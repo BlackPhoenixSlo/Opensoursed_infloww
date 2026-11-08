@@ -19,15 +19,15 @@ import { createPortal } from "react-dom";
 import { Captions, Library, RefreshCw, Star, X, Zap } from "lucide-react";
 
 import { IfButton, IfSegmented, IfSwitch } from "@/components/ui/infloww";
-import { isTopModal, useModalFocus } from "@/components/ui/ifModal";
-import { IF_FIELD } from "@/components/ui/ifSelect";
+import { useModalFocus } from "@/components/ui/ifModal";
+import { IF_FIELD, IfNativeSelect } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
-import { refreshVaultFromOf } from "@/hooks/vaultRefresh";
+import { useOfRefresh, vaultWholeSource } from "@/hooks/vaultRefresh";
 import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
@@ -39,7 +39,8 @@ import { perfLog, perfOpId, perfPainted } from "@/lib/perfLog";
 import { useInflowwPalette } from "./InflowwPalette";
 import { VaultMediaDetails } from "./VaultMediaDetails";
 import { DURATION_RANGES, inDurationRange, type DurationRange } from "./vaultDurationFilter";
-import { VAULT_SHEET, VAULT_TOOLBAR_SELECT } from "./vaultPickerSheet";
+import { buildPicked, pickedInit, pickedReducer } from "./vaultPickerPicked";
+import { VAULT_SHEET } from "./vaultPickerSheet";
 import { HOVER_DELAY_MS, useHoverPreview } from "@/hooks/useHoverPreview";
 import { KEYBOARD_HINT, PhotoHoverPanel, useGridSelection, usePhotoHover } from "./vaultPickerSelection";
 import { STATS_SORTS, isStatsSort, seenByFan, sortByStats } from "./vaultPickerStats";
@@ -52,13 +53,10 @@ import { bumpAccountCount, loadAccountCounts, loadFanMru, loadFanState, MRU_CAP,
 import { fetchSort, initialFilters, vaultFiltersReducer, type MediaType, type Sort } from "./vaultPickerFilters";
 
 // Moved out of this file; re-exported so every existing importer keeps working.
-export { progressiveVideoSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, VaultVideoPreview } from "./VaultVideoPreview";
+export { progressiveVideoSrc, gifClipSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, VaultVideoPreview } from "./VaultVideoPreview";
 // Kept only for VaultTile + the drm test importers (review O1); delete when VaultTile moves to tilePreview.
 export { evenFrameIndex } from "./vaultTilePreview";
 export { aiCaptionFor, VaultAiCaptionOverlay, useCaptionOverlay, type CaptionSurface } from "./vaultAiCaption";
-
-/** The toolbar's selects on the kit's field box (the shared token keeps its layout bits). */
-const TOOL_SELECT = cn(VAULT_TOOLBAR_SELECT, IF_FIELD, "h-8 py-0 px-[11px]");
 
 const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
   { value: "all",   label: "All"    },
@@ -103,11 +101,11 @@ export type VaultPickerProps = VaultPickerBaseProps & (
 );
 
 /** The open picker's dialog root, a modal layer like IfModal (the shared `useModalFocus`): focus moves in, Tab stays
- *  inside, and goes back to the opener on close. Escape stays the picker's own handler (preview first). */
-function PickerDialog({ rootRef, onClose, className, ...rest }: ComponentProps<"div"> & {
-  rootRef: RefObject<HTMLDivElement | null>; onClose: () => void;
+ *  inside, Escape is `onEscape` (preview first), and focus goes back to the opener on close. */
+function PickerDialog({ rootRef, onEscape, className, ...rest }: ComponentProps<"div"> & {
+  rootRef: RefObject<HTMLDivElement | null>; onEscape: () => void;
 }) {
-  useModalFocus<HTMLDivElement>(onClose, false, rootRef);
+  useModalFocus(rootRef, onEscape);
   return <div ref={rootRef} role="dialog" aria-modal="true" tabIndex={-1} className={cn(className, "outline-none")} {...rest} />;
 }
 
@@ -134,35 +132,30 @@ export function VaultPicker(props: VaultPickerProps) {
   // Per-fan folder MRU (last 3 used). Lives in localStorage so it
   // survives reloads + transfers between tabs.
   const [folderMru, setFolderMru] = useState<FanId[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set(initialSelectedIds));
-  // Cache of media metadata for ids the user picked across filter switches
-  // so we can return the full VaultMedia[] on confirm even if the user
-  // selects from one filter then jumps to another.
-  const [selectedMeta, setSelectedMeta] = useState<Map<number, VaultMedia>>(
-    () => new Map(),
-  );
+  // The picked ids, plus the media seen for them across filter switches (vaultPickerPicked.ts).
+  const [picked, pick] = useReducer(pickedReducer, initialSelectedIds, pickedInit);
+  const selectedIds = picked.ids;
 
   const listsQ = useVaultLists(accountId, open);
   // Chatter Access (folders): for a RESTRICTED chatter session this is the
-  // authoritative folder menu (DA-3). Owners get `restricted: false` (the
-  // hook disables itself off-session), so all of the gating below is inert
-  // for them. The backend soft-denies disallowed/None list_id regardless —
+  // authoritative folder menu (DA-3). Owners: the hook disables itself
+  // off-session (`data` undefined → `restricted` false), so all of the gating
+  // below is inert for them. The backend soft-denies disallowed/None list_id regardless —
   // this only shapes the picker's folder UI so it opens to a usable folder.
   const folderAccessQ = useChatterFolderAccess(accountId, open);
   const restricted = !!folderAccessQ.data?.restricted;
 
   // ── Cache-first vault source (ADDITION — normal live search is preserved) ──
-  // Once this account's vault is FULLY in the local mirror (`complete`: a full
-  // background walk or a manual Collect finished), serve the grid + search
-  // straight from it: instant open, infinite-scroll FROM CACHE, and local
-  // (of_terms-aware) search. A partial mirror (first pages only) or a missing
-  // `complete` stays on the live-OF path. A restricted chatter takes the
+  // Once this account's vault is FULLY in the local mirror (`vaultWholeSource`:
+  // what can be sent is the whole vault), serve the grid + search straight from it: instant
+  // open, infinite-scroll FROM CACHE, and local (of_terms-aware) search. A
+  // partial mirror stays on the live-OF path. A restricted chatter takes the
   // mirror too: the server applies their folder limits on the mirror routes.
   // Both hooks always mount; only the enabled one fetches.
   const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
-  const cachedCount = cacheSummary.data?.count ?? 0;
-  const useLocalVault = open && cacheSummary.data?.complete === true && cachedCount > 0;
+  const source = open ? vaultWholeSource(cacheSummary.data) : "live";
+  const useLocalVault = source === "mirror";
   const vaultLive = useVaultMedia({
     accountId, type, listId, sort: ofSort, query,
     // Fire the live OF path immediately whenever we're NOT on the cache path.
@@ -176,25 +169,19 @@ export function VaultPicker(props: VaultPickerProps) {
   const vaultMirror = useMirrorItems({
     accountId, type, query, sort: ofSort, ofFolderId: listId, enabled: useLocalVault,
   });
-  const vault = useLocalVault
-    ? ({
-        items: vaultMirror.items,
-        hasMore: vaultMirror.hasMore,
-        isLoading: cacheSummary.isLoading || vaultMirror.isLoading,
-        isFetching: vaultMirror.isFetching,
-        isFetchingNextPage: vaultMirror.isFetchingNextPage,
-        isPlaceholderData: false,
-        error: null,
-        loadMore: vaultMirror.loadMore,
-        // Refresh = what OF holds NOW, as Vault Pro's ↻: the mirror's urls carry the signature (and the proxy IP)
-        // of the Collect that wrote them, so re-reading the mirror alone changed nothing after a proxy move.
-        refresh: () => { void refreshVaultFromOf(qc, accountId!, listId).catch(() => false); },
-      } as Omit<typeof vaultLive, "refresh"> & { refresh: () => void })
-    : vaultLive;
+  const vault = useLocalVault ? vaultMirror : vaultLive;
 
   // A broken thumbnail (an expired signed url) reloads the grid once per Creator per cooldown (reloadBrokenThumbs:
   // the mirror's items, or the live listing past the relay's cache); reopening the picker resets the tiles only.
-  const thumbs = useThumbAutoRefresh(open ? accountId : null, useLocalVault ? "mirror" : "live");
+  const thumbs = useThumbAutoRefresh(open ? accountId : null, source);
+
+  // Refresh (↻) = what OF holds NOW on either source, as Vault Pro's and the manager's ↻: the mirror's urls carry
+  // the signature (and the proxy IP) of the Collect that wrote them, so re-reading the mirror alone changed nothing
+  // after a proxy move. Disabled and spinning until the reloaded grid is in; says so when OF could not be reached
+  // or the sync failed. Settled, the broken thumbs are drawn again. The picker stays mounted: pending is per
+  // Creator (a reopen or a switch back mid-sync stays disabled; a sync for A never disables B's button); closing
+  // it or switching Creator drops only the note.
+  const ofRefresh = useOfRefresh(open ? accountId : null, thumbs);
 
   // Harvest OF's own vault search for the current query and fold it into the
   // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
@@ -331,8 +318,7 @@ export function VaultPicker(props: VaultPickerProps) {
       openOpIdRef.current = id;
       paintedRef.current = false;
       perfLog(id, "vault.open", "requested", { accountId, fanId });
-      setSelectedIds(new Set(initialSelectedIds));
-      setSelectedMeta(new Map());
+      pick({ type: "reset", ids: initialSelectedIds });
       // Restore the whole picker position for this fan: folder, sort,
       // type. If the chatter has never opened the picker for this fan,
       // fall back to All / Newest / All-types. Crucially we DON'T force
@@ -394,29 +380,23 @@ export function VaultPicker(props: VaultPickerProps) {
     [open, accountId],
   );
 
-  // Esc closes. When the preview modal is open, swallow Esc to close just
-  // the preview — the second press then closes the whole picker.
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !isTopModal(rootRef.current)) return;
-      if (hoverPhoto) {
-        closePhoto();
-        return;
-      }
-      if (previewMedia) {
-        setPreviewMedia(null);
-        return;
-      }
-      if (details) {
-        setDetails(null);
-        return;
-      }
-      onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose, previewMedia, details, hoverPhoto, closePhoto]);
+  // Esc closes (PickerDialog's, only while it is the top layer). When the preview modal is open, swallow Esc to close
+  // just the preview — the second press then closes the whole picker.
+  const onEscape = () => {
+    if (hoverPhoto) {
+      closePhoto();
+      return;
+    }
+    if (previewMedia) {
+      setPreviewMedia(null);
+      return;
+    }
+    if (details) {
+      setDetails(null);
+      return;
+    }
+    onClose();
+  };
 
   // Infinite scroll sentinel.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -446,47 +426,16 @@ export function VaultPicker(props: VaultPickerProps) {
     return () => io.disconnect();
   }, [open, vault.hasMore, vault.isFetchingNextPage]);
 
-  function addMany(ms: VaultMedia[]) {
-    setSelectedIds((prev) => new Set([...prev, ...ms.map((m) => m.id)]));
-    setSelectedMeta((prev) => new Map([...prev, ...ms.map((m) => [m.id, m] as const)]));
-  }
+  const addMany = (ms: VaultMedia[]) => pick({ type: "addMany", media: ms });
+  const toggle = (m: VaultMedia) => pick({ type: "toggle", media: m });
 
-  function toggle(m: VaultMedia) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(m.id)) next.delete(m.id);
-      else next.add(m.id);
-      return next;
-    });
-    setSelectedMeta((prev) => {
-      const next = new Map(prev);
-      next.set(m.id, m);
-      return next;
-    });
-  }
-
-  // `extra` lets the double-click "insta add" path force-include the
-  // double-clicked tile regardless of how the click sequence left
-  // selectedIds (the two onClicks of a dblclick toggle the tile twice,
-  // so the net selection state depends on parity).
+  // `extra`: the double-clicked tile, always in (see buildPicked).
   const confirmWith = useCallback(
     (extra?: VaultMedia) => {
-      const picked: VaultMedia[] = [];
-      const seenInList = new Map(vault.items.map((m) => [m.id, m]));
-      const ids = new Set(selectedIds);
-      if (extra) ids.add(extra.id);
-      for (const id of ids) {
-        const m =
-          (extra && extra.id === id ? extra : undefined) ??
-          seenInList.get(id) ??
-          selectedMeta.get(id);
-        if (m) picked.push(m);
-        else picked.push({ id, type: "photo" } as VaultMedia);
-      }
-      onConfirm(picked);
+      onConfirm(buildPicked(picked, vault.items, extra));
       onClose();
     },
-    [vault.items, selectedIds, selectedMeta, onConfirm, onClose],
+    [vault.items, picked, onConfirm, onClose],
   );
   const confirm = useCallback(() => confirmWith(), [confirmWith]);
 
@@ -558,7 +507,7 @@ export function VaultPicker(props: VaultPickerProps) {
     // fixes the "click a tile and the whole composer disappears" bug.
     <PickerDialog
       rootRef={rootRef}
-      onClose={onClose}
+      onEscape={onEscape}
       aria-label="Vault picker"
       className={cn("fixed inset-0 z-[60] flex items-stretch", messagesPro && VAULT_SHEET.backdrop)}
       style={palette}
@@ -620,10 +569,10 @@ export function VaultPicker(props: VaultPickerProps) {
           />
 
           {folderItems.length > 0 && (
-            <select
+            <IfNativeSelect
               value={listId ?? ""}
               onChange={(e) => dispatch({ type: "setListId", value: e.target.value ? Number(e.target.value) : null })}
-              className={cn(TOOL_SELECT, "max-w-[9rem] md:max-w-none")}
+              className="shrink-0 ml-2 max-w-[9rem] md:max-w-none"
               title="Filter by folder"
             >
               {/* Restricted chatters have no "All folders" view — the
@@ -634,19 +583,19 @@ export function VaultPicker(props: VaultPickerProps) {
                   {f.label}
                 </option>
               ))}
-            </select>
+            </IfNativeSelect>
           )}
 
-          <select
+          <IfNativeSelect
             value={sort}
             onChange={(e) => dispatch({ type: "setSort", value: e.target.value as Sort })}
-            className={TOOL_SELECT}
+            className="shrink-0 ml-2"
             title="Sort order. Newest / Oldest are OF's; the stats sorts rank the loaded media by our send records."
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
             {STATS_SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
+          </IfNativeSelect>
 
           {fanId != null && (
             <span className="shrink-0 ml-2" title="Hide content viewed or unlocked by fan, or posted on Creator's feed">
@@ -660,16 +609,16 @@ export function VaultPicker(props: VaultPickerProps) {
           )}
 
           {fanId != null && (
-            <select
+            <IfNativeSelect
               value={lengthRange}
               onChange={(e) => dispatch({ type: "setLengthRange", value: e.target.value as DurationRange })}
-              className={TOOL_SELECT}
+              className="shrink-0 ml-2"
               title="Filter by length"
             >
               {DURATION_RANGES.map((r) => (
                 <option key={r.value} value={r.value}>{r.label}</option>
               ))}
-            </select>
+            </IfNativeSelect>
           )}
 
           <div className="relative shrink-0 ml-2">
@@ -724,12 +673,15 @@ export function VaultPicker(props: VaultPickerProps) {
                 {wall.isFetching ? "scanning wall…" : "wall scan incomplete"}
               </span>
             )}
+            {ofRefresh.note && <span role="status" className="text-[12px] text-warn">{ofRefresh.note}</span>}
             <IfButton
               variant="link"
-              onClick={() => { vault.refresh(); wall.refresh(); }}
+              disabled={!accountId || ofRefresh.isPending}
+              aria-busy={ofRefresh.isPending}
+              onClick={() => { ofRefresh.mutate(listId); wall.refresh(); }}
               className="gap-1.5"
             >
-              <RefreshCw className={cn("h-3.5 w-3.5", (vault.isFetching || wall.isFetching) && "animate-spin")} aria-hidden />
+              <RefreshCw className={cn("h-3.5 w-3.5", (ofRefresh.isPending || vault.isFetching || wall.isFetching) && "animate-spin")} aria-hidden />
               refresh
             </IfButton>
           </div>
@@ -806,7 +758,7 @@ export function VaultPicker(props: VaultPickerProps) {
             className={cn(
               "grid grid-cols-3 sm:grid-cols-4 gap-2 transition-opacity",
               sheet ? sheet.pickerGrid : "md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7",
-              vault.isFetching && vault.isPlaceholderData && "opacity-60",
+              !useLocalVault && vaultLive.isFetching && vaultLive.isPlaceholderData && "opacity-60",
             )}
           >
             {visibleItems.map((m, tileIdx) => (

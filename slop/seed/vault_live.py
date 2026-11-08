@@ -7,7 +7,7 @@ OnlyFans vault (lib/vault_wire.py serves the vault itself), by SQL, as the produ
   live Creators     no mirror; the relay's cached page 1 of the picker's listing (PICKER_KEY, fetched 2 h ago) whose
                     thumb urls expired 1 h ago, as OF signed them when that page was fetched.
 
-PICKER_KEY / LISTS_KEY are server.vault_media_cache_key / vault_lists_cache_key's output for those reads, copied: the
+PICKER_KEY / LISTS_KEY are vault_cache.vault_media_cache_key / vault_lists_cache_key's output for those reads, copied: the
 scenario asserts both (THUMBS_RELOAD: the relay re-cached PICKER_KEY; REFRESH_WIRE: LISTS_KEY), so a format change
 there turns its check red instead of stranding a stale row.
 
@@ -23,8 +23,8 @@ from . import World, ts, vault_week
 
 LATENCY_S = 0.15     # each OF vault call (a guess at OF through a proxy): of_wire's own wait + `extra_s`
 PICKER_PAGE = 24     # app/hooks/useVaultMedia.ts PAGE
-PICKER_KEY = "media:type=all|list=None|offset=0|limit=24|sort=desc|field=recent|query="   # server.vault_media_cache_key
-LISTS_KEY = "lists:view=main|limit=50|offset=0"                                           # server.vault_lists_cache_key
+PICKER_KEY = "media:type=all|list=None|offset=0|limit=24|sort=desc|field=recent|query="   # vault_cache.vault_media_cache_key
+LISTS_KEY = "lists:view=main|limit=50|offset=0"                                           # vault_cache.vault_lists_cache_key
 
 
 def seed(w: World, wire, mirror: list[str], live: list[str]) -> None:

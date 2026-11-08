@@ -10,7 +10,8 @@
  *     box stays as the toolbar has it.
  *   • An edit never leaves the rich editor (the box would swap under the caret); only a send or "Aa" off does.
  *   • A send empties the text: the box is back to what the toolbar says.
- *   • Not allowed (a Fansly account: it never gets OF markup): always the plain textarea, no toolbar.
+ *   • Not allowed (a Fansly account: it never gets OF markup; its host hides "Aa"): text loaded there goes to the
+ *     plain textarea, no toolbar (`loaded`'s `allowed`, required so no host can forget it).
  */
 
 export interface RichMode {
@@ -25,14 +26,14 @@ export const PLAIN_MODE: RichMode = { toolbar: false, rich: false };
 export type RichModeEvent =
   /** "Aa" pressed; `formatted`: the text holds formatting now. */
   | { type: "aa"; formatted: boolean }
-  /** Text put in from outside (a script pick, a restore). */
-  | { type: "loaded"; formatted: boolean }
+  /** Text put in from outside (a script pick, a restore); `allowed`: the account may author OF rich text. */
+  | { type: "loaded"; formatted: boolean; allowed: boolean }
   /** The text was edited in the box. */
   | { type: "edited"; formatted: boolean }
   | { type: "sent" };
 
-export function richMode(m: RichMode, e: RichModeEvent, allowed = true): RichMode {
-  if (!allowed) return m.toolbar || m.rich ? PLAIN_MODE : m;
+export function richMode(m: RichMode, e: RichModeEvent): RichMode {
+  if (e.type === "loaded" && !e.allowed) return m.toolbar || m.rich ? PLAIN_MODE : m;
   let next: RichMode;
   switch (e.type) {
     case "aa": {

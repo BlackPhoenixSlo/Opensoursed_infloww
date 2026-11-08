@@ -26,9 +26,11 @@ real run_one_tick with a fake OF client:
         startDate sent: ingest_tx_recent_walk_empty once per account per process; still 'ok'
     case_quiet_account_empty_walk_no_warning    0 rows, newest held row before the startDate
     case_supervisor_passes_the_mode             supervisor_cycle ticks with the decided mode
-    case_health_exposes_last_full_scan_at       read from the DB (survives a restart)
+    case_health_exposes_last_full_attempt_at       read from the DB (survives a restart)
     case_legacy_schema_gains_last_full_at       a box without the column: boot catch-up adds it
         (NULL), the 0106 revision is guarded, idempotent, the single head after 0105
+    case_legacy_schema_gains_backfill_stalls    a box without backfill_stalls (no migration): boot
+        catch-up adds it (NULL), which reads 0: no walk started, nothing given up
 
 Run: ./venv/bin/python service/tests/test_tx_ingest_recent.py
 """
@@ -405,7 +407,7 @@ async def case_supervisor_passes_the_mode():
     assert ticked == [(ACCT, "refresh"), (ACCT, "recent")], ticked
 
 
-async def case_health_exposes_last_full_scan_at():
+async def case_health_exposes_last_full_attempt_at():
     """The /health payload (unscoped: no signed-in principal, as internal curl), from the DB."""
     from tx_ingest_admin_api import admin_ingest_tx_health
     await _ready()
@@ -413,10 +415,10 @@ async def case_health_exposes_last_full_scan_at():
     await _set_full(at)
     _restart()
     rows = {a["account_id"]: a for a in (await admin_ingest_tx_health())["accounts"]}
-    assert rows[ACCT]["last_full_scan_at"] == at.isoformat(), rows[ACCT]
+    assert rows[ACCT]["last_full_attempt_at"] == at.isoformat(), rows[ACCT]
     await _set_full(None)
     rows = {a["account_id"]: a for a in (await admin_ingest_tx_health())["accounts"]}
-    assert rows[ACCT]["last_full_scan_at"] is None, rows[ACCT]
+    assert rows[ACCT]["last_full_attempt_at"] is None, rows[ACCT]
 
 
 def case_legacy_schema_gains_last_full_at():
@@ -492,6 +494,57 @@ def case_legacy_schema_gains_last_full_at():
     finally:
         eng.dispose()
         old.unlink()
+
+
+def case_legacy_schema_gains_backfill_stalls():
+    import asyncio
+    import importlib
+    import os
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+
+    import sqlalchemy as sa
+    import sqlalchemy.dialects.sqlite  # noqa: F401
+    from sqlalchemy.schema import CreateTable
+
+    import transaction_ingest_decide as d
+
+    old = Path(tempfile.gettempdir()) / f"tx_scan_stalls_{os.getpid()}.db"
+    old.unlink(missing_ok=True)
+    acct_ddl, ddl = (str(CreateTable(m.__table__).compile(dialect=sa.dialects.sqlite.dialect()))
+                     for m in (Account, TransactionScanHistory))
+    con = sqlite3.connect(old)
+    con.executescript(f"""
+        CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
+        INSERT INTO alembic_version VALUES ('0106_tx_scan_last_full_at');
+        {acct_ddl};
+        {ddl};
+        ALTER TABLE transaction_scan_history DROP COLUMN backfill_stalls;
+        INSERT INTO transaction_scan_history (account_id, fully_backfilled, current_status)
+            VALUES ('legacy2', 0, 'idle');
+    """)
+    con.commit()
+    con.close()
+    db_engine = importlib.import_module("db.engine")
+    prev = db_engine.DATABASE_URL
+    try:
+        db_engine.DATABASE_URL = f"sqlite+aiosqlite:///{old}"
+        asyncio.run(db_engine.init_db())
+    finally:
+        db_engine.DATABASE_URL = prev
+    con = sqlite3.connect(old)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(transaction_scan_history)")}
+        val = con.execute("SELECT backfill_stalls FROM transaction_scan_history WHERE account_id='legacy2'").fetchone()
+    finally:
+        con.close()
+        old.unlink()
+    assert "backfill_stalls" in cols and val == (None,), (sorted(cols), val)
+    facts = ti.scan_facts(TransactionScanHistory(account_id="legacy2", fully_backfilled=False,
+                                                 current_status="idle", backfill_stalls=val[0]))
+    assert facts.backfill_stalls == 0 and not d.walk_started(facts), facts
+    assert d.decide_mode(facts, now=datetime(2026, 11, 8)) == "backfill", "a NULL is no stall"
 
 
 _harness.run()

@@ -258,7 +258,6 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
                 <MediaTile
                   mediaId={m.id ?? null}
                   proxiedUrl={thumb}
-                  fallbackUrl={rawThumb ?? ""}
                   eager={isEager}
                   alt=""
                   className={cn("rounded-md border border-black/10 object-contain", blurCls)}

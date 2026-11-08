@@ -9,6 +9,12 @@ entries, one bound per account (least-used IP) and kept (docs/proxies.md, "Inflo
                                        two ports counts once); same-country wins over less-used; ties random.
   case_pick_answering_table:           least-used that answers; a silent one passed over; `checked` reused;
                                        `probes` caps new probes; none answering → None.
+  case_assign_fallback_table:          no answer / all unusable: untried usable, tried usable, not dead (flapping),
+                                       dead last; best tier within each; never strands.
+  case_tier_order_table:               `a,b,|,c,d,|,e,f`: a new login takes tier 0 (idle later tiers ignored),
+                                       an untried tier 1 once tier 0's probes fail; a failover (and a due
+                                       re-pick) stays on the source's tier while one answers, else the best
+                                       other tier; a tier-0 source as before.
   case_parse_zero_to_three_lines:      empty/blank/None → none; newline or comma separated; labels infloww-<hash>.
   case_parse_bad_and_repeated_lines:   a bad line is an error (password redacted); a repeated proxy counts once.
   case_pool_has_no_cap:                five lines parse and sync as five pool entries, each with its own label.
@@ -45,6 +51,7 @@ entries, one bound per account (least-used IP) and kept (docs/proxies.md, "Inflo
                                        drops a pool row mirrored earlier.
   case_pool_routes:                    POST /admin/proxy-pool/assign + /unbind for the owner; another Agency's
                                        owner and A's chatter are refused, the registry is unchanged; signed out → 401.
+  case_reload_session_is_the_owners_own_creator_only: no id → the relay-wide default; another Agency's → 403.
 
 The registry is repointed at a temp file; every host and password is fake (`.invalid`).
 
@@ -355,6 +362,44 @@ def case_list_hides_pool():
         # An Agency's owner: no error count, no in-flight counts (the relay's whole traffic: the site owner's).
         assert set(rows[0]["health"]) == {"state", "down", "refusals"}, rows
     assert "mine" in {p["label"] for p in OWNER_A.get("/admin/proxies").json()["proxies"]}
+
+
+def case_make_default_is_the_owners_own_creator_only():
+    """POST /admin/accounts/active names a Creator in the body (the isolation middleware never sees it): another
+    Agency's, or one that does not exist, is 403 alike (no existence oracle) and the default is unchanged; the
+    caller's own is 200; the Master's reach is every Creator."""
+    account_registry.set_active_account_id(CREATOR_A)
+    for client, aid, want, active in ((OWNER_A, CREATOR_B, 403, CREATOR_A), (OWNER_A, "999999999", 403, CREATOR_A),
+                                      (OWNER_B, CREATOR_A, 403, CREATOR_A), (OWNER_B, CREATOR_B, 200, CREATOR_B)):
+        r = client.post("/admin/accounts/active", json={"account_id": aid})
+        assert (r.status_code, account_registry._read_active_unlocked()) == (want, active), (aid, r.status_code, r.text)
+    master = fx.login_owner("agency_master")
+    assert master.post("/admin/accounts/active", json={"account_id": CREATOR_A}).status_code == 200
+    assert account_registry._read_active_unlocked() == CREATOR_A
+
+
+def case_reload_session_is_the_owners_own_creator_only():
+    """POST /admin/reload-session with no id acts on the relay-wide default, which may be another Agency's
+    Creator: 403 for A (nothing reloaded, no user_id read), 200 for its owner B and the Master."""
+    class _C:
+        user_id, x_of_rev = "of-user", "rev"
+    loaded: list[str] = []
+    real = server._load_client
+    server._load_client = lambda aid: loaded.append(aid) or _C()
+    session = account_registry._account_path(CREATOR_B, "latest.json")   # a default needs a session to stick
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text("{}")
+    try:
+        account_registry.set_active_account_id(CREATOR_B)
+        for client, query, want in ((OWNER_A, "", 403), (OWNER_A, f"?account_id={CREATOR_B}", 403),
+                                    (OWNER_B, "", 200), (fx.login_owner("agency_master"), "", 200)):
+            r = client.post(f"/admin/reload-session{query}")
+            assert r.status_code == want, (query, r.status_code, r.text)
+        assert loaded == [CREATOR_B, CREATOR_B], loaded
+    finally:
+        server._load_client = real
+        session.unlink()
+        account_registry.set_active_account_id(CREATOR_A)
 
 
 def case_generic_routes_refuse_pool():
@@ -675,6 +720,15 @@ def case_parse_pool_table():
     assert [len(g) for g in proxy_registry._tiers([{"label": "x"}, {"label": "y", "tier": 1}])] == [1, 1]
     errors = proxy_registry.parse_pool("bad.invalid:x:u:secretpw")[1]
     assert len(errors) == 1 and "secretpw" not in errors[0], errors
+    # `|` inside an item (not an item of its own): a bad line, never a password or a label; the sync fails closed
+    for text in ["a.invalid:1:u:secretpw|b.invalid:2:u:p2", "a.invalid:1:u:secretpw |", "| a.invalid:1",
+                 "a.invalid:1,b.invalid:2:u:p|,c.invalid:3", "u:secret|pw@a.invalid:1"]:
+        entries, errors = proxy_registry.parse_pool(text)
+        assert len(errors) == 1 and "tier break" in errors[0] and "secret" not in errors[0], (text, errors)
+        assert not any("|" in (e.get("password") or "") + e["host"] for e in entries), (text, entries)
+    _reset("a.invalid:1,b.invalid:2")
+    out = proxy_registry.sync_pool("a.invalid:1:u:p|b.invalid:2:u:p")
+    assert out["errors"] and not out["changed"] and len(proxy_registry.pool_entries()) == 2, out
 
 
 def _e(label, host, port=1, ids=(), ip=None, geo=None):
@@ -749,6 +803,79 @@ def case_pick_answering_table():
                                              verify=verify, checked=checked, probes=probes)
         assert (got["label"] if got else None, seen) == (want, probed), (answers, before, probes, got, seen)
         assert all(checked[k] == answers[k] for k in seen), checked
+
+
+def case_assign_fallback_table():
+    """A new login no probe answered for still binds: an untried usable one, then a tried usable one, then one
+    not `dead` (flapping: answers most calls), only then a dead one (least-used once its Creators moved off);
+    the best tier first within each. Only usable ones are probed."""
+    nogeo = lambda p: None  # noqa: E731
+
+    def pool(label, tier, ids):
+        return {**_e(label, f"{label}.invalid", ids=ids), "pool": True, "tier": tier}
+    # (pool (label, tier, ids), bad, dead, answers) -> picked, probed
+    rows = [
+        ([("d", 0, []), ("f", 0, ["1", "2", "3"])], "df", "d", {}, "f", []),   # the r2 repro: never the dead one
+        ([("d", 0, []), ("f", 0, []), ("u", 0, ["1", "2"])], "df", "d", {"u": False}, "u", ["u"]),   # tried usable
+        ([("d", 0, []), ("f", 1, ["1"])], "df", "d", {}, "f", []),             # not dead beats the better tier
+        ([("f", 0, ["1"]), ("g", 1, [])], "fg", "", {}, "f", []),              # all flapping: best tier
+        ([("d", 0, ["1"]), ("e", 0, [])], "de", "de", {}, "e", []),            # all dead: least-used of all
+    ]
+    for entries, bad, dead, answers, want, probed in rows:
+        proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [pool(*e) for e in entries]}))
+        seen: list[str] = []
+
+        def verify(p, answers=answers, seen=seen):
+            seen.append(p["label"])
+            return answers[p["label"]]
+        got, kept = proxy_registry.assign_pool("9", bad=set(bad), dead=set(dead), due=set(), geo=nogeo,
+                                               verify=verify, rng=_FirstRng())
+        assert (got["label"], seen, kept) == (want, probed, False), (entries, bad, dead, got, seen)
+        assert proxy_registry.get_for_account("9")["label"] == want
+
+
+def case_tier_order_table():
+    text = "t-a.invalid:1,t-b.invalid:1,|,t-c.invalid:1,t-d.invalid:1,|,t-e.invalid:1,t-f.invalid:1"
+    name_of = dict(zip(_labels(text), "abcdef"))
+    nogeo = lambda p: None  # noqa: E731
+
+    def setup():   # 1 on a, 2 on b, 3 on c, 4 on e; d and f idle (least-used alone would pick them)
+        _reset(text)
+        by = {v: k for k, v in name_of.items()}
+        for aid, n in (("1", "a"), ("2", "b"), ("3", "c"), ("4", "e")):
+            proxy_registry.assign_account(by[n], aid)
+        assert [p["tier"] for p in proxy_registry.pool_entries()] == [0, 0, 1, 1, 2, 2]
+        return by
+
+    def verify_of(dead, seen):
+        return lambda p: seen.append(name_of[p["label"]]) or name_of[p["label"]] not in dead
+
+    # assign_pool: (account, due, dead) -> (bound to, probed)
+    for aid, due, dead, want, probed in [
+        ("7", "", "", "a", "a"),          # tier 0, though d and f are idle
+        ("7", "", "a", "b", "ab"),
+        ("7", "", "ab", "d", "ab"),       # tier 0 failed both probes: an untried one of tier 1, least-used
+        ("4", "e", "", "f", "f"),         # a due re-pick off tier 2 stays on tier 2
+        ("4", "e", "f", "a", "fa"),       # no tier-2 standby answers: the best other tier
+    ]:
+        by, seen = setup(), []
+        p, kept = proxy_registry.assign_pool(aid, bad=set(), dead=set(), due={by[n] for n in due}, geo=nogeo,
+                                             verify=verify_of(dead, seen), rng=_FirstRng())
+        assert (name_of[p["label"]], "".join(seen), kept) == (want, probed, False), (aid, due, dead, p, seen)
+    # failover_pool: (failed source, dead) -> (its account's destination, probed)
+    for src, dead, want, probed in [
+        ("e", "", "f", "f"),              # tier 2 stays on tier 2 (before: tier 0 first)
+        ("e", "f", "a", "fa"),            # no tier-2 standby answers: tier 0, then tier 1
+        ("a", "", "b", "b"),              # tier-0 source: as before
+        ("a", "b", "d", "bd"),
+        ("c", "", "d", "d"),              # tier 1 stays on tier 1
+    ]:
+        by, seen = setup(), []
+        moved = proxy_registry.failover_pool(by[src], bad=set(), geo=nogeo, verify=verify_of(dead, seen),
+                                             rng=_FirstRng())
+        assert len(moved) == 1, moved
+        got = name_of[proxy_registry.get_for_account(moved[0])["label"]]
+        assert (got, "".join(seen)) == (want, probed), (src, dead, got, seen)
 
 
 _harness.run()

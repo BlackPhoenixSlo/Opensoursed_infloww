@@ -205,19 +205,23 @@ def case_copy_keeps_text_tags_notes_and_sequence_drops_media_and_skips_taken_nam
             media=[{"id": 77, "type": "photo"}], previews=[77])
     mk(A, title="Kept", text="only on A")
     mk(B, title="KEPT", text="B already has this name")
+    # A text-only priced script (an Infloww import's) keeps its price; a Condition option keeps its condition.
+    mk(A, title="if bought", text="thanks", price=7.5, conditional="if he bought", script_id="Night", script_step=2)
     r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [B]})
     assert r.status_code == 200 and r.json() == {
-        "copied": 2, "skipped": 1, "media_dropped": 1, "sequence_dropped": 0}, r.text
+        "copied": 3, "skipped": 1, "media_dropped": 1}, r.text
     got = {x["title"]: x for x in _list(MASTER, B)}
-    assert set(got) == {"opener", "ppv", "KEPT"}, got
+    assert set(got) == {"opener", "ppv", "KEPT", "if bought"}, got
     o = got["opener"]
     assert (o["text"], o["tags"], o["notes"], o["script_id"], o["script_step"]) == (
         "hey", ["Openers"], "after 9pm", "Night", 1), o
     p = got["ppv"]
     assert (p["media"], p["previews"], p["price"], p["locked_text"], p["tagged_users"]) == ([], [], 0, False, []), p
+    c = got["if bought"]
+    assert (c["price"], c["conditional"], c["script_id"], c["script_step"]) == (7.5, "if he bought", "Night", 2), c
     # Copying again skips everything; the sources are untouched.
     r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [B]})
-    assert r.json() == {"copied": 0, "skipped": 3, "media_dropped": 0, "sequence_dropped": 0}, r.text
+    assert r.json() == {"copied": 0, "skipped": 4, "media_dropped": 0}, r.text
     a = {x["id"]: x for x in _list(MASTER, A)}
     assert a[s2["id"]]["media"] == [{"id": 77, "type": "photo"}] and a[s1["id"]]["tags"] == ["Openers"]
 
@@ -227,10 +231,15 @@ def case_copy_with_ids_shares_only_those_scripts():
     _wipe(B)
     one = MASTER.post(f"/admin/saved-replies?account_id={A}", json={"title": "one", "text": "1"}).json()
     MASTER.post(f"/admin/saved-replies?account_id={A}", json={"title": "two", "text": "2"})
+    # Past SQLite's bound-variable cap of old builds (999): read in chunks; past the cap, 422.
     r = MASTER.post("/admin/saved-replies/copy",
-                    json={"from_account_ids": [A], "to_account_ids": [B], "ids": [one["id"]]})
+                    json={"from_account_ids": [A], "to_account_ids": [B],
+                          "ids": [one["id"], *range(10**9, 10**9 + 1500)]})
     assert r.json()["copied"] == 1, r.text
     assert [x["title"] for x in _list(MASTER, B)] == ["one"]
+    r = MASTER.post("/admin/saved-replies/copy",
+                    json={"from_account_ids": [A], "to_account_ids": [B], "ids": list(range(20_001))})
+    assert r.status_code == 422, r.text
 
 
 def case_copy_refuses_an_account_the_caller_does_not_hold_and_bad_bodies():
@@ -245,12 +254,15 @@ def case_copy_refuses_an_account_the_caller_does_not_hold_and_bad_bodies():
     assert [x["title"] for x in _list(MASTER, B)] == ["one"]  # the previous case's copy, nothing new
     r = OWNER_A.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [""]})
     assert r.status_code == 422, r.text
+    # Share to all creators names no targets of its own: both at once is refused, never one silently winning.
+    r = OWNER_A.post("/admin/saved-replies/copy",
+                     json={"from_account_ids": [A], "to_account_ids": [A], "all_creators": True})
+    assert r.status_code == 422, r.text
 
 
-def case_copy_never_puts_two_scripts_at_one_sequence_step():
-    """Sources sharing a sequence name with each other, or with the target, would land two scripts on one step:
-    the later one arrives outside any sequence and is counted."""
-    c = "1000003"  # a third Creator the Master holds, so two sources can feed one target
+def _creator_c() -> str:
+    """A third Creator the Master holds, so two sources can feed one target."""
+    c = "1000003"
     (fx.account_registry.ACCOUNTS_DIR / c).mkdir(exist_ok=True)
 
     async def seed() -> None:
@@ -258,23 +270,123 @@ def case_copy_never_puts_two_scripts_at_one_sequence_step():
             if await s.get(Account, c) is None:
                 s.add(Account(id=c, nickname="creator_c", color="#aaaaaa"))
     asyncio.run(seed())
+    return c
+
+
+def _copy(src: list[str], dst: list[str], ids: list[int] | None = None) -> dict:
+    r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": src, "to_account_ids": dst, "ids": ids})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _rows(acc: str) -> list[tuple]:
+    return sorted((x["script_id"] or "", x["script_step"] or 0, x["title"]) for x in _list(MASTER, acc))
+
+
+def case_a_sequence_is_copied_whole_or_skipped_whole():
+    """A sequence arrives whole, "N.M" options included; one whose name the target already uses is skipped whole
+    (the target's partial one stays as it has it). Two sources sharing a sequence name: the first picked brings it,
+    the other's is skipped, so a later share of the other adds nothing. Same-named scripts in two sequences both
+    land; a loose script still skips a name the target has."""
+    c = _creator_c()
     for acc in (A, B, c):
         _wipe(acc)
-    mk = lambda acc, title, step: MASTER.post(  # noqa: E731
+    mk = lambda acc, title, step, seq="Night", text=None: MASTER.post(  # noqa: E731
         f"/admin/saved-replies?account_id={acc}",
-        json={"title": title, "text": title, "script_id": "Night", "script_step": step})
+        json={"title": title, "text": text or title, "script_id": seq, "script_step": step})
     assert mk(A, "a1", 1).status_code == 200
-    mk(A, "a2", 2)
+    mk(A, "a2.1", 2)
+    mk(A, "a2.2", 2)                          # step 2's second option
+    mk(A, "hi", 1, seq="Day")                 # the same name in another sequence
+    mk(A, "hi", 1, seq="Eve", text="hi eve")
     mk(B, "b1", 1)
     mk(B, "b3", 3)
-    mk(c, "c2", 2)
-    r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": [A, B], "to_account_ids": [c]})
-    assert r.status_code == 200 and r.json() == {
-        "copied": 4, "skipped": 0, "media_dropped": 0, "sequence_dropped": 2}, r.text
-    got = {x["title"]: (x["script_id"], x["script_step"]) for x in _list(MASTER, c)}
-    assert got == {"c2": ("Night", 2), "a1": ("Night", 1), "a2": (None, None),
-                   "b1": (None, None), "b3": ("Night", 3)}, got
+    mk(c, "c2 renamed", 2)                    # c's own, partial Night: stays as c has it
+    assert _copy([A, B], [c]) == {"copied": 2, "skipped": 5, "media_dropped": 0}
+    assert _rows(c) == [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 2, "c2 renamed")], _rows(c)
+    _wipe(c)
+    assert _copy([A, B], [c]) == {"copied": 5, "skipped": 2, "media_dropped": 0}
+    whole_a = [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 1, "a1"), ("Night", 2, "a2.1"), ("Night", 2, "a2.2")]
+    assert _rows(c) == whole_a, _rows(c)
+    # [A, B] then B: B's Night is skipped whole, never landing loose or beside A's.
+    assert _copy([B], [c]) == {"copied": 0, "skipped": 2, "media_dropped": 0}
+    assert _copy([A, B], [c]) == {"copied": 0, "skipped": 7, "media_dropped": 0}
+    assert _rows(c) == whole_a, _rows(c)
+    # The pick order decides: B first brings B's Night.
+    _wipe(c)
+    assert _copy([B, A], [c]) == {"copied": 4, "skipped": 3, "media_dropped": 0}
+    assert _rows(c) == [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 1, "b1"), ("Night", 3, "b3")], _rows(c)
+    # A loose script skips a name the target has, a step's included.
+    _wipe(B)
+    MASTER.post(f"/admin/saved-replies?account_id={B}", json={"title": "B1", "text": "loose"})
+    assert _copy([B], [c]) == {"copied": 0, "skipped": 1, "media_dropped": 0}
     for acc in (A, B, c):
+        _wipe(acc)
+
+
+def case_a_tag_share_brings_each_of_its_sequences_whole():
+    """A tag share selects a sequence's tagged steps only; the copy brings that whole sequence (every step and
+    option, in step order), so a later share of the sequence adds nothing, and the target's own edits and deletions
+    afterwards survive every re-share."""
+    for acc in (A, B):
+        _wipe(acc)
+    mk = lambda title, step=None, seq="Night", tags=(): MASTER.post(  # noqa: E731
+        f"/admin/saved-replies?account_id={A}",
+        json={"title": title, "text": title, "script_id": seq if step else None, "script_step": step,
+              "tags": list(tags)}).json()
+    mk("n3", 3)                               # made first: the copy still inserts in step order
+    mk("n2.1", 2)
+    n1 = mk("n1", 1, tags=["VIP"])
+    mk("n2.2", 2)
+    promo = mk("promo", tags=["VIP"])
+    # The VIP tag's share: its scripts' ids (as the page's `entryIds`).
+    assert _copy([A], [B], ids=[n1["id"], promo["id"]]) == {"copied": 5, "skipped": 0, "media_dropped": 0}
+    night = sorted((x["id"], x["title"]) for x in _list(MASTER, B) if x["script_id"] == "Night")
+    assert [t for _, t in night] == ["n1", "n2.1", "n2.2", "n3"], night
+    assert _copy([A], [B]) == {"copied": 0, "skipped": 5, "media_dropped": 0}
+    # B renames its step 1 and deletes step 3: its own edits win over the source's.
+    by_title = {x["title"]: x["id"] for x in _list(MASTER, B)}
+
+    async def edit() -> None:
+        async with get_session() as s:
+            (await s.get(SavedReply, by_title["n1"])).title = "n1 mine"
+            await s.delete(await s.get(SavedReply, by_title["n3"]))
+    asyncio.run(edit())
+    for ids in (None, [n1["id"]]):
+        assert _copy([A], [B], ids=ids)["copied"] == 0
+    assert _rows(B) == [("", 0, "promo"), ("Night", 1, "n1 mine"), ("Night", 2, "n2.1"), ("Night", 2, "n2.2")]
+    for acc in (A, B):
+        _wipe(acc)
+
+
+def case_identical_copies_at_once_land_each_script_once():
+    """Two identical shares at once (a double click, two tabs): one copy into a Creator at a time, so the later sees
+    the earlier's rows: no duplicate script, no 500 on the sequence header's unique (account_id, name)."""
+    import httpx
+    import server
+    for acc in (A, B):
+        _wipe(acc)
+
+    async def seed() -> None:
+        async with get_session() as s:
+            await s.execute(delete(SavedReplySequence).where(SavedReplySequence.account_id.in_([A, B])))
+            s.add(SavedReplySequence(account_id=A, name="Race", position=1))
+            for i in range(100):
+                s.add(SavedReply(account_id=A, title=f"loose {i}", text=f"l{i}"))
+                s.add(SavedReply(account_id=A, title=f"r{i}", text=f"r{i}", script_id="Race", script_step=i + 1))
+    asyncio.run(seed())
+    body = {"from_account_ids": [A], "to_account_ids": [B]}
+
+    async def race():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://testserver",
+                                     cookies=dict(MASTER.cookies)) as cl:
+            return await asyncio.gather(*(cl.post("/admin/saved-replies/copy", json=body) for _ in range(4)))
+
+    got = asyncio.run(race())
+    assert [r.status_code for r in got] == [200] * 4, [r.text[:200] for r in got]
+    assert sorted(r.json()["copied"] for r in got) == [0, 0, 0, 200], [r.json() for r in got]
+    assert len(_list(MASTER, B)) == 200 and list(_seq_metas(MASTER, B)) == ["Race"]
+    for acc in (A, B):
         _wipe(acc)
 
 
@@ -327,7 +439,9 @@ def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
                      json={"from_account_ids": [src], "all_creators": True})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"copied", "skipped", "media_dropped", "sequence_dropped"}, body
+    assert set(body) == {"copied", "skipped", "media_dropped"}, body
+    # The source is no target: none of its own rows counts as skipped.
+    assert body["skipped"] == 0, body
     # Every other creator got both scripts, media/price dropped, the sequence header carried.
     for dst in (d1, d2):
         got = {x["title"]: x for x in _list(OWNER_A, dst)}

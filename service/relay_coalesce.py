@@ -63,10 +63,14 @@ _first_calls: dict[str, int] = {}
 
 # Two hooks server.py installs at import (defaults: one class, no admission), so
 # this module stays importable alone and never imports server:
-#   priority_class()  "user" | "background", the request's (X-Priority). A user
-#                     read never joins a background-led flight: it would inherit
-#                     the background lane wait, the 5-try retry and its failure.
-#                     A background read may join a user-led one (same class first).
+#   priority_class()  "user" | "background", the request's (X-Priority). The one
+#                     note on single-flight joins by class (here and relay_cache):
+#                     a user read never joins a background-led flight: it would
+#                     inherit the background lane wait, the 5-try retry and its
+#                     failure. Here a background read may join a user-led one (same
+#                     class first); relay_cache splits its lock and failure by class
+#                     both ways (relay_cache._lock_key), the classes sharing the entry.
+#                     Callers never put the priority in their key.
 #   admission()       an async context manager the LEADER enters around its fetch:
 #                     a background read waits for its Creator's background lane on
 #                     the event loop, before any worker thread is taken (server.
@@ -75,7 +79,8 @@ priority_class: Callable[[], str] = lambda: "user"
 admission: Callable[[], AsyncContextManager] = contextlib.nullcontext
 
 # Guards `_coalesced_hits` and `_first_calls`. The `_inflight` dict is
-# only mutated from inside the event loop, so it doesn't need a lock.
+# mutated from the event loop, and by `forget` from any thread, unlocked: see
+# `forget` for what that race can cost.
 _stats_lock = threading.Lock()
 
 
@@ -115,10 +120,13 @@ async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
     cancellation of the original awaiter does NOT abort the upstream
     call — other waiters still get a result.
 
-    `key` must be a hashable tuple. By convention, key[0] is the
-    namespace label (used for stats grouping) and the remaining slots
-    fully identify the request, INCLUDING account_id — otherwise two
-    chatters on different OF accounts would share a response."""
+    `key` must be a hashable tuple: key[0] the namespace label (stats
+    grouping), key[1] the account id, the remaining slots the rest of the
+    request. The account must be in the key (two chatters on different OF
+    accounts would share a response) and at key[1]: `forget` drops an
+    evicted account's flights by it. Stored keys end with the class, so an
+    account-less key (("health_all",), every account at once) has the class
+    at k[1] and never matches an account."""
     assert isinstance(key, tuple) and len(key) >= 1, "key must be a non-empty tuple"
     namespace = str(key[0])
     cls = priority_class()
@@ -200,6 +208,19 @@ async def coalesce_fresh(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
 
     asyncio.create_task(_run())
     return await asyncio.shield(fut)
+
+
+def forget(account_id: str | None = None) -> None:
+    """Drop the account's in-flight `coalesce` entries (None: every one) so a caller after
+    its client was evicted (client_pool.evict: re-bootstrap, proxy edit) starts a fresh
+    flight on the new session instead of joining one the old session's client runs. The
+    running flights finish for their own waiters. Keys carry the account at key[1].
+    Unlocked (a worker thread may call it while the loop adds flights): a flight the
+    loop starts for the account during this call may be dropped too, costing one extra
+    fetch for the next caller, never a wrong answer."""
+    for k in list(_inflight):
+        if account_id is None or k[1] == account_id:
+            _inflight.pop(k, None)
 
 
 def reset_for_tests() -> None:

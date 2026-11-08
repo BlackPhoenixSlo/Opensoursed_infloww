@@ -26,6 +26,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Info, Maximize, PanelRight, RotateCw } from "lucide-react";
 
 import { CreatorColumn, PALETTE, liveSession } from "@/components/of-manager/CreatorColumn";
+import { popoutReady } from "@/components/of-manager/popoutReady";
 import { FanDrawer } from "@/components/chat/FanDrawer";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
 import { TemplatePicker } from "@/components/chat/TemplatePicker";
@@ -107,17 +108,16 @@ function Chrome({ children }: { children: React.ReactNode }) {
   const accounts = useOfManagerAccounts();
   const noCreators = accountsQ.isSuccess && accounts.length === 0;
   const { scope, setScope } = useScope();
-  // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own. Applied once the
-  // id is known as a Creator or a watcher (a cached list: at once), so a watcher's id stays OF Manager's (WatcherScope),
-  // never the window's scope; an id in neither list only after a successful read (as a Creator's). A failed read
-  // applies nothing unknown (it could be a watcher): the window keeps its scope until a read knows the id.
+  // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own, applied once
+  // (`popoutReady`: when the id is known as a Creator or a watcher, so a watcher's id stays OF Manager's
+  // (WatcherScope), never the window's scope; an unknown id only after a successful read: it could be a watcher).
   const known = accountsQ.data;
   const popped = useRef(false);
   useEffect(() => {
     if (popped.current) return;
+    const knownIds = [...(known?.accounts ?? []), ...(known?.watchers ?? [])].map((a) => a.id);
     const id = new URL(window.location.href).searchParams.get("account");
-    const isKnown = !!id && [...(known?.accounts ?? []), ...(known?.watchers ?? [])].some((a) => a.id === id);
-    if (id && !isKnown && !accountsQ.isSuccess) return;
+    if (!popoutReady(id, knownIds, accountsQ.isSuccess)) return;
     popped.current = true;
     if (id) setScope({ kind: "model", accountId: id }, { persist: false });
   }, [setScope, known, accountsQ.isSuccess]);

@@ -89,7 +89,7 @@ describe("composerDraft", () => {
       const s = run(FULL, {
         type: "pickTemplate",
         t: tpl({ price: 9, lockedText: true, media: [media(5), media(6)], previews: [5], taggedUsers: [7, 8], gifId: "g9", gifUrl: "u9", title: "T" }),
-        rich: true,
+        allowRich: true,
       });
       expect(s).toEqual({
         ...FULL,
@@ -107,10 +107,10 @@ describe("composerDraft", () => {
       ["no Script", {}, null],
       ["a Script with no step", { scriptId: "s9", scriptStep: null }, null],
     ])("%s sets the draft's script (a newer pick replaces an older one)", (_name, over, want) => {
-      expect(run(FULL, { type: "pickTemplate", t: tpl(over) }).script).toEqual(want);
+      expect(run(FULL, { type: "pickTemplate", t: tpl(over), allowRich: false }).script).toEqual(want);
     });
     it("a free template clears a typed price, the lock and previews; a GIF-less one keeps the picked GIF", () => {
-      const s = run(FULL, { type: "pickTemplate", t: tpl({ lockedText: true }) });
+      const s = run(FULL, { type: "pickTemplate", t: tpl({ lockedText: true }), allowRich: false });
       expect(s).toMatchObject({ price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0, pickedGifs: FULL.pickedGifs });
       expect(s.taggedCreators).toBe(FULL.taggedCreators);
       expect(s.scheduleAt).toBe(LATER);
@@ -200,7 +200,7 @@ describe("buildSendArgs", () => {
 });
 
 describe("sentReplyId: the saved reply a send counts for", () => {
-  const picked = (over: Partial<PickedTemplate>) => run(FULL, { type: "pickTemplate", t: tpl(over) });
+  const picked = (over: Partial<PickedTemplate>) => run(FULL, { type: "pickTemplate", t: tpl(over), allowRich: false });
   it.each<[string, ComposerDraft, number | null]>([
     ["a picked saved reply", picked({ replyId: 7 }), 7],
     ["a sequence step", picked({ replyId: 8, scriptId: "Welcome", scriptStep: 2 }), 8],
@@ -213,7 +213,7 @@ describe("sentReplyId: the saved reply a send counts for", () => {
 describe("a formatted script's markup (rich)", () => {
   const HTML = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p>';
   const picked = (over: Partial<PickedTemplate> = {}, rich = true) =>
-    run(EMPTY_DRAFT, { type: "pickTemplate", t: tpl(over), rich });
+    run(EMPTY_DRAFT, { type: "pickTemplate", t: tpl(over), allowRich: rich });
   it.each<[string, Partial<PickedTemplate>, ComposerDraft["rich"]]>([
     ["formatted script keeps its markup", { text: "Hey babe", displayText: HTML }, { html: HTML, plain: "Hey babe" }],
     ["plain script has none", { text: "hi", displayText: "hi" }, null],

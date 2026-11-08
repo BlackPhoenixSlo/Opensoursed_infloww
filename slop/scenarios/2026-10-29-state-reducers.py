@@ -186,6 +186,10 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    [{texts: [A, C], price 12, delay 5}, {text, price 7, delay 45, hours_to_live 6}], and GET
    /admin/automation-rules and the automation_rules row hold the same. Screenshots premade-compose-trigger,
    premade-rule-saved.
+17. Delayed welcome (Smart Messages > New Message > Subscriber welcome, Creator 1): type a message,
+   Escape leaves the touched editor open, then Save sends exactly one rule write with that message;
+   the dialog shows Saved, and GET /admin/automation-rules and its automation_rules row hold it.
+   Screenshots welcome-escape-trigger, welcome-saved; bodies in welcome-rule-bodies.json.
 18. Fan List (app/components/chat/fanListPaging.ts, useChatList's placeholder): Messages Pro on
    Creator A (34 chats at small, seed 1), the owner clicks "Load more conversations" (a JS click: a scroll to
    it would page on by itself and hide the button first) and A's offset-25 page is held at the wire; A's tab
@@ -518,6 +522,8 @@ PERSIST_SETTLE_MS = 6_000  # app/components/providers.tsx PERSIST_THROTTLE_MS (4
 
 # No fault targets it (proof shot + side effect for the funnel media pane), so the name lives here.
 FUNNEL_MEDIA_SAVED = "funnel media: an opener vault pick, Save media -> 'Saved' shown and the GET holds the pick"
+WELCOME_SAVED = "delayed welcome: Escape keeps the typed editor open; one Save and route plus row hold the message"
+WELCOME_TEXT = "slop welcome after Escape"
 
 SECTIONS = {
     "mass": (MASS_FREE, MASS_GATE, MASS_GATE_SEND, MASS_BODY, MASS_TEMPLATE_GIF, MASS_ALL),
@@ -544,6 +550,7 @@ SECTIONS = {
     "vault": (VAULT_DRAG, VAULT_CANCEL, VAULT_SORT, VAULT_RELOAD, VAULT_SORT_LABEL, VAULT_QUICK_RELOAD,
               VAULT_MIRROR_SORT_LABEL),
     "premade": (PREMADE_ROWS, PREMADE_PAYLOAD, PREMADE_STORED),
+    "welcome": (WELCOME_SAVED,),
     "fanlist": (FANLIST_SCOPE, FANLIST_LOAD_MORE, FANLIST_RETURN, FANLIST_REWARM),
     "chat-refused": (CHAT_REFUSED_SHOWN, CHAT_REFUSED_RESTORED),
     "chat-ppv": (PPV_SEND_BODY,),
@@ -683,7 +690,7 @@ def _insert_vault_items(w, aid: str, rows: list[tuple[int, datetime, str]]) -> N
 
 def _seed_collect_run(con, w, aid: str, total: int) -> None:
     """The `vault_cache_runs` row a finished manual Collect leaves (status done, phase done; seed/vault_live.py's
-    shape): `vault_ai_api.full_walk_done` -> `cache/summary` `complete` true, the picker's mirror path."""
+    shape): `vault_runs.full_walk_done` -> `cache/summary` `complete` true, the picker's mirror path."""
     started = w.now - timedelta(hours=2)
     con.execute("INSERT INTO vault_cache_runs(account_id, status, phase, total_seen, upserted, pages_done, started_at,"
                 " finished_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -2252,7 +2259,7 @@ async def _premade(ctx, page, chk) -> None:
         await ta.nth(1).fill("slop post one B")
         await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(2).fill("slop post one C")
-        await form.get_by_title("Remove this variant").nth(1).click()
+        await form.get_by_role("button", name="Remove variant 2").click()
         await price.nth(0).fill("12")
         await form.get_by_placeholder("0 (now)").fill("5")
         # Post 2 (later removed) and Post 3.
@@ -2303,6 +2310,47 @@ async def _premade(ctx, page, chk) -> None:
             db_account=row[0] if row else None, db_kind=row[1] if row else None)
     finally:
         page.remove_listener("request", on_request)
+
+
+async def _welcome(ctx, page, chk) -> None:
+    creator = ctx.world.data["creators"][1]
+    aid = creator["id"]
+    await page.goto(f"{ctx.app}/growth/smart-messages", wait_until="domcontentloaded")
+    await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
+    await page.get_by_role("button", name="New Message").click(timeout=WAIT_MS)
+    await page.get_by_role("button", name=re.compile(r"^Subscriber welcome")).click(timeout=WAIT_MS)
+    await page.get_by_role("button", name="Next", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Delayed welcome")
+    await dialog.get_by_placeholder("Enter your message...").fill(WELCOME_TEXT, timeout=WAIT_MS)
+    await page.keyboard.press("Escape")
+    stayed = await dialog.is_visible()
+    await ui.shot(ctx, page, "welcome-escape-trigger")
+
+    with recorded(page, "POST", "/admin/automation-rules") as posts, \
+            recorded(page, "PATCH", "/admin/automation-rules") as patches:
+        await dialog.get_by_role("button", name="Save", exact=True).click()
+        await dialog.get_by_text("Saved", exact=True).wait_for(timeout=30_000)
+        await _painted(page)
+        await ui.shot(ctx, page, "welcome-saved")
+    writes = posts + patches
+    (ctx.out / "welcome-rule-bodies.json").write_text(json.dumps(writes, indent=2))
+    response = (await ctx.owner.get(f"/admin/automation-rules?account_id={aid}"))
+    response.raise_for_status()
+    rules = [r for r in response.json().get("rules", []) if r.get("kind") == "send_welcome"]
+    con = ctx.world.sql()
+    rows = con.execute("SELECT id, account_id, kind, steps_json FROM automation_rules "
+                       "WHERE account_id=? AND kind=?", (aid, "send_welcome")).fetchall()
+    con.close()
+    body = writes[0].get("body") or {} if writes else {}
+    route_messages = [(r.get("payload") or {}).get("message") for r in rules]
+    db_messages = [json.loads(row[3] or "{}").get("message") for row in rows]
+    chk(WELCOME_SAVED, stayed and await dialog.is_visible() and len(writes) == 1
+        and writes[0]["status"] == 200 and body.get("account_id") == aid
+        and (body.get("payload") or {}).get("message") == WELCOME_TEXT
+        and len(rules) == 1 and route_messages == [WELCOME_TEXT]
+        and len(rows) == 1 and rows[0][1:3] == (aid, "send_welcome")
+        and db_messages == [WELCOME_TEXT], stayed_after_escape=stayed, writes=writes,
+        route_messages=route_messages, db_messages=db_messages, rows=len(rows), account=aid)
 
 
 SL_NAME = "slop between list"
@@ -5546,6 +5594,7 @@ async def run(ctx) -> None:
                          ("funnel-media", _funnel_media),
                          ("frame", lambda c, p, k: _frame(c, p, k, links)), ("autofollow", _autofollow),
                          ("clock", _clock), ("vault", _vault), ("premade", _premade),
+                         ("welcome", _welcome),
                          ("fanlist", _fanlist), ("chat-refused", _chat_refused), ("chat-ppv", _chat_ppv), ("bell", _bell), ("vaultmanage", _vaultmanage),
                          ("redescribe", _redescribe), ("shimmer", _shimmer), ("scripts", _scripts),
                          ("session", _session), ("rich-text", _rich_text),

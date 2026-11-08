@@ -13,10 +13,14 @@ on-screen GIF through the account's paid proxy (measured in the PR #277 work).
                                           past the end → 416 `bytes */n`. No upstream, no lane slot.
   case_partial_of_small_refetches_whole — upstream answers a part (Safari's `bytes=0-1` probe): one more GET
                                           without Range fetches the whole clip, then disk.
-  case_big_or_unknown_streams_through   — over IMG_RANGE_CACHE_MAX_BYTES, or no size: today's pass-through
+  case_big_or_unknown_streams_through   — over img_clip.RANGE_CACHE_MAX_BYTES, or no size: today's pass-through
                                           (upstream's 206 streamed, nothing on disk, every request upstream).
   case_plain_get_keeps_the_photo_cap    — no Range: a 3 MB object (over the 2 MB photo cap, under the clip cap)
                                           is still not cached.
+  case_short_body_is_not_cached         — upstream sends fewer bytes than its Content-Range says (a cut
+                                          transfer): a 502, never written to disk, no lane slot kept.
+  case_long_body_is_not_cached          — more bytes than declared: the same 502.
+  case_encoded_body_streams_through     — a Content-Encoding body (decoded size unknown): today's pass-through.
 
 OF's CDN is faked at the client's `http.get`: no request leaves the process.
 Run: ./venv/bin/python service/tests/test_img_range_cache.py
@@ -38,6 +42,7 @@ os.environ["IMG_CACHE_DIR"] = str(_TMP / "cache")
 
 import admission  # noqa: E402
 import img_api  # noqa: E402
+import img_clip  # noqa: E402
 import server  # noqa: E402 — after _harness (DB) + IMG_CACHE_DIR are bound
 
 _harness.bootstrap()
@@ -54,7 +59,7 @@ def _u(sig: str = "s1") -> str:
 class _Resp:
     """CloudFront as OF's CDN answers: a Range → 206 + Content-Range; `sized=False` drops the sizes (chunked)."""
 
-    def __init__(self, body: bytes, range_: str | None, sized: bool = True):
+    def __init__(self, body: bytes, range_: str | None, sized: bool = True, short: int = 0, extra: int = 0):
         n = len(body)
         self.headers = {"Content-Type": "video/mp4", "Accept-Ranges": "bytes"}
         m = re.fullmatch(r"bytes=(\d*)-(\d*)", range_ or "")
@@ -68,6 +73,7 @@ class _Resp:
             self.status_code, self._body = 200, body
         if sized:
             self.headers["Content-Length"] = str(len(self._body))
+        self._body = self._body[:len(self._body) - short] + b"\0" * extra   # vs the declared size
         self.closed = False
 
     def iter_content(self, chunk_size=65536):
@@ -79,8 +85,10 @@ class _Resp:
 
 
 class _Cdn:
-    def __init__(self, body: bytes = CLIP, sized: bool = True, partial: bool = False):
-        self.body, self.sized, self.partial = body, sized, partial
+    def __init__(self, body: bytes = CLIP, sized: bool = True, partial: bool = False, short: int = 0,
+                 extra: int = 0, headers: dict[str, str] | None = None):
+        self.body, self.sized, self.partial, self.headers = body, sized, partial, headers or {}
+        self.short, self.extra = short, extra
         self.gets: list[str | None] = []   # the Range each upstream GET carried (None: none)
 
     def get(self, url, timeout=None, stream=False, headers=None):
@@ -88,7 +96,9 @@ class _Cdn:
         self.gets.append(rng)
         if rng and self.partial:   # a CDN that only ever answers the first 2 bytes of a Range
             rng = "bytes=0-1"
-        return _Resp(self.body, rng, self.sized)
+        r = _Resp(self.body, rng, self.sized, self.short, self.extra)
+        r.headers.update(self.headers)
+        return r
 
 
 def _rig(cdn: _Cdn) -> None:
@@ -153,7 +163,7 @@ def case_partial_of_small_refetches_whole():
 
 
 def case_big_or_unknown_streams_through():
-    big = b"v" * (img_api._IMG_RANGE_CACHE_MAX_BYTES + 1)
+    big = b"v" * (img_clip.RANGE_CACHE_MAX_BYTES + 1)
     for cdn in (_Cdn(body=big), _Cdn(sized=False)):
         _rig(cdn)
         for _ in range(2):
@@ -169,12 +179,41 @@ def case_big_or_unknown_streams_through():
 
 def case_plain_get_keeps_the_photo_cap():
     body = b"p" * (3 * 1024 * 1024)
-    assert img_api._IMG_CACHE_MAX_BYTES < len(body) <= img_api._IMG_RANGE_CACHE_MAX_BYTES
+    assert img_api._IMG_CACHE_MAX_BYTES < len(body) <= img_clip.RANGE_CACHE_MAX_BYTES
     cdn = _Cdn(body=body)
     _rig(cdn)
     r = _get()
     assert r.status_code == 200 and len(r.content) == len(body)
     assert not _on_disk(), "a plain GET over the 2 MB photo cap was cached"
+
+
+def case_long_body_is_not_cached():
+    cdn = _Cdn(extra=100)
+    _rig(cdn)
+    video_free = admission.VIDEO_STREAM.free()
+    r = _get("bytes=0-")
+    assert r.status_code == 502, (r.status_code, r.headers)
+    assert not _on_disk(), "an over-long clip was cached"
+    assert admission.VIDEO_STREAM.free() == video_free, "a lane slot leaked"
+
+
+def case_encoded_body_streams_through():
+    _rig(_Cdn(headers={"Content-Encoding": "gzip"}))
+    r = _get("bytes=0-")
+    assert r.status_code == 206 and r.headers.get("x-img-cache") == "BYPASS", (r.status_code, r.headers)
+    assert not _on_disk(), "an encoded clip was cached"
+
+
+def case_short_body_is_not_cached():
+    cdn = _Cdn(short=100)
+    _rig(cdn)
+    video_free = admission.VIDEO_STREAM.free()
+    r = _get("bytes=0-")
+    assert r.status_code == 502, (r.status_code, r.headers)
+    assert not _on_disk(), "a truncated clip was cached"
+    assert admission.VIDEO_STREAM.free() == video_free, "a lane slot leaked"
+    _get("bytes=0-")
+    assert cdn.gets == ["bytes=0-", "bytes=0-"], f"want each open upstream until a whole clip lands: {cdn.gets}"
 
 
 _harness.run()

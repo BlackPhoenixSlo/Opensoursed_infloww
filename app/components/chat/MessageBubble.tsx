@@ -19,8 +19,9 @@ import { BubbleStatusRow, BubbleTimeRow, timeRowShows } from "@/components/chat/
 import { BubbleActions } from "@/components/chat/BubbleActions";
 import { PpvStatusLine } from "@/components/chat/PpvStatus";
 import { MP } from "@/lib/messagesPro";
+import { ofPlainText } from "@/lib/ofRichText";
 import { MediaStrip } from "./MessageMedia";
-import { QuoteCard, stripHtml, TranslatableText } from "./messageListParts";
+import { QuoteCard, TranslatableText } from "./messageListParts";
 
 export function Bubble({
   msg, replyTo, isOutgoing, isOptimisticOutgoing, accountId, fanId, ownerUserId,
@@ -77,7 +78,7 @@ export function Bubble({
   // true or false is this bubble's own toggle. Its first press asks the same
   // module cache and relay call the thread mode uses, for this one text.
   const [ownTranslate, setOwnTranslate] = useState<boolean | null>(null);
-  const strippedText = msg.text ? stripHtml(msg.text) : "";
+  const strippedText = msg.text ? ofPlainText(msg.text) : "";
   // The bubble's own toggle counts only while the gate allows translation;
   // `threadTranslate` arrives gated already.
   const own = translateAllowed ? ownTranslate : null;

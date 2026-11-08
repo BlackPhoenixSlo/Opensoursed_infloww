@@ -227,18 +227,26 @@ async def case_run():
 
 
 async def case_a_refused_post_closes_its_minted_run():
-    """The proxy refused the queue POST (OF never saw it): the run minted for it ends
-    RUN_REFUSED, not 'running' forever; the job waits out the proxy (proxy_retry:1).
-    A POST OF may have taken (a read timeout), or any other non-proxy failure (a connect
-    timeout: surely not sent, not the proxy), keeps its run as it is."""
-    from curl_cffi.requests.exceptions import ConnectTimeout, ProxyError, ReadTimeout
-    from automations.send_mass_message import RUN_REFUSED
+    """A POST that surely did not send closes the run minted for it (the shared send
+    owns it), not 'running' for the job's retry and the boot heal to read as maybe
+    sent: the proxy refused it (OF never saw it) -> MASS_RUN_REFUSED, the job waits out
+    the proxy (proxy_retry:1); a refused connect (curl 7) or OF's 4xx -> MASS_RUN_FAILED, no
+    proxy wait. A POST OF may have taken (a read timeout) keeps its run 'running'."""
+    from types import SimpleNamespace
+    from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError, ProxyError, ReadTimeout
+    from db.models import MASS_RUN_FAILED, MASS_RUN_REFUSED
+    from of_client import OFAPIError
     import run_decide
+    noconn = CurlConnectionError("Failed to connect to 127.0.0.1 port 9")
+    noconn.code = 7   # curl_cffi.const.CurlECode.COULDNT_CONNECT
+    of_400 = OFAPIError("400 for https://onlyfans.com/api2/v2/messages/queue\n{}",
+                        response=SimpleNamespace(status_code=400, text="{}"))
     for aid, err, want_run, want_err in (
-            ("acc_mass_refused", ProxyError("CONNECT tunnel failed, response 403"), RUN_REFUSED,
+            ("acc_mass_refused", ProxyError("CONNECT tunnel failed, response 403"), MASS_RUN_REFUSED,
              f"{run_decide.PROXY_RETRY}:1 ("),
             ("acc_mass_timeout", ReadTimeout("Operation timed out"), "running", run_decide.MAY_HAVE_SENT),
-            ("acc_mass_noconn", ConnectTimeout("Connection timed out"), "running", None)):
+            ("acc_mass_noconn", noconn, MASS_RUN_FAILED, None),
+            ("acc_mass_of_400", of_400, MASS_RUN_FAILED, None)):
         await _seed_account(aid)
 
         class _Fails(FakeClient):
@@ -251,10 +259,42 @@ async def case_a_refused_post_closes_its_minted_run():
         async with get_session() as s:
             runs = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().all()
             assert [r.status for r in runs] == [want_run], (aid, [r.status for r in runs])
-            assert (runs[0].completed_at is not None) == (want_run == RUN_REFUSED), runs[0].completed_at
+            assert (runs[0].completed_at is not None) == (want_run != "running"), runs[0].completed_at
             job = await s.get(ScheduledJob, job_id)
             assert (job.last_error.startswith(want_err) if want_err
                     else not job.last_error.startswith(run_decide.PROXY_RETRY)), (aid, job.last_error)
+
+
+async def case_an_exclude_sync_the_proxy_refused_raises_for_the_proxy_wait():
+    """The Auto_Exclude sync refused at the proxy (OF never saw it) raises, so the job
+    waits out the proxy as for a refused POST (proxy_retry:1), never the plain
+    `exclude_list_sync_failed` error; nothing minted. Any other sync failure still
+    fails closed with that error."""
+    from curl_cffi.requests.exceptions import ProxyError
+    import audiences
+    import run_decide
+    for aid, err in (("acc_excl_refused", ProxyError("CONNECT tunnel failed, response 403")),
+                     ("acc_excl_broken", RuntimeError("lists 500"))):
+        await _seed_account(aid)
+        _use_fake(FakeClient())
+
+        async def _boom(*a, _err=err, **kw):
+            raise _err
+        real, audiences.ensure_exclude_list = audiences.ensure_exclude_list, _boom
+        try:
+            job_id = await enqueue_job(aid, "send_mass_message", payload={
+                "text": "hi", "user_lists": ["fans"], "excluded_users": [2002]})
+            res = await run_once(aid, "send_mass_message")
+        finally:
+            audiences.ensure_exclude_list = real
+        async with get_session() as s:
+            assert (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().all() == []
+            job = await s.get(ScheduledJob, job_id)
+        if isinstance(err, ProxyError):
+            assert (job.last_error or "").startswith(f"{run_decide.PROXY_RETRY}:1 ("), (res, job.last_error)
+        else:
+            assert "exclude_list_sync_failed" in json.dumps(res), res
+            assert not (job.last_error or "").startswith(run_decide.PROXY_RETRY), job.last_error
 
 
 # ── case_echoed_real_rows — OF echoes per-fan ids → real rows ─────────
@@ -1227,4 +1267,5 @@ _harness.run(
     case_dry_run_ignores_queued_dry_runs,
     case_dry_pending_ids_mirror_pending_send_fan_ids,
     case_a_refused_post_closes_its_minted_run,
+    case_an_exclude_sync_the_proxy_refused_raises_for_the_proxy_wait,
 )

@@ -251,6 +251,22 @@ def _fetch_claimers(client, campaign_id: int) -> list[dict]:
     return fans
 
 
+def _claim_due(key: tuple[str, int], subs: int) -> bool:
+    """The link's claimers may be read from OF now: it has subscribers and OF did not
+    fail on it within _CLAIMERS_FAIL_TTL."""
+    failed_at = _CLAIMERS_FAILED.get(key)
+    return subs > 0 and (failed_at is None or time.monotonic() - failed_at >= _CLAIMERS_FAIL_TTL)
+
+
+def _claim_record(key: tuple[str, int], subs: int, fans: list[dict] | None, now: float) -> None:
+    """Store one claimers read: its fans (cached at `subs`), or None: OF failed (backs off)."""
+    if fans is None:
+        _CLAIMERS_FAILED[key] = now
+    else:
+        _CLAIMERS_FAILED.pop(key, None)
+        _CLAIMERS_CACHE[key] = (subs, now, fans)
+
+
 def _claimers_cached(client, account_id: str, c: dict) -> list[dict]:
     """The link's fans from cache, refetched past the TTL or as soon as OF's
     countSubscribers moves. Zero subscribers: no fans, no OF call. A recent OF
@@ -264,16 +280,14 @@ def _claimers_cached(client, account_id: str, c: dict) -> list[dict]:
     hit = _CLAIMERS_CACHE.get(key)
     if hit and (key in _CLAIMERS_WALKING or (hit[0] == subs and time.monotonic() - hit[1] < _CLAIMERS_TTL)):
         return hit[2]
-    failed_at = _CLAIMERS_FAILED.get(key)
-    if failed_at is not None and time.monotonic() - failed_at < _CLAIMERS_FAIL_TTL:
+    if not _claim_due(key, subs):
         raise RuntimeError(f"claimers {cid}: failed recently, not retried yet")
     try:
         fans = _fetch_claimers(client, cid)
     except Exception:
-        _CLAIMERS_FAILED[key] = time.monotonic()
+        _claim_record(key, subs, None, time.monotonic())
         raise
-    _CLAIMERS_FAILED.pop(key, None)
-    _CLAIMERS_CACHE[key] = (subs, time.monotonic(), fans)
+    _claim_record(key, subs, fans, time.monotonic())
     return fans
 
 
@@ -421,9 +435,7 @@ def _read_moved(client, account_id: str, moved: list[dict]) -> dict[tuple[str, i
     for c in moved:
         cid, subs = safe_int(c.get("id")), safe_int(c.get("countSubscribers"))
         key = (account_id, cid)
-        failed_at = _CLAIMERS_FAILED.get(key)
-        if (not cid or subs <= 0 or _parse_of_time(c.get("createdAt")) is None
-                or (failed_at is not None and time.monotonic() - failed_at < _CLAIMERS_FAIL_TTL)):
+        if not cid or _parse_of_time(c.get("createdAt")) is None or not _claim_due(key, subs):
             continue
         try:
             out[key] = (subs, _fetch_claimers(client, cid))
@@ -466,11 +478,7 @@ async def prewarm(account_id: str) -> bool:
             async with _LOCKS.setdefault(account_id, asyncio.Lock()):
                 now = time.monotonic()
                 for key, (subs, fans) in got.items():
-                    if fans is None:
-                        _CLAIMERS_FAILED[key] = now
-                    else:
-                        _CLAIMERS_FAILED.pop(key, None)
-                        _CLAIMERS_CACHE[key] = (subs, now, fans)
+                    _claim_record(key, subs, fans, now)
                 if got:
                     _COMPUTED.pop(account_id, None)
         finally:

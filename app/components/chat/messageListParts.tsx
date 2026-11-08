@@ -73,7 +73,7 @@ export function QuoteCard({
       ? "You"
       : replyTo.fromUser?.name || replyTo.fromUser?.username || "fan";
   const preview = replyTo.text
-    ? stripHtml(replyTo.text)
+    ? ofPlainText(replyTo.text)
     : replyTo.mediaCount
     ? `(${replyTo.mediaCount} media)`
     : "(message)";
@@ -122,10 +122,6 @@ export function resolveSide(
   return ownerUserId != null && m.fromUser?.id === ownerUserId ? "right" : "left";
 }
 
-/** OF returns message bodies as HTML: the bubble's plain text (lines kept, every tag dropped, entities decoded),
- *  the translate layer's key. lib/ofRichText's `ofPlainText`; formatted bodies render through `OfRichText`. */
-export const stripHtml = ofPlainText;
-
 // Per-language color for the "(es)" tag — same code, same color everywhere so
 // a chatter learns "amber = Spanish" at a glance. Unknown codes fall back to sky.
 const LANG_TAG_COLOR: Record<string, string> = {
@@ -147,7 +143,7 @@ export function TranslatableText({ raw, translation, textClassName }: {
   /** On the text span only, never the language tag: a PPV's title weight (ML11). */
   textClassName?: string;
 }) {
-  const original = stripHtml(raw);
+  const original = ofPlainText(raw);
   const t = translation;
   const show = !!t?.text && t.lang !== "en"
     && t.text.trim().toLowerCase() !== original.trim().toLowerCase();

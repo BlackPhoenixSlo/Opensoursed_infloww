@@ -63,7 +63,7 @@ def _pending() -> dict | None:
     defensively so this file fails on the BEHAVIOUR below rather than dying
     with an AttributeError before a single case runs — a RED proof that
     aborts at setup proves nothing."""
-    return getattr(vault_cache, "_pending_invalidations", None)
+    return getattr(vault_cache, "_invalidated_at", None)
 
 
 def _expect(label: str, ok: bool, detail: str = "") -> None:
@@ -121,7 +121,7 @@ async def _row_count(query_key: str | None = None) -> int:
 
 async def case_happy_path_still_caches() -> None:
     """The guard must not cost us the cache itself."""
-    await vault_cache.put(_AID, _KEY, _PAYLOAD)
+    await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     got = await vault_cache.get(_AID, _KEY)
     _expect("happy path: put -> get round-trips the payload",
             got == _PAYLOAD, detail=f"got {got!r}")
@@ -138,7 +138,7 @@ async def case_empty_listings_are_never_cached() -> None:
     "nothing" saves the cheapest possible fetch and buys a silent, TTL-long,
     self-healing lie in exchange."""
     empty = {"list": [], "hasMore": False}
-    await vault_cache.put(_AID, "empty-listing", empty)
+    await vault_cache.put(_AID, "empty-listing", empty, started_at=datetime.utcnow())
     _expect("empty listing: not served from cache",
             await vault_cache.get(_AID, "empty-listing") is None)
     _expect("empty listing: no row was written at all",
@@ -146,8 +146,8 @@ async def case_empty_listings_are_never_cached() -> None:
             detail=f"{await _row_count('empty-listing')} row(s) present")
 
     # ...and it must not shadow a GOOD row already cached under that key.
-    await vault_cache.put(_AID, _KEY, _PAYLOAD)
-    await vault_cache.put(_AID, _KEY, empty)
+    await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
+    await vault_cache.put(_AID, _KEY, empty, started_at=datetime.utcnow())
     _expect("empty listing: does not overwrite a healthy cached row",
             await vault_cache.get(_AID, _KEY) == _PAYLOAD)
 
@@ -185,7 +185,7 @@ async def case_put_never_raises_on_locked_db() -> None:
     try:
         raised = None
         try:
-            await vault_cache.put(_AID, "key-while-locked", _PAYLOAD)
+            await vault_cache.put(_AID, "key-while-locked", _PAYLOAD, started_at=datetime.utcnow())
         except Exception as e:  # noqa: BLE001 - that is the bug under test
             raised = e
     finally:
@@ -234,7 +234,7 @@ async def case_failed_invalidate_stops_serving_stale_rows() -> None:
     """The correctness hole that swallowing would otherwise open: the creator
     uploads, the DELETE fails, and the picker keeps serving the pre-upload
     listing for a full TTL. The surviving row must read as a miss."""
-    await vault_cache.put(_AID, _KEY, _PAYLOAD)
+    await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     _expect("stale guard: row is served before the failed invalidate",
             await vault_cache.get(_AID, _KEY) == _PAYLOAD)
 
@@ -252,24 +252,24 @@ async def case_failed_invalidate_stops_serving_stale_rows() -> None:
     # A fresh upstream result must still re-warm the cache — the account is
     # not poisoned, only the rows the invalidate meant to kill.
     fresh = {"list": [{"id": 7}, {"id": 8, "name": "just uploaded"}], "hasMore": False}
-    await vault_cache.put(_AID, _KEY, fresh)
+    await vault_cache.put(_AID, _KEY, fresh, started_at=datetime.utcnow())
     _expect("stale guard: a fresh put re-warms the account",
             await vault_cache.get(_AID, _KEY) == fresh,
             detail=f"got {await vault_cache.get(_AID, _KEY)!r}")
 
 
-async def case_successful_invalidate_clears_the_pending_mark() -> None:
-    """Once the rows are actually gone the watermark has nothing left to
-    suppress — leaving it set would keep raising the bar forever."""
+async def case_successful_invalidate_resets_the_mark() -> None:
+    """A successful invalidate moves the watermark to its own moment — an older
+    (here: a bogus future) bar left in place would keep raising it forever."""
     store = _pending()
-    _expect("vault_cache exposes a pending-invalidation store", store is not None)
+    _expect("vault_cache exposes an invalidation store", store is not None)
     if store is None:
         return
     store[_AID] = datetime.utcnow() + timedelta(hours=1)
     await vault_cache.invalidate(_AID)
-    _expect("pending mark cleared by a successful invalidate",
-            _AID not in store, detail=f"still {store!r}")
-    await vault_cache.put(_AID, _KEY, _PAYLOAD)
+    _expect("mark reset to the invalidate's moment by a successful invalidate",
+            store.get(_AID, datetime.min) <= datetime.utcnow(), detail=f"still {store!r}")
+    await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     _expect("cache usable again after a successful invalidate",
             await vault_cache.get(_AID, _KEY) == _PAYLOAD)
 
@@ -285,7 +285,7 @@ async def main() -> None:
         case_get_reports_a_miss_on_locked_db,
         case_invalidate_never_raises_on_locked_db,
         case_failed_invalidate_stops_serving_stale_rows,
-        case_successful_invalidate_clears_the_pending_mark,
+        case_successful_invalidate_resets_the_mark,
     ):
         store = _pending()
         if store is not None:

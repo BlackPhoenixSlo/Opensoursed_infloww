@@ -23,18 +23,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AccountPicker } from "@/components/compose/AccountPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import { isAudienceSeed, useTouched } from "@/components/compose/useTouched";
-import {
-  audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
-} from "@/components/audience/audienceReducer";
+import { massExcludeListId } from "@/components/audience/audienceReducer";
 import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
-import { relay, type VaultMedia } from "@/lib/relay";
-import { SENSITIVE_BLOCK_MESSAGE, useSensitiveHits } from "@/lib/sensitiveWords";
+import { relay } from "@/lib/relay";
+import { useSensitiveHits } from "@/lib/sensitiveWords";
 import { fmtPrice } from "@/lib/format";
+import {
+  buildPayload, initPriorityMass, launchError, numericPrice as priceOf, priorityMassReducer,
+} from "./priorityMassForm";
 
 const ROUTE = "/admin/priority-mass/runs";
 const MAX_RECIPIENTS = 5000;
@@ -76,21 +76,16 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   initialAccountId?: string | null;
 }) {
   const qc = useQueryClient();
-  // The account and its audience (list ids are per account) — one reducer.
-  const [aud, rawDispatch] = useReducer(audienceReducer, initialAccountId, (id) => initAudience(id));
-  // The user's dispatch and setters: any of them but the seeding touches the form (Escape then keeps it).
-  const { touched, dispatch, edit } = useTouched(aud, rawDispatch, isAudienceSeed);
-  const { accountId, includes, excludes } = aud;
-  const [text, setText] = useState("");
-  const [attached, setAttached] = useState<VaultMedia[]>([]);
+  // The account, its audience (list ids are per account) and the message — one reducer.
+  const [form, rawDispatch] = useReducer(priorityMassReducer, initialAccountId, initPriorityMass);
+  // The user's dispatch: any action but the seeding touches the form (Escape then keeps it).
+  const { touched, dispatch } = useTouched(form, rawDispatch, isAudienceSeed);
+  const { accountId, includes, excludes, text, attached, price, previewCount, lockedText } = form;
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [price, setPrice] = useState("");
-  const [previewCount, setPreviewCount] = useState(0);
-  const [lockedText, setLockedText] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { customLists, isLoading, data: lists, isFetching } = useFanLists(accountId);
   const sensitiveHits = useSensitiveHits(text, accountId);
-  const numericPrice = Number(price) || 0;
+  const numericPrice = priceOf(form);
 
   // Pre-tick the standing MASSDMEXCLUDE list in Exclude once the account's lists
   // settle (not a stale cache mid-refetch); seeded once per account, so an untick sticks.
@@ -100,21 +95,13 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   }, [accountId, lists, isFetching]);
 
   // Send waits for that seed, so a run never goes out before MASSDMEXCLUDE is excluded.
-  const seeded = !accountId || aud.seededFor === accountId;
+  const seeded = !accountId || form.seededFor === accountId;
   // The read failed (no data, nothing in flight): Send stays shut — a missing
   // exclusion would reach excluded fans. Reopening remounts and refetches.
   const listsFailed = !!accountId && !lists && !isFetching;
 
   const send = useMutation({
-    mutationFn: () => relay.post<PriorityMassRun>(ROUTE, {
-      account_id: accountId,
-      text: text.trim(),
-      media_files: attached.map((m) => m.id),
-      previews: numericPrice > 0 ? attached.slice(0, previewCount).map((m) => m.id) : [],
-      price: numericPrice,
-      locked_text: numericPrice > 0 && lockedText,
-      ...buildAudiencePayload(aud),
-    }),
+    mutationFn: () => relay.post<PriorityMassRun>(ROUTE, buildPayload(form)),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: runsKey(accountId) });
       onClose();
@@ -123,14 +110,9 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   });
 
   function launch() {
-    setError(null);
-    if (sensitiveHits.length > 0) return setError(SENSITIVE_BLOCK_MESSAGE);
-    if (!accountId) return setError("Pick a Creator.");
-    if (!text.trim() && attached.length === 0) return setError("Add a text or media.");
-    const audErr = audienceError(aud);
-    if (audErr) return setError(audErr);
-    if (numericPrice > 0 && attached.length === 0) return setError("A priced message needs media.");
-    send.mutate();
+    const why = launchError(form, sensitiveHits.length > 0);
+    setError(why);
+    if (!why) send.mutate();
   }
 
   if (!open) return null;
@@ -140,7 +122,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
       <IfModal
         title="Priority mass message"
         width={722}
-        className={EDITOR_MODAL}
+        size="editor"
         onClose={close}
         // Escape never drops a draft the user touched; × and Cancel still close.
         keyboard={!touched}
@@ -161,7 +143,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
             <IfTextArea
               aria-label="Message"
               value={text}
-              onChange={(e) => edit(setText)(e.target.value)}
+              onChange={(e) => dispatch({ type: "setText", text: e.target.value })}
               placeholder="Hey {name}…"
               rows={4}
               maxLength={2000}
@@ -172,11 +154,11 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
           <MediaTray
             accountId={accountId}
             attached={attached}
-            onChange={edit(setAttached)}
+            onChange={(m) => dispatch({ type: "setAttached", attached: m })}
             onOpenVaultPicker={() => setPickerOpen(true)}
             price={numericPrice}
             previewCount={previewCount}
-            onPreviewCountChange={edit(setPreviewCount)}
+            onPreviewCountChange={(n) => dispatch({ type: "setPreviewCount", n })}
           />
           <div>
             <IfLabel htmlFor="pm-price">Price (USD)</IfLabel>
@@ -186,13 +168,13 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
                 type="text"
                 inputMode="decimal"
                 value={price}
-                onChange={(e) => edit(setPrice)(sanitizePriceInput(e.target.value))}
+                onChange={(e) => dispatch({ type: "setPrice", price: sanitizePriceInput(e.target.value) })}
                 placeholder="0 (free)"
                 className="w-40 max-md:text-base"
               />
               {numericPrice > 0 && (
                 <label className="flex cursor-pointer select-none items-center gap-2 text-[14px] text-fg">
-                  <input type="checkbox" checked={lockedText} onChange={(e) => edit(setLockedText)(e.target.checked)}
+                  <input type="checkbox" checked={lockedText} onChange={(e) => dispatch({ type: "setLockedText", on: e.target.checked })}
                     className="h-4 w-4 accent-accent" />
                   Lock the text too (fan must pay to read)
                 </label>
@@ -233,7 +215,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
         accountId={accountId}
         fanId={null}
         initialSelectedIds={attached.map((m) => m.id)}
-        onConfirm={(p) => { edit(setAttached)(p); setPickerOpen(false); }}
+        onConfirm={(p) => { dispatch({ type: "setAttached", attached: p }); setPickerOpen(false); }}
       />
     </>
   );

@@ -60,6 +60,21 @@ def _chat(client, **params):
     return client.get("/admin/screens/chat", params={"account": A1, "fan": FAN, **params})
 
 
+def _flat(env: dict) -> dict:
+    """The screen envelope (screens_api.run_screen) as `{read: body}` plus `errors` (every answer with a status),
+    `thumbs` and `asOf`, for these checks."""
+    assert set(env) == {"answers", "thumbs", "asOf"}, set(env)
+    out = {"errors": [], "thumbs": env["thumbs"], "asOf": env["asOf"]}
+    for a in env["answers"]:
+        assert ("body" in a) != ("status" in a), a
+        assert a["accountId"] == (A1 if a["read"] == "scheduledSends" else None), a
+        if "status" in a:
+            out["errors"].append(a)
+        else:
+            out[a["read"]] = a["body"]
+    return out
+
+
 def _cf(exp: int) -> str:
     """A CloudFront-signed URL expiring at `exp` (its custom Policy, CloudFront's base64)."""
     pol = json.dumps({"Statement": [{"Resource": "x", "Condition": {"DateLessThan": {"AWS:EpochTime": exp}}}]})
@@ -70,7 +85,7 @@ def _cf(exp: int) -> str:
 def case_the_open_reads_are_the_routes_bodies_in_one_call():
     r = _chat(OWNER_A, lacks="savedReplies,sensitiveWords")
     assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.text
-    got = r.json()
+    got = _flat(r.json())
     assert got["errors"] == [], got["errors"]
     assert got["seed"] == _get(OWNER_A, f"/admin/messages/{A1}/{FAN}", limit=30)[1]
     assert got["fan"] == _get(OWNER_A, f"/admin/fans/{A1}/{FAN}")[1]
@@ -83,9 +98,9 @@ def case_the_open_reads_are_the_routes_bodies_in_one_call():
 
 
 def case_lacks_names_the_lists_read_else_none():
-    got = _chat(OWNER_A).json()
+    got = _flat(_chat(OWNER_A).json())
     assert "savedReplies" not in got and "sensitiveWords" not in got, sorted(got)
-    got = _chat(OWNER_A, lacks="sensitiveWords,bogus").json()
+    got = _flat(_chat(OWNER_A, lacks="sensitiveWords,bogus").json())
     assert "sensitiveWords" in got and "savedReplies" not in got and "bogus" not in got, sorted(got)
 
 
@@ -113,7 +128,7 @@ def case_a_restricted_chatter_gets_each_routes_own_refusal():
 def _same_as_routes(want_refused: bool = False):
     r = _chat(CHATTER_A)
     assert r.status_code == 200, r.text
-    got = r.json()
+    got = _flat(r.json())
     errs = {e["read"]: e["status"] for e in got["errors"]}
     routes = {"seed": (f"/admin/messages/{A1}/{FAN}", None, {"limit": 30}), "fan": (f"/admin/fans/{A1}/{FAN}", None, {}),
               "attribution": (f"/admin/messages/{A1}/{FAN}/attribution", None, {}),

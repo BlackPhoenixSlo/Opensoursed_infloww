@@ -18,6 +18,13 @@ sweep_cadence — full chat sweeps (`scrape_chats` `{}`) on a cadence, not per r
       one is enqueued; a `{}` job parked 'error' by a real error holds it too. A
       failed fan_ids run, a `{"limit": 50}` run, a `{}` job whose retries restarts
       cancelled, and an interrupted run never delay it.
+  case_sweep_with_every_chat_failed_raises_not_full_sweep:
+      a `{}` scrape_chats run whose every target chat failed raises (the job
+      retries, then parks 'error'); one scraped chat finalises `full_sweep`; an
+      explicit-id run with every chat failed still returns its stats. A sweep whose
+      first _SWEEP_FAIL_FAST chats all failed stops there (no more OF calls) and raises.
+      OF's 404 (fan gone) is handled, not a failure: 5 gone then good chats, and an
+      all-gone small sidebar, finalise `full_sweep` without raising.
 
 Run: ./venv/bin/python service/tests/test_sweep_cadence.py  (exit 0 = pass)
 """
@@ -169,6 +176,67 @@ async def case_cadence_anchors_on_the_last_finished_sweep():
         run.completed_at = datetime.utcnow() - timedelta(seconds=sweep_cadence.SWEEP_EVERY_S + 60)
     await sweep_cadence.tick()
     assert len(_open_sweeps(await _jobs(a))) == 1
+
+
+async def case_sweep_with_every_chat_failed_raises_not_full_sweep():
+    import automation_executor as ax
+    from automations import scrape_chats as sc
+
+    chats = [11, 12]
+    tried: list[int] = []
+
+    class _Client:
+        user_id = 1
+
+        def list_chats(self, **_kw):
+            return {"list": [{"withUser": {"id": c}} for c in chats], "hasMore": False}
+    ok_ids: set[int] = set()
+
+    gone_ids: set[int] = set()
+
+    async def one_chat(_aid, _own, _client, chat_id, *_a, **_kw):
+        tried.append(chat_id)
+        if chat_id in gone_ids:
+            raise sc.OFAPIError("404", response=type("R", (), {"status_code": 404})())
+        if chat_id not in ok_ids:
+            raise RuntimeError("boom")
+        return 1, 1
+
+    async def stamp(_aid, _fid):
+        return None
+    real = (ax._make_client, sc._scrape_one_chat, sc._PAGE_SLEEP_S, sc._stamp_scrape_history)
+    ax._make_client, sc._scrape_one_chat, sc._PAGE_SLEEP_S = (lambda _aid: _Client()), one_chat, 0
+    sc._stamp_scrape_history = stamp
+    try:
+        try:
+            await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
+            raise AssertionError("an all-failed {} sweep must raise")
+        except RuntimeError as e:
+            assert "0 of 2" in str(e), e
+        out = await sc._automation_scrape_chats("sc_failed_sweep", {"fan_ids": [11, 12]}, run_id=0)
+        assert out["chats_failed"] == 2 and "full_sweep" not in out, out
+        ok_ids.add(12)
+        out = await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
+        assert out["full_sweep"] is True and out["chats_scanned"] == 1, out
+        chats[:], tried[:] = list(range(100, 140)), []   # 40 chats, every one failing
+        try:
+            await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
+            raise AssertionError("a failing {} sweep must raise")
+        except RuntimeError as e:
+            assert "5 failed of the first 5 of 40" in str(e), e
+        assert len(tried) == sc._SWEEP_FAIL_FAST, tried
+        # 5 gone fans at the top, then good chats: a healthy sweep.
+        chats[:], tried[:] = list(range(200, 210)), []
+        gone_ids |= set(range(200, 205))
+        ok_ids |= set(range(205, 210))
+        out = await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
+        assert out["full_sweep"] is True and out["chats_scanned"] == 5 and out["chats_failed"] == 5, out
+        # A small sidebar of only gone fans: nothing to scrape, still a sweep.
+        chats[:] = [200, 201, 202]
+        out = await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
+        assert out["full_sweep"] is True and out["chats_scanned"] == 0 and out["chats_failed"] == 3, out
+    finally:
+        ax._make_client, sc._scrape_one_chat, sc._PAGE_SLEEP_S, sc._stamp_scrape_history = real
 
 
 _harness.run()

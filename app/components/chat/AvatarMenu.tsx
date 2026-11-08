@@ -47,8 +47,8 @@ function earnings(sub: OFSubscribedOnData | undefined): string {
 }
 
 export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId: string; fanId: FanId }) {
-  // The Fan's full OF profile: no request while cached (the drawer, a prefetch's
-  // prefetch); else one read (useOFUser).
+  // The Fan's full OF profile: no request while cached (the drawer or a prefetch
+  // read it); else one read (useOFUser).
   const fan = useOFUser(accountId, fanId).data;
   const sub = fan?.subscribedOnData;
   // Warm the lists so "Add to lists ▸" opens at once (shared query key).

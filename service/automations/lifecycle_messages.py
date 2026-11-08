@@ -276,8 +276,12 @@ async def refresh_roster(account_id: str, client, *, now: datetime,
     the run stats. One crawl per account at a time: the lifecycle sweep and
     smart_list_sync both call this, and two interleaved crawls would stamp
     different seen_at. The sweeps' crawl is a background walk (of_pacing: paced per
-    Creator, OF's 429 retried once); the admin run-now is a person's and pages as before."""
-    async with _roster_locks.setdefault(str(account_id), asyncio.Lock()):
+    Creator, OF's 429 retried once); the admin run-now is a person's and pages as before,
+    answering {roster: in_progress} at once when a crawl already holds the lock."""
+    lock = _roster_locks.setdefault(str(account_id), asyncio.Lock())
+    if force and lock.locked():
+        return {"roster": "in_progress"}
+    async with lock:
         if force:
             return await _refresh_roster(account_id, client, now=now, force=True)
         return await of_pacing.walk(account_id, "subscribers", lambda: _refresh_roster(

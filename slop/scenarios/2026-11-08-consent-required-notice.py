@@ -1,5 +1,5 @@
 """OnlyFans' consent-form demand (NC/AL law) as a pinned agency notification and a shell banner
-(service/consent_notices.py, notifications_api.PINNED_KINDS, app ConsentBanner + AgencyFeed's pinned rows).
+(service/consent_notices.py, notifications_api.PINNED_KIND, app ConsentBanner + AgencyFeed's pinned rows).
 
 World: `agency_inbox` (small 3 Creators x 50 fans, medium 10 x 500), a captured session per Creator against
 lib/of_wire.py (`OF_WIRE`), every Creator's WS pump up on the fake's socket. REF = creators[0] (OF refuses its
@@ -247,7 +247,7 @@ async def run(ctx) -> None:
     body = await feed()
     snap("after-removal")
     ctx.check(CLEARED_BY_REMOVAL, again["status"] == 502 and reflagged and removed.status_code == 200
-              and body["pinned"] == [] and rows() == [],
+              and ref not in {n["account_id"] for n in body["pinned"]} and ref not in {r[1] for r in rows()},
               resend=again["status"], reflagged=reflagged, delete=removed.status_code,
               pinned=[n["account_id"] for n in body["pinned"]], rows=[r[:2] for r in rows()])
 

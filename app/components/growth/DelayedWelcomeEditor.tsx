@@ -21,125 +21,73 @@
  * the whole payload), so every other knob (the question, the GIF, the pacing
  * and the follow-back) stays as the Brain set it.
  * With no rule yet, Save creates the one the old Brain welcome lane created
- * (`WELCOME_CREATE_DEFAULTS` below), switched off unless the owner ticks Enabled,
+ * (`WELCOME_CREATE_DEFAULTS`, delayedWelcomeForm.ts), switched off unless the owner ticks Enabled,
  * with Infloww's 2～5 minute delay for a new welcome (`resetTemplateDefaultData`,
  * index.9f50f370.js @14443789). The media, price and Auto-unsend go out with
  * the message only: left empty, the Brain's welcome keeps its own image.
  */
 
-import { useState } from "react";
+import { useReducer } from "react";
 
-import { IfButton, IfHelp, IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
+import { unsaved } from "@/components/automations/sentDraft";
+import { VariantsField } from "@/components/compose/VariantsField";
+import { IfHelp, IfInput, IfLearn, IfSwitch, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { EditorFooter } from "@/components/ui/ifModal";
-import { useAutomationRules, useCreateRule, useUpdateRule } from "@/hooks/useAutomations";
+import { useAutomationRules, useSaveRule, type AutomationRule } from "@/hooks/useAutomations";
 
 import {
-  FollowUpsField, VariantsField, badDelay, cleanFollowUps, type FollowUpDraft,
-} from "./LifecycleMessageEditor";
-import {
-  SmartMessageFields, collectExtras, extrasDraft, extrasOfPayload, type ExtrasDraft,
-} from "./SmartMessageFields";
+  buildSave, initWelcomeState, mergeTarget, welcomeIssues, welcomeReducer, type WelcomeDraft, type WelcomeEdit,
+} from "./delayedWelcomeForm";
+import { MAX_VARIANTS, TEXT_MAX } from "./lifecycleForm";
+import { FollowUpsField } from "./LifecycleMessageEditor";
+import { SmartMessageFields } from "./SmartMessageFields";
 
-/** The welcome rule's default cadence: poll OF's new-subscriber feed every
- *  5 min (the send_welcome spec's {every_seconds: 300}). */
-const WELCOME_DEFAULT_EVERY_S = 300;
-
-/** Default 3rd-bubble question, stamped at rule creation (the sender treats an
- *  absent key as off, so older rules don't change; "" is explicitly off). */
-const WELCOME_QUESTION_DEFAULT = "what's yours?";
-
-/** The six welcome booleans a brand-new rule is born with. They mirror the
- *  relay catalog's `default` for each key (`automation_rules_api`'s
- *  send_welcome entry; `case_every_catalogued_bool_honours_its_default` holds
- *  the two sides together). `time_only: true` is a creation default only: the
- *  sender reads an absent `time_only` as off on purpose (C-N7). `follow_back`
- *  and `follow_back_gate` drive a money-spending lane, not a bubble. */
-const WELCOME_CREATE_DEFAULTS = {
-  time_only: true,
-  skip_time_bubble: false,
-  human_pace: true,
-  stop_on_reply: true,
-  follow_back: true,
-  follow_back_gate: true,
-};
-
-/** Infloww's delay for a new welcome: 2～5 minutes. */
-const WELCOME_DELAY: [number, number] = [2, 5];
-
-type Draft = { enabled: boolean; minutes: number; variants: string[]; followUps: FollowUpDraft[]; afterOf: boolean };
-
-export function DelayedWelcomeEditor({ accountId }: { accountId: string | null }) {
+export function DelayedWelcomeEditor({ accountId, onTouched }: {
+  accountId: string | null;
+  /** Called on each user edit (the dialog's Escape gate). */
+  onTouched: () => void;
+}) {
   const rulesQ = useAutomationRules(accountId);
-  const rule = (rulesQ.data ?? []).find((r) => r.kind === "send_welcome" && r.account_id === accountId) ?? null;
-  const create = useCreateRule(accountId);
-  const update = useUpdateRule(accountId);
+  const live = (rulesQ.data ?? []).find((r) => r.kind === "send_welcome" && r.account_id === accountId) ?? null;
+  if (rulesQ.isLoading) return <p className="text-[14px] text-fg-dim">Loading…</p>;
+  return <Form accountId={accountId} live={live} onTouched={onTouched} />;
+}
 
-  // The form shows the rule (or, with none, the Brain's defaults) until the
-  // owner edits it; a successful save drops the edit so the saved rule shows.
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [extrasEdit, setExtrasEdit] = useState<ExtrasDraft | null>(null);
-  const stored = rule?.payload ?? {};
-  const saved = stored.message;
-  const savedVariants = (Array.isArray(saved) ? saved : [saved]).filter((v): v is string => typeof v === "string");
-  const savedSteps = Array.isArray(stored.follow_ups) ? stored.follow_ups as { text?: unknown; delay_minutes?: unknown }[] : [];
-  const cur: Draft = draft ?? {
-    enabled: rule?.is_enabled ?? false,
-    minutes: Math.max(1, Math.round((rule?.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
-    variants: savedVariants.length ? savedVariants : [""],
-    followUps: savedSteps.map((f) => ({ text: String(f.text ?? ""), delay: String(f.delay_minutes ?? "") })),
-    afterOf: stored.after_of_welcome === true,
+function Form({ accountId, live, onTouched }: {
+  accountId: string | null;
+  /** The rule as the cache reads it (null: none, or its read failed). */
+  live: AutomationRule | null;
+  onTouched: () => void;
+}) {
+  const save = useSaveRule(accountId);
+  const [state, rawDispatch] = useReducer(welcomeReducer, live, initWelcomeState);
+  // A newer read (a refetch, another tab, the first read after a failed one, the rule deleted) goes to the reducer:
+  // an untouched form follows it, an edit stays. Held while a save runs, so the draft it sent is not replaced unseen.
+  if (live !== state.live && !save.isPending) rawDispatch({ type: "live", rule: live });
+  // What a save merges into (null = create it).
+  const rule = mergeTarget(state);
+  const { draft } = state;
+  // Every edit is the user's: it tells the dialog (its Escape gate) and clears the last save's line, but not while
+  // that save runs (Save stays disabled; on land the edit stays and "Saved" stays off: `unsaved`).
+  const dispatch = (a: WelcomeEdit) => {
+    onTouched();
+    rawDispatch(a);
+    if (!save.isPending) save.reset();
   };
-  const { enabled, minutes, afterOf } = cur;
-  const edit = (patch: Partial<Draft>) => {
-    setDraft({ ...cur, ...patch });
-    setMsg(null);
-  };
-  const extras = extrasEdit ?? extrasDraft(
-    rule ? extrasOfPayload(rule.payload) : { delay_range: WELCOME_DELAY }, WELCOME_DELAY);
-  const collected = collectExtras(extras, { delay: true });
-  const problem = typeof collected === "string" ? collected : null;
-  const invalid = cur.followUps.some(badDelay);
-  const saving = create.isPending || update.isPending;
+  const edit = (patch: Partial<Omit<WelcomeDraft, "extras">>) => dispatch({ type: "patch", patch });
+  const { enabled, minutes, afterOf, extras } = draft;
+  const { problem, invalid } = welcomeIssues(draft);
 
-  async function save() {
-    if (!accountId || typeof collected === "string" || invalid) return;
-    setMsg(null);
-    const every_seconds = Math.max(60, Math.round(minutes * 60));
-    const variants = cur.variants.map((v) => v.trim()).filter(Boolean);
-    const followUps = cleanFollowUps(cur.followUps);
-    // One text stays a string; several are the variants' list. The follow-up
-    // knobs are written once used, so a rule that never had them keeps its shape.
-    const smart = {
-      message: variants.length > 1 ? variants : (variants[0] ?? ""),
-      ...(followUps.length || "follow_ups" in stored ? { follow_ups: followUps } : {}),
-      ...(afterOf || "after_of_welcome" in stored ? { after_of_welcome: afterOf } : {}),
-    };
-    try {
-      if (rule) {
-        await update.mutateAsync({
-          id: rule.id, is_enabled: enabled, every_seconds,
-          payload: { ...(rule.payload ?? {}), ...smart, ...collected },
-        });
-      } else {
-        await create.mutateAsync({
-          account_id: accountId, kind: "send_welcome", name: "Welcome new subscribers",
-          every_seconds, is_enabled: enabled,
-          payload: {
-            ...WELCOME_CREATE_DEFAULTS, question: WELCOME_QUESTION_DEFAULT, gif_id: "", ...smart,
-            ...collected,
-          },
-        });
-      }
-      setDraft(null);
-      setExtrasEdit(null);
-      setMsg("Saved.");
-    } catch (e) {
-      setMsg((e as Error)?.message || "Save failed");
-    }
+  function submit() {
+    const req = accountId ? buildSave(draft, rule, accountId) : null;
+    if (!req) return;
+    rawDispatch({ type: "saved" });
+    save.mutate(req, {
+      onSuccess: (r) => rawDispatch({ type: "landed", rule: r }),
+      onError: () => rawDispatch({ type: "failed" }),
+    });
   }
 
-  if (rulesQ.isLoading) return <p className="text-[14px] text-fg-dim">Loading…</p>;
   return (
     <div className="space-y-4 text-[14px]">
       <div className="flex items-center justify-between gap-4">
@@ -171,8 +119,10 @@ export function DelayedWelcomeEditor({ accountId }: { accountId: string | null }
       <VariantsField
         id="dw-message"
         label="Message"
-        variants={cur.variants}
+        variants={draft.variants}
         placeholder="Enter your message..."
+        max={MAX_VARIANTS}
+        maxLength={TEXT_MAX}
         onChange={(variants) => edit({ variants })}
       />
 
@@ -181,29 +131,27 @@ export function DelayedWelcomeEditor({ accountId }: { accountId: string | null }
           accountId={accountId}
           id="dw"
           draft={extras}
-          onChange={(patch) => { setExtrasEdit({ ...extras, ...patch }); setMsg(null); }}
+          onChange={(patch) => dispatch({ type: "patchExtras", patch })}
           delay
         />
       )}
       {problem && <p className="text-warn">{problem}</p>}
 
-      <FollowUpsField id="dw-fu" steps={cur.followUps} onChange={(followUps) => edit({ followUps })} />
+      <FollowUpsField id="dw-fu" steps={draft.followUps} onChange={(followUps) => edit({ followUps })} />
       <div>
         <IfSwitch label="OnlyFans' welcome message is message 1: while it is on, send only the follow-ups"
           checked={afterOf} onChange={(on) => edit({ afterOf: on })} />
         {afterOf && (
           <IfHelp>
             Checked once per run on OnlyFans; while it is off or empty, the welcome above goes out as usual.
-            {!cur.followUps.some((f) => f.text.trim()) && " With no follow-up, a fan OnlyFans welcomes gets nothing from us."}
+            {!draft.followUps.some((f) => f.text.trim()) && " With no follow-up, a fan OnlyFans welcomes gets nothing from us."}
           </IfHelp>
         )}
       </div>
 
       <EditorFooter>
-        {msg && <span className="mr-auto text-fg-dim">{msg}</span>}
-        <IfButton variant="primary" onClick={save} disabled={!accountId || saving || !!problem || invalid}>
-          {saving ? "Saving…" : "Save"}
-        </IfButton>
+        <SaveRow onSave={submit} disabled={!accountId || !!problem || invalid}
+          save={saveVerdict(save, !unsaved(state))} />
       </EditorFooter>
     </div>
   );

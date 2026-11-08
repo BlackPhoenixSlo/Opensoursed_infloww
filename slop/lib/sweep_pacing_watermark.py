@@ -10,7 +10,7 @@ left out of the verdict.
 The relay is SIGKILLed (`crash_relay`) and started on the same DB, then two supervisor passes run.
 Pass A: exactly the due Creators walk full (their ingest_tx_scan_start mode and their unfiltered
 ledger GETs at OF), the rest recent, their watermark untouched; the due ones' stamped >= the restart.
-Pass B: nobody walks full.
+Pass B: nobody walks full (a Creator whose period boundary falls between pass A and pass B is not asserted there).
 
 failed (tx_failed_full_consumes_period): one of those Creators F (not CROWD's shared bucket, the
 most time to its boundary), made due by SQL, its full walk's first page answered 429 twice (the
@@ -145,8 +145,11 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
         stamped = _dt(scan_a.get(a, {}).get("last_full_at"))
         ok_stamp = (stamped is not None and stamped >= restart_at - timedelta(seconds=1)) if a in due \
             else stamped == seed[a]
-        ok = (a_pass["modes"].get(a) == want and bool(a_pass["full"].get(a)) == (a in due) and ok_stamp
-              and b_pass["modes"].get(a) == ["recent"] and not b_pass["full"].get(a))
+        # A due Creator (left < MARGIN_S) whose boundary falls between pass A and pass B's end is due again
+        # in pass B: its full walk there is correct, so pass B only asserts the ones still in A's period.
+        crossed = _bucket_start(a_pass["t0"], phases[a], every) != _bucket_start(b_pass["t1"], phases[a], every)
+        ok_b = crossed or (b_pass["modes"].get(a) == ["recent"] and not b_pass["full"].get(a))
+        ok = (a_pass["modes"].get(a) == want and bool(a_pass["full"].get(a)) == (a in due) and ok_stamp and ok_b)
         if not ok:
             wrong[a] = {"due": a in due, "pass_a": a_pass["modes"].get(a), "pass_a_full_gets": a_pass["full"].get(a),
                         "pass_b": b_pass["modes"].get(a), "pass_b_full_gets": b_pass["full"].get(a),

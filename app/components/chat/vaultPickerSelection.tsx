@@ -8,8 +8,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { VaultMedia } from "@/lib/relay";
-import { proxyImage } from "@/lib/mediaUrl";
-import { vaultTileThumb } from "@/hooks/useVaultCache";
+import { proxyImage, vaultTileThumb } from "@/lib/mediaUrl";
 // The photo enlarge waits the video preview's dwell.
 import { HOVER_DELAY_MS } from "@/hooks/useHoverPreview";
 

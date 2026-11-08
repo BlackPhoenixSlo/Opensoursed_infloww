@@ -1582,6 +1582,17 @@ class FunnelAccountMedia(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+# `mass_runs.status`: minted RUNNING right before its POST; then OK (OF took it), REFUSED
+# (the proxy refused the POST: OF never saw it), FAILED (surely not sent otherwise:
+# of_write._may_have_sent False, e.g. OF's 4xx), or INTERRUPTED (the boot heal found it
+# RUNNING, left by a dead process: OF may have taken it, never resent).
+MASS_RUN_RUNNING = "running"
+MASS_RUN_OK = "ok"
+MASS_RUN_REFUSED = "refused"
+MASS_RUN_FAILED = "failed"
+MASS_RUN_INTERRUPTED = "interrupted"
+
+
 class MassRun(Base):
     """One broadcast = one mass_runs row. funnel_state links per-fan state to this."""
     __tablename__ = "mass_runs"
@@ -1608,7 +1619,7 @@ class MassRun(Base):
     automation_kind: Mapped[str | None] = mapped_column(String)
     started_at: Mapped[datetime] = _ts_now()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+    status: Mapped[str] = mapped_column(String, nullable=False, default=MASS_RUN_RUNNING)
     # When the first mass was unsent/deleted → reply_mass_funnel STOPS enrolling
     # NEW repliers off this run (only replies at/before this cutoff enroll); the
     # walker keeps advancing fans already engaged until #30 halts them on a buy.
@@ -2583,6 +2594,10 @@ class TransactionScanHistory(Base):
     # first seen without one, the moment it was seeded (its first full walk then waits
     # for its next phase boundary). Recent walks leave it.
     last_full_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Backfill ticks in a row that stopped short of done (transaction_ingest_decide.scan_after_success):
+    # the walk is under way whatever a later failure writes to last_error; 3 give it up (kept: backfill_given_up).
+    # Nullable/additive: init_db self-heals it via ALTER TABLE (no migration); NULL reads 0.
+    backfill_stalls: Mapped[int | None] = mapped_column(Integer)
     rows_inserted_total: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
@@ -3675,9 +3690,10 @@ class AssistantTurn(Base):
     """One help-assistant ask (assistant_api POST /admin/assistant/ask): the
     question, the answer the asker saw (friendly error sentences included, with
     `error` the machine tag), who asked and what it cost. The owner reads these
-    to learn what people ask (GET /admin/assistant/history?all=1); the widget
-    reads the asker's own (scoped by `user_id`, or `chatter_id` for a chatter
+    in the DB to learn what people ask; the widget reads the asker's own (GET
+    /admin/assistant/history, scoped by `user_id`, or `chatter_id` for a chatter
     session — exactly one is set; both NULL only under ALLOW_ANONYMOUS_ADMIN).
+    Pruned to each asker's newest 500 on write.
     `role` is the server-derived asker role string. No keys, no prompt blocks.
     No FKs: a deleted user's questions stay readable."""
     __tablename__ = "assistant_turns"
@@ -3706,8 +3722,7 @@ class AssistantTurn(Base):
 class OfConsentAccept(Base):
     """A Creator's "Auto-accept OnlyFans consent" switch, append-only: one row per
     change, who made it and when (an attestation that the Creator signed OF's
-    consent form). The newest row by id is the setting; no row = off. While on,
-    every media send carries `isConsentAccepted: true` (of_consent.py, of_sends).
+    consent form). The newest row by id is the setting; no row = off.
     `user_id`/`username` the signed-in owner, `employee_id` the acting Employee
     (the audit log's attribution). No FKs: the history outlives a deleted user."""
     __tablename__ = "of_consent_accepts"

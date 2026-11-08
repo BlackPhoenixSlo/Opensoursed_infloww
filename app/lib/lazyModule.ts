@@ -5,8 +5,8 @@ import { useEffect, useReducer } from "react";
  * `next/dynamic` (React.lazy) suspends on its first render even with the chunk in, and React then holds the empty
  * fallback ~300 ms (its Suspense reveal throttle, measured: PlatformGate's note). `useLazyModule` gives `undefined`
  * until the module lands, re-renders its caller then, and gives it on the first render of every caller after.
- * A failed load is left unhandled on purpose (the root layout's stale-chunk script reloads the page on it); the
- * next wanting render tries again.
+ * A failed load is left unhandled on purpose (the root layout's stale-chunk script reloads the page on it); a caller
+ * mounted after it (or `preload()`) tries again, a mounted one does not.
  */
 export interface LazyModule<T> {
   preload: () => Promise<T>;

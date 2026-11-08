@@ -19,9 +19,11 @@ import {
 } from "react";
 import { ChevronDown, RemoveFormatting } from "lucide-react";
 
-import { applyFormat, COLORS, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
 import {
-  editorHtmlOf, editorValue, formatAtCaret, marksAt, NO_MARKS, pastedOfHtml, plainLength, tidy, type Marks,
+  applyFormat, COLORS, commandState, execCommand as exec, setOfHtml, SIZES, type FormatCommand,
+} from "@/lib/ofMirrorFormat";
+import {
+  cutTo, editorHtmlOf, editorValue, formatAtCaret, marksAt, NO_MARKS, pastedOfHtml, plainLength, tidy, type Marks,
 } from "@/lib/ofRichTextEditor";
 import { cn } from "@/lib/utils";
 
@@ -56,9 +58,19 @@ type Props = {
 };
 
 const keep = (e: ReactPointerEvent | React.MouseEvent) => e.preventDefault();
-/** The browser's editing command; false where there is none (jsdom). */
-const exec = (doc: Document | undefined, name: string, value?: string): boolean =>
-  typeof doc?.execCommand === "function" ? doc.execCommand(name, false, value) : false;
+/** Where the browser has no editing command (jsdom): `node` (a text, a fragment) replaces the selection, the caret
+ *  after it. */
+function insertAtRange(sel: Selection, node: Node): void {
+  const r = sel.getRangeAt(0);
+  r.deleteContents();
+  const last = node.nodeType === Node.DOCUMENT_FRAGMENT_NODE ? node.lastChild : node;
+  r.insertNode(node);
+  if (!last) return;
+  r.setStartAfter(last);
+  r.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
 const TOOL = "inline-grid place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 h-11 min-w-11 md:h-8 md:min-w-8 px-1";
 const ON = "text-[#4166f6] bg-[#4166f6]/10 hover:text-[#4166f6]";
 
@@ -90,10 +102,8 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     savedRange.current = sel.getRangeAt(0).cloneRange();
     const m = marksAt(root, sel.anchorNode);
     // A B or I armed on an empty selection is the browser's typing style: it shows before the first letter.
-    const q = (c: string) => {
-      try { return typeof root.ownerDocument.queryCommandState === "function" && root.ownerDocument.queryCommandState(c); } catch { return false; }
-    };
-    setMarks({ ...m, bold: m.bold || q("bold"), italic: m.italic || q("italic") });
+    const doc = root.ownerDocument;
+    setMarks({ ...m, bold: m.bold || commandState(doc, "bold"), italic: m.italic || commandState(doc, "italic") });
   }, []);
 
   useEffect(() => {
@@ -172,16 +182,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
       const sel = restore();
       if (!root || !sel) return;
       if (text.length > left()) return;
-      if (!exec(root.ownerDocument, "insertText", text)) {
-        const r = sel.getRangeAt(0);
-        r.deleteContents();
-        const t = root.ownerDocument.createTextNode(text);
-        r.insertNode(t);
-        r.setStartAfter(t);
-        r.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(r);
-      }
+      if (!exec(root.ownerDocument, "insertText", text)) insertAtRange(sel, root.ownerDocument.createTextNode(text));
       emit();
     },
     focus() {
@@ -191,7 +192,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
 
   /** Text from outside (a drop, a paste with no formatting) goes in plain, cut to fit. */
   const insertPlain = (text: string) => {
-    text = text.slice(0, Math.max(0, left()));
+    text = cutTo(text, left());
     if (text) exec(rootRef.current?.ownerDocument, "insertText", text);
   };
   /** A paste keeps OF's formatting (OF's paste filter: its tags and classes, inline colours and sizes as classes); what
@@ -207,16 +208,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     if (!sel?.rangeCount) return;
     const tpl = root.ownerDocument.createElement("template");
     tpl.innerHTML = one ? one[1] : marked;
-    const r = sel.getRangeAt(0);
-    r.deleteContents();
-    const last = tpl.content.lastChild;
-    r.insertNode(tpl.content);
-    if (last) {
-      r.setStartAfter(last);
-      r.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(r);
-    }
+    insertAtRange(sel, tpl.content);
   };
   const len = plainLength(value);
   const size = SIZES.find((s) => s.cls === marks.size) ?? SIZES.find((s) => s.cls === "m-editor-fs__default")!;

@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import { type VaultMedia } from "@/lib/relay";
 
 import {
-  CANCELLED, MAX_DIRECT_STRIKES, UNFILED, canRetry, fileName, folderOf, initialDownloadState, isBusy, safeName,
-  sourceFor, summarize, toItems, vaultDownloadReducer, type Action, type DlState,
+  BUSY_OFF, CANCELLED, DOWNLOAD_OFF, MAX_DIRECT_STRIKES, SHARE_BATCH_BYTES, SHARE_COUNT_OFF, SHARE_HELD_BYTES,
+  SHARE_MODE_OFF, UNFILED, addToBatches, batchLabel, canFetchMore, canRetry, downloadOff, fileName, folderOf,
+  countText, heldBytes, initialDownloadState, isBusy, mimeFor, panelTitle, readyBatch, safeName, sourceFor, summarize, toItems, unsaved,
+  vaultDownloadReducer, type Action, type DlBatch, type DlMode, type DlSink, type DlState,
 } from "./vaultDownloadReducer";
 
 const run = (actions: Action[], from: DlState = initialDownloadState): DlState => actions.reduce(vaultDownloadReducer, from);
@@ -148,5 +150,111 @@ describe("paths", () => {
   it("toItems: DRM-only video has no url, mp4 name", () => {
     const [it0] = toItems([media(9, "video", null)], null);
     expect(it0).toMatchObject({ id: 9, url: null, name: "9.mp4", status: "queued", folder: UNFILED });
+  });
+});
+
+describe("share sink (phones)", () => {
+  const MB = 1 << 20;
+  const B = 10 * MB;   // a small budget for the tables
+  const fold = (sizes: number[], budget = B) =>
+    sizes.reduce<DlBatch[]>((bs, n, i) => addToBatches(bs, i + 1, n, budget), []);
+  const shape = (bs: DlBatch[]) => bs.map((b) => `${b.ids.join(",")}${b.sealed ? "|" : ""}`);
+
+  it.each<[string, number[], string[]]>([
+    ["small files share one open batch", [MB, MB, MB], ["1,2,3"]],
+    ["the file that would overflow seals the batch and opens the next", [4 * MB, 4 * MB, 4 * MB], ["1,2|", "3"]],
+    ["exactly the budget seals", [4 * MB, 6 * MB, MB], ["1,2|", "3"]],
+    ["a file over the budget is a batch of its own", [MB, 30 * MB, MB], ["1|", "2|", "3"]],
+    ["a first file over the budget seals alone", [30 * MB], ["1|"]],
+    ["photos then a video > budget/2", [MB, MB, MB, 8 * MB, MB], ["1,2,3|", "4,5"]],
+  ])("addToBatches: %s", (_n, sizes, want) => {
+    expect(shape(fold(sizes))).toEqual(want);
+  });
+  it("every id lands in exactly one batch, in order", () => {
+    const sizes = [3, 9, 1, 12, 2, 2, 7, 25, 1, 4].map((n) => n * MB);
+    expect(fold(sizes).flatMap((b) => b.ids)).toEqual(sizes.map((_, i) => i + 1));
+  });
+
+  it.each<[string, DlSink | null, DlMode, number, boolean, string]>([
+    ["no sink", null, "selection", 1, false, DOWNLOAD_OFF],
+    ["busy", "folder", "selection", 1, true, BUSY_OFF],
+    ["desktop folder", "folder", "folder", 0, false, ""],
+    ["desktop vault", "folder", "vault", 0, false, ""],
+    ["desktop 500 selected", "folder", "selection", 500, false, ""],
+    ["phone 20 selected", "share", "selection", 20, false, ""],
+    ["phone 21 selected", "share", "selection", 21, false, SHARE_COUNT_OFF],
+    ["phone folder", "share", "folder", 0, false, SHARE_MODE_OFF],
+    ["phone vault", "share", "vault", 0, false, SHARE_MODE_OFF],
+  ])("downloadOff: %s", (_n, sink, mode, count, busy, want) => {
+    expect(downloadOff(sink, mode, count, busy)).toBe(want);
+  });
+
+  const shareStart: Action = { ...start, directAllowed: false, sink: "share" };
+  const doneA = (id: number, bytes: number): Action[] => [{ type: "itemStart", id }, { type: "itemDone", id, source: "relay", bytes }];
+
+  it("done files fill batches; the run's end seals the open one; save marks it", () => {
+    const s0 = run([shareStart, listed([1, 2, 3])]);
+    const s1 = run([...doneA(1, MB), ...doneA(2, SHARE_BATCH_BYTES)], s0);
+    expect(shape(s1.batches)).toEqual(["1|", "2|"]);
+    expect(readyBatch(s1)).toBe(0);
+    expect(batchLabel(s1, 0)).toBe("Save 1");
+    const s2 = run([{ type: "itemStart", id: 3 }, { type: "itemFailed", id: 3, error: "DRM" }], s1);
+    expect(s2.phase).toBe("done");
+    expect(shape(s2.batches)).toEqual(["1|", "2|"]);
+    const s3 = run([{ type: "batchSaved", index: 0 }], s2);
+    expect(readyBatch(s3)).toBe(1);
+    expect(batchLabel(s3, 1)).toBe("Save 2");
+    expect(unsaved(s3)).toBe(1);
+    expect(run([{ type: "batchSaved", index: 0 }], s3)).toBe(s3);   // twice is a no-op
+  });
+  it("an open batch can't be saved; the folder sink never batches", () => {
+    const s = run([shareStart, listed([1, 2]), ...doneA(1, MB)]);
+    expect(readyBatch(s)).toBe(-1);
+    expect(run([{ type: "batchSaved", index: 0 }], s)).toBe(s);
+    expect(run([start, listed([1]), ...doneA(1, MB)]).batches).toEqual([]);
+  });
+  it("cancel seals what was fetched so it can still be saved", () => {
+    const s = run([shareStart, listed([1, 2, 3]), ...doneA(1, MB), ...doneA(2, MB), { type: "cancel" }]);
+    expect(shape(s.batches)).toEqual(["1,2|"]);
+    expect(batchLabel(s, 0)).toBe("Save 1–2");
+  });
+  it("canFetchMore holds the share sink at ~2 batches unsaved, never the folder sink", () => {
+    const half = SHARE_HELD_BYTES / 2;
+    const bs = (n: number, saved = false): DlBatch => ({ ids: [1], bytes: n, sealed: true, saved });
+    expect(canFetchMore({ sink: "share", batches: [bs(half)] })).toBe(true);
+    expect(canFetchMore({ sink: "share", batches: [bs(half), bs(half)] })).toBe(false);
+    expect(canFetchMore({ sink: "share", batches: [bs(half, true), bs(half)] })).toBe(true);
+    expect(canFetchMore({ sink: "folder", batches: [bs(SHARE_HELD_BYTES * 9)] })).toBe(true);
+    expect(heldBytes({ batches: [bs(5, true), bs(7)] })).toBe(7);
+  });
+  it.each<[string, string]>([
+    ["1.jpg", "image/jpeg"], ["2.JPEG", "image/jpeg"], ["3.png", "image/png"], ["4.gif", "image/gif"],
+    ["5.mp4", "video/mp4"], ["6.mov", "video/quicktime"], ["7.mp3", "audio/mpeg"], ["8.bin", "application/octet-stream"],
+  ])("mimeFor(%s) = %s", (name, want) => {
+    expect(mimeFor(name)).toBe(want);
+  });
+  it("title + count read 'ready' until the share resolves, 'saved' after (not 'Downloaded' before a tap)", () => {
+    const fetched = run([shareStart, listed([1, 2]), ...doneA(1, 150 * MB), ...doneA(2, 150 * MB)]);
+    expect(fetched.phase).toBe("done");
+    expect(panelTitle(fetched)).toBe("Ready to save: 3 selected");
+    expect(countText(fetched)).toBe("2 of 2 ready");
+    const one = run([{ type: "batchSaved", index: 0 }], fetched);
+    expect(panelTitle(one)).toBe("Ready to save: 3 selected");
+    expect(countText(one)).toBe("2 of 2 ready · 1 saved");
+    const all = run([{ type: "batchSaved", index: 1 }], one);
+    expect(panelTitle(all)).toBe("Saved 3 selected");
+    expect(countText(all)).toBe("2 of 2 ready · 2 saved");
+    const folder = run([start, listed([1]), ...doneA(1, MB)]);
+    expect(panelTitle(folder)).toBe("Downloaded 3 selected");
+    expect(countText(folder)).toBe("1 of 1 saved");
+  });
+  it.each<[string, Action[], boolean]>([
+    ["share sink with items", [shareStart, listed([1]), { type: "linksSaved" }], true],
+    ["folder sink: no-op", [start, listed([1]), { type: "linksSaved" }], false],
+    ["nothing listed yet: no-op", [shareStart, { type: "linksSaved" }], false],
+    ["a new run clears it", [shareStart, listed([1]), ...doneA(1, MB), { type: "linksSaved" },
+      { type: "batchSaved", index: 0 }, { type: "close" }, shareStart], false],
+  ])("linksSaved: %s", (_n, actions, want) => {
+    expect(run(actions).linksSaved).toBe(want);
   });
 });

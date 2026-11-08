@@ -12,6 +12,7 @@ const busScope = vi.fn();
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: (s: string) => busScope(s) } }));
 vi.mock("@/hooks/useAccountStateEvents", () => ({ useAccountStateEvents: () => {} }));
 
+import { cookieValue } from "@/lib/screenEntry";
 import { ScopeProvider, useDropWatcherScope, useEventScopeOverride, useScope, WATCHER_PICK_KEY, WatcherScope } from "@/contexts/ScopeContext";
 
 function Focus() { useEventScopeOverride("all"); return null; }
@@ -21,6 +22,28 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 );
 
 afterEach(() => { cleanup(); busScope.mockClear(); window.localStorage.clear(); });
+
+describe("the saved scope's cookie (lib/screenEntry.ts: a document load's inbox bundle guess)", () => {
+  const SCOPE_COOKIE = "chatterly_scope";
+  afterEach(() => { document.cookie = `${SCOPE_COOKIE}=; path=/; max-age=0`; });
+  const saved = () => cookieValue(document.cookie, SCOPE_COOKIE);
+
+  it("mirrors one bit of the saved scope (model or all, never the Creator's id) on load and on every saved pick", async () => {
+    window.localStorage.setItem("chatterly:scope", "model:m1");
+    focusOn = false;
+    const { result } = renderHook(() => useScope(), { wrapper });
+    await act(async () => {});
+    expect(saved()).toBe("model");
+    expect(document.cookie).not.toContain("m1");
+    act(() => result.current.setScope({ kind: "all" }));
+    expect(saved()).toBe("all");
+    act(() => result.current.setScope({ kind: "model", accountId: "m2" }, { persist: false }));
+    expect(saved()).toBe("all");
+    act(() => result.current.setScope({ kind: "model", accountId: "m2" }));
+    expect(saved()).toBe("model");
+    expect(document.cookie).not.toContain("m2");
+  });
+});
 
 describe("useEventScopeOverride", () => {
   it("points the bus (and eventScope) at the override while mounted, then back to the saved scope", async () => {

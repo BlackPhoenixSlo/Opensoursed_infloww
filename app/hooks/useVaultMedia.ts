@@ -18,6 +18,7 @@ import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { type FanId } from "@/lib/fanId";
+import { mirrorThumbSrc } from "@/lib/mediaUrl";
 
 const PAGE = 24;
 
@@ -35,8 +36,8 @@ export interface ChatterFolderAccessResp {
 /**
  * Chatter Access (folders): the authoritative folder menu for a RESTRICTED
  * chatter session (DA-3). Only runs for a chatter-only principal — owners
- * (User cookie present) are never restricted, so the query is disabled and
- * the result reads `restricted: false` (full vault). The folder names come
+ * (User cookie present) are never restricted, so the query is disabled:
+ * not loading, `data` undefined (read as full vault). The folder names come
  * from the backend's denormalised column, not from paginated vault/lists,
  * so the menu is complete even when a folder sits past the lists page.
  */
@@ -91,12 +92,11 @@ export async function fetchAllVaultLists(
 
 /** ["vault-lists"] is persisted to the browser, so a folder's covers must not be
  *  OF-signed URLs (IP-bound, dead after ~22 h): a cover with a media id becomes the
- *  relay's stable thumb (`mirrorThumbSrc`'s url; not imported — useVaultCache
- *  imports this file), one without is dropped. */
+ *  relay's stable thumb (`mirrorThumbSrc`), one without is dropped. */
 export function stableCovers(l: VaultList, accountId: string | null | undefined): VaultList {
   if (!l.medias) return l;
   const medias = accountId
-    ? l.medias.flatMap((m) => (m?.id != null ? [{ ...m, url: `/admin/vault-ai/thumb?account_id=${encodeURIComponent(accountId)}&media_id=${encodeURIComponent(String(m.id))}` }] : []))
+    ? l.medias.flatMap((m) => (m?.id != null ? [{ ...m, url: mirrorThumbSrc(accountId, m.id) }] : []))
     : [];
   return { ...l, medias };
 }
@@ -188,8 +188,7 @@ export async function dropRelayVaultCache(accountId: string): Promise<void> {
 
 /** The one key, pager and fetcher for a live vault listing view: useVaultMedia
  *  and a background Vault warm (on the background lane)
- *  both take them from here. `takeRefresh` says whether this fetch bypasses
- *  the relay's shared vault cache (useVaultMedia's `refresh()`). */
+ *  both take them from here. */
 export function vaultMediaQuery(
   opts: Omit<UseVaultMediaOpts, "enabled">,
   { priority }: { priority?: "background" } = {},

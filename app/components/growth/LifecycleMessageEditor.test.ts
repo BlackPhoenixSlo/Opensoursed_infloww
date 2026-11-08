@@ -1,7 +1,7 @@
-/** LifecycleMessageEditor's follow-up helpers: the delay check and the steps the Relay stores. */
+/** lifecycleForm's follow-up helpers: the delay check and the steps the Relay stores. */
 import { describe, expect, it } from "vitest";
 
-import { badDelay, cleanFollowUps } from "./LifecycleMessageEditor";
+import { badDelay, cleanFollowUps } from "./lifecycleForm";
 
 const WEEK = 7 * 24 * 60;
 

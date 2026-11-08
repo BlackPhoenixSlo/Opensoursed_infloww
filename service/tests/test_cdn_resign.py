@@ -11,6 +11,8 @@ mirror / vault cache / browser holds 403s through the account's new proxy. Measu
   case_img_without_media_id_is_as_before — no media id: the 403 passes through, OF is never asked.
   case_fresh_url_must_be_the_same_file — a fresh payload without that host+path hands nothing back, and the
                                         failure is remembered (no OF call per frame).
+  case_fresh_url_that_still_403s_is_remembered — re-signed but still 403: remembered as failed, the url forgotten;
+                                        the next /img and scrub make no OF call, every response closed.
   case_scrub_download_resigns          — the storyboard download (a sync route's worker thread) does the same.
   case_herd_shares_one_read            — 12 concurrent frames / posters of one media: one by-id read.
 
@@ -55,12 +57,13 @@ class _Resp:
     def __init__(self, status: int):
         self.status_code = status
         self.headers = {"Content-Type": "video/mp4", "Content-Length": "3"}
+        self.closed = False
 
     def iter_content(self, chunk_size=65536):
         yield b"mp4"
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class _Client:
@@ -70,14 +73,17 @@ class _Client:
         self.account_id = "acct-1"
         self.timeout_s = 5
         self.gets: list[str] = []
+        self.resps: list[_Resp] = []
         self.byid: list[int] = []
         self.fresh_media = fresh_media
         self.lock = threading.Lock()
 
         def get(url, **_kw):
+            r = _Resp(200 if "Policy=new-ip" in url else 403)
             with self.lock:
                 self.gets.append(url)
-            return _Resp(200 if "Policy=new-ip" in url else 403)
+                self.resps.append(r)
+            return r
         self.http = SimpleNamespace(get=get)
 
     def vault_media_by_id(self, media_id: int) -> dict:
@@ -144,6 +150,29 @@ def case_fresh_url_must_be_the_same_file():
     assert _img(STALE, MID) == 403
     assert c.byid == [MID], "a failed re-sign is remembered, not retried per request"
     assert c.gets == [STALE, STALE], c.gets
+
+
+def case_fresh_url_that_still_403s_is_remembered():
+    """OF re-signs the file, but the CDN still refuses the fresh url (signed for another egress): without the
+    negative cache every frame would pay one by-id read + two CDN GETs for the next hour."""
+    still = f"{FILE}?Tag=2&Policy=other-ip&Signature=s3&Key-Pair-Id=K"
+    c = _Client(_media(still))
+    _reset(c)
+    assert _img(STALE, MID) == 403
+    assert c.gets == [STALE, still] and c.byid == [MID], (c.gets, c.byid)
+    assert cdn_resign.current("acct-1", STALE) == STALE, "the still-refused url is used up front"
+    assert _img(STALE, MID) == 403
+    assert c.byid == [MID], "a re-sign whose retry still 403s is retried per request"
+    assert c.gets == [STALE, still, STALE], c.gets
+    src = _TMP / "dl" / "still.tmp"
+    src.parent.mkdir(parents=True, exist_ok=True)
+
+    async def scrub() -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: storyboard._storyboard_download(SimpleNamespace(headers={}), STALE, src, None, MID))
+    assert anyio.run(scrub) is False
+    assert c.byid == [MID], c.byid
+    assert all(r.closed for r in c.resps), "an upstream response was left open"
 
 
 def case_scrub_download_resigns():

@@ -28,6 +28,7 @@ const put = relay.put as unknown as Mock;
 
 const LIST = {
   unread: 1,
+  pinned: [],
   notifications: [
     { id: 7, kind: "employee_deactivated", text: "Ana was deactivated", account_id: null, employee_id: 3,
       data: null, created_at: "2026-10-20T10:00:00Z", read: false },
@@ -117,7 +118,7 @@ describe("AgencyNotifications in the top bar's one bell", () => {
       account_id: "acct-k", employee_id: null, data: { reason: "otp_required", href: "/creators?relink=browserbase" },
       created_at: "2026-10-25T10:00:00Z", read: false };
     get.mockImplementation((path: string) => path.startsWith("/admin/agency-notifications")
-      ? Promise.resolve({ unread: 2, notifications: [otp, ...LIST.notifications] }) : route(path));
+      ? Promise.resolve({ unread: 2, notifications: [otp, ...LIST.notifications], pinned: [] }) : route(path));
     post.mockResolvedValue({ unread: 0 });
     renderWithProviders(<HeaderBell />);
     expect(await screen.findByTestId("bell-count")).toHaveTextContent("2");

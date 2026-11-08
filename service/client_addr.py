@@ -55,21 +55,25 @@ log = logging.getLogger("of-relay.client_addr")
 _warned: set[str] = set()
 
 
-def _parse(raw: str, env: str) -> tuple[Net, ...]:
+_EDGE_KEYWORDS = {"cloudflare": CLOUDFLARE, "cloudflare-tunnel": f"{CLOUDFLARE},{_LOOPBACK}"}
+
+
+def _parse(raw: str, env: str, keywords: dict[str, str] | None = None) -> tuple[Net, ...]:
+    """`raw`'s networks. An entry that is no IP or CIDR (nor one of `keywords`) is logged and skipped, never
+    raised: the relay must still start. Skipping trusts less; a TRUSTED_PROXIES left with nothing gets the default,
+    as an empty one does."""
     out = []
     for entry in raw.split(","):
         entry = entry.strip()
         if not entry:
             continue
-        if entry.lower() in ("cloudflare", "cloudflare-tunnel"):
-            out.extend(_parse(CLOUDFLARE, env))
-            if entry.lower() == "cloudflare-tunnel":
-                out.extend(_parse(_LOOPBACK, env))
+        if keywords and entry.lower() in keywords:
+            out.extend(_parse(keywords[entry.lower()], env))
             continue
         try:
             out.append(ipaddress.ip_network(entry, strict=False))
         except ValueError:
-            raise ValueError(f"{env}: {entry!r} is not an IP or CIDR") from None
+            log.error("%s: %r is not an IP or CIDR, skipped", env, entry)
     return tuple(out)
 
 
@@ -78,7 +82,7 @@ def _parse_trusted(raw: str) -> tuple[Net, ...]:
 
 
 def _parse_edge(raw: str) -> tuple[Net, ...]:
-    return _parse(raw, "EDGE_PROXIES")
+    return _parse(raw, "EDGE_PROXIES", _EDGE_KEYWORDS)
 
 
 TRUSTED_PROXIES = _parse_trusted(os.environ.get("TRUSTED_PROXIES", ""))
@@ -128,7 +132,7 @@ def client_address(request: Request) -> Addr | str:
     Setting TRUSTED_PROXIES to the proxies' own addresses closes it.
     """
     peer = request.client.host if request.client else "unknown"
-    hop: Addr | str = _ip(peer) or peer
+    hop = _ip(peer)
     last = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
     if last:
         if not _is_trusted_proxy(peer):
@@ -137,11 +141,6 @@ def client_address(request: Request) -> Addr | str:
                 log.warning("X-Forwarded-For from %s ignored: not in TRUSTED_PROXIES", peer)
         else:
             hop = _ip(last) or hop
-    if EDGE_PROXIES and not isinstance(hop, str) and _in(hop, EDGE_PROXIES):
+    if _in(hop, EDGE_PROXIES):
         hop = _ip(request.headers.get("cf-connecting-ip", "").strip()) or hop
-    return hop
-
-
-def reset() -> None:
-    """Forget the warned peers (tests)."""
-    _warned.clear()
+    return hop if hop is not None else peer

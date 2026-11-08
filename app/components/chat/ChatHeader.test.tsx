@@ -522,8 +522,15 @@ describe("ChatHeader", () => {
       expect(qs.has("from_user")).toBe(false);
       expect(qs.has("purchased")).toBe(false);
 
-      // It closes from its head.
+      // It closes from its head, focus back on its opener.
+      expect(within(sheet).getByRole("button", { name: "Close" })).toHaveFocus();
       await user.click(within(sheet).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog", { name: "Chat gallery" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Gallery" })).toHaveFocus();
+      // And from its backdrop.
+      await user.click(screen.getByRole("button", { name: "Gallery" }));
+      const backdrop = screen.getByRole("dialog", { name: "Chat gallery" }).parentElement!.querySelector<HTMLElement>("button[aria-hidden]")!;
+      await user.click(backdrop);
       expect(screen.queryByRole("dialog", { name: "Chat gallery" })).not.toBeInTheDocument();
 
       // With Find open, one Escape closes the Gallery only: Find's panel
@@ -541,6 +548,7 @@ describe("ChatHeader", () => {
       expect(findEscape).not.toHaveBeenCalled();
       expect(props.onToggleFind).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Find" })).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("button", { name: "Gallery" })).toHaveFocus();
     });
 
     // Synthetic Chat gallery pages for ticket 89's cases: one photo per item.

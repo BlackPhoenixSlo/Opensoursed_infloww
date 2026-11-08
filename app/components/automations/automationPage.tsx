@@ -106,30 +106,5 @@ export function ConfirmDelete({ title, children, pending, onConfirm, onClose }: 
   );
 }
 
-/** A page Save's verdict (HumanStyleBlock.tsx `usePageSave`): saving, saved, or the failed save's message. */
-export interface SaveVerdict { pending: boolean; saved: boolean; error: string | null }
-
-/** Save, then a `warn` (why it is refused), "Saved" or the failed save's message. */
-export function SaveRow({ save, onSave, disabled, warn }: {
-  save: SaveVerdict;
-  onSave: () => void;
-  disabled?: boolean;
-  warn?: string | null;
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <IfButton variant="primary" onClick={onSave} disabled={save.pending || disabled} className="min-w-[76px]">
-        {save.pending ? "Saving…" : "Save"}
-      </IfButton>
-      {warn && <span className="text-[12px] text-warn">{warn}</span>}
-      {save.saved && <span className="text-[12px] text-ok">Saved</span>}
-      {save.error && <span className="text-[12px] text-err">{save.error}</span>}
-    </div>
-  );
-}
-
-/** The 722px editor modals go (almost) full-screen below `sm`. */
-export const EDITOR_MODAL = "max-sm:h-[calc(100dvh-32px)]";
-
 /** A wide table's empty state stays in view when the table scrolls sideways (antd's fixed empty row). */
 export const TABLE_EMPTY = "sticky left-0 min-h-[400px] max-w-[calc(100vw-32px)]";

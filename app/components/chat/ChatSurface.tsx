@@ -27,6 +27,7 @@ import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useChatPinned } from "@/hooks/useChatPinned";
+import { normalizeVaultHistory, type FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useCreateSavedReply } from "@/hooks/useSavedReplies";
 import { scriptDraftFromMessage } from "@/lib/messageScripts";
@@ -55,7 +56,7 @@ import { quoteFromMessage, type QuotedReply } from "./ReplyStrip";
 import { useUnsendChoice } from "./UnsendChoice";
 import { chatDrawerReducer, initialChatDrawer } from "./chatDrawer";
 import { newBackfillIds } from "./jumpAnchor";
-import { attributionAsks } from "./attributionRefresh";
+import { attributionAsks, noteAsks, type Asked } from "./attributionRefresh";
 import { useJumpToMessage } from "./useJumpToMessage";
 import { useMarkChatRead } from "./useMarkChatRead";
 
@@ -474,17 +475,16 @@ export function ChatSurface({
     if (items.length === 0) return;
 
     relay
-      .post("/admin/vault/sends/backfill", {
+      .post<{ inserted?: number; history?: Partial<FanVaultHistoryResp> | null } | undefined>("/admin/vault/sends/backfill", {
         account_id: accountId,
         fan_id: fanId,
         items,
       })
-      .then((r) => {
-        const resp = r as { inserted?: number; history?: { by_media?: unknown } } | undefined;
+      .then((resp) => {
         if ((resp?.inserted ?? 0) === 0) return;
         // The new history comes with the answer (vault_sends_api): set it, no second read.
         if (resp?.history && typeof resp.history === "object") {
-          qc.setQueryData(["vault-history", accountId, fanId], { ...resp.history, by_media: resp.history.by_media ?? {} });
+          qc.setQueryData<FanVaultHistoryResp>(["vault-history", accountId, fanId], normalizeVaultHistory(resp.history));
         } else {
           qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
         }
@@ -619,20 +619,29 @@ export function ChatSurface({
   // useChatMessages but our attribution map is still cached. Rather than
   // shortening staleTime (which would re-fetch even on idle chats), we
   // piggyback on the chat-message arrival itself — invalidate ONLY when
-  // an outbound message newer than the map isn't in it, once per id
+  // an outbound message newer than the map isn't in it, at most twice per id
   // (attributionRefresh.ts). Idle chats pay nothing; active chats pay one
-  // fetch per teammate-send observed. (ownerUserId is hydrated synchronously above.)
-  const attributionAsked = useRef<Set<string>>(new Set());
-  useEffect(() => { attributionAsked.current = new Set(); }, [accountId, fanId]);
+  // fetch (at most two) per teammate-send observed. (ownerUserId is hydrated synchronously above.)
+  // Per chat: the surface is keyed per Creator + Fan, so a switch starts it empty.
+  const attributionAsked = useRef<Asked>(new Map());
   const attributionAt = attributionQ.dataUpdatedAt;
+  // A second ask due later (attributionRefresh LAG_MS) re-runs the check then.
+  const [attributionRecheck, setAttributionRecheck] = useState(0);
   useEffect(() => {
     if (!accountId || fanId == null || ownerUserId == null) return;
     if (!attributionMap) return;
-    const ask = attributionAsks(mergedMessages, ownerUserId, attributionMap, attributionAt, attributionAsked.current);
-    if (ask.length === 0) return;
-    for (const id of ask) attributionAsked.current.add(id);
-    qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
-  }, [accountId, fanId, ownerUserId, mergedMessages, attributionMap, attributionAt, qc]);
+    const now = Date.now();
+    const { ask, recheckAt } = attributionAsks(
+      mergedMessages, ownerUserId, attributionMap, attributionAt, attributionAsked.current, now,
+    );
+    if (ask.length > 0) {
+      noteAsks(attributionAsked.current, ask, now);
+      qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
+    }
+    if (recheckAt == null) return;
+    const t = setTimeout(() => setAttributionRecheck((n) => n + 1), recheckAt - now);
+    return () => clearTimeout(t);
+  }, [accountId, fanId, ownerUserId, mergedMessages, attributionMap, attributionAt, qc, attributionRecheck]);
 
   const fanUsername = chat.withUser.username || profile?.username || fanQ.data?.of_username;
   const headerName = decodeHtmlEntities(

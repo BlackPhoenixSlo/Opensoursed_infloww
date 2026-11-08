@@ -18,17 +18,22 @@ confidently inventing a click path.
 
 THE SYSTEM PROMPT IS BYTE-STABLE — built once, cached, no timestamps, no account
 names, sorted drift lists. ~28k tokens of manual ride on every call (median
-`tokens_in` 28,418 over 228 logged calls; 98.6% median cache hit), so the cost
-model is entirely the provider's PREFIX CACHE; one varying byte at the front of
-the prompt busts it and multiplies input cost. ALL per-request text (the
-question, the derived role, the LIVE STATE block) goes in the USER message.
+`tokens_in` 28,418 over 228 logged calls; 98.6% median cache hit on DeepSeek),
+so on DeepSeek the cost model is entirely the provider's PREFIX CACHE; one
+varying byte at the front of the prompt busts it and multiplies input cost.
+ALL per-request text (the question, the derived role, the previous turns, the
+LIVE STATE block) goes in the USER message. (The keyed Claude Opus default
+does not cache at all — `_model_pick.KEYED_PURPOSE_DEFAULTS` — so there every
+call pays the full input rate.)
 
 WHICH model answers is an operator setting, not a constant here: the route asks
-`_common.resolve_model` under the purpose `help_assistant`, and an operator pins
-it per account (the brain's per-purpose overrides, `account_ai_config`).
-It does NOT follow the account brain, which is the one way this route differs
-from every lane: `_common.PURPOSE_DEFAULT_MODELS` holds it on DeepSeek between
-that pin and `cfg.model`. Because of the cached-input economics above, the
+`_common.resolve_model_and_fallback` under the purpose `help_assistant`, and an
+operator pins it per account (the brain's per-purpose overrides,
+`account_ai_config`). It does NOT follow the account brain, which is the one
+way this route differs from every lane: `_common.PURPOSE_DEFAULT_MODELS` holds
+it on DeepSeek between that pin and `cfg.model` — or on Claude Opus where an
+Anthropic key resolves, and then a cap, key or provider failure on Opus is
+retried ONCE on DeepSeek (never a pin: a pin that fails is reported). Because of the cached-input economics above, the
 cheapest model on a short chat turn is not the cheapest one here, and when all
 seven live accounts were switched to glm-5.3-flash the brain would have taken
 this route with them at roughly 2.8x — with nobody choosing it. That multiple
@@ -59,17 +64,25 @@ two is the database, so every line of the pack is testable without one. THIS
 file is the HTTP layer: the prompt, the drift gate, the route, and no
 diagnosis at all.
 
-  POST /admin/assistant/ask  {question, account_id?, history?} → {answer, error}
-  GET  /admin/assistant/history?limit=50        → the caller's own turns, newest first
-  GET  /admin/assistant/history?all=1&limit=50  → every asker's turns (master only)
+  POST /admin/assistant/ask  {question, account_id?} → {answer, error, id}
+  GET  /admin/assistant/history?limit=50  → the caller's own turns, newest first
 
-HISTORY. Every ask that reached the model (success or a friendly-error answer)
-writes one `assistant_turns` row — question, the answer the asker saw, who,
-model/provider/cost/latency; never a key, never the prompt blocks — so the
-owner can read what people ask. The widget sends the asker's last turns back
-as `history` (≤3, each side cut to 600 chars); they ride the USER message under
-PREVIOUS TURNS, so a bare "yes" can take up the last answer's offer while the
-system prompt stays one cached prompt.
+HISTORY. Every non-blank ask past the account gate writes one `assistant_turns`
+row — question, the answer the asker saw (a friendly error sentence included),
+who, model/provider/cost/latency; never a key, never the prompt blocks — and
+`id` in the response is that row (null when the write failed). Each asker keeps
+their newest MAX_TURNS_KEPT rows. The SERVER owns the context: `_own_turns` is
+the one read, scoped to the asker AND their CURRENT reach (a row about an
+account they were unlinked from is gone from both reads). The history GET
+returns it; the prompt gets the last CONTEXT_TURNS answered turns on the SAME
+account from the last CONTEXT_WINDOW, under PREVIOUS TURNS in the USER message,
+so a bare "yes" can take up the last answer's offer while the system prompt
+stays byte-stable. The client sends no history — text it sent would land in
+the prompt as "your answers".
+
+LENGTH. The prompt asks a how-to answer to AIM for ≤300 characters and end
+with one offer; a follow-up that takes the offer may be long. Nothing checks
+length after generation — a hard cut would break **…** and link paths.
 
 NO ACCOUNT YET. A signed-in agency that has not connected an OnlyFans account
 still needs "where is X?" answered — connecting one is the first thing it asks
@@ -99,23 +112,25 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import ColumnElement, and_, delete, or_, select
 
 import assistant_fan_pack
 import assistant_state
 import llm_client
-from auth import assert_account_owned, get_request_user, require_master, require_user
-from automations._common import resolve_model  # the one model resolver
+from auth import (assert_account_owned, get_request_user, require_actor_account_ids,
+                  require_user)
+from automations._common import resolve_model_and_fallback  # the one model resolver
 from brand import BRAND_NAME
 from chatters import get_request_chatter
 from db.engine import get_session
-from db.models import AssistantTurn, Chatter, User
+from db.models import AssistantTurn
 from llm_client import (LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError,
                         key_error_payload)
 from llm_models import MODELS
@@ -144,17 +159,19 @@ Rules:
   essential part — where it lives and what to set, still within 300 characters
   — and end with ONE short question offering the rest, naming its topic: "Want
   the step-by-step for Auto Post?" Nothing after that question. An answer that
-  already fits in 300 characters gets no offer. The offer still names its
-  feature, and when the asker comes back for more ("step-by-step for Auto
-  Post", "tell me more about the Auto Post settings") the full answer may be
-  long. A "PREVIOUS TURNS" block may come before the question: the asker's
-  last few questions and your answers, oldest first. Read the question in its
-  light. A bare "yes", "more" or "go on" means yes to the offer in your LAST
-  previous answer: give that rest, about that feature. Only with no PREVIOUS
-  TURNS block, or no offer in it, say in one line that you cannot tell what it
-  refers to and ask which feature. Fan diagnoses from a FAN EVIDENCE
-  PACK keep the shape their examples show, and a clarifying question (which
-  date, which fan) still OPENS the reply rather than closing it.
+  already fits in 300 characters gets no offer.
+- The offer still names its feature, and when the asker comes back for more
+  ("step-by-step for Auto Post", "tell me more about the Auto Post settings")
+  the full answer may be long.
+- A "PREVIOUS TURNS" block may come before the question: the asker's last few
+  questions and your answers, oldest first. Read the question in its light. A
+  bare "yes", "more" or "go on" means yes to the offer in your LAST previous
+  answer: give that rest, about that feature. Only with no PREVIOUS TURNS
+  block, or no offer in it, say in one line that you cannot tell what it
+  refers to and ask which feature.
+- Fan diagnoses from a FAN EVIDENCE PACK keep the shape their examples show,
+  and a clarifying question (which date, which fan) still OPENS the reply
+  rather than closing it.
 - If the asker is a chatter and the answer lives on a page the manual's Roles
   section says an employee does not see, say what the feature does and tell them
   to ask an owner or admin to set it up — do not hand them a click path they
@@ -451,20 +468,28 @@ def _asker_role() -> str:
     return "a chatter" if get_request_chatter() is not None else "an owner/admin"
 
 
-def _history_block(history: "list[HistoryTurn] | None") -> str | None:
-    """The asker's earlier turns, oldest first; None when there are none."""
-    if not history:
+HISTORY_SIDE_CHARS = 600   # per question / per answer of a previous turn in the prompt
+
+
+def _history_block(turns: list[AssistantTurn]) -> str | None:
+    """The asker's earlier turns, oldest first, each side capped at
+    HISTORY_SIDE_CHARS; None when there are none."""
+    if not turns:
         return None
+
+    def cap(text: str) -> str:
+        return text if len(text) <= HISTORY_SIDE_CHARS else text[:HISTORY_SIDE_CHARS - 1] + "…"
+
     lines = ["PREVIOUS TURNS (oldest first; the asker's earlier questions and "
              "your answers — the question below follows them):"]
-    for i, t in enumerate(history, 1):
-        lines.append(f"[{i}] Asker: {t.question}\n[{i}] You: {t.answer}")
+    for i, t in enumerate(turns, 1):
+        lines.append(f"[{i}] Asker: {cap(t.question)}\n[{i}] You: {cap(t.answer)}")
     return "\n".join(lines)
 
 
 def _user_block(question: str, role: str, state: str | None = None,
-                fan: str | None = None,
-                history: "list[HistoryTurn] | None" = None) -> str:
+                fan: str | None = None, *,
+                history: list[AssistantTurn]) -> str:
     """Everything that varies per request lives HERE, not in the system prompt.
 
     PREVIOUS TURNS sit BEFORE the question, so the question still follows
@@ -490,64 +515,34 @@ NO_ACCOUNT_NOTE = (
     "app, so there is no live state to read.")
 
 
-MAX_HISTORY_TURNS = 3
-MAX_HISTORY_CHARS = 600     # per question AND per answer
-
-
-def _cut(text: str) -> str:
-    text = (text or "").strip()
-    return text if len(text) <= MAX_HISTORY_CHARS else text[:MAX_HISTORY_CHARS - 1] + "…"
-
-
-class HistoryTurn(BaseModel):
-    question: str = Field("", max_length=20_000)
-    answer: str = Field("", max_length=20_000)
-
-    @field_validator("question", "answer")
-    @classmethod
-    def _trim(cls, v: str) -> str:
-        return _cut(v)
-
-
 class AskBody(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
     # Omitted = no account connected yet (see the module docstring). Empty is
     # still refused: "" would no-op `assert_account_owned`.
     account_id: str | None = Field(None, min_length=1)
-    # The widget's last turns, oldest first. Over-long input is CUT, not
-    # refused (a 422 would break the ask): the newest MAX_HISTORY_TURNS survive.
-    history: list[HistoryTurn] | None = Field(None, max_length=50)
-    # No `role` field, deliberately — see the module docstring.
-
-    @field_validator("history")
-    @classmethod
-    def _last_turns(cls, v: list[HistoryTurn] | None) -> list[HistoryTurn] | None:
-        if not v:
-            return None
-        kept = [t for t in v if t.question or t.answer][-MAX_HISTORY_TURNS:]
-        return kept or None
+    # No `role` field and no `history`, deliberately — see the module docstring.
 
 
-def _answer(text: str, error: str | None = None) -> dict[str, Any]:
-    return {"answer": text, "error": error}
-
-
-def _provider_of(model: str) -> str | None:
-    mdl = MODELS.get(model)
-    return mdl.provider if mdl is not None else None
+@dataclass
+class Reply:
+    """One ask's outcome: what the asker sees and what its turn row records."""
+    answer: str
+    model: str                    # the model that answered (or last failed)
+    provider: str
+    error: str | None = None      # machine tag; None on success
+    cost_millicents: int | None = None
 
 
 async def _complete(model: str, user_content: str, *, account_id: str | None,
                     user_id: str | None = None,
                     capped: str = "This account's AI budget is used up for today.",
-                    meta: dict[str, Any] | None = None,
-                    ) -> dict[str, Any]:
+                    fallback: str | None = None) -> Reply:
     """One help-bot completion, every provider failure turned into an answer.
 
-    `meta`, when given, is filled with what the turn row records (model,
-    provider, cost) — the answer dict itself stays {answer, error}."""
-    if meta is not None:
-        meta.update(model=model, provider=_provider_of(model), cost_millicents=None)
+    `fallback` is set only when `model` is a KEYED purpose default
+    (`resolve_model_and_fallback`): a cap, key or provider failure then gets
+    exactly ONE retry on it, and the Reply names the model that answered."""
+    sent = Reply("", model=model, provider=MODELS[model].provider)
     try:
         result = await llm_client.chat(
             model=model,
@@ -560,34 +555,45 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
             ],
             temperature=0.3,
         )
-    except LLMCapExceeded:
-        log.info("assistant: cap exceeded for account=%s user=%s", account_id, user_id)
-        return _answer(capped, "cap")
-    except LLMKeyError as e:
+    except LLMKeyError as e:            # before LLMConfigError: it is one too
         log.warning("assistant: llm key %s provider=%s", e.kind, e.provider)
         p = key_error_payload(e)
-        return _answer(f"{p['message']} {p['fix']}", "config")
+        failed = replace(sent, answer=f"{p['message']} {p['fix']}", error="config")
     except LLMConfigError:
         log.warning("assistant: llm config error", exc_info=True)
-        return _answer(
-            "Your agency's LLM key isn't set — Settings → AI keys.", "config")
+        return replace(sent, answer="Your agency's LLM key isn't set — Settings → AI keys.",
+                       error="config")
+    except LLMCapExceeded:
+        log.info("assistant: cap exceeded for account=%s user=%s", account_id, user_id)
+        failed = replace(sent, answer=capped, error="cap")
     except LLMHTTPError:
         log.warning("assistant: llm provider error", exc_info=True)
-        return _answer(
-            "The AI provider is having trouble — try again in a minute.",
-            "provider")
+        failed = replace(sent, answer="The AI provider is having trouble — try again in a minute.",
+                         error="provider")
+    else:
+        sent = replace(sent, model=result.model, provider=result.provider,
+                       cost_millicents=result.cost_cents)
+        answer = (result.content or "").strip()
+        if not answer:
+            # A model that reasoned its whole output budget away returns content=""
+            # (see llm_client's note on the `thinking` field). Say something.
+            log.warning("assistant: empty answer from %s", result.model)
+            return replace(sent, answer="The AI came back empty — try asking again.",
+                           error="empty_answer")
+        return replace(sent, answer=answer)
+    if fallback is None:
+        return failed
+    log.warning("assistant: keyed default %s failed (%s) — one retry on %s",
+                model, failed.error, fallback)
+    return await _complete(fallback, user_content, account_id=account_id,
+                           user_id=user_id, capped=capped)
 
-    if meta is not None:
-        meta.update(model=result.model, provider=result.provider,
-                    cost_millicents=result.cost_cents)
-    answer = (result.content or "").strip()
-    if not answer:
-        # A model that reasoned its whole output budget away returns content=""
-        # (see llm_client's note on the `thinking` field). Say something.
-        log.warning("assistant: empty answer from %s", result.model)
-        return _answer(
-            "The AI came back empty — try asking again.", "empty_answer")
-    return _answer(answer)
+
+# ── Turns: one server-owned read for the history GET and the prompt ───
+
+MAX_TURNS_KEPT = 500                   # per asker; also the history GET's max limit
+CONTEXT_TURNS = 3                      # previous turns that ride an ask…
+CONTEXT_WINDOW = timedelta(hours=2)    # …and how old they may be
 
 
 def _asker_ids() -> tuple[str | None, str | None]:
@@ -599,59 +605,114 @@ def _asker_ids() -> tuple[str | None, str | None]:
     return None, (chatter.id if chatter is not None else None)
 
 
-async def _record_turn(*, question: str, out: dict[str, Any], role: str,
-                       account_id: str | None, meta: dict[str, Any],
-                       started: float) -> None:
-    """One `assistant_turns` row per answered ask. Best-effort: a failed write
-    is logged and never costs the asker the answer they already paid for."""
+def _asker_clause(user_id: str | None, chatter_id: str | None) -> ColumnElement[bool]:
+    if user_id is not None:
+        return AssistantTurn.user_id == user_id
+    if chatter_id is not None:
+        return AssistantTurn.chatter_id == chatter_id
+    return and_(AssistantTurn.user_id.is_(None), AssistantTurn.chatter_id.is_(None))
+
+
+async def _own_turns(limit: int, *narrow: ColumnElement[bool]) -> list[AssistantTurn]:
+    """This asker's turns, newest first, within their CURRENT reach: a row
+    about an account the principal no longer reaches (a chatter unlinked from
+    its owner) is gone, and rows with no account stay. No principal → [].
+    `narrow`: extra where-clauses on top of asker + reach."""
+    user_id, chatter_id = _asker_ids()
+    if user_id is None and chatter_id is None:
+        return []
+    where = [_asker_clause(user_id, chatter_id)]
+    reach = require_actor_account_ids()
+    if reach is not None:
+        where.append(or_(AssistantTurn.account_id.is_(None),
+                         AssistantTurn.account_id.in_(reach)))
+    where += narrow
+    async with get_session() as s:
+        return list((await s.execute(
+            select(AssistantTurn).where(*where)
+            .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
+            .limit(limit))).scalars().all())
+
+
+async def _context_turns(account_id: str | None) -> list[AssistantTurn]:
+    """The prompt's PREVIOUS TURNS, oldest first: answered turns on the ask's
+    own account (none for a no-account ask) from the last CONTEXT_WINDOW.
+    A failed read is no context, never a failed ask."""
+    try:
+        rows = await _own_turns(
+            CONTEXT_TURNS,
+            AssistantTurn.error.is_(None),
+            AssistantTurn.account_id.is_(None) if account_id is None
+            else AssistantTurn.account_id == account_id,
+            AssistantTurn.ts >= datetime.now(timezone.utc).replace(tzinfo=None) - CONTEXT_WINDOW)
+    except Exception:
+        log.warning("assistant: previous-turns read failed", exc_info=True)
+        return []
+    return rows[::-1]
+
+
+async def _record_turn(*, question: str, reply: Reply, role: str,
+                       account_id: str | None, started: float) -> int | None:
+    """Write this ask's `assistant_turns` row and prune the asker's rows past
+    their newest MAX_TURNS_KEPT; the new row's id. Best-effort: a failed write
+    is logged, returns None, and never costs the asker the answer."""
     user_id, chatter_id = _asker_ids()
     try:
         async with get_session() as s:
-            s.add(AssistantTurn(
+            row = AssistantTurn(
                 user_id=user_id, chatter_id=chatter_id, account_id=account_id,
-                role=role, question=question, answer=out["answer"],
-                error=out["error"], model=meta.get("model"),
-                provider=meta.get("provider"),
-                cost_millicents=meta.get("cost_millicents"),
-                latency_ms=int((time.monotonic() - started) * 1000)))
+                role=role, question=question, answer=reply.answer,
+                error=reply.error, model=reply.model, provider=reply.provider,
+                cost_millicents=reply.cost_millicents,
+                latency_ms=int((time.monotonic() - started) * 1000))
+            s.add(row)
+            await s.flush()
+            mine = _asker_clause(user_id, chatter_id)
+            keep = (select(AssistantTurn.id).where(mine)
+                    .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
+                    .limit(MAX_TURNS_KEPT))
+            await s.execute(
+                delete(AssistantTurn).where(mine, AssistantTurn.id.not_in(keep))
+                .execution_options(synchronize_session=False))
+            return row.id
     except Exception:
         log.warning("assistant: turn row write failed", exc_info=True)
+        return None
 
+
+# ── The route ─────────────────────────────────────────────────────────
 
 @router.post("/admin/assistant/ask")
 async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     started = time.monotonic()
-    out, meta, role, question = await _ask(body)
-    if meta:   # empty = refused before any model call (blank question)
-        await _record_turn(question=question, out=out, role=role,
-                           account_id=body.account_id, meta=meta, started=started)
-    return out
-
-
-async def _ask(body: AskBody) -> tuple[dict[str, Any], dict[str, Any], str, str]:
-    """The ask itself → (answer dict, turn meta, role, stripped question)."""
     if body.account_id is None:
         # No account to gate on, so the gate is the session itself: a signed-in
         # user of this deployment, never an anonymous caller.
-        user = require_user(detail="sign in required")
+        require_user(detail="sign in required")
     else:
         assert_account_owned(body.account_id)
     question = body.question.strip()
+    if not question:      # refused before any model call: no turn row
+        return {"answer": "Ask me something about the product.",
+                "error": "empty_question", "id": None}
     role = _asker_role()
-    meta: dict[str, Any] = {}
-    if not question:
-        return (_answer("Ask me something about the product.", "empty_question"),
-                meta, role, question)
+    reply = await _ask(body, question, role)
+    row_id = await _record_turn(question=question, reply=reply, role=role,
+                                account_id=body.account_id, started=started)
+    return {"answer": reply.answer, "error": reply.error, "id": row_id}
 
+
+async def _ask(body: AskBody, question: str, role: str) -> Reply:
+    """The gated, non-blank ask → the Reply the asker sees."""
+    prev = await _context_turns(body.account_id)
     if body.account_id is None:
         # Manual only, billed to the asking agency. No account → no pin to
         # read, so the model is the purpose default.
-        out = await _complete(
-            await resolve_model("", PURPOSE),
-            _user_block(question, role, NO_ACCOUNT_NOTE, history=body.history),
-            account_id=None, user_id=user.id, meta=meta,
+        model, fallback = await resolve_model_and_fallback("", PURPOSE)
+        return await _complete(
+            model, _user_block(question, role, NO_ACCOUNT_NOTE, history=prev),
+            account_id=None, user_id=_asker_ids()[0], fallback=fallback,
             capped="Today's help-bot budget is used up — try again tomorrow.")
-        return out, meta, role, question
 
     # Resolution comes FIRST: the paste may name a different model, and the live
     # state block has to describe the account the question is actually about.
@@ -661,69 +722,33 @@ async def _ask(body: AskBody) -> tuple[dict[str, Any], dict[str, Any], str, str]
     # One rule for both lines below: the SCOPED account owns this answer's
     # settings AND its bill, even when the paste named another account. The
     # daily AI budget is per account, so naming one in a question must not
-    # reach into its config or spend its money. `resolve_model` is total —
+    # reach into its config or spend its money. The resolver is total —
     # there is no failure branch to write here.
-    model = await resolve_model(body.account_id, PURPOSE)
-    out = await _complete(
-        model, _user_block(question, role, state, target.block, body.history),
-        account_id=body.account_id, meta=meta)      # pays — see above
-    if out["error"] is None:
+    model, fallback = await resolve_model_and_fallback(body.account_id, PURPOSE)
+    reply = await _complete(
+        model, _user_block(question, role, state, target.block, history=prev),
+        account_id=body.account_id, fallback=fallback)      # pays — see above
+    if reply.error is None:
         # The model answered without rows it should have had — be honest about why.
         if state is None:
-            out["answer"] += assistant_state.FAIL_NOTE
+            reply.answer += assistant_state.FAIL_NOTE
         if not target.ok:
-            out["answer"] += assistant_fan_pack.FAIL_NOTE
-    return out, meta, role, question
+            reply.answer += assistant_fan_pack.FAIL_NOTE
+    return reply
 
 
 # ── History ───────────────────────────────────────────────────────────
 
 def _turn_row(t: AssistantTurn) -> dict[str, Any]:
-    return {
-        "id": t.id,
-        "ts": t.ts.replace(tzinfo=timezone.utc).isoformat() if t.ts else None,
-        "account_id": t.account_id, "role": t.role,
-        "question": t.question, "answer": t.answer, "error": t.error,
-        "model": t.model, "provider": t.provider,
-        "cost_millicents": t.cost_millicents, "latency_ms": t.latency_ms,
-    }
+    return {"id": t.id, "ts": t.ts.replace(tzinfo=timezone.utc).isoformat(),
+            "question": t.question, "answer": t.answer, "error": t.error}
 
 
 @router.get("/admin/assistant/history")
-async def history(limit: int = Query(50, ge=1, le=500),
-                  all: bool = Query(False)) -> dict[str, Any]:
-    """The caller's own turns, newest first; `all=1` is every asker's (master).
-
-    Own: whoever the session is — a user by `user_id`, a chatter by
-    `chatter_id`. No principal (ALLOW_ANONYMOUS_ADMIN) has no history: 401.
-    All: `require_master`, the founder read gate (401 anonymous, 403 others);
-    each row also carries the asker's username / chatter name."""
-    if all:
-        require_master()
-        async with get_session() as s:
-            rows = (await s.execute(
-                select(AssistantTurn, User.username, Chatter.username,
-                       Chatter.display_name)
-                .outerjoin(User, User.id == AssistantTurn.user_id)
-                .outerjoin(Chatter, Chatter.id == AssistantTurn.chatter_id)
-                .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
-                .limit(limit))).all()
-        turns = []
-        for t, uname, cname, cdisplay in rows:
-            row = _turn_row(t)
-            row.update(user_id=t.user_id, chatter_id=t.chatter_id,
-                       username=uname or cname,
-                       display_name=cdisplay if t.chatter_id else None)
-            turns.append(row)
-        return {"turns": turns}
-
-    user_id, chatter_id = _asker_ids()
-    if user_id is None and chatter_id is None:
+async def history(limit: int = Query(50, ge=1, le=MAX_TURNS_KEPT)) -> dict[str, Any]:
+    """The caller's own turns, newest first (`_own_turns`: a user by
+    `user_id`, a chatter by `chatter_id`, within their current reach). No
+    principal (ALLOW_ANONYMOUS_ADMIN) has no history: 401."""
+    if _asker_ids() == (None, None):
         raise HTTPException(status_code=401, detail="sign in required")
-    col = AssistantTurn.user_id if user_id else AssistantTurn.chatter_id
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(AssistantTurn).where(col == (user_id or chatter_id))
-            .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
-            .limit(limit))).scalars().all()
-    return {"turns": [_turn_row(t) for t in rows]}
+    return {"turns": [_turn_row(t) for t in await _own_turns(limit)]}

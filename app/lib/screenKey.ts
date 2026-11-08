@@ -5,31 +5,37 @@
 
 export type Screen =
   | { kind: "dashboard"; from: string | null; to: string | null }
-  | { kind: "inbox" }
+  /** Messages Pro's All Models list at `cursor` (useChatList's offset, the same for every Creator). */
+  | { kind: "inbox"; cursor: number }
   /** An open thread (service/chat_screen_api.py): its local reads; `lacks` the lists the client has no fresh copy of. */
   | { kind: "chat"; accountId: string; fanId: string; lacks: ChatLack[] };
 
 export type ChatLack = "savedReplies" | "sensitiveWords";
 
+/** `s`'s identity: two screens with one key share a bundle. */
 export function screenKey(s: Screen): string {
   if (s.kind === "chat") return `chat|${s.accountId}|${s.fanId}|${s.lacks.join(",")}`;
-  return s.kind === "dashboard" ? `dashboard|${s.from ?? ""}|${s.to ?? ""}` : "inbox|0";
+  return s.kind === "dashboard" ? `dashboard|${s.from ?? ""}|${s.to ?? ""}` : `inbox|${s.cursor}`;
 }
 
-/** The bundle's URL for `key` (`dashboard|from|to`, `inbox|cursor`, `chat|account|fan|lacks`). */
-export function bundlePath(key: string): string {
-  const [kind, a, b, c] = key.split("|");
-  const qs = new URLSearchParams();
-  if (kind === "chat") {
-    qs.set("account", a);
-    qs.set("fan", b);
-    if (c) qs.set("lacks", c);
-  } else if (kind === "dashboard") {
-    if (a) qs.set("from", a);
-    if (b) qs.set("to", b);
+/** `path` with `params` appended to its query. */
+export function withQuery(path: string, params: Record<string, string>): string {
+  const qs = new URLSearchParams(params).toString();
+  return qs ? `${path}${path.includes("?") ? "&" : "?"}${qs}` : path;
+}
+
+/** `s`'s bundle URL. */
+export function bundlePath(s: Screen): string {
+  const qs: Record<string, string> = {};
+  if (s.kind === "chat") {
+    qs.account = s.accountId;
+    qs.fan = s.fanId;
+    if (s.lacks.length) qs.lacks = s.lacks.join(",");
+  } else if (s.kind === "dashboard") {
+    if (s.from) qs.from = s.from;
+    if (s.to) qs.to = s.to;
   } else {
-    qs.set("cursor", a);
+    qs.cursor = String(s.cursor);
   }
-  const s = qs.toString();
-  return `/admin/screens/${kind}${s ? `?${s}` : ""}`;
+  return withQuery(`/admin/screens/${s.kind}`, qs);
 }

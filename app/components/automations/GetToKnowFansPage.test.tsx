@@ -131,6 +131,22 @@ describe("Get to know fans", () => {
     expect(await screen.findByText("Saved")).toBeInTheDocument();
   });
 
+  it("a failed rules refetch keeps the typed settings mounted", async () => {
+    serve("Name: Mia", true);
+    const client = makeTestQueryClient();
+    renderWithProviders(<GetToKnowFansPage />, client);
+    const cutoff = (await screen.findByRole("spinbutton", { name: "Message cutoff" })) as HTMLInputElement;
+    fireEvent.change(cutoff, { target: { value: "12" } });
+    const served = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (path.startsWith("/admin/automation-rules")) throw new Error("rules down");
+      return served(path, ...rest);
+    });
+    await client.refetchQueries();
+    await screen.findByText(/rules down/);
+    expect((screen.getByRole("spinbutton", { name: "Message cutoff" }) as HTMLInputElement).value).toBe("12");
+  });
+
   it("does not show Saved over a cutoff typed while the rule save was in flight", async () => {
     serve("Name: Mia", true);
     let land!: (v: unknown) => void;

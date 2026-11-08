@@ -26,7 +26,7 @@ import { createPortal } from "react-dom";
 import { EllipsisVertical } from "lucide-react";
 
 import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfSegmented } from "@/components/ui/infloww";
-import { EditorFooter, FooterSlotContext } from "@/components/ui/ifModal";
+import { EditorFooter } from "@/components/ui/ifModal";
 import { AccessEditor } from "@/components/employees/EmployeeAccess";
 import {
   buildEmployeeRequest, canSaveEmployee, picksNoCreators, type SignIn,
@@ -58,12 +58,10 @@ export function Modal({ open, onOpenChange, title, children, wide = false, foote
   wide?: boolean;
   footerSlot?: boolean;
 }) {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
   if (!open) return null;
   return (
-    <IfModal title={title} width={wide ? 640 : 440} onClose={() => onOpenChange(false)}
-      footer={footerSlot ? <span ref={setSlot} className="contents" /> : undefined}>
-      {footerSlot ? <FooterSlotContext.Provider value={slot}>{children}</FooterSlotContext.Provider> : children}
+    <IfModal title={title} width={wide ? 640 : 440} onClose={() => onOpenChange(false)} footerSlot={footerSlot}>
+      {children}
     </IfModal>
   );
 }

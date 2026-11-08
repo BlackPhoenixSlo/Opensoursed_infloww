@@ -27,7 +27,8 @@
  * While the probes run, a browser that holds a session cookie (`signedIn`, read by the root layout on the server)
  * sees the route's BootSkeleton, from the server's HTML on, instead of a blank page; one without sees nothing until
  * the probes answer, so a signed-out visitor never sees the app's frame flash before the landing. Such a browser's
- * Dashboard or Messages Pro screen bundle starts with the probes, and the Dashboard's Applied settings read.
+ * Dashboard or Messages Pro screen bundle starts with the probes (the server's inline boot answers it when it guessed
+ * the same screen).
  */
 
 import { useEffect } from "react";
@@ -41,9 +42,8 @@ import Landing from "@/components/auth/Landing";
 import BootSkeleton from "@/components/shell/BootSkeleton";
 import { EmptyState } from "@/components/ui/infloww";
 import type { AuthBanner } from "@/contexts/userSessionReducer";
-import { prefetchAppliedSettings } from "@/lib/appliedSettings";
 import { prefetchScreenBundle } from "@/lib/relay";
-import { entryScreen, readDashboardEntry } from "@/lib/screenEntry";
+import { bootScreen, cookieValue } from "@/lib/screenEntry";
 
 // The invite page and a share link's report: only their own paths draw them, which render on the server, so
 // next/dynamic (it preloads their chunks from the HTML) keeps them out of every other first load. <Landing> stays
@@ -60,12 +60,11 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
   const { user, boot, banner, formUp, retry } = useUser();
   const { chatter, loading: chatterLoading, reprobe } = useChatter();
   const pathname = usePathname();
-  // A document load of a bundled screen starts its bundle alongside the probes, not after them, and the Dashboard
-  // its Applied settings read too: its days wait on it (lib/screenEntry.ts, lib/appliedSettings.ts).
+  // A document load of a bundled screen starts its bundle alongside the probes, not after them: the server's guess,
+  // from the same cookies (lib/screenEntry.ts `bootScreen`).
   useEffect(() => {
     if (!signedIn) return;
-    const s = entryScreen(window.location.pathname, window.location.search, readDashboardEntry());
-    if (window.location.pathname === "/") prefetchAppliedSettings();
+    const s = bootScreen(window.location.pathname + window.location.search, (n) => cookieValue(document.cookie, n));
     if (s) prefetchScreenBundle(s);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the document's first route only
   }, []);

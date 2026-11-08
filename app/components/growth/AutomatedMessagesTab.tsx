@@ -55,9 +55,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 
-import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
-import { FooterSlotContext } from "@/components/ui/ifModal";
 import {
   EmptyState, IF_TABLE, IfBody, IfButton, IfInput, IfModal, IfRangePicker, IfSelect, type IfOption,
 } from "@/components/ui/infloww";
@@ -406,24 +404,26 @@ export function AutomatedEditor({
   accountId: string | null;
   onClose: () => void;
 }) {
-  // The editor's Save (and its status line) lands in the footer, after Cancel (`EditorFooter`).
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  // Escape closes only a clean draft: an editor reports its first user edit (× and Cancel still close).
+  // The Nudge editor keeps its own draft in localStorage and reports none.
+  const [touched, setTouched] = useState(false);
+  const onTouched = () => setTouched(true);
   return (
     // The dialog is named by the Trigger alone; the extra tag opens the body.
-    <IfModal title={trigger} width={722} className={EDITOR_MODAL} onClose={onClose}
-      footer={<><IfButton onClick={onClose}>Cancel</IfButton><span ref={setSlot} className="contents" /></>}>
+    // The editor's Save (and its status line) lands in the footer, after Cancel (`EditorFooter`).
+    <IfModal title={trigger} width={722} size="editor" onClose={onClose} keyboard={!touched}
+      footer={<IfButton onClick={onClose}>Cancel</IfButton>} footerSlot>
       {/* Our editor, not Infloww's seven-step wizard. */}
       <div className="mb-4"><ExtraTag /></div>
-      <FooterSlotContext.Provider value={slot}>
       {/* Keyed on the Creator: it opens on the chip's pick. */}
       {trigger === NUDGE.label
         ? <NudgeOnlineTab key={accountId ?? ""} initialAccountId={accountId} />
         : trigger === PURCHASED.label
-          ? <PurchaseFollowupEditor key={accountId ?? ""} accountId={accountId} />
+          ? <PurchaseFollowupEditor key={accountId ?? ""} accountId={accountId} onTouched={onTouched} />
           : LIFECYCLE_KIND.has(trigger)
-            ? <LifecycleMessageEditor key={accountId ?? ""} accountId={accountId} kind={LIFECYCLE_KIND.get(trigger)!} />
-            : <DelayedWelcomeEditor key={accountId ?? ""} accountId={accountId} />}
-      </FooterSlotContext.Provider>
+            ? <LifecycleMessageEditor key={accountId ?? ""} accountId={accountId} kind={LIFECYCLE_KIND.get(trigger)!}
+                onTouched={onTouched} />
+            : <DelayedWelcomeEditor key={accountId ?? ""} accountId={accountId} onTouched={onTouched} />}
     </IfModal>
   );
 }

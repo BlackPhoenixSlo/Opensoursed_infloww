@@ -5,8 +5,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type Dispatch } from "r
  * stays touched until the composer closes (unmounts), a reverted edit included. The automatic seeding (the picker's
  * first account, the standing exclude list) never does, whenever it lands.
  *
- * Returns the user's `dispatch`: an action touches unless `isSeed(action, state)` (the state last rendered), and
- * `edit(set)`: a plain setter that touches.
+ * Returns the user's `dispatch`: an action touches unless `isSeed(action, state)` (the state last rendered).
  */
 export function useTouched<S, A>(state: S, dispatch: Dispatch<A>, isSeed: (action: A, state: S) => boolean) {
   const [touched, setTouched] = useState(false);
@@ -20,11 +19,7 @@ export function useTouched<S, A>(state: S, dispatch: Dispatch<A>, isSeed: (actio
     if (!seedRef.current(a, stateRef.current)) setTouched(true);
     dispatch(a);
   }, [dispatch]);
-  const edit = useCallback(<V,>(set: (v: V) => void) => (v: V) => {
-    setTouched(true);
-    set(v);
-  }, []);
-  return { touched, dispatch: userDispatch, edit };
+  return { touched, dispatch: userDispatch };
 }
 
 /** The audience reducer's automatic actions: the standing exclude seed, and the picker's first account (from none). */

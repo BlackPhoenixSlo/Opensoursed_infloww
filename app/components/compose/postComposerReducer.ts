@@ -26,12 +26,11 @@
  *     ask; `buildPostBody` the one body (built once, sent to every model).
  */
 
-import { applyTemplate, previewIdsFor, wireMedia } from "@/lib/composeDraft";
-import { hasOfFormatting, OF_TEXT_MAX } from "@/lib/ofRichText";
+import { previewIdsFor, textBoxReducer, wireMedia, type TextBoxAction } from "@/lib/composeDraft";
+import { OF_TEXT_MAX, TEXT_TOO_LONG } from "@/lib/ofRichText";
 import { plainLength } from "@/lib/ofRichTextEditor";
-import { PLAIN_MODE, richMode, type RichMode } from "@/lib/ofRichMode";
+import { PLAIN_MODE, type RichMode } from "@/lib/ofRichMode";
 import { localDatetimeToIso } from "@/lib/scheduleHistory";
-import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
 import { isAccountSwitch } from "@/components/audience/audienceReducer";
 
@@ -63,9 +62,7 @@ export type PostAction =
   | { type: "appendText"; v: string }
   | { type: "setAccount"; id: string | null }
   | { type: "setAllModels"; on: boolean }
-  /** `rich`: the account takes OF markup (an OnlyFans one): a formatted script keeps it. */
-  | { type: "pickTemplate"; t: PickedTemplate; rich?: boolean }
-  | { type: "aa" }
+  | TextBoxAction
   | FanOutAction;
 
 /** The `field` action for `k` (the cast is the one TS can't prove: a
@@ -104,12 +101,9 @@ export function postComposerReducer(s: PostForm, a: PostAction): PostForm {
         : { ...s, accountId: a.id };
     case "setAllModels":
       return a.on === s.allModels ? s : { ...s, allModels: a.on, ...initFanOut() };
-    case "pickTemplate": {
-      const n = applyTemplate(s, a.t, !!a.rich);
-      return { ...n, mode: richMode(s.mode, { type: "loaded", formatted: hasOfFormatting(n.text) }, !!a.rich) };
-    }
+    case "pickTemplate":
     case "aa":
-      return { ...s, mode: richMode(s.mode, { type: "aa", formatted: hasOfFormatting(s.text) }) };
+      return textBoxReducer(s, a);
   }
 }
 
@@ -164,7 +158,7 @@ export function validatePost(f: PostForm, ctx: PostCtx): string | null {
   if (price > 0 && media.length === 0) return "A paid post needs at least one image";
   // All-models is text-only: media is no way out there.
   if (!f.text.trim() && media.length === 0) return f.allModels ? "Add text" : "Add text or media";
-  if (plainLength(f.text) > OF_TEXT_MAX) return `Text is over ${OF_TEXT_MAX} characters`;
+  if (plainLength(f.text) > OF_TEXT_MAX) return TEXT_TOO_LONG;
   if (f.schedule && !localDatetimeToIso(f.schedule)) return "Invalid schedule date";
   return null;
 }

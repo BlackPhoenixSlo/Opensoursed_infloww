@@ -38,6 +38,9 @@ def case_strip_emojis_util():
     assert strip_emojis("") == "" and strip_emojis(None) == ""     # safe on empty/None
     # an emoji-only string collapses to "" (the caller's `if p.strip()` drops it)
     assert strip_emojis("😏😏😏") == ""
+    assert strip_emojis("(⌒‿⌒) ⌘") == "(⌒‿⌒) ⌘"
+    assert strip_emojis("⌚ ⏳") == ""
+    assert strip_emojis("❤️ 👩‍❤️‍👩") == ""
 
 
 async def case_load_strip_emojis_default_off():

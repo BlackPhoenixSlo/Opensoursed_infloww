@@ -24,7 +24,10 @@ UI (small run, Chromium):
      until screenshot picker-thumbs-<dev>-trigger (the broken top tiles), then let through; once the top tiles drew,
      picker-thumbs-<dev>-settled. THUMBS_RELOAD: before, every top tile unloaded; one invalidate; after, every top
      tile drawn (naturalWidth > 0); the CDN answered each top tile's path 403 then 200; the relay's cached page 1
-     (DB) refetched after the open, every thumb's Policy in the future.
+     (DB) refetched after the open, every thumb's Policy in the future. Then a picker Refresh POST is held at the
+     browser wire: its button becomes disabled and aria-busy, five more clicks produce no POST, and it settles.
+     A later sync answer is 502 at that wire boundary; the picker shows the saved-vault failure note. Screenshots
+     picker-refresh-<dev>-trigger, -settled, -failure-settled. PICKER_REFRESH: one POST per burst and failure.
 
 Load (stage `sync`, also --no-ui): K_LOAD new media in a new folder made on OnlyFans for each load Creator, then
 `--users` owner sessions press Refresh at once (POST /admin/vault-ai/sync, round-robin over the load Creators, a
@@ -137,7 +140,8 @@ async def run(ctx) -> None:
 
     ctx.rec.stage = "ui"
     if ctx.app is None:
-        for c in (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE, REFRESH_FAIL_SHOWN, THUMBS_RELOAD):
+        for c in (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE, REFRESH_FAIL_SHOWN, THUMBS_RELOAD,
+                  "vault_picker_refresh_pending_single_post_and_failure_note"):
             ctx.skip(c, "--no-ui")
     else:
         a = [await _refresh_ui(ctx, w, vw, aid, dev, made_on_of)
@@ -336,24 +340,26 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
                     pass
             got["media_reads"] = [{"offset": parse_qs(urlsplit(r["url"]).query).get("offset"), "status": r["status"]}
                                   for r in reads]
+        if "error" not in got:
+            con = w.sql()
+            try:
+                row = con.execute("SELECT response_json, fetched_at FROM vault_response_cache WHERE account_id=? AND "
+                                  "query_key=?", (aid, vault_live.PICKER_KEY)).fetchone()
+            finally:
+                con.close()
+            if row:
+                body = json.loads(row[0])
+                fetched = datetime.strptime(row[1][:19], "%Y-%m-%d %H:%M:%S")
+                got["db"] = {"fetched_after_open": fetched.timestamp() >= _utc_epoch_floor(t_open),
+                             "min_exp_ahead_s": round(min(_exp(m["files"]["thumb"]["url"]) for m in body["list"])
+                                                      - time.time())}
+            got["refresh"] = await _picker_refresh(ctx, page, aid, dev)
         got["invalidates"] = len(inv)
     keys = {f"{HOST}{cdn_path(aid, m, 'thumb')}": m for m in top}
     got["cdn"] = {}
     for c in await _cdn_calls(ctx, cdn0):
         if c["key"] in keys:
             got["cdn"].setdefault(str(keys[c["key"]]), []).append(c["status"])
-    con = w.sql()
-    try:
-        row = con.execute("SELECT response_json, fetched_at FROM vault_response_cache WHERE account_id=? AND "
-                          "query_key=?", (aid, vault_live.PICKER_KEY)).fetchone()
-    finally:
-        con.close()
-    if row:
-        body = json.loads(row[0])
-        fetched = datetime.strptime(row[1][:19], "%Y-%m-%d %H:%M:%S")
-        got["db"] = {"fetched_after_open": fetched.timestamp() >= _utc_epoch_floor(t_open),
-                     "min_exp_ahead_s": round(min(_exp(m["files"]["thumb"]["url"]) for m in body["list"])
-                                              - time.time())}
     (ctx.out / f"picker-thumbs-{dev}.json").write_text(json.dumps(got, indent=2, default=str))
     return got
 
@@ -380,6 +386,72 @@ def _check_picker(ctx, w, runs: list[dict]) -> None:
               media_reads=[g.get("media_reads") for g in runs], db=[g.get("db") for g in runs],
               errors={g["dev"]: g.get("error") for g in runs if "error" in g},
               shots=[[g.get("trigger_shot"), g.get("settled_shot") or g.get("failed_shot")] for g in runs])
+    refresh = [g.get("refresh") or {} for g in runs]
+    good = [r.get("pending") is True and r.get("burst_posts") == 1 and r.get("settled") is True
+            and r.get("failure_posts") == 1 and r.get("failure_wire_posts") == 1
+            and r.get("failure_statuses") == [502] and r.get("failure_note") == FAIL_NOTE for r in refresh]
+    ctx.check("vault_picker_refresh_pending_single_post_and_failure_note", all(good),
+              per_dev=dict(zip([g["dev"] for g in runs], good)), refresh=refresh)
+
+
+async def _picker_refresh(ctx, page, aid: str, dev: str) -> dict:
+    """Hold the real sync POST at the browser wire, burst clicks, then answer a later sync with a wire-level 502."""
+    out: dict = {}
+    button = page.get_by_role("dialog", name="Vault picker").get_by_role("button", name="refresh", exact=True)
+    entered, release = asyncio.Event(), asyncio.Event()
+    posts = []
+
+    async def hold_sync(route):
+        posts.append(route.request.url)
+        entered.set()
+        await release.wait()
+        await route.continue_()
+
+    sync_match = lambda u: urlsplit(u).path == SYNC_PATH  # noqa: E731
+    await page.route(sync_match, hold_sync)
+    try:
+        await button.click(timeout=SETTLE_MS)
+        await asyncio.wait_for(entered.wait(), SETTLE_MS / 1000)
+        try:
+            await page.wait_for_function("() => { const b = document.querySelector('[role=dialog][aria-label=\"Vault picker\"] button[aria-busy=\"true\"]'); return b && b.disabled; }",
+                                         timeout=5000)
+        except Exception:  # noqa: BLE001 — record the observed state below
+            pass
+        out["pending_disabled"] = await button.is_disabled()
+        out["pending_busy"] = await button.get_attribute("aria-busy")
+        out["pending"] = out["pending_disabled"] and out["pending_busy"] == "true"
+        out["trigger"] = await ui.shot(ctx, page, f"picker-refresh-{dev}-trigger")
+        await button.evaluate("b => { for (let i = 0; i < 5; i++) b.click(); }")
+        await page.wait_for_timeout(300)
+        out["burst_posts"] = len(posts)
+        release.set()
+        await page.wait_for_function("() => document.querySelector('[role=dialog][aria-label=\"Vault picker\"] button[aria-busy=\"false\"]') !== null",
+                                     timeout=SETTLE_MS)
+        out["settled"] = not await button.is_disabled()
+        out["settled_shot"] = await ui.shot(ctx, page, f"picker-refresh-{dev}-settled")
+        await page.unroute(sync_match, hold_sync)
+        # This picker Creator has no mirror to sync. Answer the real sync request with a wire-level 502, the
+        # same status the relay returns when its OF side cannot be reached; leave service code untouched.
+        async def fail_sync(route):
+            out["failure_wire_posts"] = out.get("failure_wire_posts", 0) + 1
+            await route.fulfill(status=502, content_type="application/json", body='{"detail":"OnlyFans unavailable"}')
+        await page.route(sync_match, fail_sync)
+        try:
+            with recorded(page, "POST", SYNC_PATH) as failed:
+                await button.click(timeout=SETTLE_MS)
+                note = page.get_by_role("dialog", name="Vault picker").get_by_role("status").filter(has_text=FAIL_NOTE)
+                await note.first.wait_for(timeout=SETTLE_MS)
+                out["failure_note"] = FAIL_NOTE
+                out["failure_posts"] = len(failed)
+                out["failure_statuses"] = [x["status"] for x in failed]
+                out["failure_shot"] = await ui.shot(ctx, page, f"picker-refresh-{dev}-failure-settled")
+        finally:
+            await page.unroute(sync_match, fail_sync)
+    except Exception as e:  # noqa: BLE001 — check reports the browser failure
+        out["error"] = f"{type(e).__name__}: {e}"[:600]
+        release.set()
+        out["failed_shot"] = await ui.shot(ctx, page, f"failed-picker-refresh-{dev}")
+    return out
 
 
 # ── load: many owners pressing Refresh at once ─────────────────────

@@ -89,7 +89,7 @@ WANT_META = {"a.jpg": {"hashtags": ["slopa", "beach"], "price_cents": 1250}, "c.
 PICKER_TS = Path(__file__).resolve().parents[1] / "lib" / "picker_ts.mjs"
 LISTS = "/api/of/v2/vault/lists"
 LISTS_PAGE = 50  # fetchAllVaultLists' page
-LISTS_KEY = f"lists:view=main|limit={LISTS_PAGE}|offset=0"  # server.vault_lists_cache_key of its first page
+LISTS_KEY = f"lists:view=main|limit={LISTS_PAGE}|offset=0"  # vault_cache.vault_lists_cache_key of its first page
 # Creator 1's OF folders: (id, name, photos, videos); the granted one is empty on OF (hasMedia false).
 PICKER_FOLDERS = ((7101, "Slop picker customs", 0, 0), (7102, "Slop picker teasers", 4, 1),
                   (7103, "Slop picker vip", 2, 3))

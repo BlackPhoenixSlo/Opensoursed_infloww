@@ -35,8 +35,8 @@ import live_rev
 import of_pacing
 import proxy_health
 import proxies as proxy_registry
-from of_origin import OF_API_ORIGIN
-from of_rich_text import has_html, is_of_html, of_plain, sanitize_of_html
+from of_origin import IMPERSONATE, OF_API_ORIGIN, OF_WEB_ORIGIN
+from of_rich_text import escape_as_of_html, has_html, is_of_html, of_plain, sanitize_of_html
 from of_signer import sign
 
 # Dedicated logger so proxy/upstream errors are filterable from the rest
@@ -165,19 +165,24 @@ def _cookie_domain(domain: str | None) -> str:
     return (domain or ".onlyfans.com").lstrip(".").lower()
 
 
-def _guard_outbound(text):
+def _guard_outbound(text, *, chat=False):
     """`text` as the guard leaves it, or the guard's exception (blocked).
 
-    Markup (a formatted script, any HTML tag: of_rich_text.has_html) is read as
-    the fan reads it, once, so a banned word can neither hide behind tags nor
-    trip on a class name; it goes on unchanged and the send's own boundary
-    (`_wrap_text_as_p` / `of_text`, the Fansly shim's plain text) sanitizes it.
+    The guard reads what the fan will: a text the send's boundary reads as
+    markup is read as its plain text (`of_plain`), once, so a banned word can
+    neither hide behind tags nor trip on a class name; it goes on unchanged and
+    the send's own boundary rewrites it. Which texts that is follows the path:
+    `of_text` (the mass, queue and post bodies, the Fansly shim's plain text)
+    rewrites every `has_html` text; the chat send (`chat=True`,
+    `_wrap_text_as_p`) only OF markup, and escapes anything else whole, so the
+    fan reads bare tags (`<a href=word>x</a>`) as written and the guard reads
+    them so too.
     Block mode only: `load_banned_words` pins it, so a markup body is never
     masked."""
     guard = OUTBOUND_TEXT_GUARD.get()
     if guard is None:
         return text
-    if not has_html(text):
+    if not (is_of_html(text) if chat else has_html(text)):
         return guard(text)
     guard(of_plain(text))
     return text
@@ -243,13 +248,8 @@ def _err_kind(e: BaseException) -> str:
     return f"type={type(e).__name__} curl={code}"
 
 
-# curl_cffi impersonation profile. "chrome" picks the latest stable Chrome JA3.
-# Pin to a specific version (e.g. "chrome131") if OF starts blocking newer ones.
-IMPERSONATE = "chrome"
-
 APP_TOKEN = "33d57ade8c02dbc5a333db99ff9ae26a"   # OF web app constant
-# OF_API_ORIGIN: the ADR 0024 test seam (of_origin.py); "" = OnlyFans.
-OF_WEB_ORIGIN = OF_API_ORIGIN or "https://onlyfans.com"
+# OF_WEB_ORIGIN / OF_API_ORIGIN: of_origin.py (the ADR 0024 test seam; "" = OnlyFans).
 API_BASE = f"{OF_WEB_ORIGIN}/api2/v2"
 # OF web's chat gallery type tabs: the last segment of /chats/{chat_id}/media/<kind>.
 CHAT_MEDIA_KINDS = ("photos", "videos", "audios")
@@ -298,6 +298,7 @@ class OFDeactivatedError(OFDeniedError):
 # No relay route makes one today; this backstop keeps a future route from it.
 _DENIED_API_PATHS = ("/api2/v2/users/logout", "/api2/v2/users/delete/request", "/api2/v2/log")
 _SESSIONS_PATH = "/api2/v2/sessions"
+_LEDGER_PATH = "/payouts/transactions"   # its background pages: paced per bound proxy too (of_pacing)
 
 
 def _denied(method: str, url: str) -> str | None:
@@ -325,23 +326,15 @@ def _wrap_text_as_p(text: str) -> str:
     `<p>…</p>` wrapper. Plain-text sends to fans work without wrapping,
     but creator-to-creator sends 400 unless wrapped — match OF web's
     body exactly here. Multi-paragraph text becomes one `<p>` with
-    `<br>` separators, mirroring what the OF editor produces."""
+    `<br />` separators, mirroring what the OF editor produces."""
     if not text:
         return text
-    stripped = text.strip()
     # Already HTML (OF's rich text: a picked formatted script)? Don't
     # double-wrap; keep only OF's own tags and classes (of_rich_text).
-    if is_of_html(stripped):
+    if is_of_html(text):
         return sanitize_of_html(text)
-    # Internal newlines → <br>, then wrap the whole thing.
-    escaped = (
-        stripped
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\n", "<br />")
-    )
-    return f"<p>{escaped}</p>"
+    # Internal newlines → <br />, then wrap the whole thing (of_text's fail-closed escape is the same wrap).
+    return escape_as_of_html(text, br="<br />")
 
 
 # The release-form arrays, which OF's composer always emits together. A send
@@ -407,6 +400,10 @@ class _Transport:
     # Has a signed call with this session's rules had a 2xx from OF
     # (`signing.signed_ok_at`, see _note_signed_ok)? True on a bare client: it never stamps.
     _signed_ok: bool = True
+    # A bare client's account and transport: none (of_pacing keys a walk's page on the account).
+    account_id: str | None = None
+    proxy_url: str | None = None
+    proxy_label: str | None = None
 
     def __init__(self, session_dict: dict, *, proxies: dict | None = None,
                  proxy_label: str | None = None,
@@ -822,8 +819,12 @@ class _Transport:
                 raise
 
     def get_json(self, path_or_url: str, **kw) -> Any:
-        # Inside a background walk: the Creator's pacer and OF's 429 retried once (of_pacing).
-        return of_pacing.paced(getattr(self, "account_id", None), lambda: self._get_json(path_or_url, **kw))
+        # Inside a background walk: the Creator's pacer and OF's 429 retried once (of_pacing);
+        # a ledger page also takes its bound proxy endpoint's slot (this client's transport).
+        eg = None
+        if urlsplit(path_or_url).path.rstrip("/").endswith(_LEDGER_PATH):
+            eg = of_pacing.egress(self.proxy_url, self.proxy_label)
+        return of_pacing.paced(self.account_id, lambda: self._get_json(path_or_url, **kw), eg)
 
     def _get_json(self, path_or_url: str, **kw) -> Any:
         r = self.get(path_or_url, **kw)

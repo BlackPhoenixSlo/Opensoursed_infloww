@@ -8,20 +8,19 @@ describe("richMode: the Aa state machine", () => {
     ["Aa on: toolbar + rich editor", M(false, false), { type: "aa", formatted: false }, M(true, true)],
     ["Aa off, no formatting: textarea back", M(true, true), { type: "aa", formatted: false }, M(false, false)],
     ["Aa off, formatted: toolbar hides, editor + formatting stay (OF)", M(true, true), { type: "aa", formatted: true }, M(false, true)],
-    ["formatted script loaded: rich editor, toolbar as it was", M(false, false), { type: "loaded", formatted: true }, M(false, true)],
-    ["plain loaded, Aa off: textarea", M(false, true), { type: "loaded", formatted: false }, M(false, false)],
-    ["plain loaded, Aa on: stays rich", M(true, true), { type: "loaded", formatted: false }, M(true, true)],
+    ["formatted script loaded: rich editor, toolbar as it was", M(false, false), { type: "loaded", formatted: true, allowed: true }, M(false, true)],
+    ["plain loaded, Aa off: textarea", M(false, true), { type: "loaded", formatted: false, allowed: true }, M(false, false)],
+    ["plain loaded, Aa on: stays rich", M(true, true), { type: "loaded", formatted: false, allowed: true }, M(true, true)],
     ["edit dropping formatting: never swaps the box under the caret", M(false, true), { type: "edited", formatted: false }, M(false, true)],
     ["edit adding formatting in the textarea (paste): rich", M(false, false), { type: "edited", formatted: true }, M(false, true)],
     ["sent, Aa off: textarea back", M(false, true), { type: "sent" }, M(false, false)],
     ["sent, Aa on: stays rich", M(true, true), { type: "sent" }, M(true, true)],
   ])("%s", (_n, m, e, want) => expect(richMode(m, e)).toEqual(want));
 
-  it.each<RichModeEvent>([
-    { type: "aa", formatted: true }, { type: "loaded", formatted: true }, { type: "edited", formatted: true }, { type: "sent" },
-  ])("not allowed (Fansly): always plain, no toolbar (%o)", (e) => {
-    expect(richMode(M(true, true), e, false)).toBe(PLAIN_MODE);
-    expect(richMode(PLAIN_MODE, e, false)).toBe(PLAIN_MODE);
+  it.each<boolean>([true, false])("loaded where not allowed (Fansly): plain, no toolbar (formatted %s)", (formatted) => {
+    const e: RichModeEvent = { type: "loaded", formatted, allowed: false };
+    expect(richMode(M(true, true), e)).toBe(PLAIN_MODE);
+    expect(richMode(PLAIN_MODE, e)).toBe(PLAIN_MODE);
   });
 
   it("no change returns the same object (React bails out)", () => {

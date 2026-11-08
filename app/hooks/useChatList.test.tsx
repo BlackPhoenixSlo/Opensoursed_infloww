@@ -642,10 +642,41 @@ describe("shareChatPages: rows shared by (account, fan), not by index", () => {
 });
 
 describe("unenriched", () => {
-  it("skips a fan named in the last ENRICH_TTL_MS, per Creator", async () => {
+  it("skips a fan the enrichment named in the last ENRICH_TTL_MS, per Creator", async () => {
     const { unenriched, ENRICH_TTL_MS } = await import("./useChatList");
-    const seen = new Map([["A|1", 1000], ["A|2", 1000 - ENRICH_TTL_MS]]);
-    expect(unenriched([1, 2, 3], "A", 1000, seen)).toEqual([2, 3]);
-    expect(unenriched([1], "B", 1000, seen)).toEqual([1]);
+    const qc = new QueryClient();
+    const now = Date.parse("2026-08-25T10:00:00Z");
+    qc.setQueryData(["of-user", "A", 1], { id: 1, enrichedAt: now - 1 });
+    qc.setQueryData(["of-user", "A", 2], { id: 2, enrichedAt: now - ENRICH_TTL_MS });
+    expect(unenriched([1, 2, 3], "A", now, qc)).toEqual([2, 3]);
+    expect(unenriched([1], "B", now, qc)).toEqual([1]);
+  });
+
+  it("a name a notification seeded is still enriched; an enriched one isn't re-asked within the TTL", async () => {
+    const { enrichWithUsers } = await import("./useChatList");
+    const { seedName } = await import("@/components/toastStore");
+    const qc = new QueryClient();
+    const chats = [{ ...row(1, "2026-08-25T10:00:00Z"), __accountId: "seed-acct" }];
+    const byIds = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/fans/seed-acct/by-ids")).length;
+    seedName(qc, "seed-acct", 1, { name: "From a toast" });
+    await enrichWithUsers(chats, "seed-acct", qc);
+    expect(byIds()).toBe(1);
+    seedName(qc, "seed-acct", 1, { name: "From a toast" });
+    await enrichWithUsers(chats, "seed-acct", qc);
+    expect(byIds()).toBe(1);
+  });
+
+  it("an identity switch (the cache cleared) names every fan again", async () => {
+    const { enrichWithUsers } = await import("./useChatList");
+    const qc = new QueryClient();
+    const chats = [{ ...row(1, "2026-08-25T10:00:00Z"), __accountId: "switch-acct" }];
+    const byIds = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/fans/switch-acct/by-ids")).length;
+    await enrichWithUsers(chats, "switch-acct", qc);
+    await enrichWithUsers(chats, "switch-acct", qc);
+    expect(byIds()).toBe(1);
+    qc.clear();
+    const out = await enrichWithUsers(chats, "switch-acct", qc);
+    expect(byIds()).toBe(2);
+    expect(out[0].withUser.name).toBe("fan-1");
   });
 });

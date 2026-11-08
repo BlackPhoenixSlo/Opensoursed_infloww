@@ -2,9 +2,11 @@
  * vaultDownload — the download's I/O, no React: list what to save, pick the folder, run the queue. Every outcome
  * goes through `send` (the panel's dispatch); the state and its rules are `vaultDownloadReducer`.
  *
- * Sink: the File System Access API. `showDirectoryPicker` once, then per item `<creator>/<folder>/<id>.<ext>`
+ * Sink `folder`: the File System Access API. `showDirectoryPicker` once, then per item `<creator>/<folder>/<id>.<ext>`
  * written by `response.body.pipeTo(fileHandle.createWritable())`: nothing is held in memory, a cancelled or short
  * file is aborted (the browser drops its temp file), never left half-written.
+ * Sink `share` (phones): the same fetch, collected into a `File` (`<id>.<ext>`, its MIME by extension) kept by the
+ * caller until the user's tap hands its batch to `navigator.share` (`shareFiles`).
  *
  * Source per item (docs/spec/vault-download.md, measured 2026-11-08): direct (the signed CDN url, S3 answers CORS
  * `*`) while `sourceFor` allows it; a failed direct fetch (CloudFront's 403 carries no CORS header, so it surfaces
@@ -12,12 +14,14 @@
  * after its re-sign is a `directStrike`.
  */
 
+import { type VaultSource } from "@/hooks/vaultRefresh";
 import { relay, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
 import { resolveShareToken } from "@/lib/shareToken";
+import { buildLinksFile, type LinksFile } from "@/components/vault/vaultLinksFile";
 
 import {
-  CANCELLED, CONCURRENCY, sourceFor, toItems,
-  type Action, type DlItem, type DlMode, type DlSource, type DlState,
+  CANCELLED, CONCURRENCY, canFetchMore, mimeFor, safeName, sourceFor, toItems,
+  type Action, type DlItem, type DlMode, type DlSink, type DlSource, type DlState,
 } from "@/components/vault/vaultDownloadReducer";
 
 /** The live OF listing's pacing: one 100-item page, then this long before the next (the mirror needs none). */
@@ -27,8 +31,28 @@ const LIVE_PAGE = 100;
 
 export type Send = (a: Action) => void;
 
-export function downloadSupported(): boolean {
-  return typeof window !== "undefined" && typeof (window as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+/** Where files go here: a picked folder (desktop Chrome/Edge), the share sheet (phones: files shareable), or nowhere. */
+export function downloadSink(): DlSink | null {
+  if (typeof window === "undefined") return null;
+  if (typeof (window as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function") return "folder";
+  try {
+    const probe = new File([""], "x.jpg", { type: "image/jpeg" });
+    return navigator.canShare?.({ files: [probe] }) ? "share" : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hand `files` to the share sheet (Save to Photos / Files). Must run inside the user's tap. "dismissed" when the user
+ *  closed the sheet (AbortError): not a failure, the batch stays. */
+export async function shareFiles(files: File[]): Promise<"saved" | "dismissed"> {
+  try {
+    await navigator.share({ files });
+    return "saved";
+  } catch (e) {
+    if ((e as DOMException)?.name === "AbortError") return "dismissed";
+    throw e;
+  }
 }
 
 /** The folder picker. Null when the user closed it. */
@@ -53,9 +77,11 @@ export async function directAllowed(accountId: string): Promise<boolean> {
   }
 }
 
-/** Every media of a folder (`folderId`) or of the whole vault (null), paged through the source the grid reads. */
+/** Every media of a folder (`folderId`) or of the whole vault (null), paged through `source` (`vaultWholeSource`:
+ *  a partial mirror would list part of it). The whole vault is soft-denied (empty) to a folder-limited chatter on
+ *  both sources; the manager keeps that download off for it. */
 export async function listAll(
-  accountId: string, folderId: string | number | null, source: "mirror" | "live", signal: AbortSignal,
+  accountId: string, folderId: string | number | null, source: VaultSource, signal: AbortSignal,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<VaultMedia[]> {
   const out: VaultMedia[] = [];
@@ -102,14 +128,62 @@ async function resign(accountId: string, it: DlItem): Promise<string | null> {
   }
 }
 
-async function fileFor(root: FileSystemDirectoryHandle, creator: string, it: DlItem): Promise<FileSystemFileHandle> {
-  const c = await root.getDirectoryHandle(creator, { create: true });
-  const f = await c.getDirectoryHandle(it.folder, { create: true });
-  return f.getFileHandle(it.name, { create: true });
+/** Where one item's bytes go: `body` is counted and errors on a short read (the sink must not keep it then). */
+export type Sink = (it: DlItem, body: ReadableStream<Uint8Array>, signal: AbortSignal) => Promise<void>;
+
+/** Each item as `<creator>/<folder>/<id>.<ext>` under `root`. */
+export function folderSink(root: FileSystemDirectoryHandle, creator: () => string): Sink {
+  return async (it, body, signal) => {
+    const c = await root.getDirectoryHandle(creator(), { create: true });
+    const f = await c.getDirectoryHandle(it.folder, { create: true });
+    const fh = await f.getFileHandle(it.name, { create: true });
+    await body.pipeTo(await fh.createWritable(), { signal });
+  };
 }
 
-/** Stream `r`'s body into the file; the byte count, or throws (a short body is an error, the file is aborted). */
-async function save(r: Response, fh: FileSystemFileHandle, signal: AbortSignal, progress: (n: number) => void): Promise<number> {
+/** Each item as a `File` named `<id>.<ext>` with its MIME type, handed to `keep` (the share batches' store). */
+export function shareSink(keep: (id: number, f: File) => void): Sink {
+  return async (it, body) => {
+    const blob = await new Response(body).blob();
+    keep(it.id, new File([blob], it.name, { type: mimeFor(it.name) }));
+  };
+}
+
+/** The links file for the run's items now (vaultLinksFile.ts), links absolute to this page's origin. */
+export function linksFor(accountId: string, s: DlState, now = Date.now()): LinksFile {
+  return buildLinksFile(s.items, { origin: window.location.origin, accountId, creator: s.creator, label: s.label,
+                                   direct: s.directAllowed, now, token: resolveShareToken() });
+}
+
+/** Desktop: both links files into `<root>/<creator>/` (a folder download: its `<folder>/`), before any media.
+ *  A failure here never stops the download. */
+export async function writeLinks(root: FileSystemDirectoryHandle, dirs: string[], f: LinksFile): Promise<void> {
+  try {
+    let d = root;
+    for (const n of dirs) d = await d.getDirectoryHandle(n, { create: true });
+    for (const [name, body] of [[f.txtName, f.txt], [f.htmlName, f.html]]) {
+      const fh = await d.getFileHandle(name, { create: true });
+      await new Blob([body], { type: "text/plain" }).stream().pipeTo(await fh.createWritable());   // as the media sink
+    }
+  } catch (e) {
+    console.warn("vault download: links file not written", e);
+  }
+}
+
+/** Phone: the links files as Files for their own share (txt + html; just txt if the browser won't share html). */
+export function linksShareFiles(f: LinksFile): File[] {
+  const txt = new File([f.txt], f.txtName, { type: "text/plain" });
+  const both = [txt, new File([f.html], f.htmlName, { type: "text/html" })];
+  try {
+    if (navigator.canShare?.({ files: both })) return both;
+    return navigator.canShare?.({ files: [txt] }) ? [txt] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Count `r`'s body into the sink; the byte count, or throws (a short body is an error, the sink aborts). */
+async function save(r: Response, it: DlItem, sink: Sink, signal: AbortSignal, progress: (n: number) => void): Promise<number> {
   if (!r.body) throw new Error("empty body");
   const want = Number(r.headers.get("content-length") || 0);
   let n = 0;
@@ -127,8 +201,7 @@ async function save(r: Response, fh: FileSystemFileHandle, signal: AbortSignal, 
       if (want && n !== want) throw new Error(`short body: ${n} of ${want} bytes`);
     },
   });
-  const w = await fh.createWritable();
-  await r.body.pipeThrough(count).pipeTo(w, { signal });
+  await sink(it, r.body.pipeThrough(count, { signal }), signal);
   return n;
 }
 
@@ -144,7 +217,7 @@ async function directFetch(url: string, signal: AbortSignal): Promise<Response |
 
 export interface RunDeps {
   accountId: string;
-  root: FileSystemDirectoryHandle;
+  sink: Sink;
   send: Send;
   /** The reducer's state now (the panel keeps it in a ref alongside its dispatch). */
   get: () => DlState;
@@ -156,7 +229,6 @@ async function one(d: RunDeps, it: DlItem): Promise<void> {
   send({ type: "itemStart", id: it.id });
   const progress = (n: number) => send({ type: "itemProgress", id: it.id, bytes: n });
   try {
-    const fh = await fileFor(d.root, d.get().creator, it);
     let src: DlSource = sourceFor(d.get());
     let r: Response | null = null;
     if (src === "direct" && it.url) {
@@ -177,18 +249,30 @@ async function one(d: RunDeps, it: DlItem): Promise<void> {
         return;
       }
     }
-    const n = await save(r, fh, signal, progress);
+    const n = await save(r, it, d.sink, signal, progress);
     send({ type: "itemDone", id: it.id, source: src, bytes: n });
   } catch (e) {
     send({ type: "itemFailed", id: it.id, error: signal.aborted ? CANCELLED : (e as Error)?.message || String(e) });
   }
 }
 
-/** Download every queued item, CONCURRENCY at a time, until done or `signal` aborts. */
+/** How often a held worker (share sink, unsaved batches at SHARE_HELD_BYTES) looks again. */
+const HOLD_POLL_MS = 250;
+
+/** Download every queued item, CONCURRENCY at a time, until done or `signal` aborts. A worker waits before its next
+ *  item while `canFetchMore` says no (share sink: ~2 batches unsaved). */
 export async function runQueue(d: RunDeps): Promise<void> {
   const queue = d.get().items.filter((i) => i.status === "queued");
+  const room = async () => {
+    while (!canFetchMore(d.get()) && !d.signal.aborted) await new Promise((r) => setTimeout(r, HOLD_POLL_MS));
+  };
   const worker = async () => {
-    for (let it = queue.shift(); it && !d.signal.aborted; it = queue.shift()) await one(d, it);
+    for (;;) {
+      await room();
+      const it = queue.shift();
+      if (!it || d.signal.aborted) return;
+      await one(d, it);
+    }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 }
@@ -201,17 +285,26 @@ export interface StartArgs {
   /** selection: the ticked tiles; else listed here. */
   media?: VaultMedia[];
   folder?: { id: string | number; name: string } | null;
-  source: "mirror" | "live";
+  source: VaultSource;
 }
 
-/** One whole run: picker, direct check, listing, queue. Returns false when the user closed the picker. */
+/** One whole run: the sink (folder: the picker), direct check, listing, queue. `share` is the share sink's file
+ *  store; null = the folder sink. Returns false when the user closed the picker. */
 export async function startDownload(
-  a: StartArgs, d: Omit<RunDeps, "root">, setRoot: (r: FileSystemDirectoryHandle) => void,
+  a: StartArgs, d: Omit<RunDeps, "sink">, setSink: (s: Sink) => void, share: ((id: number, f: File) => void) | null,
 ): Promise<boolean> {
-  const root = await pickRoot();
-  if (!root) return false;
-  setRoot(root);
-  d.send({ type: "start", mode: a.mode, label: a.label, creator: a.creator, directAllowed: await directAllowed(a.accountId) });
+  let sink: Sink;
+  let root: FileSystemDirectoryHandle | null = null;
+  if (share) sink = shareSink(share);
+  else {
+    root = await pickRoot();
+    if (!root) return false;
+    const r = root;
+    sink = folderSink(r, () => d.get().creator);
+  }
+  setSink(sink);
+  d.send({ type: "start", mode: a.mode, label: a.label, creator: a.creator, sink: share ? "share" : "folder",
+           directAllowed: await directAllowed(a.accountId) });
   let media = a.media;
   if (!media) {
     try {
@@ -222,6 +315,10 @@ export async function startDownload(
     }
   }
   d.send({ type: "listed", items: toItems(media, a.folder?.name ?? null) });
-  await runQueue({ ...d, root });
+  if (root && d.get().items.length) {
+    const s = d.get();
+    await writeLinks(root, a.folder ? [s.creator, safeName(a.folder.name)] : [s.creator], linksFor(a.accountId, s));
+  }
+  await runQueue({ ...d, sink });
   return true;
 }

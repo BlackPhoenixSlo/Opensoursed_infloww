@@ -24,10 +24,11 @@ def nonempty(v) -> bool:
 # LLM tell, so when the account opts in we remove emojis IN CODE at the send
 # chokepoint. Targets the emoji unicode blocks only — NOT general punctuation, so
 # an em-dash "—" or apostrophe survives. Collapses any double space left behind.
-_EMOJI_STRIP_RE = re.compile(
-    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
-    "\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F\U0001F1E6-\U0001F1FF‍♀♂]+"
+EMOJI_CLASS = (
+    "[\U0001F000-\U0001FAFF\u231a\u231b\u2328\u23cf\u23e9-\u23f3\u23f8-\u23fa\U00002600-\U000027BF\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF\U0001F1E6-\U0001F1FF]"
 )
+_EMOJI_STRIP_RE = re.compile(rf"(?:{EMOJI_CLASS}|[\ufe00-\ufe0f\u200d])+")
 _EMOJI_WS_RE = re.compile(r"[ \t]{2,}")
 
 

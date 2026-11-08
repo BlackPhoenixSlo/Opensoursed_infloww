@@ -33,6 +33,12 @@ export interface FanVaultHistoryResp {
   by_media: Record<string, FanVaultEntry>;
 }
 
+/** A history answer (the read's, or the backfill's `history`) as the cache holds it: `by_media` always set, so
+ *  every reader can index `by_media[id]` (a reply without it used to crash the whole Thread). */
+export function normalizeVaultHistory(resp: Partial<FanVaultHistoryResp> | null | undefined): FanVaultHistoryResp {
+  return { ...resp, by_media: resp?.by_media ?? {} };
+}
+
 export function useFanVaultHistory(
   accountId: string | null,
   fanId: FanId | null,
@@ -46,10 +52,7 @@ export function useFanVaultHistory(
         account_id: accountId!,
         fan_id: String(fanId),
       });
-      const resp = await relay.get<Partial<FanVaultHistoryResp> | null>(`/admin/vault/fan-history?${qs.toString()}`);
-      // Normalised once here so every reader can index `by_media[id]`: a
-      // reply without it used to crash the whole Thread.
-      return { ...resp, by_media: resp?.by_media ?? {} };
+      return normalizeVaultHistory(await relay.get<Partial<FanVaultHistoryResp> | null>(`/admin/vault/fan-history?${qs.toString()}`));
     },
     staleTime: 60_000,
     refetchOnWindowFocus: false,

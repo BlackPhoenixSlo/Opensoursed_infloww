@@ -23,11 +23,11 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
-import { isDrmOnlyVideo, progressiveVideoSrc } from "@/components/chat/VaultPicker";
+import { gifClipSrc, isDrmOnlyVideo, progressiveVideoSrc } from "@/components/chat/VaultPicker";
+import { releaseVideo } from "@/components/chat/VaultGifLoop";
 import ImageLightbox from "@/components/vault/ImageLightbox";
 import { useStillLadder } from "@/hooks/useStillLadder";
-import { mirrorFullSrc } from "@/hooks/useVaultCache";
-import { proxyImage } from "@/lib/mediaUrl";
+import { mirrorFullSrc, proxyImage } from "@/lib/mediaUrl";
 import { type VaultMedia } from "@/lib/relay";
 
 /** Held past the first playable frame, so the player does not appear mid-stutter. */
@@ -93,19 +93,25 @@ function VaultInlineVideo({ src, poster }: { src: string; poster?: string }) {
 }
 
 /** A gif (OF's short .mp4) in the details drawer: it loops, muted, over its
- *  still as poster; the still alone if the clip fails. Keyed on the source by
- *  its caller, so another selection starts afresh. */
-function VaultInlineGif({ src, poster, onPosterError, fallback }: {
-  src: string; poster: string | null; onPosterError: () => void; fallback: ReactNode;
+ *  still as poster; `fallback` (the still view) if the clip fails. Keyed on the
+ *  source by its caller, so another selection starts afresh; closing the drawer
+ *  or picking another lets go of the clip's decoder. */
+function VaultInlineGif({ src, poster, fallback }: {
+  src: string; poster: string | null; fallback: ReactNode;
 }) {
   const [failed, setFailed] = useState(false);
-  if (failed) {
-    if (!poster) return fallback;
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={poster} alt="" onError={onPosterError} className="w-full max-h-[30vh] object-contain" />;
-  }
+  const ref = useRef<HTMLVideoElement | null>(null);
+  // The src goes back on in the body: StrictMode's dev double-mount runs the release once and React won't re-set
+  // an unchanged prop, so the drawer would show only the poster.
+  useEffect(() => {
+    const el = ref.current;
+    if (el && !el.getAttribute("src")) el.setAttribute("src", src);
+    return () => { if (el) releaseVideo(el); };
+  }, [src]);
+  if (failed) return fallback;
   return (
     <video
+      ref={ref}
       data-gif-loop
       src={src}
       poster={poster || undefined}
@@ -159,7 +165,7 @@ export default function VaultPreviewMedia({
   const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
   const drmOnly = isVideo && isDrmOnlyVideo(m);
   const playable = isVideo && !!rawSrc && !drmOnly;
-  const gifSrc = m.type === "gif" ? progressiveVideoSrc(m) : null;
+  const gifSrc = gifClipSrc(m);
   const idNum = Number(m.id);
   const [zoom, setZoom] = useState(false);
 
@@ -197,11 +203,29 @@ export default function VaultPreviewMedia({
     </div>
   );
 
+  const stillView = still.src ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={still.src}
+      alt=""
+      aria-hidden={isVideo}
+      onError={still.onError}
+      onClick={isVideo ? undefined : () => setZoom(true)}
+      title={isVideo ? undefined : "Click to view full size"}
+      className={`w-full max-h-[30vh] object-contain${isVideo ? "" : " cursor-zoom-in"}`}
+    />
+  ) : (
+    // Say so. A blank black box is how a rendering failure gets read as
+    // a missing upload, and then re-uploaded — onto OnlyFans' byte
+    // dedupe, which returns the same id and changes nothing.
+    noPreview
+  );
+
   return (
     <div className="relative w-full rounded-lg overflow-hidden bg-black">
       {gifSrc ? (
         <VaultInlineGif key={gifSrc} src={proxyImage(gifSrc, accountId, m.id)} poster={still.src}
-          onPosterError={still.onError} fallback={noPreview} />
+          fallback={stillView} />
       ) : playable ? (
         <VaultInlineVideo
           key={rawSrc}
@@ -212,23 +236,7 @@ export default function VaultPreviewMedia({
         />
       ) : (
         <>
-          {still.src ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={still.src}
-              alt=""
-              aria-hidden={isVideo}
-              onError={still.onError}
-              onClick={isVideo ? undefined : () => setZoom(true)}
-              title={isVideo ? undefined : "Click to view full size"}
-              className={`w-full max-h-[30vh] object-contain${isVideo ? "" : " cursor-zoom-in"}`}
-            />
-          ) : (
-            // Say so. A blank black box is how a rendering failure gets read as
-            // a missing upload, and then re-uploaded — onto OnlyFans' byte
-            // dedupe, which returns the same id and changes nothing.
-            noPreview
-          )}
+          {stillView}
           {isVideo && (
             <button
               type="button"

@@ -177,7 +177,7 @@ def migrate_legacy() -> dict[str, Any]:
                 if newest is None or sp.stat().st_mtime > newest[0].stat().st_mtime:
                     newest = (sp, adir.name)
         if newest:
-            ACTIVE_FILE.write_text(json.dumps({"active_account_id": newest[1]}, indent=2))
+            _write_active_unlocked(newest[1])
 
         MIGRATED_MARKER.write_text(_utc_now())
         return {"migrated": True, "moved": moved, "active": newest[1] if newest else None}
@@ -258,14 +258,9 @@ def set_role(account_id: str, role: str | None) -> dict[str, Any]:
     `upsert_account`, which keeps the other fields."""
     if role is not None and role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
-    meta = upsert_account(account_id, role=role or "")
-    # A watcher is never the default account: a default Creator flagged as one
-    # leaves the pointer (get_active_account_id then falls back to a Creator).
-    if role == ROLE_WATCHER:
-        with _lock:
-            if _read_active_unlocked() == account_id:
-                ACTIVE_FILE.write_text(json.dumps({"active_account_id": None}, indent=2))
-    return meta
+    # A pointer left at a Creator flagged watcher here is skipped where it is read
+    # (get_active_account_id: never a watcher, it falls back to a Creator).
+    return upsert_account(account_id, role=role or "")
 
 
 def list_accounts(include_watchers: bool = False) -> list[dict[str, Any]]:
@@ -434,9 +429,8 @@ def delete_account(account_id: str) -> bool:
         if not adir.is_dir():
             return False
         shutil.rmtree(adir)
-        active = _read_active_unlocked()
-        if active == account_id:
-            ACTIVE_FILE.write_text(json.dumps({"active_account_id": None}, indent=2))
+        if _read_active_unlocked() == account_id:
+            _write_active_unlocked(None)
         return True
 
 
@@ -449,6 +443,11 @@ def _read_active_unlocked() -> str | None:
         return json.loads(ACTIVE_FILE.read_text()).get("active_account_id")
     except Exception:
         return None
+
+
+def _write_active_unlocked(account_id: str | None) -> None:
+    """The one pointer write (caller holds `_lock`)."""
+    ACTIVE_FILE.write_text(json.dumps({"active_account_id": account_id}, indent=2))
 
 
 def get_active_account_id() -> str | None:
@@ -478,10 +477,16 @@ def get_active_account_id() -> str | None:
     return fallback
 
 
-def set_active_account_id(account_id: str | None) -> None:
+def set_active_account_id(account_id: str | None) -> bool:
+    """Point the default at `account_id` (None clears it). A watcher (a fan
+    account) is never the default (a route without X-Account-Id would act as
+    it): refused, nothing written, False."""
+    if account_id is not None and is_watcher(account_id):
+        return False
     _ensure_dirs()
     with _lock:
-        ACTIVE_FILE.write_text(json.dumps({"active_account_id": account_id}, indent=2))
+        _write_active_unlocked(account_id)
+    return True
 
 
 # ─── Session pointer ───────────────────────────────────────────

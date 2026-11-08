@@ -8,6 +8,8 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_retry_after_table:   OFAPIError-like 429 response; _proxy 502 detail with
                             upstream_status 429; anything else -> None.
   case_outside_walk_plain:  no walk -> call() as is: no pause, a 429 raises at once.
+  case_bare_client_unpaced: inside a walk, a page with no account (bare client) goes out at
+                            once, never under a shared "None" pacer key.
   case_pacer_shared:        two walks (different kinds) on one Creator: every GET
                             >= PAGE_GAP_S after the previous; other Creator unpaced.
   case_retry_once:          a 429 retries the SAME call once; a second 429 raises.
@@ -18,6 +20,17 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_prewarm_busy_table:  prewarm_all walks idle Creators in order and skips one with a
                             person's read in the last USER_WINDOW_S (no waiting); the next
                             pass walks it once idle.
+  case_egress_key_table:    the endpoint key: scheme://host:port, no credentials, case-folded;
+                            DIRECT; the log label never a host, port or credential.
+  case_proxy_slot_shared:   ledger pages of two Creators on one endpoint: every departure on it
+                            >= PAGE_GAP_S apart; a third Creator on another endpoint unpaced by them.
+  case_proxy_retry_shares_slot: a 429's retry takes the endpoint slot too (spaced from the other
+                            Creator's pages), still exactly one retry; its log names the label.
+  case_link_stats_per_creator: through OFClient.get_json, two Creators on one proxy: link-stats
+                            pages leave together (per Creator only), ledger pages are spaced.
+  case_failover_old_new_client: ADR-0030 move through real OFClient.from_session_file + get_json:
+                            the old client keeps the old endpoint's slot, the new one shares the
+                            new endpoint's slot with the Creator already there.
 
 Run: ./venv/bin/python service/tests/test_of_pacing.py   (exit 0 = pass)
 """
@@ -267,6 +280,213 @@ def case_prewarm_busy_table():
         for k, v in real.items():
             setattr(link_metrics, k, v)
         link_metrics.account_registry.list_accounts = real_list
+
+
+E1 = ("socks5://u:pw@10.0.0.1:1080", "pool-a")
+E2 = ("socks5://u:pw@10.0.0.2:1080", "pool-b")
+
+
+def _spaced(ts: list[float], gap: float) -> bool:
+    ts = sorted(ts)
+    return all(b - a >= gap - 0.01 for a, b in zip(ts, ts[1:]))
+
+
+def case_egress_key_table():
+    for url, label, key, lb in [
+        (None, None, "direct", "direct"),
+        ("", "x", "direct", "direct"),
+        ("http://user:secret@Proxy.Example.com:8080", "hu-1", "http://proxy.example.com:8080", "hu-1"),
+        ("http://other:pw2@proxy.example.com:8080/", "hu-1", "http://proxy.example.com:8080", "hu-1"),
+        ("socks5://127.0.0.1:9050", "infloww-0a1b2c3d", "socks5://127.0.0.1:9050", "infloww-0a1b2c3d"),
+        ("http://u:p@1.2.3.4:3128", "1.2.3.4:3128", "http://1.2.3.4:3128", None),
+        ("http://u:p@1.2.3.4:3128", None, "http://1.2.3.4:3128", None),
+        ("http://u:p@h.example.com:1", "bad label;rm", "http://h.example.com:1", "badlabelrm"),
+    ]:
+        k, got = of_pacing.egress(url, label)
+        assert k == key, (url, k)
+        assert "secret" not in k and "pw" not in k and "user" not in k
+        if lb is None:
+            assert got.startswith("p-") and len(got) == 10 and "1.2.3.4" not in got, got
+        else:
+            assert got == lb, (url, label, got)
+
+
+def _ledger_walks(plan, pages, fail=None):
+    """plan: {account: egress}; each walks `pages` ledger pages at once. `fail`: account whose
+    first page OF answers 429 once. Every departure: (account, t)."""
+    sent: list[tuple[str, float]] = []
+    failed = set()
+
+    def get(aid):
+        sent.append((aid, time.monotonic()))
+        if aid == fail and aid not in failed:
+            failed.add(aid)
+            raise _E429()
+        return []
+
+    async def job(aid, eg):
+        for _ in range(pages):
+            await asyncio.to_thread(of_pacing.paced, aid, lambda: get(aid), eg)
+
+    async def main():
+        await asyncio.gather(*(of_pacing.walk(a, "transactions", lambda a=a, eg=eg: job(a, eg))
+                               for a, eg in plan.items()))
+    asyncio.run(main())
+    return sent
+
+
+def case_proxy_slot_shared():
+    gap = 0.08
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+    e1, e2 = of_pacing.egress(*E1), of_pacing.egress(*E2)
+    sent = _ledger_walks({"a1": e1, "a2": e1, "b1": e2}, 4)
+    on1 = [t for a, t in sent if a in ("a1", "a2")]
+    on2 = [t for a, t in sent if a == "b1"]
+    assert len(on1) == 8 and _spaced(on1, gap), sorted(on1)
+    assert len(on2) == 4 and _spaced(on2, gap)
+    assert min(on2) - min(on1) < gap / 2, "another endpoint must not wait on E1's slot"
+    span1, span2 = max(on1) - min(on1), max(on2) - min(on2)
+    assert span1 >= 7 * gap - 0.02 and span2 < 5 * gap, (span1, span2)
+
+
+def case_proxy_retry_shares_slot():
+    import logging
+    gap = 0.08
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0, RETRY_MAX_S=0.01, RETRY_DEFAULT_S=0.01)
+    e1 = of_pacing.egress(*E1)
+    lines: list[str] = []
+
+    class H(logging.Handler):
+        def emit(self, r):
+            lines.append(r.getMessage())
+    h = H()
+    of_pacing.log.addHandler(h)
+    of_pacing.log.setLevel(logging.INFO)
+    try:
+        sent = _ledger_walks({"a1": e1, "a2": e1}, 3, fail="a1")
+    finally:
+        of_pacing.log.removeHandler(h)
+    assert sum(1 for a, _ in sent if a == "a1") == 4 and sum(1 for a, _ in sent if a == "a2") == 3, sent
+    assert _spaced([t for _, t in sent], gap), "the retry takes the endpoint slot too"
+    retry = [x for x in lines if x.startswith("bg_walk_429_retry")]
+    assert len(retry) == 1 and "account=a1" in retry[0] and "proxy=pool-a" in retry[0], retry
+    assert "10.0.0.1" not in retry[0] and "pw" not in retry[0] and "1080" not in retry[0], retry
+
+
+_SESSION = {"headers": {"user_id": "0", "x_bc": "bc", "x_of_rev": "rev", "user_agent": "ua"},
+            "signing": {"rules": {"static_param": "s", "start": "1", "end": "2",
+                                  "checksum_indexes": [1], "checksum_constant": 1}},
+            "cookies": []}
+
+
+def _client(aid, url, label):
+    from of_client import OFClient
+    sess = {**_SESSION, "headers": {**_SESSION["headers"], "user_id": aid}}
+    c = OFClient(sess, proxies={"http": url, "https": url}, proxy_label=label)
+    return c
+
+
+def _record(c, sent, tag):
+    c._get_json = lambda path, **kw: sent.append((tag, path.rsplit("/", 1)[-1], time.monotonic())) or []
+    return c
+
+
+def _walk_gets(jobs, pages):
+    """jobs: [(account, client, url)] each its own walk, `pages` GETs at once."""
+    async def job(c, url):
+        for _ in range(pages):
+            await asyncio.to_thread(c.get_json, url)
+
+    async def main():
+        await asyncio.gather(*(of_pacing.walk(a, "transactions", lambda c=c, u=u: job(c, u)) for a, c, u in jobs))
+    asyncio.run(main())
+
+
+def case_link_stats_per_creator():
+    gap = 0.08
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+    sent: list = []
+    a1, a2 = _record(_client("a1", *E1), sent, "a1"), _record(_client("a2", *E1), sent, "a2")
+    stats = "https://onlyfans.com/api2/v2/trial-links/stats"
+    _walk_gets([("a1", a1, stats), ("a2", a2, stats)], 3)
+    t1 = [t for tag, _, t in sent if tag == "a1"]
+    t2 = [t for tag, _, t in sent if tag == "a2"]
+    assert _spaced(t1, gap) and _spaced(t2, gap), "each Creator keeps its own spacing"
+    assert abs(min(t1) - min(t2)) < gap / 2, "link-stats on one proxy: per Creator only"
+    sent.clear()
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+    ledger = "https://onlyfans.com/api2/v2/payouts/transactions?limit=100"
+    _walk_gets([("a1", a1, ledger), ("a2", a2, ledger)], 3)
+    assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "ledger pages share the endpoint"
+    sent.clear()
+    t0 = time.monotonic()
+    for _ in range(3):   # outside a walk (a person's read): never paced
+        a1.get_json(ledger)
+    assert time.monotonic() - t0 < gap and len(sent) == 3
+
+
+def case_failover_old_new_client():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    import accounts as account_registry
+    import proxies as proxy_registry
+    from of_client import OFClient
+    gap = 0.08
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+    tmp = Path(tempfile.mkdtemp(prefix="of_pacing_failover_"))
+    real_path, real_latest = proxy_registry.REGISTRY_PATH, account_registry.latest_session_path
+    proxy_registry.REGISTRY_PATH = tmp / "proxies.json"
+    proxy_registry._last_good_text = None
+
+    def session(aid):
+        d = tmp / "sessions" / "accounts" / aid
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "session_1.json"
+        p.write_text(json.dumps({**_SESSION, "headers": {**_SESSION["headers"], "user_id": aid}}))
+        return p
+
+    def reg(on_a, on_b):
+        proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
+            {"label": "pool-a", "scheme": "socks5", "host": "10.0.0.1", "port": 1080, "username": "u",
+             "password": "pw", "assigned_account_ids": on_a},
+            {"label": "pool-b", "scheme": "socks5", "host": "10.0.0.2", "port": 1080, "username": "u",
+             "password": "pw", "assigned_account_ids": on_b}]}))
+    account_registry.latest_session_path = session
+    try:
+        reg(["x"], ["y"])
+        sent: list = []
+        old = _record(OFClient.from_account("x"), sent, "old")
+        reg([], ["x", "y"])   # the move: one registry write; the old client is still out
+        new = _record(OFClient.from_account("x"), sent, "new")
+        y = _record(OFClient.from_account("y"), sent, "y")
+        assert old.proxy_label == "pool-a" and new.proxy_label == "pool-b", (old.proxy_label, new.proxy_label)
+        ledger = "https://onlyfans.com/api2/v2/payouts/transactions?limit=100"
+        _walk_gets([("y", y, ledger), ("x", old, ledger)], 3)
+        ty = [t for tag, _, t in sent if tag == "y"]
+        to = [t for tag, _, t in sent if tag == "old"]
+        assert _spaced(ty, gap) and _spaced(to, gap)
+        assert abs(min(ty) - min(to)) < gap / 2, "the old client keeps pool-a's slot, not pool-b's"
+        sent.clear()
+        _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+        _walk_gets([("y", y, ledger), ("x", new, ledger)], 3)
+        assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "the new client shares pool-b's slot"
+    finally:
+        proxy_registry.REGISTRY_PATH, account_registry.latest_session_path = real_path, real_latest
+        proxy_registry._last_good_text = None
+
+
+def case_bare_client_unpaced():
+    _knobs(PAGE_GAP_S=0.2, JITTER_S=0.0)
+    sent: list[float] = []
+
+    async def job():
+        for _ in range(3):
+            await asyncio.to_thread(of_pacing.paced, None, lambda: sent.append(time.monotonic()))
+    asyncio.run(of_pacing.walk("a1", "k", job))
+    assert len(sent) == 3 and sent[-1] - sent[0] < 0.2, sent
+    assert not of_pacing._next_at, of_pacing._next_at
 
 
 try:

@@ -16,7 +16,7 @@
  * /help-center page (HelpCenterPage.tsx) shows the same conversation.
  * `AssistantWidget` is the gate: the corner launcher and the docked panel,
  * hidden on /help-center, where the page is the open panel. `AssistantPanel`
- * is presentation plus the draft textarea, in a `dock` or a `page` variant.
+ * is presentation plus the draft textarea, in a `dock`, `page` or `sheet` variant.
  *
  * LOOKS AND SITS LIKE INFLOWW'S OWN INTERCOM MESSENGER: a round black
  * launcher in the bottom-right corner, and above it a light panel (always
@@ -35,8 +35,8 @@
  *
  * Deliberately thin: no streaming, no feedback buttons. Earlier sessions'
  * turns come back from the server (GET /admin/assistant/history, once per page
- * load, on the first open) and render under "Earlier"; each ask carries the
- * last 3 answered turns as `history` (assistantReducer `historyForAsk`) so a
+ * load, on the first open) and render under "Earlier". The ask carries no
+ * history: the server adds the asker's own recent turns to the prompt, so a
  * bare "yes" can take up the last answer's offer.
  *
  * ALL-MODELS SCOPE: the product's default scope is "all models", which used to
@@ -75,17 +75,18 @@ import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { BRAND_NAME } from "@/lib/brand";
 import {
-  assistantReducer, groupByDay, HISTORY_LIMIT, historyForAsk, historyFromRows, initialAssistantState,
+  assistantReducer, groupByDay, HISTORY_LIMIT, historyFromRows, initialAssistantState,
   settledFrom, settledFromError, type AskResponse, type AssistantCore, type HistoryRow, type Turn,
 } from "./assistantReducer";
-import { useSheetViewport } from "./useSheetViewport";
+import { useBodyScrollLock } from "./useBodyScrollLock";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
 } from "./launcherDockReducer";
 
 export type { Turn } from "./assistantReducer";
 
-/** Open/closed survives a reload; the conversation does not. */
+/** Open/closed survives a reload. (The conversation does too, from the server:
+ *  it comes back under "Earlier".) */
 const OPEN_KEY = "chatterly:assistant_open";
 /** Where the phone launcher was dropped / tucked (launcherDockReducer.ts).
  *  v2: the default became tucked-left; v1 spots (often an accidental drag,
@@ -108,9 +109,8 @@ const NO_ACCOUNT_HINT =
 
 // ── The provider ───────────────────────────────────────────────────
 
-/** The reducer's fields (assistantReducer.ts; `onHelpPage` and the history
- *  load status stay inside) plus the provider's own. */
-interface AssistantState extends Omit<AssistantCore, "onHelpPage" | "historyStatus"> {
+/** The reducer fields surfaces read (assistantReducer.ts) plus the provider's own. */
+interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "turns" | "unread" | "history"> {
   toggle: () => void;
   ask: (question: string) => void;
   accountId: string | null;
@@ -133,7 +133,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // must not either — read it in an effect and paint nothing until then.
   // hydrated / open / turns / unread move together: assistantReducer.ts.
   const [state, dispatch] = useReducer(assistantReducer, initialAssistantState);
-  const { hydrated, open, history, turns } = state;
+  const { hydrated, open, history, turns, unread } = state;
   const pathname = usePathname();
   // A reply is "read" if the dock is open or the help page is on screen; the
   // reducer holds both and reads them when the answer lands.
@@ -184,41 +184,38 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   // Earlier sessions' turns: once per page load, the first time a surface
   // shows the conversation. A failed read leaves it idle for the next open.
+  // History is the asker's own across every account (the session decides),
+  // so the read carries no account or employee header.
   const wantHistory = hydrated && (open || state.onHelpPage) && state.historyStatus === "idle";
   useEffect(() => {
     if (!wantHistory) return;
     dispatch({ type: "history_requested" });
-    relay.get<{ turns?: HistoryRow[] }>(`/admin/assistant/history?limit=${HISTORY_LIMIT}`, { accountId: scopedId, employeeId })
+    relay.get<{ turns: HistoryRow[] }>(`/admin/assistant/history?limit=${HISTORY_LIMIT}`)
       .then((body) => dispatch({ type: "history_loaded", turns: historyFromRows(body) }))
       .catch(() => dispatch({ type: "history_failed" }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wantHistory]);
 
   const ask = useCallback(async (question: string) => {
     const id = nextId.current++;
-    const prior = historyForAsk({ history, turns });
     dispatch({ type: "asked", id, question });
     try {
       const r = await relay.post<AskResponse>(
         "/admin/assistant/ask",
         // No `role` — the server derives who is asking from the session, and a
-        // role read out of this body would be client-supplied theater.
+        // role read out of this body would be client-supplied theater. No
+        // history either: the server reads the asker's own previous turns.
         // No account connected yet → no `account_id`: a manual-only answer.
-        // Previous turns ride along only when there are any.
-        { ...(accountId ? { question, account_id: accountId } : { question }), ...(prior.length ? { history: prior } : {}) },
+        accountId ? { question, account_id: accountId } : { question },
         { accountId, employeeId },
       );
       dispatch(settledFrom(id, r));
     } catch (e) {
       dispatch(settledFromError(id, e));
     }
-  }, [accountId, employeeId, history, turns]);
+  }, [accountId, employeeId]);
 
-  // `onHelpPage` / `historyStatus` stay inside the reducer: drop them from the context value at runtime too.
-  const { onHelpPage: _onHelpPage, historyStatus: _historyStatus, ...core } = state;
-  void _onHelpPage; void _historyStatus;
   const value: AssistantState = {
-    ...core, toggle, ask, accountId, accounts,
+    hydrated, open, turns, unread, history, toggle, ask, accountId, accounts,
     scoped: scopedId !== null, setPicked, userName,
   };
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
@@ -259,11 +256,10 @@ export function AssistantWidget() {
       <button
         type="button"
         onClick={a.toggle}
-        // Desktop-only, same as the MoneyRail dock: at phone widths a fixed
-        // bottom corner sits on top of the chat composer.
+        // Desktop-only (the `phone` gate above), same as the MoneyRail dock: at
+        // phone widths a fixed bottom corner sits on top of the chat composer.
         className={cn(
-          "fixed bottom-5 right-5 z-40 hidden place-items-center",
-          onMessagesPro ? "lg:grid" : "md:grid",
+          "fixed bottom-5 right-5 z-40 grid place-items-center",
           "h-12 w-12 rounded-full bg-black text-white",
           "shadow-[0_4px_16px_rgba(0,0,0,0.35)] transition-transform hover:scale-105",
         )}
@@ -384,15 +380,57 @@ function LauncherIcon() {
 // ── The panel ──────────────────────────────────────────────────────
 
 /** The answer renderer (markdown + tab links, with every page's tab table behind it): out of the shell's first load,
- *  fetched when a panel opens. */
+ *  fetched when a panel opens. Plain text stands in until it lands (or if it never does). */
 const answerText = lazyModule(() => import("./AnswerText"));
+
+/** Everything that differs between the three panel variants. */
+const VARIANT = {
+  dock: {
+    frame: cn(
+      "fixed bottom-[84px] right-5 z-40",
+      "w-[400px] h-[min(704px,calc(100dvh-104px))] rounded-2xl",
+      "shadow-[0_8px_40px_rgba(0,0,0,0.35)]",
+    ),
+    column: "",
+    composerPad: "",
+    inputText: "text-[14px]",
+    earlierOpen: true,
+    // The dock sits beside the page it links to: it stays open.
+    closeOnNavigate: false,
+    lockPage: false,
+  },
+  page: {
+    frame: "h-chat min-h-0 w-full",
+    // The page spans the shell panel; its content keeps the messenger's measure.
+    column: "mx-auto w-full max-w-[720px]",
+    composerPad: "",
+    inputText: "text-[14px]",
+    earlierOpen: true,
+    closeOnNavigate: false,
+    lockPage: false,
+  },
+  sheet: {
+    // Pinned to the visual viewport (`--vvt` / `--vvh`, app/layout.tsx).
+    frame: "fixed inset-x-0 top-[var(--vvt,0px)] z-50 h-[var(--vvh,100dvh)] w-full",
+    column: "",
+    composerPad: "pb-[max(1rem,env(safe-area-inset-bottom))]",
+    // 16px on the phone: iOS zooms the page into any smaller input.
+    inputText: "text-[16px]",
+    // Collapsed, so earlier turns never bury the composer.
+    earlierOpen: false,
+    // A link tapped in the full-screen sheet closes it, or the page it opened
+    // stays hidden under the sheet.
+    closeOnNavigate: true,
+    lockPage: true,
+  },
+} as const;
 
 /** The messenger's body. `dock`: Intercom's 400px panel above the launcher.
  *  `page`: the same content filling /help-center's white frame (Infloww's
  *  HelpPage: full bleed, no page header), in a centred 720px column, with no
  *  close button (the sidebar is the way out). `sheet`: the phone's full-screen
  *  messenger, pinned to the visual viewport over a locked body
- *  (useSheetViewport) so the keyboard never covers its composer nor scrolls
+ *  (useBodyScrollLock) so the keyboard never covers its composer nor scrolls
  *  the page out from under it. Earlier sessions' turns sit above this one's
  *  under an "Earlier" toggle, collapsed on the sheet so they never bury the
  *  composer. */
@@ -412,15 +450,14 @@ export function AssistantPanel({
   // `settled` (assistantReducer) matches answers to turns by id, never by order.
   const canSend = draft.trim().length > 0;
   const empty = turns.length === 0;
-  const page = variant === "page";
-  const sheet = variant === "sheet";
-  const sheetStyle = useSheetViewport(sheet);
-  const [earlierOpen, setEarlierOpen] = useState(!sheet);
-  // A link tapped in the full-screen sheet closes it, or the page it opened
-  // stays hidden under the sheet. The dock sits beside the page: stays open.
-  const leave = sheet ? onClose : undefined;
-  // The page spans the shell panel; its content keeps the messenger's measure.
-  const column = page ? "mx-auto w-full max-w-[720px]" : "";
+  const v = VARIANT[variant];
+  useBodyScrollLock(v.lockPage);
+  const [earlierOpen, setEarlierOpen] = useState<boolean>(v.earlierOpen);
+  const leave = v.closeOnNavigate ? onClose : undefined;
+  const column = v.column;
+  const text = (body: string, muted = false) => answer
+    ? <answer.AnswerText text={body} muted={muted} onNavigate={leave} />
+    : <span className="whitespace-pre-wrap">{body}</span>;
 
   // Follow the newest row — both when a question lands and when its answer
   // replaces the "thinking…" line (which is usually the taller of the two).
@@ -457,9 +494,10 @@ export function AssistantPanel({
           )}
         >
           {/* The answer is markdown (the manual is), and the tab names in
-              it are real destinations — AnswerText renders both. No
-              `whitespace-pre-wrap` here: it owns its own block layout. */}
-          {answer && <answer.AnswerText text={t.answer} muted={!!t.error} onNavigate={leave} />}
+              it are real destinations — AnswerText renders both with its own
+              block layout; until it loads, `text` falls back to pre-wrapped
+              plain text. */}
+          {text(t.answer, !!t.error)}
         </div>
       )}
     </div>
@@ -468,19 +506,7 @@ export function AssistantPanel({
   return (
     <div
       data-look="messenger"
-      style={sheetStyle}
-      className={cn(
-        "flex flex-col bg-panel text-fg overflow-hidden",
-        page
-          ? "h-chat min-h-0 w-full"
-          : sheet
-          ? "fixed inset-x-0 top-0 z-50 h-[var(--vvh,100dvh)] w-full"
-          : cn(
-              "fixed bottom-[84px] right-5 z-40 hidden md:flex",
-              "w-[400px] h-[min(704px,calc(100dvh-104px))] rounded-2xl",
-              "shadow-[0_8px_40px_rgba(0,0,0,0.35)]",
-            ),
-      )}
+      className={cn("flex flex-col bg-panel text-fg overflow-hidden", v.frame)}
     >
       {/* Dark header fading into the light body, as Infloww's messenger. */}
       {/* Home: dark (#242424 -> #2d2d2d) down past the greeting, fading to white behind the first card,
@@ -567,13 +593,13 @@ export function AssistantPanel({
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
       <div className="shrink-0 border-t border-[#ededed] bg-white">
-        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", sheet && "pb-[max(1rem,env(safe-area-inset-bottom))]", column)}>
+        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", v.composerPad, column)}>
           {/* No live account at all (none connected yet, or the roster has
               not loaded): the server answers from the manual alone, and the
               one thing worth pointing at is where to connect one. */}
           {!accountId && (
             <div className="px-1 text-[11px] leading-4 text-muted">
-              {answer && <answer.AnswerText text={NO_ACCOUNT_HINT} onNavigate={leave} />}
+              {text(NO_ACCOUNT_HINT)}
             </div>
           )}
           {/* In all-models scope nothing on screen names an account, but the
@@ -612,10 +638,9 @@ export function AssistantPanel({
               placeholder="Ask a question…"
               title="Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"
               rows={1}
-              // 16px on the phone: iOS zooms the page into any smaller input.
               className={cn(
                 "flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]",
-                sheet ? "text-[16px]" : "text-[14px]",
+                v.inputText,
               )}
             />
             {/* Always "Ask" — the per-turn "thinking…" row shows progress, and

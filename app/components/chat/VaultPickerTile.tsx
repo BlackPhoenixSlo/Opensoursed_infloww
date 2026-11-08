@@ -11,11 +11,10 @@ import { type MouseEvent } from "react";
 import { type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { SCRUB_FRAMES, type useHoverPreview } from "@/hooks/useHoverPreview";
 import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
-import { vaultTileThumb } from "@/hooks/useVaultCache";
 import { type VaultMediaStat } from "@/hooks/useVaultMediaStats";
 import { type FanId } from "@/lib/fanId";
 import { fmtDuration } from "@/lib/format";
-import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
+import { mirrorPosterSrc, proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
 import { type VaultMedia } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { notWiredTitle } from "./NotWired";
@@ -30,7 +29,7 @@ import { type usePhotoHover } from "./vaultPickerSelection";
 import { statsLabel } from "./vaultPickerStats";
 import { tilePreview } from "./vaultTilePreview";
 import { describeTile, pillText, resolveStatus, STATUS_DOT_CLASS, STATUS_RING_CLASS } from "./vaultTileStatus";
-import { isDrmOnlyVideo, progressiveVideoSrc, videoPosterFrames } from "./VaultVideoPreview";
+import { gifClipSrc, isDrmOnlyVideo, progressiveVideoSrc, videoPosterFrames } from "./VaultVideoPreview";
 
 export const TILE_HINT = "Click to select · double-click to attach";
 
@@ -97,16 +96,14 @@ export function VaultPickerTile({
   // Permanent cached thumb on the mirror path, proxied OF url on the
   // live one, "" for a media with no picture at all (a voice note) —
   // in which case the `{m.type}` placeholder below renders; so does a broken one waiting for the picker's reload.
-  const base = vaultTileThumb(m, accountId);
-  const thumb = thumbs.thumbFor(m.id, base);
-  const onThumbFail = () => thumbs.onBroken(m.id, thumb);
-  // The playable mp4 — null for DRM-only videos. We do NOT fall
-  // back to files.preview.url here: that's a static poster JPEG,
-  // and feeding it to <video>/`/img/scrub` is exactly what made
-  // DRM items fail ("Couldn't load" + 502 storyboard build).
+  const thumb = thumbs.tile(m);
+  // A video's playable mp4 — null for DRM-only videos and for anything
+  // but a video. We do NOT fall back to files.preview.url here: that's a
+  // static poster JPEG, and feeding it to <video>/`/img/scrub` is exactly
+  // what made DRM items fail ("Couldn't load" + 502 storyboard build).
   const rawVideoSrc = progressiveVideoSrc(m);
   // A gif is OF's short .mp4: it loops over the still while on screen (VaultGifLoop).
-  const gifSrc = m.type === "gif" && accountId ? proxyImage(rawVideoSrc, accountId, m.id) : "";
+  const gifSrc = accountId ? proxyImage(gifClipSrc(m), accountId, m.id) : "";
   // DRM (encrypted) videos have no progressive source; we slideshow
   // OF's own poster frames instead of the impossible ffmpeg scrub.
   // The 🔒 marker keys off the manifest (authoritative), so it
@@ -142,7 +139,7 @@ export function VaultPickerTile({
   const useCachedPoster = drmOnly && !!accountId;
   const posterSrcFor = (u: string, idx: number) =>
     useCachedPoster
-      ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}`
+      ? mirrorPosterSrc(accountId!, m.id, idx)
       : proxyImage(u, accountId, m.id);
   const status = resolveStatus(fanEntry, onWall);
   // The Fan already has it (bought, or last sent free). Advisory:
@@ -191,9 +188,9 @@ export function VaultPickerTile({
            *  loading yet — without it those beats flash black
            *  (empty <img> over the dark tile). Never animates;
            *  the frame layers sit on top at object-cover. */}
-          {thumb && (
+          {thumb.src && (
             <img
-              src={thumb}
+              src={thumb.src}
               alt=""
               aria-hidden
               // Cache path = permanent on-disk thumbs → load ALL at
@@ -201,7 +198,7 @@ export function VaultPickerTile({
               // we don't flood OF with off-screen fetches.
               loading={useLocalVault ? "eager" : "lazy"}
               decoding="async"
-              onError={onThumbFail}
+              onError={thumb.onError}
               className={cn(
                 "absolute inset-0 w-full h-full object-cover",
                 blurCls,
@@ -310,13 +307,13 @@ export function VaultPickerTile({
             )
           )}
         </>
-      ) : thumb ? (
+      ) : thumb.src ? (
         <img
-          src={thumb}
+          src={thumb.src}
           alt=""
           loading={useLocalVault ? "eager" : "lazy"}
           decoding="async"
-          onError={onThumbFail}
+          onError={thumb.onError}
           className={cn("w-full h-full object-cover", blurCls)}
         />
       ) : (

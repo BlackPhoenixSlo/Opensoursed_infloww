@@ -71,23 +71,13 @@ export interface AccountMeta {
   proxy_bad_reason?: "down" | "flapping";
   /** "watcher" on a watcher account (GET /admin/accounts' `watchers`, a chatter's roster row): a fan account that
    *  reads what the Creators send, no Creator. Absent on a Creator. */
-  role?: "watcher" | null;
+  role?: "watcher";
 }
 
 /** A watcher account as GET /admin/accounts lists it (`watchers`): a Creator's fields, so Manage creators edits it
  *  and OF Manager browses as it (WatcherScope); never in `accounts`, so no sending, automation or analytics surface
  *  sees it. */
 export type WatcherAccount = AccountMeta & { role: "watcher" };
-
-/** A watcher account as a creator picker lists it (`CreatorRail`'s `watchers`): a plain fan account that
- *  reads what the Creators send, no Creator, so a dimmed row that cannot be picked. */
-export interface WatcherMeta {
-  id: string;
-  nickname?: string | null;
-  name?: string | null;
-  /** A captured session (GET /admin/accounts' `watchers`; a list without sessions omits it). */
-  has_session?: boolean;
-}
 
 /** `health` on a custom proxy (service/proxy_health.py `snapshot`). `state`: healthy | suspect (failed calls
  *  in a row, under the threshold) | bad (confirmed by a probe; rechecked with backoff) | rechecking (a recheck
@@ -99,12 +89,16 @@ export interface ProxyHealth {
   last_error_at?: number | null;
   bad_since?: number | null;
   next_recheck_at?: number | null;
-  probe?: { ok?: boolean; ip?: string | null; geo?: string | null; colo?: string | null; ttfb_ms?: number | null; error?: string | null };
+  /** The last health probe (OnlyFans' API host through the proxy: what `state` is judged by). */
+  probe?: { ok?: boolean; ttfb_ms?: number | null; error?: string | null };
+  /** The last answering Cloudflare trace (the Test button, a new binding's region): display only. */
+  trace?: { ip?: string | null; geo?: string | null; colo?: string | null };
   /** Why it is bad: "down" (refused calls in a row, confirmed by a probe) or "flapping" (the
    *  PROXY_FLAP_BAD_PCT refusal rate, on by default). Only while bad or rechecking. */
   bad_reason?: "down" | "flapping";
-  /** Attempts the provider refused (CONNECT 403) of all made through it in the last `window_s` seconds. */
-  refusals?: { window_s: number; refused: number; calls: number; pct: number };
+  /** The share of attempts the provider refused (CONNECT 403) of all made through it in the last `window_s`
+   *  seconds. The counts are every Agency's traffic through it: the site owner's only (absent for anyone else). */
+  refusals?: { window_s: number; pct: number; refused?: number; calls?: number };
   /** OF calls through it in flight now, and the most at once since the relay started. */
   inflight?: number;
   inflight_peak?: number;

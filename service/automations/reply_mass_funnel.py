@@ -153,7 +153,7 @@ from ._funnel_signals import (
 )
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, FunnelAccountMedia, FunnelResponder, FunnelState,
+    MASS_RUN_OK, AccountAiConfig, FunnelAccountMedia, FunnelResponder, FunnelState,
     MassMessageFunnel, MassRun, Message,
 )
 from llm_client import LLMCapExceeded
@@ -266,7 +266,7 @@ async def _active_mass_runs(
             MassRun.started_at, MassRun.discovery_closed_at, MassRun.audience_filter,
         ).where(
             MassRun.account_id == str(account_id),
-            MassRun.status == "ok",
+            MassRun.status == MASS_RUN_OK,
             MassRun.funnel_id.is_not(None),
         )
         if only_id is not None:

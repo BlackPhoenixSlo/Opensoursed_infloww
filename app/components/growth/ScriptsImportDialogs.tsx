@@ -17,11 +17,10 @@ import { CheckCircle2, Download, Upload } from "lucide-react";
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import { useCopySavedReplies, useImportSavedReplies, type SavedReplyCopyResult } from "@/hooks/useSavedReplies";
 import {
-  buildPayload, canSubmit, copyDialogReducer, COPY_DIALOG_INITIAL, MAX_SOURCES,
+  buildPayload, canSubmit, copyDialogInit, copyDialogReducer, isFull, MAX_SOURCES,
 } from "@/components/growth/copyDialogState";
+import { creatorName } from "@/components/growth/ScriptsParts";
 import type { AccountMeta } from "@/lib/relay";
-
-const creatorName = (a: AccountMeta) => a.nickname || a.name || a.id;
 
 export function ExcelImportDialog({ accountId, onClose }: { accountId: string | null; onClose: () => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -114,20 +113,16 @@ export function CopyScriptsDialog({
   onClose: () => void;
   onCopied?: () => void;
 }) {
-  const [state, dispatch] = useReducer(copyDialogReducer, COPY_DIALOG_INITIAL);
+  const [state, dispatch] = useReducer(copyDialogReducer, mode, copyDialogInit);
   const { picked, allCreators } = state;
   const copy = useCopySavedReplies();
   const others = accounts.filter((a) => a.id !== accountId);
-  const importing = mode === "import";
-  const full = importing && picked.length >= MAX_SOURCES;
+  const importing = state.mode === "import";
+  const full = isFull(state);
 
   const submit = () => {
-    if (!accountId || !canSubmit(state, mode)) return;
-    const p = buildPayload(state, { mode, accountId, ids });
-    copy.mutate(
-      { fromAccountIds: p.from_account_ids, toAccountIds: p.to_account_ids, allCreators: p.all_creators, ids: p.ids },
-      { onSuccess: () => onCopied?.() },
-    );
+    if (!accountId || !canSubmit(state)) return;
+    copy.mutate(buildPayload(state, { accountId, ids }), { onSuccess: () => onCopied?.() });
   };
 
   if (copy.data) {
@@ -147,7 +142,7 @@ export function CopyScriptsDialog({
       onClose={onClose}
       footer={<>
         <IfButton onClick={onClose} disabled={copy.isPending}>Cancel</IfButton>
-        <IfButton variant="primary" disabled={!canSubmit(state, mode) || copy.isPending} onClick={submit}>
+        <IfButton variant="primary" disabled={!canSubmit(state) || copy.isPending} onClick={submit}>
           {copy.isPending ? "Copying…" : "Confirm"}
         </IfButton>
       </>}
@@ -158,7 +153,8 @@ export function CopyScriptsDialog({
           : ids
             ? `${ids.length} script${ids.length === 1 ? "" : "s"} to share.`
             : "Every script of this Creator is shared."}
-        {" "}Media is not copied between Creators; a script name the Creator already has is skipped.
+        {" "}Media is not copied between Creators; a sequence is copied whole, and a script name or sequence the
+        Creator already has is skipped.
       </p>
       {/* Share only: send to every Creator you own (the server resolves the full roster). Re-sharing is a no-op
           (a name the Creator already holds is skipped), so the Confirm button is the only guard a repeat needs. */}
@@ -202,22 +198,17 @@ export function CopyScriptsDialog({
   );
 }
 
-function CopySummary({ result }: { result: SavedReplyCopyResult }) {
+export function CopySummary({ result }: { result: SavedReplyCopyResult }) {
   return (
     <div className="flex flex-col items-center text-center">
       <CheckCircle2 className="mb-2 h-[42px] w-[42px] text-ok" aria-hidden />
       <p className="text-fg-dim">
         <span className="text-ok">{result.copied}</span> script{result.copied === 1 ? "" : "s"} copied
-        {result.skipped > 0 && <>, {result.skipped} skipped (the name was already there)</>}.
+        {result.skipped > 0 && <>, {result.skipped} skipped (the name or sequence was already there)</>}.
       </p>
       {result.media_dropped > 0 && (
         <p className="mt-1 text-xs text-fg-dim">
           {result.media_dropped} arrived without their media: add it from the Creator&apos;s own vault.
-        </p>
-      )}
-      {result.sequence_dropped > 0 && (
-        <p className="mt-1 text-xs text-fg-dim">
-          {result.sequence_dropped} arrived outside their sequence: that step was already taken.
         </p>
       )}
     </div>

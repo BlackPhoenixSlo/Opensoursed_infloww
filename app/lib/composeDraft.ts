@@ -13,6 +13,8 @@
  *     in the chat draft, whose text is the chat's own) are left absent.
  *     `templateText`: a host with OF's rich editor (`rich`, an OnlyFans account) takes a formatted script's markup,
  *     every other its plain text (a Fansly account never gets OF markup).
+ *   • `textBoxReducer`: the text box's two actions the broadcast composers (mass message, post) share, a picked
+ *     script and "Aa", each folded into the box's rich mode (lib/ofRichMode).
  *   • `canBeFreePreview` is THE free-preview rule: only a tile with a real
  *     vault id can be a free teaser. A fresh upload still carries a `_claim`
  *     (no id until OF resolves it): it rides as media but can't be referenced
@@ -25,6 +27,7 @@ import type { PickedGif } from "@/components/chat/GifPicker";
 import { templateMediaToVault, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
 import { hasOfFormatting } from "@/lib/ofRichText";
+import { richMode, type RichMode } from "@/lib/ofRichMode";
 
 export interface ComposeDraft {
   /** Absent on a draft whose text lives elsewhere (the chat's `useChatDraft`). */
@@ -38,6 +41,17 @@ export interface ComposeDraft {
   lockedText?: boolean;
   /** Absent on a composer without a GIF picker. */
   pickedGifs?: PickedGif[];
+}
+
+/** `rich`: the account takes OF markup (an OnlyFans one): a formatted script keeps it. Required, so no host can
+ *  forget it (ofRichMode's `allowed`). */
+export type TextBoxAction = { type: "pickTemplate"; t: PickedTemplate; rich: boolean } | { type: "aa" };
+
+/** A picked script (`applyTemplate`) or "Aa", folded into the box's rich mode. */
+export function textBoxReducer<D extends ComposeDraft & { text: string; mode: RichMode }>(s: D, a: TextBoxAction): D {
+  if (a.type === "aa") return { ...s, mode: richMode(s.mode, { type: "aa", formatted: hasOfFormatting(s.text) }) };
+  const n = applyTemplate(s, a.t, a.rich);
+  return { ...n, mode: richMode(s.mode, { type: "loaded", formatted: hasOfFormatting(n.text), allowed: a.rich }) };
 }
 
 /** `prev` plus a placeholder chip per tagged id it lacks (the picker resolves

@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import {
   buildMassBody, confirmPrompt, fieldAction, gifNote, gifOnlyForm, initMassForm, MASS_ALREADY_SENT,
-  MASS_ONE_GIF_ALL_MODELS, massMessageReducer, TEXT_TOO_LONG, validateMass,
+  MASS_ONE_GIF_ALL_MODELS, massMessageReducer, validateMass,
   type MassAction, type MassCtx, type MassForm,
 } from "@/components/compose/massMessageReducer";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
+import { TEXT_TOO_LONG } from "@/lib/ofRichText";
 import { PRICE_NOTE } from "@/lib/sendGuards";
 import { SENSITIVE_BLOCK_MESSAGE } from "@/lib/sensitiveWords";
 
@@ -162,8 +163,8 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
   });
   it("a non-GIF template keeps picked GIFs; a GIF template replaces them with its GIF", () => {
     const s = form({ pickedGifs: [gif("old")] });
-    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl() }).pickedGifs).toEqual([gif("old")]);
-    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl({ gifId: "g" }) }).pickedGifs.map((g) => g.id)).toEqual(["g"]);
+    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl(), rich: false }).pickedGifs).toEqual([gif("old")]);
+    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl({ gifId: "g" }), rich: false }).pickedGifs.map((g) => g.id)).toEqual(["g"]);
   });
   it("addGif dedupes by id and closes the picker; removeGif drops one", () => {
     const s = run(form({ gifPickerOpen: true }), { type: "addGif", gif: gif("g") }, fieldAction("gifPickerOpen", true),
@@ -202,7 +203,7 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
     ["system audience", { type: "cycleSystem", id: "fans" }],
     ["list include", { type: "toggleInclude", id: "L" }],
     ["GIF", { type: "addGif", gif: gif("g") }],
-    ["template", { type: "pickTemplate", t: tpl({ text: "other" }) }],
+    ["template", { type: "pickTemplate", t: tpl({ text: "other" }), rich: false }],
     ["all-models off", { type: "setAllModels", on: false }],
   ])("BUG: a partial fan-out locks the content: %s is refused", (_n, a) => {
     expect(massMessageReducer(partial, a)).toBe(partial);
@@ -222,7 +223,7 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
   it.each<[string, MassAction]>([
     ["text", fieldAction("text", "edited")],
     ["list include", { type: "toggleInclude", id: "L" }],
-    ["template", { type: "pickTemplate", t: tpl({ text: "other" }) }],
+    ["template", { type: "pickTemplate", t: tpl({ text: "other" }), rich: false }],
     ["all-models off", { type: "setAllModels", on: false }],
   ])("BUG: a round in flight locks the content: %s is refused", (_n, a) => {
     expect(massMessageReducer(inFlight, a)).toBe(inFlight);
@@ -339,11 +340,11 @@ describe("buildMassBody — the one body", () => {
     ["a FREE template after a PAID draft sends free and unlocked", {}, { price: 0, locked_text: false }],
     ["a PAID template sends its price and lock", { price: 25, lockedText: true }, { price: 25, locked_text: true }],
   ])("%s", (_n, t, want) => {
-    const s = massMessageReducer(form({ price: "25", lockedText: true }), { type: "pickTemplate", t: tpl(t) });
+    const s = massMessageReducer(form({ price: "25", lockedText: true }), { type: "pickTemplate", t: tpl(t), rich: false });
     expect(buildMassBody(s, false)).toMatchObject(want);
   });
   it("a template picked in all-models mode never sends its tags", () => {
-    const s = run(form(), { type: "setAllModels", on: true }, { type: "pickTemplate", t: tpl({ taggedUsers: [9] }) });
+    const s = run(form(), { type: "setAllModels", on: true }, { type: "pickTemplate", t: tpl({ taggedUsers: [9] }), rich: false });
     expect(buildMassBody(s, false)).not.toHaveProperty("tagged_users");
   });
   it("an include segment replaces the list chips (OF unions lists and ids)", () => {

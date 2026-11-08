@@ -7,6 +7,8 @@ read, which uvicorn's httptools drops, ADR 0024), so the relay's calls arrive
 concurrently and are recorded in arrival order.
 
   GET  /hash/?u=<uid>                      the CDN's x-hash (text), any account
+  GET  /robots.txt                         the API host's robots (text), no account: what the
+                                           watcher's `probe_of` GETs through a proxy
   GET  /static/prod/f/<rev>/2313.js        the signing chunk (lib/browserbase.py's
                                            synthetic one): a paste-curl bootstrap
                                            derives its rules from it
@@ -19,9 +21,9 @@ concurrently and are recorded in arrival order.
                                            items) and gets them back, `offset`/`limit`
   GET  /api2/v2/users/notifications/count  the bell's counts, all zero (`{"all": 0, ...}`):
                                            the shell's per-Creator badge read
-  GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxies.probe` reads it
+  GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxy_probe.probe` reads it
                                            (ip / loc / colo lines; lib/relay.py points
-                                           `proxies.TRACE_URL` here under OF_WIRE), so a
+                                           `proxy_probe.TRACE_URL` here under OF_WIRE), so a
                                            proxy's confirm and recheck probes go through
                                            the fake proxy to loopback, never to 1.1.1.1
   GET  /api2/v2/chats/{fan}/messages       a thread's history, `messages[uid][fan]` (OF message items, newest
@@ -376,6 +378,8 @@ class FakeOF:
                 if u.path.rstrip("/") == "/hash":
                     uid = (parse_qs(u.query).get("u") or [""])[0]
                     return self._record(uid, route, 200, "%040x" % (hash(uid) & (2**160 - 1)), "text/plain")
+                if method == "GET" and u.path == "/robots.txt":
+                    return self._record("", route, 200, "User-agent: *\nDisallow: /\n", "text/plain")
                 if method == "GET" and _CHUNK.fullmatch(u.path):
                     return self._record("", "GET /static/prod/f/{rev}/2313.js", 200, fake.chunk(),
                                         "application/javascript")

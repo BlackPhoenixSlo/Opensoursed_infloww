@@ -8,7 +8,7 @@
  * ones already sent. Now a read tagged `background` (a GET under /api/of/) waits here: at most
  * `perCreator` of one Creator's on the wire (the relay's lane, so nothing is slower: the relay would
  * hold the rest anyway), and at most `SLOW_CAP` in all when the browser says the link is starved
- * (2g/3g or Save-Data). Waiting reads are dropped when their screen goes away. The Creator the user
+ * (2g/3g or Save-Data). A waiting read is dropped when its caller aborts it (its `signal`). The Creator the user
  * has open never waits (its reads are the user's), and a user read never queues (relay.ts sends it at
  * once, fetch priority high).
  *
@@ -22,14 +22,12 @@
  * took the cold Dashboard from 3.9 s to 17.3 s, 24 in all to 4.7 s, and a click went ahead either way.
  */
 
-export type Lane = "user" | "background";
-
 export interface Job {
   id: number;
   /** The Creator the read is for (`X-Account-Id`); null when unscoped (one lane of its own). */
   accountId: string | null;
   /** A read the open screen's bundle covers, gone out on its own (a miss, a failed or late bundle). */
-  screen?: boolean;
+  screen: boolean;
 }
 
 export interface ScheduleState {

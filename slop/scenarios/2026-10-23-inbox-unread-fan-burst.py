@@ -12,15 +12,26 @@ Creator's inbox; UI: Messages Pro shows the burst, and a click on a notification
 fan's DM (toast in the main window and in Messages Pro, top bar bell row, /notifications
 row, OS notification; in the browser and in the desktop app) opens that Fan as a Fan tab
 in the one Messages Pro window (actors/notif_click; `--set desktop=0` skips Electron).
+Quick reply (the Messages Pro bell's Reply, app/components/NotificationQuickReply.tsx):
+one Fan DMs two Creators (the same Fan id on both; the second Creator's chat is made by
+the ingest), Messages Pro on All Models lists both rows in its bell; Reply on the second
+Creator's row, a line typed and sent: OF got exactly that one send, as that Creator to
+that Fan with the typed text, nothing to the first Creator (lib/relay.py `of_sends`), the
+line is in that thread (/admin/messages) and not in the other; the field read Sent and
+the other Creator's row still offers Reply (screenshots quick-reply-trigger / -settled).
+Declared bypass: the bell's OF notifications feed is answered empty at the wire (as in
+actors/notif_click), so the rows are the DMs' own (the SSE history mirror).
 Budgets: end-to-end p95 (frame handed to the relay -> on the manager's /events stream)
-and the inbox read p95s. Break-it-once: transcoder-drops-1-in-10, and
-`--fault=notif-click-opens-browser-tab` (targets in lib/faults.py).
+and the inbox read p95s. Break-it-once: transcoder-drops-1-in-10,
+`--fault=notif-click-opens-browser-tab` and `--fault=quick-reply-to-wrong-fan` (targets in
+lib/faults.py).
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import math
+import re
 
 from slop.actors import fan_dm, manager, notif_click, ui
 
@@ -121,7 +132,7 @@ async def run(ctx) -> None:
             ctx.skip(f"p95 {route} < {budget}ms", "no samples")
 
     if not ctx.app:
-        for n in (*UI_CHECKS, *notif_click.BROWSER_CHECKS, *notif_click.DESKTOP_CHECKS):
+        for n in (*UI_CHECKS, *notif_click.BROWSER_CHECKS, *notif_click.DESKTOP_CHECKS, *QR_CHECKS):
             ctx.skip(n, "--no-ui")
     else:
         async with ui.owner_browser(ctx) as page:
@@ -151,8 +162,103 @@ async def run(ctx) -> None:
                 ctx.skip(n, "--set desktop=0")
         (ctx.out / "notif-click.json").write_text(json.dumps(clicks, indent=2, default=str))
 
+        qr = await _quick_reply(ctx, creators, fans)
+        (ctx.out / "quick-reply.json").write_text(json.dumps(qr, indent=2, default=str))
+
 
 UI_CHECKS = ("Messages Pro Fan List shows the burst", "no 5xx in the browser session")
+QR_EXACT = ("quick reply: OF got exactly one send, as the replied row's Creator to its Fan with the typed text, "
+            "none to the other Creator's same Fan; the line is in that thread only (DB)")
+QR_UI = "quick reply: the bell row's field takes the line and reads Sent; the other Creator's row still offers Reply"
+QR_CHECKS = (QR_EXACT, QR_UI)
+QR_ID_BASE = fan_dm.INJECT_ID_BASE + 888_000
+SENT_JS = """() => { window.__slopQrSent = false; new MutationObserver(() => {
+  if ([...document.querySelectorAll('[role=status]')].some((e) => e.textContent.trim() === 'Sent')) window.__slopQrSent = true;
+}).observe(document.body, {subtree: true, childList: true, characterData: true}); }"""
+
+
+def _plain(html: str | None) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip()
+
+
+async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
+    """The Messages Pro bell's quick reply (module docstring): one Fan, two Creators, Reply on the second's row."""
+    a, b = creators[0]["id"], creators[1]["id"]
+    used = {f["id"] for f in notif_click.distinct(fans[a])[:5]}  # notif_click's Fans
+    fan = next((f for f in notif_click.distinct(fans[a]) if f["id"] not in used), None)
+    if fan is None:
+        for n in QR_CHECKS:
+            ctx.check(n, False, reason="no Fan with a name of its own left after notif_click's five")
+        return {}
+    line = {a: f"slop qr dm to {a}", b: f"slop qr dm to {b}"}
+    typed = "slop quick reply: only to this Creator"
+    ids = iter(range(QR_ID_BASE, QR_ID_BASE + 100))
+    got: dict = {"fan": fan["id"], "creators": [a, b], "replied_as": b, "typed": typed}
+
+    async def sends() -> list[dict]:
+        return (await ctx.owner.get("/__slop/fake/calls?sends=1")).json()["of_sends"]
+
+    async def feed(r):  # declared bypass: OF's notifications feed empty, the rows are the DMs' own
+        await r.fulfill(json={} if "/count" in r.request.url else {"list": [], "hasMore": False})
+
+    async with ui.owner_browser(ctx, send=True) as page:
+        await page.route("**/api/of/v2/users/notifications**", feed)
+        await page.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
+        bell = page.get_by_role("button", name="Notifications").first
+        await bell.wait_for(timeout=120_000)
+        reply_btn = page.get_by_role("button", name="Reply", exact=True)
+        rows = {c: page.locator("div").filter(has_text=line[c]).filter(has=reply_btn).last for c in (a, b)}
+        got["dm_tries"] = 0
+        for got["dm_tries"] in range(1, 4):   # a DM the transcoder fault drops is sent again (new id)
+            for c in (a, b):
+                await fan_dm.inject(ctx.owner, c, fan_dm.frame(next(ids), fan, line[c]))
+            if await bell.get_attribute("aria-expanded") != "true":
+                await bell.click()
+            try:
+                await rows[a].wait_for(timeout=20_000)
+                await rows[b].wait_for(timeout=20_000)
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        mark = len(await sends())   # no send of this step can have gone yet
+        try:
+            await rows[b].get_by_role("button", name="Reply", exact=True).click(timeout=10_000)
+            field = rows[b].get_by_role("textbox", name=f"Reply to {fan['name']}")
+            await field.wait_for(timeout=60_000)   # the field's module is lazy
+            await field.fill(typed)
+            got["trigger_png"] = await ui.shot(ctx, page, "quick-reply-trigger")
+            await page.evaluate(SENT_JS)
+            await rows[b].get_by_role("button", name="Send", exact=True).click()
+            await page.wait_for_function("() => window.__slopQrSent", timeout=30_000)
+            got["sent_seen"] = True
+        except Exception as e:  # noqa: BLE001 — a step that cannot complete is the checks' FAIL
+            got["error"] = f"{type(e).__name__}: {e}"[:400]
+            got["sent_seen"] = await page.evaluate("() => !!window.__slopQrSent")
+        # Settled: the replied row says who responded (chat_responded), the other Creator's still offers Reply.
+        responded = page.locator("div").filter(has_text=line[b]).filter(has_text="has responded").last
+        try:
+            await responded.wait_for(timeout=15_000)
+            got["replied_row_responded"] = True
+        except Exception:  # noqa: BLE001
+            got["replied_row_responded"] = False
+        got["other_row_reply"] = await rows[a].get_by_role("button", name="Reply", exact=True).count() == 1
+        got["settled_png"] = await ui.shot(ctx, page, "quick-reply-settled")
+        await asyncio.sleep(1.0)  # a stray second send would have reached OF by now
+        new = (await sends())[mark:]
+    got["of_sends"] = new
+    threads = {c: [m for m in await manager.thread_messages(ctx.owner, c, fan["id"]) if _plain(m.get("body")) == typed]
+               for c in (a, b)}
+    got["thread_rows"] = {c: [{k: m.get(k) for k in ("message_id", "direction", "body")} for m in ms]
+                          for c, ms in threads.items()}
+    exact = [s for s in new if str(s["account_id"]) == b and int(s["fan_id"]) == int(fan["id"])
+             and _plain(s["text"]) == typed]
+    ctx.check(QR_EXACT, len(new) == 1 and len(exact) == 1 and len(threads[b]) == 1 and not threads[a],
+              sends=new, want={"account_id": b, "fan_id": fan["id"], "text": typed},
+              thread_b=len(threads[b]), thread_a=len(threads[a]))
+    ctx.check(QR_UI, "error" not in got and got["sent_seen"] and got["other_row_reply"],
+              **{k: got.get(k) for k in ("error", "sent_seen", "other_row_reply", "replied_row_responded",
+                                         "dm_tries", "trigger_png", "settled_png")})
+    return got
 
 
 def _p(xs: list[float], q: float) -> float:

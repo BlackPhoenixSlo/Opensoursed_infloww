@@ -26,15 +26,22 @@ SHARE_ALL_NOOP = ("scripts share-to-all: re-sharing the same library to all crea
                   "is a true no-op) and the coverage is unchanged")
 ALL_MODELS_VIEW = ("scripts all-models view: GET /admin/saved-replies/overview lists every owned Creator and, per "
                    "sequence / tag name, each Creator's count == that Creator's own stored rows (lean, read-only)")
+UI_ALL_MODELS = ("scripts page: \"All models\" (Creator column) shows the coverage matrix, a column per roster Creator, "
+                 "each sequence / tag row's counts == GET /overview, with the header's write actions (Learn, Share, More: "
+                 "Add script / Add sequence / Add tag / Import) gone; every Creator's saved-reply rows unchanged")
 
 
 def _drop_last_step() -> None:
-    """The bulk import silently loses each sequence's last step: `scripts_import_api._ordered_steps` (looked up per
-    call) trimmed by one."""
+    """The bulk import silently loses each sequence's last step: `scripts_import_api._parse_sequence`'s steps (looked
+    up per call) trimmed by one."""
     import scripts_import_api
 
-    real = scripts_import_api._ordered_steps
-    scripts_import_api._ordered_steps = lambda steps: real(steps)[:-1]
+    real = scripts_import_api._parse_sequence
+
+    def trimmed(q):
+        why, steps = real(q)
+        return why, steps[:-1]
+    scripts_import_api._parse_sequence = trimmed
 
 
 def _share_drops_a_creator() -> None:
@@ -52,5 +59,5 @@ def register(Fault) -> dict:
         # slop/run scripts-library --break --baseline=<green folder>
         "scripts-bulk-drops-last-step": Fault(_drop_last_step, (IMPORT_COUNTS, READ_BACK, UI_STEPS, UI_TAGS)),
         # slop/run scripts-library --break --fault=scripts-share-drops-a-creator --baseline=<green folder>
-        "scripts-share-drops-a-creator": Fault(_share_drops_a_creator, (SHARE_ALL, ALL_MODELS_VIEW)),
+        "scripts-share-drops-a-creator": Fault(_share_drops_a_creator, (SHARE_ALL, ALL_MODELS_VIEW, UI_ALL_MODELS)),
     }

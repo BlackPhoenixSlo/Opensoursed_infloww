@@ -1,6 +1,6 @@
 /**
  * readyMadeContent — the ready-made rule's words and its one content gate, pure
- * (ReadyMadePanel, ReadyMadeRuleEditor, ComposeModal only read these).
+ * (ReadyMadePanel and ReadyMadeRuleEditor only read these).
  *
  *   • `KIND_COPY` — the words each kind is shown with.
  *   • `hasContent` — the kind's own list (premadeRows `listItems`) has at least one entry (any entry counts).

@@ -65,7 +65,8 @@ from sqlalchemy import update  # noqa: E402
 
 import llm_client  # noqa: E402
 import llm_providers  # noqa: E402
-import vault_ai_api  # noqa: E402 — collect status (_run_status / _running)
+import vault_ai_api  # noqa: E402 — collect status (_run_status)
+import vault_runs  # noqa: E402 — manual_running
 import vault_ai_vision  # noqa: E402 — _describe_one / _flags_one under test
 import vault_ai_vision_decide  # noqa: E402 — the frame ladder
 import vault_frames  # noqa: E402 — the frame-collection seam both of them call
@@ -678,15 +679,15 @@ async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
     aid = _fresh_account()
     row = VaultCacheRun(account_id=aid, status="running", phase="warming")
 
-    vault_ai_api._running.discard(aid)
+    vault_runs.manual_running.discard(aid)
     assert vault_ai_api._run_status(row, aid) == "interrupted", "the lie survived"
 
-    vault_ai_api._running.add(aid)
+    vault_runs.manual_running.add(aid)
     try:
         assert vault_ai_api._run_status(row, aid) == "running", (
             "a sweep that IS running must still say so")
     finally:
-        vault_ai_api._running.discard(aid)
+        vault_runs.manual_running.discard(aid)
 
     # A finished run is never reinterpreted — only `running` can be orphaned.
     for done in ("done", "error"):

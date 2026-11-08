@@ -22,6 +22,9 @@ Cases:
   case_cold_entry_still_evicts:
       an untouched entry past the TTL is still reclaimed (touch didn't pin
       everything forever).
+  case_over_budget_evicts_the_oldest:
+      past _IMG_CACHE_BUDGET_BYTES the sweep deletes the least recently used
+      entries (bin + ct) until the store fits, even inside the TTL.
   case_unsend_is_cache_free:
       service/automations/unsend_messages.py contains ZERO cache code — the
       plan explicitly removes the unsend→cache coupling.
@@ -129,6 +132,27 @@ def case_cold_entry_still_evicts():
     assert not bin_p.is_file(), "evictor failed to reclaim a cold, expired entry"
 
 
+def case_over_budget_evicts_the_oldest():
+    import time as _t
+    now = _t.time()
+    urls = [f"https://cdn2.onlyfans.com/files/b/bb/budget-{i}/clip.mp4?Signature=b" for i in range(3)]
+    paths = []
+    for i, url in enumerate(urls):   # oldest first, all well inside the TTL
+        img_api._img_cache_write(url, "video/mp4", b"x" * 1000)
+        bin_p, ct_p = img_api._img_cache_paths(img_api._img_cache_key(url))
+        os.utime(bin_p, (now - 3000 + i, now - 3000 + i))
+        paths.append((bin_p, ct_p))
+    total = sum(p.stat().st_size for p in _CACHE_DIR.rglob("*.bin"))
+    real = img_api._IMG_CACHE_BUDGET_BYTES
+    img_api._IMG_CACHE_BUDGET_BYTES = total - 1500   # two of the three must go
+    try:
+        assert img_api._img_cache_evict_once() == 2
+    finally:
+        img_api._IMG_CACHE_BUDGET_BYTES = real
+    assert [b.is_file() or c.is_file() for b, c in paths] == [False, False, True], paths
+    assert sum(p.stat().st_size for p in _CACHE_DIR.rglob("*.bin")) == total - 2000
+
+
 def case_unsend_is_cache_free():
     src = (Path(__file__).resolve().parents[1] / "automations" / "unsend_messages.py").read_text()
     # Strip comments/docstring noise isn't worth it — assert on identifiers that
@@ -156,5 +180,6 @@ _harness.run(
     case_send_to_many_writes_once,
     case_touch_keeps_hot_entry_warm,
     case_cold_entry_still_evicts,
+    case_over_budget_evicts_the_oldest,
     case_unsend_is_cache_free,
 )

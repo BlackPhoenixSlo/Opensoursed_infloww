@@ -22,6 +22,12 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
            by id (one by-id OF read each) and fetched direct again.                            VAULT.
   proxied  a fresh browser on B: Download selected of 3 photos + 1 video (`vault-download-proxied-trigger`,
            `-settled`): 0 browser CDN fetches, all relay.                                      PROXIED.
+  phone    a fresh phone browser on B (390x844, touch, no folder picker, share stubbed): Select all (> 20) is off
+           with "Phone: up to 20 at a time", 20 ticked is on, 21 off, Download folder / whole vault off with their
+           reason (`vault-download-phone-cap`).                                                PHONE_CAP.
+           Then 3 photos + 2 videos padded to PHONE_VIDEO_MB each (> SHARE_BATCH_BYTES/2, so never one batch):
+           Download selected (`vault-download-phone-trigger`), the first "Save 1–N" (`-ready`) dismissed once
+           (AbortError: the button stays), then every Save tapped until all are saved (`-settled`).  PHONE_SHARE.
 Each check reads the files on disk: the path (creator = the Creator's nickname, folder = the downloaded folder, else
 the media's first custom OF folder, else Unfiled), a .jpg's bytes equal the CDN's seeded bytes (img_relay.asset_bytes),
 an .mp4's size equals what the fake served for that key and it starts with an ftyp box; no stray file; the panel's
@@ -41,9 +47,26 @@ Bypasses (declared):
   handle whose `createWritable()` is a real WritableStream; each chunk crosses a Playwright binding (base64) and is
   written under the run's tmp as `<file>.crswap`, renamed on close, deleted on abort (Chromium's own swap-file rule).
   The stub refuses separators and "."/".." in names, as the real API does.
+- The links .html is opened with page.set_content (its exact bytes), not file:// (the harness context aborts every
+  non-loopback load); an app link is fetched with the context's session (APIRequestContext, its cookies), not by a
+  click (a click would save it via the browser's download manager).
 - One ffmpeg testsrc clip for every mp4 (img_relay.video_bytes); videos are never DRM here (unit-tested instead:
-  service/tests/test_vault_download.py).
-Break-it-once: vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED red.
+  service/tests/test_vault_download.py). The phone stage's 2 videos are that clip padded with a `free` box to
+  PHONE_VIDEO_MB (img_relay.padded_mp4, the fake re-armed just before the stage).
+- Phone: Chromium with mobile emulation (viewport, touch, is_mobile), not WebKit/iOS. `showDirectoryPicker` is deleted
+  by an init script; `navigator.canShare` / `navigator.share` (the OS share sheet, not automatable) are stubbed at the
+  page boundary (SHARE_JS): canShare true for files, share records each File's name / type / size and whether the
+  call ran inside a user activation (`navigator.userActivation.isActive`), and rejects one call with AbortError when
+  told to (the user dismissing the sheet). Save to Photos / Files itself and iOS memory limits are not exercised.
+Links file (app/components/vault/vaultLinksFile.ts), every desktop phase: links-valid-*.txt + .html in
+<creator>/[<folder>/], opened before any media (Disk.opened), one line / row per item; A: CDN urls, B: the app relay
+url; the html opened in Chromium (`vault-download-links-html`, `-proxied`), a CDN link clicked (A), an app link
+fetched with the session (B).                                                                  LINKS.
+Phone: "Save links" tapped first: its own share, txt + html, inside the tap, app urls.          PHONE_LINKS.
+Break-it-once: vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
+PHONE_LINKS red; vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED and
+PHONE_SHARE red; vault-download-share-batch-drops-item (client: `addToBatches` loses the file that opens a batch)
+turns only PHONE_SHARE red.
 """
 from __future__ import annotations
 
@@ -53,11 +76,15 @@ import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
+
+from collections import Counter
 
 from slop.lib.img_relay import EGRESS, ORIG_HOST, arm_run, asset_bytes
 from slop.lib.proxy_wire import ProxyWire
-from slop.lib.vault_download_faults import FOLDER, PROXIED, RELAY_LOAD, SELECT, VAULT
+from slop.lib.vault_download_faults import (
+    FOLDER, LINKS, PHONE_CAP, PHONE_LINKS, PHONE_SHARE, PROXIED, RELAY_LOAD, SELECT, VAULT,
+)
 from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
 from slop.seed import vault_week
 
@@ -70,6 +97,11 @@ P95_VS_LAST = (1.5, 200)
 P95_VS_LAST_MIN_N = 20
 CDN_LATENCY_S = 0.02
 VIEWPORT = (1440, 900)
+PHONE_VIEWPORT = (390, 844)
+PHONE_MAX = 20                     # vaultDownloadReducer.SHARE_MAX_ITEMS
+PHONE_VIDEO_MB = 110               # > SHARE_BATCH_BYTES (200 MB) / 2: two never share a batch
+PHONE_COUNT_OFF = f"Phone: up to {PHONE_MAX} at a time"
+PHONE_MODE_OFF = "Phone: only a selection downloads here; folders and the whole vault need desktop Chrome or Edge"
 WAIT_MS = 120_000
 SETTLE_S = 180
 STALE = 3
@@ -103,6 +135,23 @@ PICKER_JS = r"""(() => {
 })();"""
 
 
+# The phone: no folder picker, the share sheet stubbed at the page boundary (declared above).
+SHARE_JS = r"""(() => {
+  try { delete Window.prototype.showDirectoryPicker; } catch (e) {}
+  try { delete window.showDirectoryPicker; } catch (e) {}
+  const S = window.__slopShare = { calls: [], dismissed: [], abortNext: false };
+  navigator.canShare = (d) => !!(d && Array.isArray(d.files) && d.files.length);
+  navigator.share = async (d) => {
+    const active = navigator.userActivation ? navigator.userActivation.isActive : null;
+    const files = await Promise.all(Array.from((d && d.files) || []).map(async (f) => ({ name: f.name, type: f.type,
+      size: f.size, text: f.type.startsWith("text/") ? await f.text() : null })));
+    if (S.abortNext) { S.abortNext = false; S.dismissed.push({ files, active });
+      throw new DOMException("Share canceled", "AbortError"); }
+    S.calls.push({ files, active });
+  };
+})();"""
+
+
 def _safe(s: str) -> str:
     """vaultDownloadReducer.safeName."""
     t = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", s)
@@ -117,6 +166,7 @@ class Disk:
         self.base = base.resolve()
         self.open: dict[int, tuple[Path, object]] = {}
         self.n = 0
+        self.opened: list[str] = []   # every file opened, in order (rel to base): links files must come first
 
     def _p(self, rel: str) -> Path:
         p = (self.base / rel).resolve()
@@ -130,6 +180,7 @@ class Disk:
             return None
         if op == "open":
             p = self._p(a[0])
+            self.opened.append(str(p.relative_to(self.base)))
             self.n += 1
             self.open[self.n] = (p, open(p.with_name(p.name + ".crswap"), "wb"))
             return self.n
@@ -145,6 +196,32 @@ class Disk:
             p.with_name(p.name + ".crswap").unlink(missing_ok=True)
             del self.open[a[0]]
         return None
+
+
+async def _open_vault(ctx, page, aid: str, port: int, browser_cdn: list[dict]) -> None:
+    """Vault Pro on `aid`, tours seen, the browser's CDN requests answered by the relay's fake (declared)."""
+    bctx = page.context
+    await bctx.add_init_script(TOURS_SEEN + f"localStorage.setItem('vault.accountId', '{aid}');")
+
+    async def cdn(route):  # the browser -> CDN boundary (declared): the relay's fake CDN, S3's CORS
+        req = route.request
+        u = urlsplit(req.url)
+        hdrs = {ORIG_HOST: u.hostname, EGRESS: "direct", "user-agent": "slop-browser"}
+        if req.headers.get("range"):
+            hdrs["range"] = req.headers["range"]
+        r = await bctx.request.get(f"http://127.0.0.1:{port}{u.path}?{u.query}", headers=hdrs, timeout=60_000)
+        body = await r.body()
+        out = {k: v for k, v in r.headers.items() if k in ("content-type", "content-length", "content-range")}
+        if r.status in (200, 206):
+            out["access-control-allow-origin"] = "*"
+        browser_cdn.append({"key": f"{u.hostname}{u.path}", "status": r.status, "type": req.resource_type,
+                            "bytes": len(body), "t": time.time()})
+        await route.fulfill(status=r.status, headers=out, body=body)
+
+    await bctx.route(f"https://{HOST}/**", cdn)
+    await page.goto(f"{ctx.app}/growth/vault-pro", wait_until="domcontentloaded", timeout=WAIT_MS)
+    await page.locator("section [title^='#']").first.wait_for(timeout=WAIT_MS)
+    await page.wait_for_timeout(1000)
 
 
 def _key(aid: str, m: dict) -> str:
@@ -163,9 +240,64 @@ def _expected(vw, aid: str, creator: str, ms: list[dict], folder: str | None) ->
     return out
 
 
+def _is_links(name: str) -> bool:
+    return name.startswith("links-valid-") and name.endswith((".txt", ".html"))
+
+
+def _app_link(app: str, aid: str, mid: int) -> str:
+    """vaultLinksFile.appLink (no share token here)."""
+    return f"{app.rstrip('/')}{DOWNLOAD}?{urlencode({'account_id': aid, 'media_id': mid})}"
+
+
+def _link_lines(txt: str) -> list[tuple[str, str]]:
+    return [tuple(ln.split("  ", 1)) for ln in txt.splitlines() if ln and not ln.startswith("#")]
+
+
+def _links(txt: str, html: str, aid: str, ms: list[dict], direct: bool, app: str) -> dict:
+    """A links file vs the items: one line / row each, every id once; direct: the CDN url of that media, unexpired;
+    proxied: the app relay url, no CDN host."""
+    want = {f"{m['id']}.{'mp4' if m['type'] == 'video' else 'jpg'}": m for m in ms}
+    lines = _link_lines(txt)
+    names = Counter(n for n, _ in lines)
+    bad = []
+    for name, link in lines:
+        m = want.get(name)
+        if m is None:
+            continue
+        if direct:
+            u = urlsplit(link)
+            exp = _policy_exp(link)
+            if f"{u.hostname}{u.path}" != _key(aid, m) or not exp or exp < time.time() + 600:
+                bad.append([name, link[:120]])
+        elif link != _app_link(app, aid, m["id"]):
+            bad.append([name, link[:160]])
+    rows = re.findall(r'<tr data-id="(\d+)" data-link="(\w+)"', html)
+    return {"lines": len(lines), "want": len(want), "missing": sorted(set(want) - set(names))[:10],
+            "twice": sorted(n for n, k in names.items() if k > 1)[:10], "stray": sorted(set(names) - set(want))[:10],
+            "bad": bad[:10], "cdn_host_in_txt": HOST in txt, "html_rows": len(rows),
+            "html_ids_ok": sorted(int(i) for i, _ in rows) == sorted(m["id"] for m in ms),
+            "html_kinds": sorted({k for _, k in rows}), "valid_line": next((ln for ln in txt.splitlines()
+                                                                             if ln.startswith("# Valid")), "")}
+
+
+def _links_ok(k: dict, direct: bool) -> bool:
+    return (k["lines"] == k["want"] and not k["missing"] and not k["twice"] and not k["stray"] and not k["bad"]
+            and k["html_rows"] == k["want"] and k["html_ids_ok"]
+            and k["html_kinds"] == (["cdn"] if direct else ["app"]) and k["cdn_host_in_txt"] == direct)
+
+
+def _policy_exp(url: str) -> int | None:
+    p = parse_qs(urlsplit(url).query).get("Policy", [None])[0]
+    if not p:
+        return None
+    raw = p.replace("-", "+").replace("_", "=").replace("~", "/")
+    pol = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
+    return int(pol["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
+
+
 def _verify(root: Path, want: dict[str, dict], served: dict[str, int]) -> dict:
     """Files under `root` vs `want`: missing, stray, bad bytes."""
-    got = {str(p.relative_to(root)): p for p in root.rglob("*") if p.is_file()}
+    got = {str(p.relative_to(root)): p for p in root.rglob("*") if p.is_file() and not _is_links(p.name)}
     bad = []
     for rel, e in want.items():
         p = got.get(rel)
@@ -191,7 +323,8 @@ async def run(ctx):
     a, b = (c["id"] for c in w.data["creators"][:2])
     nick = {c["id"]: c["nickname"] for c in w.data["creators"]}
     vault_week.mirror(w, vw, [a, b])
-    armed = await arm_run(ctx.owner, ctx.stack.tmp, vw.assets([a, b]), CDN_LATENCY_S)
+    assets = vw.assets([a, b])
+    armed = await arm_run(ctx.owner, ctx.stack.tmp, assets, CDN_LATENCY_S)
     owner = ctx.owner
 
     async def cdn_since(n: int) -> list[dict]:
@@ -217,8 +350,9 @@ async def run(ctx):
 
         if ctx.app:
             await _ui(ctx, w, vw, a, b, nick, peg, armed["port"], cdn_n, cdn_since)
+            await _phone(ctx, vw, b, peg, armed["port"], assets, cdn_n, cdn_since)
         else:
-            for name in (SELECT, FOLDER, VAULT, PROXIED):
+            for name in (SELECT, FOLDER, VAULT, PROXIED, PHONE_CAP, PHONE_SHARE, LINKS, PHONE_LINKS):
                 ctx.skip(name, "needs UI (--no-ui)")
     finally:
         await owner.post("/admin/proxies/slop-dl/unbind", json={"account_id": b})
@@ -286,29 +420,9 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         return [(int(m.group(2)), m.group(3), int(m.group(4))) for m in _LOG.finditer(txt) if m.group(1) == aid]
 
     async def setup(page, aid: str) -> None:
-        bctx = page.context
-        await bctx.add_init_script(TOURS_SEEN + f"localStorage.setItem('vault.accountId', '{aid}');" + PICKER_JS)
-        await bctx.expose_binding("__slopFs", disk.binding)
-
-        async def cdn(route):  # the browser -> CDN boundary (declared): the relay's fake CDN, S3's CORS
-            req = route.request
-            u = urlsplit(req.url)
-            hdrs = {ORIG_HOST: u.hostname, EGRESS: "direct", "user-agent": "slop-browser"}
-            if req.headers.get("range"):
-                hdrs["range"] = req.headers["range"]
-            r = await bctx.request.get(f"http://127.0.0.1:{port}{u.path}?{u.query}", headers=hdrs, timeout=60_000)
-            body = await r.body()
-            out = {k: v for k, v in r.headers.items() if k in ("content-type", "content-length", "content-range")}
-            if r.status in (200, 206):
-                out["access-control-allow-origin"] = "*"
-            browser_cdn.append({"key": f"{u.hostname}{u.path}", "status": r.status, "type": req.resource_type,
-                                "bytes": len(body), "t": time.time()})
-            await route.fulfill(status=r.status, headers=out, body=body)
-
-        await bctx.route(f"https://{HOST}/**", cdn)
-        await page.goto(f"{ctx.app}/growth/vault-pro", wait_until="domcontentloaded", timeout=WAIT_MS)
-        await page.locator("section [title^='#']").first.wait_for(timeout=WAIT_MS)
-        await page.wait_for_timeout(1000)
+        await page.context.add_init_script(PICKER_JS)
+        await page.context.expose_binding("__slopFs", disk.binding)
+        await _open_vault(ctx, page, aid, port, browser_cdn)
 
     async def download(page, phase: str, click) -> dict:
         """Point the stub at root `phase`, shoot the trigger, click, wait for the panel to settle, shoot it."""
@@ -337,6 +451,7 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         creator = _safe(nick[aid])
         want = _expected(vw, aid, creator, ms, folder)
         n0, i0, l0, v0 = await cdn_n(), len(browser_cdn), log_mark(), len(ctx.of_wire.vault_calls)
+        o0 = len(disk.opened)
         try:
             d = await download(page, name, click)
         except Exception as e:  # noqa: BLE001 — the check reports it
@@ -362,6 +477,20 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         d["by_id"] = [c["query"]["id"] for c in ctx.of_wire.vault_calls[v0:] if c["route"] == "by_id"
                       and c["account"] == aid]
         d["want"] = len(want)
+        # The links file: in <creator>/ (a folder download: <creator>/<folder>/), opened before any media.
+        ldir = disk.base / name / creator / (_safe(folder) if folder is not None else "")
+        files = sorted(p for p in ldir.glob("links-valid-*") if p.is_file()) if ldir.is_dir() else []
+        txt = next((p for p in files if p.suffix == ".txt"), None)
+        html = next((p for p in files if p.suffix == ".html"), None)
+        first = [Path(x).name for x in disk.opened[o0:o0 + 2]]
+        lk = {"dir": str(ldir.relative_to(disk.base)), "files": [p.name for p in files], "first_opened": first,
+              "first_ok": len(files) == 2 and sorted(first) == sorted(p.name for p in files)}
+        if txt and html:
+            lk.update(_links(txt.read_text(), html.read_text(), aid, ms, aid == a, ctx.app))
+            lk["html_path"] = str(html)
+            (ctx.out / f"links-{name}.txt").write_text(txt.read_text())   # evidence: the file's content
+            (ctx.out / f"links-{name}.html").write_text(html.read_text())
+        d["links"] = lk
         if extra:
             d.update(extra)
         return d
@@ -387,12 +516,50 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
             await t.click(timeout=10_000)
         await page.get_by_role("button", name="Download selected").wait_for(timeout=10_000)
 
+    async def open_links(page, html_path: str, shot_name: str, m: dict, direct: bool) -> dict:
+        """The links html in Chromium (its bytes via set_content, as double-clicked), shot; then m's link: CDN clicked (the popup's
+        load through the browser's CDN boundary), app fetched with this context's session (its cookies)."""
+        o: dict = {}
+        hp = await page.context.new_page()
+        try:
+            # set_content, not file://: the harness context aborts every non-loopback load (declared)
+            await hp.set_content(Path(html_path).read_text(), timeout=WAIT_MS)
+            o["shot"] = await ui.shot(ctx, hp, shot_name)
+            row = hp.locator(f'tr[data-id="{m["id"]}"]')
+            href = await row.locator("a").first.get_attribute("href")
+            o["href"] = (href or "")[:200]
+            if direct:
+                i0 = len(browser_cdn)
+                async with hp.expect_popup(timeout=WAIT_MS) as pi:
+                    await row.get_by_role("link", name="Open (CDN)").click(timeout=10_000)
+                pop = await pi.value
+                await pop.wait_for_load_state(timeout=WAIT_MS)
+                o["opened_shot"] = await ui.shot(ctx, pop, shot_name + "-opened")
+                hits = [c for c in browser_cdn[i0:] if c["key"] == _key(a, m)]
+                o["cdn"] = [[c["status"], c["type"], c["bytes"]] for c in hits]
+                o["ok"] = pop.url == href and any(c[0] == 200 and c[1] == "document" and c[2] == m["sizes"][1]
+                                                   for c in o["cdn"])
+            else:
+                rr = await page.context.request.get(href, timeout=60_000)
+                body = await rr.body()
+                o["app"] = {"status": rr.status, "cd": rr.headers.get("content-disposition"), "bytes": len(body)}
+                o["ok"] = (rr.status == 200 and o["app"]["cd"] == f'attachment; filename="{m["id"]}.jpg"'
+                           and body == asset_bytes(_key(b, m), m["sizes"][1]))
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            o["error"] = f"{type(e).__name__}: {e}"[:600]
+            o["ok"] = False
+        finally:
+            await hp.close()
+        return o
+
+    lk_all: dict = {}
+
     # ── A: no proxy, direct ──
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
         try:
             await setup(page, a)
         except Exception as e:  # noqa: BLE001
-            for name in (SELECT, FOLDER, VAULT):
+            for name in (SELECT, FOLDER, VAULT, LINKS):
                 ctx.check(name, False, error=f"setup: {type(e).__name__}: {e}"[:600])
             await ui.shot(ctx, page, "failed-vault-download-setup")
             return
@@ -402,6 +569,7 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         await tick(page, sel)
         d = await phase_run("select", page, a, sel, None,
                             lambda: page.get_by_role("button", name="Download selected").click(timeout=10_000))
+        lk_all["select"] = d["links"]
         ctx.check(SELECT, len(sel) == 4 and settled(d, 4) and disk_ok(d) and d["panel"]["direct"] == "4"
                   and d["relay_downloads"]["n"] == 0 and d["browser_cdn"]["n"] == 4, **d)
         await page.get_by_role("button", name="Close download").click(timeout=10_000)
@@ -418,6 +586,7 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
             await page.get_by_role("menuitem", name="Download folder").click(timeout=10_000)
 
         d = await phase_run("folder", page, a, fms, f["name"], open_folder_menu)
+        lk_all["folder"] = d["links"]
         ctx.check(FOLDER, bool(fms) and settled(d, len(fms)) and disk_ok(d) and d["panel"]["direct"] == str(len(fms))
                   and d["relay_downloads"]["n"] == 0, folder=f["name"], **d)
         await page.get_by_role("button", name="Close download").click(timeout=10_000)
@@ -435,6 +604,10 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         d["stale_browser"] = {k: d["browser_by_key"].get(k) for k in stale_keys}
         ctx.check(VAULT, settled(d, len(every)) and disk_ok(d) and d["panel"]["direct"] == str(len(every))
                   and d["relay_downloads"]["n"] == 0 and stale_ok, **{k: v for k, v in d.items() if k != "browser_by_key"})
+        lk_all["vault"] = d["links"]
+        fresh = next(m for m in every if m["type"] == "photo" and m not in stale)
+        lk_all["vault"]["open"] = (await open_links(page, d["links"]["html_path"], "vault-download-links-html", fresh, True)
+                                   if d["links"].get("html_path") else {"ok": False, "error": "no html"})
 
     # ── B: on a proxy, relay only ──
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
@@ -444,6 +617,7 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
             await tick(page, sel)
         except Exception as e:  # noqa: BLE001
             ctx.check(PROXIED, False, error=f"setup: {type(e).__name__}: {e}"[:600])
+            ctx.check(LINKS, False, error=f"proxied setup: {type(e).__name__}: {e}"[:600], **lk_all)
             await ui.shot(ctx, page, "failed-vault-download-proxied-setup")
             return
         d = await phase_run("proxied", page, b, sel, None,
@@ -452,3 +626,168 @@ async def _ui(ctx, w, vw, a: str, b: str, nick: dict, peg: str, port: int, cdn_n
         ctx.check(PROXIED, len(sel) == 4 and settled(d, 4) and disk_ok(d) and d["browser_cdn"]["n"] == 0
                   and d["panel"]["relay"] == "4" and d["relay_downloads"]["ok"] == 4 and d["relay_cdn_egress"] == [peg],
                   **d)
+        lk_all["proxied"] = d["links"]
+        photo = next(m for m in sel if m["type"] == "photo")
+        lk_all["proxied"]["open"] = (await open_links(page, d["links"]["html_path"], "vault-download-links-html-proxied",
+                                                      photo, False)
+                                     if d["links"].get("html_path") else {"ok": False, "error": "no html"})
+    ok = all(lk_all.get(ph, {}).get("first_ok") and _links_ok(lk_all[ph], ph != "proxied")
+             for ph in ("select", "folder", "vault", "proxied")) if len(lk_all) == 4 else False
+    names_ok = (len(lk_all) == 4 and all(x.startswith("links-valid-until-") for ph in ("select", "folder", "vault")
+                                         for x in lk_all[ph]["files"])
+                and all(x.startswith("links-valid-while-logged-in.") for x in lk_all["proxied"]["files"]))
+    ctx.check(LINKS, ok and names_ok and lk_all["vault"]["open"]["ok"] and lk_all["proxied"]["open"]["ok"],
+              **{ph: {k: v for k, v in x.items() if k != "html_path"} for ph, x in lk_all.items()})
+
+
+async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict, cdn_n, cdn_since) -> None:
+    """The phone sink on B (proxied: relay only): the 20 cap and the mode reasons, then a selection shared in batches."""
+    from slop.actors import ui
+
+    ms = vw.listing(b)
+    vids = [m for m in ms if m["type"] == "video"][1:3]   # not the newest: PROXIED's
+    photos = [m for m in ms if m["type"] == "photo"][3:6]
+    sel = photos + vids
+    big = {_key(b, m): PHONE_VIDEO_MB << 20 for m in vids}
+    await arm_run(ctx.owner, ctx.stack.tmp, assets, CDN_LATENCY_S, mp4_sizes=big)
+    browser_cdn: list[dict] = []
+    cap: dict = {}
+    d: dict = {"selected": [m["id"] for m in sel], "videos": [m["id"] for m in vids]}
+
+    async def tick(page, mids) -> None:
+        for mid in mids:
+            t = page.locator(f"section [title^='#{mid} ']").first
+            await t.scroll_into_view_if_needed(timeout=10_000)
+            await t.tap(timeout=10_000)
+
+    async def dl_state(page) -> dict:
+        btn = page.get_by_role("button", name="Download selected")
+        off = page.get_by_test_id("download-off")
+        bar = page.locator("div", has=btn).filter(has_text="Selected").last
+        count = await bar.evaluate("(el) => el.querySelector('div span:nth-child(2)')?.textContent ?? ''")
+        return {"count": count, "enabled": await btn.is_enabled(),
+                "reason": (await off.inner_text()) if await off.count() else ""}
+
+    async with ui.owner_browser(ctx, viewport=PHONE_VIEWPORT, through=(LISTS_PATH, MEDIA_PATH), touch=True) as page:
+        try:
+            await page.context.add_init_script(SHARE_JS)
+            await _open_vault(ctx, page, b, port, browser_cdn)
+            cap["picker"] = await page.evaluate("typeof window.showDirectoryPicker")
+            await page.get_by_role("button", name="Select", exact=True).tap(timeout=10_000)
+            await page.get_by_role("button", name="Select all").tap(timeout=10_000)
+            await page.get_by_role("button", name="Download selected").wait_for(timeout=10_000)
+            cap["all"] = await dl_state(page)
+            vault_btn = page.get_by_role("button", name="Download whole vault")
+            cap["vault"] = {"enabled": await vault_btn.is_enabled(), "title": await vault_btn.get_attribute("title")}
+            cap["shot"] = await ui.shot(ctx, page, "vault-download-phone-cap")
+            await page.get_by_role("button", name="Clear").tap(timeout=10_000)
+            await tick(page, [m["id"] for m in ms[:PHONE_MAX]])
+            cap["twenty"] = await dl_state(page)
+            await tick(page, [ms[PHONE_MAX]["id"]])
+            cap["twentyone"] = await dl_state(page)
+            await page.get_by_role("button", name="Clear").tap(timeout=10_000)
+            row = page.locator("aside [role='button']").filter(has_text=vw.vault(b)["folders"][0]["name"]).first
+            await row.scroll_into_view_if_needed(timeout=10_000)
+            await row.get_by_role("button", name="More").tap(timeout=10_000)
+            item = page.get_by_role("menuitem", name=re.compile(r"^Download folder"))
+            cap["folder"] = {"label": await item.inner_text(), "enabled": await item.is_enabled(),
+                             "title": await item.get_attribute("title")}
+            await row.get_by_role("button", name="More").tap(timeout=10_000)   # closes the menu
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            cap["error"] = f"{type(e).__name__}: {e}"[:600]
+            cap["failed_shot"] = await ui.shot(ctx, page, "failed-vault-download-phone-cap")
+        ok = "error" not in cap
+        ctx.check(PHONE_CAP, ok and cap["picker"] == "undefined"
+                  and int(cap["all"]["count"] or 0) > PHONE_MAX and not cap["all"]["enabled"]
+                  and cap["all"]["reason"] == PHONE_COUNT_OFF
+                  and cap["twenty"] == {"count": str(PHONE_MAX), "enabled": True, "reason": ""}
+                  and cap["twentyone"] == {"count": str(PHONE_MAX + 1), "enabled": False, "reason": PHONE_COUNT_OFF}
+                  and cap["vault"] == {"enabled": False, "title": PHONE_MODE_OFF}
+                  and cap["folder"]["enabled"] is False and cap["folder"]["title"] == PHONE_MODE_OFF, **cap)
+
+        n0, s0 = await cdn_n(), len(page.slop["statuses"])
+        try:
+            await tick(page, [m["id"] for m in sel])
+            d["trigger_shot"] = await ui.shot(ctx, page, "vault-download-phone-trigger")
+            await page.get_by_role("button", name="Download selected").tap(timeout=10_000)
+            panel = page.locator(PANEL)
+            links = page.get_by_test_id("dl-save-links")
+            save = page.get_by_test_id("dl-save")
+            await save.wait_for(timeout=WAIT_MS)
+            # Save links before any media share (tapped once the big fetches are in, outside their streams)
+            d["links_shot"] = await ui.shot(ctx, page, "vault-download-phone-links")
+            await links.tap(timeout=10_000)
+            await links.wait_for(state="detached", timeout=10_000)   # linksSaved: the button goes
+            d["first_label"] = await save.inner_text()
+            d["ready_title"] = await panel.locator("div.font-medium").first.inner_text()
+            d["ready_shot"] = await ui.shot(ctx, page, "vault-download-phone-ready")
+            await page.evaluate("window.__slopShare.abortNext = true")
+            await save.tap(timeout=10_000)
+            await page.wait_for_timeout(500)
+            d["after_dismiss"] = {"visible": await save.is_visible(), "label": await save.inner_text()}
+            labels, t0 = [], time.time()
+            while time.time() - t0 < SETTLE_S:
+                if await panel.get_attribute("data-phase") == "done" and await panel.get_attribute("data-unsaved") == "0":
+                    break
+                if await save.count() and await save.is_visible():
+                    lab = await save.inner_text()
+                    labels.append(lab)
+                    await save.tap(timeout=10_000)
+                    t1 = time.time()   # until this batch leaves (the label changes or the button goes)
+                    while time.time() - t1 < 30 and await save.count() and await save.inner_text() == lab:
+                        await asyncio.sleep(0.1)
+                else:
+                    await asyncio.sleep(0.25)
+            d["labels"] = labels
+            d["panel"] = {k: await panel.get_attribute(f"data-{k}") for k in
+                          ("phase", "total", "done", "failed", "relay", "direct", "batches", "saved", "unsaved")}
+            d["settled_shot"] = await ui.shot(ctx, page, "vault-download-phone-settled")
+        except Exception as e:  # noqa: BLE001
+            d["error"] = f"{type(e).__name__}: {e}"[:600]
+            d["failed_shot"] = await ui.shot(ctx, page, "failed-vault-download-phone")
+        share = await page.evaluate("window.__slopShare")
+        statuses = page.slop["statuses"][s0:]
+    calls = await cdn_since(n0)
+    served = {c["key"]: c["bytes"] for c in calls if c["status"] == 200}
+    want = {f"{m['id']}.{'mp4' if m['type'] == 'video' else 'jpg'}":
+            ["video/mp4", served.get(_key(b, m), -1)] if m["type"] == "video" else ["image/jpeg", m["sizes"][1]]
+            for m in sel}
+    is_links = [all(_is_links(f["name"]) for f in c["files"]) for c in share["calls"]]
+    lcalls = [c for c, k in zip(share["calls"], is_links) if k]
+    share["calls"] = [c for c, k in zip(share["calls"], is_links) if not k]   # the media batches
+    shared = [f for c in share["calls"] for f in c["files"]]
+    got = Counter(f["name"] for f in shared)
+    d["shared"] = {"calls": [[f["name"] for f in c["files"]] for c in share["calls"]],
+                   "active": [c["active"] for c in share["calls"]], "dismissed": len(share["dismissed"]),
+                   "twice": sorted(k for k, n in got.items() if n > 1), "missing": sorted(set(want) - set(got)),
+                   "stray": sorted(set(got) - set(want)),
+                   "bad": [[f["name"], f["type"], f["size"], want.get(f["name"])] for f in shared
+                           if want.get(f["name"]) != [f["type"], f["size"]]]}
+    d["video_bytes"] = {k: served.get(k) for k in big}
+    d["browser_cdn"] = len([c for c in browser_cdn if f"/files/v/{b}/" in c["key"]])
+    d["relay_cdn_egress"] = sorted({c["egress"] for c in calls if c.get("ua") != "slop-browser"
+                                    and c["key"] in {_key(b, m) for m in sel}})
+    d["http_5xx"] = [[st, u] for st, u in statuses if st >= 500][:10]
+    p = d.get("panel") or {}
+    sh = d["shared"]
+    n = len(sel)
+    lf = {f["type"]: f for c in lcalls for f in c["files"]}
+    lt, lh = lf.get("text/plain") or {}, lf.get("text/html") or {}
+    pl: dict = {"calls": len(lcalls), "first": bool(is_links) and is_links[0], "active": [c["active"] for c in lcalls],
+                "names": sorted(f["name"] for c in lcalls for f in c["files"])}
+    if lt.get("text") and lh.get("text"):
+        pl.update(_links(lt["text"], lh["text"], b, sel, False, ctx.app))
+        (ctx.out / "links-phone.txt").write_text(lt["text"])
+        (ctx.out / "links-phone.html").write_text(lh["text"])
+    ctx.check(PHONE_LINKS, "error" not in d and pl["calls"] == 1 and pl["first"] and pl["active"] == [True]
+              and pl["names"] == ["links-valid-while-logged-in.html", "links-valid-while-logged-in.txt"]
+              and "lines" in pl and _links_ok(pl, False), **pl)
+    ctx.check(PHONE_SHARE, "error" not in d and len(vids) == 2 and len(photos) == 3
+              and all(v == PHONE_VIDEO_MB << 20 for v in d["video_bytes"].values())
+              and p.get("phase") == "done" and p.get("total") == str(n) and p.get("done") == str(n)
+              and p.get("failed") == "0" and p.get("relay") == str(n) and p.get("unsaved") == "0"
+              and int(p.get("batches") or 0) >= 2 and p.get("batches") == p.get("saved")
+              and len(sh["calls"]) == int(p["batches"]) and all(a is True for a in sh["active"])
+              and not sh["twice"] and not sh["missing"] and not sh["stray"] and not sh["bad"]
+              and str(d.get("ready_title", "")).startswith("Ready to save") and sh["dismissed"] == 1 and d.get("after_dismiss") == {"visible": True, "label": d.get("first_label")}
+              and d["browser_cdn"] == 0 and d["relay_cdn_egress"] == [peg] and not d["http_5xx"], **d)

@@ -20,7 +20,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorProfiles } from "@/lib/creatorProfiles";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { ofMeQuery } from "@/lib/ofMe";
-import { relay, type AccountMeta, type WatcherMeta } from "@/lib/relay";
+import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
 import { subscribeToStorage } from "@/lib/storageSync";
 import { cn } from "@/lib/utils";
 
@@ -77,7 +77,7 @@ export function CreatorColumn(props: {
   noAll?: boolean;
   /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
    *  own lists its watchers in `accounts` instead, as pickable rows with a "watcher" badge (WatcherScope). */
-  watchers?: WatcherMeta[];
+  watchers?: WatcherAccount[];
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
@@ -116,7 +116,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
   /** No "All creators" row. */
   noAll?: boolean;
   /** Watcher accounts after the creators, not pickable. */
-  watchers?: WatcherMeta[];
+  watchers?: WatcherAccount[];
   /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
   /** OF Manager's own column: it collapses, warms the hovered creator's OF view and owns the `/` key. */
@@ -405,7 +405,7 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
 
 /** A watcher account's row: the creator rows' button, disabled (it is no Creator, so nothing to pick), dimmed, with a
  *  "watcher" badge. No photo: the avatar is a Creator's `/users/me`, and a watcher is a fan account. */
-function WatcherRow({ watcher, collapsed }: { watcher: WatcherMeta; collapsed: boolean }) {
+function WatcherRow({ watcher, collapsed }: { watcher: WatcherAccount; collapsed: boolean }) {
   const name = watcher.nickname || watcher.name || watcher.id;
   return (
     <button

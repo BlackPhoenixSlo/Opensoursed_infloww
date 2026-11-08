@@ -449,10 +449,10 @@ def _proxy_failover_never_moves() -> None:
 
 
 def _pool_failover_ignores_tiers() -> None:
-    """The failover as before INFLOWW_PROXIES tiers: one group, the least-used answering proxy of the
-    whole pool (bug class: a Creator moved off an ISP proxy lands on an idler, worse DC one)."""
+    """The failover and attach as before INFLOWW_PROXIES tiers: one group, the least-used answering proxy of the
+    whole pool (bug class: a Creator moved off, or a login bound, onto an idler, worse DC one)."""
     import proxies
-    proxies._tiers = lambda entries: [list(entries)]
+    proxies._tiers = lambda entries, first=None: [list(entries)]
 
 
 def _pool_assign_drops_unanswered_login() -> None:
@@ -464,14 +464,14 @@ def _pool_assign_drops_unanswered_login() -> None:
 
     real = proxies.assign_pool
 
-    def assign_pool(account_id, *, bad, due, geo, verify, rng=None):
+    def assign_pool(account_id, *, bad, dead, due, geo, verify, rng=None):
         answers: list[bool] = []
 
         def counted(p):
             answers.append(bool(verify(p)))
             return answers[-1]
         was_on_pool = proxies.is_pool(proxies.get_for_account(account_id))
-        out = real(account_id, bad=bad, due=due, geo=geo, verify=counted, rng=rng)
+        out = real(account_id, bad=bad, dead=dead, due=due, geo=geo, verify=counted, rng=rng)
         if not was_on_pool and not out[1] and answers and not any(answers):
             proxies.unbind_pool(account_id)
             raise LookupError("slop fault pool-assign-drops-unanswered-login: no Inflowwww proxy answers")
@@ -492,8 +492,8 @@ def _proxy_confirm_probes_trace() -> None:
     """The watcher's confirm and rechecks back on Cloudflare's trace (the pre-fix probe): a proxy
     that answers the trace yet refuses CONNECT to OF is never confirmed bad (bug class: the probe
     tests another host than the one failing)."""
-    import proxies
-    proxies.probe_of = proxies.probe
+    import proxy_probe
+    proxy_probe.probe_of = proxy_probe.probe
 
 
 def _proxy_decide_recheck_answer_ignored() -> None:
@@ -502,7 +502,7 @@ def _proxy_decide_recheck_answer_ignored() -> None:
     calls through stays bad for good (bug class: the pool shrinks; the standby is lost)."""
     import proxy_health_decide as ph
     real = ph.decide
-    ph.decide = lambda st, ev: real(st, ph.RecheckResult(ok=False) if isinstance(ev, ph.RecheckResult) else ev)
+    ph.decide = lambda st, ev: real(st, ph.RecheckResult(ok=False, flapping=ev.flapping) if isinstance(ev, ph.RecheckResult) else ev)
 
 
 # ── proxy watcher claim hand-off (rwl/proxy-watch-gap) ──
@@ -636,7 +636,7 @@ _DASHBOARD_TOTAL_NOT_SAVED = """(() => {
 # 2026-10-28. `GET /admin/accounts` reaches the page as a 503 (the request itself still goes out and answers), so the
 # cards take their failed-list path and send every Creator's OnlyFans reads, the session-less one's included (404
 # Unknown account_id), with no "Not connected" label. The Dashboard's screen bundle (app/lib/screenBundle.ts) carries
-# the list too: its `accounts` answers as that read's 503 error there.
+# the list too: its `accounts` answer is that read's 503 error there.
 _DASHBOARD_OFFLINE_CREATOR_READS_OF = """(() => {
   const real = window.fetch;
   const detail = 'slop fault: accounts unavailable';
@@ -648,8 +648,8 @@ _DASHBOARD_OFFLINE_CREATOR_READS_OF = """(() => {
       return p.then(async (r) => {
         if (!r.ok) return r;
         const body = await r.json();
-        delete body.accounts;
-        body.errors = [...(body.errors || []), { accountId: null, read: 'accounts', status: 503, detail: { detail } }];
+        body.answers = (body.answers || []).filter((a) => a.read !== 'accounts')
+          .concat([{ accountId: null, read: 'accounts', status: 503, detail: { detail } }]);
         return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
       });
     }
@@ -749,6 +749,14 @@ FAULTS: dict[str, Fault] = {
             ("desktop", ("main-window toast", "Messages Pro toast", "top bar bell row", "native notification")))
         for e in entries
     ), browser_js=_NOTIF_CLICK_OPENS_BROWSER_TAB, desktop=_NOTIF_CLICK_DESKTOP_IGNORES_MESSAGES_PRO),
+    # slop/run inbox-unread --break --fault=quick-reply-to-wrong-fan: app/components/NotificationQuickReply.tsx's
+    # send hook built for another Fan than its row's (a row's props misrouted, as an index-keyed list did): the
+    # reply goes out as the right Creator to the next Fan id. Client side, in flight (actors/ui), never in the repo.
+    "quick-reply-to-wrong-fan": Fault(None, (
+        "quick reply: OF got exactly one send, as the replied row's Creator to its Fan with the typed text, "
+        "none to the other Creator's same Fan; the line is in that thread only (DB)",
+    ), browser=((r"accountId,(?:\s|\\n)*fanId,(?:\s|\\n)*hookHandle:(?:\s|\\n)*handle",
+                 "accountId, fanId: Number(fanId) + 1, hookHandle: handle"),)),
     "sse-fanout-reorders-within-thread": Fault(_sse_fanout_reorders_within_thread, (
         "per-thread order preserved on every /events stream",
     )),
@@ -885,6 +893,7 @@ FAULTS: dict[str, Fault] = {
     )),
     # slop/run proxy-failover --break --fault=pool-failover-ignores-tiers
     "pool-failover-ignores-tiers": Fault(_pool_failover_ignores_tiers, (
+        "pool: ON_POOL Creators bound least-used through /admin/proxy-pool/assign, each warm-up tunneled",
         "pool tiers: the dead tier-0 proxy's Creators all moved to the other tier-0 proxy, none to the idler "
         "tier-1 one (INFLOWW_PROXIES `|`)",
     )),
@@ -901,7 +910,7 @@ FAULTS: dict[str, Fault] = {
     )),
     # slop/run proxy-failover --break --fault=proxy-confirm-probes-trace
     "proxy-confirm-probes-trace": Fault(_proxy_confirm_probes_trace, (
-        "the watcher's confirm and rechecks probe OnlyFans' x-hash endpoint with no account and no cookie (proxies.probe_of)",
+        "the watcher's confirm and rechecks probe OnlyFans' API host (robots.txt) with no account and no cookie (proxy_probe.probe_of)",
     )),
     # slop/run proxy-failover --break --fault=proxy-decide-recheck-answer-ignored
     "proxy-decide-recheck-answer-ignored": Fault(_proxy_decide_recheck_answer_ignored, (
@@ -1079,3 +1088,12 @@ FAULTS["vault-sort-label-not-saved-in-sort"] = Fault(
     None, (_reducers.VAULT_SORT_LABEL, _reducers.VAULT_MIRROR_SORT_LABEL), browser=(
         (r"\(0,\s*[\w$]+\.saveFolderSort\)\(accountId,", "((..._) => {})(accountId,"),
     ), browser_files=_reducers.USE_VAULT_CACHE_FILES)
+
+# Vault picker's client regressions. Each rewrite applies only to the served next-dev bundle; the real UI and
+# relay still run. The scenarios retain their existing default FAULT, while --fault can select either of these.
+FAULTS["vault-gif-loop-cap-removed"] = Fault(
+    None, ("ui_gif_picker_caps_attached_loops_and_detaches_offscreen",),
+    browser=((r"MAX_GIF_LOOPS\s*=\s*4", "MAX_GIF_LOOPS = 40"),), browser_files=1)
+FAULTS["vault-picker-refresh-pending-hidden"] = Fault(
+    None, ("vault_picker_refresh_pending_single_post_and_failure_note",),
+    browser=((r"isPending:\s*pending", "isPending: false"),), browser_files=2)

@@ -135,15 +135,47 @@ def _get(client, path: str, aid: str | None = None, **params):
     return r.status_code, r.json()
 
 
+def _view(env: dict) -> dict:
+    """The screen envelope (screens_api.run_screen: one answer per read) as per-read maps, for these checks: `errors`
+    (every answer with a status), `refreshing` ({accountId, read}), an unscoped read's body under its name, a scoped
+    read's `{accountId: body}` (answer order). Same shape as slop/lib/screen_bundle.py bundle_view (tests never import
+    slop), plus the envelope's own asserts (one answer per (accountId, read))."""
+    assert set(env) == {"answers", "asOf"} and isinstance(env["asOf"], int), set(env)
+    v: dict = {"errors": [], "refreshing": [], "asOf": env["asOf"]}
+    seen: set[tuple] = set()
+    for a in env["answers"]:
+        assert ("body" in a) != ("status" in a) and {"accountId", "read"} <= set(a), a
+        assert (a["accountId"], a["read"]) not in seen, f"duplicate answer {a}"   # the maps below would hide it
+        seen.add((a["accountId"], a["read"]))
+        if "status" in a:
+            v["errors"].append(a)
+            continue
+        if a.get("refreshing"):
+            v["refreshing"].append({"accountId": a["accountId"], "read": a["read"]})
+        if a["accountId"] is None:
+            v[a["read"]] = a["body"]
+        else:
+            v.setdefault(a["read"], {})[a["accountId"]] = a["body"]
+    return v
+
+
+def _late(v: dict) -> set[tuple]:
+    """The (accountId, read) pairs answered past the bundle's deadline."""
+    return {(e["accountId"], e["read"]) for e in v["errors"]
+            if e["status"] == 504 and e["detail"] == {"upstream_status": "bundle_deadline"}}
+
+
 def _dash(client, **params):
     r = client.get("/admin/screens/dashboard", params={**WINDOW, **params})
     assert r.status_code == 200, f"{r.status_code} {r.text}"
     assert r.headers.get("cache-control") == "no-store"
-    return r.json()
+    return _view(r.json())
 
 
-def _by_id(got: dict) -> dict[str, dict]:
-    return {c["id"]: c for c in got["creators"]}
+def _inbox(client, **params):
+    r = client.get("/admin/screens/inbox", params=params)
+    assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.text
+    return _view(r.json())
 
 
 def _put(client, tab: str, blob: dict) -> None:
@@ -166,40 +198,38 @@ def _reset_roles() -> None:
 def case_owner_dashboard_is_the_per_creator_routes_in_one_call():
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
     got = _dash(OWNER_A)
-    assert [c["id"] for c in got["creators"]] == [a["id"] for a in got["accounts"]["accounts"]], "roster order"
-    assert sorted(c["id"] for c in got["creators"]) == [A1, A2], got["creators"]
+    assert list(got["profile"]) == [a["id"] for a in got["accounts"]["accounts"]], "roster order"
+    assert sorted(got["profile"]) == [A1, A2], got["profile"]
     assert got["errors"] == [], got["errors"]
     assert got["settings"] == _get(OWNER_A, "/admin/settings/applied")[1]
     assert got["accounts"] == _get(OWNER_A, "/admin/accounts")[1]
     assert got["perModel"] == _get(OWNER_A, "/admin/stats/per-model", **WINDOW)[1]
-    for c in got["creators"]:
-        assert not c["stale"] and c["asOf"], c
-        assert c["profile"] == _get(OWNER_A, "/api/of/v2/users/me", c["id"])[1]
-        assert c["subscriberCounts"] == _get(OWNER_A, "/api/of/v2/subscriptions/count/all", c["id"])[1]
-        assert c["newFans"] == _get(OWNER_A, "/api/of/v2/subscriptions/subscribers/chart", c["id"],
-                                    start=WINDOW["from"], end=WINDOW["to"])[1]
+    for aid in got["profile"]:
+        assert got["profile"][aid] == _get(OWNER_A, "/api/of/v2/users/me", aid)[1]
+        assert got["subscriberCounts"][aid] == _get(OWNER_A, "/api/of/v2/subscriptions/count/all", aid)[1]
+        assert got["newFans"][aid] == _get(OWNER_A, "/api/of/v2/subscriptions/subscribers/chart", aid,
+                                           start=WINDOW["from"], end=WINDOW["to"])[1]
     assert all(aid != B1 for aid, _ in CALLS), CALLS
 
 
 def case_dashboard_without_dates_reads_the_chart_as_the_hook_does():
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
-    got = OWNER_A.get("/admin/screens/dashboard").json()
-    assert _by_id(got)[A1]["newFans"] == {"subscribers": int(A1) % 13, "start": None, "end": None, "by": None}
+    got = _view(OWNER_A.get("/admin/screens/dashboard").json())
+    assert got["newFans"][A1] == {"subscribers": int(A1) % 13, "start": None, "end": None, "by": None}
 
 
 def case_owner_inbox_is_the_per_creator_routes_in_one_call():
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
-    r = OWNER_A.get("/admin/screens/inbox")
-    assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.text
-    got = r.json()
-    assert sorted(got["chats"]) == [A1, A2] and got["errors"] == [] and got["stale"] == [], got
+    got = _inbox(OWNER_A)
+    assert got["accounts"] == _get(OWNER_A, "/admin/accounts")[1]
+    assert sorted(got["chats"]) == [A1, A2] and got["errors"] == [], got
     for aid in (A1, A2):
         assert got["notificationCounts"][aid] == _get(OWNER_A, "/api/of/v2/users/notifications/count", aid)[1]
         assert got["chats"][aid] == _get(OWNER_A, "/api/of/v2/chats", aid, limit=25, offset=0, order="recent")[1]
-    assert got["nextCursorByAccount"] == {A1: 25, A2: None}, got["nextCursorByAccount"]
-    nxt = OWNER_A.get("/admin/screens/inbox", params={"cursor": 25}).json()
+    assert {a: got["chats"][a]["hasMore"] for a in (A1, A2)} == {A1: True, A2: False}, got["chats"]
+    nxt = _inbox(OWNER_A, cursor=25)
     assert nxt["chats"][A1] == _get(OWNER_A, "/api/of/v2/chats", A1, limit=25, offset=25, order="recent")[1]
-    assert nxt["nextCursorByAccount"][A1] is None
+    assert nxt["chats"][A1]["hasMore"] is False
 
 
 def _lanes() -> dict[str, dict]:
@@ -214,7 +244,7 @@ def case_only_the_open_creator_reads_as_the_user():
     of_pacing._last_user.clear()
     before = _lanes()
     r = OWNER_A.get("/admin/screens/inbox", params={"focus": A1}, headers={"X-Priority": "user"})
-    assert r.status_code == 200 and not r.json()["errors"], r.text
+    assert r.status_code == 200 and not _view(r.json())["errors"], r.text
     after = _lanes()
     d = {aid: {k: after[aid][k] - before[aid][k] for k in ("calls_user", "calls_background")} for aid in (A1, A2)}
     assert d[A1]["calls_user"] > 0 and d[A1]["calls_background"] == 0, d
@@ -237,7 +267,7 @@ def case_reads_queued_at_the_deadline_run_on():
     finally:
         screens_api.BUNDLE_READS = real
     second = _dash(OWNER_A, deadline_ms=1000)
-    assert second["errors"] == [] and all(not c["stale"] for c in second["creators"]), second
+    assert second["errors"] == [], second
     assert CALLS[n:] == [], CALLS[n:]
 
 
@@ -246,16 +276,16 @@ def case_reads_queued_at_the_deadline_run_on():
 def case_chatter_sees_only_its_creators_and_naming_another_reads_nothing():
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
     got = _dash(CHATTER_A)
-    assert [c["id"] for c in got["creators"]] == [A1, A2], got["creators"]
-    assert got["accounts"] == _get(CHATTER_A, "/chatter/me/accounts")[1]
+    assert list(got["profile"]) == [A1, A2], got["profile"]
+    assert "accounts" not in got, "a chatter's list is /chatter/me/accounts: never a bundle answer"
     narrowed = _dash(CHATTER_A, accounts=f"{B1},{A2}")
-    assert [c["id"] for c in narrowed["creators"]] == [A2], narrowed
+    assert list(narrowed["profile"]) == [A2], narrowed
     assert {"accountId": B1, "read": "*", "status": 404, "detail": "not on this screen"} in narrowed["errors"]
-    inbox = CHATTER_A.get("/admin/screens/inbox", params={"accounts": B1}).json()
-    assert inbox["chats"] == {} and inbox["errors"][0]["status"] == 404
+    inbox = _inbox(CHATTER_A, accounts=B1)
+    assert "chats" not in inbox and inbox["errors"][0]["status"] == 404
     assert all(aid != B1 for aid, _ in CALLS), CALLS
     both = _dash(CHATTER_AB)
-    assert sorted(c["id"] for c in both["creators"]) == sorted([A1, A2, B1])
+    assert sorted(both["profile"]) == sorted([A1, A2, B1])
 
 
 def case_a_role_without_the_dashboard_gets_the_routes_own_403():
@@ -268,7 +298,7 @@ def case_a_role_without_the_dashboard_gets_the_routes_own_403():
         errs = {(e["accountId"], e["read"]): e for e in got["errors"]}
         assert errs[A1, "subscriberCounts"]["status"] == 403
         assert errs[A1, "subscriberCounts"]["detail"] == want[1]["detail"], (errs, want)
-        assert got["creators"][0]["subscriberCounts"] is None
+        assert A1 not in got.get("subscriberCounts", {}), got
         assert not any(name == "counts" for _, name in CALLS), CALLS
     finally:
         _reset_roles()
@@ -280,8 +310,8 @@ def case_a_hidden_per_model_card_reads_none_of_it():
     try:
         got = _dash(CHATTER_A)
         assert "/#card-per-model" in got["settings"]["permissions"]["denied_cards"]
-        assert got["perModel"] is None
-        assert all("subscriberCounts" not in c and "newFans" not in c for c in got["creators"]), got["creators"]
+        assert "perModel" not in got
+        assert "subscriberCounts" not in got and "newFans" not in got, got
         assert {name for _, name in CALLS} == {"me"}, CALLS
     finally:
         _reset_roles()
@@ -295,9 +325,8 @@ def case_a_slow_creator_is_stale_and_the_rest_is_on_time():
     got = _dash(OWNER_A, deadline_ms=300)
     took = time.monotonic() - t0
     assert took < 1.2, f"bundle waited {took:.2f}s for the slow Creator"
-    a1, a2 = _by_id(got)[A1], _by_id(got)[A2]
-    assert not a1["stale"] and a1["profile"]["id"] == int(A1), a1
-    assert a2["stale"] and a2["profile"] is None, a2
+    assert got["profile"][A1]["id"] == int(A1) and not {r for a, r in _late(got) if a == A1}, got
+    assert A2 not in got["profile"], got["profile"]
     late = {e["read"] for e in got["errors"] if e["accountId"] == A2}
     assert late == {"profile", "subscriberCounts", "newFans"}, got["errors"]
     assert all(e["status"] == 504 and e["detail"] == {"upstream_status": "bundle_deadline"}
@@ -311,7 +340,7 @@ def case_an_of_error_is_the_routes_own_502():
     assert want[0] == 502, want
     [e] = [e for e in got["errors"] if e["accountId"] == A1]
     assert e["read"] == "subscriberCounts" and e["status"] == 502 and e["detail"] == want[1]["detail"], (e, want)
-    assert _by_id(got)[A1]["profile"] is not None and _by_id(got)[A2]["subscriberCounts"] is not None
+    assert got["profile"][A1] is not None and got["subscriberCounts"][A2] is not None
 
 
 def case_counts_are_one_of_read_across_concurrent_dashboards():
@@ -344,8 +373,7 @@ def case_identical_reads_in_flight_run_once():
     try:
         clients = [OWNER_A] + [_one_loop(fx.login_owner("agency_a_owner")) for _ in range(5)]
         out: list[dict] = []
-        ts = [threading.Thread(target=lambda c=c: out.append(c.get("/admin/screens/inbox").json()))
-              for c in clients]
+        ts = [threading.Thread(target=lambda c=c: out.append(_inbox(c))) for c in clients]
         for t in ts:
             t.start()
         for t in ts:
@@ -360,10 +388,10 @@ def case_identical_reads_in_flight_run_once():
 
 def case_a_failed_read_is_never_reused():
     _use(a1=FakeOF(A1, fail={"notif"}), a2=FakeOF(A2))
-    first = OWNER_A.get("/admin/screens/inbox").json()
+    first = _inbox(OWNER_A)
     assert A1 not in first["notificationCounts"] and any(e["accountId"] == A1 for e in first["errors"]), first
     FAKES[A1].fail = set()
-    again = OWNER_A.get("/admin/screens/inbox").json()
+    again = _inbox(OWNER_A)
     assert again["notificationCounts"].get(A1) == {"all": int(A1) % 7, "tip": 1}, again
 
 
@@ -374,10 +402,10 @@ def case_a_warm_cache_never_reaches_a_caller_without_that_creator():
     gate; a chatter's role hook also checks the Agency) names B1: nothing read, nothing served."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
     warm = _dash(_one_loop(fx.login_owner("agency_b_owner")))
-    assert _by_id(warm)[B1]["subscriberCounts"] is not None, warm["creators"]
+    assert warm["subscriberCounts"][B1] is not None, warm
     n = len(CALLS)
     got = _dash(OWNER_A, accounts=B1)
-    assert got["creators"] == [] and got["errors"] == [
+    assert "profile" not in got and got["errors"] == [
         {"accountId": B1, "read": "*", "status": 404, "detail": "not on this screen"}], got
     assert CALLS[n:] == [], CALLS[n:]
 
@@ -385,20 +413,20 @@ def case_a_warm_cache_never_reaches_a_caller_without_that_creator():
 
 # ── Serve-stale: the last value at once, the read behind it ───────────────
 
-def _active(c: dict) -> int:
-    return c["subscriberCounts"]["subscribers"]["active"]
+def _active(v: dict, aid: str) -> int:
+    return v["subscriberCounts"][aid]["subscribers"]["active"]
 
 
 def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
     """Past the relay's caches (cleared: their 60 s TTL passed), A1's OF slow and its fan count moved: the bundle
-    answers at once with the last values (`refreshing`, asOf their age), the reads run behind it through the same
+    answers at once with the last values (each `refreshing`), the reads run behind it through the same
     single-flight path, and the client's follow-up (`accounts=`, never a last value) has the new count."""
     import relay_cache
     import screens_api
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     first = _dash(OWNER_A)
     assert first["refreshing"] == [] and first["errors"] == [], first
-    old = _active(_by_id(first)[A1])
+    old = _active(first, A1)
     relay_cache._cache.clear()
     screens_api._SHARED.clear()   # SHARE_S passed too
     FAKES[A1].slow_s, FAKES[A1].more_fans = 1.0, 5
@@ -406,15 +434,14 @@ def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
     got = _dash(OWNER_A)
     took = time.monotonic() - t0
     assert took < 0.5, f"waited {took:.2f}s for OF behind a last value"
-    assert _active(_by_id(got)[A1]) == old and not _by_id(got)[A1]["stale"], got["creators"]
+    assert _active(got, A1) == old and not got["errors"], got
     assert {(e["accountId"], e["read"]) for e in got["refreshing"]} == {
         (a, r) for a in (A1, A2) for r in ("profile", "subscriberCounts", "newFans")}, got["refreshing"]
-    assert _by_id(got)[A1]["asOf"] <= first["asOf"], (got["creators"], first["asOf"])
     follow = _dash(OWNER_A, accounts=f"{A1},{A2}", deadline_ms=5000)
-    assert follow["refreshing"] == [] and _active(_by_id(follow)[A1]) == old + 5, follow
+    assert follow["refreshing"] == [] and _active(follow, A1) == old + 5, follow
     assert CALLS.count((A1, "counts")) == 2, CALLS   # the first, then one behind the answer the follow-up joined
     again = _dash(OWNER_A)
-    assert _active(_by_id(again)[A1]) == old + 5 and again["refreshing"], again
+    assert _active(again, A1) == old + 5 and again["refreshing"], again
 
 
 def case_a_last_value_is_only_its_own_principals():
@@ -424,9 +451,9 @@ def case_a_last_value_is_only_its_own_principals():
     assert _dash(OWNER_A)["refreshing"] == []
     assert _dash(OWNER_A)["refreshing"], "the owner's own second bundle: its last values"
     chatter = _dash(CHATTER_A)
-    assert chatter["refreshing"] == [] and [c["id"] for c in chatter["creators"]] == [A1, A2], chatter
+    assert chatter["refreshing"] == [] and list(chatter["profile"]) == [A1, A2], chatter
     other = _dash(_one_loop(fx.login_owner("agency_b_owner")))
-    assert other["refreshing"] == [] and [c["id"] for c in other["creators"]] == [B1], other
+    assert other["refreshing"] == [] and list(other["profile"]) == [B1], other
 
 
 def case_a_last_value_never_outlives_its_gate():
@@ -434,12 +461,12 @@ def case_a_last_value_never_outlives_its_gate():
     not the counts it saw a moment ago."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     warm = _dash(CHATTER_A)
-    assert _by_id(warm)[A1]["subscriberCounts"] is not None, warm
+    assert warm["subscriberCounts"][A1] is not None, warm
     _role({"/messages-pro": True})
     try:
         got = _dash(CHATTER_A)
         errs = {(e["accountId"], e["read"]): e["status"] for e in got["errors"]}
-        assert errs[A1, "subscriberCounts"] == 403 and _by_id(got)[A1]["subscriberCounts"] is None, got
+        assert errs[A1, "subscriberCounts"] == 403 and A1 not in got.get("subscriberCounts", {}), got
         assert not any(e["read"] == "subscriberCounts" for e in got["refreshing"]), got["refreshing"]
     finally:
         _reset_roles()

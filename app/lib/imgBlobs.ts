@@ -37,6 +37,8 @@ export function cachedImg(key: string): Promise<string | null> | undefined {
 /** Hold `load` (an object URL, or null: failed) as `key`'s bytes; returns it. */
 export function rememberImg(key: string, load: Promise<string | null>): Promise<string | null> {
   const p = load.catch(() => null);
+  // No revoke on replace: the only replace is MediaTile's race after a shared load failed (null, nothing to free),
+  // and a live entry's URL may be painting in another tile.
   blobs.delete(key);
   blobs.set(key, p);
   void p.then((u) => { if (!u && blobs.get(key) === p) blobs.delete(key); });

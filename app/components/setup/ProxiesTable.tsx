@@ -443,14 +443,14 @@ export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean;
   const r = h?.refusals;
   const span = r ? (r.window_s < 60 ? `${Math.round(r.window_s)} s` : `${Math.round(r.window_s / 60)} min`) : "";
   const rate = r ? `refusing ${Math.round(r.pct)}% (${span})` : "";
-  const refusing = r && r.refused > 0 ? ` · ${rate}` : "";
+  const refusing = r && r.pct > 0 ? ` · ${rate}` : "";
   if (h && (h.state === "bad" || h.state === "rechecking")) {
     const since = h.bad_since ? ` since ${new Date(h.bad_since * 1000).toLocaleTimeString()}` : "";
     const next = h.state === "rechecking" ? "rechecking now" : h.next_recheck_at
       ? `recheck at ${new Date(h.next_recheck_at * 1000).toLocaleTimeString()}` : "rechecking";
     // Bad for refusing too often (the flap knob): the rate is the reason, not a count of refusals in a row.
     if (h.bad_reason === "flapping") {
-      return { on: false, detail: r && r.refused > 0 ? `${rate}${since} — ${next}` : `was refusing — ${next}` };
+      return { on: false, detail: r && r.pct > 0 ? `${rate}${since} — ${next}` : `was refusing — ${next}` };
     }
     return { on: false, detail: `unreachable${since} (${h.errors} refused) — ${next}${refusing}` };
   }

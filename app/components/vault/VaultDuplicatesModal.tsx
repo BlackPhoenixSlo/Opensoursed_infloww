@@ -27,11 +27,11 @@ import { Check } from "lucide-react";
 
 import {
   hideDuplicates,
-  mirrorThumbSrc,
   useDuplicates,
   type DupeCluster,
   type DupeMember,
 } from "@/hooks/useVaultCache";
+import { mirrorThumbSrc } from "@/lib/mediaUrl";
 import { IfButton, IfHelp, IfLabel, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 

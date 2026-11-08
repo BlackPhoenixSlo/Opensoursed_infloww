@@ -121,6 +121,10 @@ def case_defers_refusal_table():
     for reason, n in (("proxy_retry:2", 2), ("proxy_retry:3 (ProxyError(...))", 3), ("proxy_refused (x)", 0),
                       ("RuntimeError()", 0), (None, 0), ("proxy_retry:x", 0)):
         assert proxy_tries(reason) == n, (reason, n)
+    from run_decide import proxy_refused_reason, proxy_retry_reason
+    for n in (1, 2, 3):   # the writer and its parser, side by side in run_decide
+        assert proxy_tries(proxy_retry_reason(n, "ProxyError('CONNECT 403: x y')")) == n
+    assert proxy_tries(proxy_refused_reason("ProxyError()")) == 0
 
 
 def case_outcome_table():

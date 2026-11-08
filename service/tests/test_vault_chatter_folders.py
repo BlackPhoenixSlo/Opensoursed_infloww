@@ -18,6 +18,14 @@ is linked to A and restricted to OF folder 12 on accV. Mirror rows:
   /admin/vault-ai/disputes/resolve|flags-review/grade|pack-triage
                               chatter 404 outside its folders / no mirror row;
                               owner unchanged (200, 400 not_in_mirror for 999)
+  pack-candidates shelf       chatter's rung counts are of folder 12's media only
+  /api/of/v2/vault/media/{id}, PATCH items/{id}, items/{id}/hide, reorder
+                              chatter 404 outside its folders / no mirror row,
+                              before any cache read or OF call
+  collect/status, cache/summary last_run, harvest-keywords/status
+                              chatter gets no whole-vault totals / hit count
+  /admin/vault-ai/sync        chatter 403 outside its folders; on All only the cache
+                              drop (200, seen/new null, no OF walk)
 
 Run: ./venv/bin/python service/tests/test_vault_chatter_folders.py   (exit 0 = pass)
 """
@@ -33,13 +41,16 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
+import vault_ai_api  # noqa: E402
 import vault_ai_vision  # noqa: E402
+import vault_cache  # noqa: E402
+import vault_ingest  # noqa: E402
 import vault_stills  # noqa: E402
 from _pre_enforcement import seed_pre_enforcement_install  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, Chatter, ChatterFolderAccess, ChatterUser, User, UserAccount, VaultItem,
-    VaultOfQueryLog, VaultSend,
+    Account, Chatter, ChatterFolderAccess, ChatterUser, User, UserAccount, VaultCacheRun,
+    VaultItem, VaultOfQueryLog, VaultSend,
 )
 
 client_factory = _harness.make_client
@@ -221,6 +232,113 @@ def case_review_writes_404_outside_folders():
             assert r.status_code == want, ("owner", path, mid, r.status_code, r.text[:120])
     r = chatter.post("/admin/vault-ai/pack-triage", json=triage(101, 102))
     assert r.status_code == 404, ("one outside verdict spoils the list", r.status_code, r.text[:120])
+
+
+def case_pack_shelf_counts_scoped():
+    """After the triage above filed 101 (chatter) and 102 + 999 (owner) on "tease":
+    the owner's shelf counts all three, the chatter's only 101."""
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    q = f"/admin/vault-ai/pack-candidates?account_id={AID}&category=feet"
+
+    def tease(r):
+        assert r.status_code == 200, (r.status_code, r.text[:200])
+        return next(x["count"] for x in r.json()["folders"] if x["rung"] == "tease")
+    assert (tease(owner.get(q)), tease(chatter.get(q))) == (3, 1)
+
+
+def case_by_id_edit_hide_reorder_gated():
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    h = {"X-Account-Id": AID}
+    import asyncio
+    for mid in (101, 102):   # cached, so a pass reads no OF
+        asyncio.run(vault_cache.put(AID, f"media-by-id:{mid}", {"id": mid}, started_at=datetime.utcnow()))
+    for mid, want in ((101, 200), (102, 404), (103, 404), (999, 404)):
+        r = chatter.get(f"/api/of/v2/vault/media/{mid}", headers=h)
+        assert r.status_code == want, ("by-id", mid, r.status_code, r.text[:120])
+    assert owner.get("/api/of/v2/vault/media/102", headers=h).json() == {"id": 102}
+
+    edit = {"account_id": AID, "fields": {"description": "x"}}
+    assert chatter.patch("/admin/vault-ai/items/102", json=edit).status_code == 404
+    assert chatter.patch("/admin/vault-ai/items/101", json=edit).status_code == 200
+    r = chatter.post("/admin/vault-ai/items/102/hide", json={"account_id": AID})
+    assert r.status_code == 404, ("hide", r.status_code, r.text[:120])
+
+    def reorder(c, folder, *mids):
+        return c.post("/admin/vault-ai/reorder", json={
+            "account_id": AID, "folder_id": folder,
+            "order": [{"media_id": m, "manual_order": 0} for m in mids]})
+    for folder, mids, want in ((12, (101,), 200), (123, (101,), 404), (12, (101, 102), 404),
+                               (None, (102,), 404), (None, (101,), 200)):
+        r = reorder(chatter, folder, *mids)
+        assert r.status_code == want, ("reorder", folder, mids, r.status_code, r.text[:120])
+    assert reorder(owner, 123, 102).status_code == 200
+
+
+async def case_run_totals_owner_only():
+    async with get_session() as s:
+        s.add(VaultCacheRun(account_id=AID, status="error", phase="media", pages_done=9,
+                            total_seen=900, upserted=900, error="boom",
+                            started_at=datetime.utcnow(), finished_at=datetime.utcnow()))
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    q = f"account_id={AID}"
+    vault_ai_api._warm_progress[AID] = {"phase": "images", "warmed": 40, "warm_total": 900}
+    try:
+        o = owner.get(f"/admin/vault-ai/collect/status?{q}").json()["run"]
+        c = chatter.get(f"/admin/vault-ai/collect/status?{q}").json()["run"]
+    finally:
+        vault_ai_api._warm_progress.pop(AID, None)
+    assert (o["total_seen"], o["upserted"], o["pages_done"]) == (900, 900, 9), o
+    assert (o["warmed"], o["warm_total"]) == (40, 900), o
+    assert (c["total_seen"], c["upserted"], c["pages_done"]) == (None, None, None), c
+    assert (c["warmed"], c["warm_total"]) == (None, None), c
+    assert (o["error"], c["error"]) == ("boom", None), (o, c)   # a cap's error names the vault's size
+    assert c["status"] == o["status"], (c, o)
+    o = owner.get(f"/admin/vault-ai/cache/summary?{q}").json()
+    c = chatter.get(f"/admin/vault-ai/cache/summary?{q}").json()
+    assert (o["last_run"]["total_seen"], c["last_run"]["total_seen"]) == (900, None), (o, c)
+    vault_ai_api._kw_progress[AID] = {"total": 30, "done": 4, "matches": 77}
+    try:
+        o = owner.get(f"/admin/vault-ai/harvest-keywords/status?{q}").json()["progress"]
+        c = chatter.get(f"/admin/vault-ai/harvest-keywords/status?{q}").json()["progress"]
+    finally:
+        vault_ai_api._kw_progress.pop(AID, None)
+    assert o == {"total": 30, "done": 4, "matches": 77}, o
+    assert c == {"total": 30, "done": 4, "matches": None}, c
+
+
+def case_sync_needs_an_allowed_folder():
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    saved = vault_ingest.has_live_mirror
+
+    async def _no_mirror(_aid):
+        return False
+    vault_ingest.has_live_mirror = _no_mirror   # stop before any OF walk
+    saved_inv, dropped = vault_cache.invalidate, []
+
+    async def _inv(aid):
+        dropped.append(aid)
+    vault_cache.invalidate = _inv
+    try:
+        for folder, want in (("&of_folder_id=123", 403), ("&of_folder_id=12", 200)):
+            r = chatter.post(f"/admin/vault-ai/sync?account_id={AID}{folder}")
+            assert r.status_code == want, ("chatter", folder, r.status_code, r.text[:120])
+            if want == 403:
+                assert r.json()["detail"] == {"error": "folder_not_allowed"}, r.json()
+        # All (where the UI opens): Refresh still drops the cache; no whole-vault walk or counts.
+        vault_ingest.has_live_mirror = saved   # a walk would need it: must not get that far
+        dropped.clear()
+        r = chatter.post(f"/admin/vault-ai/sync?account_id={AID}")
+        assert r.status_code == 200, ("chatter All", r.status_code, r.text[:120])
+        assert (r.json()["seen"], r.json()["new"]) == (None, None), r.json()
+        assert dropped == [AID], dropped
+        vault_ingest.has_live_mirror = _no_mirror
+        for folder in ("", "&of_folder_id=123"):
+            r = owner.post(f"/admin/vault-ai/sync?account_id={AID}{folder}")
+            assert r.status_code == 200, ("owner", folder, r.status_code, r.text[:120])
+    finally:
+        vault_ingest.has_live_mirror = saved
+        vault_cache.invalidate = saved_inv
+    assert vault_ai_api.vault_ingest is vault_ingest
 
 
 _harness.run()

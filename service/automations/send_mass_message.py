@@ -74,11 +74,13 @@ from automation_registry import register
 from automations import send_mass_decide as smd
 from automations._pools import int_list
 from of_client import proxy_refused
+from of_write import _may_have_sent
 from automations._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
 from db.engine import get_session
-from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun, ScheduledJob
+from db.models import (MASS_RUN_FAILED, MASS_RUN_OK, MASS_RUN_REFUSED, MASS_RUN_RUNNING,
+                       FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun, ScheduledJob)
 from event_transcoder import _parse_iso, _to_cents
 
 log = logging.getLogger("of-relay.automation.send_mass_message")
@@ -209,12 +211,15 @@ async def _dry_run(account_id: str, run_id: int, p: smd.Plan, client, pol,
     return {**smd.dry_run_result(p, would_send), **stats}
 
 
-async def _close_refused_run(mass_run_id: int) -> None:
-    """A minted run whose POST the proxy refused: OF never saw it (RUN_REFUSED)."""
+async def _close_unsent_run(mass_run_id: int, e: BaseException) -> None:
+    """A minted run whose POST surely did not send (`_may_have_sent(e)` False) ends
+    MASS_RUN_REFUSED when the proxy refused it, else MASS_RUN_FAILED (OF's 4xx, never
+    connected): closed here, the one owner, before the error reaches any caller."""
     async with get_session() as s:
         mr = await s.get(MassRun, mass_run_id)
-        if mr is not None and mr.status == "running":
-            mr.status, mr.completed_at = RUN_REFUSED, datetime.utcnow()
+        if mr is not None and mr.status == MASS_RUN_RUNNING:
+            mr.status = MASS_RUN_REFUSED if proxy_refused(e) else MASS_RUN_FAILED
+            mr.completed_at = datetime.utcnow()
 
 
 @register("send_mass_message")
@@ -398,7 +403,11 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             try:
                 auto_lid = await ensure_exclude_list(
                     account_id, set(p.excl_set), client=client)
-            except Exception:
+            except Exception as e:
+                # The proxy refused the sync (OF never saw it): raised, so a stream's
+                # send / a job waits out the proxy as for a refused POST.
+                if proxy_refused(e):
+                    raise
                 # Fail CLOSED — a broadcast without its guard is the over-send
                 # bug itself. Nothing minted yet, so no dangling 'running' row.
                 log.warning("send_mass_message: Auto_Exclude sync failed — "
@@ -426,7 +435,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     automation_kind=attr_kind,
                     audience_filter=audience_filter,
                     recipient_count=len(p.recipients),
-                    status="running",
+                    status=MASS_RUN_RUNNING,
                 )
                 s.add(mr)
                 await s.flush()
@@ -456,11 +465,12 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 before_write=_mint,
             )
         except Exception as e:
-            # The proxy refused it (CONNECT 403: OF never saw it): the minted run ends
-            # RUN_REFUSED, not 'running' forever. Any other
-            # error keeps its run as it is (the pre-existing behaviour).
-            if mass_run_id and proxy_refused(e):
-                await _close_refused_run(mass_run_id)
+            # Surely not sent (the proxy refused it, OF answered 4xx, it never
+            # connected): the minted run ends refused / failed, not 'running' for the
+            # job's retry and the boot heal to read as "may have sent". One OF may
+            # have taken stays 'running' (the boot heal, a stream's orphan match).
+            if mass_run_id and not _may_have_sent(e):
+                await _close_unsent_run(mass_run_id, e)
             raise
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.
@@ -514,7 +524,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     async with get_session() as s:
         mr = await s.get(MassRun, mass_run_id)
         if mr is not None:
-            mr.status = "ok"
+            mr.status = MASS_RUN_OK
             mr.completed_at = datetime.utcnow()
             if queue_id is not None:
                 mr.queue_id = int(queue_id)

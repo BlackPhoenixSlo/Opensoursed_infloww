@@ -366,7 +366,7 @@ def main() -> None:
         await asyncio.sleep(0.01)
         bg.release()  # FIFO: the first waiter gets it, the cancelled one is skipped
         assert await asyncio.wait_for(waiter, 1) is True, "case12: the queued admit never woke"
-        lease = server._BgLease(a, bg, 0.0)
+        lease = server.BgLease(a, bg, 0.0)
         ctx = contextvars.copy_context()
         ctx.run(server._bg_lease.set, lease)
         entered, go = threading.Event(), threading.Event()

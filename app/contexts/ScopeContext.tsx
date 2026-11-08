@@ -13,9 +13,11 @@
  * doesn't reload data, it just changes the filter the views apply.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { pickOf, resolveWatcherPick, watcherPickReducer, type WatcherPick } from "@/contexts/watcherPickState";
 import { eventBus, type Scope as EventScope } from "@/lib/events";
 import { useAccountStateEvents } from "@/hooks/useAccountStateEvents";
+import { rememberScope } from "@/lib/screenEntry";
 
 const LS_KEY = "chatterly:scope";
 
@@ -72,9 +74,13 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
 
   // Hydrate from localStorage. Same pattern as EmployeeContext —
   // browser-only so we do it in an effect, not lazy state.
+  // Whether the saved scope is one Creator is mirrored into a cookie (lib/screenEntry.ts): a document load of Messages Pro
+  // with one Creator saved starts no agency-wide inbox bundle (AuthGate, the server's inline boot).
   useEffect(() => {
     try {
-      if (!setBeforeHydrateRef.current) setScopeState(parse(window.localStorage.getItem(LS_KEY)));
+      const saved = parse(window.localStorage.getItem(LS_KEY));
+      rememberScope(saved.kind === "model");
+      if (!setBeforeHydrateRef.current) setScopeState(saved);
     } catch { /* ignore */ } finally {
       setHydrated(true);
     }
@@ -95,6 +101,7 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
     setScopeState(s);
     if (!persist) return;
     try { window.localStorage.setItem(LS_KEY, serialize(s)); } catch {}
+    rememberScope(s.kind === "model");
   }, []);
 
   const value = useMemo<ScopeContextValue>(() => ({
@@ -160,9 +167,6 @@ export function useDropWatcherScope(watcherIds: readonly string[]): void {
  *  `{id, over}`, `over` the app's scope (serialized) it was picked over. */
 export const WATCHER_PICK_KEY = "chatterly:ofm-watcher";
 
-/** `over` null: picked before the saved scope was read (a Pop-out's `?account=` on mount); it takes the scope then. */
-interface WatcherPick { id: string; over: string | null }
-
 /** The saved watcher pick, as saved (WatcherScope checks `over`). */
 function readWatcherPick(): WatcherPick | null {
   if (typeof window === "undefined") return null;
@@ -186,6 +190,7 @@ function readWatcherPick(): WatcherPick | null {
  * since anywhere (Messages Pro, the switcher, a Pop-out's `?account=`) ends it, and the saved pick is cleared.
  * `watcherIds`: every watcher of the caller (a pick of one never reaches the outer scope); `pickable`: those OF Manager
  * lists (useOfManagerAccounts: a captured session, active). A pick outside `pickable` is dropped once `loaded`.
+ * The rules are `watcherPickState`'s (resolver + reducer); this component only dispatches and saves.
  * Never writes the outer scope with a watcher, so useDropWatcherScope (outer scope only) never fires on its account.
  */
 export function WatcherScope({ watcherIds, pickable, loaded, children }: {
@@ -196,33 +201,25 @@ export function WatcherScope({ watcherIds, pickable, loaded, children }: {
 }) {
   const parent = useScope();
   const hydrated = useContext(ScopeHydratedContext);
-  const [pick, setPick] = useState<WatcherPick | null>(readWatcherPick);
+  const [{ pick, saved }, dispatch] = useReducer(watcherPickReducer, undefined,
+    () => ({ pick: readWatcherPick(), saved: undefined }));
   const outerKey = serialize(parent.scope);
-  // Before the saved scope is read the outer scope is a placeholder: neither shown nor judged stale.
-  const current = pick != null && hydrated && (pick.over === null || outerKey === pick.over);
-  const active = current && pickable.includes(pick.id) ? pick.id : null;
+  const { active, next } = resolveWatcherPick(pick, { hydrated, outerKey, pickable, loaded });
   useEffect(() => {
-    if (hydrated && pick != null && pick.over === null) setPick({ id: pick.id, over: outerKey });
-  }, [hydrated, pick, outerKey]);
+    if (next !== pick) dispatch({ type: "settle", next });
+  }, [next, pick]);
   useEffect(() => {
-    if (pick == null || active) return;
-    const stale = (hydrated && pick.over !== null && outerKey !== pick.over) || (loaded && !pickable.includes(pick.id));
-    if (!stale) return;
-    setPick(null);
-    try { window.localStorage.removeItem(WATCHER_PICK_KEY); } catch { /* ignore */ }
-  }, [pick, active, hydrated, outerKey, loaded, pickable]);
+    if (saved === undefined) return;
+    try {
+      if (saved) window.localStorage.setItem(WATCHER_PICK_KEY, JSON.stringify(saved));
+      else window.localStorage.removeItem(WATCHER_PICK_KEY);
+    } catch { /* ignore */ }
+  }, [saved]);
   const parentSet = parent.setScope;
   const setScope = useCallback((s: Scope, options: SetScopeOptions = {}) => {
-    const watcher = s.kind === "model" && watcherIds.includes(s.accountId) ? s.accountId : null;
-    const next = watcher ? { id: watcher, over: hydrated ? outerKey : null } : null;
-    setPick(next);
-    if (options.persist !== false) {
-      try {
-        if (next) window.localStorage.setItem(WATCHER_PICK_KEY, JSON.stringify(next));
-        else window.localStorage.removeItem(WATCHER_PICK_KEY);
-      } catch { /* ignore */ }
-    }
-    if (!watcher) parentSet(s, options);
+    const p = pickOf(s, watcherIds, hydrated, outerKey);
+    dispatch({ type: "pick", pick: p, persist: options.persist !== false });
+    if (!p) parentSet(s, options);
   }, [watcherIds, parentSet, outerKey, hydrated]);
   const value = useMemo<ScopeContextValue>(
     () => (active

@@ -31,6 +31,7 @@ import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 log = logging.getLogger("of-relay.chatters")
 
@@ -378,7 +379,7 @@ class FlatAccountDTO(BaseModel):
     is_active: bool = True
     # "watcher" for a watcher account (a fan account that reads what the Creators send): the
     # app lists it in OF Manager only, never as a Creator. None = a Creator.
-    role: str | None = None
+    role: Literal["watcher"] | None = None
 
 
 class ChatterMeResp(BaseModel):

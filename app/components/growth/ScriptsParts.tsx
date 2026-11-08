@@ -20,10 +20,13 @@ import type { SeqSort, SeqSortBy } from "@/components/growth/scriptsPageState";
 import { useRenderCap } from "@/hooks/useRenderCap";
 import { fmtPrice } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
-import type { SavedReply } from "@/lib/relay";
+import type { AccountMeta, SavedReply } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 export const NOT_WIRED = "not wired";
+
+/** A Creator's name on the Scripts page, its dialogs and the All models matrix: nickname, else its own name, else id. */
+export const creatorName = (a: Pick<AccountMeta, "id" | "nickname" | "name">) => a.nickname || a.name || a.id;
 
 /** antd's dropdown: #1f1f1f, radius 8, 32px items at 14px T1, hover #2b2b2b, L1 dividers. */
 const MENU_PANEL =
@@ -129,7 +132,7 @@ export function MoreMenu({
  *  (or all of them) — the header Share's per-row twin. */
 function RowMenu({
   label, onShare, onRename, onDelete,
-}: { label: string; onShare?: () => void; onRename: () => void; onDelete: () => void }) {
+}: { label: string; onShare: () => void; onRename: () => void; onDelete: () => void }) {
   const { open, setOpen, ref } = useOutsideClose();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = () => {
@@ -153,12 +156,10 @@ function RowMenu({
       </button>
       {open && (
         <div role="menu" aria-label={`${label} menu`} className={cn(MENU_PANEL, "right-0 w-32")}>
-          {onShare && (
-            <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
-              onClick={() => { close(); onShare(); }}>
-              Share
-            </button>
-          )}
+          <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
+            onClick={() => { close(); onShare(); }}>
+            Share
+          </button>
           <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
             onClick={() => { close(); onRename(); }}>
             Rename
@@ -193,11 +194,12 @@ export function Sidebar({
   items: SidebarItem[];
   selected: string | null;
   onSelect: (id: string) => void;
-  onShare?: (item: SidebarItem) => void;
+  onShare: (item: SidebarItem) => void;
   onRename: (item: SidebarItem) => void;
   onDelete: (item: SidebarItem) => void;
+  /** The Sequence sidebar's sort; the Tag sidebar has none. */
   sort?: SeqSort;
-  onSort?: (by: SeqSortBy) => void;
+  onSort: (by: SeqSortBy) => void;
 }) {
   const [q, setQ] = useState("");
   const needle = q.trim().toLowerCase();
@@ -220,7 +222,7 @@ export function Sidebar({
         onChange={(e) => setQ(e.target.value)}
         className="w-full mb-2 rounded-md border border-border bg-transparent px-2 py-1 text-sm"
       />
-      {sort && onSort && (
+      {sort && (
         <div role="group" aria-label="Sort sequences" className="mb-2 flex items-center gap-1 text-xs">
           {SEQ_SORTS.map(([by, label]) => (
             <button
@@ -259,7 +261,7 @@ export function Sidebar({
               <div className="flex items-center gap-2">
                 <span className="flex-1 min-w-0 truncate text-sm font-medium">{i.name}</span>
                 {!i.fixed && (
-                  <RowMenu label={i.name} onShare={onShare && (() => onShare(i))}
+                  <RowMenu label={i.name} onShare={() => onShare(i)}
                     onRename={() => onRename(i)} onDelete={() => onDelete(i)} />
                 )}
               </div>

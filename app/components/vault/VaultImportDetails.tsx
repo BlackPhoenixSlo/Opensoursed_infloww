@@ -6,13 +6,14 @@
  * both draw, and Batch edit itself.
  */
 
-import { useState } from "react";
+import { useReducer } from "react";
 import { Info } from "lucide-react";
 
 import { type VaultList } from "@/lib/relay";
 import { IfButton, IfLabel, IfModal } from "@/components/ui/infloww";
-import { IF_FIELD } from "@/components/ui/ifSelect";
+import { IF_FIELD, IfNativeSelect } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
+import { BATCH_EDIT_INIT, CRITERIA, batchAll, batchEditReducer, batchShown, buildBatchPayload } from "@/components/vault/batchEditState";
 
 /** Step 3's per-file columns (growth-vault-pro#109), each a key of `RowMeta`. */
 export const STEP3_FIELDS = [
@@ -92,13 +93,14 @@ export function MetaField({
   folders: VaultList[];
   disabled?: boolean;
   multiline?: boolean;
+  /** Width, padding, height: the field box is MetaField's own. */
   className?: string;
   /** For a label above it (`htmlFor`). */
   id?: string;
 }) {
   if (field === "category") {
     return (
-      <select
+      <IfNativeSelect
         id={id}
         aria-label={label}
         value={value}
@@ -112,9 +114,10 @@ export function MetaField({
             {l.name}
           </option>
         ))}
-      </select>
+      </IfNativeSelect>
     );
   }
+  const box = cn(IF_FIELD, "outline-none placeholder:text-muted focus:border-accent", className);
   if (field === "notes" && multiline) {
     return (
       <textarea
@@ -125,7 +128,7 @@ export function MetaField({
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Briefly describe the media content"
-        className={cn(className, "resize-none")}
+        className={cn(box, "resize-none")}
       />
     );
   }
@@ -138,21 +141,10 @@ export function MetaField({
       onChange={(e) => onChange(e.target.value)}
       inputMode={field === "price" ? "decimal" : undefined}
       placeholder={PLACEHOLDER[field]}
-      className={className}
+      className={box}
     />
   );
 }
-
-/** Batch edit's criteria (#115); Hashtags and Notes start ticked. An empty
- *  list means All, as the bundle's `EditInfoModal` has it. */
-const CRITERIA = [
-  { key: "tag", label: "Tag other Creator(s)" },
-  { key: "category", label: "Category" },
-  { key: "hashtags", label: "Hashtags" },
-  { key: "notes", label: "Notes" },
-  { key: "price", label: "Suggested price", chip: "Price" },
-] as const;
-const DEFAULT_CRITERIA = ["hashtags", "notes"];
 
 /** Batch edit media (#113 to #117): the criteria pick which fields show, and
  *  Save writes the shown fields onto every selected row — only those keys, as
@@ -166,26 +158,16 @@ export function BatchEditModal({
   onSave: (values: RowMeta) => void;
   folders: VaultList[];
 }) {
-  const [criteria, setCriteria] = useState<string[]>(DEFAULT_CRITERIA);
-  const [values, setValues] = useState<RowMeta>({});
-  const all = criteria.length === 0 || criteria.length === CRITERIA.length;
-  const toggle = (key: string) => {
-    const next = criteria.includes(key) ? criteria.filter((k) => k !== key) : [...criteria, key];
-    setCriteria(next.length === CRITERIA.length ? [] : next);
-  };
+  const [s, dispatch] = useReducer(batchEditReducer, BATCH_EDIT_INIT);
+  const all = batchAll(s);
   const chip = (on: boolean) =>
     cn(
       "h-8 rounded-md border px-[15px] text-[14px] transition-colors",
       on ? "border-accent bg-accent/10 text-accent" : "border-border text-fg hover:border-accent hover:text-accent",
     );
-  const shown = CRITERIA.filter((c) => all || criteria.includes(c.key));
-  const save = () => {
-    const out: RowMeta = {};
-    for (const c of shown) out[c.key] = values[c.key] ?? "";
-    onSave(out);
-  };
-  const field = (key: MetaKey) =>
-    cn(IF_FIELD, "w-full px-[11px] outline-none placeholder:text-muted focus:border-accent", key === "notes" ? "py-1" : "h-8");
+  const shown = batchShown(s);
+  const save = () => onSave(buildBatchPayload(s));
+  const field = (key: MetaKey) => cn("w-full px-[11px]", key === "notes" ? "py-1" : "h-8");
   return (
     <IfModal
       title="Batch edit media"
@@ -205,7 +187,7 @@ export function BatchEditModal({
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" aria-pressed={all} onClick={() => setCriteria([])} className={chip(all)}>
+        <button type="button" aria-pressed={all} onClick={() => dispatch({ type: "all" })} className={chip(all)}>
           All
         </button>
         <span aria-hidden className="h-4 w-px bg-border" />
@@ -213,9 +195,9 @@ export function BatchEditModal({
           <button
             key={c.key}
             type="button"
-            aria-pressed={criteria.includes(c.key)}
-            onClick={() => toggle(c.key)}
-            className={chip(criteria.includes(c.key))}
+            aria-pressed={s.criteria.includes(c.key)}
+            onClick={() => dispatch({ type: "toggle", key: c.key })}
+            className={chip(s.criteria.includes(c.key))}
           >
             {"chip" in c ? c.chip : c.label}
           </button>
@@ -229,8 +211,8 @@ export function BatchEditModal({
               id={`batch-${c.key}`}
               field={c.key}
               label={c.label}
-              value={values[c.key] ?? ""}
-              onChange={(v) => setValues((cur) => ({ ...cur, [c.key]: v }))}
+              value={s.values[c.key] ?? ""}
+              onChange={(v) => dispatch({ type: "set", key: c.key, value: v })}
               folders={folders}
               multiline
               className={field(c.key)}

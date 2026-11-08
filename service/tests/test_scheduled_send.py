@@ -45,9 +45,10 @@ Cases (all drive the REAL run_once dispatcher → registry wiring exercised):
       an unrelated raise: nothing was sent -> 'pending', not parked.
   case_may_have_sent_table:
       of_write_paced's per-attempt classifier over the real exception classes:
-      OFDenied/OFDeactivated, curl ProxyError, ConnectTimeout, couldn't-connect
-      (7), any 4xx (OF's rate-limit 400 too) -> surely not sent; ReadTimeout,
-      other ConnectionError, 5xx, no response, a cancel, unknown -> may have.
+      OFDenied/OFDeactivated, curl ProxyError, couldn't-connect (7), any 4xx
+      (OF's rate-limit 400 too) -> surely not sent; ReadTimeout, Timeout (every
+      curl 28: curl_cffi never raises its ConnectTimeout), other ConnectionError,
+      5xx, no response, a cancel, unknown -> may have.
 
 Run: ./venv/bin/python service/tests/test_scheduled_send.py   (exit 0 = pass)
 """
@@ -562,7 +563,6 @@ def case_may_have_sent_table():
         (OFDeniedError("refused: POST /api2/v2/users/logout"), False),
         (OFDeactivatedError("refused: POST /chats/1/messages (Creator deactivated)"), False),
         (curl.exceptions.ProxyError("CONNECT tunnel failed, response 403"), False),
-        (curl.exceptions.ConnectTimeout("Connection timed out after 10001 ms"), False),
         (couldnt, False),
         (_rate_limit_400(1), False),
         (http(403), False),

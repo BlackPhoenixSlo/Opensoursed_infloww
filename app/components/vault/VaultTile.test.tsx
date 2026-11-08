@@ -17,6 +17,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import VaultTile from "@/components/vault/VaultTile";
 import type { ThumbRetry } from "@/hooks/useThumbAutoRefresh";
+import { vaultTileThumb } from "@/lib/mediaUrl";
 import type { VaultMedia } from "@/lib/relay";
 
 const ACCT = "8000149";
@@ -39,7 +40,7 @@ const PICTURE_FILES = {
 };
 
 /** A grid with nothing broken: every src as is. */
-const THUMBS: ThumbRetry = { thumbFor: (_id, src) => src, onBroken: () => {} };
+const THUMBS: ThumbRetry = { tile: (m) => ({ src: vaultTileThumb(m, ACCT), onError: () => {} }), refreshed: () => {} };
 const mount = (m: VaultMedia) => render(<VaultTile media={m} accountId={ACCT} thumbs={THUMBS} />);
 
 afterEach(cleanup);

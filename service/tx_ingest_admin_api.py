@@ -2,8 +2,8 @@
 (per-account `transaction_scan_history` watermark + Unattributed-sales views)
 and the on-demand subscriber-roster crawl.
 
-  GET  /admin/ingest/transactions/health  → per-account scan tier (+ last_full_scan_at), scoped to the caller's accounts
-  POST /admin/ingest/transactions/{account_id}/run  (202) → one refresh/backfill scan now
+  GET  /admin/ingest/transactions/health  → per-account scan tier (+ last_full_attempt_at), scoped to the caller's accounts
+  POST /admin/ingest/transactions/{account_id}/run  (202) → one refresh/backfill scan now (a backfill on a done walk restarts it and ends any pause)
   POST /admin/roster/{account_id}/crawl  → one subscriber-roster crawl now, past its TTL
   POST /admin/ingest/transactions/{account_id}/pause  (202) → pause the supervisor for N hours
   POST /admin/ingest/transactions/{account_id}/resume  (202) → clear `paused_until`
@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from auth import assert_account_owned
 from auth import get_request_user as _get_request_user
 from chatters import get_request_chatter as _get_request_chatter
+from transaction_ingest_decide import BACKFILL_PARTIAL, IN_FLIGHT
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,7 +50,8 @@ def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> st
     green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling, backfill_partial}
     yellow: 30 < minutes_since_scan <= 360
     red:    minutes_since_scan > 360 OR status in {paused, error, never_scanned}
-    (backfill_stalled, a walk stopped short of done: never green, its reason in last_error)
+    (backfill_stalled, a walk stopped short of done, and backfill_given_up, one given up after
+    repeated stops, persisted until a new backfill: never green, the reason in last_error)
 
     Note: 'refreshing'/'backfilling' here are the in-flight steady states
     (tick START stamps them, _mark_success then stamps 'ok'). A row
@@ -60,9 +62,7 @@ def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> st
         return "red"
     if minutes_since_scan is None:
         return "red"
-    if minutes_since_scan <= 30 and current_status in (
-        "idle", "ok", "refreshing", "backfilling", "backfill_partial",
-    ):
+    if minutes_since_scan <= 30 and current_status in ("idle", "ok", *IN_FLIGHT, BACKFILL_PARTIAL):
         return "green"
     if minutes_since_scan <= 360:
         return "yellow"
@@ -138,9 +138,9 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
                 "tier": tier,
             }
         # Scheduling state, not proof of success: the last ATTEMPTED full walk's window
-        # end (completed, failed or cut short), or its one-time seed (last_full_at).
+        # end (completed, failed or cut short), or its seed (scan_seeded: first sight, an outage).
         full = h.last_full_at if h is not None else None
-        entry["last_full_scan_at"] = full.isoformat() if full else None
+        entry["last_full_attempt_at"] = full.isoformat() if full else None
         accounts_out.append(entry)
         if _TIER_RANK[entry["tier"]] > _TIER_RANK[worst]:
             worst = entry["tier"]
@@ -183,6 +183,11 @@ async def admin_ingest_tx_run(
     mode = (body.mode if body else "refresh") or "refresh"
     async with get_session() as s:
         h = await _scan_history_or_404(s, account_id)
+        # A backfill on a done (or given-up) walk is a new walk from the top, down to the
+        # account's floor: one lone tick would read green on an account it leaves unfinished.
+        # The restart (trigger_backfill) also ends a /pause: the operator asked for the walk now.
+        restart = mode == "backfill" and h is not None and bool(h.fully_backfilled)
+        floor = h.backfill_floor if h is not None else None
         if h is not None and h.current_status in ("backfilling", "refreshing"):
             # Stale-age escape valve. last_scan_at is stamped at tick
             # START (transaction_ingest.run_one_tick), so its age ==
@@ -213,6 +218,9 @@ async def admin_ingest_tx_run(
     # session that took the lock), so the upstream current_status check
     # at line 4714 catches in-flight scans without needing to import
     # supervisor internals here. See library/db_data/17_round2_synthesis.md.
+    if restart:
+        from transaction_ingest import trigger_backfill  # type: ignore[import-not-found]
+        await trigger_backfill(account_id, since=floor)
     queued_at = datetime.utcnow()
 
     async def _trigger() -> None:
@@ -238,7 +246,7 @@ async def admin_roster_crawl(account_id: str) -> dict[str, Any]:
     `subscriber_snapshot`, as /admin/ingest/transactions/{id}/run is for the
     ledger. Same code path as the lifecycle sweep and smart_list_sync, under
     the same per-account lock; answers that run's stats ({roster: crawled |
-    truncated | empty, listed, returned}). A seam in ADR 0024."""
+    truncated | empty | in_progress, listed, returned}). A seam in ADR 0024."""
     from db.engine import get_session
     from db.models import Account
     from sqlalchemy import select

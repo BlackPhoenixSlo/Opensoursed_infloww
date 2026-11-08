@@ -16,6 +16,10 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
                        ledger supervisor's loop body over every live Creator); result: each
                        cycle's {t0, t1}
        Bypass, declared: the jobs' cadences (hourly / 30 min / _TICK_INTERVAL_S) and prewarm_all's spread.
+  POST /__slop/sweep-pacing/failover {label}  an ADR-0030 move of the pool proxy `label`'s Creators now:
+       proxies.failover_pool (each destination probed by proxy_health.verify_pick, one registry
+       write, the clients evicted) -> {moved}. Bypass, declared: the trigger (DOWN_AFTER failures,
+       the confirm, two failed rechecks); the move is the product's.
   GET  /__slop/sweep-pacing/runs  {runs: [{n, job, account, t0, t1, error, result}], log: [{t, msg}],
        tick_interval_s: transaction_ingest._TICK_INTERVAL_S (the supervisor's sleep this relay runs with),
        full_every_s: transaction_ingest._FULL_EVERY_S (its full 7-day walk's period),
@@ -136,6 +140,16 @@ def wire(app, loopback, _relay) -> None:
                 "recent_window_h": transaction_ingest._RECENT_WINDOW_H,
                 "phases": {a: transaction_ingest.full_phase_s(a, every) for a in ids}}
 
+    async def failover(request: Request) -> dict:
+        loopback(request)
+        import proxies
+        import proxy_health
+        label = (await request.json())["label"]
+        moved = await asyncio.to_thread(proxies.failover_pool, label, bad=set(), geo=proxy_health.last_geo,
+                                        verify=proxy_health.verify_pick)
+        return {"moved": moved}
+
     app.add_api_route("/__slop/sweep-pacing/knobs", knobs, methods=["POST"])
     app.add_api_route("/__slop/sweep-pacing/run", run, methods=["POST"])
     app.add_api_route("/__slop/sweep-pacing/runs", runs, methods=["GET"])
+    app.add_api_route("/__slop/sweep-pacing/failover", failover, methods=["POST"])

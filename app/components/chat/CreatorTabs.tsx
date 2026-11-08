@@ -45,14 +45,13 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorWarmUp } from "@/hooks/useCreatorWarmUp";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useReorder } from "@/hooks/useReorder";
-import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { MP } from "@/lib/messagesPro";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { MENU, MENU_ITEM } from "./MenuParts";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
 import { NotifMiniBadge, UnreadMiniBadge } from "./UnreadMiniBadge";
-import { sortTabs, useCreatorTabs, type CreatorSort, type CreatorTabsStore } from "./useCreatorTabs";
+import { useCreatorTabs, useShownCreatorTabs, type CreatorSort, type CreatorTabsStore } from "./useCreatorTabs";
 import { useFanListMenu } from "./useFanListMenu";
 
 const G = MP.creatorTabs;
@@ -73,9 +72,8 @@ type FocusTarget = { tab: string } | "add" | null;
 export function CreatorTabs() {
   const store = useCreatorTabs();
   const { ready, close, reopen, reorder, sort, setSort } = store;
-  const counts = useRosterCounts();
   // The strip's order: the store's, in the chosen sort.
-  const open = sortTabs(store.open, sort, (id) => counts[id]?.unread ?? 0);
+  const { open, counts } = useShownCreatorTabs(store);
   const { scope, setScope } = useScope();
   const { warm, hoverThen, clearHover } = useCreatorWarmUp();
   const activeId = scope.kind === "model" ? scope.accountId : null;

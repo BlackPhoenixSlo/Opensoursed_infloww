@@ -47,6 +47,27 @@ export async function fetchAccounts(): Promise<AccountsResp> {
   };
 }
 
+/** The owner's account list query (key + fetcher + freshness): `useAccounts` reads it, `useOfRichAllowed` peeks at
+ *  its cache under the same entry. */
+export const ownerAccountsQuery = (userId: string | undefined) => ({
+  // Scope the cache entry to the signed-in principal. /admin/accounts
+  // returns the FULL multi-tenant registry when called UNauthenticated
+  // (the dev-curl fallback). Under a principal-agnostic key, a list
+  // fetched in an unauthed window (app boot before /auth/me resolves, a
+  // brief session expiry) would persist for `staleTime` and bleed into
+  // the next owner's session — surfacing another owner's models in this
+  // owner's picker, then 403'ing on any write ("account X is not one of
+  // yours"). Keying by user_id isolates it per principal.
+  queryKey: ["accounts", userId ?? "anon"],
+  queryFn: fetchAccounts,
+  // Short staleTime on purpose: /admin/accounts is a relay-local
+  // registry read (no OF call), and a long window meant a model
+  // captured in another session stayed invisible until re-login —
+  // the persisted cache survives page reloads, so staleTime was the
+  // only expiry. 60s caps refetches at ~1/min per tab.
+  staleTime: 60_000,
+});
+
 export function useAccounts() {
   const { user } = useUser();
   const { chatter } = useChatter();
@@ -55,22 +76,7 @@ export function useAccounts() {
   const isChatterOnly = !user && !!chatter;
 
   const ownerQ = useQuery<AccountsResp>({
-    // Scope the cache entry to the signed-in principal. /admin/accounts
-    // returns the FULL multi-tenant registry when called UNauthenticated
-    // (the dev-curl fallback). Under a principal-agnostic key, a list
-    // fetched in an unauthed window (app boot before /auth/me resolves, a
-    // brief session expiry) would persist for `staleTime` and bleed into
-    // the next owner's session — surfacing another owner's models in this
-    // owner's picker, then 403'ing on any write ("account X is not one of
-    // yours"). Keying by user_id isolates it per principal.
-    queryKey: ["accounts", user?.user_id ?? "anon"],
-    queryFn: fetchAccounts,
-    // Short staleTime on purpose: /admin/accounts is a relay-local
-    // registry read (no OF call), and a long window meant a model
-    // captured in another session stayed invisible until re-login —
-    // the persisted cache survives page reloads, so staleTime was the
-    // only expiry. 60s caps refetches at ~1/min per tab.
-    staleTime: 60_000,
+    ...ownerAccountsQuery(user?.user_id),
     refetchOnWindowFocus: false,
     // Never fetch the owner list until the principal is known — an
     // /admin/accounts call fired while `user` is still null hits the
@@ -103,7 +109,7 @@ export function useAccounts() {
       session_dead_at: r.session_dead_at,
       session_dead_reason: r.session_dead_reason,
       is_active: r.is_active,
-      role: r.role === "watcher" ? "watcher" : null,
+      role: r.role ?? undefined,
     } as AccountMeta));
   }, [chatterQ.data]);
 

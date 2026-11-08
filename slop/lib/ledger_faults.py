@@ -25,25 +25,25 @@ CB_CALLS = ("cb_call_budget: one OF /payouts/chargebacks call per Creator per co
 
 def _per_row_txns() -> None:
     """A ledger page is written one row per write transaction (bug class: the page batch
-    undone, the pre-batch writer's shape): `transaction_ingest._write_page` writes each row
+    undone, the pre-batch writer's shape): `transaction_ingest.write_page` writes each row
     through `_write_one`. Every row still lands right, so only the txn count sees it."""
     import transaction_ingest as ti
 
-    async def per_row(account_id, rows):
+    async def per_row(account_id, rows, *, capped=False):
         ins = pat = 0
         for raw in rows:
-            i, p = await ti._write_one(account_id, raw)
+            i, p = await ti._write_one(account_id, raw, capped=capped)
             ins, pat = ins + i, pat + p
         return ins, pat
 
-    ti._write_page = per_row
+    ti.write_page = per_row
 
 
 def _delta_separate_txn() -> None:
     """A row's lifetime change is lost while its row commits (bug class: the pre-batch
     writer's delta in a transaction of its own after the row's, failing in between — a crash
     or a lock timeout): the first non-zero `transaction_ingest._bump_lifetime` /
-    `_apply_lifetime_delta` call does nothing, so that fan's lifetime_spend_cents never moves."""
+    `apply_lifetime_delta` call does nothing, so that fan's lifetime_spend_cents never moves."""
     import transaction_ingest as ti
 
     lost = []
@@ -57,7 +57,7 @@ def _delta_separate_txn() -> None:
         return run
 
     ti._bump_lifetime = drop_first(ti._bump_lifetime)
-    ti._apply_lifetime_delta = drop_first(ti._apply_lifetime_delta)
+    ti.apply_lifetime_delta = drop_first(ti.apply_lifetime_delta)
 
 
 def _cb_already_ignored() -> None:

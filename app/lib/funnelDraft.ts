@@ -15,7 +15,6 @@
 
 import type { FunnelFull, FunnelStep, PpvStep } from "@/hooks/useFunnels";
 import { parseJsonObject, type RawJsonCodec } from "@/lib/rawJsonReducer";
-import { mergeCaptions } from "@/lib/parseCaptions";
 
 // ── Local draft model (easy to edit; converted to/from wire FunnelStep) ──
 
@@ -215,20 +214,15 @@ export type FunnelEdit =
   | { type: "addStep"; kind: StepKind }
   | { type: "patchStep"; i: number; patch: Partial<DraftStep> }
   | { type: "removeStep"; i: number }
-  | { type: "moveStep"; i: number; dir: -1 | 1 }
-  | { type: "patchMsg"; i: number; mi: number; text: string }
-  | { type: "addMsg"; i: number }
-  /** Imported captions: replace a lone blank variant, else append (dupes skipped). */
-  | { type: "addMsgs"; i: number; texts: string[] }
-  | { type: "removeMsg"; i: number; mi: number };
+  | { type: "moveStep"; i: number; dir: -1 | 1 };
 
 /** The id for a new step: max(existing) + 1. */
 function nextStepNumber(steps: Pick<DraftStep, "step">[]): number {
   return steps.reduce((m, s) => Math.max(m, s.step), 0) + 1;
 }
 
-/** One typed-form edit (pure). Out-of-range moves and removing the last
- *  message variant are no-ops. */
+/** One typed-form edit (pure). Out-of-range moves are no-ops; a step's
+ *  message pool is a `patchStep` (VariantsField keeps one or more). */
 export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
   const mapStep = (i: number, f: (s: DraftStep) => DraftStep) =>
     ({ ...d, steps: d.steps.map((s, idx) => (idx === i ? f(s) : s)) });
@@ -248,15 +242,6 @@ export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
       [steps[e.i], steps[j]] = [steps[j], steps[e.i]];
       return { ...d, steps };
     }
-    case "patchMsg":
-      return mapStep(e.i, (s) => ({ ...s, messages: s.messages.map((m, k) => (k === e.mi ? e.text : m)) }));
-    case "addMsg":
-      return mapStep(e.i, (s) => ({ ...s, messages: [...s.messages, ""] }));
-    case "addMsgs":
-      return mapStep(e.i, (s) => ({ ...s, messages: mergeCaptions(s.messages, e.texts).pool }));
-    case "removeMsg":
-      return mapStep(e.i, (s) =>
-        s.messages.length <= 1 ? s : { ...s, messages: s.messages.filter((_, k) => k !== e.mi) });
   }
 }
 

@@ -23,7 +23,10 @@ REACT_BLANK_AFTER + 1 empty, hasMore false. BLANK, recorded complete on rows old
 reactivated the same way after BLANK_GAP_D days; OF answers its first page blank, then BLANK_ROWS rows over the gap. GAP, a walk
 caught mid-way (SQL: scan row and GAP_HELD rows, the rows of its two pages) by GAP_ROWS rows landing above its
 top in 14 days off, past OF's offset cap, GAP_BELOW still to walk. CROWD_N Creators of CROWD_ROWS rows,
-cold, on ONE OF bucket (`share`: a proxy's, a guess). Half the Creators are busy (chatters + their Fan List), half
+cold, on ONE OF bucket (`share`: a proxy's, a guess). Proxies as on AE (lib/sweep_pacing_proxy.py `bind`,
+through the product's own routes, before any walk): CROWD on one fake proxy (its shared bucket's IP), every
+other Creator PER_PROXY (5) a proxy, PX direct until its stage (ledger pages are paced per bound proxy: all
+direct, they would share the host's one slot). Half the Creators are busy (chatters + their Fan List), half
 idle. On every idle Creator OF answers one page 429 once whatever the pace: promotions offset 100
 ("Please allow 2 seconds"), subscribers offset 100 ("... allow 1 seconds"), transactions offset
 100 ("Too many requests": no wait named); on the first busy Creator its first background
@@ -149,6 +152,10 @@ Checks (names in lib/sweep_pacing_faults.py):
   tx_failed_full_consumes_period  one Creator's full walk failed on a terminal second 429 (injected
                          twice): error kept, the period spent (same-period ticks recent), the next
                          period's tick walks full again.
+  tx_proxy_pages_spaced  last (lib/sweep_pacing_proxy.py, its docstring): PX_N Creators bound 2 a proxy
+                         through the real pool assign, simultaneous full walks, an ADR-0030 move, again:
+                         per egress at OF every ledger GET >= PAGE_GAP_S apart, each Creator through its
+                         bound proxy, proxies independent, ledger totals == OF's and unchanged.
 Pacing covers OF's API list pages only: CDN, media and /img fetches are not walks here.
 Measured: metric `tx_supervisor`, each supervisor pass's walk modes, wall time and pages per Creator
 (the first fill, the full walk, a recent one); tx_calls_budget checks the pages per hour they imply.
@@ -156,7 +163,7 @@ Measured: metric `tx_supervisor`, each supervisor pass's walk modes, wall time a
 Bypasses (declared):
   transaction_ingest.full_phase_s is pinned (`/knobs`): no Creator crosses a full-walk period mid-run
   (the watermark stages unpin it). Before pass 2 the backfilled Creators' last_full_at is backdated one
-  period by SQL (a period turned over, not waited). The watermark stages' bypasses: their docstring.
+  period by SQL (a period turned over, not waited). The watermark and proxy stages' bypasses: their docstrings.
   - OF's rate limit is a GUESS (lib/sweep_pacing_wire.py), not OF's measured policy: a token bucket
     per Creator across its four list routes (10 deep, 2 a second); an empty one answers 429 with OF's measured body ("Too many
     requests. Please allow 1 seconds"); its injected 429s too. Latency is lib/of_wire.py's 50 ms.
@@ -170,7 +177,7 @@ Bypasses (declared):
   - DEEP and REACT are seeded by SQL (creators.extra, fans.seed, REACT's rows, scan row), REACT's
     `account_health.deactivated_at` is backdated by SQL between its real off and on (the gap's 30 days
     are not waited). Admin /run resumes REACT after pass 1 through the real endpoint. OF's limit is per
-    Creator here: a proxy shared between Creators is not modelled.
+    Creator here (CROWD's shared bucket aside): the Creators sharing a fake proxy share no OF bucket.
   - The tracking links and trials are of_wire's empty ones; only GROWTH's claimed promotions have
     claimers. A GROWTH /campaigns GET OF saw during an earnings read is that read's (a person's),
     not a walk's. Chatters reach the relay directly (no Next proxy); the Fan List's lookups are httpx
@@ -191,7 +198,7 @@ and tx_recent_window_kept red; every row still lands. tx-recent-startdate-iso (`
 side: the startDate reaches OF as ISO, answered empty) turns tx_recent_catches_new_row red.
 tx-backfill-* (`--fault=`, lib/sweep_pacing_faults.py): the walk's own, each to its tx_backfill_ checks.
 tx-full-watermark-forgotten / tx-failed-full-not-stamped (`--fault=`): tx_restart_keeps_full_schedule /
-tx_failed_full_consumes_period.
+tx_failed_full_consumes_period. tx-proxy-pacing-bypassed (`--fault=`): tx_proxy_pages_spaced.
 """
 from __future__ import annotations
 
@@ -201,6 +208,7 @@ import re
 import sys
 import time
 from collections import Counter, defaultdict
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -214,7 +222,7 @@ from slop.lib.sweep_pacing_faults import (BF_BURST, BF_CALLS, BF_DISPUTE, BF_DRO
                                           BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
                                           PAGES_SPACED, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
                                           TX_NEW_ROW, TX_WINDOW, USER_P95, WINDOW_IGNORED)
-from slop.lib import sweep_pacing_watermark
+from slop.lib import sweep_pacing_proxy, sweep_pacing_watermark
 from slop.lib.sweep_pacing_wire import TOO_MANY, TX_CAP, SweepWire
 from slop.seed import creators, fans, of_sessions, ts
 
@@ -357,15 +365,17 @@ def _hold_by_sql(con, w, aid: str, rows: list[dict], status=lambda _k: "cleared"
     return spend
 
 
-def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[str]]:
-    """DEEP, REACT, BLANK, GAP, CROWD (module docstring): Creators, fans, sessions, OF's ledger, the held rows."""
-    extras = creators.extra(w, 4 + CROWD_N)
+def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[str], dict[str, list[dict]]]:
+    """DEEP, REACT, BLANK, GAP, CROWD (module docstring): Creators, fans, sessions, OF's ledger, the held rows.
+    And PX's Creators (lib/sweep_pacing_proxy.py), an empty ledger until their stage: its rows, by Creator."""
+    extras = creators.extra(w, 4 + CROWD_N + sweep_pacing_proxy.PX_N)
     keep = w.data["fans"]
     pool = fans.seed(w, extras, LEDGER_FANS)
     w.data["fans"] = keep
     of_sessions.seed(w, [*w.data["creators"], *extras])
     deep, react, blank, gap = (extras[k]["id"] for k in range(4))
-    crowd = [c["id"] for c in extras[4:]]
+    crowd = [c["id"] for c in extras[4:4 + CROWD_N]]
+    px = [c["id"] for c in extras[4 + CROWD_N:]]
     rng = w.rng("scenario:sweep-pacing:ledger")
     ids = {c["id"]: [f["id"] for f in pool[c["id"]]] for c in extras}
     sw.txs[deep] = [*_ledger(rng, 30_000_000_000, ids[deep], DEEP_ROWS, w.now - timedelta(hours=3), timedelta(days=80),
@@ -386,7 +396,9 @@ def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[st
     for k, a in enumerate(crowd):
         sw.txs[a] = _ledger(rng, 37_000_000_000 + k * 100_000, ids[a], CROWD_ROWS, w.now - timedelta(hours=4), timedelta(days=30))
         sw.share[a] = "crowd-proxy"
-    sw.honest |= {deep, react, blank, gap, *crowd}
+    px_rows = {a: sweep_pacing_proxy.ledger_rows(rng, 38_000_000_000 + k * 100_000, ids[a], w.now, _tx_row)
+               for k, a in enumerate(px)}
+    sw.honest |= {deep, react, blank, gap, *crowd, *px}
     sale = rows[REACT_DISPUTED]
     sw.disputes[react] = [{"id": 0, "createdAt": _iso(w.now - timedelta(days=1)), "paymentType": _sale(sale)[1],
                            "payment": sale | {"id": f"dispute-{sale['id']}", "status": "undo"}}]
@@ -413,7 +425,7 @@ def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[st
                 (deep, 0, None, None, None, "error", 2)):
             con.execute(scan, (a, done, floor, oldest, newest, st, streak, ts(w.now), ts(w.now)))
     con.close()
-    return deep, react, blank, gap, crowd
+    return deep, react, blank, gap, crowd, px_rows
 
 
 def _scan(w, aid: str) -> dict:
@@ -469,7 +481,12 @@ def _snapshot(w, aid: str) -> tuple[int, str | None]:
     return n, last
 
 
-async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
+async def run(ctx) -> None:
+    with ExitStack() as wires:   # the fake proxies (sweep_pacing_proxy.bind): alive past the last walk
+        await _run(ctx, wires)
+
+
+async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its checks in order
     w = await ctx.build(PROFILE)
     aids = [c["id"] for c in w.data["creators"]]
     busy, idle = aids[::2], aids[1::2]
@@ -481,7 +498,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     fake = ctx.of_wire
     sw = SweepWire(fake)
     sw.window = ctx.fault != WINDOW_IGNORED
-    deep, react, blank, gap_a, crowd = _seed_ledger_creators(w, sw)   # the sessions of every Creator too
+    deep, react, blank, gap_a, crowd, px_rows = _seed_ledger_creators(w, sw)   # the sessions of every Creator too
+    px = list(px_rows)
     ledger_only = (deep, react, blank, gap_a, *crowd)
     _seed_of(sw, w, aids, n_promo, n_sub, n_tx, growth)
     for a in idle:
@@ -507,6 +525,11 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     r.raise_for_status()
     knobs = r.json()
     gap, jitter = PAGE_GAP_S, JITTER_S
+    # ── proxies, as on AE: CROWD on one (its shared bucket), the rest PER_PROXY a proxy; PX direct until its stage ──
+    rest = [*aids, deep, react, blank, gap_a]
+    per = sweep_pacing_proxy.PER_PROXY
+    bound = await sweep_pacing_proxy.bind(ctx, wires, [list(crowd), *(rest[k:k + per] for k in range(0, len(rest), per))])
+    ctx.metric("proxies", {"bound": bound, "per_proxy": dict(Counter(bound.values()))})
 
     # ── REACT: off, its gap backdated, on: the real reactivation queues the backfill ─
     sse_http = ctx.owner.share()
@@ -1074,4 +1097,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              f"ledger calls/h per Creator at {tick}/{full_s} s (inferred): {per_h} vs budget {budget_h}")
 
     # ── the full walk's persisted watermark: restart, failed full walk (after every check above) ──
-    await sweep_pacing_watermark.run(ctx, w, sw, shared=set(crowd))
+    await sweep_pacing_watermark.run(ctx, w, sw, shared=set(crowd) | set(px))
+    # ── ledger pages per bound proxy: shared / separate proxies, an ADR-0030 move (lib/sweep_pacing_proxy.py) ──
+    await sweep_pacing_proxy.run(ctx, w, sw, px, px_rows, gap=gap, slack=SPACE_SLACK_S)

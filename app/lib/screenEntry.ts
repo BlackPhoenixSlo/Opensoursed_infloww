@@ -8,8 +8,10 @@
  * Monday (the settings' defaults). A wrong guess is one bundle nobody joins (another key): the cards start their own
  * as before. `grid: false` (the session's role hides the Per-model cards): no guess, nothing would join it.
  *
- * The server makes the same guess for the HTML's inline boot (lib/inlineBoot.server.ts) from two cookies: the saved
- * entry (`ENTRY_COOKIE`, written with it) and the browser's zone (`TZ_COOKIE`, the root layout's boot script).
+ * One guess (`bootScreen`), from three cookies, for both halves: the server's for the HTML's inline boot
+ * (lib/inlineBoot.server.ts) and AuthGate's start: the saved entry (`ENTRY_COOKIE`), the browser's zone
+ * (`TZ_COOKIE`, the root layout's boot script) and whether the saved inbox scope is one Creator (`SCOPE_COOKIE`:
+ * Messages Pro on one Creator reads its own routes, no agency-wide inbox bundle).
  */
 import { DEFAULT_PERIOD, isPeriod } from "@/components/home/dashboardControls";
 import { periodWindow } from "@/lib/dateRange";
@@ -23,27 +25,50 @@ export interface DashboardEntry {
   grid: boolean;
 }
 
-const KEY = "chatterly:dashboard-entry";
-/** The saved entry's copy for the server (lib/inlineBoot.server.ts). */
-export const ENTRY_COOKIE = "chatterly_entry";
+/** The saved entry (`rememberDashboardEntry`). */
+const ENTRY_COOKIE = "chatterly_entry";
 /** The browser's IANA zone, written on every document load (app/layout.tsx): a null `tz` means it. */
 export const TZ_COOKIE = "chatterly_tz";
+/** Whether the saved inbox scope is one Creator (`rememberScope`): `model` or `all`. */
+const SCOPE_COOKIE = "chatterly_scope";
 const YEAR_S = 365 * 24 * 3600;
-const GUESS: DashboardEntry = { tz: null, weekStart: "monday", grid: true };
 
-/** The screen a document load of `pathname?search` opens and its bundle; null: none. */
-export function entryScreen(pathname: string, search: string, hint: DashboardEntry | null): Screen | null {
-  if (pathname === "/messages-pro") return { kind: "inbox" };
-  if (pathname !== "/") return null;
-  const h = hint ?? GUESS;
-  if (!h.grid) return null;
-  const w = new URLSearchParams(search).get("window");
-  const [from, to] = periodWindow(w && isPeriod(w) ? w : DEFAULT_PERIOD, h.tz, h.weekStart);
-  return { kind: "dashboard", from, to };
+/** A cookie's decoded value by name (the Next jar's `.value`; `cookieValue` over `document.cookie`); undefined: none. */
+export type CookieRead = (name: string) => string | undefined;
+
+/** The screen a document load of `pathAndSearch` opens and starts the bundle of, from its cookies (`cookie`); null:
+ *  none. Messages Pro: its inbox, unless one Creator is in scope (the page opens no inbox screen). The Dashboard: its
+ *  days per the saved entry's zone, else the browser's; with neither (the first document load on this browser), one
+ *  Intl does not know (a junk cookie) or no Per-model cards (`grid: false`), no guess. Never throws. */
+export function bootScreen(pathAndSearch: string, cookie: CookieRead): Screen | null {
+  const u = new URL(pathAndSearch, "http://x");
+  if (u.pathname === "/messages-pro") return cookie(SCOPE_COOKIE) === "model" ? null : { kind: "inbox", cursor: 0 };
+  if (u.pathname !== "/") return null;
+  const hint = parseDashboardEntry(cookie(ENTRY_COOKIE));
+  const tz = hint?.tz ?? cookie(TZ_COOKIE);
+  if (!tz || hint?.grid === false) return null;
+  const w = u.searchParams.get("window");
+  try {
+    const [from, to] = periodWindow(w && isPeriod(w) ? w : DEFAULT_PERIOD, tz, hint?.weekStart ?? "monday");
+    return { kind: "dashboard", from, to };
+  } catch {
+    return null;
+  }
+}
+
+/** `name`'s decoded value in a Cookie header (`document.cookie`); undefined: none, or undecodable (as Next's jar). */
+export function cookieValue(cookies: string, name: string): string | undefined {
+  const hit = cookies.split("; ").find((c) => c.startsWith(`${name}=`));
+  if (hit == null) return undefined;
+  try {
+    return decodeURIComponent(hit.slice(name.length + 1));
+  } catch {
+    return undefined;
+  }
 }
 
 /** A saved entry (`raw`: its JSON); null: none or junk. */
-export function parseDashboardEntry(raw: string | null | undefined): DashboardEntry | null {
+function parseDashboardEntry(raw: string | null | undefined): DashboardEntry | null {
   try {
     const v = JSON.parse(raw ?? "null");
     return v && typeof v === "object" && (v.weekStart === "monday" || v.weekStart === "sunday")
@@ -53,20 +78,23 @@ export function parseDashboardEntry(raw: string | null | undefined): DashboardEn
   }
 }
 
-export function readDashboardEntry(): DashboardEntry | null {
+/** Set (null: expire) `name` for the next document load's guess. */
+function writeCookie(name: string, value: string | null): void {
   try {
-    return parseDashboardEntry(window.localStorage.getItem(KEY));
-  } catch {
-    return null;
-  }
+    document.cookie = `${name}=${encodeURIComponent(value ?? "")}; path=/; max-age=${value == null ? 0 : YEAR_S}; samesite=lax`;
+  } catch { /* cookies off: the next document load guesses without it, as before */ }
+}
+
+/** Mirror whether the saved inbox scope is one Creator (`one`) for the next document load's guess. */
+export function rememberScope(one: boolean): void {
+  writeCookie(SCOPE_COOKIE, one ? "model" : "all");
+}
+
+/** Forget the mirrored scope: an identity switch (the next principal's scope is its own). */
+export function forgetScope(): void {
+  writeCookie(SCOPE_COOKIE, null);
 }
 
 export function rememberDashboardEntry(e: DashboardEntry): void {
-  const v = JSON.stringify(e);
-  try {
-    window.localStorage.setItem(KEY, v);
-  } catch { /* storage off: the next load guesses */ }
-  try {
-    document.cookie = `${ENTRY_COOKIE}=${encodeURIComponent(v)}; path=/; max-age=${YEAR_S}; samesite=lax`;
-  } catch { /* cookies off: the server guesses no bundle */ }
+  writeCookie(ENTRY_COOKIE, JSON.stringify(e));
 }

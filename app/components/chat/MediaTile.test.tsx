@@ -43,7 +43,6 @@ describe("MediaTile skeleton", () => {
       <MediaTile
         mediaId={1}
         proxiedUrl="https://cdn.test/a.jpg"
-        fallbackUrl="https://cdn.test/a.jpg"
         eager={false}
         className="rounded-md border border-black/10"
       />,
@@ -78,7 +77,6 @@ describe("MediaTile skeleton", () => {
       <MediaTile
         mediaId={2}
         proxiedUrl="https://cdn.test/b.jpg"
-        fallbackUrl="https://cdn.test/b.jpg"
         eager
         alt="photo"
         className="rounded-md border border-black/10"

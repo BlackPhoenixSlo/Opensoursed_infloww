@@ -118,6 +118,7 @@ def case_proxy_refused_table():
     (`_may_have_sent`).
     Only a ProxyError, terminal or its `raise ... from` cause, is unreached;
     an earlier refusal in `__context__` says nothing of the error that ended it."""
+    from of_client import proxy_refused
     rows = [   # (exception, unreached)
         (curl.exceptions.ProxyError(_CONNECT_403), True),
         (_raised(_refused), True),
@@ -129,6 +130,7 @@ def case_proxy_refused_table():
         (RuntimeError(_CONNECT_403), False),          # the text alone is not a ProxyError
     ]
     for e, unreached in rows:
+        assert proxy_refused(e) is unreached, (repr(e), repr(e.__context__), unreached)
         assert of_write._may_have_sent(e) is (not unreached), (repr(e), repr(e.__context__))
 
 

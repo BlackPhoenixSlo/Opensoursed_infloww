@@ -69,10 +69,10 @@ def _mass_refused_run_left_running() -> None:
     REFUSED_RUN_CLOSED."""
     from automations import send_mass_message
 
-    async def keep(_mass_run_id: int) -> None:
+    async def keep(_mass_run_id: int, _e: BaseException) -> None:
         return None
 
-    send_mass_message._close_refused_run = keep
+    send_mass_message._close_unsent_run = keep
 
 
 def register(Fault) -> dict:

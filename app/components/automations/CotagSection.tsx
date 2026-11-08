@@ -19,7 +19,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 
 import { relay } from "@/lib/relay";
@@ -171,13 +171,13 @@ function CotagForm({ accountId, resp }: { accountId: string; resp: AccountConfig
         username={patch.cotag_username ?? cfg.cotag_username ?? null}
         onChange={(p) => { setPatch((cur) => ({ ...cur, ...p })); if (!saveM.isIdle) saveM.reset(); }}
       />
-      <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
-        {saveM.isError && <p className="mr-auto text-[14px] text-err">{saveM.error.message || "Save failed"}</p>}
-        {saveM.isSuccess && !dirty && <p role="status" className="mr-auto text-[14px] text-ok">Saved.</p>}
-        <IfButton variant="primary" disabled={!dirty || saveM.isPending}
-          onClick={() => saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) })}>
-          {saveM.isPending ? "Saving…" : "Save co-creator tag"}
-        </IfButton>
+      <div className="border-t border-border pt-4">
+        <SaveRow
+          label="Save co-creator tag"
+          save={saveVerdict(saveM)}
+          disabled={!dirty}
+          onSave={() => saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) })}
+        />
       </div>
     </div>
   );

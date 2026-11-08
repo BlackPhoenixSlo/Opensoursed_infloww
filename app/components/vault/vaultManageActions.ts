@@ -6,6 +6,7 @@ import { type QueryClient } from "@tanstack/react-query";
 import {
   addToOfFolder,
   cacheSummaryKey,
+  type CollectRun,
   createOfFolder,
   describeAllBody,
   describeMedia,
@@ -44,6 +45,13 @@ export interface ManageDeps {
   refetchPlan: () => void;
 }
 
+/** The Collect run has something for the grid: it has seen media, or (when its totals are hidden from a restricted
+ *  chatter) it is past paging OF ("media") or no longer running. */
+export function collectHasNews(run: CollectRun | null | undefined): boolean {
+  if (!run) return false;
+  return (run.total_seen ?? 0) > 0 || run.phase !== "media" || run.status !== "running";
+}
+
 export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refreshAll"> & { isCollecting: boolean }) {
   const { accountId, qc } = d;
   if (d.isCollecting) return;
@@ -53,11 +61,14 @@ export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refres
     /* already running */
   }
   qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
-  for (let i = 0; i < 4; i++) {
+  const polls = 4;
+  for (let i = 0; i < polls; i++) {
     await new Promise((r) => setTimeout(r, 2500));
     qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
     const st = await fetchCollectStatus(accountId).catch(() => null);
-    if (st?.run && (st.run.total_seen ?? 0) > 0) {
+    // The last poll refreshes regardless: a restricted chatter sees no totals, so a vault still paging OF ("media")
+    // after the window would otherwise leave its grid stale.
+    if (collectHasNews(st?.run) || i === polls - 1) {
       d.refreshAll();
       break;
     }

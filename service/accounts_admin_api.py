@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 import account_health
 import accounts as account_registry
 import live_rev
+import notifications_api
 import proxies as proxy_registry
 import proxy_health
 import relay_cache
@@ -85,6 +86,8 @@ def reload_session(account_id: str | None = Query(None)) -> dict[str, Any]:
     aid = account_id or account_registry.get_active_account_id()
     if not aid:
         raise HTTPException(status_code=503, detail="no active account")
+    # The resolved id, not just the query's: the default is relay-wide and may be another Agency's Creator.
+    assert_account_owned(aid)
     _invalidate_client(aid)
     c = _load_client(aid)
     return {"ok": True, "account_id": aid, "user_id": c.user_id, "x_of_rev": c.x_of_rev}
@@ -275,17 +278,18 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
     except Exception:
         log.exception("dead_session_map failed")
         dead, off = {}, set()
-    # The Creator's proxy is bad: DOWN_AFTER counted failures in a row and a failed confirm probe (proxy_health).
-    down = proxy_health.down_labels()
+    # The Creator's proxy is bad (proxy_health), and why: "down" (DOWN_AFTER counted failures in a row and a
+    # failed confirm probe) or "flapping" (the refusal-rate knob PROXY_FLAP_BAD_PCT, on by default).
+    bad = proxy_health.bad_reasons()
     for a in all_accounts + watchers:
         health = dead.get(a.get("id"), account_health.NO_DEAD_SESSION)
         a["session_dead_at"] = health.at
         a["session_dead_reason"] = health.reason
         a["is_active"] = a.get("id") not in off
-        a["proxy_down"] = bool(down) and (
-            (proxy_registry.get_for_account(a["id"]) or {}).get("label") in down)
-        if a["proxy_down"]:   # why: "down" (unreachable) or "flapping" (the refusal-rate knob PROXY_FLAP_BAD_PCT, on by default)
-            a["proxy_bad_reason"] = proxy_health.snapshot(proxy_registry.get_for_account(a["id"])["label"]).get("bad_reason", "down")
+        reason = bad.get((proxy_registry.get_for_account(a["id"]) or {}).get("label")) if bad else None
+        a["proxy_down"] = reason is not None
+        if reason:
+            a["proxy_bad_reason"] = reason
     active = account_registry.get_active_account_id()
     if active not in {a.get("id") for a in all_accounts}:
         active = all_accounts[0]["id"] if all_accounts else None
@@ -460,6 +464,9 @@ async def admin_accounts_roster_counts(
     else:
         chatter = _get_request_chatter()
         ids = list(chatter.account_ids or []) if chatter is not None else []
+    # A watcher (a fan account, no Creator) is never in the strip: no OF read on it here,
+    # so this poll can never mark its session dead and pause it.
+    ids = [a for a in ids if not account_registry.is_watcher(a)]
     if not ids:
         return {"counts": {}}
 
@@ -520,12 +527,14 @@ class _ActivateBody(BaseModel):
 @router.post("/admin/accounts/active")
 def admin_accounts_activate(body: _ActivateBody = Body(...)) -> dict[str, Any]:
     """Flip which account is the default (no X-Account-Id header → this one)."""
+    # The caller's own Creators only (the id is body-carried: the isolation middleware never sees it). First, so
+    # another Agency's id answers 403 whether it exists or not.
+    assert_account_owned(body.account_id)
     if body.account_id is not None and account_registry.get_account(body.account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {body.account_id!r}")
-    # A watcher (a fan account) is never the default: a route without X-Account-Id would act as it.
-    if body.account_id is not None and account_registry.is_watcher(body.account_id):
+    # A watcher (a fan account) is never the default: the registry refuses it.
+    if not account_registry.set_active_account_id(body.account_id):
         raise HTTPException(status_code=400, detail="a watcher account cannot be the default")
-    account_registry.set_active_account_id(body.account_id)
     _kick_db_sync("accounts-active")
     return {"ok": True, "active_account_id": body.account_id}
 
@@ -586,6 +595,7 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
         await vault_cache.invalidate(account_id)
     except Exception as e:  # noqa: BLE001
         log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
+    await notifications_api.drop_pinned(account_id)   # every Agency's pinned row for it goes with it
     ok = account_registry.delete_account(account_id)
     _kick_db_sync(f"accounts-delete-{account_id}")
     return {"ok": ok}

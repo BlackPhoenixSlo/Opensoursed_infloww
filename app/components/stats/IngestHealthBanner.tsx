@@ -33,10 +33,12 @@ export function tier(t: IngestTier): { text: string; dot: string; label: string 
   return                       { text: "text-err",  dot: "bg-err",  label: "Action needed" };
 }
 
-/** A row's scan status in words; the ledger backfill's two between-ticks states need them. */
+/** A row's scan status in words: the ledger backfill's between-ticks states and its give-up
+ *  (never green: tier colours it). Others as the API says them. */
 export function statusLabel(status: string): string {
   if (status === "backfill_partial") return "backfilling · still working";
   if (status === "backfill_stalled") return "backfill stalled";
+  if (status === "backfill_given_up") return "backfill gave up";
   return status;
 }
 

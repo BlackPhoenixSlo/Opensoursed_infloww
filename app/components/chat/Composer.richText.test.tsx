@@ -82,6 +82,37 @@ describe("a formatted script in the chat composer", () => {
     expect(onSend.mock.calls[0][0].text).toBe(HTML);
   });
 
+  it("a mount without rich text (Fansly fallback, cold accounts cache) keeps the stored markup for the next", async () => {
+    const a = await mount(7);
+    await pick();
+    await waitFor(() => expect(formatted()).not.toBeNull());
+    a.unmount();
+    setPlatform("fansly");
+    const b = await mount(7);
+    expect(box()).toBeInstanceOf(HTMLTextAreaElement);
+    b.unmount();
+    setPlatform("onlyfans");
+    await mount(7);
+    await waitFor(() => expect(formatted()?.textContent).toBe("Hey"));
+  });
+
+  it("a plain send while rich text is off drops the stored markup with its text (the same words typed later stay plain)", async () => {
+    const a = await mount(7);
+    await pick();
+    await waitFor(() => expect(formatted()).not.toBeNull());
+    a.unmount();
+    setPlatform("fansly");
+    const b = await mount(7);
+    const words = boxText();
+    await enter();
+    fireEvent.change(box(), { target: { value: words } });
+    b.unmount();
+    setPlatform("onlyfans");
+    await mount(7);
+    expect(box()).toBeInstanceOf(HTMLTextAreaElement);
+    expect(formatted()).toBeNull();
+  });
+
   it('"Aa" shows the toolbar in the rich editor; off again with no formatting the plain textarea is back', async () => {
     await mount(7);
     expect(box()).toBeInstanceOf(HTMLTextAreaElement);

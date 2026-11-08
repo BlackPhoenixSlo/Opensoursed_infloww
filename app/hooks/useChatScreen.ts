@@ -14,7 +14,8 @@ import { useMemo, useRef } from "react";
 import { preloadImg } from "@/lib/imgBlobs";
 import { proxyImage } from "@/lib/mediaUrl";
 import { prefetchScreenBundle } from "@/lib/relay";
-import { screenKey, useScreen, type ChatLack, type Screen } from "@/lib/screenBundle";
+import { useScreen } from "@/lib/screenBundle";
+import { screenKey, type ChatLack, type Screen } from "@/lib/screenKey";
 import { SENSITIVE_WORDS_KEY } from "@/lib/sensitiveWords";
 import { resolveShareToken } from "@/lib/shareToken";
 

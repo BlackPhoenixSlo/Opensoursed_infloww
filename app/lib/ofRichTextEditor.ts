@@ -5,19 +5,21 @@
  *     else the plain text, one line per paragraph or `<br>`: an unformatted script stays the plain text it always was.
  *     The plain text is what was typed: never trimmed, leading/trailing empty lines kept; the one rewrite is the
  *     no-break space a contenteditable puts in for runs of spaces, which reads back as a plain space;
- *   • plain text loads as one paragraph per line; markup loads through `setOfHtml`'s allow-list;
+ *   • plain text loads as one paragraph per line; anything the relay rewrites (`hasHtml`: markup, bare tags in an
+ *     imported cell, a text it escapes whole) loads as the relay will send it (`ofText`);
  *   • the caret's marks light the toolbar (`marksAt`).
  */
 import {
-  colorClass, hasFormatting, normalize, ofHtml, restoreOffsets, textOffsets, type FormatCommand,
+  COLOR_CLASSES, colorClass, commandState, execCommand, execFormat, hasFormatting, normalize, ofHtml, restoreOffsets,
+  SIZE_CLASSES, textOffsets, type FormatCommand,
 } from "@/lib/ofMirrorFormat";
 import {
-  decodeEntities, foldBlankParagraphs, hasOfFormatting, isOfHtml, ofPlainText, plainToOfHtml, sanitizeOfHtml,
+  decodeEntities, foldBlankParagraphs, hasHtml, hasOfFormatting, ofPlain, ofText, plainToOfHtml, sanitizeOfHtml,
 } from "@/lib/ofRichText";
-import { COLORS, SIZES } from "@/lib/ofMirrorFormat";
 
-/** What the editor loads for a value (plain or markup; markup through the allow-list, li / div / h1-h6 as lines). */
-export const editorHtmlOf = (value: string): string => (isOfHtml(value) ? sanitizeOfHtml(value) : plainToOfHtml(value));
+/** What the editor loads for a value: what the relay rewrites as it sends it (allow-list, blocks as lines, a text that
+ *  fails closed as its literal text), plain text as lines. */
+export const editorHtmlOf = (value: string): string => (hasHtml(value) ? ofText(value) : plainToOfHtml(value));
 
 /** The caret's gap `clearAtCaret` leaves: never part of the value. */
 const GAP = "\u200b";
@@ -27,13 +29,14 @@ export const editorPlain = (html: string): string =>
   decodeEntities(html.replace(/^<p>|<\/p>$/g, "").replace(/<\/p><p>|<br>/g, "\n").replace(/<[^>]*>/g, ""))
     .replace(/\u00a0/g, " ");
 
-/** The editor's value: OF markup while it has formatting, else its plain text. Plain text that would read back as
- *  markup (a typed `<p>Use <VIP20></p>`) stays escaped markup, so it loads and sends as the text it is. */
+/** The editor's value: OF markup while it has formatting, else its plain text. Plain text the relay would read as
+ *  markup (`hasHtml`: a typed `<p>Use <VIP20></p>` or `Use <b>bold</b> literally`) stays escaped markup, so it loads
+ *  and sends as the text it is. */
 export function editorValue(root: Element): string {
   const html = ofHtml(root).replaceAll(GAP, "");
   if (hasFormatting(root)) return foldBlankParagraphs(html);
   const plain = editorPlain(html);
-  return isOfHtml(plain) ? foldBlankParagraphs(html) : plain;
+  return hasHtml(plain) ? foldBlankParagraphs(html) : plain;
 }
 
 /**
@@ -76,17 +79,10 @@ export function clearAtCaret(root: Element, sel: Selection): boolean {
  */
 export function formatAtCaret(root: Element, sel: Selection, cmd: FormatCommand): boolean {
   const doc = root.ownerDocument;
-  const exec = (name: string, value?: string) => typeof doc.execCommand === "function" && doc.execCommand(name, false, value);
-  const armed = (c: string) => {
-    try { return typeof doc.queryCommandState === "function" && doc.queryCommandState(c); } catch { return false; }
-  };
-  exec("styleWithCSS", "false");
-  if (cmd.kind === "bold" || cmd.kind === "italic") return exec(cmd.kind);
-  if (cmd.kind === "color") return exec("foreColor", COLORS.find((c) => c.cls === cmd.cls)?.css || "#000001");
-  if (cmd.kind === "size") return exec("fontSize", SIZES.find((s) => s.cls === cmd.cls)?.font ?? "3");
+  if (cmd.kind !== "clear") return execFormat(doc, cmd);
   if (clearAtCaret(root, sel)) return true;
-  const b = armed("bold") && exec("bold");
-  const i = armed("italic") && exec("italic");
+  const b = commandState(doc, "bold") && execCommand(doc, "bold");
+  const i = commandState(doc, "italic") && execCommand(doc, "italic");
   return b || i;
 }
 
@@ -116,8 +112,16 @@ export function pastedOfHtml(html: string, doc: Document): string | null {
   return hasOfFormatting(out) ? out : null;
 }
 
+/** `text` cut to `n` UTF-16 units (what the limit counts), never between a surrogate pair's halves (an emoji). */
+export const cutTo = (text: string, n: number): string => {
+  let end = Math.max(0, n);
+  const c = text.charCodeAt(end);
+  if (end > 0 && c >= 0xdc00 && c <= 0xdfff) end -= 1;
+  return text.slice(0, end);
+};
+
 /** A value's plain length (the 6500 limit and the counter count what the fan reads). */
-export const plainLength = (value: string): number => (isOfHtml(value) ? ofPlainText(value) : value).length;
+export const plainLength = (value: string): number => ofPlain(value).length;
 
 /** What the browser's editing leaves that is not OF's markup yet (a typed run after B on an empty selection, a
  *  pasted or Enter-made div). */
@@ -141,9 +145,6 @@ export interface Marks {
 }
 export const NO_MARKS: Marks = { bold: false, italic: false, color: null, size: null };
 
-const COLOR_SET: ReadonlySet<string> = new Set(COLORS.map((c) => c.cls));
-const SIZE_SET: ReadonlySet<string> = new Set(SIZES.map((s) => s.cls));
-
 /** The marks at `node` (the caret's), from its ancestors up to `root`; outside `root`: none. */
 export function marksAt(root: Element, node: Node | null): Marks {
   if (!node || !root.contains(node)) return NO_MARKS;
@@ -155,8 +156,8 @@ export function marksAt(root: Element, node: Node | null): Marks {
     if (tag === "STRONG" || tag === "B") m.bold = true;
     if (tag === "EM" || tag === "I") m.italic = true;
     for (const c of el.classList) {
-      if (!m.color && COLOR_SET.has(c)) m.color = c;
-      if (!m.size && SIZE_SET.has(c)) m.size = c;
+      if (!m.color && COLOR_CLASSES.has(c)) m.color = c;
+      if (!m.size && SIZE_CLASSES.has(c)) m.size = c;
     }
   }
   return m;

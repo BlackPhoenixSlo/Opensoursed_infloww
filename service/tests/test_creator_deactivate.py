@@ -119,7 +119,9 @@ account_registry.list_accounts = lambda include_watchers=False: [
 account_registry.is_account = lambda aid: aid in _ACCOUNTS
 _ACTIVE: dict[str, str | None] = {"id": OFF}
 account_registry.get_active_account_id = lambda: _ACTIVE["id"]
-account_registry.set_active_account_id = lambda aid: _ACTIVE.__setitem__("id", aid)
+# As accounts.set_active_account_id: a watcher is refused (False, nothing written).
+account_registry.set_active_account_id = lambda aid: (aid is None or not account_registry.is_watcher(aid)) \
+    and (_ACTIVE.__setitem__("id", aid) or True)
 
 STOPPED: list[str] = []
 STARTED: list[str] = []

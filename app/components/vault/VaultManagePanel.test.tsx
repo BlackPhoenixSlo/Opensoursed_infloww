@@ -28,6 +28,8 @@ const h = vi.hoisted(() => {
     describeMedia: vi.fn(),
     addToOfFolder: vi.fn(),
     patch: vi.fn(),
+    summary: { data: { count: 0 } as { count: number; complete?: boolean }, isLoading: false },
+    access: { isLoading: false, isError: false } as { isLoading: boolean; isError: boolean; data?: { restricted: boolean } },
   };
 });
 const AID = "1000001";
@@ -47,6 +49,7 @@ vi.mock("@/hooks/useVaultMedia", async (orig) => {
   return {
     ...mod,
     useVaultLists: () => lists,
+    useChatterFolderAccess: () => h.access,
     useVaultMedia: (o: { listId: unknown }) => ({
       items: o.listId == null ? h.ALL : h.IN_BEACH,
       hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
@@ -55,11 +58,10 @@ vi.mock("@/hooks/useVaultMedia", async (orig) => {
 });
 vi.mock("@/hooks/useVaultCache", async (orig) => {
   const mod = await orig<typeof import("@/hooks/useVaultCache")>();
-  const summary = { data: { count: 0 }, isLoading: false };
   const plan = { data: undefined, refetch: () => {} };
   return {
     ...mod,
-    useVaultCacheSummary: () => summary,
+    useVaultCacheSummary: () => h.summary,
     useDescribePlan: () => plan,
     useOfFoldersMirror: () => ({ data: undefined }),
     useMirrorItems: () => ({
@@ -109,6 +111,8 @@ beforeAll(() => {
     unknown as typeof window.matchMedia;
 });
 beforeEach(() => {
+  h.summary.data = { count: 0 };
+  h.access = { isLoading: false, isError: false };
   h.describeMedia.mockReset();
   h.addToOfFolder.mockReset().mockResolvedValue({});
   h.patch.mockReset().mockResolvedValue({ item: {}, locked: [] });
@@ -197,5 +201,36 @@ describe("the item editor's price", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save & lock" }));
     await flush();
     expect(h.patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("the whole-vault download", () => {
+  // The relay soft-denies "All" to a folder-limited chatter on both sources (here a partial mirror of its folders,
+  // count 12, complete:false: the live path), so a whole-vault download would read "Nothing to download".
+  const button = () => screen.getByRole("button", { name: "Download whole vault" });
+  beforeEach(() => {
+    (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve(null);
+  });
+  afterEach(() => {
+    delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+  });
+
+  it.each([
+    // An owner's folder-access query is disabled: not loading, no data.
+    { who: "owner", access: { isLoading: false, isError: false }, off: false },
+    { who: "unrestricted chatter", access: { isLoading: false, isError: false, data: { restricted: false } }, off: false },
+    { who: "restricted chatter", access: { isLoading: false, isError: false, data: { restricted: true } }, off: true },
+    { who: "chatter, folder access not read yet", access: { isLoading: true, isError: false }, off: true },
+    { who: "chatter, folder access read failed", access: { isLoading: false, isError: true }, off: true },
+  ])("$who: off=$off", ({ access, off }) => {
+    h.summary.data = { count: 12, complete: false };
+    h.access = access;
+    renderWithProviders(<VaultManagePanel />);
+    if (off) {
+      expect(button()).toBeDisabled();
+      expect(button()).toHaveAttribute("title", "Your access is by folder: download a folder");
+    } else {
+      expect(button()).toBeEnabled();
+    }
   });
 });

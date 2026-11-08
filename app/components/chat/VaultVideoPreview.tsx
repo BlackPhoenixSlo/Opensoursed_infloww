@@ -18,8 +18,16 @@ import { proxyImage } from "@/lib/mediaUrl";
  *  scaled down to a small storyboard width for ffmpeg scrubbing, so pulling
  *  the 720p mp4 is wasted bandwidth. Fall back to 720p, then files.full. */
 export function progressiveVideoSrc(m: VaultMedia): string | null {
-  // A gif is OF's short .mp4 (no DRM): its `files.full` is the clip.
-  if (m.type !== "video" && m.type !== "gif") return null;
+  return m.type === "video" ? clipUrl(m) : null;
+}
+
+/** A gif's clip: OF stores a gif as a short .mp4 (no DRM), its `files.full`; null for anything but a gif. */
+export function gifClipSrc(m: VaultMedia): string | null {
+  return m.type === "gif" ? clipUrl(m) : null;
+}
+
+/** The cheapest mp4 a media carries: 240p, 720p, then `files.full`. */
+function clipUrl(m: VaultMedia): string | null {
   return m.videoSources?.["240"] || m.videoSources?.["720"] || m.files?.full?.url || null;
 }
 
@@ -121,7 +129,7 @@ export function VaultVideoPreview({
     // (e.g. the /vault manager), where an absolute overlay would size itself to
     // whatever positioned ancestor it landed in — which rendered the video tiny
     // and left the page behind it scrollable.
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div role="dialog" aria-modal="true" aria-label="Video preview" className="fixed inset-0 z-50 flex items-center justify-center">
       <button
         type="button"
         aria-label="Close preview"

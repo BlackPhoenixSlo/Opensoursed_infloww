@@ -58,6 +58,8 @@ from db.models import (
     AccountHealth,
     AutomationRule,
     AutomationRun,
+    MASS_RUN_INTERRUPTED,
+    MASS_RUN_RUNNING,
     MassRun,
     ScheduledJob,
 )
@@ -409,11 +411,11 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
             for r in rows if r[0] not in off]
 
 
-def _epoch(dt: datetime | str | None) -> float:
-    """A naive-UTC run_at as epoch seconds (an aggregate may come back as text)."""
+def _epoch(dt: datetime | str) -> float:
+    """A naive-UTC run_at (NOT NULL) as epoch seconds (an aggregate may come back as text)."""
     if isinstance(dt, str):
         dt = _parse_iso(dt)
-    return (dt - datetime(1970, 1, 1)).total_seconds() if dt else 0.0
+    return (dt - datetime(1970, 1, 1)).total_seconds()
 
 
 # Accounts already warned about "quiet hours set, but no clock to evaluate them in".
@@ -967,19 +969,17 @@ def _log_parked(job_status: str, account_id: str, kind: str, run_id: int,
 
 # ── Supervisor ───────────────────────────────────────────────────────
 
-# A `mass_runs` status: the boot heal found the run `running`, minted by a dead process
-# between its mint and its close. OF may have taken it (nothing records whether its POST
-# left), so nothing resends it; a one-shot job parks ORPHAN_REASON. AE 2026-11-07 mass_runs 1545: `running` for good, across a deploy.
-MASS_RUN_INTERRUPTED = "interrupted"
-
 
 async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
-    """Every `running` mass run -> MASS_RUN_INTERRUPTED; returns their ids. A send that
-    closes later (a request that minted just before the heal) still closes its run `ok`."""
+    """Every `running` mass run -> MASS_RUN_INTERRUPTED; returns their ids. Nothing
+    resends one: a stream's send settles by the stream's own repair and orphan
+    match, a one-shot job parks ORPHAN_REASON (AE 2026-11-07 mass_runs 1545
+    sat `running` for good across a deploy). A send that closes later (a request
+    that minted just before the heal) still closes its run `ok`."""
     ids = list((await s.execute(
-        select(MassRun.id).where(MassRun.status == "running").order_by(MassRun.id))).scalars())
+        select(MassRun.id).where(MassRun.status == MASS_RUN_RUNNING).order_by(MassRun.id))).scalars())
     if ids:
-        await s.execute(update(MassRun).where(MassRun.id.in_(ids), MassRun.status == "running")
+        await s.execute(update(MassRun).where(MassRun.id.in_(ids), MassRun.status == MASS_RUN_RUNNING)
                         .values(status=MASS_RUN_INTERRUPTED, completed_at=now))
     return ids
 

@@ -91,10 +91,10 @@ def _prune_not_pushed() -> None:
     and got nothing filed keeps a stale badge until its next notify."""
     import notifications_api as na
 
-    async def push_pruned(agencies) -> None:
+    async def push_unread(agencies) -> None:
         return None
 
-    na._push_pruned = push_pruned
+    na.push_unread = push_unread
 
 
 def register(Fault) -> dict:

@@ -122,9 +122,12 @@ def case_text_is_sanitized_and_capped_at_6500_plain_characters():
     clean = "<p><strong>hi</strong></p><p>a</p>"
     row = _new(c, title="rich", text=hostile)
     assert row["text"] == clean, row["text"]
-    r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "<b>x</b><iframe>y</iframe>"})
+    r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "<b>x</b><img src=y>"})
     assert r.status_code == 200 and r.json()["text"] == "<p><strong>x</strong></p>", r.text
     assert next(x for x in _list(c) if x["id"] == row["id"])["text"] == "<p><strong>x</strong></p>"
+    # bare tags beside an iframe fail closed: stored escaped whole, nothing dropped
+    r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "<b>x</b><iframe>y</iframe>"})
+    assert r.status_code == 200 and r.json()["text"] == "<p>&lt;b&gt;x&lt;/b&gt;&lt;iframe&gt;y&lt;/iframe&gt;</p>", r.text
     # the limit counts what a fan reads: 6500 characters inside heavy markup is fine, 6501 is not
     span = '<span class="m-editor-fs__l m-editor-fc__blue-1">'
     edge = "<p>" + (span + "x" * 100 + "</span>") * 65 + "</p>"
@@ -136,6 +139,21 @@ def case_text_is_sanitized_and_capped_at_6500_plain_characters():
         assert r.status_code == 400, r.text
     plain = "hey <3 & <VIP20>"
     assert _new(c, title="plain", text=plain)["text"] == plain  # plain text: byte-identical
+    # markup that keeps nothing a fan would read is refused, never stored blank (the bulk import's rule);
+    # OF's own empty markup and an empty text (a media-only script) are not that
+    for text in ("<img src=x>", "<font color=red></font>"):
+        r = c.post(f"/admin/saved-replies?account_id={A}", json={"text": text})
+        assert r.status_code == 400 and "nothing a fan would read" in r.text, (text, r.text)
+        assert c.put(f"/admin/saved-replies/{row['id']}", json={"text": text}).status_code == 400
+    assert _new(c, title="media", text="<p></p>")["text"] == "<p></p>" and _new(c, title="m2", text="")["text"] == ""
+    # a body past MARKUP_MAX is a 422 before it is read at all (the same cap as the chat send's text)
+    import server
+    from of_rich_text import MARKUP_MAX
+    assert server.SendMessageBody.model_fields["text"].metadata[0].max_length == MARKUP_MAX
+    big = "<p>" + "<b>" * (MARKUP_MAX // 3) + "</p>"
+    for r in (c.post(f"/admin/saved-replies?account_id={A}", json={"text": big}),
+              c.put(f"/admin/saved-replies/{row['id']}", json={"text": big})):
+        assert r.status_code == 422 and "text" in r.text, r.text[:200]
 
 
 def case_concurrent_list_reads_share_a_run_and_still_check_ownership_each():

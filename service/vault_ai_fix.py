@@ -39,7 +39,7 @@ from sqlalchemy import select, update
 import vault_ai_brief
 from db.engine import get_session
 from db.models import VaultItem
-from vault_mirror import in_of_folders
+from vault_mirror import visible_to
 
 log = logging.getLogger("of-relay.vault_ai_fix")
 
@@ -216,18 +216,12 @@ def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any
     return {"flags": trust_flags, "describe": trust_describe}
 
 
-def _scoped(stmt, allowed: frozenset[int] | None):
-    """`allowed` (chatters.allowed_folder_ids_for_chatter): a restricted chatter's
-    OF folders — only items in them are listed, counted or scored; None = all."""
-    return stmt if allowed is None else stmt.where(in_of_folders(allowed))
-
-
 async def list_disputes(account_id: str, *,
                         allowed: frozenset[int] | None = None) -> dict[str, Any]:
     """Every item whose two passes contradict each other, with both readings.
 
     Read-only. Ordered oldest-first so the operator works a stable list rather
-    than a set that reshuffles as they fix it. `allowed`: see `_scoped`.
+    than a set that reshuffles as they fix it. `allowed`: see `vault_mirror.visible_to`.
     """
     stmt = (select(VaultItem.media_id, VaultItem.kind, VaultItem.ai_fields_json,
                    VaultItem.locked_fields_json, VaultItem.raw_json,
@@ -237,7 +231,7 @@ async def list_disputes(account_id: str, *,
                    VaultItem.kind.in_(("photo", "video")))
             .order_by(VaultItem.created_at.asc(), VaultItem.media_id.asc()))
     async with get_session() as s:
-        rows = (await s.execute(_scoped(stmt, allowed))).all()
+        rows = (await s.execute(stmt.where(visible_to(allowed)))).all()
 
     out: list[dict[str, Any]] = []
     checked = 0
@@ -393,7 +387,7 @@ async def review_queue(account_id: str, *, limit: int = 60,
     `IFFY_REASONS`). That is the difference between asking for ten minutes and
     asking for an afternoon, and the suspects are where every real defect has
     landed — so the short list is not merely cheaper, it is better targeted.
-    `allowed`: see `_scoped` (the totals count the scoped items only).
+    `allowed`: see `vault_mirror.visible_to` (the totals count the scoped items only).
     """
     import vault_scripts
 
@@ -404,7 +398,7 @@ async def review_queue(account_id: str, *, limit: int = 60,
                    VaultItem.kind.in_(("photo", "video")))
             .order_by(VaultItem.media_id.asc()))
     async with get_session() as s:
-        rows = (await s.execute(_scoped(stmt, allowed))).all()
+        rows = (await s.execute(stmt.where(visible_to(allowed)))).all()
 
     plan = await vault_scripts.plan_ai_folders(account_id, keep=2)
     lanes: dict[int, list[str]] = {}
@@ -505,13 +499,13 @@ async def flags_accuracy(account_id: str, version: int = 0, *,
     ungraded items as correct is how a 100% gets reported on a vault nobody has
     checked. Corrections that are now locked are counted as the misses they
     were, from the grade record, not from the (since-repaired) stored value.
-    `allowed`: see `_scoped`.
+    `allowed`: see `vault_mirror.visible_to`.
     """
     stmt = (select(VaultItem.media_id, VaultItem.ai_fields_json)
             .where(VaultItem.account_id == account_id,
                    VaultItem.removed_at.is_(None)))
     async with get_session() as s:
-        rows = (await s.execute(_scoped(stmt, allowed))).all()
+        rows = (await s.execute(stmt.where(visible_to(allowed)))).all()
 
     per = {r: {"ok": 0, "n": 0} for r in vault_ai_brief.VIS_REGIONS}
     graded = stale = 0

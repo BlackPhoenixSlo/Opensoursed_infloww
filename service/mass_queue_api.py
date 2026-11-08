@@ -89,7 +89,7 @@ async def _open_mass_run(
     mass_run_id: int | None = None
     try:
         from db.engine import get_session
-        from db.models import MassRun
+        from db.models import MASS_RUN_RUNNING, MassRun
         async with get_session() as s:
             run = MassRun(
                 account_id=str(account_id),
@@ -97,7 +97,7 @@ async def _open_mass_run(
                 started_by_employee_id=employee_id,
                 audience_filter=audience_filter,
                 recipient_count=len(included_users),
-                status="running",
+                status=MASS_RUN_RUNNING,
             )
             s.add(run)
             await s.flush()
@@ -210,11 +210,11 @@ async def _close_mass_run(
     queue_id = result.get("id") if isinstance(result, dict) else None
     try:
         from db.engine import get_session
-        from db.models import MassRun
+        from db.models import MASS_RUN_OK, MassRun
         async with get_session() as s:
             mr = await s.get(MassRun, mass_run_id)
             if mr is not None:
-                mr.status = "ok"
+                mr.status = MASS_RUN_OK
                 mr.completed_at = datetime.utcnow()
                 if queue_id is not None:
                     mr.queue_id = int(queue_id)

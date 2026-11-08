@@ -35,7 +35,7 @@ export function MoneyRailPanel({
   const activeAccounts = useActiveAccounts();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { dock, mounted, viewportH, panelRef, draggedRef, onHeaderPointerDown, toggle } = useRailDock(surface);
+  const { dock, mounted, viewportH, panelRef, swallowClick, onHeaderPointerDown, toggle } = useRailDock(surface);
   const open = dock.open;
   const {
     targetAccountIds, merged, unseen, replyStates, placeholderAids, anyRefreshing, anyLoading,
@@ -148,7 +148,7 @@ export function MoneyRailPanel({
           onClick={() => {
             // Same drag-swallow as the toggle: a drag released over this
             // button must not also open a group tab.
-            if (draggedRef.current) { draggedRef.current = false; return; }
+            if (swallowClick()) return;
             void openGroupTabWithSlots(groupSlots);
           }}
           disabled={groupSlots.length === 0}
@@ -160,7 +160,7 @@ export function MoneyRailPanel({
         <button
           type="button"
           onClick={() => {
-            if (draggedRef.current) { draggedRef.current = false; return; }
+            if (swallowClick()) return;
             setSettingsOpen((v) => !v);
           }}
           className={cn(

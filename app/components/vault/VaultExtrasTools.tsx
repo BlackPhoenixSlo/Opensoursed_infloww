@@ -74,7 +74,8 @@ export default function VaultExtrasTools({
   accountId: string;
   onClose: () => void;
   isCollecting: boolean;
-  totalSeen: number;
+  /** null for a restricted chatter: the count is whole-vault. */
+  totalSeen: number | null;
   cachedCount: number;
   onCollect: () => void;
   onDescribeAll: (mode: "new" | "restage" | "force") => void;
@@ -100,7 +101,7 @@ export default function VaultExtrasTools({
         <span className="text-xs text-fg-dim">
           {isCollecting ? (
             <>
-              <span className="text-warn">●</span> collecting… {totalSeen}
+              <span className="text-warn">●</span> collecting…{totalSeen != null && ` ${totalSeen}`}
             </>
           ) : cachedCount > 0 ? (
             <>

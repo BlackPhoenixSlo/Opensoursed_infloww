@@ -27,6 +27,8 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
 
 // The Media pane's vault picker needs the user context; its slots are what's pinned here.
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
+// The Start panel reads the signed-in employee.
+vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: { id: 1 } }) }));
 
 import AutoFunnelPage from "@/components/automations/AutoFunnelPage";
 import { relay } from "@/lib/relay";
@@ -183,6 +185,30 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     ]);
   });
 
+  describe("Escape closes only an untouched draft, never mid-save", () => {
+    const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    it("seeded and untouched (a mode switch included): Escape closes", async () => {
+      const dialog = await openEdit();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+      escape();
+      expect(screen.queryByRole("dialog", { name: /Edit funnel/ })).toBeNull();
+    });
+    it("a typed name: Escape does nothing", async () => {
+      const dialog = await openEdit();
+      fireEvent.change(dialog.querySelector("#funnel-name")!, { target: { value: "x" } });
+      escape();
+      expect(screen.getByRole("dialog", { name: /Edit funnel/ })).toBeTruthy();
+    });
+    it("mid-save: Escape does nothing", async () => {
+      put.mockImplementationOnce(() => new Promise(() => {}));
+      const dialog = await openEdit();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(put).toHaveBeenCalled());
+      escape();
+      expect(screen.getByRole("dialog", { name: /Edit funnel/ })).toBeTruthy();
+    });
+  });
+
   it("typed add on a gapped funnel numbers the new step max + 1 (no collision)", async () => {
     const dialog = await openEdit();
     fireEvent.click(within(dialog).getByRole("button", { name: "Reply step" }));
@@ -193,12 +219,46 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     expect(savedSteps().map((s) => s.step)).toEqual([1, 7, 8]);
   });
 
+  it("a reply step's variant pool: typed, added and imported variants save as messages", async () => {
+    const dialog = await openEdit();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reply step" }));
+    const first = within(dialog).getAllByPlaceholderText("Message…").filter((el) => !(el as HTMLInputElement).value)[0];
+    fireEvent.change(first, { target: { value: "x" } });
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Import captions" }).at(-1)!);
+    fireEvent.change(within(dialog).getByLabelText("Paste captions"), { target: { value: "y\nz" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add pasted" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    // The step's static pool is capped at the 2 the walker sends.
+    expect(savedSteps()[2]).toEqual({ step: 8, messages: ["x", "y"] });
+  });
+
   it("a server 422 on save names the step by position, not step[i] or its id", async () => {
     put.mockRejectedValueOnce(new Error("step[1].next.bought → step 9 references no existing step"));
     const dialog = await openEdit();
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
     expect(await within(dialog).findByText("Step 2 next.bought points to a step that does not exist (id 9).")).toBeTruthy();
     expect(within(dialog).queryByText(/step\[1\]/)).toBeNull();
+  });
+
+  it("one panel at a time: Start / Media toggle under the row, Edit and New funnel close them", async () => {
+    renderWithProviders(<AutoFunnelPage />);
+    const row = (await screen.findByText("strokes")).closest("tr")!;
+    const btn = (name: string) => within(row).getByRole("button", { name });
+    const expanded = () => [btn("Start"), btn("Media")].map((b) => b.getAttribute("aria-expanded"));
+    fireEvent.click(btn("Start"));
+    expect(expanded()).toEqual(["true", "false"]);
+    fireEvent.click(btn("Media"));
+    expect(expanded()).toEqual(["false", "true"]);
+    fireEvent.click(btn("Media"));
+    expect(expanded()).toEqual(["false", "false"]);
+    fireEvent.click(btn("Start"));
+    fireEvent.click(btn("Edit"));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(expanded()).toEqual(["false", "false"]);
+    fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "New funnel" })).toBeTruthy();
   });
 
   it("Media labels a PPV step by its position, not its id (id 7 is Step 2)", async () => {

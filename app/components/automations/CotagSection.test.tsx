@@ -123,6 +123,6 @@ describe("CotagSection", () => {
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config",
       { account_id: ACC, config: { ...config, cotag_username: "coone" } }]);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Saved."));
+    expect(await screen.findByText("Saved")).toBeTruthy();
   });
 });

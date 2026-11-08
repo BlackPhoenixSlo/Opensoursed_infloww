@@ -64,8 +64,9 @@ export interface SweepProgress {
   aborted?: boolean;
   /** describe-all: how many freshly-described items want a human look. */
   needs_review?: number;
-  /** harvest-keywords: how many items a keyword actually matched. */
-  matches?: number;
+  /** harvest-keywords: how many items a keyword actually matched. Null for a chatter limited to some folders (a
+   *  whole-vault count is owners only). */
+  matches?: number | null;
   /** The sweep STOPPED on the API key (missing or rejected) — the relay's
    *  payload, shown as the key toast when the sweep settles. */
   key_error?: ApiKeyErrorPayload | null;
@@ -299,5 +300,8 @@ export function sweepAbortedNote(
 
 export function harvestSweepLabel(progress: SweepProgress | null): string {
   const counts = sweepCounts(progress);
-  return counts ? `${counts.done}/${counts.total} · ${progress?.matches ?? 0} hits` : "starting…";
+  if (!counts) return "starting…";
+  // No count (a folder-limited chatter): say nothing rather than "0 hits", which reads as an empty vault.
+  const m = progress?.matches;
+  return m == null ? `${counts.done}/${counts.total}` : `${counts.done}/${counts.total} · ${m} hits`;
 }

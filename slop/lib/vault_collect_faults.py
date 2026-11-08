@@ -100,12 +100,12 @@ def _preview_no_resign() -> None:
 
 
 def _range_cache_off() -> None:
-    """`/img` never caches a small clip off a Range request (img_api's range cap 0): every <video> open of a gif
+    """`/img` never caches a small clip off a Range request (img_clip's range cap 0): every <video> open of a gif
     streams it through the account's proxy again, as before the small-clip range cache."""
-    import img_api
+    import img_clip
 
-    _need(img_api, "_IMG_RANGE_CACHE_MAX_BYTES")
-    img_api._IMG_RANGE_CACHE_MAX_BYTES = 0
+    _need(img_clip, "RANGE_CACHE_MAX_BYTES")
+    img_clip.RANGE_CACHE_MAX_BYTES = 0
 
 
 def _folder_gate_off() -> None:

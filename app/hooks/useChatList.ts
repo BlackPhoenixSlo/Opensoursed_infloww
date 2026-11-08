@@ -33,9 +33,10 @@ import { useScope, type Scope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
 import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
 import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
+import { CHATS_PAGE } from "@/lib/screenBundle";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { usePlatformAccounts } from "./useAccounts";
-import { avatarThumb, mergeOFUserName } from "./useOFUser";
+import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
 
 /** A chat row's identity in the list, (accountId, fanId): the flatten step
  *  below de-dupes by it, and the Fan List keys its picks by it. */
@@ -43,7 +44,8 @@ export function chatRowKey(c: OFChatItem): string {
   return `${c.__accountId ?? ""}:${c.withUser.id}`;
 }
 
-const PAGE_SIZE = 25;
+/** One chat page per Creator: the inbox bundle answers this exact page (lib/screenBundle.ts). */
+const PAGE_SIZE = CHATS_PAGE;
 
 /** The chats query's structural sharing: each row is shared with the previous
  *  row of the same (accountId, fanId), not the one at the same index. A live
@@ -127,17 +129,12 @@ export function normalizeChats(resp: OFChatsResp, accountId: string): OFChatItem
 }
 
 export const ENRICH_TTL_MS = 10 * 60_000;
-const enrichedAt = new Map<string, number>();
 
-/** `ids` not enriched for `accountId` in the last ENRICH_TTL_MS (`seen`: `account|id` → when). */
-export function unenriched(
-  ids: FanId[], accountId: string, now: number, seen: Map<string, number> = enrichedAt,
-): FanId[] {
-  if (seen.size > 50_000) seen.clear();
-  return ids.filter((id) => {
-    const at = seen.get(`${accountId}|${id}`);
-    return at == null || now - at >= ENRICH_TTL_MS;
-  });
+/** `ids` whose `["of-user"]` name for `accountId` the enrichment didn't write in the last ENRICH_TTL_MS (its
+ *  `enrichedAt`: a notification's seeded name alone still gets named). The cache is the record: an identity
+ *  switch that clears it names every fan again. */
+export function unenriched(ids: FanId[], accountId: string, now: number, qc: QueryClient): FanId[] {
+  return ids.filter((id) => now - (qc.getQueryData<OFUserName>(ofUserNameKey(accountId, id))?.enrichedAt ?? 0) >= ENRICH_TTL_MS);
 }
 
 /** OF's /chats only returns `{withUser: {id, _view}}`. We enrich names/
@@ -168,7 +165,7 @@ export async function enrichWithUsers(
   // A fan named in the last ENRICH_TTL_MS keeps its cached profile: each 90 s list poll re-sent by-ids for every
   // row (measured: by-ids 13 of an idle open chat's 27 calls/min).
   const now = Date.now();
-  const ids = unenriched(Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean), accountId, now);
+  const ids = unenriched(Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean), accountId, now, qc);
   if (ids.length === 0) return chats;
 
   const byId = new Map<FanId, {
@@ -220,6 +217,7 @@ export async function enrichWithUsers(
         username: profile.username,
         avatar: profile.avatar,
         customNickname: profile.customNickname ?? prev?.customNickname ?? null,
+        enrichedAt: now,
       }));
     }
   } catch (err) {
@@ -265,6 +263,7 @@ export async function enrichWithUsers(
             customNickname: profile.customNickname ?? prev?.customNickname ?? null,
             displayName: profile.displayName,
             notice: profile.notice,
+            enrichedAt: now,
           }));
         }
       } catch (err) {
@@ -283,7 +282,6 @@ export async function enrichWithUsers(
     }
   }
 
-  for (const id of byId.keys()) enrichedAt.set(`${accountId}|${id}`, now);
   return chats.map((c) => {
     const u = byId.get(c.withUser.id);
     if (!u) return c;

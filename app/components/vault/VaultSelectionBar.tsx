@@ -34,9 +34,9 @@ export default function VaultSelectionBar({
   onNewFolder: () => void;
   onDescribe: () => void;
   onClear: () => void;
-  /** Ours: save the ticked files (full quality) into a folder the user picks. */
+  /** Ours: save the ticked files (full quality) into a folder the user picks, or (phones) via the share sheet. */
   onDownload?: () => void;
-  /** Why Download is off (no File System Access, or a download is running); "" when on. */
+  /** Why Download is off (no sink here, a download is running, over the phone's cap); shown next to it; "" when on. */
   downloadOff?: string;
 }) {
   return (
@@ -69,6 +69,9 @@ export default function VaultSelectionBar({
         >
           <Download size={18} aria-hidden />
         </button>
+      )}
+      {onDownload && downloadOff && (
+        <span data-testid="download-off" className="text-xs text-fg-dim">{downloadOff}</span>
       )}
       {/* #76: OF's remove is one file at a time here (the drawer's "Remove from vault", which OF cannot
           undo); a batch of them is not built. */}

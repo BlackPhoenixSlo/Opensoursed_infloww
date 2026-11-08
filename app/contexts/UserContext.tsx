@@ -37,6 +37,8 @@ import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
 import { clearRefusedOffers } from "@/components/chat/refusedOffers";
 import { clearInline, takeInline } from "@/lib/inlineBoot";
+import { forgetScreenBundles } from "@/lib/screenBundle";
+import { forgetScope } from "@/lib/screenEntry";
 import { clearPersistedCache } from "@/lib/rqPersister";
 import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
@@ -130,6 +132,7 @@ const UserContext = createContext<UserContextValue | null>(null);
  *  UserContext + ChatterContext, as `wipeIdentityStorage` is. */
 export function clearIdentityMemory(): void {
   clearInline();
+  forgetScreenBundles();
   clearSendStash();
   clearRefusedOffers();
 }
@@ -157,6 +160,8 @@ export function wipeIdentityStorage(): Promise<void> {
       for (const k of victims) storage.removeItem(k);
     } catch { /* safari private / quota — best effort */ }
   }
+  // The saved scope's cookie mirror (lib/screenEntry.ts): the swept localStorage scope's, so it goes with it.
+  forgetScope();
   // The persisted React Query snapshot lives in IndexedDB, out of the sweep's
   // reach. The clear also cancels a throttled write still pending, so the
   // snapshot can't be re-stamped with what the cache held before the wipe.

@@ -251,24 +251,21 @@ def case_trusted_proxies_default_to_loopback_and_private_ranges():
         assert trusted(peer), peer
     for peer in ("203.0.113.5", "172.32.0.1", "2001:db8::1", "testclient", "unknown"):
         assert not trusted(peer), peer
-    # Empty or blank means the default, never "no proxy"; a bad entry names the env.
+    # Empty or blank means the default, never "no proxy".
     assert client_addr._parse_trusted("") == client_addr._parse_trusted("  ") \
         == client_addr._parse_trusted(client_addr._DEFAULT_TRUSTED)
     assert client_addr._parse_trusted("10.0.0.7, 192.168.0.0/16") == (
         ipaddress.ip_network("10.0.0.7/32"), ipaddress.ip_network("192.168.0.0/16"))
-    try:
-        client_addr._parse_trusted("10.0.0.7,proxy-host")
-        raise AssertionError("parsed")
-    except ValueError as e:
-        assert "TRUSTED_PROXIES" in str(e) and "proxy-host" in str(e), e
+    # A bad entry is skipped, never raised (the relay must start): trusting less, not more.
+    assert client_addr._parse_trusted("10.0.0.7,proxy-host") == (ipaddress.ip_network("10.0.0.7/32"),)
 
 
 def case_the_forwarded_address_is_parsed_before_it_keys_a_bucket():
     from starlette.requests import Request
 
     def key(forwarded: str, peer: str = "172.18.0.5") -> str:
-        return login_throttle.client_ip(Request({
-            "type": "http", "headers": [(b"x-forwarded-for", forwarded.encode())], "client": (peer, 1)}))
+        return login_throttle._bucket_key(client_addr.client_address(Request({
+            "type": "http", "headers": [(b"x-forwarded-for", forwarded.encode())], "client": (peer, 1)})))
     assert key("203.0.113.9:4431") == key("::ffff:203.0.113.9") == "203.0.113.9"
     assert key("[2001:db8:1:2::9]:443") == key("2001:db8:1:2:ffff::1") == "2001:db8:1:2::/64"
     assert key("not-an-address") == "172.18.0.5"

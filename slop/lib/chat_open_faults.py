@@ -9,15 +9,15 @@ THREAD_BUNDLE = "thread: the open's local reads in one /admin/screens/chat, none
 
 
 def _chat_bundle_drops_attribution() -> None:
-    """The chat open's bundle never reads attribution (`chat_screen_api._run`, its module global, without that
+    """The chat open's bundle never reads attribution (`chat_screen_api.run_screen`, its module global, without that
     read): the thread's "Sent by" map goes out per route again, bare then `since_id`."""
     import chat_screen_api
-    real = chat_screen_api._run
+    real = chat_screen_api.run_screen
 
-    async def without(outer, reads, deadline_at):
-        return await real(outer, [r for r in reads if r.name != "attribution"], deadline_at)
+    async def without(request, response, reads, *a, **kw):
+        return await real(request, response, [r for r in reads if r.name != "attribution"], *a, **kw)
 
-    chat_screen_api._run = without
+    chat_screen_api.run_screen = without
 
 
 def register(Fault) -> dict:

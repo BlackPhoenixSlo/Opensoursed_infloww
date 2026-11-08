@@ -184,7 +184,12 @@ describe("label maths", () => {
     expect(sweepAbortedNote(null)).toBeNull();
   });
 
-  it("counts harvest matches", () => {
-    expect(harvestSweepLabel({ total: 50, done: 12, matches: 340 })).toBe("12/50 · 340 hits");
+  it.each<[string, Parameters<typeof harvestSweepLabel>[0], string]>([
+    ["counts harvest matches", { total: 50, done: 12, matches: 340 }, "12/50 · 340 hits"],
+    ["a real zero still shows", { total: 50, done: 50, matches: 0 }, "50/50 · 0 hits"],
+    ["folder-limited chatter (matches null): no hit count, not \"0 hits\"", { total: 50, done: 12, matches: null }, "12/50"],
+    ["no progress yet", null, "starting…"],
+  ])("harvestSweepLabel: %s", (_n, progress, want) => {
+    expect(harvestSweepLabel(progress)).toBe(want);
   });
 });

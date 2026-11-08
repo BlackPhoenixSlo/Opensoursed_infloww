@@ -26,13 +26,13 @@ UI_SETTLED = "consent UI: desktop and phone portrait show no banner and no pinne
 def _send_ok_not_clearing() -> None:
     import consent_notices as cn
 
-    real = cn.verdict_call
+    real = cn.verdict
 
-    def verdict_call(*a, **k):
-        v = real(*a, **k)
-        return None if v is False else v
+    def verdict(method, *a, **k):
+        need, state = real(method, *a, **k)
+        return (None, state) if need is False and method != "GET" else (need, state)
 
-    cn.verdict_call = verdict_call
+    cn.verdict = verdict
 
 
 def _pinned_readable() -> None:
@@ -43,11 +43,11 @@ def _pinned_readable() -> None:
     async def mark(user_id, notification_id):
         if notification_id is None:
             return await real(user_id, None)
-        na.PINNED_KINDS, keep = (), na.PINNED_KINDS
+        na.PINNED_KIND, keep = "", na.PINNED_KIND
         try:
             return await real(user_id, notification_id)
         finally:
-            na.PINNED_KINDS = keep
+            na.PINNED_KIND = keep
 
     na._mark_read = mark
 

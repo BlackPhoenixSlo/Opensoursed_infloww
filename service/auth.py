@@ -1010,6 +1010,9 @@ async def admin_revoke_user_account(
     user_id: str, account_id: str, body: RevokeAccountBody = Body(...),
 ) -> dict:
     _assert_admin_password(body.admin_password)
+    import notifications_api  # lazy: it imports this module
+    # The Agency's pinned row for it goes first: a failed drop is a retryable 500 with nothing committed.
+    await notifications_api.drop_pinned(account_id, [user_id])
     async with get_session() as s:
         result = await s.execute(
             delete(UserAccount).where(

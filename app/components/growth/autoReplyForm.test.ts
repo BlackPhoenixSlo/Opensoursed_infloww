@@ -16,9 +16,11 @@ const DEFAULTS: AutoreplyConfig = {
   describe_photos: false, skip_photo_only: false,
 };
 
+/** The state after `actions`, from the draft `from`. */
+const runState = (actions: AutoReplyAction[], from: AutoReplyDraft = draftFromConfig(DEFAULTS)) =>
+  actions.reduce(autoReplyReducer, { draft: from, sent: null, modelTouched: false });
 /** The draft after `actions`, from `from`. */
-const run = (actions: AutoReplyEdit[], from: AutoReplyDraft = draftFromConfig(DEFAULTS)) =>
-  actions.reduce(autoReplyReducer, { draft: from, sent: null }).draft;
+const run = (actions: AutoReplyEdit[], from?: AutoReplyDraft) => runState(actions, from).draft;
 
 describe("round trip: buildPayload(draftFromConfig(c), c) = c", () => {
   it.each<[string, AutoreplyConfig]>([
@@ -208,15 +210,47 @@ describe("model: the account's reply model", () => {
     ["effort only", BRAIN("deepseek-v4-pro", "high"), [{ type: "effort", effort: "low" }],
       { model: "deepseek-v4-pro", reasoning_effort: "low" }],
   ])("brainPayload: %s", (_n, b, actions, want) => {
-    const d = run(actions, draftFromConfig(DEFAULTS, b));
-    const out = brainPayload(d, b);
+    const out = brainPayload(runState(actions, draftFromConfig(DEFAULTS, b)), b);
+    expect(out && { model: out.model, reasoning_effort: out.reasoning_effort }).toEqual(want);
+  });
+
+  const CLAUDE = { model: "claude-opus-5-5", effort: "" };
+  it.each<[string, BrainPick, BrainPick, AutoReplyAction[], { model: string | null; reasoning_effort: string | null } | null]>([
+    ["model changed elsewhere since open, untouched here: no PUT (no revert)",
+      BRAIN("claude-opus-5-5"), BRAIN("deepseek-v4-pro", "high"), [], null],
+    ["brain read failed at open, arrives later, untouched: no PUT", { ...BRAIN(null), config: { model: null, reasoning_effort: null } },
+      BRAIN("claude-opus-5-5"), [], null],
+    ["picked here and saved (the latest brain is the pick): no second PUT",
+      BRAIN(null), BRAIN("claude-opus-5-5"), [{ type: "model", model: "claude-opus-5-5" }], null],
+    ["picked here while it changed elsewhere: the pick wins",
+      BRAIN(null), BRAIN("deepseek-v4-pro", "high"), [{ type: "model", model: "claude-opus-5-5" }],
+      { model: "claude-opus-5-5", reasoning_effort: null }],
+    ["saved a pick, then reverted to the opened one: the revert is sent",
+      BRAIN(null), BRAIN("claude-opus-5-5"),
+      [{ type: "model", model: "claude-opus-5-5" }, { type: "saved" }, { type: "brainSaved", pick: CLAUDE }, { type: "model", model: "" }],
+      { model: null, reasoning_effort: null }],
+    ["a landed pick, then changed elsewhere, an unrelated edit: no PUT (no revert)",
+      BRAIN(null), BRAIN("deepseek-v4-pro", "high"),
+      [{ type: "model", model: "claude-opus-5-5" }, { type: "saved" }, { type: "brainSaved", pick: CLAUDE },
+        { type: "switch", k: "enabled", on: true }],
+      null],
+    ["the brain PUT failed (no brainSaved): the next Save sends it again",
+      BRAIN(null), BRAIN(null), [{ type: "model", model: "claude-opus-5-5" }, { type: "saved" }],
+      { model: "claude-opus-5-5", reasoning_effort: null }],
+    ["the pick moved while its PUT ran: the new pick still goes out",
+      BRAIN(null), BRAIN("claude-opus-5-5"),
+      [{ type: "model", model: "claude-opus-5-5" }, { type: "saved" }, { type: "model", model: "deepseek-v4-pro" },
+        { type: "brainSaved", pick: CLAUDE }],
+      { model: "deepseek-v4-pro", reasoning_effort: null }],
+  ])("brainPayload across Saves and edits elsewhere: %s", (_n, atOpen, latest, actions, want) => {
+    const out = brainPayload(runState(actions, draftFromConfig(DEFAULTS, atOpen)), latest);
     expect(out && { model: out.model, reasoning_effort: out.reasoning_effort }).toEqual(want);
   });
 
   it("echoes the rest of the stored brain (the PUT replaces it)", () => {
     const b = { ...BRAIN(null), config: { model: null, reasoning_effort: "", persona: "Ella.", cotag_username: "x" } };
-    const d = run([{ type: "model", model: "claude-opus-5-5" }], draftFromConfig(DEFAULTS, b));
-    expect(brainPayload(d, b)).toEqual({ model: "claude-opus-5-5", reasoning_effort: null, persona: "Ella.", cotag_username: "x" });
+    const st = runState([{ type: "model", model: "claude-opus-5-5" }], draftFromConfig(DEFAULTS, b));
+    expect(brainPayload(st, b)).toEqual({ model: "claude-opus-5-5", reasoning_effort: null, persona: "Ella.", cotag_username: "x" });
   });
 
   it("model edits leave the autoreply blob alone and count as unsaved", () => {

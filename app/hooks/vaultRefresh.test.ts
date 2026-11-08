@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { QueryClient } from "@tanstack/react-query";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()),
@@ -11,7 +13,9 @@ vi.mock("@/hooks/useVaultCache", () => ({
 }));
 
 import { invalidateVaultGrid } from "@/hooks/useVaultCache";
-import { ofUnreachable, refreshVaultFromOf, reloadBrokenThumbs, type ThumbSource } from "@/hooks/vaultRefresh";
+import {
+  ofUnreachable, refreshVaultFromOf, reloadBrokenThumbs, useOfRefresh, vaultBrowseSource, vaultWholeSource, type VaultSource,
+} from "@/hooks/vaultRefresh";
 import { relay, RelayError } from "@/lib/relay";
 
 const post = relay.post as unknown as Mock;
@@ -27,6 +31,107 @@ describe("ofUnreachable", () => {
     ["403", new RelayError(403, null), false],
     ["422", new RelayError(422, null), false],
   ])("%s", (_n, e, want) => expect(ofUnreachable(e)).toBe(want));
+});
+
+// F1/F15: the whole-set rule (picker grid, whole-vault/folder downloads, focus prefetch): a partial mirror never.
+describe("vaultWholeSource", () => {
+  it.each<[string, Parameters<typeof vaultWholeSource>[0], VaultSource]>([
+    ["summary not in yet", undefined, "live"],
+    ["no summary (chatter's 403)", null, "live"],
+    ["nothing collected", { count: 0, complete: false }, "live"],
+    ["partial mirror (first pages only)", { count: 300, complete: false }, "live"],
+    ["`complete` missing", { count: 300 }, "live"],
+    ["walk done but empty", { count: 0, complete: true }, "live"],
+    ["walk done, media held", { count: 300, complete: true }, "mirror"],
+    // H1 (#329): a restricted chatter's count is its folders' only; `complete` is still the whole-vault flag.
+    ["restricted chatter, walk done, its folders hold media", { count: 12, complete: true }, "mirror"],
+  ])("%s", (_n, summary, want) => expect(vaultWholeSource(summary)).toBe(want));
+});
+
+// F15: the browse rule (manager grid, its thumb reload + selection download): a partial mirror is the mirror.
+describe("vaultBrowseSource", () => {
+  it.each<[string, Parameters<typeof vaultBrowseSource>[0], VaultSource]>([
+    ["summary not in yet", undefined, "live"],
+    ["nothing collected", { count: 0, complete: false }, "live"],
+    ["partial mirror (collector page cap, never complete)", { count: 300, complete: false }, "mirror"],
+    ["`complete` missing", { count: 300 }, "mirror"],
+    ["walk done, media held", { count: 300, complete: true }, "mirror"],
+    // H1 (#329): a restricted chatter's own folders' count.
+    ["restricted chatter, its folders hold media", { count: 12, complete: false }, "mirror"],
+  ])("%s", (_n, summary, want) => expect(vaultBrowseSource(summary)).toBe(want));
+});
+
+// F17/F18: both grids' Refresh mutation.
+describe("useOfRefresh", () => {
+  beforeEach(() => { post.mockReset(); reload.mockClear(); cleanup(); });
+
+  function mountRefresh(scope: string | null) {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const refreshed = vi.fn();
+    const h = renderHook(({ s }: { s: string | null }) => useOfRefresh(s, { refreshed }), {
+      wrapper, initialProps: { s: scope },
+    });
+    return { ...h, refreshed };
+  }
+
+  it.each<[string, () => Promise<unknown>, string | null]>([
+    ["synced: no note", async () => ({}), null],
+    ["OF unreachable: the saved-vault note", async () => { throw new RelayError(502, null); }, "Couldn't reach OnlyFans, showing saved vault"],
+    ["another failure: Refresh failed", async () => { throw new RelayError(403, null); }, "Refresh failed"],
+  ])("%s", async (_n, impl, want) => {
+    post.mockImplementation(impl);
+    const { result, refreshed } = mountRefresh("A");
+    act(() => result.current.mutate(null));
+    await waitFor(() => expect(refreshed).toHaveBeenCalledWith("A"));
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.note).toBe(want);
+  });
+
+  it("settles for the Creator it ran for, not the one on screen; a switch frees the button", async () => {
+    let settle!: () => void;
+    post.mockImplementation(() => new Promise<void>((r) => { settle = r; }));
+    const { result, rerender, refreshed } = mountRefresh("A");
+    act(() => result.current.mutate(null));
+    await waitFor(() => expect(result.current.isPending).toBe(true));
+    rerender({ s: "B" });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    await act(async () => settle());
+    await waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
+    expect(refreshed).toHaveBeenCalledWith("A");
+    expect(result.current.note).toBeNull();
+  });
+
+  // F24: pending lives with the Creator's mutation, not the observer: a reopen (or switch back) mid-sync stays
+  // disabled, so no second POST /admin/vault-ai/sync.
+  it.each<[string, (string | null)[]]>([
+    ["close + reopen", [null, "A"]],
+    ["switch to B and back", ["B", "A"]],
+  ])("%s mid-sync: still pending for A, free for others", async (_n, path) => {
+    let settle!: () => void;
+    post.mockImplementation(() => new Promise<void>((r) => { settle = r; }));
+    const { result, rerender } = mountRefresh("A");
+    act(() => result.current.mutate(null));
+    await waitFor(() => expect(result.current.isPending).toBe(true));
+    for (const s of path) {
+      rerender({ s });
+      expect(result.current.isPending).toBe(s === "A");
+    }
+    await act(async () => settle());
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(post).toHaveBeenCalledOnce();
+  });
+
+  it("closing (scope null) drops the note, so a reopen starts clean", async () => {
+    post.mockRejectedValue(new RelayError(403, null));
+    const { result, rerender } = mountRefresh("A");
+    act(() => result.current.mutate(null));
+    await waitFor(() => expect(result.current.note).toBe("Refresh failed"));
+    rerender({ s: null });
+    await waitFor(() => expect(result.current.note).toBeNull());
+    rerender({ s: "A" });
+    expect(result.current.note).toBeNull();
+  });
 });
 
 describe("refreshVaultFromOf", () => {
@@ -57,7 +162,7 @@ describe("refreshVaultFromOf", () => {
 
 // R3-6: what each source reloads for broken thumbnails, in order (the relay's cache drop first, then the refetch).
 describe("reloadBrokenThumbs", () => {
-  it.each<[ThumbSource, string[]]>([
+  it.each<[VaultSource, string[]]>([
     ["mirror", ['invalidate ["vault-mirror-items","1"]']],
     ["live", ["POST /admin/vault/cache/invalidate", 'invalidate ["vault-media","1"]']],
   ])("%s", async (source, want) => {

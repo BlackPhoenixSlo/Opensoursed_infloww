@@ -68,6 +68,8 @@ import type { PerEmployeeResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { periodWindow, type Period } from "@/lib/dateRange";
+// A header figure is `fmtCents` (whole dollars, "$1,005,875"): the house choice, deliberately unlike the bundle's
+// `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints two decimals at every size.
 import { fmtCents, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { relay } from "@/lib/relay";
@@ -84,7 +86,6 @@ import { CHARGEBACKS_UNAVAILABLE, netMissingNote } from "@/components/home/netMi
 
 /** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
 export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";
-export { CHARGEBACKS_UNAVAILABLE };
 
 /** White on the dark card (16-dashboard.png), the theme's text in light. */
 export const WHITE = "text-white [html[data-theme=light]_&]:text-fg";
@@ -128,11 +129,6 @@ export const TILE_ICON: Record<Channel, { Icon: LucideIcon; rgb: string }> = {
 /** The answer's rows; an answer without a `rows` array (a mock's `[]` or `{}`) reads as a window with no sales,
  *  never a crash. */
 const rowsOf = (d: RevenueResp | undefined): RevenueRow[] => (Array.isArray(d?.rows) ? d.rows : []);
-
-/** A header figure in whole dollars with a thousands separator, "$1,005,875": the house choice for the earnings
- *  overview, deliberately unlike the bundle's `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints
- *  two decimals at every size. Rounds to the nearest dollar; a loss keeps its minus, one under a dollar is "$0". */
-const money = fmtCents;
 
 /** A row's money in the chosen basis: OnlyFans's `net_cents` in Net, `total_cents` in Gross. */
 const cents = (r: RevenueRow, basis: Basis) => (basis === "Net" ? r.net_cents ?? 0 : r.total_cents);
@@ -226,7 +222,7 @@ function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
           <span data-figure className={cn("text-[21px] leading-[28px] font-bold", WHITE)}>-</span>
         ) : (
           <span data-figure className={cn("text-[21px] leading-[28px] font-bold tabular-nums", isLoss(sum) ? "text-err" : WHITE)}>
-            {money(sum)}
+            {fmtCents(sum)}
           </span>
         )}
         <span className="text-[12px] leading-[17px] text-[#808080]">{label(k)}</span>
@@ -415,29 +411,22 @@ export default function DashboardHeader() {
   const [basis, setBasis] = useState<Basis>(DEFAULT_BASIS);
   const principalId = usePrincipalId();
 
-  const revenue = useQuery<RevenueResp>({
-    // Saved with the snapshot (providers.tsx PERSIST_KEYS): the principal keeps one login's figure from another's.
-    queryKey: ["dashboard", "revenue-by-kind", principalId, from, to, basis],
+  // The window's by-kind read; `reversed`, Chargebacks': the same over the reversals (`status=reversed`: chargedback,
+  // refunded, refund pending). The earnings one is saved with the snapshot (providers.tsx PERSIST_KEYS): the
+  // principal keeps one login's figure from another's.
+  const byKind = (reversedOnly: boolean) => ({
+    queryKey: ["dashboard", reversedOnly ? "revenue-reversed-by-kind" : "revenue-by-kind", principalId, from, to, basis],
     queryFn: () => {
       const qs = new URLSearchParams({ from, to, group_by: "kind" });
+      if (reversedOnly) qs.set("status", "reversed");
       if (basis === "Net") qs.set("include_net", "true");
       return relay.get<RevenueResp>(`/admin/stats/revenue?${qs.toString()}`);
     },
     enabled: ready,
     staleTime: 30_000,
   });
-
-  // Chargebacks: the same read over the reversals (`status=reversed`: chargedback, refunded, refund pending).
-  const reversed = useQuery<RevenueResp>({
-    queryKey: ["dashboard", "revenue-reversed-by-kind", principalId, from, to, basis],
-    queryFn: () => {
-      const qs = new URLSearchParams({ from, to, group_by: "kind", status: "reversed" });
-      if (basis === "Net") qs.set("include_net", "true");
-      return relay.get<RevenueResp>(`/admin/stats/revenue?${qs.toString()}`);
-    },
-    enabled: ready,
-    staleTime: 30_000,
-  });
+  const revenue = useQuery<RevenueResp>(byKind(false));
+  const reversed = useQuery<RevenueResp>(byKind(true));
 
   // OnlyFans' referrals, the same figure under Net and Gross; Total earnings adds them as the bundle's does. The
   // ledger's Total shows without waiting on them (an OF read per Creator) and takes them in when they land.
@@ -498,7 +487,7 @@ export default function DashboardHeader() {
             {!ready || revenue.isPending ? (
               <span className="h-[45px] flex items-center"><Shimmer what={label("total")} className="h-[34px] w-32" /></span>
             ) : (
-              <Figure text={money(totalCents)} refreshing={revenue.isFetching} />
+              <Figure text={fmtCents(totalCents)} refreshing={revenue.isFetching} />
             )}
           </div>
           <div className="flex flex-col md:flex-row xl:flex-[3] min-w-0">

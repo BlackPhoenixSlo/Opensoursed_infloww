@@ -164,12 +164,13 @@ def _may_have_sent(e: BaseException) -> bool:
     """Whether OnlyFans may have taken the write attempt that raised `e` (send once).
     Surely not: refused before it left the box (OFDeniedError, a deactivated Creator's
     too), the proxy refused before the tunnel opened (of_client.proxy_refused: `e` or its
-    `raise ... from` cause is a ProxyError), the connection never opened
-    (ConnectTimeout, curl's couldn't-connect: of_client._proxy_retry's own split), or
-    OF answered 4xx (its rate-limit 400 included). Anything else may
-    have: a read timeout, a dropped connection, a 5xx, a cancel while the call was out
-    (its worker thread runs on), anything unknown."""
-    if proxy_refused(e) or isinstance(e, (OFDeniedError, curl_exc.ConnectTimeout)):
+    `raise ... from` cause is a ProxyError), the connection never opened (curl's
+    couldn't-connect, 7: of_client._proxy_retry's own split), or OF answered 4xx (its
+    rate-limit 400 included). Anything else may have: any timeout (curl_cffi raises
+    every curl 28, connect phase too, as a plain Timeout: its ConnectTimeout is never
+    raised), a dropped connection, a 5xx, a cancel while the call was out (its worker
+    thread runs on), anything unknown."""
+    if proxy_refused(e) or isinstance(e, OFDeniedError):
         return False
     if isinstance(e, curl_exc.ConnectionError) and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT:
         return False

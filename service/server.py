@@ -28,7 +28,6 @@ import json
 
 import asyncio
 import atexit
-import collections
 import contextlib
 import functools
 from contextvars import ContextVar
@@ -40,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_SKIP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
-from starlette.routing import Match
+from starlette.routing import BaseRoute, Match
 from pydantic import BaseModel, Field, field_validator
 
 HERE = Path(__file__).resolve().parent
@@ -99,6 +98,7 @@ import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoin
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
 import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
+from bg_lane import BgLane, BgLease  # noqa: E402  # a Creator's background sub-cap, loop + threads
 import chats_page  # noqa: E402  # one logical page of OF /chats (inbox, badge)
 import db_retention  # noqa: E402  # DB retention loops (raw_json, audit, optimize, payload cap)
 from lists import router as _lists_router  # noqa: E402
@@ -863,8 +863,9 @@ async def _no_store_by_default(request: Request, call_next):
     """A reply that names no Cache-Control is `no-store`: the relay's answers are
     per signed-in user, so a CDN in front (deploy/ae/EDGE-CDN.md) must never keep
     one, even under a site-wide "cache everything" rule. Routes that set their
-    own (/img, /events, the stills) keep it. Browsers see no change: none of
-    these replies carries the Last-Modified a heuristic cache would need."""
+    own (/img, /events, the stills) keep it. Browsers see no change: only a
+    reply with Last-Modified (a FileResponse) is heuristically cached, and the
+    file routes set their own Cache-Control."""
     response = await call_next(request)
     response.headers.setdefault("cache-control", "no-store")
     return response
@@ -1238,11 +1239,20 @@ def _on_proxy_switched(account_ids: list[str]) -> None:
     the pooled client goes and a live chat socket reconnects, so REST and the
     WS leave from the same IP from now on, not after the next relay restart.
     OF's signed vault urls are bound to the egress IP too, so the account's
-    cached vault pages read as misses from now on (vault_cache.mark_stale)."""
+    cached vault pages read as misses from now on (vault_cache.mark_stale),
+    the background vault walk on the old client stops (cursor kept) and the
+    rows are deleted, so a restart cannot serve them either."""
     for aid in account_ids:
         _invalidate_client(aid)
         _reroute_account_pump(aid)
         vault_cache.mark_stale(aid)
+        _on_main_loop(lambda a=aid: _vault_after_proxy_switch(a), f"vault-proxy-switch-{aid}")
+
+
+async def _vault_after_proxy_switch(account_id: str) -> None:
+    import vault_collect
+    await vault_collect.preempt(account_id)
+    await vault_cache.invalidate(account_id)
 
 
 proxy_registry.on_switch(_on_proxy_switched)
@@ -1978,7 +1988,7 @@ _EXECUTOR_THREADS = lane_config.resolve(
     max(_FLEET_ACCOUNTS, _accounts_on_disk()) * _ACCOUNT_LANE_TOTAL + _EXECUTOR_HEADROOM,
 )
 _account_lanes_lock = threading.Lock()
-_account_lanes: dict[str, tuple[threading.BoundedSemaphore, "_BgLane"]] = {}
+_account_lanes: dict[str, tuple[threading.BoundedSemaphore, BgLane]] = {}
 #
 # ── Lane accounting ────────────────────────────────────────────────────
 # The previous two counters (`_priority_total_waits`,
@@ -2216,13 +2226,18 @@ def _lane_acquire(sem, account_id: str, which: str) -> float:
     else:
         sem.acquire()
     waited = _time_mod.monotonic() - t0
+    _lane_record_wait(account_id, which, waited)
+    return waited
+
+
+def _lane_record_wait(account_id: str, which: str, waited: float) -> None:
+    """Count one blocked acquire of the `which` ("background" | "total") lane and its wait."""
     ckey = "blocked_background" if which == "background" else "blocked_total"
     wkey = "wait_s_background" if which == "background" else "wait_s_total"
     with _lane_stats_lock:
         for st in _lane_stat_rows(account_id):
             st[ckey] += 1
             st[wkey] += waited
-    return waited
 
 
 def _lane_entered(account_id: str, priority: str, waited: float, bg_held: bool) -> None:
@@ -2258,128 +2273,7 @@ def _lane_exited(account_id: str, bg_held: bool) -> None:
     _lane_stats_flush()
 
 
-class _BgLane:
-    """One Creator's background sub-cap, one count shared by the event loop and
-    worker threads (it was a threading semaphore, acquired in the worker).
-
-    That shape let a flood of background reads each take a worker thread FIRST and
-    then block on the sub-cap, so the thread pools filled with waiters and a user's
-    tap waited for a thread, not a lane. Now a background request waits for its slot
-    ON THE LOOP (`admit`, through `_bg_admission`) before any thread is taken, and
-    its worker borrows that slot (`_BgLease`). A server-side caller already in a
-    thread (`_priority_lane_background`) still blocks in `acquire()`, counted as
-    `threads_waiting_background`. One FIFO for both kinds, so the cap is exact and
-    neither starves the other. `acquire(blocking=False)` / `release()` keep the
-    semaphore's API (release past zero raises ValueError, as BoundedSemaphore)."""
-
-    def __init__(self, cap: int) -> None:
-        self.cap, self.held = cap, 0
-        self._lock = threading.Lock()
-        self._waiters: collections.deque = collections.deque()  # [granted, loop | None, Future | Event]
-
-    def _take(self) -> bool:
-        if self.held < self.cap and not self._waiters:
-            self.held += 1
-            return True
-        return False
-
-    def acquire(self, blocking: bool = True) -> bool:
-        with self._lock:
-            if self._take():
-                return True
-            if not blocking:
-                return False
-            w = [False, None, threading.Event()]
-            self._waiters.append(w)
-        w[2].wait()
-        return True
-
-    async def admit(self) -> bool:
-        """Take a slot, waiting on the loop. Returns whether it had to wait."""
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            if self._take():
-                return False
-            w = [False, loop, loop.create_future()]
-            self._waiters.append(w)
-        try:
-            await w[2]
-        except BaseException:
-            with self._lock:
-                granted = w[0]
-                if not granted:
-                    self._waiters.remove(w)
-            if granted:  # handed over as we were cancelled: pass it on
-                self.release()
-            raise
-        return True
-
-    def release(self) -> None:
-        with self._lock:
-            if not self._waiters:
-                if self.held <= 0:
-                    raise ValueError("_BgLane released too many times")
-                self.held -= 1
-                return
-            w = self._waiters.popleft()
-            w[0] = True  # the slot moves to `w`: `held` stays
-        if w[1] is None:
-            w[2].set()
-            return
-        try:
-            w[1].call_soon_threadsafe(_bg_grant, w[2])
-        except RuntimeError:  # its loop is closed: nobody will take it
-            self.release()
-
-
-def _bg_grant(fut: asyncio.Future) -> None:
-    if not fut.done():  # cancelled meanwhile: `admit`'s handler passes the slot on
-        fut.set_result(None)
-
-
-_bg_lease_lock = threading.Lock()
-
-
-class _BgLease:
-    """A background slot the loop took for one flight or request (`_bg_admission`).
-    `_priority_lane` borrows it in the worker instead of acquiring; one borrower at
-    a time (a second, e.g. a parallel child, acquires as usual). Freed when the
-    owner left AND no worker holds it: a cancelled request whose thread is still on
-    OF keeps the slot until that thread is done."""
-
-    __slots__ = ("aid", "lane", "waited", "in_use", "closed")
-
-    def __init__(self, aid: str, lane: _BgLane, waited: float) -> None:
-        self.aid, self.lane, self.waited = aid, lane, waited
-        self.in_use = self.closed = False
-
-    def borrow(self, aid: str) -> bool:
-        with _bg_lease_lock:
-            if aid != self.aid or self.in_use or self.closed:
-                return False
-            self.in_use = True
-            return True
-
-    def take_wait(self) -> float:
-        w, self.waited = self.waited, 0.0
-        return w
-
-    def give_back(self) -> None:
-        with _bg_lease_lock:
-            self.in_use = False
-            free = self.closed
-        if free:
-            self.lane.release()
-
-    def close(self) -> None:
-        with _bg_lease_lock:
-            self.closed = True
-            free = not self.in_use
-        if free:
-            self.lane.release()
-
-
-_bg_lease: ContextVar[_BgLease | None] = ContextVar("bg_lease", default=None)
+_bg_lease: ContextVar[BgLease | None] = ContextVar("bg_lease", default=None)
 
 
 @contextlib.asynccontextmanager
@@ -2410,11 +2304,8 @@ async def _bg_admission(request: Request | None = None):
         _lane_gauge(aid, "loop_waiting_background", -1)
     waited = _time_mod.monotonic() - t0 if queued else 0.0
     if queued:
-        with _lane_stats_lock:
-            for st in _lane_stat_rows(aid):
-                st["blocked_background"] += 1
-                st["wait_s_background"] += waited
-    lease = _BgLease(aid, lane, waited)
+        _lane_record_wait(aid, "background", waited)
+    lease = BgLease(aid, lane, waited)
     token = _bg_lease.set(lease)
     try:
         yield
@@ -2423,15 +2314,24 @@ async def _bg_admission(request: Request | None = None):
         lease.close()
 
 
-@functools.lru_cache(maxsize=4096)
+_route_sync: list[tuple[BaseRoute, bool]] = []   # app's routes in match order, each: a sync `def`?
+
+
 def _sync_route(method: str, path: str) -> bool:
     """The route `method path` matches is a sync `def`: it goes straight to the
-    threadpool (an `_account_ttl` route is async: its cache wrapper)."""
-    scope = {"type": "http", "method": method, "path": path, "root_path": ""}
-    for r in app.router.routes:
-        if r.matches(scope)[0] is Match.FULL:
+    threadpool (an `_account_ttl` route is async: its cache wrapper). The routes'
+    kinds are read once, at the first call: every route is registered at import
+    (app.include_router / decorators, none at runtime), before any request; refilled
+    if the app's route count ever moves."""
+    if len(_route_sync) != len(app.router.routes):
+        _route_sync.clear()
+        for r in app.router.routes:
             call = getattr(getattr(r, "dependant", None), "call", None)
-            return call is not None and not asyncio.iscoroutinefunction(call)
+            _route_sync.append((r, call is not None and not asyncio.iscoroutinefunction(call)))
+    scope = {"type": "http", "method": method, "path": path, "root_path": ""}
+    for r, sync in _route_sync:
+        if r.matches(scope)[0] is Match.FULL:
+            return sync
     return False
 
 
@@ -2439,7 +2339,7 @@ relay_coalesce.priority_class = lambda: "background" if _current_priority() == "
 relay_coalesce.admission = lambda: _bg_admission()
 
 
-def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, "_BgLane"]:
+def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, BgLane]:
     """Return (total, background) semaphores for `account_id`, creating
     them on first access."""
     with _account_lanes_lock:
@@ -2447,7 +2347,7 @@ def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, "_BgLane"]:
         if pair is None:
             pair = (
                 threading.BoundedSemaphore(_ACCOUNT_LANE_TOTAL),
-                _BgLane(_ACCOUNT_LANE_BACKGROUND),
+                BgLane(_ACCOUNT_LANE_BACKGROUND),
             )
             _account_lanes[account_id] = pair
         return pair
@@ -2483,37 +2383,36 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
     total, background = _lanes_for(account_id)
     if priority is None:
         priority = _current_priority()
-    bg_held = False
-    waited = 0.0
-    lease = _bg_lease.get() if priority == "background" else None
-    if lease is not None and not lease.borrow(account_id):
-        lease = None
-    if lease is not None:  # the slot the loop admitted this request for (_bg_admission)
-        waited += lease.take_wait()
-    elif priority == "background":
-        waited += _lane_acquire(background, account_id, "background")
-        bg_held = True
+    release_bg, waited = _take_bg(account_id, background) if priority == "background" else (None, 0.0)
+    total_held = entered = False
     try:
         waited += _lane_acquire(total, account_id, "total")
-    except BaseException:
-        if bg_held:
-            try: background.release()
-            except ValueError: pass
-        if lease is not None:
-            lease.give_back()
-        raise
-    _lane_entered(account_id, priority, waited, bg_held or lease is not None)
-    try:
+        total_held = True
+        _lane_entered(account_id, priority, waited, release_bg is not None)
+        entered = True
         yield
     finally:
-        _lane_exited(account_id, bg_held or lease is not None)
-        try: total.release()
-        except ValueError: pass
-        if bg_held:
-            try: background.release()
+        if entered:
+            _lane_exited(account_id, release_bg is not None)
+        if total_held:
+            try: total.release()
             except ValueError: pass
-        if lease is not None:
-            lease.give_back()
+        if release_bg is not None:
+            release_bg()
+
+
+def _take_bg(account_id: str, background: BgLane) -> tuple[Callable[[], None], float]:
+    """A background caller's slot: the one the loop admitted this request for
+    (_bg_admission's lease, borrowed), else one acquired here. (its release, seconds waited)."""
+    lease = _bg_lease.get()
+    if lease is not None and lease.borrow(account_id):
+        return lease.give_back, lease.take_wait()
+    waited = _lane_acquire(background, account_id, "background")
+
+    def release() -> None:
+        try: background.release()
+        except ValueError: pass
+    return release, waited
 
 
 POOL_PROXY_ERROR = f"{BRAND_NAME} proxy unreachable"
@@ -3402,9 +3301,10 @@ async def list_users(
     # IDs must be sorted in the key — two requests with [1,2,3] vs [3,2,1]
     # should coalesce. The OF response is keyed by user-id string anyway,
     # so per-waiter slicing is order-insensitive.
-    # Priority in the key: a person's read never waits behind a background one's 429 retry.
+    # No priority in the key: relay_coalesce adds the class (a person's read never joins a
+    # background flight and its 429 retry; a background one may join a person's).
     background = _current_priority() == "background"
-    key = ("list_users", aid, view, background, tuple(sorted(ids)))
+    key = ("list_users", aid, view, tuple(sorted(ids)))
 
     async def _read():
         return await asyncio.to_thread(_proxy, lambda: _get_client().list_users(ids, view=view))
@@ -3532,7 +3432,7 @@ async def _sync_of_user_overlay(
 # ── Send a message ─────────────────────────────────────────────
 
 class SendMessageBody(BaseModel):
-    text: str = Field(..., description="Message body. Plain text or HTML.")
+    text: str = Field(..., max_length=130_000, description="Message body. Plain text or HTML. At most of_rich_text.MARKUP_MAX (422).")
     locked_text: bool = Field(False, description="Lock the text behind the PPV price.")
     price: float = Field(0, ge=0, description="PPV price; 0 = free message.")
     # Either: ints (existing vault ids) or dicts (fresh-upload claim objects
@@ -4116,9 +4016,7 @@ def of_post_comments(post_id: int, limit: int = Query(20, ge=1, le=50), offset: 
 
 # THE cache keys for /vault/media and /vault/lists live in vault_cache, shared
 # with the background collector (vault_collect) so the pages it warms are the
-# pages these routes read. Re-exported under their old names for the tests.
-vault_media_cache_key = vault_cache.vault_media_cache_key
-vault_lists_cache_key = vault_cache.vault_lists_cache_key
+# pages these routes read.
 
 
 @app.get("/api/of/v2/vault/media")
@@ -4158,13 +4056,14 @@ async def of_vault_media(
     # `query` is part of the cache key so a search result can never be served
     # for a different (or empty) query.
     q_norm = (query or "").strip()
-    key = vault_media_cache_key(type=type, list_id=list_id, offset=offset,
-                                limit=limit, sort=sort, field=field, q_norm=q_norm,
-                                before=before_publish_date)
+    key = vault_cache.vault_media_cache_key(type=type, list_id=list_id, offset=offset,
+                                            limit=limit, sort=sort, field=field, q_norm=q_norm,
+                                            before=before_publish_date)
     if not refresh:
         cached = await vault_cache.get(aid, key)
         if cached is not None:
             return cached
+    t0 = datetime.utcnow()
     result = await asyncio.to_thread(
         _proxy,
         lambda: _get_client().vault_media(
@@ -4173,7 +4072,7 @@ async def of_vault_media(
             before_publish_date=before_publish_date,
         ),
     )
-    await vault_cache.put(aid, key, result)
+    await vault_cache.put(aid, key, result, started_at=t0)
     return result
 
 
@@ -4184,14 +4083,15 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
     per-slot images (`time_images` stores only ids), which the paginated list
     can't surface unless the item happens to land on a loaded page.
 
-    Owner-gated: the only caller is the owner-only Brain editor, and gating to
-    the account owner keeps this from becoming a folder-restriction bypass for
-    restricted chatters (the list route soft-denies per folder; a by-id read
-    can't be folder-scoped, so we require ownership instead). Cached server-side
-    via vault_cache like the list route, so repeat loads are instant and shared.
+    Folder-gated like the stills: a restricted chatter gets 404 for a media
+    outside its folders or one the mirror has no row for
+    (vault_ai_api.assert_media_visible), checked before the cache read. Cached
+    server-side via vault_cache like the list route, so repeat loads are
+    instant and shared.
     """
     aid = _current_aid()
     assert_account_owned(aid)
+    await vault_ai_api.assert_media_visible(aid, media_id)
     key = f"media-by-id:{media_id}"
     cached = await vault_cache.get(aid, key)
     if cached is not None:
@@ -4201,11 +4101,12 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
         # The slot is INSIDE the coalescer on purpose (see relay_coalesce's
         # module docstring): waiters that joined an in-flight fetch hold no
         # slot, so only the one caller actually going to OF occupies one.
+        t0 = datetime.utcnow()
         async with admission.VAULT_MEDIA_READ:
             fetched = await asyncio.to_thread(
                 _proxy, lambda: _get_client().vault_media_by_id(media_id),
             )
-        await vault_cache.put(aid, key, fetched)
+        await vault_cache.put(aid, key, fetched, started_at=t0)
         return fetched
 
     # A remount, a second tab, or two panes resolving the same slot image all
@@ -4273,11 +4174,12 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
     # chatter. None ⇒ no restriction (owner, or unrestricted chatter).
     allowed_folders = await _allowed_folder_ids_for_chatter(aid)
     q_norm = (query or "").strip()
-    key = vault_lists_cache_key(view=view, limit=limit, offset=offset, q_norm=q_norm)
+    key = vault_cache.vault_lists_cache_key(view=view, limit=limit, offset=offset, q_norm=q_norm)
     result = None
     if not refresh:
         result = await vault_cache.get(aid, key)
     if result is None:
+        t0 = datetime.utcnow()
         result = await asyncio.to_thread(
             _proxy,
             lambda: _get_client().vault_lists(view=view, limit=limit, offset=offset,
@@ -4285,16 +4187,16 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
         )
         # Cache the UNFILTERED payload — owners + other chatters share this
         # entry. Filtering happens per-response below, never written back.
-        await vault_cache.put(aid, key, result)
+        await vault_cache.put(aid, key, result, started_at=t0)
     if allowed_folders is not None and isinstance(result, dict):
-        # Filter on READ only — shallow-copy so the cached object keeps its
-        # full folder list for owners/unrestricted chatters.
-        filtered = dict(result)
-        filtered["list"] = [
-            f for f in (result.get("list") or [])
-            if f.get("id") in allowed_folders
-        ]
-        return filtered
+        # Filter on READ only, into a new dict of just the allowed folders and
+        # `hasMore`: OF's other keys (`all`: whole-vault counts + cover urls)
+        # describe folders the chatter may not see.
+        return {
+            "list": [f for f in (result.get("list") or [])
+                     if isinstance(f, dict) and f.get("id") in allowed_folders],
+            "hasMore": result.get("hasMore"),
+        }
     return result
 
 @app.get("/api/of/v2/payouts/balances")

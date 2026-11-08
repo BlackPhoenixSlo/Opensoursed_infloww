@@ -104,6 +104,7 @@ from urllib.parse import parse_qs, urlsplit
 from playwright.async_api import async_playwright
 
 from slop.actors.ui import LAUNCH_ARGS, track
+from slop.lib import navs
 from slop.lib.faults import FAULTS
 from slop.lib.wan import WanEdge
 from slop.seed import agency, earnings, fans, of_sessions, threads
@@ -394,7 +395,7 @@ SWEEP_ROUTES = """/ /analytics/creator-reports /analytics/employee-reports /anal
 /fansly-manager/lists /fansly-manager/scheduled /fansly-manager/earning-statistics /of-manager/home
 /of-manager/messages /of-manager/notifications /of-manager/queue /of-manager/vault /of-manager/statements
 /of-manager/statistics /of-manager/bank /of-manager/profile /of-manager/settings /of-manager/collections
-/of-manager/streaming /of-manager/release-forms /of-manager/new-post""".split()
+/of-manager/streaming /of-manager/release-forms /of-manager/new-post""".split() + list(navs.extras("SWEEP_ROUTES"))
 #: Pages whose empty state is their content, not a read's answer (no read to wait for), and why.
 SWEEP_STATIC_EMPTY = {
     "/settings/billing": "Billing's 'No invoices' on both subtabs is static: Inflowwww bills nothing",

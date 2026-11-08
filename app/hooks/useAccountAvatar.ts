@@ -21,6 +21,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { REFRESH_KEYS } from "@/lib/screenBundle";
 
 export interface AccountAvatar {
   id?: number;
@@ -43,16 +44,21 @@ export async function fetchOwnProfile<T extends { id?: number | string }>(
   }
 }
 
-export function useAccountAvatar(accountId: string | null | undefined) {
-  return useQuery<AccountAvatar | null>({
-    queryKey: ["of-profile", accountId] as const,
+/** The `["of-profile", accountId]` read both readers share (this hook and useStats' useAccountProfile): one key,
+ *  fetcher, retry and lifetime. Each reader adds its own freshness. */
+export function ofProfileQuery<T extends AccountAvatar = AccountAvatar>(accountId: string | null | undefined) {
+  return {
+    queryKey: [REFRESH_KEYS.profile, accountId] as const,
     enabled: !!accountId,
-    queryFn: ({ signal }) => fetchOwnProfile<AccountAvatar>(accountId!, signal),
-    staleTime: Infinity,
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchOwnProfile<T>(accountId!, signal),
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,
     retry: false,
-  });
+  };
+}
+
+export function useAccountAvatar(accountId: string | null | undefined) {
+  return useQuery<AccountAvatar | null>({ ...ofProfileQuery(accountId), staleTime: Infinity });
 }
 
 /** Pull the best-available thumbnail URL out of an `AccountAvatar`. Falls

@@ -18,7 +18,6 @@ import {
 } from "@/components/chat/VaultPicker";
 import { tilePreview } from "@/components/chat/vaultTilePreview";
 import { HOVER_DELAY_MS, SCRUB_FRAMES, useHoverPreview } from "@/hooks/useHoverPreview";
-import { vaultTileThumb } from "@/hooks/useVaultCache";
 import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
@@ -74,10 +73,9 @@ export default function VaultTile({
   // what the tile shows is tilePreview's read of it, as in the picker.
   const hover = useHoverPreview(HOVER_DELAY_MS);
 
-  // "" for a media with no picture (a voice note), or a broken one waiting for the grid's reload — the placeholder
-  // renders.
-  const base = vaultTileThumb(m, accountId);
-  const thumb = thumbs.thumbFor(m.id, base);
+  // src "" for a media with no picture (a voice note), or a broken one waiting for the grid's reload — the
+  // placeholder renders.
+  const thumb = thumbs.tile(m);
   const dur = fmtDuration(m.duration);
   const isVideo = m.type === "video";
   const rawVideoSrc = isVideo ? progressiveVideoSrc(m) : null;
@@ -118,15 +116,15 @@ export default function VaultTile({
         selected || checked ? "border-accent ring-2 ring-accent/40" : "border-border hover:border-fg-dim/50"
       }`}
     >
-      {thumb ? (
+      {thumb.src ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={thumb}
+          src={thumb.src}
           alt=""
           aria-hidden
           loading="lazy"
           decoding="async"
-          onError={() => thumbs.onBroken(m.id, thumb)}
+          onError={thumb.onError}
           className="absolute inset-0 w-full h-full object-cover"
         />
       ) : (

@@ -41,6 +41,7 @@ import {
   SIDEBAR_FOOTER,
   isDivider,
   isGroup,
+  isPopoutRoute,
   onPopoutClick,
   sidebarFor,
   sidebarHref,
@@ -99,9 +100,9 @@ export default function Sidebar({
 
   const link = (l: NavLink, sub = false, footer = false) => {
     const Icon = l.icon;
-    // Messages Pro opens in its own window and this page stays put.
+    // Messages Pro (and a page inside it) opens in its own window and this page stays put.
     const onClick = (e: React.MouseEvent) => {
-      if (l.popout) onPopoutClick(e, l.href);
+      if (isPopoutRoute(l.href)) onPopoutClick(e, l.href);
       onNavigate?.();
     };
     if (collapsed) {

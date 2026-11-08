@@ -34,6 +34,7 @@ import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN, orderThread } from "@/hooks
 import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { relay, type OFMessage } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
+import { SEED_PAGE } from "@/lib/screenBundle";
 
 // Mass-send optimistic placeholders (service/attribution.py 5e15 band) are a
 // just-sent bridge, not history. A placeholder that outlived this window is a
@@ -95,7 +96,7 @@ export function dropSeedMessage(
 
 /** The seed query's key, fetcher and freshness — shared with any prefetch,
  *  so a warm lands where this reads. */
-export function seedQueryOptions(accountId: string | null, fanId: FanId | null, limit = 30) {
+export function seedQueryOptions(accountId: string | null, fanId: FanId | null, limit = SEED_PAGE) {
   return {
     queryKey: [...seedKey(accountId, fanId), limit] as const,
     queryFn: () => {
@@ -114,7 +115,7 @@ export function useChatMessagesLocal(opts: {
   fanId: FanId | null;
   limit?: number;
 }): { rows: OFMessage[]; isLoading: boolean } {
-  const { enabled = true, accountId, fanId, limit = 30 } = opts;
+  const { enabled = true, accountId, fanId, limit = SEED_PAGE } = opts;
   const q = useQuery<LocalMessagesResp>({
     ...seedQueryOptions(accountId, fanId, limit),
     enabled: enabled && !!accountId && fanId != null,
@@ -236,7 +237,11 @@ export function mapRows(
         id: isOut ? ownerId : fanId,
         name: r.sender_name ?? "",
       },
-      createdAt: r.created_at ?? new Date().toISOString(),
+      // The relay's created_at is naive UTC; OF's createdAt carries its zone.
+      // Raw, a non-UTC browser read it as local time: the bubble showed the
+      // wrong hour, and his reply could read as older than the last line out
+      // until OF's fetch landed.
+      createdAt: r.created_at ? toUtcIso(r.created_at) : new Date().toISOString(),
       media: [],
       mediaCount: r.media_count ?? 0,
       price: (r.price_cents ?? 0) / 100,

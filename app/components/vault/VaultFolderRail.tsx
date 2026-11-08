@@ -19,6 +19,7 @@ import {
 import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState, IfButton, IfModal } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
+import { SHARE_MODE_OFF } from "@/components/vault/vaultDownloadReducer";
 import { applyCustomOrder, customizeReducer } from "@/components/vault/vaultFolderOrder";
 import {
   FOLDER_ORDERS, FOLDER_SORTS, loadFolderSort, type FolderSortState,
@@ -203,7 +204,9 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
   );
 }
 
-export default function VaultFolderRail({ folders, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder }: {
+export default function VaultFolderRail({
+  folders, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder, downloadFolderOff = "",
+}: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
   loading: boolean;
@@ -217,6 +220,8 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
   onChanged: () => void;
   /** Ours: the row menu's "Download folder" (absent: no such item). */
   onDownloadFolder?: (f: VaultList) => void;
+  /** Why "Download folder" is off (shown disabled, the reason as its title); "" when on. */
+  downloadFolderOff?: string;
 }) {
   const accountId = useVaultAccountId();
   const qc = useQueryClient();
@@ -506,7 +511,8 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
                           items={[
                             { label: "Rename", onClick: () => setNameModal({ folder: f }) },
                             { label: "Delete", onClick: () => setDeleteModal(f) },
-                            ...(onDownloadFolder ? [{ label: "Download folder", onClick: () => onDownloadFolder(f) }] : []),
+                            ...(onDownloadFolder ? [{ label: downloadFolderOff === SHARE_MODE_OFF ? "Download folder (desktop only)" : "Download folder", onClick: () => onDownloadFolder(f),
+                                                      disabled: !!downloadFolderOff, title: downloadFolderOff || undefined }] : []),
                           ]}
                         />
                       </span>

@@ -449,13 +449,14 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [accountId, fanId, sendNow, schedule, onStart, onSettled, report],
   );
 
+  /** Re-sends a failed bubble under its own temp id; resolves how it ended. */
   const retry = useCallback(
-    async (tempId: number) => {
+    async (tempId: number): Promise<SendSettled> => {
       onStart?.();
       const entry = sendStash.get(tempId);
       if (!accountId || fanId == null || !entry) {
         onSettled?.("failed");
-        return;
+        return { sent: false };
       }
       // Upload the files that failed again (the landed ones keep their
       // media; discarding the bubble cancels the rest), then send as the
@@ -482,6 +483,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       report(sending);
       const ended = await sending;
       if (ended.sent) void refreshRoster(accountId, { force: true });
+      return ended;
     },
     [accountId, fanId, appendLocal, dropLocal, refreshRoster, optimisticMessage, sendAfterUploads, onStart, onSettled, report],
   );

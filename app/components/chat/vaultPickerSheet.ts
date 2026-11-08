@@ -43,7 +43,3 @@ export const VAULT_CARD_TAG = "max-w-full truncate rounded bg-black/60 px-1 text
 export const VAULT_CARD_GIF = "bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded";
 /** Unsend, Not wired: the ⓘ's 20px round at the standard disabled opacity (spec, Not wired). */
 export const VAULT_CARD_UNSEND = `${CARD_ROUND} opacity-40 cursor-not-allowed`;
-
-/** The picker toolbar's folder, sort and length selects. */
-export const VAULT_TOOLBAR_SELECT =
-  "shrink-0 ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent";

@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import threading
 
+import relay_coalesce
 from of_client import OFClient
 
 log = logging.getLogger("of-relay.client_pool")
@@ -75,6 +76,7 @@ def evict(account_id: str | None = None) -> None:
             _POOL.clear()
         else:
             _POOL.pop(account_id, None)
+    relay_coalesce.forget(account_id)   # no caller joins a flight on the evicted client
     # Fansly accounts are pooled in fansly_backend, not here (their client is
     # the shim, not an OFClient). Invalidation still has ONE home — this
     # function — so a re-capture or proxy edit can't leave a stale shim behind

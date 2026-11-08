@@ -13,13 +13,13 @@ Two signals, one state per proxy label (in memory; a restart starts clean):
     three of those fit inside any CONNECT-403 blip. Any call that gets an
     answer resets the count. A timeout is not counted: it can't be told
     apart from a slow OF.
-  * The probe (`proxies.probe_of`): one GET of OnlyFans' x-hash endpoint
+  * The probe (`proxy_probe.probe_of`): one GET of OnlyFans' API host (`robots.txt`)
     through the proxy, no cookies, no session, Chrome's TLS. Any HTTP answer:
     the proxy tunnels to OF. Health is judged by it alone: the confirm and
     recheck below, before a new binding or a move (`verify_pick`), and
     periodically only when PROXY_HEALTH_INTERVAL_S is set (opt-in, off by
     default). A failed probe counts one error too. Cloudflare's trace
-    (`proxies.probe`: egress ip, country, colo) is display and region only
+    (`proxy_probe.probe`: egress ip, country, colo) is display and region only
     (`note_trace`: the Test button, a new binding's first region), never
     counted: a proxy can answer it yet refuse CONNECT to OF (2026-11-06).
     Probes only ever go through proxies in the registry: never an ad-hoc
@@ -85,15 +85,18 @@ The flap knob (PROXY_FLAP_BAD_PCT, default FLAP_PCT_DEFAULT = 20; 0 turns it
 off: moving a Creator changes the IP OnlyFans sees, a risk the owner accepted
 on 2026-11-05, so flapping proxies leave rotation on their own). Goes bad (`FlapBad`: no
 confirm, as a flapping proxy answers a single probe most of the time) on a
-refusal when: >= FLAP_MIN_CALLS attempts in the window, the rate >= X
-(PROXY_FLAP_BAD_PCT), refusals in >= FLAP_BUCKETS tenths of the window (a
-short full outage is not flapping: the confirm path owns it), and the proxy
-is neither down nor in a DOWN_AFTER streak. Then the usual rechecks,
+refusal when `ph.flap_trips`: >= FLAP_MIN_CALLS attempts in the window, the
+rate >= X (PROXY_FLAP_BAD_PCT), refusals in >= FLAP_BUCKETS tenths of the
+window (a short full outage is not flapping: the confirm path owns it); decide
+leaves a proxy down or in a DOWN_AFTER streak alone. Then the usual rechecks,
 `failover_due` and no fail-back. Stays bad (an answer or a passing recheck,
-its own sample counted first, does not bring it up) while the rate >= X/2
-and the newest refusal is within window/5 (`flapping`); otherwise the next
-one brings it back as standby. The failover never moves anyone onto a proxy
-that is `flapping`, even when its probe answers (none left: nobody moves).
+its own sample counted first, does not bring it up) while `ph.flap_holds`:
+>= FLAP_MIN_CALLS attempts and the rate >= X/2, no recency rule
+(`still_flapping`); once its window drains the next one brings it back as
+standby. The failover never moves anyone onto a proxy that is bad or
+`herd_guarded` (`ph.flap_guards`: holds AND refusals in >= FLAP_BUCKETS
+tenths, so a clean proxy's one blip does not), even when its probe answers
+(none left: nobody moves).
 `health.bad_reason` says which path made it bad: "down" or "flapping".
 
 When a proxy goes down or comes back, each Creator on it gets the
@@ -121,6 +124,7 @@ from typing import Any, Callable
 
 import proxies
 import proxy_health_decide as ph
+import proxy_probe
 
 log = logging.getLogger("of-relay.proxy-health")
 
@@ -135,15 +139,15 @@ CONFIRM_GAP_S = 30.0    # the confirm probes no sooner than this after a streak'
 FLAP_PCT_ENV = "PROXY_FLAP_BAD_PCT"        # the flap knob; unset = FLAP_PCT_DEFAULT, 0 = off (docs/adr/0030 Consequences)
 FLAP_WINDOW_ENV = "PROXY_FLAP_WINDOW_S"    # the refusal window, shown in /admin/proxies too
 WINDOW_S = 600.0
+# The knob's other thresholds: ph.FLAP_MIN_CALLS, ph.FLAP_BUCKETS, ph.flap_trips / flap_holds / flap_guards.
 FLAP_PCT_DEFAULT = 20.0   # refused share that marks a flapping proxy bad (prod replay 2026-11-05: flags the two bad ones, never the clean ones)
-FLAP_MIN_CALLS = 20       # a rate over fewer attempts than this marks nothing bad
-FLAP_BUCKETS = 3          # ... nor one whose refusals sit in fewer of the window's tenths than this (a blip)
 _WINDOW_CAP = 50_000      # attempts kept per label, whatever the window
 
 _lock = threading.Lock()
 _state: dict[str, dict[str, Any]] = {}
-# Per-label attempt telemetry (`attempt_start`/`attempt_end`, the probes): the window of
-# (time, refused) and running counts. Own lock; taken after _lock, never around it.
+# Per-label attempt telemetry (`attempt_start`/`attempt_end`, the probes; `_tele_entry`): the window of
+# (time, refused, tenth), its refused count and refusals per tenth, in-flight counts. Own lock; taken after
+# _lock, never around it.
 _tele_lock = threading.Lock()
 _tele: dict[str, dict[str, Any]] = {}
 _watchers: set[str] = set()   # labels with a watcher: claimed (Watch) before its thread starts, released
@@ -196,15 +200,35 @@ def flap_bad_pct() -> float:
 def _tele_entry(label: str) -> dict[str, Any]:
     e = _tele.get(label)
     if e is None:
-        e = _tele[label] = {"q": collections.deque(), "refused": 0, "inflight": 0, "inflight_peak": 0,
-                            "last_refused": None}
+        # q: (time, refused, tenth) per attempt; tenths: refusals per tenth of the window (absolute buckets of
+        # window_s()/10), so the spread is a len(), not a scan
+        e = _tele[label] = {"q": collections.deque(), "refused": 0, "tenths": collections.Counter(),
+                            "inflight": 0, "inflight_peak": 0}
     return e
 
 
 def _prune(e: dict[str, Any], now: float) -> None:
     q, edge = e["q"], now - window_s()
     while q and (q[0][0] < edge or len(q) > _WINDOW_CAP):
-        e["refused"] -= q.popleft()[1]
+        _, refused, tenth = q.popleft()
+        if refused:
+            e["refused"] -= 1
+            e["tenths"][tenth] -= 1
+            if not e["tenths"][tenth]:
+                del e["tenths"][tenth]
+
+
+def _stats(e: dict[str, Any] | None, now: float) -> ph.WindowStats:
+    """The window as one snapshot (the caller holds _tele_lock)."""
+    if not e:
+        return ph.WindowStats(0, 0, 0)
+    _prune(e, now)
+    return ph.WindowStats(len(e["q"]), e["refused"], len(e["tenths"]))
+
+
+def _window(label: str) -> ph.WindowStats:
+    with _tele_lock:
+        return _stats(_tele.get(label), _now())
 
 
 def attempt_start(label: str | None) -> None:
@@ -228,65 +252,34 @@ def attempt_end(label: str | None, refused: bool | None) -> None:
 
 
 def _sample(label: str, refused: bool) -> None:
-    """One outcome into the window. With the flap knob on, a refusal that takes the rate to it marks the
-    proxy bad (ph.FlapBad)."""
+    """One outcome into the window. A refusal that makes the window `ph.flap_trips` (knob on) sends FlapBad;
+    decide leaves a proxy already down, or in a DOWN_AFTER streak, to the outage path."""
     with _tele_lock:
-        e = _tele_entry(label)
-        e["q"].append((_now(), refused))
-        e["refused"] += refused
+        e, now = _tele_entry(label), _now()
+        tenth = int(now // (window_s() / 10))
+        e["q"].append((now, refused, tenth))
         if refused:
-            e["last_refused"] = _now()
-        _prune(e, _now())
-    st = _state.get(label) or {}
-    # Down, or a DOWN_AFTER streak awaiting its confirm: the outage path owns it (decide checks it again).
-    if refused and flap_bad_pct() and not st.get("down") and st.get("errors", 0) < ph.DOWN_AFTER:
-        r = refusals(label)
-        if _flapping(r, flap_bad_pct()) and _spread(label) >= FLAP_BUCKETS:
-            _step(label, lambda: ph.FlapBad(_now(), label in _watchers, r["pct"], r["calls"]))
-
-
-def _spread(label: str) -> int:
-    """In how many tenths of the window (absolute buckets of window_s()/10) a refusal landed, counted up to
-    FLAP_BUCKETS: a 10 s outage refusing every call sits in one or two, a flapping proxy in many."""
-    size, seen = window_s() / 10, set()
-    with _tele_lock:
-        for t, refused in reversed((_tele.get(label) or {}).get("q", ())):
-            if refused:
-                seen.add(int(t // size))
-                if len(seen) >= FLAP_BUCKETS:
-                    break
-    return len(seen)
+            e["refused"] += 1
+            e["tenths"][tenth] += 1
+        w = _stats(e, now)
+    if refused and ph.flap_trips(w, flap_bad_pct()):
+        _step(label, lambda: ph.FlapBad(_now(), label in _watchers, w.pct, w.calls))
 
 
 def refusals(label: str) -> dict[str, Any]:
     """`health.refusals`: attempts refused / made through `label` in the last window_s() seconds."""
-    with _tele_lock:
-        e = _tele.get(label)
-        if e:
-            _prune(e, _now())
-        refused, calls = (e["refused"], len(e["q"])) if e else (0, 0)
-    return {"window_s": window_s(), "refused": refused, "calls": calls,
-            "pct": round(100.0 * refused / calls, 1) if calls else 0.0}
+    w = _window(label)
+    return {"window_s": window_s(), "refused": w.refused, "calls": w.calls, "pct": w.pct}
 
 
-def _flapping(r: dict[str, Any], pct: float) -> bool:
-    """Knob on, >= FLAP_MIN_CALLS attempts in the window, refusal rate >= `pct`."""
-    return bool(pct) and r["calls"] >= FLAP_MIN_CALLS and r["refused"] * 100.0 >= pct * r["calls"]
+def still_flapping(label: str) -> bool:
+    """`ph.flap_holds` on `label`'s window now (knob on): a flap-bad proxy stays bad while it holds."""
+    return ph.flap_holds(_window(label), flap_bad_pct())
 
 
-def flapping(label: str) -> bool:
-    """Still flapping (knob on): the rate >= HALF the knob AND a refusal in the last window_s()/5. A flap-bad
-    proxy stays bad while this holds (hysteresis: bad at >= X %, back below X/2 % or after window/5 quiet, so a
-    rate hovering at X does not flip it bad/up and stall the failover); a failover never moves anyone onto a
-    proxy for which it holds. Its Creators moved away, its window drains and it comes back as standby."""
-    pct = flap_bad_pct()
-    if not pct:
-        return False
-    r = refusals(label)
-    with _tele_lock:
-        last = (_tele.get(label) or {}).get("last_refused")
-    return (r["calls"] > 0 and r["refused"] * 100.0 >= pct / 2 * r["calls"]
-            and last is not None and _now() - last <= window_s() / 5)
+def herd_guarded(label: str) -> bool:
+    """`ph.flap_guards` on `label`'s window now (knob on): no new binding or move onto it (`unusable_labels`)."""
+    return ph.flap_guards(_window(label), flap_bad_pct())
 
 
 def confirm_gap_s() -> float:
@@ -303,7 +296,7 @@ def record(label: str | None, ok: bool, error: str | None = None) -> None:
     st = _state.get(label)
     if ok and (st is None or (st["errors"] == 0 and not st["down"])):
         return  # healthy and staying healthy: nothing to write (no entry made, the lock not taken)
-    _step(label, lambda: ph.CallOk(_now(), flapping(label)) if ok else ph.CallErr(_now(), error, label in _watchers))
+    _step(label, lambda: ph.CallOk(_now(), still_flapping(label)) if ok else ph.CallErr(_now(), error, label in _watchers))
 
 
 def _step(label: str, event: Callable[[], ph.Event]) -> ph.Next:
@@ -341,23 +334,23 @@ def _step(label: str, event: Callable[[], ph.Event]) -> ph.Next:
 
 
 def last_geo(p: dict[str, Any]) -> str | None:
-    """A proxy's country as its last answering probe saw it (None: never seen)."""
+    """A proxy's country as its last answering trace saw it (`note_trace`; None: never seen)."""
     with _lock:
-        return (_state.get(p.get("label") or "") or {}).get("geo")
+        return ((_state.get(p.get("label") or "") or {}).get("trace") or {}).get("geo")
 
 
 def verify_pick(p: dict[str, Any], timeout_s: int = 15, region: bool = True) -> bool:
     """The destination check before a NEW binding (a login's attach step,
     Browserbase's bind) or a move (`_failover`, a held Creator re-picked):
-    one probe through the pick, counted like the Test button's. False = pass
+    one probe through the pick, counted (unlike the Test button's). False = pass
     it over: nobody is moved onto a proxy that does not answer right now.
     `region=False` (a login's attach, which waits on it): no region trace, at most one probe a pick."""
     label = p.get("label") or ""
-    result = proxies.probe_of(p, timeout_s=timeout_s)
+    result = proxy_probe.probe_of(p, timeout_s=timeout_s)
     if label:
         record_probe(label, result)
         if region and result.get("ok") and last_geo(p) is None:   # the region (failover's `like`): one uncounted trace
-            note_trace(label, proxies.probe(p, timeout_s=timeout_s))
+            note_trace(label, proxy_probe.probe(p, timeout_s=timeout_s))
     return bool(result.get("ok"))
 
 
@@ -378,52 +371,44 @@ ATTACH_PROBE_TIMEOUT_S = 5
 
 
 def assign_pool(account_id: str, rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
-    """`proxies.assign_pool` with this module's view: bad proxies skipped, a
+    """`proxies.assign_pool` with this module's view: unusable proxies skipped, a
     Creator moved off its proxy only when `failover_due` and onto a pick that
     answers (`verify_pick`, ATTACH_PROBE_TIMEOUT_S each), the region from the
     last probes. A Creator on no pool proxy is bound even when no pick
-    answers (least-used not bad) or every pool proxy is bad (least-used).
-    LookupError: the pool is empty."""
-    return proxies.assign_pool(account_id, bad=down_labels(), due=_due_labels(), geo=last_geo,
+    answers (least-used not bad) or every pool proxy is bad (least-used, one
+    not bad for an outage first). LookupError: the pool is empty."""
+    reasons = bad_reasons()   # one read: `bad` and `dead` agree
+    return proxies.assign_pool(account_id, bad=unusable_labels(reasons),
+                               dead={lb for lb, why in reasons.items() if why == "down"}, due=_due_labels(),
+                               geo=last_geo,
                                verify=lambda p: verify_pick(p, timeout_s=ATTACH_PROBE_TIMEOUT_S, region=False),
                                rng=rng)
 
 
 def record_probe(label: str, result: dict[str, Any]) -> None:
-    """Keep a `proxies.probe_of` result; count its outcome (the periodic probe,
+    """Keep a `proxy_probe.probe_of` result; count its outcome (the periodic probe,
     `verify_pick`). A watcher's own probes go through `_probe` instead."""
     _keep_probe(label, result)
     record(label, bool(result.get("ok")), result.get("error"))
 
 
-_TRACE_KEYS = ("ip", "geo", "colo")
-
-
 def note_trace(label: str, result: dict[str, Any]) -> None:
-    """Keep the Cloudflare trace's ip/geo/colo (the Test button, a new
-    binding's region) for display and the region; never counted: health is
-    judged by `proxies.probe_of` alone, so a Test click on a proxy refusing
-    OF does not bring it back."""
+    """Keep an answering Cloudflare trace (the Test button, a new binding's
+    region) in its own slot, `trace` {ip, geo, colo}: its geo is the region
+    (`last_geo`, failover's `like`), kept through a failed probe or trace.
+    Display and region only, never counted: health is `probe`, `proxy_probe.probe_of`'s."""
     if not result.get("ok"):
         return
     with _lock:
         st = _state.setdefault(label, ph.blank())
-        st["probe"] = {**(st.get("probe") or {}), **{k: result.get(k) for k in _TRACE_KEYS}}
-        if result.get("geo"):
-            st["geo"] = result["geo"]
+        st["trace"] = {k: result.get(k) for k in ("ip", "geo", "colo")}
 
 
 def _keep_probe(label: str, result: dict[str, Any]) -> None:
     with _lock:
         st = _state.setdefault(label, ph.blank())
-        prev = st.get("probe") or {}
-        st["probe"] = {k: result.get(k) for k in ("ok", "ip", "geo", "colo", "ttfb_ms", "error")}
-        for k in _TRACE_KEYS:   # probe_of has no ip/geo: the last trace's stay
-            if st["probe"][k] is None:
-                st["probe"][k] = prev.get(k)
+        st["probe"] = {k: result.get(k) for k in ("ok", "ttfb_ms", "error")}
         st["probed_at"] = _now()
-        if result.get("ok") and result.get("geo"):
-            st["geo"] = result["geo"]   # the last country seen: kept through a failed probe (failover's region)
     # A probe is one attempt in the refusal window: ok, or refused (a ProxyError, as `_attempt`); else neither.
     if result.get("ok") or result.get("refused"):
         _sample(label, not result.get("ok"))
@@ -436,7 +421,7 @@ def _probe(label: str) -> bool | None:
     if p is None:
         _step(label, ph.Gone)
         return None
-    result = proxies.probe_of(p)
+    result = proxy_probe.probe_of(p)
     _keep_probe(label, result)
     return bool(result.get("ok"))
 
@@ -475,8 +460,8 @@ def _watch_inner(label: str) -> None:
             nxt = None if ok is None else _step(label, lambda: ph.ConfirmResult(_now(), ok, streak))
         elif isinstance(nxt, ph.Recheck):
             ok = _probe(label)
-            # flapping: read after the probe's own sample (_keep_probe) is in the window.
-            nxt = None if ok is None else _step(label, lambda: ph.RecheckResult(ok, flapping(label)))
+            # still_flapping: read after the probe's own sample (_keep_probe) is in the window.
+            nxt = None if ok is None else _step(label, lambda: ph.RecheckResult(ok, still_flapping(label)))
         elif isinstance(nxt, ph.ArmRecheck):
             nxt = _arm_recheck(label)
         else:
@@ -499,10 +484,7 @@ def _failover(label: str) -> list[str]:
     or logged when the proxy is not a pool proxy or nobody is on it
     (failover_pool returns None). Logged; [] when nobody moved (they stay,
     surfaced)."""
-    bad = down_labels()
-    if flap_bad_pct():   # the herd guard: never onto a proxy still flapping, even if its one probe answers
-        bad |= {lb for lb in list(_tele) if flapping(lb)}
-    moved = proxies.failover_pool(label, bad=bad, geo=last_geo, verify=verify_pick)
+    moved = proxies.failover_pool(label, bad=unusable_labels(bad_reasons()), geo=last_geo, verify=verify_pick)
     if moved is None:
         return []
     _step(label, lambda: ph.FailedOver(_now(), tuple(moved)))
@@ -511,7 +493,7 @@ def _failover(label: str) -> list[str]:
 
 def snapshot(label: str) -> dict[str, Any]:
     """`health` for one proxy: {state, down, errors, last_error, last_error_at,
-    probe?, probed_at?, bad_since?, next_recheck_at?, failed_over?...}. A
+    probe? (the health probe), trace? (display), probed_at?, bad_since?, next_recheck_at?, failed_over?...}. A
     proxy never seen reads as healthy."""
     with _lock:
         st = dict(_state.get(label) or {})
@@ -519,10 +501,8 @@ def snapshot(label: str) -> dict[str, Any]:
     st.setdefault("errors", 0)
     st.pop("first_error_at", None)
     st.pop("streak", None)
-    if st.pop("flap", False) and st["down"]:
-        st["bad_reason"] = "flapping"
-    elif st["down"]:
-        st["bad_reason"] = "down"
+    if not st.get("bad_reason"):   # set with down only (decide)
+        st.pop("bad_reason", None)
     st["refusals"] = refusals(label)
     with _tele_lock:
         e = _tele.get(label) or {}
@@ -536,8 +516,21 @@ def snapshot(label: str) -> dict[str, Any]:
 
 
 def down_labels() -> set[str]:
+    return set(bad_reasons())
+
+
+def bad_reasons() -> dict[str, str]:
+    """Each bad proxy's label: why it is bad, "down" or "flapping" (one read for a whole list)."""
     with _lock:
-        return {label for label, st in _state.items() if st["down"]}
+        return {label: st["bad_reason"] for label, st in _state.items() if st["down"]}
+
+
+def unusable_labels(reasons: dict[str, str]) -> set[str]:
+    """Never the destination of a new binding or a move (`assign_pool`, `_failover`): bad (`reasons`,
+    the caller's one `bad_reasons()` read), or `herd_guarded` (even when its one probe answers)."""
+    with _tele_lock:
+        seen = list(_tele)
+    return set(reasons) | {lb for lb in seen if herd_guarded(lb)}
 
 
 def _announce(label: str, down: bool) -> None:
@@ -559,7 +552,7 @@ def probe_all() -> int:
     """Probe every proxy a Creator is on, one at a time. Returns how many."""
     n = 0
     for p in probe_targets():
-        record_probe(p["label"], proxies.probe_of(p))
+        record_probe(p["label"], proxy_probe.probe_of(p))
         n += 1
     return n
 

@@ -1,10 +1,11 @@
 /**
  * IngestHealthBanner's strip and row text: `tier` maps an IngestTier to its colours and label, `overallLabel` the
- * strip's sentence (no accounts wins over any tier), `relTime` the "last scan" recency, `truncate` a row's last error.
+ * strip's sentence (no accounts wins over any tier), `relTime` the "last scan" recency, `truncate` a row's last error,
+ * `statusLabel` a row's scan status in words.
  */
 import { describe, expect, it } from "vitest";
 
-import { overallLabel, relTime, tier, truncate } from "@/components/stats/IngestHealthBanner";
+import { overallLabel, relTime, statusLabel, tier, truncate } from "@/components/stats/IngestHealthBanner";
 import type { IngestTier } from "@/hooks/useStats";
 
 describe("tier", () => {
@@ -68,5 +69,16 @@ describe("truncate", () => {
     ["x".repeat(121),    undefined, "x".repeat(119) + "…"],
   ] as const)("%#: n=%s", (s, n, want) => {
     expect(truncate(s, n)).toBe(want);
+  });
+});
+
+describe("statusLabel", () => {
+  it.each([
+    ["backfill_partial", "backfilling · still working"],
+    ["backfill_stalled", "backfill stalled"],
+    ["backfill_given_up", "backfill gave up"],
+    ["error", "error"],
+  ])("%s", (status, want) => {
+    expect(statusLabel(status)).toBe(want);
   });
 });

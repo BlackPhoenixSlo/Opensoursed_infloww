@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { SavedReply, SavedReplySequenceMeta } from "@/lib/relay";
 
 import {
-  ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, firstGap, kindOf, livePending, matchesSearch, neighbour,
+  ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, entryIds, firstGap, kindOf, livePending, matchesSearch, neighbour,
   nextStep, scriptRows, scriptsPageReducer, selectionOf, sequenceDates, sequenceHeader, sequenceOrder,
   sequenceSteps, sequencesOf, tagCountsOf,
   type Action, type ScriptsPageState, type SeqSort, type SeqSortBy, type SortBy, type SortOrder, type View,
@@ -197,6 +197,23 @@ describe("reset (another Creator)", () => {
 const end = (ids: number[], error: string | null = null, account: string | null = null): Action =>
   ({ type: "runEnd", ids, error, account });
 
+describe("All models", () => {
+  it.each<[string, Partial<ScriptsPageState>, Action, Partial<ScriptsPageState>]>([
+    ["opening it closes the Creator's overlay and drops its checked scripts",
+      { account: "a", modal: { kind: "share", ids: [1] }, checked: new Set([1, 2]) }, { type: "allModels" },
+      { account: "a", allModels: true, modal: null, checked: new Set() }],
+    ["opening it keeps the Creator's view and open entries",
+      { account: "a", view: "sequences", ...opened("VIP", "B") }, { type: "allModels" },
+      { account: "a", allModels: true, view: "sequences", ...opened("VIP", "B") }],
+    ["a Creator's pick leaves it", { account: "a", allModels: true }, { type: "reset", account: "b" },
+      { account: "b", allModels: false }],
+    ["the same Creator's pick leaves it too", { account: "a", allModels: true }, { type: "reset", account: "a" },
+      { account: "a", allModels: false }],
+  ])("%s", (_n, start, action, want) => {
+    expect(scriptsPageReducer(st(start), action)).toEqual(st(want));
+  });
+});
+
 describe("runs: busy ids, the last error and the ticks", () => {
   type Row = [string, Partial<ScriptsPageState>, Action[], number[], string | null, number[]];
   it.each<Row>([
@@ -386,7 +403,6 @@ describe("sequenceOrder", () => {
     ["b", [sr(3, { updated_at: "2026-03-01" })]],
     ["a", [sr(4, { updated_at: "2026-04-01" })]],
   ]);
-  const names = ["Seq 2", "a", "Seq 10", "b"];
   it.each<[SeqSort, string[]]>([
     [{ by: "custom", order: "asc" }, ["b", "Seq 10", "Seq 2", "a"]],
     [{ by: "custom", order: "desc" }, ["a", "Seq 2", "Seq 10", "b"]],
@@ -394,14 +410,15 @@ describe("sequenceOrder", () => {
     [{ by: "name", order: "desc" }, ["Seq 10", "Seq 2", "b", "a"]],
     [{ by: "recent", order: "desc" }, ["Seq 10", "a", "b", "Seq 2"]],
     [{ by: "recent", order: "asc" }, ["Seq 2", "b", "a", "Seq 10"]],
-  ])("%j", (sort, want) => expect(sequenceOrder(names, metas, seqs, sort)).toEqual(want));
+  ])("%j", (sort, want) => expect(sequenceOrder(metas, seqs, sort)).toEqual(want));
 
   it.each<[string, string, number]>([
     ["Step 2", "Step 10", -1], ["step 1", "STEP 1", 0], ["b", "a", 1],
   ])("byName(%s, %s) is %i", (a, b, sign) => expect(Math.sign(byName(a, b))).toBe(sign));
 
   it("no meta at all: Custom is by name, numbers by value", () => {
-    expect(sequenceOrder(["x 10", "x 9", "X 1"], new Map(), new Map(), INITIAL.seqSort)).toEqual(["X 1", "x 9", "x 10"]);
+    const seqs = new Map(["x 10", "x 9", "X 1"].map((n) => [n, []]));
+    expect(sequenceOrder(new Map(), seqs, INITIAL.seqSort)).toEqual(["X 1", "x 9", "x 10"]);
   });
 });
 
@@ -479,6 +496,17 @@ describe("scriptRows", () => {
       expect(rowsOf({ view: "manage", replies: same, sort: { by: "recent", order } }).map(({ r }) => r.id)).toEqual(want);
     },
   );
+});
+
+describe("entryIds", () => {
+  const list = [sr(1, { tags: ["VIP"], script_id: "A" }), sr(2, { tags: [], script_id: "A" }),
+    sr(3, { tags: ["VIP", "N"] }), sr(4, { script_id: "B" })];
+  it.each<[string, "tag" | "sequence", string, number[]]>([
+    ["a tag's tagged scripts", "tag", "VIP", [1, 3]],
+    ["a sequence's steps", "sequence", "A", [1, 2]],
+    ["a sequence name is no tag", "tag", "A", []],
+    ["an unknown entry", "sequence", "Z", []],
+  ])("%s", (_n, kind, name, want) => expect(entryIds(kind, name, list)).toEqual(want));
 });
 
 describe("selectionOf", () => {

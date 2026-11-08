@@ -189,19 +189,17 @@ USE_VAULT_CACHE_FILES = 10
 def register(Fault) -> dict:
     return {
         # slop/run 2026-10-29-state-reducers --break (the scenario's FAULT)
-        # app/components/compose/massMessageReducer.ts `pickTemplate`: a FREE template keeps the draft's price
-        # and text lock (the pre-reducer bug), so the PAID template's $25 + lock survive. Only the free-template
-        # check goes red: the gate and body checks retype the price themselves. Anchored on the mass reducer's
-        # own `pickTemplate` -> `aa` -> `addGif` case run (its `const n = applyTemplate(s, a.t, !!a.rich)`):
-        # lib/composeDraft.ts is shared (bundled in the Smart Messages chunk AND the dashboard's), and
-        # postComposerReducer.ts has the same pickTemplate + aa cases but no `addGif` after them, and
-        # chat/composerDraft.ts no `const n`, so exactly one served file is rewritten. Spans up to 2000 chars: the
-        # served JS spells each import as a long Turbopack module path.
+        # app/lib/composeDraft.ts `textBoxReducer`: after its `const n = applyTemplate(s, a.t, a.rich)`, a FREE
+        # template keeps the draft's price and text lock, so the PAID template's $25 + lock survive. The Mass
+        # free-template check goes red; its gate/body checks retype the price, and the Post checks do not pick
+        # a FREE template. The shared source is served in the MassMessageComposer chunk and the Message
+        # dashboard, Get to know fans, Smart Messages and Messages Pro page chunks (5 files); the node mass
+        # fan-out import rewrites one TypeScript module (measured in
+        # 20261108T180638Z-2026-10-29-state-reducers-break-9597).
         "free-template-keeps-price": Fault(None, (MASS_FREE,), browser=(
-            (r'(const n = )([^;]*?\(s, a\.t, !!a\.rich\));((?:(?!pickTemplate)[\s\S]){0,2000}?case \\?"aa\\?":'
-             r'(?:(?!pickTemplate)[\s\S]){0,2000}?case \\?"addGif\\?":)',
-             r"\1((n) => a.t.price > 0 ? n : { ...n, price: s.price, lockedText: s.lockedText })(\2);\3"),
-        )),
+            (r'(const n = )([^;]*?\(s, a\.t, a\.rich\));',
+             r"\1((n) => a.t.price > 0 ? n : { ...n, price: s.price, lockedText: s.lockedText })(\2);"),
+        ), browser_files=5, ts_files=1),
         # slop/run 2026-10-29-state-reducers --break --fault=template-clears-picked-gifs
         # lib/composeDraft.ts `applyTemplate`: a GIF-less template clears the picked GIFs again (the pre-Q7 rule),
         # so the GIF picked before the FREE template is gone and the Broadcast carries none. Only the template-GIF

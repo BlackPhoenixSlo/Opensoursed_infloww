@@ -10,6 +10,9 @@
  * uploads (a running one is aborted, a queued one never starts), revoke its
  * blob: previews, and stop the send: it checks that its entry is still the
  * stashed one before it sends.
+ *
+ * A sent temp id is also remembered (the last DELIVERED_CAP of them, until an
+ * identity switch), so a later reader can tell "went out" from "discarded".
  */
 
 import { revokePreviews } from "@/lib/blobPreviews";
@@ -63,6 +66,9 @@ export interface StashEntry {
 }
 
 const entries = new Map<number, StashEntry>();
+/** Sent temp ids, oldest first (a Set keeps insertion order); bounded. */
+const deliveredIds = new Set<number>();
+export const DELIVERED_CAP = 200;
 
 export const sendStash = {
   get(tempId: number): StashEntry | undefined {
@@ -71,9 +77,16 @@ export const sendStash = {
   set(tempId: number, entry: StashEntry): void {
     entries.set(tempId, entry);
   },
-  /** The message went out: forget it, keeping its previews. */
+  /** The message went out: forget it, keeping its previews, and remember it went. */
   sent(tempId: number): void {
     entries.delete(tempId);
+    deliveredIds.delete(tempId);
+    deliveredIds.add(tempId);
+    if (deliveredIds.size > DELIVERED_CAP) deliveredIds.delete(deliveredIds.values().next().value as number);
+  },
+  /** Whether the message went out (among the last DELIVERED_CAP sent). */
+  delivered(tempId: number): boolean {
+    return deliveredIds.has(tempId);
   },
   /** The message is discarded: forget it, cancel its uploads, revoke its
    *  previews. */
@@ -89,7 +102,8 @@ export const sendStash = {
   },
 };
 
-/** Drop every unsent message (an identity switch). */
+/** Drop every unsent message and forget the sent ones (an identity switch). */
 export function clearSendStash(): void {
   for (const tempId of [...entries.keys()]) sendStash.discard(tempId);
+  deliveredIds.clear();
 }

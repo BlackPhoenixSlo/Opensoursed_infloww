@@ -14,7 +14,7 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
 import { Donut, PerfTitle, Sparkline, TrendBars } from "./ReportsCharts";
 import {
-  type Bucket, type Chan, type Point, type View, CHANNELS, EARNING_CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf,
+  type Bucket, type Chan, type Point, type View, CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf,
 } from "./reportsMath";
 
 /** #161: the Creator performance Earnings block's channel buttons, All first. The bundle's Streams has none: its sales
@@ -27,9 +27,9 @@ const PERF_CHANNELS: readonly { key: Chan | "all"; label: string }[] = [
   { key: "messages", label: "Messages" },
   { key: "referrals", label: "Referrals" },
 ];
-/** #167: Creator performance's own slice and legend-dot colours, in CHANNELS' order (the bundle's literal hex, as the
- *  Overview's channel colours are); its sparklines rise and fall in the bundle's two. */
-const PERF_COLORS: Record<Chan, string> = {
+/** #167: Creator performance's own slice and legend-dot colours, in CHANNELS' order then Chargebacks' (the bundle's
+ *  literal hex, as the Overview's channel colours are); its sparklines rise and fall in the bundle's two. */
+const PERF_COLORS: Record<Chan | "chargebacks", string> = {
   subscriptions: "#3467ff", tips: "#2ad4ac", posts: "#ff6868", messages: "#ffa553", referrals: "#34c2ff", chargebacks: "#ff7c71",
 };
 const PERF_SPARK = { up: "#2ad4ac", down: "#ff7c71" } as const;
@@ -44,6 +44,7 @@ const PERF_TIPS = {
 export default function CreatorPerformance({
   ids, perModel, hideZero, setHideZero, perfAll, perfList, picked, setPickedId, exportAllowed, exportPerf,
   perfChan, setPerfChan, perfView, perfRetry, perfPoints, perfBuckets, perfPrior, perfDaily, perfHeat, perfChargebacks,
+  perfChargebacksCents,
 }: {
   ids: { perfEarnings: string; perfBreakdown: string; perfHeatmap: string; perfChargebacks: string };
   perModel: { isPending: boolean; isError: boolean };
@@ -54,6 +55,8 @@ export default function CreatorPerformance({
   perfView: View; perfRetry: () => void;
   perfPoints: Point[]; perfBuckets: Record<Bucket, number>; perfPrior: Record<Bucket, number> | null;
   perfDaily: ReturnType<typeof dailyOf>; perfHeat: { weekday: number; hour: number; value: number }[]; perfChargebacks: Point[];
+  /** The picked Creator's reversals, below zero: a row after the channels in the legend and growth column. */
+  perfChargebacksCents: number;
 }) {
   const perfReady = perfView === "ready";
   /* #172 to #174: a failed block's `AbnormalRequestError` in the block's place, centred in its height: the error art,
@@ -63,7 +66,12 @@ export default function CreatorPerformance({
       <EmptyState kind="error" text="Request failed" onRetry={perfRetry} />
     </div>
   );
-  const perfChanSum = EARNING_CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
+  const perfChanSum = CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
+  /* The legend's and growth column's rows: the channels (share, growth, sparkline), then Chargebacks (none of them). */
+  const rows: { key: Chan | "chargebacks"; label: string; cents: number; chan: Chan | null }[] = [
+    ...CHANNELS.map((c) => ({ key: c.key, label: c.label, cents: perfBuckets[c.key], chan: c.key })),
+    { key: "chargebacks", label: "Chargebacks", cents: perfChargebacksCents, chan: null },
+  ];
   const figureColor = (cents: number) => (perfReady && isLoss(cents) ? "var(--color-err)" : "var(--color-fg)");
   return (
     <div className="flex flex-col md:flex-row text-[13px]">
@@ -166,28 +174,28 @@ export default function CreatorPerformance({
           {perfView === "error" ? perfFailed(250) : (
             <div className="flex flex-col md:flex-row border rounded-lg" style={{ borderColor: "var(--color-border)" }}>
               <div className="flex-1 min-w-0 p-4">
-                <Donut perf slices={perfReady ? EARNING_CHANNELS.map((c) => ({ color: PERF_COLORS[c.key], cents: perfBuckets[c.key] })) : null} />
+                <Donut perf slices={perfReady ? CHANNELS.map((c) => ({ color: PERF_COLORS[c.key], cents: perfBuckets[c.key] })) : null} />
                 <ul aria-label="Earnings breakdown legend" className="flex flex-wrap">
-                  {CHANNELS.map((c) => (
+                  {rows.map((c) => (
                     <li key={c.key} className="w-1/3 mb-2 flex flex-col">
                       <span className="flex items-center text-xs font-semibold leading-4 tracking-[0.15px] mb-2" style={{ color: "var(--color-fg-dim)" }}>
                         <span className="w-[7px] h-[7px] rounded-full mr-1.5 shrink-0" style={{ background: PERF_COLORS[c.key] }} aria-hidden />
                         {c.label}
                       </span>
-                      <span className="text-lg font-bold leading-[22px] px-2" style={{ color: figureColor(perfBuckets[c.key]) }}>
-                        {perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
+                      <span className="text-lg font-bold leading-[22px] px-2" style={{ color: figureColor(c.cents) }}>
+                        {perfReady ? fmtDollars(c.cents) : "-"}
                       </span>
                       <span className="text-sm font-semibold leading-5 px-2" style={{ color: "var(--color-fg-dim)" }}>
-                        {perfReady && c.key !== "chargebacks"
-                          ? `${(perfChanSum > 0 ? (100 * perfBuckets[c.key]) / perfChanSum : 0).toFixed(2)}%` : "-"}
+                        {perfReady && c.chan
+                          ? `${(perfChanSum > 0 ? (100 * c.cents) / perfChanSum : 0).toFixed(2)}%` : "-"}
                       </span>
                     </li>
                   ))}
                 </ul>
               </div>
               <ul aria-label="Earnings growth" className="md:w-[314px] border-t md:border-t-0 md:border-l" style={{ borderColor: "var(--color-border)" }}>
-                {CHANNELS.map((c) => {
-                  const g = perfReady ? growthOf(perfBuckets[c.key], perfPrior?.[c.key]) : { text: "-", dir: null };
+                {rows.map((c) => {
+                  const g = perfReady && c.chan ? growthOf(c.cents, perfPrior?.[c.chan]) : { text: "-", dir: null };
                   return (
                     <li
                       key={c.key}
@@ -197,8 +205,8 @@ export default function CreatorPerformance({
                       <span className="flex flex-col min-w-0">
                         {/* #166: the count, 4px from the 12px arrow, then the change. */}
                         <span className="inline-flex items-center">
-                          <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: figureColor(perfBuckets[c.key]) }}>
-                            {perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
+                          <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: figureColor(c.cents) }}>
+                            {perfReady ? fmtDollars(c.cents) : "-"}
                           </span>
                           <span
                             className="inline-flex items-center text-xs font-bold leading-4"
@@ -214,8 +222,8 @@ export default function CreatorPerformance({
                           {c.label}
                         </span>
                       </span>
-                      {perfReady && c.key !== "chargebacks" && (
-                        <Sparkline values={perfDaily.byChan(c.key)} color={g.dir === "down" ? PERF_SPARK.down : PERF_SPARK.up} />
+                      {perfReady && c.chan && (
+                        <Sparkline values={perfDaily.byChan(c.chan)} color={g.dir === "down" ? PERF_SPARK.down : PERF_SPARK.up} />
                       )}
                     </li>
                   );

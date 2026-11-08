@@ -31,6 +31,9 @@ Extensions, in order (`genExtensions$1`, SPA @9137461; same in PRE `o_` @1110477
 when `len - n*len(placeholder) + n*100 > 6500`, so each `{name}` tag counts as 100 chars), `ClassName` (custom mark),
 `Color` (tiptap color ext: inline `style="color:…"`, never set by the toolbar), `StarterKit`. Editor DOM class
 `b-text-editor prosemirror-editor`. **M**
+CharacterCount is tiptap's stock one (SPA @9084840, re-read 2026-11-08): `mode:"textSize"`, `textCounter:S=>S.length`
+over `doc.textBetween(0, size, undefined, " ")`, so the limit counts UTF-16 code units (an emoji outside the BMP is 2),
+a hard break as 1 and a paragraph boundary as 0. **M**
 
 Toolbar (`Toolbar$1`, SPA @9142774; PRE `c_` @1114825), left to right: **M**
 

@@ -181,7 +181,7 @@ export { insertByCreatedAt, toUtcIso };
 
 export interface InboxRealtimeOptions {
   /** Whether the page shows the roster badges (default true). A page without
-   *  them (a page with its own SSE scope) still gets live threads, but a message for a fan with no
+   *  them still gets live threads, but a message for a fan with no
    *  loaded chat row costs no live OF roster re-read (`refreshOne`) — there
    *  that is every message. */
   roster?: boolean;

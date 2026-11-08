@@ -55,6 +55,7 @@ import { resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
 import { renderWithProviders } from "@/test-utils";
 import { expectDomOrder, relayGet, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { CreatorTabs } from "./CreatorTabs";
+import { useCreatorTabs, useShownCreatorTabs } from "./useCreatorTabs";
 
 /* ── fixtures ───────────────────────────────────────────────────────────── */
 
@@ -83,6 +84,8 @@ const COUNTS = {
   [MAX]: { unread: 0, owe_reply: 4 },
 };
 
+/** The roster counts' read waits on this when a case sets it. */
+let countsGate: Promise<void> | null = null;
 /** What the relay's accounts read answers; a case may change the roster. */
 let relayAccounts: ReturnType<typeof account>[] = ACCOUNTS;
 
@@ -107,7 +110,8 @@ beforeEach(() => {
   // The roster counts' 8s refresh cooldown is module state: no case inherits
   // another's.
   resetRosterCountsModuleState();
-  routeRelay("/admin/accounts/roster-counts", () => ({ counts: COUNTS }));
+  countsGate = null;
+  routeRelay("/admin/accounts/roster-counts", () => (countsGate ?? Promise.resolve()).then(() => ({ counts: COUNTS })));
   relayAccounts = ACCOUNTS;
   routeRelay("/admin/accounts", () => ({ accounts: relayAccounts, active_account_id: ZED }));
 });
@@ -543,6 +547,23 @@ describe("CreatorTabs", () => {
     await sortBy("Custom order");
     expect(tabNames()).toEqual(["Zed Creator", "Amy Creator", "Max Creator"]);
     expect(stored(tabsKey(EMP_A.id))).toEqual({ order: [], closed: [] });
+  });
+
+  it("useShownCreatorTabs is the strip's order; sorted by unread, unknown until the counts land", async () => {
+    window.localStorage.setItem(tabsKey(EMP_A.id), JSON.stringify({ order: [], closed: [], sort: "unread" }));
+    let land!: () => void;
+    countsGate = new Promise((r) => { land = r; });
+    function Probe() {
+      const { open, known } = useShownCreatorTabs(useCreatorTabs());
+      return <output aria-label="Shown order">{known ? open.map((a) => a.nickname).join(",") : "unknown"}</output>;
+    }
+    renderWithProviders(<ScopeProvider><CreatorTabs /><Probe /></ScopeProvider>);
+    await screen.findByRole("tab", { name: /^Zed Creator/ });
+    expect(screen.getByRole("status", { name: "Shown order" })).toHaveTextContent("unknown");
+    await act(async () => { land(); });
+    await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    expect(screen.getByRole("status", { name: "Shown order" })).toHaveTextContent("Amy Creator,Zed Creator,Max Creator");
+    expect(tabNames()).toEqual(["Amy Creator", "Zed Creator", "Max Creator"]);
   });
 
   it("ArrowLeft and ArrowRight move the focused tab one place with focus following; Enter activates it", async () => {

@@ -838,7 +838,9 @@ export function Row({
           <span className="font-medium text-fg">{responded || "A teammate"}</span> has responded
         </div>
       ) : fanId != null && (
-        <QuickReply accountId={accountId} fanId={fanId} name={name} />
+        // Keyed by its Fan: a list keyed by index (an id-less row) can hand this Row another Fan's props, and the
+        // line typed for one Fan must never go to another.
+        <QuickReply key={`${accountId}:${fanId}:${n.id ?? ""}`} accountId={accountId} fanId={fanId} name={name} />
       )}
     </div>
   );

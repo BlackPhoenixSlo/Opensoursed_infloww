@@ -19,6 +19,7 @@ service/tests/test_route_order.py).
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query, Response
@@ -26,9 +27,12 @@ from pydantic import BaseModel, Field
 
 import relay_coalesce
 from auth import assert_account_owned
-from of_rich_text import PLAIN_MAX, of_text, plain_length
+from of_rich_text import MARKUP_MAX, PLAIN_MAX, drops_all_text, of_text, plain_length
 
 router = APIRouter()
+
+# A script's notes and a Condition step option's text: the editor's limits, the bulk import's too.
+NOTES_MAX, CONDITIONAL_MAX = 256, 150
 
 
 # ── Saved replies (local-only "templates" minus welcome) ──────────────
@@ -38,7 +42,8 @@ router = APIRouter()
 
 class _SavedReplyBody(BaseModel):
     title: str | None = None
-    text: str
+    # 422 past MARKUP_MAX before it is read at all; _clean_text's 400s count the text a fan reads.
+    text: str = Field(..., max_length=MARKUP_MAX)
     price: float = Field(0, ge=0)
     locked_text: bool = False
     # Vault-media references, persisted as JSON so the editor can
@@ -69,13 +74,14 @@ class _SavedReplyBody(BaseModel):
     # notes (at most 256). None leaves a stored value as it is on PUT, so a
     # client that predates them never wipes them.
     tags: list[str] | None = None
-    notes: str | None = Field(None, max_length=256)
+    notes: str | None = Field(None, max_length=NOTES_MAX)
     # A Condition step option's text (Infloww's `conditional`); None leaves it on PUT.
-    conditional: str | None = Field(None, max_length=150)
+    conditional: str | None = Field(None, max_length=CONDITIONAL_MAX)
 
 
-_SCRIPT_TAG_MAX = 32
-_IN_CHUNK = 500
+TAG_MAX = 32  # a script tag name (the editor, relabel, the Excel and bulk imports)
+IN_CHUNK = 500  # ids per `IN (...)`: under SQLite's bound-variable cap
+IDS_MAX = 20_000  # ids in one selection request
 
 
 async def prune_sequences(s: Any, account_id: str) -> None:
@@ -88,7 +94,7 @@ async def prune_sequences(s: Any, account_id: str) -> None:
                                                      SavedReplySequence.name.not_in(named)))
 
 
-async def touch_sequences(s: Any, account_id: str, names: set[str | None]) -> None:
+async def touch_sequences(s: Any, account_id: str, names: Iterable[str | None]) -> None:
     """A step of these sequences changed: their Last modified on is now."""
     from datetime import datetime as _dt
 
@@ -101,6 +107,13 @@ async def touch_sequences(s: Any, account_id: str, names: set[str | None]) -> No
         ).values(updated_at=_dt.utcnow()))
 
 
+async def sync_sequences(s: Any, account_id: str, touched: Iterable[str | None] = ()) -> None:
+    """After a script write: flush, mark the `touched` sequences modified now, drop the metas no script names."""
+    await s.flush()
+    await touch_sequences(s, account_id, touched)
+    await prune_sequences(s, account_id)
+
+
 def _clean_tags(tags: list[str]) -> list[str]:
     """Trimmed, de-duplicated (first spelling wins), empty names dropped; 400 over 32 characters."""
     out: list[str] = []
@@ -108,18 +121,30 @@ def _clean_tags(tags: list[str]) -> list[str]:
         name = str(t).strip()
         if not name or name in out:
             continue
-        if len(name) > _SCRIPT_TAG_MAX:
-            raise HTTPException(status_code=400, detail=f"tag name over {_SCRIPT_TAG_MAX} characters")
+        if len(name) > TAG_MAX:
+            raise HTTPException(status_code=400, detail=f"tag name over {TAG_MAX} characters")
         out.append(name)
     return out
 
 
-def _clean_text(text: str) -> str:
-    """The text a script stores: markup reduced to OF's allow-list (of_rich_text), so no client stores other
-    HTML; 400 past OF's limit, counted on the text a fan reads (the editor's counter, app/lib/ofRichTextEditor.ts)."""
-    text = of_text(text)
+def text_reason(raw: str, text: str) -> str | None:
+    """Why a script's text is refused, or None. `text` is `of_text(raw)`, what is stored: refused when the
+    allow-list keeps nothing a fan would read of markup that held text (`drops_all_text`; OF's own empty markup,
+    a media-only script's, is not that), or past OF's limit counted on the text a fan reads (the editor's counter,
+    app/lib/ofRichTextEditor.ts). The editor's routes and the bulk import share it."""
+    if drops_all_text(raw, text):
+        return "text is only markup that is not kept (nothing a fan would read)"
     if plain_length(text) > PLAIN_MAX:
-        raise HTTPException(status_code=400, detail=f"text longer than {PLAIN_MAX} characters")
+        return f"text longer than {PLAIN_MAX} characters"
+    return None
+
+
+def _clean_text(raw: str) -> str:
+    """The text a script stores: markup reduced to OF's allow-list (of_rich_text), so no client stores other
+    HTML; 400 for a `text_reason`."""
+    text = of_text(raw)
+    if (why := text_reason(raw, text)) is not None:
+        raise HTTPException(status_code=400, detail=why)
     return text
 
 
@@ -184,11 +209,11 @@ async def _list_body(account_id: str) -> bytes:
         media_ids = sorted({i for ids in ids_by_row for i in ids})
         removed: set[int] = set()
         # In chunks: a 10k-script library can name more media than SQLite's bound-variable cap.
-        for at in range(0, len(media_ids), _IN_CHUNK):
+        for at in range(0, len(media_ids), IN_CHUNK):
             removed.update((await s.execute(
                 select(VaultItem.media_id).where(
                     VaultItem.account_id == account_id,
-                    VaultItem.media_id.in_(media_ids[at:at + _IN_CHUNK]),
+                    VaultItem.media_id.in_(media_ids[at:at + IN_CHUNK]),
                     VaultItem.removed_at.is_not(None),
                 ),
             )).scalars().all())
@@ -227,7 +252,7 @@ async def admin_saved_replies_create(
             conditional=body.conditional or None,
         )
         s.add(row)
-        await touch_sequences(s, account_id, {row.script_id})
+        await sync_sequences(s, account_id, {row.script_id})
         await s.commit()
         await s.refresh(row)
         return _serialize_saved_reply(row)
@@ -271,9 +296,7 @@ async def admin_saved_replies_update(
         if body.conditional is not None:
             row.conditional = body.conditional or None
         row.updated_at = _dt.utcnow()
-        await s.flush()
-        await touch_sequences(s, row.account_id, {was_in, row.script_id})
-        await prune_sequences(s, row.account_id)
+        await sync_sequences(s, row.account_id, {was_in, row.script_id})
         await s.commit()
         await s.refresh(row)
         return _serialize_saved_reply(row)
@@ -291,15 +314,13 @@ async def admin_saved_replies_delete(reply_id: int) -> dict[str, Any]:
         if not row:
             raise HTTPException(status_code=404, detail="saved reply not found")
         await s.delete(row)
-        await s.flush()
-        await touch_sequences(s, row.account_id, {row.script_id})
-        await prune_sequences(s, row.account_id)
+        await sync_sequences(s, row.account_id, {row.script_id})
         await s.commit()
         return {"ok": True}
 
 
 class _IdsBody(BaseModel):
-    ids: list[int] = Field(..., max_length=20_000)
+    ids: list[int] = Field(..., max_length=IDS_MAX)
 
 
 @router.post("/admin/saved-replies/delete")
@@ -318,12 +339,11 @@ async def admin_saved_replies_delete_many(
     deleted = 0
     async with get_session() as s:
         seqs: set[str | None] = set()
-        for at in range(0, len(ids), _IN_CHUNK):
-            where = (SavedReply.account_id == account_id, SavedReply.id.in_(ids[at:at + _IN_CHUNK]))
+        for at in range(0, len(ids), IN_CHUNK):
+            where = (SavedReply.account_id == account_id, SavedReply.id.in_(ids[at:at + IN_CHUNK]))
             seqs.update((await s.execute(select(SavedReply.script_id).where(*where))).scalars().all())
             deleted += (await s.execute(delete(SavedReply).where(*where))).rowcount or 0
-        await touch_sequences(s, account_id, seqs)
-        await prune_sequences(s, account_id)
+        await sync_sequences(s, account_id, seqs)
         await s.commit()
     return {"deleted": deleted}
 
@@ -400,8 +420,8 @@ async def admin_saved_replies_relabel(
     dst = (body.to or "").strip() or None
     if src is None and (dst is None or body.kind == "sequence" or not body.ids):
         raise HTTPException(status_code=400, detail="from is required, or to and ids to add a tag")
-    if body.kind == "tag" and dst is not None and len(dst) > _SCRIPT_TAG_MAX:
-        raise HTTPException(status_code=400, detail=f"tag name over {_SCRIPT_TAG_MAX} characters")
+    if body.kind == "tag" and dst is not None and len(dst) > TAG_MAX:
+        raise HTTPException(status_code=400, detail=f"tag name over {TAG_MAX} characters")
     if body.kind == "sequence" and dst is not None and len(dst) > 64:
         raise HTTPException(status_code=400, detail="sequence name over 64 characters")
     async with get_session() as s:
@@ -462,7 +482,4 @@ async def _relabel_sequence_row(s: Any, account_id: str, src: str, dst: str | No
     elif whole and dst is None:
         await s.execute(delete(SavedReplySequence).where(SavedReplySequence.account_id == account_id,
                                                          SavedReplySequence.name == src))
-    else:
-        await touch_sequences(s, account_id, {src, dst})
-    await s.flush()
-    await prune_sequences(s, account_id)
+    await sync_sequences(s, account_id, () if whole else {src, dst})

@@ -33,7 +33,8 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { useLoadMoreSentinel } from "@/hooks/useLoadMoreSentinel";
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
 import { parseUtc } from "@/lib/format";
-import { fmtPrice, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice } from "@/lib/messageFormat";
+import { ofPreviewText } from "@/lib/ofRichText";
 import { onPopoutClick } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
@@ -123,7 +124,7 @@ export default function MessageDashboardTable({
           </td>
           <td className={IF_TABLE.td}>
             <span className="line-clamp-2 break-words">
-              {stripHtml(r.body) || (r.media_count > 0 ? `${r.media_count} media` : DASH)}
+              {ofPreviewText(r.body) || (r.media_count > 0 ? `${r.media_count} media` : DASH)}
             </span>
           </td>
           <td className={IF_TABLE.td}>

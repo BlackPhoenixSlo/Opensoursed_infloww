@@ -26,11 +26,12 @@
  * a 200px-rootMargin window, then fire with fetchpriority="low".
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { sameUserId } from "@/lib/fanId";
 import { cachedImg, imgIdentity, rememberImg } from "@/lib/imgBlobs";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
+import { MEDIA_TILE_INIT, mediaTileLoadKey, mediaTileReducer } from "./mediaTileState";
 
 // Module-level mapping captured from the X-Img-Hash response header.
 // Shared across all MediaTile instances + chat renders, so /img/by-hash
@@ -57,10 +58,6 @@ interface MediaTileProps {
   eager: boolean;
   className?: string;
   alt?: string;
-  // The original signed CDN URL (without our /img wrapping). Used as a
-  // fallback when /img/by-hash returns 404 — we re-fetch with the
-  // legacy /img?u= path which the server uses to refresh the hash map.
-  fallbackUrl: string;
 }
 
 export function MediaTile({
@@ -69,10 +66,9 @@ export function MediaTile({
   eager,
   className,
   alt = "",
-  fallbackUrl,
 }: MediaTileProps) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  // Loading, loaded or failed (mediaTileState.ts).
+  const [state, dispatch] = useReducer(mediaTileReducer, MEDIA_TILE_INIT);
   const placeholderRef = useRef<HTMLDivElement | null>(null);
 
   // The bytes' identity: the same image across OnlyFans' re-signed URLs (else the URL itself).
@@ -80,11 +76,10 @@ export function MediaTile({
   // The newest signature (a lazy tile starts after a re-sign with it); a failed load retries on a new one only.
   const urlRef = useRef(proxiedUrl);
   urlRef.current = proxiedUrl;
-  const failedAt = useRef<string | null>(null);
-  const retry = failed && failedAt.current !== proxiedUrl ? proxiedUrl : "";
+  const loadKey = mediaTileLoadKey(state, proxiedUrl);
 
   useEffect(() => {
-    if (!proxiedUrl) return;
+    if (!loadKey) return;
     const ctrl = new AbortController();
     let cancelled = false;
     let io: IntersectionObserver | null = null;
@@ -129,9 +124,8 @@ export function MediaTile({
       if (!url) url = await rememberImg(identity, load());
       // AbortError (chat switch, scroll-away) is not a failure: don't paint the failed state.
       if (cancelled) return;
-      if (url) { setBlobUrl(url); setFailed(false); return; }
-      failedAt.current = urlRef.current;
-      setFailed(true);
+      if (url) dispatch({ type: "loaded", url });
+      else dispatch({ type: "failed", at: urlRef.current });
     };
 
     if (eager || cachedImg(identity)) {
@@ -161,14 +155,15 @@ export function MediaTile({
       ctrl.abort();
       io?.disconnect();
     };
-    // Deliberately exclude fallbackUrl and proxiedUrl from deps: a re-signed URL is the same bytes (`identity`),
-    // so it shouldn't restart a successful load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identity, mediaId, eager, retry]);
+    // Not proxiedUrl (read via urlRef): a re-signed URL is the same bytes (`identity`), so it shouldn't restart a
+    // successful load (`loadKey` carries it only for a failed tile's retry).
+  }, [identity, mediaId, eager, loadKey]);
 
-  if (failed) {
+  if (state.kind === "failed") {
+    // The placeholder's ref too: a retry waits for the lazy observer like a first load.
     return (
       <div
+        ref={placeholderRef}
         className={cn(
           "w-full h-full bg-bg/30 grid place-items-center opacity-70",
           MP.ours.MediaTile.skeleton, MP.ours.MediaTile.failedLabel,
@@ -179,7 +174,7 @@ export function MediaTile({
       </div>
     );
   }
-  if (!blobUrl) {
+  if (state.kind !== "loaded") {
     // Skeleton: a reserved box (never 0-height) the image paints into.
     // h-full fills the parent's reserved box; `MP.ours.MediaTile.skeleton` is
     // the floor when there's no sized parent (no aspect-ratio, see its comment).
@@ -194,7 +189,7 @@ export function MediaTile({
   // letterbox), so swapping skeleton → image causes zero vertical shift.
   return (
     <img
-      src={blobUrl}
+      src={state.url}
       alt={alt}
       decoding="async"
       className={cn("w-full h-full object-cover", className)}

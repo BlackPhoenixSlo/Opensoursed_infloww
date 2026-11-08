@@ -46,6 +46,7 @@ def edge(raw: str):
     finally:
         client_addr.EDGE_PROXIES = real
         login_throttle.reset()
+        client_addr._warned.clear()
 
 
 def addr(peer: str, xff: str | None = None, cf: str | None = None) -> str:
@@ -66,11 +67,17 @@ def case_cloudflare_is_its_published_ranges_plus_any_extra_cidr():
     assert ipaddress.ip_network("10.9.9.0/24") in nets and ipaddress.ip_network("173.245.48.0/20") in nets
     assert len(nets) == len(client_addr.CLOUDFLARE.split(",")) + 1, len(nets)
     assert client_addr._in(ipaddress.ip_address(CF_V6), nets)
+    # A bad entry is logged by name and skipped (the relay still starts); the rest still parse.
+    lines = _Lines()
+    logging.getLogger("of-relay.client_addr").addHandler(lines)
     try:
-        client_addr._parse_edge("cloudflare,cdn-host")
-        raise AssertionError("parsed")
-    except ValueError as e:
-        assert "EDGE_PROXIES" in str(e) and "cdn-host" in str(e), e
+        assert client_addr._parse_edge("cloudflare,cdn-host") == client_addr._parse_edge("cloudflare")
+        assert client_addr._parse_edge("cdn-host") == ()
+    finally:
+        logging.getLogger("of-relay.client_addr").removeHandler(lines)
+    assert any("EDGE_PROXIES" in ln and "cdn-host" in ln for ln in lines.lines), lines.lines
+    # The keywords are EDGE_PROXIES' only: TRUSTED_PROXIES=cloudflare is a bad entry, so the default.
+    assert client_addr._parse_trusted("cloudflare") == client_addr._parse_trusted("")
 
 
 def case_through_cloudflare_the_phone_is_the_client():
@@ -128,14 +135,15 @@ def case_two_phones_behind_one_cloudflare_server_keep_their_own_sign_in_bucket()
         with edge(""):  # today: both phones are the Cloudflare server
             assert _spray(c, PHONE_A, login_throttle.IP_CAPACITY) == [401] * login_throttle.IP_CAPACITY
             assert _spray(c, PHONE_B, 1) == [429]
-            assert any(f"ip={CF_V4}" in ln for ln in lines.lines), lines.lines
+            assert any(f"addr={CF_V4} key={CF_V4}" in ln for ln in lines.lines), lines.lines
         lines.lines.clear()
         with edge("cloudflare"):
             codes = _spray(c, PHONE_A, login_throttle.IP_CAPACITY + 1)
             assert codes == [401] * login_throttle.IP_CAPACITY + [429], codes
             assert _spray(c, PHONE_B, 1) == [401]
             # The throttle's log names the phone, not Cloudflare.
-            assert any(f"sign-in throttled ip={PHONE_A} buckets=ip" in ln for ln in lines.lines), lines.lines
+            assert any(f"sign-in throttled addr={PHONE_A} key={PHONE_A} buckets=ip" in ln for ln in lines.lines), \
+                lines.lines
             assert not any(CF_V4 in ln for ln in lines.lines), lines.lines
     finally:
         logging.getLogger("of-relay.login_throttle").removeHandler(lines)

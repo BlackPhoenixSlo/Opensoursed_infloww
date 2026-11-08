@@ -36,6 +36,7 @@ _SCRAPE_RECENT_CAP = 100       # newest-end messages pulled each scrape (first/l
 _SCRAPE_OLDEST_CAP = 100       # convo-start messages, grabbed ONCE on the first scrape
 _SCRAPE_CHAT_LIMIT = 100       # how many sidebar chats one all-chats sweep covers (paginated 10/page)
 _PAGE_SLEEP_S = 0.3            # inter-page / inter-chat politeness gap (matches of_client)
+_SWEEP_FAIL_FAST = 5           # a `{}` sweep with this many non-404 failures before any scrape stops (raises)
 
 
 # ── Automation 01: scrape_chats (the reference) ──────────────────────
@@ -574,6 +575,7 @@ async def _automation_scrape_chats(
 
     chats_scanned = 0
     chats_failed = 0
+    chats_broken = 0   # failures other than OF's 404 "fan gone" (handled: stamped, skipped)
     messages_inserted = 0
     messages_seen = 0
     for chat_id, with_user, is_muted in targets:
@@ -603,10 +605,16 @@ async def _automation_scrape_chats(
                     log.warning("stamp_scrape_history failed account=%s chat=%s",
                                 account_id, chat_id, exc_info=True)
             else:
+                chats_broken += 1
                 log.warning(
                     "scrape_chat_failed account=%s chat=%s",
                     account_id, chat_id, exc_info=True,
                 )
+                if not payload and not chats_scanned and chats_broken >= _SWEEP_FAIL_FAST:
+                    # The account is failing (proxy, 429 burst), not one chat: don't spend the
+                    # remaining ~95 chats x 3 attempts on it. Same effect as the post-loop raise.
+                    raise RuntimeError(f"full sweep scraped 0 chats, {chats_broken} failed "
+                                       f"of the first {chats_failed} of {len(targets)}")
         await asyncio.sleep(_PAGE_SLEEP_S)
 
     out = {
@@ -618,7 +626,11 @@ async def _automation_scrape_chats(
     }
     if not payload:
         # Payload exactly `{}`: sweep_cadence anchors the next full sweep on this run
-        # (`{"limit": 50}`, a per-fan job, ... never count).
+        # (`{"limit": 50}`, a per-fan job, ... never count). Nothing scraped and a chat
+        # failed for a reason other than OF's 404 (fan gone): not a sweep. Raise, so the
+        # job retries, then parks 'error' (the cadence's backoff).
+        if chats_broken and not chats_scanned:
+            raise RuntimeError(f"full sweep scraped 0 of {len(targets)} chats")
         out["full_sweep"] = True
     return out
 

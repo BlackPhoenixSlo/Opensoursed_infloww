@@ -16,7 +16,7 @@
  * queue (its DELETE is a mass-message action).
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { IfButton, IfModal } from "@/components/ui/infloww";
@@ -113,17 +113,6 @@ function UnsendChoiceDialog({
   onCancel: () => void;
 }) {
   const [scope, setScope] = useState<UnsendScope>("chat");
-
-  // IfModal closes on Escape; this only stops the key at `document`, before
-  // the `window` ones of Find (`ChatSearch`) and the overlay Fan insights
-  // (as `ChatGallery`), so one Escape closes only this.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") e.stopPropagation();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
 
   const option = (value: UnsendScope, label: string) => (
     <label className="flex cursor-pointer items-center gap-2">

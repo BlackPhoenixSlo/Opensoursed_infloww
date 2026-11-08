@@ -24,12 +24,14 @@ Where the rows come from (settings_schema.NOTIFICATION_KINDS):
   consent_required      consent_notices: OnlyFans wants the Creator's signed consent
                         form (NC/AL law); one per Creator while it lasts
 
-A PINNED_KINDS row is a standing problem, not news: it is no
+A PINNED_KIND row is a standing problem, not news: it is no
 NOTIFICATION_KINDS switch (never filtered), `read` refuses it (409), read-all
 and the retention prune skip it, so it stays unread; the list answers it
 apart as `pinned` (the banner's source) and only while the Agency still holds
-its Creator: a Creator unlinked or deleted drops its pinned rows on the next
-read. Its filer deletes it once the problem is gone.
+its Creator (linked), and `_unread` (every count: the
+list, the reads, each push) counts it on the same terms. The read never
+deletes: `drop_pinned` does, once the problem is gone (consent_notices) or
+when the Creator is removed or unlinked from the Agency (the routes).
 
 The first three ride `employees.audit_middleware`: `audit_snapshot` reads the
 before-state of the few routes above (None for any other request, no read)
@@ -48,7 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -62,7 +64,8 @@ import events
 from auth import get_request_user, require_user
 from db.engine import get_session
 from db.models import (
-    Account, AgencyNotification, ClockEvent, Employee, Fan, SettingsVersion, Shift, ShiftAssignment, UserAccount,
+    Account, AgencyNotification, ClockEvent, Employee, Fan, SettingsVersion, Shift, ShiftAssignment, User,
+    UserAccount,
 )
 from settings_schema import BUILT_IN_ROLE_DEFAULTS, NOTIFICATION_KINDS
 
@@ -79,11 +82,22 @@ RETENTION = timedelta(days=90)
 
 _SIGN_IN = "sign in as an account owner to read notifications"
 
-# Kinds that cannot be read or dismissed: they leave when their filer deletes
-# them (the problem is solved) or the Agency drops their Creator. Each files
-# with dedupe `<kind>:<account_id>`, so one range of the dedupe index finds them.
-PINNED_KINDS = ("consent_required",)
+# The kind that cannot be read or dismissed (consent_notices.KIND): it leaves
+# by `drop_pinned` (the problem is solved, or the Agency dropped the Creator).
+# One row per (Agency, Creator): dedupe `pinned_key(account_id)`.
+PINNED_KIND = "consent_required"
 _PINNED_REFUSED = "this notification clears itself once the problem is solved"
+
+
+def pinned_key(account_id: str) -> str:
+    return f"{PINNED_KIND}:{account_id}"
+
+
+def _held_pinned(agency_user_id: str):
+    """The Agency's PINNED_KIND rows for Creators it still links (the unlink
+    and delete routes drop the row, so a link is the whole test)."""
+    return (AgencyNotification.agency_user_id == agency_user_id) & (AgencyNotification.kind == PINNED_KIND) \
+        & AgencyNotification.account_id.in_(select(UserAccount.account_id).where(UserAccount.user_id == agency_user_id))
 
 
 # ── Filing notifications ─────────────────────────────────────────────
@@ -106,9 +120,13 @@ async def _switched_off(s, agency_user_id: str) -> set[str]:
 
 
 async def _unread(s, agency_user_id: str) -> int:
-    return (await s.execute(select(func.count(AgencyNotification.id)).where(
-        AgencyNotification.agency_user_id == agency_user_id, AgencyNotification.read_at.is_(None),
-    ))).scalar_one()
+    """The Agency's unread count, the one definition: its unread rows but
+    PINNED_KIND, plus the pinned rows `_pinned` shows (always unread)."""
+    return (await s.execute(select(func.count(AgencyNotification.id)).where(or_(
+        (AgencyNotification.agency_user_id == agency_user_id) & AgencyNotification.read_at.is_(None)
+        & (AgencyNotification.kind != PINNED_KIND),
+        _held_pinned(agency_user_id),
+    )))).scalar_one()
 
 
 def _push(agency_user_id: str, unread: int) -> None:
@@ -302,47 +320,79 @@ def _fan_name(fan: Fan | None) -> str | None:
 
 # ── Dead sessions (account_health) ───────────────────────────────────
 
+async def notify_creator_owners(account_id: str, build: Callable[[str], Notice]) -> int:
+    """File `build(<the Creator's name>)` for every owner of the Creator; an
+    owner already holding its `dedupe` key is skipped without a write. Returns
+    how many were filed."""
+    async with get_session() as s:
+        owners = set((await s.execute(select(UserAccount.user_id).where(
+            UserAccount.account_id == account_id))).scalars().all())
+        acc = await s.get(Account, account_id)
+        notice = build((acc.nickname if acc is not None else None) or account_id)
+        if notice.dedupe and owners:
+            owners -= set((await s.execute(select(AgencyNotification.agency_user_id).where(
+                AgencyNotification.agency_user_id.in_(owners),
+                AgencyNotification.dedupe_key == notice.dedupe))).scalars().all())
+    filed = 0
+    for owner in sorted(owners):
+        filed += await notify(owner, [notice])
+    return filed
+
+
 async def notify_session_dead(account_id: str, reason: str, since: datetime) -> None:
     """One `session_dead` notification per owner of the Creator for the dead
     episode that began at `since` (its `session_dead_at`). Never raises: the
     flag it reports matters more."""
     try:
-        async with get_session() as s:
-            owners = (await s.execute(select(UserAccount.user_id).where(
-                UserAccount.account_id == account_id))).scalars().all()
-            acc = await s.get(Account, account_id)
-        name = (acc.nickname if acc is not None else None) or account_id
-        data: dict[str, Any] = {"reason": reason}
-        if reason == "otp_required":
-            # Browserbase login is the sign-in that takes the 2FA code: the row opens it (/creators?relink=).
-            # The link is not tied to this Creator (Browserbase login signs in whichever account the
-            # owner enters), so the text names whose account to sign in to.
-            text = (f"{name} needs a 2FA code on OnlyFans: sign in to {name}'s OnlyFans account again "
-                    f"with Browserbase login to resume")
-            data["href"] = "/creators?relink=browserbase"
-        else:
-            why = "has no captured session" if reason == "no_session" else "was logged out of OnlyFans"
-            text = f"{name} {why}: relink the creator to resume"
-        notice = Notice("session_dead", text, account_id=account_id,
-                        data=data, dedupe=f"session_dead:{account_id}:{since.isoformat()}")
-        for owner in owners:
-            await notify(owner, [notice])
+        await notify_creator_owners(account_id, lambda name: _session_dead_notice(account_id, name, reason, since))
     except Exception:
         log.exception("session_dead notification failed (account=%s)", account_id)
 
 
+def _session_dead_notice(account_id: str, name: str, reason: str, since: datetime) -> Notice:
+    data: dict[str, Any] = {"reason": reason}
+    if reason == "otp_required":
+        # Browserbase login is the sign-in that takes the 2FA code: the row opens it (/creators?relink=).
+        # The link is not tied to this Creator (Browserbase login signs in whichever account the
+        # owner enters), so the text names whose account to sign in to.
+        text = (f"{name} needs a 2FA code on OnlyFans: sign in to {name}'s OnlyFans account again "
+                f"with Browserbase login to resume")
+        data["href"] = "/creators?relink=browserbase"
+    else:
+        why = "has no captured session" if reason == "no_session" else "was logged out of OnlyFans"
+        text = f"{name} {why}: relink the creator to resume"
+    return Notice("session_dead", text, account_id=account_id,
+                  data=data, dedupe=f"session_dead:{account_id}:{since.isoformat()}")
+
+
 # ── The periodic sweep: missed clock-ins, retention ──────────────────
 
-async def _push_pruned(agencies: Sequence[str]) -> None:
-    """Push the unread count to each Agency the sweep dropped unread rows of
-    (`notify` pushes only when it files, so a prune alone would leave the
-    badge stale)."""
+async def push_unread(agencies: Sequence[str]) -> None:
+    """Push the unread count to each Agency that lost unread rows outside
+    `notify` (the sweep's prune, a cleared pinned row): `notify` pushes only
+    when it files, so a delete alone would leave the badge stale."""
     if not agencies:
         return
     async with get_session() as s:
         counts = [(agency, await _unread(s, agency)) for agency in agencies]
     for agency, unread in counts:
         _push(agency, unread)
+
+
+async def drop_pinned(account_id: str, agencies: Iterable[str] | None = None) -> int:
+    """Delete the Creator's PINNED_KIND row of each Agency in `agencies`
+    (None: every Agency's) and push each one's new unread count. Returns how
+    many went."""
+    key = pinned_key(account_id)
+    async with get_session() as s:
+        # every Agency: users.id IN keeps the lookup on uq(agency_user_id, dedupe_key)
+        who = (select(User.id).scalar_subquery() if agencies is None else sorted(set(agencies)))
+        where = AgencyNotification.agency_user_id.in_(who) & (AgencyNotification.dedupe_key == key)
+        hit = sorted(set((await s.execute(select(AgencyNotification.agency_user_id).where(where))).scalars().all()))
+        if hit:
+            await s.execute(delete(AgencyNotification).where(where))
+    await push_unread(hit)
+    return len(hit)
 
 
 async def tick(now: datetime | None = None) -> int:
@@ -357,13 +407,13 @@ async def tick(now: datetime | None = None) -> int:
     from clock_api import _clock_gate, _occurrence_at, _time_tracking  # lazy: clock_api imports employees
     now = now or datetime.utcnow()
     async with get_session() as s:
-        old = (AgencyNotification.created_at < now - RETENTION) & AgencyNotification.kind.notin_(PINNED_KINDS)
+        old = (AgencyNotification.created_at < now - RETENTION) & (AgencyNotification.kind != PINNED_KIND)
         lost_unread = (await s.execute(select(AgencyNotification.agency_user_id).where(
             old, AgencyNotification.read_at.is_(None)).distinct())).scalars().all()
         await s.execute(delete(AgencyNotification).where(old))
         agencies = (await s.execute(select(SettingsVersion.user_id).where(
             SettingsVersion.tab == "time-tracking").distinct())).scalars().all()
-    await _push_pruned(lost_unread)
+    await push_unread(lost_unread)
     filed = 0
     for agency in agencies:
         notices: list[Notice] = []
@@ -424,26 +474,11 @@ def _row(n: AgencyNotification) -> dict[str, Any]:
     }
 
 
-async def _pinned(s, agency_user_id: str) -> tuple[list[AgencyNotification], bool]:
-    """The Agency's PINNED_KINDS rows for Creators it still holds (linked, and
-    not deleted from the registry), oldest first; the rest are deleted here.
-    Returns (rows, whether any were deleted)."""
-    import accounts  # lazy: one stat per pinned row
-    from agency_scope import agency_account_ids
-    rows: list[AgencyNotification] = []
-    for kind in PINNED_KINDS:  # `<kind>:` .. `<kind>;`: ';' follows ':', one dedupe-index range
-        rows += (await s.execute(select(AgencyNotification).where(
-            AgencyNotification.agency_user_id == agency_user_id,
-            AgencyNotification.dedupe_key >= f"{kind}:", AgencyNotification.dedupe_key < f"{kind};",
-        ))).scalars().all()
-    if not rows:
-        return [], False
-    held = await agency_account_ids(s, agency_user_id)
-    keep = [n for n in rows if n.account_id in held and accounts.is_account(n.account_id)]
-    gone = [n.id for n in rows if n not in keep]
-    if gone:
-        await s.execute(delete(AgencyNotification).where(AgencyNotification.id.in_(gone)))
-    return sorted(keep, key=lambda n: (n.created_at, n.id)), bool(gone)
+async def _pinned(s, agency_user_id: str) -> list[AgencyNotification]:
+    """The Agency's PINNED_KIND rows for Creators it still links, oldest
+    first; the others are hidden, not deleted (a read changes nothing)."""
+    return list((await s.execute(select(AgencyNotification).where(_held_pinned(agency_user_id))
+                                 .order_by(AgencyNotification.created_at, AgencyNotification.id))).scalars().all())
 
 
 @router.get("")
@@ -454,32 +489,27 @@ async def list_notifications(
     pinned rows apart (not paged)."""
     user = require_user(detail=_SIGN_IN)
     async with get_session() as s:
-        pinned, dropped = await _pinned(s, user.id)
+        pinned = await _pinned(s, user.id)
         rows = (await s.execute(
             select(AgencyNotification).where(AgencyNotification.agency_user_id == user.id,
-                                             AgencyNotification.kind.notin_(PINNED_KINDS))
+                                             (AgencyNotification.kind != PINNED_KIND))
             .order_by(AgencyNotification.created_at.desc(), AgencyNotification.id.desc())
             .limit(limit).offset(offset)
         )).scalars().all()
-        out = {"notifications": [_row(n) for n in rows], "unread": await _unread(s, user.id),
-               "pinned": [_row(n) for n in pinned]}
-    if dropped:
-        import consent_notices  # lazy: it imports this module
-        await consent_notices.reload()
-        _push(user.id, out["unread"])
-    return out
+        return {"notifications": [_row(n) for n in rows], "unread": await _unread(s, user.id),
+                "pinned": [_row(n) for n in pinned]}
 
 
 async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int]:
     async with get_session() as s:
         q = update(AgencyNotification).where(
             AgencyNotification.agency_user_id == user_id, AgencyNotification.read_at.is_(None),
-            AgencyNotification.kind.notin_(PINNED_KINDS))
+            (AgencyNotification.kind != PINNED_KIND))
         if notification_id is not None:
             n = await s.get(AgencyNotification, notification_id)
             if n is None or n.agency_user_id != user_id:
                 raise HTTPException(status_code=404, detail="notification not found")
-            if n.kind in PINNED_KINDS:
+            if n.kind == PINNED_KIND:
                 raise HTTPException(status_code=409, detail=_PINNED_REFUSED)
             q = q.where(AgencyNotification.id == notification_id)
         await s.execute(q.values(read_at=datetime.utcnow()).execution_options(synchronize_session=False))

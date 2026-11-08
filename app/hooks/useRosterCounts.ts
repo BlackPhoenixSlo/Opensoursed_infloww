@@ -42,6 +42,12 @@ export function rosterCountsKey(principalId: string): readonly [string, string] 
 }
 
 export function useRosterCounts(): Record<string, RosterCount> {
+  return useRosterCountsRead().counts;
+}
+
+/** The counts, and whether their first read is over (answered, failed, or
+ *  never asked: no principal) — before it, every count reads 0. */
+export function useRosterCountsRead(): { counts: Record<string, RosterCount>; settled: boolean } {
   const user = useOptionalUser()?.user;
   const chatter = useOptionalChatter()?.chatter;
   const principalId = usePrincipalId();
@@ -72,7 +78,7 @@ export function useRosterCounts(): Record<string, RosterCount> {
     refetchOnWindowFocus: false,
   });
 
-  return q.data?.counts ?? EMPTY;
+  return { counts: q.data?.counts ?? EMPTY, settled: !q.isPending || q.fetchStatus === "idle" };
 }
 
 /** Per-account cooldown (ms) so re-hovering / mass-send bursts don't fire a live

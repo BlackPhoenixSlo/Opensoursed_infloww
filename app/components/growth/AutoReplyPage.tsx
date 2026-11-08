@@ -28,16 +28,17 @@
 
 import { useReducer } from "react";
 import Link from "next/link";
+import { useMutation } from "@tanstack/react-query";
 
-import { IfInput, IfLearn, IfSelect, IfSwitch } from "@/components/ui/infloww";
+import { IfInput, IfLearn, IfSelect, IfSwitch, SaveRow } from "@/components/ui/infloww";
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { ListColumn, useFanLists } from "@/components/audience/fanLists";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
 import { unsaved } from "@/components/automations/sentDraft";
-import { FormBlock, NoCreator, SaveRow, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
+import { FormBlock, NoCreator, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
+import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp, type BrainConfig } from "@/hooks/useAccountConfig";
 import {
   useAutoreplyConfig,
   useSaveAutoreplyConfig,
@@ -46,7 +47,7 @@ import {
 } from "@/hooks/useAutoreplyConfig";
 
 import {
-  answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS,
+  answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS, pickOf,
   randomiseOn, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
 } from "./autoReplyForm";
 
@@ -109,18 +110,23 @@ function AutoReplyFields({
 }) {
   const replyM = useSaveAutoreplyConfig(accountId);
   const brainM = useSaveAccountConfig(accountId);
-  // One Save, two PUTs (the brain's only when the model moved): one verdict.
-  const saveM = {
-    isPending: replyM.isPending || brainM.isPending,
-    isSuccess: replyM.isSuccess && !brainM.isPending && !brainM.isError,
-    isError: replyM.isError || brainM.isError,
-    error: replyM.error ?? brainM.error,
-    reset: () => { replyM.reset(); brainM.reset(); },
-  };
-  const style = useHumanStyle("autoreply", accountId);
-  const { customLists, isLoading: listsLoading } = useFanLists(accountId);
   // Seeded once from defaults ⊕ stored; a refetch does not re-seed (autoReplyForm.ts).
   const [state, dispatch] = useReducer(autoReplyReducer, undefined, () => initState({ ...defaults, ...stored }, brain));
+  // One Save, two PUTs (the brain's only when the model moved): one mutation, pending until both settle, failed if
+  // either did (its error shown), so a half-landed Save never reads "Saved".
+  const saveM = useMutation<void, Error, { reply: AutoreplyConfig; brain: BrainConfig | null }>({
+    mutationFn: async ({ reply, brain: b }) => {
+      const runs = await Promise.allSettled([
+        ...(b ? [brainM.mutateAsync(b).then(() => dispatch({ type: "brainSaved", pick: pickOf(b) }))] : []),
+        replyM.mutateAsync(reply),
+      ]);
+      // Both failed: the blob's error shows (it is the last run), as before the one mutation.
+      const failed = runs.findLast((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failed) throw failed.reason;
+    },
+  });
+  const style = useHumanStyle("autoreply", accountId);
+  const { customLists, isLoading: listsLoading } = useFanLists(accountId);
   const { draft } = state;
   const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
 
@@ -134,9 +140,7 @@ function AutoReplyFields({
   const noSource = !canSubmit(draft);
 
   const save = () => verdict.save(() => {
-    const b = brain && brainPayload(draft, brain);
-    if (b) brainM.mutate(b);
-    replyM.mutate(buildPayload(draft, stored));
+    saveM.mutate({ reply: buildPayload(draft, stored), brain: brain ? brainPayload(state, brain) : null });
   });
 
   return (

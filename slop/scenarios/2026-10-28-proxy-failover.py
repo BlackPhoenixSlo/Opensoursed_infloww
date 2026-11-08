@@ -24,10 +24,10 @@ proxies, each lib/proxy_wire.py on loopback, synced into the registry through
 `POST /__slop/proxy-pool` (the startup's own `proxies.sync_pool`), listed as two failover tiers
 (`w0,w1,|,w2`: POOL_TIER_BREAK after TIER0 proxies, as AE lists its ISP proxies before its DC ones). The owner puts ON_POOL
 (12, `--set on_pool=`) Creators on the Inflowwww proxy through the product's own
-`POST /admin/proxy-pool/assign` (least-used: 4 per proxy) and each reads `users/me` once
+`POST /admin/proxy-pool/assign` (least-used of the best tier: 6 per tier-0 proxy, none on tier 1) and each reads `users/me` once
 through it. Then the first tier-0 proxy dies (its Creators must move to the other tier-0 one, the
 tier-1 one only were none answering), and for LOAD_S (`--set load_s=`)
-`--users` people (seeded picks among the Creators on the pool, so about a third of them on
+`--users` people (seeded picks among the Creators on the pool, so about half of them on
 the dead proxy) each read the Fan List with its manual refresh (`GET /api/of/v2/chats?refresh=1`,
 the one read that bypasses relay_cache; `users/me` is cached 60 s) once a second and send a DM
 every third second (`POST /api/of/v2/chats/{fan}/messages`, unique text). LOGIN_AT_S after the death the owner
@@ -44,7 +44,8 @@ the owner logs in one more Creator the same way: no pick answers its probe, and 
 must still bind it (the least-used proxy not bad) and keep the session, never throw a
 finished login away. Last (re-watch), with the pool revived, a fourth pool proxy joins it
 (`POST /__slop/proxy-pool` again, the three kept with their bindings) and one more Creator
-is attached to it (least-used: it holds 0, every other one at least 1). It blips: dead for
+is attached to it (w0-w2, revived a moment before, are still bad until their rechecks answer: it is the
+only pool proxy not bad). It blips: dead for
 DOWN_AFTER sends of that Creator at once (DOWN_AFTER full-policy failures together start its
 watcher), then back, and a Fan List refresh answers through it inside the confirm's wait, so
 the watcher's ConfirmDue ends it (no probe, nothing surfaced). Then it dies for good and exactly
@@ -58,12 +59,12 @@ CUSTOM_LABEL (`POST /admin/proxies`, the owner's own; custom so its `health` is 
 never failed over), one Creator on it (`POST /admin/proxies/assign`), dies and DOWN_AFTER of that
 Creator's sends fail together (counted): its watcher confirms it bad and rechecks it (2, 4, 8,
 16 s). Once a recheck is armed at least WINDOW_S out (`health.next_recheck_at`), it revives; the
-owner's Test button (`POST /admin/proxies/{label}/test`, the trace: display only, ADR 0030) answers
+owner's Test button (`POST /admin/proxies/{label}/test`: probe_of + trace, never counted, ADR 0030) answers
 and leaves it bad; the Creator's Fan List refresh answers (back up); then it dies again and
 DOWN_AFTER sends fail together, all before that recheck is due: the errors start no watcher (the sleeping one holds the claim), so only that
 watcher, waking to a proxy at DOWN_AFTER, can confirm it bad again.
 
-Invariants: the binding went through (4/4/4, each warm-up tunneled); the dead proxy's
+Invariants: the binding went through (6/6 over tier 0, none on tier 1, each warm-up tunneled); the dead proxy's
 Creators are on a healthy pool proxy within FAILOVER_MS of the death and their reads and
 sends after the move answer 200 (budget); before the move the relay surfaced it (pool
 `bad` 1, `proxy_down` on exactly its Creators); the Creator logged in during the outage was
@@ -88,7 +89,7 @@ first counted failure (the first send through the dead proxy, ~4 s in) (the stat
 is the same code); the proxies are SOCKS5 on loopback that
 refuse each CONNECT after 0.33 s (lib/proxy_wire.py: curl 97, not prod's 56, both
 `ProxyError`); the probe's trace is lib/of_wire.py's `/cdn-cgi/trace` (the watcher's confirm and rechecks
-GET its `/hash/` instead, `proxies.probe_of`); people are httpx
+GET its `/robots.txt` instead, `proxy_probe.probe_of`); people are httpx
 pools on their own recorder (their reads of a dead Creator 502 on purpose; the stock no-5xx
 check covers the owner's calls, this scenario's checks cover theirs); the login is a
 re-capture of a seeded Creator (`account_id` given), the Add creator flow's relay calls
@@ -99,14 +100,14 @@ pin); the re-watch proxy's sends go through a recorder of their own (their 502s 
 Limitation, declared: proxy_wire refuses every CONNECT or none, and the probe's trace and OF share
 of_wire's one origin, so a proxy that answers the trace but refuses OF (the devils-advocate repro:
 `_failover` verifying a destination by the trace) is not staged here; it is pinned by
-service/tests/test_proxy_health.py (case_failover_skips_a_destination_that_does_not_answer,
-case_verify_pick_judges_by_probe_of_and_fills_the_region_once), and C_PROBE_OF plus
+service/tests/test_proxy_failover.py (case_failover_skips_a_destination_that_does_not_answer) and
+test_proxy_health.py (case_verify_pick_judges_by_probe_of_and_fills_the_region_once), and C_PROBE_OF plus
 --fault=proxy-confirm-probes-trace keep the watcher on probe_of here.
 
 Break-it-once: proxy-failover-never-moves (the move gone) turns the failover check
 red (the tier check too: nobody moved);
 `--fault=pool-failover-ignores-tiers` (one tier: least-used across the whole pool, as before tiers)
-turns only the tier check red; `--fault=proxy-recheck-never-runs` (no recheck, so no move either) turns the
+turns the bind (4/4/4) and tier checks red; `--fault=proxy-recheck-never-runs` (no recheck, so no move either) turns the
 failover and the recheck checks red; `--fault=pool-assign-drops-unanswered-login` (the attach
 refuses a Creator on no pool proxy when no pick answers) turns only the outage-login check red.
 The rules are a pure `service/proxy_health_decide.decide`; `--fault=proxy-decide-recheck-answer-ignored`
@@ -183,8 +184,8 @@ C_RECHECK_GAP = ("recheck-gap: a bad proxy an answer brings back while its watch
                  "DOWN_AFTER failed sends before it wakes, is confirmed bad again by that watcher within budget; "
                  "a Test click while it is bad leaves it bad")
 C_WIRE = "lib/of_wire.py saw only signed calls it models"
-C_PROBE_OF = ("the watcher's confirm and rechecks probe OnlyFans' x-hash endpoint with no account and no cookie "
-              "(proxies.probe_of)")
+C_PROBE_OF = ("the watcher's confirm and rechecks probe OnlyFans' API host (robots.txt) with no account and no cookie "
+              "(proxy_probe.probe_of)")
 
 
 def _service_int(module: str, name: str) -> int:
@@ -254,9 +255,9 @@ async def run(ctx) -> None:
         await _recheck_gap(ctx, custom, aids[n_on + 4], w.data["fans"])
     ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
               unmodelled=dict(fake.unmodelled), of_calls=len(fake.calls) - n0)
-    # A warm-up's x-hash names its Creator (`u=`); the watcher's probe names nobody. Only the
-    # probes that got through reach OF: the revived proxy's recheck, at least.
-    probes = [c for c in fake.calls[n0:] if c["route"].startswith("GET /hash") and not c["account"]]
+    # The watcher's probe names nobody. Only the probes that got through reach OF: the revived
+    # proxy's recheck, at least.
+    probes = [c for c in fake.calls[n0:] if c["route"] == "GET /robots.txt" and not c["account"]]
     ctx.check(C_PROBE_OF, bool(probes) and not any(c["cookie"] for c in probes), probes=len(probes),
               with_cookie=sum(1 for c in probes if c["cookie"]))
 
@@ -269,7 +270,7 @@ async def _rewatch(ctx, reg: _Registry, pool_text: str, spare: ProxyWire, aid: s
     r = await owner.post("/__slop/proxy-pool", json={"text": f"{pool_text},socks5://127.0.0.1:{spare.port}"})
     label = next((lb for lb, port in reg.pool_labels().items() if port == spare.port), None)
     bound = (await owner.post("/admin/proxy-pool/assign", json={"account_id": aid})).status_code
-    on = reg.bindings().get(aid)   # least-used: the new proxy holds 0, every other pool proxy >= 1
+    on = reg.bindings().get(aid)   # w0-w2 still bad right after their revive: the new proxy is the only pick
     http = owner.share(rec=Recorder(), limits=2 * DOWN_AFTER + 4)   # declared: its dead sends 502 on purpose
     to = [f["id"] for f in fans[aid]]
 
@@ -353,7 +354,7 @@ async def _recheck_gap(ctx, wire: ProxyWire, aid: str, fans: dict) -> None:
     due = armed.get("next_recheck_at")
     lead_s = round(due - time.time(), 2) if armed_at else None   # how far out that recheck was
     wire.revive()
-    click = await owner.post(test)   # the trace answers: display only, the proxy stays bad
+    click = await owner.post(test)   # probe_of answers (ok), never counted: the proxy stays bad
     after_click = (await health()).get("state")
     answer = (await _call(http, "read", aid, PEOPLE_READ))["status"]   # an answer through it: back up
     up = (await health()).get("state")
@@ -400,9 +401,10 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
     per_label = Counter(binding.get(a) for a in on_pool)
     warm = await asyncio.gather(*(_call(owner, "warm", a, READ) for a in on_pool))
     tunneled = {label: sum(1 for c in wire.connects if c["alive"]) for label, wire in label_wire.items()}
-    spread = sorted(per_label.values()) == sorted([len(on_pool) // POOL + (1 if i < len(on_pool) % POOL else 0)
-                                                   for i in range(POOL)])
-    ctx.check(C_BIND, synced and all(s == 200 for s in bound) and spread and set(per_label) <= set(label_wire)
+    tier0_labels = {lb for lb, wv in label_wire.items() if wv in wires[:TIER0]}   # a new login prefers tier 0
+    spread = set(per_label) <= tier0_labels and sorted(per_label.values()) == sorted(
+        [len(on_pool) // TIER0 + (1 if i < len(on_pool) % TIER0 else 0) for i in range(TIER0)])
+    ctx.check(C_BIND, synced and all(s == 200 for s in bound) and spread
               and all(x["status"] == 200 for x in warm)
               and all(tunneled[label] >= n for label, n in per_label.items()),
               synced=synced, assign=Counter(bound), per_proxy=dict(per_label), tunneled=tunneled,

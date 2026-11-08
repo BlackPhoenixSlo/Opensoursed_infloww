@@ -18,11 +18,12 @@
  * pass none and get the honest message below instead of a broken image.
  */
 
+import { useRef } from "react";
 import { X } from "lucide-react";
 
 import { useModalFocus } from "@/components/ui/ifModal";
 import { useStillLadder } from "@/hooks/useStillLadder";
-import { mirrorFullSrc } from "@/hooks/useVaultCache";
+import { mirrorFullSrc } from "@/lib/mediaUrl";
 
 export default function ImageLightbox({
   accountId,
@@ -39,7 +40,8 @@ export default function ImageLightbox({
 }) {
   const still = useStillLadder([mirrorFullSrc(accountId, mediaId), ...fallbacks]);
   // A modal layer over a queue's IfModal: Escape closes only this, Tab stays in it.
-  const boxRef = useModalFocus<HTMLDivElement>(onClose, true);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalFocus(boxRef, onClose);
 
   return (
     <div

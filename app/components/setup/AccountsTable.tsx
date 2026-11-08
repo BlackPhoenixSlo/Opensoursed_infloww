@@ -83,45 +83,51 @@ const PAGE_SIZES = [10, 20, 50] as const;
 /** Platform names (creators-manage#20). */
 const PLATFORM_LABEL = { onlyfans: "OnlyFans", fansly: "Fansly" } as const;
 
+/** A row's verdict, and whether its session is live: the row edits it and has nothing to re-link (creators-manage#45,
+ *  #46). */
+export type RowConnectivity = Connectivity & { connected: boolean };
+const down = (c: Connectivity): RowConnectivity => ({ ...c, connected: false });
+
 /**
  * The one connectivity mapping (spec phase-04, Implementation Decisions,
  * Connectivity mapping), in the capture's words (creators-manage#23, #40): the
  * accounts read's verdict (lib/sessionConnectivity, shared with the KPI cards)
  * outranks the live probe, which decides only a live session.
  */
-export function connectivity(a: AccountMeta, h: Health | undefined, read: { loaded: boolean; error: Error | null }): Connectivity {
-  // A watcher (a fan account) is never probed (no /health row): its session from the accounts read alone.
+export function connectivity(a: AccountMeta, h: Health | undefined, read: { loaded: boolean; error: Error | null }): RowConnectivity {
+  // A watcher (a fan account) is never probed (no /health row): its session from the accounts read alone, and a
+  // captured one counts as connected.
   if (a.role === "watcher") {
-    if (a.session_dead_at) return { label: "Disconnected", tone: "err", dead: true };
+    if (a.session_dead_at) return down({ label: "Disconnected", tone: "err", dead: true });
     return a.has_session
-      ? { label: "Session captured", tone: "muted", title: "watcher account: not probed" }
-      : { label: "—", tone: "muted", title: "no captured session" };
+      ? { label: "Session captured", tone: "muted", title: "watcher account: not probed", connected: true }
+      : down({ label: "—", tone: "muted", title: "no captured session" });
   }
   // A Fansly session the relay can no longer use reads Infloww's fansly0003 (FANSLY_T.rebind).
   const fansly = a.platform === "fansly";
   // From the accounts read, so a failed health read cannot hide it.
   const settled = sessionConnectivity(a);
-  if (settled) return settled.dead && fansly ? { ...settled, title: FANSLY_T.rebind } : settled;
+  if (settled) return down(settled.dead && fansly ? { ...settled, title: FANSLY_T.rebind } : settled);
   // ASSUMPTION: "—" is ours; no capture label means "we could not ask" (spec, Further Notes, rung 5). Overturned by a
   // capture label for an unknown state.
-  if (read.error) return { label: "—", title: read.error.message, tone: "muted" };
-  if (!read.loaded) return { label: "Pending connection", tone: "muted" };
+  if (read.error) return down({ label: "—", title: read.error.message, tone: "muted" });
+  if (!read.loaded) return down({ label: "Pending connection", tone: "muted" });
   // ASSUMPTION: a loaded answer that lacks the row is "—", not "Pending connection": nothing is still probing, and the
   // relay answers one row per account (`_health_all_accounts`), so this only shows a relay fault (rung 5). Overturned
   // if the relay starts answering partial snapshots that a later read completes.
-  if (!h) return { label: "—", title: "no health answer for this Creator", tone: "muted" };
-  if (h.ok) return { label: "Connected", tone: "ok", title: h.name };
+  if (!h) return down({ label: "—", title: "no health answer for this Creator", tone: "muted" });
+  if (h.ok) return { label: "Connected", tone: "ok", title: h.name, connected: true };
   // A probe that outran the relay's budget is NOT a verdict on the session: the relay stopped waiting, it did not
   // cancel, and the OF call is still running upstream.
-  if (h.timed_out) return { label: "Pending connection", title: h.message, tone: "muted" };
-  if (h.error === "no_session") return { label: "Not connected", tone: "muted" };
-  return { label: "Disconnected", tone: "err", title: fansly ? FANSLY_T.rebind : h.error || "down" };
+  if (h.timed_out) return down({ label: "Pending connection", title: h.message, tone: "muted" });
+  if (h.error === "no_session") return down({ label: "Not connected", tone: "muted" });
+  return down({ label: "Disconnected", tone: "err", title: fansly ? FANSLY_T.rebind : h.error || "down" });
 }
 
 /** Everything one row's cells read. */
 interface RowCells {
   account: AccountMeta;
-  conn: Connectivity;
+  conn: RowConnectivity;
   isDefault: boolean;
   employees: ReactNode;
   name: ReactNode;
@@ -345,8 +351,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
     names: [a.nickname, a.name, a.id, profiles.profiles[a.id]?.name],
     platform: a.platform,
     tag: profiles.profiles[a.id]?.tag,
-    // A watcher has no Deactivate: it counts as activated.
-    isActive: a.role === "watcher" || a.is_active,
+    isActive: a.is_active,
     conn: () => connectivity(a, healthByAid.get(a.id), healthRead).label,
   }, rowFilter);
   const accounts = (accountsQ.data?.accounts || []).filter(keep);
@@ -581,7 +586,7 @@ function Row({
   account: AccountMeta;
   /** The account's stored Creator details, Tag and notes (useCreatorProfiles). */
   profile?: CreatorProfile;
-  conn: Connectivity;
+  conn: RowConnectivity;
   /** The bound proxy, for the Creator cell's title. */
   proxy: string | null;
   employees: ReactNode;
@@ -654,8 +659,12 @@ function Row({
   const tag = profile?.tag ? <Badge color="muted">{profile.tag}</Badge> : null;
 
   // creators-manage#45, #46: a Connected row has the Edit pencil and a menu without Edit; any other row has the link
-  // button and the menu with all four items. A watcher is never probed: its captured session counts as connected.
-  const connected = conn.label === "Connected" || (watcher && conn.label === "Session captured");
+  // button and the menu with all four items.
+  const { connected } = conn;
+  const caps: RowCaps = {
+    edit: !connected, recovery: !connected && !fansly,
+    linkAnother: !watcher, toggleActive: !watcher, makeDefault: !isDefault && !watcher,
+  };
   const actions = (
     <>
       <div className="flex items-center gap-2">
@@ -676,10 +685,8 @@ function Row({
         )}
         <RowMenu
           label={label}
-          connected={connected}
-          isDefault={isDefault}
+          caps={caps}
           onLink={onLink}
-          fansly={fansly}
           onEdit={onEdit}
           onLinkAnother={onLinkAnother}
           onDelete={onDelete}
@@ -687,7 +694,6 @@ function Row({
           onActivate={onActivate}
           active={account.is_active}
           onToggleActive={onToggleActive}
-          watcher={watcher}
         />
       </div>
     </>
@@ -702,6 +708,12 @@ function Row({
     </tr>
   );
 }
+
+/** What a row's ⋮ menu offers. Edit and the recovery items only off a connected row (recovery: OnlyFans only; a
+ *  Fansly row's link button opens its paste session). A watcher account has no "Link another account" (no Creator to
+ *  link under), no Deactivate / Activate (no pollers or automations to stop) and no Make default (a watcher is never
+ *  the default; the relay refuses it); neither has the default Creator. */
+interface RowCaps { edit: boolean; recovery: boolean; linkAnother: boolean; toggleActive: boolean; makeDefault: boolean }
 
 /**
  * The row's "⋮" menu, an overlay under the dots, right-aligned to them, above the fixed Action cell (as the Tracking
@@ -721,14 +733,10 @@ function Row({
  * 5). Overturned by the en locale chunk or a render of the bundle.
  */
 function RowMenu({
-  label, connected, fansly, isDefault, onLink, onEdit, onLinkAnother, onDelete, onRename, onActivate, active, onToggleActive,
-  watcher = false,
+  label, caps, onLink, onEdit, onLinkAnother, onDelete, onRename, onActivate, active, onToggleActive,
 }: {
   label: string;
-  connected: boolean;
-  /** Fansly: no OnlyFans recovery items; the row's link button opens the Fansly paste session. */
-  fansly?: boolean;
-  isDefault: boolean;
+  caps: RowCaps;
   onLink?: (at: SectionKey) => void;
   onEdit: () => void;
   onLinkAnother?: () => void;
@@ -738,9 +746,6 @@ function RowMenu({
   /** False on a deactivated creator: the item reads "Activate". */
   active: boolean;
   onToggleActive: () => void;
-  /** A watcher account: no "Link another account" (no Creator to link under), no Deactivate / Activate (no pollers or
-   *  automations to stop) and no Make default (a watcher is never the default; the relay refuses it). */
-  watcher?: boolean;
 }) {
   const { open, setOpen, ref } = useOutsideClose();
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
@@ -783,15 +788,15 @@ function RowMenu({
         <div role="menu" aria-label={`Actions for ${label}`} className={MENU_BOX} style={{ top: pos.top, right: pos.right }}>
           {/* Each capture item leads with lucide's nearest icon (#48's Edit04Line, PlusLine, UserX01Line,
               Trash01Line); the bundle's icon font is not copied. */}
-          {!connected && item("Edit", onEdit, { icon: Pencil })}
-          {!watcher && item("Link another account", onLinkAnother, { icon: Plus })}
+          {caps.edit && item("Edit", onEdit, { icon: Pencil })}
+          {caps.linkAnother && item("Link another account", onLinkAnother, { icon: Plus })}
           {/* Opens creators-manage#77's Deactivate modal (ActiveCreatorModal). */}
-          {!watcher && (active
+          {caps.toggleActive && (active
             ? item("Deactivate", onToggleActive, { icon: UserX })
             : item("Activate", onToggleActive, { icon: UserCheck }))}
           {/* Opens creators-manage#78's Delete modal (DeleteCreatorModal). */}
           {item("Delete", onDelete, { danger: true, icon: Trash2 })}
-          {!connected && !fansly && (
+          {caps.recovery && (
             <div role="group" aria-label="Recovery" className={MENU_RULE}>
               {item("Log in to account via OnlyFans", onLink && (() => onLink("paste")))}
               {item("Log in to account via Login+")}
@@ -800,7 +805,7 @@ function RowMenu({
           <div role="group" aria-label={EXTRA_LABEL} className={MENU_RULE}>
             <div className="px-3 py-1"><ExtraTag /></div>
             {item("Rename", onRename, { title: EXTRA_LABEL })}
-            {!isDefault && !watcher && item("Make default", onActivate, { title: EXTRA_LABEL })}
+            {caps.makeDefault && item("Make default", onActivate, { title: EXTRA_LABEL })}
           </div>
         </div>
       )}

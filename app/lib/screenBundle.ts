@@ -13,53 +13,70 @@
  * all (a Creator not in it, the bundle failed, still late after the follow-up) goes out as before: per Creator, a
  * background one through the scheduler (lib/relaySchedule.ts, the focused Creator first).
  *
- * Who starts a bundle: a read only the screen's burst makes (fan counts, new fans, per-model; the bell, a chat page),
- * never a shared one (users/me, the accounts list, Applied settings), which only joins one already going; or a
- * document load of the screen's route (`prefetchScreen`, lib/screenEntry.ts), with the auth probe. A screen
+ * Who starts a bundle: a read only the screen's burst makes (fan counts, new fans, per-model; a chat page), never a
+ * shared one (users/me, the accounts list, Applied settings) nor the bell (it polls), which only join one already
+ * going; or a document load of the screen's route (`prefetchScreen`, lib/screenEntry.ts), with the auth probe. A screen
  * whose keys are all fresh (the saved snapshot) fires no read, so no bundle. A bundle's answers serve joins for
- * KEEP_MS after it lands (cards that mount a moment later), never longer: a refetch after a write reads its route.
+ * KEEP_MS after it lands (or after its follow-up; cards that mount a moment later), never longer, including right after
+ * a write: a write does not expire it (a chat open fires its own writes, mark-read and the vault backfill, while its
+ * bundle is in flight or just landed, and its later reads such as attribution must still join it), so a refetch within
+ * KEEP_MS of a landing reads from before the write; reads after that go to their route. An identity switch forgets
+ * every one (`forgetScreenBundles`: another principal's answers).
+ *
+ * A bundle's call has BUNDLE_TIMEOUT_MS (its follow-up FOLLOW_TIMEOUT_MS), its deadline plus a generous margin: past
+ * it, it hung (a miss for every read); a slow answer within it still answers (no per-Creator fan-out beside it).
  *
  * Serve-stale: a read the relay answered from its last value (`refreshing`, re-read there behind the answer) resolves
  * at once and takes the same one follow-up as a late one; when the follow-up's value differs, `onScreenRefreshed`
- * names that hook's key (`refreshKey`), the app invalidates it, and the refetch joins the follow-up's body.
+ * names that hook's key (`refreshKey`), the app invalidates it, and the refetch joins the follow-up's body. A
+ * follow-up with no value for it (failed, timed out, still late): the flight is dropped, the key named too, and that
+ * read's refetch goes to its route (`bypass`), so a stale value never stands as fresh.
  */
 import { useEffect, useRef } from "react";
 
-import { bundlePath, screenKey, type ChatLack, type Screen } from "@/lib/screenKey";
+import { bundlePath, screenKey, withQuery, type ChatLack, type Screen } from "@/lib/screenKey";
 
-export { bundlePath, screenKey, type ChatLack, type Screen };
-
-/** The chat bundle's DB seed page (service/chat_screen_api.py SEED_PAGE, useChatMessagesLocal's limit). */
+/** The chat bundle's DB seed page (service/chat_screen_api.py SEED_PAGE; useChatMessagesLocal's default limit). */
 export const SEED_PAGE = 30;
 /** The attribution route's limit: a bare answer with fewer rows holds every outbound row of the thread. */
 export const ATTRIBUTION_LIMIT = 200;
 
-/** The bundle's per-Creator chat page (service/screens_api.py CHATS_PAGE, useChatList PAGE_SIZE). */
+/** The bundle's per-Creator chat page (service/screens_api.py CHATS_PAGE; useChatList's PAGE_SIZE). */
 export const CHATS_PAGE = 25;
 /** How long a landed bundle still serves joins. */
 export const KEEP_MS = 2_000;
 /** The follow-up for a bundle's late Creators: this long after it landed, and its own (long) deadline. */
 export const FOLLOW_MS = 250;
 export const FOLLOW_DEADLINE_MS = 15_000;
+/** A bundle's call past its deadline (service/screens_api.py DEADLINE_MS, 2 s; the follow-up's FOLLOW_DEADLINE_MS) plus
+ *  this failed: a hang, not a slow answer (the relay's queue before the deadline, a slow link's download after it). */
+const TIMEOUT_MARGIN_MS = 6_000;
+export const BUNDLE_TIMEOUT_MS = 2_000 + TIMEOUT_MARGIN_MS;
+export const FOLLOW_TIMEOUT_MS = FOLLOW_DEADLINE_MS + TIMEOUT_MARGIN_MS;
+
+/** A bundle's relay GET of `path`, failed past `timeoutMs`. */
+export type BundleGet = (path: string, timeoutMs: number) => Promise<unknown>;
 
 type Field =
   | "profile" | "subscriberCounts" | "newFans" | "perModel" | "accounts" | "settings"
   | "notificationCounts" | "chats"
   | "seed" | "fan" | "attribution" | "fanHistory" | "scheduledSends" | ChatLack;
 
-export interface Read {
+export type Read = {
   field: Field;
   accountId: string | null;
-  /** May start a bundle (else only joins one). */
-  starter: boolean;
-  /** The bundle this read belongs to (an inbox read but the chat page: any inbox bundle; null). */
-  bundle: string | null;
   /** An attribution read's `since_id`: answered from the bundle's bare attribution (`attributionSince`). */
   since?: number;
-}
+} & (
+  /** `starter`: may start its bundle (else only joins one). `bundle`: the one it belongs to; null: any inbox bundle
+   *  (the bell, which only joins). */
+  | { starter: true; bundle: Screen }
+  | { starter: false; bundle: Screen | null }
+);
 
 export type Outcome =
-  | { kind: "body"; body: unknown }
+  /** `refreshing`: the relay's last value, re-read there behind the answer (its follow-up has the new one). */
+  | { kind: "body"; body: unknown; refreshing?: true }
   | { kind: "error"; status: number; detail: unknown }
   /** Past the bundle's deadline (its follow-up has it). */
   | { kind: "late" }
@@ -81,34 +98,33 @@ export function classify(url: string, accountId: string | null, screen: Screen):
   const path = q < 0 ? url : url.slice(0, q);
   const params = new URLSearchParams(q < 0 ? "" : url.slice(q + 1));
   const bare = [...params.keys()].length === 0;
-  const own = (field: Field, starter: boolean, bundle: string | null): Read | null =>
+  const own = (field: Field, starter: boolean, bundle: Screen): Read | null =>
     accountId ? { field, accountId, starter, bundle } : null;
-  const shared = (field: Field, bundle: string): Read | null =>
-    accountId ? null : { field, accountId: null, starter: false, bundle };
+  const shared = (field: Field, starter: boolean, bundle: Screen): Read | null =>
+    accountId ? null : { field, accountId: null, starter, bundle };
   if (screen.kind === "chat") return classifyChat(path, params, bare, accountId, screen);
   if (screen.kind === "dashboard") {
-    const key = screenKey(screen);
     const { from, to } = screen;
-    if (path === "/api/of/v2/users/me" && bare) return own("profile", false, key);
-    if (path === "/api/of/v2/subscriptions/count/all" && bare) return own("subscriberCounts", true, key);
+    if (path === "/api/of/v2/users/me" && bare) return own("profile", false, screen);
+    if (path === "/api/of/v2/subscriptions/count/all" && bare) return own("subscriberCounts", true, screen);
     if (path === "/api/of/v2/subscriptions/subscribers/chart" && exactly(params, { start: from, end: to })) {
-      return own("newFans", true, key);
+      return own("newFans", true, screen);
     }
-    if (path === "/admin/stats/per-model" && exactly(params, { from, to })) {
-      return accountId ? null : { field: "perModel", accountId: null, starter: true, bundle: key };
-    }
-    if (path === "/admin/accounts" && bare) return shared("accounts", key);
-    if (path === "/admin/settings/applied" && bare) return shared("settings", key);
+    if (path === "/admin/stats/per-model" && exactly(params, { from, to })) return shared("perModel", true, screen);
+    if (path === "/admin/accounts" && bare) return shared("accounts", false, screen);
+    if (path === "/admin/settings/applied" && bare) return shared("settings", false, screen);
     return null;
   }
-  if (path === "/api/of/v2/users/notifications/count" && bare) return own("notificationCounts", true, null);
+  if (path === "/api/of/v2/users/notifications/count" && bare && accountId) {
+    return { field: "notificationCounts", accountId, starter: false, bundle: null };
+  }
   if (path === "/api/of/v2/chats") {
     const offset = Number(params.get("offset"));
     if (Number.isInteger(offset) && offset >= 0 && exactly(params, {
       limit: String(CHATS_PAGE), offset: String(offset), order: "recent",
-    })) return own("chats", true, `inbox|${offset}`);
+    })) return own("chats", true, { kind: "inbox", cursor: offset });
   }
-  if (path === "/admin/accounts" && bare) return shared("accounts", "inbox|0");
+  if (path === "/admin/accounts" && bare) return shared("accounts", false, { kind: "inbox", cursor: 0 });
   return null;
 }
 
@@ -119,7 +135,7 @@ function classifyChat(
 ): Read | null {
   const { accountId: a, fanId: f } = screen;
   const read = (field: Field, since?: number): Read => ({
-    field, accountId, starter: false, bundle: screenKey(screen), ...(since != null ? { since } : {}),
+    field, accountId, starter: false, bundle: screen, ...(since != null ? { since } : {}),
   });
   const thread = `/admin/messages/${encodeURIComponent(a)}/${f}`;
   if (accountId === a) {
@@ -155,51 +171,37 @@ export function attributionSince(bare: unknown, since: number): AttributionBody 
   return { by_msg_id: out };
 }
 
-type Body = Record<string, unknown>;
-type BundleError = { accountId?: string | null; read?: string; status?: number; detail?: unknown };
+/** One read's answer in a bundle (service/screens_api.py `run_screen`): its route's body, or its error. */
+type Answer = { accountId: string | null; read: string } & (
+  | { body: unknown; refreshing?: true }
+  | { status: number; detail: unknown }
+);
 
-function late(e: BundleError): boolean {
-  return e.status === 504 && (e.detail as Body | null)?.upstream_status === "bundle_deadline";
+function answers(body: unknown): Answer[] {
+  const a = (body as { answers?: unknown } | null)?.answers;
+  return Array.isArray(a) ? (a as Answer[]) : [];
 }
 
-/** `read`'s answer in a bundle `body`: the route's body, its error, or a miss (go out per Creator). */
+function answerOf(body: unknown, read: Read): Answer | undefined {
+  return answers(body).find((a) => a.accountId === read.accountId && a.read === read.field);
+}
+
+function late(a: Answer): boolean {
+  return "status" in a && a.status === 504
+    && (a.detail as { upstream_status?: unknown } | null)?.upstream_status === "bundle_deadline";
+}
+
+/** `read`'s answer in a bundle `body`: the route's body, its error, late, or a miss (go out per Creator). */
 export function outcome(body: unknown, read: Read): Outcome {
-  if (!body || typeof body !== "object") return MISS;
-  const b = body as Body;
-  const errors = (Array.isArray(b.errors) ? b.errors : []) as BundleError[];
-  const err = errors.find((e) => (e.accountId ?? null) === read.accountId && e.read === read.field);
-  if (err) {
-    if (late(err)) return LATE;
-    return typeof err.status === "number" ? { kind: "error", status: err.status, detail: err.detail } : MISS;
+  const a = answerOf(body, read);
+  if (!a) return MISS;
+  if ("status" in a) return late(a) ? LATE : { kind: "error", status: a.status, detail: a.detail };
+  if (a.body == null) return MISS;   // no value and no error: not an answer
+  if (read.field === "attribution" && read.since != null) {
+    const derived = attributionSince(a.body, read.since);
+    return derived ? { kind: "body", body: derived } : MISS;
   }
-  switch (read.field) {
-    case "seed": case "fan": case "attribution": case "fanHistory": case "scheduledSends":
-    case "savedReplies": case "sensitiveWords": {
-      if (b[read.field] == null) return MISS;
-      if (read.field === "attribution" && read.since != null) {
-        const derived = attributionSince(b.attribution, read.since);
-        return derived ? { kind: "body", body: derived } : MISS;
-      }
-      return { kind: "body", body: b[read.field] };
-    }
-    case "accounts":  // a chatter's is /chatter/me/accounts' list: not this route's body
-      return b.accounts && typeof b.accounts === "object" && !Array.isArray(b.accounts)
-        ? { kind: "body", body: b.accounts } : MISS;
-    case "settings":
-    case "perModel":
-      return b[read.field] != null ? { kind: "body", body: b[read.field] } : MISS;
-    case "notificationCounts":
-    case "chats": {
-      const m = b[read.field] as Body | undefined;
-      return m && read.accountId && read.accountId in m ? { kind: "body", body: m[read.accountId] } : MISS;
-    }
-    default: {
-      const rows = (Array.isArray(b.creators) ? b.creators : []) as Body[];
-      const row = rows.find((r) => r.id === read.accountId);
-      // A field the bundle did not read (a hidden card), or a null with no error: not an answer.
-      return row && row[read.field] != null ? { kind: "body", body: row[read.field] } : MISS;
-    }
-  }
+  return a.refreshing ? { kind: "body", body: a.body, refreshing: true } : { kind: "body", body: a.body };
 }
 
 // ── runtime: the open screen and its bundles in flight ──────────────────────
@@ -207,17 +209,14 @@ export function outcome(body: unknown, read: Read): Outcome {
 /** The open screens by key (Messages Pro's list and its open thread at once). */
 const open = new Map<string, Screen>();
 type Flight = {
-  key: string; done: number | null; p: Promise<unknown>; follow: Promise<unknown> | null;
+  screen: Screen; key: string; done: number | null; p: Promise<unknown>; follow: Promise<unknown> | null;
   /** The follow-up's body once it landed (it answers before `p`), and when. */
   fresh?: unknown; freshAt?: number;
 };
 const flights = new Map<string, Flight>();
-
-/** The open screen's bundles may serve its reads (null: none). */
-export function setScreen(s: Screen | null): void {
-  open.clear();
-  if (s) open.set(screenKey(s), s);
-}
+/** Reads whose stale value the follow-up never replaced: their next read goes to the route (once). */
+const bypass = new Set<string>();
+const readId = (r: Read) => `${r.field}|${r.accountId ?? ""}`;
 
 /** Mark `s` open while the calling component is mounted (set during render: this commit's reads see it). */
 export function useScreen(s: Screen | null): void {
@@ -241,15 +240,13 @@ function live(key: string, now: number): Flight | null {
 }
 
 function find(read: Read, now: number): Flight | null {
-  if (read.bundle) return live(read.bundle, now);
-  for (const k of [...flights.keys()].filter((k) => k.startsWith("inbox|"))) {
-    const f = live(k, now);
-    if (f) return f;
-  }
+  if (read.bundle) return live(screenKey(read.bundle), now);
+  for (const [k, f] of [...flights]) if (f.screen.kind === "inbox" && live(k, now)) return f;
   return null;
 }
 
-function abortable<T>(p: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+/** `p`, or a rejection with `signal`'s reason once it aborts (`p` itself runs on). */
+export function abortable<T>(p: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   if (!signal) return p;
   signal.throwIfAborted();
   return new Promise<T>((resolve, reject) => {
@@ -259,19 +256,20 @@ function abortable<T>(p: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   });
 }
 
-function start(key: string, get: (path: string) => Promise<unknown>): Flight {
-  const flight: Flight = { key, done: null, p: Promise.resolve(null), follow: null };
-  flight.p = get(bundlePath(key)).catch(() => null).finally(() => { flight.done = Date.now(); });
-  flights.set(key, flight);
+function start(screen: Screen, get: BundleGet): Flight {
+  const now = Date.now();
+  for (const k of [...flights.keys()]) live(k, now);   // landed ones past KEEP_MS: gone (a long-lived tab)
+  const flight: Flight = { screen, key: screenKey(screen), done: null, p: Promise.resolve(null), follow: null };
+  flight.p = get(bundlePath(screen), BUNDLE_TIMEOUT_MS).catch(() => null).finally(() => { flight.done = Date.now(); });
+  flights.set(flight.key, flight);
   return flight;
 }
 
 /** Start `s`'s bundle now unless one is live: a document load starts it with the auth probe (lib/screenEntry.ts),
  *  not three round trips later when the screen's first starter mounts; the screen's reads join it as any flight. A
  *  guess another screen's key never joins (a miss: that screen starts its own). */
-export function prefetchScreen(s: Screen, get: (path: string) => Promise<unknown>): Promise<unknown> {
-  const key = screenKey(s);
-  return (live(key, Date.now()) ?? start(key, get)).p;
+export function prefetchScreen(s: Screen, get: BundleGet): Promise<unknown> {
+  return (live(screenKey(s), Date.now()) ?? start(s, get)).p;
 }
 
 /** The read `url` for `accountId` would be, if the open screen's bundle covers it (sync: no await for the rest). */
@@ -286,9 +284,8 @@ export function screenRead(url: string, accountId: string | null): Read | null {
 /** `read`'s answer from its screen's bundle: joins one in flight (or landed < KEEP_MS ago), else a starter starts one
  *  with `get` (the bundle's own relay GET, user priority), else a miss. A failed bundle is a miss for every read; a
  *  late read takes the flight's one follow-up (still late or failed there: a miss). */
-export async function screenJoin(
-  read: Read, get: (path: string) => Promise<unknown>, signal?: AbortSignal | null,
-): Promise<Outcome> {
+export async function screenJoin(read: Read, get: BundleGet, signal?: AbortSignal | null): Promise<Outcome> {
+  if (bypass.delete(readId(read))) return MISS;
   let f = find(read, Date.now());
   if (!f && !read.starter) {
     // This commit's starters fire in the same task: let them start it.
@@ -297,69 +294,67 @@ export async function screenJoin(
   }
   if (!f) {
     if (!read.starter) return MISS;
-    f = start(read.bundle ?? "inbox|0", get);
+    f = start(read.bundle, get);
   }
   const body = await abortable(f.p, signal);
   const fresh = f.freshAt != null ? outcome(f.fresh, read) : MISS;
   if (fresh.kind === "body" || fresh.kind === "error") return fresh;
   const o = outcome(body, read);
-  if (o.kind === "body" && refreshing(body, read)) void refreshed(f, get, read, o);
+  if (o.kind === "body" && o.refreshing) void refreshed(f, get, read, o.body);
   if (o.kind !== "late") return o;
-  if (f.key.startsWith("chat|")) return MISS;  // no follow-up: the relay kept the read running, its route answers
+  if (f.screen.kind === "chat") return MISS;  // no follow-up: the relay kept the read running, its route answers
   const again = outcome(await abortable(followUp(f, get), signal), read);
   return again.kind === "late" ? MISS : again;
 }
 
-/** The relay answered `read` from its last value (service/screens_api.py STALE_READS): re-read behind the answer. */
-function refreshing(body: unknown, read: Read): boolean {
-  const rs = ((body as Body | null)?.refreshing ?? []) as BundleError[];
-  return Array.isArray(rs) && rs.some((e) => (e.accountId ?? null) === read.accountId && e.read === read.field);
-}
-
 const listeners = new Set<(key: readonly unknown[]) => void>();
 
-/** `cb` gets the query key of every read a follow-up answered with another value than the stale one it saw. */
+/** `cb` gets the query key of every read a follow-up answered with another value than the stale one it saw, or
+ *  with none (that read then goes to its route). */
 export function onScreenRefreshed(cb: (key: readonly unknown[]) => void): () => void {
   listeners.add(cb);
   return () => { listeners.delete(cb); };
 }
 
 /** The hook key holding `read`'s value (hooks/useStats.ts: useAccountProfile, useOfSubscriberCounts, useOfNewFans:
- *  the reads the relay serves stale); null: none. */
-export function refreshKey(read: Read): readonly unknown[] | null {
-  const k = REFRESH_KEYS[read.field];
+ *  the reads the relay serves stale, service/screens_api.py STALE_READS); null: none. */
+function refreshKey(read: Read): readonly unknown[] | null {
+  const k = (REFRESH_KEYS as Partial<Record<Field, string>>)[read.field];
   return k && read.accountId ? [k, read.accountId] : null;
 }
-const REFRESH_KEYS: Partial<Record<Field, string>> = {
+/** Those hooks' query key heads (hooks/useStats.ts reads them from here). */
+export const REFRESH_KEYS = {
   profile: "of-profile", subscriberCounts: "of-sub-counts", newFans: "of-new-fans",
-};
+} as const satisfies Partial<Record<Field, string>>;
 
-async function refreshed(f: Flight, get: (path: string) => Promise<unknown>, read: Read, was: Outcome): Promise<void> {
+async function refreshed(f: Flight, get: BundleGet, read: Read, was: unknown): Promise<void> {
   const now = outcome(await followUp(f, get), read);
   const key = refreshKey(read);
-  if (key && (now.kind === "body" || now.kind === "error") && JSON.stringify(now) !== JSON.stringify(was)) {
-    for (const cb of listeners) cb(key);
+  if (!key) return;
+  if (now.kind === "body" || now.kind === "error") {
+    if (now.kind === "error" || JSON.stringify(now.body) !== JSON.stringify(was)) for (const cb of listeners) cb(key);
+    return;
   }
+  // No new value: the stale one must not stand. This flight serves no more joins; the read's refetch reads its route.
+  if (flights.get(f.key) === f) flights.delete(f.key);
+  bypass.add(readId(read));
+  for (const cb of listeners) cb(key);
 }
 
-/** The URL of `key`'s follow-up for its late Creators `ids`. */
-export function followPath(key: string, ids: string[]): string {
-  const p = bundlePath(key);
-  const qs = new URLSearchParams({ accounts: ids.join(","), deadline_ms: String(FOLLOW_DEADLINE_MS) });
-  return `${p}${p.includes("?") ? "&" : "?"}${qs.toString()}`;
+/** The URL of `s`'s follow-up for its late Creators `ids`. */
+export function followPath(s: Screen, ids: string[]): string {
+  return withQuery(bundlePath(s), { accounts: ids.join(","), deadline_ms: String(FOLLOW_DEADLINE_MS) });
 }
 
 /** `f`'s one follow-up: every Creator its body answered late (FOLLOW_MS after it landed) or from the relay's last
  *  value (at once: its re-read is already running there). Its body then answers the flight's joins first, for KEEP_MS. */
-function followUp(f: Flight, get: (path: string) => Promise<unknown>): Promise<unknown> {
+function followUp(f: Flight, get: BundleGet): Promise<unknown> {
   f.follow ??= f.p.then(async (body) => {
-    const errors = (((body as Body | null)?.errors ?? []) as BundleError[]).filter(late);
-    const stale = ((body as Body | null)?.refreshing ?? []) as BundleError[];
-    const ids = [...new Set([...errors, ...(Array.isArray(stale) ? stale : [])]
-      .filter((e) => e.accountId).map((e) => String(e.accountId)))];
+    const due = answers(body).filter((a) => a.accountId && (late(a) || ("body" in a && a.refreshing)));
+    const ids = [...new Set(due.map((a) => String(a.accountId)))];
     if (!ids.length) return null;
-    if (errors.length) await new Promise((r) => setTimeout(r, FOLLOW_MS));
-    const fresh = await get(followPath(f.key, ids)).catch(() => null);
+    if (due.some(late)) await new Promise((r) => setTimeout(r, FOLLOW_MS));
+    const fresh = await get(followPath(f.screen, ids), FOLLOW_TIMEOUT_MS).catch(() => null);
     if (fresh) { f.fresh = fresh; f.freshAt = Date.now(); }
     return fresh;
   });
@@ -374,9 +369,20 @@ export async function screenSettled(signal?: AbortSignal | null): Promise<void> 
   if (busy.length) await abortable(Promise.all(busy), signal);
 }
 
-/** Tests only: forget every bundle and the open screen. */
-export function resetScreenBundles(): void {
+/** Forget every bundle, in flight or landed, and every `bypass`: an identity switch (another principal's answers). */
+export function forgetScreenBundles(): void {
   flights.clear();
+  bypass.clear();
+}
+
+/** Tests only: the bundles held (in flight or landed). */
+export function screenBundleKeys(): string[] {
+  return [...flights.keys()];
+}
+
+/** Tests only: forget every bundle, listener and open screen. */
+export function resetScreenBundles(): void {
+  forgetScreenBundles();
   listeners.clear();
   open.clear();
 }

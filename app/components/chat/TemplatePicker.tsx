@@ -33,8 +33,7 @@ import type { OFMessageTemplate, SavedReply, VaultMedia } from "@/lib/relay";
 import { useInflowwPalette } from "./InflowwPalette";
 import { PILL, PILL_ICON, PILL_LABEL } from "./ComposerToolbar";
 import { fmtPrice } from "@/lib/format";
-import { htmlToText } from "@/lib/messageFormat";
-import { isOfHtml } from "@/lib/ofRichText";
+import { hasHtml, isOfHtml, ofPlainText, ofText } from "@/lib/ofRichText";
 import { OfRichText } from "./OfRichText";
 
 /** Unified shape so Composer doesn't care where the row came from. */
@@ -77,7 +76,7 @@ export interface PickedTemplate {
 function fromOF(t: OFMessageTemplate): PickedTemplate {
   return {
     source: "of",
-    text: htmlToText(t.displayText || t.text),
+    text: ofPlainText(t.displayText || t.text),
     displayText: t.displayText || t.text,
     mediaCount: t.mediaCount ?? (t.media?.length ?? 0),
     price: t.price ?? 0,
@@ -96,9 +95,10 @@ function fromOF(t: OFMessageTemplate): PickedTemplate {
 export function fromLocal(r: SavedReply): PickedTemplate {
   return {
     source: "local",
-    // A formatted script's markup stays in `displayText` (the composer sends it while the text is untouched).
-    text: isOfHtml(r.text) ? htmlToText(r.text) : r.text,
-    displayText: r.text,
+    // A formatted script's markup stays in `displayText` (the composer sends it while the text is untouched); bare
+    // tags (an old row: `hey <b>babe</b>`) load as the OF markup the relay would send (`ofText`), never as raw tags.
+    text: hasHtml(r.text) ? ofPlainText(r.text) : r.text,
+    displayText: isOfHtml(r.text) ? r.text : ofText(r.text),
     mediaCount: r.media?.length ?? 0,
     price: r.price ?? 0,
     lockedText: !!r.locked_text,
@@ -270,7 +270,7 @@ export function TemplatePicker({
   // "/" search: the Composer input keeps focus, so its Enter and Escape are
   // heard here as they bubble; keys from anywhere else are left alone. The
   // Composer stops its own send on Enter. Escape closes one layer only (the
-  // house rule, `ChatGallery.tsx:93-95`): stopped at `document`, it never
+  // house rule, `useModalFocus` in ifModal.tsx): stopped at `document`, it never
   // reaches the `window` Escape of Find or the overlay Fan insights.
   const onSlashKey = useEffectEvent((e: KeyboardEvent) => {
     if (isImeComposing(e) || e.target !== anchorRef.current) return;
@@ -362,8 +362,8 @@ export function TemplatePicker({
               <div className="px-3 py-4 text-xs text-fg-dim text-center">
                 {search
                   ? `No templates match "${search}".`
-                  : hideImageTemplates && allItems.length > 0
-                    ? `No text/GIF-only templates. ${allItems.length} hidden because they contain images.`
+                  : hiddenCount > 0
+                    ? `No text/GIF-only templates. ${hiddenCount} hidden because they contain images.`
                     : "No templates yet. Create one in Settings → Templates."}
               </div>
             )}

@@ -19,14 +19,12 @@ import { useState } from "react";
 
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
-import { IF_FIELD } from "@/components/ui/ifSelect";
-import { IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
+import { IfHelp, IfInput, IfLabel, IfNativeSelect } from "@/components/ui/infloww";
 import { useReportTimeZone } from "@/lib/appliedSettings";
 import { VAULT_PICK_MAX, readPrice } from "@/lib/ofMirrorChatShared";
 import { MIN_PRICE } from "@/lib/sendGuards";
 import { type VaultMedia } from "@/lib/relay";
 import { fromZonedInput, toZonedInput } from "@/lib/shifts";
-import { cn } from "@/lib/utils";
 
 import { SM_EDITOR as E } from "./smartMessagesControls";
 
@@ -233,15 +231,14 @@ export function SmartMessageFields({
         // Two groups: the range keeps "minutes automatically" beside its fields, wrapping only as a whole.
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={`${id}-delay`}>{E.sendToFans.label}</label>
-          <select
+          <IfNativeSelect
             id={`${id}-delay`}
             value={draft.delayOn ? "on" : "off"}
             onChange={(e) => onChange({ delayOn: e.target.value === "on" })}
-            className={cn(IF_FIELD, "h-8 px-[11px]")}
           >
             <option value="off">{E.delayNone.label}</option>
             <option value="on">{E.delayOn.label}</option>
-          </select>
+          </IfNativeSelect>
           {draft.delayOn ? (
             <div className="flex flex-wrap items-center gap-2">
               <span>{E.delayRandom.label}</span>
@@ -326,12 +323,11 @@ function DateChoice({ id, title, offLabel, tz, on, iso, onChange }: {
         {E.scheduledDate.label}
       </label>
       {on && (
-        <input
+        <IfInput
           type="datetime-local"
           aria-label={`${title} date`}
           value={iso ? toZonedInput(iso, tz) : ""}
           onChange={(e) => onChange(true, fromZonedInput(e.target.value, tz))}
-          className={cn(IF_FIELD, "h-8 px-[11px]")}
         />
       )}
     </div>

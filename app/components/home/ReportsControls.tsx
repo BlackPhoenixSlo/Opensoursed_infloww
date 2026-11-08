@@ -11,7 +11,7 @@ import { dateBounds } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
-import { type Chan, type RangeKey, DEFAULT_COLS, EARNING_CHANNELS, datePresets, fmtRangeLabel, GRAN_LIMIT, GRANS, STAT_COLS } from "./reportsMath";
+import { type Chan, type RangeKey, CHANNELS, DEFAULT_COLS, datePresets, fmtRangeLabel, GRAN_LIMIT, GRANS, STAT_COLS } from "./reportsMath";
 
 /* ── outside-click hook ── */
 
@@ -219,7 +219,7 @@ export function ShownBySelect({ value, days, onPick }: { value: Gran; days: numb
 export function ChannelsPill({ picked, onChange }: { picked: Set<Chan>; onChange: (next: Set<Chan>) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
-  const names = EARNING_CHANNELS.filter((c) => picked.has(c.key)).map((c) => c.label);
+  const names = CHANNELS.filter((c) => picked.has(c.key)).map((c) => c.label);
   const toggle = (key: Chan) => {
     const next = new Set(picked);
     if (next.has(key)) next.delete(key);
@@ -249,7 +249,7 @@ export function ChannelsPill({ picked, onChange }: { picked: Set<Chan>; onChange
       {open && (
         <PopoverBox anchor="left">
           <div className="flex flex-col">
-            {EARNING_CHANNELS.map((c) => (
+            {CHANNELS.map((c) => (
               <label
                 key={c.key}
                 className="flex items-center gap-2 text-[12px] px-2 py-1.5 rounded cursor-pointer"

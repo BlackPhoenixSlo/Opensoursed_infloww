@@ -80,10 +80,8 @@ _registry_lock = asyncio.Lock()
 # queued on the key's lock while that fetch failed gets that failure instead
 # of going upstream again after it, so single-flight holds on errors too (as
 # relay_coalesce's): N readers of a Creator behind a dead proxy wait for one
-# failure, not N in a row. Locks and failures are per priority class
-# (relay_coalesce.priority_class): a user read never queues behind, or takes
-# the failure of, a background read of the same key (its lane wait and 5
-# tries); the classes share the cache entry. Within a class the FIRST caller's
+# failure, not N in a row. Locks and failures are per priority class (the join
+# rule: relay_coalesce's priority_class note). Within a class the FIRST caller's
 # retry policy decides for every caller queued behind it. Only reads go
 # through here, and a background read is re-polled anyway. Each
 # waiter raises its own copy (`_fresh`), so tracebacks don't pile onto one

@@ -21,7 +21,7 @@ import re
 import threading
 import time as _time_mod
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from curl_cffi import requests as curl_requests
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 import admission
 import cdn_resign
+import img_clip
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, OF_CDN_SUFFIXES
 from relay_host import get_request_client as _get_client
 from relay_host import load_client as _load_client
@@ -155,18 +156,17 @@ def _img_hash_remember(account_id: str, u: str) -> str:
 # Only stores WHOLE objects, never a partial. _IMG_CACHE_MAX_BYTES caps
 # per-file size for a plain GET as a safety net even when Content-Length
 # isn't trustworthy. A Range request (browser <video>) is served off disk
-# when the object is there (FileResponse answers the range: 206/416), and on
-# a miss caches the whole object when upstream's answer says it is at most
-# _IMG_RANGE_CACHE_MAX_BYTES (a vault GIF is an OF mp4 a <video> loops: one
-# proxy download instead of one per picker open). Anything bigger or of
-# unknown size streams through untouched — real videos are never buffered.
+# when the object is there (FileResponse answers the range: 206/416); on a
+# miss, a small clip is cached whole (service/img_clip.py).
 _IMG_CACHE_DIR = Path(os.environ.get("IMG_CACHE_DIR", "/tmp/of-relay-img-cache"))
 _IMG_CACHE_MAX_BYTES = int(os.environ.get("IMG_CACHE_MAX_BYTES", str(2 * 1024 * 1024)))
-_IMG_RANGE_CACHE_MAX_BYTES = int(os.environ.get("IMG_RANGE_CACHE_MAX_BYTES", str(5 * 1024 * 1024)))
 _IMG_CACHE_TTL_S = int(os.environ.get("IMG_CACHE_TTL_S", str(7 * 24 * 60 * 60)))
 _IMG_CACHE_EVICT_INTERVAL_S = 30 * 60
-# Every /img answer's: a Creator's media, kept a week by the browser (see
-# `_stream_upstream`), never by a shared cache.
+# The whole store's ceiling (it shares the disk with SQLite): past it, each
+# sweep deletes the least recently used entries until it fits.
+_IMG_CACHE_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
+# Every /img and /img/scrub answer's: a Creator's media, kept a week by the
+# browser (see `_stream_upstream`), never by a shared cache.
 _CACHE_CONTROL = "private, max-age=604800, stale-while-revalidate=86400, immutable"
 _img_cache_hits: int = 0
 _img_cache_misses: int = 0
@@ -265,9 +265,10 @@ def _img_cache_write(u: str, content_type: str, data: bytes) -> bool:
 
 def _img_cache_evict_once() -> int:
     """Walk the cache dir and delete entries older than _IMG_CACHE_TTL_S
-    (by mtime). Returns the number of (bin, ct) pairs removed. Cheap on
-    a few-tens-of-thousands of files; if the cache grows past that we'd
-    want a smarter index, but this is fine for current expected size."""
+    (by mtime), then the oldest of the rest while their total is over
+    _IMG_CACHE_BUDGET_BYTES. Returns the number of (bin, ct) pairs removed.
+    Cheap on a few-tens-of-thousands of files; if the cache grows past that
+    we'd want a smarter index, but this is fine for current expected size."""
     if not _IMG_CACHE_DIR.exists():
         return 0
     import time as _t
@@ -280,6 +281,7 @@ def _img_cache_evict_once() -> int:
     _pin_prune_expired()
     with _pin_lock:
         protected = set(_pinned_keys)
+    kept: list[tuple[float, int, Path]] = []  # (mtime, size, .bin) of the entries the TTL leaves
     try:
         for sub in _IMG_CACHE_DIR.iterdir():
             if not sub.is_dir():
@@ -288,21 +290,36 @@ def _img_cache_evict_once() -> int:
                 try:
                     if f.stem in protected:
                         continue
-                    if f.stat().st_mtime < cutoff:
+                    st = f.stat()
+                    if st.st_mtime < cutoff:
                         f.unlink()
                         if f.suffix == ".bin":
                             removed += 1
+                    elif f.suffix == ".bin":
+                        kept.append((st.st_mtime, st.st_size, f))
                 except OSError:
                     continue
     except OSError:
         return removed
+    total = sum(size for _, size, _ in kept)
+    for _, size, f in sorted(kept):
+        if total <= _IMG_CACHE_BUDGET_BYTES:
+            break
+        for p in (f, f.with_suffix(".ct")):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        total -= size
+        removed += 1
     return removed
 
 
 async def _img_cache_sweep() -> None:
     removed = await asyncio.to_thread(_img_cache_evict_once)
     if removed:
-        log.info("img cache evicted: %d entries (TTL=%ds)", removed, _IMG_CACHE_TTL_S)
+        log.info("img cache evicted: %d entries (TTL=%ds, budget=%dB)", removed, _IMG_CACHE_TTL_S,
+                 _IMG_CACHE_BUDGET_BYTES)
 
 
 async def _img_cache_evictor_loop() -> None:
@@ -555,10 +572,9 @@ async def proxy_image(
     else:
         client = await run_in_threadpool(_get_client, request)
         http, timeout_s = client.http, client.timeout_s
-    # The account whose url this is, when the caller named its vault media: only
-    # then can a 403 be re-signed (and a url re-signed earlier used up front).
-    resign_aid = str(getattr(client, "account_id", "") or "") if media_id else ""
-    fetch_u = cdn_resign.current(resign_aid, u) if resign_aid else u
+    # The account whose url this is: with the caller's vault media id, a 403 is
+    # re-signed (and a url re-signed earlier used up front), cdn_resign.fetch.
+    resign_aid = str(getattr(client, "account_id", "") or "")
 
     # Forward the browser's Range header so video <video> tags can seek.
     # Without this, the upstream always returns 200 with the whole file and
@@ -608,18 +624,10 @@ async def proxy_image(
             held.exit()
             return cached
         try:
-            r = await run_in_threadpool(
-                http.get, fetch_u, timeout=timeout_s, stream=True,
-                headers=upstream_headers or None)
-            if r.status_code == 403 and resign_aid:
-                stale, r = r, None
-                await run_in_threadpool(stale.close)
-                fetch_u = await cdn_resign.resign(resign_aid, media_id, fetch_u, client)
-                if fetch_u is None:
-                    raise HTTPException(status_code=403, detail="upstream non-2xx")
-                r = await run_in_threadpool(
-                    http.get, fetch_u, timeout=timeout_s, stream=True,
-                    headers=upstream_headers or None)
+            def get(url: str) -> Any:
+                return run_in_threadpool(http.get, url, timeout=timeout_s, stream=True,
+                                         headers=upstream_headers or None)
+            r, fetch_u = await cdn_resign.fetch(resign_aid, media_id, u, client, get)
         except HTTPException:
             raise
         except Exception as e:
@@ -627,7 +635,7 @@ async def proxy_image(
         # 206 (Partial Content) is the normal Range response — treat it as ok.
         if r.status_code not in (200, 206):
             raise HTTPException(status_code=r.status_code, detail="upstream non-2xx")
-        clip = _small_clip(r) if range_hdr else None
+        clip = img_clip.small_clip(r) if range_hdr else None
         if clip is not None:
             stale, r = r, None
             resp = await run_in_threadpool(
@@ -653,62 +661,17 @@ async def proxy_image(
         raise
 
 
-_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
-
-
-def _small_clip(r: Any) -> bool | None:
-    """For upstream's answer to a Range request: whether that answer is the
-    WHOLE object (a 200, or a 206 `bytes 0-(n-1)/n` — what a <video> asks
-    first), when the object's size is known and at most
-    _IMG_RANGE_CACHE_MAX_BYTES. None (stream it through) otherwise."""
-    if r.status_code == 206:
-        m = _CONTENT_RANGE.fullmatch((r.headers.get("Content-Range") or "").strip())
-        if not m:
-            return None
-        n = int(m.group(3))
-        whole = m.group(1) == "0" and int(m.group(2)) == n - 1
-    else:
-        try:
-            n = int(r.headers.get("Content-Length") or 0)
-        except ValueError:
-            return None
-        whole = True
-    return whole if 0 < n <= _IMG_RANGE_CACHE_MAX_BYTES else None
-
-
-def _cache_clip(r: Any, whole: bool, u: str, refetch: Any) -> Response:
-    """Write a small clip to the disk cache whole, then answer the caller's
-    Range off disk (FileResponse). When `r` is only part of it (Safari probes
-    `bytes=0-1`), one more GET without Range (`refetch`) fetches the rest.
-    Closes every response it reads. Blocking: run in the threadpool, inside
-    the caller's lane slot. A failed disk write still answers: the whole clip
-    as a 200, which a <video> takes for any Range."""
-    try:
-        if not whole:
-            r.close()
-            r = refetch()
-            if r.status_code != 200:
-                raise HTTPException(status_code=502, detail="upstream non-2xx on the whole clip")
-        data = bytearray()
-        for chunk in r.iter_content(chunk_size=64 * 1024):
-            data.extend(chunk)
-            if len(data) > _IMG_RANGE_CACHE_MAX_BYTES:
-                raise HTTPException(status_code=502, detail="clip larger than upstream said")
-        ct = r.headers.get("Content-Type", "application/octet-stream")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
-    finally:
-        try:
-            r.close()
-        except Exception:
-            pass
-    if _img_cache_write(u, ct, bytes(data)):
+def _cache_clip(r: Any, clip: img_clip.Clip, u: str, refetch: Callable[[], Any]) -> Response:
+    """img_clip's whole clip to the disk cache, then the caller's Range off disk
+    (FileResponse). A failed disk write still answers: the whole clip as a 200,
+    which a <video> takes for any Range. Blocking: run in the threadpool, inside
+    the caller's lane slot."""
+    data, ct = img_clip.read(r, clip, refetch)
+    if _img_cache_write(u, ct, data):
         hit = _serve_if_cached(u, "FILLED")
         if hit is not None:
             return hit
-    return Response(bytes(data), media_type=ct, headers={"Cache-Control": _CACHE_CONTROL, "X-Img-Cache": "MISS"})
+    return Response(data, media_type=ct, headers={"Cache-Control": _CACHE_CONTROL, "X-Img-Cache": "MISS"})
 
 
 def _close_then_exit(r: Any, held: admission.Lane) -> None:

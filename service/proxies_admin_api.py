@@ -20,6 +20,7 @@ service/tests/test_route_order.py).
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 import accounts as account_registry
 import proxies as proxy_registry
 import proxy_health
+import proxy_probe
 from auth import assert_account_owned
 from brand import BRAND_NAME
 from relay_host import get_request_user as _get_request_user
@@ -59,6 +61,19 @@ class _AssignBody(BaseModel):
     account_id: str | None = Field(None, description="OF account id to bind this proxy to (null to unassign)")
 
 
+def _health_view(h: dict[str, Any], site_owner: bool, keys: tuple[str, ...] | None = None) -> dict[str, Any]:
+    """`proxy_health.snapshot` as the viewer may read it (`keys`: only those). The in-flight counts and the
+    refusal window's totals are the relay's whole traffic through the proxy (every Agency on it): the site
+    owner's only; anyone else gets the share alone (`refusals` {window_s, pct})."""
+    out = {k: v for k, v in h.items() if keys is None or k in keys}
+    if not site_owner:
+        out.pop("inflight", None)
+        out.pop("inflight_peak", None)
+        if "refusals" in out:
+            out["refusals"] = {k: out["refusals"][k] for k in ("window_s", "pct")}
+    return out
+
+
 @router.get("/admin/proxies")
 def admin_proxies_list() -> dict[str, Any]:
     """Return proxies + the account list the UI populates its 'assign to'
@@ -87,9 +102,7 @@ def admin_proxies_list() -> dict[str, Any]:
     pool_rows: list[dict[str, Any]] = []
     pool_size = pool_bad = 0
     down = proxy_health.down_labels()
-    # In-flight counts are the relay's whole traffic through a proxy (every Agency on it): the site owner's only.
-    site_owner = user is None or getattr(user, "is_admin", False)
-    hidden = () if site_owner else ("inflight", "inflight_peak")
+    site_owner = user is None or user.is_admin
     for p in proxies_list:
         if proxy_registry.is_pool(p):
             # Never listed: only the count, how many are bad (proxy_health), and
@@ -101,9 +114,9 @@ def admin_proxies_list() -> dict[str, Any]:
             if p.get("label") and (user is None or mine):
                 # Refusal telemetry of the pool proxies the viewer is on, by `slot` (1-based place in the
                 # pool): no label (a hash of host and user), no host, no probe ip.
-                h = proxy_health.snapshot(p["label"])
-                pool_rows.append({"slot": pool_size, "health": {
-                    k: h[k] for k in ("state", "down", "refusals", "inflight", "inflight_peak") if k not in hidden}})
+                pool_rows.append({"slot": pool_size, "health": _health_view(
+                    proxy_health.snapshot(p["label"]), site_owner,
+                    keys=("state", "down", "refusals", "inflight", "inflight_peak"))})
             continue
         if user is not None:
             pu = p.get("user_id")
@@ -125,7 +138,7 @@ def admin_proxies_list() -> dict[str, Any]:
         out["assigned_account"] = bound[0] if bound else None
         out["assigned_account_id"] = bound[0]["id"] if bound else None
         out["url"] = proxy_registry.proxy_url(p)
-        out["health"] = {k: v for k, v in proxy_health.snapshot(p["label"]).items() if k not in hidden}
+        out["health"] = _health_view(proxy_health.snapshot(p["label"]), site_owner)
         enriched.append(out)
     return {
         "proxies": enriched,
@@ -380,9 +393,17 @@ def admin_proxies_test(label: str) -> dict[str, Any]:
         pu = p.get("user_id")
         if pu is not None and pu != user.id:
             raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
-    result = proxy_registry.probe(p)
-    proxy_registry.record_verification(
-        label, ip=result.get("ip"), geo=result.get("geo"), ok=result.get("ok", False),
-    )
-    proxy_health.note_trace(label, result)   # display only: health is probe_of's (proxy_health)
-    return result
+    # `ok` is the health probe's (probe_of: tunnels to OF), so it never says ok where health says bad; not
+    # counted: a click never brings a bad proxy back. The trace beside it: ip/geo/colo, display only. Both at
+    # once (a dead proxy: one timeout, not two).
+    with ThreadPoolExecutor(2) as pool:
+        health_f, trace_f = pool.submit(proxy_probe.probe_of, p), pool.submit(proxy_probe.probe, p)
+        health, trace = health_f.result(), trace_f.result()
+    ok = bool(health.get("ok"))
+    # A failed trace (1.1.1.1 blocked) has no ip: record_verification keeps the last ip/geo, shown here too.
+    proxy_registry.record_verification(label, ip=trace.get("ip"), geo=trace.get("geo"), ok=ok)
+    proxy_health.note_trace(label, trace)
+    egress = {k: trace.get(k) for k in ("ip", "geo", "colo")}
+    if ok and egress["ip"] is None:
+        egress.update(ip=p.get("verified_ip"), geo=p.get("verified_geo"))
+    return {"ok": ok, "error": health.get("error"), "ttfb_ms": health.get("ttfb_ms"), **egress}

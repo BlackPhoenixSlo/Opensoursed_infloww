@@ -3,8 +3,8 @@
   GET  /admin/saved-replies/import-template           → the empty .xlsx template
   POST /admin/saved-replies/import?account_id=  multipart `file`
        → {total, success_count, fail_count, failed: [{sheet, row, name, reason}]}
-  POST /admin/saved-replies/copy  {from_account_ids, to_account_ids, ids?}
-       → {copied, skipped, media_dropped, sequence_dropped}
+  POST /admin/saved-replies/copy  {from_account_ids, to_account_ids | all_creators, ids?}
+       → {copied, skipped, media_dropped}
   POST /admin/saved-replies/bulk?account_id=  {sequences, tags, mode, dry_run?}
        → {sequences: {...counts}, steps: {...}, tag_scripts: {...}, skipped: [names], failed: [...]}
 
@@ -24,13 +24,16 @@ file has, is a failed row ("duplicate name"), never an overwrite.
 
 Copy is Share (from this Creator to others) and Import from other creators (from
 others to this one) in one route. A copied script keeps its name, text, tags,
-notes, sequence and GIF; media never moves between accounts (ADR-0008), so
-media, previews, price and locked text are dropped and counted, and tagged
-Creators (an account's own @-tags) are dropped too. A name the target already
-has is skipped (an untitled script: the same text). A sequence step the target
-already holds (its own, or an earlier copy's: two sources sharing a sequence
-name) arrives outside any sequence, counted as `sequence_dropped`, so no
-sequence ends up with two scripts at one step.
+notes, condition, sequence and GIF, and its price while it has no media; media
+never moves between accounts (ADR-0008), so media and previews are dropped and
+counted, a script that loses its media loses its price too, locked text is
+dropped, and tagged Creators (an account's own @-tags) are dropped too. A
+sequence is copied whole or not at all: any of its scripts selected (a tag
+share's included) brings every step and "N.M" option; one whose name the target
+already uses is skipped whole (the target's own stays as it is), and of two
+sources sharing a name the first picked brings it, so no copy mixes two sources'
+steps and a re-share adds nothing. A script outside a sequence whose name the
+target already has (an untitled one: the same text) is skipped.
 
 Every route sits under /admin/saved-replies/, so Role enforcement maps it to the
 Scripts page (`permissions.PAGE_MAP`), and each account named goes through
@@ -38,9 +41,9 @@ Scripts page (`permissions.PAGE_MAP`), and each account named goes through
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
@@ -52,18 +55,25 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import SavedReply, SavedReplySequence
 from of_rich_text import of_text, plain_length
-from saved_replies_api import prune_sequences
+import permissions
+from infloww_dump import parse_step, sequence_dates
+from saved_replies_api import CONDITIONAL_MAX, IDS_MAX, IN_CHUNK, NOTES_MAX, TAG_MAX, sync_sequences, text_reason
 from xlsx_io import read_xlsx, write_xlsx
 
 router = APIRouter(prefix="/admin/saved-replies", tags=["scripts"])
 
-NAME_MAX, TAG_MAX, TEXT_MAX, NOTE_MAX = 64, 32, 1000, 246
+NAME_MAX = 64
+# The Excel import's own (Infloww's import limits, the help article's); the editor's and bulk's are saved_replies_api's.
+EXCEL_TEXT_MAX, EXCEL_NOTE_MAX = 1000, 246
 SHEET_ROWS_MAX = 1000
 COLUMNS = ("name", "text", "note")
 _HEADER_ALIASES = {"notes": "note"}
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _MAX_UPLOAD = 5 * 1024 * 1024
 _MAX_COPY_SOURCES = 5
+# One bulk import or copy into a Creator at a time (this process): two identical ones at once would both miss the
+# other's new scripts (no unique key holds them) and create them twice. Held one at a time, never nested.
+_BULK_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _key(name: str | None) -> str:
@@ -88,7 +98,7 @@ def _reason(tag: str, name: str, text: str, note: str) -> str | None:
     if not plain_length(text):
         return "text is required"
     for label, n, limit in (("name", len(name), NAME_MAX), ("tag", len(tag), TAG_MAX),
-                            ("text", plain_length(text), TEXT_MAX), ("note", len(note), NOTE_MAX)):
+                            ("text", plain_length(text), EXCEL_TEXT_MAX), ("note", len(note), EXCEL_NOTE_MAX)):
         if n > limit:
             return f"{label} longer than {limit} characters"
     return None
@@ -162,98 +172,117 @@ class _CopyBody(BaseModel):
     # The targets to share to. Omitted/empty is only valid with `all_creators`, which
     # resolves the targets SERVER-SIDE to the principal's full owned Creator roster.
     to_account_ids: list[_AccountId] = Field(default_factory=list)
-    # Share to every Creator the principal owns (the full roster, not session-only).
+    # Share to every Creator the principal owns but the sources (the full roster, not session-only).
     all_creators: bool = False
-    # The scripts to copy; omitted copies every script of the sources.
-    ids: list[int] | None = None
+    # The scripts to copy; omitted copies every script of the sources. Capped as the selection delete's.
+    ids: list[int] | None = Field(None, max_length=IDS_MAX)
 
 
 @router.post("/copy")
 async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
     """Share (from a Creator to others) / Import (from others to this Creator).
 
-    Dedup is a true no-op on a re-share: per target it builds `have` from the target's
-    held script keys (title, case-blind, or "\\0"+text for an untitled one) and skips any
-    source whose key is already there (and the source account itself), adding keys mid-run
-    so two sources can't both land. `all_creators` resolves the targets to the owned roster
-    (`owned_account_ids`); each resolved id still passes `assert_account_owned`.
+    A sequence is the unit of a copy: a selected script of a source's sequence brings that whole sequence (every
+    step and "N.M" option, in (step, id) order), so a copy never leaves a target a partial sequence. A target that
+    already uses the sequence's name keeps its own (its edits and deletions win): the source's is skipped whole.
+    Sources sharing a name: the first in `from_account_ids` (the user's pick order) brings it, the others' are
+    skipped. A script outside a sequence is skipped when its key (title, case-blind, or "\\0"+text for an untitled
+    one) is already there; keys are added mid-run so two sources can't both land. A re-share is a no-op.
+    `all_creators` resolves the targets to the owned roster (`owned_account_ids`) less the sources, and is refused
+    (422) beside `to_account_ids`; each resolved id still passes `assert_account_owned`.
 
-    Share-to-all is COMMITTED PER TARGET Creator, so a failure part-way leaves the finished
-    targets persisted and a re-run is a no-op for them (the lightest correct "job": the UI
-    disables the Confirm button for the single request's life — no separate task table). A
-    copied row that introduces a sequence (`script_id`) the target lacks also carries that
-    sequence's header: a `SavedReplySequence` upsert, idempotent on unique (account_id, name)
-    — never a blind insert, and the target's other sequences are not reordered."""
+    Share-to-all is COMMITTED PER TARGET Creator, so a failure part-way leaves the finished targets persisted and a
+    re-run is a no-op for them (the UI disables Confirm for the request's life — no task table). Each target is
+    read and written under its `_BULK_LOCKS` lock (one at a time, never nested), so two identical copies at once
+    can't both miss the other's rows. A copied sequence the target lacks also carries its source's header, once
+    (a `SavedReplySequence` on unique (account_id, name); the target's other sequences are not reordered)."""
     from_ids = list(dict.fromkeys(body.from_account_ids))
+    if body.all_creators and body.to_account_ids:
+        raise HTTPException(status_code=422, detail="all_creators and to_account_ids are exclusive")
     if body.all_creators:
         from accounts_admin_api import owned_account_ids
-        targets = owned_account_ids()
+        targets = [t for t in owned_account_ids() if t not in from_ids]
     else:
         targets = list(dict.fromkeys(body.to_account_ids))
     if not targets:
         raise HTTPException(status_code=422, detail="no target creators")
     for acc in {*from_ids, *targets}:
         assert_account_owned(acc)
-    copied = skipped = media_dropped = sequence_dropped = 0
+    copied = skipped = media_dropped = 0
     async with get_session() as s:
-        q = (select(SavedReply)
-             .where(SavedReply.account_id.in_(from_ids))
-             .order_by(SavedReply.id))
-        if body.ids is not None:
-            q = q.where(SavedReply.id.in_(body.ids))
+        q = select(SavedReply).where(SavedReply.account_id.in_(from_ids))
+        rows: dict[int, SavedReply] = {}
+        if body.ids is None:
+            rows = {r.id: r for r in (await s.execute(q)).scalars()}
+        else:
+            # In chunks: SQLite's bound-variable cap (as the list's media read).
+            ids = sorted(set(body.ids))
+            for at in range(0, len(ids), IN_CHUNK):
+                rows.update((r.id, r) for r in (await s.execute(
+                    q.where(SavedReply.id.in_(ids[at:at + IN_CHUNK])))).scalars())
+            # Every selected sequence whole.
+            for acc in from_ids:
+                names = sorted({r.script_id for r in rows.values() if r.account_id == acc and r.script_id})
+                for at in range(0, len(names), IN_CHUNK):
+                    rows.update((r.id, r) for r in (await s.execute(q.where(
+                        SavedReply.account_id == acc, SavedReply.script_id.in_(names[at:at + IN_CHUNK])))).scalars())
+        rank = {acc: i for i, acc in enumerate(from_ids)}
+        ordered = sorted(rows.values(), key=lambda r: (rank[r.account_id], r.script_id or "", r.script_step or 0, r.id))
         # Materialise before the per-target commits so no row is accessed detached.
         sources = [{"account_id": r.account_id, "title": r.title, "text": r.text,
                     "gif_id": r.gif_id, "gif_url": r.gif_url, "script_id": r.script_id,
                     "script_step": r.script_step, "tags_json": r.tags_json, "notes": r.notes,
+                    "conditional": r.conditional, "price_cents": r.price_cents,
                     "has_media": bool(json.loads(r.media_json or "[]"))}
-                   for r in (await s.execute(q)).scalars().all()]
-        # The source sequences' headers (first source to name a sequence wins), carried to a
-        # target that lacks the sequence.
-        src_metas: dict[str, SavedReplySequence] = {}
-        for m in (await s.execute(select(SavedReplySequence).where(
-                SavedReplySequence.account_id.in_(from_ids)).order_by(SavedReplySequence.id))).scalars():
-            src_metas.setdefault(m.name, m)
-        for target in dict.fromkeys(targets):
-            held = (await s.execute(select(SavedReply).where(
-                SavedReply.account_id == target))).scalars().all()
-            have = {_key(r.title) if r.title else "\0" + r.text for r in held}
-            steps = {(r.script_id, r.script_step) for r in held if r.script_id}
-            # Sequence names the target already keeps a header for: the meta upsert's idempotency.
-            meta_names = set((await s.execute(select(SavedReplySequence.name).where(
-                SavedReplySequence.account_id == target))).scalars())
-            seeded: set[str] = set()
-            for src in sources:
-                k = _key(src["title"]) if src["title"] else "\0" + src["text"]
-                if src["account_id"] == target or k in have:
-                    skipped += 1
-                    continue
-                have.add(k)
-                if src["has_media"]:
-                    media_dropped += 1
-                script_id, script_step = src["script_id"], src["script_step"]
-                if script_id and (script_id, script_step) in steps:
-                    script_id = script_step = None
-                    sequence_dropped += 1
-                elif script_id:
-                    steps.add((script_id, script_step))
-                s.add(SavedReply(
-                    account_id=target, title=src["title"], text=src["text"],
-                    gif_id=src["gif_id"], gif_url=src["gif_url"],
-                    script_id=script_id, script_step=script_step,
-                    tags_json=src["tags_json"], notes=src["notes"],
-                ))
-                copied += 1
-                # The surviving sequence the target lacks a header for: carry it once.
-                if script_id and script_id not in meta_names and script_id not in seeded:
-                    seeded.add(script_id)
-                    sm = src_metas.get(script_id)
-                    if sm is not None:
-                        s.add(SavedReplySequence(
-                            account_id=target, name=script_id, description=sm.description,
-                            created_by=sm.created_by, position=sm.position))
-            await s.commit()
-    return {"copied": copied, "skipped": skipped, "media_dropped": media_dropped,
-            "sequence_dropped": sequence_dropped}
+                   for r in ordered]
+        # Each sequence name's bringer: the first source (pick order) holding it.
+        bringer: dict[str, str] = {}
+        for src in sources:
+            if src["script_id"]:
+                bringer.setdefault(src["script_id"], src["account_id"])
+        # Each source's own sequence headers, carried to a target that lacks the sequence.
+        src_metas = {(m.account_id, m.name): m for m in (await s.execute(select(SavedReplySequence).where(
+            SavedReplySequence.account_id.in_(from_ids)))).scalars()}
+        for target in targets:
+            async with _BULK_LOCKS.setdefault(target, asyncio.Lock()):
+                held = (await s.execute(select(SavedReply).where(
+                    SavedReply.account_id == target))).scalars().all()
+                have = {_key(r.title) if r.title else "\0" + r.text for r in held}
+                held_seqs = {r.script_id for r in held if r.script_id}
+                # Sequence names the target already keeps a header for: the header insert's idempotency.
+                meta_names = set((await s.execute(select(SavedReplySequence.name).where(
+                    SavedReplySequence.account_id == target))).scalars())
+                for src in sources:
+                    script_id = src["script_id"]
+                    k = _key(src["title"]) if src["title"] else "\0" + src["text"]
+                    # The target's own rows (a source among the targets) are in `held`: skipped here too.
+                    if script_id:
+                        new = script_id not in held_seqs and bringer[script_id] == src["account_id"]
+                    else:
+                        new = k not in have
+                    if not new:
+                        skipped += 1
+                        continue
+                    have.add(k)
+                    if src["has_media"]:
+                        media_dropped += 1
+                    s.add(SavedReply(
+                        account_id=target, title=src["title"], text=src["text"],
+                        gif_id=src["gif_id"], gif_url=src["gif_url"],
+                        script_id=script_id, script_step=src["script_step"],
+                        tags_json=src["tags_json"], notes=src["notes"], conditional=src["conditional"],
+                        price_cents=0 if src["has_media"] else (src["price_cents"] or 0),
+                    ))
+                    copied += 1
+                    if script_id and script_id not in meta_names:
+                        meta_names.add(script_id)
+                        sm = src_metas.get((src["account_id"], script_id))
+                        if sm is not None:
+                            s.add(SavedReplySequence(
+                                account_id=target, name=script_id, description=sm.description,
+                                created_by=sm.created_by, position=sm.position))
+                await s.commit()
+    return {"copied": copied, "skipped": skipped, "media_dropped": media_dropped}
 
 
 @router.get("/overview")
@@ -302,14 +331,11 @@ async def saved_replies_overview() -> dict[str, Any]:
 
 
 # ── Bulk import (an Infloww library in JSON) ─────────────────────────
-# Limits: the saved-reply editor's (name 64 as SCRIPT_NAME_MAX, notes 256, tag 32, price >= 0) with Infloww's
-# text cap (6500) and condition text (150); sequence name 64 as relabel's. A request holds at most BULK_ROWS_MAX
-# scripts: the CLI chunks a library, never splitting a sequence.
-BULK_TEXT_MAX, BULK_NOTE_MAX, BULK_COND_MAX, SEQ_NAME_MAX = 6500, 256, 150, 64
-BULK_BY_MAX, BULK_DESC_MAX = 128, 6500
+# Limits: the saved-reply editor's (name 64 as SCRIPT_NAME_MAX, text `text_reason`, NOTES_MAX, CONDITIONAL_MAX,
+# tag 32, price >= 0); sequence name 64 as relabel's. A request holds at most BULK_ROWS_MAX scripts: the CLI chunks
+# a library, never splitting a sequence.
+SEQ_NAME_MAX, BULK_BY_MAX, BULK_DESC_MAX = 64, 128, 6500
 BULK_ROWS_MAX = 5000
-_STEP = re.compile(r"^\s*(\d+)(?:\.(\d+))?\s*$")
-_FM = re.compile(r"^FM\d+$")
 
 
 class _BulkStep(BaseModel):
@@ -354,47 +380,12 @@ class _BulkBody(BaseModel):
     dry_run: bool = False
 
 
-def _parse_step(v: str | int | float) -> tuple[int, int] | None:
-    """"3" -> (3, 0), "2.1" -> (2, 1); None below step 1 or not N / N.M."""
-    m = _STEP.match(str(v))
-    if not m or int(m.group(1)) < 1:
-        return None
-    return int(m.group(1)), int(m.group(2) or 0)
-
-
-def _ordered_steps(steps: list[_BulkStep]) -> list[tuple[int, _BulkStep]]:
-    """A valid sequence's steps as (N, step) in insert order: by N, then option M, then payload order (so a
-    step's options get ascending ids, the order the Scripts page and the chat list them in)."""
-    ordered = sorted(enumerate(steps), key=lambda e: (_parse_step(e[1].step), e[0]))
-    return [(_parse_step(st.step)[0], st) for _, st in ordered]  # type: ignore[index]
-
-
-def _parse_when(v: str | int | float | None) -> datetime | None:
-    """Epoch seconds or ms, an ISO date-time, or Infloww's day-only "Oct 13, 2026" (kept at 12:00 UTC so the
-    day reads the same in any browser zone), as naive UTC; None when absent or unreadable."""
-    if v is None or v == "":
-        return None
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        try:
-            d = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
-        except ValueError:
-            try:
-                return datetime.strptime(str(v).strip(), "%b %d, %Y").replace(hour=12)
-            except ValueError:
-                return None
-        return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
-    try:
-        return datetime.fromtimestamp(n / 1000 if n > 1e11 else n, timezone.utc).replace(tzinfo=None)
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def _script_reason(name: str, text: str, notes: str, price: float | None) -> str | None:
-    """`text` (already of_text'd) counts as the fan reads it: markup by its plain text."""
-    for label, n, limit in (("name", len(name), NAME_MAX), ("text", plain_length(text), BULK_TEXT_MAX),
-                            ("notes", len(notes), BULK_NOTE_MAX)):
+def _script_reason(name: str, raw: str, text: str, notes: str, price: float | None) -> str | None:
+    """`raw` is the payload's text, `text` its `of_text` (the caller's, stored as is): `text_reason`, then the
+    name, notes and price limits."""
+    if (why := text_reason(raw, text)) is not None:
+        return why
+    for label, n, limit in (("name", len(name), NAME_MAX), ("notes", len(notes), NOTES_MAX)):
         if n > limit:
             return f"{label} longer than {limit} characters"
     if price is not None and price < 0:
@@ -402,34 +393,51 @@ def _script_reason(name: str, text: str, notes: str, price: float | None) -> str
     return None
 
 
-def _sequence_reason(q: _BulkSequence) -> str | None:
+def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _BulkStep, str]]]:
+    """(why the sequence fails, []) or (None, its steps as (N, step, stored text `of_text`) in insert order: by N,
+    then option M, so a step's options get ascending ids, the order the Scripts page and the chat list them in)."""
     name = q.name.strip()
+    why = None
     if not name:
-        return "name is required"
-    if len(name) > SEQ_NAME_MAX:
-        return f"name longer than {SEQ_NAME_MAX} characters"
-    if _FM.match(name):
-        return "name is reserved (FM follow-up scripts)"
-    if len(q.created_by or "") > BULK_BY_MAX or len(q.description or "") > BULK_DESC_MAX:
-        return "created_by or description too long"
-    if not q.steps:
-        return "no steps"
-    seen: set[tuple[int, int]] = set()
+        why = "name is required"
+    elif len(name) > SEQ_NAME_MAX:
+        why = f"name longer than {SEQ_NAME_MAX} characters"
+    elif name.startswith("FM") and name[2:].isascii() and name[2:].isdigit():
+        why = "name is reserved (FM follow-up scripts)"
+    elif len(q.created_by or "") > BULK_BY_MAX or len(q.description or "") > BULK_DESC_MAX:
+        why = "created_by or description too long"
+    elif not q.steps:
+        why = "no steps"
+    if why:
+        return why, []
+    steps: dict[tuple[int, int], tuple[_BulkStep, str]] = {}
     for st in q.steps:
-        at = _parse_step(st.step)
+        at = parse_step(st.step)
         if at is None:
-            return f"step {st.step!r}: must be N or N.M with N >= 1"
-        if at in seen:
-            return f"step {st.step!r}: twice"
-        seen.add(at)
-        why = _script_reason((st.name or "").strip(), of_text(st.text or ""), (st.notes or "").strip(), st.price)
-        if why is None and len((st.conditional or "").strip()) > BULK_COND_MAX:
-            why = f"conditional longer than {BULK_COND_MAX} characters"
+            return f"step {st.step!r}: must be N or N.M with N >= 1", []
+        if at in steps:
+            return f"step {st.step!r}: twice", []
+        raw = st.text or ""
+        text = of_text(raw)
+        why = _script_reason((st.name or "").strip(), raw, text, (st.notes or "").strip(), st.price)
+        if why is None and len((st.conditional or "").strip()) > CONDITIONAL_MAX:
+            why = f"conditional longer than {CONDITIONAL_MAX} characters"
         if why is None and any(len(t.strip()) > TAG_MAX for t in st.tags):
             why = f"tag name longer than {TAG_MAX} characters"
         if why:
-            return f"step {st.step}: {why}"
-    return None
+            return f"step {st.step}: {why}", []
+        steps[at] = (st, text)
+    return None, [(at[0], st, text) for at, (st, text) in sorted(steps.items())]
+
+
+def _tag_script_reason(tag: str, name: str, raw: str, text: str, notes: str, price: float | None) -> str | None:
+    if not tag:
+        return "tag name is required"
+    if len(tag) > TAG_MAX:
+        return f"tag name longer than {TAG_MAX} characters"
+    if not name and not text.strip():
+        return "name and text are empty"
+    return _script_reason(name, raw, text, notes, price)
 
 
 @router.post("/bulk")
@@ -443,11 +451,20 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
     payload's put in their place (meta updated). A tag's script is matched on (name, case-blind; text): a
     script that exists already (a sequence step included) gets the tag added, else it is created; so a
     re-run creates nothing. Media is not importable (never in the payload); price is kept. `dry_run` counts
-    and rolls back. Same Role gate as the Excel import (the Scripts page's `/admin/saved-replies/`)."""
+    and rolls back. Same Role gate as the Excel import (the Scripts page's `/admin/saved-replies/`); `replace`
+    also needs the Delete scripts permission."""
     assert_account_owned(account_id)
+    if body.mode == "replace":
+        # Replace deletes a sequence's scripts: the Delete scripts permission, which the route pattern can't see.
+        await permissions.require_action("delete-script", account_id)
     rows_in = sum(len(q.steps) for q in body.sequences) + sum(len(t.scripts) for t in body.tags)
     if rows_in > BULK_ROWS_MAX:
         raise HTTPException(status_code=413, detail=f"more than {BULK_ROWS_MAX} scripts in one request")
+    async with _BULK_LOCKS.setdefault(account_id, asyncio.Lock()):
+        return await _bulk_import(account_id, body)
+
+
+async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
     seq = {"total": len(body.sequences), "created": 0, "skipped": 0, "replaced": 0, "failed": 0}
     steps = {"total": sum(len(q.steps) for q in body.sequences), "created": 0, "deleted": 0}
     tagged = {"total": sum(len(t.scripts) for t in body.tags), "created": 0, "tagged": 0, "skipped": 0,
@@ -463,7 +480,7 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
         in_payload: set[str] = set()
         for q in body.sequences:
             name = q.name.strip()
-            why = _sequence_reason(q)
+            why, parsed = _parse_sequence(q)
             if why is None and name in in_payload:
                 why = "name twice in this request"
             if why:
@@ -482,8 +499,7 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
                 seq["replaced"] += 1
             else:
                 seq["created"] += 1
-            created = _parse_when(q.created_on) or now
-            modified = _parse_when(q.modified_on) or created
+            created, modified = sequence_dates(q.created_on, q.modified_on, now)
             meta = metas.get(name)
             if meta is None:
                 meta = metas[name] = SavedReplySequence(account_id=account_id, name=name)
@@ -491,9 +507,9 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
             meta.position, meta.created_by = q.order, (q.created_by or "").strip() or None
             meta.description = (q.description or "").strip() or None
             meta.created_at, meta.updated_at = created, modified
-            for n, st in _ordered_steps(q.steps):
+            for n, st, text in parsed:
                 s.add(SavedReply(
-                    account_id=account_id, title=(st.name or "").strip() or None, text=of_text(st.text or ""),
+                    account_id=account_id, title=(st.name or "").strip() or None, text=text,
                     price_cents=int(round((st.price or 0) * 100)), script_id=name, script_step=n,
                     tags_json=json.dumps(list(dict.fromkeys(t.strip() for t in st.tags if t.strip()))),
                     notes=(st.notes or "").strip() or None,
@@ -504,29 +520,25 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
             have.add(name)
         await s.flush()
         # Tags: (name, text) -> the script that holds it.
-        index: dict[tuple[str, str], int] = {}
-        for rid, title, text in (await s.execute(
-                select(SavedReply.id, SavedReply.title, SavedReply.text)
+        index: dict[tuple[str, str], SavedReply] = {}
+        for row in (await s.execute(
+                select(SavedReply)
                 .where(SavedReply.account_id == account_id)
-                .order_by(SavedReply.id))).all():
-            index.setdefault((_key(title), text), rid)
+                .order_by(SavedReply.id))).scalars():
+            index.setdefault((_key(row.title), row.text), row)
         for t in body.tags:
             tag = t.name.strip()
             for sc in t.scripts:
                 # Infloww stores scripts as HTML: only OF's allow-list is kept (plain text as is), and the
                 # (name, text) match below compares stored text with stored text.
                 name, text, notes = (sc.name or "").strip(), of_text(sc.text or ""), (sc.notes or "").strip()
-                why = ("tag name is required" if not tag
-                       else f"tag name longer than {TAG_MAX} characters" if len(tag) > TAG_MAX
-                       else "name and text are empty" if not name and not text.strip()
-                       else _script_reason(name, text, notes, sc.price))
+                why = _tag_script_reason(tag, name, sc.text or "", text, notes, sc.price)
                 if why:
                     tagged["failed"] += 1
                     failed.append({"kind": "tag_script", "tag": tag, "name": name, "reason": why})
                     continue
-                rid = index.get((_key(name), text))
-                if rid is not None:
-                    row = await s.get(SavedReply, rid)
+                row = index.get((_key(name), text))
+                if row is not None:
                     tags = json.loads(row.tags_json or "[]")
                     if tag in tags:
                         tagged["skipped"] += 1
@@ -534,14 +546,12 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
                         row.tags_json = json.dumps([*tags, tag])
                         tagged["tagged"] += 1
                     continue
-                row = SavedReply(account_id=account_id, title=name or None, text=text,
-                                 price_cents=int(round((sc.price or 0) * 100)), tags_json=json.dumps([tag]),
-                                 notes=notes or None)
+                row = index[(_key(name), text)] = SavedReply(
+                    account_id=account_id, title=name or None, text=text,
+                    price_cents=int(round((sc.price or 0) * 100)), tags_json=json.dumps([tag]), notes=notes or None)
                 s.add(row)
-                await s.flush()
-                index[(_key(name), text)] = row.id
                 tagged["created"] += 1
-        await prune_sequences(s, account_id)
+        await sync_sequences(s, account_id)
         if body.dry_run:
             await s.rollback()
         else:

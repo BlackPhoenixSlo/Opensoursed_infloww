@@ -111,7 +111,10 @@ export interface OFUser extends DiscountFan {
  *  relay stamps (restricted, needs a human, auto-renew off): no writer of
  *  the key carries them. */
 export type OFUserName = Omit<OFUserMini, "isRestricted" | "needsHuman" | "autoRenewOff">
-  & { lastSeen?: string | null };
+  & { lastSeen?: string | null;
+    /** When the chat list's enrichment (useChatList `enrichWithUsers`) last wrote this Fan (ms): its TTL reads
+     *  this, not the key's write time, which a notification's bare name (`seedName`) also moves. */
+    enrichedAt?: number };
 
 /** The name key fields a full read refreshes (`OFUserName`'s). */
 const NAME_FIELDS = [

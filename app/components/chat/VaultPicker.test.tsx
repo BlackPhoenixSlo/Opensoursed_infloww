@@ -8,7 +8,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import type { VaultMedia } from "@/lib/relay";
+import { RelayError, type VaultMedia } from "@/lib/relay";
 import type { FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
 import { renderWithProviders } from "@/test-utils";
 import { observerStub, relayGet, relayPost, resetComposerHarness, routeRelay } from "./composerTestHarness";
@@ -90,6 +90,8 @@ let mirrorCount: number;
 let mirrorComplete: boolean | undefined;
 /** The live vault page; a test swaps it for media with files. */
 let mediaReply: VaultMedia[];
+/** The mirror's page; a test swaps it to fail. */
+let itemsReply: () => unknown;
 
 beforeEach(() => {
   resetComposerHarness();
@@ -99,13 +101,14 @@ beforeEach(() => {
   session.user = { username: "owner" };
   session.chatter = null;
   mediaReply = MEDIA;
+  itemsReply = () => ({ list: [MIRROR_PHOTO], hasMore: false, source: "mirror" });
   vi.stubGlobal("IntersectionObserver", observerStub);
   routeRelay("/admin/vault-ai/cache/summary", () => ({ account_id: "acct-1", count: mirrorCount, complete: mirrorComplete, running: false, last_run: null }));
   routeRelay("/api/of/v2/vault/lists", () => ({ list: [], hasMore: false }));
   routeRelay("/api/of/v2/vault/media", () => ({ list: mediaReply, hasMore: false }));
   routeRelay("/admin/vault/fan-history", () => fanHistoryReply());
   routeRelay("/admin/vault/wall-media", () => ({ media_ids: [], scanned_posts: 0, has_more: false }));
-  routeRelay("/admin/vault-ai/items", () => ({ list: [MIRROR_PHOTO], hasMore: false, source: "mirror" }));
+  routeRelay("/admin/vault-ai/items", () => itemsReply());
 });
 
 afterEach(() => {
@@ -202,6 +205,43 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     // once before the summary lands) never does.
     await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
     expect(paths()).toContain("/admin/vault-ai/items");
+  });
+});
+
+// F4: a restricted chatter reads the mirror routes behind #329's folder gates; their refusal is an error, not an
+// empty vault.
+describe("VaultPicker mirror errors", () => {
+  it("a failed mirror read says so, not \"No media in this filter.\"", async () => {
+    mirrorCount = 5;
+    itemsReply = () => { throw new RelayError(403, null); };
+    renderPicker(42);
+    await waitFor(() => expect(screen.getByText(/^Failed:/)).toBeInTheDocument());
+    expect(screen.queryByText("No media in this filter.")).toBeNull();
+  });
+});
+
+// F3: Refresh is one OF sync until it settled (disabled meanwhile), and says when it fell short.
+describe("VaultPicker Refresh", () => {
+  const syncs = () => relayPost.mock.calls.filter(([p]) => p.startsWith("/admin/vault-ai/sync"));
+  it.each<[string, unknown, string]>([
+    ["the sync failed", new RelayError(403, null), "Refresh failed"],
+    ["OnlyFans unreachable", new RelayError(502, null), "Couldn't reach OnlyFans, showing saved vault"],
+  ])("%s: disabled while it runs, then says so", async (_n, err, note) => {
+    mirrorCount = 5;
+    let fail!: (e: unknown) => void;
+    relayPost.mockImplementation((path: string) =>
+      path.startsWith("/admin/vault-ai/sync") ? new Promise((_r, rej) => { fail = rej; }) : Promise.resolve({}));
+    onTestFinished(() => { relayPost.mockImplementation(() => Promise.resolve({})); });
+    renderPicker(42);
+    await waitFor(() => expect(card(7001)).toBeInTheDocument());
+    const refresh = screen.getByRole("button", { name: "refresh" });
+    fireEvent.click(refresh);
+    await waitFor(() => expect(refresh).toBeDisabled());
+    fireEvent.click(refresh);
+    expect(syncs()).toHaveLength(1);
+    await act(async () => fail(err));
+    await waitFor(() => expect(screen.getByText(note)).toBeInTheDocument());
+    expect(refresh).not.toBeDisabled();
   });
 });
 

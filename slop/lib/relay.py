@@ -64,7 +64,7 @@ falls back to `_OfflineOF` too.
                            have their ports only once the relay is up. Then every pooled client is
                            evicted (server._invalidate_client), as a restart would. Answers the
                            sync's {size, rebound, dropped, ...}. Under OF_WIRE the relay's
-                           `proxies.TRACE_URL` is lib/of_wire.py's /cdn-cgi/trace, so a proxy's
+                           `proxy_probe.TRACE_URL` is lib/of_wire.py's /cdn-cgi/trace, so a proxy's
                            confirm and recheck probes (service/proxy_health.py) go through the
                            fake proxy to loopback, never to 1.1.1.1.
        Bypass, declared: it stands in for the job's hourly timer and 300 s boot
@@ -121,6 +121,8 @@ at the product's `_do_start_account_pump` on the relay loop, so a re-capture's
   GET  /__slop/pumps           the same states, no pass.
   GET  /__slop/fake/calls  the fakes' calls by label (a flow's fakes count theirs
        here), OF's PPVs per fan (`of_ppv`) and its chat reads (`of_get_messages`);
+       `?sends=1` adds every chat send the offline OF answered, in order (`of_sends`:
+       account_id, fan_id, text, price);
        `live`: SLOP_LIVE=1, the fakes not installed.
 
 A flow kept in files of its own brings its part of this relay in
@@ -214,6 +216,7 @@ class _OfflineOF(*(m.OF for m in PLUGINS if hasattr(m, "OF"))):
         media = list(media_files or [])
         if price:   # a PPV: OF answers it priced and locked; kept per fan for the checks
             _of_ppv[f"{self.account_id}:{chat_id}"].append(round(float(price) * 100))
+        _of_sends.append({"account_id": self.account_id, "fan_id": int(chat_id), "text": text, "price": price or 0})
         return {"id": OF_SEND_ID_BASE + _stats["of_sends"], "text": text, "price": price or 0,
                 "isFree": not price, "mediaCount": len(media), "media": [{"id": m} for m in media],
                 "fromUser": {"id": int(self.account_id)},
@@ -336,6 +339,7 @@ def _real_supervisor():
 _fake_calls: Counter = Counter()
 _of_ppv: dict[str, list[int]] = defaultdict(list)  # "acct:fan" -> PPV prices (cents)
 _of_get_messages: Counter = Counter()  # "acct:fan" -> GET /chats/{fan}/messages calls
+_of_sends: list[dict] = []  # every send OF answered, in order: {account_id, fan_id, text, price}
 
 
 # The canonical writers event_transcoder.transcode() dispatches to (looked up as
@@ -861,8 +865,8 @@ def _wire(app) -> None:
         _guard_curl_cffi()
         _wire_pumps(app, _loopback, server)
         # The proxy probe's Cloudflare trace is the fake OF's too (docstring: /__slop/proxy-pool).
-        import proxies as _proxies
-        _proxies.TRACE_URL = os.environ["OF_API_ORIGIN"].rstrip("/") + "/cdn-cgi/trace"
+        import proxy_probe as _proxy_probe
+        _proxy_probe.TRACE_URL = os.environ["OF_API_ORIGIN"].rstrip("/") + "/cdn-cgi/trace"
     live = os.environ.get("SLOP_LIVE") == "1"
     if os.environ.get("SLOP_SUPERVISOR") == "1":
         supervisor = _real_supervisor()
@@ -899,7 +903,8 @@ def _wire(app) -> None:
     async def fake_calls(request: Request) -> dict:
         _loopback(request)
         return {"live": live, "calls": dict(_fake_calls), "of_ppv": dict(_of_ppv),
-                "of_get_messages": dict(_of_get_messages)}
+                "of_get_messages": dict(_of_get_messages),
+                **({"of_sends": _of_sends} if request.query_params.get("sends") else {})}
 
     tick_ids = itertools.count(1)
     tick_of = contextvars.ContextVar("slop_automation_tick", default=0)

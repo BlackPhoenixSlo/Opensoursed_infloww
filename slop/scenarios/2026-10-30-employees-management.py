@@ -80,7 +80,7 @@ SECTIONS = {
 GROUPS = ("Slop night shift", "Slop day shift")
 FOLDERS = ((501, "Slop VIP folder"), (502, "Slop teaser folder"))
 REFUSED = "slop: folder write refused"
-LISTS_KEY = "lists:view=main|limit=50|offset=0"  # server.vault_lists_cache_key for fetchAllVaultLists' first page
+LISTS_KEY = "lists:view=main|limit=50|offset=0"  # vault_cache.vault_lists_cache_key for fetchAllVaultLists' first page
 EDITED_NAME = "Slop Edited Emp"
 WRITE_PATHS = re.compile(r"/admin/(employees(/\d+/setup|/login)?|chatters/(link|invite|[0-9a-f]+/(account|folder)-access))")
 

@@ -28,7 +28,7 @@ import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyArt, type EmptyKind } from "@/components/ui/emptyArt";
 import { HB_FILL_3, HB_TEXT, IF_FIELD, Listbox, type IconProp, type IfOption } from "@/components/ui/ifSelect";
-import type { AccountMeta, WatcherMeta } from "@/lib/relay";
+import type { AccountMeta, WatcherAccount } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 
@@ -193,6 +193,38 @@ export const IfButton = forwardRef<
   </button>
 ));
 IfButton.displayName = "IfButton";
+
+/** A Save's state: running, just landed, or its failure's message. */
+export interface SaveVerdict { pending: boolean; saved: boolean; error: string | null }
+
+/** A save mutation's verdict; `clean` = nothing edited since it landed ("Saved" shows only then). */
+export const saveVerdict = (
+  m: { isPending: boolean; isSuccess: boolean; error: Error | null }, clean = true,
+): SaveVerdict => ({ pending: m.isPending, saved: m.isSuccess && clean, error: m.error ? m.error.message || "Save failed" : null });
+
+/** The one Save row of a page, a card or an editor's footer: Save ("Saving…" while it runs), `children` (a counter),
+ *  a `warn` (why it is refused), "Saved" or the failed save's message. `form`: a submit for that form (an editor's
+ *  footer sits outside its form). */
+export function SaveRow({ save, onSave, disabled, warn, label = "Save", form, children }: {
+  save: SaveVerdict;
+  disabled?: boolean;
+  warn?: string | null;
+  label?: string;
+  children?: ReactNode;
+} & ({ onSave: () => void; form?: never } | { form: string; onSave?: never })) {
+  return (
+    <div className="flex items-center gap-3">
+      <IfButton type={form ? "submit" : "button"} form={form} variant="primary" onClick={onSave}
+        disabled={save.pending || disabled} className="min-w-[76px]">
+        {save.pending ? "Saving…" : label}
+      </IfButton>
+      {children}
+      {warn && <span className="text-[12px] text-warn">{warn}</span>}
+      {save.saved && <span className="text-[12px] text-ok">Saved</span>}
+      {save.error && <span className="text-[12px] text-err">{save.error}</span>}
+    </div>
+  );
+}
 
 const LEARN = "inline-flex items-center gap-1 text-[14px] text-accent hover:text-accent-hover";
 
@@ -478,7 +510,7 @@ export function IfSwitch({ checked, onChange, label, loading, disabled, "aria-la
 
 // ── Creator select + ?creator= ──────────────────────────────────────────────────────────────────────────────────
 
-const creatorName = (a: AccountMeta | WatcherMeta) => a.nickname || a.name || a.id;
+const creatorName = (a: AccountMeta | WatcherAccount) => a.nickname || a.name || a.id;
 
 /** A 20px creator avatar with the online dot (a live session) at its foot. */
 function CreatorAvatar({ account }: { account: AccountMeta }) {
@@ -507,7 +539,7 @@ export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, wa
   /** Relabels the "All creators" option (Scripts' "All models"), default "All creators". */
   allLabel?: string;
   /** Watcher accounts, listed after the creators as disabled options (`CreatorRail`'s `watchers`). */
-  watchers?: WatcherMeta[];
+  watchers?: WatcherAccount[];
   searchable?: boolean;
   disabled?: boolean;
   className?: string;

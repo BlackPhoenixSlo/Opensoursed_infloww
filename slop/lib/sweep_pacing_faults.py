@@ -51,6 +51,8 @@ so a target can never name a check that does not exist.
                        stamped walks full whatever last_full_at says (a restart re-walks everyone).
   tx-failed-full-not-stamped  a failed full walk on a backfilled Creator leaves last_full_at (the
                        pre-fix rule, AE 2026-11-08): its next tick in the same period walks full again.
+  tx-proxy-pacing-bypassed  ledger pages paced per Creator only (of_pacing.egress answers None: no
+                       proxy slot): Creators on one proxy page at once.
 """
 from __future__ import annotations
 
@@ -82,6 +84,7 @@ BF_GAP = "tx_backfill_gap_rewalked"
 BF_SHARED = "tx_backfill_shared_bucket"
 TX_RESTART = "tx_restart_keeps_full_schedule"
 TX_FAILED_FULL = "tx_failed_full_consumes_period"
+TX_PROXY_SPACED = "tx_proxy_pages_spaced"
 
 
 def _unpaced() -> None:
@@ -101,6 +104,7 @@ def _tx_cadence_300() -> None:
 
 
 def _bf_offset_walk() -> None:
+    import transaction_backfill as tb
     import transaction_ingest as ti
     offsets: dict[int, int] = {}
 
@@ -114,28 +118,29 @@ def _bf_offset_walk() -> None:
             return ti.BackfillStep("complete", "fault")
         return ti.BackfillStep("next", "fault", sent_marker)
 
-    ti._backfill_fetch, ti.backfill_step = fetch, step
+    tb._backfill_fetch, tb.backfill_step = fetch, step
 
 
 def _bf_complete_on_empty() -> None:
+    import transaction_backfill as tb
     import transaction_ingest as ti
-    real = ti.backfill_step
+    real = tb.backfill_step
 
     def step(*, rows, **kw):
         return ti.BackfillStep("complete", "fault") if rows == 0 else real(rows=rows, **kw)
 
-    ti.backfill_step = step
+    tb.backfill_step = step
 
 
 def _bf_marker_exclusive() -> None:
-    import transaction_ingest as ti
-    real_step, real_of = ti.backfill_step, ti.marker_of
+    import transaction_backfill as tb
+    real_step, real_of = tb.backfill_step, tb.marker_of
 
     def step(**kw):
         got = real_step(**kw)
         return got._replace(marker=got.marker - 1) if got.marker is not None else got
 
-    ti.backfill_step, ti.marker_of = step, lambda at: real_of(at) - 1
+    tb.backfill_step, tb.marker_of = step, lambda at: real_of(at) - 1
 
 
 def _bf_lifetime_on_reread() -> None:
@@ -152,23 +157,17 @@ def _bf_lifetime_on_reread() -> None:
 
 def _bf_flips_uncapped() -> None:
     import transaction_ingest as ti
+    real = ti.write_page
 
-    class Off:
-        def set(self, _v):
-            return None
+    async def write(account_id, rows, *, capped=False):
+        return await real(account_id, rows)
 
-        def reset(self, _t):
-            return None
-
-        def get(self):
-            return False
-
-    ti._BACKFILL_NEWS_CAPPED = Off()
+    ti.write_page = write
 
 
 def _bf_uncapped() -> None:
-    import transaction_ingest as ti
-    ti._BACKFILL_TICK_PAGES = 1_000_000
+    import transaction_backfill as tb
+    tb._BACKFILL_TICK_PAGES = 1_000_000
 
 
 def _bf_poll_only_complete() -> None:
@@ -178,7 +177,7 @@ def _bf_poll_only_complete() -> None:
 
     async def poll(account_id, client):
         async with ti.get_session() as s:
-            done = (await ti._scan_state(s, account_id)).fully_backfilled
+            done = (await ti.scan_state(s, account_id)).fully_backfilled
         return await real(account_id, client) if done else None
 
     cb.poll_after_walk = poll
@@ -222,23 +221,23 @@ def _bf_poll_every_tick() -> None:
 
 
 def _bf_gap_unread() -> None:
-    import transaction_ingest as ti
-    real = ti._backfill_recent_rows
+    import transaction_backfill as tb
+    real = tb._backfill_recent_rows
 
     async def read(*a, **kw):
         got = await real(*a, **kw)
         return "reached" if got == "gap" else got
 
-    ti._backfill_recent_rows = read
+    tb._backfill_recent_rows = read
 
 
 def _bf_blank_first_page() -> None:
-    import transaction_ingest as ti
+    import transaction_backfill as tb
 
     async def real_empty(*_a, **_kw):
         return False
 
-    ti._window_answered_blank = real_empty
+    tb._window_answered_blank = real_empty
 
 
 def _bf_failure_counted() -> None:
@@ -274,7 +273,7 @@ def _tx_full_watermark_forgotten() -> None:
             return await real_decide(account_id)
         async with ti.get_session() as s:
             row = await s.get(ti.TransactionScanHistory, account_id)
-            facts = ti._scan_facts(row) if row is not None else None
+            facts = ti.scan_facts(row) if row is not None else None
         got = ti.decide_mode(facts if facts is None else replace(facts, last_full_at=None), now=datetime.utcnow())
         return "refresh" if got == "recent" else got
 
@@ -292,6 +291,11 @@ def _tx_failed_full_not_stamped() -> None:
         await real(account_id, exc, full_at=None if done else full_at, **kw)
 
     ti._record_failure = record
+
+
+def _tx_proxy_pacing_bypassed() -> None:
+    import of_pacing
+    of_pacing.egress = lambda *_a, **_kw: None
 
 
 def register(Fault) -> dict:
@@ -323,4 +327,5 @@ def register(Fault) -> dict:
         "tx-backfill-dispute-repolled": Fault(_bf_dispute_repolled, (BF_DISPUTE, BF_LIFETIME)),
         "tx-full-watermark-forgotten": Fault(_tx_full_watermark_forgotten, (TX_RESTART,)),
         "tx-failed-full-not-stamped": Fault(_tx_failed_full_not_stamped, (TX_FAILED_FULL,)),
+        "tx-proxy-pacing-bypassed": Fault(_tx_proxy_pacing_bypassed, (TX_PROXY_SPACED,)),
     }

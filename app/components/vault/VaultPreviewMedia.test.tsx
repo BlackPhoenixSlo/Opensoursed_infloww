@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 
 import VaultPreviewMedia from "./VaultPreviewMedia";
 import { type VaultMedia } from "@/lib/relay";
@@ -56,5 +57,23 @@ describe("the inline video's loading circle", () => {
     act(() => vi.advanceTimersByTime(15_000));
     expect(screen.queryByRole("status", { name: "Loading video" })).toBeNull();
     expect(player(container).className).not.toContain("invisible");
+  });
+});
+
+// F19: the drawer's gif loop survives StrictMode's dev double-mount, and still lets go of its clip on unmount.
+describe("the drawer's gif loop", () => {
+  const gif = { id: 3, type: "gif", files: { full: { url: "https://cdn.example/g.mp4" } } } as unknown as VaultMedia;
+
+  it("keeps its src through StrictMode's double mount, drops it on unmount", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const { container, unmount } = render(
+      <StrictMode><VaultPreviewMedia media={gif} accountId="acc" onExpand={() => {}} /></StrictMode>,
+    );
+    const el = container.querySelector("video[data-gif-loop]") as HTMLVideoElement;
+    expect(el.getAttribute("src")).toBeTruthy();
+    unmount();
+    expect(el.getAttribute("src")).toBeNull();
+    vi.restoreAllMocks();
   });
 });

@@ -10,7 +10,7 @@
 // progressive src + the poster-frame list instead.
 import { describe, it, expect } from "vitest";
 import type { VaultMedia } from "@/lib/relay";
-import { progressiveVideoSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, evenFrameIndex } from "./VaultPicker";
+import { progressiveVideoSrc, gifClipSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, evenFrameIndex } from "./VaultPicker";
 
 const drmVideo: VaultMedia = {
   id: 4340233385,
@@ -97,7 +97,9 @@ describe("vault video source resolution", () => {
       id: 3, type: "gif",
       files: { thumb: { url: "https://cdn2.onlyfans.com/g/150x150_frame_0.jpg" }, full: { url: "https://cdn2.onlyfans.com/g/0i1n8it6_source.mp4" } },
     };
-    expect(progressiveVideoSrc(gif)).toBe("https://cdn2.onlyfans.com/g/0i1n8it6_source.mp4");
+    expect(gifClipSrc(gif)).toBe("https://cdn2.onlyfans.com/g/0i1n8it6_source.mp4");
+    // Not a video: no scrub / player source.
+    expect(progressiveVideoSrc(gif)).toBeNull();
     expect(isDrmOnlyVideo(gif)).toBe(false);
   });
 

@@ -1124,7 +1124,8 @@ describe("the Messages Pro page", () => {
     /** Fan Four's message cache under the other Creator, as the Thread reads it. */
     const fanFourMessages = () =>
       queryClient.getQueryData<OFMessage[]>(["messages", OTHER_ACCOUNT_ID, FAN_FOUR.id]) ?? [];
-    return { field: screen.getByRole("textbox", { name: "Reply to Fixture Fan Four" }), fanFourMessages };
+    // The field's module is lazy (NotificationBell): under load it may land after the click.
+    return { field: await screen.findByRole("textbox", { name: "Reply to Fixture Fan Four" }), fanFourMessages };
   }
 
   it("a message notification's Reply posts the text to the Fan's chat messages route as the notification's Creator, then clears and reads \"Sent\"", async () => {
@@ -1158,7 +1159,7 @@ describe("the Messages Pro page", () => {
     expect(screen.queryByRole("textbox", { name: "Reply to Fixture Fan Four" })).toBeNull();
   });
 
-  it("a rejected Reply keeps the text and shows the error, with no \"Sent\", and leaves no failed bubble in the Fan's messages", async () => {
+  it("a rejected Reply keeps the text and shows the error, with no \"Sent\", and leaves its failed bubble in the Fan's messages", async () => {
     const { field, fanFourMessages } = await openReply();
     relayPost.mockImplementation((path: string) => path === THREAD_OF_FAN_FOUR
       ? Promise.reject(new Error("Fixture relay refused the send"))
@@ -1171,9 +1172,9 @@ describe("the Messages Pro page", () => {
     expect(field).toHaveValue("Fixture quick reply");
     expect(screen.queryByText("Sent")).toBeNull();
     expect(relayPost.mock.calls.filter(([path]) => path === THREAD_OF_FAN_FOUR)).toHaveLength(1);
-    // The field is the one place to retry: the Thread's Retry belongs to
-    // another instance of the send hook, which never saw this send.
-    expect(fanFourMessages().filter((m) => m._failed || m.text === "Fixture quick reply")).toEqual([]);
+    // The inbox row already reads as our reply: the failed bubble (its Retry
+    // reads the shared send stash) is the Thread's trace that it didn't go.
+    expect(fanFourMessages().filter((m) => m._failed).map((m) => m.text)).toEqual(["Fixture quick reply"]);
   });
 
   it("replies from a reopened Reply field keep each reply in the Fan's messages", async () => {

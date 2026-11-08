@@ -21,8 +21,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 
 import type { Gran } from "@/components/stats/chart";
 import { ssePoll } from "@/lib/events";
-import { fetchOwnProfile } from "@/hooks/useAccountAvatar";
+import { ofProfileQuery } from "@/hooks/useAccountAvatar";
 import { relay, type RelayContext } from "@/lib/relay";
+import { REFRESH_KEYS } from "@/lib/screenBundle";
 import { type FanId } from "@/lib/fanId";
 
 const CACHE = {
@@ -607,15 +608,10 @@ export interface OfProfile {
 
 export function useAccountProfile(accountId: string | null | undefined) {
   return useQuery<OfProfile | null>({
-    queryKey: ["of-profile", accountId] as const,
-    enabled: !!accountId,
     // Shared with useAccountAvatar. Session expired / network blip / OF
     // rate-limit / another Creator's body → null; the card falls back to ID.
-    queryFn: ({ signal }) => fetchOwnProfile<OfProfile>(accountId!, signal),
+    ...ofProfileQuery<OfProfile>(accountId),
     staleTime: 30 * 60_000,
-    gcTime: 24 * 60 * 60_000,
-    refetchOnWindowFocus: false,
-    retry: false,
     placeholderData: keepPreviousData,
   });
 }
@@ -642,7 +638,7 @@ export interface OfSubscriberCounts {
 
 export function useOfSubscriberCounts(accountId: string | null | undefined) {
   return useQuery<OfSubscriberCounts | null>({
-    queryKey: ["of-sub-counts", accountId] as const,
+    queryKey: [REFRESH_KEYS.subscriberCounts, accountId] as const,
     enabled: !!accountId,
     queryFn: async ({ signal }) => {
       try {
@@ -684,7 +680,7 @@ export function useOfNewFans(
   to: string | null,
 ) {
   return useQuery<number | null>({
-    queryKey: ["of-new-fans", accountId, from, to] as const,
+    queryKey: [REFRESH_KEYS.newFans, accountId, from, to] as const,
     enabled: !!accountId,
     queryFn: async ({ signal }) => {
       try {

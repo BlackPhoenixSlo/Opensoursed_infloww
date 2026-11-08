@@ -25,13 +25,13 @@ import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import {
-  FormBlock, NoCreator, SaveRow, SwitchRow, useAutomationCreator,
+  FormBlock, NoCreator, SwitchRow, useAutomationCreator,
 } from "@/components/automations/automationPage";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
 import { unsaved } from "@/components/automations/sentDraft";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { IfButton, IfInput, IfTextArea } from "@/components/ui/infloww";
+import { IfInput, IfTextArea, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 import {
   useAutomationKinds, useAutomationRules, useSaveRule, useSwitchKind, type AutomationKind, type AutomationRule,
@@ -91,8 +91,9 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
           ) : null}
         </FormBlock>
 
-        {/* Once per creator, on or off, rule or not: the switch creating or parking the rule never re-seeds it. */}
-        {rulesQ.isSuccess && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
+        {/* Once per creator, on or off, rule or not: the switch creating or parking the rule never re-seeds it, and a
+            failed refetch (data kept) never unmounts the typed settings. */}
+        {rulesQ.data !== undefined && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
 
         <ModelInfo accountId={accountId} />
       </div>
@@ -232,15 +233,12 @@ function ModelInfoForm({ accountId, resp }: { accountId: string; resp: AccountCo
         rows={7}
         maxLength={NOTES_MAX}
       />
-      <div className="flex items-center gap-3">
-        <IfButton variant="primary" className="min-w-[76px]" disabled={saveM.isPending}
-          onClick={() => saveM.mutate({ ...resp.config, model_notes: text })}>
-          {saveM.isPending ? "Saving…" : "Save"}
-        </IfButton>
+      <SaveRow
+        save={saveVerdict(saveM)}
+        onSave={() => saveM.mutate({ ...resp.config, model_notes: text })}
+      >
         <span className="text-[12px] text-muted tabular-nums">{text.length}/{NOTES_MAX}</span>
-        {saveM.isSuccess && !saveM.isPending && <span className="text-[12px] text-ok">Saved</span>}
-        {saveM.isError && <span className="text-[12px] text-err">{saveM.error.message || "Save failed"}</span>}
-      </div>
+      </SaveRow>
     </>
   );
 }

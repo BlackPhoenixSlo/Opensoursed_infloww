@@ -26,7 +26,7 @@ import {
   EmptyState, IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfModal, IfSegmented, IfTextArea,
   type IfOption,
 } from "@/components/ui/infloww";
-import { ConfirmDelete, EDITOR_MODAL, SwitchRow, TABLE_EMPTY } from "@/components/automations/automationPage";
+import { ConfirmDelete, SwitchRow, TABLE_EMPTY } from "@/components/automations/automationPage";
 import { cn } from "@/lib/utils";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
 import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
@@ -42,7 +42,8 @@ import {
   editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, stepErrorText,
   type FunnelBody, type FunnelEdit,
 } from "@/lib/funnelDraft";
-import { canSubmit, useRawJson } from "@/lib/rawJsonReducer";
+import { canSubmit, useRawJson, type RawJsonAction } from "@/lib/rawJsonReducer";
+import { useTouched } from "@/components/compose/useTouched";
 import {
   useAutomationRules,
   useCreateRule,
@@ -82,7 +83,9 @@ export function FunnelEditor({
   // whole funnel body `{ name, opening_message, description, steps }` (paste
   // steps, tweak a field the form doesn't expose). Unknown step keys pass
   // through; see lib/funnelDraft for how known keys and `step` numbers are kept.
-  const [draft, dispatch] = useRawJson(FUNNEL_RAW, () => EMPTY_FUNNEL);
+  const [draft, rawDispatch] = useRawJson(FUNNEL_RAW, () => EMPTY_FUNNEL);
+  // Escape closes only an untouched draft: the load's seed, a mode switch and a failed save are not edits.
+  const { touched, dispatch } = useTouched(draft, rawDispatch, isFunnelSeed);
   const { name, description, opening, steps } = draft.value;
   const edit = (e: FunnelEdit) => dispatch({ type: "update", fn: (d) => editFunnel(d, e) });
   const fail = (error: string) => dispatch({ type: "fail", error });
@@ -90,9 +93,9 @@ export function FunnelEditor({
   // Seed once from the loaded funnel (edit mode). Create mode starts blank.
   useEffect(() => {
     if (seeded || !fullQ.data) return;
-    dispatch({ type: "set", value: funnelDraftOf(fullQ.data) });
+    rawDispatch({ type: "set", value: funnelDraftOf(fullQ.data) });
     setSeeded(true);
-  }, [fullQ.data, seeded, dispatch]);
+  }, [fullQ.data, seeded, rawDispatch]);
 
   const busy = createM.isPending || updateM.isPending;
 
@@ -134,7 +137,8 @@ export function FunnelEditor({
       width={722}
       title={isEdit ? `Edit funnel · ${name || funnelId}` : "New funnel"}
       onClose={onClose}
-      className={EDITOR_MODAL}
+      keyboard={!touched && !busy}
+      size="editor"
       footer={(
         <>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
@@ -213,10 +217,6 @@ export function FunnelEditor({
             onPatch={(patch) => edit({ type: "patchStep", i, patch })}
             onRemove={() => edit({ type: "removeStep", i })}
             onMove={(dir) => edit({ type: "moveStep", i, dir })}
-            onMsgChange={(mi, text) => edit({ type: "patchMsg", i, mi, text })}
-            onMsgAdd={() => edit({ type: "addMsg", i })}
-            onMsgImport={(texts) => edit({ type: "addMsgs", i, texts })}
-            onMsgRemove={(mi) => edit({ type: "removeMsg", i, mi })}
           />
         ))}
 
@@ -235,6 +235,8 @@ export function FunnelEditor({
     </IfModal>
   );
 }
+
+const isFunnelSeed = (a: { type: RawJsonAction<unknown>["type"] }) => a.type === "set" || a.type === "open" || a.type === "close" || a.type === "fail";
 
 // ── Mass-funnels tab: list + create/edit dialogs (Auto Funnel) ──
 
@@ -258,10 +260,9 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
 }) {
   const listQ = useFunnels();
   const deleteM = useDeleteFunnel();
-  const [editing, setEditing] = useState<number | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [launching, setLaunching] = useState<number | null>(null);
-  const [mediaFor, setMediaFor] = useState<number | null>(null);
+  // One open at a time: the editor dialog (new or a funnel) or a row's Start / Media panel.
+  const [panel, setPanel] = useState<{ k: "new" } | { k: "edit" | "start" | "media"; id: number } | null>(null);
+  const openOn = (k: "edit" | "start" | "media", id: number) => panel?.k === k && panel.id === id;
   const [deleting, setDeleting] = useState<{ id: number; name: string } | null>(null);
   const [rowErr, setRowErr] = useState<{ id: number; msg: string } | null>(null);
 
@@ -301,28 +302,21 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
     }
   }
 
-  function close() {
-    setEditing(null);
-    setAdding(false);
-  }
+  const close = () => setPanel(null);
 
   async function remove(id: number) {
     setDeleting(null);
     setRowErr(null);
     try {
       await deleteM.mutateAsync(id);
-      if (editing === id) close();
+      if (openOn("edit", id)) close();
     } catch (e) {
       setRowErr({ id, msg: (e as Error)?.message || "Delete failed" });
     }
   }
 
   /** One row's panel at a time: Start or Media, toggled. */
-  const openPanel = (which: "start" | "media", id: number) => {
-    close();
-    setLaunching(which === "start" && launching !== id ? id : null);
-    setMediaFor(which === "media" && mediaFor !== id ? id : null);
-  };
+  const openPanel = (k: "start" | "media", id: number) => setPanel(openOn(k, id) ? null : { k, id });
 
   const line = (children: ReactNode, cls = "text-muted") => (
     <tr><td colSpan={FUNNEL_COLUMNS.length} className={cn("py-10 text-center text-[14px]", cls)}>{children}</td></tr>
@@ -334,7 +328,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
         the reply / PPV steps per replying fan.</>}>
         <span className="max-sm:sr-only">Learn</span>
       </IfLearn>
-      <IfButton variant="primary" icon={Plus} onClick={() => { setEditing(null); setAdding(true); }} className="max-sm:px-2.5">
+      <IfButton variant="primary" icon={Plus} onClick={() => setPanel({ k: "new" })} className="max-sm:px-2.5">
         <span className="max-sm:sr-only">New funnel</span>
       </IfButton>
     </>
@@ -377,7 +371,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
               : funnels.length === 0 ? (
                 <tr><td colSpan={FUNNEL_COLUMNS.length}><EmptyState kind="data" text="No funnels yet" className={TABLE_EMPTY} /></td></tr>
               ) : funnels.map((f) => {
-                const open = launching === f.id || mediaFor === f.id;
+                const open = openOn("start", f.id) || openOn("media", f.id);
                 return (
                   <Fragment key={f.id}>
                     <tr className={cn(IF_TABLE.row, open && "border-b-0")}>
@@ -389,10 +383,10 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                       <td className={cn(IF_TABLE.td, "w-full max-w-0 truncate text-fg-dim")}>{f.description || f.opening_message}</td>
                       <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap")}>
                         <span className="inline-flex gap-4">
-                          <button type="button" className={LINK} aria-expanded={mediaFor === f.id} onClick={() => openPanel("media", f.id)}>Media</button>
-                          <button type="button" className={LINK} aria-expanded={launching === f.id} onClick={() => openPanel("start", f.id)}>Start</button>
+                          <button type="button" className={LINK} aria-expanded={openOn("media", f.id)} onClick={() => openPanel("media", f.id)}>Media</button>
+                          <button type="button" className={LINK} aria-expanded={openOn("start", f.id)} onClick={() => openPanel("start", f.id)}>Start</button>
                           <button type="button" className={LINK}
-                            onClick={() => { setLaunching(null); setMediaFor(null); setAdding(false); setEditing(f.id); }}>Edit</button>
+                            onClick={() => setPanel({ k: "edit", id: f.id })}>Edit</button>
                           <button type="button" className={LINK} disabled={deleteM.isPending}
                             onClick={() => setDeleting({ id: f.id, name: f.name })}>Delete</button>
                         </span>
@@ -401,7 +395,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                     {open && (
                       <tr className={IF_TABLE.row}>
                         <td colSpan={FUNNEL_COLUMNS.length} className="space-y-2 px-4 pb-4">
-                          {launching === f.id && (
+                          {openOn("start", f.id) && (
                             <>
                               {!walkerOn && (
                                 <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2">
@@ -414,11 +408,11 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                                   </IfButton>
                                 </div>
                               )}
-                              <FunnelLaunchPanel key={accountId ?? ""} funnel={f} accountId={accountId} onClose={() => setLaunching(null)} />
+                              <FunnelLaunchPanel key={accountId ?? ""} funnel={f} accountId={accountId} onClose={close} />
                             </>
                           )}
-                          {mediaFor === f.id && (
-                            <FunnelMediaPane funnel={f} accountId={accountId} onClose={() => setMediaFor(null)} />
+                          {openOn("media", f.id) && (
+                            <FunnelMediaPane funnel={f} accountId={accountId} onClose={close} />
                           )}
                         </td>
                       </tr>
@@ -430,8 +424,8 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
         </table>
       </div>
 
-      {(adding || editing != null) && (
-        <FunnelEditor key={editing ?? "new"} funnelId={editing} onClose={close} />
+      {(panel?.k === "new" || panel?.k === "edit") && (
+        <FunnelEditor key={panel.k === "edit" ? panel.id : "new"} funnelId={panel.k === "edit" ? panel.id : null} onClose={close} />
       )}
       {deleting && (
         <ConfirmDelete

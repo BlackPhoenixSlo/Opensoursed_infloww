@@ -15,8 +15,9 @@
 In Infloww a sequence step IS a script, and that script may also sit in tags: each becomes ONE row. `plan()` maps
 the dump that way: a step's script name is its `script_name` (or `name`); a step whose name was ambiguous at capture
 (`script_name_candidates`) gets the first candidate no other step uses, in dump order, so each name is used once.
-A tag's scripts are joined to steps by script name and go on the step as its `tags`; only tag scripts in no
-sequence are sent as tag scripts (standalone rows). "All scripts" and "Uncategorized" are Infloww's fixed views,
+A tag's scripts are joined to steps by script name (case-blind) and text, as the relay matches a tag script
+(`_script_key`), and go on the step as its `tags`; only tag scripts matching no step are sent as tag scripts
+(standalone rows). "All scripts" and "Uncategorized" are Infloww's fixed views,
 not tags: never created, used only to reconcile (All scripts == every row, Uncategorized == the untagged ones).
 
 Sign-in is the owner's, as scripts/lane-stats.sh does: `POST /auth/login` with RELAY_USER / RELAY_PASS (prompted
@@ -28,8 +29,11 @@ chunk with `dry_run: true`: the relay counts and rolls back. Media is not in the
 Prints the per-chunk answers, then the reconciliation: the dump's own views vs the plan, the endpoint's counts, and
 (not on a dry run) a read-back: rows (FM follow-up scripts aside), per-tag and untagged counts, the sequence metas
 in dump order, and every step field by field (sequence, step, text, notes, name, tags, condition, price) against the
-plan. `--report` writes all of it as JSON. Exit 0 when everything matches; 1 otherwise; 2 usage / sign-in.
-Standard library only.
+plan. Text, step labels and dates are compared as the relay stores them: through the relay's own `of_text`
+(service/of_rich_text.py), `parse_step` and `sequence_dates` (service/infloww_dump.py, UTC), imported from the
+checkout's service/; a date the dump doesn't give (the relay stores its import time) is not compared. `--report`
+writes all of it as JSON, a failed read-back's HTTP codes included. Exit 0 when everything matches; 1 otherwise (a relay that can't be reached is a failed request, HTTP 0, never a traceback); 2 usage /
+sign-in / no service/ beside scripts/. Standard library only.
 """
 from __future__ import annotations
 
@@ -44,11 +48,32 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 VIEWS = ("all scripts", "uncategorized")  # Infloww's fixed Tag-sidebar entries
-_FM = re.compile(r"^FM\d+$")
+_FM = re.compile(r"^FM[0-9]+$")  # the relay's reserved script names (FM<digits>)
+
+
+def _relay_modules():
+    """The relay's own `of_text`, `parse_step` and `sequence_dates` (service/of_rich_text.py, service/infloww_dump.py,
+    both standard library only): the text, step and dates the relay stores of a payload's. Appended to sys.path, so
+    nothing there shadows the standard library. A checkout without them can't reconcile: exit 2, never a silent
+    guess."""
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "service"))
+    try:
+        from infloww_dump import parse_step, sequence_dates
+        from of_rich_text import of_text
+    except ImportError as e:
+        print(f"import_infloww_scripts needs the relay's service/ beside scripts/ ({e})", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        sys.path.pop()
+    return of_text, parse_step, sequence_dates
+
+
+_of_text, _parse_step, _sequence_dates = _relay_modules()
+_UNREAD = datetime.min  # `sequence_dates`' stand-in for the import's own time: a date the dump doesn't give
 
 
 def _load(path: Path, key: str) -> list[dict]:
@@ -63,27 +88,23 @@ def _view(tags: list[dict], name: str) -> list[dict] | None:
 
 
 def _order(label) -> tuple[int, int]:
-    n, _, m = str(label).strip().partition(".")
-    return int(n), int(m or 0)
+    """A step label's (N, M); (0, 0) for one the relay refuses (its sequence failed, so nothing is read back)."""
+    return _parse_step(label) or (0, 0)
 
 
-def plan(sequences: list[dict], tags: list[dict]) -> dict:
-    """The dump as the endpoint's payload, one row per script: {"sequences", "tags" (scripts in no sequence
-    only), "expected" (rows, per tag, untagged, steps, sequences), "problems" (unmappable bits)}."""
-    real = [t for t in tags if t["name"].strip().lower() not in VIEWS]
-    tags_of: dict[str, list[str]] = {}
-    for t in real:
-        for sc in t.get("scripts") or []:
-            got = tags_of.setdefault((sc.get("name") or "").strip(), [])
-            if t["name"].strip() not in got:
-                got.append(t["name"].strip())
-    tags_of.pop("", None)
+def _script_key(name: str | None, text: str | None) -> tuple[str, str]:
+    """A script's identity as the relay's tag pass matches it: name case-blind, text as stored."""
+    return (name or "").strip().lower(), _of_text(text or "")
+
+
+def _step_names(sequences: list[dict], problems: list[str]) -> list[list[str]]:
+    """Each step's script name: its `script_name` / `name`, else the first of its `script_name_candidates` no other
+    step uses (dump order)."""
     used = {(st.get("script_name") or st.get("name") or "").strip() for q in sequences for st in q.get("steps") or []}
     used.discard("")
-    problems: list[str] = []
-    out: list[dict] = []
+    out: list[list[str]] = []
     for q in sequences:
-        steps = []
+        names = []
         for st in q.get("steps") or []:
             name = (st.get("script_name") or st.get("name") or "").strip()
             if not name and st.get("script_name_candidates"):
@@ -93,23 +114,46 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
                     used.add(name)
                 else:
                     problems.append(f"{q['name'].strip()!r} step {st['step']}: every candidate name taken")
+            names.append(name)
+        out.append(names)
+    return out
+
+
+def plan(sequences: list[dict], tags: list[dict]) -> dict:
+    """The dump as the endpoint's payload, one row per script: {"sequences", "tags" (scripts in no sequence
+    only), "expected" (rows, per tag, untagged, steps, sequences), "problems" (unmappable bits)}."""
+    real = [t for t in tags if t["name"].strip().lower() not in VIEWS]
+    tags_of: dict[tuple[str, str], list[str]] = {}
+    for t in real:
+        for sc in t.get("scripts") or []:
+            if not (sc.get("name") or "").strip():
+                continue
+            got = tags_of.setdefault(_script_key(sc.get("name"), sc.get("text")), [])
+            if t["name"].strip() not in got:
+                got.append(t["name"].strip())
+    problems: list[str] = []
+    out: list[dict] = []
+    for q, names in zip(sequences, _step_names(sequences, problems)):
+        steps = []
+        for st, name in zip(q.get("steps") or [], names):
             row = {k: st[k] for k in ("step", "text", "notes", "conditional", "price") if st.get(k) is not None}
-            steps.append({**row, "name": name or None, "tags": tags_of.get(name, []) if name else []})
+            steps.append({**row, "name": name or None,
+                          "tags": tags_of.get(_script_key(name, st.get("text")), []) if name else []})
         out.append({**{k: v for k, v in q.items() if k not in ("steps", "script_count")}, "steps": steps})
-    in_seq = {st["name"] for q in out for st in q["steps"] if st["name"]}
+    in_seq = {_script_key(st["name"], st.get("text")) for q in out for st in q["steps"] if st["name"]}
     loose: list[dict] = []
     for t in real:
-        scripts = [sc for sc in t.get("scripts") or [] if (sc.get("name") or "").strip() not in in_seq]
+        scripts = [sc for sc in t.get("scripts") or [] if _script_key(sc.get("name"), sc.get("text")) not in in_seq]
         if scripts:
             loose.append({**{k: v for k, v in t.items() if k != "scripts"}, "scripts": scripts})
-    standalone = {((sc.get("name") or "").strip().lower(), sc.get("text") or ""): tags_of.get(
-        (sc.get("name") or "").strip(), [t["name"].strip()]) for t in loose for sc in t["scripts"]}
-    tagged_names = set(tags_of)
-    for v in VIEWS:
-        for sc in _view(tags, v) or []:
-            name = (sc.get("name") or "").strip()
-            if name not in in_seq and name not in tagged_names:
-                problems.append(f"{name!r}: in no sequence and no tag (an untagged loose script is not importable)")
+    standalone = {_script_key(sc.get("name"), sc.get("text")): tags_of.get(
+        _script_key(sc.get("name"), sc.get("text")), [t["name"].strip()]) for t in loose for sc in t["scripts"]}
+    all_view, uncategorized = _view(tags, "all scripts"), _view(tags, "uncategorized")
+    for sc in (all_view or []) + (uncategorized or []):
+        key = _script_key(sc.get("name"), sc.get("text"))
+        if key not in in_seq and key not in tags_of:
+            problems.append(f"{(sc.get('name') or '').strip()!r}: in no sequence and no tag (an untagged loose "
+                            "script is not importable)")
     n_steps = sum(len(q["steps"]) for q in out)
     per_tag: Counter = Counter()
     for q in out:
@@ -121,9 +165,8 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
     expected = {"sequences": len(out), "steps": n_steps, "standalone": len(standalone),
                 "rows": n_steps + len(standalone), "per_tag": dict(per_tag), "untagged": untagged}
     # The dump's own views must agree with the plan (All scripts == every row, Uncategorized == untagged).
-    views = {"all_scripts": len(_view(tags, "all scripts") or []) if _view(tags, "all scripts") is not None else None,
-             "uncategorized": len(_view(tags, "uncategorized") or [])
-             if _view(tags, "uncategorized") is not None else None,
+    views = {"all_scripts": len(all_view) if all_view is not None else None,
+             "uncategorized": len(uncategorized) if uncategorized is not None else None,
              "per_tag": {t["name"].strip(): len(t.get("scripts") or []) for t in real}}
     if views["all_scripts"] is not None and views["all_scripts"] != expected["rows"]:
         problems.append(f"dump 'All scripts' {views['all_scripts']} != planned rows {expected['rows']}")
@@ -165,21 +208,6 @@ def chunks(sequences: list[dict], tags: list[dict], size: int) -> list[dict]:
     return out
 
 
-def _day(v) -> str | None:
-    """A dump date as YYYY-MM-DD (what the relay keeps of a day-only date), None when unreadable."""
-    if v in (None, ""):
-        return None
-    try:
-        n = float(v)
-        return datetime.fromtimestamp(n / 1000 if n > 1e11 else n, timezone.utc).strftime("%Y-%m-%d")
-    except (TypeError, ValueError):
-        pass
-    try:
-        return datetime.strptime(str(v).strip(), "%b %d, %Y").strftime("%Y-%m-%d")
-    except ValueError:
-        return str(v)[:10]
-
-
 def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
     """The Creator's scripts (FM aside) and sequence metas vs the plan, field by field."""
     rows = [r for r in rows if not _FM.match(r.get("script_id") or "")]
@@ -200,7 +228,7 @@ def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
             diffs.append({"sequence": name, "field": "steps", "want": len(want), "got": len(got)})
         for g, st in zip(got, want):
             for field, w, h in (("step", _order(st["step"])[0], g["script_step"]),
-                                ("text", st.get("text") or "", g["text"]),
+                                ("text", _of_text(st.get("text") or ""), g["text"]),
                                 ("notes", (st.get("notes") or "").strip() or None, g["notes"]),
                                 ("name", st["name"], g["title"]),
                                 ("tags", sorted(st["tags"]), sorted(g.get("tags") or [])),
@@ -211,7 +239,7 @@ def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
     loose = {((r.get("title") or "").strip().lower(), r["text"]): r for r in rows if not r.get("script_id")}
     for t in p["tags"]:
         for sc in t["scripts"]:
-            r = loose.get(((sc.get("name") or "").strip().lower(), sc.get("text") or ""))
+            r = loose.get(_script_key(sc.get("name"), sc.get("text")))
             if r is None or t["name"].strip() not in (r.get("tags") or []):
                 diffs.append({"tag": t["name"].strip(), "script": sc.get("name"), "field": "standalone",
                               "want": "present + tagged", "got": r and r.get("tags")})
@@ -222,12 +250,14 @@ def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
     meta_diffs = []
     for q in p["sequences"]:
         m = by_name.get(q["name"].strip()) or {}
+        # The days the relay stores (UTC), by its own rule for an unreadable date; the import's time is not compared.
+        created, modified = (d.strftime("%Y-%m-%d") if d != _UNREAD else None for d in _sequence_dates(
+            q.get("created_on"), q.get("modified_on"), _UNREAD))
         for field, w, h in (("created_by", (q.get("created_by") or "").strip() or None, m.get("created_by")),
                             ("description", (q.get("description") or "").strip() or None, m.get("description")),
-                            ("created_on", _day(q.get("created_on")), (m.get("created_at") or "")[:10] or None),
-                            ("modified_on", _day(q.get("modified_on") or q.get("created_on")),
-                             (m.get("updated_at") or "")[:10] or None)):
-            if w != h:
+                            ("created_on", created, (m.get("created_at") or "")[:10] or None),
+                            ("modified_on", modified, (m.get("updated_at") or "")[:10] or None)):
+            if w != h and not (field.endswith("_on") and w is None):
                 meta_diffs.append({"sequence": q["name"].strip(), "field": field, "want": w, "got": h})
     got = {"rows": len(rows), "sequences": len(by_seq), "metas": len(metas), "per_tag": dict(per_tag),
            "untagged": sum(1 for r in rows if not r.get("tags")), "metas_in_dump_order": order == want_order}
@@ -264,16 +294,18 @@ class Relay:
                 return e.code, json.loads(e.read() or b"{}")
             except ValueError:
                 return e.code, {}
+        except OSError as e:  # unreachable, refused, timed out (URLError and TimeoutError are OSErrors): HTTP 0
+            return 0, {"detail": str(getattr(e, "reason", None) or e)}
 
 
-def _sign_in(relay: Relay) -> None:
+def _sign_in(relay: Relay) -> str | None:
+    """Why the sign-in failed, or None."""
     user = os.environ.get("RELAY_USER") or (input("username: ") if sys.stdin.isatty() else "")
     pw = os.environ.get("RELAY_PASS") or (getpass.getpass("password: ") if sys.stdin.isatty() else "")
     if not user or not pw:
-        sys.exit("relay needs a sign-in; set RELAY_USER and RELAY_PASS")
+        return "relay needs a sign-in; set RELAY_USER and RELAY_PASS"
     code, _ = relay.call("POST", "/auth/login", {"username": user, "password": pw})
-    if code != 200:
-        sys.exit(f"sign-in failed (HTTP {code})")
+    return f"sign-in failed (HTTP {code})" if code != 200 else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -298,8 +330,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  PLAN PROBLEM {msg}")
     relay = Relay(a.base_url, os.environ.get("SHARE_TOKEN"))
     code, _ = relay.call("GET", "/admin/saved-replies/sequences", account_id=a.account_id)
-    if code == 401:
-        _sign_in(relay)
+    if code == 401 and (why := _sign_in(relay)):
+        print(why, file=sys.stderr)
+        return 2
     total: Counter = Counter()
     failed: list[dict] = []
     skipped: list[str] = []
@@ -339,19 +372,22 @@ def main(argv: list[str] | None = None) -> int:
         code, ans = relay.call("GET", "/admin/saved-replies", account_id=a.account_id)
         code2, metas = relay.call("GET", "/admin/saved-replies/sequences", account_id=a.account_id)
         if code != 200 or code2 != 200:
+            # Still a report: the run's counts and failures, and which read-back request failed.
             print(f"  read-back: HTTP {code} / {code2}", file=sys.stderr)
-            return 1
-        rb = read_back(ans["list"], metas["list"], p)
-        g = rb["got"]
-        print(f"  read-back: {g['rows']} scripts (want {exp['rows']}), {g['sequences']} sequences with "
-              f"{g['metas']} metas (want {exp['sequences']}, dump order {g['metas_in_dump_order']}), per tag "
-              f"{g['per_tag']} (want {exp['per_tag']}), untagged {g['untagged']} (want {exp['untagged']})")
-        print(f"  field-by-field: {len(rb['step_diffs'])} step differences, {len(rb['meta_diffs'])} meta "
-              f"differences; mismatches {rb['mismatches'] or 'none'}")
-        for d in (rb["step_diffs"] + rb["meta_diffs"])[:20]:
-            print(f"    {d}")
-        report["read_back"] = rb
-        ok = ok and not rb["mismatches"] and not rb["step_diffs"] and not rb["meta_diffs"]
+            report["read_back"] = {"failed": {"list_http": code, "sequences_http": code2}}
+            ok = False
+        else:
+            rb = read_back(ans["list"], metas["list"], p)
+            g = rb["got"]
+            print(f"  read-back: {g['rows']} scripts (want {exp['rows']}), {g['sequences']} sequences with "
+                  f"{g['metas']} metas (want {exp['sequences']}, dump order {g['metas_in_dump_order']}), per tag "
+                  f"{g['per_tag']} (want {exp['per_tag']}), untagged {g['untagged']} (want {exp['untagged']})")
+            print(f"  field-by-field: {len(rb['step_diffs'])} step differences, {len(rb['meta_diffs'])} meta "
+                  f"differences; mismatches {rb['mismatches'] or 'none'}")
+            for d in (rb["step_diffs"] + rb["meta_diffs"])[:20]:
+                print(f"    {d}")
+            report["read_back"] = rb
+            ok = ok and not rb["mismatches"] and not rb["step_diffs"] and not rb["meta_diffs"]
     report["ok"] = ok
     if a.report:
         a.report.write_text(json.dumps(report, ensure_ascii=False, indent=1))

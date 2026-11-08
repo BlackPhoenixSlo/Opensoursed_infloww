@@ -23,7 +23,7 @@ import { EmptyState, IF_TABLE, IfButton, IfModal, IfSelect, IfSwitch, type IfOpt
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
 import { ProjectionAvatar, S4SMediaStrip, message } from "@/components/s4s/s4sBits";
-import { vaultTileThumb } from "@/hooks/useVaultCache";
+import { vaultTileThumb } from "@/lib/mediaUrl";
 import {
   S4S_DAILY_LIMITS, S4S_MAX_CAPTION, S4S_MAX_MEDIA, S4S_MAX_POSTS, S4S_PROFILES_KEY,
   createS4SPost, deleteS4SPost, editS4SPost, putS4SPostMedia, setPrimaryS4SPost, updateS4SProfile,

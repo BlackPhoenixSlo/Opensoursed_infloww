@@ -11,7 +11,9 @@ sweep finished >= SWEEP_EVERY_S ago (never swept: at once). The anchor is the
 latest job with payload exactly `{}` that ended for real, read from the DB, so
 restarts change nothing:
   - ok: its `automation_runs` row (scrape_chats stamps `full_sweep` on a `{}` run
-    only; `{"limit": 50}`, `fan_ids` and failed runs never carry it), `completed_at`;
+    only; `{"limit": 50}`, `fan_ids` and failed runs never carry it, nor a `{}` run
+    that scraped nothing and hit a non-404 failure: it raises, so it retries then parks
+    'error'), `completed_at`;
   - a real error (retries spent): the job row parked 'error', at its `run_at` (the
     last attempt's due time, ~when it ran), so a failing account waits the cadence.
 A restart's cancel (`last_error` RESTART_CANCEL, even with the retries spent) and an
@@ -49,7 +51,8 @@ TICK_S = 300
 FIRST_AFTER_S = 120
 DUP_REASON = "duplicate full sweep"
 FULL_SWEEP_MARK = '"full_sweep": true'   # scrape_chats' stats on a `{}` run (json.dumps)
-RESTART_CANCEL = "cancelled"   # last_error of a job whose run a shutdown cancelled (run_decide.outcome)
+RESTART_CANCEL = "cancelled"   # last_error of a job whose run a shutdown cancelled (automation_executor's
+                               # run_decide.outcome("cancelled", None, "cancelled"): a literal there, no constant)
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,7 @@ async def tick() -> dict:
         cutoff = now - timedelta(seconds=SWEEP_EVERY_S)
         recent = set((await s.execute(
             select(AutomationRun.account_id)
-            .where(AutomationRun.kind == KIND, AutomationRun.status == "ok",
+            .where(AutomationRun.kind.in_(kind_family(KIND)), AutomationRun.status == "ok",
                    AutomationRun.completed_at >= cutoff,
                    AutomationRun.stats_json.contains(FULL_SWEEP_MARK, autoescape=True))
             .group_by(AutomationRun.account_id)
@@ -133,8 +136,6 @@ async def tick() -> dict:
                 await enqueue_job(aid, KIND, payload={}, session=s)
         if p.enqueue:
             wake_supervisor()
-    out = {"live": len(live), "enqueued": len(p.enqueue), "cancelled": cancelled}
-    if p.cancel or p.enqueue:
         log.info("chat_sweep_cadence live=%d enqueued=%d cancelled_duplicates=%d",
-                 out["live"], out["enqueued"], cancelled)
-    return out
+                 len(live), len(p.enqueue), cancelled)
+    return {"live": len(live), "enqueued": len(p.enqueue), "cancelled": cancelled}

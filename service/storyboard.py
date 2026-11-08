@@ -28,7 +28,7 @@ import anyio.from_thread
 
 import admission
 import cdn_resign
-from img_api import _ALLOWED_CDN_SUFFIXES
+from img_api import _ALLOWED_CDN_SUFFIXES, _CACHE_CONTROL
 from relay_host import get_request_client as _get_client
 from relay_host import periodic as _periodic
 
@@ -232,20 +232,16 @@ def _storyboard_download(
     # cancel POST arriving after the build wraps up is a no-op — not a
     # poison flag for the next session that happens to reuse this id.
     cancel_event = _storyboard_register_session(session_id) if session_id else None
+    r = None
     try:
         client = _get_client(request)
         aid = str(getattr(client, "account_id", "") or "")
-        if media_id and aid:
-            u = cdn_resign.current(aid, u)
-        r = client.http.get(u, timeout=client.timeout_s, stream=True)
-        if r.status_code == 403 and media_id and aid:
-            try: r.close()
-            except Exception: pass
-            # Sync route, so an anyio worker thread: hop to the loop for the by-id read.
-            fresh = anyio.from_thread.run(cdn_resign.resign, aid, media_id, u, client)
-            if fresh:
-                u = fresh
-                r = client.http.get(u, timeout=client.timeout_s, stream=True)
+
+        # Sync route, so an anyio worker thread: hop to the loop for cdn_resign (its by-id read); the GETs go to
+        # the default executor (as resolve_fresh's read does), not back to the anyio pool this thread holds.
+        def get(url: str):
+            return asyncio.to_thread(client.http.get, url, timeout=client.timeout_s, stream=True)
+        r, u = anyio.from_thread.run(cdn_resign.fetch, aid, media_id, u, client, get)
         if r.status_code not in (200, 206):
             log.warning("storyboard download non-2xx %d for %s", r.status_code, u[:120])
             _storyboard_build_failures += 1
@@ -269,14 +265,10 @@ def _storyboard_download(
                     else:
                         # Truly abort — drop the partial mp4, signal failure.
                         _storyboard_total_cancelled += 1
-                        try: r.close()
-                        except Exception: pass
                         return False
                 if chunk:
                     f.write(chunk)
                     bytes_done += len(chunk)
-        try: r.close()
-        except Exception: pass
         return True
     except Exception:
         log.warning("storyboard download failed for %s", u[:120], exc_info=True)
@@ -285,6 +277,9 @@ def _storyboard_download(
         except Exception: pass
         return False
     finally:
+        if r is not None:
+            try: r.close()
+            except Exception: pass
         if session_id:
             _storyboard_release_session(session_id)
 
@@ -525,7 +520,7 @@ def proxy_image_scrub(
         frame_path,
         media_type="image/jpeg",
         headers={
-            "Cache-Control": "private, max-age=604800, immutable",
+            "Cache-Control": _CACHE_CONTROL,
             "X-Img-Hash": h,
         },
     )

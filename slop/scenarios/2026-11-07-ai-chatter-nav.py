@@ -1,5 +1,6 @@
 """Sidebar: My Automations split in two plus Full AI Chatter (2026-11-07). The owner on a phone opens
-the nav drawer and finds My Automations (Auto Post, Auto Story, Auto Mass, Gen-Info),
+the nav drawer and finds My Automations (Auto Post, Auto Story, Auto Mass, Gen-Info, and the pages a flow
+in files of its own adds: lib/<flow>_nav.py `MY_AUTOMATIONS`),
 then My AI Chatter (Auto-reply, Auto Funnel, Get to know fans), then Full AI Chatter, and taps it: the
 drawer closes on the coming-soon page. At desktop width the sidebar on Auto-reply holds My AI Chatter
 open with Auto-reply current. A chatter whose enforced role ticks Auto-reply only sees My AI Chatter
@@ -22,6 +23,7 @@ from __future__ import annotations
 import json
 
 from slop.actors import ui
+from slop.lib import navs
 from slop.lib.client import Http
 from slop.seed import chatters
 
@@ -35,13 +37,14 @@ AUTO_REPLY = "/growth/auto-reply"
 GTKF = "/growth/get-to-know-fans"
 FULL = "/full-ai-chatter"
 
-MY_AUTOMATIONS = "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info"
+_AUTOMATIONS = ("Auto Post", "Auto Story", "Auto Mass", "Gen-Info", *navs.extras("MY_AUTOMATIONS"))
+MY_AUTOMATIONS = "My Automations: " + " / ".join(_AUTOMATIONS)
 MY_AI_CHATTER = "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans"
 
 C_ROLE = "PUT /admin/settings/roles (enforced, a role ticking Auto-reply of the opt-in pages) is stored and read back"
 C_APPLIED = ("chatter's GET /admin/settings/applied: opt_in is exactly Auto-reply; pages hold Auto-reply, "
              "Get to know fans and Full AI Chatter")
-C_PHONE_DRAWER = ("phone (390x844): the nav drawer lists My Automations (5 pages), then My AI Chatter "
+C_PHONE_DRAWER = (f"phone (390x844): the nav drawer lists My Automations ({len(_AUTOMATIONS)} pages), then My AI Chatter "
                   "(Auto-reply, Auto Funnel, Get to know fans), then Full AI Chatter")
 C_PHONE_PAGE = "phone: tapping Full AI Chatter in the drawer closes it on /full-ai-chatter showing Coming soon"
 C_DESKTOP = ("desktop (1440px): on Auto-reply the sidebar holds My Automations, then My AI Chatter with "

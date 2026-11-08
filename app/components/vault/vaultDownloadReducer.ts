@@ -5,6 +5,11 @@
  * happened. Each item saves to `<creator>/<folder>/<mediaId>.<ext>` and records the source that delivered it:
  * `direct` (the browser fetched OF's signed CDN url itself; only when the account has no proxy, see
  * docs/spec/vault-download.md) or `relay` (`/admin/vault-ai/download`, through the account's client).
+ *
+ * Sink `folder` (desktop Chrome/Edge) writes each file into a picked folder. Sink `share` (phones: no folder picker,
+ * but `navigator.share` takes files) is selection-only, at most SHARE_MAX_ITEMS: each fetched file joins the open
+ * batch until SHARE_BATCH_BYTES, a sealed batch waits for the user's "Save" tap (the share sheet), and fetching holds
+ * while unsaved batches reach SHARE_HELD_BYTES.
  */
 
 import { type VaultMedia } from "@/lib/relay";
@@ -13,6 +18,10 @@ export type DlMode = "selection" | "folder" | "vault";
 export type DlSource = "direct" | "relay";
 export type DlStatus = "queued" | "active" | "done" | "failed";
 export type DlPhase = "idle" | "listing" | "running" | "done" | "cancelled";
+export type DlSink = "folder" | "share";
+
+/** Share sink: files handed to one share sheet, in fetch-completion order. `sealed`: no more files join it. */
+export interface DlBatch { ids: number[]; bytes: number; sealed: boolean; saved: boolean }
 
 export interface DlItem {
   id: number;
@@ -40,10 +49,15 @@ export interface DlState {
   directStrikes: number;
   /** The listing failed (folder / whole vault): why. */
   error: string | null;
+  sink: DlSink;
+  /** Share sink only: the batches so far; the last may be open. */
+  batches: DlBatch[];
+  /** Share sink only: the links file was handed to a share sheet (vaultLinksFile.ts). */
+  linksSaved: boolean;
 }
 
 export type Action =
-  | { type: "start"; mode: DlMode; label: string; creator: string; directAllowed: boolean }
+  | { type: "start"; mode: DlMode; label: string; creator: string; directAllowed: boolean; sink?: DlSink }
   | { type: "listed"; items: DlItem[] }
   | { type: "listFailed"; error: string }
   | { type: "itemStart"; id: number }
@@ -53,6 +67,8 @@ export type Action =
   | { type: "directStrike" }
   | { type: "cancel" }
   | { type: "retryFailed" }
+  | { type: "batchSaved"; index: number }
+  | { type: "linksSaved" }
   | { type: "close" };
 
 /** Direct fetches that fail even after a re-sign before every later item goes through the relay. */
@@ -60,14 +76,48 @@ export const MAX_DIRECT_STRIKES = 2;
 /** Files fetched at once per tab. */
 export const CONCURRENCY = 3;
 export const CANCELLED = "cancelled";
+/** Share sink: at most this many files per run (a selection). */
+export const SHARE_MAX_ITEMS = 20;
+/** Share sink: a batch fills to this many bytes; a bigger file is a batch of its own. Tune here. */
+export const SHARE_BATCH_BYTES = 200 * 1024 * 1024;
+/** Share sink: fetching holds while unsaved batches hold this many bytes (~2 batches in memory). */
+export const SHARE_HELD_BYTES = 2 * SHARE_BATCH_BYTES;
+
+export const DOWNLOAD_OFF = "Download needs Chrome or Edge (it saves into a folder you pick)";
+export const BUSY_OFF = "A download is running";
+export const SHARE_MODE_OFF = "Phone: only a selection downloads here; folders and the whole vault need desktop Chrome or Edge";
+export const SHARE_COUNT_OFF = `Phone: up to ${SHARE_MAX_ITEMS} at a time`;
 
 export const initialDownloadState: DlState = {
   phase: "idle", mode: null, label: "", creator: "", items: [], directAllowed: false, directStrikes: 0, error: null,
+  sink: "folder", batches: [], linksSaved: false,
 };
+
+/** Share sink: add a fetched file to the open batch. A file that would push a non-empty batch past `budget` seals it
+ *  and opens the next; a batch at or over `budget` seals at once (so a file >= budget is a batch of its own). */
+export function addToBatches(bs: DlBatch[], id: number, bytes: number, budget = SHARE_BATCH_BYTES): DlBatch[] {
+  let out = bs;
+  let open = out.length && !out[out.length - 1].sealed ? out[out.length - 1] : null;
+  if (open && open.ids.length && open.bytes + bytes > budget) {
+    out = [...out.slice(0, -1), { ...open, sealed: true }];
+    open = null;
+  }
+  const next: DlBatch = open ? { ...open, ids: [...open.ids, id], bytes: open.bytes + bytes }
+    : { ids: [id], bytes, sealed: false, saved: false };
+  if (next.bytes >= budget) next.sealed = true;
+  return open ? [...out.slice(0, -1), next] : [...out, next];
+}
+
+/** Seal the open batch (nothing more is coming). */
+export function sealBatches(bs: DlBatch[]): DlBatch[] {
+  const last = bs[bs.length - 1];
+  return last && !last.sealed ? [...bs.slice(0, -1), { ...last, sealed: true }] : bs;
+}
 
 function settle(s: DlState): DlState {
   if (s.phase !== "running") return s;
-  return s.items.some((i) => i.status === "queued" || i.status === "active") ? s : { ...s, phase: "done" };
+  if (s.items.some((i) => i.status === "queued" || i.status === "active")) return s;
+  return { ...s, phase: "done", batches: sealBatches(s.batches) };
 }
 
 function patch(s: DlState, id: number, f: (i: DlItem) => DlItem): DlState {
@@ -79,7 +129,7 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
     case "start":
       if (s.phase === "listing" || s.phase === "running") return s;   // one run at a time
       return { ...initialDownloadState, phase: "listing", mode: a.mode, label: a.label, creator: a.creator,
-               directAllowed: a.directAllowed };
+               directAllowed: a.directAllowed, sink: a.sink ?? "folder" };
     case "listed": {
       if (s.phase !== "listing") return s;
       const seen = new Set<number>();
@@ -93,9 +143,11 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
         ? patch(s, a.id, (i) => (i.status === "queued" ? { ...i, status: "active", bytes: 0, error: null } : i)) : s;
     case "itemProgress":
       return patch(s, a.id, (i) => (i.status === "active" ? { ...i, bytes: a.bytes } : i));
-    case "itemDone":
-      return settle(patch(s, a.id, (i) => (i.status === "active"
-        ? { ...i, status: "done", source: a.source, bytes: a.bytes, error: null } : i)));
+    case "itemDone": {
+      if (!s.items.some((i) => i.id === a.id && i.status === "active")) return s;
+      const next = patch(s, a.id, (i) => ({ ...i, status: "done", source: a.source, bytes: a.bytes, error: null }));
+      return settle(s.sink === "share" ? { ...next, batches: addToBatches(s.batches, a.id, a.bytes) } : next);
+    }
     case "itemFailed":
       return settle(patch(s, a.id, (i) => (i.status === "active" || i.status === "queued"
         ? { ...i, status: "failed", source: null, error: a.error } : i)));
@@ -103,15 +155,77 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
       return { ...s, directStrikes: s.directStrikes + 1 };
     case "cancel":
       if (s.phase !== "listing" && s.phase !== "running") return s;
-      return { ...s, phase: "cancelled", items: s.items.map((i) => (i.status === "queued" || i.status === "active"
-        ? { ...i, status: "failed", source: null, bytes: 0, error: CANCELLED } : i)) };
+      return { ...s, phase: "cancelled", batches: sealBatches(s.batches),
+               items: s.items.map((i) => (i.status === "queued" || i.status === "active"
+                 ? { ...i, status: "failed", source: null, bytes: 0, error: CANCELLED } : i)) };
     case "retryFailed":
       if (!canRetry(s)) return s;
       return { ...s, phase: "running", items: s.items.map((i) => (i.status === "failed"
         ? { ...i, status: "queued", bytes: 0, error: null } : i)) };
+    case "batchSaved": {
+      const b = s.batches[a.index];
+      if (!b || !b.sealed || b.saved) return s;
+      return { ...s, batches: s.batches.map((x, i) => (i === a.index ? { ...x, saved: true } : x)) };
+    }
+    case "linksSaved":
+      return s.sink === "share" && s.items.length ? { ...s, linksSaved: true } : s;
     case "close":
       return s.phase === "listing" || s.phase === "running" ? s : initialDownloadState;
   }
+}
+
+/** Why a download of `mode` (`count` files for a selection) can't start now; "" when it can. */
+export function downloadOff(sink: DlSink | null, mode: DlMode, count: number, busy: boolean): string {
+  if (!sink) return DOWNLOAD_OFF;
+  if (busy) return BUSY_OFF;
+  if (sink === "share" && mode !== "selection") return SHARE_MODE_OFF;
+  if (sink === "share" && count > SHARE_MAX_ITEMS) return SHARE_COUNT_OFF;
+  return "";
+}
+
+/** Share sink: the first sealed batch not saved yet (the one whose Save button shows), or -1. */
+export function readyBatch(s: Pick<DlState, "batches">): number {
+  return s.batches.findIndex((b) => b.sealed && !b.saved);
+}
+
+/** Share sink: bytes fetched and not handed to a share sheet yet. */
+export function heldBytes(s: Pick<DlState, "batches">): number {
+  return s.batches.reduce((n, b) => n + (b.saved ? 0 : b.bytes), 0);
+}
+
+/** May the runner start fetching another file? Always for the folder sink (it streams to disk). */
+export function canFetchMore(s: Pick<DlState, "sink" | "batches">): boolean {
+  return s.sink !== "share" || heldBytes(s) < SHARE_HELD_BYTES;
+}
+
+/** Share sink: "Save 1–8" for batch `index` (positions across batches), "Save 9" for a single file. */
+export function batchLabel(s: Pick<DlState, "batches">, index: number): string {
+  const from = s.batches.slice(0, index).reduce((n, b) => n + b.ids.length, 0) + 1;
+  const to = from + (s.batches[index]?.ids.length ?? 1) - 1;
+  return to > from ? `Save ${from}–${to}` : `Save ${from}`;
+}
+
+/** Share sink: files fetched but not saved, after the fetch ended (the panel stays until they are). */
+export function unsaved(s: Pick<DlState, "batches">): number {
+  return s.batches.reduce((n, b) => n + (b.saved ? 0 : b.ids.length), 0);
+}
+
+/** The panel's title. Share sink: "Ready" while fetched files wait for their Save tap, "Saved" once all are. */
+export function panelTitle(s: DlState): string {
+  if (s.phase === "listing") return `Listing ${s.label}…`;
+  if (s.phase === "running") return `Downloading ${s.label}`;
+  if (s.phase === "cancelled") return `Cancelled: ${s.label}`;
+  if (!s.label) return "Download";
+  if (s.sink !== "share") return `Downloaded ${s.label}`;
+  return unsaved(s) > 0 ? `Ready to save: ${s.label}` : `Saved ${s.label}`;
+}
+
+/** The count line: "3 of 4 saved" (folder), share: "5 of 5 ready" until tapped, then "… · 2 saved". */
+export function countText(s: DlState): string {
+  const sum = summarize(s);
+  if (s.sink !== "share") return `${sum.done} of ${sum.total} saved`;
+  const saved = s.batches.reduce((n, b) => n + (b.saved ? b.ids.length : 0), 0);
+  return `${sum.done} of ${sum.total} ready${saved ? ` · ${saved} saved` : ""}`;
 }
 
 /** Where the next item's bytes come from. */
@@ -146,6 +260,17 @@ export function summarize(s: DlState): DlSummary {
 // ── Items from OF media dicts ────────────────────────────────────────
 
 const KIND_EXT: Record<string, string> = { photo: "jpg", video: "mp4", gif: "mp4", audio: "mp3" };
+const EXT_MIME: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", heic: "image/heic",
+  mp4: "video/mp4", m4v: "video/x-m4v", mov: "video/quicktime", webm: "video/webm", mp3: "audio/mpeg",
+  m4a: "audio/mp4", wav: "audio/wav",
+};
+
+/** The MIME type for a file name's extension (iOS offers "Save Image/Video" only for a proper image/video type). */
+export function mimeFor(name: string): string {
+  const m = /\.([A-Za-z0-9]+)$/.exec(name);
+  return (m && EXT_MIME[m[1].toLowerCase()]) || "application/octet-stream";
+}
 export const UNFILED = "Unfiled";
 
 /** The full-quality file: `files.full.url` (photo jpg, video / gif source mp4, audio mp3). Same rule as the relay's

@@ -35,10 +35,7 @@ import { massExcludeListId } from "@/components/audience/audienceReducer";
 import { useSensitiveHits } from "@/lib/sensitiveWords";
 import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
-import { EDITOR_MODAL } from "@/components/automations/automationPage";
-import { IfButton, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
-import { IF_FIELD } from "@/components/ui/ifSelect";
-import { cn } from "@/lib/utils";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
@@ -212,7 +209,7 @@ export function MassMessageComposer({
       <IfModal
         title={online ? "New Mass Online message" : "New mass message"}
         width={722}
-        className={EDITOR_MODAL}
+        size="editor"
         onClose={close}
         // Escape never drops a draft the user touched; × and Cancel still close.
         keyboard={!touched}
@@ -264,9 +261,8 @@ export function MassMessageComposer({
             {/* Toolbar — same composer features as the chat: recent-
              *  emojis quick row, full emoji picker, GIF picker,
              *  saved-template picker, @-tag creators picker. */}
-            {/* Escape in a picker's search box closes that picker, not the whole composer. */}
-            <div className="flex items-center gap-1.5 flex-wrap"
-              onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
+            {/* The pickers portal above the dialog: Escape in their search boxes is theirs (useModalFocus). */}
+            <div className="flex items-center gap-1.5 flex-wrap">
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
               {allowRich && <AaButton on={form.mode.toolbar} onToggle={() => dispatch({ type: "aa" })} />}
@@ -380,11 +376,11 @@ export function MassMessageComposer({
            *  live OF-queue broadcast ignores it. */}
           <div>
             <IfLabel htmlFor={funnelSelectId}>Funnel follow-up</IfLabel>
-            <select
+            <IfNativeSelect
               id={funnelSelectId}
               value={funnelId ?? ""}
               onChange={(e) => set("funnelId")(e.target.value ? Number(e.target.value) : null)}
-              className={cn(IF_FIELD, "h-8 w-full min-w-0 px-[11px] outline-none focus:border-accent")}
+              className="w-full min-w-0"
             >
               <option value="">None (just send the opener)</option>
               {(funnelsQ.data ?? []).map((f) => (
@@ -392,7 +388,7 @@ export function MassMessageComposer({
                   {f.name} ({f.step_count} step{f.step_count === 1 ? "" : "s"})
                 </option>
               ))}
-            </select>
+            </IfNativeSelect>
             {funnelId != null && (
               <IfHelp>
                 After this opener lands, the funnel walks its reply / PPV steps per replying fan.

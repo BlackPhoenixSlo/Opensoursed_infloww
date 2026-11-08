@@ -9,19 +9,25 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
   walk(account_id, kind, run)
       Runs `run()` as a background walk: inside it, every OFClient GET goes through
       `paced` (OFClient.get_json calls it). No claim: every walker is single-flight by
-      its own lock or loop already (/tmp/wp2-inventory.md names each).
+      its own lock or loop already. `account_id` names the walk (None: a pass over many
+      Creators; logged as walk= on a 429 retry); pages pace on their client's
+      account (a client with none: unpaced).
   paced(account_id, call)          (sync, in the walk's worker thread)
-      Outside a walk: `call()` as before. Inside: the Creator's pacer, then `call()`; on
+      Outside a walk: `call()` as before. Inside: `account_id`'s pacer, then `call()`; on
       OF's 429 it waits what OF asks and sends the SAME request once more. A second 429
       raises as before: a failed page, never an empty one.
+  paced(account_id, call, egress_key=egress(proxy_url, label))
+      A ledger page (OFClient.get_json, /payouts/transactions only): the Creator's slot AND
+      its bound proxy endpoint's, both free, both stamped at once.
   retry_429(account_id, call)      (async)
       The 429 retry alone, for a request a person's page sends itself (`X-Priority:
       background` /users/list name fill, server.py): user-triggered, so never paced. The
-      wait is on the loop, outside the OF lane.
+      wait is on the loop (no worker thread), but inside the request's background
+      admission: it holds the Creator's background lane slot (<= RETRY_MAX_S).
   note_user(account_id) / last_user_at(account_id) / user_active(account_id)
       A person's request for the Creator (server._lane_entered: a non-background lane entry
-      made from a real request; the Promotions page) / its monotonic time (vault_collect, via
-      relay_host.last_user_activity_at) / one in the last USER_WINDOW_S (10 s):
+      made from a real request; the Promotions page) / its monotonic time (vault_collect) /
+      one in the last USER_WINDOW_S (10 s):
       link_metrics.prewarm_all skips that Creator this pass and walks it the next; no waiting.
       No walk holds the lock the Growth page's reads take (of_tracking_api._LOCKS) across an
       OF call or a pause.
@@ -32,6 +38,14 @@ The pacer is ONE per Creator, shared by every job: a background GET leaves PAGE_
 User reads never do either: no walk, no pause, no retry. Stdlib only (a leaf: of_client
 imports it).
 
+Ledger pages are paced per proxy endpoint too (AE 2026-11-08, measured: the ledger's 429s
+followed the proxy IP, not the Creator; 16 Creators on ~3 proxies, 4 walks at once). The slot
+is keyed on the endpoint the client was BUILT with (OFClient.proxy_url: its transport), never
+a fresh account->proxy lookup: after an ADR-0030 move an outstanding client keeps its old
+proxy's slot, the next client takes the new one's. Never rotated on a 429. Key: scheme, host,
+port (no credentials); DIRECT for a direct client. Limit: two endpoints that share one exit IP
+pace apart (nothing here can tell). Other routes stay per Creator.
+
 Limits, as built (kept on purpose):
   * Not fair between jobs: every waiter wakes and asks again, the first to ask gets the slot;
     a long walk can delay another job's pages on the same Creator, never break them.
@@ -41,7 +55,7 @@ Limits, as built (kept on purpose):
     cap does not bound them, and a paced page sleeps IN that thread (time.sleep in `paced`).
     Threads asleep at once on a 50-Creator box, counted from the code (inferred): link prewarm 1
     (serial pass); Growth refresh / Details re-walk / list adds <= 1 per Creator (walk lock),
-    only Creators whose Growth page was opened; ledger supervisor 4 (refresh 4, then backfill 4);
+    only Creators whose Growth page was opened; ledger supervisor 4 (refresh 4, then backfill 2);
     roster crawl <= 8 (inside automation runs: run_slot.auto_runs(50) = 6 + 2 operator);
     promo_reactivate shares those 8 slots; auto-exclude <= 1 per Creator with a big list due
     (single-flight per Creator, no global cap). Worst case
@@ -53,6 +67,7 @@ Limits, as built (kept on purpose):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -61,6 +76,7 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 log = logging.getLogger("of-relay.of_pacing")
 
@@ -71,11 +87,13 @@ RETRY_MAX_S = 10.0
 USER_WINDOW_S = 10.0      # link_metrics.prewarm_all skips a Creator with a person's read this recent
 
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
+DIRECT = "direct"         # the egress key (and label) of a client with no proxy
+_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 @dataclass
 class _Walk:
-    account_id: str
+    account_id: str | None
     kind: str
 
 
@@ -118,31 +136,54 @@ def retry_after(exc: BaseException) -> float | None:
     return parse_allow(getattr(resp, "text", "") or "")
 
 
-def _turn(account_id: str) -> float:
-    """0.0 when the Creator's next background GET may leave now (its departure is stamped:
-    the next one leaves PAGE_GAP_S + jitter after it), else the seconds to wait and ask again.
-    Stamped on departure, not booked ahead: a sender that woke late never lets the next one
-    leave right behind it."""
+def egress(proxy_url: str | None, label: str | None = None) -> tuple[str, str]:
+    """(key, log label) of a client's bound endpoint. key: `scheme://host:port`, lowercased,
+    no credentials; DIRECT with no proxy. label: the registry label when it names no host,
+    else `p-<8 hex of the key>`; never a host, port or credential."""
+    if not proxy_url:
+        return DIRECT, DIRECT
+    u = urlsplit(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
+    host = (u.hostname or "").lower()
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    key = f"{u.scheme.lower()}://{host}:{port or ''}"
+    lb = _UNSAFE.sub("", label or "")[:40]
+    if not lb or (host and host in lb.lower()) or re.fullmatch(r"[\d.]+", lb):
+        lb = "p-" + hashlib.sha1(key.encode()).hexdigest()[:8]
+    return key, lb
+
+
+def _turn(*keys: str) -> float:
+    """0.0 when every key's next background GET may leave now (the departure is stamped on
+    all of them at once: the next one leaves PAGE_GAP_S + jitter after it), else the seconds
+    to wait and ask again. Stamped on departure, not booked ahead: a sender that woke late
+    never lets the next one leave right behind it; checked and stamped under one lock, so no
+    key is held while another waits."""
     with _lock:
         now = time.monotonic()
-        at = _next_at.get(account_id, 0.0)
+        at = max(_next_at.get(k, 0.0) for k in keys)
         if at > now:
             return at - now
-        _next_at[account_id] = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+        nxt = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+        for k in keys:
+            _next_at[k] = nxt
         return 0.0
 
 
-def _wait_turn(account_id: str) -> None:
-    while (d := _turn(account_id)) > 0:
+def _wait_turn(*keys: str) -> None:
+    while (d := _turn(*keys)) > 0:
         time.sleep(d)
 
 
-def paced(account_id: Any, call: Callable[[], Any]) -> Any:
+def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] | None = None) -> Any:
     w = _WALK.get()
-    if w is None:
+    if w is None or account_id is None:   # None: a bare client, no Creator to pace on
         return call()
-    aid = str(account_id or w.account_id)
-    _wait_turn(aid)
+    aid = str(account_id)
+    keys = (aid,) if egress_key is None else (aid, f"egress {egress_key[0]}")
+    _wait_turn(*keys)
     try:
         return call()
     except Exception as e:
@@ -150,9 +191,11 @@ def paced(account_id: Any, call: Callable[[], Any]) -> Any:
         if wait is None:
             raise
     # Outside the except: OF's second 429 is the page's own error, not one "during handling" the first.
-    log.info("bg_walk_429_retry account=%s kind=%s wait_s=%.1f", aid, w.kind, wait)
+    # walk= after kind=: proxy-health's summarize.py matches "account=... kind=transactions".
+    log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
+             w.account_id or "-", egress_key[1] if egress_key else "-", wait)
     time.sleep(wait)
-    _wait_turn(aid)
+    _wait_turn(*keys)
     return call()
 
 
@@ -169,7 +212,7 @@ async def retry_429(account_id: Any, call: Callable[[], Awaitable[Any]]) -> Any:
 
 
 async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:
-    tok = _WALK.set(_Walk(str(account_id), kind))
+    tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind))
     try:
         return await run()
     finally:

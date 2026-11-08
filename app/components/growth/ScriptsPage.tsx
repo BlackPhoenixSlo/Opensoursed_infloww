@@ -53,7 +53,7 @@ import {
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import {
-  ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, firstGap, kindOf, livePending, nextStep, scriptRows,
+  ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, entryIds, firstGap, kindOf, livePending, nextStep, scriptRows,
   scriptsPageReducer, selectionOf, sequenceHeader, sequenceOrder, sequencesOf, tagCountsOf, type EntryKind,
   type Modal, type NamePrompt,
 } from "@/components/growth/scriptsPageState";
@@ -78,19 +78,16 @@ export default function ScriptsPage() {
   // The view, the open tag and sequence, the checked scripts, the page's new tags, the busy scripts and the last
   // error, the open overlay, the search and the sort: `scriptsPageState.ts`.
   const [page, dispatch] = useReducer(scriptsPageReducer, INITIAL);
-  const { view, checked, busy, error, modal, search, sort } = page;
+  const { view, checked, busy, error, modal, search, sort, allModels } = page;
   const [expanded, setExpanded] = useState(false);
-  // The "All models" coverage matrix (CreatorRail's All pick), read-only, across every owned Creator. A single
-  // boolean (CLAUDE.md: single booleans stay useState; no new reducer).
-  const [allModels, setAllModels] = useState(false);
   const namePrompt = modal?.kind === "name" ? modal.prompt : null;
   const openModal = (m: Modal) => dispatch({ type: "openModal", modal: m });
   const closeModal = () => dispatch({ type: "closeModal" });
   const clearSelection = () => dispatch({ type: "setChecked", ids: [] });
   // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence, error, overlay, search)
   // carries over; an answer to what was done on it is dropped while the page shows another (`account`).
+  // The "All models" coverage matrix (CreatorRail's All pick) leaves with it (`reset`).
   const pickCreator = (id: string) => {
-    setAllModels(false);
     setAccountId(id);
     setDraft(null);
     dispatch({ type: "reset", account: id });
@@ -107,7 +104,7 @@ export default function ScriptsPage() {
   const sequences = useMemo(() => sequencesOf(replies), [replies]);
   const metas = useMemo(() => new Map((metaQ.data ?? []).map((m) => [m.name, m])), [metaQ.data]);
   const seqNames = useMemo(
-    () => sequenceOrder(sequences.keys(), metas, sequences, page.seqSort),
+    () => sequenceOrder(metas, sequences, page.seqSort),
     [sequences, metas, page.seqSort],
   );
   // The sidebars' order, as drawn: deleting the open entry opens its neighbour in it.
@@ -224,12 +221,6 @@ export default function ScriptsPage() {
   }
 
   const sideKind = kindOf(view);
-
-  /** A sidebar entry's script ids, for its per-row Share: a tag's tagged scripts, a sequence's steps. */
-  const shareIdsOf = (kind: EntryKind, name: string): number[] =>
-    kind === "tag"
-      ? replies.filter((r) => (r.tags ?? []).includes(name)).map((r) => r.id)
-      : (sequences.get(name) ?? []).map((r) => r.id);
 
   // ── render ──
   const tagItems: SidebarItem[] = useMemo(() => [
@@ -409,7 +400,8 @@ export default function ScriptsPage() {
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
         actions={
-          <div className="flex items-center gap-4 h-6">
+          // All models shows no Creator: the actions that write to one are hidden with it.
+          !allModels && <div className="flex items-center gap-4 h-6">
             <button type="button" disabled title={NOT_WIRED} className={HEADER_BOX}>
               <BookOpen size={18} className="mr-1" aria-hidden />
               Learn
@@ -437,7 +429,7 @@ export default function ScriptsPage() {
       <CreatorRail
         creators={{
           accounts, value: allModels ? null : accountId, onChange: pickCreator,
-          onAll: () => setAllModels(true), allLabel: "All models",
+          onAll: () => dispatch({ type: "allModels" }), allLabel: "All models",
         }}
         className="flex flex-col"
       >
@@ -527,7 +519,7 @@ export default function ScriptsPage() {
               items={sideKind === "tag" ? tagItems : seqItems}
               selected={sideKind === "tag" ? activeTag : activeSeq}
               onSelect={(id) => dispatch({ type: "open", kind: sideKind, name: id })}
-              onShare={(i) => openModal({ kind: "share", ids: shareIdsOf(sideKind, i.name) })}
+              onShare={(i) => openModal({ kind: "share", ids: entryIds(sideKind, i.name, replies) })}
               onRename={(i) => openModal({ kind: "name", prompt: { kind: "rename", entry: sideKind, from: i.name } })}
               onDelete={(i) => deleteEntry(sideKind, i.name)}
               sort={sideKind === "sequence" ? page.seqSort : undefined}
@@ -564,6 +556,7 @@ export default function ScriptsPage() {
       {modal?.kind === "excel" && <ExcelImportDialog accountId={accountId} onClose={closeModal} />}
       {(modal?.kind === "import" || modal?.kind === "share") && (
         <CopyScriptsDialog
+          key={modal.kind}
           mode={modal.kind}
           accountId={accountId}
           accounts={accounts}

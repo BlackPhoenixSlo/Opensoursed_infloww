@@ -15,34 +15,33 @@
  * Auto-unsend) save with it and go out with whichever message is sent.
  * Infloww's "after delay" option is not wired. On a free page the three
  * Triggers Infloww keeps for paid pages cannot be switched on. Below the form:
- * the fans it reached who then bought. `VariantsField` and `FollowUpsField`
- * are shared with the Delayed welcome editor.
+ * the fans it reached who then bought. `FollowUpsField` is shared with the
+ * Delayed welcome editor.
  */
 
-import { useId, useState } from "react";
+import { useId, useReducer } from "react";
 
-import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
-import { IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfSwitch, IfTextArea } from "@/components/ui/infloww";
+import { VariantsField } from "@/components/compose/VariantsField";
+import { IF_TABLE, IfButton, IfHelp, IfInput, IfLearn, IfNativeSelect, IfSwitch, IfTextArea, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { EditorFooter } from "@/components/ui/ifModal";
-import { IF_FIELD } from "@/components/ui/ifSelect";
 import {
   useLifecycleMessageBuyers, useLifecycleMessageConfig, useSaveLifecycleMessageConfig,
-  type LifecycleKind, type LifecycleMessage, type LifecycleMessageConfig,
+  type LifecycleKind, type LifecycleMessageConfig,
 } from "@/hooks/useLifecycleMessageConfig";
 import { useFreePageRefusal } from "@/hooks/usePaidPage";
 import { fmtCents } from "@/lib/format";
-import { mergeCaptions } from "@/lib/parseCaptions";
 import { cn } from "@/lib/utils";
 
-import { SmartMessageFields, collectExtras, extrasDraft, type ExtrasDraft } from "./SmartMessageFields";
+import {
+  FOLLOW_UP_DELAY_MAX as DELAY_MAX, MAX_VARIANTS, TEXT_MAX, badDelay, badMonths, buildPayload, initLifecycle, lifecycleIssues, lifecycleReducer,
+  type FollowUpDraft, type LifecycleAction, type MessageDraft,
+} from "./lifecycleForm";
+import { SmartMessageFields } from "./SmartMessageFields";
 
 // The Relay's bounds (automations/lifecycle_messages.py).
 const MAX_MESSAGES = 10;
-const MAX_VARIANTS = 10;
 const MAX_FOLLOW_UPS = 5;
-const DELAY_MAX = 7 * 24 * 60;
 const DISCOUNT_PERCENTS = Array.from({ length: 12 }, (_, i) => (i + 1) * 5);
-const SELECT = cn(IF_FIELD, "h-8 px-2 disabled:opacity-50");
 
 /** Infloww's `isPaidAutoRules` (index.9f50f370.js @14441992): refused on a free page. */
 export const PAID_ONLY_KINDS: ReadonlySet<LifecycleKind> = new Set<LifecycleKind>([
@@ -86,69 +85,16 @@ export const LIFECYCLE_COPY: Record<LifecycleKind, Copy> = {
   },
 };
 
-export default function LifecycleMessageEditor({ accountId, kind }: {
+export default function LifecycleMessageEditor({ accountId, kind, onTouched }: {
   accountId: string | null; kind: LifecycleKind;
+  /** Called on each user edit (the dialog's Escape gate). */
+  onTouched: () => void;
 }) {
   const q = useLifecycleMessageConfig(accountId, kind);
   if (!accountId) return <p className="text-[14px] text-fg-dim">Pick a Creator first.</p>;
   if (q.isError) return <p className="text-[14px] text-err">Couldn&apos;t load this Creator&apos;s message.</p>;
   if (!q.data) return <p className="text-[14px] text-fg-dim">Loading…</p>;
-  return <Form key={kind} accountId={accountId} kind={kind} initial={q.data.config} />;
-}
-
-export interface FollowUpDraft {
-  text: string;
-  /** Minutes, as typed. */
-  delay: string;
-}
-
-/** A follow-up's delay is a whole number of minutes from 1 to a week. */
-export function badDelay(f: FollowUpDraft): boolean {
-  const n = Number(f.delay);
-  return !!f.text.trim() && !(Number.isInteger(n) && n >= 1 && n <= DELAY_MAX);
-}
-
-/** The typed follow-ups that have text, as the Relay stores them. */
-export function cleanFollowUps(steps: FollowUpDraft[]) {
-  return steps.filter((f) => f.text.trim()).map((f) => ({ text: f.text.trim(), delay_minutes: Number(f.delay) }));
-}
-
-export function VariantsField({ id, label, variants, placeholder, onChange }: {
-  id: string; label: string; variants: string[]; placeholder?: string; onChange: (v: string[]) => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <IfLabel htmlFor={`${id}-0`} className="mb-0">{label}</IfLabel>
-      {variants.map((v, i) => (
-        <div key={i} className="flex items-start gap-3">
-          <IfTextArea
-            id={`${id}-${i}`}
-            aria-label={i ? `${label}, variant ${i + 1}` : undefined}
-            value={v}
-            maxLength={1000}
-            placeholder={i === 0 ? placeholder : "Another way to say it"}
-            rows={3}
-            onChange={(e) => onChange(variants.map((x, j) => (j === i ? e.target.value : x)))}
-          />
-          {variants.length > 1 && (
-            <IfButton variant="link" onClick={() => onChange(variants.filter((_, j) => j !== i))}>
-              Remove
-            </IfButton>
-          )}
-        </div>
-      ))}
-      <div className="flex flex-wrap items-center gap-4">
-        {variants.length < MAX_VARIANTS && (
-          <IfButton variant="link" onClick={() => onChange([...variants, ""])}>
-            Add variant
-          </IfButton>
-        )}
-        <ImportCaptionsButton current={variants} max={MAX_VARIANTS}
-          onImport={(items) => onChange(mergeCaptions(variants, items).pool)} />
-      </div>
-      {variants.length > 1 && <IfHelp>Each fan gets one of these at random.</IfHelp>}
-    </div>
-  );
+  return <Form key={kind} accountId={accountId} kind={kind} initial={q.data.config} onTouched={onTouched} />;
 }
 
 export function FollowUpsField({ id, steps, onChange }: {
@@ -179,7 +125,7 @@ export function FollowUpsField({ id, steps, onChange }: {
           <IfTextArea
             aria-label={`Follow-up ${i + 1}`}
             value={f.text}
-            maxLength={1000}
+            maxLength={TEXT_MAX}
             rows={2}
             onChange={(e) => set(i, { text: e.target.value })}
           />
@@ -196,27 +142,8 @@ export function FollowUpsField({ id, steps, onChange }: {
   );
 }
 
-interface MessageDraft {
-  variants: string[];
-  followUps: FollowUpDraft[];
-  discount: { percent: number; months: string } | null;
-}
-
-const toDraft = (m: LifecycleMessage): MessageDraft => ({
-  variants: m.variants.length ? m.variants : [""],
-  followUps: m.follow_ups.map((f) => ({ text: f.text, delay: String(f.delay_minutes) })),
-  discount: m.discount && { percent: m.discount.percent, months: String(m.discount.months) },
-});
-
-const EMPTY: MessageDraft = { variants: [""], followUps: [], discount: null };
-
-function badMonths(d: MessageDraft): boolean {
-  const n = Number(d.discount?.months);
-  return !!d.discount && !(Number.isInteger(n) && n >= 1 && n <= 12);
-}
-
-function Form({ accountId, kind, initial }: {
-  accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig;
+function Form({ accountId, kind, initial, onTouched }: {
+  accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig; onTouched: () => void;
 }) {
   // One per mounted editor: the footer's Save (outside the form) submits this one.
   const formId = useId();
@@ -224,28 +151,15 @@ function Form({ accountId, kind, initial }: {
   const save = useSaveLifecycleMessageConfig(accountId, kind);
   const freeRefusal = useFreePageRefusal(accountId);
   const refusal = PAID_ONLY_KINDS.has(kind) ? freeRefusal : null;
-  const [enabled, setEnabled] = useState(initial.enabled);
-  const [messages, setMessages] = useState<MessageDraft[]>(
-    initial.messages?.length ? initial.messages.map(toDraft) : [{ ...EMPTY, variants: [initial.text || copy.example] }]);
-  const [hours, setHours] = useState(String(initial.hours ?? 24));
-  const [extras, setExtras] = useState<ExtrasDraft>(() => extrasDraft(initial));
-  const collected = collectExtras(extras, { frequency: true });
-  const problem = typeof collected === "string" ? collected : null;
-  const n = Number(hours);
-  const badHours = !!copy.hours && !(Number.isInteger(n) && n >= copy.hours.min && n <= copy.hours.max);
-  const clean: LifecycleMessage[] = messages
-    .map((m) => ({
-      variants: m.variants.map((v) => v.trim()).filter(Boolean),
-      follow_ups: cleanFollowUps(m.followUps),
-      discount: m.discount && { percent: m.discount.percent, months: Number(m.discount.months) },
-    }))
-    .filter((m) => m.variants.length);
-  const missingText = enabled && !clean.length;
-  const invalid = messages.some((m) => m.followUps.some(badDelay) || badMonths(m));
-  const refused = !!refusal && enabled;
+  const [draft, rawDispatch] = useReducer(lifecycleReducer, undefined, () => initLifecycle(initial, copy.example));
+  // Every action is the user's: each one tells the dialog (its Escape gate).
+  const dispatch = (a: LifecycleAction) => { onTouched(); rawDispatch(a); };
+  const { enabled, messages, hours, extras } = draft;
+  const rules = { hours: copy.hours, refusal };
+  const { problem, badHours, missingText } = lifecycleIssues(draft, rules);
+  const payload = buildPayload(draft, rules);
   const id = `lm-${kind}`;
-  const setMessage = (i: number, patch: Partial<MessageDraft>) =>
-    setMessages(messages.map((m, j) => (j === i ? { ...m, ...patch } : m)));
+  const setMessage = (i: number, patch: Partial<MessageDraft>) => dispatch({ type: "patchMessage", i, patch });
 
   return (
     <div className="space-y-6 text-[14px]">
@@ -254,8 +168,7 @@ function Form({ accountId, kind, initial }: {
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
-          if (missingText || badHours || invalid || refused || typeof collected === "string") return;
-          save.mutate({ enabled, messages: clean, ...(copy.hours ? { hours: n } : {}), ...collected });
+          if (payload) save.mutate(payload);
         }}
       >
         <div className="flex items-center justify-between gap-4">
@@ -270,7 +183,7 @@ function Form({ accountId, kind, initial }: {
           </>} />
         </div>
         {/* On a free page it can be switched off, never on. */}
-        <IfSwitch label="On" checked={enabled} disabled={!!refusal && !enabled} onChange={setEnabled} />
+        <IfSwitch label="On" checked={enabled} disabled={!!refusal && !enabled} onChange={(on) => dispatch({ type: "setEnabled", on })} />
         {refusal && <p className="text-warn">{refusal}</p>}
         {copy.hours && (
           <div className="flex flex-wrap items-center gap-2">
@@ -281,7 +194,7 @@ function Form({ accountId, kind, initial }: {
               min={copy.hours.min}
               max={copy.hours.max}
               value={hours}
-              onChange={(e) => setHours(e.target.value)}
+              onChange={(e) => dispatch({ type: "setHours", hours: e.target.value })}
               className="w-[90px]"
             />
             <span>{copy.hours.after}</span>
@@ -292,7 +205,7 @@ function Form({ accountId, kind, initial }: {
             <div className="flex items-center justify-between">
               <span className="font-medium">Message {i + 1}</span>
               {messages.length > 1 && (
-                <IfButton variant="link" onClick={() => setMessages(messages.filter((_, j) => j !== i))}>
+                <IfButton variant="link" onClick={() => dispatch({ type: "removeMessage", i })}>
                   Remove message
                 </IfButton>
               )}
@@ -302,6 +215,8 @@ function Form({ accountId, kind, initial }: {
               label="Message"
               variants={m.variants}
               placeholder={copy.example}
+              max={MAX_VARIANTS}
+              maxLength={TEXT_MAX}
               onChange={(variants) => setMessage(i, { variants })}
             />
             <FollowUpsField id={`${id}-${i}-fu`} steps={m.followUps} onChange={(followUps) => setMessage(i, { followUps })} />
@@ -309,15 +224,14 @@ function Form({ accountId, kind, initial }: {
               <div className="flex flex-wrap items-center gap-2">
                 <IfSwitch label="Give a renewal discount of" checked={!!m.discount}
                   onChange={(on) => setMessage(i, { discount: on ? { percent: 10, months: "1" } : null })} />
-                <select
+                <IfNativeSelect
                   aria-label="Discount percent"
                   value={m.discount?.percent ?? 10}
                   disabled={!m.discount}
                   onChange={(e) => m.discount && setMessage(i, { discount: { ...m.discount, percent: Number(e.target.value) } })}
-                  className={SELECT}
                 >
                   {DISCOUNT_PERCENTS.map((p) => <option key={p} value={p}>{p}%</option>)}
-                </select>
+                </IfNativeSelect>
                 <span>for</span>
                 <IfInput
                   aria-label="Discount months"
@@ -337,7 +251,7 @@ function Form({ accountId, kind, initial }: {
         ))}
         {messages.length < MAX_MESSAGES && (
           <div>
-            <IfButton variant="link" onClick={() => setMessages([...messages, EMPTY])}>
+            <IfButton variant="link" onClick={() => dispatch({ type: "addMessage" })}>
               Add message
             </IfButton>
             {messages.length > 1 && <IfHelp className="mt-0">Each fan gets one message at random.</IfHelp>}
@@ -347,7 +261,7 @@ function Form({ accountId, kind, initial }: {
           accountId={accountId}
           id={id}
           draft={extras}
-          onChange={(patch) => setExtras((d) => ({ ...d, ...patch }))}
+          onChange={(patch) => dispatch({ type: "patchExtras", patch })}
           frequency
         />
         {problem && <p className="text-warn">{problem}</p>}
@@ -355,17 +269,8 @@ function Form({ accountId, kind, initial }: {
           <p className="text-warn">Hours must be a whole number from {copy.hours.min} to {copy.hours.max}.</p>
         )}
         {missingText && <p className="text-warn">Write a message to turn this on.</p>}
-        {save.isError && <p className="text-err">Couldn&apos;t save: {save.error.message}</p>}
         <EditorFooter>
-          {save.isSuccess && !save.isPending && <span className="mr-auto text-fg-dim">Saved.</span>}
-          <IfButton
-            type="submit"
-            form={formId}
-            variant="primary"
-            disabled={missingText || badHours || invalid || refused || !!problem || save.isPending}
-          >
-            {save.isPending ? "Saving…" : "Save"}
-          </IfButton>
+          <SaveRow form={formId} disabled={!payload} save={saveVerdict(save)} />
         </EditorFooter>
       </form>
       <Buyers accountId={accountId} kind={kind} />

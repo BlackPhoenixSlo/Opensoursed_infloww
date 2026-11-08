@@ -577,93 +577,21 @@ def migrate_legacy_assignments(filename_to_account: dict[str, str]) -> int:
 
 def record_verification(label: str, *, ip: str | None, geo: str | None,
                         ok: bool) -> None:
-    """Persist the last egress-IP probe result for a proxy."""
+    """Persist the last egress-IP probe result for a proxy. ok with no `ip` (the trace did not answer):
+    the last verified ip/geo are kept."""
     with _lock:
         data = _load_for_write()
         p = _by_label(data, label)
         if p is None:
             return
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        if ok:
+        if ok and ip:
             p.update(verified_ip=ip, verified_geo=geo, verified_at=stamp)
+        elif ok:
+            p.update(verified_at=stamp)
         else:
             p.update(verified_at=stamp, verified_ip=None)
         save(data)
-
-
-TRACE_URL = "https://1.1.1.1/cdn-cgi/trace"
-
-
-def parse_trace(text: str) -> dict[str, str]:
-    """Cloudflare's trace body: `key=value` lines (ip, loc, colo, ...)."""
-    out: dict[str, str] = {}
-    for line in (text or "").splitlines():
-        k, sep, v = line.partition("=")
-        if sep:
-            out[k.strip()] = v.strip()
-    return out
-
-
-def probe(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
-    """One GET of Cloudflare's trace endpoint through the proxy: the egress
-    ip, its country (`loc`, kept as `geo`), the Cloudflare `colo` and the
-    time to first byte. No OnlyFans call and no third-party key (it used to
-    be ipify plus ipinfo.io). Returns {ok, ip, geo, colo, ttfb_ms, error?}.
-    Blocking; safe from a request handler."""
-    from curl_cffi import CurlInfo, requests as curl_requests
-
-    routes = proxies_dict_for_requests(p)  # outside the try: a malformed entry still raises
-    out: dict[str, Any] = {"ok": False, "ip": None, "geo": None, "colo": None,
-                           "ttfb_ms": None, "error": None}
-    try:
-        with curl_requests.Session(curl_infos=[CurlInfo.STARTTRANSFER_TIME]) as s:
-            r = s.get(TRACE_URL, proxies=routes, timeout=timeout_s)
-        if r.status_code != 200:
-            out["error"] = f"proxy_probe_failed: HTTP {r.status_code}"
-            return out
-        trace = parse_trace(r.text)
-        ttfb = r.infos.get(CurlInfo.STARTTRANSFER_TIME)
-        out.update(ip=trace.get("ip") or None, geo=trace.get("loc") or None,
-                   colo=trace.get("colo") or None,
-                   ttfb_ms=round(ttfb * 1000) if isinstance(ttfb, (int, float)) else None)
-        out["ok"] = out["ip"] is not None
-        if not out["ok"]:
-            out["error"] = "proxy_probe_failed: no ip in the trace"
-    except Exception as e:  # curl errors: refused CONNECT, timeout, TLS, DNS
-        out["error"] = f"proxy_probe_failed: {e}"
-        # The refused CONNECT alone (ProxyError, as of_client._attempt): proxy_health's refusal window.
-        out["refused"] = isinstance(e, curl_requests.exceptions.ProxyError)
-    finally:
-        log.info("proxy_probe label=%s ok=%s", p.get("label") or "-", out["ok"])
-    return out
-
-
-def probe_of(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
-    """`probe`, but through to OnlyFans: one GET of the x-hash endpoint
-    (of_client.HASH_BASE, what every client's warm-up already fetches; ~0.2 s,
-    answers without a session) with no cookies, no session headers and Chrome's
-    TLS profile, so nothing ties it to a Creator. Any HTTP answer means the
-    proxy opened the tunnel to OF: ok. The watcher's confirm and rechecks use
-    it, as a proxy can answer Cloudflare's trace yet refuse CONNECT to OF.
-    No ip/geo (the trace's `probe` keeps those). Same shape as `probe`."""
-    from curl_cffi import CurlInfo, requests as curl_requests
-    from of_client import HASH_BASE, IMPERSONATE   # lazy: of_client imports this module
-
-    routes = proxies_dict_for_requests(p)
-    out: dict[str, Any] = {"ok": False, "ip": None, "geo": None, "colo": None,
-                           "ttfb_ms": None, "error": None}
-    try:
-        with curl_requests.Session(impersonate=IMPERSONATE,
-                                   curl_infos=[CurlInfo.STARTTRANSFER_TIME]) as s:
-            r = s.get(f"{HASH_BASE}/", proxies=routes, timeout=timeout_s)
-        ttfb = r.infos.get(CurlInfo.STARTTRANSFER_TIME)
-        out.update(ok=True, ttfb_ms=round(ttfb * 1000) if isinstance(ttfb, (int, float)) else None)
-    except Exception as e:  # curl errors: refused CONNECT, timeout, TLS, DNS
-        out["error"] = f"proxy_probe_failed: {e}"
-        out["refused"] = isinstance(e, curl_requests.exceptions.ProxyError)
-    finally:
-        log.info("proxy_probe_of label=%s ok=%s", p.get("label") or "-", out["ok"])
-    return out
 
 
 # ── Inflowwww proxy pool ───────────────────────────────────────────────────
@@ -705,8 +633,10 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
     scheme/user/host/port (stable across password rotations, changes when the
     proxy itself is swapped), so a removed proxy is told apart from a kept one.
     A POOL_TIER_BREAK item starts the next tier: each entry's `tier` is the
-    number of breaks before it (0 without any), the failover's preference
-    (`failover_pool`); a proxy listed twice keeps its first (best) tier."""
+    number of breaks before it (0 without any), the destination check's preference
+    (`_pick_answering`); a proxy listed twice keeps its first (best) tier. A
+    POOL_TIER_BREAK inside any other item is a bad line (the sync fails closed):
+    `a:1:u:p|b:2:u:p` would read as one proxy with password `p|b:2:u:p`."""
     entries: list[dict[str, Any]] = []
     errors: list[str] = []
     tier = 0
@@ -716,6 +646,9 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
             continue
         if line == POOL_TIER_BREAK:
             tier += 1
+            continue
+        if POOL_TIER_BREAK in line:
+            errors.append(f"{redact_line(line)}: a tier break `{POOL_TIER_BREAK}` must be an item of its own")
             continue
         try:
             e = parse_proxy_line(line)
@@ -855,26 +788,28 @@ def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
 def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
                     rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
                     verify: Verify, checked: dict[str, bool],
-                    probes: int | None = None) -> dict[str, Any] | None:
-    """The one destination check, for a new binding and a failover alike: the
-    least-used candidate (`_pick_pool`) that answers `verify` right now; one
-    that does not is passed over for the next. `checked` remembers each
-    label's answer for the caller's whole pass (a failover moving several
-    Creators probes each destination once). At most `probes` new probes (None:
-    no limit). None when none answers within them: nobody is moved onto a
-    proxy that failed its probe."""
-    left = list(candidates)
-    while left:
-        pick = _pick_pool(left, data, aid, rng, like=like, geo=geo)
-        label = pick.get("label") or ""
-        if label not in checked:
-            if probes is not None and probes <= 0:
-                return None
-            checked[label] = bool(verify(pick))
-            probes = None if probes is None else probes - 1
-        if checked[label]:
-            return pick
-        left = [p for p in left if p.get("label") != label]
+                    probes: int | None = None, first_tier: int | None = None) -> dict[str, Any] | None:
+    """The one destination check, for a new binding and a failover alike: from
+    the best `_tiers` group with one that answers (a later tier only when none
+    in an earlier one does; `first_tier`, a moved Creator's own, goes first), the least-used candidate (`_pick_pool`) that
+    answers `verify` right now; one that does not is passed over for the next.
+    `checked` remembers each label's answer for the caller's whole pass (a
+    failover moving several Creators probes each destination once). At most
+    `probes` new probes in all (None: no limit). None when none answers within
+    them: nobody is moved onto a proxy that failed its probe."""
+    for tier in _tiers(candidates, first_tier):
+        left = list(tier)
+        while left:
+            pick = _pick_pool(left, data, aid, rng, like=like, geo=geo)
+            label = pick.get("label") or ""
+            if label not in checked:
+                if probes is not None and probes <= 0:
+                    return None
+                checked[label] = bool(verify(pick))
+                probes = None if probes is None else probes - 1
+            if checked[label]:
+                return pick
+            left = [p for p in left if p.get("label") != label]
     return None
 
 
@@ -883,12 +818,18 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
 ATTACH_PROBES = 2
 
 
-def _tiers(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+def _tier(p: dict[str, Any]) -> int:
+    return int(p.get("tier") or 0)
+
+
+def _tiers(entries: list[dict[str, Any]], first: int | None = None) -> list[list[dict[str, Any]]]:
     """`entries` grouped by pool `tier` (POOL_TIER_BREAK in POOL_ENV), best
-    first; one group when the env has no break (an entry from before tiers: 0)."""
-    def tier(p: dict[str, Any]) -> int:
-        return int(p.get("tier") or 0)
-    return [[p for p in entries if tier(p) == t] for t in sorted({tier(p) for p in entries})]
+    first; one group when the env has no break (an entry from before tiers, or
+    a custom one: 0). With `first`, that tier's group leads and the rest keep
+    their order (a Creator moved off a tier-2 proxy is not downgraded to tier 0
+    while tier 2 has one that answers)."""
+    return [[p for p in entries if _tier(p) == t]
+            for t in sorted({_tier(p) for p in entries}, key=lambda t: (t != first, t))]
 
 
 def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
@@ -896,20 +837,23 @@ def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
     return next((p for p in data["proxies"] if is_pool(p) and aid in _ids_on(p)), None)
 
 
-def assign_pool(account_id: str, *, bad: set[str], due: set[str], geo: Geo, verify: Verify,
+def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str], geo: Geo, verify: Verify,
                 rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
     """Bind `account_id` to an Inflowwww proxy (callers: `proxy_health.assign_pool`,
-    which injects `bad`, `due`, `geo`, `verify`). Sticky: an account already on
+    which injects `bad` (its unusable labels: bad or herd-guarded), `dead` (those
+    of them bad for an outage, not flapping), `due`, `geo`, `verify`). Sticky: an account already on
     a pool proxy keeps it unless that proxy is in `due` (bad long enough that
     its failover is due: the same predicate `proxy_health._failover` runs on);
-    then it moves as a failover would move it, but only onto a pick that
+    then it moves as a failover would move it (its own tier first), but only onto a pick that
     answered its probe (none answers: it stays, surfaced as `proxy_down`; a
     move is an OnlyFans IP change). An account on no pool proxy gets the
-    least-used pool proxy not in `bad` that answers a probe right now
-    (`_pick_answering`), so a login during an outage lands on one that works;
-    when none answers, the least-used not in `bad` anyway (an untried one
-    first), and when every pool proxy is in `bad`, the least-used of them
-    (surfaced as `proxy_down`): a finished login is never thrown away. At most
+    least-used pool proxy not in `bad`, of the best tier, that answers a probe
+    right now (`_pick_answering`), so a login during an outage lands on one
+    that works. When none answers, the least-used of the first non-empty group,
+    best tier first within it: untried not in `bad`, then any not in `bad`, then
+    any not in `dead` (a flapping one answers most calls; a dead one, least-used
+    once its Creators moved off, none), then the whole pool (surfaced as
+    `proxy_down`): a finished login is never thrown away. At most
     ATTACH_PROBES probes (the attach request waits on them). The bind is a
     compare-and-set under the registry lock: when a concurrent failover or
     assign rebound the account meanwhile, that binding is kept (one IP change,
@@ -927,13 +871,14 @@ def assign_pool(account_id: str, *, bad: set[str], due: set[str], geo: Geo, veri
         raise LookupError(f"no {BRAND_NAME} proxies are set up on this relay")
     candidates = [p for p in pool if p.get("label") not in bad and p.get("label") != cur]
     checked: dict[str, bool] = {}
-    pick = _pick_answering(candidates, data, aid, rng, like=current, geo=geo,
-                           verify=verify, checked=checked, probes=ATTACH_PROBES)
+    pick = _pick_answering(candidates, data, aid, rng, like=current, geo=geo, verify=verify, checked=checked,
+                           probes=ATTACH_PROBES, first_tier=_tier(current) if current else None)
     if pick is None:
         if current:
             return current, True
         untried = [p for p in candidates if (p.get("label") or "") not in checked]
-        pick = _pick_pool(untried or candidates or pool, data, aid, rng, like=None, geo=geo)
+        alive = [p for p in pool if p.get("label") not in dead]
+        pick = _pick_pool(_tiers(untried or candidates or alive or pool)[0], data, aid, rng, like=None, geo=geo)
     with _lock:
         data = _load_for_write()
         now = _pool_entry_of(data, aid)
@@ -947,9 +892,9 @@ def assign_pool(account_id: str, *, bad: set[str], due: set[str], geo: Geo, veri
 def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
                   rng: random.Random | None = None) -> list[str] | None:
     """Move every account on the bad pool proxy `label` to a pool proxy not in
-    `bad` that answers right now (each to the least-used, same country first,
-    `_pick_answering`), from the best `_tiers` group with one that answers
-    (a later tier only when none in an earlier one does), then apply the moves in ONE registry write, so `save`
+    `bad` that answers right now (`_pick_answering`: the source's own tier
+    while one there answers, else the best other tier with one that answers;
+    the least-used, same country first, in it), then apply the moves in ONE registry write, so `save`
     evicts their clients and reconnects their chat sockets together. The
     destinations are probed outside the registry lock; the write re-reads the
     registry. Nothing is probed, nothing moves, and None is returned (not
@@ -967,9 +912,8 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     checked: dict[str, bool] = {}
     plan: dict[str, str] = {}
     for aid in _ids_on(source):
-        target = next((t for tier in _tiers(healthy)
-                       if (t := _pick_answering(tier, data, aid, rng, like=source, geo=geo, verify=verify,
-                                                checked=checked))), None)
+        target = _pick_answering(healthy, data, aid, rng, like=source, geo=geo, verify=verify, checked=checked,
+                                 first_tier=_tier(source))
         if target is None:
             break   # nobody answers: the rest stay too
         plan[aid] = target["label"]

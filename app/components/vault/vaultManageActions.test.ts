@@ -1,19 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 
-const h = vi.hoisted(() => ({ describeMedia: vi.fn(), addToOfFolder: vi.fn(), createOfFolder: vi.fn() }));
+const h = vi.hoisted(() => ({
+  describeMedia: vi.fn(), addToOfFolder: vi.fn(), createOfFolder: vi.fn(),
+  startCollect: vi.fn(), fetchCollectStatus: vi.fn(),
+}));
 vi.mock("@/hooks/useVaultCache", async (orig) => ({
   ...(await orig<typeof import("@/hooks/useVaultCache")>()),
   describeMedia: h.describeMedia,
   addToOfFolder: h.addToOfFolder,
   createOfFolder: h.createOfFolder,
+  startCollect: h.startCollect,
+  fetchCollectStatus: h.fetchCollectStatus,
 }));
 
 import {
   addSelectedToFolder,
+  collectHasNews,
   describeOne,
   describeSelected,
   newFolderWithSelection,
+  onCollect,
   type ManageDeps,
   type Tile,
 } from "./vaultManageActions";
@@ -37,6 +44,54 @@ function deps(selected: number[] = [1, 2]) {
 }
 
 const tile = { id: 7, type: "photo" } as Tile;
+
+// Collect's poll refreshes the grid once the run has news. A restricted chatter gets null totals (whole-vault), so
+// "seen > 0" alone never fired for it: the grid stayed stale after Collect.
+describe("collectHasNews", () => {
+  const run = (total_seen: number | null, phase: string | null, status = "running") =>
+    ({ id: 1, status, phase, total_seen, upserted: total_seen, pages_done: total_seen, error: null,
+       started_at: null, finished_at: null, running: status === "running" });
+  it.each<[string, Parameters<typeof collectHasNews>[0], boolean]>([
+    ["no run", null, false],
+    ["owner, paging, nothing yet", run(0, "media"), false],
+    ["owner, paging, seen some", run(100, "media"), true],
+    ["chatter, paging", run(null, "media"), false],
+    ["chatter, past paging (thumbs)", run(null, "thumbs"), true],
+    ["chatter, warm phase", run(null, "images"), true],
+    ["chatter, run ended", run(null, "media", "error"), true],
+    ["chatter, done", run(null, "done", "done"), true],
+  ])("%s", (_, r, want) => {
+    expect(collectHasNews(r)).toBe(want);
+  });
+});
+
+// The poll refreshes the grid once: on news, else on its last poll (a restricted chatter's vault still paging OF
+// after the window has no news it can see, and its grid would stay stale).
+describe("onCollect", () => {
+  const run = (total_seen: number | null, phase: string) =>
+    ({ id: 1, status: "running", phase, total_seen, upserted: null, pages_done: null, error: null,
+       started_at: null, finished_at: null, running: true });
+  it.each<[string, ReturnType<typeof run>[], number]>([
+    ["owner, news on poll 2", [run(0, "media"), run(100, "media")], 2],
+    ["chatter, still paging after the window", [run(null, "media")], 4],
+  ])("%s", async (_, runs, polls) => {
+    vi.useFakeTimers();
+    try {
+      h.startCollect.mockResolvedValue(undefined);
+      h.fetchCollectStatus.mockReset();
+      runs.forEach((r) => h.fetchCollectStatus.mockResolvedValueOnce({ run: r }));
+      h.fetchCollectStatus.mockResolvedValue({ run: runs[runs.length - 1] });
+      const { d } = deps();
+      const p = onCollect({ ...d, isCollecting: false });
+      await vi.runAllTimersAsync();
+      await p;
+      expect(h.fetchCollectStatus).toHaveBeenCalledTimes(polls);
+      expect(d.refreshAll).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 /** A describe that answers only when told to, so two calls can overlap. */
 function heldDescribe() {

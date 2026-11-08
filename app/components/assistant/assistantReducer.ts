@@ -18,12 +18,14 @@
  *   • HISTORY (GET /admin/assistant/history) loads ONCE per page load, on the
  *     first open: `history_requested` → `history_loaded` | `history_failed`
  *     (`failed` until the next open, which retries — never a retry loop
- *     while the panel stays open on a 401). It is kept apart
- *     from `turns`: this session's asks are written server-side too, so a
- *     reload on every open would show them twice. `historyFromRows` maps the
- *     rows (newest first) to oldest-first turns; `groupByDay` labels them;
- *     `historyForAsk` is the last 3 answered turns the POST carries so a bare
- *     "yes" can take up the last answer's offer.
+ *     while the panel stays open on a 401). It is kept apart from `turns`,
+ *     and this session's asks are written server-side too, so every turn
+ *     carries its server row id (`rowId`, from the ask's response) and a row
+ *     already in `turns` never shows under Earlier — whichever of the load
+ *     and the answer lands first. `historyFromRows` maps the rows (newest
+ *     first) to oldest-first turns; `groupByDay` labels them.
+ *   • The client sends no history: the server picks the previous turns that
+ *     ride an ask (service/assistant_api.py `_own_turns`).
  */
 import { RelayError } from "@/lib/relay";
 
@@ -33,14 +35,22 @@ export interface Turn {
   /** null while the POST is in flight — that's the "thinking…" row. */
   answer: string | null;
   error: string | null;
-  /** ISO time, on history turns only (the server's `ts`). */
-  ts?: string | null;
+  /** The server's assistant_turns row: null in flight or when its write failed. */
+  rowId: number | null;
+}
+
+/** An earlier session's turn (GET /admin/assistant/history). */
+export interface EarlierTurn extends Turn {
+  answer: string;
+  rowId: number;
+  /** ISO time (the server's `ts`). */
+  ts: string;
 }
 
 /** One row of GET /admin/assistant/history (service/assistant_api.py `_turn_row`). */
 export interface HistoryRow {
   id: number;
-  ts: string | null;
+  ts: string;
   question: string;
   answer: string;
   error: string | null;
@@ -54,6 +64,8 @@ export type HistoryStatus = "idle" | "loading" | "loaded" | "failed";
 export interface AskResponse {
   answer: string;
   error: string | null;
+  /** The turn row the server wrote (null when the write failed). */
+  id: number | null;
 }
 
 export interface AssistantCore {
@@ -65,24 +77,22 @@ export interface AssistantCore {
   unread: boolean;
   /** The /help-center page is on screen: it shows every reply too. */
   onHelpPage: boolean;
-  /** Earlier sessions' turns, oldest first (max HISTORY_LIMIT). */
-  history: Turn[];
+  /** Earlier sessions' turns, oldest first (the server returns ≤ HISTORY_LIMIT). */
+  history: EarlierTurn[];
   historyStatus: HistoryStatus;
 }
 
-/** How many earlier turns the panel loads and shows. */
+/** How many earlier turns the panel asks the server for. */
 export const HISTORY_LIMIT = 50;
-/** How many previous turns ride each ask (the server keeps the newest 3 too). */
-export const ASK_HISTORY_TURNS = 3;
 
 export type AssistantAction =
   | { type: "hydrate"; open: boolean }
   | { type: "toggle" }
   | { type: "asked"; id: number; question: string }
   | { type: "route"; onHelpPage: boolean }
-  | { type: "settled"; id: number; answer: string; error: string | null }
+  | { type: "settled"; id: number; answer: string; error: string | null; rowId: number | null }
   | { type: "history_requested" }
-  | { type: "history_loaded"; turns: Turn[] }
+  | { type: "history_loaded"; turns: EarlierTurn[] }
   | { type: "history_failed" };
 
 export const initialAssistantState: AssistantCore = {
@@ -111,47 +121,39 @@ export function assistantReducer(state: AssistantCore, action: AssistantAction):
     case "asked":
       return {
         ...state,
-        turns: [...state.turns, { id: action.id, question: action.question, answer: null, error: null }],
+        turns: [...state.turns, { id: action.id, question: action.question, answer: null, error: null, rowId: null }],
       };
     case "route":
       // Same page kind (every pathname change, and the mount): same object, no re-render.
       return state.onHelpPage === action.onHelpPage ? state : { ...state, onHelpPage: action.onHelpPage };
     case "settled": {
-      const { id, answer, error } = action;
+      const { id, answer, error, rowId } = action;
       const seen = state.open || state.onHelpPage;
       return {
         ...state,
-        turns: state.turns.map((t) => (t.id === id ? { ...t, answer, error } : t)),
+        turns: state.turns.map((t) => (t.id === id ? { ...t, answer, error, rowId } : t)),
+        // A history load that landed first already holds this row.
+        history: state.history.filter((h) => h.rowId !== rowId),
         unread: state.unread || !seen,
       };
     }
     case "history_requested":
       return state.historyStatus === "idle" ? { ...state, historyStatus: "loading" } : state;
-    case "history_loaded":
-      return { ...state, history: action.turns.slice(-HISTORY_LIMIT), historyStatus: "loaded" };
+    case "history_loaded": {
+      const mine = new Set(state.turns.map((t) => t.rowId));
+      return { ...state, history: action.turns.filter((h) => !mine.has(h.rowId)), historyStatus: "loaded" };
+    }
     case "history_failed":
       return { ...state, historyStatus: "failed" };
   }
 }
 
 /** The history GET's rows (newest first) as oldest-first turns. Ids go
- *  negative so they can never collide with this session's (0, 1, 2…). A body
- *  without `turns` (an older server) is no history, not a crash. */
-export function historyFromRows(body: { turns?: HistoryRow[] } | null | undefined): Turn[] {
-  const rows = Array.isArray(body?.turns) ? body.turns : [];
-  return rows
-    .slice(0, HISTORY_LIMIT)
+ *  negative so they can never collide with this session's (0, 1, 2…). */
+export function historyFromRows(body: { turns: HistoryRow[] }): EarlierTurn[] {
+  return [...body.turns]
     .reverse()
-    .map((r) => ({ id: -1 - r.id, question: r.question, answer: r.answer ?? "", error: r.error ?? null, ts: r.ts }));
-}
-
-/** The last answered turns, oldest first, as the ask's `history`. An error
- *  answer (cap, transport) is not context worth sending. */
-export function historyForAsk(state: Pick<AssistantCore, "history" | "turns">): Array<{ question: string; answer: string }> {
-  return [...state.history, ...state.turns]
-    .filter((t) => t.answer !== null && !t.error)
-    .slice(-ASK_HISTORY_TURNS)
-    .map((t) => ({ question: t.question, answer: t.answer as string }));
+    .map((r) => ({ id: -1 - r.id, rowId: r.id, question: r.question, answer: r.answer, error: r.error, ts: r.ts }));
 }
 
 const DAY_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
@@ -159,20 +161,18 @@ const DAY_YEAR_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "nu
 const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
 /** Oldest-first turns in local-day runs: "Today", "Yesterday", "Nov 5" (a
- *  past year adds it). A turn without a parseable `ts` joins the run before it. */
-export function groupByDay(turns: Turn[], now: Date): Array<{ label: string; turns: Turn[] }> {
+ *  past year adds it). */
+export function groupByDay(turns: EarlierTurn[], now: Date): Array<{ label: string; turns: EarlierTurn[] }> {
   const today = dayKey(now);
   const y = new Date(now);
   y.setDate(y.getDate() - 1);
   const yesterday = dayKey(y);
-  const out: Array<{ key: string; label: string; turns: Turn[] }> = [];
+  const out: Array<{ key: string; label: string; turns: EarlierTurn[] }> = [];
   for (const t of turns) {
-    const parsed = t.ts ? new Date(t.ts) : null;
-    const d = parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
-    const key = d ? dayKey(d) : out[out.length - 1]?.key ?? "?";
+    const d = new Date(t.ts);
+    const key = dayKey(d);
     if (out[out.length - 1]?.key !== key) {
-      const label = !d ? "Earlier"
-        : key === today ? "Today"
+      const label = key === today ? "Today"
         : key === yesterday ? "Yesterday"
         : (d.getFullYear() === now.getFullYear() ? DAY_FMT : DAY_YEAR_FMT).format(d);
       out.push({ key, label, turns: [] });
@@ -192,6 +192,7 @@ export function settledFrom(id: number, r: AskResponse | null | undefined): Sett
     type: "settled", id,
     answer: answer || "The assistant came back empty — try asking again.",
     error: answer ? (r?.error ?? null) : "empty_answer",
+    rowId: r?.id ?? null,
   };
 }
 
@@ -204,5 +205,6 @@ export function settledFromError(id: number, e: unknown): Settled {
     type: "settled", id,
     answer: `Couldn't reach the assistant${detail ? ` (${detail})` : ""} — try again in a moment.`,
     error: "transport",
+    rowId: null,
   };
 }

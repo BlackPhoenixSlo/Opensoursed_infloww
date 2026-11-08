@@ -30,7 +30,7 @@ import { useChatDraftText } from "@/lib/chatDrafts";
 import { useFanTyping } from "@/lib/fanTyping";
 import type { FanListSelection } from "./FanList";
 import { ROW_BADGE_LABEL, type RowBadge, rowBadges } from "./fanRowBadges";
-import { previewText, previewTitle } from "./fanRowPreview";
+import { fanRowPreview } from "./fanRowPreview";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
 import { NOT_WIRED, NotWiredNote, notWiredTitle, useNotWiredNote } from "./NotWired";
 
@@ -120,6 +120,7 @@ export const FanRow = memo(function FanRow({
   const verified = !!(c.withUser.isVerified || profile?.isVerified);
   const draft = useChatDraftText(accountId, c.withUser.id);
   const typing = useFanTyping(accountId, c.withUser.id);
+  const preview = fanRowPreview(c, { typing, draft, selected: isSelected });
   return (
     <OpenInNewWindowMenu href={fanDeepLinkHref(accountId, c.withUser.id)}>
       <button
@@ -290,18 +291,11 @@ export const FanRow = memo(function FanRow({
           </div>
           <div className={cn(G.bottom, "flex items-center")}>
             <span
-              title={typing || (draft && !isSelected) ? undefined : previewTitle(c)}
+              title={preview.title}
               className={cn(G.preview, "flex-1 min-w-0 truncate", unread ? cn(G.previewUnread, "text-fg") : "text-fg-dim")}
             >
-              {/* Infloww's preview states (MP2 message-HF80yTBL.js; 04 M3,
-               *  M25): "is typing…" while the Fan types, else an unsent draft
-               *  as "[Draft] …" in the preview's own emphasis (not on the open
-               *  chat, whose composer shows it), else the last message. */}
-              {typing
-                ? <span className="italic">is typing…</span>
-                : draft && !isSelected
-                  ? `[Draft] ${draft}`
-                  : previewText(c)}
+              {/* "typing…" in italic; a draft or the last message plain (fanRowPreview). */}
+              {preview.typing ? <span className="italic">{preview.text}</span> : preview.text}
             </span>
             <span className={cn(G.time, "shrink-0 whitespace-nowrap text-fg-dim")}>
               {fmtTime(c.lastMessage?.createdAt, now)}

@@ -7,7 +7,7 @@
  * The root layout (server) starts those GETs on the relay with the request's own cookies (lib/inlineBoot.server.ts)
  * and does not wait: the shell and the JS go out at once, each answer streams in when the relay gave it (a promise
  * prop of `InlineBoot`, components/InlineBoot.tsx). Here, the browser's side: the first GET of such a URL (`take`)
- * gets that answer as if it had fetched it, once, for KEEP_MS after the document's boot; no answer (relay down, past
+ * gets that answer as if it had fetched it, once, for INLINE_KEEP_MS after the document's boot; no answer (relay down, past
  * its time, a 5xx) is a miss, and the caller fetches as before. A URL nobody asks (another key: the guess was wrong)
  * is never used. Everything after it (a bundle's follow-up, a later /auth/me) is the network's.
  */
@@ -19,8 +19,10 @@ export type InlineData = Record<string, Promise<InlineAnswer>>;
 
 /** The request header app/proxy.ts sets on a document GET of a booted route: its path and query. */
 export const BOOT_PATH_HEADER = "x-chatterly-boot-path";
+/** The routes whose document load carries an inline boot (app/proxy.ts tags them; lib/inlineBoot.server.ts). */
+export const BOOTED: ReadonlySet<string> = new Set(["/", "/messages-pro"]);
 /** How long after the boot an inline answer may stand in for its first fetch. */
-export const KEEP_MS = 10_000;
+export const INLINE_KEEP_MS = 10_000;
 /** Query params that never change an answer's body: the share token and the bundle's open Creator (its priority). */
 const IGNORED = ["t", "focus"];
 
@@ -45,7 +47,7 @@ export function seedInline(data: InlineData): void {
  * in the same tick as before); a promise of null when its answer turned out a miss (fetch it). */
 export function takeInline(url: string): Promise<Response | null> | null {
   if (seeded == null || answers.size === 0) return null;
-  if (Date.now() - seeded > KEEP_MS) {
+  if (Date.now() - seeded > INLINE_KEEP_MS) {
     answers.clear();
     return null;
   }
@@ -62,7 +64,7 @@ export function takeInline(url: string): Promise<Response | null> | null {
       res(null);
     }
   }).then((a) => {
-    if (!a || a.status < 200 || a.status >= 500) return null;
+    if (!a) return null;   // a 5xx or a redirect is already none (lib/inlineBoot.server.ts)
     const empty = a.status === 204 || a.status === 205;
     return new Response(empty ? null : a.body, { status: a.status, headers: { "content-type": "application/json" } });
   });
@@ -73,8 +75,8 @@ export function clearInline(): void {
   answers.clear();
 }
 
-/** Tests only. */
+/** Tests only: as a fresh document (a later seed is taken). */
 export function resetInline(): void {
-  answers.clear();
+  clearInline();
   seeded = null;
 }

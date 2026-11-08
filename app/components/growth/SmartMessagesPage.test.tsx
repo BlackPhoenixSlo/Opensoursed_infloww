@@ -838,6 +838,294 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("after a save the editor says Saved and shows the rule the save answered with (the edit dropped); the next edit clears it", async () => {
+    await mount(undefined, { welcomeRules: { [A.id]: { on: true, everySeconds: 600 } } });
+    await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    // The PATCH answers with the rule as written (17 minutes, the server's say); the cache's refetch still reads 10.
+    relayPatch.mockImplementation(() => Promise.resolve({ ...welcomeRule(A.id, true, 17 * 60), payload: { message: "As saved" } }));
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    fireEvent.change(welcomeEditor().delay, { target: { value: "15" } });
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    const d = welcomeEditor().dialog;
+    expect(await within(d).findByText("Saved")).toBeTruthy();
+    // The form reseeds from the save's answer, not the cache.
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(welcomeEditor().delay.value).toBe("17");
+    expect(welcomeEditor().message.value).toBe("As saved");
+    fireEvent.click(welcomeEditor().enabled);
+    await waitFor(() => expect(within(d).queryByText("Saved")).toBeNull());
+  });
+
+  it("a rule appearing mid-typing (a refetch) keeps the typed draft, and Save then PATCHes that rule", async () => {
+    const welcomeRules: Fixture["welcomeRules"] = {};
+    await mount(undefined, { welcomeRules });
+    await openPopUp();
+    await act(async () => { fireEvent.click(cardNamed(WELCOME_CARD.title)); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    expect(within(d).getByText(/has none yet/)).toBeTruthy();
+    fireEvent.change(welcomeEditor().message, { target: { value: "Typed before the rule came" } });
+
+    // Another tab creates the rule; the rules read refetches it.
+    welcomeRules[A.id] = { on: false, everySeconds: 600 };
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
+    expect(welcomeEditor().message.value).toBe("Typed before the rule came");
+
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({ payload: { message: "Typed before the rule came" } });
+    expect(rawCalls(relayPost, RULES)).toEqual([]);
+  });
+
+  /** The create path with the POST held open: the editor, the rules fixture, and the hand that lands the POST. */
+  async function createHeldOpen() {
+    const welcomeRules: Fixture["welcomeRules"] = {};
+    await mount(undefined, { welcomeRules });
+    await openPopUp();
+    await act(async () => { fireEvent.click(cardNamed(WELCOME_CARD.title)); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    let land!: () => Promise<void>;
+    relayPost.mockImplementation(() => new Promise((resolve) => {
+      land = async () => {
+        // The server now holds the rule it answered with; the refetch reads it.
+        welcomeRules[A.id] = { on: false, everySeconds: 7 * 60, message: "As created" };
+        await act(async () => { resolve(welcomeRule(A.id, false, 7 * 60, "As created")); });
+      };
+    }));
+    expectedWrites.push(`POST ${RULES}`);
+    const d = welcomeEditor().dialog;
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPost, RULES)).toHaveLength(1));
+    return { d, land: () => land(), saving: () => within(d).getByRole("button", { name: "Saving…" }) };
+  }
+
+  it("create path: typing while the POST runs keeps Save disabled (one POST, no duplicate rule); on land the typed edit stays and the next Save PATCHes the new rule", async () => {
+    const { d, land, saving } = await createHeldOpen();
+    expect(saving()).toBeDisabled();
+    // welcomeEditor() wants a "Save" button; while saving it reads "Saving…".
+    fireEvent.change(within(d).getByRole("textbox", { name: "Message" }), { target: { value: "Typed while saving" } });
+    expect(saving()).toBeDisabled();
+    await act(async () => { fireEvent.click(saving()); });
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+
+    await land();
+    await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    // Not reseeded over the edit, and no "Saved" for a draft that holds an unsaved edit.
+    expect(welcomeEditor().message.value).toBe("Typed while saving");
+    expect(within(d).queryByText("Saved")).toBeNull();
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({ payload: { message: "Typed while saving" } });
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+  });
+
+  it("create path: untouched while the POST runs, on land the form reseeds from the answer and says Saved", async () => {
+    const { d, land, saving } = await createHeldOpen();
+    expect(saving()).toBeDisabled();
+    await land();
+    expect(await within(d).findByText("Saved")).toBeTruthy();
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(welcomeEditor().delay.value).toBe("7");
+    expect(welcomeEditor().message.value).toBe("As created");
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+  });
+
+  it("a PATCH that fails with an edit made while it ran: the error shows, the edit stays, and a retry PATCHes once", async () => {
+    await mount(undefined, { welcomeRules: { [A.id]: { on: true, everySeconds: 600 } } });
+    await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    let fail!: () => Promise<void>;
+    relayPatch.mockImplementationOnce(() => new Promise((_, reject) => {
+      fail = async () => { await act(async () => { reject(new Error("relay down")); }); };
+    }));
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    fireEvent.change(welcomeEditor().delay, { target: { value: "15" } });
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    fireEvent.change(within(d).getByRole("textbox", { name: "Message" }), { target: { value: "Typed while saving" } });
+    expect(within(d).getByRole("button", { name: "Saving…" })).toBeDisabled();
+
+    await fail();
+    expect(await within(d).findByText("relay down")).toBeTruthy();
+    expect(welcomeEditor().message.value).toBe("Typed while saving");
+    expect(welcomeEditor().delay.value).toBe("15");
+    expect(within(d).queryByText("Saved")).toBeNull();
+
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(2));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[1][1]).toMatchObject({
+      every_seconds: 900, payload: { message: "Typed while saving" },
+    });
+    expect(await within(d).findByText("Saved")).toBeTruthy();
+    expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(2);
+    expect(rawCalls(relayPost, RULES)).toEqual([]);
+  });
+
+  it("untouched, the rule appears after a failed first read: the fields show it, and Save PATCHes it", async () => {
+    await mount(undefined, { failRules: true });
+    await openPopUp();
+    await act(async () => { fireEvent.click(cardNamed(WELCOME_CARD.title)); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    expect(within(d).getByText(/has none yet/)).toBeTruthy();
+    expect(welcomeEditor().delay.value).toBe("5");
+
+    stubReads({ welcomeRules: { [A.id]: { on: true, everySeconds: 1200, message: "From the server" } } });
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
+    expect(welcomeEditor().enabled).toBeChecked();
+    expect(welcomeEditor().delay.value).toBe("20");
+    expect(welcomeEditor().message.value).toBe("From the server");
+
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({
+      is_enabled: true, every_seconds: 1200, payload: { message: "From the server" },
+    });
+    expect(rawCalls(relayPost, RULES)).toEqual([]);
+  });
+
+  it("untouched, the rule changes in another tab: the fields follow it, and Save PATCHes it", async () => {
+    const welcomeRules: Fixture["welcomeRules"] = { [A.id]: { on: true, everySeconds: 600 } };
+    await mount(undefined, { welcomeRules });
+    await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    expect(welcomeEditor().message.value).toBe("");
+
+    welcomeRules[A.id] = { on: false, everySeconds: 1200, message: "From another tab" };
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(welcomeEditor().message.value).toBe("From another tab"));
+    expect(welcomeEditor().enabled).not.toBeChecked();
+    expect(welcomeEditor().delay.value).toBe("20");
+
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({
+      is_enabled: false, every_seconds: 1200, payload: { message: "From another tab" },
+    });
+  });
+
+  it("the rule changes while a PATCH runs, then the PATCH fails: the draft it sent stays, and a retry sends it", async () => {
+    const welcomeRules: Fixture["welcomeRules"] = { [A.id]: { on: true, everySeconds: 600 } };
+    await mount(undefined, { welcomeRules });
+    await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    let fail!: () => Promise<void>;
+    relayPatch.mockImplementationOnce(() => new Promise((_, reject) => {
+      fail = async () => { await act(async () => { reject(new Error("relay down")); }); };
+    }));
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    fireEvent.change(welcomeEditor().delay, { target: { value: "15" } });
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+
+    welcomeRules[A.id] = { on: false, everySeconds: 1200, message: "From another tab" };
+    await act(async () => { await client.invalidateQueries(); });
+    // The page has the new rule (its row is named by the message) while the PATCH still runs.
+    await waitFor(() => expect(screen.getAllByText("From another tab").length).toBeGreaterThan(0));
+    expect(within(d).getByRole("spinbutton", { name: "Check every (minutes)" })).toHaveValue(15);
+    await fail();
+    expect(await within(d).findByText("relay down")).toBeTruthy();
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(welcomeEditor().delay.value).toBe("15");
+    expect(welcomeEditor().message.value).toBe("");
+
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(2));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[1][1]).toMatchObject({ is_enabled: true, every_seconds: 900 });
+  });
+
+  it("untouched, a failed first read then a failed create: when the read recovers the fields follow it, and a retry PATCHes it", async () => {
+    await mount(undefined, { failRules: true });
+    await openPopUp();
+    await act(async () => { fireEvent.click(cardNamed(WELCOME_CARD.title)); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    expect(welcomeEditor().delay.value).toBe("5");
+    relayPost.mockRejectedValueOnce(new Error("relay down"));
+    expectedWrites.push(`POST ${RULES}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    expect(await within(d).findByText("relay down")).toBeTruthy();
+
+    stubReads({ welcomeRules: { [A.id]: { on: true, everySeconds: 1200, message: "From the server" } } });
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
+    expect(welcomeEditor().enabled).toBeChecked();
+    expect(welcomeEditor().delay.value).toBe("20");
+    expect(welcomeEditor().message.value).toBe("From the server");
+
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({
+      is_enabled: true, every_seconds: 1200, payload: { message: "From the server" },
+    });
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+  });
+
+  it("untouched, the rule deleted in another tab: the fields go back to the defaults, and Save creates it off", async () => {
+    const welcomeRules: Fixture["welcomeRules"] = { [A.id]: { on: true, everySeconds: 600 } };
+    await mount(undefined, { welcomeRules });
+    await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    expect(welcomeEditor().enabled).toBeChecked();
+
+    delete welcomeRules[A.id];
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(within(d).getByText(/has none yet/)).toBeTruthy());
+    expect(welcomeEditor().enabled).not.toBeChecked();
+    expect(welcomeEditor().delay.value).toBe("5");
+    expect(welcomeEditor().message.value).toBe("");
+
+    relayPost.mockResolvedValueOnce(welcomeRule(A.id, false));
+    expectedWrites.push(`POST ${RULES}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPost, RULES)).toHaveLength(1));
+    expect(rawCalls(relayPost, RULES)[0][1]).toMatchObject({ is_enabled: false, every_seconds: 300, payload: { message: "" } });
+    expect(rawCalls(relayPatch, ruleAt(A.id))).toEqual([]);
+  });
+
+  it("create lands but the refetch fails: the next Save PATCHes the created rule (no second POST)", async () => {
+    await mount(undefined, { welcomeRules: {} });
+    await openPopUp();
+    await act(async () => { fireEvent.click(cardNamed(WELCOME_CARD.title)); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    const d = welcomeEditor().dialog;
+    relayPost.mockResolvedValueOnce(welcomeRule(A.id, false, 7 * 60, "As created"));
+    // From here the rules read fails: the cache keeps reading no rule.
+    stubReads({ failRules: true });
+    expectedWrites.push(`POST ${RULES}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    expect(await within(d).findByText("Saved")).toBeTruthy();
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(within(d).queryByText(/has none yet/)).toBeNull();
+    expect(welcomeEditor().message.value).toBe("As created");
+
+    fireEvent.change(welcomeEditor().message, { target: { value: "Second save" } });
+    expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
+    await act(async () => { fireEvent.click(welcomeEditor().save); });
+    await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toHaveLength(1));
+    expect(rawCalls(relayPatch, ruleAt(A.id))[0][1]).toMatchObject({ every_seconds: 420, payload: { message: "Second save" } });
+    expect(rawCalls(relayPost, RULES)).toHaveLength(1);
+  });
+
   it("switches our welcome on whatever OnlyFans' own welcome reads, and never reads or writes that switch", async () => {
     await mount(undefined, { welcomeRules: { [A.id]: { on: false } }, ofOn: { [A.id]: true } });
     await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
@@ -971,7 +1259,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
         delay_range: [15, 16], // equal ends widen by a minute, as Infloww's clamp does
       } },
     ]));
-    expect(await within(dialog).findByText("Saved.")).toBeTruthy();
+    expect(await within(dialog).findByText("Saved")).toBeTruthy();
   });
 
   it("opening the row opens the same editor with the rule's saved config", async () => {
@@ -1055,7 +1343,29 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
         ...EXTRAS_DEFAULTS, frequency: "every",
       } },
     ]));
-    expect(await within(dialog).findByText("Saved.")).toBeTruthy();
+    expect(await within(dialog).findByText("Saved")).toBeTruthy();
+  });
+
+  it("a lifecycle message's variant pool: typed, added and imported variants save in order", async () => {
+    await mount(undefined, {
+      lifecycle: { [A.id]: { expired_message: { on: true, text: "Come back, fixture", hours: 48 } } },
+    });
+    await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[4])!).getByRole("button", { name: "Come back, fixture" })); });
+    const dialog = screen.getByRole("dialog", { name: triggerLabels[4] });
+    await within(dialog).findByRole("heading", { name: "Expired", level: 3 });
+    expectedWrites.push(`PUT ${LM_CONFIG}`);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add variant" }));
+    fireEvent.change(within(dialog).getByLabelText("Message, variant 2"), { target: { value: "b" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import captions" }));
+    fireEvent.change(within(dialog).getByLabelText("Paste captions"), { target: { value: "c\nb" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add pasted" }));
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Save" })); });
+    await waitFor(() => expect(relayPut.mock.calls.filter(([p]) => p === LM_CONFIG).map(([, body]) => body)).toEqual([
+      { account_id: A.id, kind: "expired_message", config: {
+        enabled: true, hours: 48, messages: [{ variants: ["Come back, fixture", "b", "c"], follow_ups: [], discount: null }],
+        ...EXTRAS_DEFAULTS, frequency: "every",
+      } },
+    ]));
   });
 
   it('"Birthday greetings", then Next, opens the Birthday editor, off by default, with no hours and Infloww\'s script as its text', async () => {
@@ -1424,5 +1734,52 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     expect(["Attachment(s)", "Price", "Start date"].map((c) => cellOf(resub, c).textContent)).toEqual(["--", "--", "--"]);
     await applyFilters({ status: "Scheduled" });
     expect(rows().map(triggerOf)).toEqual([PURCHASED]);
+  });
+});
+
+describe("a Trigger editor's dialog: Escape closes only a clean draft", () => {
+  const escape = () => act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" }); });
+  const openPurchased = async () => {
+    await mount(undefined, { purchase: { [A.id]: FIXTURE_PURCHASE } });
+    await act(async () => { fireEvent.click(within(purchasedRow()!).getByRole("button", { name: FIXTURE_PURCHASE.text })); });
+    const dialog = screen.getByRole("dialog", { name: PURCHASED });
+    await within(dialog).findByRole("heading", { name: "Message on purchase" });
+    return dialog;
+  };
+  it("Purchased, untouched: Escape closes", async () => {
+    await openPurchased();
+    await escape();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("Purchased, typed: Escape does nothing; × closes", async () => {
+    const dialog = await openPurchased();
+    fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "typed" } });
+    await escape();
+    expect(screen.getByRole("dialog", { name: PURCHASED })).toBeTruthy();
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Close" })); });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("Expired, hours typed: Escape does nothing", async () => {
+    await mount(undefined, { lifecycle: { [A.id]: { expired_message: { on: true, text: "Come back, fixture", hours: 48 } } } });
+    await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[4])!).getByRole("button", { name: "Come back, fixture" })); });
+    const dialog = screen.getByRole("dialog", { name: triggerLabels[4] });
+    await within(dialog).findByRole("heading", { name: "Expired", level: 3 });
+    fireEvent.change(within(dialog).getByLabelText("Fan’s subscription expired"), { target: { value: "72" } });
+    await escape();
+    expect(screen.getByRole("dialog", { name: triggerLabels[4] })).toBeTruthy();
+  });
+  it("Delayed welcome: untouched Escape closes; a switch flipped holds it", async () => {
+    await mount(undefined, { welcomeRules: { [A.id]: { on: true, everySeconds: 600 } } });
+    const open = async () => {
+      await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
+      await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
+    };
+    await open();
+    await escape();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await open();
+    await act(async () => { fireEvent.click(welcomeEditor().enabled); });
+    await escape();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 });

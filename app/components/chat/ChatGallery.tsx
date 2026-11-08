@@ -22,9 +22,10 @@
  * keeps its rows (`FanDrawer.tsx:1277-1287`).
  */
 
-import { useEffect } from "react";
+import { useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { useModalFocus } from "@/components/ui/ifModal";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -91,18 +92,10 @@ export function ChatGallery({ accountId, fanId, onClose }: {
   const [blurMode] = useBlurMode();
   const blurCls = blurImageClass(blurMode);
 
-  // One layer per Escape (the house rule, `FanDrawer.tsx:335-338`): this
-  // `document` listener runs before the `window` ones of Find (`ChatSearch`)
-  // and the overlay Fan insights, and stops the key there.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // A modal layer (`useModalFocus`): Tab stays in the sheet, focus goes back to its opener on close, and one Escape
+  // closes only it (stopped at `document`, before the `window` ones of Find and the overlay Fan insights).
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalFocus(boxRef, onClose);
 
   if (typeof document === "undefined") return null;
   // Portalled to <body>, as the Vault picker is, so no ancestor of the Chat
@@ -117,7 +110,7 @@ export function ChatGallery({ accountId, fanId, onClose }: {
         onClick={onClose}
         className="absolute inset-0 bg-black/60 cursor-default"
       />
-      <div role="dialog" aria-modal="true" aria-label="Chat gallery" className={cn(S.panel, "relative flex flex-col overflow-hidden w-full bg-panel border-border shadow-2xl")}>
+      <div ref={boxRef} role="dialog" aria-modal="true" aria-label="Chat gallery" tabIndex={-1} className={cn(S.panel, "relative flex flex-col overflow-hidden w-full bg-panel border-border shadow-2xl outline-none")}>
         <div className={cn(S.head, "flex items-center border-border")}>
           <h2 className="mr-auto">Chat gallery</h2>
           {/* With nothing loaded, the one "↻ Refresh" sits with the error. */}
@@ -150,7 +143,6 @@ export function ChatGallery({ accountId, fanId, onClose }: {
                   <MediaTile
                     mediaId={t.mediaId}
                     proxiedUrl={proxyImage(t.url, accountId)}
-                    fallbackUrl={t.url}
                     eager={false}
                     className={cn("rounded-none", blurCls)}
                   />

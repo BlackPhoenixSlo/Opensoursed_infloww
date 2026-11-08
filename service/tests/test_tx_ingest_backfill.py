@@ -25,6 +25,7 @@ import events  # noqa: E402
 import of_client  # noqa: E402
 import of_pacing  # noqa: E402
 import transaction_chargebacks as cb  # noqa: E402
+import transaction_backfill as tb  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, Transaction, TransactionScanHistory  # noqa: E402
@@ -199,7 +200,7 @@ async def case_the_tick_cap_stops_short_and_the_next_tick_resumes_at_the_cursor(
     rows = _spread(4500, step_s=1500, cents=100)
     of = _OF(rows)
     await _tick(aid, of)
-    assert len(of.wire) == ti._BACKFILL_TICK_PAGES == 40, len(of.wire)
+    assert len(of.wire) == tb._BACKFILL_TICK_PAGES == 40, len(of.wire)
     scan = await _scan(aid)
     assert not scan.fully_backfilled and scan.current_status == "backfill_partial", scan
     cursor = scan.oldest_seen_occurred_at
@@ -230,7 +231,7 @@ async def case_same_second_rows_at_a_tick_boundary_are_re_read():
     await _account(aid)
     rows = _spread(150, newest_h=96, step_s=600, ties=30, cents=100)   # below the recent read
     of = _OF(rows)
-    orig, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    orig, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
         assert len(await _held(aid)) == 100, "the page ended 10 rows into a 30-row second"
@@ -239,7 +240,7 @@ async def case_same_second_rows_at_a_tick_boundary_are_re_read():
         assert await _walk(aid, of) == 1
         assert of.wire[-1]["marker"] == _epoch(rows[99]), of.wire
     finally:
-        ti._BACKFILL_TICK_PAGES = orig
+        tb._BACKFILL_TICK_PAGES = orig
     await _exactly(aid, rows)
     assert await _lifetime(aid) == 15_000
 
@@ -292,7 +293,7 @@ async def case_a_crash_before_the_cursor_save_re_reads_and_skips_nothing():
     await _account(aid)
     rows = _spread(300, step_s=4000)
     of = _OF(rows)
-    real, saves = ti._save_backfill_page, {"n": 0}
+    real, saves = tb._save_backfill_page, {"n": 0}
 
     async def boom(*a, **kw):
         saves["n"] += 1
@@ -300,11 +301,11 @@ async def case_a_crash_before_the_cursor_save_re_reads_and_skips_nothing():
             raise RuntimeError("killed after the page's commit, before its cursor")
         return await real(*a, **kw)
 
-    ti._save_backfill_page = boom
+    tb._save_backfill_page = boom
     try:
         res = await _tick(aid, of)
     finally:
-        ti._save_backfill_page = real
+        tb._save_backfill_page = real
     assert res["error"], res
     scan = await _scan(aid)
     assert scan.oldest_seen_occurred_at == datetime.fromisoformat(rows[99]["createdAt"]).replace(tzinfo=None)
@@ -439,7 +440,7 @@ async def case_a_walk_back_from_an_outage_reads_what_landed_above_its_top():
     async with get_session() as s:
         (await s.get(TransactionScanHistory, aid)).newest_seen_occurred_at = \
             datetime.fromisoformat(rows[0]["createdAt"]).replace(tzinfo=None)
-    assert await ti._write_page(aid, rows[:100]) == (100, 0)
+    assert await ti.write_page(aid, rows[:100]) == (100, 0)
     during = [_row(f"gap{i}", now - timedelta(days=5 + i)) for i in range(10)]
     of = _OF([*during, *rows])
     assert await _walk(aid, of) == 1
@@ -572,7 +573,7 @@ async def case_an_admin_backfill_on_a_recorded_complete_account_walks_on_from_it
     rows = _spread(1200, step_s=6000)
     await _account(aid, floor=floor, cursor=datetime.fromisoformat(rows[599]["createdAt"]).replace(tzinfo=None),
                    full=True)
-    assert await ti._write_page(aid, rows[:600]) == (600, 0)
+    assert await ti.write_page(aid, rows[:600]) == (600, 0)
     of = _OF(rows)
     await _tick(aid, of)
     assert (await _scan(aid)).fully_backfilled
@@ -585,11 +586,11 @@ async def case_a_refresh_on_an_unfinished_backfill_leaves_its_cursor():
     await _account(aid)
     rows = _spread(700, step_s=4000)
     of = _OF(rows)
-    orig, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 2
+    orig, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 2
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = orig
+        tb._BACKFILL_TICK_PAGES = orig
     cursor = (await _scan(aid)).oldest_seen_occurred_at
     await _tick(aid, of, mode="refresh")   # OF's latest 600, past the 200 the walk held
     assert (await _scan(aid)).oldest_seen_occurred_at == cursor, "a refresh moved the backfill's cursor"
@@ -623,6 +624,40 @@ async def case_the_admin_run_is_a_paced_walk():
     assert (await _scan(aid)).fully_backfilled
 
 
+async def case_an_admin_backfill_on_a_given_up_walk_restarts_it():
+    """R3c1: the admin backfill on a given-up (or done) walk is trigger_backfill's restart, down to
+    its floor: not one lone tick that clears given-up, then a recent tick reads ok on an unfinished walk."""
+    from tx_ingest_admin_api import _TxRunBody, admin_ingest_tx_run
+    aid = "bf_admin_given_up"
+    floor = _floor()
+    rows = _spread(700, step_s=4000)
+    await _account(aid, floor=floor, cursor=_now() - timedelta(days=1), full=True)
+    async with get_session() as s:
+        scan = await s.get(TransactionScanHistory, aid)
+        scan.current_status, scan.backfill_stalls = "backfill_given_up", 3
+        scan.last_error = "backfill_stopped: no_next_marker"
+    of = _OF(rows)
+    orig, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 2
+    orig_client = ti._client_for
+    ti._client_for = lambda _aid: of
+    try:
+        assert (await admin_ingest_tx_run(aid, _TxRunBody(mode="backfill")))["accepted"]
+        for t in [t for t in __import__("asyncio").all_tasks() if t.get_name().endswith(aid)]:
+            await t
+    finally:
+        ti._client_for = orig_client
+        tb._BACKFILL_TICK_PAGES = orig
+    scan = await _scan(aid)
+    assert (scan.fully_backfilled, scan.backfill_stalls, scan.current_status, scan.backfill_floor) == (
+        False, 0, "backfill_partial", floor), scan
+    assert (await _tick(aid, of, mode="recent"))["error"] is None
+    scan = await _scan(aid)
+    assert not scan.fully_backfilled and scan.current_status != "ok", "a recent tick read the unfinished walk ok"
+    await _walk(aid, of)
+    assert (await _scan(aid)).current_status == "ok"
+    await _exactly(aid, rows)
+
+
 def _dispute(row: dict, status: str = "undo") -> dict:
     """OF's /payouts/chargebacks item naming `row`'s sale: the ledger row with another id."""
     words = row["description"]
@@ -639,7 +674,7 @@ async def _status(aid: str, pid: str) -> str:
 
 async def _disputed(aid: str, row: dict) -> None:
     """`row` held, then flipped to chargedback by the disputes path (its amount off lifetime)."""
-    await ti._write_page(aid, [row | {"status": "done"}])
+    await ti.write_page(aid, [row | {"status": "done"}])
     r = await cb.apply_chargebacks(aid, [_dispute(row)])
     assert r["applied"] == 1, r
 
@@ -667,7 +702,7 @@ async def case_a_walk_rereading_a_disputed_row_applies_its_amount_at_most_once()
         await _account(aid)
         sale = _row(f"sale{n}", at, cents=500)
         other = _row(f"other{n}", at - timedelta(days=1), cents=300)
-        await ti._write_page(aid, [other])
+        await ti.write_page(aid, [other])
         await _disputed(aid, sale)
         assert await _lifetime(aid) == 300
         of = _OF([sale | {"status": ledger}, other])
@@ -731,13 +766,13 @@ async def case_a_dispute_on_a_row_the_walk_has_not_reached_applies_once_it_lands
     sale = rows[320]
     of = _OF(rows)
     of.disputes = [_dispute(sale)]
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
         assert not await _rows_of(aid, sale["id"]), "the walk is pages above it"
         assert await _walk(aid, of) > 1
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     assert await _status(aid, sale["id"]) == "chargedback"
     assert await _lifetime(aid) == 100 * 349
     await _exactly(aid, rows)
@@ -781,11 +816,11 @@ async def _interrupted_walk(aid: str, per_day: int = 110, old: int = 800) -> tup
     step = 86400 // per_day
     below = _spread(old, newest_h=24 * 15, step_s=step, prefix="o")
     of = _OF(below)
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 2
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 2
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     scan = await _scan(aid)
     assert scan.newest_seen_occurred_at == _at(below[0]) and not scan.fully_backfilled, scan
     gap = _spread(14 * per_day, newest_h=1, step_s=step, prefix="g")
@@ -806,11 +841,11 @@ async def case_a_read_short_of_the_gap_clears_the_cursor_and_walks_from_the_top(
     aid = "bf_gap_top"
     of, rows = await _interrupted_walk(aid)
     n = len(of.wire)
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 2
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 2
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     sent = of.wire[n:]
     assert [w["offset"] for w in sent[:6]] == [0, 100, 200, 300, 400, 500], sent[:6]
     assert "marker" not in sent[6] and sent[6]["offset"] == 0, sent[6:]
@@ -930,11 +965,11 @@ async def case_a_failing_refresh_on_an_unfinished_walk_still_gives_the_walk_its_
     aid = "bf_refresh_fails"
     await _account(aid)
     of = _OF(_spread(350, step_s=4000))
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     cursor = (await _scan(aid)).oldest_seen_occurred_at
     await _unstamp(aid)
     assert await ti._decide_mode(aid) == "refresh"
@@ -1023,11 +1058,11 @@ async def case_a_tick_cap_stays_partial_and_green():
     aid = "bf_cap_green"
     await _account(aid)
     of = _OF(_spread(350, step_s=4000))
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     scan = await _scan(aid)
     assert scan.current_status == "backfill_partial" and scan.last_error is None, scan
 
@@ -1117,13 +1152,13 @@ async def case_a_tick_moving_no_row_out_of_a_reversal_polls_no_disputes():
     rows = _spread(350, newest_h=48)
     of = _OF(rows)
     of.disputes = [_dispute(rows[300])]
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
         assert of.cb_wire == [], "nothing moved out of a reversal"
         await _walk(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     assert len(of.cb_wire) == 1, "the completed walk's own poll, once"
     assert await _status(aid, rows[300]["id"]) == "chargedback"
 
@@ -1143,7 +1178,7 @@ async def case_a_poll_that_fails_is_retried_by_the_next_tick():
         raise RuntimeError("OF 500")
 
     of.chargebacks = boom
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
         assert calls, "the reinstate asked for a poll"
@@ -1152,7 +1187,7 @@ async def case_a_poll_that_fails_is_retried_by_the_next_tick():
         await _tick(aid, of)
         assert of.cb_wire, "the next tick retries the poll"
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     assert await _status(aid, sale["id"]) == "chargedback"
 
 
@@ -1184,15 +1219,73 @@ async def case_a_tip_held_one_second_off_the_ledger_is_promoted_once_and_the_cur
         s.add(Transaction(account_id=aid, fan_id=FAN, amount_cents=100, kind="tip", status="pending",
                           occurred_at=_at(tip) + timedelta(seconds=1)))
     of = _OF(rows)
-    cap, ti._BACKFILL_TICK_PAGES = ti._BACKFILL_TICK_PAGES, 1
+    cap, tb._BACKFILL_TICK_PAGES = tb._BACKFILL_TICK_PAGES, 1
     try:
         await _tick(aid, of)
     finally:
-        ti._BACKFILL_TICK_PAGES = cap
+        tb._BACKFILL_TICK_PAGES = cap
     assert (await _scan(aid)).oldest_seen_occurred_at == _at(tip), "the cursor sits on OF's stamp"
     await _walk(aid, of)
     await _exactly(aid, rows)
     assert await _lifetime(aid) == 100 * 150, "promoted, not added"
+
+
+async def case_a_walk_moving_a_page_a_tick_is_never_given_up():
+    """N2c: no nextMarker on any page, so each tick holds one page and stops; the cursor moves
+    down every tick: the walk completes, never given up (it was, on its third tick)."""
+    aid = "bf_moving"
+    await _account(aid)
+    rows = _spread(450, step_s=4000)
+    of = _OF(rows)
+    of.answer = lambda q, body: {**body, "nextMarker": None}
+    for _ in range(8):
+        assert (await _tick(aid, of))["error"] is None
+        scan = await _scan(aid)
+        assert scan.current_status != "backfill_given_up" and (scan.backfill_stalls or 0) <= 1, scan
+        if scan.fully_backfilled:
+            break
+    assert scan.fully_backfilled and scan.current_status == "ok" and scan.last_error is None, scan
+    await _exactly(aid, rows)
+
+
+async def case_a_walk_stuck_at_its_cursor_is_given_up_and_stays_so():
+    """N1c / F4: OF answering the walk's top page whatever the marker (no nextMarker): the
+    cursor never moves, the third tick gives the walk up: backfill_given_up (never green in the
+    health response), its reason kept by the recent ticks after it; a new backfill clears it."""
+    from tx_ingest_admin_api import admin_ingest_tx_health
+    aid = "bf_stuck_cursor"
+    await _account(aid)
+    rows = _spread(300, step_s=4000)
+    of = _OF(rows)
+    top: list = []
+
+    def answer(q, body):
+        if q.get("marker") is None and not q.get("offset") and len(q.get("startDate") or "") == 10 and not top:
+            top.append(body)
+        return {**(top[0] if q.get("marker") is not None else body), "nextMarker": None}
+    of.answer = answer
+    seen = []
+    for _ in range(3):
+        assert (await _tick(aid, of))["error"] is None
+        scan = await _scan(aid)
+        seen.append((scan.current_status, scan.backfill_stalls, scan.fully_backfilled))
+    assert seen == [("backfill_stalled", 1, False), ("backfill_stalled", 2, False),
+                    ("backfill_given_up", 3, True)], seen
+    assert scan.last_error == "backfill_stopped: no_next_marker", scan.last_error
+    assert await ti._decide_mode(aid) == "recent", "back on the recent walks"
+    of.answer = None
+    for _ in range(2):
+        assert (await _tick(aid, of, mode="recent"))["error"] is None
+    scan = await _scan(aid)
+    assert (scan.current_status, scan.last_error) == ("backfill_given_up", "backfill_stopped: no_next_marker"), scan
+    health = {a["account_id"]: a for a in (await admin_ingest_tx_health())["accounts"]}[aid]
+    assert health["current_status"] == "backfill_given_up" and health["tier"] != "green", health
+    await ti.trigger_backfill(aid, since=_floor())
+    scan = await _scan(aid)
+    assert (scan.backfill_stalls, scan.fully_backfilled, scan.current_status) == (0, False, "idle"), scan
+    await _walk(aid, of)
+    assert (await _scan(aid)).current_status == "ok"
+    await _exactly(aid, rows)
 
 
 async def case_steady_state_walks_keep_their_wire():

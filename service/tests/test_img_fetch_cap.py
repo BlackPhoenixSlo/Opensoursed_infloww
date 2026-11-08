@@ -123,7 +123,7 @@ class _FakeResp:
         self._hold = hold_s
         self.status_code = 200
         self.headers = {"Content-Type": "image/jpeg",
-                        "Content-Length": str(len(body))}
+                        "Content-Length": str(2 * len(body))}  # iter_content yields it twice
 
     def iter_content(self, chunk_size: int = 65536):
         # The hold lives in the STREAM, not in the get(), because that is where

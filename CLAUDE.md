@@ -10,4 +10,4 @@
 - Latency budgets live in the scenario file (end-to-end frame→SSE, plus real routes), never here.
 
 # State logic — reducers, not setState chains
-- When ≥2 `useState`s change together or gate each other, or validity/payload depends on several of them: a pure `(state, action) => state` reducer with a typed `Action` union in a plain `.ts` next to the component, plus pure `canSubmit`/`buildPayload` helpers, tested with vitest tables. The component only dispatches. Single booleans stay `useState`; no global store.
+- When ≥2 `useState`s change together or gate each other, or validity/payload depends on several of them: a pure `(state, action) => state` reducer with a typed `Action` union in a plain `.ts` next to the component, plus pure `canSubmit`/`buildPayload` helpers, tested with vitest tables (template: `app/components/chat/fanDrawerForm.ts` + its test). The component only dispatches. Single booleans stay `useState`; no global store.

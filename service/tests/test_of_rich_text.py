@@ -2,7 +2,10 @@
 
 `of_rich_text.sanitize_of_html` keeps p, br, strong, em and span with OF's colour / size classes (b/i renamed), drops
 every other tag (its text kept; script/style whole), and is byte-stable on the app editor's own markup. `of_text`
-leaves plain text alone. The chat send (`_wrap_text_as_p`), the 1:1 queue, the mass and the post bodies all pass through it.
+leaves plain text alone and escapes a text that fails closed whole (the fan reads it as written, nothing dropped).
+`has_html` / `of_text` / `of_plain` share one case table with the app's `hasHtml` / `ofText` / `ofPlain`
+(fixtures/of_rich_text_cases.json, also read by app/lib/ofRichText.test.ts); it passes on every Python the relay runs
+(no html.parser). The chat send (`_wrap_text_as_p`), the 1:1 queue, the mass and the post bodies all pass through it.
 
 Run:  ./venv/bin/python service/tests/test_of_rich_text.py   (or under pytest)
 """
@@ -10,9 +13,16 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 
 _harness.bootstrap()
 
+import json  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
 from automations._wordfilter import OutboundGuard, OutboundWordsBlocked  # noqa: E402
 from of_client import OUTBOUND_TEXT_GUARD, OFClient, _guard_outbound, _wrap_text_as_p  # noqa: E402
-from of_rich_text import has_html, is_of_html, of_plain, of_rich_html, of_text, plain_length, sanitize_of_html  # noqa: E402
+from of_rich_text import (  # noqa: E402
+    _WS, _fails_closed, escape_as_of_html, has_html, is_of_html, of_plain, of_rich_html, of_text, plain_length,
+    sanitize_of_html,
+)
 
 BLUE_BOLD = '<p><span class="m-editor-fs__l m-editor-fc__blue-1"><strong>Hey babe</strong></span></p>'
 
@@ -47,32 +57,10 @@ TABLE = [
     ("hr and br between blocks", "<p>a</p><hr><br>b", "<p>a</p><p><br>b</p>"),
 ]
 
-# (name, text, has_html, of_text) — any HTML tag is markup; "<" in plain text is not
-HAS_HTML = [
-    ("heart", "<3 u", False, "<3 u"),
-    ("angle code", "code <VIP20>", False, "code <VIP20>"),
-    ("prose in angles", "<i love you>", False, "<i love you>"),
-    ("maths", "x < y > z", False, "x < y > z"),
-    ("lone open", "a <b", False, "a <b"),
-    ("bare b", "hey <b>babe</b>", True, "<p>hey <strong>babe</strong></p>"),
-    ("event attr", "<strong onclick=bad>Hi</strong>", True, "<p><strong>Hi</strong></p>"),
-    ("quoted attr", '<img src="x" onerror="1">hi', True, "<p>hi</p>"),
-    ("closing only", "hi</em>", True, "<p>hi</p>"),
-    ("newlines kept as br", "hi\n<b>x</b>\r\nyo", True, "<p>hi<br><strong>x</strong><br>yo</p>"),
-    ("script", "a<script>alert(1)</script>", True, "<p>a</p>"),
-    ("of markup", "<p>x</p>", True, "<p>x</p>"),
-]
-
-# (name, text, plain)
-PLAIN = [
-    ("paragraphs and br", "<p>a<br>b</p><p>c &amp; d</p>", "a\nb\nc & d"),
-    ("list", "<p>a</p><ul><li>x</li><li>y</li></ul>", "a\nx\ny"),
-    ("nbsp is a space", "<p>a&nbsp;b</p>", "a b"),
-    ("raw hostile markup", '<p>x<img src=x onerror=1><script>y</script></p>', "x"),
-    ("bare tags", "hey <b>babe</b>", "hey babe"),
-    ("plain unchanged", "a <3 &amp; b", "a <3 &amp; b"),
-    ("none", None, ""),
-]
+# The shared table (fixtures/of_rich_text_cases.json): has_html, of_text, of_plain — the app's half asserts the same rows.
+_FIXTURE = json.loads((Path(__file__).resolve().parent / "fixtures" / "of_rich_text_cases.json").read_text())
+CASES, NAMES = _FIXTURE["cases"], _FIXTURE["names"]
+_LIVE_TAG = re.compile(r"<(/?)([A-Za-z][\w-]*)")
 
 
 def case_sanitize_table():
@@ -82,19 +70,71 @@ def case_sanitize_table():
         assert sanitize_of_html(got) == got, ("idempotent", name)
 
 
-def case_has_html_and_of_text_table():
-    for name, text, markup, want in HAS_HTML:
-        assert has_html(text) is markup, (name, text)
+def case_shared_table_has_html_of_text_of_plain():
+    assert len(CASES) >= 30
+    for c in CASES:
+        name, text = c["name"], c["text"]
+        assert has_html(text) is c["markup"], (name, text)
         got = of_text(text)
-        assert got == want, (name, got)
+        assert got == c["sent"], (name, got)
         assert of_text(got) == got, ("idempotent", name, got)
+        # fail closed: markup goes out holding no live tag outside OF's list (plain text goes as written)
+        tags = {t.lower() for _s, t in _LIVE_TAG.findall(got)}
+        assert not c["markup"] or tags <= {"p", "br", "strong", "em", "span"}, ("live tag", name, got)
+        assert of_plain(text) == c["plain"], (name, of_plain(text))
+        # fail closed loses nothing: escaped whole, the fan reads every character as written
+        if not is_of_html(text) and _fails_closed(text):
+            assert got == escape_as_of_html(text) and of_plain(text) == text.strip(_WS).replace("\r\n", "\n"), name
 
 
-def case_of_plain_table():
-    for name, text, want in PLAIN:
-        assert of_plain(text) == want, (name, of_plain(text))
+def case_shared_perf_rows_stay_linear():
+    import time
+    perf, slow = _FIXTURE["perf"], []
+    for row in perf["rows"]:
+        text = "".join(piece * n for piece, n in row["parts"])
+        t = time.perf_counter()
+        has_html(text), of_text(text), of_plain(text)
+        ms = (time.perf_counter() - t) * 1000
+        if ms >= perf["max_ms"]:
+            slow.append((row["name"], f"{ms:.0f} ms"))
+    assert not slow, slow
+
+
+def name_rows(names):
+    """Rows generated from the fixture's name lists (app/lib/ofRichText.test.ts generates the same):
+    (text, markup, plain or None)."""
+    known, active, blocks, drop = (set(names[k]) for k in ("known", "active", "blocks", "drop"))
+    pool = sorted(known | active | blocks | drop | set(names["unknown"]))
+    rows = []
+    for n in pool:
+        tag = n in known or n in active
+        # prose in angles: plain unless an active name (or `<p `: OF's own markup starts so, `is_of_html`)
+        rows.append((f"<{n} coming soon>", n in active or n == "p", None))
+        rows.append((f"x <{n} id=1>y", True, None))  # a known name: bare formatting; any other: fails closed
+        rows.append((f"<{n}>", tag, None))
+        if n not in ("p", "br"):
+            rows.append((f"<p>a<{n}>b</{n}>c</p>", True,
+                         "ac" if n in drop else "a\nb\nc" if n in blocks else "abc"))
+    return rows
+
+
+def case_name_lists_match_the_fixture():
+    from of_rich_text import _ACTIVE, _BLOCK, _DROP_CONTENT, _KNOWN
+    assert (sorted(_KNOWN), sorted(_ACTIVE), sorted(_BLOCK), sorted(_DROP_CONTENT)) == \
+        (NAMES["known"], NAMES["active"], NAMES["blocks"], NAMES["drop"])
+    rows = name_rows(NAMES)
+    assert len(rows) > 300
+    for text, markup, plain in rows:
+        assert has_html(text) is markup, (text, markup)
+        assert plain is None or of_plain(text) == plain, (text, of_plain(text))
+
+
+def case_of_plain_none_and_length():
+    assert of_plain(None) == "" and of_plain("<p>a&nbsp;b</p>") == "a b"
     assert plain_length("<p><strong>" + "x" * 10 + "</strong></p>") == 10
     assert plain_length("plain") == 5 and plain_length(None) == 0
+    # UTF-16 code units, as OF's CharacterCount (`textCounter: S => S.length`) and the app's plainLength count
+    assert plain_length("\U0001F496ab") == 4 and plain_length("<p><b>\U0001F496</b></p>") == 2
 
 
 def case_plain_text_untouched():
@@ -125,6 +165,10 @@ def case_chat_send_wraps_or_sanitizes():
     assert _wrap_text_as_p("hi\nthere") == "<p>hi<br />there</p>"  # plain: byte-identical to before
     assert _wrap_text_as_p(BLUE_BOLD) == BLUE_BOLD
     assert _wrap_text_as_p('<p>x<img src=x onerror=1></p>') == "<p>x</p>"
+    # bare tags: the chat send escapes them, the same wrap as of_text's fail-closed escape (only the break differs)
+    hostile = " <svg x>\n<b>hi</b> "
+    assert _wrap_text_as_p(hostile) == "<p>&lt;svg x&gt;<br />&lt;b&gt;hi&lt;/b&gt;</p>"
+    assert of_text(hostile) == _wrap_text_as_p(hostile).replace("<br />", "<br>")
 
 
 def case_queue_and_mass_bodies_sanitize():
@@ -179,6 +223,35 @@ def case_word_guard_reads_markup_as_text():
     # plain text: as before (mask still masks it)
     assert _guarded("hey babe", ["babe"], "mask")[0] == "hey b***"
     assert _guard_outbound(BLUE_BOLD) == BLUE_BOLD  # no guard set: unchanged
+
+
+def case_word_guard_reads_what_each_path_sends():
+    """The guard scans what the fan reads on that path: the chat send escapes bare tags (the fan reads them as
+    written), the mass body sanitizes them (the fan reads their text)."""
+    tok = OUTBOUND_TEXT_GUARD.set(OutboundGuard(["badword"], "block"))
+    try:
+        for text in ("<a href=badword>x</a>", "hi <b title=badword>there</b>"):
+            spy = _PostSpy()
+            try:
+                spy.send_message(1, text)
+                raise AssertionError(f"chat not blocked: {spy.bodies}")
+            except OutboundWordsBlocked:
+                pass
+            spy.send_mass_message(text, included_users=[1])  # the fan reads "x" / "hi there": nothing to block
+            assert "badword" not in spy.bodies[-1]["text"], spy.bodies
+        spy = _PostSpy()
+        spy.send_message(1, "<p>x<a href=badword>y</a></p>")  # OF markup: sanitized on chat too, the fan reads "xy"
+        assert spy.bodies[-1]["text"] == "<p>xy</p>", spy.bodies
+    finally:
+        OUTBOUND_TEXT_GUARD.reset(tok)
+    # mask mode on a chat's bare tags: the literal text the fan reads is masked, as any plain text
+    tok = OUTBOUND_TEXT_GUARD.set(OutboundGuard(["babe"], "mask"))
+    try:
+        spy = _PostSpy()
+        spy.send_message(1, "hey <b>babe</b>")
+        assert spy.bodies[-1]["text"] == "<p>hey &lt;b&gt;b***&lt;/b&gt;</p>", spy.bodies
+    finally:
+        OUTBOUND_TEXT_GUARD.reset(tok)
 
 
 class _PostSpy(OFClient):

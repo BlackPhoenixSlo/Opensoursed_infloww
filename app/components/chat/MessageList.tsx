@@ -31,10 +31,11 @@ import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import type { AttributionEntry } from "@/hooks/useChatAttribution";
 import { withdrawnLines, type WithdrawnLine } from "@/lib/withdrawnLines";
 import { MP } from "@/lib/messagesPro";
+import { ofPlainText } from "@/lib/ofRichText";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Bubble } from "./MessageBubble";
 import {
-  dateDividerLabel, DateSeparator, localDateKey, messageRuns, resolveSide, stripHtml, type RunLabel,
+  dateDividerLabel, DateSeparator, localDateKey, messageRuns, resolveSide, type RunLabel,
 } from "./messageListParts";
 import { useThreadPin } from "./useThreadPin";
 
@@ -129,7 +130,7 @@ export function MessageList(props: MessageListProps) {
   // The effective mode holds the Agency's AI translation gate (spec phase-04).
   const { on: translateOn, allowed: translateAllowed } = useEffectiveTranslateMode(accountId);
   const translatableTexts = useMemo(
-    () => (translateOn ? messages.filter((m) => m.text).map((m) => stripHtml(m.text)) : []),
+    () => (translateOn ? messages.filter((m) => m.text).map((m) => ofPlainText(m.text)) : []),
     [messages, translateOn],
   );
   useTranslations(translatableTexts, translateOn, accountId);

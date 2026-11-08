@@ -6,7 +6,7 @@ import {
 } from "@/lib/relaySchedule";
 
 const run = (actions: Action[], s: ScheduleState = initialSchedule) => actions.reduce(scheduleReducer, s);
-const enq = (id: number, accountId: string | null = `c${id}`): Action => ({ type: "enqueue", job: { id, accountId } });
+const enq = (id: number, accountId: string | null = `c${id}`): Action => ({ type: "enqueue", job: { id, accountId, screen: false } });
 const start = (...ids: number[]): Action => ({ type: "start", ids });
 /** A read the open screen's bundle covers, gone out per Creator. */
 const scr = (id: number, accountId: string | null = `c${id}`): Action => ({ type: "enqueue", job: { id, accountId, screen: true } });

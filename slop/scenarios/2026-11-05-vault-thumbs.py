@@ -47,14 +47,14 @@ Then the Creator's video urls in the mirror are signed for a proxy it left (OLD_
 picker and hovers a video tile (`vault-hover-trigger`, then `vault-hover-frames-a` / `-b` a second apart: frames
 cycling): every /img/scrub 200, >= 2 frame indices shown, the stale url re-signed by id (>= 1 by-id read, the
 exact count is the HTTP phase's: a thumb re-fetch may add one; the CDN's 403 then 200).                                                ui_hover_scrub_after_proxy_change.
-Gifs (the UI Creator's GIF_KS items are gifs: OF's .mp4 in `files.full`): a fresh browser opens the picker; every
-on-screen gif tile loops its clip (src on, playing, time moving a second apart, painted), the one below the fold has
-no src and cost 0 CDN calls; scrolled to, it attaches and plays and a first-row gif that left the view is paused;
+Gifs (42 UI Creator items are gifs: OF's .mp4 in `files.full`): a fresh browser opens the picker; up to four
+on-screen gif tiles loop their clips (src on, playing, time moving a second apart, painted), those below the fold have
+no src and cost 0 CDN calls; scrolling moves the attached clips and first-row gifs that left the view lose src;
 prefers-reduced-motion: an on-screen gif has no src until hovered, then plays.   ui_gif_tiles_loop_while_on_screen.
 Its ⓘ Media details loops the clip inline.                                         ui_gif_details_loops_inline.
-Each gif clip crosses the CDN once in the whole UI section (cold, second, phone opens, the gif open, Media details,
-the reduced-motion reload): one 200/206, every later <video> Range off the relay's disk (img_api's small-clip range
-cache), while the relay served the clips more often than that.                    ui_gif_clip_crosses_cdn_once.
+Each fetched gif clip crosses the CDN once in the whole UI section (cold, second, phone opens, the gif open, Media
+details, the reduced-motion reload): one 200/206, every later <video> Range off the relay's disk (img_api's small-clip
+range cache), while the relay served the clips more often than that.             ui_gif_clip_crosses_cdn_once.
 The thumb opens' "0 CDN" counts thumbs only; their gif clip calls are `cdn_gif`.
 Load-sensitive (measured 2026-11-05, host load 25-45, red on origin/main too: evidence/control-main/README.md):
 the picker fires /cache/summary and the live /vault/media together; when the live answer lands >~2 ms first,
@@ -108,9 +108,9 @@ THUMB = "/admin/vault-ai/thumb"
 LISTS = "/api/of/v2/vault/lists"
 MEDIA = "/api/of/v2/vault/media"
 DEAD = (48, 72)
-# The UI Creator's gifs (vault_wire `gifs`): two on the picker's first row, one on its 4th (6 columns), below the fold
-# at GIF_VIEWPORT yet on the first page (24), so in the DOM. Measured at 1440x900: 3.5 rows show, page 2 not loaded.
-GIF_KS = (0, 1, 22)
+# The UI Creator's gifs (vault_wire `gifs`): dense first page plus more below, preserving video tiles at 4, 7, 9
+# for the existing hover scrub flow. The first page has off-screen gifs in the DOM at GIF_VIEWPORT.
+GIF_KS = tuple(k for k in range(45) if k not in (4, 7, 9))  # 42 gifs, with video tiles kept for hover
 GIF_VIEWPORT = (1440, 700)
 STALE_VIDS = 3
 OLD_EGRESS = "127.0.0.1:1"  # the UI Creator's earlier proxy, long gone
@@ -593,6 +593,7 @@ GIF_JS = """t => {
   const v = t.querySelector('video[data-gif-loop]'), sc = t.closest('.overflow-y-auto');
   const r = t.getBoundingClientRect(), s = (sc || document.documentElement).getBoundingClientRect();
   return {in_view: r.bottom > s.top && r.top < s.bottom, video: !!v, src: v ? v.getAttribute('src') : null,
+          preload: v ? v.getAttribute('preload') : null,
           paused: v ? v.paused : null, t: v ? Math.round(v.currentTime * 100) / 100 : null,
           ready: v ? v.readyState : null, opacity: v ? getComputedStyle(v).opacity : null};
 }"""
@@ -606,9 +607,9 @@ def _playing(a: dict, b: dict) -> bool:
 
 
 async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, relay_gif_n: int) -> None:
-    """The owner's picker on the UI Creator's gifs (GIF_KS), desktop (GIF_VIEWPORT): each on-screen gif tile loops its clip (src
-    attached, playing, time moving, painted over the still) while a gif below the fold has no src and cost no CDN
-    call; scrolled to, it attaches and plays, and a gif that left the view is paused (GIF_TILES). Its ⓘ Media
+    """The owner's picker on the UI Creator's gifs (GIF_KS), desktop (GIF_VIEWPORT): up to four on-screen gif tiles
+    loop their clips (src attached, playing, time moving, painted over the still) while gifs below the fold have
+    no src and cost no CDN call; scrolling gives new visible gifs a slot and detaches those that left (GIF_TILES). Its ⓘ Media
     details loops the clip inline (GIF_DETAILS). Then prefers-reduced-motion: an on-screen gif has no src until
     hovered, then plays (GIF_TILES). Shots: vault-gif-trigger, -playing-a/-b (a second apart), -scrolled,
     -details-playing, -reduced-still, -reduced-hover. Side effect: the fake CDN's calls per gif clip.
@@ -641,26 +642,34 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
             await vault.wait_for(timeout=60_000)
             await vault.click(timeout=60_000)
             dialog = page.get_by_role("dialog", name="Vault picker")
-            await dialog.locator(f'[data-tile-id="{gifs[-1]}"]').wait_for(state="attached", timeout=60_000)
+            await dialog.locator(f'[data-tile-id="{gifs[19]}"]').wait_for(state="attached", timeout=60_000)
             d["trigger"] = await ui.shot(ctx, page, "vault-gif-trigger")
             t0 = time.time()
             while time.time() - t0 < 30:
                 st = await states(dialog)
-                if all(s and not s["paused"] and s["t"] for s in st.values() if s and s["in_view"]):
+                if sum(bool(s and s["src"] and not s["paused"] and s["t"]) for s in st.values()) >= 1:
                     break
                 await asyncio.sleep(0.25)
             a = await states(dialog)
+            video_a = await dialog.locator("video[src]").count()
             d["playing_a"] = await ui.shot(ctx, page, "vault-gif-playing-a")
             await page.wait_for_timeout(1000)
             b = await states(dialog)
+            video_b = await dialog.locator("video[src]").count()
             d["playing_b"] = await ui.shot(ctx, page, "vault-gif-playing-b")
             d["open_a"], d["open_b"] = a, b
             seen = [m for m in gifs if a[m] and a[m]["in_view"]]
             below = [m for m in gifs if a[m] and not a[m]["in_view"]]
             d["cdn_before_scroll"] = await cdn_gif()
-            open_ok = (len(seen) >= 1 and len(below) >= 1 and all(_playing(a[m], b[m]) for m in seen)
+            open_ok = (len(seen) >= 1 and len(below) >= 1 and any(_playing(a[m], b[m]) for m in seen)
                        and all(a[m]["src"] is None and b[m]["src"] is None for m in below)
                        and all(d["cdn_before_scroll"][m] == [] for m in below))
+            samples = [(a, video_a), (b, video_b)]
+            # Move through the first page in steps while many gif tiles remain mounted.
+            for m in (gifs[5], gifs[10], gifs[15], gifs[19]):
+                await dialog.locator(f'[data-tile-id="{m}"]').scroll_into_view_if_needed(timeout=30_000)
+                await page.wait_for_timeout(350)
+                samples.append((await states(dialog), await dialog.locator("video[src]").count()))
             # Scroll the one below the fold into view: it attaches and plays; the first row leaves and pauses.
             if below:
                 await dialog.locator(f'[data-tile-id="{below[0]}"]').scroll_into_view_if_needed(timeout=30_000)
@@ -671,17 +680,30 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
                     break
                 await asyncio.sleep(0.25)
             c = await states(dialog)
+            video_c = await dialog.locator("video[src]").count()
             await page.wait_for_timeout(1000)
             c2 = await states(dialog)
+            video_c2 = await dialog.locator("video[src]").count()
             d["scrolled"] = await ui.shot(ctx, page, "vault-gif-scrolled")
             d["after_scroll"], d["after_scroll_b"] = c, c2
             left = [m for m in seen if not c2[m]["in_view"]]
             d["left_view"] = left
-            scroll_ok = bool(below) and _playing(c[below[0]], c2[below[0]]) and len(left) >= 1 \
-                and all(c2[m]["paused"] is True for m in left)
+            samples.extend(((c, video_c), (c2, video_c2)))
+            d["loop_samples"] = [{"picker_video_src": count,
+                                  "attached": sum(bool(s and s["src"]) for s in sample.values()),
+                                  "offscreen_attached": [m for m, s in sample.items() if s and s["src"] and not s["in_view"]],
+                                  "unattached_preload": [m for m, s in sample.items() if s and not s["src"] and s["preload"] != "none"]}
+                                 for sample, count in samples]
+            cap_ok = len(gifs) >= 40 and any(s and s["src"] and s["in_view"] for sample, _ in samples
+                                                  for s in sample.values()) \
+                and all(x["picker_video_src"] <= 4 and x["attached"] <= 4 and not x["offscreen_attached"]
+                                                and not x["unattached_preload"] for x in d["loop_samples"])
+            scroll_ok = bool(below) and any(_playing(c[m], c2[m]) for m in gifs if c[m] and c2[m] and c[m]["in_view"]) and len(left) >= 1 \
+                and all(c2[m]["src"] is None for m in left)
             d["img_statuses"] = sorted({s for s, u in page.slop["statuses"]
                                         if urlsplit(u).path == "/img" and "gif.mp4" in u})
             t_ok = open_ok and scroll_ok and set(d["img_statuses"]) <= {200, 206} and bool(d["img_statuses"])
+            d["cap_ok"] = cap_ok
             # Media details on the gif now in view.
             tile = dialog.locator(f'[data-tile-id="{below[0] if below else gifs[0]}"]')
             await tile.get_by_label("Media details").click(timeout=30_000)
@@ -730,10 +752,14 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
         d["relay_gif_img"] = sum(1 for _, u in page.slop["statuses"] if urlsplit(u).path == "/img" and "gif.mp4" in u)
     d["cdn_gif"] = await cdn_gif()
     ctx.check(GIF_TILES, t_ok and "error" not in d, **d)
+    ctx.check("ui_gif_picker_caps_attached_loops_and_detaches_offscreen", d.get("cap_ok") is True and "error" not in d,
+              gif_count=len(gifs), samples=d.get("loop_samples"), trigger=d.get("trigger"), settled=d.get("scrolled"))
     calls = await cdn_since(n_ui0)
     per = {m: [[c["status"], c["range"]] for c in calls if c["key"] == key[m]] for m in gifs}
     relay_n = relay_gif_n + d["relay_gif_img"]
-    ctx.check(GIF_CDN_ONCE, "error" not in d and all(len(v) == 1 and v[0][0] in (200, 206) for v in per.values())
-              and relay_n > len(gifs), cdn_per_gif=per, relay_gif_img=relay_n, shot=d.get("playing_b"))
+    fetched = [v for v in per.values() if v]
+    ctx.check(GIF_CDN_ONCE, "error" not in d and len(fetched) >= 3
+              and all(len(v) == 1 and v[0][0] in (200, 206) for v in fetched)
+              and relay_n > len(fetched), cdn_per_gif=per, relay_gif_img=relay_n, shot=d.get("playing_b"))
     ctx.check(GIF_DETAILS, det_ok and "error" not in d, details=d.get("details"), shot=d.get("details_playing"),
               error=d.get("error"))

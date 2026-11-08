@@ -51,7 +51,8 @@ the limit says (OF's 429s are not only bursts); `"times": k` answers its first k
 requests; `"empty": True` instead of `text`: an empty 200, hasMore false (the answer OF gives past
 its offset cap, out of nowhere). GET /campaigns and /trials stay of_wire's; their
 arrivals are logged too (status None), not limited. Every request is kept in `log`, arrival order: {t, account, route, query (the
-raw query string), offset, view, status}.
+raw query string), offset, view, status, egress (lib/proxy_wire.egress_of: "127.0.0.1:<proxy port>"
+or "direct", the tunnel the request came through)}.
 """
 from __future__ import annotations
 
@@ -61,6 +62,8 @@ import time
 from datetime import datetime
 from functools import lru_cache
 from urllib.parse import parse_qs, urlsplit
+
+from slop.lib.proxy_wire import egress_of
 
 BURST = 10
 TX_CAP = 600   # OF's ledger: `offset` >= 600 is empty, hasMore false (measured, acct 15891843, 11-07)
@@ -157,7 +160,8 @@ class SweepWire:
                     inj["done"], blank = True, True
             self._bucket[key] = (tokens, now)
             entry = {"t": now, "account": uid, "route": name, "query": u.query, "offset": off, "view": view,
-                     "status": 429 if text else 200, "asked": text, "tokens": round(tokens, 2)}
+                     "status": 429 if text else 200, "asked": text, "tokens": round(tokens, 2),
+                     "egress": egress_of(h.client_address[1])}
             self.log.append(entry)
         time.sleep(self.fake.latency_s)
         if text:

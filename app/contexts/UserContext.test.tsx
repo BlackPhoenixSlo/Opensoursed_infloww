@@ -18,7 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { UserProvider, useUser } from "@/contexts/UserContext";
+import { UserProvider, useUser, wipeIdentityStorage } from "@/contexts/UserContext";
+import { cookieValue, rememberScope } from "@/lib/screenEntry";
 import { clearPersistedCache } from "@/lib/rqPersister";
 
 vi.mock("@/lib/rqPersister", () => ({ clearPersistedCache: vi.fn(async () => {}) }));
@@ -171,6 +172,17 @@ describe("UserContext logout", () => {
     } finally {
       Object.defineProperty(window, "location", { configurable: true, value: realLocation });
     }
+  });
+});
+
+describe("wipeIdentityStorage", () => {
+  it("expires the saved scope's cookie with the saved scope (the next principal's Messages Pro load guesses afresh)", async () => {
+    window.localStorage.setItem("chatterly:scope", "model:m1");
+    rememberScope(true);
+    expect(cookieValue(document.cookie, "chatterly_scope")).toBe("model");
+    await wipeIdentityStorage();
+    expect(window.localStorage.getItem("chatterly:scope")).toBeNull();
+    expect(cookieValue(document.cookie, "chatterly_scope")).toBeUndefined();
   });
 });
 

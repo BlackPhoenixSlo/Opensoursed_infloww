@@ -16,8 +16,10 @@
  *     while that save was in flight).
  *   • Model + effort are the ACCOUNT's (`account_ai_config.model` /
  *     `reasoning_effort`, the account-config PUT), not this blob's: seeded by
- *     `brainSeed`, sent by `brainPayload` only when they changed. "" = null
- *     (model: the server's `default_model`; effort: the model's own pin).
+ *     `brainSeed`, sent by `brainPayload` only while a pick made here has not
+ *     landed (`modelTouched`: set by a model/effort edit, cleared by
+ *     `brainSaved`) and differs from the latest brain. "" = null (model: the
+ *     server's `default_model`; effort: the model's own pin).
  */
 
 import { sentState, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
@@ -57,7 +59,10 @@ type KeysOf<V> = { [K in keyof AutoReplyDraft]: AutoReplyDraft[K] extends V ? K 
 export type SwitchKey = KeysOf<boolean>;
 export type NumberKey = KeysOf<number>;
 
-export type AutoReplyState = SentState<AutoReplyDraft>;
+export type AutoReplyState = SentState<AutoReplyDraft> & {
+  /** A model/effort pick made here that no brain PUT has landed yet. */
+  modelTouched: boolean;
+};
 
 /** An edit of the draft. */
 export type AutoReplyEdit =
@@ -69,7 +74,10 @@ export type AutoReplyEdit =
   | { type: "model"; model: string }
   | { type: "effort"; effort: string };
 
-export type AutoReplyAction = AutoReplyEdit | Saved;
+/** The brain PUT carrying `pick` landed. */
+type BrainSaved = { type: "brainSaved"; pick: Pick2 };
+
+export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved;
 
 /** [lo, hi] per number input. The delay tops out well under the engine's
  *  `silence_max_minutes` (default 1115), past which a delay (or its randomised
@@ -107,13 +115,21 @@ export const effortChoices = (d: AutoReplyDraft, b: BrainPick): string[] =>
 /** The model the replies run on right now: the pick, else the server's default. */
 export const answersWith = (d: AutoReplyDraft, b: BrainPick): string => d.model || b.default_model;
 
-/** The account-config PUT body (the stored brain echoed, model/effort set), or
- *  null when neither moved from `brainSeed` — no Save rewrites the brain idly. */
-export function brainPayload<C extends BrainPick["config"]>(d: AutoReplyDraft, b: BrainPick & { config: C }): C | null {
-  const seed = brainSeed(b);
-  if (d.model === seed.model && d.effort === seed.effort) return null;
+type Pick2 = Pick<AutoReplyDraft, "model" | "effort">;
+const samePick = (d: Pick2, s: Pick2) => d.model === s.model && d.effort === s.effort;
+
+/** The account-config PUT body (the latest stored brain `b` echoed, model/effort set), or null with no pick made here
+ *  since the last landed brain PUT, or when the pick already is `b`'s — no Save rewrites the brain idly, an unrelated
+ *  Save never reverts a model changed elsewhere, and a pick reverted after a Save still goes out. */
+export function brainPayload<C extends BrainPick["config"]>(
+  { draft: d, modelTouched }: AutoReplyState, b: BrainPick & { config: C },
+): C | null {
+  if (!modelTouched || samePick(d, brainSeed(b))) return null;
   return { ...b.config, model: d.model || null, reasoning_effort: d.effort || null };
 }
+
+/** The pick a brain PUT body carries (`brainSaved`'s). */
+export const pickOf = (c: BrainPick["config"]): Pick2 => ({ model: c.model ?? "", effort: c.reasoning_effort ?? "" });
 
 /** The draft for an effective config (defaults ⊕ stored), plus the account's model pick. */
 export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyDraft {
@@ -137,7 +153,7 @@ export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null):
 
 /** The form's state for an effective config: its draft, nothing sent yet. */
 export const initState = (eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyState =>
-  sentState(draftFromConfig(eff, brain));
+  ({ ...sentState(draftFromConfig(eff, brain)), modelTouched: false });
 
 /** Randomise only means something above a 0 delay (the switch is disabled at 0). */
 export const randomiseOn = (d: AutoReplyDraft) => d.randomise && d.delay > 0;
@@ -186,4 +202,10 @@ function editDraft(d: AutoReplyDraft, action: AutoReplyEdit): AutoReplyDraft {
   }
 }
 
-export const autoReplyReducer = withSent(editDraft);
+const sentReducer = withSent(editDraft);
+
+export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoReplyState {
+  // A landed brain PUT clears the pick, unless it moved again while the PUT ran.
+  if (a.type === "brainSaved") return samePick(s.draft, a.pick) ? { ...s, modelTouched: false } : s;
+  return { ...sentReducer(s, a), modelTouched: s.modelTouched || a.type === "model" || a.type === "effort" };
+}

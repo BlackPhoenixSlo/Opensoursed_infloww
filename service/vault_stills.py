@@ -67,7 +67,7 @@ POSTER_DIR = Path(os.environ.get("VAULT_POSTER_DIR", "/tmp/of-relay-vault-poster
 IMAGE_DIR = Path(os.environ.get("VAULT_IMAGE_DIR", "/tmp/of-relay-vault-images"))
 
 # `private`: the stills routes are per-user gated (chatter folder limits,
-# vault_ai_api._assert_media_visible), so the browser may keep them but a shared
+# vault_ai_api.assert_media_visible), so the browser may keep them but a shared
 # cache must not hand one user's allowed tile to another.
 _HEADERS = {"Cache-Control": "private, max-age=604800"}
 

@@ -330,7 +330,8 @@ async def _park_failed_job(s, job_id: int, err: str, *, refused: bool = False) -
     `refused`: run_decide.defers_refusal (a one-shot broadcast the proxy refused,
     nothing of it at OF). It waits out the refusal burst like any refused send:
     PROXY_RETRY_MINUTES out, up to PROXY_RETRIES retries, `last_error`
-    "proxy_retry:<n> (...)", then 'error' "proxy_refused (...)". `n` counts the
+    run_decide.proxy_retry_reason "proxy_retry:<n> (...)", then 'error'
+    run_decide.proxy_refused_reason "proxy_refused (...)". `n` counts the
     refusals in a row (the previous last_error's), apart from `attempts`: an earlier
     other failure eats none of them; a later other failure is judged on `attempts`
     (the refusals included) as before."""
@@ -357,15 +358,15 @@ async def _park_failed_job(s, job_id: int, err: str, *, refused: bool = False) -
         case run_decide.Cancelled():
             job.status = JOB_CANCELLED
             job.last_error = f"{RULE_OFF_REASON} ({err})"[:500]
-        case run_decide.Retry(backoff_s=backoff_s):
+        case run_decide.Retry(backoff_s=wait_s):
             job.status = "pending"
-            job.run_at = datetime.utcnow() + timedelta(seconds=backoff_s)
+            job.run_at = datetime.utcnow() + timedelta(seconds=wait_s)
             if refused:
-                job.last_error = f"{run_decide.PROXY_RETRY}:{attempts} ({err})"[:500]
+                job.last_error = run_decide.proxy_retry_reason(attempts, err)[:500]
         case run_decide.Error():
             job.status = "error"
             if refused:
-                job.last_error = f"{run_decide.PROXY_REFUSED} ({err})"[:500]
+                job.last_error = run_decide.proxy_refused_reason(err)[:500]
         case _:
             assert_never(decision)
 

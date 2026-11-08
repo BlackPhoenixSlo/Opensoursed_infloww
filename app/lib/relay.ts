@@ -14,7 +14,10 @@
 import { resolveShareToken } from "@/lib/shareToken";
 import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
 import { takeInline } from "@/lib/inlineBoot";
-import { prefetchScreen, screenJoin, screenRead, screenSettled, type Screen } from "@/lib/screenBundle";
+import {
+  abortable, prefetchScreen, screenJoin, screenRead, screenSettled,
+} from "@/lib/screenBundle";
+import { withQuery, type Screen } from "@/lib/screenKey";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
 export { SALARY_FREQUENCIES, toChoice } from "./relayTypes";
@@ -270,11 +273,14 @@ export async function request<T = unknown>(
   // (Safari/WebKit runs them in parallel either way). `no-store` skips the
   // cache, so the lock is never taken. Unscoped calls keep the browser's
   // default. A caller's own `init.cache` wins.
-  const cache = headers.has("X-Account-Id") ? "no-store" : undefined;
-  // A read the open screen's bundle covers (lib/screenBundle.ts): its answer from that one call; a miss goes out below.
+  const scoped = headers.has("X-Account-Id");
+  const cache = scoped ? "no-store" : undefined;
   const method = (init?.method ?? "GET").toUpperCase();
-  const read = method === "GET" && !opts?.refresh && ctx?.employeeId == null && !headers.has("X-Employee-Id")
-    ? screenRead(url, ctx?.accountId ?? null) : null;
+  // A GET no employee audits (X-Employee-Id) may be answered here, before any queue: by the open screen's bundle
+  // (lib/screenBundle.ts; a refresh or a share token never matches its URLs), else, unscoped, by the HTML's inline
+  // answer for a document load's first GET of it (lib/inlineBoot.ts, once). A miss goes out below.
+  const local = method === "GET" && !headers.has("X-Employee-Id");
+  const read = local ? screenRead(url, ctx?.accountId ?? null) : null;
   if (read) {
     const o = await screenJoin(read, bundleGet, init?.signal);
     if (o.kind === "body") return o.body as T;
@@ -282,6 +288,10 @@ export async function request<T = unknown>(
       return parseResponse<T>(new Response(JSON.stringify({ detail: o.detail }), { status: o.status }));
     }
   }
+  const inline = local && !scoped ? takeInline(url) : null;
+  // Bounded by the caller's signal as its fetch would be (a bundle's timeout: a stalled HTML stream is a failed bundle).
+  const answered = inline && await abortable(inline, init?.signal);
+  if (answered) return parseResponse<T>(answered);
   const background = ctx?.priority === "background";
   // A background OnlyFans GET waits for the open screen's bundle, then for a slot (lib/relaySchedule.ts). Writes never
   // queue; a user call never waits.
@@ -290,23 +300,19 @@ export async function request<T = unknown>(
   const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal, read != null) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
-    // A document load's first GET of an unscoped read the HTML carried (lib/inlineBoot.ts): that answer, once.
-    const inline = method === "GET" && !headers.has("X-Account-Id") && !headers.has("X-Employee-Id")
-      ? takeInline(url) : null;
-    const r = (inline && await inline) ?? await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" });
-    return await parseResponse<T>(r);
+    return await parseResponse<T>(await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" }));
   } finally {
     release?.();
   }
 }
 
-
-/** A screen bundle's GET (lib/screenBundle.ts). It runs every other Creator's reads as background on the relay: only
- *  the open one is the user's. A failed one (blocked, broken) sends the screen's reads per Creator: each Creator's
- *  background lane keeps a slot for them until a bundle answers again (lib/relaySchedule.ts `reserve`). */
-function bundleGet(p: string): Promise<unknown> {
+/** A screen bundle's GET (lib/screenBundle.ts), aborted past `timeoutMs` (a failed one). It runs every other Creator's
+ *  reads as background on the relay: only the open one is the user's. A failed one (blocked, broken, hung) sends the
+ *  screen's reads per Creator: each Creator's background lane keeps a slot for them until a bundle answers again
+ *  (lib/relaySchedule.ts `reserve`). */
+function bundleGet(p: string, timeoutMs: number): Promise<unknown> {
   const f = relayFocus();
-  return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" }).then(
+  return request(f ? withQuery(p, { focus: f }) : p, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }).then(
     (body) => { dispatchSchedule({ type: "reserve", on: false }); return body; },
     (e: unknown) => { dispatchSchedule({ type: "reserve", on: true }); throw e; },
   );

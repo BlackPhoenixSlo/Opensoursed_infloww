@@ -1,5 +1,5 @@
 """Screen bundles' break-it-once faults (service/screens_api.py; its routes look `_deadline`,
-`_narrow` and `_gate` up on the module at call time, so the patch is what the real
+`deadline_at`, `_narrow` and `_gate` up on the module at call time, so the patch is what the real
 /admin/screens/* routes run). lib/faults.py merges `register(Fault)` into FAULTS. The check
 names live here and scenarios/2026-11-05-screen-bundles.py (and slow-connections, C_AGAIN) imports
 them, so a target can never name a check that does not exist.
@@ -27,8 +27,8 @@ def _screen_bundle_user_priority() -> None:
 
     real = screens_api._inner_request
 
-    def copy_priority(outer, path, query, aid):
-        inner = real(outer, path, query, aid)
+    def copy_priority(outer, path, query, aid, focus):
+        inner = real(outer, path, query, aid, focus)
         hdrs = [(k, v) for k, v in inner.scope["headers"] if k != b"x-priority"]
         if pri := outer.headers.get("x-priority") or "user":
             hdrs.append((b"x-priority", pri.encode()))
@@ -43,7 +43,9 @@ def _screen_bundle_waits_slowest() -> None:
     one Creator whose proxy is slow holds the whole screen."""
     import screens_api
 
-    screens_api._deadline = lambda started, deadline_ms: started + 3600.0
+    import time
+
+    screens_api.deadline_at = lambda deadline_ms: time.monotonic() + 3600.0
 
 
 def _screen_bundle_ignores_scope() -> None:
@@ -72,7 +74,7 @@ def _screen_bundle_ignores_scope() -> None:
 
 
 def _screen_bundle_stale_unmarked() -> None:
-    """Serve-stale without its mark: a last value answers but `refreshing` stays empty, so the client never
+    """Serve-stale without its mark: a last value answers without `refreshing`, so the client never
     follows up and a card the relay answered stale keeps the old count (30 min staleTime)."""
     import screens_api
 

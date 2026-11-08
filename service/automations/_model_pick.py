@@ -67,14 +67,15 @@ def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -
 # `account_ai_config.model`: an explicit pin still wins, the brain no longer
 # drags the route along behind it.
 #
-# `help_assistant` is here because it is priced unlike any lane. ~28k byte-stable
-# tokens of manual ride on every call at a measured 98.6% median cache hit
-# (median `tokens_in` 28,418 over 228 logged calls), so the bill is almost
-# entirely the provider's CACHED-INPUT rate, and the cheapest model on a short
-# chat turn is not the cheapest one here.
+# `help_assistant` is here so the account brain cannot drag it along: ~28k
+# tokens of manual ride on every call, so its bill is unlike any lane's, and
+# it is priced on its own terms. With no Anthropic key it runs DeepSeek, whose
+# prefix cache serves that manual at a measured 98.6% median hit (median
+# `tokens_in` 28,418 over 228 logged calls), and there the cheapest model on a
+# short chat turn is not the cheapest one here.
 #
-# 🚨 THE PIN IS A BET ON CACHING, NOT ON PRICE, and the difference matters
-# because the price table says the opposite. Replayed through
+# 🚨 THE DEEPSEEK PIN IS A BET ON CACHING, NOT ON PRICE, and the difference
+# matters because the price table says the opposite. Replayed through
 # `_cost_millicents` over those 228 real calls, glm-5.3-flash AT THIS ROUTE'S
 # OWN 98.6% HIT RATE costs 0.77x DeepSeek — cheaper. It only reaches 2.75x if it
 # never caches at all, and in practice it barely does: 36 of 400 live GLM calls
@@ -82,6 +83,8 @@ def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -
 # account's brain was switched to glm-5.3-flash, this line is the only thing
 # that stopped the help bot going with it — but re-measure the GLM hit rate
 # before trusting the number, because the whole justification rests on it.
+# (The keyed Claude Opus default below does NOT cache at all; it is an opt-in
+# quality choice, priced at the miss rate.)
 #
 # 🚨 Spelled out, NOT `DEFAULT_MODEL`. This is a PIN, and a pin whose value is a
 # symbol designed to move is not one — the day the house default becomes a GLM,
@@ -95,13 +98,16 @@ PURPOSE_DEFAULT_MODELS: dict[str, str] = {
 
 
 # A purpose default that moves to a better model when THIS account can pay that
-# model's provider — never otherwise, so a deployment without the key behaves
-# exactly as before. `help_assistant` → Claude Opus when an Anthropic key
-# resolves (the agency's own, or the deployment's HELP_ASSISTANT_ANTHROPIC_KEY).
-# The Anthropic compat layer does not cache, so this is ~100x the DeepSeek
-# bill per question (~28k input tokens at the miss rate): keying it is opting in.
-KEYED_PURPOSE_DEFAULTS: dict[str, tuple[str, str]] = {
-    "help_assistant": ("anthropic", "claude-opus-5-5"),
+# model's provider (read off MODELS) — never otherwise, so a deployment without
+# the key behaves exactly as before. `help_assistant` → Claude Opus when an
+# Anthropic key resolves (the agency's own, or the deployment's
+# HELP_ASSISTANT_ANTHROPIC_KEY). The Anthropic compat layer does not cache, so
+# this is ~100x the DeepSeek bill per question (~28k input tokens at the miss
+# rate): keying it is opting in. A keyed default that fails (cap, key, provider)
+# falls back once to the PURPOSE_DEFAULT_MODELS model — see
+# `resolve_model_and_fallback`.
+KEYED_PURPOSE_DEFAULTS: dict[str, str] = {
+    "help_assistant": "claude-opus-5-5",
 }
 
 
@@ -119,21 +125,36 @@ async def _provider_keyed(account_id: str, provider: str, purpose: str) -> bool:
         return False
 
 
-async def purpose_default(account_id: str, purpose: str) -> str | None:
-    """What `purpose` runs on this account with no operator pin, or None when
-    the purpose is not in PURPOSE_DEFAULT_MODELS (it then follows the brain).
-    Always a MODELS id otherwise — see resolve_model on retired ids."""
-    if purpose not in PURPOSE_DEFAULT_MODELS:
-        return None
-    keyed = KEYED_PURPOSE_DEFAULTS.get(purpose)
-    if keyed and keyed[1] in llm_client.MODELS and \
-            await _provider_keyed(account_id, keyed[0], purpose):
-        return keyed[1]
+def _fixed_default(purpose: str) -> str:
+    """The PURPOSE_DEFAULT_MODELS model, or the house model once it is retired."""
     fixed = PURPOSE_DEFAULT_MODELS[purpose]
     return fixed if fixed in llm_client.MODELS else DEFAULT_MODEL
 
 
+async def _keyed_default(account_id: str, purpose: str) -> str | None:
+    """The KEYED_PURPOSE_DEFAULTS model when this account has its provider's
+    key, else None."""
+    keyed = KEYED_PURPOSE_DEFAULTS.get(purpose)
+    if keyed and (mdl := llm_client.MODELS.get(keyed)):
+        if await _provider_keyed(account_id, mdl.provider, purpose):
+            return keyed
+    return None
+
+
+async def purpose_default(account_id: str, purpose: str) -> str:
+    """What `purpose` (a PURPOSE_DEFAULT_MODELS key) runs on this account with
+    no operator pin. Always a MODELS id — see resolve_model on retired ids."""
+    return await _keyed_default(account_id, purpose) or _fixed_default(purpose)
+
+
 async def resolve_model(account_id: str, purpose: str, override: str | None = None) -> str:
+    """The model one run calls; see `resolve_model_and_fallback`."""
+    return (await resolve_model_and_fallback(account_id, purpose, override))[0]
+
+
+async def resolve_model_and_fallback(
+        account_id: str, purpose: str, override: str | None = None,
+) -> tuple[str, str | None]:
     """Resolve the LLM model for one automation run, VALIDATED against
     llm_client.MODELS at every step so a stale/typo value can never reach
     llm_client.chat (where it would fail every fan with LLMConfigError).
@@ -143,6 +164,12 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
     TOTAL: a value not in MODELS is skipped and a config read that fails is
     logged, both falling through to the house model, so resolution always yields
     a usable model and never raises.
+
+    The second value is what to retry on ONCE when the first fails on a cap, a
+    key or the provider: the PURPOSE_DEFAULT_MODELS model when the first is a
+    KEYED default (an opt-in upgrade must not take the route down with its
+    budget or key), else None — an override, an operator pin, the brain and the
+    house model are choices, and a failed choice is reported, not swapped.
 
     The purpose default outranking the brain is deliberate and is the ONLY step
     an operator cannot see in a dropdown — see PURPOSE_DEFAULT_MODELS for the
@@ -154,7 +181,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
     with no dropdown (content_resolver, pins) rely on.
     """
     if override and _fits_or_warn(override, purpose, account_id, "override"):
-        return override
+        return override, None
     try:
         async with get_session() as s:
             cfg = await s.get(AccountAiConfig, account_id)
@@ -166,7 +193,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
         # running the house model, so the total contract covers both.
         log.warning("resolve_model: config read failed account=%s purpose=%s — "
                     "using %s", account_id, purpose, DEFAULT_MODEL, exc_info=True)
-        return DEFAULT_MODEL
+        return DEFAULT_MODEL, None
     if cfg is not None and cfg.model_by_purpose:
         try:
             by_purpose = json.loads(cfg.model_by_purpose) or {}
@@ -183,7 +210,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
             chosen = None
             log.warning("bad_model_by_purpose account=%s purpose=%s", account_id, purpose)
         if chosen and _fits_or_warn(chosen, purpose, account_id, "pin"):
-            return chosen
+            return chosen, None
     if purpose in PURPOSE_DEFAULT_MODELS:
         # MEMBERSHIP decides, not the value's validity — this branch must be
         # TERMINAL. Written as `if fixed in MODELS: return fixed`, a retired
@@ -191,7 +218,8 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
         # through to `cfg.model`, which is glm-5.3-flash on every live account.
         # That is exactly and only the outcome the map exists to prevent, and it
         # would have happened silently, at ~2.8x, the day someone tidied MODELS.
-        return await purpose_default(account_id, purpose)
+        keyed, fixed = await _keyed_default(account_id, purpose), _fixed_default(purpose)
+        return (keyed, fixed) if keyed else (fixed, None)
     if cfg is not None and cfg.model and _fits_or_warn(cfg.model, purpose, account_id, "brain"):
-        return cfg.model
-    return DEFAULT_MODEL
+        return cfg.model, None
+    return DEFAULT_MODEL, None

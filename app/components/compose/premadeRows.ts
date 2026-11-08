@@ -2,16 +2,18 @@
  * premadeRows — PremadeForm's repeating rows: the Row shape, one reducer, and
  * the pure row ⇄ payload mapping the component only calls.
  *
- *   • `rowsReducer` owns every row edit (patch, audience chips, text-variant
- *     pool, add/remove, reset). A row and a row's text pool never drop below
- *     one entry.
+ *   • `rowsReducer` owns every row edit (patch, audience chips, add/remove,
+ *     reset). A row never drops below one entry (the text pool is a `patch`:
+ *     VariantsField keeps it at one or more).
+ *   • `premadeReducer` is the form's one state: the rows plus the Auto Posts
+ *     repost cycle; reset clears both.
  *   • `rowToItem` takes the `kind` explicitly.
  *   • `buildPayload` is the ONE `{posts|messages:[…]}` payload "Use in rule"
  *     stores: rows with no text and no media are dropped.
  *   • `payloadToRows` / `itemToRow` are the inverse (Re-compose seeds the form).
  */
 
-import { mergeCaptions } from "@/lib/parseCaptions";
+import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
 import type { VaultMedia } from "@/lib/relay";
 
 export type Kind = "auto_posts" | "mass_premade";
@@ -25,12 +27,7 @@ export function listItems(payload: Record<string, unknown> | undefined, kind: Ki
   return Array.isArray(arr) ? arr : [];
 }
 
-/** OF built-in audiences usable across any account (sent as `userLists`). Same
- *  pair the Mass Online composer exposes. */
-export const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
-  { id: "fans",      label: "All fans"  },
-  { id: "following", label: "Following" },
-];
+const SYSTEM_IDS = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
 
 export interface Row {
   // Text variant POOL — one is picked at random per fire. Always ≥1 entry.
@@ -60,9 +57,10 @@ export interface Row {
   unsendAfterHours: string;
   resendAfterHours: string;
   resendCount: string;
-  // mass_premade audience (Mass Online parity). `includes`/`excludes` hold a mix
-  // of system-audience ids ('fans'/'following') and custom-list ids — they go to
-  // OF as `user_lists` / `excluded_user_lists`. The hour/limit knobs resolve
+  // mass_premade audience (Mass Online parity). `includes` holds a mix of
+  // system-audience ids ('fans'/'following') and custom-list ids, `excludes`
+  // custom-list ids only (OF drops a built-in name in `excludedLists`,
+  // fanLists.tsx) — they go to OF as `user_lists` / `excluded_user_lists`. The hour/limit knobs resolve
   // server-side via audiences.resolve_mass_audience (DB-sourced fan ids).
   includes: string[];
   excludes: string[];
@@ -102,19 +100,13 @@ export function blankRow(): Row {
 
 export type RowsAction =
   | { type: "patch"; i: number; patch: Partial<Row> }
-  // Per-row audience toggles (mass_premade). includes/excludes mix system ids +
-  // custom-list ids, mutually exclusive per id (same UX as Mass Online).
-  | { type: "cycleSystem"; i: number; id: string }
+  // Per-row audience toggles (mass_premade), the same UX as Mass Online: a system
+  // chip is include-only (toggleListInclude; OF drops a built-in name in
+  // `excludedLists`); a custom list is included or excluded, never both.
   | { type: "toggleListInclude"; i: number; id: string }
   | { type: "toggleListExclude"; i: number; id: string }
   | { type: "add" }
   | { type: "remove"; i: number }
-  // Text-variant pool (one row → many text variants, random one sent).
-  | { type: "patchText"; i: number; ti: number; val: string }
-  | { type: "addText"; i: number }
-  // Imported captions: replace a lone blank variant, else append (dupes skipped).
-  | { type: "addTexts"; i: number; vals: string[] }
-  | { type: "removeText"; i: number; ti: number }
   | { type: "reset" };
 
 function mapRow(rows: Row[], i: number, fn: (r: Row) => Row): Row[] {
@@ -132,13 +124,6 @@ export function rowsReducer(rows: Row[], a: RowsAction): Row[] {
   switch (a.type) {
     case "patch":
       return mapRow(rows, a.i, (r) => ({ ...r, ...a.patch }));
-    /** System chip tri-state: off → +include → −exclude → off. */
-    case "cycleSystem":
-      return mapRow(rows, a.i, (r) => mutAudience(r, (inc, exc) => {
-        if (inc.has(a.id)) { inc.delete(a.id); exc.add(a.id); }
-        else if (exc.has(a.id)) { exc.delete(a.id); }
-        else { inc.add(a.id); }
-      }));
     case "toggleListInclude":
       return mapRow(rows, a.i, (r) => mutAudience(r, (inc, exc) => {
         if (inc.has(a.id)) inc.delete(a.id);
@@ -153,16 +138,6 @@ export function rowsReducer(rows: Row[], a: RowsAction): Row[] {
       return [...rows, blankRow()];
     case "remove":
       return rows.length <= 1 ? rows : rows.filter((_, idx) => idx !== a.i);
-    case "patchText":
-      return mapRow(rows, a.i, (r) => ({ ...r, texts: r.texts.map((t, k) => (k === a.ti ? a.val : t)) }));
-    case "addText":
-      return mapRow(rows, a.i, (r) => ({ ...r, texts: [...r.texts, ""] }));
-    case "addTexts":
-      return mapRow(rows, a.i, (r) => ({ ...r, texts: mergeCaptions(r.texts, a.vals).pool }));
-    case "removeText":
-      return mapRow(rows, a.i, (r) => ({
-        ...r, texts: r.texts.length <= 1 ? r.texts : r.texts.filter((_, k) => k !== a.ti),
-      }));
     case "reset":
       return [blankRow()];
   }
@@ -288,6 +263,37 @@ export function buildPayload(rows: Row[], cycle: PostsCycle, ctx: RowCtx): Prema
   return { [LIST_KEY[ctx.kind]]: items, ...cycleKnobs };
 }
 
+/** The form's one state: the rows and the Auto Posts repost cycle (list-level, auto_posts only). */
+export interface PremadeState {
+  rows: Row[];
+  cycle: PostsCycle;
+}
+
+export type PremadeAction = RowsAction | { type: "setCycle"; patch: Partial<PostsCycle> };
+
+/** Seed from a saved payload (Re-compose); the cycle only for auto_posts. */
+export function initPremade(payload: Record<string, unknown> | undefined, kind: Kind): PremadeState {
+  const posts = kind === "auto_posts";
+  return {
+    rows: payloadToRows(payload, kind),
+    cycle: {
+      resendAfterHours: posts ? numStr(payload?.resend_after_hours) : "",
+      resendCount: posts ? numStr(payload?.resend_count) : "",
+    },
+  };
+}
+
+export function premadeReducer(s: PremadeState, a: PremadeAction): PremadeState {
+  switch (a.type) {
+    case "setCycle":
+      return { ...s, cycle: { ...s.cycle, ...a.patch } };
+    case "reset":
+      return { rows: rowsReducer(s.rows, a), cycle: { resendAfterHours: "", resendCount: "" } };
+    default:
+      return { ...s, rows: rowsReducer(s.rows, a) };
+  }
+}
+
 /** Number/anything → the string an input expects ("" when unset), the inverse
  *  of posNum/nonNegInt — used to re-seed a row from a saved payload. */
 export function numStr(v: unknown): string {
@@ -327,8 +333,9 @@ export function itemToRow(it: Record<string, unknown>): Row {
   r.resendAfterHours = numStr(it.resend_after_hours);
   r.resendCount = numStr(it.resend_count);
   r.includes = Array.isArray(it.user_lists) ? (it.user_lists as unknown[]).map(String) : [];
+  // A built-in name saved in `excluded_user_lists` (the old tri-state chip) excluded nobody (OF drops it): not carried.
   r.excludes = Array.isArray(it.excluded_user_lists)
-    ? (it.excluded_user_lists as unknown[]).map(String)
+    ? (it.excluded_user_lists as unknown[]).map(String).filter((id) => !SYSTEM_IDS.has(id))
     : [];
   r.excludeRepliedHours = numStr(it.exclude_replied_hours);
   r.excludeInboundHours = numStr(it.exclude_inbound_hours);

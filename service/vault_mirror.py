@@ -30,7 +30,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, select, true
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.models import VaultItem
@@ -47,6 +47,14 @@ def in_of_folders(folder_ids):
     (chatters.allowed_folder_ids_for_chatter answers which folders)."""
     je = func.json_each(func.coalesce(VaultItem.of_folder_ids, "[]")).table_valued("value")
     return select(literal(1)).select_from(je).where(je.c.value.in_(list(folder_ids))).exists()
+
+
+def visible_to(allowed):
+    """SQL: the mirror row is one this principal may see. `allowed` is
+    chatters.allowed_folder_ids_for_chatter's answer: None (owner / unrestricted)
+    = every row, else `in_of_folders(allowed)`. The one where-clause every mirror
+    listing and count scopes with, so no route branches on `allowed` itself."""
+    return true() if allowed is None else in_of_folders(allowed)
 
 
 def has_still(kind: str | None) -> bool:

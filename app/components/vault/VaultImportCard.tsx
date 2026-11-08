@@ -551,7 +551,7 @@ export default function VaultImportCard() {
                               folders={folders.data ?? []}
                               disabled={locked}
                               className={cn(
-                                "w-full rounded border border-border bg-bg px-2 py-1 disabled:cursor-not-allowed disabled:opacity-60",
+                                "w-full px-2 py-1 disabled:cursor-not-allowed disabled:opacity-60",
                                 key === "category" ? "min-w-[96px]" : "min-w-[80px]",
                               )}
                             />

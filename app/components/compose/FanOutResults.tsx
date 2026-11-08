@@ -33,8 +33,8 @@ export function FanOutResults({
       {locked && (
         <div className="flex flex-wrap items-center gap-2 pt-1 text-fg-dim">
           <span className="min-w-0 flex-1">
-            Content locked: a retry sends this same {noun} to the failed models only. Start over
-            unlocks it, but the next send then goes to every included model again.
+            Content locked: a retry sends this same {noun} to every included model without a ✓. Start over
+            unlocks it, but the next send then goes to every included model again, the ✓ ones too.
           </span>
           <IfButton onClick={onStartOver} disabled={busy}>Start over</IfButton>
         </div>

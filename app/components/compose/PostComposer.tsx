@@ -26,7 +26,6 @@ import { EmojiPickerButton, EmojiQuickRow } from "@/components/chat/EmojiBar";
 import { TemplatePicker, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import { TagCreatorsPicker, TaggedCreatorChips } from "@/components/chat/TagCreatorsPicker";
 import { recordSchedule } from "@/lib/scheduleHistory";
-import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import { IfButton, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
@@ -169,7 +168,7 @@ export function PostComposer({
       <IfModal
         title="New post"
         width={535}
-        className={EDITOR_MODAL}
+        size="editor"
         onClose={close}
         // Escape never drops a draft the user touched; × and Cancel still close.
         keyboard={!touched}
@@ -215,9 +214,8 @@ export function PostComposer({
               toolbar={form.mode.toolbar}
               disabled={locked}
             />
-            {/* Escape in a picker's search box closes that picker, not the whole composer. */}
-            <div className="flex items-center gap-1.5 flex-wrap"
-              onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
+            {/* The pickers portal above the dialog: Escape in their search boxes is theirs (useModalFocus). */}
+            <div className="flex items-center gap-1.5 flex-wrap">
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
               {allowRich && <AaButton on={form.mode.toolbar} onToggle={() => dispatch({ type: "aa" })} />}

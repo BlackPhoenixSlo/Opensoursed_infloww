@@ -21,7 +21,8 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
-import { fmtPrice, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice } from "@/lib/messageFormat";
+import { ofPreviewText } from "@/lib/ofRichText";
 import { fmtRelTime } from "@/lib/utils";
 
 import type { TipsListRow } from "@/hooks/useTipsList";
@@ -32,7 +33,7 @@ interface Props {
 }
 
 export default function TipRow({ row }: Props) {
-  const note = row.tip_note ? stripHtml(row.tip_note) : "";
+  const note = row.tip_note ? ofPreviewText(row.tip_note) : "";
   const credited = row.attribution_source === "tip_message";
 
   // Chat link only makes sense when we have a fan_id — standalone tips on

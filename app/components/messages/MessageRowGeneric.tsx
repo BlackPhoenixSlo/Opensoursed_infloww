@@ -21,7 +21,8 @@ import { ArrowDownLeft, ArrowUpRight, Clock, Eye, Megaphone, Paperclip, Shopping
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
 import { fmtDuration } from "@/lib/format";
-import { fmtCents, fmtPrice, stripHtml } from "@/lib/messageFormat";
+import { fmtCents, fmtPrice } from "@/lib/messageFormat";
+import { ofPreviewText } from "@/lib/ofRichText";
 import { cn, fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -59,7 +60,7 @@ export function automationLabel(kind?: string | null): string | null {
 export default function MessageRowGeneric({ row }: Props) {
   if (row.is_mass_summary) return <MassSummaryRow row={row} />;
 
-  const previewBody = stripHtml(row.body);
+  const previewBody = ofPreviewText(row.body);
   const direction = row.direction ?? "out";
   const isInbound = direction === "in";
   const isSystem = direction === "system";
@@ -179,7 +180,7 @@ export default function MessageRowGeneric({ row }: Props) {
  * Not a chat link (there's no single fan); it's an at-a-glance audit row.
  */
 function MassSummaryRow({ row }: Props) {
-  const previewBody = stripHtml(row.body);
+  const previewBody = ofPreviewText(row.body);
   const isPriced = row.price_cents > 0;
   const label = automationLabel(row.automation_kind) ?? "Mass message";
 

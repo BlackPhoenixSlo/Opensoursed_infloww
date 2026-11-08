@@ -41,11 +41,4 @@ describe("useTouched", () => {
     act(() => h.result.current.dispatch({ type: "text", v: "" }));
     expect(h.result.current.touched).toBe(true);
   });
-  it("edit(set) touches and sets", () => {
-    const h = run("a");
-    let got = "";
-    act(() => h.result.current.edit((v: string) => { got = v; })("hi"));
-    expect(got).toBe("hi");
-    expect(h.result.current.touched).toBe(true);
-  });
 });

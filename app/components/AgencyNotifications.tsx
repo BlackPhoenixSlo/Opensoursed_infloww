@@ -59,7 +59,7 @@ export interface AgencyNotification {
   created_at: string;
   read: boolean;
 }
-interface ListResp { notifications: AgencyNotification[]; unread: number; pinned?: AgencyNotification[] }
+interface ListResp { notifications: AgencyNotification[]; unread: number; pinned: AgencyNotification[] }
 
 function useAgencyList(enabled: boolean) {
   return useQuery<ListResp>({
@@ -71,22 +71,23 @@ function useAgencyList(enabled: boolean) {
   });
 }
 
-/** The owner's unread count for the bell's badge and its Agency tab, or null
- *  for anyone else (a chatter's session reads nothing; the routes refuse it). */
-export function useAgencyUnread(): number | null {
+/** The list for the signed-in owner; a chatter's session reads nothing (the routes refuse it). */
+function useOwnerList() {
   const { user } = useUser();
   const { chatter } = useChatter();
   const owner = !!user && !chatter;
-  const q = useAgencyList(owner);
+  return { owner, q: useAgencyList(owner) };
+}
+
+/** The owner's unread count for the bell's badge and its Agency tab, or null for anyone else. */
+export function useAgencyUnread(): number | null {
+  const { owner, q } = useOwnerList();
   return owner ? (q.data?.unread ?? 0) : null;
 }
 
 /** The owner's pinned rows (consent forms OnlyFans wants), [] for anyone else. */
 export function useAgencyPinned(): AgencyNotification[] {
-  const { user } = useUser();
-  const { chatter } = useChatter();
-  const owner = !!user && !chatter;
-  const q = useAgencyList(owner);
+  const { owner, q } = useOwnerList();
   return (owner && q.data?.pinned) || NO_ROWS;
 }
 const NO_ROWS: AgencyNotification[] = [];
@@ -119,7 +120,8 @@ export function AgencyFeed() {
   const unread = q.data?.unread ?? 0;
   const rows = q.data?.notifications ?? [];
   const pinned = q.data?.pinned ?? [];
-  // Pinned rows stay unread: nothing for "Mark all read" when they are all that is.
+  // The server's `unread` counts the pinned rows (they stay unread, read-all skips them):
+  // nothing for "Mark all read" when they are all that is.
   const readable = unread - pinned.length;
 
   return (

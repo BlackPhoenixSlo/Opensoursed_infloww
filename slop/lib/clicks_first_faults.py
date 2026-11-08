@@ -14,9 +14,9 @@ C_BUNDLE = ("one call per screen: dash-first and mp-first send 0 per-Creator Onl
 C_PARTIAL = ("a slow Creator (OF +3 s, bundle deadline 2 s): every card keeps its saved fan count (never blank), the "
              "page sends 1 bundle + at most 1 follow-up and 0 per-Creator OnlyFans reads; the late read landed in the "
              "relay's cache (the next bundle has that Creator complete, no OnlyFans call)")
-C_ENTRY = ("a document load sends its screen bundle with the auth probe, the Dashboard its Applied settings read too: on "
-           "dash-first, dash-reload and mp-first they come with the HTML (inline boot) or leave before /auth/me answers (not "
-           "a round trip or two after it)")
+C_ENTRY = ("a document load sends its screen bundle with the auth probe: on dash-first, dash-reload and mp-first it comes "
+           "with the HTML (inline boot) or leaves before /auth/me answers (not a round trip or two after it); the "
+           "Dashboard's Applied settings read comes with the HTML (no client read leaves before /auth/me)")
 
 # app/components/auth/AuthGate.tsx before 2026-11-06: the screen bundle and the Applied settings read wait for the auth
 # probe (the bundle for its screen's first card, the settings for the principal in their query key). Emulated at the

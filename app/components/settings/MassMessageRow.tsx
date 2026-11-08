@@ -12,7 +12,8 @@ import type { MassMessageRow } from "@/hooks/useMassMessages";
 import { SM, SM_MASS_ACTIONS } from "@/components/growth/smartMessagesControls";
 import { MENU_ITEM, MENU_PANEL } from "@/components/ui/Menu";
 import { proxyImage } from "@/lib/mediaUrl";
-import { fmtCents, htmlToText } from "@/lib/messageFormat";
+import { fmtCents } from "@/lib/messageFormat";
+import { ofPlainText } from "@/lib/ofRichText";
 import { cn } from "@/lib/utils";
 
 // Friendly labels for the automation_kind tokens that produce broadcasts.
@@ -64,7 +65,7 @@ export function MassMessageRowItem({
     firstMedia?.files?.thumb?.url ||
     firstMedia?.files?.preview?.url ||
     null;
-  const text = htmlToText(m.text || m.rawText || "");
+  const text = ofPlainText(m.text || m.rawText || "");
   const dash = <span className="text-fg-dim">--</span>;
 
   return (

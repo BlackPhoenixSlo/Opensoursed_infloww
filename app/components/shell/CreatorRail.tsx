@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 
 import { CreatorColumn } from "@/components/of-manager/CreatorColumn";
 import { IfCreatorSelect } from "@/components/ui/infloww";
-import type { AccountMeta, WatcherMeta } from "@/lib/relay";
+import type { AccountMeta, WatcherAccount } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 export type CreatorPick = {
@@ -29,7 +29,7 @@ export type CreatorPick = {
   /** No "All creators" row: the page always works on one creator. */
   noAll?: boolean;
   /** Watcher accounts, shown after the creators as non-selectable rows. */
-  watchers?: WatcherMeta[];
+  watchers?: WatcherAccount[];
 };
 
 export function CreatorRail({ creators, top = "48px", className, children }: {

@@ -7,13 +7,18 @@
  * amount of retrying helps) while a timeout/network/session error is transient
  * and retrying is exactly right.
  */
+import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, prefetchScreenBundle, relay, request,
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
-import { resetScreenBundles, setScreen } from "@/lib/screenBundle";
+import { resetInline, seedInline } from "@/lib/inlineBoot";
+import { BUNDLE_TIMEOUT_MS, resetScreenBundles, useScreen } from "@/lib/screenBundle";
+import { bundlePath, type Screen } from "@/lib/screenKey";
+
+const INBOX: Screen = { kind: "inbox", cursor: 0 };
 
 const err = (m: string) => new Error(m);
 
@@ -134,7 +139,7 @@ describe("request › cache mode", () => {
 });
 
 describe("request › a failed screen bundle's reads keep a slot (slop fan-list-chips 2026-11-07)", () => {
-  afterEach(() => { vi.unstubAllGlobals(); resetScreenBundles(); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); resetScreenBundles(); });
 
   it("two hung rail feeds of a Creator never hold back its chat list once the bundle failed", async () => {
     const sent: string[] = [];
@@ -144,14 +149,92 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
       if (url.startsWith("/api/of/v2/chats")) return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
       return new Promise<Response>(() => {});  // OnlyFans never answers the rail's feeds
     }));
-    setScreen({ kind: "inbox" });
+    renderHook(() => useScreen(INBOX));
     // The bundle failed before the screen mounted (the HTML's inline answer lands first), then the rail mounts first.
-    await prefetchScreenBundle({ kind: "inbox" });
+    await prefetchScreenBundle(INBOX);
     const bg = { accountId: "a", priority: "background" as const };
     void relay.get("/api/of/v2/users/notifications?limit=10", bg);
     void relay.get("/api/of/v2/users/notifications?limit=10&type=tip", bg);
     await expect(relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", bg))
       .resolves.toEqual({ list: [], hasMore: false });
     expect(sent).toEqual(["/admin/screens/inbox", "/api/of/v2/users/notifications", "/api/of/v2/chats"]);
+  });
+
+  it("a hung bundle times out at BUNDLE_TIMEOUT_MS: the screen's reads go out per Creator", async () => {
+    const timer = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timer.signal);
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
+      sent.push(url.split("?")[0]);
+      if (url.startsWith("/admin/screens/")) {
+        return new Promise<Response>((_, rej) => init.signal!.addEventListener("abort", () => rej(init.signal!.reason)));
+      }
+      return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
+    }));
+    renderHook(() => useScreen(INBOX));
+    const page = relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", { accountId: "a" });
+    await vi.waitFor(() => expect(sent).toEqual(["/admin/screens/inbox"]));
+    expect(timeout).toHaveBeenCalledWith(BUNDLE_TIMEOUT_MS);
+    timer.abort(new DOMException("timed out", "TimeoutError"));
+    await expect(page).resolves.toEqual({ list: [], hasMore: false });
+    expect(sent).toEqual(["/admin/screens/inbox", "/api/of/v2/chats"]);
+  });
+
+  it("a stalled inline bundle answer times out at BUNDLE_TIMEOUT_MS too: a miss, the read goes out per Creator", async () => {
+    const timer = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timer.signal);
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (!url.includes("/notifications")) sent.push(url.split("?")[0]);  // the earlier tests' queued rail feeds
+      return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
+    }));
+    try {
+      seedInline({ [bundlePath(INBOX)]: new Promise(() => {}) });   // the HTML stream never sends it
+      renderHook(() => useScreen(INBOX));
+      const page = relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", { accountId: "a" });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(sent).toEqual([]);                                          // waiting on the inline answer
+      timer.abort(new DOMException("timed out", "TimeoutError"));
+      await expect(page).resolves.toEqual({ list: [], hasMore: false });
+      expect(sent).toEqual(["/api/of/v2/chats"]);
+    } finally {
+      resetInline();
+    }
+  });
+
+  it.each([
+    { name: "a slow bundle (5 s, past the old 3 s) still answers: no per-Creator read", answerMs: 5_000 as number | null },
+    { name: "a true hang is a miss at BUNDLE_TIMEOUT_MS: the read goes out per Creator", answerMs: null },
+  ])("$name", async ({ answerMs }) => {
+    vi.useFakeTimers();
+    try {
+      // The timeout on the fake clock (jsdom's AbortSignal.timeout may hold its own).
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const c = new AbortController();
+        setTimeout(() => c.abort(new DOMException("timed out", "TimeoutError")), ms);
+        return c.signal;
+      });
+      const bundle = { answers: [{ accountId: "a", read: "chats", body: { list: ["b"], hasMore: false } }] };
+      const sent: string[] = [];
+      vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
+        if (!url.includes("/notifications")) sent.push(url.split("?")[0]);  // the earlier test's queued rail feeds
+        if (!url.startsWith("/admin/screens/")) return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
+        return new Promise<Response>((res, rej) => {
+          init.signal!.addEventListener("abort", () => rej(init.signal!.reason));
+          if (answerMs != null) setTimeout(() => res(new Response(JSON.stringify(bundle))), answerMs);
+        });
+      }));
+      renderHook(() => useScreen(INBOX));
+      const page = relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", { accountId: "a" });
+      await vi.advanceTimersByTimeAsync(answerMs ?? BUNDLE_TIMEOUT_MS - 1);
+      if (answerMs == null) {
+        expect(sent).toEqual(["/admin/screens/inbox"]);   // still waiting just before the bound
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await expect(page).resolves.toEqual(answerMs != null ? bundle.answers[0].body : { list: [], hasMore: false });
+      expect(sent).toEqual(answerMs != null ? ["/admin/screens/inbox"] : ["/admin/screens/inbox", "/api/of/v2/chats"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

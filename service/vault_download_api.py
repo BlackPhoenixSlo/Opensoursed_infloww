@@ -17,7 +17,7 @@ through `GET /admin/vault-ai/download` instead.
                                                           attachment; a 403 re-signs by media id once.
 
 Every route: the account is the caller's (`assert_account_owned`), and a folder-restricted chatter gets 404 for a
-media outside its folders or one the mirror has no row for (`vault_ai_api._assert_media_visible`, the stills'
+media outside its folders or one the mirror has no row for (`vault_ai_api.assert_media_visible`, the stills'
 rule). The url streamed is the mirror row's when the row has one for the same file; `u` is used only when it names
 a file of that media (the row's payload) or, for an unrestricted caller, an OF CDN host (what `/img` already
 accepts). Downloads hold a `VAULT_DOWNLOAD` slot each for the whole stream (queued, never rejected).
@@ -48,7 +48,7 @@ from db.engine import get_session
 from db.models import VaultItem
 from jsonsafe import load_json
 from of_client import OF_CDN_SUFFIXES
-from vault_ai_api import _assert_media_visible
+from vault_ai_api import assert_media_visible
 
 log = logging.getLogger("of-relay.vault_download")
 
@@ -90,7 +90,7 @@ async def _row_media(account_id: str, media_id: int) -> dict | None:
 async def _gate(account_id: str, media_id: int) -> bool:
     """Owner / unrestricted chatter: True. Restricted chatter: 404 unless the media is in its folders."""
     assert_account_owned(account_id)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     return await allowed_folder_ids_for_chatter(account_id) is None
 
 

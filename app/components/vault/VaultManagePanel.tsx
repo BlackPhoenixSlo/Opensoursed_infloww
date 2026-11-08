@@ -15,14 +15,14 @@
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Square } from "lucide-react";
 
 import { EmptyState, IfModal } from "@/components/ui/infloww";
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
 import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
-import VaultDownloadPanel, { DOWNLOAD_OFF, useVaultDownload } from "@/components/vault/VaultDownloadPanel";
-import { isBusy, safeName } from "@/components/vault/vaultDownloadReducer";
+import VaultDownloadPanel, { useVaultDownload } from "@/components/vault/VaultDownloadPanel";
+import { downloadOff, isBusy, safeName, unsaved } from "@/components/vault/vaultDownloadReducer";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
@@ -47,7 +47,7 @@ import {
 import VaultFolderRail, { FolderCounts } from "@/components/vault/VaultFolderRail";
 import VaultMediaToolbar, { type MediaSort, type TypeCounts } from "@/components/vault/VaultMediaToolbar";
 import VaultTile from "@/components/vault/VaultTile";
-import { useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
+import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import {
   useOfFoldersMirror,
   searchOf,
@@ -57,11 +57,10 @@ import {
   invalidateVaultGrid,
   mirrorItemsKey,
 } from "@/hooks/useVaultCache";
-import { refreshVaultFromOf } from "@/hooks/vaultRefresh";
+import { useOfRefresh, vaultBrowseSource, vaultWholeSource } from "@/hooks/vaultRefresh";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { describeSweepText, sweepAbortedNote, useVaultSweep } from "@/hooks/useVaultSweep";
 import { type VaultList, type VaultMedia } from "@/lib/relay";
-import { type FanId } from "@/lib/fanId";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -85,9 +84,18 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const accountId = useVaultAccountId();
   const { account } = useVaultAccount();
   const qc = useQueryClient();
-  // Ours: download (selection / folder / whole vault) into a folder the user picks; see `vaultDownloadReducer`.
+  // Ours: download (selection / folder / whole vault) into a folder the user picks, or (phones) a selection of up to
+  // 20 to the share sheet; see `vaultDownloadReducer`.
   const dl = useVaultDownload(accountId, safeName(account?.nickname || account?.name || accountId));
-  const downloadOff = !dl.supported ? DOWNLOAD_OFF : isBusy(dl.state) ? "A download is running" : "";
+  const dlBusy = isBusy(dl.state) || unsaved(dl.state) > 0;   // phone: batches still to save
+  // A folder-limited chatter: the relay soft-denies "All" on both sources (vault/media without list_id, mirror items
+  // without of_folder_id, empty `{list: []}`), so a whole-vault download would read "Nothing to download". Its
+  // folders download one by one (the rail). Off while a chatter's folder-access read is in flight or failed, so
+  // never false-empty; an owner's query is disabled (not loading, no data), so on.
+  const folderAccess = useChatterFolderAccess(accountId);
+  const wholeVaultOff = downloadOff(dl.sink, "vault", 0, dlBusy)
+    || (folderAccess.isLoading || folderAccess.isError || folderAccess.data?.restricted === true
+      ? "Your access is by folder: download a folder" : "");
   // Folder / type / search and the ticked files — see `vaultBrowseReducer`.
   // FanId, not number: Fansly album ids are snowflakes above 2^53, and a
   // narrowed one selects a DIFFERENT album. Media ids below stay number[].
@@ -196,6 +204,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     liveKeys: [mirrorItemsKey(accountId)],
   });
   const cachedCount = summary.data?.count ?? 0;
+  // The grid's source (`vaultBrowseSource`) and the whole-vault/folder downloads' (`vaultWholeSource`), see below.
+  const source = vaultBrowseSource(summary.data);
+  const wholeSource = vaultWholeSource(summary.data);
+  const useLocal = source === "mirror";
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
   // The plan's counts come from the DB, so they stand in when the relay's
@@ -221,7 +233,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const lists = useVaultLists(accountId, true, true);
   // Mirror-derived OF folders (accurate counts; recovers folders OF's live list
   // drops, e.g. "nowfolder"). Only meaningful once collected.
-  const ofFoldersMirror = useOfFoldersMirror(accountId, cachedCount > 0);
+  const ofFoldersMirror = useOfFoldersMirror(accountId, useLocal);
   // Union: start from the live custom folders (they include EMPTY folders the
   // mirror can't see), override counts from the mirror where it has them, then
   // append any mirror-only custom folder the live list omitted.
@@ -261,13 +273,15 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   }, [lists.data, ofFoldersMirror.data]);
 
   // Everything is served from the mirror once collected (instant, incl. OF
-  // folders + reorder). Before the first collect, fall back to live OF all-media.
+  // folders + reorder): `vaultBrowseSource`, a partial mirror too. Before the
+  // first collect, fall back to live OF all-media. The thumb reload and the
+  // selection download follow the grid; the whole-vault/folder downloads take
+  // `wholeSource` (`vaultWholeSource`: a partial mirror would download part).
   // IMPORTANT: don't kick off the SLOW live-OF fetch until the (fast, local)
   // summary has resolved — otherwise every mount/account-switch treats the
   // brief "summary still loading" window as "no cache", fires a live OF round
   // trip ("Loading…"), and only later swaps to the instant mirror. Wait first.
   const summaryReady = !summary.isLoading;
-  const useLocal = cachedCount > 0;
   const usingFolder = ofFolderId != null;
   // `listId` is the selected folder, NOT null: the live path is what serves an
   // account with no mirror yet, and pinning it to null meant picking a folder
@@ -353,12 +367,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // Refresh (↻): fresh from OnlyFans (folders, the open folder's media), not just a re-read of the relay's cache.
   // Spins until the reloaded grid is in (the button is disabled meanwhile); says so when OF could not be reached
   // (the grid shows the saved vault) or the sync failed otherwise.
-  const ofRefresh = useMutation({ mutationFn: (folder: FanId | null) => refreshVaultFromOf(qc, accountId, folder) });
-  const refreshNote = ofRefresh.isPending ? null
-    : ofRefresh.isError ? "Refresh failed"
-    : ofRefresh.data === false ? "Couldn't reach OnlyFans, showing saved vault" : null;
+  // Settled, the broken thumbs are drawn again (`useOfRefresh`).
   // Broken thumbnails (an expired signed url) reload the listing that hands them out, once per cooldown.
-  const thumbs = useThumbAutoRefresh(accountId, useLocal ? "mirror" : "live");
+  const thumbs = useThumbAutoRefresh(accountId, source);
+  const ofRefresh = useOfRefresh(accountId, thumbs);
 
   const deps: ManageDeps = {
     accountId,
@@ -394,7 +406,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           accountId={accountId}
           onClose={onCloseExtras}
           isCollecting={isCollecting}
-          totalSeen={run?.total_seen ?? 0}
+          totalSeen={run?.total_seen ?? null}
           cachedCount={cachedCount}
           onCollect={() => onCollect({ accountId, qc, refreshAll, isCollecting })}
           onDescribeAll={(mode) => onDescribeAll(mode, { ...deps, describeSweep, capped, plan: plan.data, promptVersion })}
@@ -426,10 +438,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           selectedId={ofFolderId}
           onSelect={(id) => dispatchBrowse({ type: "folder", id })}
           onChanged={refreshAll}
-          onDownloadFolder={downloadOff ? undefined : (f) => dl.start({
+          onDownloadFolder={dl.sink ? (f) => dl.start({
             mode: "folder", label: `folder ${f.name}`, folder: { id: f.id, name: f.name },
-            source: useLocal ? "mirror" : "live",
-          })}
+            source: wholeSource,
+          }) : undefined}
+          downloadFolderOff={downloadOff(dl.sink, "folder", 0, dlBusy)}
         />
 
         {/* RIGHT grid */}
@@ -448,12 +461,12 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             loadedCount={items.length}
             onRefresh={() => ofRefresh.mutate(ofFolderId)}
             refreshing={ofRefresh.isPending}
-            refreshNote={refreshNote}
+            refreshNote={ofRefresh.note}
             onSelectAll={() => dispatchBrowse({ type: "selectAll", ids: items.map((m) => m.id) })}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
-            onDownloadAll={() => dl.start({ mode: "vault", label: "whole vault", source: useLocal ? "mirror" : "live" })}
-            downloadOff={downloadOff}
+            onDownloadAll={() => dl.start({ mode: "vault", label: "whole vault", source: wholeSource })}
+            downloadOff={wholeVaultOff}
           />
 
           <div
@@ -539,9 +552,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               onClear={() => dispatchBrowse({ type: "clearSelection" })}
               onDownload={() => dl.start({
                 mode: "selection", label: `${selected.size} selected`,
-                media: items.filter((m) => selected.has(m.id)), source: useLocal ? "mirror" : "live",
+                media: items.filter((m) => selected.has(m.id)), source,
               })}
-              downloadOff={downloadOff}
+              downloadOff={downloadOff(dl.sink, "selection", selected.size, dlBusy)}
             />
           )}
         </section>

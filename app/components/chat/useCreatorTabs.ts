@@ -19,7 +19,9 @@
  * - `sort` / `setSort(sort)`: how the strip orders the open tabs (MP2's chat
  *   sorting, 04-messages-pro P9): "custom" (the saved order, the default),
  *   "unread" (most unread first), "az" or "za" (by name). The strip applies
- *   it (`sortTabs`), since "unread" reads the roster counts.
+ *   it (`sortTabs`), since "unread" reads the roster counts;
+ *   `useShownCreatorTabs` is that order, for the strip and anyone who must
+ *   follow it.
  *
  * Strip order is the saved order filtered to live Creators, then every live
  * Creator the saved order lacks, in the relay's account order (the Clone's
@@ -40,6 +42,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
 import { useEmployeeKey } from "@/hooks/useEmployeeKey";
+import { useRosterCountsRead, type RosterCount } from "@/hooks/useRosterCounts";
 import type { AccountMeta } from "@/lib/relay";
 import { readStorage, subscribeToStorage } from "@/lib/storageSync";
 
@@ -66,6 +69,19 @@ export function sortTabs(open: AccountMeta[], sort: CreatorSort, unreadOf: (id: 
   if (sort === "unread") out.sort((a, b) => unreadOf(b.id) - unreadOf(a.id));
   else out.sort((a, b) => (sort === "az" ? 1 : -1) * name(a).localeCompare(name(b), undefined, { sensitivity: "base" }));
   return out;
+}
+
+/** The open tabs as the strip shows them: `store.open` in `store.sort`
+ *  ("unread" by the roster counts, also handed back for the tabs' badges).
+ *  `known`: that order is settled — the store is ready and, sorted by unread,
+ *  the counts' first read is over. */
+export function useShownCreatorTabs(store: CreatorTabsStore): {
+  open: AccountMeta[]; counts: Record<string, RosterCount>; known: boolean;
+} {
+  const { counts, settled } = useRosterCountsRead();
+  const { open, sort, ready } = store;
+  const shown = useMemo(() => sortTabs(open, sort, (id) => counts[id]?.unread ?? 0), [open, sort, counts]);
+  return { open: shown, counts, known: ready && (sort !== "unread" || settled) };
 }
 
 /** The stored value (Contracts). An empty `order` means the relay's order;

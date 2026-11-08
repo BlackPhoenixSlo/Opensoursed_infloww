@@ -60,7 +60,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from slop.actors import chatter, fan_dm, manager, ui
-from slop.lib import app_ts
+from slop.lib import app_ts, navs
 from slop.lib.chats_cache_faults import SEND_BUMP
 from slop.lib.events_faults import BUS_BACKOFF, BUS_NOTHING_DROPPED, BUS_ORDER
 from slop.lib.group_faults import GROUP_HIDDEN_ACK
@@ -117,7 +117,8 @@ STORM_REQ_P95_MS = 750         # actor requests SENT after SIGCONT and ended in 
 TELEMETRY_S = float(os.environ.get("CHATTERLY_WRITE_TELEMETRY_S", "60") or 0)
 TELEMETRY_SLACK_S = 5          # a line's span may be off its interval by this (loop lag, the 2 s stall)
 MARKER_ID_BASE = 9_690_000_000_000
-TABS = ("inbox", "popout-a", "popout-b", "group")
+EXTRA_TABS = navs.extras("TABS")  # (name, path, ready selector): a flow's own pages (lib/navs.py)
+TABS = ("inbox", "popout-a", "popout-b", "group", *(t[0] for t in EXTRA_TABS))
 # The app's EventBus in node (lib/events_ts.mjs) on Agency 0's real /events while the load
 # runs: a socket drop with 6 refused connects (the browser's own reconnect + 5 bus retries,
 # so the backoff reaches its cap), one with 2 (it starts again at the minimum), then a pause.
@@ -274,6 +275,7 @@ async def run(ctx) -> None:
                 "popout-a": f"/messages-pro/{a['account_id']}/{a['id']}",
                 "popout-b": f"/messages-pro/{b['account_id']}/{b['id']}",
                 "group": "/group?slots=" + ",".join(f"{f['account_id']}:{f['id']}" for f in marker_fans),
+                **{n: path for n, path, _ in EXTRA_TABS},
             }
             t0 = time.time()
             for name, path in urls.items():  # sequential: next dev compiles each route once
@@ -281,8 +283,8 @@ async def run(ctx) -> None:
             # next dev compiles each route on first hit; a tab whose chunk load stalls
             # meanwhile stays blank (until webpack's 120 s chunk timeout, then the error
             # boundary: "Loading chunk ... failed"). A tab counts as rendered once it
-            # shows its rows and no error boundary; else reload it.
-            ready = {n: "[data-chat-row]" for n in TABS}
+            # shows its rows (an extra tab: its own selector) and no error boundary; else reload it.
+            ready = {n: "[data-chat-row]" for n in TABS} | {n: sel for n, _, sel in EXTRA_TABS}
 
             async def rendered(n):
                 if await tab[n].get_by_text("Something broke.").count():

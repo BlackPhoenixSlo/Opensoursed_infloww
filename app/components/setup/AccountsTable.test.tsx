@@ -337,12 +337,12 @@ describe("AccountsTable — watcher accounts", () => {
 describe("connectivity — watcher", () => {
   const base = { id: "w", is_active: true, proxy_down: false, role: "watcher" as const };
   const read = { loaded: true, error: null };
-  it.each<[string, Partial<AccountMeta>, string]>([
-    ["a captured session", { has_session: true }, "Session captured"],
-    ["no session", { has_session: false }, "—"],
-    ["a flagged session", { has_session: true, session_dead_at: "2026-11-01T00:00:00Z" }, "Disconnected"],
-  ])("%s", (_n, a, label) => {
-    expect(connectivity({ ...base, ...a } as AccountMeta, undefined, read).label).toBe(label);
+  it.each<[string, Partial<AccountMeta>, string, boolean]>([
+    ["a captured session", { has_session: true }, "Session captured", true],
+    ["no session", { has_session: false }, "—", false],
+    ["a flagged session", { has_session: true, session_dead_at: "2026-11-01T00:00:00Z" }, "Disconnected", false],
+  ])("%s", (_n, a, label, connected) => {
+    expect(connectivity({ ...base, ...a } as AccountMeta, undefined, read)).toMatchObject({ label, connected });
   });
 });
 

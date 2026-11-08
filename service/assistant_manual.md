@@ -162,13 +162,21 @@ to keep the stored key.
 - DeepInfra powers vision: vault image descriptions, and Auto-reply's opt-in
   "describe photos fans send".
 - Z.ai is an optional second provider.
-- Anthropic is optional and powers only this help assistant: with an Anthropic
-  key set (it starts `sk-ant-`, from console.anthropic.com) the help assistant
+- Anthropic is optional. It powers a Claude model picked in the **Model** block
+  (My AI Chatter → Auto-reply), and this help assistant: with an Anthropic key
+  set (it starts `sk-ant-`, from console.anthropic.com) the help assistant
   answers on Claude Opus (`claude-opus-5-5`), otherwise on `deepseek-v4-flash`.
-  A model the deployment operator pinned for the help assistant still wins.
+  Before any account is connected, only the deployment's own help-assistant
+  Anthropic key switches it to Opus. When Opus fails (its budget used up, the
+  key refused, the provider down) that answer is retried once on
+  `deepseek-v4-flash`. A model the deployment operator pinned for the help
+  assistant still wins, and is never swapped.
 
 **It fails closed.** With no key for the provider a model belongs to, the call is
 refused with "add it in Settings → AI keys" — there is no fallback house key.
+The one exception is this help assistant: the deployment may hold its own
+help-assistant keys (DeepSeek, Anthropic), which answer when the agency has
+none.
 An agency holding only a DeepInfra key still has every chat reply fail. If two
 owners are linked to one model, the one holding a key for a provider pays for
 it; only when BOTH hold a key for the same provider does AI stop on that
@@ -241,11 +249,16 @@ phone locked.
 ## This help assistant — memory and the phone launcher
 
 - **It remembers your earlier questions.** Each question and its answer are
-  kept for the person who asked. Opening the chat shows them under
-  **Earlier (N)**, grouped by day — tap it to open or fold the list (on a phone
-  it starts folded). Every new question carries your last three exchanges, so a
-  follow-up builds on them: a bare "yes", "more" or "go on" takes up the offer in
-  the last answer. It only sees your own questions, never a colleague's.
+  kept for the person who asked (the newest 500). Opening the chat shows them
+  under **Earlier (N)**, grouped by day — tap it to open or fold the list (on a
+  phone it starts folded). Every new question carries your last three answered
+  exchanges about the same account from the last two hours, so a follow-up
+  builds on them: a bare "yes", "more" or "go on" takes up the offer in the last
+  answer. It only sees your own questions, never a colleague's, and only about
+  accounts you can still open.
+- **Answers aim to be short.** A how-to answer aims for about 300 characters
+  and ends with one offer of the rest ("Want the step-by-step for Auto Post?");
+  say yes and the follow-up may be longer. Nothing cuts an answer off.
 - **On a phone the launcher is a ">" tab on the left edge.** Tap the tab to pull
   the round help icon out; tap the icon to open the chat. Drag the icon anywhere;
   drag it partly past the left or right edge to tuck it away behind its tab. On a
@@ -310,7 +323,10 @@ are editable in the app:
 
 - **The account's AI model** (and its reasoning effort): the **Model** block at
   the top of **My AI Chatter → Auto-reply** (see "kind: autoreply"). It is
-  account-wide: every AI automation without a model of its own uses it too.
+  account-wide: every AI automation without a model of its own uses it too —
+  with exceptions: Get to know fans, Generate fan profiles and the chat's AI
+  Copilot need a model that returns JSON, so under a Claude pick they run
+  `deepseek-v4-flash`; this help assistant never follows the account model.
 - **Model info**, the short note every chat prompt pins: it is on **My AI
   Chatter → Get to know fans**.
 
@@ -796,7 +812,10 @@ model, listed by id: Claude Opus, Sonnet or Haiku (`claude-opus-5-5`,
 When the picked model takes one, an **Effort** select (reasoning effort) shows
 under it; "Model default" leaves the model's own. The line under the selects
 reads "Answers with *model*. Account-wide: AI automations without a model of
-their own use it too." — this is the account's model, not just Auto-reply's.
+their own use it too." — this is the account's model, not just Auto-reply's,
+with the exceptions listed under "The Brain" (Get to know fans, Generate fan
+profiles and the AI Copilot stay on `deepseek-v4-flash` under a Claude pick;
+the help assistant never follows it).
 Press **Save** to keep the pick. Pick a model only if Settings → AI keys holds a
 key for its provider (Anthropic for Claude, Z.ai for GLM, DeepSeek for
 DeepSeek, DeepInfra for Qwen); without one its AI is refused (see "The AI key").

@@ -42,14 +42,13 @@
  */
 
 import { SENSITIVE_BLOCK_MESSAGE } from "@/lib/sensitiveWords";
-import { applyTemplate, previewIdsFor, wireMedia } from "@/lib/composeDraft";
-import { hasOfFormatting, OF_TEXT_MAX } from "@/lib/ofRichText";
+import { previewIdsFor, textBoxReducer, wireMedia, type TextBoxAction } from "@/lib/composeDraft";
+import { OF_TEXT_MAX, TEXT_TOO_LONG } from "@/lib/ofRichText";
 import { plainLength } from "@/lib/ofRichTextEditor";
-import { PLAIN_MODE, richMode, type RichMode } from "@/lib/ofRichMode";
+import { PLAIN_MODE, type RichMode } from "@/lib/ofRichMode";
 import { localDatetimeToIso } from "@/lib/scheduleHistory";
 import { priceNote } from "@/lib/sendGuards";
 import type { PickedGif } from "@/components/chat/GifPicker";
-import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
 import {
   audienceReducer, initAudience, isAccountSwitch, resetAudience, toggled, without,
@@ -123,9 +122,7 @@ export type MassAction =
   | { type: "toggleSmartInclude"; id: number }
   | { type: "toggleSmartExclude"; id: number }
   | { type: "setAllModels"; on: boolean }
-  /** `rich`: the account takes OF markup (an OnlyFans one): a formatted script keeps it. */
-  | { type: "pickTemplate"; t: PickedTemplate; rich?: boolean }
-  | { type: "aa" }
+  | TextBoxAction
   | { type: "addGif"; gif: PickedGif }
   | { type: "removeGif"; id: string }
   /** The broadcast landed; these trailing GIF sends failed (the form is spent). */
@@ -221,12 +218,9 @@ export function massMessageReducer(s: MassForm, a: MassAction): MassForm {
       return audienceReset(a.on
         ? { ...dropAccountScoped(s), ...initFanOut(), allModels: true, accountId: null, price: "", lockedText: false }
         : { ...s, ...initFanOut(), allModels: false });
-    case "pickTemplate": {
-      const n = applyTemplate(s, a.t, !!a.rich);
-      return { ...n, mode: richMode(s.mode, { type: "loaded", formatted: hasOfFormatting(n.text) }, !!a.rich) };
-    }
+    case "pickTemplate":
     case "aa":
-      return { ...s, mode: richMode(s.mode, { type: "aa", formatted: hasOfFormatting(s.text) }) };
+      return textBoxReducer(s, a);
     case "addGif":
       return s.pickedGifs.some((g) => g.id === a.gif.id)
         ? { ...s, gifPickerOpen: false }
@@ -271,9 +265,6 @@ export function gifNote(f: Pick<MassForm, "allModels" | "pickedGifs">): string {
   if (tooManyGifs(f)) return MASS_ONE_GIF_ALL_MODELS;
   return n > 1 ? `${n} GIFs — first rides this broadcast; rest fan out as standalone sends` : "1 GIF attached";
 }
-
-/** OF's text cap, counted on what the fan reads (the markup's tags are free). */
-export const TEXT_TOO_LONG = `Text is over ${OF_TEXT_MAX} characters`;
 
 /** Why this form can't be sent, or null. */
 export function validateMass(f: MassForm, ctx: MassCtx): string | null {

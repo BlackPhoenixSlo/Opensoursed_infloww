@@ -28,8 +28,8 @@ A phone (390x844, touch, iPhone user agent) on one browser profile, each visit a
                 (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
 dash-first and mp-first read through the screen bundles (app/lib/screenBundle.ts, service/screens_api.py): 0
 per-Creator OnlyFans reads of what the bundle carries (BUNDLE_OF; the money rail's feeds keep their own routes), one
-bundle each (C_BUNDLE), sent with the auth probe on a document load, the Dashboard's Applied settings read too (C_ENTRY:
-app/components/auth/AuthGate.tsx, lib/screenEntry.ts). dash-leave and mp-click-N run the per-Creator path on purpose
+bundle each (C_BUNDLE), sent with the auth probe on a document load, the Dashboard's Applied settings read with the
+HTML (C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). dash-leave and mp-click-N run the per-Creator path on purpose
 (the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
 Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
 (but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
@@ -63,11 +63,13 @@ leave it. Reads the HTML brought (inline boot) are the relay's log of the Next s
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import sqlite3
 import statistics
 import time
 from collections import Counter
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
@@ -80,6 +82,7 @@ BUNDLE_OF = frozenset(("/api/of/v2/users/me", "/api/of/v2/subscriptions/count/al
                        "/api/of/v2/subscriptions/subscribers/chart", "/api/of/v2/chats",
                        "/api/of/v2/users/notifications/count"))
 from slop.lib.faults import FAULTS
+from slop.lib.screen_bundle import bundle_view, late_reads
 from slop.lib.wan import WanEdge
 from slop.seed import agency, earnings, fans, of_sessions, threads
 from slop.seed import creators as creators_seed
@@ -132,6 +135,7 @@ PROBE_JS = r"""(() => {
   const check = () => {
     q = false;
     if (document.querySelector('[data-chat-row]')) mark('rows');
+    // legs' marks
     if (location.pathname !== S.path) mark('left');
     const fans = [...document.querySelectorAll('dt')].filter((d) => d.textContent.trim() === 'Fans')
       .map((d) => ((d.nextElementSibling || {}).textContent || '').trim());
@@ -148,6 +152,15 @@ PROBE_JS = r"""(() => {
   new MutationObserver(() => { if (!q) { q = true; queueMicrotask(check); } })
     .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
 })();"""
+
+# Legs kept in files of their own (lib/clicks_first_<leg>_leg.py; never a *_faults.py: the relay imports those). Each
+# defines `PROBE_MARKS` (JS joined into PROBE_JS), `CHECKS` (check names), `UNCAPPED` (background read paths not the
+# browser queue's to cap, C_CAP), `async visit(ctx, pw, edge, udir, v, *, cs, n, fake, visit_fn)` (after mp-click-N;
+# visit_fn = _visit) and `check(ctx, v, *, cs, n, click_budget_ms, max_inflight)` (after this file's checks).
+LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
+        for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("clicks_first_*_leg.py"))]
+PROBE_JS = PROBE_JS.replace("    // legs' marks\n", "".join(leg.PROBE_MARKS for leg in LEGS))
+UNCAPPED = tuple(p for leg in LEGS for p in leg.UNCAPPED)  # background reads not the browser queue's to cap
 
 SHOW_CARDS_JS = """() => { const d = [...document.querySelectorAll('dt')].find((x) => x.textContent.trim() === 'Fans');
   if (d) d.scrollIntoView({ block: 'center' }); }"""
@@ -235,10 +248,11 @@ async def _quiet(page, quiet_s: float = 3.0, cap_s: float = 90.0) -> None:
 
 
 async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=None, early: bool = False,
-                 no_bundle: bool = False, shift_s: float = 0.0) -> dict:
+                 no_bundle: bool = False, shift_s: float = 0.0, done: str | None = None) -> dict:
     """One visit of `path` in a new browser process on profile `udir`; `act(page, net)` runs once the page painted
     (`early`: at once, the page still loading). `no_bundle`: /admin/screens/* answers 404 (the per-Creator path);
-    `shift_s`: the page's clock that far ahead."""
+    `shift_s`: the page's clock that far ahead; `done`: the PROBE_JS mark that means painted (default: the Dashboard's
+    fan counts, else Fan rows)."""
     down, up, cpu = NET
     fault = FAULTS.get(ctx.fault or "")
     bctx = await pw.chromium.launch_persistent_context(
@@ -269,7 +283,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         await cdp.send("Emulation.setCPUThrottlingRate", {"rate": cpu})
         t_nav = time.time()
         await page.goto(edge.url + path, wait_until="commit", timeout=120_000)
-        done = "fans" if path == "/" else "rows"
+        done = done or ("fans" if path == "/" else "rows")
         painted, extra = True, {}
         if early:  # leaves the page while it loads: nothing to wait for
             extra = await act(page, net)
@@ -298,7 +312,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
     # what came with the HTML: the Next server's reads for this document (relay-side log; reset by a relay restart)
     reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
     inline = [x for x in reads if x["t0"] >= t_nav - 0.05 and x["path"].startswith(INLINE_READS)]
-    d.update(painted=painted, net=list(net.reqs.values()), inline=inline, **(extra or {}))
+    d.update(painted=painted, done=done, net=list(net.reqs.values()), inline=inline, **(extra or {}))
     return d
 
 
@@ -322,7 +336,7 @@ def _summary(d: dict) -> dict:
     res = [e for e in d["res"] if "/perflog/" not in e["name"]]
     of = [e for e in res if "/api/of/" in e["name"]]
     net_of = [r for r in d["net"] if r["path"].startswith("/api/of/")]
-    paint = d["marks"].get("fans", d["marks"].get("rows"))
+    paint = d["marks"].get("fans", d["marks"].get("rows", d["marks"].get(d["done"])))
     plain, follow = _bundles(d)
     return {"bundles": len(plain), "follow_ups": len(follow),
             "relay_before_paint": None if paint is None else sum(1 for e in res if e["start"] < paint),
@@ -331,7 +345,7 @@ def _summary(d: dict) -> dict:
             "relay_requests": len(res), "of_requests": len(of),
             "of_background": sum(1 for r in net_of if r["bg"]), "of_user": sum(1 for r in net_of if not r["bg"]),
             "max_bg_inflight": _max_inflight([r for r in net_of if r["bg"]]),
-            "painted_ms": round(d["marks"].get("fans", d["marks"].get("rows", -1)))}
+            "painted_ms": round(d["marks"].get("fans", d["marks"].get("rows", d["marks"].get(d["done"], -1))))}
 
 
 async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
@@ -355,7 +369,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     clicks = ctx.param("clicks", CLICKS)
     ctx.metric("world", {"creators": len(cs), "of_ms": round(fake.latency_s * 1000), "rtt_ms": rtt, "net": NET,
                          "clicks": clicks})
-    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT, C_BUNDLE, C_PARTIAL, C_ENTRY)
+    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT, C_BUNDLE, C_PARTIAL, C_ENTRY,
+              *(c for leg in LEGS for c in leg.CHECKS))
     if not ctx.ui:
         for c in checks:
             ctx.skip(c, "--no-ui: no browser (the change is the app's alone)")
@@ -418,9 +433,11 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             n_after = len(fake.calls)
             plain = _bundles(v["dash-slow"])[0]
             r = await ctx.owner.get(plain[0] if plain else "/admin/screens/dashboard")
-            after_body = r.json() if r.status_code == 200 else None
+            after_body = bundle_view(r.json()) if r.status_code == 200 else None
             slow_after = {"status": r.status_code,
-                          "row": next((c for c in (after_body or {}).get("creators", []) if c["id"] == slow), None),
+                          "counts": (after_body or {}).get("subscriberCounts", {}).get(slow),
+                          "late": sorted(r for a, r in late_reads(after_body) if a == slow),
+                          "duplicates": (after_body or {}).get("duplicates", []),
                           "of_calls": sum(1 for c in fake.calls[n_after:] if c["account"] == slow
                                           and c["route"].startswith("GET /api2/")),
                           "of_calls_during_visit": sum(1 for c in fake.calls[n_slow:n_after] if c["account"] == slow)}
@@ -440,6 +457,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                 await asyncio.sleep(max(0.0, STALE_S - (time.time() - t_last)))
                 v[f"mp-click-{i}"] = await _visit(ctx, pw, edge, udir, f"mp-click-{i}", "/messages-pro",
                                                   first=False, act=tap(i), no_bundle=True)
+            for leg in LEGS:
+                await leg.visit(ctx, pw, edge, udir, v, cs=cs, n=n, fake=fake, visit_fn=_visit)
     finally:
         edge.close()
     for k, d in v.items():
@@ -464,8 +483,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_BUNDLE, all(not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
-    # A document load: the bundle (the Dashboard: and its Applied settings read) leaves with the auth probe, or all
-    # come with the HTML (inline boot: the server sent them at once). A read of the page's own after an inline probe:
+    # A document load: the bundle leaves with the auth probe, or comes with the HTML (inline boot: the server sent it
+    # at once); the Dashboard's Applied settings read comes with the HTML (no client read of it leaves before /auth/me). A read of the page's own after an inline probe:
     # not ok (nothing to compare it with; the zone cookie is set, so the server's guess should have it).
     def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
@@ -485,10 +504,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     d = v["dash-slow"]
     plain, follow = _bundles(d)
     of_reads = [r["path"] for r in d["net"] if r["path"].split("?")[0] in BUNDLE_OF]
-    row = slow_after["row"] or {}
     ctx.check(C_PARTIAL, d["painted"] and "blank" not in d["marks"] and len(plain) == 1 and len(follow) <= 1
-              and not of_reads and slow_after["status"] == 200 and not row.get("stale", True)
-              and row.get("subscriberCounts") is not None and slow_after["of_calls"] == 0,
+              and not of_reads and slow_after["status"] == 200 and not slow_after["late"] and not slow_after["duplicates"]
+              and slow_after["counts"] is not None and slow_after["of_calls"] == 0,
               painted_ms=round(d["marks"].get("fans", -1)), blank_ms=d["marks"].get("blank"), bundles=plain,
               follow_ups=follow, of_reads=of_reads[:6], slow_creator=slow, after=slow_after)
 
@@ -501,7 +519,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
         return r[0]["path"].split("/")[3] if r else None
     inflight = {}
     for k, d in v.items():
-        bg = [r for r in d["net"] if r["path"].startswith("/api/of/") and r["bg"] and r["account"] != tapped(d)]
+        bg = [r for r in d["net"] if r["path"].startswith("/api/of/") and r["bg"] and r["account"] != tapped(d)
+              and not r["path"].startswith(UNCAPPED)]
         inflight[k] = max((_max_inflight([r for r in bg if r["account"] == a]) for a in {r["account"] for r in bg}),
                           default=0)
     ctx.check(C_CAP, max(inflight.values(), default=0) <= PER_CREATOR and any(inflight.values()),
@@ -564,3 +583,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                             for t in thread.values()), threads=thread)
     ctx.check(C_CLICK, med is not None and len(ok_taps) == clicks and med <= CLICK_BUDGET_MS, budget=True,
               median_ms=med, taps_ms=taps, budget_ms=CLICK_BUDGET_MS)
+
+    for leg in LEGS:
+        leg.check(ctx, v, cs=cs, n=n, click_budget_ms=CLICK_BUDGET_MS, max_inflight=_max_inflight)

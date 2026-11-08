@@ -38,13 +38,13 @@ describe("postComposerReducer", () => {
       form({ allModels: true, results: [bad("a")] }), [{ type: "setAllModels", on: false }],
       { allModels: false, results: null }],
     ["BUG: a FREE template clears a typed price (was: kept the old PPV)", form({ price: "25" }),
-      [{ type: "pickTemplate", t: tpl() }], { price: "", text: "t" }],
+      [{ type: "pickTemplate", t: tpl(), rich: false }], { price: "", text: "t" }],
     ["a paid template sets its price, media and preview count", form(),
-      [{ type: "pickTemplate", t: tpl({ price: 7, media: [media(4)], previews: [4] }) }],
+      [{ type: "pickTemplate", t: tpl({ price: 7, media: [media(4)], previews: [4] }), rich: false }],
       { price: "7", previewCount: 1, attached: [media(4)] }],
     ["a free template after a paid one replaces previewCount and media", form(),
-      [{ type: "pickTemplate", t: tpl({ price: 7, media: [media(4), media(5)], previews: [4] }) },
-        { type: "pickTemplate", t: tpl({ media: [media(6)] }) }],
+      [{ type: "pickTemplate", t: tpl({ price: 7, media: [media(4), media(5)], previews: [4] }), rich: false },
+        { type: "pickTemplate", t: tpl({ media: [media(6)] }), rich: false }],
       { price: "", previewCount: 0, attached: [media(6)] }],
     ["field sets one input", form(), [postFieldAction("schedule", "x")], { schedule: "x" }],
     ["BUG: appendText appends to the CURRENT text (emoji, no cursor)", form(),
@@ -80,7 +80,7 @@ describe("postComposerReducer", () => {
     ["previews", postFieldAction("previewCount", 1)],
     ["schedule", postFieldAction("schedule", "2030-01-01T10:00")],
     ["tags", postFieldAction("taggedCreators", [tag])],
-    ["template", { type: "pickTemplate", t: tpl({ text: "other" }) }],
+    ["template", { type: "pickTemplate", t: tpl({ text: "other" }), rich: false }],
     ["account", { type: "setAccount", id: "acc2" }],
     ["all-models off (would clear the results, re-arming a post to all)", { type: "setAllModels", on: false }],
   ])("BUG: a partial fan-out locks the content: %s is refused", (_n, a) => {
@@ -93,7 +93,7 @@ describe("postComposerReducer", () => {
   it.each<[string, PostAction]>([
     ["text", postFieldAction("text", "edited")],
     ["emoji", { type: "appendText", v: "!" }],
-    ["template", { type: "pickTemplate", t: tpl({ text: "other" }) }],
+    ["template", { type: "pickTemplate", t: tpl({ text: "other" }), rich: false }],
     ["all-models off", { type: "setAllModels", on: false }],
   ])("BUG: a round in flight locks the content: %s is refused", (_n, a) => {
     expect(postComposerReducer(inFlight, a)).toBe(inFlight);
@@ -117,7 +117,7 @@ describe("postComposerReducer", () => {
   });
 
   it("a template keeps the post's own fields (no lockedText / pickedGifs)", () => {
-    const s = postComposerReducer(form(), { type: "pickTemplate", t: tpl({ price: 7, lockedText: true }) });
+    const s = postComposerReducer(form(), { type: "pickTemplate", t: tpl({ price: 7, lockedText: true }), rich: false });
     expect(s).not.toHaveProperty("lockedText");
     expect(s).not.toHaveProperty("pickedGifs");
   });
@@ -183,9 +183,9 @@ describe("buildPostBody — the one body", () => {
   });
 
   it.each<[string, PostForm]>([
-    ["paid text-only template", postComposerReducer(form(), { type: "pickTemplate", t: tpl({ text: "tpl", price: 12 }) })],
+    ["paid text-only template", postComposerReducer(form(), { type: "pickTemplate", t: tpl({ text: "tpl", price: 12 }), rich: false })],
     ["paid template with media + previews",
-      postComposerReducer(form(), { type: "pickTemplate", t: tpl({ text: "tpl", price: 12, media: [media(4), media(5)], previews: [4] }) })],
+      postComposerReducer(form(), { type: "pickTemplate", t: tpl({ text: "tpl", price: 12, media: [media(4), media(5)], previews: [4] }), rich: false })],
     ["price typed before the page was known", form({ price: "9", previewCount: 1, attached: [media(4)] })],
   ])("subscription page, %s → valid and free; a normal page keeps the price", (_n, f) => {
     expect(f.price).not.toBe("");
@@ -202,7 +202,7 @@ describe("OF rich text in the post composer (item 2)", () => {
     ["OF: a formatted script keeps its markup, rich editor",
       [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true }],
       { text: F, mode: { toolbar: false, rich: true } }],
-    ["Fansly: plain", [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }) }],
+    ["Fansly: plain", [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: false }],
       { text: "Hey babe", mode: { toolbar: false, rich: false } }],
     ["Aa toggles the toolbar", [{ type: "aa" }], { mode: { toolbar: true, rich: true } }],
   ])("%s", (_n, actions, want) => {

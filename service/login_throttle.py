@@ -7,7 +7,7 @@ per USER_REFILL_S; and one per client IP, IP_CAPACITY refilling one per
 IP_REFILL_S (an IPv6 client counts by its /64). The tight bucket is per IP, so
 a stranger's few wrong guesses never lock the owner out of their own sign-in;
 the loose one caps a guesser who rotates addresses (or forges X-Forwarded-For,
-see client_ip) at about 30 guesses per 10 minutes per account, at the price
+see client_addr) at about 30 guesses per 10 minutes per account, at the price
 that such a guesser can lock that account out for everyone while he keeps at
 it. `take()` runs
 before any DB read and takes a token from each at once (no await in between, so
@@ -61,17 +61,12 @@ def _level(key: tuple[str, ...], now: float) -> float:
     return min(float(cap), tokens + (now - at) / refill)
 
 
-def _bucket_key(ip: client_addr.Addr) -> str:
-    """An IPv4 client by its address, an IPv6 one by its /64 (one host's usual share)."""
+def _bucket_key(ip: client_addr.Addr | str) -> str:
+    """An IPv4 client by its address, an IPv6 one by its /64 (one host's usual share); a peer that is no address
+    by its string."""
+    if isinstance(ip, str):
+        return ip
     return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
-
-
-def client_ip(request: Request) -> str:
-    """The sign-in's client key (`_bucket_key`) of client_addr.client_address:
-    the socket peer, the address our proxy wrote in X-Forwarded-For, or the
-    CDN's CF-Connecting-IP (EDGE_PROXIES); see there."""
-    addr = client_addr.client_address(request)
-    return addr if isinstance(addr, str) else _bucket_key(addr)
 
 
 @dataclass
@@ -102,13 +97,17 @@ class Attempt:
 def take(request: Request, username: str) -> Attempt:
     """Take one token per bucket for this sign-in attempt, or 429."""
     now = _clock()
-    ip = client_ip(request)
+    # The socket peer, the address our proxy wrote in X-Forwarded-For, or the
+    # CDN's CF-Connecting-IP (EDGE_PROXIES); see client_addr.
+    addr = client_addr.client_address(request)
+    ip = _bucket_key(addr)
     keys = (("name", username, ip), ("user", username), ("ip", ip))
     levels = [_level(k, now) for k in keys]
     short = [(k, lv) for k, lv in zip(keys, levels) if lv < 1]
     if short:
         wait = max(math.ceil((1 - lv) * _limits(k)[1]) for k, lv in short)
-        log.warning("sign-in throttled ip=%s buckets=%s retry_after=%ss", ip, ",".join(k[0] for k, _ in short), wait)
+        log.warning("sign-in throttled addr=%s key=%s buckets=%s retry_after=%ss", addr, ip,
+                    ",".join(k[0] for k, _ in short), wait)
         raise HTTPException(
             status_code=429,
             detail={
@@ -136,4 +135,3 @@ def _wait_words(seconds: int) -> str:
 def reset() -> None:
     """Forget every bucket (tests)."""
     _buckets.clear()
-    client_addr.reset()

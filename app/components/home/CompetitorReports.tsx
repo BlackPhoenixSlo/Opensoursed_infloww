@@ -68,12 +68,12 @@ import { cn } from "@/lib/utils";
 
 import CreatorOverview from "./CreatorOverview";
 import CreatorPerformance from "./CreatorPerformance";
+import { netMissingNote } from "./netMissingNote";
 import { DateRangePill, FILTER_FIELD, FiltersPill, ShownBySelect } from "./ReportsControls";
 import {
-  type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, DEFAULT_COLS, DEFAULT_RANGE, EARNING_CHANNELS,
-  asChargebacks,
+  type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, CHANNELS, DEFAULT_COLS, DEFAULT_RANGE,
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
-  isTab, netMissingNote, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalOf, viewOf, wholeHistory,
+  chargebacksCents, isTab, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalOf, viewOf, wholeHistory,
 } from "./reportsMath";
 
 // The kind bucketing's home moved to reportsMath.ts; CompetitorReports.bucket.test.ts still reads it here.
@@ -255,7 +255,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   const revPriorQueries = useQueries({
     queries: effectiveIds.map((id) => revenueQuery("kind", id, priorFromIso, priorToIso, net)),
   });
-  // Chargebacks' tile and legend row: the window's reversals, below zero (`asChargebacks`). No prior read: its growth is "-".
+  // Chargebacks' tile and legend row: the window's reversals, below zero (`chargebacksCents`). No prior read: its growth is "-".
   const revReversedQueries = useQueries({
     queries: effectiveIds.map((id) => revenueQuery("kind", id, fromIso, toIso, net, true)),
   });
@@ -287,10 +287,10 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
 
   /* aggregate kind rows → buckets, for the window and the one before */
   const buckets = useMemo(
-    () => sumKinds([...revByKindQueries, { data: refRev.kind },
-      ...revReversedQueries.map((q) => ({ data: asChargebacks(q.data) }))], money),
-    [revByKindQueries, refRev, revReversedQueries, money],
+    () => sumKinds([...revByKindQueries, { data: refRev.kind }], money),
+    [revByKindQueries, refRev, money],
   );
+  const cbCents = useMemo(() => chargebacksCents(revReversedQueries, money), [revReversedQueries, money]);
   const totalCents = useMemo(() => totalOf(buckets), [buckets]);
   // The ledger's Gross earnings stays gross with net on: a net read still carries each row's `total_cents`.
   const grossCents = useMemo(
@@ -316,17 +316,15 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
 
   /* The Overview's state: an error first, then a read still pending, then no Creator in the selection. */
   // The referrals and reversed reads never hold the Overview: failed, referrals count $0.00 under a note and
-  // Chargebacks shows "-" under a title (`chargebacksRead`), never an error.
+  // Chargebacks shows "-" under a title (its own `chargebacksView`), never an error.
   const view = viewOf([perModel, ...revByDayQueries, ...revByKindQueries, ...revByHourQueries],
     visibleCreators.length > 0);
-  const chargebacksRead = {
-    isPending: revReversedQueries.some((q) => q.isPending), isError: revReversedQueries.some((q) => q.isError),
-  };
+  const chargebacksView = viewOf(revReversedQueries, visibleCreators.length > 0);
 
   const trendPoints = useMemo(() => rollUp(trendSrc.slots, trendSrc.d.total, trendPeriod), [trendSrc, trendPeriod]);
   // #74: a line per picked channel, every one when none is picked.
   const channelLines = useMemo(
-    () => EARNING_CHANNELS
+    () => CHANNELS
       .filter((c) => chanPick.size === 0 || chanPick.has(c.key))
       .map((c) => ({ ...c, points: rollUp(chanSrc.slots, chanSrc.d.byChan(c.key), chanPeriod) })),
     [chanSrc, chanPeriod, chanPick],
@@ -396,10 +394,10 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [perfReversedQueries, perfSlots, money, perfPeriod],
   );
   const perfBuckets = useMemo(
-    () => sumKinds([...perfKindQueries, { data: perfRefRev.kind },
-      ...perfReversedQueries.map((q) => ({ data: asChargebacks(q.data) }))], money),
-    [perfKindQueries, perfRefRev, perfReversedQueries, money],
+    () => sumKinds([...perfKindQueries, { data: perfRefRev.kind }], money),
+    [perfKindQueries, perfRefRev, money],
   );
+  const perfChargebacksCents = useMemo(() => chargebacksCents(perfReversedQueries, money), [perfReversedQueries, money]);
   const perfPrior = useMemo(
     () => (wholeHistory(perfPriorQueries)
       ? sumKinds([...perfPriorQueries, { data: perfRefPriorRev.kind }], money) : null),
@@ -421,13 +419,13 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     }
     if (c.displays.includes("day")) {
       // The day read Earnings by channel makes, so a Creator already on screen comes from the cache.
-      // Chargebacks' column: the reversed day read's rows on the same answer.
-      const read = async (id: string): Promise<RevResp> => {
+      // Chargebacks' column: the reversed day read.
+      const read = async (id: string): Promise<{ earned: RevResp; reversed: RevResp }> => {
         const [earned, reversed] = await Promise.all([
           qc.fetchQuery(revenueQuery("day", id, fromIso, toIso, c.net)),
           qc.fetchQuery(revenueQuery("day", id, fromIso, toIso, c.net, true)),
         ]);
-        return { ...earned, rows: [...earned.rows, ...(asChargebacks(reversed)?.rows ?? [])] };
+        return { earned, reversed };
       };
       sections.push({ title: "By day", rows: await creatorDayRows(visibleCreators, dayDates, c.net, read) });
     }
@@ -614,7 +612,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           picked={picked} setPickedId={setPickedId} exportAllowed={exportAllowed} exportPerf={exportPerf}
           perfChan={perfChan} setPerfChan={setPerfChan} perfView={perfView} perfRetry={perfRetry} perfPoints={perfPoints}
           perfBuckets={perfBuckets} perfPrior={perfPrior} perfDaily={perfDaily} perfHeat={perfHeat}
-          perfChargebacks={perfChargebacks}
+          perfChargebacks={perfChargebacks} perfChargebacksCents={perfChargebacksCents}
         />
       )}
 
@@ -626,7 +624,8 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           setChanPick={setChanPick} chanGran={chanGran} setChanGran={setChanGran} channelLines={channelLines}
           from={from} to={to} net={net} buildExport={buildExport} perModel={perModel} visibleCreators={visibleCreators}
           visibleCols={visibleCols} setVisibleCols={setVisibleCols} orderedCols={orderedCols} colCtx={colCtx}
-          grossCents={grossCents} netLedger={netLedger} chargebacksRead={chargebacksRead}
+          grossCents={grossCents} netLedger={netLedger} chargebacksCents={cbCents}
+          chargebacksView={chargebacksView}
         />
       )}
     </div>

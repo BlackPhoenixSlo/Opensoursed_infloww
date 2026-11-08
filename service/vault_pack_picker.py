@@ -32,7 +32,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import vault_ai_brief
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
-from vault_mirror import in_of_folders
+from vault_mirror import visible_to
 
 # Every folder this module makes is the OPERATOR's, not the pipeline's. This one
 # string is what keeps `vault_scripts`' reaper off them: it retires only rows
@@ -133,19 +133,26 @@ async def _folders_by_name(s, account_id: str, cat: Category) -> dict[str, Vault
 
 
 async def _shelf(s, account_id: str, cat: Category,
-                 folders: dict[str, VaultFolder]) -> list[dict[str, Any]]:
+                 folders: dict[str, VaultFolder],
+                 allowed: frozenset[int] | None = None) -> list[dict[str, Any]]:
     """The rungs and how full each is, cheapest first.
 
     One shape, returned by BOTH `candidates` and `triage`, so the client renders
     the shelf from the same source whether it just saved or just opened. A rung
     with no folder yet reports `folder_id: None` and count 0 rather than being
     absent — the ladder's shape should not depend on how far triage has got.
+    `allowed`: a restricted chatter's counts are of the media it may see only
+    (`vault_mirror.visible_to`).
     """
     ids = [f.id for f in folders.values()]
     counts = dict((await s.execute(
-        select(VaultFolderItem.folder_id, func.count()).where(
+        select(VaultFolderItem.folder_id, func.count())
+        .outerjoin(VaultItem, (VaultItem.account_id == VaultFolderItem.account_id)
+              & (VaultItem.media_id == VaultFolderItem.media_id))
+        .where(
             VaultFolderItem.account_id == account_id,
             VaultFolderItem.folder_id.in_(ids),
+            visible_to(allowed),
         ).group_by(VaultFolderItem.folder_id)
     )).all()) if ids else {}
     out = []
@@ -179,7 +186,7 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
     """
     async with get_session() as s:
         folders = await _folders_by_name(s, account_id, cat)
-        shelf = await _shelf(s, account_id, cat, folders)
+        shelf = await _shelf(s, account_id, cat, folders, allowed)
 
         by_id = {f.id: name for name, f in folders.items()}
         filed = {
@@ -204,10 +211,9 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
                     func.coalesce(VaultItem.search_text, "").like(f"%{cat.term}%"),
                     func.coalesce(VaultItem.ai_fields_json, "").like(f'%"{cat.term}"%'),
                 ),
+                visible_to(allowed),
             )
         )
-        if allowed is not None:
-            stmt = stmt.where(in_of_folders(allowed))
         items = (await s.execute(
             stmt.order_by(VaultItem.media_id).limit(max(1, min(int(limit), 2000)))
         )).all()
@@ -233,7 +239,8 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
 
 
 async def triage(
-    account_id: str, cat: Category, verdicts: dict[int, str | None],
+    account_id: str, cat: Category, verdicts: dict[int, str | None], *,
+    allowed: frozenset[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Save the operator's verdicts. Creates the rung folders on first save.
 
@@ -277,4 +284,4 @@ async def triage(
                     index_elements=["account_id", "folder_id", "media_id"])
             )
         await s.commit()
-        return await _shelf(s, account_id, cat, folders)
+        return await _shelf(s, account_id, cat, folders, allowed)

@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  blankRow, buildPayload, itemToRow, payloadToRows, rowToItem, rowsReducer, rowsToItems,
-  type PostsCycle, type Row, type RowCtx, type RowsAction,
+  blankRow, buildPayload, initPremade, itemToRow, payloadToRows, premadeReducer, rowToItem, rowsReducer, rowsToItems,
+  type Kind, type PostsCycle, type PremadeAction, type PremadeState, type Row, type RowCtx, type RowsAction,
 } from "@/components/compose/premadeRows";
-import { parseCaptions } from "@/lib/parseCaptions";
+import { mergeCaptions, parseCaptions } from "@/lib/parseCaptions";
 import type { VaultMedia } from "@/lib/relay";
 
 const run = (s: Row[], ...actions: RowsAction[]) => actions.reduce(rowsReducer, s);
@@ -25,27 +25,12 @@ describe("rowsReducer", () => {
     ["add appends a blank row", two(), [{ type: "add" }], [...two(), blankRow()]],
     ["remove drops row i", two(), [{ type: "remove", i: 0 }], [row({ texts: ["b"] })]],
     ["remove keeps the last row", [row({ texts: ["a"] })], [{ type: "remove", i: 0 }], [row({ texts: ["a"] })]],
-    ["patchText edits one variant", [row({ texts: ["x", "y"] })], [{ type: "patchText", i: 0, ti: 1, val: "z" }],
-      [row({ texts: ["x", "z"] })]],
-    ["addText appends an empty variant", two(), [{ type: "addText", i: 1 }],
-      [row({ texts: ["a"] }), row({ texts: ["b", ""] })]],
-    ["addTexts replaces a lone blank variant", [row(), row({ texts: ["b"] })], [{ type: "addTexts", i: 0, vals: ["x", "y"] }],
-      [row({ texts: ["x", "y"] }), row({ texts: ["b"] })]],
-    ["addTexts appends, skipping dupes", [row({ texts: ["a"] })], [{ type: "addTexts", i: 0, vals: ["a", "z"] }],
-      [row({ texts: ["a", "z"] })]],
-    ["addTexts with nothing is a no-op", [row()], [{ type: "addTexts", i: 0, vals: [] }], [row()]],
-    ["removeText drops variant ti", [row({ texts: ["x", "y", "z"] })], [{ type: "removeText", i: 0, ti: 1 }],
-      [row({ texts: ["x", "z"] })]],
-    ["removeText keeps the last variant", [row({ texts: ["x"] })], [{ type: "removeText", i: 0, ti: 0 }],
-      [row({ texts: ["x"] })]],
     ["reset → one blank row", two(), [{ type: "reset" }], [blankRow()]],
-    // System chip tri-state: off → include → exclude → off.
-    ["cycleSystem off → include", [row({ includes: [], excludes: [] })], [{ type: "cycleSystem", i: 0, id: "fans" }],
+    // System chip: off ↔ include, never exclude (OF drops a built-in name in excludedLists).
+    ["system chip off → include", [row({ includes: [], excludes: [] })], [{ type: "toggleListInclude", i: 0, id: "fans" }],
       [row({ includes: ["fans"], excludes: [] })]],
-    ["cycleSystem include → exclude", [row({ includes: ["fans"] })], [{ type: "cycleSystem", i: 0, id: "fans" }],
-      [row({ includes: [], excludes: ["fans"] })]],
-    ["cycleSystem exclude → off", [row({ includes: [], excludes: ["fans"] })],
-      [{ type: "cycleSystem", i: 0, id: "fans" }], [row({ includes: [], excludes: [] })]],
+    ["system chip include → off (no exclude state)", [row({ includes: ["fans"] })], [{ type: "toggleListInclude", i: 0, id: "fans" }],
+      [row({ includes: [], excludes: [] })]],
     ["toggleListInclude adds + clears its exclude", [row({ includes: [], excludes: ["9"] })],
       [{ type: "toggleListInclude", i: 0, id: "9" }], [row({ includes: ["9"], excludes: [] })]],
     ["toggleListInclude again removes", [row({ includes: ["9"], excludes: [] })],
@@ -60,7 +45,7 @@ describe("rowsReducer", () => {
 
   it("leaves other rows untouched (same reference)", () => {
     const s = two();
-    const next = rowsReducer(s, { type: "patchText", i: 1, ti: 0, val: "q" });
+    const next = rowsReducer(s, { type: "patch", i: 1, patch: { texts: ["q"] } });
     expect(next[0]).toBe(s[0]);
     expect(s[1].texts).toEqual(["b"]); // input not mutated
   });
@@ -139,7 +124,7 @@ describe("itemToRow round-trip", () => {
   // item → row → item keeps every payload field.
   it.each<[string, Partial<Row>, RowCtx]>([
     ["posts full", FULL, POSTS],
-    ["mass full", FULL, MASS],
+    ["mass full (custom excludes only)", { ...FULL, excludes: ["666"] }, MASS],
     ["one text", { texts: ["solo"] }, POSTS],
     ["mass blank (online off, no audience)", { includes: [], onlineOnly: false }, MASS],
     ["mass defaults", {}, MASS],
@@ -147,6 +132,12 @@ describe("itemToRow round-trip", () => {
   ])("%s", (_name, over, ctx) => {
     const item = rowToItem(row(over), ctx);
     expect(rowToItem(itemToRow(item), ctx)).toEqual(item);
+  });
+  it("a built-in name saved in excluded_user_lists (it excluded nobody) is not carried; list ids are", () => {
+    const item = rowToItem(FULL, MASS);
+    expect(item.excluded_user_lists).toEqual(["following", "666"]);
+    expect(itemToRow(item).excludes).toEqual(["666"]);
+    expect(rowToItem(itemToRow(item), MASS)).toEqual({ ...item, excluded_user_lists: ["666"] });
   });
   it("re-seeds media as id-only stubs and fills the row", () => {
     expect(itemToRow({ text: "t", media_files: [1, "x"], media_folder_id: 4, price: 5, online_only: true }))
@@ -192,10 +183,53 @@ describe("imported captions → payload", () => {
   it("all 251 fixture captions ride in one post's texts pool", () => {
     const raw = readFileSync(join(__dirname, "../../lib/__fixtures__/captions-general.csv"), "utf8");
     const { items } = parseCaptions(raw, { filename: "captions-general.csv" });
-    const rows = run([blankRow()], { type: "addTexts", i: 0, vals: items });
+    const rows = run([blankRow()], { type: "patch", i: 0, patch: { texts: mergeCaptions([""], items).pool } });
     const p = buildPayload(rows, { resendCount: "", resendAfterHours: "" }, POSTS);
     expect(p?.posts).toHaveLength(1);
     expect(p?.posts?.[0].texts).toEqual(items);
     expect((p?.posts?.[0].texts as string[]).length).toBe(251);
+  });
+});
+
+// The form state that replaced PremadeForm's rows reducer + two cycle useStates + the opened snapshot.
+describe("premadeReducer", () => {
+  const S = (over: Partial<PremadeState> = {}): PremadeState =>
+    ({ rows: [blankRow()], cycle: { resendCount: "", resendAfterHours: "" }, ...over });
+  it.each<[string, PremadeState, PremadeAction[], PremadeState]>([
+    ["setCycle patches one knob", S(), [{ type: "setCycle", patch: { resendAfterHours: "24" } }],
+      S({ cycle: { resendCount: "", resendAfterHours: "24" } })],
+    ["a row action reaches the rows only", S({ cycle: { resendCount: "2", resendAfterHours: "6" } }),
+      [{ type: "patch", i: 0, patch: { texts: ["hi"] } }],
+      S({ rows: [row({ texts: ["hi"] })], cycle: { resendCount: "2", resendAfterHours: "6" } })],
+    ["reset clears the rows and the cycle", S({ rows: [row({ texts: ["a"] }), row()], cycle: { resendCount: "2", resendAfterHours: "6" } }),
+      [{ type: "reset" }], S()],
+  ])("%s", (_name, start, actions, want) => {
+    expect(actions.reduce(premadeReducer, start)).toEqual(want);
+  });
+
+  it.each<[string, Record<string, unknown> | undefined, Kind, PostsCycle]>([
+    ["auto_posts seeds the cycle from the payload", { posts: [{ text: "a" }], resend_count: 3, resend_after_hours: 12 },
+      "auto_posts", { resendCount: "3", resendAfterHours: "12" }],
+    ["mass_premade never seeds a cycle", { messages: [{ text: "a" }], resend_count: 3, resend_after_hours: 12 },
+      "mass_premade", { resendCount: "", resendAfterHours: "" }],
+    ["no payload: blank", undefined, "auto_posts", { resendCount: "", resendAfterHours: "" }],
+  ])("initPremade: %s", (_name, payload, kind, cycle) => {
+    expect(initPremade(payload, kind)).toEqual({ rows: payloadToRows(payload, kind), cycle });
+  });
+
+  // Same input → the body the old inline code built: buildPayload(rows, {resendCount, resendAfterHours}, {kind}).
+  it.each<[string, Kind, PremadeAction[], string | null]>([
+    ["posts + cycle", "auto_posts", [{ type: "patch", i: 0, patch: { texts: ["hi"] } },
+      { type: "setCycle", patch: { resendCount: "2" } }, { type: "setCycle", patch: { resendAfterHours: "24" } }],
+      '{"posts":[{"text":"hi"}],"resend_count":2,"resend_after_hours":24}'],
+    ["posts, cycle reset away", "auto_posts", [{ type: "setCycle", patch: { resendCount: "2", resendAfterHours: "24" } },
+      { type: "reset" }, { type: "patch", i: 0, patch: { texts: ["hi"] } }], '{"posts":[{"text":"hi"}]}'],
+    ["mass, default audience", "mass_premade", [{ type: "patch", i: 0, patch: { texts: ["hi"] } }],
+      '{"messages":[{"text":"hi","online_only":true,"user_lists":["fans","following"]}]}'],
+    ["nothing usable", "auto_posts", [{ type: "setCycle", patch: { resendCount: "2" } }], null],
+  ])("payload: %s", (_name, kind, actions, want) => {
+    const s = actions.reduce(premadeReducer, initPremade(undefined, kind));
+    const p = buildPayload(s.rows, s.cycle, { kind });
+    expect(p === null ? null : JSON.stringify(p)).toBe(want);
   });
 });

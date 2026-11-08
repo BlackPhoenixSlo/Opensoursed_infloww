@@ -39,12 +39,18 @@ Checks (names in lib/scripts_library_faults.py):
   ALL_MODELS_VIEW GET /admin/saved-replies/overview lists every owned Creator and, per sequence / tag name, each
                  Creator's count == that Creator's own stored rows (an independent per-account read-back of the lean
                  projection).
+  UI_ALL_MODELS  /growth/scripts, the Creator column's "All models" pick: the matrix's columns == the overview's
+                 accounts == the whole roster, its Sequence and Tag rows (rendered + "Show more (k)") == the overview
+                 in order, each cell's count (missing = 0) == per_account; the header's write actions (Learn, Share,
+                 More and its Add script / Create new / Add tag / From Excel / From other creators), shown on a
+                 Creator first, are gone; every Creator's GET /admin/saved-replies row count unchanged across it.
 p95 vs the last green run on the serial and concurrent list reads (volume tag).
 
-FAULT `scripts-bulk-drops-last-step`: the import loses each sequence's last step (`_ordered_steps` trimmed):
-IMPORT_COUNTS, READ_BACK, UI_STEPS and UI_TAGS go red; the re-import, sidebar, load and send checks stay green.
+FAULT `scripts-bulk-drops-last-step`: the import loses each sequence's last step (`_parse_sequence`'s steps trimmed):
+IMPORT_COUNTS, READ_BACK, UI_STEPS and UI_TAGS go red; the re-import, sidebar, load, send and all-models (UI vs the
+overview) checks stay green.
 A second fault `scripts-share-drops-a-creator` (`--fault=`): `owned_account_ids` loses its last Creator, so
-SHARE_ALL and ALL_MODELS_VIEW go red while SHARE_ALL_NOOP stays green.
+SHARE_ALL, ALL_MODELS_VIEW and UI_ALL_MODELS go red while SHARE_ALL_NOOP stays green.
 Bypass, declared: OF's own /me is held by the slop browser, so the chat's creator id is preset in localStorage
 (`of-owner:<account>`), as fm-auto-reply-walk does.
 """
@@ -62,8 +68,8 @@ from urllib.parse import urlsplit
 
 from slop.actors import ui
 from slop.lib.scripts_library_faults import (ALL_MODELS_VIEW, IMPORT_COUNTS, LIST_LOAD, LIST_P95, READ_BACK,
-                                             REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_SEND, UI_SIDEBAR,
-                                             UI_STEPS, UI_TAGS)
+                                             REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_ALL_MODELS, UI_SEND,
+                                             UI_SIDEBAR, UI_STEPS, UI_TAGS)
 from slop.seed.agency import PASSWORD
 
 PROFILE = "agency_inbox"
@@ -331,14 +337,15 @@ async def run(ctx) -> None:
                                    "list_bytes": len(json.dumps(body))})
 
     # 4. Share-to-all + the all-models overview (API; the library lives only on `aid` so far).
-    await _share_and_overview(ctx, aid, accounts, by_seq, metas, want_rows)
+    ov = await _share_and_overview(ctx, aid, accounts, by_seq, metas, len(rows))
 
     if not ctx.app:
-        for c in (UI_SIDEBAR, UI_STEPS, UI_TAGS, UI_SEND):
+        for c in (UI_SIDEBAR, UI_STEPS, UI_TAGS, UI_ALL_MODELS, UI_SEND):
             ctx.skip(c, "--no-ui")
         return
     # Synthetic: the deep sequence's cards; a real dump: every sequence's.
-    await _ui_page(ctx, seqs, seqs if real else [seqs[n // 2]], truth, {k: len(v) for k, v in by_seq.items()}, views)
+    await _ui_page(ctx, seqs, seqs if real else [seqs[n // 2]], truth, {k: len(v) for k, v in by_seq.items()}, views,
+                   accounts, ov)
     fans = [t["fan_id"] for t in w.data["threads"] if str(t["account_id"]) == aid]
     await _ui_send(ctx, aid, fans[0] if fans else None, seqs[0], by_seq)
 
@@ -376,17 +383,18 @@ def _expect(roster: list[str], cov: dict[str, tuple[dict[str, int], dict[str, in
 
 
 async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[str, list[dict]],
-                              src_metas: dict[str, dict], want_rows: int) -> None:
+                              src_metas: dict[str, dict], src_rows: int) -> dict:
+    """SHARE_ALL, ALL_MODELS_VIEW, SHARE_ALL_NOOP -> the overview as last read (UI_ALL_MODELS's expectation)."""
     roster = [str(a["id"]) for a in accounts]
     others = [t for t in roster if t != aid]
-    # Copy keeps one script per (sequence, step), so an option step (N.1 / N.2 share a `script_step`) lands once on a
-    # target: the copyable coverage is the source's DISTINCT steps per sequence, not its total rows.
-    aid_seqs = {k: len({r["script_step"] for r in v}) for k, v in by_seq.items()}
+    # A shared sequence arrives whole: every row, a step's "N.M" options included (they share a `script_step`), so
+    # the coverage is the source's row count per sequence.
+    aid_seqs = {k: len(v) for k, v in by_seq.items()}
     aid_tags = (await _coverage(ctx.owner, aid))[1]
 
     # SHARE_ALL: resolve the roster server-side (to=[] with all_creators) and copy to every other Creator.
     share = (await ctx.owner.post(COPY, json={"from_account_ids": [aid], "all_creators": True})).json()
-    keys_ok = set(share) == {"copied", "skipped", "media_dropped", "sequence_dropped"}
+    keys_ok = set(share) == {"copied", "skipped", "media_dropped"}
     cov = {t: await _coverage(ctx.owner, t) for t in roster}
     # Every other Creator now holds at least the source's coverage (they began without these run-unique names).
     spread_bad = [t for t in others
@@ -403,8 +411,10 @@ async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[
         meta_ok = bool(tm and tm.get("position") == src_meta.get("position")
                        and tm.get("created_by") == src_meta.get("created_by")
                        and tm.get("description") == src_meta.get("description"))
-    ctx.check(SHARE_ALL, keys_ok and share.get("copied") == want_rows * len(others) and not spread_bad and meta_ok,
-              response=share, roster=len(roster), others=len(others), want_rows=want_rows,
+    # The source's stored rows (as read back, FM-free), not the dump's: an import fault is READ_BACK's, not this.
+    ctx.check(SHARE_ALL, keys_ok and share.get("copied") == src_rows * len(others) and share.get("skipped") == 0
+              and not spread_bad and meta_ok,
+              response=share, roster=len(roster), others=len(others), src_rows=src_rows,
               spread_bad=spread_bad[:5], meta_sequence=sample, meta_ok=meta_ok)
 
     # ALL_MODELS_VIEW: the lean overview == an independent per-account read-back over the whole roster.
@@ -424,6 +434,7 @@ async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[
     ov2_seq = {s["name"]: s["per_account"] for s in ov2.get("sequences", [])}
     ctx.check(SHARE_ALL_NOOP, reshare.get("copied") == 0 and ov2_seq == ov_seq,
               response=reshare, coverage_unchanged=ov2_seq == ov_seq)
+    return ov2
 
 
 _SIDEBAR = """(label) => { const a = document.querySelector(`aside[aria-label="${label}"]`);
@@ -461,7 +472,7 @@ async def _open_sequence(page, q: dict, want: list[dict]) -> tuple[list[dict], l
 
 
 async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, stored: dict[str, int],
-                   views: dict[str, int]) -> None:
+                   views: dict[str, int], accounts: list[dict], ov: dict) -> None:
     n = len(seqs)
     async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
         await page.goto(f"{ctx.app}/growth/scripts", wait_until="domcontentloaded")
@@ -532,6 +543,90 @@ async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, store
         await ui.shot(ctx, page, "scripts-tags-settled")
         ctx.check(UI_TAGS, tag_counts == views and hit >= 1, got=tag_counts, want=views, search=probe,
                   search_hits=hit)
+        await _ui_all_models(ctx, page, accounts, ov)
+
+
+# The header's write actions, hidden while All models is on: (role, accessible name). Shown on a Creator first;
+# the menu items only exist with More open.
+HEADER_WRITES = (("button", "Learn"), ("button", "Share"), ("button", "More"))
+MORE_ITEMS = ("Add script", "Create new", "Add tag", "From Excel", "From other creators")
+_MATRIX = r"""() => { const t = document.querySelector('table'); if (!t) return null;
+  const cols = [...t.querySelectorAll('thead th')].slice(1, -1).map((th) => th.getAttribute('title'));
+  const rows = [...t.querySelectorAll('tbody tr')].map((tr) => { const td = [...tr.children];
+    return { name: td[0].getAttribute('title'), cells: td.slice(1, -1).map((c) =>
+      c.querySelector('[aria-label="missing"]') ? 0 : Number(c.textContent.trim())) }; });
+  const more = [...document.querySelectorAll('button')].map((b) => b.textContent.match(/^Show more \((\d+)\)$/))
+    .find(Boolean);
+  const head = [...document.querySelectorAll('span')].map((s) => s.textContent).find((x) => / creators · /.test(x));
+  return { cols, rows, more: more ? Number(more[1]) : 0, head: head ?? null }; }"""
+
+
+async def _present(page) -> dict[str, int]:
+    """How many of each header write action the page shows (the More menu's items as menuitems)."""
+    got = {name: await page.get_by_role(role, name=name, exact=True).count() for role, name in HEADER_WRITES}
+    for name in MORE_ITEMS:
+        got[name] = await page.get_by_role("menuitem", name=name, exact=True).count()
+    return got
+
+
+async def _ui_all_models(ctx, page, accounts: list[dict], ov: dict) -> None:
+    """UI_ALL_MODELS: the Creator column's All models pick -> the matrix == the overview, no write action, no write."""
+    roster = [str(a["id"]) for a in accounts]
+    rows_of = {t: len((await ctx.owner.get(LIST, params={"account_id": t})).json().get("list", [])) for t in roster}
+    cols = [str(a["id"]) for a in ov.get("accounts", [])]
+    # A column's title is creatorName: nickname, else name, else id (roster meta first, then the overview's own).
+    meta = {str(a["id"]): a for a in accounts}
+    names_ok = lambda i, title: title in {meta.get(cols[i], {}).get("nickname"), meta.get(cols[i], {}).get("name"),  # noqa: E731
+                                          (ov["accounts"][i] or {}).get("nickname"), cols[i]} - {None, ""}
+    before: dict[str, int] = {}
+    got: dict[str, dict] = {}
+    after: dict[str, int] = {}
+    err = None
+    try:
+        # On a Creator the actions are there (so their absence below is not vacuous): More opened for its items.
+        await page.get_by_role("button", name="More", exact=True).click()
+        await page.get_by_role("menuitem", name="Add script", exact=True).wait_for(timeout=10_000)
+        before = await _present(page)
+        await page.keyboard.press("Escape")
+        col = page.locator('aside[aria-label="Creators"]')
+        await col.locator("button[aria-expanded]", has_text="All models").click()  # the menu, not Collapse
+        pick = col.locator("button:not([aria-expanded])", has_text=re.compile(r"^All models$"))
+        await pick.wait_for(timeout=10_000)
+        await ui.shot(ctx, page, "scripts-all-models-trigger")
+        await pick.click()
+        for kind, label in (("sequences", "Sequence"), ("tags", "Tag")):
+            want = ov.get(kind, [])
+            await page.get_by_role("tab", name=label, exact=True).click()
+            await page.wait_for_function(
+                f"([n, h]) => {{ const m = ({_MATRIX})(); return !!m && m.head === h && m.rows.length + m.more === n; }}",
+                arg=[len(want), f"{len(cols)} creators · {len(want)} {kind}"], timeout=30_000)
+            got[kind] = await page.evaluate(_MATRIX)
+        after = await _present(page)
+        await page.get_by_role("tab", name="Sequence", exact=True).click()
+        await page.wait_for_function(f"() => ({_MATRIX})()?.head?.endsWith(' sequences')", timeout=10_000)
+    except Exception as e:  # noqa: BLE001 — the check reports it
+        err = f"{type(e).__name__}: {str(e)[:160]}"
+    await ui.shot(ctx, page, "scripts-all-models-settled")
+    bad: list[dict] = []
+    for kind in ("sequences", "tags"):
+        m = got.get(kind) or {"cols": [], "rows": [], "more": -1}
+        want = ov.get(kind, [])
+        if len(m["cols"]) != len(cols) or not all(names_ok(i, c) for i, c in enumerate(m["cols"])):
+            bad.append({"kind": kind, "cols": m["cols"]})
+        if len(m["rows"]) + m["more"] != len(want):
+            bad.append({"kind": kind, "rows": len(m["rows"]), "more": m["more"], "want": len(want)})
+        for r, w_ in zip(m["rows"], want):
+            exp = [w_["per_account"].get(c, 0) for c in cols]
+            if r["name"] != w_["name"] or r["cells"] != exp:
+                bad.append({"kind": kind, "got": r, "want": {"name": w_["name"], "cells": exp}})
+    rows_after = {t: len((await ctx.owner.get(LIST, params={"account_id": t})).json().get("list", [])) for t in roster}
+    shown = {k: v for k, v in after.items() if v}
+    ctx.check(UI_ALL_MODELS, bool(err is None and set(cols) == set(roster) and len(cols) == len(roster) and not bad
+                                  and before and all(before.values()) and not shown and rows_after == rows_of),
+              roster=len(roster), columns=len(cols), sequences=len(ov.get("sequences", [])),
+              tags=len(ov.get("tags", [])), rendered={k: len(v["rows"]) for k, v in got.items()},
+              bad=len(bad), first_bad=bad[:3], actions_on_creator=before, actions_on_all_models=after,
+              rows_unchanged=rows_after == rows_of, rows=sum(rows_of.values()), error=err)
 
 
 async def _ui_send(ctx, aid: str, fan, q: dict, by_seq: dict[str, list[dict]]) -> None:

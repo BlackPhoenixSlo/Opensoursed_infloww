@@ -1,0 +1,795 @@
+{
+ "note": "One table, two implementations: service/of_rich_text.py (has_html, of_text, of_plain) and app/lib/ofRichText.ts (hasHtml, ofText, ofPlain). service/tests/test_of_rich_text.py and app/lib/ofRichText.test.ts both assert every row; add a row here and whichever side drifts goes red. Bytes differ by design in one place, kept out of this table: the relay keeps tags nested as given (the app writes OF's span > strong > em). Also out of the table: entities without their `;` (`&amp b`, `&copy2024`) and numeric C1 references (`&#150;`) in markup — the relay decodes them as browsers do, the app keeps them as written; OF's and our editor's markup always writes `;`. Out of the table too: numeric references a browser reads as U+FFFD (`&#0;`, `&#xD800;`, `&#1114112;`) — the relay decodes them to U+FFFD, the app keeps them as written. A text that fails closed on a handler-shaped word (`<b>hi</b> online=yes`, the A4 row) is escaped whole: its bare tags show as written, nothing is lost.",
+ "contract": "markup: the relay rewrites the text before it leaves (OF markup and bare formatting through the allow-list, a text that fails closed escaped whole into one paragraph; the editor escapes a typed literal that would read so); sent: of_text / ofText; plain: of_plain / ofPlain, the text a fan reads (untrimmed, plain text as is)",
+ "cases": [
+  {
+   "name": "heart",
+   "text": "<3 u",
+   "markup": false,
+   "sent": "<3 u",
+   "plain": "<3 u"
+  },
+  {
+   "name": "angle code",
+   "text": "code <VIP20>",
+   "markup": false,
+   "sent": "code <VIP20>",
+   "plain": "code <VIP20>"
+  },
+  {
+   "name": "prose in angles",
+   "text": "<i love you>",
+   "markup": false,
+   "sent": "<i love you>",
+   "plain": "<i love you>"
+  },
+  {
+   "name": "maths",
+   "text": "x < y > z",
+   "markup": false,
+   "sent": "x < y > z",
+   "plain": "x < y > z"
+  },
+  {
+   "name": "lone open",
+   "text": "a <b",
+   "markup": false,
+   "sent": "a <b",
+   "plain": "a <b"
+  },
+  {
+   "name": "plain entity kept",
+   "text": "a <3 &amp; b",
+   "markup": false,
+   "sent": "a <3 &amp; b",
+   "plain": "a <3 &amp; b"
+  },
+  {
+   "name": "empty",
+   "text": "",
+   "markup": false,
+   "sent": "",
+   "plain": ""
+  },
+  {
+   "name": "prose: link in bio",
+   "text": "<link in bio>",
+   "markup": false,
+   "sent": "<link in bio>",
+   "plain": "<link in bio>"
+  },
+  {
+   "name": "prose: code at checkout",
+   "text": "Use <code VIP20> at checkout",
+   "markup": false,
+   "sent": "Use <code VIP20> at checkout",
+   "plain": "Use <code VIP20> at checkout"
+  },
+  {
+   "name": "prose: summary below",
+   "text": "<summary below>",
+   "markup": false,
+   "sent": "<summary below>",
+   "plain": "<summary below>"
+  },
+  {
+   "name": "prose: video coming soon",
+   "text": "<video coming soon>",
+   "markup": false,
+   "sent": "<video coming soon>",
+   "plain": "<video coming soon>"
+  },
+  {
+   "name": "prose: video soon",
+   "text": "<video soon>",
+   "markup": false,
+   "sent": "<video soon>",
+   "plain": "<video soon>"
+  },
+  {
+   "name": "prose: U+00A0 is no HTML whitespace",
+   "text": "<video soon>",
+   "markup": false,
+   "sent": "<video soon>",
+   "plain": "<video soon>"
+  },
+  {
+   "name": "prose: vertical tab is no HTML whitespace",
+   "text": "<br\u000b>",
+   "markup": false,
+   "sent": "<br\u000b>",
+   "plain": "<br\u000b>"
+  },
+  {
+   "name": "bare b",
+   "text": "hey <b>babe</b>",
+   "markup": true,
+   "sent": "<p>hey <strong>babe</strong></p>",
+   "plain": "hey babe"
+  },
+  {
+   "name": "event attr",
+   "text": "<strong onclick=bad>Hi</strong>",
+   "markup": true,
+   "sent": "<p>&lt;strong onclick=bad&gt;Hi&lt;/strong&gt;</p>",
+   "plain": "<strong onclick=bad>Hi</strong>"
+  },
+  {
+   "name": "quoted attr",
+   "text": "<img src=\"x\" onerror=\"1\">hi",
+   "markup": true,
+   "sent": "<p>&lt;img src=\"x\" onerror=\"1\"&gt;hi</p>",
+   "plain": "<img src=\"x\" onerror=\"1\">hi"
+  },
+  {
+   "name": "closing only",
+   "text": "hi</em>",
+   "markup": true,
+   "sent": "<p>hi</p>",
+   "plain": "hi"
+  },
+  {
+   "name": "newlines kept as br",
+   "text": "hi\n<b>x</b>\r\nyo",
+   "markup": true,
+   "sent": "<p>hi<br><strong>x</strong><br>yo</p>",
+   "plain": "hi\nx\nyo"
+  },
+  {
+   "name": "script",
+   "text": "a<script>alert(1)</script>",
+   "markup": true,
+   "sent": "<p>a&lt;script&gt;alert(1)&lt;/script&gt;</p>",
+   "plain": "a<script>alert(1)</script>"
+  },
+  {
+   "name": "of markup",
+   "text": "<p>x</p>",
+   "markup": true,
+   "sent": "<p>x</p>",
+   "plain": "x"
+  },
+  {
+   "name": "boolean attr",
+   "text": "<img src=x onerror=alert(1) hidden>",
+   "markup": true,
+   "sent": "<p>&lt;img src=x onerror=alert(1) hidden&gt;</p>",
+   "plain": "<img src=x onerror=alert(1) hidden>"
+  },
+  {
+   "name": "svg slash",
+   "text": "<svg/onload=alert(1)>",
+   "markup": true,
+   "sent": "<p>&lt;svg/onload=alert(1)&gt;</p>",
+   "plain": "<svg/onload=alert(1)>"
+  },
+  {
+   "name": "attrs without a space",
+   "text": "<img src=\"x\"onerror=\"a()\">",
+   "markup": true,
+   "sent": "<p>&lt;img src=\"x\"onerror=\"a()\"&gt;</p>",
+   "plain": "<img src=\"x\"onerror=\"a()\">"
+  },
+  {
+   "name": "details ontoggle",
+   "text": "<details open ontoggle=alert(1)>",
+   "markup": true,
+   "sent": "<p>&lt;details open ontoggle=alert(1)&gt;</p>",
+   "plain": "<details open ontoggle=alert(1)>"
+  },
+  {
+   "name": "unclosed img",
+   "text": "<img src=x onerror=alert(1)",
+   "markup": true,
+   "sent": "<p>&lt;img src=x onerror=alert(1)</p>",
+   "plain": "<img src=x onerror=alert(1)"
+  },
+  {
+   "name": "known name with attrs",
+   "text": "hi <a href=javascript:alert(1) x>y",
+   "markup": true,
+   "sent": "<p>hi y</p>",
+   "plain": "hi y"
+  },
+  {
+   "name": "unknown name with a handler",
+   "text": "<xss onmouseover=alert(1)>t</xss>",
+   "markup": true,
+   "sent": "<p>&lt;xss onmouseover=alert(1)&gt;t&lt;/xss&gt;</p>",
+   "plain": "<xss onmouseover=alert(1)>t</xss>"
+  },
+  {
+   "name": "uppercase",
+   "text": "hey <IMG SRC=x ONERROR=a()>",
+   "markup": true,
+   "sent": "<p>hey &lt;IMG SRC=x ONERROR=a()&gt;</p>",
+   "plain": "hey <IMG SRC=x ONERROR=a()>"
+  },
+  {
+   "name": "dotted name with a handler",
+   "text": "<x.y onmouseover=alert(1)>hi",
+   "markup": true,
+   "sent": "<p>&lt;x.y onmouseover=alert(1)&gt;hi</p>",
+   "plain": "<x.y onmouseover=alert(1)>hi"
+  },
+  {
+   "name": "quoted < before a handler",
+   "text": "<xx alt=\"<\" onclick=a()>t",
+   "markup": true,
+   "sent": "<p>&lt;xx alt=\"&lt;\" onclick=a()&gt;t</p>",
+   "plain": "<xx alt=\"<\" onclick=a()>t"
+  },
+  {
+   "name": "NUL in the name with a handler",
+   "text": "<x\u0000y onmouseover=alert(1)>t",
+   "markup": true,
+   "sent": "<p>&lt;x\u0000y onmouseover=alert(1)&gt;t</p>",
+   "plain": "<x\u0000y onmouseover=alert(1)>t"
+  },
+  {
+   "name": "handler after a > in the value",
+   "text": "<xx title='>' onclick=a()>t",
+   "markup": true,
+   "sent": "<p>&lt;xx title='&gt;' onclick=a()&gt;t</p>",
+   "plain": "<xx title='>' onclick=a()>t"
+  },
+  {
+   "name": "unclosed script",
+   "text": "hi <script src=//e.js",
+   "markup": true,
+   "sent": "<p>hi &lt;script src=//e.js</p>",
+   "plain": "hi <script src=//e.js"
+  },
+  {
+   "name": "style name fails closed: escaped, read as written",
+   "text": "<style tips>",
+   "markup": true,
+   "sent": "<p>&lt;style tips&gt;</p>",
+   "plain": "<style tips>"
+  },
+  {
+   "name": "doctype and PI hold no text",
+   "text": "<!doctype html><?xml v?><b>x</b><![CDATA[y]]>z",
+   "markup": true,
+   "sent": "<p><strong>x</strong>z</p>",
+   "plain": "xz"
+  },
+  {
+   "name": "paragraphs and br",
+   "text": "<p>a<br>b</p><p>c &amp; d</p>",
+   "markup": true,
+   "sent": "<p>a<br>b</p><p>c &amp; d</p>",
+   "plain": "a\nb\nc & d"
+  },
+  {
+   "name": "br variants",
+   "text": "<p>a<br/>b<br />c</br>d</p>",
+   "markup": true,
+   "sent": "<p>a<br>b<br>c<br>d</p>",
+   "plain": "a\nb\nc\nd"
+  },
+  {
+   "name": "list",
+   "text": "<p>a</p><ul><li>x</li><li>y</li></ul>",
+   "markup": true,
+   "sent": "<p>a</p><p>x</p><p>y</p>",
+   "plain": "a\nx\ny"
+  },
+  {
+   "name": "table cells",
+   "text": "<p>a</p><table><tr><td>1</td><td>2</td></tr></table>",
+   "markup": true,
+   "sent": "<p>a</p><p>1</p><p>2</p>",
+   "plain": "a\n1\n2"
+  },
+  {
+   "name": "blockquote and pre",
+   "text": "<blockquote>q</blockquote><pre>c</pre>",
+   "markup": true,
+   "sent": "<p>q</p><p>c</p>",
+   "plain": "q\nc"
+  },
+  {
+   "name": "section hr article",
+   "text": "<section>a</section><hr><article>b</article>",
+   "markup": true,
+   "sent": "<p>a</p><p>b</p>",
+   "plain": "a\nb"
+  },
+  {
+   "name": "block inside a paragraph splits it",
+   "text": "<p>a<div>b</div>c</p>",
+   "markup": true,
+   "sent": "<p>a</p><p>b</p><p>c</p>",
+   "plain": "a\nb\nc"
+  },
+  {
+   "name": "layout whitespace between blocks",
+   "text": "<p>a</p>\n<ul>\n  <li> x</li>\n</ul>",
+   "markup": true,
+   "sent": "<p>a</p><p>x</p>",
+   "plain": "a\nx"
+  },
+  {
+   "name": "p inside li not doubled",
+   "text": "<p>a</p><ol><li><p>x</p></li></ol>",
+   "markup": true,
+   "sent": "<p>a</p><p>x</p>",
+   "plain": "a\nx"
+  },
+  {
+   "name": "hr and br between blocks",
+   "text": "<p>a</p><hr><br>b",
+   "markup": true,
+   "sent": "<p>a</p><p><br>b</p>",
+   "plain": "a\n\nb"
+  },
+  {
+   "name": "empty div is no paragraph",
+   "text": "<div></div>x",
+   "markup": true,
+   "sent": "<p>x</p>",
+   "plain": "x"
+  },
+  {
+   "name": "empty paragraph kept",
+   "text": "<p></p><p>x</p>",
+   "markup": true,
+   "sent": "<p></p><p>x</p>",
+   "plain": "\nx"
+  },
+  {
+   "name": "editor output is stable",
+   "text": "<p><span class=\"m-editor-fs__l m-editor-fc__blue-1\"><strong>Hey babe</strong></span></p>",
+   "markup": true,
+   "sent": "<p><span class=\"m-editor-fs__l m-editor-fc__blue-1\"><strong>Hey babe</strong></span></p>",
+   "plain": "Hey babe"
+  },
+  {
+   "name": "unclosed marks closed",
+   "text": "<p><strong>a<em>b</p><p>c",
+   "markup": true,
+   "sent": "<p><strong>a<em>b</em></strong></p><p>c</p>",
+   "plain": "ab\nc"
+  },
+  {
+   "name": "hostile inside of markup",
+   "text": "<p>x<img src=x onerror=1><script>y</script></p>",
+   "markup": true,
+   "sent": "<p>x</p>",
+   "plain": "x"
+  },
+  {
+   "name": "N1: svg with a boolean attr, set onmouseover",
+   "text": "<svg x><set attributeName=onmouseover to=alert(1)>hover",
+   "markup": true,
+   "sent": "<p>&lt;svg x&gt;&lt;set attributeName=onmouseover to=alert(1)&gt;hover</p>",
+   "plain": "<svg x><set attributeName=onmouseover to=alert(1)>hover"
+  },
+  {
+   "name": "N1: svg, animate href javascript",
+   "text": "<svg x><a x><animate attributeName=href values=javascript:alert(1) /><text x=20 y=20>click me",
+   "markup": true,
+   "sent": "<p>&lt;svg x&gt;&lt;a x&gt;&lt;animate attributeName=href values=javascript:alert(1) /&gt;&lt;text x=20 y=20&gt;click me</p>",
+   "plain": "<svg x><a x><animate attributeName=href values=javascript:alert(1) /><text x=20 y=20>click me"
+  },
+  {
+   "name": "N1: math maction href",
+   "text": "<math x><maction actiontype=statusline href=javascript:alert(1)>click",
+   "markup": true,
+   "sent": "<p>&lt;math x&gt;&lt;maction actiontype=statusline href=javascript:alert(1)&gt;click</p>",
+   "plain": "<math x><maction actiontype=statusline href=javascript:alert(1)>click"
+  },
+  {
+   "name": "N2: prose with a style name",
+   "text": "my <style is everything> see you",
+   "markup": true,
+   "sent": "<p>my &lt;style is everything&gt; see you</p>",
+   "plain": "my <style is everything> see you"
+  },
+  {
+   "name": "N2: prose with a script name",
+   "text": "<script for tonight> babe",
+   "markup": true,
+   "sent": "<p>&lt;script for tonight&gt; babe</p>",
+   "plain": "<script for tonight> babe"
+  },
+  {
+   "name": "N2: prose with a title name",
+   "text": "<Title> ok",
+   "markup": true,
+   "sent": "<p>&lt;Title&gt; ok</p>",
+   "plain": "<Title> ok"
+  },
+  {
+   "name": "N2: prose that reads as a handler",
+   "text": "Hey <name>, see you tonight\nonly = 50% off",
+   "markup": true,
+   "sent": "<p>Hey &lt;name&gt;, see you tonight<br>only = 50% off</p>",
+   "plain": "Hey <name>, see you tonight\nonly = 50% off"
+  },
+  {
+   "name": "N2: formatting beside a fail-closed name goes as written",
+   "text": "hey <b>babe</b> <style is me>",
+   "markup": true,
+   "sent": "<p>hey &lt;b&gt;babe&lt;/b&gt; &lt;style is me&gt;</p>",
+   "plain": "hey <b>babe</b> <style is me>"
+  },
+  {
+   "name": "N3: unclosed tag after markup is text",
+   "text": "<p>hi <b",
+   "markup": true,
+   "sent": "<p>hi &lt;b</p>",
+   "plain": "hi <b"
+  },
+  {
+   "name": "N3: unclosed quoted value is text",
+   "text": "<p>a <b title=\"x>y",
+   "markup": true,
+   "sent": "<p>a &lt;b title=\"x&gt;y</p>",
+   "plain": "a <b title=\"x>y"
+  },
+  {
+   "name": "N3: unclosed comment is text",
+   "text": "<p>a<!-- x",
+   "markup": true,
+   "sent": "<p>a&lt;!-- x</p>",
+   "plain": "a<!-- x"
+  },
+  {
+   "name": "N3: bare formatting then an unclosed tag",
+   "text": "x <b>y</b> <i",
+   "markup": true,
+   "sent": "<p>x <strong>y</strong> &lt;i</p>",
+   "plain": "x y <i"
+  },
+  {
+   "name": "N3: NUL in a name is text",
+   "text": "<p>a<x\u0000y>b</p>",
+   "markup": true,
+   "sent": "<p>a&lt;x\u0000y&gt;b</p>",
+   "plain": "a<x\u0000y>b"
+  },
+  {
+   "name": "N3: CDATA is a bogus comment up to its first >",
+   "text": "<p>a<![CDATA[x>y]]>z</p>",
+   "markup": true,
+   "sent": "<p>ay]]&gt;z</p>",
+   "plain": "ay]]>z"
+  },
+  {
+   "name": "nbsp kept as &nbsp;, never stripped",
+   "text": "<p>a&nbsp;b c</p>&nbsp;<div>&nbsp;d</div>",
+   "markup": true,
+   "sent": "<p>a&nbsp;b&nbsp;c</p><p>&nbsp;</p><p>&nbsp;d</p>",
+   "plain": "a b c\n \n d"
+  },
+  {
+   "name": "a mark with no text is nothing",
+   "text": "<i> bold move<b></b>",
+   "markup": true,
+   "sent": "<p><em>bold move</em></p>",
+   "plain": "bold move"
+  },
+  {
+   "name": "empty mark alone",
+   "text": "<b></b>",
+   "markup": true,
+   "sent": "",
+   "plain": ""
+  },
+  {
+   "name": "A2: bare formatting keeps an angle code",
+   "text": "<b>SALE</b> use <code VIP20> at checkout",
+   "markup": true,
+   "sent": "<p><strong>SALE</strong> use &lt;code VIP20&gt; at checkout</p>",
+   "plain": "SALE use <code VIP20> at checkout"
+  },
+  {
+   "name": "A2: bare formatting keeps angle prose",
+   "text": "<b>hi</b> <i love you> babe",
+   "markup": true,
+   "sent": "<p><strong>hi</strong> &lt;i love you&gt; babe</p>",
+   "plain": "hi <i love you> babe"
+  },
+  {
+   "name": "A2: bare formatting keeps a placeholder",
+   "text": "<b>x</b> <name>",
+   "markup": true,
+   "sent": "<p><strong>x</strong> &lt;name&gt;</p>",
+   "plain": "x <name>"
+  },
+  {
+   "name": "A2: bare formatting keeps an unclosed run",
+   "text": "<i>so</i> <3 u <b and",
+   "markup": true,
+   "sent": "<p><em>so</em> &lt;3 u &lt;b and</p>",
+   "plain": "so <3 u <b and"
+  },
+  {
+   "name": "U6: unknown name with style= fails closed",
+   "text": "<x style=\"position:fixed;inset:0\">gotcha",
+   "markup": true,
+   "sent": "<p>&lt;x style=\"position:fixed;inset:0\"&gt;gotcha</p>",
+   "plain": "<x style=\"position:fixed;inset:0\">gotcha"
+  },
+  {
+   "name": "U6: applet code= fails closed",
+   "text": "<applet code=x>",
+   "markup": true,
+   "sent": "<p>&lt;applet code=x&gt;</p>",
+   "plain": "<applet code=x>"
+  },
+  {
+   "name": "U6: frame src= fails closed",
+   "text": "<frame src=javascript:alert(1)>",
+   "markup": true,
+   "sent": "<p>&lt;frame src=javascript:alert(1)&gt;</p>",
+   "plain": "<frame src=javascript:alert(1)>"
+  },
+  {
+   "name": "U6: prose with an attr-like = escapes losslessly",
+   "text": "a=b <c d=e>",
+   "markup": true,
+   "sent": "<p>a=b &lt;c d=e&gt;</p>",
+   "plain": "a=b <c d=e>"
+  },
+  {
+   "name": "U6: unknown name without attr= stays plain",
+   "text": "<vip20> only today",
+   "markup": false,
+   "sent": "<vip20> only today",
+   "plain": "<vip20> only today"
+  },
+  {
+   "name": "U6: address is a known block",
+   "text": "x <address>y</address>",
+   "markup": true,
+   "sent": "<p>x </p><p>y</p>",
+   "plain": "x \ny"
+  },
+  {
+   "name": "A4: handler false positive escapes bare tags (lossless)",
+   "text": "<b>hi</b> online=yes",
+   "markup": true,
+   "sent": "<p>&lt;b&gt;hi&lt;/b&gt; online=yes</p>",
+   "plain": "<b>hi</b> online=yes"
+  }
+ ],
+ "names": {
+  "note": "The name lists both sides copy (of_rich_text.py _KNOWN/_ACTIVE/_BLOCK/_DROP_CONTENT, ofRichText.ts KNOWN/ACTIVE/BLOCK, ofMirrorFormat.ts DROP_CONTENT); each suite generates rows from them. unknown: names no list holds.",
+  "known": [
+   "a",
+   "abbr",
+   "address",
+   "article",
+   "aside",
+   "audio",
+   "b",
+   "base",
+   "big",
+   "blockquote",
+   "body",
+   "br",
+   "button",
+   "center",
+   "code",
+   "dd",
+   "del",
+   "details",
+   "div",
+   "dl",
+   "dt",
+   "em",
+   "embed",
+   "figcaption",
+   "figure",
+   "font",
+   "footer",
+   "form",
+   "h1",
+   "h2",
+   "h3",
+   "h4",
+   "h5",
+   "h6",
+   "head",
+   "header",
+   "hr",
+   "html",
+   "i",
+   "iframe",
+   "img",
+   "input",
+   "ins",
+   "label",
+   "li",
+   "link",
+   "main",
+   "mark",
+   "math",
+   "meta",
+   "nav",
+   "noscript",
+   "object",
+   "ol",
+   "option",
+   "p",
+   "pre",
+   "s",
+   "script",
+   "section",
+   "select",
+   "small",
+   "source",
+   "span",
+   "strike",
+   "strong",
+   "style",
+   "sub",
+   "summary",
+   "sup",
+   "svg",
+   "table",
+   "tbody",
+   "td",
+   "template",
+   "textarea",
+   "th",
+   "thead",
+   "title",
+   "tr",
+   "u",
+   "ul",
+   "video"
+  ],
+  "active": [
+   "embed",
+   "head",
+   "iframe",
+   "math",
+   "noscript",
+   "object",
+   "script",
+   "style",
+   "svg",
+   "template",
+   "textarea",
+   "title"
+  ],
+  "blocks": [
+   "address",
+   "article",
+   "aside",
+   "blockquote",
+   "dd",
+   "div",
+   "dl",
+   "dt",
+   "figcaption",
+   "figure",
+   "footer",
+   "h1",
+   "h2",
+   "h3",
+   "h4",
+   "h5",
+   "h6",
+   "header",
+   "hr",
+   "li",
+   "main",
+   "nav",
+   "ol",
+   "pre",
+   "section",
+   "table",
+   "td",
+   "th",
+   "tr",
+   "ul"
+  ],
+  "drop": [
+   "head",
+   "iframe",
+   "noscript",
+   "object",
+   "script",
+   "style",
+   "template",
+   "textarea",
+   "title"
+  ],
+  "unknown": [
+   "applet",
+   "dialog",
+   "love",
+   "marquee",
+   "vip20"
+  ]
+ },
+ "perf": {
+  "note": "Both suites build each text (parts: [piece, times], concatenated), run has_html + of_text + of_plain (hasHtml + ofText + ofPlain) and fail past max_ms: the tokenizer and the parse stay linear (a quoted value or a comment that ran on to every later `<` was quadratic: 10-14 s for the first row). Each text is under of_rich_text.MARKUP_MAX, what a route takes.",
+  "max_ms": 500,
+  "rows": [
+   {
+    "name": "quoted values across `<`",
+    "parts": [
+     [
+      "<p><a ",
+      1
+     ],
+     [
+      "\"<b\" ",
+      20000
+     ]
+    ]
+   },
+   {
+    "name": "unclosed comments",
+    "parts": [
+     [
+      "<p>",
+      1
+     ],
+     [
+      "<!--",
+      32000
+     ]
+    ]
+   },
+   {
+    "name": "unclosed comments, plain text",
+    "parts": [
+     [
+      "<!--",
+      32000
+     ]
+    ]
+   },
+   {
+    "name": "deep unclosed marks then stray ends",
+    "parts": [
+     [
+      "<p>",
+      1
+     ],
+     [
+      "<i>",
+      18000
+     ],
+     [
+      "</b>",
+      18000
+     ]
+    ]
+   },
+   {
+    "name": "bare marks, one per line",
+    "parts": [
+     [
+      "<b>x\n",
+      25000
+     ]
+    ]
+   },
+   {
+    "name": "escaped text, one long mid-text whitespace run",
+    "parts": [
+     [
+      "<script x> a",
+      1
+     ],
+     [
+      " ",
+      64000
+     ],
+     [
+      "b",
+      1
+     ]
+    ]
+   }
+  ]
+ }
+}

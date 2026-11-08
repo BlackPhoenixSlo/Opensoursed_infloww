@@ -6,9 +6,10 @@ vi.mock("@/lib/shareToken", () => ({ resolveShareToken: () => "tok" }));
 
 import { relay, type VaultMedia } from "@/lib/relay";
 
-import { listAll, LIVE_PAGE_GAP_MS, runQueue } from "./vaultDownload";
+import { folderSink, listAll, LIVE_PAGE_GAP_MS, runQueue, shareFiles, shareSink } from "./vaultDownload";
 import {
-  initialDownloadState, toItems, vaultDownloadReducer, type Action, type DlState,
+  SHARE_BATCH_BYTES, initialDownloadState, readyBatch, toItems, vaultDownloadReducer, type Action, type DlSink,
+  type DlState,
 } from "./vaultDownloadReducer";
 
 const get = relay.get as unknown as ReturnType<typeof vi.fn>;
@@ -36,11 +37,12 @@ const cdn = (id: number, sig = "old") => `https://cdn2.onlyfans.com/files/a/${id
 const media = (id: number, type = "photo", url: string | null = cdn(id)) =>
   ({ id, type, files: { full: { url } }, listStates: [] }) as unknown as VaultMedia;
 
-async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: string) => Promise<Response>, abort?: AbortController) {
+async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: string) => Promise<Response>,
+  abort?: AbortController, sink: DlSink = "folder") {
   let s: DlState = initialDownloadState;
   const seen: Action[] = [];
   const send = (a: Action) => { seen.push(a); s = vaultDownloadReducer(s, a); };
-  send({ type: "start", mode: "selection", label: "x", creator: "amy", directAllowed });
+  send({ type: "start", mode: "selection", label: "x", creator: "amy", directAllowed, sink });
   send({ type: "listed", items: toItems(ms, null) });
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (u: string, init?: RequestInit) => {
@@ -49,9 +51,12 @@ async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: strin
     return fetchImpl(u);
   }));
   const files: Files = {};
+  const kept = new Map<number, File>();
   const ac = abort ?? new AbortController();
-  await runQueue({ accountId: "acc", root: dir(files, ""), send, get: () => s, signal: ac.signal });
-  return { s, files, calls, seen };
+  await runQueue({ accountId: "acc", send, get: () => s, signal: ac.signal,
+                   sink: sink === "share" ? shareSink((id, f) => kept.set(id, f))
+                     : folderSink(dir(files, ""), () => s.creator) });
+  return { s, files, calls, seen, kept };
 }
 
 beforeEach(() => {
@@ -140,8 +145,8 @@ describe("integrity", () => {
     fail = false;
     let s = vaultDownloadReducer(r.s, { type: "retryFailed" });
     const files: Files = {};
-    await runQueue({ accountId: "acc", root: dir(files, ""), send: (a) => { s = vaultDownloadReducer(s, a); },
-                     get: () => s, signal: new AbortController().signal });
+    await runQueue({ accountId: "acc", sink: folderSink(dir(files, ""), () => s.creator),
+                     send: (a) => { s = vaultDownloadReducer(s, a); }, get: () => s, signal: new AbortController().signal });
     expect(s.items.map((i) => i.status)).toEqual(["done", "done"]);
     expect(Object.keys(files)).toEqual(["amy/Unfiled/2.jpg"]);
   });
@@ -185,5 +190,68 @@ describe("listAll", () => {
     expect(get.mock.calls[0][0]).toBe("/api/of/v2/vault/media?limit=100&offset=0");
     expect(get.mock.calls[0][1]).toEqual({ accountId: "acc" });
     expect(sleep.mock.calls).toEqual([[LIVE_PAGE_GAP_MS], [LIVE_PAGE_GAP_MS]]);
+  });
+});
+
+describe("share sink (phones)", () => {
+  const typed = (id: number, ext: string) => media(id, ext === "mp4" ? "video" : "photo",
+    `https://cdn2.onlyfans.com/files/a/${id}.${ext}?Signature=old`);
+  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("same source chain, each file kept as <id>.<ext> with its MIME, one batch at the end", async () => {
+    const { s, kept, files } = await go([typed(1, "jpg"), typed(2, "png"), typed(3, "mp4"), typed(4, "gif")], true,
+      async () => body(5), undefined, "share");
+    expect(files).toEqual({});
+    expect([...kept.values()].map((f) => [f.name, f.type, f.size]).sort()).toEqual([
+      ["1.jpg", "image/jpeg", 5], ["2.png", "image/png", 5], ["3.mp4", "video/mp4", 5], ["4.gif", "image/gif", 5]]);
+    expect(s.items.every((i) => i.status === "done" && i.source === "direct")).toBe(true);
+    expect(s.batches).toHaveLength(1);
+    expect(s.batches[0]).toMatchObject({ bytes: 20, sealed: true, saved: false });
+    expect(s.batches[0].ids.slice().sort()).toEqual([1, 2, 3, 4]);
+  });
+
+  it("DRM 422 fails and joins no batch; a short body keeps no file", async () => {
+    const { s, kept } = await go([media(7, "video", null), media(8)], false,
+      async (u) => (u.includes("media_id=7") ? new Response("{}", { status: 422 }) : body(3, 9)), undefined, "share");
+    expect(kept.size).toBe(0);
+    expect(s.items.map((i) => i.status)).toEqual(["failed", "failed"]);
+    expect(s.batches).toEqual([]);
+  });
+
+  it("holds fetching while ~2 batches are unsaved, resumes after each save", async () => {
+    let s: DlState = initialDownloadState;
+    // every file reported as a whole batch's bytes: each is a batch of its own
+    const send = (a: Action) => {
+      s = vaultDownloadReducer(s, a.type === "itemDone" ? { ...a, bytes: SHARE_BATCH_BYTES } : a);
+    };
+    send({ type: "start", mode: "selection", label: "x", creator: "amy", directAllowed: false, sink: "share" });
+    send({ type: "listed", items: toItems([1, 2, 3, 4, 5, 6].map((i) => media(i)), null) });
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => { fetched.push(u); return body(4); }));
+    const run = runQueue({ accountId: "acc", send, get: () => s, signal: new AbortController().signal,
+                           sink: shareSink(() => {}) });
+    await tick(50);
+    const held = fetched.length;
+    expect(held).toBeLessThan(6);
+    await tick(600);
+    expect(fetched.length).toBe(held);   // nothing more until a save
+    while (s.phase !== "done" || readyBatch(s) >= 0) {
+      if (readyBatch(s) >= 0) send({ type: "batchSaved", index: readyBatch(s) });
+      await tick(300);
+    }
+    await run;
+    expect(fetched.length).toBe(6);
+    expect(s.items.every((i) => i.status === "done")).toBe(true);
+    expect(s.batches.map((b) => b.ids.length)).toEqual([1, 1, 1, 1, 1, 1]);
+  });
+
+  it("shareFiles: AbortError is dismissed (not a failure), other errors throw", async () => {
+    const f = [new File(["x"], "1.jpg", { type: "image/jpeg" })];
+    vi.stubGlobal("navigator", { share: vi.fn(async () => undefined) });
+    await expect(shareFiles(f)).resolves.toBe("saved");
+    vi.stubGlobal("navigator", { share: vi.fn(async () => { throw new DOMException("x", "AbortError"); }) });
+    await expect(shareFiles(f)).resolves.toBe("dismissed");
+    vi.stubGlobal("navigator", { share: vi.fn(async () => { throw new DOMException("x", "NotAllowedError"); }) });
+    await expect(shareFiles(f)).rejects.toThrow();
   });
 });

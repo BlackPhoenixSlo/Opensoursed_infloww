@@ -5,7 +5,8 @@ REAL OFClient against lib/of_wire.py, `OF_WIRE`) and a vault of vault_collect_it
 (lib/vault_wire.py, made per Creator on first sight, so it is there the moment a session lands). OF's CDN is
 lib/img_relay.py's fake, armed with every vault thumb + full (`pictures`: small PNGs), and
 vault_stills' stores point into the run's temp dir. The collector runs on its own (RELAY_ENV: tick 2 s, first
-tick 1 s, GAP_S 1 s, USER_QUIET_S 20 s).
+tick 1 s, GAP_S 2 s, USER_QUIET_S 20 s). GAP_S stays above of_pacing's per-Creator 1 s page gap (+0.3 s
+jitter), which every collector call also goes through: at 1 s that pacer alone kept the gaps and hid collect-unpaced.
 
 Load (until every quiet Creator's walk reached auto:done, then LINGER_S more): BUSY_FRAC of the Creators are
 busy: --users/2 picker users (each: the folder list, All page 0 with refresh=1 — the picker's refresh, so every
@@ -60,7 +61,7 @@ PROFILE = "flat_agency"
 UI = False
 OF_WIRE = True
 FAULT = "collect-unpaced"
-GAP_S, QUIET_S, MAX_SKIP_S = 1.0, 20.0, 1800.0
+GAP_S, QUIET_S, MAX_SKIP_S = 2.0, 20.0, 1800.0
 RELAY_ENV = {"VAULT_COLLECT_TICK_S": "2", "VAULT_COLLECT_FIRST_AFTER_S": "1", "VAULT_COLLECT_GAP_S": str(GAP_S),
              "VAULT_COLLECT_USER_QUIET_S": str(QUIET_S), "VAULT_COLLECT_MAX_SKIP_S": str(MAX_SKIP_S),
              "SLOP_VAULT_STILLS": "1"}

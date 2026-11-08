@@ -114,6 +114,13 @@ describe("ProxiesTable refusal rate", () => {
       }, {
         label: "hu-6", host: "u.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.12",
         health: { state: "healthy", errors: 0, refusals: { window_s: 45, refused: 9, calls: 30, pct: 30 } },
+      }, {
+        // An Agency's owner: the share alone (the counts are every Agency's traffic: the site owner's).
+        label: "hu-7", host: "v.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.13",
+        health: { state: "healthy", errors: 0, refusals: { window_s: 600, pct: 12.6 } },
+      }, {
+        label: "hu-8", host: "w.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.14",
+        health: { state: "healthy", errors: 0, refusals: { window_s: 600, pct: 0 } },
       }],
       pool: { size: 0, account_ids: [] },
       accounts: [],
@@ -132,7 +139,9 @@ describe("ProxiesTable refusal rate", () => {
     expect(screen.queryByText(/refusing 0%/)).not.toBeInTheDocument();
     // A window under a minute reads in seconds, never "(0 min)".
     expect(screen.getByText("203.0.113.12 · refusing 30% (45 s)")).toBeInTheDocument();
-    expect(screen.getAllByText(/refusing \d/)).toHaveLength(4);
+    expect(screen.getByText("203.0.113.13 · refusing 13% (10 min)")).toBeInTheDocument();
+    expect(screen.getByText("203.0.113.14")).toBeInTheDocument();
+    expect(screen.getAllByText(/refusing \d/)).toHaveLength(5);
   });
 });
 

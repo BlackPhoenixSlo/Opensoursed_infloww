@@ -15,6 +15,7 @@
  */
 
 import { useState, useSyncExternalStore } from "react";
+import { useIsRestoring } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
@@ -94,13 +95,20 @@ export function FreeTrialBanner() {
 
 export function FreeTrialExpiredModal() {
   const expired = useTrialDaysLeft() === 0;
+  // The snapshot restore lands after mount and copies the saved fetch count, which
+  // "fetched since mount" can't tell from this load's read: start reading once it's in.
+  const restoring = useIsRestoring();
+  return expired && !restoring ? <ExpiredNag /> : null;
+}
+
+function ExpiredNag() {
   // Unknown until this load's Applied read answers; a failed read shows the nag (the default).
-  const { settings, failed } = useAppliedSettingsAfterMount(expired);
+  const { settings, failed } = useAppliedSettingsAfterMount(true);
   const allowed = settings ? settings.preferences?.hide_trial_popup !== true : failed;
   // Per mount: AppShell mounts once per page load, so this is per app start.
   const [closed, setClosed] = useState(false);
   return (
-    <Dialog.Root open={expired && allowed && !closed} onOpenChange={(o) => { if (!o) setClosed(true); }}>
+    <Dialog.Root open={allowed && !closed} onOpenChange={(o) => { if (!o) setClosed(true); }}>
       <Dialog.Portal>
         {/* IfModal's look (antd's modal), kept on Radix: the 70% mask, the kit box, the × 16px in. */}
         <Dialog.Overlay className={`fixed inset-0 z-[60] ${IF_MODAL_MASK}`} />

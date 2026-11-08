@@ -16,7 +16,7 @@ import { AssistantProvider, AssistantWidget } from "@/components/assistant/Assis
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
 import { BOOT_PATH_HEADER } from "@/lib/inlineBoot";
 import { inlinePaths, startInline } from "@/lib/inlineBoot.server";
-import { ENTRY_COOKIE, TZ_COOKIE } from "@/lib/screenEntry";
+import { TZ_COOKIE } from "@/lib/screenEntry";
 
 import "./globals.css";
 
@@ -113,13 +113,17 @@ try {
 //      animation. Listening from the layout-level keeps the var in
 //      sync across route changes (which would otherwise unmount and
 //      re-arm an effect every time).
-// Cheap: one DOM property write per event, no rAF needed.
+// `--vvt` is the visual viewport's offsetTop (px): the phone help sheet pins
+// its top there (AssistantWidget's VARIANT.sheet).
+// Cheap: two DOM property writes per event, no rAF needed.
 const VVH_BOOT_SCRIPT = `
 (function(){
   var vv = window.visualViewport;
   if (!vv) return;
   function update(){
-    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+    var st = document.documentElement.style;
+    st.setProperty('--vvh', vv.height + 'px');
+    st.setProperty('--vvt', vv.offsetTop + 'px');
   }
   update();
   vv.addEventListener('resize', update);
@@ -189,7 +193,7 @@ export default async function RootLayout({
   const h = await headers();
   const inline = signedIn
     ? startInline(
-      inlinePaths(h.get(BOOT_PATH_HEADER), jar.get(ENTRY_COOKIE)?.value, jar.get(TZ_COOKIE)?.value),
+      inlinePaths(h.get(BOOT_PATH_HEADER), (n) => jar.get(n)?.value),
       h.get("cookie"),
       process.env.RELAY_URL || "http://127.0.0.1:8787",
     )

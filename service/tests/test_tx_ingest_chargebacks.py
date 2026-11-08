@@ -231,7 +231,7 @@ def _reset_txns() -> None:
 async def case_dispute_then_ledger():
     aid = "cb_1"
     await _account(aid)
-    assert await ti._write_page(aid, [LEDGER_B | {"status": "done"}]) == (1, 0)
+    assert await ti.write_page(aid, [LEDGER_B | {"status": "done"}]) == (1, 0)
     assert await _lifetime(aid) == BASE_LIFETIME + 2888
     _reset_txns()
     LOGS.lines.clear()
@@ -251,7 +251,7 @@ async def case_dispute_then_ledger():
     assert _txns("ledger-chargebacks") == 0, "a re-poll takes no write lock"
     assert not LOGS.named("ingest_cb_applied"), LOGS.lines
     # The ledger catches up (`undo`): same status, same fields -> noop.
-    assert await ti._write_page(aid, [LEDGER_B]) == (0, 1)
+    assert await ti.write_page(aid, [LEDGER_B]) == (0, 1)
     assert _txns("ledger") == 0, "the ledger's own undo of a disputed row writes nothing"
     assert await _lifetime(aid) == BASE_LIFETIME
 
@@ -259,8 +259,8 @@ async def case_dispute_then_ledger():
 async def case_ledger_then_dispute():
     aid = "cb_2"
     await _account(aid)
-    await ti._write_page(aid, [LEDGER_B | {"status": "done"}])
-    await ti._write_page(aid, [LEDGER_B])
+    await ti.write_page(aid, [LEDGER_B | {"status": "done"}])
+    await ti.write_page(aid, [LEDGER_B])
     assert await _lifetime(aid) == BASE_LIFETIME
     _reset_txns()
     r = await cb.apply_chargebacks(aid, [DISPUTE_B, DISPUTE_OPEN])
@@ -277,9 +277,9 @@ async def case_dispute_then_ledger_says_done():
     # takes it off again. Net: one deduction while the dispute stands.
     aid = "cb_2b"
     await _account(aid)
-    await ti._write_page(aid, [LEDGER_B | {"status": "done"}])
+    await ti.write_page(aid, [LEDGER_B | {"status": "done"}])
     await cb.apply_chargebacks(aid, [DISPUTE_B])
-    await ti._write_page(aid, [LEDGER_B | {"status": "done"}])
+    await ti.write_page(aid, [LEDGER_B | {"status": "done"}])
     assert await _lifetime(aid) == BASE_LIFETIME + 2888
     await cb.apply_chargebacks(aid, [DISPUTE_B])
     assert await _lifetime(aid) == BASE_LIFETIME
@@ -314,7 +314,7 @@ async def case_applied_broadcasts_a_status_flip():
     import events
     aid = "cb_4"
     await _account(aid)
-    await ti._write_page(aid, [LEDGER_B | {"status": "done"}])
+    await ti.write_page(aid, [LEDGER_B | {"status": "done"}])
     seen = []
 
     async def announce(account_id, fan_id, **kw):

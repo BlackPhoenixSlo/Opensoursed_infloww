@@ -103,7 +103,7 @@ def test_streak_of_calls_starts_exactly_one_watcher():
     (ConfirmDue(now=104.0, gap=30.0), _st(errors=0, streak=1)),   # a blip: an answer reset it in the wait
     (ConfirmResult(now=134.0, ok=True, streak=1),                 # a blip: the confirm answers
      _st(errors=DOWN_AFTER, first_error_at=100.0, streak=1)),
-    (RecheckResult(ok=True), {**DOWN, "rechecking": True}),       # back up: the recheck answers
+    (RecheckResult(ok=True, flapping=False), {**DOWN, "rechecking": True}),       # back up: the recheck answers
 ])
 def test_an_error_right_after_the_watchers_last_step_starts_a_new_one(last_step, at_last):
     """N1: the claim is released in the same decide as the watcher's last step (Unwatch), so the
@@ -156,9 +156,10 @@ def test_confirm_result(ok, kinds, then, down, errors):
 
 @table("during_probe, kinds, then, write", [
     # the probe confirms streak 1 (first error at 100), fails at 140; gap 30
-    (AT_100, ["Announce(True)"], ArmRecheck(), {"down": True, "bad_since": 140.0, "rechecks_failed": 0}),
+    (AT_100, ["Announce(True)"], ArmRecheck(), {"down": True, "bad_reason": "down", "bad_since": 140.0,
+                                                "rechecks_failed": 0}),
     ({**AT_100, "errors": DOWN_AFTER + 2}, ["Announce(True)"], ArmRecheck(),          # same streak, more errors
-     {"down": True, "bad_since": 140.0, "rechecks_failed": 0}),
+     {"down": True, "bad_reason": "down", "bad_since": 140.0, "rechecks_failed": 0}),
     (_st(streak=1), ["Unwatch"], None, {}),                                          # a call got through: reset
     (_st(errors=1, first_error_at=120.0, streak=2), ["Unwatch"], None, {}),         # then a new error: not at the bar
     ({**AT_100, "first_error_at": 120.0, "streak": 2}, [], Wait(0.0, ConfirmDue), {}),   # a whole new streak: ConfirmDue waits it
@@ -205,7 +206,7 @@ def _drive(outcomes: list, base: float = 2.0, max_steps: int = 50):
             break
         assert st["rechecking"] and st["next_recheck_at"] is None
         n += 1
-        st, effects, then = decide(st, RecheckResult(ok=nxt))
+        st, effects, then = decide(st, RecheckResult(ok=nxt, flapping=False))
         log += _announced(effects)
         if Failover() in effects:
             failover_at.append(n)
@@ -257,7 +258,7 @@ def test_gone_mid_recheck_ends_the_loop():
 
 
 def test_answer_during_the_sleep_ends_the_loop():
-    st, sleeps, log, _ = _drive([False, CallOk(now=12.0), False])
+    st, sleeps, log, _ = _drive([False, CallOk(now=12.0, flapping=False), False])
     assert log == ["Announce(True)", "Announce(False)"], "back once, by the call; no recheck probe after"
     assert not st["down"] and sleeps == [2.0, 4.0]
 
@@ -267,7 +268,7 @@ def test_failing_recheck_after_a_call_brought_it_back():
     failure is counted (as before) but moves nobody, the proxy stays up, and the watcher ends (below the
     bar; at it: test_back_at_the_bar_mid_recheck_keeps_the_watcher)."""
     up = {**_st(), "rechecks_failed": 1, "rechecking": True}
-    st, effects, nxt = decide(up, RecheckResult(ok=False))
+    st, effects, nxt = decide(up, RecheckResult(ok=False, flapping=False))
     assert effects == [Unwatch()] and nxt is None, (effects, nxt)
     assert st["down"] is False and st["rechecks_failed"] == 2 and st["rechecking"] is False
 
@@ -275,7 +276,7 @@ def test_failing_recheck_after_a_call_brought_it_back():
 def _back_at_the_bar(st):
     """A call answered (the proxy is back up), then DOWN_AFTER errors while the watcher still holds the
     claim (watching=True: no Watch, no second watcher)."""
-    st, _, _ = decide(st, CallOk(now=200.0))
+    st, _, _ = decide(st, CallOk(now=200.0, flapping=False))
     for i in range(DOWN_AFTER):
         st, effects, _ = decide(st, CallErr(now=201.0 + i, error="e", watching=True))
         assert Watch() not in effects, effects
@@ -285,7 +286,7 @@ def _back_at_the_bar(st):
 @table("before, step", [
     ({**DOWN, "next_recheck_at": 210.0}, RecheckDue()),        # the answer + streak in the recheck's sleep
     (DOWN, RecheckWait(now=205.0, base=2.0)),                  # ... between a failed confirm / recheck and the arm
-    ({**DOWN, "rechecking": True}, RecheckResult(ok=False)),   # ... during the recheck probe, which then fails
+    ({**DOWN, "rechecking": True}, RecheckResult(ok=False, flapping=False)),   # ... during the recheck probe, which then fails
 ])
 def test_back_at_the_bar_mid_recheck_keeps_the_watcher(before, step):
     """F1 (N1's class, recheck phase): the same watcher goes back to the confirm phase, never Unwatch."""
@@ -307,7 +308,7 @@ def test_failed_over_only_stamps():
 
 # ── the flap knob (PROXY_FLAP_BAD_PCT): flap-bad stays bad while `flapping` (the shell's hysteresis: the
 # window's rate still >= HALF the knob; FlapBad itself fires at >= the knob) ──
-_FLAP_DOWN = {**_st(), "down": True, "flap": True, "bad_since": 1.0, "rechecks_failed": FAILOVER_AFTER_RECHECKS - 1, "rechecking": True}
+_FLAP_DOWN = {**_st(), "down": True, "bad_reason": "flapping", "bad_since": 1.0, "rechecks_failed": FAILOVER_AFTER_RECHECKS - 1, "rechecking": True}
 
 
 @table("before, ev, kinds, then, down, failed", [
@@ -318,14 +319,15 @@ _FLAP_DOWN = {**_st(), "down": True, "flap": True, "bad_since": 1.0, "rechecks_f
     (_FLAP_DOWN, CallOk(now=1.0, flapping=False), ["Announce(False)"], None, False, 0),
     (_FLAP_DOWN, RecheckResult(ok=True, flapping=False), ["Announce(False)", "Unwatch"], None, False, 0),
     # a proxy confirmed bad the usual way (no flap mark) ignores the rate
-    ({**_FLAP_DOWN, "flap": False}, CallOk(now=1.0, flapping=True), ["Announce(False)"], None, False, 0),
-    ({**_FLAP_DOWN, "flap": False}, RecheckResult(ok=True, flapping=True), ["Announce(False)", "Unwatch"], None,
+    ({**_FLAP_DOWN, "bad_reason": "down"}, CallOk(now=1.0, flapping=True), ["Announce(False)"], None, False, 0),
+    ({**_FLAP_DOWN, "bad_reason": "down"}, RecheckResult(ok=True, flapping=True), ["Announce(False)", "Unwatch"], None,
      False, 0),
 ])
 def test_flap_bad_clears_only_when_the_rate_drops(before, ev, kinds, then, down, failed):
     st, effects, nxt = decide(before, ev)
     assert (_kinds(effects), nxt) == (kinds, then), (effects, nxt)
-    assert st["down"] is down and st["rechecks_failed"] == failed and st["flap"] is (down and before["flap"])
+    assert st["down"] is down and st["rechecks_failed"] == failed
+    assert st["bad_reason"] == (before["bad_reason"] if down else None), "bad_reason is set with down, cleared with it"
 
 
 def test_flap_bad_then_the_watcher_rechecks():
@@ -335,11 +337,55 @@ def test_flap_bad_then_the_watcher_rechecks():
     assert decide(st, ConfirmDue(now=6.0, gap=30.0))[2] == ArmRecheck()
 
 
+W = ph.WindowStats
+
+
+@table("w, knob, trips, holds, guards", [
+    (W(20, 4, 3), 20.0, True, True, True),      # 20 %, 3 tenths: goes bad
+    (W(19, 4, 3), 20.0, False, False, False),   # too few attempts to judge either way
+    (W(20, 4, 2), 20.0, False, True, False),    # refusals in 2 tenths: a blip, not FlapBad (still over half);
+                                                # on a clean proxy still a destination
+    (W(720, 150, 2), 20.0, False, True, False),  # one 30 s blip at 1 att/s, 5 tries a call (20.8 %): usable
+    (W(20, 3, 3), 20.0, False, True, True),     # 15 % over 3 tenths: under the knob, over half: holds, guarded
+    (W(20, 2, 5), 20.0, False, True, True),     # 10 % = half: holds
+    (W(21, 2, 5), 20.0, False, False, False),   # 9.5 %: under half: back
+    (W(10, 10, 5), 20.0, False, False, False),  # a drained window (its Creators moved away): back, whatever the rate
+    (W(100, 100, 10), 0.0, False, False, False),  # knob off: never
+])
+def test_flap_thresholds(w, knob, trips, holds, guards):
+    assert (ph.flap_trips(w, knob), ph.flap_holds(w, knob), ph.flap_guards(w, knob)) == (trips, holds, guards)
+
+
+@table("w, pct", [(W(0, 0, 0), 0.0), (W(3, 1, 1), 33.3), (W(20, 4, 3), 20.0)])
+def test_window_pct(w, pct):
+    assert w.pct == pct
+
+
+def test_flap_hysteresis_does_not_oscillate():
+    """F1: a proxy flap-bad at >= X, then a window hovering in [X/2, X) with its last refusal minutes ago (the
+    old recency rule read it clean after window/5): every answer and every passing recheck keeps it bad, so no
+    up/announce flip and the rechecks run up to the failover; only the drained window brings it back, once."""
+    st, _, _ = decide(_st(), FlapBad(now=0.0, watching=False, pct=25.0, calls=40))
+    hovering = [W(40, 7, 4), W(45, 7, 4), W(60, 7, 3), W(50, 6, 2)]   # 17.5 %, 15.6 %, 11.7 %, 12 %: no new refusal
+    flips, failovers = 0, 0
+    for w in hovering:
+        holds = ph.flap_holds(w, 20.0)
+        st, effects, _ = decide(st, CallOk(now=1.0, flapping=holds))
+        flips += "Announce(False)" in _kinds(effects)
+        st, effects, _ = decide({**st, "rechecking": True}, RecheckResult(ok=True, flapping=holds))
+        flips += "Announce(False)" in _kinds(effects)
+        failovers += "Failover" in _kinds(effects)
+        assert st["down"], w
+    assert flips == 0 and failovers == len(hovering) - FAILOVER_AFTER_RECHECKS + 1, (flips, failovers)
+    st, effects, _ = decide(st, CallOk(now=2.0, flapping=ph.flap_holds(W(12, 2, 2), 20.0)))   # drained
+    assert not st["down"] and _kinds(effects) == ["Announce(False)"]
+
+
 # ── every state × every event: the whole transition table, pinned as it is ──
 # The shapes decide tells apart. down: bad, its next recheck armed; rechecking: a recheck in flight whose
 # failure is the FAILOVER_AFTER_RECHECKS-th; due: in flight, failover already due; failed_over: just failed
 # over (FailedOver stamped).
-_D = {**AT_100, "down": True, "bad_since": 105.0, "rechecks_failed": 0,
+_D = {**AT_100, "down": True, "bad_reason": "down", "bad_since": 105.0, "rechecks_failed": 0,
       "rechecking": False, "next_recheck_at": 130.0}
 _R = {**_D, "rechecking": True, "next_recheck_at": None, "rechecks_failed": FAILOVER_AFTER_RECHECKS - 1}
 _RD = {**_R, "rechecks_failed": FAILOVER_AFTER_RECHECKS}
@@ -354,13 +400,13 @@ STATES = {
     "failed_over": {**_RD, "rechecking": False, "failed_over_at": 108.0, "failed_over": 2},
 }
 EVENTS = {   # one clock for all: now=110, the streak began at 100, the confirm gap is 30, the recheck base 10
-    "call_ok": CallOk(now=110.0), "call_err": CallErr(now=110.0, error="boom", watching=False),
+    "call_ok": CallOk(now=110.0, flapping=False), "call_err": CallErr(now=110.0, error="boom", watching=False),
     "call_err_watching": CallErr(now=110.0, error="boom", watching=True),
     "confirm_due": ConfirmDue(now=110.0, gap=30.0),
     "confirm_ok": ConfirmResult(now=110.0, ok=True, streak=1),   # the probe is for streak 1
     "confirm_bad": ConfirmResult(now=110.0, ok=False, streak=1),
     "recheck_wait": RecheckWait(now=110.0, base=10.0), "recheck_due": RecheckDue(),
-    "recheck_ok": RecheckResult(ok=True), "recheck_bad": RecheckResult(ok=False),
+    "recheck_ok": RecheckResult(ok=True, flapping=False), "recheck_bad": RecheckResult(ok=False, flapping=False),
     "gone": Gone(), "failed_over": FailedOver(now=110.0, moved=("a",)),
     "flap_bad": FlapBad(now=110.0, watching=False, pct=40.0, calls=30),
     "flap_bad_watching": FlapBad(now=110.0, watching=True, pct=40.0, calls=30),
@@ -380,12 +426,12 @@ LAST_ERR = {"last_error": "boom", "last_error_at": 110.0}
 FIRST_ERR = {"errors": 1, "first_error_at": 110.0, "streak": 1, **LAST_ERR}   # a streak's first error
 MORE_ERR = {"errors": DOWN_AFTER + 1, **LAST_ERR}                             # one past DOWN_AFTER
 CONFIRM_RESET = {"errors": 0, "first_error_at": None}                # the confirm answered: count restarts
-CONFIRMED_BAD = {"down": True, "bad_since": 110.0, "rechecks_failed": 0}
+CONFIRMED_BAD = {"down": True, "bad_reason": "down", "bad_since": 110.0, "rechecks_failed": 0}
 RECHECK_IN_FLIGHT = {"rechecking": True, "next_recheck_at": None}
 RECHECK_FAILED_1 = {"rechecking": False, "rechecks_failed": 1}
 RECHECK_FAILED_PAST_DUE = {"rechecking": False, "rechecks_failed": FAILOVER_AFTER_RECHECKS + 1}
 FAILED_OVER_ONE = {"failed_over_at": 110.0, "failed_over": 1}                # FailedOver(moved=("a",))
-FLAPPED = {"down": True, "flap": True, "bad_since": 110.0, "rechecks_failed": 0}   # FlapBad: bad, no confirm
+FLAPPED = {"down": True, "bad_reason": "flapping", "bad_since": 110.0, "rechecks_failed": 0}   # FlapBad: bad, no confirm
 _FLAP_ROWS = [(s, "flap_bad", ["Log", "Announce(True)", "Watch"], None, FLAPPED)
               for s in ("none", "healthy", "suspect", "threshold")] + \
              [(s, "flap_bad_watching", ["Log", "Announce(True)"], None, FLAPPED)
@@ -529,8 +575,8 @@ def test_every_state_and_event(state, event, effects, then, write):
 def test_matrix_is_exhaustive():
     import typing
     assert FAILOVER_AFTER_RECHECKS == 2, "the recheck delays and Failover cells above assume it"
-    assert ph._UP == {"errors": 0, "first_error_at": None, "down": False, "rechecks_failed": 0,
-                      "next_recheck_at": None, "rechecking": False, "flap": False}, \
+    assert ph._UP == {"errors": 0, "first_error_at": None, "down": False, "bad_reason": None, "rechecks_failed": 0,
+                      "next_recheck_at": None, "rechecking": False}, \
         "the matrix's answer cells write ph._UP"
     assert {type(e) for e in EVENTS.values()} == set(typing.get_args(ph.Event)), "an event class is missing"
     cells = [(s, e) for s, e, *_ in MATRIX]

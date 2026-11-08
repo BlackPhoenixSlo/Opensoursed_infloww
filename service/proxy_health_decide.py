@@ -13,7 +13,7 @@ lock performs the effects in order, then the watcher's next move. Each event
 is one of the shell's lock sections:
 
   CallOk / CallErr   record(): an OF call or a probe through the proxy answered / failed
-  FlapBad            the flap knob (PROXY_FLAP_BAD_PCT, default 20, 0 = off): the window's refusal rate crossed it
+  FlapBad            the flap knob (PROXY_FLAP_BAD_PCT, default 20, 0 = off): the window `flap_trips`
   ConfirmDue         the confirm's wait is over (owns every confirm wait: the gap from the streak's first error)
   ConfirmResult      the confirm probe's answer, for the streak its Confirm named
   RecheckWait        arm the next recheck (stamp next_recheck_at; base = recheck_s(), read at each arm)
@@ -44,6 +44,11 @@ under the same lock) and gets its Watch. So the watcher goes on exactly while
 its state warrants one: no proxy is left bad or at DOWN_AFTER errors with
 nobody watching it.
 
+The flap knob's three thresholds are pure too, over one `WindowStats` the shell
+reads under its telemetry lock: `flap_trips` (goes bad: FlapBad),
+`flap_holds` (stays bad: the events' `flapping`) and `flap_guards` (the herd guard: no new binding or move
+onto it).
+
 Importable without side effects (stdlib only).
 """
 
@@ -56,15 +61,51 @@ from typing import Any, Optional, Union
 DOWN_AFTER = 3                # consecutive counted errors that start the confirm
 FAILOVER_AFTER_RECHECKS = 2   # failed rechecks in a row before a pool proxy's Creators move
 RECHECK_MAX_S = 600.0         # the recheck's doubling stops here (6 probes an hour for a proxy that stays dead)
+FLAP_MIN_CALLS = 20           # a refusal rate over fewer attempts than this marks nothing bad and holds nothing bad
+FLAP_BUCKETS = 3              # FlapBad and the herd guard need refusals in this many tenths of the window (else a blip)
 
 State = Optional[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class WindowStats:
+    """One label's refusal window, read under one lock (`proxy_health._window`): the attempts in it, how many
+    were refused, and in how many tenths of the window a refusal landed."""
+    calls: int
+    refused: int
+    spread: int
+
+    @property
+    def pct(self) -> float:
+        """The refused share, % to one decimal (0 with no attempts): `health.refusals.pct`, FlapBad's log."""
+        return round(100.0 * self.refused / self.calls, 1) if self.calls else 0.0
+
+
+def flap_trips(w: WindowStats, knob: float) -> bool:
+    """Goes bad (FlapBad): knob on, >= FLAP_MIN_CALLS attempts, >= `knob` % refused, refusals in >=
+    FLAP_BUCKETS tenths of the window (a short full outage sits in one or two: the confirm path owns it)."""
+    return flap_guards(w, knob) and w.refused * 100.0 >= knob * w.calls
+
+
+def flap_holds(w: WindowStats, knob: float) -> bool:
+    """Still flapping (hysteresis): knob on, >= FLAP_MIN_CALLS attempts, >= HALF of `knob` % refused. No
+    recency rule: a flap-bad proxy comes back only once its window drains (under half, or too few attempts to
+    judge), so a burst minutes ago cannot read clean and trip again on the next refusal (each trip a move)."""
+    return bool(knob) and w.calls >= FLAP_MIN_CALLS and w.refused * 200.0 >= knob * w.calls
+
+
+def flap_guards(w: WindowStats, knob: float) -> bool:
+    """The herd guard on a proxy not marked bad (a flap-bad one is kept off by its bad state): no new binding
+    or move onto it while `flap_holds` AND its refusals sit in >= FLAP_BUCKETS tenths. One blip (<= 2 tenths)
+    never does, so a clean proxy's blip does not take it out of rotation for the whole window."""
+    return flap_holds(w, knob) and w.spread >= FLAP_BUCKETS
 
 
 # ── events ──
 @dataclass(frozen=True)
 class CallOk:
     now: float
-    flapping: bool = False    # flap knob on and the window's refusal rate still >= HALF of it (hysteresis, shell)
+    flapping: bool            # `flap_holds` on the window now (the shell reads it under the lock); required
 
 
 @dataclass(frozen=True)
@@ -109,7 +150,7 @@ class RecheckDue:
 @dataclass(frozen=True)
 class RecheckResult:
     ok: bool
-    flapping: bool = False    # as CallOk's: read after the probe's own sample is in the window
+    flapping: bool            # as CallOk's: read after the probe's own sample is in the window; required
 
 
 @dataclass(frozen=True)
@@ -184,13 +225,14 @@ Next = Optional[Union[Wait, Confirm, Recheck, ArmRecheck]]
 
 
 def blank() -> dict[str, Any]:
-    # streak: bumped at each streak's first error; a confirm is for one streak (ConfirmResult.streak)
-    return {"errors": 0, "first_error_at": None, "streak": 0, "down": False, "last_error": None,
+    # streak: bumped at each streak's first error; a confirm is for one streak (ConfirmResult.streak).
+    # bad_reason: set with down, by the transition that made it bad: "down" (the confirm) or "flapping" (FlapBad).
+    return {"errors": 0, "first_error_at": None, "streak": 0, "down": False, "bad_reason": None, "last_error": None,
             "last_error_at": None}
 
 
-_UP = {"errors": 0, "first_error_at": None, "down": False, "rechecks_failed": 0, "next_recheck_at": None,
-       "rechecking": False, "flap": False}
+_UP = {"errors": 0, "first_error_at": None, "down": False, "bad_reason": None, "rechecks_failed": 0,
+       "next_recheck_at": None, "rechecking": False}
 
 
 def failover_due(st: State) -> bool:
@@ -220,9 +262,9 @@ def _resume(st: State) -> tuple[list[Effect], Next]:
 def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
     if isinstance(ev, CallOk):
         cur = st if st is not None else blank()
-        if cur.get("flap") and ev.flapping:
-            # Flap-bad (FlapBad): a flapping proxy answers most calls; only the rate dropping below half the
-            # knob brings it up (`flapping` is that hysteresis, read by the shell).
+        if cur["bad_reason"] == "flapping" and ev.flapping:
+            # Flap-bad (FlapBad): a flapping proxy answers most calls; only its window draining (`flap_holds`
+            # False) brings it up.
             return {**cur, "errors": 0, "first_error_at": None}, [], None
         if cur["down"]:
             return {**cur, **_UP}, [Log(logging.WARNING, "proxy %s is back up"), Announce(False)], None
@@ -234,7 +276,7 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         cur = st if st is not None else blank()
         if cur["down"] or cur["errors"] >= DOWN_AFTER:
             return st, [], None   # bad already, or a DOWN_AFTER streak's confirm owns it: no second transition
-        nxt = {**cur, "down": True, "flap": True, "bad_since": ev.now, "rechecks_failed": 0}
+        nxt = {**cur, "down": True, "bad_reason": "flapping", "bad_since": ev.now, "rechecks_failed": 0}
         return nxt, [Log(logging.WARNING, "proxy %s is DOWN (refusing %.0f%% of %d calls)", (ev.pct, ev.calls)),
                      Announce(True), *([] if ev.watching else [Watch()])], None
 
@@ -273,7 +315,7 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
             effects, then = _resume(st)
             return st, [Log(logging.INFO, "proxy %s: a call got through during the confirm probe; not marked bad"),
                         *effects], then
-        nxt = {**st, "down": True, "bad_since": ev.now, "rechecks_failed": 0}
+        nxt = {**st, "down": True, "bad_reason": "down", "bad_since": ev.now, "rechecks_failed": 0}
         effects, then = _resume(nxt)
         return nxt, [Log(logging.WARNING, "proxy %s is DOWN (confirmed by probe)"), Announce(True), *effects], then
 
@@ -293,7 +335,7 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         # Written whatever happened during the probe (as before): an answer brings it up and is announced
         # even when a call already did; a failure counts even when a call brought it back meanwhile.
         cur = {**(st or blank()), "rechecking": False}
-        if ev.ok and not (cur.get("flap") and ev.flapping):
+        if ev.ok and not (cur["bad_reason"] == "flapping" and ev.flapping):
             nxt: State = {**cur, **_UP} if st is not None else None
             effects, then = _resume(nxt)
             return nxt, [Log(logging.WARNING, "proxy %s is back up (recheck)"), Announce(False), *effects], then

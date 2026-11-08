@@ -14,7 +14,7 @@ import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { OFMessage } from "@/lib/relay";
 import { vaultFilesFromChat } from "@/lib/vaultFiles";
 import { giphyUrl } from "@/lib/ofMedia";
-import { hasOfFormatting, ofPlainText, sanitizeOfHtml } from "@/lib/ofRichText";
+import { hasOfFormatting, ofPlainText, ofText } from "@/lib/ofRichText";
 
 export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
   // Vault ids only: a saved reply stores numeric OF media ids. Free previews
@@ -29,7 +29,7 @@ export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
   // A formatted message keeps its OF markup (allow-listed), so the script sends formatted; else its plain text.
   const raw = msg.text ?? "";
   const plain = ofPlainText(raw);
-  const text = hasOfFormatting(raw) ? sanitizeOfHtml(raw) : plain;
+  const text = hasOfFormatting(raw) ? ofText(raw) : plain;
   return {
     title: plain.split("\n")[0].slice(0, 40) || null,
     text,

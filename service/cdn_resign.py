@@ -15,15 +15,17 @@ signature for the file the caller already named.
 
 `current` lets the next request skip the 403: a fresh url seen for that host+path within FRESH_TTL_S is used up
 front (a hover asks 12 frames, a tile up to 9 posters, a <video> many ranges, all with the browser's stale url).
-A failed re-sign is remembered for FAIL_TTL_S per media so a dead clip costs one OF call per 5 min, not one per
-frame. RAM-only: a restart costs one OF call per media on its next 403.
+A failed re-sign (no fresh url, or a fresh url that still answers 403) is remembered for FAIL_TTL_S per media
+so a dead clip costs one OF call per 5 min, not one per frame. RAM-only: a restart costs one OF call per media on its
+next 403. `fetch` is the one GET -> 403 -> re-sign -> retry sequence both routes run.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 from urllib.parse import urlsplit
 
 import relay_coalesce
@@ -83,6 +85,13 @@ def _fail(key: tuple[str, int]) -> None:
         _failed[key] = time.monotonic()
 
 
+def _close(r: Any) -> None:
+    try:
+        r.close()
+    except Exception:
+        pass
+
+
 async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> str | None:
     """A freshly signed url for `failed_u`'s host+path, from one by-id read of `media_id`; None when OF has no
     such media, the read failed, or OF handed back the very url that just failed. Concurrent callers for one
@@ -108,3 +117,29 @@ async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> 
         return None
     log.info("cdn_resign account=%s media=%s ok", account_id, media_id)
     return new
+
+
+async def fetch(account_id: str, media_id: int | None, u: str, client: Any,
+                get: Callable[[str], Awaitable[Any]]) -> tuple[Any, str]:
+    """GET `u` with `get` and return (the response, the url it came from); the caller owns and closes it. With an
+    account and a media id: the url re-signed earlier for that file is used up front (`current`), and a 403
+    re-signs once (`resign`) and GETs the fresh url; when no fresh url comes, the 403 comes back (closed). A retry
+    that still 403s marks the media failed and forgets the fresh url, so the next request with it makes no OF read
+    for FAIL_TTL_S."""
+    if not (account_id and media_id):
+        return await get(u), u
+    u = current(account_id, u)
+    r = await get(u)
+    if r.status_code != 403:
+        return r, u
+    await asyncio.to_thread(_close, r)
+    new = await resign(account_id, media_id, u, client)
+    if new is None:
+        return r, u
+    r = await get(new)
+    if r.status_code == 403:
+        _fail((account_id, int(media_id)))
+        with _lock:
+            _fresh.pop((account_id, _base(new)), None)
+        log.info("cdn_resign account=%s media=%s retry still 403", account_id, media_id)
+    return r, new

@@ -242,16 +242,17 @@ def case_success_table():
     ]
     for mode, floor, want_status, want_full in table:
         s = d.scan_after_success(base, mode=mode, inserted=3, patched=1, last_marker=None,
-                                 rows_min=t1, rows_max=NOW, floor_reached=floor, now=NOW)
+                                 rows_min=t1, rows_max=NOW, floor_reached=floor, now=NOW).state
         assert (s.current_status, s.fully_backfilled) == (want_status, want_full), (mode, floor, s)
         assert (s.consecutive_failures, s.last_error, s.last_scan_at) == (0, None, NOW), s
         # Until done the seen range is the backfill's: only a backfill moves it (a refresh's
         # top would hide a gap below it from the next resumed read).
         moved = mode == "backfill"
         assert (s.oldest_seen_occurred_at, s.newest_seen_occurred_at) == (t1 if moved else t2, NOW if moved else t2), s
-        assert (s.rows_inserted_total, s.rows_patched_total, s.last_marker) == (8, 1, 7), s
+        # A backfill's counters were added page by page (scan_backfill_page): not twice.
+        assert (s.rows_inserted_total, s.rows_patched_total, s.last_marker) == ((5, 0) if moved else (8, 1)) + (7,), s
     done = d.scan_after_success(replace(base, fully_backfilled=True), mode="refresh", inserted=0, patched=0,
-                                last_marker=None, rows_min=t1, rows_max=NOW, floor_reached=True, now=NOW)
+                                last_marker=None, rows_min=t1, rows_max=NOW, floor_reached=True, now=NOW).state
     assert (done.oldest_seen_occurred_at, done.newest_seen_occurred_at) == (t1, NOW), "a finished account's widens"
     assert done.current_status == "ok"
     assert d.BACKFILL_PARTIAL not in d.IN_FLIGHT, "between ticks: an in-flight status would skip the next tick"
@@ -263,7 +264,7 @@ def case_a_stopped_walk_reads_stalled_until_a_tick_clears_it():
 
     def after(state, mode, floor=False, stop=None):
         return d.scan_after_success(state, mode=mode, inserted=0, patched=0, last_marker=None, rows_min=None,
-                                    rows_max=None, floor_reached=floor, now=NOW, stop_reason=stop)
+                                    rows_max=None, floor_reached=floor, now=NOW, stop_reason=stop).state
     table = [
         # (stop reason, want status, want last_error)
         (None, "backfill_partial", None),
@@ -284,6 +285,180 @@ def case_a_stopped_walk_reads_stalled_until_a_tick_clears_it():
     assert (done.current_status, done.last_error, done.fully_backfilled) == ("ok", None, True), done
     plain = after(replace(base, last_error="OF 500"), "refresh", floor=True)
     assert (plain.current_status, plain.last_error) == ("backfill_partial", None), plain
+
+
+def case_a_finished_walk_short_of_newest_seen_queues_a_backfill():
+    """F1 (C1): after an outage longer than OF's 600-row offset cap, a finished account's full
+    walk never reads back to newest_seen: the rows between are queued for a backfill floored
+    there; a recent walk short of it leaves the range for the next full walk."""
+    top, old_floor = NOW - timedelta(days=6), NOW - timedelta(days=90)
+    base = ScanState(fully_backfilled=True, oldest_seen_occurred_at=old_floor, newest_seen_occurred_at=top,
+                     backfill_floor=old_floor, consecutive_failures=1, last_full_at=NOW - timedelta(hours=7))
+
+    def after(mode, rows_min, rows_max=NOW, state=base):
+        return d.scan_after_success(state, mode=mode, inserted=600, patched=0, last_marker=None, rows_min=rows_min,
+                                    rows_max=rows_max, floor_reached=True, now=NOW,
+                                    full_at=NOW if mode == "refresh" else None).state
+    table = [
+        # (mode, oldest row read, want fully_backfilled, want newest_seen, want floor, want cursor, want status)
+        ("refresh", NOW - timedelta(days=5), False, top, top, None, "idle"),          # the gap: queued
+        ("refresh", top, True, NOW, old_floor, old_floor, "ok"),                         # read back to it
+        ("refresh", top - timedelta(days=1), True, NOW, old_floor, old_floor, "ok"),
+        ("recent", NOW - timedelta(days=2), True, top, old_floor, old_floor, "ok"),     # left for the full walk
+        ("recent", top - timedelta(hours=1), True, NOW, old_floor, old_floor, "ok"),
+        ("refresh", None, True, top, old_floor, old_floor, "ok"),                        # an empty walk: nothing moves
+    ]
+    for mode, rows_min, full, newest, floor, cursor, status in table:
+        s = after(mode, rows_min, None if rows_min is None else NOW)
+        got = (s.fully_backfilled, s.newest_seen_occurred_at, s.backfill_floor, s.oldest_seen_occurred_at,
+               s.current_status)
+        assert got == (full, newest, floor, cursor, status), (mode, rows_min, got)
+        assert (s.consecutive_failures, s.last_scan_at) == (0, NOW), s
+    queued = after("refresh", NOW - timedelta(days=5))
+    assert queued.last_full_at == NOW and queued.rows_inserted_total == 600, "the walk's own stamps stay"
+    assert d.decide_mode(queued, now=NOW) == "backfill", "the gap walks next"
+    assert d.window_for("backfill", queued, NOW) == (top, NOW)
+    assert after("refresh", NOW - timedelta(days=5), state=replace(base, newest_seen_occurred_at=None)).fully_backfilled
+    # trigger_backfill's reset is the same one; a walk not done keeps its own lower floor.
+    for st, floor, want in [(base, top, top), (replace(base, fully_backfilled=False), top, old_floor),
+                            (ScanState(backfill_stalls=2, paused_until=NOW, current_status="paused"), top, top)]:
+        q = d.scan_backfill_queued(st, floor)
+        assert (q.backfill_floor, q.oldest_seen_occurred_at, q.fully_backfilled, q.current_status, q.paused_until,
+                q.consecutive_failures, q.backfill_stalls) == (want, None, False, "idle", None, 0, 0), q
+        assert not d.walk_started(q)
+
+
+def case_a_failure_keeps_the_walks_place_and_never_reads_green():
+    """F2 / F3 (S3, C3): a failure leaves backfill_stalls (the walk stays started); one after
+    held pages is not counted and reads backfill_stalled with its error, never idle."""
+    stalled = ScanState(backfill_stalls=1, last_error="backfill_stopped: empty_page", current_status="backfilling")
+    table = [
+        # (state, refusal, progressed, want status, want failures)
+        (stalled, False, False, "error", 1),
+        (stalled, True, False, "idle", 0),
+        (stalled, False, True, d.BACKFILL_STALLED, 0),
+        (stalled, True, True, d.BACKFILL_STALLED, 0),
+        (replace(stalled, consecutive_failures=2), False, False, "paused", 3),
+        (replace(stalled, consecutive_failures=2), False, True, d.BACKFILL_STALLED, 2),
+        (ScanState(), False, True, d.BACKFILL_STALLED, 0),
+    ]
+    for st, refusal, progressed, status, fails in table:
+        s = d.scan_after_failure(st, refusal, NOW, error="RuntimeError('OF 429 twice')", progressed=progressed)
+        assert (s.current_status, s.consecutive_failures, s.last_error) == (status, fails, "RuntimeError('OF 429 twice')"), \
+            (refusal, progressed, s)
+        assert s.backfill_stalls == st.backfill_stalls and d.walk_started(s) == d.walk_started(st), s
+    from tx_ingest_admin_api import _tx_ingest_tier
+    assert _tx_ingest_tier(5.0, d.scan_after_failure(ScanState(), False, NOW, error="x", progressed=True)
+                           .current_status) != "green", "a failed tick never reads green"
+
+
+def case_a_walk_stalled_three_ticks_running_is_given_up():
+    """F4 (C6): _BACKFILL_MAX_STALLS stops in a row (no tick cap or completion between) give
+    the walk up: the account back on recent / full walks. N1c: given up reads
+    BACKFILL_GIVEN_UP, never green, its reason kept by every later tick (a failure between
+    too), until trigger_backfill queues a new walk."""
+    from tx_ingest_admin_api import _tx_ingest_tier
+    t = NOW - timedelta(days=3)
+
+    def run(state, mode="backfill", stop=None, floor=False):
+        return d.scan_after_success(state, mode=mode, inserted=0, patched=0, last_marker=None, rows_min=None,
+                                    rows_max=None, floor_reached=floor, now=NOW, stop_reason=stop)
+
+    def after(*a, **kw):
+        return run(*a, **kw).state
+    s = ScanState(oldest_seen_occurred_at=t, newest_seen_occurred_at=t)
+    seen = []
+    for stop in ("marker_not_decreasing", "marker_not_decreasing", "marker_not_decreasing"):
+        r = run(s, stop=stop)
+        s = r.state
+        seen.append((s.current_status, s.backfill_stalls, s.fully_backfilled, r.outcome))
+    assert seen == [("backfill_stalled", 1, False, None), ("backfill_stalled", 2, False, None),
+                    (d.BACKFILL_GIVEN_UP, 3, True, "given_up")], seen
+    reason = "backfill_stopped: marker_not_decreasing"
+    assert s.last_error == reason, s
+    assert d.decide_mode(replace(s, last_full_at=NOW), now=NOW) == "recent"
+    assert _tx_ingest_tier(5.0, s.current_status) != "green", "a given-up walk never reads green"
+    # Later ticks keep it (N1c regression: a recent tick used to wipe it to ok / None).
+    failed = d.scan_after_failure(s, False, NOW, error="RuntimeError('OF 500')")
+    table = [
+        # (state before, mode, want last_error)
+        (s, "recent", reason),
+        (s, "refresh", reason),
+        (after(s, mode="recent", floor=True), "recent", reason),
+        (failed, "recent", "backfill_stopped: given_up"),
+    ]
+    for st, mode, err in table:
+        r = run(st, mode=mode, floor=True)
+        assert (r.state.current_status, r.state.last_error, r.state.backfill_stalls, r.state.fully_backfilled,
+                r.outcome) == (d.BACKFILL_GIVEN_UP, err, 3, True, None), (mode, r)
+    assert failed.last_error != reason, "the failure overwrote it: the next success says given_up"
+    q = d.scan_backfill_queued(s, t)
+    assert (q.backfill_stalls, q.current_status, q.fully_backfilled) == (0, "idle", False), q
+    assert after(q, stop="tick_cap").current_status == "backfill_partial", "a new walk starts over"
+    # The tick cap or a completion between resets the count; a refresh between keeps it.
+    s = after(after(ScanState(oldest_seen_occurred_at=t), stop="empty_page"), stop="empty_page")
+    assert (s.backfill_stalls, s.fully_backfilled) == (2, False), s
+    kept = after(replace(s, current_status="refreshing"), mode="refresh", floor=True)
+    assert (kept.backfill_stalls, kept.current_status, kept.last_error) == (2, "backfill_stalled", s.last_error), kept
+    assert after(kept, stop="empty_page").fully_backfilled, "the third stop, a refresh between"
+    capped = after(s, stop="tick_cap")
+    assert (capped.backfill_stalls, capped.current_status, capped.last_error) == (0, "backfill_partial", None), capped
+    assert not after(capped, stop="empty_page").fully_backfilled
+    done = after(s, stop="last_page", floor=True)
+    assert (done.backfill_stalls, done.fully_backfilled, done.last_error) == (0, True, None), done
+
+
+def case_a_moving_walk_that_stops_each_tick_is_never_given_up():
+    """N2c: a stop after the cursor moved down (`advanced`) starts the count over at itself;
+    only stops with the cursor where it was run it up to the give-up."""
+    table = [
+        # (stalls before, stalled, advanced, want stalls)
+        (0, False, False, 0),
+        (2, False, False, 0),     # tick cap / completion
+        (2, False, True, 0),
+        (0, True, False, 1),
+        (2, True, False, 3),      # the give-up
+        (2, True, True, 1),       # stopped, but the cursor moved: counts itself only
+    ]
+    for before, stalled, advanced, want in table:
+        assert d.stall_count(before, stalled=stalled, advanced=advanced) == want, (before, stalled, advanced)
+    t = NOW - timedelta(days=3)
+    s = ScanState(oldest_seen_occurred_at=t, newest_seen_occurred_at=t)
+    for i in range(6):     # walked pages, then stopped: six ticks, never given up
+        r = d.scan_after_success(s, mode="backfill", inserted=0, patched=0, last_marker=None, rows_min=None,
+                                 rows_max=None, floor_reached=False, now=NOW,
+                                 stop_reason=("empty_page", "no_next_marker", "no_has_more")[i % 3], advanced=True)
+        s = r.state
+        assert (s.backfill_stalls, s.fully_backfilled, s.current_status, r.outcome) == (
+            1, False, d.BACKFILL_STALLED, None), (i, r)
+        assert d.walk_started(s) and d.decide_mode(replace(s, last_full_at=NOW), now=NOW) == "backfill", s
+    stuck = []     # then two stops with the cursor where it was: the give-up
+    for _ in range(2):
+        s = d.scan_after_success(s, mode="backfill", inserted=0, patched=0, last_marker=None, rows_min=None,
+                                 rows_max=None, floor_reached=False, now=NOW, stop_reason="empty_page").state
+        stuck.append(s.backfill_stalls)
+    assert stuck == [2, 3] and s.current_status == d.BACKFILL_GIVEN_UP, (stuck, s)
+
+
+def case_scan_after_success_names_its_outcome():
+    """N1s: the outcome is scan_after_success's own answer, not a before/after compare:
+    a manual backfill tick on a finished account cut by the tick cap is no give-up."""
+    t = NOW - timedelta(days=3)
+    walking = ScanState(oldest_seen_occurred_at=t, newest_seen_occurred_at=t)
+    done = ScanState(fully_backfilled=True, oldest_seen_occurred_at=t - timedelta(days=80),
+                     newest_seen_occurred_at=t, backfill_floor=t - timedelta(days=80))
+    table = [
+        # (state, mode, stop, floor reached, rows_min, want outcome)
+        (walking, "backfill", "empty_page", False, None, None),
+        (replace(walking, backfill_stalls=2), "backfill", "empty_page", False, None, "given_up"),
+        (replace(walking, backfill_stalls=3), "recent", None, True, None, None),   # given up before
+        (done, "backfill", "tick_cap", False, None, None),      # a backfill tick on a finished account
+        (done, "refresh", None, True, NOW - timedelta(days=1), "gap_queued"),
+    ]
+    for st, mode, stop, floor, rows_min, want in table:
+        r = d.scan_after_success(st, mode=mode, inserted=0, patched=0, last_marker=None, rows_min=rows_min,
+                                 rows_max=NOW if rows_min else None, floor_reached=floor, now=NOW, stop_reason=stop)
+        assert r.outcome == want, (mode, stop, r)
 
 
 def case_marker_of_rounds_up_so_ties_are_re_read():
@@ -375,6 +550,8 @@ def case_backfill_tier_stays_green_between_ticks():
     assert _tx_ingest_tier(5.0, "backfill_partial") == "green"
     assert _tx_ingest_tier(5.0, "backfilling") == "green"
     assert _tx_ingest_tier(5.0, d.BACKFILL_STALLED) == "yellow", "a stopped walk needs a look"
+    assert _tx_ingest_tier(5.0, d.BACKFILL_GIVEN_UP) == "yellow", "a given-up walk too"
+    assert d.BACKFILL_GIVEN_UP not in d.IN_FLIGHT
     assert d.BACKFILL_STALLED not in d.IN_FLIGHT, "between ticks: an in-flight status would skip the next tick"
 
 
@@ -421,9 +598,14 @@ def case_window_and_mode():
         ("walk started, never stamped", ScanState(oldest_seen_occurred_at=NOW), None, phase, "refresh"),
         ("walk not started, full walk due", ScanState(), B - timedelta(seconds=1), phase, "backfill"),
         ("walk stopped on its first page, full walk due",
-         ScanState(last_error="backfill_stopped: blank_first_page"), None, phase, "refresh"),
+         ScanState(backfill_stalls=1, last_error="backfill_stopped: blank_first_page"), None, phase, "refresh"),
         ("walk stopped on its first page, full walk done",
-         ScanState(last_error="backfill_stopped: blank_first_page"), B, phase, "backfill"),
+         ScanState(backfill_stalls=1, last_error="backfill_stopped: blank_first_page"), B, phase, "backfill"),
+        # F2: the stall is its own column; a later failure's last_error never hides it.
+        ("walk stopped, then a tick failed: still started",
+         ScanState(backfill_stalls=1, last_error="RuntimeError('OF 500')"), None, phase, "refresh"),
+        ("stop words in last_error alone decide nothing",
+         ScanState(last_error="backfill_stopped: blank_first_page"), None, phase, "backfill"),
         ("a tick failed before any page: not stopped", ScanState(last_error="OF 500"), None, phase, "backfill"),
         # Unseeded (row from before the column): recent; _decide_mode persists scan_seeded's stamp.
         ("backfilled, never stamped: recent, no deploy herd", done, None, phase, "recent"),
@@ -474,7 +656,7 @@ def _full_ticks(aid: str, tick_s: float, hours: float, t0: datetime,
     ph = d.full_phase_s(aid)
     for n in range(int(hours * 3600 / tick_s)):
         now = t0 + timedelta(seconds=n * tick_s)
-        st = d.scan_seeded(st, now)
+        st = d.scan_seeded(st, now, phase_s=ph)
         if d.decide_mode(st, now=now, phase_s=ph) == "refresh":
             out.append(n)
             st = replace(st, last_full_at=now)
@@ -544,8 +726,8 @@ def case_full_watermark_seed_failure_and_rollback():
     assert kept.last_full_at == B
     ok = dict(inserted=0, patched=0, last_marker=None, rows_min=None, rows_max=None, now=NOW)
     assert d.scan_after_success(replace(done, last_full_at=B), mode="recent", floor_reached=True,
-                                **ok).last_full_at == B
-    assert d.scan_after_success(done, mode="refresh", floor_reached=False, full_at=at, **ok).last_full_at == at
+                                **ok).state.last_full_at == B
+    assert d.scan_after_success(done, mode="refresh", floor_reached=False, full_at=at, **ok).state.last_full_at == at
     assert d.decide_mode(f, now=NOW, phase_s=ph) == "recent", "a failed full walk re-walks in its period"
     # Clock stepped back below the watermark: one refresh, which re-stamps it, then recent.
     future = replace(done, last_full_at=NOW + timedelta(hours=3))
@@ -566,6 +748,47 @@ def case_full_watermark_seed_failure_and_rollback():
         assert bool(first) == crossed, (aid, first, crossed)
         due, not_due = due + crossed, not_due + (not crossed)
     assert due and not_due and due < len(FLEET) // 2, (due, not_due)
+
+
+def case_the_boot_after_an_outage_is_no_full_walk_herd():
+    """F5 (C5): a watermark two or more periods behind (the relay was down) is re-seeded, so
+    each account walks full at its own next phase boundary, not all on the boot's tick."""
+    full, ph = d._DEFAULT_FULL_EVERY_S, 437
+    done = ScanState(fully_backfilled=True)
+    B = NOW - timedelta(seconds=ph)             # start of the current period (see case_window_and_mode)
+    table = [
+        # (watermark, want seeded)
+        (B - timedelta(seconds=1), False),                  # the previous period: its first tick walks
+        (B - timedelta(seconds=full), False),              # the previous period's start
+        (B - timedelta(seconds=full + 1), True),           # two periods back
+        (NOW - timedelta(hours=26), True),
+        (B, False),
+        (NOW + timedelta(hours=3), False),                  # clock stepped back: decide_mode re-stamps it
+    ]
+    for last, seeded in table:
+        st = replace(done, last_full_at=last)
+        got = d.scan_seeded(st, NOW, full_every_s=full, phase_s=ph)
+        assert (got.last_full_at == NOW) == seeded and (got is st) == (not seeded), (last, got)
+    # N3c: a walk under way (cursor, or a stop) is re-seeded the same; one not started, or
+    # unseeded, keeps what decide_mode makes of it (backfill first; its first refresh).
+    stale = NOW - timedelta(hours=26)
+    for st, seeded in [(ScanState(oldest_seen_occurred_at=NOW, last_full_at=stale), True),
+                       (ScanState(backfill_stalls=1, last_full_at=stale), True),
+                       (ScanState(oldest_seen_occurred_at=NOW, last_full_at=B - timedelta(seconds=1)), False),
+                       (ScanState(oldest_seen_occurred_at=NOW), False),
+                       (ScanState(last_full_at=stale), False)]:
+        got = d.scan_seeded(st, NOW, full_every_s=full, phase_s=ph)
+        assert (got.last_full_at == NOW) == seeded and (got is st) == (not seeded), (st, got)
+        if seeded:
+            assert d.decide_mode(got, now=NOW, full_every_s=full, phase_s=ph) == "backfill", got
+    # A 26 h outage, the whole fleet stale: spread over the period, none at the boot.
+    t0 = NOW + timedelta(seconds=123)
+    first = Counter()
+    for aid in FLEET:
+        fulls = _full_ticks(aid, 900, 4, t0, last=t0 - timedelta(hours=26))
+        assert fulls and 1 <= fulls[0] <= 8, (aid, fulls[:3])
+        first[fulls[0]] += 1
+    assert max(first.values()) <= 16, first
 
 
 # ── the write path ──────────────────────────────────────────────────
@@ -597,24 +820,24 @@ async def case_a_page_is_one_ledger_txn_with_its_lifetime():
     rows = [row(f"q{i}" if i % 2 else 7_700_000_000 + i, amount=1.0 + i, at=NOW - timedelta(minutes=i))
             for i in range(5)]
     _ledger_txns()
-    assert await ti._write_page(aid, rows) == (5, 0)
+    assert await ti.write_page(aid, rows) == (5, 0)
     assert _ledger_txns() == 1, "a page must be ONE write transaction"
     assert await _lifetime(aid) == 100 + 200 + 300 + 400 + 500
     # A quiet re-poll of the same page: no write transaction at all.
-    assert await ti._write_page(aid, rows) == (0, 5)
+    assert await ti.write_page(aid, rows) == (0, 5)
     assert _ledger_txns() == 0, "a re-poll with every field equal must take no write lock"
     # A chargeback of one row: its lifetime delta commits with the row.
     rows[2] = row(7_700_000_002, amount=3.0, status="undo", at=NOW - timedelta(minutes=2))
-    assert await ti._write_page(aid, rows) == (0, 5)
+    assert await ti.write_page(aid, rows) == (0, 5)
     assert _ledger_txns() == 1
     assert await _lifetime(aid) == 1500 - 300
     # OF calls it `done` again (dispute lost): the amount comes back with the row.
     rows[2] = row(7_700_000_002, amount=3.0, status="done", at=NOW - timedelta(minutes=2))
-    assert await ti._write_page(aid, rows) == (0, 5)
+    assert await ti.write_page(aid, rows) == (0, 5)
     assert _ledger_txns() == 1
     assert await _lifetime(aid) == 1500
     rows[2] = row(7_700_000_002, amount=3.0, status="undo", at=NOW - timedelta(minutes=2))
-    assert await ti._write_page(aid, rows) == (0, 5)
+    assert await ti.write_page(aid, rows) == (0, 5)
     _ledger_txns()
     assert await _lifetime(aid) == 1500 - 300
     # A lone row with nothing to write (re-poll, or no provider id): no write transaction.
@@ -630,7 +853,7 @@ async def case_a_bad_row_falls_back_row_by_row():
     bad = row("b1", amount=1e18)   # cents overflow SQLite's INTEGER: this row alone fails
     rows = [row("g1", amount=2.0), bad, row("g2", amount=3.0)]
     _ledger_txns()
-    assert await ti._write_page(aid, rows) == (2, 0)
+    assert await ti.write_page(aid, rows) == (2, 0)
     assert _ledger_txns() == 1 + 3, "the failed page, then one transaction per row"
     assert await _lifetime(aid) == 500
 
@@ -652,7 +875,7 @@ async def case_a_lock_timeout_is_not_retried_row_by_row():
     ti._ingest_rows, ti._write_one = locked, one_row
     try:
         try:
-            await ti._write_page("tx_decide_3", [row("l1"), row("l2")])
+            await ti.write_page("tx_decide_3", [row("l1"), row("l2")])
         except sqlalchemy.exc.OperationalError:
             pass
         else:
@@ -679,7 +902,7 @@ async def case_an_after_commit_failure_spares_the_other_rows():
     real = events.announce_transaction
     events.announce_transaction = announce
     try:
-        assert await ti._write_page(aid, [row("a1"), row("a2", what="Tip on post from Bob")]) == (2, 0)
+        assert await ti.write_page(aid, [row("a1"), row("a2", what="Tip on post from Bob")]) == (2, 0)
     finally:
         events.announce_transaction = real
     assert announced == ["tip", "tip_post"], "the second row's announce still runs"

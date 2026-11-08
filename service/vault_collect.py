@@ -4,7 +4,8 @@ One Creator at a time, never while someone is using it, at most one OF API call
 per VAULT_COLLECT_GAP_S. Each walk, recorded as one `vault_cache_runs` row:
 
   auto:hot        (a) the folder list, paged exactly as the picker asks (50/page)
-                  (b) page 0 of every dropdown folder (custom + hasMedia; limit 24)
+                  (b) page 0 of every dropdown folder (custom + hasMedia; limit 24;
+                      one failing folder is logged and skipped, never the walk)
                   (c) All's page 0 and its prefetch page (offset 24)
                   — each written to vault_cache under the picker route's own key
                   AND upserted into the vault_items mirror (no run id).
@@ -13,9 +14,14 @@ per VAULT_COLLECT_GAP_S. Each walk, recorded as one `vault_cache_runs` row:
                   full walk (manual Collect, or an auto:done with pages_done > 0)
                   finished within FULL_S — so `complete` is re-earned weekly and
                   items beyond the hot pages reach the mirror at least weekly.
+                  Stopped at WALK_MAX_PAGES with OF still saying hasMore, the run
+                  goes on as auto:thumbs:capped and ends done with an error naming
+                  the cap: never `complete`, but it schedules like a full walk (no
+                  re-walk from 0 every STALE_S).
   auto:thumbs     (e) the newest 100 mirror items' thumbs into vault_stills'
-                  permanent store (thumb only; CDN fetches, not GAP-paced).
-  auto:done       finished; `finished_at` dates it for staleness.
+                  permanent store (thumb only; CDN fetches, not GAP-paced; best effort).
+  auto:done       finished; `finished_at` dates it for staleness. Each new run
+                  prunes the account's older auto rows (vault_runs.prune_auto_runs).
 
 Deletions stay lazy: nothing here removes mirror rows. A media OF has deleted is
 stamped `removed_at` when a still request for it 404s on re-sign
@@ -23,16 +29,23 @@ stamped `removed_at` when a still request for it 404s on re-sign
 
 Picking (one per tick): an unfinished `auto:*` run (resume) → an account with no
 auto run → the stalest done run older than STALE_S, or an errored run past its
-1 h backoff (after MAX_ATTEMPTS errors in a row the run is abandoned and a fresh
-walk, hot set first, starts). Skipped while a manual Collect holds it
-(vault_ai_api._running) or a user-priority request hit its lane within
-USER_QUIET_S — unless that has kept it waiting MAX_SKIP_S, then it walks anyway.
+1 h backoff (resumed at its cursor; the backoff is the only retry bound — a dead
+session drops out of `_live_accounts`). Skipped while a manual Collect holds it
+(vault_runs.manual_running) or a user-priority request hit its lane within
+USER_QUIET_S — unless that has kept it waiting MAX_SKIP_S, then it walks anyway (the
+wait counts from the first skip or yield to a person until a walk ends other than by
+yielding to one, or `preempt` is asked: manual Collect / proxy switch).
 
-The collector's own `_auto_running` is never vault_ai_api._running: the Collect
-button must not 409 behind it. A manual Collect preempts instead (`preempt`):
-the walk stops at its next OF call or sleep, marks its run `error: preempted`
-(cursor kept) and lets go within one gap. Dead-session / OTP / deactivated
-accounts are not candidates. Not reused: vault_ai_api's Collect (it also warms
+Interruptions are not errors. The walk stops at its next OF call, sleep or thumb
+when a manual Collect starts (`preempt`; the collector's own `_auto_running` is
+never vault_runs.manual_running, so the button never 409s behind it), when a
+person uses the account mid-walk (USER_QUIET_S, unless this walk was the
+MAX_SKIP_S one) or when the account's proxy changes (`preempt` from
+server._on_proxy_switched: the walk's client is bound to the old IP). Its row
+stays `running` at its cursor, so it is resumed first once the account is free,
+with a fresh client. Dead-session / OTP / deactivated accounts are not
+candidates. Every OF call runs inside an of_pacing walk (the Creator's shared
+pacer, one retry on OF's 429). Not reused: vault_ai_api's Collect (it also warms
 full images, posters and storyboards, and sleeps 0.15 s between pages).
 
 Env knobs (read at import):
@@ -51,7 +64,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -60,11 +72,12 @@ from sqlalchemy import select
 
 import accounts as account_registry
 import automation_executor as ax
+import of_pacing
 import relay_host
-import vault_ai_api
 import vault_cache
 import vault_frames
 import vault_mirror
+import vault_runs
 import vault_stills
 from account_health import dead_session_map, deactivated_ids
 from db.engine import get_session
@@ -92,7 +105,6 @@ USER_QUIET_S = _env("VAULT_COLLECT_USER_QUIET_S", 120)
 MAX_SKIP_S = _env("VAULT_COLLECT_MAX_SKIP_S", 1800)
 THUMB_CONCURRENCY = max(1, int(_env("VAULT_COLLECT_THUMB_CONCURRENCY", 2)))
 ERROR_BACKOFF_S = 3600
-MAX_ATTEMPTS = 3          # consecutive errors on one run before a fresh walk
 PREEMPT_WAIT_S = 10
 THUMB_GAP_S = 0.5
 
@@ -105,11 +117,12 @@ HOT_THUMBS = 100
 
 P_HOT, P_THUMBS, P_DONE = "auto:hot", "auto:thumbs", "auto:done"
 P_ALL = "auto:all:"
+P_CAPPED = P_THUMBS + ":capped"   # thumbs after a walk the page cap stopped; survives a pause / error
 
 _walk_lock = asyncio.Lock()           # never two accounts at once
 _auto_running: set[str] = set()        # the account being walked (≤1)
 _abort: dict[str, asyncio.Event] = {}  # aid → set by `preempt`
-_skipped_since: dict[str, float] = {}  # aid → monotonic() of its first skip in a row
+_skipped_since: dict[str, float] = {}  # aid → monotonic() of its first skip / yield; cleared when a walk ends any other way or on `preempt`
 _last_call_end = 0.0                   # monotonic() when the last OF call returned
 
 
@@ -120,7 +133,7 @@ def _lane(aid: str):
 
 
 def _user_active_at(aid: str) -> float | None:
-    return relay_host.last_user_activity_at(aid)
+    return of_pacing.last_user_at(aid)
 
 
 async def _live_accounts() -> list[str]:
@@ -135,16 +148,30 @@ async def _live_accounts() -> list[str]:
     return [a for a in live if a not in dead and a not in off]
 
 
-# ── preemption (manual Collect wins) ──────────────────────────────────
+# ── preemption (manual Collect, a person, a proxy change) ─────────────
 
 class Preempted(Exception):
-    pass
+    """The walk was interrupted, not failed: its row stays `running` at its cursor."""
+
+
+def _person_first(aid: str) -> bool:
+    """A person used `aid` within USER_QUIET_S and has not yet been kept waiting
+    MAX_SKIP_S: the collector skips the account / its walk yields. The streak
+    (first skip or yield) survives yields to a person and ends when a walk finishes,
+    errors, or on any `preempt` (manual Collect / proxy switch), so a bursty person who is quiet at every pick
+    but back mid-walk cannot starve the account forever."""
+    active, now = _user_active_at(aid), time.monotonic()
+    if active is None or now - active >= USER_QUIET_S:
+        return False
+    return now - _skipped_since.setdefault(aid, now) < MAX_SKIP_S
 
 
 def _check(aid: str) -> None:
     ev = _abort.get(aid)
-    if (ev is not None and ev.is_set()) or aid in vault_ai_api._running:
+    if (ev is not None and ev.is_set()) or aid in vault_runs.manual_running:
         raise Preempted("preempted")
+    if _person_first(aid):
+        raise Preempted("a person is using the account")
 
 
 async def _sleep(aid: str, seconds: float) -> None:
@@ -159,23 +186,30 @@ async def _sleep(aid: str, seconds: float) -> None:
 
 
 async def preempt(aid: str) -> None:
-    """Ask the walk of `aid` (if any) to stop; wait ≤PREEMPT_WAIT_S for it."""
+    """Ask the walk of `aid` (if any) to stop; wait ≤PREEMPT_WAIT_S for it (an OF
+    call already in flight finishes first). Ends the skip streak: nobody is waiting on it."""
+    _skipped_since.pop(aid, None)
     if aid not in _auto_running:
         return
     _abort.setdefault(aid, asyncio.Event()).set()
     deadline = time.monotonic() + PREEMPT_WAIT_S
     while aid in _auto_running and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
-
-
-vault_ai_api.preempt_auto = preempt
+    if aid in _auto_running:
+        log.warning("vault collect: %s still walking %.0fs after preempt; going ahead",
+                    aid, PREEMPT_WAIT_S)
 
 
 # ── pacing + one OF call ──────────────────────────────────────────────
 
 async def _of_call(aid: str, fn: Callable[..., Any], **kw: Any) -> Any:
     """One OF API call: ≥GAP_S after the previous one returned, on a thread,
-    holding the account's background lane only around the call itself."""
+    holding one of the account's background lane slots, inside an of_pacing walk
+    (the Creator's pacer is shared with every other background walk; OF's 429 gets
+    one retry after the wait it asks for). The pacer's wait and that 429 wait sleep
+    inside OFClient.get_json, so the lane slot is held through them too (the
+    Creator's ~1 s page gap, longer if other walks queue on it; OF's 429 ask).
+    Keeping them out would need a hook in of_pacing; one walk at a time, one slot."""
     global _last_call_end
     await _sleep(aid, _last_call_end + GAP_S - time.monotonic())
 
@@ -183,7 +217,7 @@ async def _of_call(aid: str, fn: Callable[..., Any], **kw: Any) -> Any:
         with _lane(aid):
             return fn(**kw)
     try:
-        return await asyncio.to_thread(_run)
+        return await of_pacing.walk(aid, "vault_collect", lambda: asyncio.to_thread(_run))
     finally:
         _last_call_end = time.monotonic()
 
@@ -195,30 +229,23 @@ async def _latest_auto_run(aid: str) -> VaultCacheRun | None:
         return (await s.execute(
             select(VaultCacheRun)
             .where(VaultCacheRun.account_id == aid,
-                   VaultCacheRun.phase.like(f"{vault_ai_api.AUTO_PHASE_PREFIX}%"))
+                   VaultCacheRun.phase.like(f"{vault_runs.AUTO_PHASE_PREFIX}%"))
             .order_by(VaultCacheRun.started_at.desc(), VaultCacheRun.id.desc())
             .limit(1)
         )).scalar_one_or_none()
 
 
-async def _full_walk_fresh(aid: str) -> bool:
-    """A whole-vault walk finished within FULL_S (vault_ai_api.full_walk_done)."""
+async def _walked_recently(aid: str) -> bool:
+    """A vault walk (or one the page cap stopped) finished within FULL_S."""
     async with get_session() as s:
-        return await vault_ai_api.full_walk_done(
-            s, aid, since=datetime.utcnow() - timedelta(seconds=FULL_S))
-
-
-def _attempts(run: VaultCacheRun) -> int:
-    """Consecutive errors on this run, kept as the error's "[n] " prefix."""
-    m = re.match(r"\[(\d+)\] ", run.error or "")
-    return int(m.group(1)) if m else (1 if run.status == "error" else 0)
+        return await vault_runs.walked_since(s, aid, datetime.utcnow() - timedelta(seconds=FULL_S))
 
 
 # ── picking ───────────────────────────────────────────────────────────
 
 def _due_rank(run: VaultCacheRun | None, now: datetime) -> tuple | None:
     """Sort key for an account that is due, None when it is not."""
-    if run is None:
+    if run is None or run.status == "abandoned":   # "abandoned": a legacy terminal row
         return (1, datetime.min)
     if run.status == "running":
         return (0, run.started_at or datetime.min)   # interrupted walk: resume first
@@ -231,6 +258,7 @@ def _due_rank(run: VaultCacheRun | None, now: datetime) -> tuple | None:
 
 
 async def _pick() -> tuple[str, VaultCacheRun | None] | None:
+    """(account, its latest auto run) of the most due account no person comes first on."""
     now = datetime.utcnow()
     due: list[tuple[tuple, str, VaultCacheRun | None]] = []
     for aid in await _live_accounts():
@@ -239,19 +267,10 @@ async def _pick() -> tuple[str, VaultCacheRun | None] | None:
         if rank is not None:
             due.append((rank, aid, run))
     due.sort(key=lambda t: t[0])
-    mono = time.monotonic()
     for _, aid, run in due:
-        if aid in vault_ai_api._running:
+        if aid in vault_runs.manual_running or _person_first(aid):
             continue
-        active = _user_active_at(aid)
-        if active is None or mono - active >= USER_QUIET_S:
-            _skipped_since.pop(aid, None)  # quiet: the skip streak is over
-            return aid, run
-        first = _skipped_since.setdefault(aid, mono)
-        if mono - first >= MAX_SKIP_S:
-            log.info("vault collect: %s busy for %.0fs, walking anyway", aid, mono - first)
-            _skipped_since.pop(aid, None)
-            return aid, run
+        return aid, run
     return None
 
 
@@ -264,8 +283,7 @@ async def tick() -> None:
         if picked is None:
             log.debug("vault collect: nothing due")
             return
-        aid, run = picked
-        await walk(aid, run)
+        await walk(*picked)
 
 
 # ── the walk ──────────────────────────────────────────────────────────
@@ -273,14 +291,15 @@ async def tick() -> None:
 async def _media_page(aid: str, client: Any, *, list_id: int | None, offset: int) -> int:
     """One picker page fetched exactly as /api/of/v2/vault/media would, cached
     under that route's key and folded into the mirror. Returns rows upserted."""
+    t0 = datetime.utcnow()
     resp = await _of_call(aid, client.vault_media, limit=PICKER_PAGE, offset=offset,
                           type="all", list_id=list_id, sort="desc", field="recent",
                           query=None, before_publish_date=None)
     key = vault_cache.vault_media_cache_key(type="all", list_id=list_id, offset=offset,
                                             limit=PICKER_PAGE, sort="desc", field="recent",
                                             q_norm="")
-    await vault_cache.put(aid, key, resp)
-    written, _ = await vault_ai_api._upsert_page(aid, (resp or {}).get("list") or [], folder_id=list_id)
+    await vault_cache.put(aid, key, resp, started_at=t0)
+    written, _ = await vault_runs.upsert_page(aid, (resp or {}).get("list") or [], folder_id=list_id)
     return len(written)
 
 
@@ -288,10 +307,11 @@ async def _hot(aid: str, client: Any) -> int:
     folders: list[dict] = []
     offset = 0
     for _ in range(LISTS_MAX_PAGES):
+        t0 = datetime.utcnow()
         resp = await _of_call(aid, client.vault_lists, view="main", limit=LISTS_PAGE,
                               offset=offset, query=None)
         await vault_cache.put(aid, vault_cache.vault_lists_cache_key(
-            view="main", limit=LISTS_PAGE, offset=offset), resp)
+            view="main", limit=LISTS_PAGE, offset=offset), resp, started_at=t0)
         rows = (resp or {}).get("list") or []
         folders.extend(r for r in rows if isinstance(r, dict))
         if not (resp or {}).get("hasMore") or not rows:
@@ -300,7 +320,12 @@ async def _hot(aid: str, client: Any) -> int:
     n = 0
     for f in folders:  # the picker's dropdown: custom folders that have media
         if f.get("type") == "custom" and f.get("hasMedia") and f.get("id") is not None:
-            n += await _media_page(aid, client, list_id=f["id"], offset=0)
+            try:
+                n += await _media_page(aid, client, list_id=f["id"], offset=0)
+            except Preempted:
+                raise
+            except Exception as e:  # noqa: BLE001 — one bad folder must not cost the full walk
+                log.warning("vault collect: folder %s page failed account=%s: %s", f["id"], aid, e)
     for off in (0, PICKER_PAGE):  # All: first page + the prefetched second
         n += await _media_page(aid, client, list_id=None, offset=off)
     return n
@@ -338,76 +363,94 @@ async def _thumbs(aid: str, client: Any) -> None:
                 vault_stills.write(path, data)
             await _sleep(aid, THUMB_GAP_S)
 
-    await asyncio.gather(*(_worker() for _ in range(min(THUMB_CONCURRENCY, len(todo)))))
+    workers = [asyncio.create_task(_worker()) for _ in range(min(THUMB_CONCURRENCY, len(todo)))]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        # One worker's Preempted (or error) stops its siblings too: `walk` drops the
+        # abort flag on exit, so a sibling left running would fetch on unchecked.
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 async def walk(aid: str, run: VaultCacheRun | None = None) -> None:
-    """Walk one account, resuming `run` if it is unfinished. Never raises."""
-    if aid in vault_ai_api._running:   # a manual Collect got there first
+    """Walk one account, resuming `run` if it is unfinished. Never raises. Stops
+    (cursor kept) when a person comes first (`_person_first`), a manual Collect
+    starts or the proxy switches (`preempt`)."""
+    if aid in vault_runs.manual_running:   # a manual Collect got there first
         return
     _auto_running.add(aid)
     _abort[aid] = asyncio.Event()
     run_id: int | None = None
-    attempts = 0
     try:
-        if run is not None and run.status == "error" and _attempts(run) >= MAX_ATTEMPTS:
-            await vault_ai_api._update_run(run.id, status="abandoned")
-            run = None
-        if run is None or run.status == "done":
+        if run is None or run.status not in ("running", "error"):
             async with get_session() as s:
                 row = VaultCacheRun(account_id=aid, status="running", phase=P_HOT)
                 s.add(row)
+                await s.flush()
+                await vault_runs.prune_auto_runs(s, aid)
                 await s.commit()
                 run_id, phase = row.id, P_HOT
                 pages, seen, upserted = 0, 0, 0
         else:
             run_id, phase = run.id, run.phase or P_HOT
-            attempts = _attempts(run)
             pages, seen, upserted = run.pages_done or 0, run.total_seen or 0, run.upserted or 0
-            # The error stays: its "[n] " prefix is the consecutive-error count.
-            await vault_ai_api._update_run(run_id, status="running", finished_at=None)
-            if phase.startswith(P_ALL) and await _full_walk_fresh(aid):
-                phase = P_THUMBS   # e.g. the manual Collect that preempted us walked it
+            await vault_runs.update_run(run_id, status="running", error=None, finished_at=None)
         client = await asyncio.to_thread(ax._make_client, aid)
 
         if phase == P_HOT:
             upserted += await _hot(aid, client)
-            phase = P_THUMBS if await _full_walk_fresh(aid) else f"{P_ALL}0"
-            await vault_ai_api._update_run(run_id, phase=phase, upserted=upserted)
+            phase = f"{P_ALL}0"
+            await vault_runs.update_run(run_id, phase=phase, upserted=upserted)
+
+        if phase.startswith(P_ALL) and await _walked_recently(aid):
+            # Another walk is fresh (e.g. the manual Collect that preempted us). This row
+            # did not finish All: pages_done 0 keeps it out of vault_runs._walked (`complete`).
+            phase, pages = P_THUMBS, 0
+            await vault_runs.update_run(run_id, phase=phase, pages_done=0)
 
         if phase.startswith(P_ALL):
             offset = int(phase[len(P_ALL):] or 0)
+            more = True
             while pages < WALK_MAX_PAGES:
                 resp = await _of_call(aid, client.vault_media, limit=WALK_PAGE, offset=offset,
                                       type="all", sort="asc")
                 items = (resp or {}).get("list") or []
-                n = len((await vault_ai_api._upsert_page(aid, items))[0])
+                n = len((await vault_runs.upsert_page(aid, items))[0])
                 seen += len(items)
                 upserted += n
                 pages += 1
                 offset += WALK_PAGE
                 more = bool(items) and bool((resp or {}).get("hasMore"))
                 phase = f"{P_ALL}{offset}" if more else P_THUMBS
-                await vault_ai_api._update_run(run_id, phase=phase, pages_done=pages, total_seen=seen,
-                              upserted=upserted)
+                await vault_runs.update_run(run_id, phase=phase, pages_done=pages, total_seen=seen,
+                                            upserted=upserted)
                 if not more:
                     break
-            phase = P_THUMBS
-            await vault_ai_api._update_run(run_id, phase=phase)
+            if more:   # the backstop, not the end of the vault: not a full walk
+                log.warning("vault collect: walk capped at %s pages account=%s", WALK_MAX_PAGES, aid)
+            phase = P_CAPPED if more else P_THUMBS
+            await vault_runs.update_run(run_id, phase=phase)
 
-        if phase == P_THUMBS:
+        if phase.startswith(P_THUMBS):
             await _thumbs(aid, client)
 
-        await vault_ai_api._update_run(run_id, status="done", phase=P_DONE, error=None,
-                                       finished_at=datetime.utcnow())
+        capped = vault_runs.capped_error(WALK_MAX_PAGES) if phase == P_CAPPED else None
+        await vault_runs.update_run(run_id, status="done", phase=P_DONE, error=capped,
+                                    finished_at=datetime.utcnow())
+        _skipped_since.pop(aid, None)
         log.info("vault collect done account=%s run=%s pages=%s upserted=%s",
                  aid, run_id, pages, upserted)
+    except Preempted as e:   # not an error: the row stays running at its cursor
+        log.info("vault collect paused account=%s run=%s: %s", aid, run_id, e)
     except Exception as e:  # noqa: BLE001 — a dead session must not kill the periodic
         log.warning("vault collect stopped account=%s run=%s: %s", aid, run_id, e)
+        _skipped_since.pop(aid, None)
         if run_id is not None:
             try:
-                await vault_ai_api._update_run(run_id, status="error", error=f"[{attempts + 1}] {e}"[:500],
-                              finished_at=datetime.utcnow())
+                await vault_runs.update_run(run_id, status="error", error=str(e)[:500],
+                                            finished_at=datetime.utcnow())
             except Exception:  # noqa: BLE001
                 pass
     finally:

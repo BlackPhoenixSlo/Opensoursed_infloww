@@ -1,22 +1,26 @@
+import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  attributionSince, bundlePath, classify, outcome, prefetchScreen, resetScreenBundles, screenJoin, screenKey, screenRead,
-  setScreen, type Read, type Screen,
+  attributionSince, classify, outcome, prefetchScreen, resetScreenBundles, screenJoin, screenRead, useScreen, type Read,
 } from "./screenBundle";
+import { bundlePath, screenKey, type Screen } from "./screenKey";
 
 const CHAT: Screen = { kind: "chat", accountId: "A1", fanId: "42", lacks: ["savedReplies"] };
 const CK = "chat|A1|42|savedReplies";
-const BODY = {
+const FIELDS = {
   seed: { messages: [{ id: 9 }] }, fan: { fan_id: 42 }, attribution: { by_msg_id: { 5: { e: 1 }, 9: { e: 2 } } },
-  fanHistory: { by_media: {} }, scheduledSends: { list: [] }, savedReplies: { list: [] }, thumbs: [], errors: [],
+  fanHistory: { by_media: {} }, scheduledSends: { list: [] }, savedReplies: { list: [] },
 };
+const answer = (read: string, body: unknown) => ({ accountId: read === "scheduledSends" ? "A1" : null, read, body });
+const BODY = { answers: Object.entries(FIELDS).map(([k, v]) => answer(k, v)), thumbs: [], asOf: 1 };
+const without = (read: string) => BODY.answers.filter((a) => a.read !== read);
 
-afterEach(() => resetScreenBundles());
+afterEach(() => { cleanup(); resetScreenBundles(); });
 
 describe("chat classify", () => {
   it.each<[string, string, string | null, Partial<Read> | null]>([
-    ["seed page", "/admin/messages/A1/42?limit=30", null, { field: "seed", bundle: CK, starter: false }],
+    ["seed page", "/admin/messages/A1/42?limit=30", null, { field: "seed", bundle: CHAT, starter: false }],
     ["an older seed page", "/admin/messages/A1/42?limit=30&before_id=9", null, null],
     ["another limit", "/admin/messages/A1/42?limit=50", null, null],
     ["another fan's seed", "/admin/messages/A1/43?limit=30", null, null],
@@ -41,27 +45,28 @@ describe("chat classify", () => {
 
   it("key and path", () => {
     expect(screenKey(CHAT)).toBe(CK);
-    expect(bundlePath(CK)).toBe("/admin/screens/chat?account=A1&fan=42&lacks=savedReplies");
-    expect(bundlePath("chat|A1|42|")).toBe("/admin/screens/chat?account=A1&fan=42");
+    expect(bundlePath(CHAT)).toBe("/admin/screens/chat?account=A1&fan=42&lacks=savedReplies");
+    expect(bundlePath({ ...CHAT, lacks: [] })).toBe("/admin/screens/chat?account=A1&fan=42");
   });
 });
 
 describe("chat outcome", () => {
   const read = (field: Read["field"], extra: Partial<Read> = {}): Read =>
-    ({ field, accountId: null, starter: false, bundle: CK, ...extra });
+    ({ field, accountId: null, starter: false, bundle: CHAT, ...extra });
   it("each field is its route's body", () => {
-    expect(outcome(BODY, read("seed"))).toEqual({ kind: "body", body: BODY.seed });
-    expect(outcome(BODY, read("scheduledSends", { accountId: "A1" }))).toEqual({ kind: "body", body: BODY.scheduledSends });
+    expect(outcome(BODY, read("seed"))).toEqual({ kind: "body", body: FIELDS.seed });
+    expect(outcome(BODY, read("scheduledSends", { accountId: "A1" }))).toEqual({ kind: "body", body: FIELDS.scheduledSends });
+    expect(outcome(BODY, read("scheduledSends"))).toEqual({ kind: "miss" });   // the X-Account-Id must match
     expect(outcome(BODY, read("sensitiveWords"))).toEqual({ kind: "miss" });
   });
   it("attribution since: derived from the bare rows", () => {
     expect(outcome(BODY, read("attribution", { since: 6 }))).toEqual({ kind: "body", body: { by_msg_id: { 9: { e: 2 } } } });
   });
   it("an error is the route's; a late read is a miss (no follow-up)", async () => {
-    const err = { ...BODY, fan: undefined, errors: [{ accountId: null, read: "fan", status: 404, detail: "nope" }] };
+    const err = { answers: [...without("fan"), { accountId: null, read: "fan", status: 404, detail: "nope" }] };
     expect(outcome(err, read("fan"))).toEqual({ kind: "error", status: 404, detail: "nope" });
-    setScreen(CHAT);
-    const late = { ...BODY, seed: undefined, errors: [{ accountId: null, read: "seed", status: 504, detail: { upstream_status: "bundle_deadline" } }] };
+    renderHook(() => useScreen(CHAT));
+    const late = { answers: [...without("seed"), { accountId: null, read: "seed", status: 504, detail: { upstream_status: "bundle_deadline" } }] };
     const get = vi.fn(async () => late);
     prefetchScreen(CHAT, get);
     expect(await screenJoin(screenRead("/admin/messages/A1/42?limit=30", null)!, get)).toEqual({ kind: "miss" });

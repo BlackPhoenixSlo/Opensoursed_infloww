@@ -71,6 +71,7 @@ import time
 from collections import Counter
 
 from slop.lib.client import Http, label
+from slop.lib.screen_bundle import bundle_view, late_reads
 from slop.lib.screens_faults import C_NO_SKIP, C_PRIORITY, C_SCOPE, C_SLOW
 from slop.seed import chatters as chatters_seed
 from slop.seed import of_sessions
@@ -125,11 +126,20 @@ C_WIRE = "lib/of_wire.py saw only signed calls it models"
 C_BUDGET = "light-stage bundle p95 within BUDGET_MS"
 
 
+DASH_READS = ("profile", "subscriberCounts", "newFans")
+
+
+def _creators(body: dict) -> set[str]:
+    """The Creators a Dashboard bundle answered (a value or an error per read; not a refused `*`)."""
+    return ({a for r in DASH_READS for a in body.get(r, {})}
+            | {e["accountId"] for e in body["errors"] if e["accountId"] and e["read"] != "*"})
+
+
 async def _get(http, path: str, **params) -> tuple[int, dict | None, float]:
     t0 = time.perf_counter()
     try:
         r = await http.get(path, params=params)
-        body = r.json() if r.status_code == 200 else None
+        body = bundle_view(r.json()) if r.status_code == 200 else None
         return r.status_code, body, (time.perf_counter() - t0) * 1000
     except Exception:  # noqa: BLE001  transport error: recorded as 599 by the client too
         return 599, None, (time.perf_counter() - t0) * 1000
@@ -138,13 +148,15 @@ async def _get(http, path: str, **params) -> tuple[int, dict | None, float]:
 def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> str | None:
     if status != 200 or body is None:
         return f"status {status}"
-    if not body.get("settings") or not body.get("accounts"):
-        return "no settings/accounts"
-    ids = [c["id"] for c in body["creators"]]
-    if set(ids) != want or len(ids) != len(want):
-        return f"creators {sorted(set(ids) ^ want)[:5]} off"
-    late = {(e["accountId"], e["read"]) for e in body["errors"]
-            if e["status"] == 504 and e["detail"] == {"upstream_status": "bundle_deadline"}}
+    if body["duplicates"]:
+        return f"duplicate answers {body['duplicates'][:3]}"
+    # A chatter's accounts list is /chatter/me/accounts: never in the bundle.
+    if not body.get("settings") or bool(body.get("accounts")) != owner:
+        return "no settings/accounts" if owner else "a chatter got an accounts answer"
+    ids = _creators(body)
+    if ids != want:
+        return f"creators {sorted(ids ^ want)[:5]} off"
+    late = late_reads(body)
     other = [e for e in body["errors"] if (e["accountId"], e["read"]) not in late]
     if other:
         return f"errors {other[:2]}"
@@ -154,32 +166,35 @@ def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> s
     card = PER_MODEL_CARD not in ((body["settings"].get("permissions") or {}).get("denied_cards") or ())
     if card and owner and body.get("perModel") is None and (None, "perModel") not in late:
         return "no perModel"
-    fields = ("profile", "subscriberCounts", "newFans") if card else ("profile",)
-    for c in body["creators"]:
-        if not card and ({"subscriberCounts", "newFans"} & set(c)):
-            return f"creator {c['id']}: hidden card but counts read"
-        missing = [f for f in fields if c.get(f) is None]
-        if c["stale"] != bool(missing) or any((c["id"], f) not in late for f in missing):
-            return f"creator {c['id']} missing {missing} stale={c['stale']}"
-        if c["profile"] is not None and str(c["profile"].get("id")) != c["id"]:
-            return f"creator {c['id']} got profile {c['profile'].get('id')}"
+    fields = DASH_READS if card else ("profile",)
+    answered = {(e["accountId"], e["read"]) for e in body["errors"]}
+    for aid in sorted(ids):
+        if not card and any(aid in body.get(f, {}) or (aid, f) in answered for f in ("subscriberCounts", "newFans")):
+            return f"creator {aid}: hidden card but counts read"
+        missing = [f for f in fields if body.get(f, {}).get(aid) is None]
+        stale = any(a == aid for a, _ in late)
+        if stale != bool(missing) or any((aid, f) not in late for f in missing):
+            return f"creator {aid} missing {missing} stale={stale}"
+        profile = body.get("profile", {}).get(aid)
+        if profile is not None and str(profile.get("id")) != aid:
+            return f"creator {aid} got profile {profile.get('id')}"
     return None
 
 
 def _inbox_problem(status, body, want: set[str], n_chats: dict[str, int], cursor: int, *, cold: bool) -> str | None:
     if status != 200 or body is None:
         return f"status {status}"
-    late = {(e["accountId"], e["read"]) for e in body["errors"]
-            if e["status"] == 504 and e["detail"] == {"upstream_status": "bundle_deadline"}}
+    if body["duplicates"]:
+        return f"duplicate answers {body['duplicates'][:3]}"
+    late = late_reads(body)
     other = [e for e in body["errors"] if (e["accountId"], e["read"]) not in late]
     if other:
         return f"errors {other[:2]}"
     if late and not cold:
         return f"late in a warm round {sorted(map(str, late))[:3]}"
-    if set(body["stale"]) != {a for a, _ in late}:
-        return "stale != late"
+    chats, bells = body.get("chats", {}), body.get("notificationCounts", {})
     for aid in want:
-        page, bell = body["chats"].get(aid), body["notificationCounts"].get(aid)
+        page, bell = chats.get(aid), bells.get(aid)
         if page is None and (aid, "chats") not in late:
             return f"{aid} no page"
         if bell is None and (aid, "notificationCounts") not in late:
@@ -188,9 +203,9 @@ def _inbox_problem(status, body, want: set[str], n_chats: dict[str, int], cursor
             n = n_chats[aid]
             if len(page.get("list") or []) != max(0, min(25, n - cursor)):
                 return f"{aid} page {len(page.get('list') or [])} rows, want {max(0, min(25, n - cursor))}"
-            if body["nextCursorByAccount"].get(aid, "absent") != (cursor + 25 if cursor + 25 < n else None):
-                return f"{aid} next cursor {body['nextCursorByAccount'].get(aid, 'absent')}"
-    extra = (set(body["chats"]) | set(body["notificationCounts"])) - want
+            if page.get("hasMore") != (cursor + 25 < n):
+                return f"{aid} hasMore {page.get('hasMore')}"
+    extra = (set(chats) | set(bells)) - want
     return f"extra Creators {sorted(extra)[:3]}" if extra else None
 
 
@@ -263,7 +278,7 @@ async def run(ctx) -> None:
     n0 = len(fake.calls)
     bad, res = await dash_round("dash-cold", cold=True)
     calls = of_calls_since(n0)
-    stale_cold = sum(c["stale"] for _, b, _ in res if b for c in b["creators"])
+    stale_cold = sum(len({a for a, _ in late_reads(b) if a}) for _, b, _ in res)
     ctx.check(C_DASH_COLD, not bad, bundles=len(res), bad=len(bad), first=bad[:3], stale_creators=stale_cold)
     off = one_per(calls, ("profile", "subscriberCounts", "newFans"))
     ctx.check(C_ONE_DASH, not off, n_off=len(off), off=dict(list(off.items())[:6]), of_calls=len(calls))
@@ -271,7 +286,7 @@ async def run(ctx) -> None:
     for k in range(ROUNDS):
         b, r = await dash_round("dash-warm", cold=True)
         warm_bad += b
-        stale_warm += sum(c["stale"] for _, x, _ in r if x for c in x["creators"])
+        stale_warm += sum(len({a for a, _ in late_reads(x) if a}) for _, x, _ in r)
     ctx.check(C_DASH_WARM, not warm_bad, rounds=ROUNDS, bundles=ROUNDS * len(clients), bad=len(warm_bad),
               first=warm_bad[:3], stale_creators=stale_warm, creators_listed=ROUNDS * sum(len(w) for _, w, _ in clients))
     light_bad = []
@@ -294,16 +309,14 @@ async def run(ctx) -> None:
         if st != 200 or body is None:
             leaks.append(f"{name} status {st}")
             continue
-        got = ([c["id"] for c in body["creators"] if any(c.get(f) is not None for f in
-                                                          ("profile", "subscriberCounts", "newFans"))]
-               if name == "dashboard" else sorted(set(body["chats"]) | set(body["notificationCounts"])))
+        got = (sorted({a for f in DASH_READS for a, x in body.get(f, {}).items() if x is not None})
+               if name == "dashboard" else sorted(set(body.get("chats", {})) | set(body.get("notificationCounts", {}))))
         if got:
             leaks.append(f"{name} values for {got[:3]}")
         refused = {e["accountId"] for e in body["errors"] if e["status"] == 404 and e["read"] == "*"}
         if refused != set(others):
             leaks.append(f"{name} 404s {sorted(refused)[:3]} != asked")
-    own_lists = [sorted(c["id"] for c in b["creators"]) for (_, b, _), (h, _, owner) in zip(res, clients)
-                 if not owner and b]
+    own_lists = [sorted(_creators(b)) for (_, b, _), (h, _, owner) in zip(res, clients) if not owner and b]
     if any(set(x) - set(aids) for x in own_lists):
         leaks.append("a chatter bundle listed a Creator outside the Agency")
     nb = [c for c in of_calls_since(n0) if c["account"] == neighbour]
@@ -315,13 +328,13 @@ async def run(ctx) -> None:
     n1 = len(fake.calls)
     so = await _get(ctx.owner, DASH, accounts=neighbour, **WINDOW)
     ctx.rec.stage = None
-    warmed = bool(nwarm) and any(c["id"] == neighbour and c["subscriberCounts"] for c in nwarm["creators"])
+    warmed = bool(nwarm) and bool(nwarm.get("subscriberCounts", {}).get(neighbour))
     st, body, _ = so
     if not warmed:
         leaks.append("neighbour owner's bundle did not warm its Creator")
-    if st != 200 or body is None or body["creators"] or {e["accountId"] for e in body["errors"]
-                                                         if e["status"] == 404 and e["read"] == "*"} != {neighbour}:
-        leaks.append(f"owner naming the neighbour's Creator: {st} {(body or {}).get('creators')}")
+    if st != 200 or body is None or _creators(body) or {e["accountId"] for e in body["errors"]
+                                                        if e["status"] == 404 and e["read"] == "*"} != {neighbour}:
+        leaks.append(f"owner naming the neighbour's Creator: {st} {sorted(_creators(body)) if body else None}")
     nb += [c for c in of_calls_since(n1) if c["account"] == neighbour]
     ctx.check(C_SCOPE, not leaks and not nb, asked=len(others), leaks=leaks, neighbour_of_calls=len(nb))
 
@@ -361,13 +374,13 @@ async def run(ctx) -> None:
 
     async def per_route(aid: str) -> None:
         hdr = {"X-Account-Id": aid}
-        c = next(x for x in bd["creators"] if x["id"] == aid)
-        pairs = [("profile", "/api/of/v2/users/me", {}, c["profile"]),
-                 ("subscriberCounts", "/api/of/v2/subscriptions/count/all", {}, c["subscriberCounts"]),
+        pairs = [("profile", "/api/of/v2/users/me", {}, bd.get("profile", {}).get(aid)),
+                 ("subscriberCounts", "/api/of/v2/subscriptions/count/all", {}, bd.get("subscriberCounts", {}).get(aid)),
                  ("newFans", "/api/of/v2/subscriptions/subscribers/chart",
-                  {"start": WINDOW["from"], "end": WINDOW["to"]}, c["newFans"]),
-                 ("notificationCounts", "/api/of/v2/users/notifications/count", {}, bi["notificationCounts"].get(aid)),
-                 ("chats", "/api/of/v2/chats", {"limit": 25, "offset": 0, "order": "recent"}, bi["chats"].get(aid))]
+                  {"start": WINDOW["from"], "end": WINDOW["to"]}, bd.get("newFans", {}).get(aid)),
+                 ("notificationCounts", "/api/of/v2/users/notifications/count", {},
+                  bi.get("notificationCounts", {}).get(aid)),
+                 ("chats", "/api/of/v2/chats", {"limit": 25, "offset": 0, "order": "recent"}, bi.get("chats", {}).get(aid))]
         for name, path, q, got in pairs:
             r = await one.get(path, params=q, headers=hdr)
             if r.status_code != 200 or r.json() != got:
@@ -400,13 +413,15 @@ async def run(ctx) -> None:
             continue
         if ms > dl + SLACK_MS:
             sbad.append(f"took {ms:.0f} ms")
-        late = sorted(e["read"] for e in body["errors"] if e["accountId"] == slow and e["status"] == 504
-                      and e["detail"] == {"upstream_status": "bundle_deadline"})
-        rest = [c for c in body["creators"] if c["id"] != slow]
-        if late != ["newFans", "profile", "subscriberCounts"] or not next(
-                c for c in body["creators"] if c["id"] == slow)["stale"]:
+        if body["duplicates"]:
+            sbad.append(f"duplicate answers {body['duplicates'][:3]}")
+        lt = late_reads(body)
+        late = sorted(r for a, r in lt if a == slow)
+        rest = _creators(body) - {slow}
+        if late != ["newFans", "profile", "subscriberCounts"]:
             sbad.append(f"slow Creator late={late}")
-        if any(c["stale"] or c["profile"] is None for c in rest) or len(rest) != len(aids) - 1:
+        if any(a in rest for a, _ in lt) or any(body.get("profile", {}).get(a) is None for a in rest) \
+                or len(rest) != len(aids) - 1:
             sbad.append("another Creator incomplete")
     walls = sorted(ms for _, _, ms in sres)
     ctx.check(C_SLOW, not sbad, bundles=len(sres), deadline_ms=dl, slack_ms=SLACK_MS, bad=sbad[:4],
@@ -424,9 +439,10 @@ async def run(ctx) -> None:
     st, body, ms = await _get(ss[0], DASH, **WINDOW)
     ctx.rec.stage = None
     again = [c for c in of_calls_since(n1) if c["account"] == slow]
-    c0 = next((c for c in (body or {}).get("creators", []) if c["id"] == slow), None)
-    ctx.check(C_WARMED, st == 200 and c0 is not None and not c0["stale"] and c0["subscriberCounts"] is not None
-              and not again, http_status=st, ms=round(ms), slow_of_calls_after=len(again))
+    ctx.check(C_WARMED, st == 200 and body is not None and not any(a == slow for a, _ in late_reads(body))
+              and body.get("subscriberCounts", {}).get(slow) is not None
+              and not body["duplicates"] and not again, http_status=st, ms=round(ms), slow_of_calls_after=len(again),
+              duplicates=(body or {}).get("duplicates", [])[:3])
     for h in ss:
         await h.aclose()
     for h in chat_http:
@@ -476,9 +492,10 @@ async def run(ctx) -> None:
               and delta[tapped]["blocked_total"] == 0 and delta[tapped]["calls_background"] > 0,
               first_status=fst, tap_status=tap.status_code, tap_ms=round(tap_ms), user_active=user_active[:5],
               n_user_active=len(user_active), focus=delta[focus], tapped=delta[tapped])
-    late_first = len((fbody or {}).get("stale", []))
+    late_first = len({a for a, _ in late_reads(fbody) if a})
     sprob = _inbox_problem(sst, sbody, set(aids), n_chats, 0, cold=False)
-    ctx.check(C_NO_SKIP, fst == 200 and not missing and sprob is None and second_calls == 0,
+    ctx.check(C_NO_SKIP, fst == 200 and not fbody["duplicates"] and not missing and sprob is None
+              and second_calls == 0, first_duplicates=(fbody or {}).get("duplicates", [])[:3],
               reads=2 * len(aids), deadline_ms=LANES_DEADLINE_MS, stale_after_first=late_first,
               never_reached_of=len(missing), first_missing=missing[:4], second=sprob, second_of_calls=second_calls)
     await lh.aclose()

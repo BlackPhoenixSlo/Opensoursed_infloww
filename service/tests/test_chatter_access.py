@@ -196,11 +196,11 @@ def _login_both(user: str, chatter: str) -> TestClient:
 # Derived from the server's own key builders — a cache-key format change can
 # never strand a stale literal here again (the drift that once turned this
 # suite red: the `query=` part vault search added).
-LISTS_KEY = server.vault_lists_cache_key()
+LISTS_KEY = vault_cache.vault_lists_cache_key()
 
 
 def _media_key(list_id: int) -> str:
-    return server.vault_media_cache_key(list_id=list_id)
+    return vault_cache.vault_media_cache_key(list_id=list_id)
 
 
 # ── 4. Fixture: mirrors the real velvetvoice1 shape ────────────────
@@ -277,7 +277,9 @@ async def case_vault_lists_filtered(ids: dict[str, str]) -> None:
     await vault_cache.put("accAva", LISTS_KEY, {
         "list": [{"id": 1, "name": "Best"}, {"id": 2, "name": "Teasers"}],
         "hasMore": False,
-    })
+        # OF's whole-vault "All" tile: counts + signed cover urls.
+        "all": {"videosCount": 40, "photosCount": 900, "medias": [{"id": 9, "url": "https://x/9"}]},
+    }, started_at=datetime.utcnow())
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
 
     chatter = _login_chatter("sensui")
@@ -285,12 +287,15 @@ async def case_vault_lists_filtered(ids: dict[str, str]) -> None:
     ids_seen = [f["id"] for f in r.json().get("list", [])]
     _expect("restricted chatter sees ONLY allowed folder in vault/lists",
             ids_seen == [1], detail=f"got {ids_seen!r}")
+    _expect("restricted chatter gets no whole-vault `all` (counts + cover urls)",
+            set(r.json()) == {"list", "hasMore"}, detail=f"got keys {sorted(r.json())!r}")
 
     owner = _login_user("velvetvoice")
     ro = owner.get("/api/of/v2/vault/lists", headers={"X-Account-Id": "accAva"})
     owner_ids = [f["id"] for f in ro.json().get("list", [])]
     _expect("owner sees the FULL folder list (cache kept unfiltered)",
             owner_ids == [1, 2], detail=f"got {owner_ids!r}")
+    _expect("owner still gets `all`", "all" in ro.json(), detail=f"got keys {sorted(ro.json())!r}")
     await _clear_access(ids["sensui"])
 
 
@@ -299,7 +304,7 @@ async def case_vault_media_softdeny_and_allow(ids: dict[str, str]) -> None:
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
     # Seed the cache for an ALLOWED folder so the pass-through path doesn't
     # need a live OF session.
-    await vault_cache.put("accAva", _media_key(1), {"list": [{"id": 111}], "hasMore": False})
+    await vault_cache.put("accAva", _media_key(1), {"list": [{"id": 111}], "hasMore": False}, started_at=datetime.utcnow())
 
     c = _login_chatter("sensui")
     deny_shape = {"list": [], "hasMore": False}
@@ -325,8 +330,8 @@ async def case_da1_dual_cookie_owner_not_restricted(ids: dict[str, str]) -> None
     await _clear_access(ids["sensui"])
     await vault_cache.put("accAva", LISTS_KEY, {
         "list": [{"id": 1, "name": "Best"}, {"id": 2, "name": "Teasers"}], "hasMore": False,
-    })
-    await vault_cache.put("accAva", _media_key(2), {"list": [{"id": 222}], "hasMore": False})
+    }, started_at=datetime.utcnow())
+    await vault_cache.put("accAva", _media_key(2), {"list": [{"id": 222}], "hasMore": False}, started_at=datetime.utcnow())
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
 
     # Same browser carries BOTH cookies. User cookie wins → owner view → NO

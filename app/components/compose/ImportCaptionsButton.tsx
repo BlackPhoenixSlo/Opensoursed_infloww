@@ -39,6 +39,7 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
   className?: string;
 }) {
   const { open, setOpen, ref } = useOutsideClose<HTMLDivElement>();
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const pasteId = useId();
@@ -61,6 +62,7 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
   return (
     <div ref={ref} className="contents">
       <IfButton
+        ref={triggerRef}
         variant="link"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -77,7 +79,15 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
         onChange={(e) => void onFile(e.target.files?.[0])}
       />
       {open && (
-        <div role="dialog" aria-label="Import captions" className="basis-full">
+        // Escape closes this panel only, never the dialog around it (which would drop the whole draft): the modal
+        // skips a defaultPrevented Escape (useModalFocus).
+        <div role="dialog" aria-label="Import captions" className="basis-full"
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            setOpen(false);
+            triggerRef.current?.focus();
+          }}>
           <div className="pop-menu origin-top max-w-sm space-y-3 rounded-md border border-border bg-bg p-3 text-[14px] text-fg shadow-sm">
             <IfButton className="w-full" onClick={() => fileRef.current?.click()}>
               Choose file (.csv, .txt, .json)

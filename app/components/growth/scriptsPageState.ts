@@ -16,6 +16,9 @@
  *     unchecks its ids (the server took them; a failed run keeps the ticks for a retry).
  *   • The name prompt and the Excel / Import / Share dialogs are one overlay (`modal`): opening one replaces another.
  *   • Closing the search clears its text.
+ *   • The All models matrix (`allModels`, CreatorRail's All pick) shows no Creator: no overlay and no checked scripts
+ *     stay open on the hidden one, and the page's write actions are hidden while it shows. Picking a Creator
+ *     (`reset`) leaves it.
  *   • Another Creator (`reset`) keeps the view and the sort (view preferences) and the busy ids (see `reset`): none
  *     of the last Creator's picks, checks, pending tags, error, overlay or search. An answer (a run's end, an
  *     entry's rename or delete) carries the Creator it was asked on: on another Creator's page it is dropped
@@ -89,6 +92,8 @@ export interface ScriptsPageState {
   seqSort: SeqSort;
   /** The Creator the page shows (`reset`); null until the first pick. */
   account: string | null;
+  /** The All models matrix shows in place of the Creator (`allModels`); a Creator's pick (`reset`) leaves it. */
+  allModels: boolean;
 }
 
 export type Action =
@@ -120,7 +125,9 @@ export type Action =
    *  newest first). */
   | { type: "seqSort"; by: SeqSortBy }
   /** Another Creator (`account`): nothing of this one's carries over but the view, the sorts and the busy ids. */
-  | { type: "reset"; account: string | null };
+  | { type: "reset"; account: string | null }
+  /** The All models matrix: the Creator's overlay closes and its checked scripts go. */
+  | { type: "allModels" };
 
 export const INITIAL: ScriptsPageState = {
   view: "tags",
@@ -134,6 +141,7 @@ export const INITIAL: ScriptsPageState = {
   sort: { by: "recent", order: "desc" },
   seqSort: { by: "custom", order: "asc" },
   account: null,
+  allModels: false,
 };
 
 /** The open entry: `sel` while `order` lists it, else the first entry, else none. */
@@ -221,6 +229,8 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
       // `busy` stays: script ids are global DB ids, so the last Creator's never show on this one, and a run still
       // out on them keeps their rows waiting if the user comes back (no second POST); its `runEnd` frees them.
       return { ...INITIAL, view: s.view, sort: s.sort, seqSort: s.seqSort, busy: s.busy, account: a.account };
+    case "allModels":
+      return { ...s, allModels: true, modal: null, checked: new Set() };
   }
 }
 
@@ -250,16 +260,22 @@ export function sequencesOf(replies: readonly SavedReply[]): Map<string, SavedRe
   return m;
 }
 
-/** The Sequence sidebar in `sort`'s order. Custom: the sequences' own position (one without meta after them, by
- *  name); Recent: last modified (`sequenceHeader`); Name. Ties go by name. */
+/** An entry's scripts' ids (its per-row Share): a tag's tagged scripts, a sequence's steps, in list order. */
+export function entryIds(kind: EntryKind, name: string, replies: readonly SavedReply[]): number[] {
+  return replies
+    .filter((r) => (kind === "tag" ? (r.tags ?? []).includes(name) : r.script_id === name))
+    .map((r) => r.id);
+}
+
+/** The Sequence sidebar (`sequences`' names) in `sort`'s order. Custom: the sequences' own position (one without
+ *  meta after them, by name); Recent: last modified (`sequenceHeader`); Name. Ties go by name. */
 export function sequenceOrder(
-  names: Iterable<string>,
   metas: ReadonlyMap<string, SavedReplySequenceMeta>,
   sequences: ReadonlyMap<string, readonly SavedReply[]>,
   sort: SeqSort,
 ): string[] {
   const dir = sort.order === "asc" ? 1 : -1;
-  const list = [...names];
+  const list = [...sequences.keys()];
   if (sort.by === "name") return list.sort((a, b) => dir * byName(a, b));
   if (sort.by === "custom") {
     const pos = (n: string) => metas.get(n)?.position ?? Number.POSITIVE_INFINITY;

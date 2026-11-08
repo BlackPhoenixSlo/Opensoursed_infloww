@@ -20,7 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTes
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
-import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/reportsMath";
+import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/netMissingNote";
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 // An owner session by default; a test may switch to a chatter session (no user).

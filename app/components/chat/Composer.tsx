@@ -163,9 +163,18 @@ export function Composer({
   // The draft's markup survives a chat switch with its text (lib/chatDrafts), and reopens in the rich editor.
   const [draft, act] = useReducer(composerDraft, null, () => {
     const rich = allowRich ? readChatRich(accountId, fanId) : null;
-    return { ...EMPTY_DRAFT, rich, mode: richMode(PLAIN_MODE, { type: "loaded", formatted: !!rich }) };
+    return { ...EMPTY_DRAFT, rich, mode: richMode(PLAIN_MODE, { type: "loaded", formatted: !!rich, allowed: allowRich }) };
   });
-  useEffect(() => { writeChatRich(accountId, fanId, draft.rich); }, [accountId, fanId, draft.rich]);
+  // Saved as it changes, never while rich text is off (a cold accounts cache, a Fansly fallback): this mount
+  // never read the stored markup, so its null would wipe it.
+  const savedRich = useRef(draft.rich);
+  useEffect(() => {
+    if (!allowRich || draft.rich === savedRich.current) return;
+    savedRich.current = draft.rich;
+    writeChatRich(accountId, fanId, draft.rich);
+  }, [allowRich, accountId, fanId, draft.rich]);
+  // The draft's markup while formatted (one read for the editor and the translation strip).
+  const richHtml = richText(draft, text);
   const { price, priceOpen, lockedText, attached, scheduleOpen, scheduleAt, taggedCreators, pickedGifs } = draft;
   // The whole draft as last rendered, for a refused schedule that settles
   // after the chatter has typed on (`afterRefusedSchedule`); null once the
@@ -291,6 +300,9 @@ export function Composer({
     const epoch = readRefusedOffers().epoch;
     previews.markSent(draft.attached);
     setText("");
+    // The markup goes with its text, rich text on or off: a stale one left stored would reopen "Aa" over nothing.
+    savedRich.current = null;
+    writeChatRich(accountId, fanId, null);
     act({ type: "sent" });
     // Files still uploading go with this send (canSend keeps a schedule from
     // getting here while one runs). The chatter types on at once.
@@ -497,7 +509,7 @@ export function Composer({
     // Script step rides on the draft, so the send advances the Script.
     // A formatted one opens in the rich editor, formatted (OnlyFans only; Fansly gets its plain text).
     setText(t.text);
-    act({ type: "pickTemplate", t, rich: allowRich });
+    act({ type: "pickTemplate", t, allowRich });
     setTimeout(focusInput, 0);
   }
 
@@ -569,7 +581,7 @@ export function Composer({
           <SensitiveWordWarning hits={sensitiveHits} />
           <TimedReminderNotice accountId={accountId} fanId={fanId} />
           <OutboundTranslationStrip t={outbound} onUse={setText} onSend={sendTranslation} canSend={view.canSend}
-            formatted={richOn && richText(draft, text) != null} />
+            formatted={richOn && richHtml != null} />
           {scripts.nextSteps.map((nextStep) => (
             <div
               key={nextStep.key}
@@ -627,7 +639,7 @@ export function Composer({
           input={richOn ? (
             <OfRichTextEditor
               ref={editorRef}
-              value={richText(draft, text) ?? text}
+              value={richHtml ?? text}
               onChange={onRichChange}
               toolbar={draft.mode.toolbar}
               disabled={disabled}

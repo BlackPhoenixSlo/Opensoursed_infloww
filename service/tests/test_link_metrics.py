@@ -396,7 +396,7 @@ def case_refresh_waits_for_the_account_lock():
     f.trial(51, [_fan(870_001)])
 
     async def go():
-        lock = lm._lock(aid)
+        lock = lm.walk_lock(aid)
         await lock.acquire()
         task = asyncio.create_task(lm.refresh(aid, "trial", [(51, 1, None)]))
         await asyncio.sleep(0.05)
@@ -405,7 +405,7 @@ def case_refresh_waits_for_the_account_lock():
         await task
         assert len(f.claim_calls) == 1
     asyncio.run(go())
-    lm._WALK_LOCKS.pop(aid, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
 
 
 def case_details_while_locked_returns_cache_flagged():
@@ -414,11 +414,11 @@ def case_details_while_locked_returns_cache_flagged():
     f.trial(52, [_fan(870_101)])
 
     async def hold():
-        await lm._lock(aid).acquire()
+        await lm.walk_lock(aid).acquire()
     asyncio.run(hold())
     d = _fans(aid, "trial", 52, count=1)
     assert d["refreshing"] is True and d["fans"] == [] and f.claim_calls == []
-    lm._WALK_LOCKS.pop(aid, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
     d = _fans(aid, "trial", 52, count=1)
     assert [x["fan_id"] for x in d["fans"]] == [870_101], "unlocked: walked on demand"
 
@@ -829,10 +829,10 @@ def case_list_of_error_stops_the_pass_and_backs_off():
     lm._LIST_FAILED_AT.clear()
 
     async def sync2():
-        async with lm._lock(aid):
+        async with lm.walk_lock(aid):
             return await lm.sync_lists(aid, "trial", None, {211: 1, 212: 1})
     assert asyncio.run(sync2()) == 2 and [c[2] for c in f.list_calls[-2:]] == [211, 212], f.list_calls
-    lm._WALK_LOCKS.pop(aid, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
 
 
 def case_list_on_a_tracking_link_follows_its_subscribers():
@@ -1157,10 +1157,10 @@ def case_promo_list_is_per_account():
     assert owner_a.get(f"/admin/promo-list?account_id={a}").json()["list_id"] == "900081", "a's is untouched"
 
     async def sync():
-        async with lm._lock(b):
+        async with lm.walk_lock(b):
             return await lm.sync_lists(b, "promo", FakeOF(), {301: 5})
     assert asyncio.run(sync()) == 0, "b's pass never reads a's setting"
-    lm._WALK_LOCKS.pop(b, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(b, None)
     # Each on its own list, with the same OnlyFans promotion ids: every add carries its own account's list.
     fa, fb = FakeOF(), FakeOF()
     for fk in (fa, fb):
@@ -1216,11 +1216,11 @@ def case_stale_rewalk_not_while_locked_or_backed_off():
     _age_walks(aid, 61)
 
     async def hold():
-        await lm._lock(aid).acquire()
+        await lm.walk_lock(aid).acquire()
     asyncio.run(hold())
     d = _fans(aid, "trial", 231, count=1)
     assert d["refreshing"] is False and not _spawned and len(f.claim_calls) == 1, "a walk holds the lock: no second"
-    lm._WALK_LOCKS.pop(aid, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
     import time
     lm._FAILED_AT[(aid, "trial")] = time.monotonic()
     d = _fans(aid, "trial", 231, count=1)
@@ -1257,10 +1257,10 @@ def case_accounts_never_mix():
     assert by2[111]["list_id"] is None, "a1's List is not a2's"
 
     async def sync():
-        async with lm._lock(a2):
+        async with lm.walk_lock(a2):
             return await lm.sync_lists(a2, "trial", f, {111: 9})
     assert asyncio.run(sync()) == 0 and len(f.list_calls) == 1, "a2's pass never adds a1's links"
-    lm._WALK_LOCKS.pop(a2, None)
+    lm.of_tracking_api._WALK_LOCKS.pop(a2, None)
     seen = []
     real = lm.assert_account_owned
     lm.assert_account_owned = seen.append
@@ -1434,6 +1434,26 @@ def case_prewarm_all_skips_dead_sessions_and_non_onlyfans_accounts():
     assert seen == ["first", live], seen
 
 
+def case_prewarm_all_walks_a_busy_creator_after_one_skip():
+    busy = _acct()
+    rows = [{"id": busy, "has_session": True, "platform": "onlyfans"}]
+    seen: list[str] = []
+
+    async def fake_prewarm(aid):
+        seen.append(aid)
+    real = (lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S, lm.of_pacing.user_active)
+    lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S = (lambda: rows), fake_prewarm, 0
+    lm.of_pacing.user_active = lambda _aid: True   # a person reads on it every pass
+    try:
+        for _ in range(4):
+            asyncio.run(lm.prewarm_all())
+    finally:
+        (lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S,
+         lm.of_pacing.user_active) = real
+        lm._PREWARM_SKIPPED.discard(busy)
+    assert seen == [busy, busy], seen   # skip, walk, skip, walk: never starved
+
+
 _harness.run(
     case_walk_moves_offset_by_page_past_a_short_page,
     case_walk_reads_a_20_row_page_then_a_short_page,
@@ -1478,4 +1498,5 @@ _harness.run(
     case_walks_never_hold_the_growth_lock_across_an_of_call,
     case_links_of_promos_folds_earlier_rearms_into_their_campaign,
     case_prewarm_all_skips_dead_sessions_and_non_onlyfans_accounts,
+    case_prewarm_all_walks_a_busy_creator_after_one_skip,
 )

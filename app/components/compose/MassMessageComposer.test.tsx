@@ -34,7 +34,7 @@ vi.mock("@/contexts/ScopeContext", () => {
 });
 vi.mock("@/hooks/useAccounts", () => {
   const accounts = [{ id: "acct1", nickname: "A", color: "#fff" }, { id: "acct2", nickname: "B", color: "#fff" }];
-  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, fetchAccounts: async () => ({ accounts }) };
+  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts }) }) };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => ({
   useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }),
@@ -325,6 +325,24 @@ describe("MassMessageComposer — Escape never drops a typed draft", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Whales" })[0]).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/Include fans with unread msgs/), { target: { value: "50" } });
     escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+// The pickers portal above the dialog; Escape in their search box is theirs, never the composer's (useModalFocus).
+describe("MassMessageComposer — Escape in a picker's search box leaves even a clean composer open", () => {
+  it.each([["Emoji picker"], ["Insert saved template"], ["Tag other creators in this message"]])("%s", async (name) => {
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    fireEvent.click(screen.getByTitle(name));
+    const input = await waitFor(() => {
+      const el = [...document.querySelectorAll<HTMLInputElement>("input[type=text], input[type=search]")]
+        .find((i) => !i.closest('[role="dialog"]'));
+      if (!el) throw new Error(`no search box for ${name}`);
+      return el;
+    });
+    input.focus();
+    fireEvent.keyDown(input, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 });

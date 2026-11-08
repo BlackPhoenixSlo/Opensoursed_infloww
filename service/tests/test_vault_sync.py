@@ -92,8 +92,8 @@ def _use(of: _FakeOF) -> None:
 async def case_drops_the_listing_cache():
     await _reset(mirror_ids=[1])
     _use(_FakeOF([_media(1)]))
-    await vault_cache.put(AID, "lists:view=main|limit=50|offset=0", {"list": [], "hasMore": False})
-    await vault_cache.put(AID, "media:type=all", {"list": [], "hasMore": False})
+    await vault_cache.put(AID, "lists:view=main|limit=50|offset=0", {"list": [], "hasMore": False}, started_at=datetime.utcnow())
+    await vault_cache.put(AID, "media:type=all", {"list": [], "hasMore": False}, started_at=datetime.utcnow())
     await api.sync_from_of(account_id=AID, of_folder_id=None)
     assert await vault_cache.get(AID, "lists:view=main|limit=50|offset=0") is None
     assert await vault_cache.get(AID, "media:type=all") is None
@@ -103,7 +103,7 @@ async def case_no_mirror_reads_no_of():
     await _reset()
     of = _FakeOF([_media(1)])
     _use(of)
-    await vault_cache.put(AID, "lists:view=main|limit=50|offset=0", {"list": [], "hasMore": False})
+    await vault_cache.put(AID, "lists:view=main|limit=50|offset=0", {"list": [], "hasMore": False}, started_at=datetime.utcnow())
     r = await api.sync_from_of(account_id=AID, of_folder_id=None)
     assert r["mirror"] is False and of.calls == [], (r, of.calls)
     assert await vault_cache.get(AID, "lists:view=main|limit=50|offset=0") is None

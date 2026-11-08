@@ -14,7 +14,7 @@ docstring is its spec (phases, load, bypasses).
 | `seed/agency_notifications_bulk.py` | `n` owner rows in one SQL insert, shaped as `notify` files them (`role_changed`, `employee_deactivated`, `message_unsent`, `session_dead`), read and unread, aged 1 min to 120 days, in filings that share one `created_at` (ties ordered by id), plus three boundary rows at `w.now - retention` -1 s / 0 / +1 s. No `clock_in_missed` (each needs a Shift; the sweep files those for real). `w.data["agency_notifications_bulk"]`: ids and the boundary ids. |
 | `scenarios/2026-11-01-notifications-feed-volume.py` | The scenario; its `_State` (the seeded feed and every session's plan). |
 | `lib/consent_faults.py` | The consent scenario's check names and faults. |
-| `scenarios/2026-11-08-consent-required-notice.py` | The pinned `consent_required` row (`service/consent_notices.py`, `notifications_api.PINNED_KINDS`) and the shell's ConsentBanner. |
+| `scenarios/2026-11-08-consent-required-notice.py` | The pinned `consent_required` row (`service/consent_notices.py`, `notifications_api.PINNED_KIND`) and the shell's ConsentBanner. |
 
 ## Scenarios
 

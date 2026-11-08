@@ -306,27 +306,35 @@ describe("AssistantWidget", () => {
       expect(historyCalls()).toHaveLength(1);
     });
 
-    it("sends the last answered turns (no error ones) as history, oldest first", async () => {
-      relayPost.mockResolvedValue({ answer: "Here are the steps.", error: null });
+    it("sends no history: the server picks the previous turns", async () => {
+      relayPost.mockResolvedValue({ answer: "Here are the steps.", error: null, id: 13 });
       await openPanel();
       await screen.findByRole("button", { name: "Earlier (3)" });
       await ask("yes");
       await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
-      expect(relayPost.mock.calls[0][1]).toEqual({
-        question: "yes", account_id: "1001",
-        history: [
-          { question: "old q", answer: "old a" },
-          { question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?" },
-        ],
+      expect(relayPost.mock.calls[0][1]).toEqual({ question: "yes", account_id: "1001" });
+      // The read is the asker's own across accounts: no account/employee header.
+      expect(historyCalls()[0]).toHaveLength(1);
+    });
+
+    it("a turn asked while the history read failed shows once after the retry", async () => {
+      let fail = true;
+      relayGet.mockImplementation((path: string) => {
+        if (!path.startsWith("/admin/assistant/history")) return Promise.resolve({ count: 0, since_hours: 24, list: [] });
+        if (fail) return Promise.reject(new Error("relay 502"));
+        // The retry already holds the row the ask wrote (id 20).
+        return Promise.resolve({ turns: [{ id: 20, ts: new Date().toISOString(), question: "fresh q", answer: "fresh a", error: null }, ...rows] });
       });
-      await screen.findByText("Here are the steps.");
-      await ask("and then?");
-      await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(2));
-      expect((relayPost.mock.calls[1][1] as { history: unknown[] }).history).toEqual([
-        { question: "old q", answer: "old a" },
-        { question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?" },
-        { question: "yes", answer: "Here are the steps." },
-      ]);
+      relayPost.mockResolvedValue({ answer: "fresh a", error: null, id: 20 });
+      const bubble = await openPanel();
+      await waitFor(() => expect(historyCalls()).toHaveLength(1));
+      await ask("fresh q");
+      await screen.findByText("fresh a");
+      fail = false;
+      await userEvent.click(bubble);
+      await userEvent.click(bubble);
+      await screen.findByRole("button", { name: "Earlier (3)" });
+      expect(screen.getAllByText("fresh q")).toHaveLength(1);
     });
 
     it("a failed history read is no history, and the next open retries", async () => {
@@ -421,18 +429,29 @@ describe("AssistantWidget on a phone", () => {
     expect(screen.getByRole("button", { name: "Help assistant" })).toBeTruthy();
   });
 
-  it("the sheet locks the page under it and unlocks it on close", async () => {
+  it("the sheet locks the page under it and unlocks it on close, leaving other locks alone", async () => {
     window.localStorage.setItem("chatterly:assistant_open", "1");
+    document.body.style.paddingRight = "15px";       // another lock, from before
     render();
-    await screen.findByPlaceholderText("Ask a question…");
+    const box = await screen.findByPlaceholderText("Ask a question…");
     expect(document.body.style.position).toBe("fixed");
     expect(document.body.style.overflow).toBe("hidden");
     expect(document.documentElement.style.overflow).toBe("hidden");
+    // Pinned to the visual viewport through the boot script's vars, not inline styles.
+    const sheet = box.closest("[data-look='messenger']") as HTMLElement;
+    expect(sheet.className).toContain("top-[var(--vvt,0px)]");
+    expect(sheet.getAttribute("style")).toBeNull();
     // 16px: iOS zooms into a smaller input on focus.
-    expect(screen.getByPlaceholderText("Ask a question…").className).toContain("text-[16px]");
+    expect(box.className).toContain("text-[16px]");
+    document.body.style.touchAction = "none";        // another lock, taken meanwhile
     await userEvent.click(screen.getByRole("button", { name: "Close help" }));
-    expect(document.body.getAttribute("style")).toBeNull();
+    for (const p of ["position", "top", "left", "right", "width", "overflow"] as const) {
+      expect(document.body.style[p]).toBe("");
+    }
+    expect(document.body.style.paddingRight).toBe("15px");
+    expect(document.body.style.touchAction).toBe("none");
     expect(document.documentElement.style.overflow).toBe("");
+    document.body.removeAttribute("style");
   });
 
   it("a tapped answer link navigates AND closes the sheet", async () => {
@@ -444,7 +463,7 @@ describe("AssistantWidget on a phone", () => {
     expect(nav.pushed).toEqual(["/creators"]);
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
     expect(window.localStorage.getItem("chatterly:assistant_open")).toBe("0");
-    expect(document.body.getAttribute("style")).toBeNull();
+    expect(document.body.style.position).toBe("");
   });
 
   it("earlier turns sit collapsed under Earlier on the sheet", async () => {
@@ -473,6 +492,19 @@ describe("AssistantWidget on a phone", () => {
 
     // The next real tap still opens it (the swallow is one-shot).
     await userEvent.click(moved);
+    expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
+  });
+
+  it("a finger's tap jitter under 10px is a tap, not a drag", async () => {
+    render();
+    const bubble = await pullOut();
+    const r = bubble.getBoundingClientRect();
+    const x = r.left + 24, y = r.top + 24;
+    await userEvent.pointer([
+      { keys: "[TouchA>]", target: bubble, coords: { clientX: x, clientY: y } },
+      { pointerName: "TouchA", target: bubble, coords: { clientX: x + 6, clientY: y + 5 } },
+      { keys: "[/TouchA]", target: bubble },
+    ]);
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
   });
 

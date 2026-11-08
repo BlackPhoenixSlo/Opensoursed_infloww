@@ -147,24 +147,15 @@ describe("editFunnel", () => {
     ["moveStep down swaps", { type: "moveStep", i: 0, dir: 1 }, msgs, [["b", "c"], ["a"]]],
     ["moveStep up from the top is a no-op", { type: "moveStep", i: 0, dir: -1 }, (d) => d, two],
     ["moveStep down from the bottom is a no-op", { type: "moveStep", i: 1, dir: 1 }, (d) => d, two],
-    ["patchMsg edits one variant", { type: "patchMsg", i: 1, mi: 1, text: "z" }, msgs, [["a"], ["b", "z"]]],
-    ["addMsg appends a blank variant", { type: "addMsg", i: 0 }, msgs, [["a", ""], ["b", "c"]]],
-    ["removeMsg drops a variant", { type: "removeMsg", i: 1, mi: 0 }, msgs, [["a"], ["c"]]],
-    ["removeMsg keeps the last variant", { type: "removeMsg", i: 0, mi: 0 }, msgs, [["a"], ["b", "c"]]],
-    ["addMsgs appends, skipping dupes", { type: "addMsgs", i: 1, texts: ["c", "d"] }, msgs, [["a"], ["b", "c", "d"]]],
+    ["patchStep replaces a step's message pool", { type: "patchStep", i: 1, patch: { messages: ["z"] } }, msgs, [["a"], ["z"]]],
   ])("%s", (_name, e, pick, want) => {
     expect(pick(editFunnel(two, e))).toEqual(want);
-  });
-
-  it("addMsgs replaces a lone blank variant", () => {
-    const blank: FunnelDraft = { ...DRAFT, steps: [{ ...reply("a", 1), messages: [""] }] };
-    expect(msgs(editFunnel(blank, { type: "addMsgs", i: 0, texts: ["x", "y"] }))).toEqual([["x", "y"]]);
   });
 
   it("never mutates its input", () => {
     const snap = JSON.stringify(two);
     editFunnel(two, { type: "moveStep", i: 0, dir: 1 });
-    editFunnel(two, { type: "patchMsg", i: 0, mi: 0, text: "q" });
+    editFunnel(two, { type: "patchStep", i: 0, patch: { messages: ["q"] } });
     expect(JSON.stringify(two)).toBe(snap);
   });
 });

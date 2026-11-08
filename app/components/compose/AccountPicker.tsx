@@ -15,9 +15,7 @@ import { useEffect, useId, useMemo } from "react";
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useScope } from "@/contexts/ScopeContext";
-import { IfLabel } from "@/components/ui/infloww";
-import { IF_FIELD } from "@/components/ui/ifSelect";
-import { cn } from "@/lib/utils";
+import { IfLabel, IfNativeSelect } from "@/components/ui/infloww";
 
 export function AccountPicker({
   value, onChange,
@@ -48,11 +46,11 @@ export function AccountPicker({
   return (
     <div>
       <IfLabel htmlFor={id}>Post as</IfLabel>
-      <select
+      <IfNativeSelect
         id={id}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
-        className={cn(IF_FIELD, "h-8 w-full px-[11px] outline-none focus:border-accent")}
+        className="w-full"
       >
         {visibleAccounts.length === 0 && <option value="">(no active sessions)</option>}
         {visibleAccounts.map((a) => (
@@ -60,7 +58,7 @@ export function AccountPicker({
             {a.nickname || a.id}
           </option>
         ))}
-      </select>
+      </IfNativeSelect>
     </div>
   );
 }

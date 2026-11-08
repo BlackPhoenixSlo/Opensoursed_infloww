@@ -18,7 +18,8 @@ import { Paperclip } from "lucide-react";
 
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
-import { fmtPrice, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice } from "@/lib/messageFormat";
+import { ofPreviewText } from "@/lib/ofRichText";
 import { fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -46,7 +47,7 @@ function fmtUnlockDelta(sentIso: string | null, purchasedIso: string | null): st
 }
 
 export default function MessageRow({ row }: Props) {
-  const previewBody = stripHtml(row.body);
+  const previewBody = ofPreviewText(row.body);
   const isPaid = row.is_paid;
   const justPaid = isPaid && !row.purchased_at;
 

@@ -55,17 +55,25 @@ export function markScriptSent(id: number): Promise<unknown> {
   return relay.post("/admin/saved-replies/sent", { id }).catch(() => undefined);
 }
 
-export function useSavedReplies(accountId: string | null) {
-  return useQuery<SavedReply[]>({
+/** One Creator's list query, for `useSavedReplies` and a one-off `queryClient.fetchQuery` (the All models
+ *  share reads its source's list through the same cache). */
+export function savedRepliesQuery(accountId: string | null) {
+  return {
     queryKey: [KEY, accountId],
-    enabled: !!accountId,
     queryFn: async () => {
       const resp = await relay.get<ListResp>(
-        `/admin/saved-replies?account_id=${encodeURIComponent(accountId!)}`,
+        `/admin/saved-replies?account_id=${encodeURIComponent(accountId ?? "")}`,
       );
       return resp.list ?? [];
     },
     staleTime: 5 * 60 * 1000,
+  };
+}
+
+export function useSavedReplies(accountId: string | null) {
+  return useQuery<SavedReply[]>({
+    ...savedRepliesQuery(accountId),
+    enabled: !!accountId,
     refetchOnWindowFocus: false,
   });
 }
@@ -184,12 +192,15 @@ export function useImportSavedReplies(accountId: string | null) {
 }
 
 /** Share and Import from other creators (`POST /admin/saved-replies/copy`): copies scripts without their media,
- *  skipping a name the target already has. `ids` omitted copies every script of the sources. */
+ *  skipping a name the target already has; a sequence is copied whole (any of its scripts in `ids` brings all its
+ *  steps), and skipped whole where the target already has one of that name. `ids` omitted copies every script of
+ *  the sources. */
 export interface SavedReplyCopy {
   fromAccountIds: string[];
   toAccountIds: string[];
-  /** Share to the principal's full owned Creator roster (resolved server-side); `toAccountIds` is then ignored. */
-  allCreators?: boolean;
+  /** Share to the principal's full owned Creator roster (resolved server-side); `toAccountIds` must then be
+   *  empty (both given is refused, 422). */
+  allCreators: boolean;
   ids?: number[];
 }
 
@@ -197,8 +208,6 @@ export interface SavedReplyCopyResult {
   copied: number;
   skipped: number;
   media_dropped: number;
-  /** Scripts whose sequence step the target already held: copied outside any sequence. */
-  sequence_dropped: number;
 }
 
 /** All-models view (`GET /admin/saved-replies/overview`): a lean coverage matrix — per owned Creator, each
@@ -209,10 +218,9 @@ export interface ScriptsOverview {
   tags: Array<{ name: string; per_account: Record<string, number> }>;
 }
 
-export function useScriptsOverview(enabled = true) {
+export function useScriptsOverview() {
   return useQuery<ScriptsOverview>({
     queryKey: [KEY, "overview"],
-    enabled,
     queryFn: () => relay.get<ScriptsOverview>("/admin/saved-replies/overview"),
     staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
@@ -226,7 +234,7 @@ export function useCopySavedReplies() {
       relay.post<SavedReplyCopyResult>("/admin/saved-replies/copy", {
         from_account_ids: fromAccountIds,
         to_account_ids: toAccountIds,
-        all_creators: allCreators ?? false,
+        all_creators: allCreators,
         ids,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY] }),

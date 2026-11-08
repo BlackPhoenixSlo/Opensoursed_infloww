@@ -1,4 +1,4 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -17,10 +17,10 @@ vi.mock("next/navigation", () => ({
 import {
   EmptyState, HB_TABLE, HbButton, HbFilter, HbModal, HbPager, HbSelect, IF_TABLE, IfBody, IfButton, IfCard, IfHelp,
   IfCreatorSelect, IfInput, IfLearn, IfModal, IfPager, IfRangePicker, IfSegmented, IfSelect, IfSwitch, IfTabs,
-  InflowwPageHeader, useCreatorParam,
+  InflowwPageHeader, saveVerdict, useCreatorParam,
 } from "./infloww";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { EditorFooter, FooterSlotContext, useModalFocus } from "@/components/ui/ifModal";
+import { EditorFooter, useModalFocus } from "@/components/ui/ifModal";
 
 beforeEach(() => {
   replace.mockClear();
@@ -494,6 +494,25 @@ describe.each([
     );
   }
 
+  it("with no title: named by label, no empty heading", () => {
+    render(<Modal label="Preview" onClose={vi.fn()}>body</Modal>);
+    expect(screen.getByRole("dialog", { name: "Preview" })).toBeTruthy();
+    expect(screen.queryByRole("heading")).toBeNull();
+  });
+
+  it("leaves an Escape a control inside already handled (preventDefault) alone", () => {
+    const onClose = vi.fn();
+    render(
+      <Modal title="Create message" onClose={onClose}>
+        <input aria-label="Name" onKeyDown={(e) => { if (e.key === "Escape") e.preventDefault(); }} />
+      </Modal>,
+    );
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Name" }), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("is an aria-modal dialog named by its title, closed by Escape, focus back on the opener", async () => {
     render(<Harness />);
     const opener = screen.getByRole("button", { name: "Open" });
@@ -518,6 +537,36 @@ describe.each([
     await userEvent.tab({ shift: true });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
   });
+
+  it("the trap skips controls in a disabled fieldset", () => {
+    render(
+      <Modal title="Edit" closable={false} onClose={() => {}}>
+        <input aria-label="First" />
+        <fieldset disabled><input aria-label="Locked" /><button type="button">Locked button</button></fieldset>
+      </Modal>,
+    );
+    const first = screen.getByRole("textbox", { name: "First" });
+    first.focus();
+    // `First` is the box's only focusable: Tab and Shift+Tab stay on it, never on a locked control.
+    expect(fireEvent.keyDown(first, { key: "Tab" })).toBe(false);
+    expect(first).toHaveFocus();
+    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(false);
+    expect(first).toHaveFocus();
+  });
+
+  it.each([["Tab", false], ["Shift+Tab", true]] as const)(
+    "focus on the page behind (not a portal above): %s brings it back into the box", (_k, shiftKey) => {
+      render(
+        <>
+          <button type="button">Behind</button>
+          <Modal title="Edit" onClose={() => {}}><input aria-label="Name" /></Modal>
+        </>,
+      );
+      const behind = screen.getByRole("button", { name: "Behind" });
+      behind.focus();
+      expect(fireEvent.keyDown(behind, { key: "Tab", shiftKey })).toBe(false);
+      expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
+    });
 
   it("leaves Tab and Escape to a portaled picker that holds focus", async () => {
     render(<Harness picker />);
@@ -544,7 +593,8 @@ describe.each([
 
   it("a modal layer on top (vault picker, lightbox) takes Escape and Tab; once it goes the trap is back", async () => {
     function Layer() {
-      const ref = useModalFocus(() => {}, false);
+      const ref = useRef<HTMLDivElement>(null);
+      useModalFocus(ref);
       return createPortal(<div ref={ref} tabIndex={-1} role="dialog" aria-label="Layer" />, document.body);
     }
     const onClose = vi.fn();
@@ -564,10 +614,12 @@ describe.each([
     const toggle = within(dialog).getByRole("button", { name: "Layer" });
     fireEvent.click(toggle);
     toggle.focus();
-    // Last focusable: with a layer on top the wrap does not happen and Escape is not taken.
-    expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(true);
+    // Last focusable: with a layer on top the lower box does not wrap and Escape is not taken; the layer (its own
+    // trap) takes Tab back into itself.
     expect(fireEvent.keyDown(toggle, { key: "Escape" })).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Layer" })).toHaveFocus();
     fireEvent.click(toggle);
     toggle.focus();
     expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(false);
@@ -598,6 +650,29 @@ describe.each([
       expect(outer).toHaveBeenCalledTimes(1);
       expect(inner).toHaveBeenCalledTimes(1);
     });
+
+  it("one Escape on the top modal closes only it: a window listener (Find, Fan insights) and the lower modal never hear it", () => {
+    const lower = vi.fn();
+    const upper = vi.fn();
+    const onWindow = vi.fn();
+    window.addEventListener("keydown", onWindow);
+    try {
+      render(
+        <Modal title="Lower" onClose={lower}>
+          <Modal title="Upper" onClose={upper}><input aria-label="Upper field" /></Modal>
+        </Modal>,
+      );
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Upper field" }), { key: "Escape" });
+      expect(upper).toHaveBeenCalledTimes(1);
+      expect(lower).not.toHaveBeenCalled();
+      expect(onWindow).not.toHaveBeenCalled();
+      // A key the modal does not take still reaches the window.
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Upper field" }), { key: "a" });
+      expect(onWindow).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("keydown", onWindow);
+    }
+  });
 
   it.each([["plain", false], ["StrictMode", true]] as const)(
     "opened from outside, outer + inner together (%s): the inner going puts focus in the outer, its keys work", (_m, strict) => {
@@ -700,36 +775,32 @@ describe.each([
     expect(screen.getByRole("dialog", { name: "Upper" })).toContainElement(document.activeElement as HTMLElement);
   });
 
-  it("an editor's EditorFooter lands in the modal's footer slot, after the caller's Cancel; a submit there still submits", () => {
-    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
-    function Editor() {
-      return (
-        <form id="ed-form" onSubmit={onSubmit}>
-          <input aria-label="Name" />
-          <EditorFooter><button type="submit" form="ed-form">Save</button></EditorFooter>
-        </form>
-      );
-    }
-    function Host() {
-      const [slot, setSlot] = useState<HTMLElement | null>(null);
-      return (
-        <Modal title="Edit" onClose={() => {}}
-          footer={<><button type="button">Cancel</button><span data-testid="slot" ref={setSlot} className="contents" /></>}>
-          <FooterSlotContext.Provider value={slot}><Editor /></FooterSlotContext.Provider>
-        </Modal>
-      );
-    }
-    render(<Host />);
-    const save = screen.getByRole("button", { name: "Save" });
-    expect(screen.getByTestId("slot")).toContainElement(save);
-    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).not.toContainElement(save);
-    fireEvent.click(save);
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    cleanup();
-    // Alone (no slot provided) the buttons sit inline under the body.
-    render(<Editor />);
-    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).toContainElement(screen.getByRole("button", { name: "Save" }));
-  });
+  it.each([["plain", false], ["StrictMode", true]] as const)(
+    "a dialog that closes as it opens the next (%s): closing the next puts focus back on the first one's opener", async (_m, strict) => {
+      function Chain() {
+        const [step, setStep] = useState<0 | 1 | 2>(0);
+        return (
+          <>
+            <button type="button" onClick={() => setStep(1)}>New message</button>
+            {step === 1 && (
+              <Modal title="Pick" onClose={() => setStep(0)}
+                footer={<button type="button" onClick={() => setStep(2)}>Next</button>}>
+                <input aria-label="Pick field" />
+              </Modal>
+            )}
+            {step === 2 && <Modal title="Compose" onClose={() => setStep(0)}><input aria-label="Text" /></Modal>}
+          </>
+        );
+      }
+      render(strict ? <StrictMode><Chain /></StrictMode> : <Chain />);
+      const opener = screen.getByRole("button", { name: "New message" });
+      await userEvent.click(opener);
+      await userEvent.click(screen.getByRole("button", { name: "Next" }));
+      expect(screen.getByRole("dialog", { name: "Compose" })).toContainElement(document.activeElement as HTMLElement);
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(opener).toHaveFocus();
+    });
 
   it("closable=false draws no × and ignores Escape", async () => {
     render(<Harness closable={false} />);
@@ -793,5 +864,56 @@ describe("IfCreatorSelect + useCreatorParam", () => {
     renderWithProviders(<Harness accounts={[]} />);
     expect(screen.getByTestId("body")).toHaveTextContent("none");
     expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent("No creators");
+  });
+});
+
+describe("IfModal footerSlot", () => {
+  it("an editor's EditorFooter lands in an IfModal footerSlot's footer, after the caller's Cancel; a submit there still submits", () => {
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
+    function Editor() {
+      return (
+        <form id="ed-form" onSubmit={onSubmit}>
+          <input aria-label="Name" />
+          <EditorFooter><button type="submit" form="ed-form">Save</button></EditorFooter>
+        </form>
+      );
+    }
+    render(<IfModal title="Edit" onClose={() => {}} footer={<button type="button">Cancel</button>} footerSlot><Editor /></IfModal>);
+    const save = screen.getByRole("button", { name: "Save" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel.parentElement).toContainElement(save);
+    expect(cancel.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).not.toContainElement(save);
+    fireEvent.click(save);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    cleanup();
+    // Alone (no slot provided) the buttons sit inline under the body.
+    render(<Editor />);
+    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).toContainElement(screen.getByRole("button", { name: "Save" }));
+  });
+  it("a modal without footerSlot inside one with it keeps its own editor's buttons inline", () => {
+    render(
+      <IfModal title="Outer" onClose={() => {}} footerSlot>
+        <IfModal title="Inner" onClose={() => {}}>
+          <div data-testid="inner-body"><EditorFooter><button type="button">Done</button></EditorFooter></div>
+        </IfModal>
+      </IfModal>,
+    );
+    expect(screen.getByTestId("inner-body")).toContainElement(screen.getByRole("button", { name: "Done" }));
+  });
+});
+
+describe("saveVerdict: a save mutation's SaveRow verdict", () => {
+  const M = (o: Partial<{ isPending: boolean; isSuccess: boolean; error: Error | null }>) =>
+    ({ isPending: false, isSuccess: false, error: null, ...o });
+  it.each([
+    ["idle", M({}), true, { pending: false, saved: false, error: null }],
+    ["running", M({ isPending: true }), true, { pending: true, saved: false, error: null }],
+    ["landed", M({ isSuccess: true }), true, { pending: false, saved: true, error: null }],
+    ["landed, edited since", M({ isSuccess: true }), false, { pending: false, saved: false, error: null }],
+    ["failed", M({ error: new Error("refused") }), true, { pending: false, saved: false, error: "refused" }],
+    ["failed, no message", M({ error: new Error("") }), true, { pending: false, saved: false, error: "Save failed" }],
+  ])("%s", (_n, m, clean, want) => {
+    expect(saveVerdict(m, clean)).toEqual(want);
   });
 });

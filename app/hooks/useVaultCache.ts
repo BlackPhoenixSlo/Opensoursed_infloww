@@ -20,7 +20,6 @@ import { useSweepStatus } from "@/hooks/useVaultSweep";
 import { vaultListsKey, vaultMediaKey } from "@/hooks/useVaultMedia";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
-import { proxyImage } from "@/lib/mediaUrl";
 import { flushPersistedCache } from "@/lib/rqPersister";
 import { errText } from "@/lib/errText";
 
@@ -634,16 +633,18 @@ export interface VaultCacheSummary {
   /** True once a full background walk or a manual Collect finished. Missing → false:
    *  a partial mirror must not switch the picker to the DB path. */
   complete?: boolean;
-  last_run: { id: number; status: string; total_seen: number; finished_at: string | null } | null;
+  /** `total_seen` is null for a restricted chatter (whole-vault count). */
+  last_run: { id: number; status: string; total_seen: number | null; finished_at: string | null } | null;
 }
 
 export interface CollectRun {
   id: number;
   status: string;
   phase: string | null;
-  total_seen: number;
-  upserted: number;
-  pages_done: number;
+  /** Whole-vault totals: null for a restricted chatter (they would leak folder sizes it may not see). */
+  total_seen: number | null;
+  upserted: number | null;
+  pages_done: number | null;
   error: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -878,69 +879,6 @@ export async function hideDuplicates(
     }
   }
   return agg;
-}
-
-/**
- * The image for one vault TILE — the grid and the chat picker — or "" when the
- * media has no picture to show. The caller renders a placeholder on "".
- *
- * Two rules, and neither is a kind check:
- *
- * 1. `_thumb` first. It is the relay's permanent, signature-free copy of the
- *    300px square, stamped onto a mirror row by `vault_ai_api._overlay`, and its
- *    PRESENCE is the answer to "does this media have a still" — the relay stamps
- *    it only for a kind that can have one (`vault_mirror.has_still`). A voice
- *    note therefore arrives with no `_thumb` and falls through to…
- * 2. …a chain that stops at `preview`. `files.full` is deliberately NOT in it.
- *    Measured across a 6,388-item mirror, `full` is the sole variant for all 592
- *    audio items and for NOTHING else — every photo, video and gif carries a real
- *    picture variant. So the `full` step could only ever resolve for the one kind
- *    whose `full` IS the audio, and an <img> pointed at that costs two OF calls
- *    and one of six in-flight still slots before it 404s, on every render.
- *
- * Between them the audio case needs no branch in any component: nothing resolves,
- * so nothing is requested. Note the rule cannot be recovered from the url — OF's
- * vault CDN paths carry no extension at all (`…/0gwnzeh3cf8dgfj70262`), which is
- * why `ofMedia.stillUrl`'s extension test is the right answer for a chat bubble
- * and no answer at all here.
- */
-export function vaultTileThumb(
-  m: VaultMedia,
-  accountId: string | null | undefined,
-): string {
-  return (
-    m._thumb ||
-    // No media id here on purpose: a stale page of tiles reloads itself once
-    // (one listing call); a per-tile re-sign would be one OF call per tile.
-    proxyImage(
-      m.files?.thumb?.url || m.files?.squarePreview?.url || m.files?.preview?.url,
-      accountId,
-    )
-  );
-}
-
-/** The same url `vaultTileThumb` prefers, built from an id alone — for a surface
- *  that holds no media dict. It cannot consult `has_still`, so the store answers
- *  an impossible one with an instant 404 (`vault_stills.bytes_for`).
- *  300x300 CENTRE-CROP — fine for a grid tile, wrong for judging exposure. */
-export function mirrorThumbSrc(accountId: string, mediaId: number): string {
-  return `/admin/vault-ai/thumb?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}`;
-}
-
-/** The FULL-FRAME image (aspect-preserving preview), permanent + signature-free.
- *  Use this anywhere an operator judges what is actually on show — the square
- *  thumb crops the top and bottom off a 3:4 portrait, hiding an edge-of-frame
- *  waistband or genitalia (the exact crop that misled the vision model). */
-export function mirrorFullSrc(accountId: string, mediaId: number): string {
-  return `/admin/vault-ai/image?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}`;
-}
-
-/** One of a video's poster frames (OF's own pre-extracted stills, media-id keyed
- *  and permanent — the same frames the chat VaultPicker slideshows). Used to
- *  hover-scrub a clip in the review UI: a video cannot be judged from a single
- *  still, so the operator drags across frame 0 → N-1 to see the whole thing. */
-export function mirrorPosterSrc(accountId: string, mediaId: number, i: number): string {
-  return `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}&i=${i}`;
 }
 
 /**

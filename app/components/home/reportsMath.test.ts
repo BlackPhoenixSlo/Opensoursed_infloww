@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PerModelRow } from "@/hooks/useStats";
 
 import {
-  type ColCtx, type RevResp, DEFAULT_RANGE, STAT_COLS, asChargebacks, cellCsv, creatorDayRows, creatorRows, datePresets,
-  dailyOf, daysFrom, grossOf, netMissingNote, netOf, rollUp, sumKinds, totalOf, viewOf,
+  type ColCtx, type RevResp, DEFAULT_RANGE, STAT_COLS, cellCsv, chargebacksCents, creatorDayRows, creatorRows, datePresets,
+  dailyOf, daysFrom, grossOf, netOf, rollUp, sumKinds, totalOf, viewOf,
 } from "./reportsMath";
+import { netMissingNote } from "./netMissingNote";
 
 const col = (key: string) => STAT_COLS.find((c) => c.key === key)!;
 const gross: ColCtx = { hours: 24, agencyCents: 10_000, net: false };
@@ -60,34 +61,32 @@ describe("sumKinds", () => {
     { data: { rows: [{ day: null, kind: "referral", total_cents: 50, count: 1, net_cents: 40 }, { day: null, kind: null, total_cents: 7, count: 1, net_cents: 5 }] } },
     // Stream sales: Total earnings only.
     { data: { rows: [{ day: null, kind: "ppv_stream", total_cents: 11, count: 1, net_cents: 9 }] } },
-    // The reversed read, as Chargebacks.
-    { data: asChargebacks({ rows: [
-      { day: null, kind: "ppv_message", total_cents: 2888, count: 2, net_cents: 2310 },
-      { day: null, kind: "tip", total_cents: 100, count: 1 },
-    ] }) },
     {},
   ];
+  // The reversed read, Chargebacks' own.
+  const reversed = [{ data: { rows: [
+    { day: null, kind: "ppv_message", total_cents: 2888, count: 2, net_cents: 2310 },
+    { day: null, kind: "tip", total_cents: 100, count: 1 },
+  ] } }, {}];
   it.each([
-    ["gross", grossOf, { subscriptions: 1500, tips: 300, posts: 200, messages: 0, chargebacks: -2988, referrals: 50, other: 18 }, 2068],
-    ["net (net_cents null or absent → 0)", netOf, { subscriptions: 1200, tips: 0, posts: 0, messages: 0, chargebacks: -2310, referrals: 40, other: 14 }, 1254],
-  ] as const)("%s: Chargebacks below zero, left out of the total", (_name, money, want, total) => {
+    ["gross", grossOf, { subscriptions: 1500, tips: 300, posts: 200, messages: 0, referrals: 50, other: 18 }, 2068, -2988],
+    ["net (net_cents null or absent → 0)", netOf, { subscriptions: 1200, tips: 0, posts: 0, messages: 0, referrals: 40, other: 14 }, 1254, -2310],
+  ] as const)("%s: channels sum to the total; Chargebacks below zero, apart", (_name, money, want, total, cb) => {
     const b = sumKinds(qs, money);
     expect(b).toEqual(want);
     expect(totalOf(b)).toBe(total);
+    expect(chargebacksCents(reversed, money)).toBe(cb);
   });
+  it("no reversals: Chargebacks $0, not -0", () => expect(Object.is(chargebacksCents([{}], grossOf), 0)).toBe(true));
 });
 
-describe("dailyOf with Chargebacks", () => {
+describe("dailyOf", () => {
   const days = ["2026-01-01", "2026-01-02"];
   const earned: RevResp = { rows: [{ day: "2026-01-01", kind: null, total_cents: 1500, count: 2, by_kind: [
     { kind: "subscription", total_cents: 1000, count: 1 }, { kind: "ppv_stream", total_cents: 500, count: 1 },
   ] }] };
-  const reversed: RevResp = { rows: [{ day: "2026-01-02", kind: null, total_cents: 700, count: 1, by_kind: [
-    { kind: "ppv_message", total_cents: 700, count: 1 },
-  ] }] };
-  const d = dailyOf([{ data: earned }, { data: asChargebacks(reversed) }], days, grossOf);
-  it("the day total keeps the earnings only; streams count in it", () => expect(d.total).toEqual([1500, 0]));
-  it("Chargebacks by day below zero", () => expect(d.byChan("chargebacks")).toEqual([0, -700]));
+  const d = dailyOf([{ data: earned }], days, grossOf);
+  it("streams count in the day total", () => expect(d.total).toEqual([1500, 0]));
   it("no stream channel: subscriptions alone", () => expect(d.byChan("subscriptions")).toEqual([1000, 0]));
 });
 
@@ -130,7 +129,7 @@ describe("netMissingNote", () => {
 describe("creatorDayRows", () => {
   const ann = { account_id: "a1", display_name: "Ann" } as unknown as PerModelRow;
   const bob = { account_id: "b2", display_name: "" } as unknown as PerModelRow;
-  const reads: Record<string, RevResp> = {
+  const earned: Record<string, RevResp> = {
     a1: { rows: [{ day: "2026-01-01", kind: null, total_cents: 1800, count: 3, net_cents: 1440, by_kind: [
       { kind: "subscription", total_cents: 1000, count: 1, net_cents: 800 },
       { kind: "ppv", total_cents: 500, count: 1, net_cents: 400 },
@@ -138,9 +137,11 @@ describe("creatorDayRows", () => {
     ] }] },
     b2: { rows: [] },
   };
-  // The reversed day read's rows, as the caller adds them (CompetitorReports' buildExport).
-  reads.a1.rows.push(...asChargebacks({ rows: [{ day: "2026-01-02", kind: null, total_cents: 2888, count: 1, net_cents: 2310 }] })!.rows);
-  const read = (id: string) => Promise.resolve(reads[id]);
+  // The reversed day read (CompetitorReports' buildExport).
+  const reversed: Record<string, RevResp> = {
+    a1: { rows: [{ day: "2026-01-02", kind: null, total_cents: 2888, count: 1, net_cents: 2310 }] }, b2: { rows: [] },
+  };
+  const read = (id: string) => Promise.resolve({ earned: earned[id], reversed: reversed[id] });
   const header = ["Creator", "Day", "Total earnings", "Subscription", "Tips", "Posts", "Messages", "Other", "Chargebacks"];
   it.each([
     ["gross", false, [

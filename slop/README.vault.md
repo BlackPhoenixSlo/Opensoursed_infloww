@@ -48,10 +48,25 @@ oracles, bypasses).
   re-sign each, then direct 200), `PROXIED` (0 browser CDN fetches), `RELAY_LOAD`; files read off disk (path, a
   .jpg's exact bytes, an .mp4's size = served + ftyp), the panel's data-* counts, the relay's `vault_download` log
   lines; p95 of the relay download vs last green. Fault `vault-download-direct-ignores-proxy` (default, client:
-  `sourceFor` drops the proxy rule) turns only `PROXIED` red. Bypasses: the browser's CDN requests answered at its
-  network boundary (Playwright route) by img_relay's fake with S3's CORS (ACAO `*` on 200/206, none on 403); the
-  native folder picker stubbed (init script; each chunk over a binding to `<tmp>/downloads/<phase>/`, `.crswap`
-  then rename, as Chromium). Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).
+  `sourceFor` drops the proxy rule) turns only `PROXIED` and `PHONE_SHARE` red. Phone stage (B, 390x844 Chromium
+  mobile emulation, `touch`): `PHONE_CAP` (Select all > 20 off with "Phone: up to 20 at a time", 20 on, 21 off,
+  folder / whole vault off with their reason) and `PHONE_SHARE` (3 photos + 2 videos padded to 110 MB,
+  `img_relay.padded_mp4` via `arm_run(mp4_sizes=)`, so >= 2 share batches; one sheet dismissed keeps the button;
+  every file shared once with name / MIME / exact size; each share inside a user activation; no 5xx); screenshots
+  `vault-download-phone-<cap|links|trigger|ready|settled>`. Fault `vault-download-share-batch-drops-item` (client:
+  `addToBatches` drops the file that opens a batch) turns only `PHONE_SHARE` red. Links file: `LINKS` (each
+  desktop phase writes `links-valid-*.txt/.html` first in `<creator>/[<folder>/]`, the picker stub's open order;
+  one line / row per item, every id once; A's lines its CDN urls unexpired, B's the app relay url; the html opened
+  in Chromium, `vault-download-links-html[-proxied]`, A's CDN link clicked (popup 200 through the CDN boundary,
+  `-opened`), B's app link fetched with the session: 200 attachment, exact bytes) and `PHONE_LINKS` ("Save links"
+  first, its own share inside the tap, txt + html, app urls). Copies `links-<phase>.txt/.html` in the run folder.
+  Fault `vault-download-links-cdn-for-proxied` (client: `linkRows` drops the direct rule) turns only `LINKS` and
+  `PHONE_LINKS` red. Bypasses: the browser's CDN
+  requests answered at its network boundary (Playwright route) by img_relay's fake with S3's CORS (ACAO `*` on
+  200/206, none on 403); the native folder picker stubbed (init script; each chunk over a binding to
+  `<tmp>/downloads/<phase>/`, `.crswap` then rename, as Chromium); phone: `showDirectoryPicker` deleted and
+  `navigator.canShare` / `share` stubbed by an init script that records the shared Files (no WebKit, no real sheet).
+  Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).
 
 - `2026-11-05-vault-refresh`: `OF_WIRE` (`seed/of_sessions`) + `lib/vault_wire.py`, `agency_pool` plus `seed/vault_live`, `lib/img_relay.py`
   armed with `pictures`. UI: Vault Pro on Creator 0 (desktop) and 1 (phone): a folder + 5 media made on OF after

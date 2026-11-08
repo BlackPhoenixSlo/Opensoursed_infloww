@@ -25,6 +25,16 @@ const wp = vi.hoisted(() => {
     testPush: vi.fn(async () => ({ status: 201 })),
   };
 });
+// The quick-reply field at its interface (NotificationQuickReply.test covers its send): a line it holds per mount.
+vi.mock("./NotificationQuickReply", async () => {
+  const { useState } = await import("react");
+  return {
+    QuickReplyField: ({ name }: { name: string }) => {
+      const [text, setText] = useState("");
+      return <input aria-label={`Reply to ${name}`} value={text} onChange={(e) => setText(e.target.value)} />;
+    },
+  };
+});
 vi.mock("@/lib/webPush", () => ({
   pushSupported: () => wp.supported,
   iosTab: () => wp.ios,
@@ -38,7 +48,7 @@ vi.mock("@/lib/webPush", () => ({
 
 import { renderWithProviders } from "@/test-utils";
 import { NOTIF_CLEARED_EVENT, appendNotifHistory, dispatchNotifArrived, markNotifHistoryResponded } from "@/lib/notifSettings";
-import { NotificationBell } from "./NotificationBell";
+import { NotificationBell, Row } from "./NotificationBell";
 import { DENIED_MSG, IOS_TAB_MSG } from "./OsPingSettings";
 
 afterEach(() => {
@@ -147,6 +157,18 @@ describe("NotificationBell (has responded)", () => {
     expect(screen.getByText(/has responded/)).toBeInTheDocument();
     // Fan 8 is still unanswered: one Reply left.
     expect(screen.getAllByRole("button", { name: "Reply" })).toHaveLength(1);
+  });
+});
+
+describe("NotificationBell (quick reply)", () => {
+  it("a row whose props move to another Fan (an id-less row arrived above) never carries the typed line over", async () => {
+    const msg = (fan: number) => ({ type: "message", user: { id: fan, name: `Fan ${fan}` }, text: "hi" });
+    const { rerender } = renderWithProviders(<Row n={msg(7)} accountId="acc-1" accountLabel={null} reply />);
+    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.type(await screen.findByLabelText("Reply to Fan 7"), "for seven");
+    rerender(<Row n={msg(8)} accountId="acc-1" accountLabel={null} reply />);
+    const other = screen.queryByLabelText("Reply to Fan 8") as HTMLInputElement | null;
+    expect(other?.value ?? "").toBe("");
   });
 });
 

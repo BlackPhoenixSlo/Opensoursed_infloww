@@ -117,7 +117,7 @@ from isotime import iso_z
 import of_pacing
 import of_tracking_api
 from of_promos import fetch_of_promos, fetch_of_trials, safe_int, to_cents
-from of_tracking_api import _BUCKET, _WALK_LOCKS, _MetaFields, _blank, _parse_of_time
+from of_tracking_api import _BUCKET, _MetaFields, _blank, _parse_of_time, walk_lock
 
 log = logging.getLogger("of-relay.link_metrics")
 
@@ -143,16 +143,11 @@ _TASKS: set[asyncio.Task] = set()   # strong refs, so a running refresh is not c
 _REWALKING: set[tuple[str, str, int]] = set()   # Details' stale re-walks queued or running
 _LIST_QUEUED: set[tuple[str, str, int]] = set()  # a save's first add-to-list, queued or running
 _LIST_FAILED_AT: dict[str, float] = {}           # account -> the last failed add-to-list (back-off)
+_PREWARM_SKIPPED: set[str] = set()                # accounts prewarm_all skipped last pass (user active)
 
 
 def _now() -> datetime:
     return datetime.utcnow()
-
-
-def _lock(account_id: str) -> asyncio.Lock:
-    """The account's walk lock (of_tracking_api.walk_lock): one OF walk at a time. No Growth
-    route waits on it; the list and Details routes only read whether it is held."""
-    return _WALK_LOCKS.setdefault(account_id, asyncio.Lock())
 
 
 # ── The walk ──────────────────────────────────────────────────────────
@@ -250,7 +245,7 @@ async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, in
     at a time under the account's walk lock; mark the rest checked. An OF failure
     stops the pass (most likely a 429) and backs off; what was walked stays."""
     walked = checked = 0
-    async with _lock(account_id):
+    async with walk_lock(account_id):
         async with get_session() as s:
             metas = {m.of_id: m for m in (await s.execute(select(LinkMeta).where(
                 LinkMeta.account_id == account_id, LinkMeta.kind == kind))).scalars().all()}
@@ -394,17 +389,20 @@ async def prewarm_all() -> None:
 
     A Creator with a person's read in the last of_pacing.USER_WINDOW_S (10 s)
     is skipped in its turn (one `bg_walk_skip` line) and walked next pass: no
-    waiting, so a pass never runs late. The pacer alone keeps the walks off
-    OF's limit; this only keeps a pass's burst off a person's own reads."""
+    waiting, so a pass never runs late. Skipped once, it is walked next pass even
+    if still busy (a Creator always in use is never starved). The pacer alone keeps
+    the walks off OF's limit; this only keeps a pass's burst off a person's own reads."""
     live = [m["id"] for m in account_registry.list_accounts()
             if m.get("has_session") and m.get("platform") == "onlyfans"]
     gap = _PREWARM_SPREAD_S / max(len(live), 1)
     for i, aid in enumerate(live):
         if i:
             await asyncio.sleep(gap * random.uniform(0.5, 1.5))
-        if of_pacing.user_active(aid):
+        if aid not in _PREWARM_SKIPPED and of_pacing.user_active(aid):
+            _PREWARM_SKIPPED.add(aid)
             log.info("bg_walk_skip account=%s kind=link_prewarm", aid)
             continue
+        _PREWARM_SKIPPED.discard(aid)
         await _prewarm_live(aid)
 
 
@@ -591,7 +589,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
     walked = meta is not None and meta.walked_at is not None
     moved = count is not None and walked and meta.claim_count != count
     if count != 0 and (not walked or moved):
-        if _lock(account_id).locked():
+        if walk_lock(account_id).locked():
             refreshing = True        # a refresh is walking OF for this account; show what is cached
         else:
             try:
@@ -627,7 +625,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
 
 async def _walk_one(account_id: str, kind: str, of_id: int, count: int | None,
                     campaign_id: int | None) -> None:
-    async with _lock(account_id):
+    async with walk_lock(account_id):
         client = await asyncio.to_thread(ax._make_client, account_id)
         fans = await asyncio.to_thread(walk, client, kind, of_id, count)
         await _store_walk(account_id, kind, of_id, fans, count, campaign_id)
@@ -640,7 +638,7 @@ def _rewalk_later(account_id: str, kind: str, of_id: int, count: int | None, cam
     key = (account_id, kind, of_id)
     if key in _REWALKING:
         return True
-    if _lock(account_id).locked():
+    if walk_lock(account_id).locked():
         return False
     if _backed_off(account_id, kind):
         return False
@@ -717,8 +715,9 @@ async def _promo_list_is(account_id: str, list_id: str) -> bool:
 
 
 async def sync_lists(account_id: str, kind: str, client, counts: dict[int, int]) -> int:
-    """With the account's walk lock held (of_tracking_api's earnings read: its
-    _LOCKS): OF's add-to-list for each of the kind's links with a List whose
+    """Under the account's walk lock (the walks here, of_tracking_api.prewarm) or
+    of_tracking_api._LOCKS (its earnings read, _compute): the two paths may both sync
+    at once, harmless as an add is idempotent (a fan already on the List stays). OF's add-to-list for each of the kind's links with a List whose
     claim count (`counts`, from OF's list read) grew past the last add. Paced; the first OF error stops the pass (raised).
     `client` None: one is made only if an add is due. Promotions follow the
     account's one setting (off: nothing)."""
@@ -767,7 +766,7 @@ async def _list_add_task(account_id: str, kind: str, of_id: int) -> None:
     after that queues its own add, whose mark this task leaves alone."""
     released = False
     try:
-        async with _lock(account_id):
+        async with walk_lock(account_id):
             _LIST_QUEUED.discard((account_id, kind, of_id))
             released = True
             async with get_session() as s:
@@ -954,7 +953,7 @@ async def _promo_list_task(account_id: str) -> None:
     more pass, whose mark this task leaves alone."""
     released = False
     try:
-        async with _lock(account_id):
+        async with walk_lock(account_id):
             _LIST_QUEUED.discard((account_id, "promo", 0))
             released = True
             async with get_session() as s:

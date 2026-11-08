@@ -5,11 +5,9 @@
  * EditRuleJsonModal (PATCH one automation rule) and JsonConfigModal (a per-account config blob).
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
-import { IfButton, IfHelp, IfModal } from "@/components/ui/infloww";
-import { IF_FIELD } from "@/components/ui/ifSelect";
-import { cn } from "@/lib/utils";
+import { IfButton, IfHelp, IfModal, IfTextArea } from "@/components/ui/infloww";
 
 export function RawJsonModal({
   name, subtitle, text, onText, error, status, busy, onReformat, onSave, onClose,
@@ -27,11 +25,14 @@ export function RawJsonModal({
   onSave: () => void;
   onClose: () => void;
 }) {
+  // Escape closes only an untyped buffer (the caller's async seed is not a user edit), and never mid-save.
+  const [typed, setTyped] = useState(false);
   return (
     <IfModal
       width={820}
       title={`Edit raw JSON · ${name}`}
       onClose={onClose}
+      keyboard={!typed && !busy}
       footer={(
         <>
           <IfButton variant="link" onClick={onReformat} disabled={!!status} className="mr-2">Reformat</IfButton>
@@ -46,13 +47,13 @@ export function RawJsonModal({
       {status ? (
         <div className="py-10 text-center text-muted">{status}</div>
       ) : (
-        <textarea
+        <IfTextArea
           aria-label="Raw JSON"
           value={text}
-          onChange={(e) => onText(e.target.value)}
+          onChange={(e) => { setTyped(true); onText(e.target.value); }}
           spellCheck={false}
           placeholder="{ }"
-          className={cn(IF_FIELD, "block h-[52vh] w-full resize-none px-[11px] py-1 font-mono text-[13px] outline-none placeholder:text-muted focus:border-accent")}
+          className="h-[52vh] resize-none font-mono text-[13px]"
         />
       )}
       {error && <div className="mt-2 whitespace-pre-wrap text-[12px] text-err">{error}</div>}

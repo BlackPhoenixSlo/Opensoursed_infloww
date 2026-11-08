@@ -131,7 +131,7 @@ export function useRailDock(surface: Surface) {
 
   // A press on the header is a drag or a click (useDragPress); the drag
   // positions from the panel's top-left at press time.
-  const { onPointerDown: onHeaderPointerDown, draggedRef, swallowClick } = useDragPress({
+  const { onPointerDown: onHeaderPointerDown, swallowClick } = useDragPress({
     begin: () => {
       const rect = panelRef.current?.getBoundingClientRect();
       return rect ? { x: rect.left, y: rect.top } : null;
@@ -172,5 +172,6 @@ export function useRailDock(surface: Surface) {
     return () => window.removeEventListener("resize", onResize);
   }, [mounted]);
 
-  return { dock, mounted, viewportH, panelRef, draggedRef, onHeaderPointerDown, toggle };
+  // `swallowClick`: every other button in the dragged header asks it first.
+  return { dock, mounted, viewportH, panelRef, swallowClick, onHeaderPointerDown, toggle };
 }

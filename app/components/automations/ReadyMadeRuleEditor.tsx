@@ -7,14 +7,13 @@ import { PenLine } from "lucide-react";
 
 import { EmptyState, IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSegmented, IfSelect, IfSwitch } from "@/components/ui/infloww";
 import { IF_FIELD } from "@/components/ui/ifSelect";
-import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import { useCreateRule, useUpdateRule, type AutomationRule } from "@/hooks/useAutomations";
 import { useRawJson } from "@/lib/rawJsonReducer";
 import { PAYLOAD_RAW, withoutDryRun } from "@/lib/rulePayload";
 import { UNIT_S, splitInterval, type Unit } from "@/components/automations/ruleInterval";
 import { LIST_KEY, type Kind } from "@/components/compose/premadeRows";
 import { KIND_COPY, canSave, hasContent, summarize } from "@/components/automations/readyMadeContent";
-import { ComposeModal } from "@/components/automations/ComposeModal";
+import { PremadeForm } from "@/components/compose/PremadeForm";
 import { cn } from "@/lib/utils";
 
 export function ReadyMadeRuleEditor({
@@ -107,7 +106,7 @@ export function ReadyMadeRuleEditor({
       width={722}
       title={editing ? `Edit · ${editing.name}` : `New ${copy.noun}`}
       onClose={onClose}
-      className={EDITOR_MODAL}
+      size="editor"
       footer={(
         <>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
@@ -223,9 +222,10 @@ export function ReadyMadeRuleEditor({
       </div>
 
       {composerOpen && (
-        <ComposeModal
+        <PremadeForm
           kind={kind}
           accountId={accountId}
+          title={KIND_COPY[kind].composeTitle}
           initialPayload={composed}
           onClose={() => setComposerOpen(false)}
           onComposePayload={(p) => {

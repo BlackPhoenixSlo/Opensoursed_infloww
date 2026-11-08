@@ -23,12 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_ai_vision  # flags + describe passes; routes included at their old spots below
 import vault_ai_vision_decide
+import vault_collect  # preempt: the Collect button stops the background walk of its account first
 # The permanent, signature-free picture stores (thumbs / full previews / DRM poster
 # frames), including the whole route body behind the three serve endpoints below.
 # This module keeps the SWEEP that fills them.
@@ -38,6 +39,7 @@ import vault_of_folders  # duplicates list/hide, folder plan + publish, OF folde
 import relay_coalesce
 import vault_ingest  # has_live_mirror: the grid's own "is the mirror on" question
 import vault_pack_picker
+import vault_runs
 import vault_stills
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
@@ -93,57 +95,35 @@ router = APIRouter()
 _PAGE = 100                # OF vault/media caps limit at 100
 _MAX_PAGES = 200          # 20k-item backstop so a stuck hasMore can't loop forever
 _PAGE_SLEEP_S = 0.15      # pacing: automations bypass the relay's priority lane
-# Guard against two concurrent MANUAL sweeps for the same account clobbering each
-# other. The background collector (vault_collect) has its own set and skips these.
-_running: set[str] = set()
-# The background collector's phases all start with this; `_latest_run` (the
-# Collect button's progress) ignores them.
-AUTO_PHASE_PREFIX = "auto:"
-
-
-async def _no_preempt(_account_id: str) -> None:
-    return None
-
-# Set by vault_collect at import: stop its walk of this account (cursor kept) and
-# wait ≤10 s for it to let go. A manual Collect calls it first — the button wins.
-# A hook, not an import: vault_collect imports this module.
-preempt_auto = _no_preempt
-
-
-async def full_walk_done(s: Any, account_id: str, since: datetime | None = None) -> bool:
-    """THE definition of "the whole vault was walked" (finished at/after `since`
-    when given): a manual Collect run (status done, phase "done"), or a collector
-    run that paged All (phase "auto:done" with pages_done > 0 — a hot-set-only
-    refresh leaves 0). `cache/summary`'s `complete` and the collector's weekly
-    re-walk both ask this, so they cannot disagree."""
-    stmt = select(VaultCacheRun.id).where(
-        VaultCacheRun.account_id == account_id, VaultCacheRun.status == "done",
-        or_(VaultCacheRun.phase == "done",
-            (VaultCacheRun.phase == f"{AUTO_PHASE_PREFIX}done") & (VaultCacheRun.pages_done > 0)))
-    if since is not None:
-        stmt = stmt.where(VaultCacheRun.finished_at >= since)
-    return (await s.execute(stmt.limit(1))).first() is not None
 _SOFT_DENY = {"list": [], "hasMore": False, "source": "mirror"}
 
 
-async def _assert_media_visible(account_id: str, *media_ids: int) -> None:
-    """404 a restricted chatter's request naming media outside its folders — a
-    still (even on a disk hit), a dispute fix, a grade, a pack verdict — and a
-    media the mirror has no row for (its folders are unknown). One query for all
-    the ids, the listing's predicate. Owners pay no DB read: the gate answers
-    None first."""
-    allowed = await allowed_folder_ids_for_chatter(account_id)
-    if allowed is None:
-        return
+async def visible_ids(account_id: str, media_ids) -> set[int]:
+    """The ids among `media_ids` the acting principal may see: all of them for an
+    owner / unrestricted chatter (no DB read — the gate answers None first), else
+    those whose mirror row is in its folders (a media the mirror has no row for is
+    out: its folders are unknown). One query for all the ids, the listing's predicate."""
     ids = {int(m) for m in media_ids}
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    if allowed is None or not ids:
+        return ids
     async with get_session() as s:
-        seen = {m for (m,) in (await s.execute(
+        return {m for (m,) in (await s.execute(
             select(VaultItem.media_id).where(
                 VaultItem.account_id == account_id, VaultItem.media_id.in_(ids),
-                in_of_folders(allowed))
+                vault_mirror.visible_to(allowed))
         )).all()}
-    if ids - seen:
+
+
+async def assert_media_visible(account_id: str, *media_ids: int) -> None:
+    """404 a restricted chatter's request naming media outside its folders — a
+    still (even on a disk hit), a dispute fix, a grade, a pack verdict, an edit,
+    a hide, a reorder, a by-id read — or one the mirror has no row for."""
+    ids = {int(m) for m in media_ids}
+    if ids - await visible_ids(account_id, ids):
         raise HTTPException(status_code=404, detail="not_found")
+
+
 # In-memory storyboard-warming progress per account (surfaced in /collect/status).
 _warm_progress: dict[str, dict[str, Any]] = {}
 
@@ -169,52 +149,12 @@ async def _warm_store(client: Any, account_id: str, phase: str,
                                           "warm_total": total}
 
 
-async def _update_run(run_id: int, **fields: Any) -> None:
-    """Set `fields` on the VaultCacheRun row (if it still exists) and commit."""
-    async with get_session() as s:
-        run = await s.get(VaultCacheRun, run_id)
-        if run:
-            for k, v in fields.items():
-                setattr(run, k, v)
-            await s.commit()
-
-
-async def _upsert_page(account_id: str, items: list, run_id: int | None = None, *, folder_id: int | None = None,
-                       want_known: bool = False) -> tuple[list[tuple[dict, dict[str, Any]]], set[int]]:
-    """One OF vault/media page into the mirror, one transaction: Collect's sweep, Refresh's sync and the background
-    collector (vault_collect) all write through here. Returns `(written, known)`: each (OF media, its row values)
-    upserted, and, only with `want_known` (Refresh's "anything new?"; the others never ask, so they pay no extra
-    SELECT), the ids of those the mirror already held (else empty). The statement is `vault_mirror`'s, shared with the
-    import ingest: one on-conflict set, so seeing a media again refreshes only the mirror bookkeeping, never an AI /
-    operator / describe field. An item with NO listStates key says nothing about its folders: it keeps the ones the
-    mirror knows instead of being overwritten with [], and from a folder's page (`folder_id`) it IS in that one."""
-    written = [(m, v) for m in items if isinstance(m, dict)
-               for v in (vault_mirror.row_values(account_id, m, run_id),) if v]
-    if not written:
-        return [], set()
-    async with get_session() as s:
-        known = set((await s.execute(
-            select(VaultItem.media_id).where(VaultItem.account_id == account_id,
-                                             VaultItem.media_id.in_([v["media_id"] for _, v in written]))
-        )).scalars().all()) if want_known else set()
-        for m, v in written:
-            if m.get("listStates") is None:
-                prev = await s.get(VaultItem, (account_id, v["media_id"]))
-                ids = set(load_json(prev.of_folder_ids, []) or []) if prev else set()
-                if folder_id is not None:
-                    ids.add(folder_id)
-                v["of_folder_ids"] = json.dumps(sorted(ids, key=str))
-            await s.execute(vault_mirror.upsert_stmt(v))
-        await s.commit()
-    return written, known
-
-
 async def _run_collect(account_id: str, run_id: int) -> None:
     """Background sweep: page the whole vault, upsert into the mirror."""
     try:
         # The button wins over the background collector: it stops its walk of
         # this account (cursor kept) before this one starts paging.
-        await preempt_auto(account_id)
+        await vault_collect.preempt(account_id)
         client = await asyncio.to_thread(ax._make_client, account_id)
         offset = 0
         pages = 0
@@ -224,6 +164,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         thumbs: list[tuple[int, str]] = []     # (media_id, thumb url) to cache after
         stills: list[tuple[int, str]] = []     # (media_id, full-frame url) to cache after
         drm_posters: list[tuple[int, list[str]]] = []  # DRM (media_id, poster urls)
+        more = True
         while pages < _MAX_PAGES:
             resp = await asyncio.to_thread(
                 client.vault_media, limit=_PAGE, offset=offset, type="all", sort="asc",
@@ -231,7 +172,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
             items = (resp or {}).get("list") or []
             if not items:
                 break
-            written, _ = await _upsert_page(account_id, items, run_id)
+            written, _ = await vault_runs.upsert_page(account_id, items, run_id)
             for m, vals in written:
                 total += 1
                 upserted += 1
@@ -258,9 +199,10 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                             drm_posters.append((vals["media_id"], pf))
             pages += 1
             offset += _PAGE
-            await _update_run(run_id, pages_done=pages, total_seen=total,
-                              upserted=upserted, phase="media")
-            if not (resp or {}).get("hasMore"):
+            await vault_runs.update_run(run_id, pages_done=pages, total_seen=total,
+                                        upserted=upserted, phase="media")
+            more = bool((resp or {}).get("hasMore"))
+            if not more:
                 break
             await asyncio.sleep(_PAGE_SLEEP_S)
 
@@ -269,7 +211,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         # already on disk. Metadata is already committed above, so search +
         # the grid are usable while this (slower) phase runs. Re-collect only
         # warms NEW videos — _warm_one_sync short-circuits cached ones.
-        await _update_run(run_id, phase="thumbs")
+        await vault_runs.update_run(run_id, phase="thumbs")
         # Fill the three permanent stores. All incremental — an already-cached file
         # is skipped, so a re-collect only pays for what is new.
         await _warm_store(client, account_id, "thumbs",
@@ -287,7 +229,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                           [(vault_stills.poster_path(account_id, mid, idx), u)
                            for mid, frames in drm_posters
                            for idx, u in enumerate(frames)])
-        await _update_run(run_id, phase="warming")
+        await vault_runs.update_run(run_id, phase="warming")
         warmed = 0
         _warm_progress[account_id] = {"phase": "warming", "warmed": 0, "warm_total": len(videos)}
         for vurl, vdur in videos:
@@ -302,19 +244,22 @@ async def _run_collect(account_id: str, run_id: int) -> None:
             await asyncio.sleep(0.02)   # light pacing between mp4 downloads
         _warm_progress.pop(account_id, None)
 
-        await _update_run(run_id, status="done", phase="done", pages_done=pages,
-                          total_seen=total, upserted=upserted,
-                          finished_at=datetime.utcnow())
+        # Stopped by the page cap with OF still saying hasMore: done, but not a
+        # whole-vault walk (`vault_runs.full_walk_done`).
+        capped = vault_runs.capped_error(_MAX_PAGES) if more and pages >= _MAX_PAGES else None
+        await vault_runs.update_run(run_id, status="done", phase="done", pages_done=pages,
+                                    total_seen=total, upserted=upserted, error=capped,
+                                    finished_at=datetime.utcnow())
         log.info("vault_collect done account=%s run=%s items=%s", account_id, run_id, total)
     except Exception as e:  # noqa: BLE001
         log.exception("vault_collect failed account=%s run=%s", account_id, run_id)
         try:
-            await _update_run(run_id, status="error", error=str(e)[:500],
-                              finished_at=datetime.utcnow())
+            await vault_runs.update_run(run_id, status="error", error=str(e)[:500],
+                                        finished_at=datetime.utcnow())
         except Exception:  # noqa: BLE001
             pass
     finally:
-        _running.discard(account_id)
+        vault_runs.manual_running.discard(account_id)
         _warm_progress.pop(account_id, None)
 
 
@@ -322,9 +267,9 @@ async def _run_collect(account_id: str, run_id: int) -> None:
 async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
     """Kick off a full-vault mirror sweep in the background."""
     assert_account_owned(account_id)
-    if account_id in _running:
+    if account_id in vault_runs.manual_running:
         raise HTTPException(status_code=409, detail={"error": "collect_already_running"})
-    _running.add(account_id)
+    vault_runs.manual_running.add(account_id)
     # Drop the OF listing cache first. It holds whole response bodies whose
     # urls are time-signed, so serving one back after the signature aged out
     # hands the picker links that 403 — the same stale-url the sweep is about
@@ -351,39 +296,27 @@ def _run_status(row: VaultCacheRun, account_id: str) -> str:
     it is also why 1,046 clips were never warmed, and the status endpoint
     reported the sweep as still in progress the whole time.
 
-    `_running` is the only place a live sweep is tracked and it is process-local,
+    `vault_runs.manual_running` is the only place a live sweep is tracked and it is process-local,
     so a row claiming to run for an account nobody is running IS orphaned — the
     process that owned it is gone. Read, never written: the stored row stays the
     honest record of what the task last wrote, and a reconciliation pass that
     could itself be interrupted is machinery this does not need."""
-    if row.status == "running" and account_id not in _running:
+    if row.status == "running" and account_id not in vault_runs.manual_running:
         return "interrupted"
     return row.status
-
-
-async def _latest_run(s: Any, account_id: str) -> VaultCacheRun | None:
-    """The account's most recently started MANUAL collect run, or None. The
-    background collector's `auto:*` runs are not the Collect button's."""
-    return (
-        await s.execute(
-            select(VaultCacheRun)
-            .where(VaultCacheRun.account_id == account_id,
-                   or_(VaultCacheRun.phase.is_(None),
-                       ~VaultCacheRun.phase.like(f"{AUTO_PHASE_PREFIX}%")))
-            .order_by(VaultCacheRun.started_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
 
 
 @router.get("/admin/vault-ai/collect/status")
 async def collect_status(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
-        row = await _latest_run(s, account_id)
+        row = await vault_runs.latest_manual_run(s, account_id)
     if row is None:
         return {"account_id": account_id, "run": None}
     warm = _warm_progress.get(account_id)
+    # A restricted chatter gets the run's state, never its whole-vault totals
+    # (they would leak the size of folders it may not see).
+    allowed = await allowed_folder_ids_for_chatter(account_id)
     return {
         "account_id": account_id,
         "run": {
@@ -393,15 +326,15 @@ async def collect_status(account_id: str = Query(...)) -> dict[str, Any]:
             # while it runs: the row is written once before the three stores, so
             # alone it showed "thumbs" while the counter reset per store.
             "phase": (warm or {}).get("phase") or row.phase,
-            "total_seen": row.total_seen,
-            "upserted": row.upserted,
-            "pages_done": row.pages_done,
-            "error": row.error,
+            "total_seen": row.total_seen if allowed is None else None,
+            "upserted": row.upserted if allowed is None else None,
+            "pages_done": row.pages_done if allowed is None else None,
+            "error": row.error if allowed is None else None,   # the cap's text names the vault's size
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-            "running": account_id in _running,
-            "warmed": (warm or {}).get("warmed"),
-            "warm_total": (warm or {}).get("warm_total"),
+            "running": account_id in vault_runs.manual_running,
+            "warmed": (warm or {}).get("warmed") if allowed is None else None,
+            "warm_total": (warm or {}).get("warm_total") if allowed is None else None,
         },
     }
 
@@ -413,23 +346,23 @@ async def cache_summary(account_id: str = Query(...)) -> dict[str, Any]:
     # count would leak the size of folders it may not see.
     allowed = await allowed_folder_ids_for_chatter(account_id)
     async with get_session() as s:
-        stmt = (select(func.count()).select_from(VaultItem)
-                .where(VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)))
-        if allowed is not None:
-            stmt = stmt.where(in_of_folders(allowed))
-        count = (await s.execute(stmt)).scalar_one()
-        last = await _latest_run(s, account_id)
-        complete = await full_walk_done(s, account_id)
+        count = (await s.execute(
+            select(func.count()).select_from(VaultItem)
+            .where(VaultItem.account_id == account_id, VaultItem.removed_at.is_(None),
+                   vault_mirror.visible_to(allowed)))).scalar_one()
+        last = await vault_runs.latest_manual_run(s, account_id)
+        complete = await vault_runs.full_walk_done(s, account_id)
     return {
         "account_id": account_id,
         "count": int(count or 0),
         # A whole-vault walk has finished at least once (manual Collect or the
         # background collector), so the mirror can stand in for OF's listing.
         "complete": complete,
-        "running": account_id in _running,
+        "running": account_id in vault_runs.manual_running,
         "last_run": None if last is None else {
             "id": last.id, "status": _run_status(last, account_id),
-            "total_seen": last.total_seen,
+            # Whole-vault, so owners only (same reason as `count`).
+            "total_seen": last.total_seen if allowed is None else None,
             "finished_at": last.finished_at.isoformat() if last.finished_at else None,
         },
     }
@@ -448,8 +381,8 @@ async def _sync_from_of(account_id: str, of_folder_id: int | None) -> dict[str, 
             list_id=of_folder_id,
         )
         pages += 1
-        written, known = await _upsert_page(account_id, (resp or {}).get("list") or [], folder_id=of_folder_id,
-                                            want_known=True)
+        written, known = await vault_runs.upsert_page(account_id, (resp or {}).get("list") or [],
+                                                      folder_id=of_folder_id)
         if not written:
             break
         seen += len(written)
@@ -469,12 +402,18 @@ async def sync_from_of(account_id: str = Query(...), of_folder_id: int | None = 
     """Vault Pro's Refresh: what OnlyFans holds NOW. Drops the relay's OF listing cache (folders and media, so the
     next /api/of/v2/vault/* read goes to OF), then, when the grid reads the mirror, pages OF's live listing newest
     first (the open folder's, if any) and upserts it, so new media and folder membership show without a full
-    Collect. Concurrent presses for one account and folder share one OF walk."""
+    Collect. Concurrent presses for one account and folder share one OF walk. A restricted chatter: a folder outside
+    its own is 403; on All only the cache drop runs (All's walk and its seen/new counts are whole-vault: null)."""
     assert_account_owned(account_id)
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    if allowed is not None and of_folder_id is not None and of_folder_id not in allowed:
+        raise HTTPException(status_code=403, detail={"error": "folder_not_allowed"})
     try:
         await vault_cache.invalidate(account_id)
     except Exception:  # noqa: BLE001 — invalidate degrades on its own; never fail the refresh on it
         log.warning("vault_cache invalidate failed for %s", account_id, exc_info=True)
+    if allowed is not None and of_folder_id is None:
+        return {"account_id": account_id, "mirror": None, "pages": 0, "seen": None, "new": None}
     if not await vault_ingest.has_live_mirror(account_id):
         return {"account_id": account_id, "mirror": False, "pages": 0, "seen": 0, "new": 0}
     try:
@@ -498,7 +437,7 @@ async def sync_from_of(account_id: str = Query(...), of_folder_id: int | None = 
 async def vault_thumb(account_id: str = Query(...), media_id: int = Query(...)):
     """The 300px square — the grid + picker tile."""
     assert_account_owned(account_id)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.thumb_path(account_id, media_id),
         vault_frames.pick_thumb)
@@ -517,7 +456,7 @@ async def vault_image(account_id: str = Query(...), media_id: int = Query(...)):
     `_describe_image_of` picks the same variant the model was given, so the
     reviewer sees precisely the frame the reading was made on."""
     assert_account_owned(account_id)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.image_path(account_id, media_id),
         vault_frames.pick_image)
@@ -538,7 +477,7 @@ async def vault_poster(
     already resolves an unknown media by id straight from OF, which is both the
     safe source and the one that survives an expired signature."""
     assert_account_owned(account_id)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.poster_path(account_id, media_id, i),
         vault_frames.pick_poster(i))
@@ -770,6 +709,13 @@ async def list_of_folders_from_mirror(account_id: str = Query(...)) -> dict[str,
 # ── Internal folders (our own, zero OF writes) ──────────────────────
 
 
+def _int_or_none(v: Any) -> int | None:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.post("/admin/vault-ai/reorder")
 async def reorder(payload: dict = Body(...)) -> dict[str, Any]:
     """Set manual_order for media. If `folder_id` is given, order is per-folder
@@ -780,15 +726,21 @@ async def reorder(payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     folder_id = payload.get("folder_id")
     order = payload.get("order") or []
+    # A restricted chatter orders only media it can see, inside one of its folders.
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    if allowed is not None and folder_id is not None and _int_or_none(folder_id) not in allowed:
+        raise HTTPException(status_code=404, detail="not_found")
+    rows: list[tuple[int, int | None]] = []   # parsed once: the gate checks exactly what is written
+    for r in order:
+        mid = _int_or_none(r.get("media_id")) if isinstance(r, dict) else None
+        if mid is None:
+            continue
+        mo = r.get("manual_order")
+        rows.append((mid, int(mo) if mo is not None and str(mo).lstrip("-").isdigit() else None))
+    await assert_media_visible(account_id, *(mid for mid, _ in rows))
     n = 0
     async with get_session() as s:
-        for row in order:
-            try:
-                mid = int(row["media_id"])
-            except Exception:  # noqa: BLE001
-                continue
-            mo = row.get("manual_order")
-            mo = int(mo) if mo is not None and str(mo).lstrip("-").isdigit() else None
+        for mid, mo in rows:
             if folder_id is not None:
                 # Upsert: an OF-folder item has no membership row (membership is
                 # from of_folder_ids), so INSERT the order row if it's missing.
@@ -864,9 +816,10 @@ async def pack_triage(payload: dict = Body(...)) -> dict[str, Any]:
             "error": "unknown_rung", "rung": str(e)}) from None
     if not verdicts:
         raise HTTPException(status_code=400, detail={"error": "verdicts_required"})
-    await _assert_media_visible(account_id, *verdicts)  # a chatter files only what it may see
+    await assert_media_visible(account_id, *verdicts)  # a chatter files only what it may see
 
-    folders = await vault_pack_picker.triage(account_id, cat, verdicts)
+    folders = await vault_pack_picker.triage(
+        account_id, cat, verdicts, allowed=await allowed_folder_ids_for_chatter(account_id))
     return {
         "account_id": account_id,
         "category": cat.name,
@@ -897,7 +850,7 @@ router.include_router(vault_ai_vision.flags_router)
 # Chatter folder limits on the review routes below (disputes, flags review, the
 # pack picker above): the listing's gate. A restricted chatter is shown and
 # counted only media in its folders, and may fix, grade or file only those —
-# an outside media 404s as a still does (`_assert_media_visible`).
+# an outside media 404s as a still does (`assert_media_visible`).
 def _media_id(payload: dict) -> int:
     """`payload["media_id"]` as an int, else 400 media_id_required."""
     try:
@@ -931,7 +884,7 @@ async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     media_id = _media_id(payload)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     res = await vault_ai_fix.apply_fix(account_id, media_id,
                                        payload.get("values") or {})
     if not res.get("ok"):
@@ -975,7 +928,7 @@ async def flags_review_grade(payload: dict = Body(...)) -> dict[str, Any]:
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     media_id = _media_id(payload)
-    await _assert_media_visible(account_id, media_id)
+    await assert_media_visible(account_id, media_id)
     res = await vault_ai_fix.record_grade(
         account_id, media_id,
         corrections=payload.get("corrections") or {},
@@ -1121,17 +1074,9 @@ async def search_of(payload: dict = Body(...)) -> dict[str, Any]:
     r = await _harvest_query(account_id, str(payload.get("query") or ""))
     # A restricted chatter gets only ids in its allowed folders (the picker's
     # mirror search calls this for chatters too). Owners / unrestricted: as is.
-    allowed = await allowed_folder_ids_for_chatter(account_id)
-    if allowed is not None and r.get("ids"):
-        async with get_session() as s:
-            ok = {m for (m,) in (await s.execute(
-                select(VaultItem.media_id).where(
-                    VaultItem.account_id == account_id,
-                    VaultItem.media_id.in_(r["ids"]),
-                    in_of_folders(allowed))
-            )).all()}
-        ids = [i for i in r["ids"] if i in ok]
-        r = {**r, "ids": ids, "count": len(ids)}
+    ok = await visible_ids(account_id, r.get("ids") or [])
+    ids = [i for i in r.get("ids") or [] if i in ok]
+    r = {**r, "ids": ids, "count": len(ids)}
     return {"account_id": account_id, **r}
 
 
@@ -1174,10 +1119,13 @@ async def harvest_keywords(payload: dict = Body(...)) -> dict[str, Any]:
 @router.get("/admin/vault-ai/harvest-keywords/status")
 async def harvest_keywords_status(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
+    progress = _kw_progress.get(account_id)
+    if progress is not None and await allowed_folder_ids_for_chatter(account_id) is not None:
+        progress = {**progress, "matches": None}   # whole-vault hit count: owners only
     return {
         "account_id": account_id,
         "running": account_id in _kw_running,
-        "progress": _kw_progress.get(account_id),
+        "progress": progress,
     }
 
 
@@ -1252,6 +1200,7 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
     edits = {k: fields[k] for k in _EDITABLE_FIELDS if k in fields}
     if not edits:
         raise HTTPException(status_code=400, detail={"error": "no_editable_fields"})
+    await assert_media_visible(account_id, media_id)
 
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
@@ -1427,6 +1376,7 @@ async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     if not account_id:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    await assert_media_visible(account_id, media_id)   # OF has no unhide: a chatter hides only what it sees
     await vault_of_folders._reject_foreign_media(account_id, [int(media_id)])
 
     client = await asyncio.to_thread(ax._make_client, account_id)

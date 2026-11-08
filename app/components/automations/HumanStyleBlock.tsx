@@ -9,7 +9,8 @@
 
 import { useState } from "react";
 
-import { FormBlock, SwitchRow, type SaveVerdict } from "@/components/automations/automationPage";
+import { FormBlock, SwitchRow } from "@/components/automations/automationPage";
+import { saveVerdict, type SaveVerdict } from "@/components/ui/infloww";
 import { dropSaved, styleBoxes, type StyleEngine } from "@/components/automations/humanStyle";
 import type { Saved } from "@/components/automations/sentDraft";
 import { useSaveStyleConfig, useStyleConfig, type StyleConfig } from "@/hooks/useStyleConfig";
@@ -67,7 +68,7 @@ export function HumanStyleBlock({ style }: { style: HumanStyle }) {
 /** What `usePageSave` reads of the page's own save mutation. */
 interface PageMutation { isPending: boolean; isSuccess: boolean; isError: boolean; error: Error | null; reset: () => void }
 
-/** The page's Save: its mutation `m` plus the style save, one verdict (automationPage.tsx `<SaveRow>` renders it).
+/** The page's Save: its mutation `m` plus the style save, one verdict (the kit's `<SaveRow>` renders it).
  *  `pageUnsaved` is the page form's sentDraft.ts `unsaved`, so an edit turns "Saved" off by itself; `edit` (each page
  *  edit) clears a failed save's message, then dispatches. `save(run)` saves the style, records the draft as sent, then
  *  `run`s the page's own mutate. */
@@ -77,12 +78,10 @@ export function usePageSave<E extends { type: string }>(
   pageUnsaved: boolean,
   dispatch: (a: E | Saved) => void,
 ): SaveVerdict & { edit: (a: E) => void; save: (run: () => void) => void } {
-  const failed = m.error ?? style.error;
   return {
     edit: (a: E) => { if (m.isError) m.reset(); dispatch(a); },
     save: (run: () => void) => { style.save(); dispatch({ type: "saved" }); run(); },
-    pending: m.isPending || style.pending,
-    saved: m.isSuccess && !pageUnsaved && style.clean,
-    error: failed ? failed.message || "Save failed" : null,
+    ...saveVerdict({ isPending: m.isPending || style.pending, isSuccess: m.isSuccess, error: m.error ?? style.error },
+      !pageUnsaved && style.clean),
   };
 }

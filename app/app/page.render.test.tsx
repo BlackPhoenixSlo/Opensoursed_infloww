@@ -47,7 +47,8 @@ vi.mock("@/components/stats/PerModelKpiGrid", () => ({
 
 import HomePage from "@/app/page";
 import { DASHBOARD_HEADER, type DashboardControl } from "@/components/home/dashboardControls";
-import { CHARGEBACKS_UNAVAILABLE, REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
+import { REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
+import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/netMissingNote";
 import { periodWindow, type Period } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { shouldPersistKey } from "@/components/providers";

@@ -6,7 +6,8 @@
  *   • refreshVaultFromOf   Vault Pro's Refresh (↻): POST /admin/vault-ai/sync (drops that cache and, for a collected
  *     Creator, pulls OF's newest into the mirror), then reloads the grid. false when OnlyFans could not be reached
  *     (the relay's 502/504, or no answer at all): the grid still reloaded what the relay has, and the caller says
- *     so. Any other failure (401/403/422, ...) is thrown, after the same reload.
+ *     so. Any other failure (401/403/422, ...) is thrown, after the same reload. `useOfRefresh` is it as both grids'
+ *     mutation (pending, note, the thumbs redrawn).
  *   • reloadBrokenThumbs   a grid's broken thumbnails (useThumbAutoRefresh): the mirror's items again (its thumb
  *     route re-signs by id; no OF listing read), or the live listing with the relay's cache dropped first so every
  *     loaded page comes back freshly signed. Refetched in place: no flash, no scroll jump.
@@ -15,9 +16,10 @@
  * only, where the drop above makes every other cached page of the Creator go to OF again too.
  */
 
-import { type QueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { invalidateVaultGrid, mirrorItemsKey } from "@/hooks/useVaultCache";
+import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
+import { invalidateVaultGrid, mirrorItemsKey, type VaultCacheSummary } from "@/hooks/useVaultCache";
 import { dropRelayVaultCache, vaultMediaKey } from "@/hooks/useVaultMedia";
 import { type FanId } from "@/lib/fanId";
 import { relay, RelayError } from "@/lib/relay";
@@ -47,10 +49,58 @@ export async function refreshVaultFromOf(
 }
 
 /** Where a grid's tiles come from: the local mirror, or OF's live listing (through the relay's cache). */
-export type ThumbSource = "mirror" | "live";
+export type VaultSource = "mirror" | "live";
+
+type SourceSummary = Pick<VaultCacheSummary, "count" | "complete"> | null | undefined;
+
+/** Whole-set rule: the mirror once a whole-vault walk finished (`complete`) and it holds media. For what must be
+ *  the whole vault/folder: the picker's grid (what can be sent), the manager's vault/folder downloads, the focus
+ *  prefetch that warms the picker. A partial mirror (first pages only) would serve, and download, part of it. A
+ *  restricted chatter's summary carries `complete` and its own folders' count (#329), so the rule holds for its
+ *  folders; "All" is soft-denied to it on both sources, so the manager keeps its whole-vault download off. */
+export function vaultWholeSource(summary: SourceSummary): VaultSource {
+  return summary?.complete === true && summary.count > 0 ? "mirror" : "live";
+}
+
+/** Browse rule: the mirror once it holds anything. For the manager's grid (and its thumb reload, selection
+ *  download): AI-tag search, describe results and custom folder order live only in the mirror, and the collector's
+ *  page cap means a big vault may never read `complete`. */
+export function vaultBrowseSource(summary: SourceSummary): VaultSource {
+  return (summary?.count ?? 0) > 0 ? "mirror" : "live";
+}
 
 /** A grid's broken thumbnails: refetch the listing that hands out their urls, never a full OF sync. */
-export async function reloadBrokenThumbs(qc: QueryClient, accountId: string, source: ThumbSource): Promise<void> {
+export async function reloadBrokenThumbs(qc: QueryClient, accountId: string, source: VaultSource): Promise<void> {
   if (source === "live") await dropRelayVaultCache(accountId);
   await qc.invalidateQueries({ queryKey: source === "mirror" ? mirrorItemsKey(accountId) : vaultMediaKey(accountId) });
+}
+
+export interface OfRefresh {
+  /** Sync the scope's Creator (the open folder's media, if one); a no-op while the scope is null. */
+  mutate: (folder: FanId | null) => void;
+  isPending: boolean;
+  /** Settled: "Refresh failed", or the saved-vault note when OF could not be reached; else null. */
+  note: string | null;
+}
+
+/** Refresh (↻) as a mutation, for both grids: disabled + spinning while pending, the note once settled. Settled,
+ *  the broken thumbs of the Creator it ran for (the mutation's own `accountId`, not the one on screen now) are
+ *  drawn again. Pending is per Creator across mounts (`["of-refresh", scope]`): a close/reopen or a Creator
+ *  switch back mid-sync still sees it, so no second sync. The note is shown only to the grid that started the
+ *  sync while it still shows that Creator: a change of `scope` (the Creator, or null while the grid is closed)
+ *  drops it (the observer resets when its mutationKey changes). */
+export function useOfRefresh(scope: string | null, thumbs: Pick<ThumbRetry, "refreshed">): OfRefresh {
+  const qc = useQueryClient();
+  const key = ["of-refresh", scope] as const;
+  const m = useMutation({
+    mutationKey: key,
+    mutationFn: (v: { accountId: string; folder: FanId | null }) => refreshVaultFromOf(qc, v.accountId, v.folder),
+    onSettled: (_d, _e, v) => thumbs.refreshed(v.accountId),
+  });
+  const pending = useIsMutating({ mutationKey: key }) > 0;
+  const note = m.isPending ? null
+    : m.isError ? "Refresh failed"
+    : m.data === false ? "Couldn't reach OnlyFans, showing saved vault" : null;
+  const mutate = (folder: FanId | null) => { if (scope) m.mutate({ accountId: scope, folder }); };
+  return { mutate, isPending: pending, note };
 }

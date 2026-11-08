@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OFChatItem } from "@/lib/relay";
-import { previewText, previewTitle } from "./fanRowPreview";
+import { fanRowPreview, previewText } from "./fanRowPreview";
 
 type LM = NonNullable<OFChatItem["lastMessage"]>;
 const chat = (lm: Partial<LM>): OFChatItem => ({
@@ -9,7 +9,9 @@ const chat = (lm: Partial<LM>): OFChatItem => ({
   lastMessage: { id: 1, fromUser: { id: 7 }, ...lm },
 } as OFChatItem);
 
-describe("previewText / previewTitle", () => {
+const idle = { typing: false, draft: "", selected: false };
+
+describe("fanRowPreview: the last message", () => {
   it.each([
     // name, lastMessage, text, title
     ["free text", { text: "hellooo", isFree: true }, "you: hellooo", undefined],
@@ -26,11 +28,22 @@ describe("previewText / previewTitle", () => {
   ] as const)("%s", (_n, lm, text, title) => {
     const c = chat(lm as Partial<LM>);
     expect(previewText(c)).toBe(text);
-    expect(previewTitle(c)).toBe(title);
+    expect(fanRowPreview(c, idle)).toEqual({ text, title });
   });
 
   it("no last message", () => {
     expect(previewText({ withUser: { id: 9 } } as OFChatItem)).toBe("");
-    expect(previewTitle({ withUser: { id: 9 } } as OFChatItem)).toBeUndefined();
+    expect(fanRowPreview({ withUser: { id: 9 } } as OFChatItem, idle).title).toBeUndefined();
+  });
+});
+
+describe("fanRowPreview: typing and drafts", () => {
+  const c = chat({ text: "set", price: 5 });
+  it.each([
+    ["typing wins, no title", { typing: true, draft: "hey", selected: false }, { text: "is typing…", typing: true }],
+    ["a draft on another chat", { typing: false, draft: "hey", selected: false }, { text: "[Draft] hey" }],
+    ["the open chat's draft: the last message", { typing: false, draft: "hey", selected: true }, { text: "you: 🔒 set", title: "🔒 paid message (PPV)" }],
+  ] as const)("%s", (_n, s, want) => {
+    expect(fanRowPreview(c, s)).toEqual(want);
   });
 });

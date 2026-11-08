@@ -11,6 +11,8 @@ docs/spec/phase-04-apply-stored-settings.md › Role enforcement):
   opt_in_granted(ctx, roles)  the OPT_IN_PAGES one Agency context may use
   require_opt_in_page(page)   403 unless some Agency context grants that page
                               (the rule-kind and funnel writes call it)
+  require_action(action, id)  403 when the session's role denies a Function permission
+                              a route performs by its body (the bulk import's replace)
   data_scope(ctx, roles)      "all" or "self"
   narrowest_scope(scopes)     one Data scope across several Agency contexts
   scoped_employee_ids()       the Employee rows an employee-keyed report may show
@@ -671,10 +673,13 @@ def require_permission(
     open_pages = [p for p in pages if p in granted and (p != "/" or _card_route_open(path, hidden))]
     if not open_pages:
         raise HTTPException(status_code=403, detail=f"Your role does not allow {PAGE_MAP[pages[0]][0]}")
-    if action is None:
-        return
-    denied = denied_actions(ctx, roles)
-    if any(key.endswith(f"#{action}") for key in denied):
+    if action is not None:
+        _refuse_denied_action(ctx, roles, action)
+
+
+def _refuse_denied_action(ctx: AgencyContext, roles: dict[str, Any], action: str) -> None:
+    """403 `Your role does not allow <action label>` when `action` is stored false under any page."""
+    if any(key.endswith(f"#{action}") for key in denied_actions(ctx, roles)):
         raise HTTPException(status_code=403, detail=f"Your role does not allow {ACTIONS[action][0]}")
 
 
@@ -733,6 +738,18 @@ async def require_opt_in_page(page: str, account_id: str | None = None) -> None:
     routes' writes that only that page makes."""
     if (detail := await opt_in_refusal((page,), account_id)) is not None:
         raise HTTPException(status_code=403, detail=detail)
+
+
+async def require_action(action: str, account_id: str | None = None) -> None:
+    """403 `Your role does not allow <label>` when a role enforced on this session for `account_id` (every
+    linked Agency when None) stores `action` false under any page (`denied_actions`, fails closed as
+    `require_permission`): the guard on a route that performs `action` by a body field no `ACTIONS` pattern
+    can see (the bulk import's `mode: replace` deletes scripts). Owner, Master and non-Agency sessions, and
+    enforcement off, pass."""
+    if (roles := await _enforcing_roles()) is None:
+        return
+    for ctx in await agency_contexts(account_id=account_id):
+        _refuse_denied_action(ctx, roles[ctx.agency_user_id], action)
 
 
 async def require_opt_in_kind(kind: str, account_id: str | None) -> None:

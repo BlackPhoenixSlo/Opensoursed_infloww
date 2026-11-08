@@ -150,8 +150,12 @@ _PARK_REASON: dict[WriteState, str] = {
 }
 
 
-# A proxy refusal (of_client.proxy_refused) nothing of which reached OF: the budget and the
-# wait every lane shares (a refused job here). A send refused `n` times reads `proxy_retry:<n>`; out of retries, `proxy_refused`.
+# A proxy refusal (of_client.proxy_refused) nothing of which reached OF. Every lane shares the tags (a
+# send refused `n` times in a row reads `proxy_retry:<n>`, read back by `proxy_tries`; out of retries,
+# `proxy_refused`) and the wait, PROXY_RETRY_MINUTES (other send lanes import them too).
+# The budgets are per lane: a refused job PROXY_RETRIES (job_queue._park_failed_job; its other failures
+# job_queue._MAX_JOB_ATTEMPTS), a refused send in a lane with its own retry budget uses that budget (one
+# budget with its other transient stops, `proxy_retry:<n>` written there).
 PROXY_REFUSED = "proxy_refused"
 PROXY_RETRY = "proxy_retry"
 PROXY_RETRIES = 3
@@ -171,8 +175,18 @@ def defers_refusal(kind: str, refused: bool, wrote: WriteState) -> bool:
     return refused and wrote == "none" and canonical_kind(kind) in PROXY_DEFER_KINDS
 
 
+def proxy_retry_reason(n: int, err: str) -> str:
+    """A refused job's last_error while it waits out its `n`-th refusal in a row (`proxy_tries` reads it)."""
+    return f"{PROXY_RETRY}:{n} ({err})"
+
+
+def proxy_refused_reason(err: str) -> str:
+    """A refused job's last_error once out of PROXY_RETRIES."""
+    return f"{PROXY_REFUSED} ({err})"
+
+
 def proxy_tries(reason: str | None) -> int:
-    """How many proxy retries a send already had: `proxy_retry:<n>`, alone (a send's
+    """How many proxy retries a send already had: `proxy_retry:<n>`, alone (a lane send's
     reason) or followed by " (<error>)" (a job's last_error); else 0."""
     head, _, rest = (reason or "").partition(":")
     n = rest.split(" ", 1)[0]

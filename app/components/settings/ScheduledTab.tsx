@@ -18,7 +18,7 @@ import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMe
 import type { OFScheduledMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
-import { htmlToText } from "@/lib/messageFormat";
+import { ofPlainText } from "@/lib/ofRichText";
 
 export default function ScheduledTab() {
   const accounts = useActiveAccounts();
@@ -133,7 +133,7 @@ function ScheduledRow({
           )}
         </div>
         <div className="text-[14px] whitespace-pre-wrap break-words line-clamp-3">
-          {htmlToText(m.text || "")}
+          {ofPlainText(m.text || "")}
         </div>
       </div>
       <IfButton variant="link" onClick={onCancel} disabled={busy}>

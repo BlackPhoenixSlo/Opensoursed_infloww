@@ -5,7 +5,8 @@ The ledger walk only re-reads OF's latest ~600 rows, so a sale disputed weeks
 later is never seen flipping to `undo` there (measured 2026-11-07: 4 missed on
 15891843). This poll reads the disputes list and flips the matching held row to
 `chargedback` the same way a ledger status flip does: status only, in a
-`_ledger_txn` with its `_apply_lifetime_delta`, then the status_flip broadcast.
+`transaction_ingest.ledger_txn` with its `apply_lifetime_delta`, then the
+status_flip announce (events.announce_transaction, as the ledger's own flip).
 No table, no column: the row's status is the idempotence key (a re-poll finds it
 already reversed and writes nothing).
 
@@ -38,6 +39,8 @@ Lifetime follows status in both writers (transaction_ingest_decide.plan_page):
 if the ledger later calls the sale `done` again, its patch puts the amount back.
 
 Caller holds `transaction_ingest._tick_locks[account_id]` (run_one_tick does).
+transaction_ingest imports this module inside its tick; this one reads its two
+public writers at call time, so neither touches the other at import time.
 """
 from __future__ import annotations
 
@@ -56,7 +59,6 @@ from db.models import Transaction
 from transaction_ingest_decide import (
     _FINGERPRINT_WINDOW,
     _NON_REVENUE_STATUSES,
-    RowOp,
     _parse_iso,
     _to_cents,
 )
@@ -185,13 +187,18 @@ def _snap(tx: Transaction) -> Held:
                 tx.occurred_at, tx.status, tx.currency)
 
 
-def _broadcast_op(op: CbOp) -> RowOp:
-    """The status_flip RowOp `_after_commit` announces for an applied dispute."""
-    h = op.target
-    parsed = {"provider_id": h.provider_id, "fan_id": h.fan_id, "occurred_at": h.occurred_at,
-              "status": _CHARGEDBACK, "raw_kind": h.kind}
-    return RowOp("patch", parsed, h.kind, status_flip=(h.status, _CHARGEDBACK),
-                 lifetime_delta=op.lifetime_delta, broadcast="status_flip")
+async def _announce(account_id: str, ops: list[CbOp]) -> None:
+    """Each applied dispute's status_flip, after the commit (the ledger's own flip's
+    announce, uncapped). One that raises is logged; the rest still run."""
+    from events import announce_transaction
+    for op in ops:
+        h = op.target
+        try:
+            await announce_transaction(account_id, h.fan_id, occurred_at=h.occurred_at, capped=False,
+                                       kind=h.kind, status=_CHARGEDBACK, reason="status_flip")
+        except Exception:
+            log.warning("ingest_tx_after_commit_failed account=%s provider=%s",
+                        account_id, h.provider_id, exc_info=True)
 
 
 def _log_ops(account_id: str, ops: list[CbOp]) -> None:
@@ -221,14 +228,14 @@ async def apply_chargebacks(account_id: str, items: list[dict]) -> dict:
     async with get_session() as s:
         ops = plan_chargebacks(disputes, [_snap(tx) for tx in (await _read_held(s, account_id, fans)).values()])
     if any(op.writes for op in ops):
-        async with ti._ledger_txn("ledger-chargebacks") as s:
+        async with ti.ledger_txn("ledger-chargebacks") as s:
             held = await _read_held(s, account_id, fans)
             ops = plan_chargebacks(disputes, [_snap(tx) for tx in held.values()])
             for op in ops:
                 if op.writes:
                     held[op.target.id].status = _CHARGEDBACK
-                    await ti._apply_lifetime_delta(s, account_id, op.target.fan_id, op.lifetime_delta)
-        await ti._after_commit(account_id, [_broadcast_op(op) for op in ops if op.writes], {})
+                    await ti.apply_lifetime_delta(s, account_id, op.target.fan_id, op.lifetime_delta)
+        await _announce(account_id, [op for op in ops if op.writes])
     _log_ops(account_id, ops)
     counts = {k: sum(op.outcome == k for op in ops)
               for k in ("applied", "already", "open", "unmatched", "ambiguous")}

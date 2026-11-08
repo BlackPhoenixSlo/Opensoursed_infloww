@@ -76,10 +76,14 @@ logged (password redacted) and blocks the sync (below).
   line instead (newline-separated value).
 - Failover tiers (optional): an item that is just `|` starts the next tier, e.g.
   `INFLOWW_PROXIES=isp1,isp2,isp3,|,dc1,dc2`. When a proxy is confirmed down
-  (docs/adr/0030) its accounts move to the least-used answering proxy of the first tier
-  that has one; a later tier only when no proxy in every earlier tier answers. No `|`: one
-  tier, as before. New logins (`/admin/proxy-pool/assign`) ignore tiers. A relay older than
-  this reads `|` as a bad line (the sync fails closed): deploy the code before the env.
+  (docs/adr/0030) its accounts move to the least-used answering proxy of the dead proxy's own
+  tier, else of the first other tier that has one (an account bound to tier 2 by hand stays on
+  tier 2 while a tier-2 standby answers; a tier-0 one as before). No `|`: one
+  tier, as before. A `|` inside an item (`a:1:u:p|b:2:u:p`, `a:1:u:p |`) is a bad line:
+  the sync fails closed (so no password may contain `|`). New logins (`/admin/proxy-pool/assign`) go through the same check: the
+  first tier with an answering proxy within their two probes, else an untried proxy of the best
+  tier. A relay older than this reads `|` as a bad line (the sync fails closed): deploy the code
+  before the env.
 - If a password contains `$`, single-quote the value (`INFLOWW_PROXIES='host:port:user:pa$s'`)
   so the shell or compose doesn't expand it.
 - At startup the lines are seeded into the registry as system entries labelled
@@ -148,13 +152,18 @@ ADR-0030. `service/proxy_health.py` keeps one state per proxy label, in memory (
 starts clean), fed by proxied OF calls (`of_client._proxy_retry`: a final `ProxyError`
 after the full 5-try policy, or a refused connect (curl 7), counts one error; a read
 someone waits on, 2 tries in ~1 s, never counts: three of them fit in any blip; any
-answer resets the count; a timeout counts nothing) and by probes (`proxies.probe_of`:
-one GET of OnlyFans' x-hash endpoint through the proxy, no cookies, no session, Chrome
+answer resets the count; a timeout counts nothing) and by probes (`proxy_probe.probe_of`:
+one GET of OnlyFans' API host (`robots.txt`) through the proxy, no cookies, no session, Chrome
 TLS; the confirm and recheck below, every new binding or move (`verify_pick`), and the
 opt-in periodic pass `PROXY_HEALTH_INTERVAL_S`, floor 600 s; a failed probe counts one
 error). Cloudflare's `https://1.1.1.1/cdn-cgi/trace` (egress ip, country) is display and
-region only, never counted: the Test button, and once when a binding or move meets a proxy
-of unknown country; a proxy can answer it yet refuse CONNECT to OF (2026-11-06).
+region only, never counted, kept apart from the health probe (`health.trace` vs
+`health.probe`): the Test button, and once when a binding or move meets a proxy of unknown
+country; a proxy can answer it yet refuse CONNECT to OF (2026-11-06). The Test button
+(`POST /admin/proxies/{label}/test`) runs both at once: its `ok`/`error` (and `verified_ip` kept or
+cleared) are `probe_of`'s, so it never says ok where health says bad; `ip`/`geo`/`colo` are
+the trace's, shown beside (a failed trace with `ok`: the last verified ip/geo, kept and returned); neither is counted,
+so a click never brings a bad proxy back.
 
 | state | meaning |
 | --- | --- |
@@ -177,14 +186,16 @@ user chose it. A recheck that answers, or any call that gets through, brings the
 back as the least-used standby; nobody is moved back (a second IP change is a second
 OnlyFans security risk). With no answering pool proxy nobody moves and everyone on the bad
 ones is surfaced. `assign` (the attach step, Browserbase's bind) follows the same rule:
-it keeps a Creator on its pool proxy until that proxy's failover is due, skips bad
-proxies, and probes its pick first (at most `ATTACH_PROBES`, 2, picks, 5 s each, as the
+it keeps a Creator on its pool proxy until that proxy's failover is due, skips bad and
+herd-guarded proxies (below), prefers the first tier as the failover does, and probes its pick first (at most `ATTACH_PROBES`, 2, picks, 5 s each, as the
 login waits on them), so a login during an outage lands on a proxy that works. When none
 answers, a Creator already on a pool proxy stays there (a move is an IP change: never onto
 a proxy that failed its probe), and one that is not is bound anyway, to the least-used
 proxy not bad (an unprobed one first): a finished login is never thrown away over a probe
-blip. When every pool proxy is bad, a Creator on none is bound to the least-used of them
-(surfaced as `proxy_down`): a login is never lost. Only an empty pool is a 409, nothing
+blip. When every pool proxy is bad or herd-guarded, a Creator on none is bound to the least-used
+of them not down for an outage (a flapping one answers most calls; a dead one, emptied by its
+failover, would be least-used), a dead one only when all are (surfaced as `proxy_down`): a
+login is never lost. Only an empty pool is a 409, nothing
 bound. The bind is a compare-and-set under the registry lock: when a failover
 moved the Creator meanwhile, that binding is kept (one IP change, not two).
 
@@ -198,9 +209,12 @@ blips (0 to 32 s, both proxies, every chain ending in a success;
 
 What the operator sees: `GET /admin/proxies` carries `health` per custom proxy
 (`state`, `down`, `errors`, `last_error`, `last_error_at`, `bad_since`, `next_recheck_at`,
-`probe`, `failed_over`, `failed_over_at`, `bad_reason`, `refusals`, `inflight`, `inflight_peak`), `pool.bad`
+`probe`, `trace`, `failed_over`, `failed_over_at`, `bad_reason`, `refusals`, `inflight`, `inflight_peak`), `pool.bad`
 and `pool.proxies` (`[{slot, health: {state, down, refusals, inflight?, inflight_peak?}}]`
-for the pool proxies the viewer is on; `slot` is the place in the pool, never the label or host);
+for the pool proxies the viewer is on; `slot` is the place in the pool, never the label or host).
+The counts are every Agency's traffic through a proxy, so only the site owner (`is_admin`) sees
+`inflight`, `inflight_peak` and `refusals.refused`/`calls`; anyone else gets `refusals = {window_s,
+pct}` (`proxies_admin_api._health_view`, both lists);
 `GET /admin/accounts` carries `proxy_down`. The Proxies table reads "unreachable since
 <time> (<n> refused) — recheck at <time>" and the Accounts table badges the Creator
 "proxy unreachable". Down and up changes publish the `proxy_switched` account-state event
@@ -215,7 +229,7 @@ attempt and probe through the proxy over the last `PROXY_FLAP_WINDOW_S` seconds 
 left out. `inflight` is OF calls through it right now, `inflight_peak` the most at once
 since the relay started (counting only, no cap). The chat WebSocket and /img's raw CDN gets
 skip `_proxy_retry` and are not in either. The Proxies table adds "refusing 32% (10 min)"
-after the health text when anything was refused.
+after the health text while the share is above 0.
 
 Flap knob, ON by default: `PROXY_FLAP_BAD_PCT` = X, default 20 (`PROXY_FLAP_BAD_PCT=0` turns it off).
 The owner accepted the IP change on 2026-11-05 ("switching IPs is fine"), so a flapping proxy leaves
@@ -229,12 +243,18 @@ only briefly, the four clean proxies never. With the knob on:
   at least 3 different tenths of the window (by default: refused in 3 different minutes of
   the last 10). A short full outage is not flapping: it takes the 30 s confirm path. A proxy
   already down, or with a refused-calls streak awaiting its confirm, is left to that path.
-- Stays bad while at least X/2 % are refused and the last refusal is under window/5 old (2
-  min by default): a passing recheck still counts as failed, so the failover goes ahead. It
-  comes back (standby) when the share drops below X/2 % or it has been quiet for 2 minutes;
-  once its Creators moved away its window drains, so it comes back, by design.
-- The failover never moves anyone onto a proxy that is itself still flapping by that rule,
-  even when its probe answers; none left: nobody moves, retried at the next failed recheck.
+- Stays bad while at least 20 attempts are in the window and at least X/2 % of them were
+  refused, however long ago (no recency rule: a burst minutes ago that is still in the window
+  holds it, so it never reads clean and goes bad again on its next refusal, each time moving
+  Creators): a passing recheck still counts as failed, so the failover goes ahead. It comes back
+  (standby) once the window drains: the share under X/2 % or fewer than 20 attempts. Its
+  Creators moved away, only rechecks reach it, so that is up to one window (10 min) after the
+  move plus the next recheck, by design.
+- Neither the failover nor a new login (`assign`) moves anyone onto a proxy not marked bad that
+  is herd-guarded: the stay rule holds AND its refusals fall in at least 3 tenths of the window
+  (`flap_guards`; one blip on a clean proxy sits in 1-2 and does not take it out of rotation),
+  even when its probe answers; none left: the failover moves nobody (retried at the next failed
+  recheck), a login is still bound (least-used, not a dead one while another is left).
 
 `health.bad_reason` is `"flapping"` (or `"down"` from the confirm path) and `/admin/accounts`
 carries `proxy_bad_reason`: the Proxies table reads "refusing 27% (10 min) since <time> —

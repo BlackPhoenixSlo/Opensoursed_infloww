@@ -33,7 +33,8 @@ vi.mock("@/hooks/useAccounts", () => ({
     { id: "acc-a", nickname: "Creator A", has_session: true },
     { id: "acc-b", nickname: "Creator B", has_session: true },
   ],
-  fetchAccounts: async () => ({ accounts: [] }), // useOfRichAllowed's (never-run) queryFn
+  // useOfRichAllowed's (never-run) query
+  ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts: [] }) }),
 }));
 
 import ScriptsPage from "@/components/growth/ScriptsPage";
@@ -593,8 +594,20 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     expect(screen.getByText(/duplicate name/)).toBeInTheDocument();
   });
 
+  it("All models hides the header's write actions (they would act on the hidden Creator) until a Creator's pick", async () => {
+    await mount();
+    expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
+    // The creator column's picker, then its All models entry.
+    fireEvent.click(screen.getByRole("button", { name: /All models/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /All models/ }).at(-1)!);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "More" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Creator A/ }));
+    await screen.findByRole("button", { name: "More" });
+  });
+
   it("From other creators copies the picked Creators' scripts here", async () => {
-    post.mockResolvedValue({ copied: 2, skipped: 1, media_dropped: 1, sequence_dropped: 0 });
+    post.mockResolvedValue({ copied: 2, skipped: 1, media_dropped: 1 });
     await mount();
     openMore();
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "From other creators" }));
@@ -606,13 +619,13 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
     await screen.findByText(/script(s)? copied/);
     expect(post).toHaveBeenCalledWith("/admin/saved-replies/copy", {
-      from_account_ids: ["acc-b"], to_account_ids: ["acc-a"], ids: undefined,
+      from_account_ids: ["acc-b"], to_account_ids: ["acc-a"], all_creators: false, ids: undefined,
     });
     expect(screen.getByText(/1 arrived without their media/)).toBeInTheDocument();
   });
 
   it("a row's Share sends that script, and the header's Share the selection, to the picked Creators", async () => {
-    post.mockResolvedValue({ copied: 1, skipped: 0, media_dropped: 0, sequence_dropped: 0 });
+    post.mockResolvedValue({ copied: 1, skipped: 0, media_dropped: 0 });
     await mount();
     fireEvent.click(within(rows()[1]).getByRole("button", { name: "Share script" }));
     let dialog = screen.getByRole("dialog", { name: "Share script with other Creators" });
@@ -620,7 +633,7 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
     await screen.findByText(/script copied/);
     expect(post).toHaveBeenLastCalledWith("/admin/saved-replies/copy", {
-      from_account_ids: ["acc-a"], to_account_ids: ["acc-b"], ids: [2],
+      from_account_ids: ["acc-a"], to_account_ids: ["acc-b"], all_creators: false, ids: [2],
     });
     fireEvent.click(within(screen.getByRole("dialog", { name: "Shared" })).getAllByRole("button", { name: "Close" })[0]);
     fireEvent.click(within(rows()[0]).getByRole("checkbox"));
@@ -634,7 +647,7 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "Creator B" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/saved-replies/copy", {
-      from_account_ids: ["acc-a"], to_account_ids: ["acc-b"], ids: [1],
+      from_account_ids: ["acc-a"], to_account_ids: ["acc-b"], all_creators: false, ids: [1],
     }));
     await waitFor(() => expect(within(rows()[0]).getByRole("checkbox")).not.toBeChecked());
   });
@@ -989,7 +1002,7 @@ describe("tags and sequences are stored on the scripts", () => {
     const trigger = within(sidebar("Tags")).getByRole("button", { name: "Opener menu" });
     fireEvent.click(trigger);
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
-    expect(screen.getByRole("menuitem", { name: "Rename" })).toHaveFocus();
+    expect(screen.getByRole("menuitem", { name: "Share" })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(trigger).toHaveFocus();

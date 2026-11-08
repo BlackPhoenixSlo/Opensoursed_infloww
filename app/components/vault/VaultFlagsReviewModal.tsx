@@ -41,11 +41,11 @@ import { AlertTriangle, Lock } from "lucide-react";
 
 import {
   gradeFlags,
-  mirrorFullSrc,
   useFlagsAccuracy,
   useFlagsReview,
   type FlagsReviewItem,
 } from "@/hooks/useVaultCache";
+import { mirrorFullSrc } from "@/lib/mediaUrl";
 import ImageLightbox from "@/components/vault/ImageLightbox";
 import { IfButton, IfHelp, IfInput, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";

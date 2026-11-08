@@ -106,14 +106,22 @@ export const EMPTY_DRAFT: ComposerDraft = {
   mode: PLAIN_MODE,
 };
 
+/** What the PPV row's Clear empties: price, lock, media and previews, the schedule and GIFs. */
+const PPV_EMPTY: Pick<
+  ComposerDraft, "price" | "priceOpen" | "lockedText" | "attached" | "previewCount" | "scheduleOpen" | "scheduleAt" | "pickedGifs"
+> = {
+  price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0, scheduleOpen: false, scheduleAt: "",
+  pickedGifs: [],
+};
+
 /** The saved reply whose send count a send of `d` bumps: the picked one. */
 export function sentReplyId(d: ComposerDraft): number | null {
   return d.replyId ?? null;
 }
 
 export type DraftAction =
-  /** `rich`: the chat's account takes OF markup (OnlyFans), so a formatted template keeps it. */
-  | { type: "pickTemplate"; t: PickedTemplate; rich?: boolean }
+  /** `allowRich`: the chat's account takes OF markup (OnlyFans), so a formatted template keeps it. */
+  | { type: "pickTemplate"; t: PickedTemplate; allowRich: boolean }
   /** "Aa" pressed. */
   | { type: "aa" }
   /** The rich editor's value changed: its markup (null: plain, no markup). */
@@ -146,8 +154,8 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "pickTemplate": {
       const { scriptId, scriptStep } = a.t;
       const script = scriptId && typeof scriptStep === "number" ? { scriptId, scriptStep } : null;
-      const rich = a.rich && hasOfFormatting(a.t.displayText) ? { html: a.t.displayText.trim(), plain: a.t.text } : null;
-      const mode = richMode(s.mode, { type: "loaded", formatted: !!rich }, !!a.rich);
+      const rich = a.allowRich && hasOfFormatting(a.t.displayText) ? { html: a.t.displayText.trim(), plain: a.t.text } : null;
+      const mode = richMode(s.mode, { type: "loaded", formatted: !!rich, allowed: a.allowRich });
       return { ...applyTemplate(s, a.t), priceOpen: a.t.price > 0, script, rich, mode, replyId: a.t.replyId ?? null };
     }
     case "aa":
@@ -207,14 +215,15 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "setTags":
       return { ...s, taggedCreators: a.tags };
     case "clearPpv":
-      // Tags are not in the PPV row, and the Script step, formatting and saved reply ride on the text: all stay.
-      return { ...EMPTY_DRAFT, taggedCreators: s.taggedCreators, script: s.script, rich: s.rich, mode: s.mode, replyId: s.replyId };
+      // Only the row's fields: tags are not in it, and the Script step, formatting and saved reply ride on the text.
+      return { ...s, ...PPV_EMPTY };
     case "dropScript":
       return { ...s, script: null, replyId: null };
     case "sent":
       return { ...EMPTY_DRAFT, mode: richMode(s.mode, { type: "sent" }) };
     case "restore":
-      // The snapshot's text goes back in: formatted, into the rich editor; "Aa" stays as the chatter has it now.
+      // The snapshot whole, "Aa" and its box included: the text goes back as it was sent (formatted, into the rich
+      // editor).
       return a.snapshot;
   }
 }

@@ -38,12 +38,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, X } from "lucide-react";
 
 import {
-  mirrorFullSrc,
   publishFolderToOf,
   savePackTriage,
   usePackCandidates,
   type PackCandidate,
 } from "@/hooks/useVaultCache";
+import { mirrorFullSrc } from "@/lib/mediaUrl";
 import { makeSlotGate } from "@/components/vault/slotGate";
 import { IfButton, IfModal, IfSegmented } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";

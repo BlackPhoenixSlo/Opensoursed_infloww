@@ -4,15 +4,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { inlineKey, KEEP_MS, resetInline, seedInline, takeInline, type InlineAnswer } from "./inlineBoot";
+import { inlineKey, INLINE_KEEP_MS, resetInline, seedInline, takeInline, type InlineAnswer } from "./inlineBoot";
 import { inlinePaths, INLINE_TIMEOUT_MS, startInline } from "./inlineBoot.server";
 import { relay } from "./relay";
-import { bundlePath, screenKey } from "./screenKey";
-import { entryScreen, type DashboardEntry } from "./screenEntry";
+import { bundlePath } from "./screenKey";
+import { DEFAULT_PERIOD } from "@/components/home/dashboardControls";
+import { periodWindow, type Period } from "./dateRange";
+import type { DashboardEntry } from "./screenEntry";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const enc = (e: DashboardEntry) => encodeURIComponent(JSON.stringify(e));
-const dash = (search: string, hint: DashboardEntry | null) => bundlePath(screenKey(entryScreen("/", search, hint)!));
+const enc = (e: DashboardEntry) => JSON.stringify(e);
+/** The request's cookies (the Next jar's decoded values): the saved entry, the browser's zone, the scope bit. */
+const jar = (entry?: string, tz?: string, scope?: string) => (n: string) =>
+  ({ chatterly_entry: entry, chatterly_tz: tz, chatterly_scope: scope })[n];
+/** The Dashboard bundle's path for `period` per `hint`'s zone and week start. */
+const dash = (period: Period, hint: DashboardEntry) => {
+  const [from, to] = periodWindow(period, hint.tz, hint.weekStart);
+  return bundlePath({ kind: "dashboard", from, to });
+};
 
 describe("inlinePaths: what the browser would fetch first, per document", () => {
   it.each<[string, string | null, string | undefined, string | undefined, string[]]>([
@@ -24,25 +33,33 @@ describe("inlinePaths: what the browser would fetch first, per document", () => 
       ["/auth/me", "/chatter/me", "/admin/settings/applied"]],
     ["Dashboard, cards hidden: no bundle", "/", enc({ tz: "Asia/Tokyo", weekStart: "monday", grid: false }), ZONE,
       ["/auth/me", "/chatter/me", "/admin/settings/applied"]],
+    ["Dashboard, a zone Intl does not know (junk cookie): no bundle, no throw", "/", undefined, "Not/AZone",
+      ["/auth/me", "/chatter/me", "/admin/settings/applied"]],
+    ["Dashboard, a saved entry with a junk zone: no bundle, no throw", "/", enc({ tz: "Not/AZone", weekStart: "monday", grid: true }),
+      ZONE, ["/auth/me", "/chatter/me", "/admin/settings/applied"]],
   ])("%s", (_n, path, entry, tz, want) => {
-    expect(inlinePaths(path, entry, tz)).toEqual(want);
+    expect(inlinePaths(path, jar(entry, tz))).toEqual(want);
+  });
+
+  it("Messages Pro, one Creator saved in scope (its cookie): the probes only, no agency-wide inbox bundle", () => {
+    expect(inlinePaths("/messages-pro", jar(undefined, ZONE, "model"))).toEqual(["/auth/me", "/chatter/me"]);
+    expect(inlinePaths("/messages-pro", jar(undefined, ZONE, "all"))).toEqual(["/auth/me", "/chatter/me", "/admin/screens/inbox?cursor=0"]);
   });
 
   it("Dashboard, nothing saved: the browser's guess (its zone from the cookie, Monday): the key AuthGate starts", () => {
-    // The browser's guess with tz null is its own zone: here, the test process's.
-    expect(inlinePaths("/", undefined, encodeURIComponent(ZONE))[3]).toBe(dash("", null));
+    expect(inlinePaths("/", jar(undefined, ZONE))[3]).toBe(dash(DEFAULT_PERIOD, { tz: ZONE, weekStart: "monday", grid: true }));
   });
 
   it("Dashboard, a saved entry: its zone and week start win over the browser's zone; the URL's window counts", () => {
     vi.useFakeTimers({ now: new Date("2026-11-06T12:00:00Z") });
     try {
       const tokyo: DashboardEntry = { tz: "Asia/Tokyo", weekStart: "sunday", grid: true };
-      expect(inlinePaths("/?window=month", enc(tokyo), "Europe/Ljubljana")[3]).toBe(dash("?window=month", tokyo));
+      expect(inlinePaths("/?window=month", jar(enc(tokyo), "Europe/Ljubljana"))[3]).toBe(dash("month", tokyo));
       // A saved null zone (no report zone): the browser's.
       const none: DashboardEntry = { tz: null, weekStart: "sunday", grid: true };
-      expect(inlinePaths("/", enc(none), "Asia/Tokyo")[3]).toBe(dash("", { ...none, tz: "Asia/Tokyo" }));
+      expect(inlinePaths("/", jar(enc(none), "Asia/Tokyo"))[3]).toBe(dash(DEFAULT_PERIOD, { ...none, tz: "Asia/Tokyo" }));
       // Junk in the entry cookie: as none saved.
-      expect(inlinePaths("/", "%7Boops", "Asia/Tokyo")[3]).toBe(dash("", { tz: "Asia/Tokyo", weekStart: "monday", grid: true }));
+      expect(inlinePaths("/", jar("{oops", "Asia/Tokyo"))[3]).toBe(dash(DEFAULT_PERIOD, { tz: "Asia/Tokyo", weekStart: "monday", grid: true }));
     } finally {
       vi.useRealTimers();
     }
@@ -121,12 +138,12 @@ describe("takeInline: the browser's first GET of each", () => {
     expect(await takeInline("/admin/screens/dashboard?from=a&to=b&focus=7")).not.toBeNull();
   });
 
-  it("a second seed (a refresh's render) is ignored; past KEEP_MS nothing is taken", async () => {
+  it("a second seed (a refresh's render) is ignored; past INLINE_KEEP_MS nothing is taken", async () => {
     vi.useFakeTimers({ now: 1_000_000 });
     seedInline({ "/a": ok(1) });
     seedInline({ "/b": ok(2) });
     expect(await takeInline("/b")).toBeNull();
-    vi.setSystemTime(1_000_000 + KEEP_MS + 1);
+    vi.setSystemTime(1_000_000 + INLINE_KEEP_MS + 1);
     expect(await takeInline("/a")).toBeNull();
   });
 

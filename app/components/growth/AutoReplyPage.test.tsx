@@ -385,6 +385,42 @@ describe("AutoReplyPage", () => {
       expect(await screen.findByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("high");
     });
 
+    it("one Save: the brain PUT failing while the blob PUT lands shows the error, never Saved", async () => {
+      mockReads({ brain: {} });
+      put.mockImplementation((p: string) => p === "/admin/account-config"
+        ? Promise.reject(new Error("brain refused"))
+        : Promise.resolve({ account_id: "acc-a", config: {} }));
+      renderWithProviders(<AutoReplyPage />);
+      await pickAndSave("claude-opus-5-5");
+      expect(await screen.findByText(/brain refused/)).toBeInTheDocument();
+      expect(put.mock.calls.map(([p]) => p)).toEqual(["/admin/account-config", "/admin/autoreply-config"]);
+      expect(screen.queryByText("Saved")).toBeNull();
+    });
+
+    it("one Save: both PUTs failing shows the blob's error, not the brain's", async () => {
+      mockReads({ brain: {} });
+      put.mockImplementation((p: string) => Promise.reject(new Error(p === "/admin/account-config" ? "brain refused" : "blob refused")));
+      renderWithProviders(<AutoReplyPage />);
+      await pickAndSave("claude-opus-5-5");
+      expect(await screen.findByText(/blob refused/)).toBeInTheDocument();
+      expect(screen.queryByText(/brain refused/)).toBeNull();
+    });
+
+    it("save a pick, then pick the opened one back: the second Save sends it (never a false Saved)", async () => {
+      // The brain read answers with what the last PUT stored.
+      const brain: Record<string, unknown> = {};
+      mockReads({ brain });
+      put.mockImplementation((p: string, body: { config: Record<string, unknown> }) => {
+        if (p === "/admin/account-config") Object.assign(brain, body.config);
+        return Promise.resolve({ account_id: "acc-a", config: body.config });
+      });
+      renderWithProviders(<AutoReplyPage />);
+      await pickAndSave("claude-opus-5-5");
+      expect(await screen.findByText("Saved")).toBeInTheDocument();
+      put.mockClear();
+      expect(await pickAndSave("Default (deepseek-v4-flash)")).toMatchObject({ model: null });
+    });
+
     it("an untouched model sends no account-config PUT", async () => {
       mockReads({ brain: { model: "claude-opus-5-5" } });
       renderWithProviders(<AutoReplyPage />);

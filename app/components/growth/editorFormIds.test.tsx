@@ -49,6 +49,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const noop = () => {};
+
 function wrap(children: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
@@ -56,7 +58,7 @@ function wrap(children: ReactNode) {
 
 describe("two editors mounted at once each submit their own form", () => {
   it("Purchased: the second Save writes the second Creator", async () => {
-    wrap(<><PurchaseFollowupEditor accountId="acc-1" /><PurchaseFollowupEditor accountId="acc-2" /></>);
+    wrap(<><PurchaseFollowupEditor accountId="acc-1" onTouched={noop} /><PurchaseFollowupEditor accountId="acc-2" onTouched={noop} /></>);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(2));
     await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: "Save" })[1]); });
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
@@ -64,8 +66,8 @@ describe("two editors mounted at once each submit their own form", () => {
   });
 
   it("a lifecycle message: the second Save writes the second Creator", async () => {
-    wrap(<><LifecycleMessageEditor accountId="acc-1" kind="birthday_message" />
-      <LifecycleMessageEditor accountId="acc-2" kind="birthday_message" /></>);
+    wrap(<><LifecycleMessageEditor accountId="acc-1" kind="birthday_message" onTouched={noop} />
+      <LifecycleMessageEditor accountId="acc-2" kind="birthday_message" onTouched={noop} /></>);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(2));
     await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: "Save" })[1]); });
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));

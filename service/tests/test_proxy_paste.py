@@ -58,6 +58,7 @@ class _U:
     def __init__(self, uid):
         self.id = uid
         self.account_ids: list[str] = []
+        self.is_admin = False
 
 
 def as_user(user, fn, *a):

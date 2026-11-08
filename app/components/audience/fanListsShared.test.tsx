@@ -38,7 +38,7 @@ const options = () => (document.getElementById("shared-list") as HTMLSelectEleme
 
 describe("the shared fan-lists cache", () => {
   it.each([
-    ["the Mass premade composer", <PremadeForm key="c" kind="mass_premade" forcedAccountId="acct1" onComposePayload={() => {}} />],
+    ["the Mass premade composer", <PremadeForm key="c" kind="mass_premade" accountId="acct1" title="Compose" onClose={() => {}} onComposePayload={() => {}} />],
     ["the funnel launch panel", <FunnelLaunchPanel key="f" funnel={{ id: 1, name: "F", description: null, opening_message: "hi", step_count: 1 }}
       accountId="acct1" onClose={() => {}} />],
   ])("holds every list when %s fills it first", async (_name, first) => {

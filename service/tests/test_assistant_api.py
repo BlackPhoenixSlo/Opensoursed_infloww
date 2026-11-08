@@ -129,7 +129,8 @@ async def case_happy_path_returns_the_model_answer():
     spy = _Spy("My Automations → Auto Post.")
     _patch(spy)
     out = await _ask()
-    assert out == {"answer": "My Automations → Auto Post.", "error": None}, out
+    assert (out["answer"], out["error"]) == ("My Automations → Auto Post.", None), out
+    assert isinstance(out["id"], int), out    # the turn row (F5: the widget dedupes on it)
 
     assert len(spy.calls) == 1, spy.calls
     kw = spy.calls[0]
@@ -172,7 +173,7 @@ async def case_provider_failures_come_back_as_friendly_answers():
     for exc, tag, text in expected:
         _patch(_Spy(raises=exc))
         out = await _ask()
-        assert out == {"answer": text, "error": tag}, (exc, out)
+        assert (out["answer"], out["error"]) == (text, tag), (exc, out)
 
     # An empty completion (a reasoning model burning its output budget) is a
     # failure too — it must not surface as a blank bubble.
@@ -259,8 +260,8 @@ async def case_no_account_answers_from_the_manual_billed_to_the_asker():
         out = await ask(AskBody(question="how do I connect my OnlyFans account?"))
     finally:
         auth._request_user.reset(token)
-    assert out == {"answer": "Creators → Manage creators → Add creator.",
-                   "error": None}, out
+    assert (out["answer"], out["error"]) == ("Creators → Manage creators → Add creator.",
+                                             None), out
     kw = spy.calls[-1]
     assert kw["account_id"] is None and kw["user_id"] == "u_no_accounts", kw
     assert kw["purpose"] == "help_assistant", kw["purpose"]
@@ -310,8 +311,8 @@ async def case_no_account_cap_is_an_answer_about_the_asker():
         out = await ask(AskBody(question="where is the vault?"))
     finally:
         auth._request_user.reset(token)
-    assert out == {"answer": "Today's help-bot budget is used up — try again tomorrow.",
-                   "error": "cap"}, out
+    assert (out["answer"], out["error"]) == (
+        "Today's help-bot budget is used up — try again tomorrow.", "cap"), out
 
 
 def case_no_account_over_http_takes_a_session_and_nothing_else():
@@ -339,8 +340,8 @@ def case_no_account_over_http_takes_a_session_and_nothing_else():
     r = client.post("/admin/assistant/ask",
                     json={"question": "how do I connect my OnlyFans account?"})
     assert r.status_code == 200, (r.status_code, r.text)
-    assert r.json() == {"answer": "Creators → Manage creators → Add creator.",
-                        "error": None}, r.json()
+    assert {k: r.json()[k] for k in ("answer", "error")} == {
+        "answer": "Creators → Manage creators → Add creator.", "error": None}, r.json()
     assert len(spy.calls) == 1 and spy.calls[0]["user_id"] == "u_http_fresh", spy.calls
 
 
@@ -505,7 +506,7 @@ async def case_content_cases_never_race_the_clock():
         out = await _ask(question=f"why is {fan_id} quiet", account_id=aid)
     finally:
         asyncio.wait_for = real_wait_for
-    assert out == {"answer": "Clock-free.", "error": None}, out
+    assert (out["answer"], out["error"]) == ("Clock-free.", None), out
     names = [name for name, _ in calls]
     for seam in ("_fetch_state", "_resolve", "_pack"):
         assert seam in names, (seam, calls)
@@ -1917,8 +1918,8 @@ def case_fit_sheds_in_its_documented_order():
 async def case_long_answers_end_with_one_offer_to_say_more():
     # Owner, 2026-11-07: replies were bloated. The rule caps a how-to answer at
     # ~300 chars and moves the rest behind ONE closing offer that names its
-    # topic. Since 2026-11-07 the widget sends its last turns (PREVIOUS TURNS),
-    # so a bare "yes" takes up the last offer; only without them does it ask.
+    # topic. The server adds the asker's last turns (PREVIOUS TURNS), so a
+    # bare "yes" takes up the last offer; only without them does it ask.
     system = " ".join(assistant_api._build_system_prompt().split())
     assert "KEEP IT UNDER 300 CHARACTERS" in system
     assert "end with ONE short question offering the rest, naming its topic" in system
@@ -2006,54 +2007,246 @@ async def case_a_failed_turn_write_never_costs_the_answer():
         out = await _ask()
     finally:
         assistant_api.get_session = real
-    assert out == {"answer": "still answered", "error": None}, out
+    assert out == {"answer": "still answered", "error": None, "id": None}, out
 
 
-async def case_history_rides_the_user_message_before_the_question():
+async def _seed_turns(rows):
+    """Bulk-insert turn rows the product could have written: (asker kwargs,
+    account_id, question, error, age)."""
+    from db.models import AssistantTurn
+    now = datetime.utcnow()
+    async with get_session() as s:
+        for who, acc, q, err, age in rows:
+            s.add(AssistantTurn(**who, account_id=acc, role="an owner/admin",
+                                question=q, answer=f"answer to {q}", error=err,
+                                ts=now - age))
+
+
+async def case_the_server_owns_the_prompt_context():
+    """PREVIOUS TURNS come from the asker's OWN rows, never the body: the last
+    3 answered turns on the SAME account from the last 2 h, oldest first."""
+    assert "history" not in AskBody.model_fields, AskBody.model_fields.keys()
+    uid, other = "u_ctx", "acc_ctx_other"
+    me = {"user_id": uid}
+    m = timedelta(minutes=1)
+    await _seed_turns([
+        (me, AID, "ctx too old", None, timedelta(hours=3)),
+        (me, AID, "ctx q1", None, 50 * m),
+        (me, AID, "ctx q2", None, 40 * m),
+        (me, AID, "ctx q3", None, 30 * m),
+        (me, AID, "ctx q4", None, 20 * m),
+        (me, AID, "ctx failed", "cap", 10 * m),
+        (me, other, "ctx other account", None, 5 * m),
+        (me, other, "ctx other too old", None, timedelta(hours=2, minutes=5)),
+        (me, None, "ctx no account", None, 5 * m),
+        ({"user_id": "u_ctx_someone_else"}, AID, "ctx not mine", None, 1 * m),
+    ])
     spy = _Spy("Here are the steps.")
     _patch(spy)
-    long_answer = "A" * 2000
-    hist = [{"question": f"old q{i}", "answer": f"old a{i}"} for i in range(4)] + [
-        {"question": "how do I make autopost?",
-         "answer": long_answer + " Want the step-by-step for Auto Post?"}]
-    await ask(AskBody(question="yes", account_id=AID, history=hist))
-    system, user = spy.calls[-1]["messages"]
-    u = user["content"]
-    assert "PREVIOUS TURNS" in u, u[:400]
-    # Newest 3 survive, oldest first; each side cut to 600 chars.
-    assert "old q0" not in u and "old q1" not in u and "old q2" in u and "old q3" in u, u[:600]
-    assert u.index("old q2") < u.index("old q3") < u.index("how do I make autopost?")
-    assert long_answer not in u and "A" * 599 in u, "an answer was not cut to 600"
-    # The block sits before the question; the question follows everything it refers to.
-    assert u.index("PREVIOUS TURNS") < u.index("Question: yes"), u[:300]
-    assert "old q3" not in system["content"] and "Question: yes" not in system["content"]
-    # No history → no block; the system prompt is the same bytes either way.
-    await ask(AskBody(question="yes", account_id=AID))
+    token = auth._request_user.set(auth.AuthedUser(uid, "ctx", frozenset({AID, other})))
+    try:
+        await _ask("yes")
+        system, user = spy.calls[-1]["messages"]
+        u = user["content"]
+        got = [q for q in ("ctx q1", "ctx q2", "ctx q3", "ctx q4") if q in u]
+        assert got == ["ctx q2", "ctx q3", "ctx q4"], u[:800]
+        assert u.index("PREVIOUS TURNS") < u.index("ctx q2") < u.index("ctx q3") \
+            < u.index("ctx q4") < u.index("Question: yes"), u[:800]
+        for absent in ("ctx too old", "ctx failed", "ctx other account",
+                       "ctx no account", "ctx not mine"):
+            assert absent not in u, absent
+        assert "ctx q" not in system["content"], "a turn reached the cached system prompt"
+        # The row the ask just wrote is now the newest context for the next one.
+        await _ask("and then?")
+        u2 = spy.calls[-1]["messages"][1]["content"]
+        assert "ctx q2" not in u2 and "Asker: yes" in u2, u2[:800]
+        # Under 3 turns in the window: the 2 h cut, not the count, drops the old one.
+        await _ask("and on the other one?", account_id=other)
+        u3 = spy.calls[-1]["messages"][1]["content"]
+        assert "ctx other account" in u3 and "ctx other too old" not in u3, u3[:800]
+    finally:
+        auth._request_user.reset(token)
+    # A no-account ask reads only the no-account rows.
+    token = auth._request_user.set(auth.AuthedUser(uid, "ctx", frozenset()))
+    try:
+        await ask(AskBody(question="more"))
+    finally:
+        auth._request_user.reset(token)
+    u = spy.calls[-1]["messages"][1]["content"]
+    assert "ctx no account" in u and "ctx q4" not in u, u[:800]
+    # No principal (the anonymous escape hatch): no context at all.
+    await _ask("yes")
     assert "PREVIOUS TURNS (" not in spy.calls[-1]["messages"][1]["content"]
     assert spy.calls[-1]["messages"][0]["content"] == system["content"], \
         "history changed the cached system prompt — prefix cache busted"
-    # The stored question is the asker's own, never the history.
-    rows = await _turns(question="yes")
-    assert rows and all("old q" not in r.question for r in rows)
-    # The no-account path carries it too.
-    token = _as_user("u_hist_noacc")
+
+
+async def case_a_long_stored_turn_is_capped_in_the_prompt():
+    """A stored answer (or question) rides PREVIOUS TURNS cut to
+    HISTORY_SIDE_CHARS code points with "…" — never the whole thing on every ask."""
+    from db.models import AssistantTurn
+    uid, cap = "u_ctx_cap", assistant_api.HISTORY_SIDE_CHARS
+    long_q, long_a = "Q" * 3000 + "QTAIL", "é" * 5000 + "ATAIL"
+    async with get_session() as s:
+        s.add(AssistantTurn(user_id=uid, account_id=AID, role="an owner/admin",
+                            question=long_q, answer=long_a,
+                            ts=datetime.utcnow() - timedelta(minutes=1)))
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser(uid, "cap", frozenset({AID})))
     try:
-        await ask(AskBody(question="more", history=[{"question": "q", "answer": "a"}]))
+        await _ask("yes")
     finally:
         auth._request_user.reset(token)
-    assert "PREVIOUS TURNS" in spy.calls[-1]["messages"][1]["content"]
+    u = spy.calls[-1]["messages"][1]["content"]
+    assert "QTAIL" not in u and "ATAIL" not in u, len(u)
+    assert f"Asker: {'Q' * (cap - 1)}…\n" in u, u[:200]
+    assert f"You: {'é' * (cap - 1)}…\n" in u, u[-400:]
+    assert "é" * cap not in u, "answer not capped"
 
 
-def case_history_over_http_is_scoped_and_all_is_master_only():
+async def case_an_unlinked_chatter_loses_those_turns():
+    """Reach is CURRENT reach: a chatter unlinked from an account no longer
+    reads its turns — not in the history GET, not in a prompt."""
+    _patch(_Spy("ask an owner"))
+    other = "acc_unlink_other"
+
+    def _chatter(accounts):
+        return chatters._request_chatter.set(chatters.ChatterIdentity(
+            id_="ch_unlink", username="unlink", display_name=None, color=None,
+            owner_user_ids=frozenset({"u1"}), account_ids=frozenset(accounts)))
+
+    token = _chatter({AID, other})
+    try:
+        await _ask("unlink: about AID")
+        await _ask("unlink: about other", account_id=other)
+        both = [t["question"] for t in (await assistant_api.history(limit=50))["turns"]]
+        assert both == ["unlink: about other", "unlink: about AID"], both
+        assert [t.question for t in await assistant_api._context_turns(AID)] == ["unlink: about AID"]
+    finally:
+        chatters._request_chatter.reset(token)
+    token = _chatter({other})                           # unlinked from AID
+    try:
+        left = [t["question"] for t in (await assistant_api.history(limit=50))["turns"]]
+        assert left == ["unlink: about other"], left
+        assert await assistant_api._context_turns(AID) == []
+        assert [t.question for t in await assistant_api._context_turns(other)] == \
+            ["unlink: about other"]
+    finally:
+        chatters._request_chatter.reset(token)
+
+
+async def case_turns_are_pruned_to_the_newest_500_per_asker():
+    from sqlalchemy import func, select as _sel
+    from db.models import AssistantTurn
+    keep = assistant_api.MAX_TURNS_KEPT
+    assert keep == 500
+    m = timedelta(minutes=1)
+    await _seed_turns(
+        [({"user_id": "u_prune"}, AID, f"prune {i}", None, (keep + 10 - i) * m)
+         for i in range(keep + 5)]
+        + [({"user_id": "u_prune_bystander"}, AID, f"by {i}", None, i * m)
+           for i in range(3)])
+    _patch(_Spy("fresh"))
+    token = auth._request_user.set(auth.AuthedUser("u_prune", "prune", frozenset({AID})))
+    try:
+        out = await _ask("prune newest")
+    finally:
+        auth._request_user.reset(token)
+    rows = await _turns(user_id="u_prune")
+    assert len(rows) == keep, len(rows)
+    qs = {r.question for r in rows}
+    assert "prune newest" in qs and out["id"] in {r.id for r in rows}
+    # The 6 oldest went (505 seeded + 1 new − 500).
+    assert not qs & {f"prune {i}" for i in range(6)}, sorted(qs)[:8]
+    assert f"prune {6}" in qs
+    async with get_session() as s:
+        n = (await s.execute(_sel(func.count()).select_from(AssistantTurn)
+                             .where(AssistantTurn.user_id == "u_prune_bystander"))).scalar()
+    assert n == 3, "another asker's rows were pruned"
+
+
+async def case_a_failing_keyed_opus_default_retries_once_on_deepseek():
+    """Opus is the KEYED default where an Anthropic key resolves. Its own cap,
+    key or provider failure must not take the bot down: exactly ONE retry on
+    the purpose default, and the row names the model that answered. A pin is
+    an operator's choice — never swapped. A config error is not retried."""
+    import llm_providers
+    from llm_client import MODELS
+    opus, ds = "claude-opus-5-5", "deepseek-v4-flash"
+    aid = "acc_help_opus_fallback"
+    async with get_session() as s:
+        s.add(Account(id=aid))
+
+    class _FailOn(_Spy):
+        def __init__(self, fail: dict):
+            super().__init__("Answered.")
+            self.fail = fail
+
+        async def __call__(self, **kw):
+            self.calls.append(kw)
+            if kw["model"] in self.fail:
+                raise self.fail[kw["model"]]
+            return LLMResult(
+                call_id=1, model=kw["model"], provider=MODELS[kw["model"]].provider,
+                content=self.content, parsed=None, reasoning_content=None,
+                tokens_in=100, tokens_out=10, cache_hit_tokens=0,
+                cost_cents=7, latency_ms=5)
+
+    real_key = llm_providers._api_key
+    llm_providers._api_key = lambda env: (
+        "sk-ant-house" if env == "ANTHROPIC_API_KEY" else real_key(env))
+    try:
+        # Keyed and healthy: Opus answers, one call.
+        spy = _FailOn({})
+        _patch(spy)
+        out = await _ask(account_id=aid)
+        assert [c["model"] for c in spy.calls] == [opus] and out["error"] is None, out
+        for exc in (LLMCapExceeded(aid, 100, 200),
+                    LLMKeyError("invalid", "anthropic", "help_assistant", status=401),
+                    LLMHTTPError("529 overloaded", status=529)):
+            spy = _FailOn({opus: exc})
+            _patch(spy)
+            out = await _ask(account_id=aid)
+            assert [c["model"] for c in spy.calls] == [opus, ds], (exc, spy.calls)
+            assert (out["answer"], out["error"]) == ("Answered.", None), (exc, out)
+            row = (await _turns(id=out["id"]))[0]
+            assert (row.model, row.provider, row.error) == (ds, "deepseek", None), vars(row)
+        # Bounded: the fallback failing too is ONE extra call, its error shown.
+        spy = _FailOn({opus: LLMHTTPError("529", status=529),
+                       ds: LLMCapExceeded(aid, 100, 200)})
+        _patch(spy)
+        out = await _ask(account_id=aid)
+        assert [c["model"] for c in spy.calls] == [opus, ds], spy.calls
+        assert out["error"] == "cap", out
+        assert (await _turns(id=out["id"]))[0].model == ds
+        # A config error (no such provider set up) is not a reason to retry.
+        spy = _FailOn({opus: LLMConfigError("unknown provider")})
+        _patch(spy)
+        out = await _ask(account_id=aid)
+        assert [c["model"] for c in spy.calls] == [opus] and out["error"] == "config", out
+        # An operator PIN to Opus is a choice: its failure is reported, not swapped.
+        async with get_session() as s:
+            s.add(AccountAiConfig(account_id=aid, model_by_purpose=json.dumps(
+                {"help_assistant": opus})))
+        spy = _FailOn({opus: LLMHTTPError("529", status=529)})
+        _patch(spy)
+        out = await _ask(account_id=aid)
+        assert [c["model"] for c in spy.calls] == [opus], spy.calls
+        assert out["error"] == "provider", out
+    finally:
+        llm_providers._api_key = real_key
+
+
+def case_history_over_http_is_the_askers_own():
     import asyncio as _aio
     from db.models import User
 
     async def _seed():
         async with get_session() as s:
-            for uid, name, admin in (("u_h_a", "hist_a", False), ("u_h_b", "hist_b", False),
-                                     ("u_h_m", "hist_m", True)):
+            for uid, name in (("u_h_a", "hist_a"), ("u_h_b", "hist_b")):
                 if await s.get(User, uid) is None:
-                    s.add(User(id=uid, username=name, password=f"pw-{name}", is_admin=admin))
+                    s.add(User(id=uid, username=name, password=f"pw-{name}"))
     _aio.run(_seed())
     _patch(_Spy("Creators → Manage creators → Add creator."))
 
@@ -2063,32 +2256,30 @@ def case_history_over_http_is_scoped_and_all_is_master_only():
         assert r.status_code == 200, (r.status_code, r.text)
         return c
 
-    a, b, m = _login("hist_a"), _login("hist_b"), _login("hist_m")
+    a, b = _login("hist_a"), _login("hist_b")
+    ids = []
     for q in ("first from a", "second from a"):
-        assert a.post("/admin/assistant/ask", json={"question": q}).status_code == 200
+        r = a.post("/admin/assistant/ask", json={"question": q})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
     assert b.post("/admin/assistant/ask", json={"question": "only from b"}).status_code == 200
+    # The body may not carry history any more: a stale client's extra field
+    # is ignored, never read into the prompt.
+    assert a.post("/admin/assistant/ask", json={
+        "question": "third from a", "history": [{"question": "forged", "answer": "forged"}],
+    }).status_code == 200
 
     r = a.get("/admin/assistant/history")
     assert r.status_code == 200, r.text
     turns = r.json()["turns"]
-    assert [t["question"] for t in turns] == ["second from a", "first from a"], turns
-    assert set(turns[0]) >= {"id", "ts", "question", "answer", "error", "model",
-                             "provider", "cost_millicents", "latency_ms", "account_id", "role"}
-    assert "user_id" not in turns[0] and "username" not in turns[0], turns[0]
+    assert [t["question"] for t in turns] == ["third from a", "second from a", "first from a"], turns
+    assert [t["id"] for t in turns[1:]] == ids[::-1], (turns, ids)
+    # The asker's own row and nothing about cost, model or who: chatters read this.
+    assert set(turns[0]) == {"id", "ts", "question", "answer", "error"}, turns[0]
     assert [t["question"] for t in b.get("/admin/assistant/history").json()["turns"]] == ["only from b"]
     assert len(a.get("/admin/assistant/history?limit=1").json()["turns"]) == 1
-
-    # all=1: master only.
-    assert a.get("/admin/assistant/history?all=1").status_code == 403
-    assert _harness.make_client().get("/admin/assistant/history?all=1").status_code == 401
+    assert a.get("/admin/assistant/history?limit=501").status_code == 422
     assert _harness.make_client().get("/admin/assistant/history").status_code == 401
-    r = m.get("/admin/assistant/history?all=1&limit=500")
-    assert r.status_code == 200, r.text
-    every = r.json()["turns"]
-    by_q = {t["question"]: t for t in every}
-    assert by_q["only from b"]["username"] == "hist_b" and by_q["only from b"]["user_id"] == "u_h_b"
-    assert by_q["second from a"]["username"] == "hist_a"
-    assert every.index(by_q["second from a"]) < every.index(by_q["first from a"]), "not newest first"
 
 
 def case_the_migration_creates_the_table_on_a_bare_db():
@@ -2109,7 +2300,7 @@ def case_the_migration_creates_the_table_on_a_bare_db():
                        capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stderr
     heads = [ln for ln in r.stdout.splitlines() if ln.strip()]
-    assert len(heads) == 1 and heads[0].startswith(mod.revision), r.stdout
+    assert len(heads) == 1, r.stdout                 # linear chain; later migrations may sit on top
     path = Path(tempfile.mkdtemp(prefix="assistant_turns_mig_")) / "mig.db"
     assert str(path) != str(_harness.DB_PATH)
     sqlite3.connect(path).close()
@@ -2192,7 +2383,11 @@ _harness.run(
     case_every_answered_ask_writes_one_turn_row,
     case_a_chatter_turn_is_keyed_by_the_chatter,
     case_a_failed_turn_write_never_costs_the_answer,
-    case_history_rides_the_user_message_before_the_question,
-    case_history_over_http_is_scoped_and_all_is_master_only,
+    case_the_server_owns_the_prompt_context,
+    case_a_long_stored_turn_is_capped_in_the_prompt,
+    case_an_unlinked_chatter_loses_those_turns,
+    case_turns_are_pruned_to_the_newest_500_per_asker,
+    case_a_failing_keyed_opus_default_retries_once_on_deepseek,
+    case_history_over_http_is_the_askers_own,
     case_the_migration_creates_the_table_on_a_bare_db,
 )

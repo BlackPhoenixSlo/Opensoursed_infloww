@@ -10,7 +10,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useOptionalUser } from "@/contexts/UserContext";
-import { fetchAccounts, type AccountsResp } from "@/hooks/useAccounts";
+import { ownerAccountsQuery, type AccountsResp } from "@/hooks/useAccounts";
 import { accountPlatform, usePlatform } from "@/lib/platform";
 
 export function useOfRichAllowed(accountId: string | null | undefined): boolean {
@@ -18,7 +18,7 @@ export function useOfRichAllowed(accountId: string | null | undefined): boolean 
   const user = useOptionalUser()?.user;
   const cached = useQuery<AccountsResp>({
     // useAccounts' entry and fetcher (a refetch another reader triggers must find a queryFn), never fetched from here.
-    queryKey: ["accounts", user?.user_id ?? "anon"], queryFn: fetchAccounts, enabled: false, staleTime: 60_000,
+    ...ownerAccountsQuery(user?.user_id), enabled: false,
   }).data;
   const a = accountId ? cached?.accounts?.find((x) => x.id === accountId) : undefined;
   return (a ? accountPlatform(a) : platform) === "onlyfans";

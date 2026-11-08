@@ -321,6 +321,40 @@ async def case_9_fresh_exception_reaches_every_waiter() -> None:
     print("  case 9 OK — coalesce_fresh: an exception reaches every waiter, nothing left in flight")
 
 
+async def case_10_evicted_client_never_joined() -> None:
+    import client_pool
+    relay_coalesce.reset_for_tests()
+    gates = {"acct1": [asyncio.Event(), asyncio.Event()], "acct2": [asyncio.Event()]}
+    calls = {"acct1": 0, "acct2": 0}
+
+    def fetcher(aid):
+        async def run():
+            n = calls[aid]
+            calls[aid] += 1
+            await gates[aid][n].wait()
+            return f"{aid}-session{n}"
+        return run
+
+    k1, k2 = ("list_chats", "acct1", 10), ("list_chats", "acct2", 10)
+    old1 = asyncio.create_task(relay_coalesce.coalesce(k1, fetcher("acct1")))
+    old2 = asyncio.create_task(relay_coalesce.coalesce(k2, fetcher("acct2")))
+    await asyncio.sleep(0.02)
+    client_pool.evict("acct1")   # re-bootstrap / proxy edit on acct1 only
+    new1 = asyncio.create_task(relay_coalesce.coalesce(k1, fetcher("acct1")))
+    join2 = asyncio.create_task(relay_coalesce.coalesce(k2, fetcher("acct2")))
+    await asyncio.sleep(0.02)
+    _check(calls == {"acct1": 2, "acct2": 1}, f"case 10: calls {calls}")
+    gates["acct1"][0].set()
+    _check(await old1 == "acct1-session0", "case 10: the old flight's waiter lost its result")
+    _check(k1 + ("user",) in relay_coalesce._inflight, "case 10: the old flight clobbered the new entry")
+    gates["acct1"][1].set()
+    gates["acct2"][0].set()
+    _check(await new1 == "acct1-session1", "case 10: a caller after evict joined the old session")
+    _check(await old2 == await join2 == "acct2-session0", "case 10: another account's flight was dropped")
+    _check(not relay_coalesce._inflight, "case 10: state left behind")
+    print("  case 10 OK — a caller after client_pool.evict starts a fresh flight; other accounts still join")
+
+
 async def main() -> None:
     print("test_relay_coalesce.py — Stage B-2 coalescer")
     await case_1_dedup_identical()
@@ -332,6 +366,7 @@ async def main() -> None:
     await case_7_user_never_joins_background_led()
     await case_8_fresh_never_joins_a_started_run()
     await case_9_fresh_exception_reaches_every_waiter()
+    await case_10_evicted_client_never_joined()
     print("ALL PASS")
 
 

@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import AuthGate from "@/components/auth/AuthGate";
+import { forgetScope, rememberScope } from "@/lib/screenEntry";
 import type { AuthBanner, BootStatus } from "@/contexts/userSessionReducer";
 
 let mockPath = "/login";
@@ -25,6 +26,10 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/contexts/UserContext", () => ({
   useUser: () => ({ ...mockUser, login: vi.fn(), register: vi.fn(), clearUserLocally: vi.fn(), retry: mockRetry }),
+}));
+const mockPrefetch = vi.fn();
+vi.mock("@/lib/relay", async (orig) => ({
+  ...(await orig<typeof import("@/lib/relay")>()), prefetchScreenBundle: (s: unknown) => mockPrefetch(s),
 }));
 vi.mock("@/contexts/ChatterContext", () => ({
   useChatter: () => ({ ...mockChatter, login: vi.fn(), reprobe: mockReprobe }),
@@ -176,5 +181,26 @@ describe("AuthGate with a banner: the sign-in form at once", () => {
     rerender(<AuthGate><div>SHELL</div></AuthGate>);
     expect(screen.getByText("SHELL")).toBeTruthy();
     expect(document.querySelector("[data-auth-blocked]")).toBeNull();
+  });
+});
+
+describe("AuthGate on a document load of Messages Pro: the inbox bundle with the probes", () => {
+  afterEach(() => {
+    forgetScope();
+    window.history.replaceState(null, "", "/");
+    mockPrefetch.mockClear();
+  });
+
+  it.each([
+    { name: "All Models saved: started", saved: false, started: true },
+    { name: "nothing saved: started", saved: null, started: true },
+    { name: "one Creator saved: none (the page reads that Creator's own routes)", saved: true, started: false },
+  ])("$name", ({ saved, started }) => {
+    mockPath = "/messages-pro";
+    mockUser = me({ user: null, boot: "probing" });
+    window.history.replaceState(null, "", "/messages-pro");
+    if (saved != null) rememberScope(saved);
+    render(<AuthGate signedIn><div>SHELL</div></AuthGate>);
+    expect(mockPrefetch.mock.calls).toEqual(started ? [[{ kind: "inbox", cursor: 0 }]] : []);
   });
 });

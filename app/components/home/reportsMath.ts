@@ -1,7 +1,7 @@
 /**
  * Creator reports' pure parts: the revenue reads' shapes and sums, the range presets, the day axis and its buckets,
  * the sections' state, the Creator statistics columns, their cells and export rows, and the notes' wording. No React;
- * CompetitorReports.tsx and its parts read them, and DashboardHeader.tsx reads `netMissingNote` for its Net switch.
+ * CompetitorReports.tsx and its parts read them.
  */
 
 import { type Gran, fmtDollars } from "@/components/stats/chart";
@@ -79,9 +79,6 @@ export function referralsUnavailableNote(n: number | null): string {
   const who = n === null ? "these creators" : n === 1 ? "1 creator" : `${n} creators`;
   return `Referrals from OnlyFans are unavailable for ${who}, counted as $0.00.`;
 }
-
-// The Dashboard header reads this one alone; its own module keeps the rest of this file out of its first load.
-export { CHARGEBACKS_UNAVAILABLE, netMissingNote } from "./netMissingNote";
 
 /** A Creator's name as the reports show it: its display name, else its account id. */
 export const creatorName = (m: PerModelRow): string => m.display_name || m.account_id;
@@ -271,28 +268,17 @@ export function rollUp(days: string[], values: number[], p: Gran): Point[] {
 
 /* ── kind bucketing ── */
 
-/** `chargebacks`: the window's reversals (`status=reversed`, dated by their sale) below zero, the rows `asChargebacks`
- *  files; the earnings already leave reversals out, so no total counts them. Stream sales are `other`. */
-export type Bucket = "subscriptions" | "tips" | "posts" | "messages" | "chargebacks" | "referrals" | "other";
+/** The earnings channels' buckets. Stream sales are `other`. Chargebacks is no channel: `chargebacksCents`. */
+export type Bucket = "subscriptions" | "tips" | "posts" | "messages" | "referrals" | "other";
 export type Chan = Exclude<Bucket, "other">;
 const noBuckets = (): Record<Bucket, number> =>
-  ({ subscriptions: 0, tips: 0, posts: 0, messages: 0, chargebacks: 0, referrals: 0, other: 0 });
-/** Every earnings channel's money, summed: Chargebacks left out. */
-export const totalOf = (b: Record<Bucket, number>): number =>
-  Object.entries(b).reduce((a, [k, c]) => (k === "chargebacks" ? a : a + c), 0);
-/** The pseudo-kind `asChargebacks` gives a reversed read's rows. */
-const CHARGEBACK_KIND = "__chargebacks";
-/** A reversed read (`status=reversed`) as the Chargebacks channel's rows: kind `__chargebacks` (no sales kind is
- *  named so), money negated, a day row carrying itself as its one kind, so `sumKinds` and `dailyOf`'s `byChan` file it
- *  under Chargebacks and `dailyOf`'s day total leaves it out. */
-export function asChargebacks(d: RevResp | undefined): RevResp | undefined {
-  if (!d) return d;
-  const neg = (r: RevKindRow): RevKindRow => ({
-    kind: CHARGEBACK_KIND, total_cents: -r.total_cents, count: r.count,
-    ...(r.net_cents != null ? { net_cents: -r.net_cents } : {}),
-  });
-  return { rows: (d.rows ?? []).map((r) => ({ ...neg(r), day: r.day, ...(r.day != null ? { by_kind: [neg(r)] } : {}) })) };
-}
+  ({ subscriptions: 0, tips: 0, posts: 0, messages: 0, referrals: 0, other: 0 });
+/** Every earnings channel's money, summed. */
+export const totalOf = (b: Record<Bucket, number>): number => Object.values(b).reduce((a, c) => a + c, 0);
+/** Chargebacks' figure: the reversed reads' (`status=reversed`, dated by their sale) money, below zero. The earnings
+ *  already leave reversals out, so no total counts it. */
+export const chargebacksCents = (qs: readonly { data?: RevResp }[], money: Money): number =>
+  qs.reduce((a, q) => (q.data?.rows ?? []).reduce((b, r) => b - money(r), a), 0);
 /** The kind reads' rows' money summed by channel. */
 export function sumKinds(qs: readonly { data?: RevResp }[], money: Money): Record<Bucket, number> {
   const out = noBuckets();
@@ -306,7 +292,7 @@ export function dailyOf(qs: readonly { data?: RevResp }[], days: string[], money
   for (const q of qs) {
     for (const r of q.data?.rows ?? []) {
       if (!r.day) continue;
-      if (r.kind !== CHARGEBACK_KIND) total.set(r.day, (total.get(r.day) ?? 0) + money(r));
+      total.set(r.day, (total.get(r.day) ?? 0) + money(r));
       const c = byChan.get(r.day) ?? noBuckets();
       for (const k of r.by_kind ?? []) c[bucketOf(k.kind)] += money(k);
       byChan.set(r.day, c);
@@ -325,10 +311,9 @@ export const CHANNELS: readonly { key: Chan; label: string; color: string }[] = 
   { key: "posts",         label: "Posts",        color: "#d96a42" },
   { key: "messages",      label: "Messages",     color: "#ac72d2" },
   { key: "referrals",     label: "Referrals",    color: "#d5638d" },
-  { key: "chargebacks",   label: "Chargebacks",  color: "#ff7c71" },
 ];
-/** The channels with earnings: the donut, the channel lines and their picker, which draw no figure below zero. */
-export const EARNING_CHANNELS = CHANNELS.filter((c) => c.key !== "chargebacks");
+/** Chargebacks' legend dot, after the channels' (ours: no channel, no slice, no line). */
+export const CHARGEBACKS_COLOR = "#ff7c71";
 /** The Inventory's breakdown rows, which the capture lacks (its Notes): ours, in the "Earnings ledger". Gross
  *  earnings has a read, and Platform fee, VAT collected and Net earnings too while "Show net earnings" is on (the net
  *  read carries OnlyFans' own fee and VAT). */
@@ -343,7 +328,6 @@ export function bucketOf(kind: string | null): Bucket {
   if (kind === "tip_post" || kind === "ppv_post") return "posts";
   // Stream sales have no channel of their own (Chargebacks took Streams' place): Total earnings only.
   if (kind === "tip_stream" || kind === "ppv_stream") return "other";
-  if (kind === CHARGEBACK_KIND) return "chargebacks";
   if (kind === "tip") return "tips";
   if (kind === "referral") return "referrals"; // `referralsAsRevenue`'s rows
   if (kind.startsWith("ppv")) return "messages"; // ppv (WS pump) + ppv_message
@@ -359,21 +343,22 @@ export function creatorRows(cols: readonly StatCol[], creators: PerModelRow[], c
 }
 
 /** The export's "Display by day" (Infloww's, 05-analytics M22): a row per Creator per day of the range, its
- *  earnings and each channel's, from one revenue read per Creator (four at a time; Chargebacks needs the reversed
- *  read's rows on it too, `asChargebacks`). Pending sales count, as every earnings figure here. */
+ *  earnings and each channel's, from one revenue read per Creator (four at a time), then Chargebacks off its
+ *  reversed day read. Pending sales count, as every earnings figure here. */
 export async function creatorDayRows(creators: PerModelRow[], days: string[], net: boolean,
-  read: (accountId: string) => Promise<RevResp>): Promise<Cell[][]> {
+  read: (accountId: string) => Promise<{ earned: RevResp; reversed: RevResp }>): Promise<Cell[][]> {
   // Referrals are OnlyFans' own read, not on the revenue read: left out rather than written as $0. Other (stream
   // sales, any unmapped kind) before Chargebacks, so Total earnings == the columns before Chargebacks.
   const chans: { key: Bucket; label: string }[] = [
-    ...EARNING_CHANNELS.filter((c) => c.key !== "referrals"), { key: "other", label: "Other" },
-    { key: "chargebacks", label: "Chargebacks" }];
+    ...CHANNELS.filter((c) => c.key !== "referrals"), { key: "other", label: "Other" }];
   const reads = await mapLimit(creators, 4, (m) => read(m.account_id));
-  const rows: Cell[][] = [["Creator", "Day", "Total earnings", ...chans.map((c) => c.label)]];
+  const rows: Cell[][] = [["Creator", "Day", "Total earnings", ...chans.map((c) => c.label), "Chargebacks"]];
   creators.forEach((m, i) => {
-    const d = dailyOf([{ data: reads[i] }], days, net ? netOf : grossOf);
+    const money = net ? netOf : grossOf;
+    const d = dailyOf([{ data: reads[i].earned }], days, money);
     const byChan = chans.map((c) => d.byChan(c.key));
-    days.forEach((day, j) => rows.push([creatorName(m), day, usd(d.total[j]), ...byChan.map((v) => usd(v[j]))]));
+    const cb = dailyOf([{ data: reads[i].reversed }], days, money).total.map((v) => 0 - v);
+    days.forEach((day, j) => rows.push([creatorName(m), day, usd(d.total[j]), ...byChan.map((v) => usd(v[j])), usd(cb[j])]));
   });
   return rows;
 }

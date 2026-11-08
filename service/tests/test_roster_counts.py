@@ -259,6 +259,45 @@ async def case_roster_bust_recomputes_only_target():
         server.relay_cache.invalidate("roster_count", "acct-y")
 
 
+async def case_roster_counts_skip_a_watcher():
+    """A watcher (a fan account, no Creator) the owner holds is never read for the strip:
+    no OF read on it, so the 5-min poll can never mark its session dead."""
+
+    class _User:
+        account_ids = ["acct-x", "acct-w"]
+
+    class _Resp:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+    calls: list[str] = []
+
+    async def _fake_compute(aid: str, *, bypass: bool = False) -> dict[str, int]:
+        calls.append(aid)
+        return {"unread": 1, "owe_reply": 0}
+
+    orig_user = server._get_request_user
+    orig_compute = accounts_admin_api._compute_roster_count_of
+    orig_is_watcher = accounts_admin_api.account_registry.is_watcher
+    server._get_request_user = lambda: _User()
+    accounts_admin_api._compute_roster_count_of = _fake_compute
+    accounts_admin_api.account_registry.is_watcher = lambda aid: aid == "acct-w"
+    for aid in ("acct-x", "acct-w"):
+        server.relay_cache.invalidate("roster_count", aid)
+    try:
+        r = await accounts_admin_api.admin_accounts_roster_counts(_Resp())
+        assert calls == ["acct-x"], calls
+        assert set(r["counts"]) == {"acct-x"}, r
+        r_bust = await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust="acct-w")
+        assert "acct-w" not in calls and "acct-w" not in r_bust["counts"], (calls, r_bust)
+    finally:
+        server._get_request_user = orig_user
+        accounts_admin_api._compute_roster_count_of = orig_compute
+        accounts_admin_api.account_registry.is_watcher = orig_is_watcher
+        for aid in ("acct-x", "acct-w"):
+            server.relay_cache.invalidate("roster_count", aid)
+
+
 async def case_assemble_tops_up_past_of_page_cap():
     """OF caps /chats at ~10 rows regardless of `limit` — a limit=25 page must
     be assembled by looping on hasMore and advancing by rows RECEIVED, or the
@@ -453,6 +492,7 @@ _harness.run(
     case_reconcile_pulls_of_read_state_into_local,
     case_reconcile_runs_in_the_of_writer_never_backwards,
     case_roster_bust_recomputes_only_target,
+    case_roster_counts_skip_a_watcher,
     case_assemble_tops_up_past_of_page_cap,
     case_assemble_empty_page_ends_pagination,
     case_assemble_dup_only_page_breaks,

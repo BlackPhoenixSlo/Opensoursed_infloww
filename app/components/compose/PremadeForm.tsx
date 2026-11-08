@@ -1,96 +1,57 @@
 "use client";
 
 import { useId, useMemo, useReducer, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Image as ImageIcon, Lock, Plus, Trash2, X } from "lucide-react";
+import { Image as ImageIcon, Lock, Plus, Trash2 } from "lucide-react";
 
-import { fanListsQuery, topRank, type FanList } from "@/components/audience/fanLists";
+import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { IfButton, IfHelp, IfInput, IfLabel, IfSelect, IfSwitch, IfTextArea } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSelect, IfSwitch } from "@/components/ui/infloww";
 import { useVaultLists } from "@/hooks/useVaultMedia";
-import { cn } from "@/lib/utils";
 
-import { ImportCaptionsButton } from "./ImportCaptionsButton";
 import {
-  SYSTEM_AUDIENCES, buildPayload, numStr, payloadToRows, rowsReducer,
-  type Kind, type Row,
+  buildPayload, initPremade, premadeReducer,
+  type Kind, type PremadePayload, type Row,
 } from "./premadeRows";
+import { useTouched } from "./useTouched";
+import { VariantsField } from "./VariantsField";
 import { fmtPrice } from "@/lib/format";
 
-/** A built-in "frame" when no caller supplies one: the body, then the footer row right-aligned. */
-const inlineFrame: PremadeFrame = ({ body, footer }) => (
-  <>
-    {body}
-    <div className="mt-4 flex items-center justify-end gap-2">{footer}</div>
-  </>
-);
-
-/** Where the form's body and its Reset / Use in rule footer go (ComposeModal puts them in an IfModal).
- *  `dirty`: rows or the repost cycle differ from what the form opened with, so Escape must not drop them. */
-export type PremadeFrame = (parts: { body: ReactNode; footer: ReactNode; dirty: boolean }) => ReactNode;
-
-/** The ready-made rule composer: repeating posts / messages, built into the `{posts:[…]}` / `{messages:[…]}`
- *  payload a rule editor stores (`onComposePayload`, "Use in rule"). A rule is single-account
- *  (`forcedAccountId`). */
+/** The ready-made rule composer dialog: repeating posts / messages, built into the `{posts:[…]}` / `{messages:[…]}`
+ *  payload a rule editor stores (`onComposePayload`, "Use in rule"). A rule is single-account (`accountId`).
+ *  Escape never drops an edited draft (useTouched); × closes. */
 export function PremadeForm({
   kind,
-  forcedAccountId,
+  accountId,
+  title,
+  onClose,
   onComposePayload,
   initialPayload,
-  frame = inlineFrame,
 }: {
   kind: Kind;
   /** The rule's account (vault folders, images, custom lists). */
-  forcedAccountId: string;
+  accountId: string;
+  title: string;
+  onClose: () => void;
   /** Receives the built payload ("Use in rule"). */
-  onComposePayload: (payload: Record<string, unknown>) => void;
+  onComposePayload: (payload: PremadePayload) => void;
   /** Re-compose mode: seed the rows + repost cycle from a previously saved
    *  `{posts|messages:[…]}` payload so editing an existing rule isn't blank. */
   initialPayload?: Record<string, unknown>;
-  frame?: PremadeFrame;
 }) {
   const posts = kind === "auto_posts";
-  const accountId = forcedAccountId;
-  const [rows, dispatch] = useReducer(rowsReducer, undefined, () => payloadToRows(initialPayload, kind));
-  // Auto Posts repost CYCLE (list-level, not per-row): re-post the whole list
-  // after it finishes. Baked into the auto_posts payload, not the rule cadence.
-  const [postsResendAfterHours, setPostsResendAfterHours] = useState(() =>
-    posts ? numStr(initialPayload?.resend_after_hours) : "",
-  );
-  const [postsResendCount, setPostsResendCount] = useState(() =>
-    posts ? numStr(initialPayload?.resend_count) : "",
-  );
-  // What the form opened with: Escape closes only while nothing differs from it.
-  const [opened] = useState(() => JSON.stringify([rows, postsResendAfterHours, postsResendCount]));
-  const [pickerFor, setPickerFor] = useState<number | null>(null);
-  const [previewPickerFor, setPreviewPickerFor] = useState<number | null>(null);
+  // The rows and the Auto Posts repost CYCLE (list-level, not per-row: re-post the whole list after it finishes;
+  // baked into the auto_posts payload, not the rule cadence) — one reducer. Every action is the user's (Escape gate).
+  const [form, rawDispatch] = useReducer(premadeReducer, undefined, () => initPremade(initialPayload, kind));
+  const { touched, dispatch } = useTouched(form, rawDispatch, noSeed);
+  const { rows, cycle } = form;
+  // The one vault picker: which row's pool it fills.
+  const [picker, setPicker] = useState<{ i: number; pool: "media" | "previewMedia" } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Custom lists for the mass_premade audience picker (same source + sort as the
-  // Mass Online composer). Only fetched for broadcasts.
-  // The shared fan-lists cache: every list, not the first page.
-  const listsQ = useQuery<FanList[]>({ ...fanListsQuery(accountId), enabled: !!accountId && !posts });
-  const customLists = useMemo(() => {
-    // OF sometimes tags the built-in "fans"/"following" lists with a type the
-    // type-filter misses; drop any whose id already names a system audience so
-    // they don't show as redundant custom chips sharing a SYSTEM_AUDIENCES id.
-    const systemIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
-    const filtered = (listsQ.data ?? []).filter(
-      (l) =>
-        l.type !== "build-in" &&
-        l.type !== "built-in" &&
-        !systemIds.has(String(l.id)),
-    );
-    return filtered.slice().sort((a, b) => {
-      const an = (a.name ?? "").toLowerCase();
-      const bn = (b.name ?? "").toLowerCase();
-      const ra = topRank(an);
-      const rb = topRank(bn);
-      if (ra !== rb) return ra - rb;
-      return an.localeCompare(bn);
-    });
-  }, [listsQ.data]);
+  // Custom lists for the mass_premade audience picker (the house fan-lists read, shared cache). Only fetched for
+  // broadcasts.
+  const { customLists, isLoading: listsLoading } = useFanLists(posts ? null : accountId);
 
   // Vault folders for the per-row folder pool (same hook as AutoStoriesTab).
   // Only folders WITH photos — posts/mass attach photos.
@@ -106,12 +67,8 @@ export function PremadeForm({
   }
   function reset() {
     dispatch({ type: "reset" });
-    setPostsResendAfterHours("");
-    setPostsResendCount("");
     setError(null);
   }
-
-  const cycle = { resendCount: postsResendCount, resendAfterHours: postsResendAfterHours };
 
   /** The payload, minus `dry_run` (that's a separate rule knob in the editor). */
   function useInRule() {
@@ -157,32 +114,14 @@ export function PremadeForm({
           </div>
 
           {/* Text variant POOL — a random one is sent each fire. */}
-          <div className="space-y-2">
-            {r.texts.map((t, ti) => (
-              <div key={ti} className="flex items-start gap-2">
-                <IfTextArea
-                  value={t}
-                  onChange={(e) => dispatch({ type: "patchText", i, ti, val: e.target.value })}
-                  placeholder={
-                    r.texts.length > 1
-                      ? `Variant ${ti + 1} (random one sent)`
-                      : posts ? "Post caption…" : "Broadcast text…"
-                  }
-                  rows={2}
-                  className="min-w-0 flex-1"
-                />
-                {r.texts.length > 1 && (
-                  <IfButton variant="link" icon={X} title="Remove this variant" aria-label="Remove this variant"
-                    onClick={() => dispatch({ type: "removeText", i, ti })}
-                    className="text-muted hover:text-err" />
-                )}
-              </div>
-            ))}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              <IfButton variant="link" onClick={() => dispatch({ type: "addText", i })}>Add variant</IfButton>
-              <ImportCaptionsButton current={r.texts} onImport={(vals) => dispatch({ type: "addTexts", i, vals })} />
-            </div>
-          </div>
+          <VariantsField
+            id={`pm-${kind}-${i}-text`}
+            label={posts ? "Caption" : "Message"}
+            variants={r.texts}
+            placeholder={posts ? "Post caption…" : "Broadcast text…"}
+            help="One is picked at random each time."
+            onChange={(texts) => patchRow(i, { texts })}
+          />
 
           {/* Image POOL — pre-picked vault media AND/OR a whole vault folder.
            *  Both feed one pool; `media_count` is sampled from it per fire. */}
@@ -192,7 +131,7 @@ export function PremadeForm({
             picked={r.media.length}
             pickLabel="Pick image pool"
             pickedLabel={`${r.media.length} in pool`}
-            onPick={() => setPickerFor(i)}
+            onPick={() => setPicker({ i, pool: "media" })}
             onClear={() => patchRow(i, { media: [] })}
           />
           {/* How many to attach per fire — sampled from the combined pool
@@ -258,7 +197,7 @@ export function PremadeForm({
                 picked={r.previewMedia.length}
                 pickLabel="Pick preview pool"
                 pickedLabel={`${r.previewMedia.length} in preview pool`}
-                onPick={() => setPreviewPickerFor(i)}
+                onPick={() => setPicker({ i, pool: "previewMedia" })}
                 onClear={() => patchRow(i, { previewMedia: [] })}
               />
               {(r.previewMedia.length > 0 || r.previewFolderId) && (
@@ -281,21 +220,16 @@ export function PremadeForm({
                 <IfHelp>OF resolves it at send time.</IfHelp>
               </div>
 
-              {/* System audiences — tri-state chips (off → include → exclude). */}
+              {/* System audiences: include-only chips (OF drops a built-in name in `excludedLists`, fanLists.tsx). */}
               <div className="flex flex-wrap gap-2">
-                {SYSTEM_AUDIENCES.map((b) => {
-                  const state = r.includes.includes(b.id)
-                    ? "in"
-                    : r.excludes.includes(b.id) ? "ex" : "off";
-                  return (
-                    <SysChip
-                      key={b.id}
-                      state={state}
-                      onClick={() => dispatch({ type: "cycleSystem", i, id: b.id })}
-                      label={b.label}
-                    />
-                  );
-                })}
+                {SYSTEM_AUDIENCES.map((b) => (
+                  <SysChip
+                    key={b.id}
+                    state={r.includes.includes(b.id) ? "in" : "off"}
+                    onClick={() => dispatch({ type: "toggleListInclude", i, id: b.id })}
+                    label={b.label}
+                  />
+                ))}
               </div>
 
               {/* Custom lists — include / exclude columns. */}
@@ -304,7 +238,7 @@ export function PremadeForm({
                   <IfLabel>Include custom lists</IfLabel>
                   <ListColumn
                     lists={customLists}
-                    loading={listsQ.isLoading}
+                    loading={listsLoading}
                     selected={new Set(r.includes)}
                     onToggle={(id) => dispatch({ type: "toggleListInclude", i, id })}
                     emptyLabel="No custom lists."
@@ -314,7 +248,7 @@ export function PremadeForm({
                   <IfLabel>Exclude custom lists</IfLabel>
                   <ListColumn
                     lists={customLists}
-                    loading={listsQ.isLoading}
+                    loading={listsLoading}
                     selected={new Set(r.excludes)}
                     onToggle={(id) => dispatch({ type: "toggleListExclude", i, id })}
                     emptyLabel="No custom lists."
@@ -357,34 +291,22 @@ export function PremadeForm({
           <h3 className="text-[14px] font-medium text-fg">Repost cycle</h3>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <NumField label="Repost whole list after" help="hours · blank = once" placeholder="e.g. 24"
-              value={postsResendAfterHours} onChange={setPostsResendAfterHours} />
+              value={cycle.resendAfterHours} onChange={(v) => dispatch({ type: "setCycle", patch: { resendAfterHours: v } })} />
             <NumField label="Repost this many times" help="0 = once" placeholder="0"
-              value={postsResendCount} onChange={setPostsResendCount} />
+              value={cycle.resendCount} onChange={(v) => dispatch({ type: "setCycle", patch: { resendCount: v } })} />
           </div>
         </section>
       )}
 
       <VaultPicker
-        open={pickerFor !== null}
-        onClose={() => setPickerFor(null)}
+        open={picker !== null}
+        onClose={() => setPicker(null)}
         accountId={accountId}
         fanId={null}
-        initialSelectedIds={pickerFor !== null ? rows[pickerFor].media.map((m) => m.id) : []}
+        initialSelectedIds={picker ? rows[picker.i][picker.pool].map((m) => m.id) : []}
         onConfirm={(picked) => {
-          if (pickerFor !== null) patchRow(pickerFor, { media: picked });
-          setPickerFor(null);
-        }}
-      />
-
-      <VaultPicker
-        open={previewPickerFor !== null}
-        onClose={() => setPreviewPickerFor(null)}
-        accountId={accountId}
-        fanId={null}
-        initialSelectedIds={previewPickerFor !== null ? rows[previewPickerFor].previewMedia.map((m) => m.id) : []}
-        onConfirm={(picked) => {
-          if (previewPickerFor !== null) patchRow(previewPickerFor, { previewMedia: picked });
-          setPreviewPickerFor(null);
+          if (picker) patchRow(picker.i, { [picker.pool]: picked });
+          setPicker(null);
         }}
       />
     </div>
@@ -398,9 +320,15 @@ export function PremadeForm({
     </>
   );
 
-  const dirty = JSON.stringify([rows, postsResendAfterHours, postsResendCount]) !== opened;
-  return <>{frame({ body, footer, dirty })}</>;
+  return (
+    <IfModal width={722} title={title} onClose={onClose} keyboard={!touched} size="editor" footer={footer}>
+      {body}
+    </IfModal>
+  );
 }
+
+/** No automatic action seeds this form: every dispatch is the user's. */
+const noSeed = () => false;
 
 /** Folder pool + picked-image pool, side by side. */
 function MediaPool({ idPrefix, folderSelect, picked, pickLabel, pickedLabel, onPick, onClear }: {
@@ -443,62 +371,6 @@ function CountLine({ lead, value, onChange, tail }: {
         onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ""))} />
       <span>{tail}</span>
     </label>
-  );
-}
-
-/** Tri-state chip for system audiences: off / include / exclude. */
-function SysChip({
-  state, onClick, label,
-}: {
-  state: "off" | "in" | "ex";
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Click to cycle: off → include → exclude → off"
-      className={cn(
-        "h-7 rounded-full border border-border px-3 text-[14px] transition-colors",
-        state === "off" && "text-fg-dim hover:border-accent hover:text-fg",
-        state === "in" && "border-accent/40 bg-accent/10 text-accent",
-        state === "ex" && "border-err/40 text-err line-through",
-      )}
-    >
-      {state === "in" ? "Include · " : state === "ex" ? "Exclude · " : ""}{label}
-    </button>
-  );
-}
-
-/** A scrollable checkbox column of custom lists (include OR exclude). Mirrors
- *  the Mass Online composer's ListColumn. */
-function ListColumn({
-  lists, loading, selected, onToggle, emptyLabel,
-}: {
-  lists: FanList[];
-  loading: boolean;
-  selected: Set<string>;
-  onToggle: (id: string) => void;
-  emptyLabel: string;
-}) {
-  if (loading) return <div className="text-muted">Loading…</div>;
-  if (lists.length === 0) {
-    return <div className="text-muted">{emptyLabel}</div>;
-  }
-  return (
-    <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
-      {lists.map((l) => {
-        const id = String(l.id);
-        return (
-          <label key={id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-bg-elev-1">
-            <input type="checkbox" checked={selected.has(id)} onChange={() => onToggle(id)} className="accent-accent" />
-            <span className="flex-1 truncate">{l.name || `List #${id}`}</span>
-            <span className="shrink-0 text-[12px] text-muted">{l.usersCount ?? 0}</span>
-          </label>
-        );
-      })}
-    </div>
   );
 }
 

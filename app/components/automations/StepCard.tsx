@@ -3,12 +3,12 @@
 /** FunnelEditor's step card: one reply / PPV step of a mass-message funnel. */
 
 import { useId } from "react";
-import { ChevronDown, ChevronUp, Image as ImageIcon, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Image as ImageIcon, Trash2 } from "lucide-react";
 
 import {
   IfButton, IfHelp, IfInput, IfLabel, IfSegmented, IfSwitch, IfTextArea, type IfOption,
 } from "@/components/ui/infloww";
-import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
+import { VariantsField } from "@/components/compose/VariantsField";
 import type { DraftStep } from "@/lib/funnelDraft";
 
 /** reply_mass_funnel._step_texts: a static step sends its first 2 messages. */
@@ -29,10 +29,6 @@ export function StepCard({
   onPatch,
   onRemove,
   onMove,
-  onMsgChange,
-  onMsgAdd,
-  onMsgImport,
-  onMsgRemove,
 }: {
   index: number;
   total: number;
@@ -40,10 +36,6 @@ export function StepCard({
   onPatch: (patch: Partial<DraftStep>) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
-  onMsgChange: (mi: number, val: string) => void;
-  onMsgAdd: () => void;
-  onMsgImport: (texts: string[]) => void;
-  onMsgRemove: (mi: number) => void;
 }) {
   const isPpv = step.kind === "ppv";
   const id = useId();
@@ -121,34 +113,16 @@ export function StepCard({
           <IfHelp>Guides the AI; blank uses the default persona.</IfHelp>
         </div>
       ) : (
-        <div>
-          <IfLabel>{isPpv ? "Sales copy" : "Reply"} variants</IfLabel>
-          <div className="space-y-2">
-            {step.messages.map((m, mi) => (
-              <div key={mi} className="flex items-start gap-1">
-                <IfTextArea
-                  value={m}
-                  onChange={(e) => onMsgChange(mi, e.target.value)}
-                  rows={2}
-                  placeholder={step.messages.length > 1 ? `Variant ${mi + 1}` : "Message…"}
-                  className="flex-1"
-                />
-                {step.messages.length > 1 && (
-                  <IfButton variant="link" icon={X} aria-label="Remove this variant" title="Remove this variant"
-                    onClick={() => onMsgRemove(mi)} className={`${ICON_ACTION} hover:text-err`} />
-                )}
-              </div>
-            ))}
-          </div>
-          <IfHelp>One is sent at random; the first 2 are used.</IfHelp>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-            <IfButton variant="link" onClick={onMsgAdd}>
-              Add variant{step.messages.length > 1 ? ` (${step.messages.length})` : ""}
-            </IfButton>
-            {/* reply_mass_funnel sends static messages[:2] only. */}
-            <ImportCaptionsButton current={step.messages} max={FUNNEL_STEP_MSGS} onImport={onMsgImport} />
-          </div>
-        </div>
+        // reply_mass_funnel sends static messages[:2], one after the other (_step_texts, _send_step).
+        <VariantsField
+          id={`${id}-msg`}
+          label={isPpv ? "Sales copy" : "Reply"}
+          variants={step.messages}
+          placeholder="Message…"
+          max={FUNNEL_STEP_MSGS}
+          help="The first 2 are sent, in order."
+          onChange={(messages) => onPatch({ messages })}
+        />
       )}
     </div>
   );

@@ -29,12 +29,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Play } from "lucide-react";
 
 import {
-  mirrorFullSrc,
-  mirrorPosterSrc,
   resolveDispute,
   useVaultDisputes,
   type VaultDispute,
 } from "@/hooks/useVaultCache";
+import { mirrorFullSrc, mirrorPosterSrc } from "@/lib/mediaUrl";
 import ImageLightbox from "@/components/vault/ImageLightbox";
 import { IfButton, IfHelp, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";

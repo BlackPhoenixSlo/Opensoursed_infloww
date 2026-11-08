@@ -29,7 +29,7 @@ export const proxyTh = (last = false) => cn(PROXY_TABLE.th, !last && PROXY_TABLE
 /** antd's simple empty "No data" on the dark algorithm: `colorTextDisabled`, #595959 on #151515. */
 export const EMPTY_TEXT = "text-[#595959] [html[data-theme=light]_&]:text-black/25";
 
-/** The answer of `POST /admin/proxies/{label}/test`: `service/proxies.py` `probe`, `{ok, ip, geo, error}`. */
+/** The answer of `POST /admin/proxies/{label}/test`: `ok`/`error` from the health probe (`probe_of`), `ip`/`geo` from the trace. */
 export type TestResult = { ok: boolean; ip?: string | null; geo?: string | null; error?: string | null };
 
 /** The proxy a Creator is bound to: the first that lists it (the legacy singular mirror as a fall-back). */

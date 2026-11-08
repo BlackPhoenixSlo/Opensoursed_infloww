@@ -6,22 +6,25 @@ the OF response keyed on (account_id, query_key) lets the second
 picker-open (from any browser) skip the OF round-trip entirely.
 
 API:
-    await get(account_id, query_key)           -> dict | None  (None = miss/stale)
-    await put(account_id, query_key, payload)  -> None         (write-through)
-    await invalidate(account_id)               -> int          (rows deleted)
+    await get(account_id, query_key)                        -> dict | None  (None = miss/stale)
+    await put(account_id, query_key, payload, started_at=t0) -> None         (write-through; t0 = utcnow() before the fetch)
+    await invalidate(account_id)                            -> int          (rows deleted)
+    mark_stale(account_id)                                  -> None         (sync, RAM)
 
-TTL is per key prefix. Folder lists (`lists:`) keep for
-`CHATTERLY_VAULT_CACHE_TTL_SECONDS` (default 604800 = 7 days); every other
-key (media pages, media-by-id) for min(that, 72000 = 20 h), because those
-payloads carry OF's signed urls and a cache older than ~20 h hands out links
-that 403. A proxy change also stales the account's rows (`mark_stale`): the
-signed urls are bound to the egress IP. Vault content changes are creator-driven and all mutation
-paths (/api/of/v2/upload, vault list/folder edits) call
-`invalidate(account_id)` so the cache cannot serve a stale row after a
-write the relay performed. External edits (e.g. the creator deleting
-media in OF's own UI) age out via the TTL — worst case the picker
-shows a ghost row for up to 1 day until either an upload invalidates
-or the user hits Refresh.
+One TTL for every key: `CHATTERLY_VAULT_CACHE_TTL_SECONDS` (default and cap
+TTL_CAP_S = 72000 = 20 h; 0 disables the cache). Every payload carries OF's
+signed urls — media pages and by-id reads per row, folder lists in each
+folder's (and All's) cover `medias` — and a cache older than ~20 h hands out
+links that 403. A proxy change also stales the account's rows (`mark_stale`
+at once, then server._on_proxy_switched deletes them through `invalidate`):
+the signed urls are bound to the egress IP. Vault content changes are
+creator-driven and all mutation paths (/api/of/v2/upload, vault list/folder
+edits) call `invalidate(account_id)` so the cache cannot serve a stale row
+after a write the relay performed — and a fetch that started before that
+invalidate cannot write its pre-mutation payload back after it (`put`'s
+`started_at`). External edits (e.g. the creator deleting media in OF's own
+UI) age out via the TTL — worst case the picker shows a ghost row for up to
+20 h until either an upload invalidates or the user hits Refresh.
 
 This cache is an OPTIMISATION, never a dependency
 ----------------------------------------------------
@@ -35,8 +38,8 @@ data because we could not memoise it. The docstring on `put` already said
 guard just never covered the DB write, only the JSON encode.
 
 So: a failed read is a MISS (go upstream), a failed write is a NO-OP, and a
-failed invalidate falls back to `_pending_invalidations` below. The caller
-gets slower, never broken.
+failed invalidate falls back to `_invalidated_at` below. The caller gets
+slower, never broken.
 """
 from __future__ import annotations
 
@@ -55,28 +58,28 @@ from db.models import VaultResponseCache
 
 log = logging.getLogger("of-relay.vault_cache")
 
-# Account ids whose `invalidate` could not delete its rows, mapped to the
-# moment the invalidation was requested.
+# Account id → utcnow() of its latest `invalidate` / `mark_stale`. Read twice:
 #
-# Swallowing a failed invalidate is only safe if the rows it meant to kill
-# stop being served — otherwise a creator uploads media, the DELETE fails on
-# a locked DB, and the picker keeps serving the pre-upload listing for a full
-# TTL (a day, by default). That is a worse failure than the 500 we are
-# removing, because it is silent.
+#   `get` serves no row fetched before it. Swallowing a failed invalidate is
+#   only safe if the rows it meant to kill stop being served — otherwise a
+#   creator uploads media, the DELETE fails on a locked DB, and the picker keeps
+#   serving the pre-upload listing for a full TTL. That is a worse failure than
+#   the 500 we are removing, because it is silent. So the cache degrades to
+#   "always miss for this account" until a fresh `put` re-warms it, which is
+#   exactly what a successful invalidate would have produced (after one, the
+#   rows are gone and the mark filters nothing).
 #
-# So when the DELETE fails we record the account here and `get` treats every
-# row stamped at or before that moment as stale — the cache degrades to
-# "always miss for this account" until a fresh `put` re-warms it, which is
-# exactly what a successful invalidate would have produced.
+#   `put` drops a payload whose fetch started at or before it: it predates the
+#   mutation (or the proxy) the invalidate was for.
 #
 # Deliberately RAM-only: it is a repair for a write we could not perform, so
-# persisting it would need the very write that just failed. A restart drops
-# it, and the row falls back to ordinary TTL expiry.
-_pending_invalidations: dict[str, datetime] = {}
+# persisting it would need the very write that just failed; a restart has no
+# fetch in flight. A restart drops it, and a surviving row falls back to
+# ordinary TTL expiry.
+_invalidated_at: dict[str, datetime] = {}
 
 
-LISTS_TTL_DEFAULT_S = 604800   # 7 d — folder lists carry no row-level signed urls worth guarding
-MEDIA_TTL_CAP_S = 72000        # 20 h — signed media urls are never served older than this
+TTL_CAP_S = 72000   # 20 h — OF's signed urls (in every payload here) are never served older than this
 
 
 def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
@@ -100,23 +103,24 @@ def vault_lists_cache_key(*, view: str = "main", limit: int = 10, offset: int = 
     return f"lists:view={view}|limit={limit}|offset={offset}" + (f"|query={q_norm}" if q_norm else "")
 
 
-def _ttl_seconds(query_key: str = "") -> int:
-    """TTL for this key. The env sets the lists TTL; anything else (media pages,
-    by-id reads: signed urls) is capped at MEDIA_TTL_CAP_S. 0 disables."""
-    raw = os.environ.get("CHATTERLY_VAULT_CACHE_TTL_SECONDS", str(LISTS_TTL_DEFAULT_S))
+def _ttl_seconds() -> int:
+    """The cache TTL: `CHATTERLY_VAULT_CACHE_TTL_SECONDS`, never above TTL_CAP_S
+    (signed urls). 0 disables."""
+    raw = os.environ.get("CHATTERLY_VAULT_CACHE_TTL_SECONDS", str(TTL_CAP_S))
     try:
         v = max(int(raw), 0)
     except ValueError:
-        v = LISTS_TTL_DEFAULT_S
-    return v if query_key.startswith("lists:") else min(v, MEDIA_TTL_CAP_S)
+        v = TTL_CAP_S
+    return min(v, TTL_CAP_S)
 
 
 def mark_stale(account_id: str) -> None:
-    """Make every row cached so far for `account_id` read as a miss. Sync and
-    DB-free, for the sync proxy-switch hook (server._on_proxy_switched): a proxy
-    change re-binds the egress IP, and OF's signed urls are IP-bound. RAM-only
-    like `_pending_invalidations`; after a restart the 20 h media cap bounds it."""
-    _pending_invalidations[account_id] = datetime.utcnow()
+    """Make every row cached so far for `account_id` read as a miss, and drop any
+    `put` whose fetch started before now. Sync and DB-free, for the sync
+    proxy-switch hook (server._on_proxy_switched): a proxy change re-binds the
+    egress IP, and OF's signed urls are IP-bound. RAM-only; the hook then deletes
+    the rows (`invalidate`) so a restart cannot serve them either."""
+    _invalidated_at[account_id] = datetime.utcnow()
 
 
 async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
@@ -127,15 +131,15 @@ async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
     A DB failure is reported as a miss: the caller then fetches upstream
     and serves real data, which is the whole point of a cache being
     optional."""
-    ttl = _ttl_seconds(query_key)
+    ttl = _ttl_seconds()
     if ttl == 0:
         return None
     cutoff = datetime.utcnow() - timedelta(seconds=ttl)
-    # A failed invalidate (or a `mark_stale`) raises the bar past the TTL, so
-    # rows the mutation should have deleted are not served.
-    pending = _pending_invalidations.get(account_id)
-    if pending is not None and pending > cutoff:
-        cutoff = pending
+    # An invalidate whose DELETE failed (or a `mark_stale`) raises the bar past
+    # the TTL, so rows the mutation should have deleted are not served.
+    mark = _invalidated_at.get(account_id)
+    if mark is not None and mark > cutoff:
+        cutoff = mark
     try:
         async with get_session() as s:
             row = (
@@ -184,12 +188,17 @@ def _is_empty_listing(payload: Any) -> bool:
     return False
 
 
-async def put(account_id: str, query_key: str, payload: Any) -> None:
+async def put(account_id: str, query_key: str, payload: Any, *,
+              started_at: datetime) -> None:
     """Write-through cache. Upserts on the composite PK so re-fetching
     the same page just refreshes `fetched_at`.
 
     Never raises: the payload this memoises has already been fetched and is
     on its way to the caller.
+
+    `started_at`: datetime.utcnow() taken before the upstream fetch. When the
+    account was invalidated (or `mark_stale`d) at or after it, the payload
+    predates that mutation / proxy and is not cached.
 
     EMPTY LISTINGS ARE NOT CACHED. This is not a micro-optimisation, it is a
     bug we shipped: on 2026-08-31 the Fansly vault reads were still returning
@@ -213,6 +222,11 @@ async def put(account_id: str, query_key: str, payload: Any) -> None:
     if _is_empty_listing(payload):
         log.debug("vault_cache: refusing to memoise an EMPTY listing "
                   "account=%s key=%s (see put.__doc__)", account_id, query_key)
+        return
+    mark = _invalidated_at.get(account_id)
+    if mark is not None and started_at <= mark:
+        log.debug("vault_cache: fetch for account=%s key=%s started before its last "
+                  "invalidate — not cached", account_id, query_key)
         return
     try:
         blob = json.dumps(payload, ensure_ascii=False, default=str)
@@ -250,20 +264,17 @@ async def invalidate(account_id: str) -> int:
     Never raises — the mutation it follows has already happened upstream, so
     a 500 here would report failure for work that succeeded and invite the
     caller to repeat it (a re-run upload means duplicate vault media). If the
-    DELETE cannot run, `_pending_invalidations` keeps the surviving rows from
+    DELETE cannot run, `_invalidated_at` keeps the surviving rows from
     being served; the return value is the number of rows actually deleted,
     which is 0 in that case."""
+    _invalidated_at[account_id] = datetime.utcnow()
     try:
         async with get_session() as s:
             result = await s.execute(
                 delete(VaultResponseCache).where(VaultResponseCache.account_id == account_id)
             )
-            # The rows are gone, so any earlier failed invalidate for this
-            # account is now satisfied — stop holding fresh `put`s hostage.
-            _pending_invalidations.pop(account_id, None)
             return result.rowcount or 0
     except SQLAlchemyError as e:
-        _pending_invalidations[account_id] = datetime.utcnow()
         log.warning("vault_cache: invalidate failed for account=%s (%s) — "
                     "serving misses for this account until a fresh write lands",
                     account_id, e.__class__.__name__)

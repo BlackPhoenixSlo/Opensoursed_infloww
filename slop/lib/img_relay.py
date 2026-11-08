@@ -6,9 +6,12 @@ it: without the file `POST /__slop/img/arm` is a 409 that changes nothing, and n
 other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the client build error, as
 `_OfflineOF.__getattr__` did before this part existed: unarmed, nothing here can reach curl).
 
-  arm_run(http, tmp, assets, latency_s, pictures=False)  (harness side) writes `of-cdn.json` {latency_s, pictures,
-       assets: {"host/path": size}}, POSTs the arm hook and answers its body. `pictures`: every asset's bytes are a
-       real picture (`picture_bytes`, a small PNG; size ignored) so a browser draws it and vault_stills keeps it.
+  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None)  (harness side) writes `of-cdn.json`
+       {latency_s, pictures, assets: {"host/path": size}, mp4_sizes}, POSTs the arm hook and answers its body.
+       `pictures`: every asset's bytes are a real picture (`picture_bytes`, a small PNG; size ignored) so a browser
+       draws it and vault_stills keeps it. `mp4_sizes` {"host/path.mp4": size}: that video is the clip padded to
+       exactly `size` (`padded_mp4`: one trailing `free` box), a big file without encoding one. Arming again
+       re-reads the file (same server; a re-sized key's cached bytes are dropped).
   POST /__slop/img/arm   (loopback; 409 without the file or under SLOP_LIVE=1)
        1. The fake CDN: a loopback ThreadingHTTPServer in the relay process (a thread per request). Per request,
           after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
@@ -72,7 +75,7 @@ ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `cr
 OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
 _lock = threading.Lock()
 _calls: list[dict] = []
-_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False}
+_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}}
 _state = {"port": None, "armed": False, "inflight": 0}
 _bytes: dict[str, bytes] = {}
 _sessions: dict[str, object] = {}
@@ -145,10 +148,12 @@ def creator_headers(account_id: str) -> dict[str, str]:
     return {"User-Agent": f"SlopCreatorUA/{account_id}", **dict(zip(ACCOUNT_HEADERS, vals, strict=True))}
 
 
-async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False) -> dict:
+async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False,
+                  mp4_sizes: dict | None = None) -> dict:
     """Harness side: `assets` {"host/path": {size, ...}} into the config file, then the arm hook."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
-        "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()}}))
+        "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()},
+        "mp4_sizes": mp4_sizes or {}}))
     r = await http.post("/__slop/img/arm")
     if r.status_code != 200:
         raise RuntimeError(f"slop: img arm hook answered {r.status_code}: {r.text[:200]}")
@@ -209,11 +214,21 @@ def video_bytes() -> bytes:
         return out.read_bytes()
 
 
+def padded_mp4(clip: bytes, size: int) -> bytes:
+    """`clip`, then one ISO-BMFF `free` box (players skip it) up to exactly `size` bytes."""
+    pad = size - len(clip)
+    return clip if pad < 8 else clip + pad.to_bytes(4, "big") + b"free" + bytes(pad - 8)
+
+
 def _body(key: str, size: int) -> bytes:
     with _lock:
         b = _bytes.get(key)
+        big = _cfg["mp4_sizes"].get(key)
     if b is None:
-        b = video_bytes() if key.endswith(".mp4") else picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
+        if key.endswith(".mp4"):
+            b = padded_mp4(video_bytes(), int(big)) if big else video_bytes()
+        else:
+            b = picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
         with _lock:
             _bytes[key] = b
     return b
@@ -368,7 +383,10 @@ def _arm() -> dict:
     d = json.loads(_file().read_text())
     with _lock:
         assets = d.get("assets") or {}
-        _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets},
+        big = d.get("mp4_sizes") or {}
+        for k in set(big) | set(_cfg["mp4_sizes"]):
+            _bytes.pop(k, None)
+        _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets}, mp4_sizes=big,
                     latency_s=float(d.get("latency_s") or 0), pictures=bool(d.get("pictures")))
     cache = Path(os.environ["DEMO_SHOTS_TMP"]) / "img-cache"
     cache.mkdir(parents=True, exist_ok=True)

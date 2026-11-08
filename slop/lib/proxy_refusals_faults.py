@@ -3,20 +3,20 @@ window and the flap knob's stay rule in service/proxy_health.py, patched inside 
 names live here and scenarios/2026-11-05-proxy-refusals.py imports them, so a target never names a
 missing check.
 
-  flap-knob-ignored      `flapping()` always False: no hysteresis, no herd guard; FlapBad still fires,
+  flap-knob-ignored      `still_flapping()` + `herd_guarded()` always False: no hysteresis, no herd guard; FlapBad fires,
                          but any answer or passing recheck brings the proxy straight back
   refusal-window-blind   every attempt's outcome dropped before the window: refusals always 0 of 0
 """
 from __future__ import annotations
 
-C_RATE_SHOWN = ("refusing proxies: GET /admin/proxies shows refusals over >= 20 calls, pct within the share's "
-                "binomial band, refused within 5 of the fake proxy's own; the clean pool proxies 0 refused")
+C_RATE_SHOWN = ("refusing proxies: GET /admin/proxies shows the Agency owner the share alone (no counts), pct within "
+                "the share's binomial band over the fake proxy's >= 20 CONNECTs; the clean pool proxies pct 0")
 C_UI_TEXT = "Proxies page: the refusing custom proxy's row reads 'refusing N% (M min)'"
 C_FLAP_MOVES = ("flap knob on: the refusing pool proxy goes bad and its Creators move to answering pool proxies "
                 "within budget; no send lost or duplicated, only proxy_unreachable 502s, interactive p95 in budget")
 C_STANDBY_NO_FAILBACK = ("after the move, refusals stop: the moved-away pool proxy comes back as standby within "
                          "budget and nobody moves back (bindings unchanged since the move)")
-C_HYSTERESIS = ("custom proxy flap-bad at 30 %, then refusing 16 % for longer than window/5: never back up "
+C_HYSTERESIS = ("custom proxy flap-bad at 30 %, then refusing 16 % through phase B: never back up "
                 "meanwhile, still bad at the end (bad_reason flapping, badge 'proxy refusing', pct >= 10)")
 C_CLEARS = "custom proxy steadily bad when its refusals stop: it leaves bad within budget, badge gone"
 
@@ -27,7 +27,8 @@ def _flap_knob_ignored() -> None:
     flips bad/up and the two failed rechecks a move needs rarely line up."""
     import proxy_health
 
-    proxy_health.flapping = lambda label: False
+    proxy_health.still_flapping = lambda label: False
+    proxy_health.herd_guarded = lambda label: False
 
 
 def _refusal_window_blind() -> None:

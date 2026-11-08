@@ -117,8 +117,19 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     # consent-required-notice: media sends through the real send route over every Creator's fans
     "consent_sends": (120, 2_000, 5_000),
 }
-for _i, _scale in enumerate(("small", "medium", "huge")):
-    SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})
+
+
+def merge_sizes(sizes: dict[str, tuple[int, int, int]]) -> None:
+    """A flow's sizes (key: (small, medium, huge)) into SCALES; a key already there with another value is an error."""
+    per = {s: {k: v[i] for k, v in sizes.items()} for i, s in enumerate(("small", "medium", "huge"))}
+    clash = sorted({k for s, d in per.items() for k, v in d.items() if SCALES[s].get(k, v) != v})
+    if clash:
+        raise SystemExit(f"slop: sizes {clash} already in SCALES with other values")
+    for s, d in per.items():
+        SCALES[s].update(d)
+
+
+merge_sizes(FLOW_SIZES)
 
 
 @dataclass

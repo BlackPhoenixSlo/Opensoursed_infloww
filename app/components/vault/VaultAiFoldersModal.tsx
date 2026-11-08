@@ -33,13 +33,13 @@ import { Copy, Send, Shirt, User } from "lucide-react";
 
 import {
   applyAiFolders,
-  mirrorThumbSrc,
   runVaultFlags,
   useAiFolderPlan,
   useVaultFlagsStatus,
   type AiFolder,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
+import { mirrorThumbSrc } from "@/lib/mediaUrl";
 import { IfButton, IfHelp, IfLabel, IfLearn, IfModal, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 

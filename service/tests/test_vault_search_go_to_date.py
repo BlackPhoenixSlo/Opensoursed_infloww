@@ -25,6 +25,7 @@ import re  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import vault_cache  # noqa: E402
 
 
 def _client():
@@ -61,10 +62,10 @@ def case_media_before_wire():
 
 def case_cache_keys():
     # The keys every existing caller (and test_chatter_access) builds are unchanged.
-    assert server.vault_lists_cache_key(view="main", limit=50, offset=0) == "lists:view=main|limit=50|offset=0"
-    assert server.vault_media_cache_key() == "media:type=all|list=None|offset=0|limit=24|sort=desc|field=recent|query="
-    assert server.vault_lists_cache_key(view="main", limit=50, offset=0, q_norm="beach") == "lists:view=main|limit=50|offset=0|query=beach"
-    assert server.vault_media_cache_key(before="2026-09-08").endswith("|before=2026-09-08")
+    assert vault_cache.vault_lists_cache_key(view="main", limit=50, offset=0) == "lists:view=main|limit=50|offset=0"
+    assert vault_cache.vault_media_cache_key() == "media:type=all|list=None|offset=0|limit=24|sort=desc|field=recent|query="
+    assert vault_cache.vault_lists_cache_key(view="main", limit=50, offset=0, q_norm="beach") == "lists:view=main|limit=50|offset=0|query=beach"
+    assert vault_cache.vault_media_cache_key(before="2026-09-08").endswith("|before=2026-09-08")
 
 
 async def case_routes_pass_them():
@@ -75,7 +76,7 @@ async def case_routes_pass_them():
         calls["get"].append(key)
         return None
 
-    async def _put(aid, key, payload):
+    async def _put(aid, key, payload, *, started_at=None):
         calls["put"].append(key)
 
     async def _no_gate(aid):

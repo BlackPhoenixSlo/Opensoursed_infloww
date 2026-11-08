@@ -1,6 +1,7 @@
 """`OF_API_ORIGIN`: the test-only seam that points every OF call at a local
-fake (ADR 0024). Its own module so session_bootstrap can read it without
-importing of_client (and curl_cffi).
+fake (ADR 0024), and what OF's web host and Chrome profile follow from it
+(`OF_WEB_ORIGIN`, `IMPERSONATE`). Its own module so session_bootstrap and
+proxy_probe can read them without importing of_client (and curl_cffi).
 
 Unset → "" and the real OnlyFans hosts. Set → a bare loopback origin, or the
 import refuses, so the env can never send a signed request to a third party.
@@ -37,3 +38,8 @@ def parse(raw: str) -> str:
 
 
 OF_API_ORIGIN = parse(os.environ.get("OF_API_ORIGIN", ""))
+OF_WEB_ORIGIN = OF_API_ORIGIN or "https://onlyfans.com"   # the host every /api2/ call goes to
+
+# curl_cffi impersonation profile. "chrome" picks the latest stable Chrome JA3.
+# Pin to a specific version (e.g. "chrome131") if OF starts blocking newer ones.
+IMPERSONATE = "chrome"

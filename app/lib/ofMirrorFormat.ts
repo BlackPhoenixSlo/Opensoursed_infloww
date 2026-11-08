@@ -33,8 +33,8 @@ export const SIZES = [
   { cls: "m-editor-fs__sm", font: "1", label: "Smallest" },
 ] as const;
 /** Only OF's own class names count: a pasted class like `m-editor-fc__x"onclick="…` is not one, so it never reaches the markup. */
-const COLOR_CLASSES: ReadonlySet<string> = new Set(COLORS.map((c) => c.cls));
-const SIZE_CLASSES: ReadonlySet<string> = new Set(SIZES.map((s) => s.cls));
+export const COLOR_CLASSES: ReadonlySet<string> = new Set(COLORS.map((c) => c.cls));
+export const SIZE_CLASSES: ReadonlySet<string> = new Set(SIZES.map((s) => s.cls));
 const COLOR_RE = { test: (c: string) => COLOR_CLASSES.has(c) };
 const SIZE_RE = { test: (c: string) => SIZE_CLASSES.has(c) };
 
@@ -43,8 +43,15 @@ const hex = (c: string): string => {
   if (!m) return c.trim().toLowerCase();
   return `#${[m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
 };
-/** A colour (hex or rgb) as OF's class (its PASTE_CONVERT_MATRIX), or null. */
-export const colorClass = (c: string | null | undefined): string | null => (c ? (COLORS.find((x) => x.css && x.css === hex(c))?.cls ?? null) : null);
+/** What foreColor writes for Text Color "Default" (no colour of its own): a placeholder only this maps. */
+const DEFAULT_CSS = "#000001";
+/** A colour (hex or rgb) as OF's class (its PASTE_CONVERT_MATRIX; the Default placeholder as OF's default class), or
+ *  null. */
+export const colorClass = (c: string | null | undefined): string | null => {
+  if (!c) return null;
+  const h = hex(c);
+  return h === DEFAULT_CSS ? "m-editor-fc__default" : COLORS.find((x) => x.css && x.css === h)?.cls ?? null;
+};
 const sizeClass = (n: string | null) => SIZES.find((s) => s.font === n)?.cls ?? null;
 
 /** The OF classes an element carries (a span's own, a <font>'s colour and size, an inline style colour). */
@@ -201,8 +208,8 @@ export function ofHtml(root: Element): string {
 /** Whether the editor holds any of OF's formatting (else the post goes as plain text, as before formatting existed). */
 export const hasFormatting = (root: Element): boolean => paragraphs(root).some((p) => runsOf(p).some((r) => !r.br && (r.bold || r.italic || !!r.classes)));
 
-/** Whose content is never text (dropped whole), as ofRichText's DROP_CONTENT. */
-const DROP_WHOLE = /^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT|IFRAME|OBJECT|TEXTAREA|TITLE|HEAD)$/;
+/** Whose content is never text (dropped whole) by every TS sanitizer, as service/of_rich_text.py `_DROP_CONTENT`. */
+export const DROP_CONTENT = /^(script|style|template|noscript|iframe|object|textarea|title|head)$/i;
 
 /**
  * OF's markup (a saved draft's, a script's, a message's) back into `root`: only p, br, strong, em and span with OF's
@@ -221,7 +228,7 @@ export function setOfHtml(root: Element, html: string): void {
       }
       if (n.nodeType !== 1) continue;
       const el = n as Element;
-      if (DROP_WHOLE.test(el.tagName)) continue; // never text (a script's code), as OF's sanitizer and the relay's drop it
+      if (DROP_CONTENT.test(el.tagName)) continue; // never text (a script's code), as OF's sanitizer and the relay's drop it
       const tag = { P: "p", BR: "br", STRONG: "strong", B: "strong", EM: "em", I: "em", SPAN: "span" }[el.tagName];
       if (!tag) {
         clean(el, to);
@@ -251,6 +258,24 @@ export function setOfHtml(root: Element, html: string): void {
 
 export type FormatCommand = { kind: "bold" } | { kind: "italic" } | { kind: "clear" } | { kind: "color"; cls: string } | { kind: "size"; cls: string };
 
+/** The browser's editing command; false where there is none (jsdom). */
+export const execCommand = (doc: Document | undefined, name: string, value?: string): boolean =>
+  typeof doc?.execCommand === "function" ? doc.execCommand(name, false, value) : false;
+/** Whether the browser's typing style has `name` (bold, italic) armed; false where it cannot say. */
+export const commandState = (doc: Document | undefined, name: string): boolean => {
+  try { return typeof doc?.queryCommandState === "function" && doc.queryCommandState(name); } catch { return false; }
+};
+
+/** B, I, a colour or a size through the browser's command (b, i, font: `normalize` makes them OF's markup; Default
+ *  colour writes the placeholder `colorClass` maps), on a selection or, collapsed, as its typing style. Clear is the
+ *  caller's (no browser command does it). */
+export function execFormat(doc: Document, cmd: Exclude<FormatCommand, { kind: "clear" }>): boolean {
+  execCommand(doc, "styleWithCSS", "false");
+  if (cmd.kind === "bold" || cmd.kind === "italic") return execCommand(doc, cmd.kind);
+  if (cmd.kind === "color") return execCommand(doc, "foreColor", COLORS.find((c) => c.cls === cmd.cls)?.css || DEFAULT_CSS);
+  return execCommand(doc, "fontSize", SIZES.find((s) => s.cls === cmd.cls)?.font ?? "3");
+}
+
 /**
  * Apply `cmd` to the editor's selection with the browser's editing commands, then `normalize`. Text Color "Default" and
  * Text Size "Default" set OF's own default classes, as OF's toggleClass does. Clear Formatting also unwraps OF's spans
@@ -260,25 +285,14 @@ export function applyFormat(editor: HTMLElement, cmd: FormatCommand): boolean {
   const doc = editor.ownerDocument;
   const sel = doc.getSelection();
   if (!sel || !sel.rangeCount || sel.isCollapsed || !editor.contains(sel.getRangeAt(0).commonAncestorContainer)) return false;
-  const run = (name: string, value?: string) => doc.execCommand(name, false, value);
-  run("styleWithCSS", "false");
   let ok = false;
-  if (cmd.kind === "bold") ok = run("bold");
-  else if (cmd.kind === "italic") ok = run("italic");
-  else if (cmd.kind === "color") ok = run("foreColor", COLORS.find((c) => c.cls === cmd.cls)?.css || "#000001");
-  else if (cmd.kind === "size") ok = run("fontSize", SIZES.find((s) => s.cls === cmd.cls)?.font ?? "3");
+  if (cmd.kind !== "clear") ok = execFormat(doc, cmd);
   else {
     const range = sel.getRangeAt(0);
-    ok = run("removeFormat");
+    execCommand(doc, "styleWithCSS", "false");
+    ok = execCommand(doc, "removeFormat");
     for (const span of [...editor.querySelectorAll("span, strong, em")]) {
       if (range.intersectsNode(span) && sel.containsNode(span, false)) span.replaceWith(...span.childNodes);
-    }
-  }
-  // The default colour: the browser wrote OF's placeholder #000001; it is OF's m-editor-fc__default.
-  if (cmd.kind === "color" && !COLORS.find((c) => c.cls === cmd.cls)?.css) {
-    for (const f of editor.querySelectorAll("font[color='#000001']")) {
-      f.removeAttribute("color");
-      f.classList.add("m-editor-fc__default");
     }
   }
   // normalize rebuilds the nodes; keep the selection (by text offsets), so a second tool formats the same words.

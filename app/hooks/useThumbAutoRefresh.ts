@@ -20,16 +20,22 @@
  *     the reload did not change (the mirror's stable thumb route) is still asked for again instead of the browser
  *     keeping the failure. A tile's nonce never goes down: a later reload of other tiles leaves it on the src
  *     that loaded;
- *   • a tile is retried at most once per mount: broken again after its retry (media deleted on OF, a thumb that
- *     never renders), no further reload (else the grid would reload every COOLDOWN_MS) and its placeholder shows
- *     while its src is still the one that failed (`failed`); a new url (after a Refresh) is drawn again;
- *   • `reset` on a new scope (another Creator, the picker closed or reopened); the cooldown stays.
+ *   • a tile is retried at most once: broken again after its retry (media deleted on OF, a thumb that never
+ *     renders), no further reload (else the grid would reload every COOLDOWN_MS) and its placeholder shows while
+ *     its src is still the one that failed (`failed`). That give-up is module-level per Creator too (`thumbGiveUp`),
+ *     so a reopened picker or a remounted grid spends no reload (a relay vault-cache drop) on it again;
+ *   • the user's Refresh (`refreshed`, once it settled) is the retry of every tile given up on or waiting: each is
+ *     asked for again on a new nonce (the mirror's thumb url is stable, so without one it would keep its
+ *     placeholder), and the give-ups are forgotten;
+ *   • `reset` on a new scope (another Creator, the picker closed or reopened); the cooldown and give-ups stay.
  */
 
 import { useCallback, useEffect, useReducer } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { reloadBrokenThumbs, type ThumbSource } from "@/hooks/vaultRefresh";
+import { reloadBrokenThumbs, type VaultSource } from "@/hooks/vaultRefresh";
+import { vaultTileThumb } from "@/lib/mediaUrl";
+import { type VaultMedia } from "@/lib/relay";
 
 export const DEBOUNCE_MS = 400;
 export const COOLDOWN_MS = 5 * 60_000;
@@ -48,10 +54,12 @@ export interface ThumbRefreshState {
 }
 
 export type ThumbRefreshAction =
-  /** Tile `id`'s <img> failed to load `src`. */
-  | { type: "broken"; id: string; src: string }
+  /** Tile `id`'s <img> failed to load `src`; `gaveUp`: given up on in an earlier mount (`thumbGiveUp`). */
+  | { type: "broken"; id: string; src: string; gaveUp?: boolean }
   /** A reload for Creator `scope` settled (the cooldown was claimed before it started). */
   | { type: "fire"; scope: string }
+  /** The user's Refresh of Creator `scope` settled: it was the reload of every tile waiting or given up on. */
+  | { type: "refreshed"; scope: string }
   | { type: "reset"; scope: string | null };
 
 export const INITIAL_THUMB_REFRESH: ThumbRefreshState = { scope: null, pending: [], nonces: {}, nonce: 0, failed: {} };
@@ -70,8 +78,9 @@ export function thumbRefreshReducer(s: ThumbRefreshState, a: ThumbRefreshAction)
   switch (a.type) {
     case "broken":
       if (s.pending.includes(a.id)) return s;
-      // Already retried once (R3-1): no further reload for it, just its placeholder for this src (R4-1).
-      if (a.id in s.nonces) return s.failed[a.id] === a.src ? s : { ...s, failed: { ...s.failed, [a.id]: a.src } };
+      // Already retried once (R3-1), in this mount or an earlier one (F7): no further reload for it, just its
+      // placeholder for this src (R4-1).
+      if (a.id in s.nonces || a.gaveUp) return s.failed[a.id] === a.src ? s : { ...s, failed: { ...s.failed, [a.id]: a.src } };
       return { ...s, pending: [...s.pending, a.id] };
     case "fire": {
       if (a.scope !== s.scope || s.pending.length === 0) return s;
@@ -79,6 +88,16 @@ export function thumbRefreshReducer(s: ThumbRefreshState, a: ThumbRefreshAction)
       const nonces = { ...s.nonces };
       for (const id of s.pending) nonces[id] = nonce;
       return { ...s, pending: [], nonces, nonce };
+    }
+    case "refreshed": {
+      // A new nonce, so a stable url is asked for again rather than the src that failed (F8); broken again, the
+      // tile stays given up: the Refresh was its retry.
+      const ids = [...s.pending, ...Object.keys(s.failed)];
+      if (a.scope !== s.scope || ids.length === 0) return s;
+      const nonce = s.nonce + 1;
+      const nonces = { ...s.nonces };
+      for (const id of ids) nonces[id] = nonce;
+      return { ...s, pending: [], nonces, nonce, failed: {} };
     }
     case "reset":
       return { ...INITIAL_THUMB_REFRESH, scope: a.scope };
@@ -111,13 +130,27 @@ export const thumbCooldown = {
   },
 };
 
-/** A grid's tiles read their src through `thumbFor` and report a failed load (of the src it gave) to `onBroken`. */
+// Per Creator, the tiles given up on (broken again after their retry). Module-level like the cooldown: outlives
+// every grid, until the user's Refresh.
+const gaveUp = new Map<string, Set<string>>();
+export const thumbGiveUp = {
+  has: (accountId: string, id: string): boolean => gaveUp.get(accountId)?.has(id) ?? false,
+  add: (accountId: string, id: string): void => {
+    const ids = gaveUp.get(accountId) ?? new Set<string>();
+    ids.add(id);
+    gaveUp.set(accountId, ids);
+  },
+  clear: (accountId: string): void => { gaveUp.delete(accountId); },
+};
+
+/** A grid's thumbnail retry: `tile(m)` is what tile `m`'s <img> shows ("" = its placeholder) and its onError;
+ *  `refreshed(accountId)` once the user's Refresh of that Creator settled. */
 export interface ThumbRetry {
-  thumbFor: (id: string | number, src: string) => string;
-  onBroken: (id: string | number, src: string) => void;
+  tile: (m: VaultMedia) => { src: string; onError: () => void };
+  refreshed: (accountId: string) => void;
 }
 
-export function useThumbAutoRefresh(accountId: string | null, source: ThumbSource): ThumbRetry {
+export function useThumbAutoRefresh(accountId: string | null, source: VaultSource): ThumbRetry {
   const qc = useQueryClient();
   const [s, dispatch] = useReducer(thumbRefreshReducer, accountId, (scope) => ({ ...INITIAL_THUMB_REFRESH, scope }));
   useEffect(() => {
@@ -136,8 +169,20 @@ export function useThumbAutoRefresh(accountId: string | null, source: ThumbSourc
     arm();
     return () => clearTimeout(t);
   }, [pending, accountId, source, qc]);
-  const onBroken = useCallback(
-    (id: string | number, src: string) => dispatch({ type: "broken", id: String(id), src }), []);
-  const thumbFor = useCallback((id: string | number, src: string) => thumbSrc(s, String(id), src), [s]);
-  return { thumbFor, onBroken };
+  // A give-up outlives the mount (F7): recorded once the tile is drawn as failed.
+  const { scope, failed } = s;
+  useEffect(() => {
+    if (scope) for (const id of Object.keys(failed)) thumbGiveUp.add(scope, id);
+  }, [scope, failed]);
+  const tile = useCallback((m: VaultMedia) => {
+    const id = String(m.id);
+    const src = thumbSrc(s, id, vaultTileThumb(m, accountId));
+    const onError = () => dispatch({ type: "broken", id, src, gaveUp: !!accountId && thumbGiveUp.has(accountId, id) });
+    return { src, onError };
+  }, [s, accountId]);
+  const refreshed = useCallback((scope: string) => {
+    thumbGiveUp.clear(scope);
+    dispatch({ type: "refreshed", scope });
+  }, []);
+  return { tile, refreshed };
 }

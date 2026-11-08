@@ -46,9 +46,14 @@ export function previewText(c: OFChatItem): string {
   return (prefix + mk).trim();
 }
 
-/** The preview's hover text: names the marker it shows, undefined without
- *  one (so the row's own tooltip still shows over the preview). */
-export function previewTitle(c: OFChatItem): string | undefined {
+/** The row's preview line (Infloww's preview states, MP2 message-HF80yTBL.js; 04 M3, M25): "is typing…" while the
+ *  Fan types, else an unsent draft as "[Draft] …" (not on the open chat, whose composer shows it), else the last
+ *  message. `title` names the last message's marker, undefined otherwise (so the row's own tooltip still shows). */
+export function fanRowPreview(
+  c: OFChatItem, s: { typing: boolean; draft: string; selected: boolean },
+): { text: string; title?: string; typing?: true } {
+  if (s.typing) return { text: "is typing…", typing: true };
+  if (s.draft && !s.selected) return { text: `[Draft] ${s.draft}` };
   const m = c.lastMessage ? marker(c.lastMessage) : null;
-  return m ? PREVIEW_MARKER_LABEL[m] : undefined;
+  return { text: previewText(c), title: m ? PREVIEW_MARKER_LABEL[m] : undefined };
 }
