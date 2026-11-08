@@ -116,6 +116,7 @@ import lane_config_api  # noqa: E402  # Concurrency panel — UNAUTHENTICATED, s
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from customs_api import router as _customs_router  # noqa: E402
 from vault_ai_api import router as _vault_ai_router  # noqa: E402
+from vault_download_api import router as _vault_download_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
@@ -326,6 +327,7 @@ app.include_router(lane_config_api.router)
 app.include_router(_autoreply_config_router)
 app.include_router(_customs_router)
 app.include_router(_vault_ai_router)
+app.include_router(_vault_download_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 # In-product help bot (POST /admin/assistant/ask). Under /admin/* so it

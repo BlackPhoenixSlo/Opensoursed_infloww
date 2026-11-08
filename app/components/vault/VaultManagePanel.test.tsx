@@ -33,7 +33,10 @@ const h = vi.hoisted(() => {
 const AID = "1000001";
 const { BEACH } = h;
 
-vi.mock("@/components/vault/VaultAccount", () => ({ useVaultAccountId: () => "1000001" }));
+vi.mock("@/components/vault/VaultAccount", () => ({
+  useVaultAccountId: () => "1000001",
+  useVaultAccount: () => ({ account: { id: "1000001", nickname: "Amy" } }),
+}));
 vi.mock("@/lib/relay", async (orig) => {
   const mod = await orig<typeof import("@/lib/relay")>();
   return { ...mod, relay: { ...mod.relay, patch: h.patch, post: vi.fn(), get: vi.fn() } };

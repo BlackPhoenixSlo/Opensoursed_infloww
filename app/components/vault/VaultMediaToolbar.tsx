@@ -14,7 +14,7 @@
  * `disabled` greys every control (the page's no-Creator frame, where there is no vault to search).
  */
 
-import { CheckSquare, LayoutGrid, List, ListFilter, RotateCw, Search } from "lucide-react";
+import { CheckSquare, Download, LayoutGrid, List, ListFilter, RotateCw, Search } from "lucide-react";
 
 import { MENU_ITEM, MENU_PANEL, useOutsideClose } from "@/components/ui/Menu";
 import { IfSelect, type IfOption } from "@/components/ui/infloww";
@@ -171,6 +171,8 @@ export default function VaultMediaToolbar({
   onSelectAll,
   selectMode,
   onToggleSelect,
+  onDownloadAll,
+  downloadOff = "",
   disabled = false,
 }: {
   search: string;
@@ -190,6 +192,10 @@ export default function VaultMediaToolbar({
   onSelectAll: () => void;
   selectMode: boolean;
   onToggleSelect: () => void;
+  /** Ours: save the whole vault into a folder the user picks (absent: no button). */
+  onDownloadAll?: () => void;
+  /** Why the whole-vault download is off; "" when on. */
+  downloadOff?: string;
   /** Every control off (the no-Creator frame). */
   disabled?: boolean;
 }) {
@@ -279,6 +285,12 @@ export default function VaultMediaToolbar({
             aria-busy={refreshing} className={iconBox}>
             <RotateCw size={18} aria-hidden className={cn(refreshing && "animate-spin")} />
           </button>
+          {onDownloadAll && (
+            <button type="button" aria-label="Download whole vault" title={downloadOff || "Download whole vault"}
+              onClick={onDownloadAll} disabled={disabled || !!downloadOff} className={iconBox}>
+              <Download size={18} aria-hidden />
+            </button>
+          )}
           {loadedCount <= 40 && (
             <button
               type="button"

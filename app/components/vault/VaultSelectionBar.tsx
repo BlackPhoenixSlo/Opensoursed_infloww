@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 
-import { FolderInput, Trash2 } from "lucide-react";
+import { Download, FolderInput, Trash2 } from "lucide-react";
 
 import { relay, type VaultMedia } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -22,6 +22,8 @@ export default function VaultSelectionBar({
   onNewFolder,
   onDescribe,
   onClear,
+  onDownload,
+  downloadOff = "",
 }: {
   count: number;
   hasFolders: boolean;
@@ -32,6 +34,10 @@ export default function VaultSelectionBar({
   onNewFolder: () => void;
   onDescribe: () => void;
   onClear: () => void;
+  /** Ours: save the ticked files (full quality) into a folder the user picks. */
+  onDownload?: () => void;
+  /** Why Download is off (no File System Access, or a download is running); "" when on. */
+  downloadOff?: string;
 }) {
   return (
     <div className="absolute bottom-4 left-3 right-3 md:left-5 md:right-6 z-10 min-h-[38px] px-3 md:px-6 py-1 rounded-lg border border-accent/40 bg-panel/95 backdrop-blur-sm flex flex-wrap items-center gap-x-6 gap-y-1">
@@ -50,6 +56,18 @@ export default function VaultSelectionBar({
           className="text-fg-dim hover:text-fg disabled:opacity-50"
         >
           <FolderInput size={18} aria-hidden />
+        </button>
+      )}
+      {onDownload && (
+        <button
+          type="button"
+          aria-label="Download selected"
+          title={downloadOff || `${EXTRA_LABEL}\nDownload selected (full quality)`}
+          onClick={onDownload}
+          disabled={!!downloadOff}
+          className="text-fg-dim hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Download size={18} aria-hidden />
         </button>
       )}
       {/* #76: OF's remove is one file at a time here (the drawer's "Remove from vault", which OF cannot

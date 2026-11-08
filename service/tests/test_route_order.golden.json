@@ -1,4 +1,4 @@
-{"openapi_sha1": "53ccdb7ddb182615dcfa7db591f9e2d773bf08ff",
+{"openapi_sha1": "7199c374982f6cc4fd48b91cad7c974fcaf68e90",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -135,6 +135,9 @@
   ["GET", "/admin/vault-ai/harvest-keywords/status", "harvest_keywords_status"],
   ["PATCH", "/admin/vault-ai/items/{media_id}", "edit_item"],
   ["POST", "/admin/vault-ai/items/{media_id}/hide", "hide_item"],
+  ["GET", "/admin/vault-ai/download/info", "download_info"],
+  ["GET", "/admin/vault-ai/download/resign", "download_resign"],
+  ["GET", "/admin/vault-ai/download", "download"],
   ["GET", "/admin/style-config", "get_style_config"],
   ["PUT", "/admin/style-config", "put_style_config"],
   ["GET", "/admin/account-config", "get_account_config"],
