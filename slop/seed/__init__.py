@@ -112,6 +112,8 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     # subscribers (50 a page), ledger rows of the last 6 days
     "sweep_pacing_promos": (350, 1_150, 1_150), "sweep_pacing_subscribers": (500, 2_400, 5_000),
     "sweep_pacing_transactions": (400, 1_000, 2_000),
+    # consent-required-notice: media sends through the real send route over every Creator's fans
+    "consent_sends": (120, 2_000, 5_000),
 }
 for _i, _scale in enumerate(("small", "medium", "huge")):
     SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})

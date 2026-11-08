@@ -39,6 +39,23 @@ describe("notificationBellReducer", () => {
     expect(s.pane).toBe(pane);
   });
 
+  it.each<[string, BellAction[], { open: boolean; pane: "of" | "agency"; arrivals: number }]>([
+    ["openAgency from closed opens on Agency, arrivals kept", [...arrive(2), { type: "openAgency" }],
+      { open: true, pane: "agency", arrivals: 2 }],
+    ["openAgency on an open OnlyFans panel switches to Agency", [OPEN_TOPBAR, { type: "openAgency" }, ...arrive(1)],
+      { open: true, pane: "agency", arrivals: 1 }],
+    ["openAgency then close leaves the arrivals unseen", [...arrive(3), { type: "openAgency" }, { type: "close" }],
+      { open: false, pane: "agency", arrivals: 3 }],
+  ])("%s", (_n, actions, want) => {
+    const s = run(actions);
+    expect({ open: s.open, pane: s.pane, arrivals: s.arrivals }).toEqual(want);
+  });
+
+  it("openAgency on an open Agency panel is a no-op", () => {
+    const opened = run([{ type: "open", agencyUnread: 2 }]);
+    expect(notificationBellReducer(opened, { type: "openAgency" })).toBe(opened);
+  });
+
   it("ofListOnScreen only while open on the OnlyFans tab", () => {
     expect(ofListOnScreen(initialBellState)).toBe(false);
     expect(ofListOnScreen(run([OPEN_TOPBAR]))).toBe(true);

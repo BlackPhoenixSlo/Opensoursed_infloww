@@ -16,6 +16,8 @@
  *   • `open` lands on Agency when only it has something new (no arrivals,
  *     unread agency notifications); no Agency tab reads as 0 unread, so it
  *     lands on OnlyFans; the tab going away is `pane` back to OnlyFans.
+ *   • `openAgency` (the consent banner's "View") opens on Agency, or switches
+ *     an open panel to it; the OnlyFans arrivals stay unseen.
  *   • `tabsFull` (Messages Pro: the last row opened hit the Fan tab cap)
  *     shows the note until the next row opened, or the next open.
  *   • `cleared` (`chatterly:notif-cleared` — another bell opened, a toast
@@ -23,6 +25,9 @@
  */
 
 export const BADGE_MAX = 999;
+
+/** Window event: open the top bar bell on its Agency tab (ConsentBanner's "View"). */
+export const OPEN_AGENCY_EVENT = "chatterly:open-agency-notifications";
 
 export type BellPane = "of" | "agency";
 
@@ -37,6 +42,7 @@ export interface BellState {
 export type BellAction =
   /** `agencyUnread`: the Agency tab's unread count, 0 when there is no tab. */
   | { type: "open"; agencyUnread: number }
+  | { type: "openAgency" }
   | { type: "close" }
   | { type: "pane"; pane: BellPane }
   | { type: "tabsFull"; full: boolean }
@@ -57,6 +63,8 @@ export function notificationBellReducer(state: BellState, action: BellAction): B
       const pane: BellPane = state.arrivals === 0 && action.agencyUnread > 0 ? "agency" : "of";
       return { open: true, pane, arrivals: 0, tabsFull: false };
     }
+    case "openAgency":
+      return state.open && state.pane === "agency" ? state : { ...state, open: true, pane: "agency", tabsFull: false };
     case "close":
       return state.open ? { ...state, open: false } : state;
     case "pane":

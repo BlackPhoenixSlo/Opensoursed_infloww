@@ -93,7 +93,7 @@ import {
   type SoundPref,
 } from "@/lib/notifSettings";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { initialBellState, notificationBellReducer, ofListOnScreen } from "./notificationBellReducer";
+import { initialBellState, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT } from "./notificationBellReducer";
 import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
 
 /** The bell's tabs, shared with the full Notifications page
@@ -356,6 +356,15 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   // open so we don't spam OF on idle pages.
   const feed = useNotificationFeed(filter.type, ofListOnScreen(bell));
   const targetAccountIds = feed.accountIds;
+
+  // The consent banner's "View": open on the Agency tab (only where there is one).
+  const hasAgency = !!agency;
+  useEffect(() => {
+    if (!hasAgency) return;
+    const onOpenAgency = () => dispatch({ type: "openAgency" });
+    window.addEventListener(OPEN_AGENCY_EVENT, onOpenAgency);
+    return () => window.removeEventListener(OPEN_AGENCY_EVENT, onOpenAgency);
+  }, [hasAgency]);
 
   // Badge counter — bump on every arrival (unless the OnlyFans list is on
   // screen), reset on every cleared event.

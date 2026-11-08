@@ -19,6 +19,7 @@ vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }
 import { renderWithProviders } from "@/test-utils";
 import { relay } from "@/lib/relay";
 import { HeaderBell } from "@/components/shell/TopBar";
+import { ConsentBanner } from "@/components/shell/ConsentBanner";
 
 const get = relay.get as unknown as Mock;
 const post = relay.post as unknown as Mock;
@@ -47,6 +48,42 @@ afterEach(() => {
 });
 
 const openBell = async () => fireEvent.click(await screen.findByRole("button", { name: "Notifications" }));
+
+const CONSENT = { id: 11, kind: "consent_required", account_id: "15891843", employee_id: null, read: false,
+  text: "Ava: OnlyFans needs a signed consent form (NC law). Media mass messages and PPVs fail until the creator signs at onlyfans.com/my/consent-form.",
+  data: { name: "Ava", state: "NC" }, created_at: "2026-11-07T21:25:00Z" };
+
+describe("a pinned consent row and its banner", () => {
+  it("pins the row on top with nothing to click or dismiss, and Mark all read leaves it", async () => {
+    get.mockImplementation((path: string) => path.startsWith("/admin/agency-notifications")
+      ? Promise.resolve({ unread: 1, notifications: LIST.notifications.slice(1), pinned: [CONSENT] }) : route(path));
+    renderWithProviders(<><ConsentBanner /><HeaderBell /></>);
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent("Ava");
+    expect(banner.querySelector("button")).toHaveTextContent("View");
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    expect(await screen.findByRole("tab", { name: /Agency/ })).toHaveAttribute("aria-selected", "true");
+    const row = await screen.findByTestId("agency-pinned");
+    expect(row).toHaveTextContent("clears itself once solved");
+    expect(row.querySelector("button, a")).toBeNull();
+    fireEvent.click(screen.getByText(CONSENT.text));
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeDisabled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("shows no banner without pinned rows, nor for a chatter", async () => {
+    get.mockImplementation(route);
+    renderWithProviders(<ConsentBanner />);
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    cleanup();
+    session = { user: null, chatter: { chatter_id: 1 } };
+    get.mockReset();
+    renderWithProviders(<ConsentBanner />);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(get).not.toHaveBeenCalled();
+  });
+});
 
 describe("AgencyNotifications in the top bar's one bell", () => {
   it("adds the unread count to the bell, opens on Agency, and reads one row or all of them", async () => {

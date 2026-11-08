@@ -362,13 +362,15 @@ html, body {
  * unaffected because vvh ≈ 100dvh when no keyboard is up.              */
 /* `--chrome-top` is the sticky chrome above the page: Infloww's 52px top
  * bar, plus the free-trial banner under it while one shows (40px and its
- * 8px bottom margin; FreeTrialBanner). The docked sidebar and the fixed
+ * 8px bottom margin; FreeTrialBanner), and the consent banner the same
+ * (ConsentBanner). The docked sidebar and the fixed
  * dropdowns sit under it. `--shell-top` is what `.h-chat` and the
  * full-height pages subtract: the chrome by default, 0 in a Pop-out window
  * (AppShell sets it), where the panes take the full window height, more
  * on OF Manager (OfManagerChrome).                                       */
 :root { --chrome-top: 52px; --shell-top: var(--chrome-top); }
-html:has([data-trial-banner]) { --chrome-top: 100px; }
+html:has([data-trial-banner]), html:has([data-consent-banner]) { --chrome-top: 100px; }
+html:has([data-trial-banner]):has([data-consent-banner]) { --chrome-top: 148px; }
 .h-chat { height: calc(var(--vvh) - var(--shell-top, 3.5rem)); }
 
 /* `.vault-video` — the vault preview player.

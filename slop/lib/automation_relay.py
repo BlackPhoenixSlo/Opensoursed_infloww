@@ -42,7 +42,14 @@ it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A Creator in
 `send_begin` and the send raises: "proxy" the same ProxyError after `proxy_s` (OF never sees it),
 "of" OF's own 400 after `accept_at` of `send_s` (AE 2026-11-07: `{"error":{"code":0,"message":
 "Consent not accepted"}}`), as request_json raises it: OFAPIError with the response, here a
-stand-in carrying only its `status_code` and `text` (declared). A kill
+stand-in carrying only its `status_code` and `text` (declared). Every send first builds
+the body the product's real `OFClient.send_mass_message` would POST (`_Walker._wire_body`,
+transport captured; declared: `auto_tag=False`); `send_begin` carries its
+`isConsentAccepted` (`consent`) and how many `mediaFiles` (`media`). A Creator in
+`consent_required` ([account, ...]) whose body has media but no `isConsentAccepted: true`
+gets `send_refused` (`why: "consent"`) and that same OF 400; for such a Creator each answer
+(the 400, a sent one's 2xx) also goes to the product's consent observer as `_http_call`
+hands it over (`_observed`: the consent_required notice flags, then clears). A kill
 between `send_accepted` and `send_returned` is OF accepting a mass the relay never
 heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
 With the same file: `subscribers` / `following` answer empty pages (a send's
@@ -136,11 +143,35 @@ class _Walker:
         _mass_append(row)
         return row
 
+    def _wire_body(self, text, price, media_files, kw) -> dict:
+        """The POST /messages/queue body the product's real `OFClient.send_mass_message`
+        builds for this call (its transport stubbed: the body is captured, nothing is
+        sent). Declared: `auto_tag=False`, the co-performer tag lookup is not run."""
+        from of_client import OFClient
+        c = OFClient.__new__(OFClient)
+        c.account_id = self.account_id
+        got: dict = {}
+        c.post_json = lambda path, json_body=None: got.update(json_body or {}) or {}
+        OFClient.send_mass_message(c, text, price=price, media_files=media_files,
+                                   **{**kw, "auto_tag": False})
+        return got
+
     def send_mass_message(self, text, *, price=0, media_files=None, **_kw) -> dict:
         from datetime import datetime, timezone
         cfg = self._mass_cfg()
         send_s, frac = float(cfg.get("send_s", 1.0)), float(cfg.get("accept_at", 0.5))
         token = f"{self.account_id}:{time.time_ns()}:{threading.get_ident()}"
+        wire = self._wire_body(text, price, media_files, _kw)
+        consent = wire.get("isConsentAccepted")
+        law = str(self.account_id) in {str(a) for a in cfg.get("consent_required") or ()}
+        if law and wire.get("mediaFiles") and consent is not True:
+            from of_client import OFAPIError
+            time.sleep(send_s * frac)
+            self._mass_line("send_refused", token=token, text=text, by="of", why="consent",
+                            consent=consent, media=len(wire["mediaFiles"]))
+            body = '{"error":{"code":0,"message":"Consent not accepted"}}'
+            r = self._observed(wire, 400, body)
+            raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/messages/queue\n{body}", response=r)
         if (cfg.get("send_fail") or {}).get(self.account_id) == "proxy":
             from curl_cffi.requests.exceptions import ProxyError
             time.sleep(float(cfg.get("proxy_s", 6.0)))
@@ -154,7 +185,8 @@ class _Walker:
             body = '{"error":{"code":0,"message":"Consent not accepted"}}'
             raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/messages/queue\n{body}",
                              response=SimpleNamespace(status_code=400, text=body))
-        self._mass_line("send_begin", token=token, text=text)
+        self._mass_line("send_begin", token=token, text=text, consent=consent,
+                        media=len(wire.get("mediaFiles") or []))
         time.sleep(send_s * frac)
         at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with _mass_lock:
@@ -163,8 +195,23 @@ class _Walker:
                             price=price or 0, media=len(media_files or []))
         time.sleep(send_s * (1 - frac))
         self._mass_line("send_returned", token=token, queue_id=qid)
-        return {"id": qid, "createdAt": at, "text": text, "price": price or 0, "isFree": not price,
-                "mediaCount": len(media_files or [])}
+        out = {"id": qid, "createdAt": at, "text": text, "price": price or 0, "isFree": not price,
+               "mediaCount": len(media_files or [])}
+        if law:
+            self._observed(wire, 200, json.dumps(out))
+        return out
+
+    def _observed(self, wire: dict, status: int, text: str):
+        """OF's answer as `_Transport._http_call` hands it to the product's consent
+        observer (of_client._observe_consent: the consent_required notice flags on
+        the 400, clears on a 2xx media send); only for a `consent_required` Creator.
+        Declared: the response is a stand-in carrying `status_code` and `text`."""
+        from types import SimpleNamespace
+        import of_client
+        r = SimpleNamespace(status_code=status, text=text)
+        of_client._observe_consent(str(self.account_id), "POST",
+                                   "https://onlyfans.com/api2/v2/messages/queue", wire, r)
+        return r
 
     def subscribers(self, *, type="active", limit=10, offset=0, **_kw) -> dict:
         """The send's recipient crawl (audiences.resolve_recipients_blocking):

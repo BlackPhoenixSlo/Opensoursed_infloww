@@ -16,12 +16,18 @@
  * save the `notifications` key of the preferences blob — a kind switched off
  * is no longer filed. A row whose `data.href` names a page (a 2FA relink:
  * /creators?relink=browserbase) is a link to it; the click reads it too.
+ *
+ * `pinned` rows (a Creator OnlyFans wants a signed consent form from) sit on
+ * top, apart from the paged ones: no click, no read, nothing to dismiss (the
+ * relay refuses it, 409); they go when the relay clears them (the problem is
+ * solved, or the Agency dropped the Creator). The shell's ConsentBanner reads
+ * them from this same query.
  */
 
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Settings2 } from "lucide-react";
+import { Settings2, TriangleAlert } from "lucide-react";
 
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
@@ -52,7 +58,7 @@ export interface AgencyNotification {
   created_at: string;
   read: boolean;
 }
-interface ListResp { notifications: AgencyNotification[]; unread: number }
+interface ListResp { notifications: AgencyNotification[]; unread: number; pinned?: AgencyNotification[] }
 
 function useAgencyList(enabled: boolean) {
   return useQuery<ListResp>({
@@ -74,6 +80,22 @@ export function useAgencyUnread(): number | null {
   return owner ? (q.data?.unread ?? 0) : null;
 }
 
+/** The owner's pinned rows (consent forms OnlyFans wants), [] for anyone else. */
+export function useAgencyPinned(): AgencyNotification[] {
+  const { user } = useUser();
+  const { chatter } = useChatter();
+  const owner = !!user && !chatter;
+  const q = useAgencyList(owner);
+  return (owner && q.data?.pinned) || NO_ROWS;
+}
+const NO_ROWS: AgencyNotification[] = [];
+
+/** A pinned row's Creator name (`data.name`), else its account id. */
+export function pinnedName(n: AgencyNotification): string {
+  const name = (n.data as { name?: unknown } | null)?.name;
+  return typeof name === "string" && name ? name : (n.account_id ?? "a creator");
+}
+
 /** The Agency tab of the top bar's bell: "Mark all read", the kinds' gear and
  *  the rows. Mounted only for the owner (`useAgencyUnread` not null). */
 export function AgencyFeed() {
@@ -88,13 +110,16 @@ export function AgencyFeed() {
 
   const unread = q.data?.unread ?? 0;
   const rows = q.data?.notifications ?? [];
+  const pinned = q.data?.pinned ?? [];
+  // Pinned rows stay unread: nothing for "Mark all read" when they are all that is.
+  const readable = unread - pinned.length;
 
   return (
     <div className="text-sm">
       <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border text-xs">
         <button
           type="button"
-          disabled={unread === 0 || read.isPending}
+          disabled={readable <= 0 || read.isPending}
           onClick={() => read.mutate(null)}
           className="text-fg-dim hover:text-fg disabled:opacity-40"
         >
@@ -112,7 +137,25 @@ export function AgencyFeed() {
       </div>
       {settings && <KindSwitches />}
       {q.isLoading && <div className="px-3 py-4 text-fg-dim">Loading…</div>}
-      {!q.isLoading && rows.length === 0 && (
+      {pinned.length > 0 && (
+        <ul aria-label="Needs action">
+          {pinned.map((n) => (
+            <li key={n.id} data-testid="agency-pinned"
+              className="px-3 py-2 border-b border-border/40 bg-[rgba(255,161,95,.12)]">
+              <div className="flex items-start gap-2">
+                <TriangleAlert aria-hidden className="mt-0.5 w-4 h-4 shrink-0 text-warn" />
+                <div className="min-w-0">
+                  <div className="text-sm text-fg font-medium">{n.text}</div>
+                  <div className="text-[11px] text-fg-dim mt-0.5">
+                    {when(n.created_at)} · clears itself once solved
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!q.isLoading && rows.length === 0 && pinned.length === 0 && (
         <div className="px-3 py-6 text-center text-fg-dim">No agency notifications yet.</div>
       )}
       <ul>

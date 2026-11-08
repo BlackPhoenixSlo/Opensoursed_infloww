@@ -161,6 +161,13 @@ Bypass, declared: the `Sign` / `Time` / `X-Hash` headers are only checked to be
 present (`unsigned` counts calls without them), never verified; `LATENCY_S`
 (50 ms per call) is a guess at OF's latency.
 
+`consent` (Creator -> "NC" / "AL", set by the scenario at any time) is a creator OnlyFans flagged under a
+consent law: its `/users/me` carries `needConsent: true`, `needConsentState` and `consentStatus: null`, and
+every media send (`POST /api2/v2/chats/{fan}/messages` or `/messages/queue` with a non-empty `mediaFiles`) is
+answered 400 `CONSENT_BODY` (as OF answered AE's send 1495 on 2026-11-07), never kept. Once the Creator is
+also in `consent_signed`, `/users/me` says `consentStatus: "approved"` and its sends go through. Guesses,
+declared: `consentStatus` null while unsigned, and text-only sends not refused.
+
 `extra_routes`: handlers a flow adds (lib/vault_wire.py), tried after the latency /
 OTP / `fail` gates and before the built-in routes.
 """
@@ -186,6 +193,7 @@ OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
                  "phoneLast4": "", "phoneCode": {}, "faceCode": {}, "emailCode": {}},
     "strong": False}}}
 FAIL_BODY = {"error": {"code": 0, "message": "slop fake: OF internal error"}}
+CONSENT_BODY = {"error": {"code": 0, "message": "Consent not accepted"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
 _QUEUE_ONE = re.compile(r"/api2/v2/messages/queue/(\d+)")
@@ -199,6 +207,8 @@ class FakeOF:
         self.latency_s = latency_s
         self.otp: set[str] = set()
         self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
+        self.consent: dict[str, str] = {}  # Creator -> its consent law ("NC" / "AL"): media sends refused
+        self.consent_signed: set[str] = set()  # of `consent`: signed, /users/me approved, sends go through
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
         self.route_s: dict[str, float] = {}  # per route (as recorded), seconds added to each call on it
         self.route_jitter = 0.0  # route_s x uniform(1 - j, 1 + j) per call
@@ -391,14 +401,23 @@ class FakeOF:
                     failing = (uid, route) in fake.fail
                 if failing:
                     return self._record(uid, route, 500, FAIL_BODY)
+                with fake.lock:
+                    law = fake.consent.get(uid)
+                    signed = uid in fake.consent_signed
+                if (law and not signed and method == "POST"
+                        and (u.path == "/api2/v2/messages/queue" or _SEND.fullmatch(u.path))
+                        and (json.loads(raw or b"{}").get("mediaFiles"))):
+                    return self._record(uid, route, 400, CONSENT_BODY)
                 for extra in fake.extra_routes:
                     if extra(self, method, u, uid, route, raw):
                         return
                 if method == "GET" and u.path == "/api2/v2/users/me":
-                    return self._record(uid, route, 200, {"id": int(uid or 0), "username": f"u{uid}",
-                                                          "name": f"Creator {uid}", "isPerformer": True,
-                                                          "wsUrl": f"ws://127.0.0.1:{fake._ws_port}/ws3/{uid}",
-                                                          "wsAuthToken": f"slop-ws-{uid}"})
+                    me = {"id": int(uid or 0), "username": f"u{uid}", "name": f"Creator {uid}", "isPerformer": True,
+                          "wsUrl": f"ws://127.0.0.1:{fake._ws_port}/ws3/{uid}", "wsAuthToken": f"slop-ws-{uid}"}
+                    if law:
+                        me |= {"needConsent": True, "needConsentState": law,
+                               "consentStatus": "approved" if signed else None}
+                    return self._record(uid, route, 200, me)
                 if method == "GET" and u.path == "/api2/v2/chats":
                     q = parse_qs(u.query)
                     off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])

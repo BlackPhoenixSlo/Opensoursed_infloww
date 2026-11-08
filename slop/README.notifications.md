@@ -13,6 +13,8 @@ docstring is its spec (phases, load, bypasses).
 | `lib/notifications_faults.py` | The check names, `READ_ALL_LAG_S` (the read-all fault's re-run delay, which the scenario's wait is coupled to) and its faults (below), each patching a `notifications_api` attribute looked up at call time. |
 | `seed/agency_notifications_bulk.py` | `n` owner rows in one SQL insert, shaped as `notify` files them (`role_changed`, `employee_deactivated`, `message_unsent`, `session_dead`), read and unread, aged 1 min to 120 days, in filings that share one `created_at` (ties ordered by id), plus three boundary rows at `w.now - retention` -1 s / 0 / +1 s. No `clock_in_missed` (each needs a Shift; the sweep files those for real). `w.data["agency_notifications_bulk"]`: ids and the boundary ids. |
 | `scenarios/2026-11-01-notifications-feed-volume.py` | The scenario; its `_State` (the seeded feed and every session's plan). |
+| `lib/consent_faults.py` | The consent scenario's check names and faults. |
+| `scenarios/2026-11-08-consent-required-notice.py` | The pinned `consent_required` row (`service/consent_notices.py`, `notifications_api.PINNED_KINDS`) and the shell's ConsentBanner. |
 
 ## Scenarios
 
@@ -30,3 +32,13 @@ docstring is its spec (phases, load, bypasses).
   `POST read-all` and `POST /:id/read` p95 vs the last green run, all in the scenario. Faults:
   `read-all-marks-later-rows` (default; targets `LATER_UNREAD`), `notif-page-skips-offset` (`PAGED`),
   `notif-prune-ignores-retention` (`PRUNED`), `notif-prune-not-pushed` (`PRUNE_PUSHED`). Knob: `--notif_rows=` bulk rows (SCALES `notifications_feed_rows`).
+- `2026-11-08-consent-required-notice` (`OF_WIRE`, UI, volume): `agency_inbox` with captured sessions and pumps up;
+  `lib/of_wire.py`'s `consent` refuses REF's media sends (400 Consent not accepted) during `--sends=` (FLOW_SIZES
+  `consent_sends`) media sends over every Creator's fans at `--users`; ME flagged through /users/me (law AL) on its
+  pump's reconnect; each pinned row's read 409 and read-all; the owner's browser desktop + phone portrait (banner,
+  View, Agency tab: `trigger-desktop`, `trigger-phone`); then REF approved (reconnect), ME's accepted media send,
+  REF refused again and deleted from Creators; browser again (`settled-desktop`, `settled-phone`). Checks
+  (`lib/consent_faults.py`): `FLAGGED_ONCE`, `SENDS_KEPT`, `FLAGGED_BY_ME`, `NOT_DISMISSABLE`, `UI_TRIGGER`,
+  `CLEARED_BY_ME`, `CLEARED_BY_SEND`, `CLEARED_BY_REMOVAL`, `UI_SETTLED`; budget p95 of the send route, plus vs the
+  last green run. Faults: `consent-send-ok-not-clearing` (default; `CLEARED_BY_SEND`), `consent-pinned-readable`
+  (`NOT_DISMISSABLE`). Side effect: `rows.json` (the SQL rows after each step).

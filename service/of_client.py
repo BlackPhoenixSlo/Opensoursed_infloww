@@ -222,6 +222,15 @@ def _invalidate_after_write(account_id: str, url: str) -> None:
                        account_id, _short_path(url), exc_info=True)
 
 
+def _observe_consent(account_id: str, method: str, url: str, json_body: dict | None, r) -> None:
+    """consent_notices.observe; never raises (lazy: db-backed, keeps the client importable on its own)."""
+    try:
+        import consent_notices
+        consent_notices.observe(account_id, method, url, json_body, r)
+    except Exception:  # noqa: BLE001
+        log_of.warning("consent_observe_failed account=%s", account_id, exc_info=True)
+
+
 def _err_kind(e: BaseException) -> str:
     """`type=<class> curl=<code>` for a failed call's log line. curl_cffi's
     errors carry libcurl's code (`curl=56` CONNECT refused, `28` timeout, `7`
@@ -710,6 +719,8 @@ class _Transport:
             self._persist_cf_cookies(r)
             self._note_signed_ok(url, r)
             proxy_health.record(self.proxy_label, True)
+            # OF's consent-form demand (NC/AL law): a pinned agency notification while it lasts.
+            _observe_consent(self.account_id, method, url, json_body, r)
             return r
         except requests.exceptions.ProxyError as e:
             log_of.warning(

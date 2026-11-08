@@ -9,7 +9,7 @@ get notifications of their own). Under Master impersonation `require_user`
 is the impersonated owner, so the Master reads that owner's feed; marking it
 read is a mutation and refused like any other while impersonating.
 
-  GET  /admin/agency-notifications?limit&offset → {notifications[], unread}
+  GET  /admin/agency-notifications?limit&offset → {notifications[], unread, pinned[]}
   POST /admin/agency-notifications/{id}/read    → {unread}
   POST /admin/agency-notifications/read-all     → {unread}
 
@@ -21,6 +21,15 @@ Where the rows come from (settings_schema.NOTIFICATION_KINDS):
   clock_in_missed       `tick`, every TICK_S: a Shift running for CLOCK_IN_GRACE
                         whose Employee has not clocked in
   session_dead          account_health.mark_session_dead, once per dead episode
+  consent_required      consent_notices: OnlyFans wants the Creator's signed consent
+                        form (NC/AL law); one per Creator while it lasts
+
+A PINNED_KINDS row is a standing problem, not news: it is no
+NOTIFICATION_KINDS switch (never filtered), `read` refuses it (409), read-all
+and the retention prune skip it, so it stays unread; the list answers it
+apart as `pinned` (the banner's source) and only while the Agency still holds
+its Creator: a Creator unlinked or deleted drops its pinned rows on the next
+read. Its filer deletes it once the problem is gone.
 
 The first three ride `employees.audit_middleware`: `audit_snapshot` reads the
 before-state of the few routes above (None for any other request, no read)
@@ -69,6 +78,12 @@ TICK_S = 5 * 60
 RETENTION = timedelta(days=90)
 
 _SIGN_IN = "sign in as an account owner to read notifications"
+
+# Kinds that cannot be read or dismissed: they leave when their filer deletes
+# them (the problem is solved) or the Agency drops their Creator. Each files
+# with dedupe `<kind>:<account_id>`, so one range of the dedupe index finds them.
+PINNED_KINDS = ("consent_required",)
+_PINNED_REFUSED = "this notification clears itself once the problem is solved"
 
 
 # ── Filing notifications ─────────────────────────────────────────────
@@ -342,7 +357,7 @@ async def tick(now: datetime | None = None) -> int:
     from clock_api import _clock_gate, _occurrence_at, _time_tracking  # lazy: clock_api imports employees
     now = now or datetime.utcnow()
     async with get_session() as s:
-        old = AgencyNotification.created_at < now - RETENTION
+        old = (AgencyNotification.created_at < now - RETENTION) & AgencyNotification.kind.notin_(PINNED_KINDS)
         lost_unread = (await s.execute(select(AgencyNotification.agency_user_id).where(
             old, AgencyNotification.read_at.is_(None)).distinct())).scalars().all()
         await s.execute(delete(AgencyNotification).where(old))
@@ -409,29 +424,63 @@ def _row(n: AgencyNotification) -> dict[str, Any]:
     }
 
 
+async def _pinned(s, agency_user_id: str) -> tuple[list[AgencyNotification], bool]:
+    """The Agency's PINNED_KINDS rows for Creators it still holds (linked, and
+    not deleted from the registry), oldest first; the rest are deleted here.
+    Returns (rows, whether any were deleted)."""
+    import accounts  # lazy: one stat per pinned row
+    from agency_scope import agency_account_ids
+    rows: list[AgencyNotification] = []
+    for kind in PINNED_KINDS:  # `<kind>:` .. `<kind>;`: ';' follows ':', one dedupe-index range
+        rows += (await s.execute(select(AgencyNotification).where(
+            AgencyNotification.agency_user_id == agency_user_id,
+            AgencyNotification.dedupe_key >= f"{kind}:", AgencyNotification.dedupe_key < f"{kind};",
+        ))).scalars().all()
+    if not rows:
+        return [], False
+    held = await agency_account_ids(s, agency_user_id)
+    keep = [n for n in rows if n.account_id in held and accounts.is_account(n.account_id)]
+    gone = [n.id for n in rows if n not in keep]
+    if gone:
+        await s.execute(delete(AgencyNotification).where(AgencyNotification.id.in_(gone)))
+    return sorted(keep, key=lambda n: (n.created_at, n.id)), bool(gone)
+
+
 @router.get("")
 async def list_notifications(
     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
-    """The owner's notifications, newest first, and the unread count."""
+    """The owner's notifications, newest first, the unread count, and the
+    pinned rows apart (not paged)."""
     user = require_user(detail=_SIGN_IN)
     async with get_session() as s:
+        pinned, dropped = await _pinned(s, user.id)
         rows = (await s.execute(
-            select(AgencyNotification).where(AgencyNotification.agency_user_id == user.id)
+            select(AgencyNotification).where(AgencyNotification.agency_user_id == user.id,
+                                             AgencyNotification.kind.notin_(PINNED_KINDS))
             .order_by(AgencyNotification.created_at.desc(), AgencyNotification.id.desc())
             .limit(limit).offset(offset)
         )).scalars().all()
-        return {"notifications": [_row(n) for n in rows], "unread": await _unread(s, user.id)}
+        out = {"notifications": [_row(n) for n in rows], "unread": await _unread(s, user.id),
+               "pinned": [_row(n) for n in pinned]}
+    if dropped:
+        import consent_notices  # lazy: it imports this module
+        await consent_notices.reload()
+        _push(user.id, out["unread"])
+    return out
 
 
 async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int]:
     async with get_session() as s:
         q = update(AgencyNotification).where(
-            AgencyNotification.agency_user_id == user_id, AgencyNotification.read_at.is_(None))
+            AgencyNotification.agency_user_id == user_id, AgencyNotification.read_at.is_(None),
+            AgencyNotification.kind.notin_(PINNED_KINDS))
         if notification_id is not None:
             n = await s.get(AgencyNotification, notification_id)
             if n is None or n.agency_user_id != user_id:
                 raise HTTPException(status_code=404, detail="notification not found")
+            if n.kind in PINNED_KINDS:
+                raise HTTPException(status_code=409, detail=_PINNED_REFUSED)
             q = q.where(AgencyNotification.id == notification_id)
         await s.execute(q.values(read_at=datetime.utcnow()).execution_options(synchronize_session=False))
         unread = await _unread(s, user_id)

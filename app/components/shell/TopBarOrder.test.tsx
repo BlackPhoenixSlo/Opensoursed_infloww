@@ -11,7 +11,7 @@ import { render, screen } from "@testing-library/react";
 
 vi.mock("@/components/shifts/ClockButton", () => ({ default: () => <button type="button">Clock in</button> }));
 vi.mock("@/components/NotificationBell", () => ({ NotificationBell: () => <button type="button">Notifications</button> }));
-vi.mock("@/components/AgencyNotifications", () => ({ useAgencyUnread: () => null, AgencyFeed: () => null }));
+vi.mock("@/components/AgencyNotifications", () => ({ useAgencyUnread: () => null, useAgencyPinned: () => [], pinnedName: () => "", AgencyFeed: () => null }));
 vi.mock("@/components/ErrorBadge", () => ({ ErrorBadge: () => <button type="button" aria-label="Recent errors" /> }));
 vi.mock("@/components/shell/FreeTrial", () => ({ FreeTrialBadge: () => null, FreeTrialBanner: () => null }));
 vi.mock("@/hooks/useBlurMode", () => ({ useSfw: () => [false, () => {}] }));

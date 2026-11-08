@@ -3696,3 +3696,23 @@ class AssistantTurn(Base):
         Index("ix_assistant_turns_chatter_ts", "chatter_id", "ts"),
         Index("ix_assistant_turns_ts", "ts"),
     )
+
+
+class OfConsentAccept(Base):
+    """A Creator's "Auto-accept OnlyFans consent" switch, append-only: one row per
+    change, who made it and when (an attestation that the Creator signed OF's
+    consent form). The newest row by id is the setting; no row = off. While on,
+    every media send carries `isConsentAccepted: true` (of_consent.py, of_sends).
+    `user_id`/`username` the signed-in owner, `employee_id` the acting Employee
+    (the audit log's attribution). No FKs: the history outlives a deleted user."""
+    __tablename__ = "of_consent_accepts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String)
+    username: Mapped[str | None] = mapped_column(String)
+    employee_id: Mapped[int | None] = mapped_column(Integer)
+    at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_of_consent_accepts_account_id", "account_id", "id"),)

@@ -11,7 +11,7 @@ vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: { username: "
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: null, logout: vi.fn() }) }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null, clear: vi.fn() }) }));
 vi.mock("@/components/NotificationBell", () => ({ NotificationBell: () => null }));
-vi.mock("@/components/AgencyNotifications", () => ({ useAgencyUnread: () => null, AgencyFeed: () => null }));
+vi.mock("@/components/AgencyNotifications", () => ({ useAgencyUnread: () => null, useAgencyPinned: () => [], pinnedName: () => "", AgencyFeed: () => null }));
 vi.mock("@/components/ErrorBadge", () => ({ ErrorBadge: () => null }));
 vi.mock("@/components/shifts/ClockButton", () => ({
   default: () => null,
