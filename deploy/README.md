@@ -8,7 +8,7 @@ It's idempotent: re-run anytime to update or to switch how it's exposed.
 > Traefik already installed, which the https options below reuse for free TLS.
 > A plain VPS works too (the default IP option needs nothing special).
 
-The entry script lives at [`scripts/deploy-here.sh`](../scripts/deploy-here.sh).
+The entry script lives at [`deploy/deploy-here.sh`](deploy-here.sh).
 
 ---
 
