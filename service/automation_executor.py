@@ -58,6 +58,7 @@ from db.models import (
     AccountHealth,
     AutomationRule,
     AutomationRun,
+    MassRun,
     ScheduledJob,
 )
 
@@ -966,6 +967,23 @@ def _log_parked(job_status: str, account_id: str, kind: str, run_id: int,
 
 # ── Supervisor ───────────────────────────────────────────────────────
 
+# A `mass_runs` status: the boot heal found the run `running`, minted by a dead process
+# between its mint and its close. OF may have taken it (nothing records whether its POST
+# left), so nothing resends it; a one-shot job parks ORPHAN_REASON. AE 2026-11-07 mass_runs 1545: `running` for good, across a deploy.
+MASS_RUN_INTERRUPTED = "interrupted"
+
+
+async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
+    """Every `running` mass run -> MASS_RUN_INTERRUPTED; returns their ids. A send that
+    closes later (a request that minted just before the heal) still closes its run `ok`."""
+    ids = list((await s.execute(
+        select(MassRun.id).where(MassRun.status == "running").order_by(MassRun.id))).scalars())
+    if ids:
+        await s.execute(update(MassRun).where(MassRun.id.in_(ids), MassRun.status == "running")
+                        .values(status=MASS_RUN_INTERRUPTED, completed_at=now))
+    return ids
+
+
 async def _reconcile_orphans() -> None:
     """Boot-time self-heal. A fresh process owns ZERO in-flight work, so any row
     still marked 'running' was orphaned by the previous process's restart/crash:
@@ -977,7 +995,7 @@ async def _reconcile_orphans() -> None:
     Park a one-shot send (run_decide.one_shot_family: OF may already have taken it,
     and nothing records whether its write started) 'error', ORPHAN_REASON, never sent
     twice; requeue every other job (the work never finished). Mark the runs
-    interrupted. Idempotent; the supervisor awaits it before its first tick. A
+    interrupted, and every `running` mass run MASS_RUN_INTERRUPTED (never resent). Idempotent; the supervisor awaits it before its first tick. A
     direct run_once (e.g. a slop hook) may claim a job before it ends: such a job is
     'running' too, so the heal treats it as orphaned (slop scenarios wait for the
     `reconciled_orphans` line before their first pass)."""
@@ -996,9 +1014,12 @@ async def _reconcile_orphans() -> None:
             .values(status="error", completed_at=now,
                     error_text="interrupted (relay restart)")
         )
+        masses = await _interrupt_orphan_mass_runs(s, now)
+    if masses:
+        log.warning("mass_runs_interrupted ids=%s (may have sent; not resent)", masses)
     # Always logged: a scenario waits for this line before its first pass.
-    log.info("reconciled_orphans requeued_jobs=%s parked_jobs=%s interrupted_runs=%s",
-             jobs.rowcount, parked.rowcount, runs.rowcount)
+    log.info("reconciled_orphans requeued_jobs=%s parked_jobs=%s interrupted_runs=%s "
+             "interrupted_masses=%s", jobs.rowcount, parked.rowcount, runs.rowcount, len(masses))
 
 
 async def _active_models() -> int:

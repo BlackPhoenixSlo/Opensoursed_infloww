@@ -5,23 +5,30 @@
  * owner's Creators owes OnlyFans a signed consent form (NC/AL law: OF refuses
  * that Creator's media mass messages and PPVs). Its source is the agency
  * notifications' `pinned` rows (service/consent_notices.py), so it shows and
- * goes with them; not dismissible, as they are not. "View" opens the bell on
- * its Agency tab (OPEN_AGENCY_EVENT). Owner only, like that feed.
+ * goes with them; not dismissible, as they are not. "View" opens where that
+ * Creator gets fixed (`consentFixHref`) while only one is flagged, else the
+ * bell on its Agency tab (OPEN_AGENCY_EVENT). Owner only, like that feed.
  *
  * One 40px line (the text truncates; phones get the short wording) inside
  * the sticky chrome, so `--chrome-top` grows by its 48px (globals.css,
  * `[data-consent-banner]`), as for the free-trial banner.
  */
 
+import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 
-import { pinnedName, useAgencyPinned } from "@/components/AgencyNotifications";
+import { consentFixHref, pinnedName, useAgencyPinned } from "@/components/AgencyNotifications";
 import { OPEN_AGENCY_EVENT } from "@/components/notificationBellReducer";
+
+const VIEW_CLS = "h-[26px] px-2.5 shrink-0 inline-flex items-center rounded-md bg-nav-surface hover:bg-nav-hover "
+  + "text-nav-fg-active text-xs font-medium";
 
 export function ConsentBanner() {
   const pinned = useAgencyPinned();
   if (pinned.length === 0) return null;
   const names = [...new Set(pinned.map(pinnedName))].join(", ");
+  const accounts = [...new Set(pinned.map((n) => n.account_id))];
+  const fix = accounts.length === 1 ? consentFixHref(accounts[0]) : null;
   return (
     <div
       data-consent-banner
@@ -36,13 +43,13 @@ export function ConsentBanner() {
           : OnlyFans needs a signed consent form. Media mass messages and PPVs fail until the creator signs.
         </span>
       </span>
-      <button
-        type="button"
-        onClick={() => window.dispatchEvent(new Event(OPEN_AGENCY_EVENT))}
-        className="h-[26px] px-2.5 shrink-0 rounded-md bg-nav-surface hover:bg-nav-hover text-nav-fg-active text-xs font-medium"
-      >
-        View
-      </button>
+      {fix
+        ? <Link href={fix} className={VIEW_CLS}>View</Link>
+        : (
+          <button type="button" onClick={() => window.dispatchEvent(new Event(OPEN_AGENCY_EVENT))} className={VIEW_CLS}>
+            View
+          </button>
+        )}
     </div>
   );
 }

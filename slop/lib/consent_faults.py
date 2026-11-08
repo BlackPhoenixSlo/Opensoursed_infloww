@@ -16,7 +16,7 @@ FLAGGED_BY_ME = "consent: a /users/me with needConsent (the pump's reconnect) fi
 NOT_DISMISSABLE = ("consent: POST /{id}/read on each pinned row answers 409 and read-all leaves them unread "
                    "(SQL read_at NULL, API unread counts them)")
 UI_TRIGGER = ("consent UI: desktop and phone portrait show the banner naming both Creators, its View opens the "
-              "bell's Agency tab with both pinned rows and no control on them")
+              "bell's Agency tab with both pinned rows and no dismiss button on them")
 CLEARED_BY_ME = "consent: /users/me consentStatus approved (the pump's reconnect) deletes the row (SQL, API)"
 CLEARED_BY_SEND = "consent: an accepted media send deletes the row (SQL, API)"
 CLEARED_BY_REMOVAL = "consent: the owner removing the flagged Creator (DELETE /admin/accounts/{id}) drops its row"

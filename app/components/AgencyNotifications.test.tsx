@@ -20,6 +20,7 @@ import { renderWithProviders } from "@/test-utils";
 import { relay } from "@/lib/relay";
 import { HeaderBell } from "@/components/shell/TopBar";
 import { ConsentBanner } from "@/components/shell/ConsentBanner";
+import { consentFixHref } from "@/components/AgencyNotifications";
 
 const get = relay.get as unknown as Mock;
 const post = relay.post as unknown as Mock;
@@ -53,21 +54,29 @@ const CONSENT = { id: 11, kind: "consent_required", account_id: "15891843", empl
   text: "Ava: OnlyFans needs a signed consent form (NC law). Media mass messages and PPVs fail until the creator signs at onlyfans.com/my/consent-form.",
   data: { name: "Ava", state: "NC" }, created_at: "2026-11-07T21:25:00Z" };
 
+const CONSENT2 = { ...CONSENT, id: 12, account_id: "222", text: "Bea: OnlyFans needs a signed consent form (AL law).",
+  data: { name: "Bea", state: "AL" } };
+
 describe("a pinned consent row and its banner", () => {
-  it("pins the row on top with nothing to click or dismiss, and Mark all read leaves it", async () => {
+  it("pins the rows on top with nothing to dismiss, each opening its fix, and Mark all read leaves them", async () => {
     get.mockImplementation((path: string) => path.startsWith("/admin/agency-notifications")
-      ? Promise.resolve({ unread: 1, notifications: LIST.notifications.slice(1), pinned: [CONSENT] }) : route(path));
+      ? Promise.resolve({ unread: 2, notifications: LIST.notifications.slice(1), pinned: [CONSENT, CONSENT2] })
+      : route(path));
     renderWithProviders(<><ConsentBanner /><HeaderBell /></>);
     const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent("Ava");
-    expect(banner.querySelector("button")).toHaveTextContent("View");
+    expect(banner).toHaveTextContent("Ava, Bea");
+    // Two Creators flagged: View opens the bell.
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(await screen.findByRole("tab", { name: /Agency/ })).toHaveAttribute("aria-selected", "true");
-    const row = await screen.findByTestId("agency-pinned");
-    expect(row).toHaveTextContent("clears itself once solved");
-    expect(row.querySelector("button, a")).toBeNull();
-    fireEvent.click(screen.getByText(CONSENT.text));
+    const rows = await screen.findAllByTestId("agency-pinned");
+    expect(rows).toHaveLength(2);
+    for (const [row, n] of [[rows[0], CONSENT], [rows[1], CONSENT2]] as const) {
+      expect(row).toHaveTextContent("clears itself once solved");
+      expect(row.querySelector("button")).toBeNull();
+      expect(row.querySelector("a")?.getAttribute("href") ?? null).toBe(consentFixHref(n.account_id));
+    }
     expect(screen.getByRole("button", { name: "Mark all read" })).toBeDisabled();
+    fireEvent.click(screen.getByText(CONSENT.text));   // reads nothing (a link to its fix closes the panel)
     expect(post).not.toHaveBeenCalled();
   });
 

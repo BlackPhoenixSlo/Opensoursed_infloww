@@ -76,6 +76,7 @@ from db.models import (  # noqa: E402
     AutomationRun,
     Chat,
     Fan,
+    MassRun,
     Message,
     ScheduledJob,
     ScrapeHistory,
@@ -1005,6 +1006,29 @@ async def case_orphaned_one_shot_parks_sweep_requeues():
             assert run.status == "error" and "interrupted" in (run.error_text or ""), run.status
 
 
+async def case_orphaned_mass_run_ends_interrupted_never_resent():
+    """_reconcile_orphans: a mass run a dead process left `running` (minted, never
+    closed: AE 2026-11-07 run 1545) ends MASS_RUN_INTERRUPTED with completed_at; a
+    closed run is untouched; nothing is enqueued (never resent). Idempotent."""
+    aid = "acc_mass_orphan"
+    await _seed_account(aid)
+    async with get_session() as s:
+        orphan = MassRun(account_id=aid, automation_kind="mass_premade", status="running")
+        closed = MassRun(account_id=aid, automation_kind="mass_premade", status="ok", queue_id=7)
+        s.add_all([orphan, closed])
+        await s.flush()
+        orphan_id, closed_id = orphan.id, closed.id
+        jobs_before = len((await s.execute(select(ScheduledJob.id))).all())
+    for _ in range(2):
+        await ax._reconcile_orphans()
+        async with get_session() as s:
+            o, c = await s.get(MassRun, orphan_id), await s.get(MassRun, closed_id)
+            assert o.status == ax.MASS_RUN_INTERRUPTED == "interrupted", o.status
+            assert o.completed_at is not None and o.queue_id is None
+            assert c.status == "ok" and c.queue_id == 7, (c.status, c.queue_id)
+            assert len((await s.execute(select(ScheduledJob.id))).all()) == jobs_before
+
+
 # ── Supervisor tick consumes a due job (no infinite loop) ────────────
 
 async def case_supervisor_drain_runs_due_job():
@@ -1539,6 +1563,7 @@ _harness.run(
     case_a_failed_run_retries_unless_its_rule_went_off_mid_run,
     case_a_refused_one_shot_waits_out_the_proxy_unless_a_write_may_have_landed,
     case_orphaned_one_shot_parks_sweep_requeues,
+    case_orphaned_mass_run_ends_interrupted_never_resent,
     case_supervisor_drain_runs_due_job,
     case_rule_materializes_job,
     case_rule_with_unregistered_kind_stays_inert,

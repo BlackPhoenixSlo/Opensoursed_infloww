@@ -189,7 +189,7 @@ async def run(ctx) -> None:
                     rows_ = page.get_by_test_id("agency-pinned")
                     await rows_.nth(len(want_names) - 1).wait_for(timeout=30_000)
                     info["pinned"] = await rows_.count()
-                    info["controls"] = await page.locator("[data-testid=agency-pinned] :is(button, a)").count()
+                    info["controls"] = await page.locator("[data-testid=agency-pinned] button").count()   # a link to its fix is no dismiss
                     info["tab"] = await page.get_by_role("tab", name="Agency").get_attribute("aria-selected")
                     info["fits"] = await page.evaluate(
                         "() => { const b = document.querySelector('[data-consent-banner]').getBoundingClientRect();"

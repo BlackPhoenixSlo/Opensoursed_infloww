@@ -18,10 +18,11 @@
  * /creators?relink=browserbase) is a link to it; the click reads it too.
  *
  * `pinned` rows (a Creator OnlyFans wants a signed consent form from) sit on
- * top, apart from the paged ones: no click, no read, nothing to dismiss (the
- * relay refuses it, 409); they go when the relay clears them (the problem is
- * solved, or the Agency dropped the Creator). The shell's ConsentBanner reads
- * them from this same query.
+ * top, apart from the paged ones: no read, nothing to dismiss (the relay
+ * refuses it, 409); a click opens where it gets fixed (`consentFixHref`, when
+ * there is one). They go when the relay clears them (the problem is solved, or
+ * the Agency dropped the Creator). The shell's ConsentBanner reads them from
+ * this same query.
  */
 
 import Link from "next/link";
@@ -90,6 +91,13 @@ export function useAgencyPinned(): AgencyNotification[] {
 }
 const NO_ROWS: AgencyNotification[] = [];
 
+/** The page where a pinned row's Creator gets fixed (that Creator's consent switch), else null:
+ *  the pinned row links there, and so does the banner's View while only one Creator is flagged. */
+export function consentFixHref(accountId: string | null): string | null {
+  void accountId;   // no such page here: the rows stay plain and View opens the bell
+  return null;
+}
+
 /** A pinned row's Creator name (`data.name`), else its account id. */
 export function pinnedName(n: AgencyNotification): string {
   const name = (n.data as { name?: unknown } | null)?.name;
@@ -139,9 +147,9 @@ export function AgencyFeed() {
       {q.isLoading && <div className="px-3 py-4 text-fg-dim">Loading…</div>}
       {pinned.length > 0 && (
         <ul aria-label="Needs action">
-          {pinned.map((n) => (
-            <li key={n.id} data-testid="agency-pinned"
-              className="px-3 py-2 border-b border-border/40 bg-[rgba(255,161,95,.12)]">
+          {pinned.map((n) => {
+            const fix = consentFixHref(n.account_id);
+            const body = (
               <div className="flex items-start gap-2">
                 <TriangleAlert aria-hidden className="mt-0.5 w-4 h-4 shrink-0 text-warn" />
                 <div className="min-w-0">
@@ -151,8 +159,15 @@ export function AgencyFeed() {
                   </div>
                 </div>
               </div>
-            </li>
-          ))}
+            );
+            return (
+              <li key={n.id} data-testid="agency-pinned" className="border-b border-border/40 bg-[rgba(255,161,95,.12)]">
+                {fix
+                  ? <Link href={fix} className="block px-3 py-2 hover:bg-[rgba(255,161,95,.2)]">{body}</Link>
+                  : <div className="px-3 py-2">{body}</div>}
+              </li>
+            );
+          })}
         </ul>
       )}
       {!q.isLoading && rows.length === 0 && pinned.length === 0 && (
