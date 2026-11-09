@@ -423,10 +423,10 @@ def case_every_model_carries_its_own_reasoning_body():
         "glm-5.3-flash": ({}, ("low", "high", "max")),
         # The object IS the mode here; the effort string is accepted and ignored.
         "glm-4.5-air": ({"thinking": {"type": "disabled"}}, ()),
-        # Anthropic compat: `disabled` is a 400 on Opus/Sonnet 5.5, `enabled`
-        # becomes adaptive; reasoning_effort is ignored (test_llm_anthropic).
-        "claude-opus-5-5": ({"thinking": {"type": "enabled", "budget_tokens": 1024}}, ()),
-        "claude-sonnet-5-5": ({"thinking": {"type": "enabled", "budget_tokens": 1024}}, ()),
+        # Anthropic native: `enabled` is a 400 on every 5.5, `disabled` on
+        # Opus/Sonnet 5.5; adaptive at the model-default effort (test_llm_anthropic).
+        "claude-opus-5-5": ({"thinking": {"type": "adaptive"}}, ()),
+        "claude-sonnet-5-5": ({"thinking": {"type": "adaptive"}}, ()),
         "claude-haiku-5-5": ({"thinking": {"type": "disabled"}}, ()),
     }
     assert set(MODELS) == set(expected), set(MODELS) ^ set(expected)

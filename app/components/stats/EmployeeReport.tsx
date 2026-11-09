@@ -1,36 +1,15 @@
 "use client";
 
-/**
- * EmployeeReport — Analytics > Employee reports, in Infloww's legacy frame (page-parity tickets 25 and 27; live
- * `.scratch/infloww-live/08-employee-reports.png`, `09-employee-performance.png`, `10-…overview-table.png`):
- *
- *   header       the title, the report time zone's UTC offset, the icon Refresh;
- *   notice       the black sales-settings bar with "View sales settings", once above the tabs on every tab, and the
- *                Relay's attribution fallback line under it (spec phase-04, stories 46 and 54);
- *   tabs         Overview / Sales records / Employee performance, page-level, with the range box (hours, W5 5.2) and
- *                "Shown by" at the bar's right on Overview and Employee performance; Sales records brings its own
- *                toolbar (SalesRecords, ticket 28);
- *   Overview     the charts, Chatting statistics (its chatter-role checkbox in its own title row, as Infloww's), Clocked
- *                hours, then one "Inflowwww extra" heading over our own cards.
- *
- * Routes: Overview `/analytics/employee-reports`, Employee performance `?tab=performance`, Sales records keeps
- * `/analytics/sales-records` (its Permission page, role actions, the Relay's PAGE_MAP and bookmarks key on it); a tab
- * click is `router.push`, and the tab is read from the URL on every render (`useSearchParams`), so Back and Forward
- * move it too. A tab shows only when the role grants its page, so a role with Sales records alone gets the
- * frame with that one tab. Infloww's "Filters" popover is not drawn (the chart reads take no employee or creator
- * filter); "Learn more" is not built (README No work).
- *
- * The date range is owned here and threaded into every hook so the sections stay in sync: the last 30 days to
- * start with, in the Agency's report time zone, and nothing fires until the Applied settings answer
- * (useReportRange). Earnings totals include pending (uncleared) sales.
- */
+/** Compact Employee reports frame. URL tabs and report-zone ranges remain shared with Sales records. */
 
-import { Info, MessageSquareWarning } from "lucide-react";
+import { Filter, Info } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 
+import styles from "./EmployeeReport.module.css";
+import { useOutsideClose } from "@/components/ui/Menu";
 import SalesRecords from "@/components/analytics/SalesRecords";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import ChattingStatsTable from "@/components/stats/ChattingStatsTable";
@@ -104,21 +83,23 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
   };
 
   return (
-    <div className="min-w-0">
-      <InflowwPageHeader title="Employee reports" utc={reportTz} actions={<StatsRefreshButton />} />
-      <IfBody>
+    <div className={styles.report}>
+      <InflowwPageHeader title="Employee Reports" />
+      <IfBody className={styles.body}>
         <SalesSettingsNotice fallback={stats.data?.attribution_fallback ?? null} />
-        <IfTabs<EmployeeTab> aria-label="Employee reports" className={cn("mt-2 px-0", BRIGHT_BAR)} value={tab}
+        <IfTabs<EmployeeTab> aria-label="Employee reports" className={cn(styles.toolbar, "px-0", BRIGHT_BAR)} value={tab}
           onChange={go} tabs={tabs}
-          extra={tab === "sales" ? undefined : (
+          extra={tab === "sales" ? <StatsRefreshButton /> : (
             <>
-              <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} timeZone={reportTz} hours />
+              <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} timeZone={reportTz} />
               <span className="flex items-center gap-2">
                 <ShownBySelect days={days} value={bucket} onChange={setPicked} />
                 <span role="img" aria-label={GRAN_TIP} title={GRAN_TIP} className="cursor-help text-fg-dim">
                   <Info className="h-3.5 w-3.5" aria-hidden />
                 </span>
               </span>
+              <ReportFilters checked={chatterOnly} onChange={setChatterOnly} />
+              <StatsRefreshButton />
             </>
           )} />
         {tab === "sales" ? (
@@ -127,7 +108,7 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
           // The Applied settings (the report's time zone) are still in flight: the table's rows as placeholder bars.
           <TableSkeleton rows={6} className="mt-6" />
         ) : (
-          <div className="space-y-8 pt-6">
+          <div className={styles.content}>
             {tab === "performance" ? (
               <Charts tab="performance" from={fromIso} to={toIso} bucket={bucket} chatterOnly={chatterOnly} />
             ) : (
@@ -154,26 +135,28 @@ function Charts({ tab, from, to, bucket, chatterOnly }: {
   return tab === "performance" ? <EmployeePerformance {...charts} /> : <EmployeeOverviewCharts {...charts} />;
 }
 
-/** Infloww's sales-settings bar: black, radius 4, a 14px notice glyph and line, the orange "View sales settings" at
- *  the right. "Learn more" is not built (README No work: Sales "Learn more").
- *
- *  ASSUMPTION: the link shows for every viewer, chatters included; a chatter whose Permission role denies Settings
- *  lands on the denied page, which explains itself (ticket 24). Rung 5: no per-role branch here. Overturned if the
- *  owner wants the link hidden from chatters. */
 function SalesSettingsNotice({ fallback }: { fallback: string | null }) {
   return (
-    <div className="space-y-1">
-      <div role="note" className="flex min-h-[38px] items-center gap-3 rounded-[4px] bg-black px-3 py-1.5 text-[14px] text-white [html[data-theme=light]_&]:bg-bg-elev-1 [html[data-theme=light]_&]:text-fg">
-        <MessageSquareWarning className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <p className="flex-1">The sales data is based on your organization&apos;s sales settings.</p>
-        <Link href="/settings/sales"
-          className="shrink-0 whitespace-nowrap rounded-[4px] bg-cta px-2 py-0.5 text-[12px] font-medium text-black hover:opacity-90">
-          View sales settings
-        </Link>
-      </div>
-      {fallback && <p className="text-xs text-fg-dim">{fallback}</p>}
+    <div role="note" className={styles.notice} title={fallback ?? undefined}>
+      The sales data is based on the sales settings. View your settings at {" "}
+      <Link href="/settings/sales" aria-label="View sales settings">Settings &gt; Sales Settings.</Link>
+      {fallback && <span role="img" aria-label={fallback} title={fallback}><Info size={12} /></span>}
     </div>
   );
+}
+
+function ReportFilters({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+  const { open, setOpen, ref } = useOutsideClose();
+  return <div ref={ref} className="relative" onKeyDown={(event) => {
+    if (event.key === "Escape") { setOpen(false); ref.current?.querySelector("button")?.focus(); }
+  }}>
+    <button type="button" className={styles.filter} aria-expanded={open} aria-controls="employee-report-filters"
+      onClick={() => setOpen(!open)}><Filter size={12} />Filters{checked ? " (1)" : ""}</button>
+    {open && <div id="employee-report-filters" className={styles.filters}>
+      <label className="flex items-center gap-2"><input type="checkbox" checked={checked}
+        onChange={(event) => onChange(event.target.checked)} />Chatter role only</label>
+    </div>}
+  </div>;
 }
 
 /** Ours, not Infloww's, under one heading: the ingest note and "All messages…" on its line, then the per-Creator

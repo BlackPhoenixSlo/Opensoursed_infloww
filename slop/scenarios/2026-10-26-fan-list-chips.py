@@ -836,7 +836,7 @@ async def _screens(ctx, view, creators) -> None:
                           "owe_dots": dots_on, "sort": look, "sort_menu": marks, "stored_sort": stored,
                           "pin_writes": pins, "filter_row_all_models": lines_all,
                           "filter_row_one_creator": lines_one, "search": search})
-        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
+        aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
     # 2x crops of the filter and chip rows: All Models, then one Creator (its list pinned).
@@ -850,7 +850,7 @@ async def _screens(ctx, view, creators) -> None:
         await _chip_row(page).get_by_role("button", name=f"Folder {PINNED}").scroll_into_view_if_needed()
         await page.wait_for_timeout(300)
         shots["js"] = await _crop(ctx, page, "j-one-creator-chip-row-scrolled-to-pinned-list@2x")
-        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
+        aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
     # The narrowest phone: the Fan List is the whole screen.
@@ -867,7 +867,7 @@ async def _screens(ctx, view, creators) -> None:
         ctx.metric("narrow", {"viewport": NARROW, "all_models": narrow_all, "one_creator": narrow_one})
         ctx.note(f"filter row at {NARROW[0]}px: All Models {narrow_all['lines']} line(s), "
                  f"one Creator {narrow_one['lines']} line(s)")
-        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
+        aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
     # A 390px phone: the sort menu's trigger, the menu open, and the order picked there.
@@ -889,7 +889,7 @@ async def _screens(ctx, view, creators) -> None:
         ctx.check(C_PHONE_PICK, stored_phone == "spend" and look_phone["label"] == "Sort: Amount spent",
                   stored=stored_phone, label=look_phone["label"])
         ctx.metric("phone", {"viewport": PHONE, "sort_menu": marks_phone, "stored_sort": stored_phone})
-        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
+        aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
     errors = _console_errors(ctx, aborted)

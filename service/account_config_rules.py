@@ -25,7 +25,7 @@ from fastapi import HTTPException
 import llm_client
 import media_cotag
 from automations._language import norm_lang
-from automations._model_pick import JSON_OBJECT_PURPOSES, model_fits
+from automations._model_pick import model_fits
 from automations._persona import MODEL_NOTES_MAX, PERSONA_FACT_FIELDS
 from automations._voice import VOICE_HER, VOICE_HIM, parse_voice
 from llm_client import MODELS
@@ -271,8 +271,7 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
     mbp: dict[str, str] = {}
     for purpose, mv in mbp_in.items():
         cleaned = _validate_model(mv, f"model_by_purpose.{purpose}", existing.allowed)
-        if cleaned and str(purpose) in JSON_OBJECT_PURPOSES and \
-                cleaned in MODELS and not model_fits(cleaned, str(purpose)):
+        if cleaned and cleaned in MODELS and not model_fits(cleaned, str(purpose)):
             raise HTTPException(422, f"model_by_purpose.{purpose} {cleaned!r} cannot "
                                      f"return JSON, which this purpose needs")
         if cleaned:

@@ -113,7 +113,12 @@ export interface PerEmployeeRow {
   per_account?: PerEmployeeAccountRow[];
 }
 
+export interface EmployeeSalesPoint {
+  start: string; revenue_cents: number; messages_cents: number; tips_cents: number;
+}
+
 export interface PerEmployeeResp {
+  series?: EmployeeSalesPoint[];
   employees: PerEmployeeRow[];
   /** "Shift schedule needs Time tracking on; credited by Converters." while
    *  an Agency in scope has Shift schedule falling back, else null. */

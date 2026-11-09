@@ -60,6 +60,12 @@ def _urls(obj: Any) -> Iterator[str]:
             yield from _urls(v)
 
 
+def same_file(u: str, media: dict | None) -> bool:
+    """Whether the media payload contains this CDN host and path."""
+    base = _base(u)
+    return any(_base(x) == base for x in _urls(media or {}))
+
+
 def current(account_id: str, u: str) -> str:
     """`u`, or the url we re-signed for the same host+path within FRESH_TTL_S."""
     with _lock:

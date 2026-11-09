@@ -34,8 +34,8 @@ The sidebar, top to bottom:
 - **Share for Share** — Discover creators, Requests, S4S schedule and S4S
   settings.
 - **My Automations** — Auto Post, Auto Story, Auto Mass and Gen-Info.
-- **My AI Chatter** — Auto-reply, Auto Funnel and Get to know fans.
-- **Full AI Chatter** — a fully autonomous AI chatter, coming soon (owner only).
+- **My AI Chatter** — Auto-reply, Auto Funnel, Get to know fans and Full AI
+  Chatter (a fully autonomous AI chatter, coming soon; owner only).
 - **Creators** — Manage creators (connecting and watching OnlyFans accounts)
   and Custom proxy.
 - **Employees** — Manage employees (logins, roles, access) and Shift schedule.
@@ -269,48 +269,51 @@ phone locked.
 
 ## Connecting an OnlyFans account
 
-**Where:** **Creators → Manage creators → Add creator.** Owners only, and the
-session capture is **desktop only** — on a phone the page says "Session capture,
-proxies and keys are desktop-only."
+**Where:** **Creators → Manage creators → Add creator.** Owners only. The
+window opens on two choices: **Browser login** (recommended, works on a phone
+too) and **Extension** (the fallback, desktop Chrome only). There is no proxy to
+pick: a new account gets one automatically.
 
-**How to do it:**
-1. In the Add creator window, fill the creator details, pick the platform and
-   the proxy (the Inflowwww proxy, **No proxy (server IP)**, or one of yours),
-   then choose **Connect OnlyFans**.
-2. Install the **Chatterly Login Capture** Chrome extension. The step shows an
-   **Install Chrome Extension** button, and once it is there the button is
-   replaced by a green line: "Extension installed — click the puzzle icon in
-   your Chrome toolbar to open it."
-3. Sign in to OnlyFans as that creator **in Chrome**, open the extension from
-   the puzzle icon, and press **Copy cURL**.
-4. Paste it into the big box. It must start with `curl` — anything else is
-   refused with "Must start with `curl ...`".
-5. Optional, before you submit:
-   - **Nickname** — the name shown in the creators table and the creator
-     selects.
-   - **Attach proxy** — one of your registered proxies (Creators → Custom
-     proxy).
-   - **Flip this account to the relay's default after bootstrap** — **ticked by
-     default**. Untick it if you do not want this new model to become the
-     relay's default account.
-6. Press **Bootstrap from cURL**. Success shows the account as linked, and the
-   model appears in the creators table and every creator select.
+**Browser login (try this first):**
+1. Type the creator's **OnlyFans email** and **OnlyFans password**, then press
+   **Start browser login**. The login runs in a remote browser; the password is
+   sent once and never stored.
+2. If OnlyFans shows a check, solve it in the live view on the window (or
+   **Open live view full screen**). If it asks for a 2FA code, type it in the
+   **2FA code** box and press **Submit code**.
+3. When it links, the window shows "Creator account is linked", the account and
+   its proxy, and the account details (Nickname, Tag, Assigned employees,
+   Internal notes). Press **Done** to save them. A blank nickname takes the
+   account's own name.
+
+**Extension (if browser login doesn't work):**
+1. Choose **Extension**. Install the **Chatterly Login Capture** Chrome
+   extension (the **Install Chrome Extension** button; once installed it reads
+   "Extension installed").
+2. Sign in to OnlyFans as that creator **in Chrome**, open any chat, open the
+   extension and press **Copy cURL**.
+3. Paste it into **Copied cURL** (it must start with `curl`) and press **Link
+   account**. Then the same linked screen and **Done**.
+
+**Fansly:** the small **Link a Fansly account instead** link under the two
+choices switches to the Fansly paste session.
 
 **Re-capturing.** The session is a copy of that browser login. It keeps working
 across OnlyFans front-end updates (new builds), so a new OnlyFans build is never
 a reason to re-capture. Re-capture only when OnlyFans rejects the login: the
 model shows Disconnected in Manage creators and its automations are paused (see
-below). Fix is the same steps: sign in again, Copy cURL, paste, Bootstrap. That
-also immediately clears a paused account.
+below). Fix: the row's **Link creator account** button (or its menu's **Log in
+to account via OnlyFans**) opens the same window; sign in again with Browser
+login or the Extension. A re-login keeps the proxy the account is on, and it
+immediately clears a paused account.
 
 **Caveats:**
-- Picking a proxy shows an amber teleport warning, and pressing Bootstrap asks
-  you to confirm it: the cookies were minted on your own IP while every call
-  afterwards leaves from the proxy's. Only do it when the proxy sits close to
-  where you signed in. If the session captures but the proxy attach fails, the
-  result says so; attach it afterwards under Creators → Custom proxy.
-- Nothing else connects an account. Custom proxy, AI keys and the creators
-  table are all after-the-fact management.
+- With the Extension, the cookies were minted on your own computer's IP while
+  later calls leave from the assigned proxy, so OnlyFans may see a sign-in from
+  a new place; the window says so. If the session captures but the proxy attach
+  fails, the result says so, with **Retry** and **Continue**.
+- Want a specific proxy? Change it afterwards: the row's **Edit → Change
+  proxy**, or **Creators → Custom proxy**.
 
 ## The Brain (persona, clock, daily cap, models)
 
@@ -497,9 +500,14 @@ matters:
   sums them. Share links makes a public read-only report on picked links.
 - **Custom redirect links** (the collapsed section below — click the heading to
   open it) are for a target that is not the profile: a Linktree, a landing page,
-  an X profile. Give a **Name** and a **Target URL**. These are Inflowwww's own short
+  an X profile. Give a **Name** and a **Target URL** (`ofl.ink/name` is fine — a
+  missing `https://` is added). These are Inflowwww's own short
   links and they count **clicks only** — the visitor never lands on OnlyFans, so
   subscribers cannot be attributed, and the per-link **Analytics** panel says so.
+  **Bot check before redirect** (in the form, or the **Bot check** box on a link's
+  row; gated links show a "bot check" badge) makes visitors pass a Cloudflare
+  check on a blank page first; only passed checks count as clicks. It is greyed
+  out when the server has no Cloudflare Turnstile keys.
 
 Use the OnlyFans kind whenever you are sending people to the profile.
 
@@ -1631,8 +1639,8 @@ Work down this list:
    is skipped: nothing sends, queued jobs are left parked, and — this is the
    part that misleads people — **no run rows are written at all**. The rules
    all still read "enabled."
-   **Fix:** re-capture the session (Creators → Manage creators, the Paste cURL
-   step). That clears the pause immediately and the parked jobs resume on the
+   **Fix:** re-capture the session (Creators → Manage creators, the row's
+   **Link creator account**). That clears the pause immediately and the parked jobs resume on the
    next tick. The relay also re-tests a paused account on its own and un-pauses
    it the first time the session works — every 10 min for the first hour, every
    30 min for the first day, hourly for the first week, then every 6 hours.

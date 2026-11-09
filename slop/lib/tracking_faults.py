@@ -16,13 +16,22 @@ EARNINGS = ("OF tracking links: every link of each Creator listed, per link earn
 CLAIMERS = ("OF tracking links: claimers single-flight: one claimers walk per link with subscribers (every page "
             "once) under concurrent owners and across a recompute, none for a zero-subscriber or created link")
 CREATED = "OF tracking links: the Create dialog's POST answers 200 with OF's new link, for every Creator"
+GATE_PAGE = ("tracking links: every GET of a bot-checked link answers 200 with the Turnstile page: no Location, "
+             "its target nowhere in the body, Cache-Control no-store")
+GATE_VERIFY = ("tracking links: every bot-check verify with a passing token answers 200 {url: that link's own "
+               "target}, every failing one 403 with no url, and Cloudflare's siteverify got exactly one call per "
+               "verify, with the relay's secret and the fan's address")
+GATE_COUNT = ("tracking links: a bot-checked link's clicks (tracking_clicks rows, click_count, the list) == the "
+              "verifies that passed, exactly; its GETs and failed verifies count none")
+GATE_CREATE = ("tracking links: every Create with a scheme-less target stores it as https://<it>, and bot_check "
+               "(set at create, or by PATCH) reads back on the list")
 CLIENT_IP = ("tracking links: behind a CDN (EDGE_PROXIES=cloudflare), every click the storm stored holds the fan's "
              "own address (its CF-Connecting-IP), never the Cloudflare server's or the proxy's")
 
 
 def _click_lost_1_in_20() -> None:
     """Every 20th click write is lost (bug class: the best-effort click write fails and is swallowed, so the fan
-    still gets the redirect and the stat is gone). `follow_tracking_link` builds its counter bump with the module's
+    still gets the redirect and the stat is gone). `_record_click` builds its counter bump with the module's
     `update` (sqlalchemy's, looked up at call time, used nowhere else in the module): every 20th raises inside the
     click session, which rolls back the TrackingClick insert with it, and the route's own except swallows it.
     BY_DAY goes red with CLICKS (the lost clicks were 302'd), and so does the stock `relay logged no unexpected
@@ -83,6 +92,18 @@ def _cdn_header_ignored() -> None:
     client_addr.EDGE_PROXIES = ()
 
 
+def _bot_check_fails_open() -> None:
+    """Every bot-check token passes without asking Cloudflare (bug class: the siteverify verdict ignored, the
+    gate fails open). `verify_tracking_link` looks `_turnstile_passes` up at call time: a failing token gets the
+    target and counts a click, and siteverify sees no calls. GATE_VERIFY and GATE_COUNT go red."""
+    import tracking_links_api as tla
+
+    async def always(_secret, _token, _ip):
+        return True
+
+    tla._turnstile_passes = always
+
+
 def register(Fault) -> dict:
     return {
         # slop/run tracking-links-clicks --break (the scenario's FAULT)
@@ -91,4 +112,5 @@ def register(Fault) -> dict:
         "of-tracking-claimers-no-memo": Fault(_claimers_no_memo, (CLAIMERS,)),
         "of-tracking-spend-first-link": Fault(_spend_first_link, (EARNINGS,)),
         "client-addr-cdn-header-ignored": Fault(_cdn_header_ignored, (CLIENT_IP,)),
+        "tracking-bot-check-fails-open": Fault(_bot_check_fails_open, (GATE_VERIFY, GATE_COUNT)),
     }

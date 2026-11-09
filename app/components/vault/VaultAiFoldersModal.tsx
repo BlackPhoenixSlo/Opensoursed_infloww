@@ -28,7 +28,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Send, Shirt, User } from "lucide-react";
 
 import {
@@ -41,6 +41,7 @@ import {
 } from "@/hooks/useVaultCache";
 import { mirrorThumbSrc } from "@/lib/mediaUrl";
 import { IfButton, IfHelp, IfLabel, IfLearn, IfModal, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
+import { Notice } from "@/components/vault/Notice";
 import { errText } from "@/lib/errText";
 
 const TIER_STYLE: Record<string, string> = {
@@ -152,9 +153,6 @@ export default function VaultAiFoldersModal({
   const [keep, setKeep] = useState(2);
   const [mirrorToOf, setMirrorToOf] = useState(true);
   const [solo, setSolo] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ApplyAiFoldersResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const plan = useAiFolderPlan(accountId, { keep, solo }, true);
 
@@ -167,28 +165,29 @@ export default function VaultAiFoldersModal({
   }
   const multi = new Set([...seen.entries()].filter(([, n]) => n > 1).map(([m]) => m));
 
-  async function onCreate() {
-    setBusy(true);
-    setError(null);
-    try {
-      // The SAME options the preview was built from: the server re-derives the
-      // plan and retires generated folders it no longer makes, so applying
-      // without `solo` would create the lanes and delete every `-solo` folder
-      // in the same call.
-      const res = await applyAiFolders(accountId, { keep, solo, mirrorToOf });
-      setResult(res);
+  const applyM = useMutation({
+    mutationFn: (opts: { keep: number; solo: boolean; mirrorToOf: boolean }) => applyAiFolders(accountId, opts),
+    onSuccess: () => {
       // The folder rail and any per-folder grid are now stale.
       qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-of-folders-mirror", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
-    } catch (e) {
-      setError(errText(e));
-      console.error("apply AI folders failed", e);
-    } finally {
-      setBusy(false);
-    }
+    },
+    onError: (e) => console.error("apply AI folders failed", e),
+  });
+  const busy = applyM.isPending;
+  const result: ApplyAiFoldersResult | undefined = applyM.data;
+
+  function onCreate() {
+    // The SAME options the preview was built from: the server re-derives the
+    // plan and retires generated folders it no longer makes, so applying
+    // without `solo` would create the lanes and delete every `-solo` folder
+    // in the same call.
+    applyM.mutate({ keep, solo, mirrorToOf });
   }
+  /** An option change makes the last build's result stale (its error stays). */
+  const optionChanged = () => { if (applyM.isSuccess) applyM.reset(); };
 
   const s = plan.data?.summary;
   const flags = plan.data?.flags;
@@ -224,15 +223,10 @@ export default function VaultAiFoldersModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sweep?.running, flagsStatus.dataUpdatedAt, since]);
 
-  async function onRunFlags() {
-    setError(null);
-    try {
-      await runVaultFlags(accountId);
-      setSince(Date.now());
-    } catch (e) {
-      setError(errText(e));
-    }
-  }
+  const flagsM = useMutation({
+    mutationFn: () => runVaultFlags(accountId),
+    onSuccess: () => setSince(Date.now()),
+  });
 
   return (
     <IfModal
@@ -240,7 +234,7 @@ export default function VaultAiFoldersModal({
       width={820}
       onClose={onClose}
       footer={
-        <div className="flex w-full flex-wrap items-center justify-end gap-2">
+        <>
           <span className="min-w-0 flex-1 basis-60 text-[12px] text-muted">
             {result
               ? "Re-running refreshes these folders rather than making duplicates."
@@ -265,7 +259,7 @@ export default function VaultAiFoldersModal({
                 ? "Rebuild"
                 : `Create ${s?.folders ?? 0} folders`}
           </IfButton>
-        </div>
+        </>
       }
     >
       <IfHelp className="mt-0">
@@ -299,10 +293,11 @@ export default function VaultAiFoldersModal({
               </span>
             </p>
           ) : (
-            <IfButton className="mt-2 border-warn/60 text-warn hover:border-warn hover:text-warn" onClick={onRunFlags} disabled={busy}>
+            <IfButton className="mt-2 border-warn/60 text-warn hover:border-warn hover:text-warn" onClick={() => flagsM.mutate()} disabled={busy || flagsM.isPending}>
               Check {flags!.missing} stills
             </IfButton>
           )}
+          {flagsM.error && <p className="mt-1 text-[12px] text-err">{errText(flagsM.error)}</p>}
           {!sweeping && !!sweep?.progress?.error && (
             <p className="mt-1 text-[12px] text-err">
               Last run stopped: {sweep.progress.error}
@@ -319,7 +314,7 @@ export default function VaultAiFoldersModal({
             value={keep}
             onChange={(e) => {
               setKeep(Number(e.target.value));
-              setResult(null);
+              optionChanged();
             }}
             disabled={busy}
           >
@@ -335,7 +330,7 @@ export default function VaultAiFoldersModal({
             checked={mirrorToOf}
             onChange={(on) => {
               setMirrorToOf(on);
-              setResult(null);
+              optionChanged();
             }}
             disabled={busy}
             label="Also create on OnlyFans"
@@ -346,7 +341,7 @@ export default function VaultAiFoldersModal({
             checked={solo}
             onChange={(on) => {
               setSolo(on);
-              setResult(null);
+              optionChanged();
             }}
             disabled={busy}
             label="Solo cut of each lane"
@@ -382,7 +377,7 @@ export default function VaultAiFoldersModal({
       )}
 
       {result && (
-        <div className="mt-4 rounded-md border border-ok/40 bg-ok/10 px-3 py-2 text-ok">
+        <Notice tone="ok">
           Created {result.new} new{" "}
           {result.reused > 0 && `and refreshed ${result.reused} existing `}
           {result.folders === 1 ? "folder" : "folders"} with {result.items} placements.
@@ -403,14 +398,10 @@ export default function VaultAiFoldersModal({
             </span>
           )}
           <span className="block text-ok/80">Nothing was sent.</span>
-        </div>
+        </Notice>
       )}
 
-      {error && (
-        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-err">
-          {error}
-        </div>
-      )}
+      {applyM.error && <Notice tone="err">{errText(applyM.error)}</Notice>}
 
       <div className="mt-4 flex flex-col gap-3">
         {plan.isLoading && <p className="text-muted">Reading the vault…</p>}

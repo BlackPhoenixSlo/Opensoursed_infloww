@@ -42,6 +42,7 @@ import time
 from collections import Counter, defaultdict
 
 from slop.lib import fansly_relay
+from slop.lib.scen_pool import pool
 from slop.lib.rich_text_faults import (BUDGET, FANSLY_PLAIN, FANSLY_SENT, OVER, POST_MARKUP, SAVE_ROUTE, SAVED,
                                        SEND_ROUTE)
 from slop.seed import fansly_accounts, of_sessions
@@ -73,14 +74,6 @@ OVER_BODIES = ["x" * 6501, "<p>" + "y" * 6501 + "</p>"]
 EDGE = "<p>" + (_BLUE + "z" * 100 + "</span>") * 65 + "</p>"   # 6500 plain characters, ~9.5k raw
 
 
-async def _pool(items, fn, n: int) -> None:
-    it = iter(list(items))
-
-    async def worker():
-        for x in it:
-            await fn(x)
-
-    await asyncio.gather(*(worker() for _ in range(max(1, n))))
 
 
 async def run(ctx) -> None:
@@ -105,7 +98,7 @@ async def run(ctx) -> None:
         saves[job] = {"status": r.status_code, "body": r.json() if r.status_code == 200 else r.text[:300]}
 
     ctx.rec.stage = "save"
-    await _pool([(c["id"], t) for c in creators for t, *_ in SCRIPTS], save, ctx.users)
+    await pool([(c["id"], t) for c in creators for t, *_ in SCRIPTS], save, ctx.users)
     ctx.rec.stage = None
     over: list[dict] = []
     for c in creators:
@@ -140,7 +133,7 @@ async def run(ctx) -> None:
 
     ctx.rec.stage = "send"
     t0 = time.time()
-    await _pool(list(plan), send_fan, ctx.users)
+    await pool(list(plan), send_fan, ctx.users)
     send_s = time.time() - t0
     ctx.rec.stage = None
 

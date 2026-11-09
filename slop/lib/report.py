@@ -6,11 +6,25 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 EVIDENCE = Path(__file__).resolve().parents[1] / "evidence"
 FOLDER_LINE = "slop: folder {path}"  # printed by every run (lib/cli.py), parsed by lib/nightly.py
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Replace a text file without exposing a partial write."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.slop-tmp-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        os.chmod(tmp, path.stat().st_mode & 0o777 if path.exists() else 0o644)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def parse_folder_line(line: str) -> Path | None:

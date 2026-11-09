@@ -7,7 +7,7 @@ Düsseldorf host, Slovenia 25 ms):
   jp-mobile   250 ms, 1.6 Mbit/s down / 750 kbit/s up (Lighthouse's slow 4G, as dashboard-load's slow4g)
   jp-bad      400 ms, 1 Mbit/s down / 1 Mbit/s up (a guess at a congested cell; up = down, no measurement)
 
-Wire profiles (`"wire": True`, never in DEFAULT_PROFILES until their budgets are set from a green run):
+Wire profiles (`"wire": True`, excluded from DEFAULT_PROFILES; their budgets live in slow-connections):
   jp-lossy      250 ms, 1.6 Mbit/s down / 750 kbit/s up, 2 % loss per packet each way (a guess at the Tokyo
                 phone's line: its browser saw calls at p50 5 s, p95 67 s, worst 118 s, which no CDP profile shows)
   jp-lossy-bad  400 ms, 1 / 1 Mbit/s, 5 % loss each way (a guess at a congested cell)
@@ -17,15 +17,7 @@ session (latency = rtt_ms; throughput in bytes/s; `cellular4g` when capped, else
 open for the page's life: the conditions belong to it. CDP's latency is per request (each response's headers
 held `latency` ms): no TCP / TLS handshake RTTs and no TCP slow start, unlike lib/wan.py's DelayProxy (a fresh
 connection pays 3 RTTs there), which dashboard-load keeps. CDP's `packetLoss` applies only to WebRTC. A wire
-profile gets `Network.enable` only (the Meter's events): its delay, bandwidth and loss are all the kernel's.
-
-Wire mode: `with wired(profile, ports) as status:` shapes loopback TCP to / from `ports` with macOS dummynet through
-the root helper (slop/lib/netloss_helper.sh, installed once by `sudo slop/install-netloss` as HELPER, NOPASSWD for
-that path only): real TCP, so handshakes, slow start, retransmits and head-of-line blocking on one h2 connection,
-and the open /events stream is delayed too. A stale state is switched off first; off again on exit (finally and
-atexit; a SIGKILLed run's state is switched off by the next run's `wire_off_stale`, lib/cli.py, inside the machine
-lock). `wire_lock(profile)` (lib/cli.py, around a wire run): one wire run per machine. `wire_problem()`: why wire mode cannot run here (one line naming the install command), or None.
-`await calibrate(port)`: TCP connect times through the shaped port (one RTT each).
+profile is handled by the scenario, which enables CDP events while lib/netloss.py shapes TCP.
 
 `Meter(cdp)`: every request the page sends, from CDP's Network events (`requestWillBeSent`, `responseReceived`,
 `loadingFinished` / `loadingFailed`; one clock: CDP's monotonic stamps moved onto the epoch by the first
@@ -41,15 +33,8 @@ window's: settle (network quiet) before marking.
 from __future__ import annotations
 
 import asyncio
-import atexit
-import contextlib
-import fcntl
-import os
 import re
-import socket
-import subprocess
 import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 PROFILES: dict[str, dict] = {
@@ -60,16 +45,6 @@ PROFILES: dict[str, dict] = {
     "jp-lossy": {"rtt_ms": 250, "down_kbps": 1_600, "up_kbps": 750, "plr": 0.02, "wire": True},
     "jp-lossy-bad": {"rtt_ms": 400, "down_kbps": 1_000, "up_kbps": 1_000, "plr": 0.05, "wire": True},
 }
-DEFAULT_PROFILES = tuple(p for p, v in PROFILES.items() if not v.get("wire"))
-HELPER = Path("/usr/local/libexec/slop-netloss")       # root:wheel 0755, a copy of HELPER_SRC
-HELPER_SRC = Path(__file__).with_name("netloss_helper.sh")
-WIRE_STATE = Path("/var/run/slop-netloss.state")       # the helper's: exists while shaping may be on
-INSTALL = "sudo slop/install-netloss"
-# The dummynet pipes and anchor are machine-wide while the machine gate lets several runs go at once: a wire run holds
-# this flock from before its stack until after teardown (`wire_lock`), so two never overlap, and `wire_off_stale`
-# touches the state only when it can take the lock (no live wire run owns it). A killed holder's flock dies with it.
-WIRE_LOCK = Path("/tmp/slop-netloss.lock")
-WIRE_LOCK_POLL_S = 5
 SSE_PATHS = (re.compile(r"/events"),)
 BEACON_PATHS = (re.compile(r"/admin/perflog/"),)
 
@@ -78,133 +53,14 @@ def is_wire(profile: str | None) -> bool:
     return bool(profile and PROFILES[profile].get("wire"))
 
 
-def _helper(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(["sudo", "-n", str(HELPER), *args], capture_output=True, text=True, timeout=timeout)
-
-
-def wire_problem() -> str | None:
-    """None when wire mode can run; else one line naming what to do."""
-    if not HELPER.exists():
-        return f"wire profiles need the packet-loss helper (not installed); run once: {INSTALL}"
-    if HELPER.read_bytes() != HELPER_SRC.read_bytes():
-        return f"{HELPER} differs from {HELPER_SRC.name} (changed since installed); re-run: {INSTALL}"
-    st = HELPER.stat()
-    if st.st_uid != 0 or st.st_mode & 0o022:
-        return f"{HELPER} is not root-owned 0755; re-run: {INSTALL}"
-    r = _helper("status")
-    if r.returncode:
-        return f"sudo -n {HELPER} status failed ({(r.stderr or r.stdout).strip()[:160]}); re-run: {INSTALL}"
-    return None
-
-
-def wire_off() -> str:
-    r = _helper("off")
-    if r.returncode:
-        raise RuntimeError(f"slop-netloss off failed: {(r.stderr or r.stdout).strip()[:300]}")
-    return r.stdout.strip()
-
-
-def _off_quiet() -> None:
-    with contextlib.suppress(Exception):
-        if WIRE_STATE.exists():
-            wire_off()
-
-
-class WireBusy(RuntimeError):
-    """The wire lock stayed held past the wait budget: the run is INFRA."""
-
-
-def _try_lock(fd: int) -> bool:
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except BlockingIOError:
-        return False
-
-
-@contextlib.contextmanager
-def wire_lock(profile: str | None):
-    """Held for a wire profile's whole run (a no-op for any other): one wire run per machine. Waits (polling, one line
-    printed) up to SLOP_LOCK_WAIT_S (default 3600 s), then raises WireBusy. Yields the seconds waited."""
-    if not is_wire(profile):
-        yield 0.0
-        return
-    fd = os.open(WIRE_LOCK, os.O_RDWR | os.O_CREAT, 0o666)
-    t0, budget, said = time.monotonic(), float(os.environ.get("SLOP_LOCK_WAIT_S") or 3600), False
-    try:
-        while not _try_lock(fd):
-            if time.monotonic() - t0 > budget:
-                raise WireBusy(f"{WIRE_LOCK} still held after {budget:.0f}s (another wire run): SLOP_LOCK_WAIT_S")
-            if not said:
-                holder = os.pread(fd, 512, 0).decode(errors="replace").strip()
-                print(f"slop: waiting for the wire lock {WIRE_LOCK} (another wire run: {holder or '?'})", flush=True)
-                said = True
-            time.sleep(WIRE_LOCK_POLL_S)
-        os.ftruncate(fd, 0)
-        os.pwrite(fd, f"pid {os.getpid()} --net={profile} since {time.strftime('%Y-%m-%dT%H:%M:%S')}\n".encode(), 0)
-        yield round(time.monotonic() - t0, 1)
-    finally:
-        os.close(fd)  # releases the flock
-
-
-def wire_off_stale() -> str | None:
-    """A killed run's shaping left on (the helper's state file): off. None when there was none, or when a live wire
-    run holds the wire lock (its shaping, not stale). Call it outside `wire_lock` (it takes the lock itself)."""
-    if not WIRE_STATE.exists():
-        return None
-    if not HELPER.exists():
-        return f"{WIRE_STATE} exists but {HELPER} is gone: shaping may be on; sudo {HELPER_SRC} off"
-    fd = os.open(WIRE_LOCK, os.O_RDWR | os.O_CREAT, 0o666)
-    try:
-        if not _try_lock(fd):
-            return None
-        return f"stale packet-loss shaping switched off: {wire_off()}"
-    finally:
-        os.close(fd)
-
-
-@contextlib.contextmanager
-def wired(profile: str, ports: list[int]):
-    """Dummynet on `ports` (the edge the browser talks to) for `profile`; yields the helper's status text."""
-    p = PROFILES[profile]
-    _off_quiet()
-    atexit.register(_off_quiet)
-    try:
-        r = _helper("on", ",".join(map(str, ports)), str(p["rtt_ms"]), str(p.get("plr", 0)),
-                    str(p["down_kbps"] or 0), str(p["up_kbps"] or 0))
-        if r.returncode:
-            raise RuntimeError(f"slop-netloss on failed: {(r.stderr or r.stdout).strip()[:300]}")
-        yield r.stdout
-    finally:
-        try:
-            wire_off()
-        finally:
-            atexit.unregister(_off_quiet)
-
-
-async def calibrate(port: int, n: int = 10, timeout_s: float = 10) -> dict:
-    """TCP connects to 127.0.0.1:`port` (SYN up, SYN-ACK down: one shaped RTT each, loss included): ms each, the
-    median, and how many timed out."""
-    def one() -> float | None:
-        t0 = time.perf_counter()
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
-                return (time.perf_counter() - t0) * 1000
-        except OSError:
-            return None
-    got = [await asyncio.to_thread(one) for _ in range(n)]
-    ok = sorted(x for x in got if x is not None)
-    return {"connect_ms": [None if x is None else round(x, 1) for x in got],
-            "median_ms": round(ok[len(ok) // 2], 1) if ok else None, "failed": n - len(ok)}
+DEFAULT_PROFILES = tuple(p for p in PROFILES if not is_wire(p))
 
 
 async def emulate(cdp, profile: str) -> dict:
-    """Throttle the page behind `cdp` to `profile`; returns the conditions sent. A wire profile: Network.enable
-    only (dummynet shapes the edge's port, `wired`)."""
+    """Throttle the page behind `cdp` to `profile`; returns the conditions sent."""
     p = PROFILES[profile]
-    if p.get("wire"):
-        await cdp.send("Network.enable")
-        return {"wire": True, **p}
+    if is_wire(profile):
+        raise ValueError(f"wire profile {profile} needs a shaped edge port")
     capped = p["down_kbps"] is not None
     cond = {"offline": False, "latency": p["rtt_ms"],
             "downloadThroughput": p["down_kbps"] * 1000 / 8 if capped else -1,
@@ -249,7 +105,7 @@ class Meter:
         cdp.on("Network.loadingFailed", self._failed)
 
     def _wall(self, ts: float) -> float:
-        return ts + (self._off if self._off is not None else time.time() - ts)
+        return ts + self._off
 
     def _sent(self, e: dict) -> None:
         if self._off is None:
@@ -300,7 +156,7 @@ class Meter:
         return out
 
     @staticmethod
-    def _counted(r: dict) -> bool:
+    def counted(r: dict) -> bool:
         return r["kind"] not in ("sse", "beacon")
 
     @staticmethod
@@ -327,7 +183,7 @@ class Meter:
                     ok = False
                 if ok:
                     key_ms = round((time.time() - self.t0) * 1000)
-            win = [r for r in self.window() if self._counted(r)]
+            win = [r for r in self.window() if self.counted(r)]
             pending = [r["path"] for r in win if r["end"] is None]
             last = max((r["end"] for r in win if r["end"] is not None), default=0)
             last = max(last, max((r["start"] for r in win), default=0))
@@ -337,7 +193,7 @@ class Meter:
             if now > end:
                 break
             await asyncio.sleep(0.1)
-        win = [r for r in self.window() if self._counted(r)]
+        win = [r for r in self.window() if self.counted(r)]
         done = key_ms is not None and not pending and quiet >= idle_ms
         return {"settled_ms": max(key_ms, last) if done else None, "key_ms": key_ms, "requests": len(win),
                 "bytes": sum(r["bytes"] for r in win), "by_kind": self.table(win), "pending": pending[:20]}

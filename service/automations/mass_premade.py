@@ -137,11 +137,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     send_payload["automation_kind"] = "mass_premade"
     res = await send_mass_run(account_id, send_payload, run_id=run_id)
 
-    if res.get("status") == "skipped":
-        # Nothing went out (no text / empty audience) — don't strand the queue.
-        log.warning("mass_premade: send skipped (%s) — draining rest", res.get("reason"))
+    if res.get("status") not in (None, "ok"):
+        # Skipped or errored: nothing went out, so don't strand the queue.
+        log.warning("mass_premade: send not sent (%s) — draining rest", res.get("reason"))
         remaining = await _drip_rest(account_id, rest)
-        return {"status": "skipped", "reason": res.get("reason"), "remaining": remaining}
+        return {"status": res["status"], "reason": res.get("reason"), "remaining": remaining}
 
     queue_id = res.get("queue_id")
     mass_run_id = res.get("mass_run_id")

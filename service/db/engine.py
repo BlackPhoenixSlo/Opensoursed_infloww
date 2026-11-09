@@ -24,6 +24,7 @@ from typing import AsyncIterator
 
 from dotenv import load_dotenv
 from sqlalchemy import event
+from sqlalchemy import exc as sqla_exc
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -48,7 +49,7 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 # file is NullPool: every session opens a connection (a thread plus the PRAGMAs
 # below) and closes it, ~3-6x the cost of a pooled session.
 #
-# The pool is BOUNDED (_SpillQueuePool): at most POOL_SIZE connections serve
+# The pool is BOUNDED (_SpillQueuePool): POOL_SIZE connections serve
 # sessions; a session that finds none free waits for one, first come first
 # served. Unbounded overflow (what this was until 2026-10-24) turned any pile-up
 # of requests — a 1-2 s stall of the process, then every request in flight at
@@ -60,10 +61,18 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 # (.scratch/fleet-sharding/03-write-storm.md). SQLite runs one writer at a time
 # anyway, so more connections never wrote faster; they only queued in C.
 #
-# Nothing is dropped or refused: a wait that lasts SPILL_AFTER_S opens an extra
-# connection instead of failing (closed on return), so a task that nests a
-# second session while holding one, or any wait-on-itself pattern, costs at
-# most that delay, never a deadlock or a TimeoutError. Memory bound: each kept
+# A wait that lasts SPILL_AFTER_S opens an extra (spill) connection instead of
+# failing (closed on return), so a task that nests a second session while
+# holding one, or any wait-on-itself pattern, costs at most that delay, never a
+# deadlock. Spills are capped at MAX_SPILL: uncapped (until 2026-11-09), a flood
+# whose every checkout waited 2 s spilled each one — 2,856 spill connections,
+# one aiosqlite thread each, 466 -> 3,477 relay threads in 16 s, no plateau
+# (slop relay-admission medium/200, 20261109T084847Z-...-b634). At the cap a
+# checkout waits on, FIFO, up to WAIT_MAX_S more, then raises SQLAlchemy's
+# TimeoutError, which server.py answers 503 + Retry-After. 24 from medium/200
+# runs at 24 / 56 / 120: relay threads max 417 / 449 / 512, ramp CPU 1.4 / 2.0 /
+# 3.9 cores, background reads failed 77 / 85 / 85 % (the overload there is the
+# per-request role reads, not the cap); small never spills. Memory bound: each kept
 # connection's page cache grows to cache_size (64 MiB) at most; the mmap is the
 # OS page cache, shared. The in-memory DB keeps aiosqlite's StaticPool.
 # CHATTERLY_DB_NULLPOOL=1 (set by tests/_harness.py, which runs a fresh event
@@ -71,13 +80,15 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 # opened it there.
 POOL_SIZE = int(os.environ.get("CHATTERLY_DB_POOL_SIZE", "8"))
 SPILL_AFTER_S = float(os.environ.get("CHATTERLY_DB_SPILL_AFTER_S", "2.0"))
+MAX_SPILL = int(os.environ.get("CHATTERLY_DB_MAX_SPILL", "24"))
+WAIT_MAX_S = float(os.environ.get("CHATTERLY_DB_WAIT_MAX_S", "30"))
 
 
 class _SpillQueuePool(AsyncAdaptedQueuePool):
     """`pool_size` connections, handed out first come first served; a checkout
     still waiting after `timeout` seconds opens a spill connection (overflow,
-    closed on return) instead of raising. Requires max_overflow=-1, so
-    `_inc_overflow` / `_dec_overflow` only count."""
+    closed on return) while fewer than `max_overflow` are open, else waits on
+    up to WAIT_MAX_S more and raises TimeoutError."""
 
     def _do_get(self):
         if self._overflow >= 0:  # all pool_size connections exist: wait for a free one
@@ -85,13 +96,22 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
                 return self._pool.get(True, self._timeout)
             except sqla_queue.Empty:
                 pass
+            if not self._inc_overflow():  # spills at the cap: wait for any connection back
+                self.capped += 1
+                try:
+                    return self._pool.get(True, WAIT_MAX_S)
+                except sqla_queue.Empty:
+                    pass
+                raise sqla_exc.TimeoutError(
+                    f"DB pool busy: {self.size()} + {self._max_overflow} spill connections out, "
+                    f"waited {self._timeout + WAIT_MAX_S:.0f} s", code="3o7r")
             self.spills += 1
         else:  # still opening the first pool_size: an idle one, else a new one
             try:
                 return self._pool.get(False)
             except sqla_queue.Empty:
                 pass
-        self._inc_overflow()
+            self._inc_overflow()  # _overflow < 0 <= max_overflow: always counts
         try:
             return self._create_connection()
         except BaseException:
@@ -99,9 +119,10 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
             raise
 
     spills = 0  # checkouts that waited SPILL_AFTER_S and opened an extra connection
+    capped = 0  # checkouts that waited SPILL_AFTER_S with MAX_SPILL spills already open
 
 
-_POOL_ARGS = {"poolclass": _SpillQueuePool, "pool_size": POOL_SIZE, "max_overflow": -1,
+_POOL_ARGS = {"poolclass": _SpillQueuePool, "pool_size": POOL_SIZE, "max_overflow": MAX_SPILL,
               "pool_timeout": SPILL_AFTER_S}
 _pooled = (
     _is_sqlite

@@ -24,6 +24,8 @@ export interface VaultDownload {
   sink: DlSink | null;
   /** Why the picker or the run could not start (not a per-item failure). */
   error: string;
+  /** Folder sink: the picker is open (the hint shows). */
+  picking: boolean;
   start: (a: Omit<StartArgs, "accountId" | "creator">) => void;
   cancel: () => void;
   retryFailed: () => void;
@@ -42,6 +44,7 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
   // Share sink: the fetched files by media id until their batch is saved.
   const files = useRef(new Map<number, File>());
   const [error, setError] = useState("");
+  const [picking, setPicking] = useState(false);
   // null on the server, the browser's answer after hydration (no mismatch).
   const sink = useSyncExternalStore(noSubscribe, downloadSink, () => null);
   useEffect(() => () => abort.current?.abort(), []);
@@ -60,8 +63,10 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
     abort.current = ac;
     files.current.clear();
     const keep = sink === "share" ? (id: number, f: File) => { files.current.set(id, f); } : null;
+    setPicking(sink === "folder");
     startDownload({ ...a, accountId, creator }, deps(ac), (k) => { sinkRef.current = k; }, keep)
-      .catch((e) => setError((e as Error)?.message || String(e)));
+      .catch((e) => setError((e as Error)?.message || String(e)))
+      .finally(() => setPicking(false));
   };
   const cancel = () => {
     abort.current?.abort();
@@ -102,7 +107,7 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
     shareFiles(fs).then((r) => { if (r === "saved") send({ type: "linksSaved" }); })
       .catch((e) => setError((e as Error)?.message || String(e)));
   };
-  return { state, sink, error, start, cancel, retryFailed, close, saveBatch, saveLinks };
+  return { state, sink, error, picking, start, cancel, retryFailed, close, saveBatch, saveLinks };
 }
 
 function mb(n: number): string {
@@ -111,6 +116,16 @@ function mb(n: number): string {
 
 export default function VaultDownloadPanel({ dl }: { dl: VaultDownload }) {
   const { state: s, error } = dl;
+  // Chrome refuses Home / Desktop / Documents / Downloads themselves ("contains system files"; its File System Access
+  // blocklist, kDontBlockChildren), never a folder inside them. Its dialog, not ours: say so while the picker is open.
+  if (s.phase === "idle" && dl.picking) {
+    return (
+      <div role="status" data-testid="dl-pick-hint"
+        className="fixed bottom-24 left-3 right-3 sm:left-auto sm:right-6 z-40 sm:w-[340px] rounded-lg border border-border bg-panel shadow-lg text-xs px-3 py-2">
+        Pick any folder. Chrome won&apos;t take Desktop, Documents or Downloads themselves: open one and click New Folder.
+      </div>
+    );
+  }
   if (s.phase === "idle" && !error) return null;
   const sum = summarize(s);
   const busy = isBusy(s);

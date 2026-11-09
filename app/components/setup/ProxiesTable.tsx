@@ -21,15 +21,14 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { relay, type ProxyMeta, type AccountMeta } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
-import { Button } from "@/components/ui/primitives";
 import { EmptyState, IfButton, IfModal, InflowwPageHeader } from "@/components/ui/infloww";
 import AddProxyModal, {
-  EMPTY_DRAFT, draftLabel, type BulkResp, type ProxyDraft, type ProxyScheme,
+  draftLabel, type ProxyDraft,
 } from "@/components/setup/AddProxyModal";
 import CreatorEgressTable, {
   EMPTY_TEXT, PROXY_TABLE, proxyTh, type TestResult,
@@ -69,12 +68,9 @@ const isRefused = (err: unknown) => {
 export default function ProxiesTable() {
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
-  const [draft, setDraft] = useState<ProxyDraft>(EMPTY_DRAFT);
   /** #27, #37: antd's `message.error` / `message.success`, at the top and over the modal, gone after its 3s. */
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [bulkText, setBulkText] = useState("");
-  const [bulkScheme, setBulkScheme] = useState<ProxyScheme>("http");
 
   const proxiesQ = useQuery<ProxiesResp>({
     queryKey: ["proxies"],
@@ -129,7 +125,6 @@ export default function ProxiesTable() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["proxies"] });
-      setDraft(EMPTY_DRAFT);
       setAddOpen(false);
       // `creators0317` has no English on disk; "Proxy added" stands in.
       setToast({ ok: true, text: "Proxy added" });
@@ -137,16 +132,6 @@ export default function ProxiesTable() {
     onError: (err: Error) => {
       qc.invalidateQueries({ queryKey: ["proxies"] });
       setToast({ ok: false, text: err.message });
-    },
-  });
-
-  // The pasted text carries proxy passwords, so it is read from state in the
-  // closure and never becomes a mutation variable (mutations can be persisted).
-  const bulkM = useMutation({
-    mutationFn: () => relay.post<BulkResp>("/admin/proxies/bulk", { text: bulkText, scheme: bulkScheme }),
-    onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: ["proxies"] });
-      if (r.errors.length === 0) setBulkText("");
     },
   });
 
@@ -173,7 +158,7 @@ export default function ProxiesTable() {
 
   // The relay's POST upserts: an existing label is overwritten in place. The modal keeps Add proxy off for a label
   // the registry already holds (`draftProblem`), so a typo cannot silently clobber a working proxy.
-  function submitDraft() {
+  function submitDraft(draft: ProxyDraft) {
     setToast(null);
     createM.mutate({
       label: draftLabel(draft).trim(),
@@ -200,19 +185,19 @@ export default function ProxiesTable() {
       <InflowwPageHeader
         title="Manage your custom proxies"
         actions={
-        <Button
-          className="h-8 py-0 px-[15px] rounded text-sm font-normal whitespace-nowrap"
+        <IfButton
+          variant="primary"
+          icon={Plus}
+          className="whitespace-nowrap"
           disabled={refused}
           title={refused ? "not wired" : undefined}
           onClick={() => {
-            setDraft(EMPTY_DRAFT);
             setToast(null);
-            bulkM.reset();
             setAddOpen(true);
           }}
         >
-          + Add new proxy
-        </Button>
+          Add new proxy
+        </IfButton>
         }
       />
 
@@ -289,19 +274,9 @@ export default function ProxiesTable() {
 
       {addOpen && (
         <AddProxyModal
-          draft={draft}
-          onDraft={setDraft}
           takenLabels={proxiesQ.data ? proxies.map((p) => p.label) : null}
           onSave={submitDraft}
           saving={createM.isPending}
-          bulkText={bulkText}
-          onBulkText={setBulkText}
-          bulkScheme={bulkScheme}
-          onBulkScheme={setBulkScheme}
-          onBulk={() => bulkM.mutate()}
-          bulkPending={bulkM.isPending}
-          bulkError={bulkM.error?.message ?? null}
-          bulkResult={bulkM.data}
           onClose={() => setAddOpen(false)}
         />
       )}
@@ -591,4 +566,3 @@ function ProxyRow({
     </tr>
   );
 }
-

@@ -7,8 +7,9 @@
  * 8px apart, 8px radius, idle text at 62% white, hover and selected on a 5.5%
  * white wash, the platform card and dividers on a 9% one.
  *
- * Groups expand on click. A group holding the current page starts open; once
- * the user toggles one, their choice sticks for the session.
+ * Groups expand on click, one at a time: opening one closes the rest. The group
+ * holding the current page starts open; once the user toggles one, their choice
+ * sticks for the session.
  *
  * `collapsed` is Infloww's locked icon rail (`navCollapsed`, 60px): icons
  * only, the label as a tooltip. A group's icon opens its pages in a flyout
@@ -96,7 +97,8 @@ export default function Sidebar({
   const footer = visibleLinks(SIDEBAR_FOOTER, filter);
   // A page shown as another's tab (Sales records) lights that page's entry.
   const active = activeHref(sidebarHref(pathname, filter.grantedPages), [...flatten(nodes), ...footer]);
-  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  // The one open group's label; undefined until the user toggles one (the active page's group opens), null = all closed.
+  const [openGroup, setOpenGroup] = useState<string | null>();
 
   const link = (l: NavLink, sub = false, footer = false) => {
     const Icon = l.icon;
@@ -189,13 +191,13 @@ export default function Sidebar({
           if (!isGroup(n)) return link(n);
           if (collapsed) return <RailGroup key={n.label} group={n} active={active} onNavigate={onNavigate} />;
           const holdsActive = n.children.some((c) => c.href === active);
-          const open = toggled[n.label] ?? holdsActive;
+          const open = openGroup === undefined ? holdsActive : openGroup === n.label;
           const Icon = n.icon;
           return (
             <div key={n.label}>
               <button
                 type="button"
-                onClick={() => setToggled((t) => ({ ...t, [n.label]: !open }))}
+                onClick={() => setOpenGroup(open ? null : n.label)}
                 aria-expanded={open}
                 className={cn(ROW, "w-full px-3", holdsActive ? ROW_ACTIVE : ROW_IDLE)}
               >

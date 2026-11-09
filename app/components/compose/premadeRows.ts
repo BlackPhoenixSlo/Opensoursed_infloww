@@ -2,11 +2,10 @@
  * premadeRows — PremadeForm's repeating rows: the Row shape, one reducer, and
  * the pure row ⇄ payload mapping the component only calls.
  *
- *   • `rowsReducer` owns every row edit (patch, audience chips, add/remove,
- *     reset). A row never drops below one entry (the text pool is a `patch`:
- *     VariantsField keeps it at one or more).
- *   • `premadeReducer` is the form's one state: the rows plus the Auto Posts
- *     repost cycle; reset clears both.
+ *   • `rowsReducer` is the form's one state and owns every row edit (patch,
+ *     audience chips, reset). One rule = one post / message, its only clock the
+ *     rule's "Run every": no add/remove, no delay, no resend (an older list or
+ *     timer is edited in Raw JSON, readyMadeContent `isLegacy`).
  *   • `rowToItem` takes the `kind` explicitly.
  *   • `buildPayload` is the ONE `{posts|messages:[…]}` payload "Use in rule"
  *     stores: rows with no text and no media are dropped.
@@ -44,8 +43,6 @@ export interface Row {
   previewMedia: VaultMedia[];
   previewFolderId: string;
   previewCount: string; // free previews per fire (default 1)
-  // shared timer
-  delayMinutes: string;
   // auto_posts
   hoursToLive: string;
   // PPV price in DOLLARS ("" / "0" = free; >0 = paywalled). Applies to BOTH
@@ -55,8 +52,6 @@ export interface Row {
   // mass_premade
   onlineOnly: boolean;
   unsendAfterHours: string;
-  resendAfterHours: string;
-  resendCount: string;
   // mass_premade audience (Mass Online parity). `includes` holds a mix of
   // system-audience ids ('fans'/'following') and custom-list ids, `excludes`
   // custom-list ids only (OF drops a built-in name in `excludedLists`,
@@ -64,6 +59,7 @@ export interface Row {
   // server-side via audiences.resolve_mass_audience (DB-sourced fan ids).
   includes: string[];
   excludes: string[];
+  excludeLastChatHours: string; // → exclude_last_chat_hours (we OR they messaged; "Skip fans chatted with")
   excludeRepliedHours: string; // → exclude_replied_hours (fans we replied to)
   excludeInboundHours: string; // → exclude_inbound_hours (fans who messaged us)
   unreadLimit: string;         // → unread_limit (fans with unread msgs)
@@ -80,16 +76,15 @@ export function blankRow(): Row {
     previewMedia: [],
     previewFolderId: "",
     previewCount: "",
-    delayMinutes: "",
     hoursToLive: "",
     price: "",
     onlineOnly: true,
     unsendAfterHours: "",
-    resendAfterHours: "",
-    resendCount: "",
     // Default audience mirrors Mass Online: fans + following both included.
     includes: ["fans", "following"],
     excludes: [],
+    // A new Auto Mass doesn't interrupt live chats (a saved one re-seeds its own value, itemToRow).
+    excludeLastChatHours: "1",
     excludeRepliedHours: "",
     excludeInboundHours: "",
     unreadLimit: "",
@@ -105,8 +100,6 @@ export type RowsAction =
   // `excludedLists`); a custom list is included or excluded, never both.
   | { type: "toggleListInclude"; i: number; id: string }
   | { type: "toggleListExclude"; i: number; id: string }
-  | { type: "add" }
-  | { type: "remove"; i: number }
   | { type: "reset" };
 
 function mapRow(rows: Row[], i: number, fn: (r: Row) => Row): Row[] {
@@ -134,10 +127,6 @@ export function rowsReducer(rows: Row[], a: RowsAction): Row[] {
         if (exc.has(a.id)) exc.delete(a.id);
         else { exc.add(a.id); inc.delete(a.id); }
       }));
-    case "add":
-      return [...rows, blankRow()];
-    case "remove":
-      return rows.length <= 1 ? rows : rows.filter((_, idx) => idx !== a.i);
     case "reset":
       return [blankRow()];
   }
@@ -153,14 +142,6 @@ function posNum(s: string): number | undefined {
 function nonNegInt(s: string): number | undefined {
   const n = Number(s);
   return s.trim() !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
-}
-
-/** Resend knobs go out as a pair (count > 0 AND hours > 0) or not at all. Used
- *  by a mass row and by the Auto Posts list-level repost cycle. */
-function resendPair(countStr: string, hoursStr: string): { resend_count?: number; resend_after_hours?: number } {
-  const rc = nonNegInt(countStr);
-  const rah = posNum(hoursStr);
-  return rc && rc > 0 && rah ? { resend_count: rc, resend_after_hours: rah } : {};
 }
 
 export interface RowCtx {
@@ -184,8 +165,6 @@ export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
     const mc = posNum(r.mediaCount);
     if (mc) item.media_count = Math.floor(mc);       // sampled per fire (default 1)
   }
-  const delay = posNum(r.delayMinutes);
-  if (delay) item.delay_minutes = delay;
   // PPV price (dollars) — BOTH kinds support it (auto_posts→create_post,
   // mass_premade→send_mass_message both read `price`). Only emit when >0 so a
   // free post/message drops the knob entirely (matches the backend's
@@ -214,11 +193,12 @@ export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
     if (r.onlineOnly) item.online_only = true;
     const uah = posNum(r.unsendAfterHours);
     if (uah) item.unsend_after_hours = uah;
-    Object.assign(item, resendPair(r.resendCount, r.resendAfterHours));
     // Audience (Mass Online parity): system + custom list ids → user_lists /
     // excluded_user_lists; the hour/limit knobs resolve server-side.
     if (r.includes.length) item.user_lists = r.includes;
     if (r.excludes.length) item.excluded_user_lists = r.excludes;
+    const elc = posNum(r.excludeLastChatHours);
+    if (elc) item.exclude_last_chat_hours = elc;
     const erh = posNum(r.excludeRepliedHours);
     if (erh) item.exclude_replied_hours = erh;
     const eih = posNum(r.excludeInboundHours);
@@ -241,57 +221,15 @@ export function rowsToItems(rows: Row[], ctx: RowCtx): Record<string, unknown>[]
       || Array.isArray(it.media_files) || it.media_folder_id != null);
 }
 
-/** Auto Posts repost CYCLE (list-level): re-post the whole list after it finishes. */
-export interface PostsCycle {
-  resendCount: string;
-  resendAfterHours: string;
-}
-
 export type PremadePayload = {
   posts?: Record<string, unknown>[];
   messages?: Record<string, unknown>[];
-  resend_count?: number;
-  resend_after_hours?: number;
 };
 
-/** The `{posts|messages:[…]}` payload — null if no usable row. A rule stores
- *  its own dry-run knob; the cycle rides on auto_posts only, dropped when unset. */
-export function buildPayload(rows: Row[], cycle: PostsCycle, ctx: RowCtx): PremadePayload | null {
+/** The `{posts|messages:[one]}` payload — null if no usable row. A rule stores its own dry-run knob. */
+export function buildPayload(rows: Row[], ctx: RowCtx): PremadePayload | null {
   const items = rowsToItems(rows, ctx);
-  if (items.length === 0) return null;
-  const cycleKnobs = ctx.kind === "auto_posts" ? resendPair(cycle.resendCount, cycle.resendAfterHours) : {};
-  return { [LIST_KEY[ctx.kind]]: items, ...cycleKnobs };
-}
-
-/** The form's one state: the rows and the Auto Posts repost cycle (list-level, auto_posts only). */
-export interface PremadeState {
-  rows: Row[];
-  cycle: PostsCycle;
-}
-
-export type PremadeAction = RowsAction | { type: "setCycle"; patch: Partial<PostsCycle> };
-
-/** Seed from a saved payload (Re-compose); the cycle only for auto_posts. */
-export function initPremade(payload: Record<string, unknown> | undefined, kind: Kind): PremadeState {
-  const posts = kind === "auto_posts";
-  return {
-    rows: payloadToRows(payload, kind),
-    cycle: {
-      resendAfterHours: posts ? numStr(payload?.resend_after_hours) : "",
-      resendCount: posts ? numStr(payload?.resend_count) : "",
-    },
-  };
-}
-
-export function premadeReducer(s: PremadeState, a: PremadeAction): PremadeState {
-  switch (a.type) {
-    case "setCycle":
-      return { ...s, cycle: { ...s.cycle, ...a.patch } };
-    case "reset":
-      return { rows: rowsReducer(s.rows, a), cycle: { resendAfterHours: "", resendCount: "" } };
-    default:
-      return { ...s, rows: rowsReducer(s.rows, a) };
-  }
+  return items.length === 0 ? null : { [LIST_KEY[ctx.kind]]: items };
 }
 
 /** Number/anything → the string an input expects ("" when unset), the inverse
@@ -323,20 +261,18 @@ export function itemToRow(it: Record<string, unknown>): Row {
   }
   r.previewFolderId = it.preview_media_folder_id != null ? String(it.preview_media_folder_id) : "";
   r.previewCount = numStr(it.preview_media_count);
-  r.delayMinutes = numStr(it.delay_minutes);
   // auto_posts
   r.hoursToLive = numStr(it.hours_to_live);
   r.price = numStr(it.price);
   // mass_premade — online_only is only persisted when true, so absence = off.
   r.onlineOnly = Boolean(it.online_only);
   r.unsendAfterHours = numStr(it.unsend_after_hours);
-  r.resendAfterHours = numStr(it.resend_after_hours);
-  r.resendCount = numStr(it.resend_count);
   r.includes = Array.isArray(it.user_lists) ? (it.user_lists as unknown[]).map(String) : [];
   // A built-in name saved in `excluded_user_lists` (the old tri-state chip) excluded nobody (OF drops it): not carried.
   r.excludes = Array.isArray(it.excluded_user_lists)
     ? (it.excluded_user_lists as unknown[]).map(String).filter((id) => !SYSTEM_IDS.has(id))
     : [];
+  r.excludeLastChatHours = numStr(it.exclude_last_chat_hours);
   r.excludeRepliedHours = numStr(it.exclude_replied_hours);
   r.excludeInboundHours = numStr(it.exclude_inbound_hours);
   r.unreadLimit = numStr(it.unread_limit);
@@ -351,4 +287,22 @@ export function payloadToRows(payload: Record<string, unknown> | undefined, kind
   const arr = listItems(payload, kind);
   if (arr.length === 0) return [blankRow()];
   return arr.map((it) => itemToRow((it ?? {}) as Record<string, unknown>));
+}
+
+/** "Skip fans chatted with in last" chips (hours; "" = Off). A saved value off
+ *  the presets gets its own chip so the form shows what the rule does. */
+export const LAST_CHAT_PRESETS = ["", "1", "3", "8", "24"];
+
+export function lastChatChips(hours: string): { value: string; options: { value: string; label: string }[] } {
+  const n = posNum(hours);
+  const value = n ? String(n) : "";
+  const vals = LAST_CHAT_PRESETS.includes(value) ? LAST_CHAT_PRESETS
+    : [...LAST_CHAT_PRESETS, value].sort((a, b) => Number(a) - Number(b));
+  return { value, options: vals.map((v) => ({ value: v, label: v ? `${v}h` : "Off" })) };
+}
+
+/** A mass row uses an advanced "More settings" knob (opens that disclosure on edit). */
+export function hasMoreAudience(r: Row): boolean {
+  return [r.excludeRepliedHours, r.excludeInboundHours, r.recentChatHours, r.recentChatLimit, r.unreadLimit]
+    .some((v) => v.trim() !== "");
 }

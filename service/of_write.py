@@ -162,20 +162,22 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
 
 def _may_have_sent(e: BaseException) -> bool:
     """Whether OnlyFans may have taken the write attempt that raised `e` (send once).
-    Surely not: refused before it left the box (OFDeniedError, a deactivated Creator's
-    too), the proxy refused before the tunnel opened (of_client.proxy_refused: `e` or its
-    `raise ... from` cause is a ProxyError), the connection never opened (curl's
-    couldn't-connect, 7: of_client._proxy_retry's own split), or OF answered 4xx (its
-    rate-limit 400 included). Anything else may have: any timeout (curl_cffi raises
-    every curl 28, connect phase too, as a plain Timeout: its ConnectTimeout is never
-    raised), a dropped connection, a 5xx, a cancel while the call was out (its worker
-    thread runs on), anything unknown."""
-    if proxy_refused(e) or isinstance(e, OFDeniedError):
-        return False
-    if isinstance(e, curl_exc.ConnectionError) and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT:
-        return False
-    status = getattr(getattr(e, "response", None), "status_code", None)
-    return not (isinstance(status, int) and 400 <= status < 500)
+    curl_cffi raises every curl 28 phase, even connect, as plain Timeout (never ConnectTimeout); a canceled worker call keeps running: both may have sent.
+    Refusals (including OFDeactivatedError), couldn't-connect, and OF 4xx (including rate-limit 400) are unsent; the first cause link with an int OF status decides.
+    Dropped connections, 5xx, and unknown failures may have sent, including when wrapped."""
+    current: BaseException | None = e
+    for _ in range(32):  # bound a malformed cyclic cause chain
+        if current is None:
+            break
+        if proxy_refused(current) or isinstance(current, OFDeniedError):
+            return False
+        if isinstance(current, curl_exc.ConnectionError) and getattr(current, "code", None) == CurlECode.COULDNT_CONNECT:
+            return False
+        status = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return not 400 <= status < 500
+        current = current.__cause__
+    return True
 
 
 def _tracked(fn, cell: run_decide.RunWrites):

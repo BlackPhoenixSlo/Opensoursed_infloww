@@ -92,6 +92,11 @@ describe("EmployeeReportCharts", () => {
     const sales = screen.getByRole("region", { name: "Employee sales" });
     await waitFor(() => expect(within(sales).getAllByTestId("chart-hover")).toHaveLength(2));
     expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $12");
+    const bars = within(sales).getAllByTestId("sales-bar");
+    expect(bars).toHaveLength(2);
+    expect(Number(bars[0].getAttribute("height"))).toBeGreaterThan(0);
+    expect(bars[1]).toHaveAttribute("height", "0");
+    expect(within(sales).queryByRole("list")).toBeNull();
     const [call] = seriesCalls();
     expect([call.searchParams.get("bucket"), call.searchParams.get("from"), call.searchParams.get("to")])
       .toEqual(["day", FROM, TO]);

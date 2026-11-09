@@ -916,13 +916,24 @@ async def resolve_outbound_employee_id(
     if chatter is not None:
         if emp_id_raw:
             _warn_chatter_header_ignored_once()
-        return await resolve_chatter_employee_id(
-            chatter_id=chatter.id,
-            owner_user_ids=chatter.owner_user_ids,
-            account_id=account_id,
-            display_name=chatter.display_name or chatter.username,
-            color=chatter.color,
-        )
+        hint = getattr(request.state, "chatter_role_employee", None)
+        if (hint is not None and len(chatter.owner_user_ids) == 1
+                and hint[0] == chatter.id and hint[1] == account_id):
+            employee_id = hint[2]
+        else:
+            employee_id = await resolve_chatter_employee_id(
+                chatter_id=chatter.id,
+                owner_user_ids=chatter.owner_user_ids,
+                account_id=account_id,
+                display_name=chatter.display_name or chatter.username,
+                color=chatter.color,
+            )
+        if employee_id is not None:
+            # The audit hook runs later in this same request. Preserve the
+            # exact account and principal so it can stamp the same Employee
+            # without repeating two DB lookups after the send has landed.
+            request.state.chatter_outbound_employee = (chatter.id, account_id, employee_id)
+        return employee_id
     # Unauthed (internal curl / cron) — caller's Automation fallback wins.
     if emp_id_raw and emp_id_raw.isdigit():
         return int(emp_id_raw)

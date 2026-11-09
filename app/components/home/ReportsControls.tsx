@@ -4,7 +4,7 @@
  *  select, the Channels, Creator and Custom metrics pickers, and the UTC chip. */
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Filter as FilterFunnel, SlidersHorizontal, X } from "lucide-react";
+import { Filter as FilterFunnel, SlidersHorizontal, Tag, X } from "lucide-react";
 
 import { type Gran, granAllowed, granShown } from "@/components/stats/chart";
 import { dateBounds } from "@/lib/dateRange";
@@ -467,5 +467,37 @@ function CalIcon() {
       <rect x="3" y="5" width="18" height="16" rx="2" className="stroke-fg-dim" strokeWidth="1.6"/>
       <path d="M3 9h18M8 3v4M16 3v4" className="stroke-fg-dim" strokeWidth="1.6" strokeLinecap="round"/>
     </svg>
+  );
+}
+
+/** Secondary controls stay behind the toolbar's Filters button. */
+export function ReportFilters({ models, selected, onChange, onReset }: {
+  models: { id: string; name: string }[]; selected: Set<string> | null;
+  onChange: (next: Set<string> | null) => void; onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
+  const id = useId();
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" aria-expanded={open} aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 rounded border px-2 py-1 text-accent border-accent">
+        <FilterFunnel size={13} aria-hidden /> Filters{selected !== null ? ` (${selected.size})` : ""}
+      </button>
+      {open && (
+        <PopoverBox anchor="right">
+          <div id={id} role="group" aria-label="Additional filters" className="flex flex-col gap-3 p-2 w-[264px]">
+            <span className="font-medium text-sm">Filters</span>
+            <button type="button" disabled title="Creator tags are not available"
+              className="flex items-center gap-2 rounded border border-border p-2 text-fg-dim opacity-50">
+              <Tag size={14} aria-hidden /> Creator tag
+            </button>
+            <FiltersPill models={models} selected={selected} onChange={onChange} />
+            <button type="button" className="text-accent text-left text-xs" onClick={onReset}>Reset</button>
+          </div>
+        </PopoverBox>
+      )}
+    </div>
   );
 }

@@ -36,18 +36,18 @@ function outline(nodes: NavNode[]): string[] {
 }
 
 describe("sidebar (docs/infloww-screens.md §1.1)", () => {
-  it("has Infloww's items and sub-items verbatim, plus My Automations, My AI Chatter and Full AI Chatter", () => {
+  it("has Infloww's items and sub-items verbatim, plus Vault Pro, My Automations and My AI Chatter", () => {
     expect(outline(visibleSidebar(SIDEBAR, OWNER))).toEqual([
       "Dashboard",
       "OF Manager: Home / Go live / New post / Notifications / Messages Basic / Vault / Queue / Collections / Bookmarks / Statements / Statistics / Bank / My profile / Release forms / OF settings",
       // Four entries, as live 07-analytics-menu.png: Sales records is Employee reports' tab (page-parity ticket 27).
       "Analytics: Creator reports / Employee reports / Fan reports / Message dashboard",
       "Messages Pro",
-      "Growth: Smart Messages / Smart lists / Auto-follow / Vault Pro / Scripts / Profile promotion / Free trial links / Tracking links / Sensitive words",
+      "Vault Pro",
+      "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
-      "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info",
-      "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans",
-      "Full AI Chatter",
+      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
+      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chatter",
       "—",
       "Creators: Manage creators / Custom proxy",
       "Employees: Manage employees / Shift schedule",
@@ -55,25 +55,26 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(visibleLinks(SIDEBAR_FOOTER, OWNER).map((l) => l.label)).toEqual(["Settings", "Help center"]);
   });
 
-  it("My Automations is Auto Post + Auto Story + Auto Mass + Gen-Info; My AI Chatter the AI chat lanes", () => {
+  it("My Automations has the automation pages in the requested order; My AI Chatter has the AI chat lanes", () => {
     const group = (label: string) => {
       const g = visibleSidebar(SIDEBAR, OWNER).find((n) => isGroup(n) && n.label === label);
       return g && isGroup(g) && { optIn: g.chatterOptIn, children: g.children.map((c) => [c.label, c.href]) };
     };
     expect(group("My Automations")).toEqual({ optIn: true, children: [
+      ["Auto Mass", "/growth/auto-mass"],
       ["Auto Post", "/growth/auto-post"],
       ["Auto Story", "/growth/auto-story"],
-      ["Auto Mass", "/growth/auto-mass"],
+      ["Auto Funnel", "/growth/auto-funnel"],
       ["Gen-Info", "/growth/gen-info"],
     ] });
     expect(group("My AI Chatter")).toEqual({ optIn: true, children: [
       ["Auto-reply", "/growth/auto-reply"],
-      ["Auto Funnel", "/growth/auto-funnel"],
       ["Get to know fans", "/growth/get-to-know-fans"],
+      ["Full AI Chatter", "/full-ai-chatter"],
     ] });
   });
 
-  it("Full AI Chatter is an owner-only Permission page of its own, below My AI Chatter", () => {
+  it("Full AI Chatter is an owner-only Permission page of its own, in My AI Chatter but not opt-in", () => {
     expect(findNavLink("/full-ai-chatter")).toMatchObject({ label: "Full AI Chatter", chatterHidden: true });
     expect(PERMISSION_PAGES.has("/full-ai-chatter")).toBe(true);
     expect(CHATTER_OPT_IN_PAGES.has("/full-ai-chatter")).toBe(false);
@@ -95,8 +96,8 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
 
   it("My Automations and My AI Chatter are opt-in for a chatter: only the pages an enforcing role grants", () => {
     expect([...CHATTER_OPT_IN_PAGES]).toEqual([
-      "/growth/auto-post", "/growth/auto-story", "/growth/auto-mass", "/growth/gen-info",
-      "/growth/auto-reply", "/growth/auto-funnel",
+      "/growth/auto-mass", "/growth/auto-post", "/growth/auto-story",
+      "/growth/auto-funnel", "/growth/gen-info", "/growth/auto-reply",
     ]);
     // Both opt-in groups' sidebar lines, "" for a group dropped.
     const automations = (chatterOnly: boolean, permissions?: { pages: string[] | null; opt_in?: string[] }) => {
@@ -122,8 +123,8 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       .toEqual(["My Automations: Auto Mass", ""]);
     // An owner always sees them all.
     expect(automations(false, { pages: null })).toEqual([
-      "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info",
-      "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans",
+      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
+      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chatter",
     ]);
     // Opened by URL: denied to the chatter without the grant, every other page open.
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });
@@ -369,6 +370,36 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
 });
 
 describe("openPopout", () => {
+  /** The Messages Pro window already open, showing `path`; what it was sent to and whether it was focused. */
+  function popoutOn(path: string) {
+    const [pathname, search = ""] = path.split("?");
+    const win = { location: { pathname, search: search && `?${search}`, href: path }, focus: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(win as unknown as Window);
+    return { win, done: () => open.mockRestore() };
+  }
+
+  it("Messages Pro leaves a window on the inbox or a Deep link where it is, and focuses it", () => {
+    for (const path of ["/messages-pro", "/messages-pro/acc1/123"]) {
+      const { win, done } = popoutOn(path);
+      openPopout("/messages-pro");
+      expect(win.location.href).toBe(path);
+      expect(win.focus).toHaveBeenCalled();
+      done();
+    }
+  });
+
+  it("a Deep link moves the window when it shows another place, and not when it shows that one", () => {
+    for (const [path, href, to] of [
+      ["/messages-pro", "/messages-pro/acc1/123", "/messages-pro/acc1/123"],
+      ["/", "/messages-pro", "/messages-pro"],
+    ]) {
+      const { win, done } = popoutOn(path);
+      openPopout(href);
+      expect(win.location.href).toBe(to);
+      done();
+    }
+  });
+
   it("opens the Messages Pro window on the link itself when a blank window is refused (the desktop app's open handler)", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     openPopout("/messages-pro/acc1/123");

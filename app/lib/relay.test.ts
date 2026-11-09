@@ -238,3 +238,43 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
     }
   });
 });
+
+// ── Background reads: the per-Creator queue (lib/relaySchedule.ts), and `unqueued` past it ───
+
+describe("request › background queue", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Creator "q1"'s background slots (2, or 1 while a failed screen bundle reserves one: an earlier test's) all held by
+  // OF reads that never settle (slow OnlyFans / proxies; 3 cover both), then one more read.
+  it.each([
+    { name: "an unqueued read goes out at once, still X-Priority: background", unqueued: true, sent: true },
+    { name: "a normal background read waits for a slot", unqueued: false, sent: false },
+  ])("$name", async ({ unqueued, sent }) => {
+    const ac = new AbortController();
+    const f = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => {
+      if (init.signal?.aborted) reject(init.signal.reason);
+      init.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", f);
+    const bg = { accountId: "q1", priority: "background" } as const;
+    const calls = [
+      request("/api/of/v2/payouts/transactions", { signal: ac.signal }, bg),
+      request("/api/of/v2/payouts/tips", { signal: ac.signal }, bg),
+      request("/api/of/v2/payouts/chargebacks", { signal: ac.signal }, bg),
+      request("/api/of/v2/lists", { signal: ac.signal }, { ...bg, unqueued }),
+    ].map((p) => p.catch(() => null));
+    try {
+      await vi.waitFor(() => expect(f.mock.calls.length).toBeGreaterThanOrEqual(1));
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+      const payouts = f.mock.calls.filter((c) => c[0].includes("/payouts/")).length;
+      expect(payouts).toBeGreaterThanOrEqual(1);
+      expect(payouts).toBeLessThan(3);  // the slots are full: one payouts read still waits
+      const q = f.mock.calls.find((c) => c[0] === "/api/of/v2/lists");
+      expect(!!q).toBe(sent);
+      if (q) expect(new Headers(q[1].headers).get("X-Priority")).toBe("background");
+    } finally {
+      ac.abort();  // a red row must not leave its reads on the module's slots
+      await Promise.all(calls);
+    }
+  });
+});

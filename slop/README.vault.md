@@ -26,11 +26,12 @@ oracles, bypasses).
 | `lib/vault_wire.py` | OnlyFans' vault at its wire for the vault flows (week cache, Refresh): `VaultWire(fake, seed, items, sizes=)` joins `of_wire.FakeOF.extra_routes`; per Creator (made on first sight of its User-ID) `items` media in 6 folders; `/vault/lists`, `/vault/media` (list / type / sort / offset / limit), `/vault/media/{id}` (re-signed); urls signed by `seed/chat_media.sign`; `assets()` for `img_relay.arm_run`, `rotate()`, `add(uid, name, k)` (a folder + k media made on OF now); records `fake.vault_calls`. |
 | `lib/vault_collect_relay.py` | With RELAY_ENV `SLOP_VAULT_STILLS=1`: vault_stills / storyboard dirs into `$DEMO_SHOTS_TMP/vault-stills/`, the collector's periodic started (test mode skips `_start_event_pumps`). |
 | `lib/vault_collect_faults.py` | The week-cache flows' check names and faults (below). |
-| `seed/vault_week.py` | `mirror(w, wire, uids)`: vault_items + one `auto:done` run as the collector leaves them; `set_urls` (expire / re-sign). |
+| `seed/vault_week.py` | `mirror(w, wire, uids)`: vault_items + one `auto:done` run; `hot_paused(w, wire, uids, *, at, exp)`: the collector's partial hot-set mirror, with All page 0 / prefetch and every folder page 0 cached; `set_urls` expires or re-signs stored urls. |
+| `seed/vault_cache.py` | `LISTS_KEY`, `PICKER_KEY`, `media_key`, product-shaped cache rows and folder grants. |
+| `lib/vault_ui.py` | Shared picker / Vault Pro navigation, proxy binding, CDN counts, and browser error capture. |
 | `seed/profiles/flat_agency.py` | One Agency, N Creators (`w.data["flat_creators"]`), each with an OF session right away. |
 | `scenarios/2026-11-05-vault-collect.py` | The background collector under load. |
 | `scenarios/2026-11-05-vault-thumbs.py` | Durable picker thumbs. |
-| `seed/vault_live.py` | Vault Refresh's world by SQL from `lib/vault_wire.py`'s vaults: mirror Creators get `seed/vault_week.mirror` + the relay's folder list cached 2 h ago (LISTS_KEY); live Creators the picker's page 1 cached 2 h ago with thumbs expired 1 h ago (PICKER_KEY); every vault call LATENCY_S. |
 | `lib/vault_refresh_faults.py` | Vault Refresh's check names and faults (below). |
 | `scenarios/2026-11-05-vault-refresh.py` | Vault Pro's Refresh and the picker's broken-thumb reload. |
 | `lib/vault_download_faults.py` | Vault Pro download's check names and its fault (below). |
@@ -68,13 +69,15 @@ oracles, bypasses).
   `navigator.canShare` / `share` stubbed by an init script that records the shared Files (no WebKit, no real sheet).
   Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).
 
-- `2026-11-05-vault-refresh`: `OF_WIRE` (`seed/of_sessions`) + `lib/vault_wire.py`, `agency_pool` plus `seed/vault_live`, `lib/img_relay.py`
+- `2026-11-05-vault-refresh`: `OF_WIRE` (`seed/of_sessions`) + `lib/vault_wire.py`, `agency_pool` plus in-scenario `_seed_world` (`seed/vault_week.mirror` for Refresh Creators, `seed/vault_week.hot_paused` for picker Creators, and `seed/vault_cache` keys), `lib/img_relay.py`
   armed with `pictures`. UI: Vault Pro on Creator 0 (desktop) and 1 (phone): a folder + 5 media made on OF after
   load, Refresh (screenshots `vault-refresh-<dev>-trigger` / `-settled`), then Refresh with OF's vault listing failing
   (`-fail`: the "Couldn't reach OnlyFans" note); the chat Vault picker on Creator 2 / 3 with page 1 cached and its
-  thumbs 403 (its invalidate held for `picker-thumbs-<dev>-trigger`, then `-settled`). Stage `sync` (also --no-ui):
+  thumbs 403 (its invalidate held for `picker-thumbs-<dev>-trigger`, then `-settled`). While Refresh is pending,
+  repeated picker presses produce one POST; a later OF 500 yields a 502 and the failure note
+  (`picker-refresh-<dev>-trigger`, `-settled`, `-failure-settled`). Stage `sync` (also --no-ui):
   150 media made on OF per load Creator (4+), `--users` concurrent `POST /admin/vault-ai/sync`. Checks
-  (`lib/vault_refresh_faults.py`): `REFRESH_FOLDER`, `REFRESH_MEDIA`, `REFRESH_WIRE`, `REFRESH_FAIL_SHOWN`, `THUMBS_RELOAD`,
+  (`lib/vault_refresh_faults.py`): `REFRESH_FOLDER`, `REFRESH_MEDIA`, `REFRESH_WIRE`, `REFRESH_FAIL_SHOWN`, `THUMBS_RELOAD`, `PICKER_FAILURE`,
   `SYNC_LOAD`, `SYNC_COALESCED`; budget sync p95 and vs the last green run. Faults: `vault-refresh-cache-only`
   (default, client: the pre-fix Refresh), `vault-refresh-fail-silent` (client: a failed sync reads as ok),
   `vault-thumbs-no-auto-refresh` (client), `vault-sync-no-coalesce` (relay; `--no-ui`).

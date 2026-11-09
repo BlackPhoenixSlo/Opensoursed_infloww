@@ -29,12 +29,13 @@ _harness.bootstrap()
 from types import SimpleNamespace  # noqa: E402
 
 from curl_cffi import requests as curl  # noqa: E402
+from curl_cffi.const import CurlECode  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 import of_upload  # noqa: E402
 import of_write  # noqa: E402
 import server  # noqa: E402
-from of_client import OFAPIError, OFClient  # noqa: E402
+from of_client import OFAPIError, OFClient, OFDeniedError, OFDeactivatedError  # noqa: E402
 
 _BODY = '{"error":{"code":0,"message":"Please allow 10 seconds"}}'
 
@@ -78,6 +79,16 @@ def case_may_have_sent_table():
         (_of(502), True),
         (_of(None), True),
         (_of(400), False),
+        (_via_proxy(_of(400, "rejected")), False),
+        (_via_proxy(_of(502, "unknown")), True),
+        (_via_proxy(curl.exceptions.ProxyError("CONNECT refused")), False),
+        (_via_proxy(curl.exceptions.ReadTimeout("timed out")), True),
+        (_via_proxy(curl.exceptions.ConnectionError("connection dropped")), True),
+        (_via_proxy(OFDeniedError("refused locally")), False),
+        (_via_proxy(OFDeactivatedError("deactivated")), False),
+        (_via_proxy(curl.exceptions.ConnectionError("couldn't connect", code=CurlECode.COULDNT_CONNECT)), False),
+        (curl.exceptions.ConnectionError("couldn't connect", code=CurlECode.COULDNT_CONNECT), False),
+        (curl.exceptions.Timeout("curl 28 in any phase"), True),
     ]
     for e, want in rows:
         assert of_write._may_have_sent(e) is want, (repr(e), want)

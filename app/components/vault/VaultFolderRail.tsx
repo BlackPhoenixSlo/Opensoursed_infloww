@@ -27,7 +27,7 @@ import {
 import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
 import { vaultListsKey } from "@/hooks/useVaultMedia";
 import { type FanId } from "@/lib/fanId";
-import { type VaultList, type VaultListsResp } from "@/lib/relay";
+import { type VaultList, type VaultListsResp, type VaultTypeCounts } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
 
@@ -58,8 +58,9 @@ export const RAIL_ICON_BOX =
 const SORT_TITLE = "Sort — the name shown is saved in this browser, per Creator (OnlyFans' own sort is not read back)";
 
 /** A folder's counts (#30, #31): photo, video, audio and GIF, each behind its icon (20px, audio 16px), split by
- *  "·" with a 2px gap; "empty" when all are 0. Also the "Add to category" modal's rows (`MoveModalItem`). */
-export function FolderCounts({ f }: { f: VaultList }) {
+ *  "·" with a 2px gap; "empty" when all are 0. Also the "All media" row's (the whole vault's) and the "Add to
+ *  category" modal's rows (`MoveModalItem`). */
+export function FolderCounts({ f }: { f: VaultTypeCounts }) {
   const parts: [string, ReactNode, number][] = [
     ["photo", <ImageIcon key="i" size={20} aria-hidden />, f.photosCount ?? 0],
     ["video", <Video key="i" size={20} aria-hidden />, f.videosCount ?? 0],
@@ -205,10 +206,13 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
 }
 
 export default function VaultFolderRail({
-  folders, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder, downloadFolderOff = "",
+  folders, allCounts = null, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder,
+  downloadFolderOff = "",
 }: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
+  /** The whole vault's counts per type (OF's `all` on the folder list), for the "All media" row; null: none read. */
+  allCounts?: VaultTypeCounts | null;
   loading: boolean;
   /** The folder read failed: the rail shows #35's error and its Refresh (`onRetry`). */
   error: boolean;
@@ -449,10 +453,10 @@ export default function VaultFolderRail({
           >
             <div className={RAIL_ROW_INNER}>
               <div className="text-sm font-medium">All media</div>
-              {/* The bundle's "All media" counts are the vault-wide type totals (#30, #58; `classifyListsAll`,
-                  index.9f50f370.js @5087418). No read reports them, so the row says Not wired, and the media tabs
-                  stay on under All media. */}
-              <div className="text-xs text-muted" title="not wired">—</div>
+              {/* The bundle's "All media" counts are the vault-wide type totals (#30, #58; `classifyListsAll` from the
+                  list read's `all`, index.9f50f370.js @5087418). A folder-limited chatter's read has none (the relay
+                  drops it): "—". */}
+              {allCounts ? <FolderCounts f={allCounts} /> : <div className="text-xs text-muted">—</div>}
             </div>
           </button>
           {loading ? (

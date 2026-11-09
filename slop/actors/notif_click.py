@@ -478,16 +478,10 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             routed: set = set()
             closing = False
 
-            async def hold(r):
-                path = urlsplit(r.request.url).path
-                if await ui.screen_bundle_404(r):
-                    pass
-                elif path.startswith("/api/of/") or path in ui.OF_LIVE_PATHS:
-                    held.append(r)  # as actors/ui: OF is not reachable from a slop run
-                    if closing:
-                        await r.abort()
-                else:
-                    await r.continue_()
+            async def on_hold(r):
+                if closing:
+                    await r.abort()
+
 
             # As actors/ui's pages: focus on request, and the fault's page script.
             primed = "window.__slopPrimed = 1;\n" + FOCUS_JS + "\n" + (fault.browser_js if fault and fault.browser_js else "")
@@ -503,7 +497,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                     await bctx.add_init_script(primed)
                     for p in bctx.pages:
                         await prime(p)
-                    await bctx.route("**/*", hold)
+                    await ui.hold_of_reads(bctx, urlsplit(ctx.app).hostname, held, on_hold=on_hold)
                     await bctx.route("**/api/of/v2/users/notifications**", _feed(account_id, f3, "slop desktop: page row"))
 
             for c in b.contexts:

@@ -135,8 +135,16 @@ export interface TrackingLink {
   slug: string;
   target_url: string;
   click_count: number;
+  /** "Bot check before redirect": /t/<slug> serves a Cloudflare Turnstile page first. */
+  bot_check: boolean;
   path: string;
   created_at: string | null;
+}
+
+export interface TrackingLinksList {
+  links: TrackingLink[];
+  /** False when the relay has no Turnstile keys: the bot check is off (gated links 302). */
+  bot_check_available: boolean;
 }
 
 export interface TrackingAnalytics {
@@ -149,15 +157,15 @@ export interface TrackingAnalytics {
 }
 
 export function useTrackingLinks(accountId: string | null) {
-  return useQuery<TrackingLink[]>({
+  return useQuery<TrackingLinksList>({
     queryKey: [TRACK_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
     queryFn: async () => {
-      const r = await relay.get<{ links: TrackingLink[] }>(
+      const r = await relay.get<Partial<TrackingLinksList>>(
         `/admin/tracking-links?account_id=${encodeURIComponent(accountId!)}`,
       );
-      return r.links ?? [];
+      return { links: r.links ?? [], bot_check_available: !!r.bot_check_available };
     },
   });
 }
@@ -165,10 +173,18 @@ export function useTrackingLinks(accountId: string | null) {
 export function useCreateTrackingLink(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
-    TrackingLink, Error, { name: string; target_url: string; slug?: string }
+    TrackingLink, Error, { name: string; target_url: string; slug?: string; bot_check?: boolean }
   >({
     mutationFn: (body) =>
       relay.post<TrackingLink>("/admin/tracking-links", { account_id: accountId, ...body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [TRACK_KEY, accountId] }),
+  });
+}
+
+export function useUpdateTrackingLink(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<TrackingLink, Error, { id: number; bot_check: boolean }>({
+    mutationFn: ({ id, ...body }) => relay.patch<TrackingLink>(`/admin/tracking-links/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRACK_KEY, accountId] }),
   });
 }

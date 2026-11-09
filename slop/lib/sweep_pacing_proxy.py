@@ -37,6 +37,7 @@ from datetime import timedelta
 
 from slop.lib.proxy_wire import ProxyWire
 from slop.lib.sweep_pacing_faults import TX_PROXY_SPACED
+from slop.lib.sweep_pacing_ledger import tx_row
 
 PX_N, POOL, PX_ROWS = 6, 3, 450   # 5 ledger pages a walk (OF's 100 a page)
 WALK_TIMEOUT_S = 180
@@ -190,8 +191,8 @@ async def run(ctx, w, sw, px: list[str], rows: dict[str, list[dict]], *, gap: fl
                                    "min_gap_s": [j1["min_gap_s"], j2["min_gap_s"]]})
 
 
-def ledger_rows(rng, base: int, fan_ids: list[int], now, make) -> list[dict]:
+def ledger_rows(rng, base: int, fan_ids: list[int], now) -> list[dict]:
     """PX_ROWS rows newest first over the last 6 days (inside the full walk's 7)."""
     step = timedelta(days=6) / PX_ROWS
-    return [make(base + k, rng.choice(fan_ids), rng.randint(5, 50) * 100, now - timedelta(minutes=5) - step * k)
+    return [tx_row(base + k, rng.choice(fan_ids), rng.randint(5, 50) * 100, now - timedelta(minutes=5) - step * k)
             for k in range(PX_ROWS)]

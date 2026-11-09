@@ -85,6 +85,10 @@ export interface RelayContext {
    *  "background" (chat-list enrichment, periodic refresh, prefetch)
    *  may queue behind user-initiated work. Default: "user". */
   priority?: "user" | "background";
+  /** A background read that skips the browser's per-Creator queue: still `X-Priority: background` on the
+   *  relay, whose route bounds its own OnlyFans work (the Creator's lane, one coalesced read per Creator), so
+   *  a browser slot would only add a wait behind slow OnlyFans feeds holding that Creator's slots. */
+  unqueued?: boolean;
 }
 
 
@@ -294,8 +298,8 @@ export async function request<T = unknown>(
   if (answered) return parseResponse<T>(answered);
   const background = ctx?.priority === "background";
   // A background OnlyFans GET waits for the open screen's bundle, then for a slot (lib/relaySchedule.ts). Writes never
-  // queue; a user call never waits.
-  const bgRead = background && url.startsWith("/api/of/") && method === "GET";
+  // queue; a user call never waits, nor an `unqueued` one.
+  const bgRead = background && !ctx?.unqueued && url.startsWith("/api/of/") && method === "GET";
   if (bgRead) await screenSettled(init?.signal);
   const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal, read != null) : null;
   try {

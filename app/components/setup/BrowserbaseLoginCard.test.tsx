@@ -1,9 +1,9 @@
 /**
  * BrowserbaseLoginCard — the operator-facing states of the served Browserbase login.
  *
- *   - the copy says the login runs on Browserbase's network, needs no extension, and names the flow's proxy; on a phone
- *     that explanation folds behind "How it works" so the form and its button fit the first screen;
- *   - no proxy picker of its own: the start sends the flow's Proxy selection (the Inflowwww proxy, or a custom label);
+ *   - the copy says the login runs in a remote browser, needs no extension, and that the proxy is automatic (a row's
+ *     re-link: the account keeps its proxy);
+ *   - no proxy picker: a new login's start omits `proxy` (the relay's automatic pick), a re-link sends "none";
  *   - a success names the attached proxy and hands the account on at once (onLinked), like Paste cURL;
  *   - while the job runs the form is replaced by plain-language progress, the live view, a full-screen link and Stop login;
  *   - a refused start reads "Couldn't start the login: …";
@@ -27,7 +27,6 @@ vi.mock("@/lib/relay", async (orig) => {
 });
 
 import BrowserbaseLoginCard, { type RemoteLoginStatus } from "@/components/setup/BrowserbaseLoginCard";
-import type { ProxyChoice } from "@/components/setup/creatorFlow";
 import { relay, RelayError } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
@@ -56,65 +55,57 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-const CUSTOM: ProxyChoice = { type: "custom", label: "isp-1", ok: true };
-
-function start(onLinked = vi.fn(), proxy: ProxyChoice = CUSTOM) {
-  render(<BrowserbaseLoginCard onLinked={onLinked} proxy={proxy} />, { wrapper });
+function start(onLinked = vi.fn(), keepProxy = false) {
+  render(<BrowserbaseLoginCard onLinked={onLinked} keepProxy={keepProxy} />, { wrapper });
   fireEvent.change(screen.getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
   fireEvent.change(screen.getByLabelText("OnlyFans password"), { target: { value: "pw" } });
-  fireEvent.click(screen.getByRole("button", { name: "Try Browserbase login" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
   return onLinked;
 }
 
 describe("BrowserbaseLoginCard", () => {
-  it("says the login runs on Browserbase's network with no extension, and names the flow's proxy", async () => {
-    render(<BrowserbaseLoginCard proxy={{ type: "infloww" }} />, { wrapper });
-    expect(screen.getByText(/The login runs in a remote browser on Browserbase's network, so no extension is needed and it works on a\s+phone\./)).toBeInTheDocument();
-    expect(screen.getByText("Proxy for this account:").parentElement).toHaveTextContent("Proxy for this account: Inflowwww proxy");
-    // No proxy picker of its own: the flow's Proxy selection is the one.
+  it("says in one line that the proxy is automatic and where a 2FA code goes", () => {
+    render(<BrowserbaseLoginCard />, { wrapper });
+    expect(screen.getByText(/^Proxy assigned automatically\. Asked for a 2FA code\? Enter it here\.$/)).toBeInTheDocument();
+    // No proxy picker, no How it works fold.
     expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.queryByText(/No proxies yet/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "How it works" })).toBeNull();
+    expect(screen.queryByText(/Proxy for this account/)).toBeNull();
   });
 
-  it("folds the explanation behind How it works on a phone, so the form fits the first screen", () => {
-    render(<BrowserbaseLoginCard proxy={{ type: "infloww" }} />, { wrapper });
-    const how = screen.getByRole("button", { name: "How it works" });
-    const text = screen.getByText(/The login runs in a remote browser/);
-    expect(how).toHaveClass("md:hidden");
-    expect(how).toHaveAttribute("aria-expanded", "false");
-    expect(text).toHaveClass("max-md:hidden");
-    fireEvent.click(how);
-    expect(how).toHaveAttribute("aria-expanded", "true");
-    expect(text).not.toHaveClass("max-md:hidden");
+  it("a re-link says the account keeps its proxy", () => {
+    render(<BrowserbaseLoginCard keepProxy />, { wrapper });
+    expect(screen.getByText(/^Keeps its current proxy\./)).toBeInTheDocument();
   });
 
-  it("starts with the flow's Inflowwww proxy, and with a custom proxy by its label", async () => {
-    start(vi.fn(), { type: "infloww" });
+  it("a new login's start leaves the proxy to the relay; a re-link sends none", async () => {
+    start();
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", {
-      email: "a@b.c", password: "pw", backend: "browserbase", proxy: "infloww", proxy_label: undefined, nickname: undefined,
+      email: "a@b.c", password: "pw", backend: "browserbase", proxy: undefined, nickname: undefined,
     }));
     cleanup();
     relayPost.mockClear();
-    start();
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({
-      proxy: "custom", proxy_label: "isp-1",
-    })));
+    start(vi.fn(), true);
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({ proxy: "none" })));
   });
 
-  it("starts without any proxy registered: Try is enabled once email and password are in", () => {
-    relayGet.mockImplementation((path: string) =>
-      Promise.resolve(path === "/admin/proxies" ? { proxies: [], pool: { size: 0, account_ids: [] } } : current));
-    render(<BrowserbaseLoginCard proxy={{ type: "none" }} />, { wrapper });
-    const go = screen.getByRole("button", { name: "Try Browserbase login" });
+  it("Start browser login is enabled once email and password are in", () => {
+    render(<BrowserbaseLoginCard />, { wrapper });
+    const go = screen.getByRole("button", { name: "Start browser login" });
     expect(go).toBeDisabled();
     fireEvent.change(screen.getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
     fireEvent.change(screen.getByLabelText("OnlyFans password"), { target: { value: "pw" } });
     expect(go).toBeEnabled();
   });
 
+  it("an inactive card (the Extension shown) draws no Start button", () => {
+    render(<BrowserbaseLoginCard active={false} />, { wrapper });
+    expect(screen.queryByRole("button", { name: "Start browser login" })).toBeNull();
+  });
+
   it("names the Inflowwww proxy on success", async () => {
     current = job({ state: "done", account_id: "778", proxy: "infloww", proxy_label: "" });
-    start(vi.fn(), { type: "infloww" });
+    start();
     expect(await screen.findByText("Account 778 added. The Inflowwww proxy is attached for all later traffic.")).toBeInTheDocument();
   });
 
@@ -135,7 +126,6 @@ describe("BrowserbaseLoginCard", () => {
     expect(full).toHaveAttribute("href", current.live_view_url);
     expect(full).toHaveAttribute("target", "_blank");
     expect(screen.queryByLabelText("OnlyFans password")).toBeNull();
-    expect(screen.queryByText(/The login runs in a remote browser/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Stop login" }));
     expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/cancel");
   });

@@ -9,7 +9,9 @@ install time), FOLDERS custom folders; each item sits in 0-2 of them (OF's `list
 every folder holds >= 1 item. `sizes` (uid -> items) overrides `items` per Creator. `add(uid, name, k)` is a
 change made on OnlyFans now: a new folder holding k new media, created now (the newest).
 
-  GET /api2/v2/vault/lists        offset/limit (OF's default 10); the folders, hasMore.
+  GET /api2/v2/vault/lists        offset/limit (OF's default 10); the folders, hasMore, and `all`: the whole vault's
+                                  per-type counts ({photos,videos,gifs,audios}Count, on every page), as OF's (Infloww's
+                                  bundle reads `.all` into its "All media" row, index.640a8db9.js `classifyListsAll`).
   GET /api2/v2/vault/media        list ("all" or a folder id) / type (photo|video|gif, omitted = all) /
                                   sort (asc|desc by createdAt, id) / offset / limit (default 24); list, hasMore.
   GET /api2/v2/vault/media/{id}   that media with FRESH signatures (a new `gen`, exp now + SIGN_TTL_S); 404 unknown.
@@ -36,7 +38,7 @@ Records (fake.vault_calls, arrival order after the fake's latency): {t, account,
 gets them too (h._record).
 
 Bypasses (declared): media is never DRM (no poster frames); no audio; folder names are made up;
-OF's `counters` / per-folder counts are omitted (the relay never reads them on these paths).
+OF's `counters` / per-folder counts / `all.medias` covers are omitted (the relay never reads them on these paths).
 """
 from __future__ import annotations
 
@@ -94,6 +96,9 @@ class VaultWire:
         fake.extra_routes.append(self.handle)
 
     # ── the vault ──
+    def has_vault(self, uid: str) -> bool:
+        return uid in self._v
+
     def vault(self, uid: str) -> dict:
         """{"folders": [OF list item], "media": [{id, type, created, folders: [ids], sizes}] newest first}."""
         v = self._v.get(uid)
@@ -176,6 +181,14 @@ class VaultWire:
     def newest(self, uid: str, n: int) -> list[int]:
         return [m["id"] for m in self.vault(uid)["media"][:n]]
 
+    def all_counts(self, uid: str) -> dict:
+        """OF's `all` on a /vault/lists answer: the whole vault's media per type (every media once, whatever its
+        folders)."""
+        n = {t: 0 for t in ("photo", "video", "gif", "audio")}
+        for m in self.vault(uid)["media"]:
+            n[m["type"]] += 1
+        return {f"{t}sCount": c for t, c in n.items()}
+
     def listing(self, uid: str, *, list_id=None, type_=None, sort="desc") -> list[dict]:
         ms = self.vault(uid)["media"]
         if list_id not in (None, "all"):
@@ -199,7 +212,8 @@ class VaultWire:
             off, lim = int(q.get("offset") or 0), int(q.get("limit") or 10)
             fs = self.vault(uid)["folders"]
             self._rec(uid, "lists", q, 200, eg)
-            h._record(uid, route, 200, {"list": fs[off:off + lim], "hasMore": off + lim < len(fs)})
+            h._record(uid, route, 200, {"list": fs[off:off + lim], "hasMore": off + lim < len(fs),
+                                        "all": self.all_counts(uid)})
             return True
         if u.path == "/api2/v2/vault/media":
             off, lim = int(q.get("offset") or 0), int(q.get("limit") or 24)

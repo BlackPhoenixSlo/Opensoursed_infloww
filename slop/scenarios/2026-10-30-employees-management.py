@@ -17,6 +17,10 @@ its login through the same seeder), for "Existing login". By SQL: Creator 0's ca
    login, role Manager, group 2), Invite link (role VA, group 1; the link is shown). Each POST's path and body
    keys checked on the wire; GET /admin/employees, GET /admin/settings/roles and GET /admin/chatters/invites
    show the rows. Screenshots add-<mode>-trigger / add-<mode>-settled.
+2b. Add on a 390x844 phone (a touch context of its own): the "How they sign in" control's box inside the dialog (its
+   own sideways scroll allowed), no sideways page scroll, each option scrolled into the control's visible box, a tap
+   on Existing login switches the form (no Password, "Their existing username"); closed without adding.
+   Screenshots add-phone-trigger, add-phone-settled; boxes in employees-api.json `add_phone`.
 3. Edit the seeded login: name, role Manager, group 2, one PUT .../setup; the API shows them. Screenshots
    edit-trigger, edit-settled.
 4. Access limits on the edited login: Limit models on, Creator 0 and 1 ticked, 1 unticked again, Creator 0's
@@ -57,7 +61,7 @@ from urllib.parse import parse_qs, urlsplit
 from slop.actors import ui
 from slop.lib.employees_faults import (EMP_ACCESS_PARTIAL, EMP_ACCESS_REFETCH, EMP_ACCESS_RESAVED,
                                        EMP_ACCESS_SAVED, EMP_ACCESS_SAVED_STALE, EMP_ACCESS_STORED,
-                                       EMP_ADD_INVITE, EMP_ADD_LINK, EMP_ADD_LOGIN, EMP_EDIT, EMP_MODAL_REPLACE,
+                                       EMP_ADD_INVITE, EMP_ADD_PHONE, EMP_ADD_LINK, EMP_ADD_LOGIN, EMP_EDIT, EMP_MODAL_REPLACE,
                                        EMP_MODALS_ONE, EMP_NO_5XX)
 from slop.seed import chatters, ts
 
@@ -65,6 +69,7 @@ PROFILE = "agency_inbox"
 UI = True
 FAULT = "employee-access-drops-folders"
 VIEWPORT = (1440, 900)
+PHONE = (390, 844)
 WAIT_MS = 120_000  # first visit of a page compiles it in next dev
 ANIM_MS = 450  # the modal pop-in / exit ghost (globals.css .pop-modal, useExitGhost 260 ms)
 
@@ -73,6 +78,7 @@ SECTIONS = {
     "add-login": (EMP_ADD_LOGIN,),
     "add-link": (EMP_ADD_LINK,),
     "add-invite": (EMP_ADD_INVITE,),
+    "add-phone": (EMP_ADD_PHONE,),
     "edit": (EMP_EDIT,),
     "access": (EMP_ACCESS_SAVED, EMP_ACCESS_STORED, EMP_ACCESS_REFETCH, EMP_ACCESS_SAVED_STALE, EMP_ACCESS_RESAVED,
                EMP_ACCESS_PARTIAL),
@@ -325,6 +331,60 @@ async def _add_invite(ctx, page, chk, s) -> None:
         http=status, link=url, dialogs_while_link_shown=shown, api=got, want=want, invite_row=row_shown, wire=wire)
 
 
+# On a phone: the page's sideways scroll, the dialog's box and one element's box (its own sideways scroll too).
+DIALOG_FIT = """([dlg, el]) => {
+  const box = (e) => { const r = e.getBoundingClientRect();
+    return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height }; };
+  return { page: { scroll: document.scrollingElement.scrollWidth, inner: innerWidth, innerH: innerHeight },
+           dialog: box(dlg), el: { ...box(el), scroll: el.scrollWidth, client: el.clientWidth } };
+}"""
+
+
+async def _add_phone(ctx, page, chk, s) -> None:
+    """EMP_ADD_PHONE: Add on a 390x844 phone (a touch context of its own): the sign-in control fits the dialog, each
+    option scrolls into its visible box, Existing login switches the form. Closed without adding."""
+    phone = await ui._owner_page(page.context.browser, ctx, PHONE, [], [], through=("/api/of/v2/vault/lists",),
+                                 touch=True)
+    try:
+        phone.context.set_default_navigation_timeout(WAIT_MS)
+        await phone.goto(f"{ctx.app}/employees", wait_until="domcontentloaded")
+        add = phone.get_by_role("button", name="+ Add employee", exact=True)
+        await _row(phone, s["emp"]["username"]).wait_for(timeout=WAIT_MS)
+        await ui.shot(ctx, phone, "add-phone-trigger")
+        await add.tap(timeout=10_000)
+        dlg = phone.get_by_role("dialog", name="Add employee")
+        await dlg.wait_for(timeout=30_000)
+        await _settle_dialogs(phone, ["Add employee"])
+        seg = dlg.get_by_role("radiogroup", name="How they sign in")
+        dlg_h = await dlg.element_handle()
+        fit = lambda el: phone.evaluate(DIALOG_FIT, [dlg_h, el])  # noqa: E731
+        control = await fit(await seg.element_handle())
+        options = {}
+        for name in ("Create login", "Invite link", "Existing login"):
+            o = seg.get_by_role("radio", name=name, exact=True)
+            await o.scroll_into_view_if_needed(timeout=10_000)
+            ob, cb = (await fit(await o.element_handle()))["el"], (await fit(await seg.element_handle()))["el"]
+            options[name] = {**ob, "in_control": ob["l"] >= cb["l"] - 0.5 and ob["r"] <= cb["r"] + 0.5}
+        await seg.get_by_role("radio", name="Existing login", exact=True).tap(timeout=10_000)
+        checked = await seg.get_by_role("radio", name="Existing login", exact=True).get_attribute("aria-checked")
+        passwords = await dlg.locator("#emp-password").count()
+        placeholder = await dlg.locator("#emp-username").get_attribute("placeholder")
+        await phone.wait_for_timeout(ANIM_MS)
+        await ui.shot(ctx, phone, "add-phone-settled")
+        await dlg.get_by_role("button", name="Close", exact=True).tap(timeout=10_000)
+        closed = await _settle_dialogs(phone, [])
+    finally:
+        await phone.context.close()
+    p, d, c = control["page"], control["dialog"], control["el"]
+    out = {"page": p, "dialog": d, "control": c, "options": options, "existing_checked": checked,
+           "password_fields": passwords, "username_placeholder": placeholder, "dialogs_after_close": closed}
+    _api_log(ctx, "add_phone", out)
+    chk(EMP_ADD_PHONE, p["scroll"] <= p["inner"] <= PHONE[0] and d["l"] >= 0 and d["r"] <= p["inner"]
+        and c["w"] > 0 and c["l"] >= d["l"] - 0.5 and c["r"] <= d["r"] + 0.5
+        and all(o["in_control"] for o in options.values()) and checked == "true" and passwords == 0
+        and placeholder == "Their existing username" and closed == [], **out)
+
+
 # ── 3. edit ──────────────────────────────────────────────────────────────────
 
 async def _edit(ctx, page, chk, s) -> None:
@@ -533,7 +593,8 @@ async def run(ctx) -> None:
         await page.goto(f"{ctx.app}/employees", wait_until="domcontentloaded")
         await _row(page, s["emp"]["username"]).wait_for(timeout=WAIT_MS)
         for name, fn in (("modals", _modals), ("add-login", _add_login), ("add-link", _add_link),
-                         ("add-invite", _add_invite), ("edit", _edit), ("access", _access)):
+                         ("add-invite", _add_invite), ("add-phone", _add_phone), ("edit", _edit),
+                         ("access", _access)):
             await _section(ctx, page, name, lambda chk, fn=fn: fn(ctx, page, chk, s))
         bad = [(st, u) for st, u in page.slop["statuses"] if st >= 500]
         ctx.check(EMP_NO_5XX, not bad, responses=len(page.slop["statuses"]), five_xx=bad[:20])

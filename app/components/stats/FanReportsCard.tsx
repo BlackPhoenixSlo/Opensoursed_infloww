@@ -243,7 +243,7 @@ export default function FanReportsCard({ from, to, fromDay, toDay, accountId, ti
             extra={
               <div className="flex items-center gap-3">
                 <IfSelect<FanReportSort> aria-label="Rank by" className="w-[200px]" value={sort} onChange={setSort} options={SORTS} />
-                <CsvExportButton path="/admin/stats/fan-report" query={csv.toString()} look="infloww"
+                <CsvExportButton path="/admin/stats/fan-report" query={csv.toString()}
                   label="Download report" title="Download the Top fans ranking as CSV (the whole ranking, up to 50,000 rows)" />
               </div>
             }

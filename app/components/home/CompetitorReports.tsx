@@ -7,7 +7,7 @@
  * It opens on the Layout capture's frame (docs/infloww-layouts/analytics-creator-reports.md, ticket 20): the page
  * header (title, report time zone, Refresh), the "Overview" / "Creator performance" tabs, then the filter bar
  * (date range, Creator tag, Creator, Show net earnings, Reset). Item IDs are cited as `#<n>`.
- *   • the window is the page's own range (`useCreatorRange`, ticket 60), the last 7 days through today to start with,
+ *   • the window is the page's own range (`useCreatorRange`, ticket 60), the last 30 days through today to start with,
  *     with the bundle's presets and bounds (#21 to #24), in the Agency's report time zone; each "Last N days" is the
  *     other reports' `presetRange` window (N calendar days through today, so today's pending sales show); nothing is read until
  *     the Applied settings answer, so no request goes out with the browser's days. The other reports' shared
@@ -47,7 +47,7 @@
 import Link from "next/link";
 import { useId, useMemo, useState } from "react";
 import { keepPreviousData, useIsFetching, useQueries, useQueryClient } from "@tanstack/react-query";
-import { Info as InfoCircle, RefreshCw, Tag } from "lucide-react";
+import { Info as InfoCircle, RefreshCw } from "lucide-react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { type Gran, granShown } from "@/components/stats/chart";
@@ -66,10 +66,12 @@ import { type Section, exportSections } from "@/lib/reportExport";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 
+import styles from "./CreatorReports.module.css";
+
 import CreatorOverview from "./CreatorOverview";
 import CreatorPerformance from "./CreatorPerformance";
 import { netMissingNote } from "./netMissingNote";
-import { DateRangePill, FILTER_FIELD, FiltersPill, ShownBySelect } from "./ReportsControls";
+import { DateRangePill, ReportFilters, ShownBySelect } from "./ReportsControls";
 import {
   type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, CHANNELS, DEFAULT_COLS, DEFAULT_RANGE,
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
@@ -120,7 +122,7 @@ function writeTabParam(tab: Tab) {
 
 /* ── main component ── */
 
-/** Creator reports' own range, in the report time zone: the last 7 days through today to start with (#21), kept here
+/** Creator reports' own range, in the report time zone: the last 30 days through today to start with (#21), kept here
  *  so the other reports' shared `useReportRange` keeps its 30-day default. A preset's days are derived each render,
  *  so they follow the report time zone; `ready` is false until the Applied settings answer. */
 function useCreatorRange() {
@@ -197,7 +199,6 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   // #33: "Show net earnings", on at load as the bundle's is; Reset leaves it alone, as the bundle's does (#37).
   const [net, setNet] = useState(true);
   const money = net ? netOf : grossOf;
-  const netLabelId = useId();
   const sectionId = useId();
   const ids = {
     summary: `${sectionId}-summary`, trends: `${sectionId}-trends`, channel: `${sectionId}-channel`,
@@ -436,7 +437,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   return (
     <div
       // overflow-clip, not overflow-hidden: a hidden overflow would trap the statistics header's sticky top (#108).
-      className={cn(frame === "card" && "rounded-md overflow-clip border")}
+      className={cn(styles.report, frame === "card" && "rounded-md overflow-clip border")}
       style={{
         ...(frame === "card" ? { background: "var(--color-panel)", borderColor: "var(--color-border)" } : {}),
         color: "var(--color-fg)",
@@ -509,7 +510,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
         </section>
       )}
 
-      {/* #14 to #17: two toggle buttons side by side, Overview first, 16px sides and 16px below. */}
+      <div className={styles.toolbar}>
       <div role="tablist" aria-label="Creator reports" className="flex px-4 mb-4">
         {TABS.map((t) => {
           const on = tab === t.key;
@@ -533,7 +534,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
       </div>
 
       {/* #18, #19: the inline filter bar, 16px between controls, 16px left and 8px bottom padding. */}
-      <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-x-4 gap-y-2 pl-4 pr-4 pb-2 text-[14px]">
+      <div role="group" aria-label="Report controls" className={styles.toolbarControls}>
         {/* #21: the date range. */}
         <DateRangePill
           from={from}
@@ -543,54 +544,21 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           onChange={(f, t) => handleRange(f, t, "custom")}
           onPreset={(key, [f, t]) => handleRange(f, t, key)}
         />
-        {tab === "overview" ? (
-          <>
-            {/* #25: Inflowwww has no Creator tags. */}
-            <button
-              type="button"
-              disabled
-              title="not wired"
-              className={cn("inline-flex items-center rounded-md min-w-[140px] disabled:opacity-50 disabled:cursor-not-allowed", FILTER_FIELD)}
-              style={{ border: "1px solid var(--color-border)", background: "var(--color-bg-elev-1)", color: "var(--color-fg-dim)" }}
-            >
-              <Tag size={14} aria-hidden />
-              Creator tag
-            </button>
-            {/* #26: the Agency's Creators. */}
-            <FiltersPill
-              models={allModels.map((m) => ({ id: m.account_id, name: creatorName(m) }))}
-              selected={selectedIds}
-              onChange={setSelectedIds}
-            />
-          </>
-        ) : (
-          /* #27 to #29: on Creator performance the "Shown by" select takes their place. */
-          <ShownBySelect value={perfPeriod} days={dayDates.length} onPick={setPerfGran} />
-        )}
-        {/* #30 to #39: the label, the switch and Reset in one centred row. */}
-        <span className="flex items-center">
-          <span id={netLabelId} className="mr-2 text-base" style={{ color: "var(--color-fg)" }}>Show net earnings</span>
-          {/* #33, #34, #36: OnlyFans' own net on every figure that has a net read; the knob 6px in off, 22px on. */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={net}
-            aria-labelledby={netLabelId}
-            onClick={() => setNet((v) => !v)}
-            className="relative w-11 h-7 rounded-full"
-            style={{ background: net ? "var(--color-accent)" : "var(--color-bg-elev-2)" }}
-          >
-            <span className={cn("absolute top-1.5 w-4 h-4 rounded-full bg-white", net ? "left-[22px]" : "left-1.5")} aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={reset}
-            className="ml-6 text-sm font-medium"
-            style={{ color: "var(--color-accent)" }}
-          >
-            Reset
-          </button>
-        </span>
+        <ShownBySelect
+          value={tab === "overview" ? trendPeriod : perfPeriod}
+          days={dayDates.length}
+          onPick={(g) => { setTrendGran(g); setChanGran(g); setPerfGran(g); }}
+        />
+        <select aria-label="Earnings basis" value={net ? "net" : "gross"}
+          onChange={(e) => setNet(e.target.value === "net")}>
+          <option value="net">Net earnings</option>
+          <option value="gross">Gross earnings</option>
+        </select>
+        <ReportFilters
+          models={allModels.map((m) => ({ id: m.account_id, name: creatorName(m) }))}
+          selected={selectedIds} onChange={setSelectedIds} onReset={reset}
+        />
+      </div>
       </div>
       {/* Ours, as the Dashboard's Net switch has it: the sales net leaves out, so gross is never read as net. */}
       {netMissing > 0 && (

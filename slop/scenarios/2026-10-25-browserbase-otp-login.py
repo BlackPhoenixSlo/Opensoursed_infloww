@@ -14,7 +14,12 @@ prompt, chats page with a signed request and OF's signing module, which the
 login extension's interceptor captures). Every OnlyFans page carries a hidden
 reCAPTCHA frame; the 2FA page a decoy form whose button is the page's first
 submit button; a sent code takes OnlyFans VERIFY_MS ("Verifying…", no field)
-to answer. `POST /__slop/browserbase` points the relay at it. Everything
+to answer. `POST /__slop/browserbase` points the relay at it. Once linked,
+the relay's REAL OFClient reads the account's /users/me from lib/of_wire.py on
+loopback (`OF_WIRE`: the relay's OF_API_ORIGIN), whose profile for the card's
+Creator (`profiles`) is a realistic one: display name, @username and a photo.
+Bypass, declared: the photo is an SVG data URL (as 2026-11-04-creator-avatars'),
+so the browser shows it without the relay's /img fetching off-host. Everything
 between is the relay's own code.
 
 The logins:
@@ -38,7 +43,17 @@ decoy never; one code at a time (409); a code for a finished job is 409, for
 an expired one 404; a malformed code or body is 400, never echoed; no 2FA
 code (wrong or right, any login) or password in any status, error,
 relay.log or next.log; every Browserbase session is released.
-Screenshots: card-otp-prompt, card-otp-pasted, card-otp-rejected, card-otp-linked.
+The card login enters through the Add creator modal as the owner does: details and platform, then two
+choices, Browser login (first, checked) and Extension; the Extension panel is
+looked at, then Browser login starts with no proxy in its body (the relay's
+automatic pick), and Done on the linked screen saves and closes. The linked
+screen prefills from the account's own OF profile: photo on the chip, the
+Nickname field holding the OF display name; after Done the Creators row shows
+that name (not "Account <id>"), the photo and the OF user id in Creator ID, and
+the stored nickname is the OF name (accounts row, GET /admin/accounts).
+Screenshots: trigger-add-creator, add-creator-two-choices, add-creator-extension,
+add-creator-browser, card-otp-prompt, card-otp-pasted, card-otp-rejected,
+card-otp-linked, add-creator-done.
 Break-it-once: FAULT otp-code-never-consumed (the job never reads the code);
 --fault=challenge-counts-hidden-frames (the pre-fix challenge check: any
 captcha frame counts, on screen or not).
@@ -48,6 +63,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import urllib.parse
 
 from playwright.async_api import async_playwright
 
@@ -58,6 +74,7 @@ from slop.lib.client import Http, Recorder
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "otp-code-never-consumed"
+OF_WIRE = True
 VIEWPORT = (1440, 1000)
 PASSWORD = "slop-of-Password-77"
 OTP, WRONG = "246810", "135791"
@@ -65,6 +82,7 @@ AUTO_WRONG = "975310"
 PASTED, PASTED_CODE = "1234-5678", "12345678"  # the card's wrong code, pasted with its dash
 API_EMAIL, API_UID = "otp-api@slop.test", "990000101"
 UI_EMAIL, UI_UID = "otp-card@slop.test", "990000102"
+UI_NAME, UI_HANDLE = "Mia Rose", "miarose"  # the card Creator's OF profile (lib/of_wire.py `profiles`)
 AUTO_EMAIL, AUTO_UID = "otp-auto@slop.test", "990000103"  # its 2FA field submits itself
 LATE_EMAIL, LATE_UID = "otp-late@slop.test", "990000104"  # its job runs out of time on the prompt
 OTP_VERIFY_S = 15  # remote_login.OTP_VERIFY_S
@@ -84,11 +102,44 @@ TERMINAL = ("done", "error", "cancelled")
 CHECK_NO_CHALLENGE = ("API: a hidden captcha frame on OnlyFans' pages is never reported as a verification check "
                       "(no status says challenge)")
 CARD_CHECKS = (
+    "card: after creator details and platform, Browser login (checked, Recommended) first and Extension second; "
+    "no proxy step",
+    "card: the Extension choice swaps in its panel (Copied cURL, Link account) for Browser login's",
+    "card: Start browser login posts /admin/login/remote/start with no proxy (the relay's automatic pick)",
     "card: OnlyFans' 2FA prompt shows the code field (focused) with the live view still on screen",
     'card: a pasted "1234-5678" is the 8-digit code 12345678 (field, Submit on, what OnlyFans got)',
     "card: a wrong code shows the rejection and the field takes another code",
     "card: the right code links the account (job done, user_accounts row)",
+    "card: Done on the linked screen (account + account details) saves and closes the modal",
 )
+PREFILL_CHECKS = (
+    "card: the linked screen keeps the entered name, with the OF profile chip photo and @username",
+    "card: after Done the Creators row shows the OF name (not \"Account <id>\"), the photo, and Creator ID = the OF "
+    "user id",
+    "card: the stored nickname is the OF display name (accounts row and GET /admin/accounts)",
+)
+
+
+def _photo(uid: str) -> dict:
+    """OF's avatar fields, as an SVG data URL (declared bypass: no off-host /img fetch)."""
+    svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='144' height='144'><rect width='144' height='144' "
+           "fill='#c2410c'/><circle cx='72' cy='58' r='26' fill='#fed7aa'/><rect x='30' y='94' width='84' "
+           "height='50' rx='25' fill='#fed7aa'/></svg>")
+    url = "data:image/svg+xml," + urllib.parse.quote(svg) + f"#{uid}"
+    return {"avatar": url, "avatarThumbs": {"c50": url, "c144": url}}
+
+
+# The Creators table row of `uid`: the Creator cell (its div titled "<extras>\n<id>\n…"), and the Creator ID cell.
+_ROW = """(uid) => {
+  const heads = [...document.querySelectorAll('thead th')].map((th) => th.innerText.trim());
+  const row = [...document.querySelectorAll('tbody tr')]
+    .find((tr) => [...tr.querySelectorAll('div[title]')].some((d) => d.title.split('\\n')[1] === uid));
+  if (!row) return null;
+  const cell = [...row.querySelectorAll('div[title]')].find((d) => d.title.split('\\n')[1] === uid);
+  const td = row.children[heads.indexOf('Creator ID')];
+  return {name: cell.innerText.trim(), img: (cell.querySelector('img') || {}).src || null,
+          creator_id: td ? td.innerText.trim() : null};
+}"""
 
 
 async def _until(owner: Http, jid: str, cond, timeout: float, seen: list) -> dict:
@@ -238,23 +289,77 @@ async def _late_login(ctx, owner: Http, hooks: Http, world: World, seen: list) -
 
 
 async def _card_login(ctx, world: World, owner: Http, seen: list) -> None:
-    async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
+    # The linked account's /users/me goes through to the relay (its REAL OFClient, lib/of_wire.py behind it).
+    async with ui.owner_browser(ctx, viewport=VIEWPORT, through=("/api/of/v2/users/me",)) as page:
         await page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=ctx.app)
         await page.goto(f"{ctx.app}/creators", wait_until="domcontentloaded")
-        await page.get_by_role("button", name="Add creator").first.click(timeout=120_000)
+        add = page.get_by_role("button", name="Add creator").first
+        await add.wait_for(timeout=120_000)
+        await ui.shot(ctx, page, "trigger-add-creator")
+        await add.click()
         dlg = page.get_by_role("dialog", name="Add creator")
-        await dlg.get_by_label("Creator name").fill("Slop Card")
-        await dlg.get_by_label("Gender").select_option(index=1)
-        await dlg.get_by_role("button", name="Next: Link creator account").click()
-        await page.get_by_role("button", name="Next", exact=True).click(timeout=30_000)  # OnlyFans
-        await page.get_by_role("button", name="Connect OnlyFans").click(timeout=30_000)
-        await page.get_by_label("OnlyFans email").fill(UI_EMAIL, timeout=60_000)
-        await page.get_by_label("OnlyFans password").fill(PASSWORD)
+        next_step = dlg.get_by_role("button", name="Next", exact=True)
+        await dlg.get_by_label("Creator name", exact=True).wait_for(timeout=30_000)
+        ctx.check("wizard: blank creator details cannot advance", await next_step.is_disabled())
+        await dlg.get_by_label("Creator name", exact=True).fill(UI_NAME)
+        ctx.check("wizard: gender is required", await next_step.is_disabled())
+        await dlg.get_by_label("Gender", exact=True).select_option("Female")
+        await ui.shot(ctx, page, "creator-details-settled")
+        await next_step.click()
+        platforms = dlg.get_by_role("radiogroup", name="Platform", exact=True)
+        await platforms.wait_for()
+        ctx.check("wizard: platform defaults to OnlyFans", await platforms.get_by_role("radio", name="OnlyFans").is_checked())
+        await dlg.get_by_role("button", name="Back", exact=True).click()
+        ctx.check("wizard: back preserves creator details",
+                  await dlg.get_by_label("Creator name", exact=True).input_value() == UI_NAME
+                  and await dlg.get_by_label("Gender", exact=True).input_value() == "Female")
+        await next_step.click()
+        await next_step.click()
+        group = dlg.get_by_role("radiogroup", name="Login method")
+        await group.wait_for(timeout=30_000)
+        await page.wait_for_timeout(500)  # the modal's pop-in
+        radios = group.get_by_role("radio")
+        names = [(await r.evaluate("e => e.closest('label').innerText")).split("\n")[0].strip()
+                 for r in await radios.all()]
+        browser_on = await radios.nth(0).is_checked()
+        bb = dlg.get_by_role("region", name="Browserbase login")
+        start = dlg.get_by_role("button", name="Start browser login")
+        extras = {lb: await dlg.get_by_text(lb).count() for lb in ("Creator name", "Proxy selection", "Still unable")}
+        await ui.shot(ctx, page, "add-creator-two-choices")
+        ctx.check(CARD_CHECKS[0], names == ["Browser login", "Extension"] and browser_on
+                  and await dlg.get_by_text("Recommended").is_visible() and await bb.is_visible()
+                  and await start.is_visible() and await dlg.get_by_role("combobox").count() == 0
+                  and not any(extras.values()),
+                  choices=names, browser_checked=browser_on, old_steps=extras)
+
+        await group.locator("label").filter(has=page.locator("input[value=extension]")).click()
+        ext = dlg.get_by_role("region", name="Extension")
+        ext_ok = False
+        try:
+            await ext.wait_for(timeout=10_000)
+            ext_ok = (await ext.get_by_label("Copied cURL").is_visible() and not await bb.is_visible()
+                      and await dlg.get_by_role("button", name="Link account").is_visible()
+                      and await start.count() == 0)
+        except Exception:  # noqa: BLE001
+            pass
+        await ui.shot(ctx, page, "add-creator-extension")
+        ctx.check(CARD_CHECKS[1], ext_ok)
+
+        await group.locator("label").filter(has=page.locator("input[value=browser]")).click()
+        await bb.wait_for(timeout=10_000)
+        await bb.get_by_label("OnlyFans email").fill(UI_EMAIL, timeout=60_000)
+        await bb.get_by_label("OnlyFans password").fill(PASSWORD)
+        await ui.shot(ctx, page, "add-creator-browser")
         async with page.expect_response(lambda r: r.url.endswith("/admin/login/remote/start")) as started:
-            await page.get_by_role("button", name="Try Browserbase login").click()
-        first = await (await started.value).json()
+            await start.click()
+        resp = await started.value
+        body = resp.request.post_data_json or {}
+        first = await resp.json()
         seen.append(first)
         jid = first.get("id")
+        ctx.check(CARD_CHECKS[2], resp.status == 200 and bool(jid) and "proxy" not in body
+                  and body.get("backend") == "browserbase" and body.get("email") == UI_EMAIL,
+                  http_status=resp.status, body_keys=sorted(body), job_proxy=first.get("proxy"))
 
         field = page.get_by_label("2FA code")
         prompt = True
@@ -268,7 +373,7 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> None:
         await page.get_by_title("Browserbase live view").first.scroll_into_view_if_needed() if live else None
         await field.scroll_into_view_if_needed() if prompt else None
         await ui.shot(ctx, page, "card-otp-prompt")
-        ctx.check(CARD_CHECKS[0], prompt and live == 1 and focused == "bb-otp",
+        ctx.check(CARD_CHECKS[3], prompt and live == 1 and focused == "bb-otp",
                   field=prompt, live_view_iframes=live, focused=focused)
         if not prompt:
             return
@@ -290,10 +395,10 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> None:
         except Exception:  # noqa: BLE001
             shown = False
         reached = world.otp_tries[tries_before:]
-        ctx.check(CARD_CHECKS[1], pasted == PASTED_CODE and submit_on and reached == [PASTED_CODE],
+        ctx.check(CARD_CHECKS[4], pasted == PASTED_CODE and submit_on and reached == [PASTED_CODE],
                   field_value=pasted, submit_enabled=submit_on, of_got=reached)
         await ui.shot(ctx, page, "card-otp-rejected")
-        ctx.check(CARD_CHECKS[2], shown and await field.is_editable(), rejected_shown=shown)
+        ctx.check(CARD_CHECKS[5], shown and await field.is_editable(), rejected_shown=shown)
 
         try:  # locked while a code is still being checked (not for long, when the first was rejected)
             await field.fill(OTP, timeout=10_000)
@@ -306,13 +411,58 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> None:
             done = True
         except Exception:  # noqa: BLE001
             done = False
+        nick, chip_img, handle = "", 0, 0
+        if done:
+            nick_field = dlg.get_by_label("Nickname")
+            try:
+                await page.wait_for_function(
+                    "(v) => document.querySelector('[role=dialog] img') && [...document.querySelectorAll("
+                    "'[role=dialog] input')].some((i) => i.value === v)", arg=UI_NAME, timeout=30_000)
+            except Exception:  # noqa: BLE001
+                pass
+            nick = await nick_field.input_value() if await nick_field.count() else ""
+            chip_img = await dlg.locator("img").count()
+            handle = await dlg.get_by_text(f"@{UI_HANDLE}").count()
         await page.wait_for_timeout(1000)
         await ui.shot(ctx, page, "card-otp-linked")
+        ctx.check(PREFILL_CHECKS[0], nick == UI_NAME and chip_img >= 1 and handle >= 1,
+                  nickname_field=nick, chip_imgs=chip_img, handle_shown=handle)
         card_text = await page.locator("body").inner_text()
+        closed, row = False, None
+        if done:
+            try:
+                await dlg.get_by_text("Account details").wait_for(timeout=10_000)
+                save = dlg.get_by_role("button", name="Done")
+                await save.click(timeout=30_000)
+                await dlg.wait_for(state="detached", timeout=30_000)
+                closed = True
+            except Exception:  # noqa: BLE001
+                pass
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                row = await page.evaluate(_ROW, UI_UID)
+                if row and row["name"] == UI_NAME and row["img"]:
+                    break
+                await page.wait_for_timeout(500)
+            await page.wait_for_timeout(1000)
+            await ui.shot(ctx, page, "add-creator-done")
+        ctx.check(PREFILL_CHECKS[1], bool(row) and row["name"] == UI_NAME and (row["img"] or "").endswith(f"#{UI_UID}")
+                  and row["creator_id"] == UI_UID, row=row and {**row, "img": bool(row["img"])})
     st = await _finish(owner, jid, seen) if jid else {}
     _acc, link = _linked(ctx, UI_UID)
-    ctx.check(CARD_CHECKS[3], done and st.get("state") == "done" and st.get("account_id") == UI_UID and len(link) == 1,
+    ctx.check(CARD_CHECKS[6], done and st.get("state") == "done" and st.get("account_id") == UI_UID and len(link) == 1,
               shown_on_card=done, state=st.get("state"), account_id=st.get("account_id"), user_accounts=link)
+    listed = [a.get("id") for a in (await owner.get("/admin/accounts")).json().get("accounts", [])]
+    ctx.check(CARD_CHECKS[7], closed and UI_UID in listed, modal_closed=closed, listed=UI_UID in listed)
+    acc, _ = _linked(ctx, UI_UID)
+    api_nick = next((a.get("nickname") for a in (await owner.get("/admin/accounts")).json().get("accounts", [])
+                     if a.get("id") == UI_UID), None)
+    ctx.check(PREFILL_CHECKS[2], bool(acc) and acc[1] == UI_NAME and api_nick == UI_NAME,
+              accounts_row=acc, api_nickname=api_nick)
+    settings = (await owner.get("/admin/settings/account")).json()
+    creator = settings.get("config", {}).get("creators", {}).get("profiles", {}).get(UI_UID, {})
+    ctx.check("wizard: creator details persisted in account settings",
+              creator.get("name") == UI_NAME and creator.get("gender") == "Female", creator=creator)
     (ctx.out / "card-text.txt").write_text(card_text)
 
 
@@ -323,6 +473,7 @@ async def run(ctx) -> None:
     hooks = Http(ctx.relay, Recorder())  # the hook calls are not actor calls
     seen: list[dict] = []
     accounts = {API_EMAIL: API_UID, UI_EMAIL: UI_UID, AUTO_EMAIL: AUTO_UID, LATE_EMAIL: LATE_UID}
+    ctx.of_wire.profiles[UI_UID] = {"name": UI_NAME, "username": UI_HANDLE, **_photo(UI_UID)}
     with World(ctx.stack.tmp, accounts=accounts, otp=OTP, password=PASSWORD, chromium=chromium,
                autosubmit=frozenset({AUTO_EMAIL})) as world:
         r = await hooks.post("/__slop/browserbase", json={"api": world.api, "chunk_url_tpl": world.chunk_url_tpl})
@@ -336,7 +487,7 @@ async def run(ctx) -> None:
                   statuses=len(seen), challenge_statuses=len([s for s in seen if s.get("state") == "challenge"]),
                   captcha_frame_loads=world.captcha_frames)
         if ctx.app is None:
-            for c in CARD_CHECKS:
+            for c in (*CARD_CHECKS, *PREFILL_CHECKS):
                 ctx.skip(c, "--no-ui")
         else:
             await _card_login(ctx, world, ctx.owner, seen)

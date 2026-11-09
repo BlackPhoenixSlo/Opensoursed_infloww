@@ -15,12 +15,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { RotateCw } from "lucide-react";
 
-import { EmptyState, IF_TABLE, IfButton, IfCard, IfHelp, IfSwitch } from "@/components/ui/infloww";
-import { IF_FIELD } from "@/components/ui/ifSelect";
+import { EmptyState, IF_TABLE, IfButton, IfCard, IfHelp, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useIfConfirm } from "@/hooks/useIfConfirm";
 import {
   useCancelMassMessage,
   useMassMessages,
@@ -32,6 +31,7 @@ import { useAppliedSettings } from "@/lib/appliedSettings";
 import { cn } from "@/lib/utils";
 
 import { AutoUnsendPanel } from "./AutoUnsendPanel";
+import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
 import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
 
@@ -56,6 +56,9 @@ export default function MassMessagesTab() {
   // restrict to the accounts in the set. Bulk actions inherit this scope.
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [bulkRunning, setBulkRunning] = useState<string | null>(null);
+  /** The last bulk unsend's problem (nothing matched, or some failed); cleared by the next one. */
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const { ask, modal: confirmModal } = useIfConfirm();
 
   const { rows, isLoading, isFetching, error } = useMassMessages(accountIds, { daysBack });
   const cancelM = useCancelMassMessage();
@@ -109,13 +112,16 @@ export default function MassMessagesTab() {
   /** Run cancel mutations across a target subset of rows, in small
    *  parallel batches, with one combined confirmation up front. */
   async function bulkCancel(actionKey: BulkAction, label: string) {
+    setBulkNote(null);
     const targets = bulkTargets(rows, selectedModels, actionKey, Date.now());
     if (targets.length === 0) {
-      window.alert("Nothing to unsend matches that filter.");
+      setBulkNote("Nothing to unsend matches that filter.");
       return;
     }
-    const ok = window.confirm(
-      `${label}\n\nUnsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"} from EVERY recipient? This can't be undone.`,
+    const ok = await ask(
+      label,
+      `Unsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"} from EVERY recipient? This can't be undone.`,
+      "Unsend",
     );
     if (!ok) return;
     setBulkRunning(actionKey);
@@ -134,7 +140,7 @@ export default function MassMessagesTab() {
       setBulkRunning(null);
     }
     if (failed > 0) {
-      window.alert(
+      setBulkNote(
         `${failed} of ${targets.length} unsend${targets.length === 1 ? "" : "s"} failed. Those broadcasts may still be live — refresh and retry.`,
       );
     }
@@ -176,20 +182,16 @@ export default function MassMessagesTab() {
            *  OF list has the filter bar above it. */}
           <ExtraTag />
           <IfSwitch label="Hide unsent" checked={hideUnsent} onChange={setHideUnsent} />
-          <select
+          <IfNativeSelect
             aria-label="Sent in"
-            className={cn(IF_FIELD, "h-8 px-[11px]")}
             value={daysBack}
             onChange={(e) => setDaysBack(Number(e.target.value))}
           >
             {RANGE_OPTIONS.map((o) => (
               <option key={o.days} value={o.days}>{o.label}</option>
             ))}
-          </select>
-          <IfButton onClick={refresh} disabled={refreshing}>
-            <RotateCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} aria-hidden />
-            {refreshing ? "Refreshing…" : "Refresh"}
-          </IfButton>
+          </IfNativeSelect>
+          <RefreshButton onClick={refresh} refreshing={refreshing} />
         </div>
       )}>
         <IfHelp className="mb-4">
@@ -262,6 +264,7 @@ export default function MassMessagesTab() {
           ))}
         </div>
 
+        {bulkNote && <div role="alert" className="text-[14px] text-err mb-3">{bulkNote}</div>}
         {error && (
           <div className="text-[14px] text-err mb-3">
             Failed to load: {error.message}
@@ -336,14 +339,15 @@ export default function MassMessagesTab() {
                     !!bulkRunning ||
                     (cancelM.isPending && cancelM.variables?.id === m.id)
                   }
-                  onCancel={() => {
-                    if (!m.__accountId) return;
+                  onCancel={async () => {
+                    const accountId = m.__accountId;
+                    if (!accountId) return;
                     const recip = m.sentCount ?? 0;
                     const msg = recip
                       ? `Unsend this message from ALL ${recip} recipient${recip === 1 ? "" : "s"}? This can't be undone.`
                       : "Unsend this mass message from every recipient? This can't be undone.";
-                    if (!confirm(msg)) return;
-                    cancelM.mutate({ id: m.id, accountId: m.__accountId });
+                    if (!(await ask("Unsend mass message", msg, "Unsend"))) return;
+                    cancelM.mutate({ id: m.id, accountId });
                   }}
                 />
               ))}
@@ -351,6 +355,7 @@ export default function MassMessagesTab() {
           </table>
         </div>
       </IfCard>
+      {confirmModal}
     </div>
   );
 }

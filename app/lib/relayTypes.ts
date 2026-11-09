@@ -660,9 +660,14 @@ export interface VaultList {
   medias?: { id?: number | string; type?: string; url?: string | null }[] | null;
 }
 
+/** A folder's (or the whole vault's) media per type. */
+export type VaultTypeCounts = Pick<VaultList, "photosCount" | "videosCount" | "gifsCount" | "audiosCount">;
+
 export interface VaultListsResp {
   list: VaultList[];
   hasMore?: boolean;
+  /** OF's whole-vault counts per type (the "All media" row). Absent for a folder-limited chatter (the relay drops it). */
+  all?: VaultTypeCounts;
 }
 
 /** Response from POST /api/of/v2/upload. `send_with` is the only field

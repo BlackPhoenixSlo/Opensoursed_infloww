@@ -292,7 +292,7 @@ async def _audience_universe_ids(account_id: str) -> set[int]:
     return {int(r) for r in rows if r is not None}
 
 
-# (member ids, hit_backstop) for an OF custom list. Blocking. The old name stays
+# (member ids, incomplete) for an OF custom list. Blocking. The old name stays
 # importable (automations/smart_list_sync, autoreply); calls here go through
 # `of_paging.` so a patch of `of_paging.page_all_checked` reaches them.
 _crawl_list_ids_blocking = of_paging.list_member_ids
@@ -312,7 +312,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     current, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
-                           f"list {of_list_id} member crawl hit the 20k backstop")
+                           f"list {of_list_id} member crawl incomplete (backstop or repeated page)")
     unaddable: set[int] = set()
     to_add = sorted(target - current)
     for uid in to_add:                       # adds BEFORE removals
@@ -332,7 +332,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     after, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_verify_truncated",
-                           f"list {of_list_id} verify crawl hit the 20k backstop")
+                           f"list {of_list_id} verify crawl incomplete (backstop or repeated page)")
     diff = after ^ effective
     if diff:
         raise AudienceHalt(

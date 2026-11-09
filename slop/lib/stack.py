@@ -1,7 +1,8 @@
 """Throwaway local stack per run: the slop relay on a temp SQLite DB and, when a
 scenario needs the UI, `next dev` behind demo-shots' fetch guard. Free loopback
 ports, own process groups, torn down on exit; app/tsconfig.json and
-app/next-env.d.ts (which `next dev` rewrites) are restored. Same safety model as
+app/next-env.d.ts (which `next dev` rewrites) are restored; what a killed run left
+behind, the next Stack puts right (lib/recovery.py). Same safety model as
 scripts/demo-shots/run.sh: nothing leaves the machine.
 
 `shards=N` (N > 1, a fleet): N relays, each on its own temp dir `tmp/sNN/` (DB,
@@ -41,18 +42,14 @@ import time
 from pathlib import Path
 
 import httpx
+from slop.lib import recovery, selection
 
 ROOT = Path(__file__).resolve().parents[2]
 PY = Path(os.environ.get("SLOP_PY") or ROOT / "venv/bin/python")
 DEMO = ROOT / "scripts/demo-shots"
 RESTORE = ("tsconfig.json", "next-env.d.ts")
 APP_LOCK = ROOT / "app/.next/slop.lock"
-CHILD_NICE = 10  # every process the stack starts (README "The machine gate")
-
-
-def nice_child() -> None:
-    """preexec_fn: this child at nice CHILD_NICE (absolute; never lower than it already is)."""
-    os.setpriority(os.PRIO_PROCESS, 0, max(CHILD_NICE, os.getpriority(os.PRIO_PROCESS, 0)))
+APP_STATE = ROOT / "app/.next/slop.state.json"  # lib/recovery.py AppFiles
 
 
 def _lock_app() -> int:
@@ -98,6 +95,9 @@ class Stack:
             raise SystemExit(f"slop: app_mode {app_mode!r} (dev, or prod on one shard)")
         self.app_mode = app_mode
         self.shards = max(1, int(shards))
+        recovery.sweep()  # a killed run's process groups
+        self._run_state = recovery.RunState()
+        self._app_files = recovery.AppFiles(ROOT / "app", RESTORE, APP_STATE)
         fleet = self.shards > 1
         self.apps = tuple(sorted({i for i in apps if 0 <= i < self.shards})) if fleet else ((0,) if ui else ())
         self.tmp = Path(tempfile.mkdtemp(prefix="slop."))
@@ -146,9 +146,7 @@ class Stack:
             raise SystemExit("slop: service/secrets.json without service/secrets/secrets.json; see docs/ui-shots.md")
         if self.apps:  # only `next dev` rewrites these
             self._lock = _lock_app()
-            for f in RESTORE:     # a fresh worktree has no next-env.d.ts until `next` writes one
-                if (ROOT / "app" / f).exists():
-                    shutil.copy(ROOT / "app" / f, self.tmp / f"{f}.orig")
+            self._app_files.save()  # after a killed holder's files are put back
         self.logdir.mkdir(parents=True, exist_ok=True)
         base = {k: v for k, v in os.environ.items() if k != "OPENINFLOWW_LEGACY_AUTOMATIONS"}
         waits = []
@@ -270,16 +268,13 @@ class Stack:
         if not cov:
             return [str(PY), relay]
         return [str(PY), "-m", "coverage", "run", "--parallel-mode", f"--data-file={cov}/.coverage",
-                f"--source={ROOT / 'service'},{ROOT / 'slop'},{DEMO}", f"--omit={ROOT / 'slop/evidence'}/*", relay]
+                f"--source={','.join(str(ROOT / r) for r in selection.PY_ROOTS)}",
+                f"--omit={ROOT / 'slop/evidence'}/*", relay]
 
     def _prod_app(self, nenv: dict[str, str], i: int) -> None:
         """`next build` (the Dockerfile's `pnpm build`) into .next/slop-prod against this run's relay,
         then `next start` (its `pnpm start`). The build's wall time lands in next-build.log."""
         nenv = dict(nenv, NEXT_DIST_DIR=".next/slop-prod", NODE_ENV="production")
-        nm = ROOT / "app" / "node_modules"
-        if nm.is_symlink():  # a worktree's `slop/run --list` link: Turbopack refuses one pointing out of the project
-            raise SystemExit(f"slop: APP_MODE=prod builds with Turbopack (as `pnpm build`), which refuses a symlinked "
-                             f"app/node_modules; replace the link with an APFS clone: rm {nm} && cp -cR {nm.resolve()} {nm}")
         t0 = time.time()
         # `next build` rewrites next-env.d.ts, and adds a dist dir's type paths to tsconfig.json unless its
         # exact includes already list them (a new dist dir): put both back.
@@ -287,8 +282,7 @@ class Stack:
         try:
             with open(self.logdir / "next-build.log", "w") as fh:
                 r = subprocess.run(["node", "node_modules/next/dist/bin/next", "build", "--turbopack"], env=nenv,
-                                   cwd=ROOT / "app", stdout=fh, stderr=subprocess.STDOUT, timeout=900,
-                                   preexec_fn=nice_child)
+                                   cwd=ROOT / "app", stdout=fh, stderr=subprocess.STDOUT, timeout=900)
                 fh.write(f"\nslop: next build exit {r.returncode} in {time.time() - t0:.1f}s\n")
         finally:
             for f, b in kept.items():
@@ -323,15 +317,17 @@ class Stack:
 
     def _spawn(self, cmd, env, log, cwd, mode: str = "w") -> subprocess.Popen:
         fh = open(self.logdir / log, mode)
-        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
-                             preexec_fn=nice_child)
+        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
         self.procs.append(p)
+        self._run_state.record(p.pid)
         return p
 
     def _wait(self, name: str, url: str, timeout: int, proc: subprocess.Popen) -> None:
         """Ready = an HTTP answer below 500 (a 5xx while booting is not ready)."""
         t0, last = time.time(), "no answer"
         while time.time() - t0 < timeout:
+            if self._lock is not None:  # `next` rewrites the app files while it boots
+                self._app_files.note_written()
             if proc.poll() is not None:
                 raise SystemExit(f"slop: {name} exited during startup; see {self.logdir}")
             try:
@@ -359,19 +355,13 @@ class Stack:
                     os.killpg(p.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
-        for f in RESTORE:
-            orig = self.tmp / f"{f}.orig"
-            cur = ROOT / "app" / f
-            if not self.apps:
-                break                             # no next dev: nothing was saved or rewritten
-            if not orig.exists():
-                cur.unlink(missing_ok=True)       # it was absent: leave it absent
-            elif not cur.exists() or orig.read_bytes() != cur.read_bytes():
-                shutil.copy(orig, cur)
+        if self._lock is not None:
+            self._app_files.restore()
         refused = b"".join(p.read_bytes() for t in self.offhost_dirs if (p := t / "server-offhost.jsonl").exists())
         if refused or (self.tmp / "server-offhost.jsonl").exists():
             (self.logdir / "relay-offhost-refused.jsonl").write_bytes(refused)
         shutil.rmtree(self.tmp, ignore_errors=True)
+        self._run_state.close()
         if self._lock is not None:
             os.close(self._lock)  # releases the flock
             self._lock = None

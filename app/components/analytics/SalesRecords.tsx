@@ -428,7 +428,7 @@ export default function SalesRecords() {
             Reset
           </button>
         </div>
-        <CsvExportButton path={ROUTE} query={csvQuery.toString()} look="infloww" label="Export" icon={Upload}
+        <CsvExportButton path={ROUTE} query={csvQuery.toString()} label="Export" icon={Upload}
           title="Download the filtered sales as CSV (up to 50,000 rows)" />
       </div>
 

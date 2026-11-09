@@ -138,6 +138,10 @@ def current_aid() -> str:
     return live_server()._current_aid()
 
 
+async def annotate_chat_rows(account_id: str, rows):
+    return await live_server()._annotate_chat_rows(account_id, rows)
+
+
 def spawn_bg(coro, name: str):
     return live_server()._spawn_bg(coro, name)
 

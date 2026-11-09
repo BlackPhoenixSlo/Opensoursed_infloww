@@ -436,125 +436,6 @@ def _relay_cache_failure_not_shared() -> None:
 
     relay_cache._failed = _Forgets()
 
-def _proxy_failover_never_moves() -> None:
-    """The failover step gone (as before the proxy failover): a pool proxy confirmed bad
-    and rechecked is surfaced, but its Creators are never moved to a healthy pool proxy
-    (bug class: every read and send of theirs fails until the proxy answers again)."""
-    import proxy_health
-
-    def no_move(label: str) -> list:
-        proxy_health.log.warning("slop fault proxy-failover-never-moves: %s not failed over", label)
-        return []
-    proxy_health._failover = no_move
-
-
-def _pool_failover_ignores_tiers() -> None:
-    """The failover and attach as before INFLOWW_PROXIES tiers: one group, the least-used answering proxy of the
-    whole pool (bug class: a Creator moved off, or a login bound, onto an idler, worse DC one)."""
-    import proxies
-    proxies._tiers = lambda entries, first=None: [list(entries)]
-
-
-def _pool_assign_drops_unanswered_login() -> None:
-    """The attach as review round 1 left it: a Creator on no pool proxy for whom no pick
-    answers its probe gets a LookupError (409; a Browserbase login says "nothing was
-    saved") and is bound to nothing (bug class: a finished login thrown away on a
-    pool-wide probe blip)."""
-    import proxies
-
-    real = proxies.assign_pool
-
-    def assign_pool(account_id, *, bad, dead, due, geo, verify, rng=None):
-        answers: list[bool] = []
-
-        def counted(p):
-            answers.append(bool(verify(p)))
-            return answers[-1]
-        was_on_pool = proxies.is_pool(proxies.get_for_account(account_id))
-        out = real(account_id, bad=bad, dead=dead, due=due, geo=geo, verify=counted, rng=rng)
-        if not was_on_pool and not out[1] and answers and not any(answers):
-            proxies.unbind_pool(account_id)
-            raise LookupError("slop fault pool-assign-drops-unanswered-login: no Inflowwww proxy answers")
-        return out
-    proxies.assign_pool = assign_pool
-
-
-def _proxy_recheck_never_runs() -> None:
-    """No recheck of a bad proxy (as before the proxy failover): once confirmed bad it stays
-    bad until a call through it happens to answer; with its Creators moved away nobody calls
-    through it, so it never comes back as a standby (bug class: the pool shrinks for good)."""
-    import proxy_health
-    proxy_health._arm_recheck = lambda label: proxy_health.log.warning(
-        "slop fault proxy-recheck-never-runs: %s not rechecked", label)
-
-
-def _proxy_confirm_probes_trace() -> None:
-    """The watcher's confirm and rechecks back on Cloudflare's trace (the pre-fix probe): a proxy
-    that answers the trace yet refuses CONNECT to OF is never confirmed bad (bug class: the probe
-    tests another host than the one failing)."""
-    import proxy_probe
-    proxy_probe.probe_of = proxy_probe.probe
-
-
-def _proxy_decide_recheck_answer_ignored() -> None:
-    """service/proxy_health_decide.decide (the shell calls it as `ph.decide` at each step) reads an
-    answering recheck as a failed one (a reducer that lost the up transition): a revived proxy nobody
-    calls through stays bad for good (bug class: the pool shrinks; the standby is lost)."""
-    import proxy_health_decide as ph
-    real = ph.decide
-    ph.decide = lambda st, ev: real(st, ph.RecheckResult(ok=False, flapping=ev.flapping) if isinstance(ev, ph.RecheckResult) else ev)
-
-
-# ── proxy watcher claim hand-off (rwl/proxy-watch-gap) ──
-WATCH_RELEASE_LAG_S = 60.0   # > the proxy-failover scenario's REWATCH_MS and its pool-wide outage (ALL_DEAD_S)
-
-
-def _proxy_watch_claim_released_late() -> None:
-    """The watcher's claim released as before rwl/proxy-watch-gap: after the watcher returned
-    (`_watch`'s finally), not in its last step's decide (every Unwatch dropped). The window between
-    the two, microseconds in the relay, is widened to WATCH_RELEASE_LAG_S so traffic can land in it:
-    a streak's DOWN_AFTER-th error there reads the claim, starts no watcher, and the proxy sits at
-    DOWN_AFTER errors unwatched until a counted error after the release (bug class: a proxy that dies
-    again right as its last watcher ended is never confirmed bad, so never surfaced or failed over)."""
-    import time
-
-    import proxy_health
-    import proxy_health_decide as ph
-    real_decide, real_watch = ph.decide, proxy_health._watch
-
-    def decide(st, ev):
-        st2, effects, nxt = real_decide(st, ev)
-        return st2, [e for e in effects if not isinstance(e, ph.Unwatch)], nxt
-
-    def watch(label: str) -> None:
-        try:
-            real_watch(label)
-        finally:
-            time.sleep(WATCH_RELEASE_LAG_S)
-            with proxy_health._lock:
-                proxy_health._watchers.discard(label)
-    ph.decide = decide
-    proxy_health._watch = watch   # `_step` spawns `_watch` by its module name
-
-
-def _proxy_recheck_unwatches_at_threshold() -> None:
-    """The recheck phase's not-bad exit as before rwl/proxy-watch-gap's round 1 (F1): a recheck step that
-    finds the proxy back up ends the watcher (Unwatch) whatever its count, where decide now goes back to
-    the confirm phase when a streak reached DOWN_AFTER meanwhile (it started no watcher: this one held the
-    claim). Bug class: a proxy revived and dead again during a recheck's sleep sits at DOWN_AFTER errors
-    unwatched, never confirmed bad, so never surfaced or failed over."""
-    import proxy_health_decide as ph
-    real = ph.decide
-
-    def decide(st, ev):
-        st2, effects, nxt = real(st, ev)
-        if isinstance(ev, (ph.RecheckWait, ph.RecheckDue, ph.RecheckResult)) and nxt == ph.Wait(0.0, ph.ConfirmDue):
-            return st2, [*effects, ph.Unwatch()], None
-        return st2, effects, nxt
-    ph.decide = decide   # the shell calls `ph.decide` at each step
-# ── end proxy watcher claim hand-off ──
-
-
 def _otp_state_not_session_dead() -> None:
     """The classifier's code-101 branch reverted (as before fix/otp-state-session-health):
     OF's 2FA demand is not a dead session, so nothing flags, notifies or pauses the account."""
@@ -858,15 +739,14 @@ FAULTS: dict[str, Fault] = {
         "Creator performance: each Creator's net == max(OF, ledger) per day + today's ledger",
     )),
     # slop/run creator-earnings --break --fault=chargebacks-lose-sign
-    # The Chargebacks tiles drop their minus (the Dashboard's sum, reportsMath.asChargebacks' negation): they show
+    # The Chargebacks tiles drop their minus (the Dashboard's sum and reportsMath's b - money(r)): they show
     # the reversals as earnings. The relay and every total are right; only the tile check sees it.
     "chargebacks-lose-sign": Fault(None, (
         "chargebacks_tile_negative: Dashboard This month, Creator reports Last 30 days and both at 390px show "
         "Chargebacks == -(the reversed read's net) on the err token",
     ), browser=(
         (r"-rowsOf\(reversed\.data\)", "rowsOf(reversed.data)"),
-        (r"total_cents: -r\.total_cents", "total_cents: r.total_cents"),
-        (r"net_cents: -r\.net_cents", "net_cents: r.net_cents"),
+        (r"b - money\(r\)", "b + money(r)"),
     ), browser_files=2),
     # slop/run scoped-reads --break (the scenario's FAULT)
     "relay-cache-no-single-flight": Fault(_relay_cache_no_single_flight, (
@@ -887,51 +767,6 @@ FAULTS: dict[str, Fault] = {
     "relay-cache-failure-not-shared": Fault(_relay_cache_failure_not_shared, (
         "dead proxy: interactive reads answer within budget",
     )),
-    # slop/run proxy-failover --break (the scenario's FAULT)
-    "proxy-failover-never-moves": Fault(_proxy_failover_never_moves, (
-        "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again",
-    )),
-    # slop/run proxy-failover --break --fault=pool-failover-ignores-tiers
-    "pool-failover-ignores-tiers": Fault(_pool_failover_ignores_tiers, (
-        "pool: ON_POOL Creators bound least-used through /admin/proxy-pool/assign, each warm-up tunneled",
-        "pool tiers: the dead tier-0 proxy's Creators all moved to the other tier-0 proxy, none to the idler "
-        "tier-1 one (INFLOWW_PROXIES `|`)",
-    )),
-    # slop/run proxy-failover --break --fault=pool-assign-drops-unanswered-login
-    "pool-assign-drops-unanswered-login": Fault(_pool_assign_drops_unanswered_login, (
-        "login during a pool-wide outage: no probe answers, yet the session is saved and bound to a pool "
-        "proxy within budget (a login is never lost; every-proxy-bad: test_proxy_health)",
-    )),
-    # slop/run proxy-failover --break --fault=proxy-recheck-never-runs
-    "proxy-recheck-never-runs": Fault(_proxy_recheck_never_runs, (
-        "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again",
-        "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
-        "proxy (the revived one, once its Creators moved) and reads through it",
-    )),
-    # slop/run proxy-failover --break --fault=proxy-confirm-probes-trace
-    "proxy-confirm-probes-trace": Fault(_proxy_confirm_probes_trace, (
-        "the watcher's confirm and rechecks probe OnlyFans' API host (robots.txt) with no account and no cookie (proxy_probe.probe_of)",
-    )),
-    # slop/run proxy-failover --break --fault=proxy-decide-recheck-answer-ignored
-    "proxy-decide-recheck-answer-ignored": Fault(_proxy_decide_recheck_answer_ignored, (
-        "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
-        "proxy (the revived one, once its Creators moved) and reads through it",
-    )),
-    # ── proxy watcher claim hand-off (rwl/proxy-watch-gap) ──
-    # slop/run proxy-failover --break --fault=proxy-watch-claim-released-late: the re-watch check, and the
-    # pool-wide outage's (the proxy revived just before it dies again inside the widened window too)
-    "proxy-watch-claim-released-late": Fault(_proxy_watch_claim_released_late, (
-        "re-watch: a pool proxy that dies for good right after a blip ended its watcher is watched again and "
-        "surfaced within budget (its Creator reads proxy_down)",
-        "every pool proxy dead: nobody moves (bindings identical) and every pool Creator reads proxy_down",
-    )),
-    # slop/run proxy-failover --break --fault=proxy-recheck-unwatches-at-threshold: the recheck-gap check
-    "proxy-recheck-unwatches-at-threshold": Fault(_proxy_recheck_unwatches_at_threshold, (
-        "recheck-gap: a bad proxy an answer brings back while its watcher sleeps before a recheck, then "
-        "DOWN_AFTER failed sends before it wakes, is confirmed bad again by that watcher within budget; "
-        "a Test click while it is bad leaves it bad",
-    )),
-    # ── end proxy watcher claim hand-off ──
     # slop/run session-health-otp --break (the scenario's FAULT)
     "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (
         "account_health flags exactly the 2FA Creators, reason otp_required",
@@ -969,6 +804,7 @@ FAULTS: dict[str, Fault] = {
         'card: a pasted "1234-5678" is the 8-digit code 12345678 (field, Submit on, what OnlyFans got)',
         "card: a wrong code shows the rejection and the field takes another code",
         "card: the right code links the account (job done, user_accounts row)",
+        "card: Done on the linked screen (account + account details) saves and closes the modal",
     )),
     # slop/run browserbase-otp --break --fault=challenge-counts-hidden-frames
     "challenge-counts-hidden-frames": Fault(_challenge_counts_hidden_frames, (
@@ -994,6 +830,12 @@ FAULTS: dict[str, Fault] = {
         # next dev bundles appliedSettings.ts into each chunk the run loads: app/layout, app/page,
         # settings/layout, settings/[tab]/page (one match per pattern per load of each).
         browser_files=4, ts_files=1),
+    # slop/run 2026-11-08-auto-mass-one-message --break (client side): Online now renders, but no longer updates
+    # online_only when selected. Only the scenario's audience payload/UI check should catch this.
+    "auto-mass-online-chip-noop": Fault(None, (
+        "auto mass audience chips: All fans, Following and Online now share one row; changing All fans and "
+        "Online now saves the matching user_lists and online_only fields",
+    ), browser=((r"onlineOnly: !r\.onlineOnly", "onlineOnly: r.onlineOnly"),)),
     # slop/run 2026-11-07-ai-chatter-nav --break (the scenario's FAULT, client side): app/lib/nav.ts's
     # Full AI Chatter link without `chatterHidden`, so a chatter's sidebar draws the owner-only page.
     "full-ai-chatter-shown-to-chatter": Fault(None, (
@@ -1002,6 +844,12 @@ FAULTS: dict[str, Fault] = {
     ), browser=((r'(href:\s*\\?"/full-ai-chatter\\?",[^}]*?chatterHidden:\s*)(?:true|!0)', r"\g<1>false"),),
         # next dev's eval strings escape the quotes; nav.ts sits in each chunk the run loads.
         browser_files=4),
+    # slop/run 2026-11-07-ai-chatter-nav --break --fault=sidebar-groups-not-accordion (client side):
+    # app/components/shell/Sidebar.tsx before 2026-11-08, every toggled group staying open.
+    "sidebar-groups-not-accordion": Fault(None, (
+        "phone: opening My Automations (6 pages), then My AI Chatter (Auto-reply, "
+        "Get to know fans, Full AI Chatter) leaves only My AI Chatter open",
+    ), browser=((r"openGroup\s*===\s*n\.label", "openGroup !== null"),), browser_files=1),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",
@@ -1029,8 +877,8 @@ FAULTS: dict[str, Fault] = {
     ), browser_js=_DASHBOARD_TOTAL_NOT_SAVED),
     # slop/run 2026-10-28-dashboard-load --break --fault=dashboard-offline-creator-reads-of
     "dashboard-offline-creator-reads-of": Fault(None, (
-        "the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
-        "on a first visit every live Creator's card read OF",
+        "the session-less Creator sent no OnlyFans request (Dashboard visits, Creator reports' Per-model card) "
+        "and its card shows 'Not connected'; on a first visit every live Creator's card read OF",
     ), browser_js=_DASHBOARD_OFFLINE_CREATOR_READS_OF),
     # slop/run 2026-10-28-dashboard-load --break --fault=boot-skeleton-not-drawn: the two first-paint checks.
     "boot-skeleton-not-drawn": Fault(None, (
@@ -1097,3 +945,22 @@ FAULTS["vault-gif-loop-cap-removed"] = Fault(
 FAULTS["vault-picker-refresh-pending-hidden"] = Fault(
     None, ("vault_picker_refresh_pending_single_post_and_failure_note",),
     browser=((r"isPending:\s*pending", "isPending: false"),), browser_files=2)
+
+
+# --- OF call counter (fetch-diet ticket 01) ---
+# slop/run of-call-counter --break: service/of_call_counter.record counts only 2xx answers (the 429s, 5xx, 4xx and
+# no-answer calls OF saw are dropped), so the file stops equalling the wire.
+def _of_counter_drops_errors() -> None:
+    import of_call_counter
+    real = of_call_counter.record
+
+    def only_ok(account_id, method, url, status):
+        if isinstance(status, int) and 200 <= status < 300:
+            real(account_id, method, url, status)
+
+    of_call_counter.record = only_ok
+
+
+if "of-counter-drops-errors" in FAULTS:
+    raise SystemExit("slop: faults.py redefines of-counter-drops-errors")
+FAULTS["of-counter-drops-errors"] = Fault(_of_counter_drops_errors, ("counts_match_wire",))

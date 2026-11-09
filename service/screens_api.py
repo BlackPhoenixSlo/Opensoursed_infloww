@@ -188,7 +188,7 @@ def _principal() -> tuple:
 
 
 def _read_key(read: Read) -> tuple:
-    return (_principal(), read.name, read.aid, tuple(sorted((k, str(v)) for k, v in read.query.items())))
+    return (_principal(), read.name, read.aid, read.path, tuple(sorted((k, str(v)) for k, v in read.query.items())))
 
 
 def _remember(key: tuple, value: Any) -> None:

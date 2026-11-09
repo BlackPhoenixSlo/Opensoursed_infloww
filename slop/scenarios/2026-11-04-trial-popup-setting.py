@@ -95,7 +95,22 @@ def _stale_snapshot(raw) -> tuple:
 
 
 async def _dialog_after_load(page, url: str, want_shown: bool) -> bool:
-    """Load `url`, let the shell settle (its Applied read, or the snapshot), report whether the nag shows."""
+    """Load `url`, let the shell settle, and count every dialog appearance from before app mount."""
+    if not getattr(page, "_slop_dialog_init", False):
+        await page.add_init_script("""(() => {
+          window.__slopDialogSeen = 0;
+          const title = __DIALOG__;
+          const watch = () => {
+            const scan = () => { if ([...document.querySelectorAll('[role="dialog"]')].some(d =>
+              d.querySelector('[id]')?.textContent?.trim() === title ||
+              (d.getAttribute('aria-labelledby') && document.getElementById(d.getAttribute('aria-labelledby'))?.textContent?.trim() === title)))
+              window.__slopDialogSeen++; };
+            new MutationObserver(scan).observe(document.documentElement, {subtree: true, childList: true, attributes: true});
+            scan();
+          };
+          if (document.documentElement) watch(); else document.addEventListener('DOMContentLoaded', watch, {once: true});
+        })()""".replace("__DIALOG__", json.dumps(DIALOG)))
+        page._slop_dialog_init = True
     try:
         async with page.expect_response(lambda r: "/admin/settings/applied" in r.url, timeout=60_000):
             await page.goto(url, wait_until="domcontentloaded")
@@ -107,9 +122,9 @@ async def _dialog_after_load(page, url: str, want_shown: bool) -> bool:
             await dlg.wait_for(timeout=30_000)
         except Exception:  # noqa: BLE001
             return False
-        return True
+        return (await page.evaluate("window.__slopDialogSeen || 0")) > 0
     await page.wait_for_timeout(4_000)
-    return await dlg.count() > 0
+    return (await page.evaluate("window.__slopDialogSeen || 0")) > 0
 
 
 async def _stored(ctx) -> tuple:

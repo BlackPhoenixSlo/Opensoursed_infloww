@@ -5,23 +5,27 @@ merges `register(Fault)` into FAULTS. The check names live here and the scenario
                               and waits for its Creator's background lane there (before 2026-11-05)
   coalesce-ignores-priority   relay_coalesce.priority_class always "user": a user read joins a background-led
                               flight (and relay_cache's background lock), inheriting its lane wait
+  pool-spills-unbounded       db/engine.py's spill cap off (max_overflow -1): one connection + thread per
+                              checkout that waited SPILL_AFTER_S (before 2026-11-09)
 """
 from __future__ import annotations
 
-BG_CAP = 2  # service/server.py _ACCOUNT_LANE_BACKGROUND (default)
-# Catches blocking (a fault puts tap p95 at 10-30 s), not jitter: on the shared machine (gate: up to 6
-# runs) the no-fault flood p95 spread over runs was 85-140 ms all, 120-189 ms send (measured: 7b84, 09ae,
-# dd50, f09a), so 1.25x + 50 ms flipped on host noise.
-P95_RATIO, P95_SLACK_MS = 2.0, 100
-PROBE_HOLD_S, PROBE_MAX_S = 3.0, 1.0
-
-C_TAP_P95 = (f"taps during the background flood: p95 <= {P95_RATIO} x the no-flood p95 + {P95_SLACK_MS} ms, "
-             "per tap kind (open fan, send, users/me) and overall")
+C_TAP_P95 = "taps during the background flood meet the per-kind and overall p95 budget"
 C_NO_THREAD_WAIT = "every lane-stats sample during the flood: threads_waiting_background == 0 (fleet and per Creator)"
-C_BG_CAP = f"bg_in_flight_peak <= {BG_CAP} for every Creator (the background lane cap holds)"
+C_BG_CAP = "bg_in_flight_peak stays within the background lane cap for every Creator"
 C_TAPS = "every tap answered 200 in both legs (chatters x Creators x 3 each), users/me answers the asked Creator"
-C_PROBE = (f"a user read of the same list_chats key as an in-flight background read (OF holds that one "
-           f"{PROBE_HOLD_S:.0f} s) answers in < {PROBE_MAX_S:.0f} s, every probe")
+C_PROBE = "a user read of a held background list_chats key answers within the probe budget"
+C_POOL = ("relay DB connections out stay within its pool's bound (pool_size + max spill, bounded) and relay "
+          "threads under the scenario's THREADS_MAX, every 1 s sample ramp to drain")
+
+
+def _pool_spills_unbounded() -> None:
+    """The spill cap reverted (bug class: the DB pool's overflow unbounded again, before 2026-11-09): every
+    checkout that waits SPILL_AFTER_S opens one more connection, one aiosqlite thread each."""
+    import db.engine  # noqa: F401 — the package re-exports `engine` over the module name
+    import sys
+
+    sys.modules["db.engine"].engine.sync_engine.pool._max_overflow = -1
 
 
 def _admission_in_thread() -> None:
@@ -51,4 +55,9 @@ def register(Fault) -> dict:
         "admission-in-thread": Fault(_admission_in_thread, (C_TAP_P95, C_NO_THREAD_WAIT)),
         # slop/run relay-admission --break --fault=coalesce-ignores-priority
         "coalesce-ignores-priority": Fault(_coalesce_ignores_priority, (C_PROBE,)),
+        # CHATTERLY_DB_SPILL_AFTER_S=0.05 slop/run relay-admission --scale=medium --users=30 --no-ui --break
+        # --fault=pool-spills-unbounded (baseline with the same env): 50 ms spills make 30 users press the pool
+        # (capped: dbPeak 32, 148 threads, a638; uncapped: 478, 971 threads, CAUGHT dd46). Users 30/100 never spill
+        # at 2 s, and 200 uncapped hits the gate's 3000-thread guard first (INFRA, 3146 threads, 6750).
+        "pool-spills-unbounded": Fault(_pool_spills_unbounded, (C_POOL,)),
     }

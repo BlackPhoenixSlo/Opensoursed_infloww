@@ -49,7 +49,8 @@ describe("Add creator, Fansly sign-in", () => {
   it("has Infloww's Done beside Cancel, and Done submits the pasted session", async () => {
     relayPost.mockResolvedValue({ ok: true, account_id: "fy-1", platform: "fansly", name: "Fiona" });
     renderWithProviders(<AddCreatorModal extInstalled={null} at="fansly" onClose={() => {}} />);
-    expect(within(dialog()).getAllByRole("button").filter((b) => b.closest(".border-t")).map((b) => b.textContent))
+    // The footer: the dialog's last row.
+    expect(within(dialog().lastElementChild as HTMLElement).getAllByRole("button").map((b) => b.textContent))
       .toEqual(["Cancel", "Done"]);
     // The card draws no submit of its own inside the flow.
     expect(within(dialog()).queryByRole("button", { name: "Connect Fansly account" })).toBeNull();
@@ -93,13 +94,13 @@ describe("Add creator, Fansly sign-in", () => {
     expect(await within(dialog()).findByText(FANSLY_T.accountInfoError)).toBeInTheDocument();
   });
 
-  it("greys out Fansly at the platform step once the Creator has a Fansly account (creators0408)", () => {
+  it("offers no Fansly sign-in once the Creator has a Fansly account (creators0408)", () => {
     renderWithProviders(
       <AddCreatorModal extInstalled={null} onClose={() => {}} linkAnother={{ creator: { name: "Fiona", gender: "" }, linked: ["fansly"] }} />,
     );
-    const fansly = within(dialog()).getByLabelText("Fansly");
-    expect(fansly).toBeDisabled();
-    expect(fansly.closest("label")).toHaveAttribute("title", expect.stringContaining("Fansly"));
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: /Link a Fansly account/ })).toBeNull();
+    expect(within(dialog()).queryByRole("region", { name: "Fansly paste session" })).toBeNull();
   });
 });
 
@@ -125,7 +126,7 @@ describe("Manage creators, an expired Fansly session", () => {
     renderWithProviders(<AccountsTable onLink={onLink} />);
     expect(await screen.findByTitle("auth failed")).toHaveTextContent("Disconnected");
     fireEvent.click(screen.getByRole("button", { name: "Link creator account" }));
-    expect(onLink).toHaveBeenLastCalledWith("paste");
+    expect(onLink).toHaveBeenLastCalledWith("browserbase");
     fireEvent.click(screen.getByRole("button", { name: "More actions for Oscar" }));
     expect(screen.getByRole("group", { name: "Recovery" })).toBeInTheDocument();
   });

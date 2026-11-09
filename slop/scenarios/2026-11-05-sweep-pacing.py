@@ -211,18 +211,21 @@ from collections import Counter, defaultdict
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs
 
 from slop.actors import chatter
 from slop.actors.manager import SseListener
 from slop.lib.client import Recorder
 from slop.lib.procmon import pct
-from slop.lib.sweep_pacing_faults import (BF_BURST, BF_CALLS, BF_DISPUTE, BF_DROPPED, BF_FRESH, BF_GAP, BF_LIFETIME, BF_ONCE,
-                                          BF_PARTIAL, BF_SHARED,
-                                          BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
+from slop.lib import sweep_pacing_backfill
+from slop.lib.sweep_pacing_evidence import TX_START as _TX_START, held, scan_one, tx_status as _tx_status
+from slop.lib.sweep_pacing_faults import (BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
                                           PAGES_SPACED, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
                                           TX_NEW_ROW, TX_WINDOW, USER_P95, WINDOW_IGNORED)
 from slop.lib import sweep_pacing_proxy, sweep_pacing_watermark
+from slop.lib.sweep_pacing_ledger import (CROWD_N, CROWD_ROWS, DEEP_BELOW, DEEP_FAIL_AFTER, DEEP_ROWS, LEDGER_ID,
+                                          LEDGER_ID_STRIDE, REACT_BELOW, REACT_BLANK_AFTER, REACT_DISPUTED,
+                                          REACT_FLIP_FROM, REACT_FLIPS, REACT_GAP_D, REACT_HELD, REACT_ROWS, TX_CYCLES,
+                                          iso as _iso, pages as _pages, sale as _sale, tx_row as _tx_row)
 from slop.lib.sweep_pacing_wire import TOO_MANY, TX_CAP, SweepWire
 from slop.seed import creators, fans, of_sessions, ts
 
@@ -242,25 +245,16 @@ BURSTS, BURST_N, BURST_EVERY_S = 6, 8, 15.0
 USER_AT_S = tuple(round(3.0 + 1.6 * k, 1) for k in range(5))   # a person's lookups, into each burst
 GROWTH_SETTLE_S = 2.5        # after GROWTH's Promotions page (3 reads), before the first burst (8)
 EARNINGS_N, EARNINGS_EVERY_S, EARNINGS_MAX_MS = 24, 0.5, 2_000
-TX_CYCLES = 4                # backfill, the full 7-day walk, two recent ones (the first after NEW_ROW_AGO)
 NEW_ROW_AGO = (timedelta(hours=10), timedelta(days=3))   # rows OF gains before the recent pass: caught / not needed
-TX_PAGE = 100                # transaction_ingest._PAGE_LIMIT (OF's max a page)
 TX_TICK_S, TX_FULL_S, TX_RECENT_H = 900, 7200, 24   # the cadence the budget is sized for
 TX_HEADROOM = 1.5            # its slack over the pages those imply
-TICK_PAGES, FRESH_PAGES = 40, 6   # transaction_ingest_decide's _BACKFILL_TICK_PAGES / _BACKFILL_FRESH_PAGES
 LEDGER_FANS = 40
-DEEP_ROWS, DEEP_BELOW, DEEP_FAIL_AFTER = 6_000, 30, 5   # 61 pages: 5 + 429 / the cap / the rest, the 3 passes
-REACT_ROWS, REACT_HELD, REACT_BELOW, REACT_FLIPS, REACT_BLANK_AFTER, REACT_GAP_D = 1_500, 700, 20, 50, 8, 30
-REACT_DISPUTED = 650   # below the full walk's 600 rows, above REACT's blank page, held
+NEW_ROWS_STRIDE = 10
 BLANK_ROWS, BLANK_OLD, BLANK_GAP_D = 900, 20, 6   # past the full walk's 600 in under its 7 days: only the walk lands them
-# Every write path a walk takes: PPV (_link_ppv_message, try_stamp_message), first charge, renewal, tip.
-DESCRIPTIONS = ("Tip from u{}", "Payment for message from u{}", "Subscription from u{}", "Recurring subscription from u{}")
-SALES = {"Tip": ("tip", "tips"), "Payment": ("ppv_message", "chat_messages"), "Subscription": ("subscription", "subscribes"),
-         "Recurring": ("rebill", "subscribes")}
 GAP_ROWS, GAP_HELD, GAP_BELOW = 1_540, 200, 300   # 110 rows a day, measured shape of the review's case
-CROWD_N, CROWD_ROWS = 8, 2_500
 ADMIN_RUN_TIMEOUT_S = 120
 GROWTH_PROMOS, GROWTH_CLAIMED, GROWTH_CLAIMS = 250, 5, 100
+CLAIMER_PAGE = 20            # link_metrics._PAGE: claimers OF answers a page
 TERMINAL_SNAPSHOT = 120
 RUN_TIMEOUT_S = 900
 USER_READ_P95_MS = 1_000     # measured 66-68 ms small / 20 users, 99-635 ms medium / 200 users
@@ -276,7 +270,6 @@ TX_COLS = ("account_id, fan_id, kind, message_id, amount_cents, currency, occurr
 WALK_ROUTES = ("campaigns", "trials", "promotions", "subscribers", "transactions")
 PREWARM_ROUTES = ("campaigns", "trials", "promotions")
 _SKIP = re.compile(r"bg_walk_skip account=(\S+) kind=link_prewarm")
-_TX_START = re.compile(r"ingest_tx_scan_start account=(\S+) mode=(\w+)")
 _TX_FULL_OK = re.compile(r"ingest_tx_scan_end account=(\S+) mode=refresh ")
 _TX_IGNORED = "ingest_tx_recent_window_ignored"
 _TX_EMPTY = "ingest_tx_recent_walk_empty"
@@ -286,10 +279,6 @@ _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
 def _asked(text: str | None) -> float:
     m = _ALLOW.search(text or "")
     return float(m.group(1)) if m else 1.0
-
-
-def _iso(dt) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")   # OF's timestamps
 
 
 def _seed_of(sw: SweepWire, w, aids: list[str], n_promo: dict[str, int], n_sub: int, n_tx: int,
@@ -322,23 +311,9 @@ def _seed_of(sw: SweepWire, w, aids: list[str], n_promo: dict[str, int], n_sub: 
         for k in range(n_tx):
             fan = rng.choice(ids)
             cents = rng.randint(5, 50) * 100
-            at = w.now - timedelta(minutes=1 + k * 6 * 24 * 60 // max(n_tx, 1))
-            rows.append({"id": base + 900_000 + k, "user": {"id": fan}, "amount": cents / 100, "currency": "USD",
-                         "createdAt": _iso(at), "status": "done",
-                         "net": cents * 0.8 / 100, "fee": cents * 0.2 / 100, "vatAmount": 0,
-                         "description": DESCRIPTIONS[k % len(DESCRIPTIONS)].format(fan)})
+            # base + 900_000 + k is k mod 4: DESCRIPTIONS[k % 4], the row's write path
+            rows.append(_tx_row(base + 900_000 + k, fan, cents, w.now - timedelta(minutes=1 + k * 6 * 24 * 60 // max(n_tx, 1))))
         sw.txs[a] = rows   # newest first
-
-
-def _sale(row: dict) -> tuple[str, str]:
-    """The row's kind as the product writes it, and its dispute's paymentType."""
-    return next(v for k, v in SALES.items() if row["description"].startswith(k))
-
-
-def _tx_row(pid: int, fan: int, cents: int, at, status: str = "done") -> dict:
-    return {"id": pid, "user": {"id": fan}, "amount": cents / 100, "currency": "USD", "createdAt": _iso(at),
-            "status": status, "net": cents * 0.8 / 100, "fee": cents * 0.2 / 100, "vatAmount": 0,
-            "description": DESCRIPTIONS[pid % len(DESCRIPTIONS)].format(fan)}
 
 
 def _ledger(rng, base: int, fan_ids: list[int], n: int, top, span: timedelta, *, ties: int = 1,
@@ -378,31 +353,32 @@ def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[st
     px = [c["id"] for c in extras[4 + CROWD_N:]]
     rng = w.rng("scenario:sweep-pacing:ledger")
     ids = {c["id"]: [f["id"] for f in pool[c["id"]]] for c in extras}
-    sw.txs[deep] = [*_ledger(rng, 30_000_000_000, ids[deep], DEEP_ROWS, w.now - timedelta(hours=3), timedelta(days=80),
+    sw.txs[deep] = [*_ledger(rng, LEDGER_ID["deep"], ids[deep], DEEP_ROWS, w.now - timedelta(hours=3), timedelta(days=80),
                              ties=3, loading_every=7),
-                    *_ledger(rng, 31_000_000_000, ids[deep], DEEP_BELOW, w.now - timedelta(days=100), timedelta(days=20))]
-    rows = _ledger(rng, 32_000_000_000, ids[react], REACT_ROWS, w.now - timedelta(hours=2),
+                    *_ledger(rng, LEDGER_ID["deep_below"], ids[deep], DEEP_BELOW, w.now - timedelta(days=100), timedelta(days=20))]
+    rows = _ledger(rng, LEDGER_ID["react"], ids[react], REACT_ROWS, w.now - timedelta(hours=2),
                    timedelta(days=REACT_GAP_D - 2))
-    sw.txs[react] = [*rows, *_ledger(rng, 33_000_000_000, ids[react], REACT_BELOW, w.now - timedelta(days=REACT_GAP_D + 3),
-                                     timedelta(days=7))]
-    blank_old = _ledger(rng, 35_000_000_000, ids[blank], BLANK_OLD, w.now - timedelta(days=BLANK_GAP_D + 3), timedelta(days=7))
-    sw.txs[blank] = [*_ledger(rng, 34_000_000_000, ids[blank], BLANK_ROWS, w.now - timedelta(hours=2),
+    sw.txs[react] = [*rows, *_ledger(rng, LEDGER_ID["react_below"], ids[react], REACT_BELOW,
+                                     w.now - timedelta(days=REACT_GAP_D + 3), timedelta(days=7))]
+    blank_old = _ledger(rng, LEDGER_ID["blank_old"], ids[blank], BLANK_OLD, w.now - timedelta(days=BLANK_GAP_D + 3),
+                        timedelta(days=7))
+    sw.txs[blank] = [*_ledger(rng, LEDGER_ID["blank"], ids[blank], BLANK_ROWS, w.now - timedelta(hours=2),
                               timedelta(days=BLANK_GAP_D - 1)), *blank_old]
     day = timedelta(days=1) / 110
-    gap_rows = _ledger(rng, 36_000_000_000, ids[gap], GAP_ROWS + GAP_HELD + GAP_BELOW, w.now - timedelta(hours=1),
+    gap_rows = _ledger(rng, LEDGER_ID["gap"], ids[gap], GAP_ROWS + GAP_HELD + GAP_BELOW, w.now - timedelta(hours=1),
                        day * (GAP_ROWS + GAP_HELD + GAP_BELOW))
     sw.txs[gap] = gap_rows
     gap_held = gap_rows[GAP_ROWS:GAP_ROWS + GAP_HELD]
     for k, a in enumerate(crowd):
-        sw.txs[a] = _ledger(rng, 37_000_000_000 + k * 100_000, ids[a], CROWD_ROWS, w.now - timedelta(hours=4), timedelta(days=30))
+        sw.txs[a] = _ledger(rng, LEDGER_ID["crowd"] + k * LEDGER_ID_STRIDE, ids[a], CROWD_ROWS, w.now - timedelta(hours=4), timedelta(days=30))
         sw.share[a] = "crowd-proxy"
-    px_rows = {a: sweep_pacing_proxy.ledger_rows(rng, 38_000_000_000 + k * 100_000, ids[a], w.now, _tx_row)
+    px_rows = {a: sweep_pacing_proxy.ledger_rows(rng, LEDGER_ID["px"] + k * LEDGER_ID_STRIDE, ids[a], w.now)
                for k, a in enumerate(px)}
     sw.honest |= {deep, react, blank, gap, *crowd, *px}
     sale = rows[REACT_DISPUTED]
     sw.disputes[react] = [{"id": 0, "createdAt": _iso(w.now - timedelta(days=1)), "paymentType": _sale(sale)[1],
                            "payment": sale | {"id": f"dispute-{sale['id']}", "status": "undo"}}]
-    pending = {0, *range(200, 200 + REACT_FLIPS)}
+    pending = {0, *range(REACT_FLIP_FROM, REACT_FLIP_FROM + REACT_FLIPS)}
     held = rows[:REACT_HELD]
 
     def at(r: dict) -> str:
@@ -426,37 +402,6 @@ def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[st
             con.execute(scan, (a, done, floor, oldest, newest, st, streak, ts(w.now), ts(w.now)))
     con.close()
     return deep, react, blank, gap, crowd, px_rows
-
-
-def _scan(w, aid: str) -> dict:
-    con = w.sql()
-    row = con.execute("SELECT fully_backfilled, oldest_seen_occurred_at, current_status, consecutive_failures, "
-                      "last_error, backfill_floor, newest_seen_occurred_at, paused_until FROM transaction_scan_history "
-                      "WHERE account_id = ?", (aid,)).fetchone()
-    con.close()
-    keys = ("done", "cursor", "status", "failures", "last_error", "floor", "newest", "paused_until")
-    return dict(zip(keys, row)) if row else dict.fromkeys(keys)
-
-
-def _tx_status(w, aid: str, pid) -> str | None:
-    con = w.sql()
-    row = con.execute("SELECT status FROM transactions WHERE account_id = ? AND provider_transaction_id = ?",
-                      (aid, str(pid))).fetchone()
-    con.close()
-    return row[0] if row else None
-
-
-def _held(w, aid: str) -> tuple[Counter, int, int]:
-    """Provider id -> rows; their SUM(amount_cents); the Creator's SUM(lifetime_spend_cents)."""
-    con = w.sql()
-    ids = Counter(str(r[0]) for r in con.execute(
-        "SELECT provider_transaction_id FROM transactions WHERE account_id = ? AND provider_transaction_id IS NOT NULL",
-        (aid,)))
-    total = con.execute("SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE account_id = ? "
-                        "AND provider_transaction_id IS NOT NULL", (aid,)).fetchone()[0]
-    life = con.execute("SELECT COALESCE(SUM(lifetime_spend_cents), 0) FROM fans WHERE account_id = ?", (aid,)).fetchone()[0]
-    con.close()
-    return ids, total, life
 
 
 def _seed_mirror(w, aid: str, fans: list[dict]) -> str:
@@ -543,7 +488,7 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
                         (ts(w.now - timedelta(days=gap_d)), a))
         con.close()
         (await ctx.owner.post(f"/admin/accounts/{a}/active", json={"active": True})).raise_for_status()
-    react0, blank0, gap0 = _scan(w, react), _scan(w, blank), _scan(w, gap_a)
+    react0, blank0, gap0 = scan_one(w, react), scan_one(w, blank), scan_one(w, gap_a)
 
     # ── people on the busy Creators ─────────────────────────────────────────
     ur, br = Recorder(), Recorder()            # a person's lookups / the Fan List's background ones
@@ -609,59 +554,62 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
         (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": job, **extra})).raise_for_status()
     deadline = time.monotonic() + RUN_TIMEOUT_S
     new_rows: dict[str, list[str]] = {}   # Creator -> provider ids OF gained before the recent pass
-    tx_started, passed, admin = 1, {}, {}
-    fresh = _tx_row(34_000_000_000, sw.txs[deep][0]["user"]["id"], 1_700, datetime.now(timezone.utc) - timedelta(hours=1))
-    while True:
-        got = (await ctx.owner.get("/__slop/sweep-pacing/runs")).json()
-        tx_ended = sum(1 for x in got["runs"] if x["job"] == "tx_cycles" and x["t1"])
-        if tx_ended == 1 == tx_started:
-            # After the first fill: an operator resumes REACT, unless it reads complete (a person
-            # sees nothing to resume).
-            passed[1] = {deep: _scan(w, deep), react: _scan(w, react), blank: _scan(w, blank), gap_a: _scan(w, gap_a),
-                         "disputed": _tx_status(w, react, sw.txs[react][REACT_DISPUTED]["id"])}
-            if not passed[1][react]["done"]:
-                admin["t0"] = time.time()
-                admin["status"] = (await ctx.owner.post(f"/admin/ingest/transactions/{react}/run",
-                                                        json={"mode": "backfill"})).status_code
-                until = time.monotonic() + ADMIN_RUN_TIMEOUT_S
-                while not _scan(w, react)["done"] and time.monotonic() < until:
-                    await asyncio.sleep(0.5)
-                admin["t1"] = time.time()
-            # A period turned over: the backfilled Creators' full walk is due (last_full_at persists).
-            con = w.sql()
-            with con:
-                con.execute("UPDATE transaction_scan_history SET last_full_at = ? WHERE fully_backfilled = 1",
-                            (ts(datetime.utcnow() - timedelta(seconds=got["full_every_s"])),))
-            con.close()
-            (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
-            tx_started = 2
-            continue
-        if tx_ended == 2 == tx_started:
-            passed[2] = {deep: _scan(w, deep)}
-            sw.add_tx(deep, fresh)   # a row above DEEP's walk: its next tick's recent read lands it
-            # Between the full pass and the recent one: OF gains a row 10 h old (the recent walk must
-            # land it) and one 3 days old (before its startDate: the next full walk's, not its).
-            sw.startdate_iso = ctx.fault == STARTDATE_ISO
-            at = datetime.now(timezone.utc)
-            for i, a in enumerate(aids):
-                fan = sw.txs[a][0]["user"]["id"]
-                for j, ago in enumerate(NEW_ROW_AGO):
-                    pid = 9_000_000_000 + i * 10 + j
-                    sw.add_tx(a, {"id": pid, "user": {"id": fan}, "amount": 12.0, "currency": "USD",
-                                  "createdAt": _iso(at - ago), "status": "done", "net": 9.6, "fee": 2.4,
-                                  "vatAmount": 0, "description": f"Tip from u{fan}"})
-                    new_rows.setdefault(a, []).append(str(pid))
-            (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
-            tx_started = 3
-            continue
-        if tx_ended == 3 == tx_started:
-            passed[3] = {deep: _scan(w, deep), "fresh_held": str(fresh["id"]) in _held(w, deep)[0]}
-            (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
-            tx_started = 4
-            continue
-        if (tx_started == TX_CYCLES and all(x["t1"] for x in got["runs"])) or time.monotonic() > deadline:
-            break
-        await asyncio.sleep(0.5)
+    passed, admin = {}, {}
+    fresh = _tx_row(LEDGER_ID["fresh"], sw.txs[deep][0]["user"]["id"], 1_700, datetime.now(timezone.utc) - timedelta(hours=1))
+
+    async def runs_until(done) -> dict:   # /runs once `done(runs)` or past the deadline
+        while True:
+            got = (await ctx.owner.get("/__slop/sweep-pacing/runs")).json()
+            if done(got["runs"]) or time.monotonic() > deadline:
+                return got
+            await asyncio.sleep(0.5)
+
+    async def tx_pass() -> bool:   # the next supervisor pass, run to its end (False: the deadline came first)
+        return (await sweep_pacing_watermark.tx_pass(ctx.owner, sw, max(0.0, deadline - time.monotonic())))["ended"]
+
+    async def supervisor_passes() -> None:   # pass 1 started beside the other jobs; 2..TX_CYCLES one after another
+        got = await runs_until(lambda runs: any(x["job"] == "tx_cycles" and x["t1"] for x in runs))
+        if time.monotonic() > deadline:
+            return
+        # After the first fill: an operator resumes REACT, unless it reads complete (a person
+        # sees nothing to resume).
+        passed[1] = {deep: scan_one(w, deep), react: scan_one(w, react), blank: scan_one(w, blank), gap_a: scan_one(w, gap_a),
+                     "disputed": _tx_status(w, react, sw.txs[react][REACT_DISPUTED]["id"])}
+        if not passed[1][react]["done"]:
+            admin["t0"] = time.time()
+            admin["status"] = (await ctx.owner.post(f"/admin/ingest/transactions/{react}/run",
+                                                    json={"mode": "backfill"})).status_code
+            until = time.monotonic() + ADMIN_RUN_TIMEOUT_S
+            while not scan_one(w, react)["done"] and time.monotonic() < until:
+                await asyncio.sleep(0.5)
+            admin["t1"] = time.time()
+        # A period turned over: the backfilled Creators' full walk is due (last_full_at persists).
+        con = w.sql()
+        with con:
+            con.execute("UPDATE transaction_scan_history SET last_full_at = ? WHERE fully_backfilled = 1",
+                        (ts(datetime.utcnow() - timedelta(seconds=got["full_every_s"])),))
+        con.close()
+        if not await tx_pass():
+            return
+        passed[2] = {deep: scan_one(w, deep)}
+        sw.add_tx(deep, fresh)   # a row above DEEP's walk: its next tick's recent read lands it
+        # Between the full pass and the recent one: OF gains a row 10 h old (the recent walk must
+        # land it) and one 3 days old (before its startDate: the next full walk's, not its).
+        sw.startdate_iso = ctx.fault == STARTDATE_ISO
+        at = datetime.now(timezone.utc)
+        for i, a in enumerate(aids):
+            fan = sw.txs[a][0]["user"]["id"]
+            for j, ago in enumerate(NEW_ROW_AGO):
+                pid = LEDGER_ID["new"] + i * NEW_ROWS_STRIDE + j
+                sw.add_tx(a, _tx_row(pid, fan, 1_200, at - ago, description=f"Tip from u{fan}"))
+                new_rows.setdefault(a, []).append(str(pid))
+        if not await tx_pass():
+            return
+        passed[3] = {deep: scan_one(w, deep), "fresh_held": str(fresh["id"]) in held(w, deep)[0]}
+        await tx_pass()
+
+    await supervisor_passes()
+    await runs_until(lambda runs: all(x["t1"] for x in runs))
     walls = time.time() - t_walks
     await bursts
     await earn
@@ -669,11 +617,7 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     # ── pass 2: everyone idle past the window, the next prewarm pass walks the skipped ──────────
     await asyncio.sleep(knobs["USER_WINDOW_S"] + IDLE_SLACK_S)
     (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "link_prewarm"})).raise_for_status()
-    while True:
-        got = (await ctx.owner.get("/__slop/sweep-pacing/runs")).json()
-        if all(x["t1"] for x in got["runs"]) or time.monotonic() > deadline:
-            break
-        await asyncio.sleep(0.5)
+    got = await runs_until(lambda runs: all(x["t1"] for x in runs))
     timed_out = time.monotonic() > deadline
     ctx.rec.stage = None
     await sse.stop()
@@ -788,7 +732,7 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     rows = dict(con.execute("SELECT of_id, COUNT(*) FROM link_claimers WHERE account_id = ? AND kind = 'promo'"
                             " GROUP BY of_id", (growth,)).fetchall())
     con.close()
-    pages_each = -(-GROWTH_CLAIMS // 20)
+    pages_each = -(-GROWTH_CLAIMS // CLAIMER_PAGE)
     gw = {p: {"of_gets": claim_gets.get(p, 0), "rows": rows.get(p, 0)} for p in claimed}
     ctx.check(GROWTH, growth_page.get("status") == 200 and growth_page.get("metrics_refreshing") is True
               and all(v["of_gets"] >= pages_each and v["rows"] == GROWTH_CLAIMS for v in gw.values()),
@@ -888,8 +832,8 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     budget_h = {}
     for a in full_ok:
         recent_rows = sum(1 for r in sw.txs[a] if r["createdAt"][:10] >= since)
-        budget_h[a] = round((-(-recent_rows // TX_PAGE) * 3600 / TX_TICK_S
-                             + -(-min(n_tx, TX_CAP) // TX_PAGE) * 3600 / TX_FULL_S) * TX_HEADROOM, 1)
+        budget_h[a] = round((_pages(recent_rows) * 3600 / TX_TICK_S
+                             + _pages(min(n_tx, TX_CAP)) * 3600 / TX_FULL_S) * TX_HEADROOM, 1)
     cb_on_recent = sum(1 for c, ms in zip(cycles, pass_modes) for e in log if e["route"] == "chargebacks"
                        and c["t0"] <= e["t"] <= c["t1"] and ms.get(e["account"]) == "recent")
     cb_on_full = Counter(e["account"] for c, ms in zip(cycles, pass_modes) for e in log if e["route"] == "chargebacks"
@@ -909,178 +853,10 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     ctx.check(TX_NEW_ROW, bool(full_ok) and not missed and not empty,
               full_ok=len(full_ok), missed=missed, empty_walk_warnings=len(empty), e_g=empty[:3],
               rows_3d_old_landed=sum(1 for a in full_ok if new_rows[a][1] in landed))
-    # ── the backfill's marker walk: DEEP, REACT, BLANK, GAP, CROWD ──────────
-    end = {a: _scan(w, a) for a in ledger_only}
-    held = {a: _held(w, a) for a in ledger_only}
-
-    def start_date(a: str) -> str:
-        return (datetime.fromisoformat(end[a]["floor"]) - timedelta(days=1)).date().isoformat()
-
-    def of_rows(a: str) -> list[dict]:
-        # BLANK's old rows sit below its window, held since before it: OF's sum and ours hold them.
-        return [r for r in sw.txs[a] if r["createdAt"][:10] >= start_date(a) or a == blank]
-
-    def cents(rows: list[dict]) -> int:
-        return sum(round(r["amount"] * 100) for r in rows)
-
-    disputed = sw.txs[react][REACT_DISPUTED]
-    dropped, doubled, wrong_sum, wrong_life = {}, {}, {}, {}
-    for a in ledger_only:
-        want, got_ = {str(r["id"]) for r in of_rows(a)}, held[a][0]
-        missing, above = want - set(got_), set(got_) - want
-        dropped[a] = {"of": len(want), "held": len(got_), "missing": len(missing), "not_in_window": len(above),
-                      "done": end[a]["done"], "e_g": sorted(missing | above)[:3]}
-        doubled[a] = sum(1 for n in got_.values() if n > 1)
-        wrong_sum[a] = {"of_cents": cents(of_rows(a)), "held_cents": held[a][1]}
-        wrong_life[a] = {"of_cents": cents(of_rows(a)) - (cents([disputed]) if a == react else 0),
-                         "lifetime_cents": held[a][2]}
-    ctx.check(BF_DROPPED, all(v["missing"] == 0 and v["not_in_window"] == 0 and v["done"] for v in dropped.values()),
-              **{a: dropped[a] for a in dropped})
-    con = w.sql()
-    # A first charge and a renewal are one count: the writer relabels a fan's later `Subscription from` a rebill.
-    sub = lambda k: "sub" if k in ("subscription", "rebill") else k  # noqa: E731
-    kinds = {a: (dict(Counter(sub(k) for k, in con.execute(
-        "SELECT kind FROM transactions WHERE account_id = ? AND provider_transaction_id IS NOT NULL", (a,)))),
-        dict(Counter(sub(_sale(r)[0]) for r in of_rows(a)))) for a in dropped}
-    con.close()
-    ctx.check(BF_ONCE, not any(doubled.values()) and all(v["of_cents"] == v["held_cents"] for v in wrong_sum.values())
-              and all(held_k == of_k for held_k, of_k in kinds.values()),
-              doubled=doubled, sums=wrong_sum, kinds_held_vs_of=kinds)
-    ctx.check(BF_LIFETIME, all(v["of_cents"] == v["lifetime_cents"] for v in wrong_life.values()), lifetime=wrong_life)
-
-    s1 = passed.get(1, {})
-    d1, r1, d2, d3 = s1.get(deep) or {}, s1.get(react) or {}, (passed.get(2) or {}).get(deep) or {}, (passed.get(3) or {}).get(deep) or {}
-    b1, g1 = s1.get(blank) or {}, s1.get(gap_a) or {}
-    partial = {
-        "reactivation_reopened": react0["done"] == 0 and bool(react0["floor"])
-        and react0["floor"][:10] == ts(w.now - timedelta(days=REACT_GAP_D))[:10] and react0["cursor"] is None,
-        "deep_pass1_not_done": d1.get("done") == 0,
-        "deep_pass1_cursor_saved": bool(d1.get("cursor")),
-        "deep_pass1_429_recorded": "429" in (d1.get("last_error") or "") and d1.get("failures") == 2,
-        "deep_pass1_not_paused": d1.get("status") != "paused" and not d1.get("paused_until"),
-        "react_pass1_not_done": r1.get("done") == 0,
-        "react_pass1_stalled": r1.get("status") == "backfill_stalled" and bool(r1.get("cursor"))
-        and r1.get("last_error") == "backfill_stopped: empty_page",
-        "blank_reopened": blank0["done"] == 0 and blank0["cursor"] is None,
-        "blank_pass1_stalled": b1.get("done") == 0 and b1.get("status") == "backfill_stalled"
-        and b1.get("last_error") == "backfill_stopped: blank_first_page",
-        "admin_run_accepted": admin.get("status") == 202,
-        "deep_pass2_refreshed_cursor_kept": len(pass_modes) > 1 and pass_modes[1].get(deep) == "refresh"
-        and d2.get("done") == 0 and bool(d1.get("cursor")) and d2.get("cursor") == d1.get("cursor"),
-        "deep_pass3_not_done": d3.get("done") == 0,
-        "deep_pass3_cursor_lower": bool(d3.get("cursor")) and bool(d2.get("cursor")) and d3["cursor"] < d2["cursor"],
-        "all_complete_at_end": all(end[a]["done"] == 1 for a in end),
-        "none_paused_at_end": not any(end[a]["paused_until"] for a in end),
-    }
-    ctx.check(BF_PARTIAL, all(partial.values()), **partial, deep_pass1=d1, react_pass1=r1, blank_pass1=b1,
-              deep_pass2=d2, deep_pass3=d3, end={a: end[a] for a in (deep, react, blank, gap_a)})
-
-    # ── GAP: the resumed read that cannot reach newest_seen ─────────────────
-    capped = [y for y in plog if "ingest_tx_backfill_recent_capped" in y["msg"] and f"account={gap_a}" in y["msg"]]
-    gap_gets = sorted((e for e in log if e["account"] == gap_a and e["route"] == "transactions" and e["status"] == 200
-                       and len(cycles) > 1 and cycles[1]["t0"] <= e["t"] <= cycles[1]["t1"]), key=lambda e: e["t"])
-    gap_q = [parse_qs(e["query"]) for e in gap_gets]
-    rewalk = {
-        "pass1_refresh": bool(pass_modes) and pass_modes[0].get(gap_a) == "refresh",
-        "pass1_left_the_range": g1.get("newest") == gap0["newest"] and g1.get("cursor") == gap0["cursor"],
-        "pass2_read_capped": len(capped) == 1,
-        "pass2_read_pages": [e["offset"] for e in gap_gets[:FRESH_PAGES]] == [TX_PAGE * k for k in range(FRESH_PAGES)],
-        "pass2_walk_from_the_top": len(gap_q) > FRESH_PAGES + 1 and "marker" not in gap_q[FRESH_PAGES]
-        and "marker" in gap_q[FRESH_PAGES + 1],
-        "complete_at_end": end[gap_a]["done"] == 1,
-    }
-    ctx.check(BF_GAP, all(rewalk.values()), **rewalk, gets=len(gap_gets), scan_seeded=gap0, scan_pass1=g1, scan_end=end[gap_a])
-
-    # ── CROWD: one shared bucket ────────────────────────────────────────────
-    crowd_set = set(crowd)
-    crowd_429 = [e for e in log if e["account"] in crowd_set and e["status"] == 429]
-    crowd_terminal, crowd_refresh_terminal = [], []
-    for e in crowd_429:
-        page = same[(e["account"], e["route"], e["query"])]
-        if any(x["t"] < e["t"] and x["status"] == 429 for x in page):
-            # The full 7-day walk (`start=`, _REFRESH_CONCURRENCY, unchanged) is reported, not held to this: its tick
-            # fails and the next one redoes it, so the bound below gives it those pages.
-            (crowd_refresh_terminal if "start=" in e["query"] else crowd_terminal).append(
-                {"account": e["account"], "t": round(e["t"] - t_walks, 1), "query": e["query"]})
-    crowd_since = (w.now.replace(tzinfo=None) - timedelta(hours=TX_RECENT_H, days=1)).date().isoformat()
-    crowd_calls = {}
-    for a in crowd:
-        rows_ = sw.txs[a]
-        recent_rows = sum(1 for r in rows_ if r["createdAt"][:10] >= crowd_since)
-        # Its walk + a full walk + its recent walks (never more pages than rows imply) + 2 polls (complete, full).
-        bound = (-(-len(rows_) // TX_PAGE) + 1 + FRESH_PAGES + (TX_CYCLES - 2) * -(-recent_rows // TX_PAGE)
-                 + FRESH_PAGES * sum(1 for x in crowd_refresh_terminal if x["account"] == a))
-        n = sum(1 for e in log if e["account"] == a and e["route"] == "transactions" and e["status"] == 200)
-        cb_n = sum(1 for e in log if e["account"] == a and e["route"] == "chargebacks")
-        crowd_calls[a] = {"ledger": n, "bound": bound, "disputes": cb_n}
-    crowd_done = {a: end[a]["done"] for a in crowd}
-    ctx.check(BF_SHARED, all(crowd_done.values()) and not crowd_terminal
-              and all(v["ledger"] <= v["bound"] and v["disputes"] <= 2 for v in crowd_calls.values()),
-              creators=len(crowd), rows_each=CROWD_ROWS, of_429s=len(crowd_429), terminal_429s=len(crowd_terminal),
-              refresh_terminal_429s=crowd_refresh_terminal,
-              e_g=crowd_terminal[:4], calls=crowd_calls, not_done=[a for a, v in crowd_done.items() if not v],
-              refill_per_s=sw.refill_per_s, burst=sw.burst)
-
-    def walk_entries(a: str, t0: float, t1: float) -> tuple[list[dict], list[dict]]:
-        """The Creator's ledger GETs between t0 and t1, 200s: its marker walk's / its recent read's."""
-        rows = [e for e in log if e["account"] == a and e["route"] == "transactions" and t0 <= e["t"] <= t1
-                and e["status"] == 200]
-        wk = [e for e in rows if (parse_qs(e["query"]).get("startDate") or [""])[0] == start_date(a)]
-        return wk, [e for e in rows if e not in wk]
-
-    spans = [(c["t0"], c["t1"]) for c in cycles]
-    react_spans = [(admin.get("t0") or 0, admin.get("t1") or 0), *spans[:1]]
-    react_walks = [{"walk": len(x), "recent": len(y)} for x, y in (walk_entries(react, *c) for c in react_spans)]
-    deep_full = [c for c, ms in zip(spans, pass_modes) if ms.get(deep) == "refresh"]   # no startDate: not a walk's
-    deep_spans = [{"walk": len(x), "recent": len(y)} for x, y in (walk_entries(deep, *c) for c in spans if c not in deep_full)]
-    deep_end = spans[-1][1] if spans else 0
-    react_end = max(admin.get("t1") or 0, spans[0][1] if spans else 0)
-    wire = [e for a in (deep, react) for e in log if e["account"] == a and e["route"] == "transactions"
-            and e["t"] <= (deep_end if a == deep else react_end)
-            and not (a == deep and any(t0 <= e["t"] <= t1 for t0, t1 in deep_full))]
-    bad_wire = [e["query"] for e in wire
-                if {"start", "end"} & set(parse_qs(e["query"]))
-                or len((parse_qs(e["query"]).get("startDate") or [""])[0]) != 10]
-    walk_q = [e for a in (deep, react) for c in ([*spans] if a == deep else react_spans) for e in walk_entries(a, *c)[0]]
-    bad_offset = [e["query"] for e in walk_q if e["offset"] != 0]
-    deep_total = sum(x["walk"] for x in deep_spans)
-    deep_bound = DEEP_ROWS // 97 + len(spans)
-    deep_cb = sum(1 for e in log if e["account"] == deep and e["route"] == "chargebacks")
-    ctx.check(BF_CALLS, all(x["walk"] <= TICK_PAGES and x["recent"] <= FRESH_PAGES for x in [*deep_spans, *react_walks])
-              and not bad_wire and not bad_offset and deep_total <= deep_bound and deep_cb == 2,
-              deep_disputes_calls=deep_cb,
-              tick_cap=TICK_PAGES, fresh_cap=FRESH_PAGES, deep_per_pass=deep_spans, react_admin_then_pass1=react_walks,
-              deep_walk_pages=deep_total, deep_bound=deep_bound, bad_wire=bad_wire[:3], bad_offset=bad_offset[:3])
-
-    pass3 = sorted((e for e in log if e["account"] == deep and e["route"] == "transactions"
-                    and spans[2][0] <= e["t"] <= spans[2][1]), key=lambda e: e["t"]) if len(spans) > 2 else []
-    fresh_first = bool(pass3) and "marker" not in pass3[0]["query"]
-    ctx.check(BF_FRESH, passed.get(3, {}).get("fresh_held") is True and fresh_first
-              and partial["deep_pass3_cursor_lower"],
-              fresh_held_after_pass3=passed.get(3, {}).get("fresh_held"), pass3_first_get=pass3[0]["query"] if pass3 else None,
-              cursor_pass2=d2.get("cursor"), cursor_pass3=d3.get("cursor"))
-
-    con = w.sql()
-    flips = dict(con.execute("SELECT status, COUNT(*) FROM transactions WHERE account_id = ? AND provider_transaction_id IN "
-                             f"({','.join('?' * (REACT_FLIPS + 1))}) GROUP BY status",
-                             (react, *(str(sw.txs[react][k]["id"]) for k in (0, *range(200, 200 + REACT_FLIPS)))))
-                 .fetchall())
-    con.close()
-    react_all = [f for _t, f, acct in sse.state_events if str(acct) == str(react)]
-    react_news = [f for f in react_all if f.get("status") != "chargedback"]
-    dispute_news = [f for f in react_all if f.get("status") == "chargedback"]
-    dispute = {"pass1_status": passed.get(1, {}).get("disputed"), "end_status": _tx_status(w, react, disputed["id"]),
-               "lifetime": wrong_life[react], "announced": len(dispute_news),
-               "disputes_calls": sum(1 for e in log if e["route"] == "chargebacks" and e["account"] == react)}
-    ctx.check(BF_DISPUTE, dispute["pass1_status"] == dispute["end_status"] == "chargedback"
-              and wrong_life[react]["of_cents"] == wrong_life[react]["lifetime_cents"] and len(dispute_news) == 1,
-              **dispute)
-    ctx.check(BF_BURST, flips == {"cleared": REACT_FLIPS + 1} and len(react_news) == 1,
-              db_statuses=flips, sse_events=len(react_news), sse_all=len(sse.state_events), e_g=react_news[:3],
-              frames=sse.frames, stream_ended=sse.ended)
-    ctx.metric("tx_backfill", {"deep": deep, "react": react, "blank": blank, "gap": gap_a, "crowd": crowd, "deep_per_pass": deep_spans, "react_per_run": react_walks,
-                               "deep_rows": DEEP_ROWS, "react_rows": REACT_ROWS,
-                               "backfill_stops": [y["msg"] for y in plog if "ingest_tx_backfill_stop" in y["msg"]]})
+    sweep_pacing_backfill.check(
+        ctx, w, sw, deep=deep, react=react, blank=blank, gap_a=gap_a, crowd=crowd, passed=passed, react0=react0,
+        blank0=blank0, gap0=gap0, admin=admin, pass_modes=pass_modes, plog=plog, log=log, cycles=cycles, same=same,
+        t_walks=t_walks, since=since, sse=sse)
 
     slow = sorted((x for x in user_relay if p95 is not None and x["ms"] >= p95), key=lambda x: x["t"])
     ctx.metric("user_lookups_at_or_over_p95", [{"s_into_walks": round(x["t"] - t_walks, 1), "ms": round(x["ms"]),

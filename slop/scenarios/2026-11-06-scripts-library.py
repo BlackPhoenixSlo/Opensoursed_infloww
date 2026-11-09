@@ -67,6 +67,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from slop.actors import ui
+from slop.lib.procmon import pct
 from slop.lib.scripts_library_faults import (ALL_MODELS_VIEW, IMPORT_COUNTS, LIST_LOAD, LIST_P95, READ_BACK,
                                              REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_ALL_MODELS, UI_SEND,
                                              UI_SIDEBAR, UI_STEPS, UI_TAGS)
@@ -206,11 +207,6 @@ def _counts(out: str) -> dict[str, int]:
     return c
 
 
-def _p95(ms: list[float]) -> float:
-    s = sorted(ms)
-    return round(s[min(len(s) - 1, int(len(s) * 0.95))], 1) if s else 0.0
-
-
 def _day(v: str) -> str:
     return datetime.strptime(v, "%b %d, %Y").strftime("%Y-%m-%d")
 
@@ -306,9 +302,9 @@ async def run(ctx) -> None:
               and got_views == views, rows=len(rows), want_rows=want_rows, field_diffs=len(diffs),
               first_diffs=diffs[:3], loose=len(loose_rows), metas=len(metas), meta_bad=meta_bad[:5],
               views=got_views)
-    p95_serial = _p95(serial)
+    p95_serial = pct(serial)
     budget = LIST_P95_MS[ctx.scale]
-    ctx.check(LIST_P95, p95_serial <= budget, budget=True, p95_ms=p95_serial, budget_ms=budget, rows=len(rows),
+    ctx.check(LIST_P95, p95_serial is not None and p95_serial <= budget, budget=True, p95_ms=p95_serial, budget_ms=budget, rows=len(rows),
               reads=SERIAL_READS)
 
     # 3. --users owners read the whole list at once.
@@ -327,7 +323,7 @@ async def run(ctx) -> None:
         await asyncio.gather(*(reader(h) for h in clients))
     finally:
         await asyncio.gather(*(h.aclose() for h in clients))
-    p95_load = _p95(lat)
+    p95_load = pct(lat)
     ctx.check(LIST_LOAD, len(seen) == ctx.users * READS_PER_USER and all(s == (200, len(rows)) for s in seen),
               users=ctx.users, reads=len(seen), wrong=[s for s in seen if s != (200, len(rows))][:5],
               p95_ms=p95_load)

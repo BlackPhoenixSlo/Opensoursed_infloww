@@ -1,22 +1,27 @@
-"""Sidebar: My Automations split in two plus Full AI Chatter (2026-11-07). The owner on a phone opens
-the nav drawer and finds My Automations (Auto Post, Auto Story, Auto Mass, Gen-Info, and the pages a flow
-in files of its own adds: lib/<flow>_nav.py `MY_AUTOMATIONS`),
-then My AI Chatter (Auto-reply, Auto Funnel, Get to know fans), then Full AI Chatter, and taps it: the
-drawer closes on the coming-soon page. At desktop width the sidebar on Auto-reply holds My AI Chatter
-open with Auto-reply current. A chatter whose enforced role ticks Auto-reply only sees My AI Chatter
-(Auto-reply and Get to know fans, the not-opt-in page), no My Automations, no Full AI Chatter
-(owner-only). A nav flow, not a volume one: one owner, one chatter, real routes on the slop temp DB.
+"""Sidebar: My Automations split in two, Full AI Chatter in My AI Chatter, Vault Pro out of Growth, one group
+open at a time (2026-11-07, 11-08). The owner on a phone opens the nav drawer: Messages Pro, Vault Pro,
+Growth, Share for Share, My Automations, My AI Chatter as entries (no Focus row: #379, Focus opens from
+Messages Pro). Opening My Automations (the pages a flow in files of its own adds: lib/<flow>_nav.py
+`MY_AUTOMATIONS`, then Auto Mass, Auto Post, Auto Story, Auto Funnel, Gen-Info), then My AI Chatter
+(Auto-reply, Get to know fans, Full AI Chatter) leaves
+only My AI Chatter open; tapping Full AI Chatter closes the drawer on the coming-soon page. At desktop
+width the sidebar on Auto-reply holds My AI Chatter open with Auto-reply current. A chatter whose enforced
+role ticks Auto-reply only sees My AI Chatter (Auto-reply and Get to know fans, the not-opt-in page), no
+My Automations, no Full AI Chatter (owner-only). A nav flow, not a volume one: one owner, one chatter,
+real routes on the slop temp DB.
 
 World: `agency_inbox`; the chatter through the real invite + register (`seed/chatters`), the role
 through `PUT /admin/settings/roles`.
 
 Invariants: the stored role and the chatter's Applied read (`opt_in` exactly Auto-reply), the three
 sidebars' outlines, the coming-soon page after the tap, no 5xx from the relay in any browser.
-Screenshots: phone-drawer (trigger), phone-full-ai-chatter (settled; -dark too), desktop-sidebar,
-chatter-sidebar. --no-ui: the route checks only.
+Screenshots: phone-drawer, phone-accordion-trigger (My Automations open), phone-accordion (settled: only
+My AI Chatter open), phone-full-ai-chatter (settled; -dark too), desktop-sidebar, chatter-sidebar. --no-ui:
+the route checks only.
 
 Fault `full-ai-chatter-shown-to-chatter` (nav.ts's Full AI Chatter without `chatterHidden`) must turn
-only the chatter-sidebar check red.
+only the chatter-sidebar check red; `sidebar-groups-not-accordion` (Sidebar.tsx keeping every toggled group
+open) only the accordion check.
 """
 from __future__ import annotations
 
@@ -37,22 +42,26 @@ AUTO_REPLY = "/growth/auto-reply"
 GTKF = "/growth/get-to-know-fans"
 FULL = "/full-ai-chatter"
 
-_AUTOMATIONS = ("Auto Post", "Auto Story", "Auto Mass", "Gen-Info", *navs.extras("MY_AUTOMATIONS"))
+_AUTOMATIONS = (*navs.extras("MY_AUTOMATIONS"), "Auto Mass", "Auto Post", "Auto Story", "Auto Funnel", "Gen-Info")
 MY_AUTOMATIONS = "My Automations: " + " / ".join(_AUTOMATIONS)
-MY_AI_CHATTER = "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans"
+MY_AI_CHATTER = "My AI Chatter: Auto-reply / Get to know fans / Full AI Chatter"
+# The drawer's entries from Messages Pro to the divider, groups by label.
+ENTRIES = ["Messages Pro", "Vault Pro", "Growth", "Share for Share", "My Automations", "My AI Chatter"]
 
 C_ROLE = "PUT /admin/settings/roles (enforced, a role ticking Auto-reply of the opt-in pages) is stored and read back"
 C_APPLIED = ("chatter's GET /admin/settings/applied: opt_in is exactly Auto-reply; pages hold Auto-reply, "
              "Get to know fans and Full AI Chatter")
-C_PHONE_DRAWER = (f"phone (390x844): the nav drawer lists My Automations ({len(_AUTOMATIONS)} pages), then My AI Chatter "
-                  "(Auto-reply, Auto Funnel, Get to know fans), then Full AI Chatter")
+C_PHONE_DRAWER = ("phone (390x844): the nav drawer's entries run Messages Pro, Vault Pro, Growth, Share for "
+                  "Share, My Automations, My AI Chatter (no Focus); Vault Pro is not in Growth, Full AI Chatter not an entry")
+C_ACCORDION = (f"phone: opening My Automations ({len(_AUTOMATIONS)} pages), then My AI Chatter (Auto-reply, "
+               "Get to know fans, Full AI Chatter) leaves only My AI Chatter open")
 C_PHONE_PAGE = "phone: tapping Full AI Chatter in the drawer closes it on /full-ai-chatter showing Coming soon"
-C_DESKTOP = ("desktop (1440px): on Auto-reply the sidebar holds My Automations, then My AI Chatter with "
-             "Auto-reply current, then Full AI Chatter")
+C_DESKTOP = ("desktop (1440px): on Auto-reply the sidebar holds My Automations closed, then My AI Chatter open "
+             "with Auto-reply current and Full AI Chatter its last page")
 C_CHATTER = ("chatter (role ticks Auto-reply only): the sidebar shows My AI Chatter with Auto-reply and "
              "Get to know fans, no My Automations, no Full AI Chatter")
 C_5XX = "no 5xx from the relay in any browser session"
-CHECKS = (C_ROLE, C_APPLIED, C_PHONE_DRAWER, C_PHONE_PAGE, C_DESKTOP, C_CHATTER, C_5XX)
+CHECKS = (C_ROLE, C_APPLIED, C_PHONE_DRAWER, C_ACCORDION, C_PHONE_PAGE, C_DESKTOP, C_CHATTER, C_5XX)
 
 # The sidebar under `sel` as lines: "Label" for a link, "Group: Child / Child" for a group (its open
 # children only), "—" for the divider.
@@ -126,7 +135,7 @@ async def run(ctx) -> None:
     ctx.metric("chatter", who)
     try:
         if ctx.app is None:
-            for c in (C_PHONE_DRAWER, C_PHONE_PAGE, C_DESKTOP, C_CHATTER, C_5XX):
+            for c in (C_PHONE_DRAWER, C_ACCORDION, C_PHONE_PAGE, C_DESKTOP, C_CHATTER, C_5XX):
                 ctx.skip(c, "--no-ui")
             return
         statuses = []
@@ -137,14 +146,28 @@ async def run(ctx) -> None:
             await toggle.wait_for(timeout=90_000)
             await toggle.tap()
             await page.locator(f"{drawer} nav[aria-label='Main']").wait_for(timeout=30_000)
-            await _expand(page, drawer, ("My Automations", "My AI Chatter"))
+            await page.wait_for_timeout(400)  # the sheet's slide-in
+            lines = await page.evaluate(_OUTLINE, drawer) or []
+            await ui.shot(ctx, page, "phone-drawer")
+            labels = [l.split(":")[0] for l in lines]
+            got = labels[labels.index("Messages Pro"):labels.index("—")] if {"Messages Pro", "—"} <= set(labels) else labels
+            growth = await page.locator(f"{drawer} nav[aria-label='Main'] > div a[href='/growth/vault-pro']").count()
+            ctx.check(C_PHONE_DRAWER, got == ENTRIES and growth == 0, got=got, vault_pro_in_a_group=growth)
+
+            expanded = page.locator(f"{drawer} nav[aria-label='Main'] button[aria-expanded='true']")
+            await _expand(page, drawer, ("My Automations",))
+            await page.wait_for_timeout(300)  # the chevron's turn
+            first = _window(await page.evaluate(_OUTLINE, drawer))
+            await ui.shot(ctx, page, "phone-accordion-trigger")
+            await _expand(page, drawer, ("My AI Chatter",))
             full = page.locator(f"{drawer} a[href='{FULL}']")
             await full.scroll_into_view_if_needed()
-            await page.wait_for_timeout(400)  # the sheet's slide-in and the chevrons' turn
-            lines = await page.evaluate(_OUTLINE, drawer)
-            await ui.shot(ctx, page, "phone-drawer")
-            got = _window(lines)
-            ctx.check(C_PHONE_DRAWER, got == [MY_AUTOMATIONS, MY_AI_CHATTER, "Full AI Chatter"], got=got)
+            await page.wait_for_timeout(300)
+            then = _window(await page.evaluate(_OUTLINE, drawer))
+            open_ = [t.strip() for t in await expanded.all_text_contents()]
+            await ui.shot(ctx, page, "phone-accordion")
+            ctx.check(C_ACCORDION, first[:1] == [MY_AUTOMATIONS] and then == ["My Automations: ", MY_AI_CHATTER]
+                      and open_ == ["My AI Chatter"], first=first, then=then, open=open_)
             await full.tap()
             ok = True
             try:
@@ -168,13 +191,11 @@ async def run(ctx) -> None:
             await page.goto(f"{ctx.app}{AUTO_REPLY}", wait_until="domcontentloaded")
             cur = page.locator(f"#app-sidebar a[aria-current='page'][href='{AUTO_REPLY}']")
             await cur.wait_for(timeout=90_000)
-            await _expand(page, "#app-sidebar", ("My Automations",))
             await page.locator(f"#app-sidebar a[href='{FULL}']").scroll_into_view_if_needed()
             await page.wait_for_timeout(300)
             got = _window(await page.evaluate(_OUTLINE, "#app-sidebar"))
             await ui.shot(ctx, page, "desktop-sidebar")
-            ctx.check(C_DESKTOP, got == [MY_AUTOMATIONS, MY_AI_CHATTER, "Full AI Chatter"] and await cur.count() == 1,
-                      got=got)
+            ctx.check(C_DESKTOP, got == ["My Automations: ", MY_AI_CHATTER] and await cur.count() == 1, got=got)
             statuses += page.slop["statuses"]
 
         async with ui.chatter_tab(ctx, http, ctx.app, viewport=DESKTOP) as page:
@@ -185,7 +206,7 @@ async def run(ctx) -> None:
             lines = await page.evaluate(_OUTLINE, "#app-sidebar") or []
             await ui.shot(ctx, page, "chatter-sidebar")
             ctx.check(C_CHATTER, "My AI Chatter: Auto-reply / Get to know fans" in lines
-                      and not any(l.startswith("My Automations") for l in lines) and "Full AI Chatter" not in lines,
+                      and not any(l.startswith("My Automations") or "Full AI Chatter" in l for l in lines),
                       lines=lines)
             statuses += page.slop["statuses"]
         bad = [u for s, u in statuses if s >= 500 and "/api/of/" not in u]

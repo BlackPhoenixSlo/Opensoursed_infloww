@@ -2,7 +2,7 @@
 merges `register(Fault)` into FAULTS. The check names live here and the scenario imports them.
 
   consent-send-ok-not-clearing  an accepted media send no longer clears the row (the clear-on-send branch
-                                dropped): targets CLEARED_BY_SEND.
+                                dropped): targets CLEARED_BY_SEND and UI_SETTLED.
   consent-pinned-readable       `read` no longer refuses a pinned row: targets NOT_DISMISSABLE.
 """
 from __future__ import annotations
@@ -14,13 +14,14 @@ SENDS_KEPT = ("consent: every media send of an unflagged Creator answered 200 an
               "flagged Creator's answered 502 with OF's 400 Consent not accepted, none kept")
 FLAGGED_BY_ME = "consent: a /users/me with needConsent (the pump's reconnect) files the row with its law (AL)"
 NOT_DISMISSABLE = ("consent: POST /{id}/read on each pinned row answers 409 and read-all leaves them unread "
-                   "(SQL read_at NULL, API unread counts them)")
+                   "(SQL read_at NULL; both rows remain pinned)")
 UI_TRIGGER = ("consent UI: desktop and phone portrait show the banner naming both Creators, its View opens the "
               "bell's Agency tab with both pinned rows and no dismiss button on them")
 CLEARED_BY_ME = "consent: /users/me consentStatus approved (the pump's reconnect) deletes the row (SQL, API)"
 CLEARED_BY_SEND = "consent: an accepted media send deletes the row (SQL, API)"
 CLEARED_BY_REMOVAL = "consent: the owner removing the flagged Creator (DELETE /admin/accounts/{id}) drops its row"
 UI_SETTLED = "consent UI: desktop and phone portrait show no banner and no pinned row once all cleared"
+
 
 
 def _send_ok_not_clearing() -> None:
@@ -55,7 +56,7 @@ def _pinned_readable() -> None:
 def register(Fault) -> dict:
     return {
         # slop/run consent-required-notice --break (the scenario's FAULT)
-        "consent-send-ok-not-clearing": Fault(_send_ok_not_clearing, (CLEARED_BY_SEND,)),
+        "consent-send-ok-not-clearing": Fault(_send_ok_not_clearing, (CLEARED_BY_SEND, UI_SETTLED)),
         # slop/run consent-required-notice --break --fault=consent-pinned-readable --baseline=...
         "consent-pinned-readable": Fault(_pinned_readable, (NOT_DISMISSABLE,)),
     }

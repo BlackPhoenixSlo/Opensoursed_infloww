@@ -15,7 +15,10 @@ import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
-vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
+vi.mock("@/lib/events", async (orig) => ({
+  ...(await orig<typeof import("@/lib/events")>()),
+  eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} },
+}));
 // The signed-in principal: an owner, unless a case signs in a chatter only;
 // and the Employee at the keyboard, which a case may switch or leave pending
 // (reset before each case).

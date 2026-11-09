@@ -31,7 +31,7 @@
  *     `saveErr` is shown whenever its account is on screen — a failed write
  *     must not vanish because the operator looked at another account meanwhile.
  *   • Every edit (`field`, `slots`, a good `applyJson`) clears the save's
- *     verdict: the pinned bar keeps it in view and must not outlive the state
+ *     verdict: the footer beside Save keeps it in view and must not outlive the state
  *     it describes. Typing in the JSON box counts as unsaved (so a refetch
  *     keeps it) but is not an edit until applied.
  *   • `hydrate` also takes the account's kept draft (lib/pendingDraft: a tab
@@ -60,7 +60,7 @@ export interface NudgeOnlineState {
   /** The Advanced textarea; becomes `slots` on `applyJson`. */
   jsonDraft: string;
   jsonErr: string | null;
-  /** The save's own verdict — the pinned bar shows only this. */
+  /** The save's own verdict, shown in the footer beside Save. */
   save: { ok: true } | { ok: false; err: string } | null;
   runMsg: string | null;
   previewErr: string | null;
@@ -220,12 +220,13 @@ export interface SaveGateInput {
   rulesError: boolean;
 }
 
-/** THE save gate — the in-flow Save and the pinned bar read this one value.
+/** THE save gate — the tab's one Save (the editor dialog's footer,
+ *  `EditorFooter`) reads this value.
  *
  *  `drafted` is the load half, and it is a DATA-LOSS guard. The form only
- *  exists inside the `!drafted ? … : <Card>` ternary, but the pinned bar
- *  is a sibling of that ternary and renders throughout the fetch — and `busy`
- *  only watches the save PUTs. A bar gated on `busy || !accountId` alone was
+ *  exists inside the `!drafted ? … : <form>` ternary, but the footer Save
+ *  is outside that ternary and renders throughout the fetch — and `busy`
+ *  only watches the save PUTs. A Save gated on `busy || !accountId` alone was
  *  live while the form it saves was not on screen, and one click PUT
  *  `{slots:{}}` (the unseeded draft) to /admin/nudge-config — a whole-blob
  *  replace that wipes the account's nudge config. `drafted` (`base !== null`)
@@ -249,9 +250,9 @@ export function canSave(g: SaveGateInput): boolean {
   return !!g.accountId && g.drafted && g.rulesHasData && !g.rulesPlaceholder;
 }
 
-/** Why Save is off — a pinned grey button with nothing beside it reads as
- *  broken. Shown in the pinned bar, which stays on screen while the form
- *  is scrolled away; a failed load is also the card's own text (both on
+/** Why Save is off — a grey button with nothing beside it reads as broken.
+ *  Shown in the footer beside Save, which stays on screen while the form is
+ *  scrolled away; a failed load is also the form's own text (both on
  *  purpose). Waiting is dim; a failed load red. */
 export function gateNote(g: SaveGateInput): GateNote | null {
   if (canSave(g) || !g.accountId) return null;

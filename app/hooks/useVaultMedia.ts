@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
+import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultTypeCounts, type VaultMediaResp } from "@/lib/relay";
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
@@ -76,18 +76,24 @@ export async function fetchAllVaultLists(
   // `refresh=1`: the relay skips its shared vault cache (a day's TTL) and asks OF.
   const bypass = refresh ? "&refresh=1" : "";
   const merged: VaultList[] = [];
+  let all: VaultTypeCounts | undefined;
   let offset = 0;
   for (let page = 0; page < 20; page++) {
     const r = await relay.get<VaultListsResp>(
       `/api/of/v2/vault/lists?view=main&limit=${LISTS_PAGE}&offset=${offset}${bypass}`,
       ctx,
     );
+    // OF's whole-vault counts, the counts only: its `all.medias` are signed urls, and this cache is persisted.
+    if (page === 0 && r.all) {
+      const { photosCount, videosCount, gifsCount, audiosCount } = r.all;
+      all = { photosCount, videosCount, gifsCount, audiosCount };
+    }
     const rows = r.list ?? [];
     merged.push(...rows);
     if (!r.hasMore || rows.length === 0) break;
     offset += LISTS_PAGE;
   }
-  return { list: merged.map((l) => stableCovers(l, ctx.accountId)), hasMore: false };
+  return { list: merged.map((l) => stableCovers(l, ctx.accountId)), hasMore: false, ...(all && { all }) };
 }
 
 /** ["vault-lists"] is persisted to the browser, so a folder's covers must not be
@@ -149,6 +155,7 @@ export function useVaultLists(accountId: string | null, enabled = true, includeE
       list: (d.list ?? []).filter(
         (l: VaultList) => l.type === "custom" && (includeEmpty || l.hasMedia),
       ),
+      all: d.all,
     }),
   });
   const { refetch } = q;

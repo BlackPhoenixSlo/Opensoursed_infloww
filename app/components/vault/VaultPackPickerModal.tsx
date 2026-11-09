@@ -33,7 +33,7 @@
  * and tiles queue for a turn.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, X } from "lucide-react";
 
@@ -45,7 +45,9 @@ import {
 } from "@/hooks/useVaultCache";
 import { mirrorFullSrc } from "@/lib/mediaUrl";
 import { makeSlotGate } from "@/components/vault/slotGate";
+import { initialPackStatus, packStatusReducer } from "@/components/vault/packStatus";
 import { IfButton, IfModal, IfSegmented } from "@/components/ui/infloww";
+import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { errText } from "@/lib/errText";
 
 /** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
@@ -245,11 +247,10 @@ export default function VaultPackPickerModal({
   /** Unsaved verdicts, media_id -> rung|null. Absent = untouched this session. */
   const [draft, setDraft] = useState<Record<number, string | null>>({});
   const [filter, setFilter] = useState("undecided");
-  /** Non-empty while any request is in flight; shown once, in the status bar. */
-  const [busy, setBusy] = useState("");
-  const [note, setNote] = useState("");
-  /** Items the last publish left on OF that their rung no longer holds (the warning icon by the note). */
-  const [stale, setStale] = useState(0);
+  /** The status bar: `busy` non-empty while any request is in flight, else the last result (packStatus.ts). */
+  const [status, dispatchStatus] = useReducer(packStatusReducer, initialPackStatus);
+  const { busy } = status;
+  const confirm = useIfConfirm();
 
   const rungs = data?.rungs ?? [];
   // The shelf comes from the QUERY, not from the last save's response, so the
@@ -294,9 +295,7 @@ export default function VaultPackPickerModal({
 
   async function save() {
     if (!dirty) return;
-    setBusy("saving…");
-    setNote("");
-    setStale(0);
+    dispatchStatus({ type: "start", busy: "saving…" });
     try {
       const verdicts = Object.entries(draft).map(([media_id, rung]) => ({
         media_id: Number(media_id),
@@ -304,11 +303,12 @@ export default function VaultPackPickerModal({
       }));
       const res = await savePackTriage(accountId, category, verdicts);
       setDraft({});
-      setNote(`saved ${res.saved} (${res.rejected} rejected)`);
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
       await qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
-    } finally {
-      setBusy("");
+      dispatchStatus({ type: "ok", note: `saved ${res.saved} (${res.rejected} rejected)` });
+    } catch (e) {
+      // The verdicts stay in the draft: Save again retries them.
+      dispatchStatus({ type: "fail", note: `save failed: ${errText(e)}` });
     }
   }
 
@@ -322,18 +322,13 @@ export default function VaultPackPickerModal({
   }
 
   async function publish(folderId: number, name: string) {
-    setBusy(`publishing ${name} to OF…`);
-    setNote("");
-    setStale(0);
+    dispatchStatus({ type: "start", busy: `publishing ${name} to OF…` });
     try {
       const res = await publishFolderToOf(accountId, folderId);
-      setStale(res.stale_on_of.length);
-      setNote(describe(res));
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
+      dispatchStatus({ type: "ok", note: describe(res), stale: res.stale_on_of.length });
     } catch (e) {
-      setNote(`publish failed: ${errText(e)}`);
-    } finally {
-      setBusy("");
+      dispatchStatus({ type: "fail", note: `publish failed: ${errText(e)}` });
     }
   }
 
@@ -346,29 +341,28 @@ export default function VaultPackPickerModal({
    * real on OF and a re-run tops them up rather than duplicating.
    */
   async function publishAll() {
-    const stocked = shelf.filter((f) => f.folder_id && f.count);
     if (!stocked.length) return;
     const done: string[] = [];
     let staleN = 0;
-    setNote("");
-    setStale(0);
+    const step = (name: string) => `publishing ${name} to OF… (${done.length + 1}/${stocked.length})`;
     try {
       for (const f of stocked) {
-        setBusy(`publishing ${f.name} to OF… (${done.length + 1}/${stocked.length})`);
+        dispatchStatus({ type: "start", busy: step(f.name) });
         const res = await publishFolderToOf(accountId, f.folder_id!);
         staleN += res.stale_on_of.length;
         done.push(describe(res));
       }
-      setNote(done.join(" · "));
+      dispatchStatus({ type: "ok", note: done.join(" · "), stale: staleN });
     } catch (e) {
-      setNote(
-        `${done.length} of ${stocked.length} published, then FAILED: ` +
+      dispatchStatus({
+        type: "fail",
+        stale: staleN,
+        note:
+          `${done.length} of ${stocked.length} published, then FAILED: ` +
           `${errText(e)}` +
           (done.length ? ` — landed: ${done.join(" · ")}` : ""),
-      );
+      });
     } finally {
-      setStale(staleN);
-      setBusy("");
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     }
   }
@@ -386,11 +380,11 @@ export default function VaultPackPickerModal({
       width={1280}
       className="h-[calc(100vh-32px)]"
       onClose={onClose}
-      // Escape would drop unsaved verdicts; only the × closes while dirty.
+      // Escape and Done would drop unsaved verdicts, so both are off while dirty; the × still closes (a discard).
       keyboard={!dirty}
       footer={
-        <div className="flex w-full flex-wrap items-center justify-end gap-2">
-          <span className="min-w-0 flex-1 basis-60 text-[12px] text-muted">
+        <>
+          <span className="mr-auto min-w-0 flex-1 basis-60 text-[12px] text-muted">
             Nothing is written until Save, and nothing reaches OnlyFans until Publish.
           </span>
           {/* The only control here that leaves the app. Amber, not green:
@@ -399,17 +393,18 @@ export default function VaultPackPickerModal({
               SAVED shelf, so publishing dirty would silently ship the old
               membership and look like it had shipped the new. */}
           <IfButton
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Create ${stocked.length} REAL folder(s) in the OnlyFans vault?\n\n` +
-                    stocked.map((f) => `  ${f.name} — ${f.count} items`).join("\n") +
-                    `\n\nThis is visible in the OF app. Reversible, but a rebuild ` +
-                    `gets a new list id.`,
-                )
-              ) {
-                publishAll();
-              }
+            onClick={async () => {
+              const yes = await confirm.ask(
+                `Create ${stocked.length} REAL folder(s) in the OnlyFans vault?`,
+                <>
+                  <ul>
+                    {stocked.map((f) => <li key={f.name}>{f.name} — {f.count} items</li>)}
+                  </ul>
+                  <p className="mt-3">This is visible in the OF app. Reversible, but a rebuild gets a new list id.</p>
+                </>,
+                "Publish",
+              );
+              if (yes) publishAll();
             }}
             disabled={!stocked.length || !!dirty || !!busy}
             title={publishTitle}
@@ -417,11 +412,13 @@ export default function VaultPackPickerModal({
           >
             {allPublished ? "Re-publish to OF" : `Publish to OF${stocked.length ? ` (${stocked.length})` : ""}`}
           </IfButton>
-          <IfButton onClick={onClose}>Done</IfButton>
+          <IfButton onClick={onClose} disabled={!!dirty} title={dirty ? "Save or discard first" : undefined}>
+            Done
+          </IfButton>
           <IfButton variant="primary" onClick={save} disabled={!dirty || !!busy}>
             {dirty ? `Save ${dirty}` : "Saved"}
           </IfButton>
-        </div>
+        </>
       }
     >
       <div className="flex flex-wrap items-center gap-3">
@@ -459,11 +456,11 @@ export default function VaultPackPickerModal({
             </IfButton>
           </span>
         ))}
-        <span className="ml-auto flex items-center gap-1 text-muted">
-          {!busy && stale > 0 && (
+        <span className={`ml-auto flex items-center gap-1 ${!busy && status.failed ? "text-err" : "text-muted"}`}>
+          {!busy && status.stale > 0 && (
             <AlertTriangle className="h-3.5 w-3.5 text-warn" aria-hidden />
           )}
-          {busy || note}
+          {busy || status.note}
         </span>
       </div>
 
@@ -494,6 +491,7 @@ export default function VaultPackPickerModal({
           ))}
         </div>
       </div>
+      {confirm.modal}
     </IfModal>
   );
 }

@@ -13,9 +13,12 @@ DelayProxy holds every byte for half the RTT each way, in order, and holds a new
 connection one RTT before its first byte (the TCP handshake), so a fresh connection pays
 connect + TLS 1.3 + request = 3 RTTs before its first response byte, as a live deployment
 measured from the laptop (connect 185 ms, TLS +200 ms, TTFB +195 ms at ~187 ms RTT).
-Bandwidth is not limited here (Chromium's own throttling does it); TCP slow start is not
-modelled (loopback windows), so a large download on a fresh connection is a little faster
-than on a real link. nghttpx's access log (`edge-access.log`) keeps each request's time.
+Bandwidth is not limited here (Chromium's own throttling does it), though the 16-slot
+queue caps each direction at ~1 MiB per one-way delay (~10 MiB/s at 190 ms RTT), far
+above the phone profiles' bandwidth.
+TCP slow start is not modelled (loopback windows), so a large download on a fresh
+connection is a little faster than on a real link. nghttpx's access log
+(`edge-access.log`) keeps each request's time.
 Loopback only: both listen on 127.0.0.1.
 """
 from __future__ import annotations
@@ -44,7 +47,7 @@ def _free_port() -> int:
 
 class DelayProxy:
     """TCP on 127.0.0.1:`port` to `upstream`, each direction `one_way_s` late, order kept. Every
-    connection runs on one asyncio loop thread (it was 4 threads per connection)."""
+    connection runs on one asyncio loop thread."""
 
     def __init__(self, upstream: tuple[str, int], one_way_s: float):
         self.upstream, self.d = upstream, one_way_s
@@ -55,6 +58,7 @@ class DelayProxy:
         self.port = self.sock.getsockname()[1]
         self.connections = 0
         self._loop = asyncio.new_event_loop()
+        self._tasks: set[asyncio.Task] = set()
         up = threading.Event()
 
         def main() -> None:
@@ -63,28 +67,46 @@ class DelayProxy:
             up.set()
             self._loop.run_forever()
 
-        threading.Thread(target=main, name="wan-loop", daemon=True).start()
+        self._thread = threading.Thread(target=main, name="wan-loop", daemon=True)
+        self._thread.start()
         if not up.wait(10):
             raise SystemExit("slop: the WAN delay proxy did not start")
 
     async def _conn(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
+        # Owns closing both sides: a pipe ends its direction with EOF (half-close), never closes.
+        task = asyncio.current_task()
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         self.connections += 1
-        await asyncio.sleep(2 * self.d)  # SYN out, SYN-ACK back: the client's first byte leaves one RTT later
+        writers, pipes = [cw], []
         try:
+            await asyncio.sleep(2 * self.d)  # SYN out, SYN-ACK back: the client's first byte leaves one RTT later
             ur, uw = await asyncio.open_connection(*self.upstream)
+            writers.append(uw)
+            for w in writers:
+                w.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            pipes = [asyncio.create_task(self._pipe(cr, uw)), asyncio.create_task(self._pipe(ur, cw))]
+            await asyncio.gather(*pipes)
         except OSError:
-            cw.close()
-            return
-        for w in (cw, uw):
-            w.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        try:
-            await asyncio.gather(self._pipe(cr, uw), self._pipe(ur, cw))
+            pass  # upstream refused or a side reset: close both below
         finally:
-            cw.close()
-            uw.close()
+            for t in pipes:
+                t.cancel()
+            for w in writers:
+                w.close()
+            close_waiters = [asyncio.create_task(w.wait_closed()) for w in writers]
+            try:
+                await asyncio.gather(*pipes, return_exceptions=True)
+                await asyncio.wait(close_waiters, timeout=1)
+            finally:
+                for w in writers:
+                    if w.transport.get_write_buffer_size():  # 0: flushed or lost, connection_lost ran or is due
+                        w.transport.abort()
+                await asyncio.gather(*close_waiters, return_exceptions=True)
 
     async def _pipe(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
-        q: asyncio.Queue = asyncio.Queue()
+        """src to dst, `d` late; ends with dst's EOF. A failed write (OSError) cancels the reader and raises."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=16)
         loop = asyncio.get_running_loop()
 
         async def read() -> None:
@@ -93,30 +115,47 @@ class DelayProxy:
                     data = await src.read(65536)
                 except OSError:
                     data = b""
-                q.put_nowait((loop.time() + self.d, data))
+                await q.put((loop.time() + self.d, data))
                 if not data:
                     return
 
-        async def write() -> None:
+        reader = asyncio.create_task(read())
+        try:
             while True:
                 due, data = await q.get()
                 wait = due - loop.time()
                 if wait > 0:
                     await asyncio.sleep(wait)
-                try:
-                    if not data:
-                        if dst.can_write_eof():
-                            dst.write_eof()
-                        return
-                    dst.write(data)
-                    await dst.drain()
-                except OSError:
+                if not data:
+                    if dst.can_write_eof():
+                        dst.write_eof()
                     return
-
-        await asyncio.gather(read(), write())
+                dst.write(data)
+                await dst.drain()
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
 
     def close(self) -> None:
-        self._loop.call_soon_threadsafe(self._server.close)
+        async def stop() -> None:
+            self._server.close()
+            while self._tasks:  # a connection accepted during the gather starts its task late
+                tasks = tuple(self._tasks)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._server.wait_closed()
+
+        future = asyncio.run_coroutine_threadsafe(stop(), self._loop)
+        try:
+            future.result(timeout=10)
+        finally:
+            future.cancel()
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                raise TimeoutError("WAN delay proxy loop did not stop")
+            self._loop.close()
 
 
 class WanEdge:

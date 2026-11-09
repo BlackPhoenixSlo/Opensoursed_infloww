@@ -9,7 +9,7 @@ Flow:
   L  `--sends=` (FLOW_SIZES `consent_sends`) media sends through the real `POST /api/of/v2/chats/{fan}/messages`
      over every Creator's fans, `--users` at once, while OF refuses REF's (400 Consent not accepted).
   M  ME flagged by OF; its socket dropped: the pump's reconnect reads /users/me.
-  D  each pinned row's `POST /{id}/read`, then read-all.
+  D  each pinned row's `POST /{id}/read`, then read-all; SQL still unread and both rows still pinned.
   U  owner's browser, desktop 1600x1000 and phone portrait 390x844: the banner, its View, the bell's Agency tab
      (screenshots `trigger-desktop`, `trigger-phone`).
   C  REF signs (/users/me approved) and its socket drops: the reconnect clears it. ME's refusal lifts and one
@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import time
 
 from slop.actors import ui
+from slop.lib.scen_pool import pool
 from slop.lib.client import Recorder
 from slop.lib.consent_faults import (CLEARED_BY_ME, CLEARED_BY_REMOVAL, CLEARED_BY_SEND, FLAGGED_BY_ME, FLAGGED_ONCE,
                                      NOT_DISMISSABLE, SEND_ROUTE, SENDS_KEPT, UI_SETTLED, UI_TRIGGER)
@@ -50,14 +52,6 @@ FEED = "/admin/agency-notifications?limit=50"
 PHONE = (390, 844)
 
 
-async def _pool(items, fn, n: int) -> None:
-    it = iter(list(items))
-
-    async def worker():
-        for x in it:
-            await fn(x)
-
-    await asyncio.gather(*(worker() for _ in range(max(1, n))))
 
 
 async def run(ctx) -> None:
@@ -90,10 +84,13 @@ async def run(ctx) -> None:
     async def pinned_ids() -> set[str]:
         return {n["account_id"] for n in (await feed())["pinned"]}
 
-    async def until(pred, timeout_s: float = SETTLE_S) -> bool:
+    async def until(pred, timeout_s: float = SETTLE_S, project=bool) -> bool:
         t_end = time.time() + timeout_s
         while time.time() < t_end:
-            if await pred():
+            value = pred()
+            if inspect.isawaitable(value):
+                value = await value
+            if project(value):
                 return True
             await asyncio.sleep(0.25)
         return False
@@ -120,9 +117,10 @@ async def run(ctx) -> None:
     # ── L: the send load while OF refuses REF's media sends ──────────────────
     with fake.lock:
         fake.consent[ref] = "NC"
-    targets = [(c["id"], f["id"]) for c in creators for f in w.data["fans"][c["id"]]]
     n_sends = ctx.param("sends", w.size["consent_sends"])
-    plan = [(targets[i % len(targets)], 700_000 + i) for i in range(n_sends)]
+    by_aid = {aid: [f["id"] for f in w.data["fans"][aid]] for aid in ids}
+    plan = [((aid := ids[i % len(ids)], by_aid[aid][(i // len(ids)) % len(by_aid[aid])]), 700_000 + i)
+            for i in range(n_sends)]
     sends: list[dict] = []
 
     async def one(job) -> None:
@@ -131,10 +129,10 @@ async def run(ctx) -> None:
 
     ctx.rec.stage = "send"
     t0 = time.time()
-    await _pool(plan, one, ctx.users)
+    await pool(plan, one, ctx.users)
     send_s = time.time() - t0
     ctx.rec.stage = None
-    await until(lambda: _true(ref in {r[1] for r in rows()}), 15)
+    await until(lambda: ref in {r[1] for r in rows()}, 15)
     got = rows()
     body = await feed()
     snap("after-load")
@@ -145,9 +143,9 @@ async def run(ctx) -> None:
     with fake.lock:
         kept = {a: len(v) for a, v in fake.sends.items()}
     want = {a: sum(1 for (x, _f), _m in plan if x == a) for a in ids}
-    bad = [s for s in sends if (s["status"] != 200) != (s["aid"] == ref)
+    bad = [s for s in sends if s["status"] != (502 if s["aid"] == ref else 200)
            or (s["aid"] == ref and "Consent not accepted" not in s["body"])]
-    ctx.check(SENDS_KEPT, len(sends) == n_sends and not bad and kept.get(ref, 0) == 0
+    ctx.check(SENDS_KEPT, len(sends) == n_sends and all(want[a] > 0 for a in ids) and not bad and kept.get(ref, 0) == 0
               and all(kept.get(a, 0) == want[a] for a in ids if a != ref),
               sends=len(sends), bad=bad[:5], kept=kept, want=want)
 
@@ -157,7 +155,7 @@ async def run(ctx) -> None:
     t1 = time.time()
     await asyncio.to_thread(fake.drop_ws, [me_])
     reconnected = await wait_ws(me_, t1)
-    flagged = await until(lambda: _has(pinned_ids, me_))
+    flagged = await until(pinned_ids, project=lambda ids: me_ in ids)
     me_rows = [r for r in rows() if r[1] == me_]
     snap("after-users-me")
     ctx.check(FLAGGED_BY_ME, reconnected and flagged and len(me_rows) == 1 and "(AL law)" in me_rows[0][3],
@@ -168,10 +166,11 @@ async def run(ctx) -> None:
     reads = [(await owner.post(f"/admin/agency-notifications/{n['id']}/read")).status_code for n in body["pinned"]]
     after_all = (await owner.post("/admin/agency-notifications/read-all")).json()
     unread_sql = [r for r in rows() if r[2] in (None, "None")]
+    still_pinned = await pinned_ids()
     snap("after-dismiss")
     ctx.check(NOT_DISMISSABLE, len(reads) == 2 and all(s == 409 for s in reads) and len(unread_sql) == 2
-              and after_all.get("unread", 0) >= 2,
-              reads=reads, read_all=after_all, unread_rows=len(unread_sql))
+              and still_pinned == {ref, me_},
+              reads=reads, read_all=after_all, unread_rows=len(unread_sql), pinned=sorted(still_pinned))
 
     # ── U: the banner and the Agency tab ──────────────────────────────────────
     async def look(tag: str, want_names: list[str]) -> dict:
@@ -225,7 +224,7 @@ async def run(ctx) -> None:
     t2 = time.time()
     await asyncio.to_thread(fake.drop_ws, [ref])
     rc = await wait_ws(ref, t2)
-    gone = await until(lambda: _lacks(pinned_ids, ref))
+    gone = await until(pinned_ids, project=lambda ids: ref not in ids)
     snap("after-approved")
     ctx.check(CLEARED_BY_ME, rc and gone and ref not in {r[1] for r in rows()}, reconnected=rc,
               rows=[r[:2] for r in rows()])
@@ -234,7 +233,7 @@ async def run(ctx) -> None:
         fake.consent.pop(me_, None)
     fan_me = w.data["fans"][me_][0]["id"]
     ok_send = await send(me_, fan_me, 799_001)
-    gone = await until(lambda: _lacks(pinned_ids, me_), 15)
+    gone = await until(pinned_ids, 15, project=lambda ids: me_ not in ids)
     snap("after-media-send")
     ctx.check(CLEARED_BY_SEND, ok_send["status"] == 200 and gone and me_ not in {r[1] for r in rows()},
               send=ok_send, rows=[r[:2] for r in rows()])
@@ -242,7 +241,7 @@ async def run(ctx) -> None:
     with fake.lock:
         fake.consent_signed.discard(ref)
     again = await send(ref, w.data["fans"][ref][0]["id"], 799_002, http_ref)
-    reflagged = await until(lambda: _has(pinned_ids, ref), 15)
+    reflagged = await until(pinned_ids, 15, project=lambda ids: ref in ids)
     removed = await owner.request("DELETE", f"/admin/accounts/{ref}")
     body = await feed()
     snap("after-removal")
@@ -267,7 +266,7 @@ async def run(ctx) -> None:
     routes = ctx.rec.summary("send")
     r = routes.get(SEND_ROUTE)
     if r is None:
-        ctx.skip(BUDGET, "no samples")
+        ctx.check(BUDGET, False, budget=True, reason="no samples")
     else:
         ctx.check(BUDGET, r["p95_ms"] < P95_MS[SEND_ROUTE], budget=True, p95=r["p95_ms"], n=r["n"],
                   budget_ms=P95_MS[SEND_ROUTE])
@@ -278,15 +277,3 @@ async def run(ctx) -> None:
     with fake.lock:
         (ctx.out / "of-wire-calls.json").write_text(json.dumps(
             [c for c in fake.calls if c["route"] != "GET /hash"][-2000:]))
-
-
-async def _true(v: bool) -> bool:
-    return v
-
-
-async def _has(pinned_ids, aid: str) -> bool:
-    return aid in await pinned_ids()
-
-
-async def _lacks(pinned_ids, aid: str) -> bool:
-    return aid not in await pinned_ids()

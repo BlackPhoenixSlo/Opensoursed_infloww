@@ -233,4 +233,17 @@ describe("the whole-vault download", () => {
       expect(button()).toBeEnabled();
     }
   });
+
+  it("while Chrome's picker is open, says Desktop/Documents/Downloads themselves are refused; gone once closed", async () => {
+    let close!: (v: null) => void;
+    (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => new Promise((r) => { close = r; });
+    h.summary.data = { count: 12, complete: false };
+    h.access = { isLoading: false, isError: false };
+    renderWithProviders(<VaultManagePanel />);
+    fireEvent.click(button());
+    expect(await screen.findByTestId("dl-pick-hint")).toHaveTextContent(/New Folder/);
+    close(null);
+    await flush();
+    expect(screen.queryByTestId("dl-pick-hint")).toBeNull();
+  });
 });

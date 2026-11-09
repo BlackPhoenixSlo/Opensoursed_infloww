@@ -31,6 +31,7 @@ import chatter_identity_cache
 import events_decide as ed
 import events_persist
 import events_wire as ew
+import relay_hooks
 import push_send
 from db import write_telemetry
 
@@ -268,6 +269,9 @@ async def handle_event(event: dict) -> None:
     # Enqueue for the persist worker (events_persist: bounded, drops the
     # oldest on overflow; before the worker starts, the old fire-and-forget path).
     events_persist.enqueue(account_id, event_type, persistable, event)
+
+    # Update message readers before fan-out so a refetch sees the event.
+    relay_hooks.fire_inbound_message(account_id, event_type, event)
 
     # Fan out to subscribers — scope "all" + scope-by-account.
     await broadcast(event)

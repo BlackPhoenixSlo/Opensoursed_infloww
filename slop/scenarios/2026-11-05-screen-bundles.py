@@ -145,11 +145,23 @@ async def _get(http, path: str, **params) -> tuple[int, dict | None, float]:
         return 599, None, (time.perf_counter() - t0) * 1000
 
 
-def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> str | None:
+def _envelope_problem(status, body, *, cold: bool) -> str | None:
     if status != 200 or body is None:
         return f"status {status}"
     if body["duplicates"]:
         return f"duplicate answers {body['duplicates'][:3]}"
+    late = late_reads(body)
+    other = [e for e in body["errors"] if (e["accountId"], e["read"]) not in late]
+    if other:
+        return f"errors {other[:2]}"
+    if late and not cold:
+        return f"late in a warm round {sorted(map(str, late))[:3]}"
+    return None
+
+
+def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> str | None:
+    if problem := _envelope_problem(status, body, cold=cold):
+        return problem
     # A chatter's accounts list is /chatter/me/accounts: never in the bundle.
     if not body.get("settings") or bool(body.get("accounts")) != owner:
         return "no settings/accounts" if owner else "a chatter got an accounts answer"
@@ -157,11 +169,6 @@ def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> s
     if ids != want:
         return f"creators {sorted(ids ^ want)[:5]} off"
     late = late_reads(body)
-    other = [e for e in body["errors"] if (e["accountId"], e["read"]) not in late]
-    if other:
-        return f"errors {other[:2]}"
-    if late and not cold:
-        return f"late in a warm round {sorted(map(str, late))[:3]}"
     # A role hiding the Per-model card (Applied settings' denied_cards): the bundle reads profile only.
     card = PER_MODEL_CARD not in ((body["settings"].get("permissions") or {}).get("denied_cards") or ())
     if card and owner and body.get("perModel") is None and (None, "perModel") not in late:
@@ -182,16 +189,9 @@ def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> s
 
 
 def _inbox_problem(status, body, want: set[str], n_chats: dict[str, int], cursor: int, *, cold: bool) -> str | None:
-    if status != 200 or body is None:
-        return f"status {status}"
-    if body["duplicates"]:
-        return f"duplicate answers {body['duplicates'][:3]}"
+    if problem := _envelope_problem(status, body, cold=cold):
+        return problem
     late = late_reads(body)
-    other = [e for e in body["errors"] if (e["accountId"], e["read"]) not in late]
-    if other:
-        return f"errors {other[:2]}"
-    if late and not cold:
-        return f"late in a warm round {sorted(map(str, late))[:3]}"
     chats, bells = body.get("chats", {}), body.get("notificationCounts", {})
     for aid in want:
         page, bell = chats.get(aid), bells.get(aid)
@@ -266,7 +266,7 @@ async def run(ctx) -> None:
             if st != 200 or body is None or body["errors"]:
                 ctx.note(f"prime {path} {p}: status {st}, errors {(body or {}).get('errors', [])[:3]}")
 
-    async def dash_round(stage: str, cold: bool, who=None) -> list[str]:
+    async def dash_round(stage: str, cold: bool, who=None) -> tuple[list[str], list[tuple]]:
         who = who or clients
         ctx.rec.stage = stage
         res = await asyncio.gather(*(_get(h, DASH, **WINDOW) for h, _, _ in who))
@@ -390,7 +390,7 @@ async def run(ctx) -> None:
     ctx.rec.stage = None
     await one.aclose()
     ctx.check(C_PARITY, bd is not None and bi is not None and not diffs, creators=len(aids),
-              compared=8 * len(aids), diffs=diffs[:5], n_diffs=len(diffs))
+              compared=5 * len(aids), diffs=diffs[:5], n_diffs=len(diffs))
 
     for h, _, _ in clients:
         await h.aclose()
@@ -515,10 +515,10 @@ async def run(ctx) -> None:
     ctx.metric("bundle_ms", {k: {"n": v["n"], "p50": v["p50_ms"], "p95": v["p95_ms"]} for k, v in row.items() if v})
     ctx.metric("slow_bundle_ms", {"deadline_ms": dl, "p50": walls[len(walls) // 2], "max": walls[-1]})
     over = {k: (row[k]["p95_ms"], b) for k, b in BUDGET_MS.items() if b and row[k] and row[k]["p95_ms"] > b}
-    if all(BUDGET_MS.values()):
-        ctx.check(C_BUDGET, not over, budget_ms=BUDGET_MS, p95={k: row[k]["p95_ms"] for k in BUDGET_MS}, over=over)
+    if ctx.report.params.get("map"):   # slop/run --map: relay and harness under coverage.py
+        ctx.skip(C_BUDGET, "coverage run: timings not comparable")
     else:
-        ctx.skip(C_BUDGET, "BUDGET_MS not set yet (baseline run)")
+        ctx.check(C_BUDGET, not over, budget_ms=BUDGET_MS, p95={k: row[k]["p95_ms"] for k in BUDGET_MS}, over=over)
     ctx.metric("p95_vs_last_green", {k: row[k]["p95_ms"] for k in BUDGET_MS})
     ctx.metric("p95_vs_last_green_n", {k: row[k]["n"] for k in BUDGET_MS})
     ctx.note("bundle p50/p95 ms: " + ", ".join(f"{k} {v['p50_ms']}/{v['p95_ms']} (n {v['n']})"

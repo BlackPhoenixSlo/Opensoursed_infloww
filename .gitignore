@@ -72,8 +72,20 @@ chatterly.db.pre_*
 # Legacy reference dump (336MB, includes credentials.json) — local-only
 OF_AUTOMATIONV1/
 
-# Local Claude Code config (machine-specific settings + skills)
-.claude/
+# Local Claude config stays ignored; version only shared review guidance.
+.claude/*
+!.claude/REVIEW.md
+!.claude/backups/
+.claude/backups/*
+!.claude/backups/review-guidance-2026-11-09/
+!.claude/commands/
+.claude/commands/*
+!.claude/commands/rwl.md
+!.claude/commands/rwl-codexedits.md
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/review-loop/
+!.claude/skills/thermo-nuclear-code-quality-review/
 
 # graphify output — regenerable, and it distills private design docs + carries
 # absolute laptop paths, so it must never be committed (it reached the PUBLIC

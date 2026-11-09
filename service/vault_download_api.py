@@ -120,11 +120,6 @@ async def download_resign(
     return {"url": fresh}
 
 
-def _same_file(u: str, media: dict | None) -> bool:
-    base = cdn_resign._base(u)
-    return any(cdn_resign._base(x) == base for x in cdn_resign._urls(media or {}))
-
-
 def _close(r: Any) -> None:
     try:
         if r is not None:
@@ -143,7 +138,7 @@ async def download(
     row = await _row_media(account_id, media_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
     url = full_url(row)
-    if u and (_same_file(u, row) or (unrestricted and row is None and _cdn_host(u))):
+    if u and (cdn_resign.same_file(u, row) or (unrestricted and row is None and _cdn_host(u))):
         url = u
     if url is None:
         got = await vault_stills.resolve_fresh(account_id, media_id, client)
@@ -162,15 +157,11 @@ async def download(
     resigned = False
     try:
         try:
-            r = await run_in_threadpool(client.http.get, fetch_u, timeout=client.timeout_s, stream=True)
-            if r.status_code == 403:
-                stale, r = r, None
-                await run_in_threadpool(_close, stale)
-                fetch_u = await cdn_resign.resign(account_id, media_id, fetch_u, client)
-                if fetch_u is None:
-                    raise HTTPException(status_code=403, detail="upstream_denied")
-                resigned = True
-                r = await run_in_threadpool(client.http.get, fetch_u, timeout=client.timeout_s, stream=True)
+            async def get(x: str):
+                return await run_in_threadpool(client.http.get, x, timeout=client.timeout_s, stream=True)
+
+            r, fetched_url = await cdn_resign.fetch(account_id, media_id, url, client, get)
+            resigned = fetched_url != fetch_u
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001

@@ -4,10 +4,10 @@
  * refetch; an untouched form takes the server's new values; a save that lands
  * after an account switch refreshes the account it wrote. Drives the real
  * component + react-query; only the relay wire and the account list are faked
- * (as in stickySave.test.tsx).
+ * (as in NudgeOnlineTab.saveGate.test.tsx).
  */
-import { afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, notifyManager } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -29,8 +29,8 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
 import { relay } from "@/lib/relay";
 
-const relayGet = relay.get as unknown as Mock;
-const relayPut = relay.put as unknown as Mock;
+const relayGet = vi.mocked(relay.get);
+const relayPut = vi.mocked(relay.put);
 
 type Server = Record<string, { delay_minutes: number; jitter_minutes?: number }>;
 
@@ -56,8 +56,9 @@ function serve(server: Server) {
 function holdPut(server: Server) {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
-  relayPut.mockImplementationOnce(async (_path: string, body: { account_id: string; config: Server[string] }) => {
+  relayPut.mockImplementationOnce(async (_path: string, rawBody?: unknown) => {
     await gate;
+    const body = rawBody as { account_id: string; config: Server[string] };
     server[body.account_id] = body.config;
     return body;
   });
@@ -78,6 +79,8 @@ const field = (label: string) => screen.getByLabelText(label) as HTMLInputElemen
 const delay = () => field("Delay (min)");
 const jitter = () => field("Jitter (min)");
 const saveButton = () => screen.getAllByRole("button", { name: "Create automation" })[0];
+/** The footer's status column beside the Save (the gate note, the save's verdict, Run now's line). */
+const footerStatus = () => screen.getByRole("status");
 const cfgState = (qc: QueryClient, id: string) => qc.getQueryState(["nudge-config", id]);
 /** First load (config + rule list); slow under the full suite's load. */
 const ready = () => waitFor(() => expect(saveButton()).not.toBeDisabled(), { timeout: 5_000 });
@@ -155,7 +158,6 @@ describe("NudgeOnlineTab over its own save", () => {
     await release();
     await waitFor(() => expect(cfgState(qc, A)?.isInvalidated).toBe(true));
     expect(screen.queryByText("Saved.")).toBeNull();
-    expect(screen.queryByText("Saved ✓")).toBeNull();
 
     fireEvent.change(picker, { target: { value: A } });
     await waitFor(() => expect(delay().value).toBe("9"));
@@ -280,12 +282,73 @@ describe("NudgeOnlineTab over its own save", () => {
     await ready();
 
     fireEvent.click(saveButton());
-    await waitFor(() => expect(screen.getByText("Saved.")).toBeTruthy());
+    await waitFor(() => expect(within(footerStatus()).getByText("Saved.")).toBeTruthy());
     fireEvent.change(screen.getByDisplayValue(`acct-${A}`), { target: { value: B } });
-    // Said where the form would be (not "Loading…" forever) and on the pinned bar.
+    // Said where the form would be (not "Loading…" forever) and in the footer.
     await waitFor(() => expect(screen.getAllByText(/Couldn't load this account's nudge settings/)).toHaveLength(2));
     expect(screen.queryByText("Loading…")).toBeNull();
     expect(screen.queryByText("Saved.")).toBeNull();
-    expect(screen.queryByText("Saved ✓")).toBeNull();
+  });
+});
+
+describe("NudgeOnlineTab's footer status", () => {
+  const RULE = {
+    id: 7, account_id: A, name: "Nudge online", kind: "nudge_online",
+    is_enabled: true, every_seconds: 60, trigger: { type: "cadence" },
+    payload: {}, quiet_hours: null, created_at: null, last_run: null,
+    next_due_at: null, has_pending_job: false,
+  };
+
+  it("Run now's line shows beside the Save even while the form is not drawn", async () => {
+    // The config never lands, so the body is "Loading…"; the rule is known, so Run now is in the footer.
+    relayGet.mockImplementation((path: string) => {
+      if (path.startsWith("/admin/nudge-config")) return new Promise(() => {});
+      if (path.startsWith("/admin/automation-rules")) return Promise.resolve({ rules: [RULE] });
+      return Promise.resolve({});
+    });
+    vi.mocked(relay.post).mockResolvedValue({ enqueued_job_id: 1, kind: "nudge_online" });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    await waitFor(() => expect(within(footerStatus()).getByText(/Ran one detector pass/)).toBeTruthy());
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(relay.post).toHaveBeenCalledWith("/admin/automation-rules/7/run-now", {});
+  });
+});
+
+describe("NudgeOnlineTab's number fields", () => {
+  it("keeps Preview inputs while switching accounts without editing either config", async () => {
+    serve({ [A]: { delay_minutes: 4 }, [B]: { delay_minutes: 1 } });
+    mount([A, B]);
+    await ready();
+    fireEvent.change(field("Fan id"), { target: { value: "fan-7" } });
+    fireEvent.change(field("Hour"), { target: { value: "0" } });
+    fireEvent.change(screen.getByDisplayValue(`acct-${A}`), { target: { value: B } });
+    await waitFor(() => expect(delay().value).toBe("1"));
+    expect(field("Fan id").value).toBe("fan-7");
+    expect(field("Hour").value).toBe("0");
+    expect(relayPut).not.toHaveBeenCalled();
+  });
+
+  it("clearing and retyping a field gives the typed number (not 040), and an empty box is not saved as 0", async () => {
+    serve({ [A]: { delay_minutes: 0 } });
+    relayPut.mockImplementationOnce(async (_p: string, body: unknown) => body);
+    mount();
+    await ready();
+    expect(delay().value).toBe("0");
+
+    fireEvent.change(delay(), { target: { value: "" } });
+    expect(delay().value).toBe("");
+    fireEvent.change(delay(), { target: { value: "40" } });
+    expect(delay().value).toBe("40");
+    fireEvent.blur(delay());
+    expect(delay().value).toBe("40");
+
+    fireEvent.change(jitter(), { target: { value: "" } });
+    fireEvent.blur(jitter());
+    expect(jitter().value).toBe("3");
+
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
+    expect(relayPut.mock.calls[0][1]).toMatchObject({ account_id: A, config: { delay_minutes: 40 } });
   });
 });

@@ -342,14 +342,16 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreRef.current();
   }
 
-  const activeFolder = folders.find((f) => f.id === ofFolderId);
-  // #58: the chosen folder's per-type counts switch its empty types off; All media has none to go by.
-  const typeCounts: TypeCounts = activeFolder
+  // OF's whole-vault counts (the folder list's `all`): the "All media" row's.
+  const allCounts = lists.data?.all ?? null;
+  // #58: the chosen folder's (or, under All media, the whole vault's) per-type counts switch its empty types off.
+  const shownCounts = ofFolderId == null ? allCounts : folders.find((f) => f.id === ofFolderId);
+  const typeCounts: TypeCounts = shownCounts
     ? {
-        photo: activeFolder.photosCount,
-        video: activeFolder.videosCount,
-        gif: activeFolder.gifsCount,
-        audio: activeFolder.audiosCount,
+        photo: shownCounts.photosCount,
+        video: shownCounts.videosCount,
+        gif: shownCounts.gifsCount,
+        audio: shownCounts.audiosCount,
       }
     : null;
 
@@ -432,6 +434,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
       <div className={VAULT_PANES_CLASS}>
         <VaultFolderRail
           folders={folders}
+          allCounts={allCounts}
           loading={lists.isLoading}
           error={lists.isError}
           onRetry={() => lists.refetch()}

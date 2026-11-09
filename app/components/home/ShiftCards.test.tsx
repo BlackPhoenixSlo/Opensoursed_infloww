@@ -107,6 +107,7 @@ beforeEach(() => {
     const path = String(url).split("?")[0];
     const method = init?.method ?? "GET";
     if (method === "GET" && failOnce.delete(path)) return jsonRes({ detail: "relay down" }, 500);
+    if (method === "GET" && path === "/admin/shifts") return jsonRes({ occurrences: occurrences.map((o) => ({ ...o, employees: [{ id: 7, display_name: "Jane Lee" }, { id: 8, display_name: "John Smith" }], accounts: [] })) });
     if (method === "GET" && path === "/admin/shifts/me") {
       return jsonRes({ accounts, occurrences, open_clocks: openClock ? [openClock] : [], reminder: null });
     }
@@ -410,15 +411,15 @@ describe("Current clocked-in employees", () => {
     expect(rows[1]).toMatch(/^chatter_two · — · since .+ · No shift$/);
   });
 
-  it("shows the empty art and the capture's line in its 140px box, with a 0 count, when the list is empty (#77, #78)", async () => {
+  it("shows a compact empty line with a 0 count when nobody is clocked in", async () => {
     signInOwner();
     clockedIn = { time_tracking_enabled: true, clocked_in: [] };
     renderWithProviders(<ClockedInCard />);
     expect(await screen.findByText(NONE)).toBeInTheDocument();
     const card = screen.getByRole("region", { name: "Current clocked-in employees" });
-    expect(listBox(card).querySelector("[data-empty-art]")).not.toBeNull();
+    expect(listBox(card).querySelector("[data-empty-art]")).toBeNull();
     expect(card.querySelector("[data-count]")).toHaveTextContent(/^0$/);
-    expect(listBox(card)).toHaveStyle({ maxHeight: "140px" });
+    expect(listBox(card)).toHaveStyle({ maxHeight: "100px" });
   });
 
   it("says time tracking is off, labelled ours, links to Settings › Time tracking, and keeps the empty line", async () => {
@@ -442,38 +443,35 @@ describe("Current clocked-in employees", () => {
   });
 });
 
-describe("My shifts, for an owner", () => {
-  it("shows the empty state and no owner sentence, and says nothing more while time tracking is on", async () => {
+describe("Scheduled shifts, for an owner", () => {
+  it("shows empty only when the schedule is empty", async () => {
     signInOwner();
     renderWithProviders(<MyShiftsCard />);
     expect(await screen.findByText(NO_DATA)).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "My shifts" }).querySelector('[data-empty-art="data"]')).not.toBeNull();
-    expect(screen.queryByText(OWNER_TEXT)).toBeNull();
-    expect(screen.queryByText("Time tracking is off")).toBeNull();
-    expect(screen.getByRole("img", { name: MY_SHIFTS_TIP })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Shift schedule" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Clock (in|out)/ })).toBeNull();
+    expect(screen.getByRole("region", { name: "Scheduled shifts" })).toHaveClass("max-h-[720px]");
+    expect(screen.getByRole("group", { name: "Scheduled shifts list" })).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(reads()).toContain("/admin/shifts");
     expect(reads()).not.toContain("/admin/shifts/me");
   });
 
-  it("says time tracking is off and links to Settings › Time tracking when it is off", async () => {
+  it("lists dated shifts, 24-hour times, and all assigned employees for the selected period", async () => {
     signInOwner();
-    clockedIn = { time_tracking_enabled: false, clocked_in: [] };
-    renderWithProviders(<MyShiftsCard />);
-    const off = await screen.findByText("Time tracking is off");
-    expect(off.closest(`[title="${EXTRA_LABEL}"]`)).toHaveClass("text-[12px]", "text-muted");
-    expect(screen.getByRole("link", { name: "Settings › Time tracking" })).toHaveAttribute("href", "/settings/time-tracking");
-    expect(screen.queryByText(OWNER_TEXT)).toBeNull();
+    occurrences = [...OCCURRENCES, { ...OCCURRENCES[0], shift_id: 99 }];
+    renderWithProviders(<MyShiftsCard from="2026-10-14T00:00:00Z" to="2026-10-20T23:59:59.999Z" />);
+    expect(await screen.findByText("Wednesday, 14.10.2026")).toBeInTheDocument();
+    expect(screen.getAllByText("15:00-19:00")).toHaveLength(1);
+    expect(screen.getAllByTitle("Jane Lee")).toHaveLength(2);
+    expect(screen.getAllByTitle("John Smith")).toHaveLength(2);
+    const url = fetchMock.mock.calls.map(([u]) => String(u)).find((u) => u.startsWith("/admin/shifts?"))!;
+    expect(new URL(url, "http://localhost").searchParams.get("to")).toBe("2026-10-21T00:00:00.000Z");
   });
 
-  it("shows a loading line, then an error line whose Retry refetches", async () => {
+  it("shows an error whose Retry refetches the schedule", async () => {
     signInOwner();
-    failOnce.add("/admin/shifts/clocked-in");
+    failOnce.add("/admin/shifts");
     renderWithProviders(<MyShiftsCard />);
-    expect(screen.getByText("Loading your shifts…")).toBeInTheDocument();
-    expect(await screen.findByText(/^Couldn't load your shifts: /)).toBeInTheDocument();
+    expect(await screen.findByText(/^Couldn't load scheduled shifts: /)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(NO_DATA)).toBeInTheDocument();
-    expect(screen.queryByText("Time tracking is off")).toBeNull();
   });
 });

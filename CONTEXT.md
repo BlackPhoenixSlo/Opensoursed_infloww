@@ -293,3 +293,77 @@ _Avoid_: Parity table (Messages Pro's), route map (that is `docs/routes.md`), ro
 - **Write list**: `scripts/settings-check/walk.py`
 - **Effort suite**: `docs/plans/infloww-parity-next-steps.md`
 - **Merged tree**: `docs/spec/phase-00-merge-stale-docs-route-matrix.md`
+
+### Fetch diet
+
+**OF call**:
+One request the Relay makes to OnlyFans through `of_client.request_json`, answered or not.
+_Avoid_: fetch, hit, request on its own (the app's own routes are requests too)
+
+**Caller kind**:
+What issued an OF call: a walk kind, a Relay route or an automation kind.
+_Avoid_: source, origin, caller on its own
+
+**OF call counter**:
+The Relay's in-memory count of OF calls by Caller kind, normalised path, Creator and status class, flushed with a boot count to a JSON file in `service/data` beside `priority_lane_stats.json`.
+_Avoid_: request log, metrics, call log (it writes no line per call)
+
+**Demand**:
+Viewing demand or Functional demand on a Creator; nothing else makes a Creator's data fetch fast (ADR-0031).
+_Avoid_: activity, online, active Creator
+
+**View lease**:
+A Creator the app reports as on screen (selected Creator, visible money rail or roster strip row, open chat), renewed every 20 s and lapsing 60 s after the last renewal, unioned across tabs and Employees. It is the only Viewing demand; the "All" view never leases every Creator by itself.
+_Avoid_: presence, online, SSE sub (an input, not the lease), active Creator, subscription
+
+**Viewing demand**:
+A Creator holding at least one View lease.
+_Avoid_: user demand, watching, online
+
+**Functional demand**:
+Work that needs a Creator's data current whether or not anyone looks: Sellers, fan replies, welcomes, scheduled sends, list enrollment, ingestion and WS recovery. It never slows, and no fan write is capped, delayed or dropped to fund a cut.
+_Avoid_: background demand, automation demand, system demand
+
+**Idle Creator**:
+A Creator with no Demand, the only one a slow cadence applies to.
+_Avoid_: inactive, offline, cold, disconnected (that is a Dead session)
+
+**Seller**:
+An enabled automation whose behaviour changes the moment a fan pays, so its Creator's purchases poll stays fast around the clock. The code's list is `_SELLING_KINDS`.
+_Avoid_: selling automation, money automation, sales automation
+
+**Purchases poll**:
+The read of a Creator's OnlyFans purchases notification feed (`run_fast_tick`): the fast tier (30 s) under Demand, the slow tier (5 min) for an Idle Creator.
+_Avoid_: fast tick, freshness poll, ledger (that is the 15-min transaction ingest)
+
+**App-open warm**:
+One immediate refresh of purchases feed, chats window and money counters for every Creator an Employee can access, when they open Inflowwww on any page, staggered per proxy; then normal cadence.
+_Avoid_: prewarm (that is Growth's link prewarm), boot warm, login refresh
+
+**Select refresh**:
+The immediate refresh of a Creator when it is opened or selected, before its first lease timer.
+_Avoid_: open warm, eager poll
+
+**Dead session**:
+A Creator whose OnlyFans session answers 401 or reads expired. It gets no polls, only the recovery probe ladder.
+_Avoid_: disconnected Creator, logged out, expired account
+
+**Backoff ladder**:
+The purchases-feed retry wait after a 429: Retry-After first, else 30 s doubling to 900 s, capped at 120 s under Demand.
+_Avoid_: cooldown, throttle, pause (`_is_paused` is a failure pause)
+
+**Knob**:
+A named cadence or threshold read in one place with today's-safe default, an env value until a Setting flag exposes it.
+_Avoid_: setting (a Settings blob field), flag, config, constant
+
+**Setting flag**:
+A Knob exposed as a per-Agency Settings blob field after Phase 4, defaulting to the fetch diet's behaviour; chosen only from Proxy-health sweep data.
+_Avoid_: feature flag, toggle, knob (until exposed)
+
+**Audience crawl**:
+The paged read of a mass send's recipients (`resolve_recipients`) run right after the send.
+_Avoid_: recipient resolve, mass crawl, audience fetch
+
+**Silent mass-only chat**:
+A chat holding only our mass messages and no fan reply; its deep history backfill waits until the chat is opened, the fan replies or an automation needs it.
+_Avoid_: dead chat, cold chat, empty chat

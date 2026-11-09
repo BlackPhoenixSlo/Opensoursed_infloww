@@ -18,10 +18,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import deque
 import random
 import tempfile
 import threading
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from contextvars import ContextVar
 from typing import Any, Callable, Literal, NamedTuple
@@ -32,6 +34,7 @@ from curl_cffi.const import CurlECode
 
 import accounts as account_registry
 import live_rev
+import of_call_counter
 import of_pacing
 import proxy_health
 import proxies as proxy_registry
@@ -393,6 +396,77 @@ from of_reads import ReadsMixin  # noqa: E402
 from of_sends import SendsMixin  # noqa: E402
 
 
+class _SignedSessionPool:
+    """Reuse a bounded set of curl handles across executor threads for one account.
+
+    curl_cffi's default Session keeps one handle per thread. A shared Session
+    with one handle is unsafe concurrently, so each lease owns one Session
+    until the whole signed call (including proxy retries) has finished.
+    """
+
+    SIZE = 8  # 5 account-lane calls, with room for direct job/automation calls
+    WAIT_S = DEFAULT_TIMEOUT_S * FULL_RETRY.tries
+
+    def __init__(self, source: requests.Session):
+        self._ready = threading.Condition()
+        self._available: deque[requests.Session] = deque()
+        self._waiters: deque[object] = deque()
+        self._closed = False
+        for _ in range(self.SIZE):
+            session = requests.Session(impersonate=IMPERSONATE, use_thread_local_curl=False)
+            session.proxies.update(source.proxies)
+            # Passing Cookies copies it in curl_cffi; passing its CookieJar
+            # shares the live, internally locked jar across this account's leases.
+            session.cookies = source.cookies.jar
+            self._available.append(session)
+
+    @contextmanager
+    def lease(self):
+        ticket = object()
+        deadline = time.monotonic() + self.WAIT_S
+        with self._ready:
+            self._waiters.append(ticket)
+            try:
+                while True:
+                    if self._closed:
+                        raise OFAPIError("signed session retired; retry with current account session")
+                    if self._waiters[0] is ticket and self._available:
+                        session = self._available.popleft()
+                        self._waiters.popleft()
+                        self._ready.notify_all()
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise OFAPIError("signed session pool busy")
+                    self._ready.wait(remaining)
+            finally:
+                if ticket in self._waiters:
+                    self._waiters.remove(ticket)
+                    self._ready.notify_all()
+        try:
+            yield session
+        finally:
+            with self._ready:
+                retire = self._closed
+                if not retire:
+                    self._available.append(session)
+                    self._ready.notify_all()
+            if retire:
+                session.close()
+
+    def close(self) -> None:
+        """Retire idle handles now, and each borrowed handle on its return."""
+        with self._ready:
+            if self._closed:
+                return
+            self._closed = True
+            idle = list(self._available)
+            self._available.clear()
+            self._ready.notify_all()
+        for session in idle:
+            session.close()
+
+
 class _Transport:
     # Class-level default: a client never built from a file (or a bare
     # __new__ one in tests) has nowhere to persist Cloudflare cookies.
@@ -434,6 +508,9 @@ class _Transport:
         # curl_cffi.requests.Session takes impersonate at construction; every
         # subsequent .get()/.post() uses that TLS profile + matching default headers.
         self.http = requests.Session(impersonate=IMPERSONATE)
+        self._signed_pool_lock = threading.Lock()
+        self._signed_pool: _SignedSessionPool | None = None
+        self._signed_retired = False
         if proxies:
             self.http.proxies.update(proxies)
 
@@ -454,6 +531,26 @@ class _Transport:
 
         # Fetched lazily on first signed call (it's a single GET to the CDN).
         self._x_hash: str | None = None
+
+    def _signed_session(self):
+        # Tests may inject a fake HTTP object on a bare OFClient. Production
+        # sessions share the captured cookie jar and proxy configuration.
+        if not isinstance(self.http, requests.Session):
+            return nullcontext(self.http)
+        with self._signed_pool_lock:
+            if self._signed_retired:
+                raise OFAPIError("signed session retired; retry with current account session")
+            if self._signed_pool is None:
+                self._signed_pool = _SignedSessionPool(self.http)
+            pool = self._signed_pool
+        return pool.lease()
+
+    def close_signed_sessions(self) -> None:
+        with self._signed_pool_lock:
+            self._signed_retired = True
+            pool = self._signed_pool
+        if pool is not None:
+            pool.close()
 
     # ── Constructors ────────────────────────────────────────────
 
@@ -687,18 +784,26 @@ class _Transport:
         try:
             # Datacenter providers (e.g. IPRoyal DC) sporadically 403 on CONNECT
             # under load; the same IP works again moments later. _proxy_retry()
-            # retries with growing pauses against the SAME self.http session (sticky IP,
-            # no rotation) — shared with every raw self.http call in the OFClient mixins.
-            def _do() -> requests.Response:
-                # Signed per attempt: a retry can come seconds later, and Sign/Time must be fresh.
-                headers = self._signed_headers(url)
-                if json_body is not None:
-                    headers["Content-Type"] = "application/json"
-                if method == "GET":
-                    return self.http.get(url, headers=headers, timeout=self.timeout_s)
-                return self.http.request(method, url, json=json_body,
-                                         headers=headers, timeout=self.timeout_s)
-            r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}", policy=policy)
+            # Hold one curl handle across retries (sticky proxy connection/IP),
+            # then return it for reuse by another worker thread.
+            with self._signed_session() as signed_http:
+                def _do() -> requests.Response:
+                    # Signed per attempt: a retry can come seconds later, and Sign/Time must be fresh.
+                    headers = self._signed_headers(url)
+                    if json_body is not None:
+                        headers["Content-Type"] = "application/json"
+                    if method == "GET":
+                        return signed_http.get(url, headers=headers, timeout=self.timeout_s)
+                    return signed_http.request(method, url, json=json_body,
+                                               headers=headers, timeout=self.timeout_s)
+                # The OF call counter: one count per request sent, its answer's status or `error`
+                # when none came back (CONNECT retries inside _proxy_retry are one request).
+                try:
+                    r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}", policy=policy)
+                except Exception:
+                    of_call_counter.record(self.account_id, method, url, None)
+                    raise
+            of_call_counter.record(self.account_id, method, url, r.status_code)
             # Opportunistic rev capture. OF echoes their current build in
             # `x-of-rev` on most /api2/v2/* responses; note() is a no-op
             # if the header's missing or unchanged so this is cheap on

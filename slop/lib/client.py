@@ -15,6 +15,23 @@ def label(method: str, path: str) -> str:
     return f"{method} {_NUM.sub('/:id', path.split('?')[0])}"
 
 
+async def actor_call(http, kind: str, aid: str, path: str, method: str = "GET", body=None, text=None) -> dict:
+    """One actor call through a bound proxy, with timing and proxy-failure evidence."""
+    t0 = time.perf_counter()
+    try:
+        r = await (http.get(path, headers={"X-Account-Id": aid}) if method == "GET"
+                   else http.post(path, headers={"X-Account-Id": aid}, json=body))
+        status = r.status_code
+        detail = r.json().get("detail") if status >= 400 and r.headers.get("content-type", "").startswith(
+            "application/json") else None
+    except Exception:  # noqa: BLE001  transport error: 599 as the recorder does
+        status, detail = 599, None
+    t1 = time.perf_counter()
+    return {"kind": kind, "aid": aid, "status": status, "ms": (t1 - t0) * 1000, "t0": t0, "t1": t1,
+            "text": text, "detail": detail, "unreachable": status == 502 and isinstance(detail, dict)
+            and detail.get("upstream_status") == "proxy_unreachable"}
+
+
 class Recorder:
     def __init__(self) -> None:
         self.calls: dict[str, list[tuple[int, float]]] = defaultdict(list)

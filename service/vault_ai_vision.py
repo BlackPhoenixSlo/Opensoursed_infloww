@@ -665,6 +665,11 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
     # since the caller is asking for these specifically.
     only = payload.get("media_ids")
     only = {int(m) for m in only} if isinstance(only, (list, tuple, set)) else None
+    from vault_ai_api import assert_media_visible, assert_owner_scope
+    if only:
+        await assert_media_visible(account_id, *only)
+    else:
+        await assert_owner_scope(account_id)
 
     if (await _vision_budget(account_id))["key_missing"]:
         raise _vision_key_missing()
@@ -713,6 +718,8 @@ async def flags_all_status(account_id: str = Query(...)) -> dict[str, Any]:
     starting over at nothing.
     """
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     return {
         "account_id": account_id,
         "running": account_id in _flags_running,
@@ -872,6 +879,8 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
         media_id = int(payload.get("media_id"))
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    from vault_ai_api import assert_media_visible
+    await assert_media_visible(account_id, media_id)
     # Over the cap the LLM call is refused anyway, but only AFTER the frames
     # have been pulled off OF and (for a clip) cut with ffmpeg. Answering here
     # keeps a hopeless click cheap, and keeps "Describe selected" from grinding
@@ -1016,6 +1025,8 @@ async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:
 async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     model = str(payload.get("model") or "qwen3-vl-30b")
     await _claim_describe(account_id, model)
     force = bool(payload.get("force"))
@@ -1038,6 +1049,8 @@ async def describe_all_plan(
     """What each sweep mode WOULD do, so the UI can show real counts (and a cost
     estimate) before the operator commits to a re-scan of the whole vault."""
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     pv = prompt_variant(prompt_version)
     async with get_session() as s:
         def _count(mode: DescribeMode):
@@ -1061,6 +1074,8 @@ async def describe_all_plan(
 @describe_router.get("/admin/vault-ai/describe-all/status")
 async def describe_all_status(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     prog = _describe_progress.get(account_id)
     return {
         "account_id": account_id,

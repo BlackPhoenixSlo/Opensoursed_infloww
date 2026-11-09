@@ -261,4 +261,30 @@ def case_a_role_granting_neither_the_dashboard_nor_employee_reports_is_refused_e
         _roles(None)
 
 
+def case_daily_employee_sales_preserves_totals_timezone_and_empty_days():
+    r = OWNER_A.get(_sales_query(WEEK) + "&include_series=true")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    points = data["series"]
+    assert len(points) == 7
+    assert points[0]["start"] == "2026-10-11"
+    assert points[-1]["start"] == "2026-10-17"
+    assert sum(p["revenue_cents"] for p in points) == sum(e["revenue_cents"] for e in data["employees"])
+    today = OWNER_A.get(_sales_query(TODAY) + "&include_series=true").json()["series"]
+    assert today == [{"start": "2026-10-14", "revenue_cents": 1250, "messages_cents": 0, "tips_cents": 1250}]
+    yesterday = OWNER_A.get(_sales_query(YESTERDAY) + "&include_series=true").json()["series"]
+    assert yesterday == [{"start": "2026-10-13", "revenue_cents": 700, "messages_cents": 700, "tips_cents": 0}]
+    assert points[-1]["revenue_cents"] == 0
+
+
+def case_daily_employee_sales_obeys_self_scope():
+    try:
+        _roles({"/": True})
+        r = CHATTER_A.get(_sales_query(WEEK) + "&include_series=true")
+        assert r.status_code == 200, r.text
+        assert sum(p["revenue_cents"] for p in r.json()["series"]) == 3000
+    finally:
+        _roles(None)
+
+
 _harness.run()

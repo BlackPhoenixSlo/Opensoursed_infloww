@@ -36,8 +36,8 @@
  */
 
 import { useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Lock } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Lock } from "lucide-react";
 
 import {
   gradeFlags,
@@ -47,17 +47,13 @@ import {
 } from "@/hooks/useVaultCache";
 import { mirrorFullSrc } from "@/lib/mediaUrl";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { MediaMeta, OverLines, REGION_LABEL, Reasons, STATE_TONE } from "@/components/vault/regionBits";
 import { IfButton, IfHelp, IfInput, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 const REGIONS = ["breasts_vis", "vulva_vis", "anus_vis"] as const;
 const STATES = ["bare", "covered", "not_in_frame"] as const;
 
-const LABEL: Record<string, string> = {
-  breasts_vis: "breasts",
-  vulva_vis: "vulva",
-  anus_vis: "anus",
-};
 const STATE_LABEL: Record<string, string> = {
   bare: "bare",
   covered: "covered",
@@ -66,9 +62,7 @@ const STATE_LABEL: Record<string, string> = {
 
 function stateClass(state: string, on: boolean): string {
   if (!on) return "border-border bg-bg text-fg-dim hover:border-fg-dim/60";
-  if (state === "bare") return "border-err/70 bg-err/20 text-err";
-  if (state === "covered") return "border-info/70 bg-info/20 text-info";
-  return "border-muted/70 bg-muted/20 text-fg-dim";
+  return STATE_TONE.strong[state] ?? STATE_TONE.strong.not_in_frame;
 }
 
 function Card({
@@ -83,8 +77,6 @@ function Card({
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [zoom, setZoom] = useState(false);
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
   /** What the model said, unless the operator has tapped something else. */
   const shown = (region: string) => picked[region] ?? item.regions[region] ?? "";
@@ -92,20 +84,12 @@ function Card({
     ([r, v]) => v !== item.regions[r],
   );
 
-  async function save() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await gradeFlags(accountId, item.media_id, Object.fromEntries(changed), note);
-      onSaved(item.media_id, changed.length);
-    } catch (e) {
-      setErr(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const named = Object.entries(item.over).filter(([, v]) => v);
+  const saveM = useMutation({
+    mutationFn: (changes: [string, string][]) =>
+      gradeFlags(accountId, item.media_id, Object.fromEntries(changes), note),
+    onSuccess: (_r, changes) => onSaved(item.media_id, changes.length),
+  });
+  const busy = saveM.isPending;
 
   return (
     <div
@@ -133,7 +117,7 @@ function Card({
             <div key={region} className="flex items-center gap-1.5">
               <span className="flex w-16 shrink-0 items-center gap-1 text-[12px] text-muted">
                 {locked && <Lock className="h-3 w-3" aria-label="locked" />}
-                {LABEL[region]}
+                {REGION_LABEL[region]}
               </span>
               <div className="flex gap-1 flex-1">
                 {STATES.map((s) => (
@@ -155,33 +139,13 @@ function Card({
           );
         })}
 
-        {named.length > 0 && (
-          <p className="text-[12px] text-muted leading-snug">
-            {named.map(([r, v]) => (
-              <span key={r} className="block">
-                {LABEL[r]}: <b className="text-fg">{v}</b>
-              </span>
-            ))}
-          </p>
-        )}
+        <OverLines over={item.over} />
 
         <p className="text-[12px] text-fg-dim line-clamp-2 leading-snug">
           {item.description}
         </p>
-        <p className="text-[12px] text-muted">
-          #{item.media_id} · {item.kind} · {item.explicitness} · {item.clothing_state}
-          {item.lanes.length > 0 && ` · ${item.lanes.join(", ")}`}
-        </p>
-        {item.iffy_why.length > 0 && (
-          <ul className="space-y-0.5">
-            {item.iffy_why.map((w) => (
-              <li key={w} className="flex items-start gap-1 text-[12px] text-warn leading-snug">
-                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-                {w}
-              </li>
-            ))}
-          </ul>
-        )}
+        <MediaMeta item={item} lanes={item.lanes} />
+        <Reasons items={item.iffy_why} tone="warn" />
 
         <IfInput
           value={note}
@@ -193,7 +157,7 @@ function Card({
 
         <IfButton
           disabled={busy}
-          onClick={save}
+          onClick={() => saveM.mutate(changed)}
           className={`mt-auto w-full ${
             changed.length
               ? "border-warn/60 bg-warn/15 text-warn hover:border-warn hover:bg-warn/25 hover:text-warn"
@@ -206,7 +170,7 @@ function Card({
               ? `Fix ${changed.length} and continue`
               : "Looks right"}
         </IfButton>
-        {err && <p className="text-[12px] text-err">{err}</p>}
+        {saveM.error && <p className="text-[12px] text-err">{errText(saveM.error)}</p>}
       </div>
     </div>
   );

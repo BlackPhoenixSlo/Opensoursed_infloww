@@ -18,7 +18,7 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        data collected so far (lib/procmon.py every 5 s, cli once before teardown); 404 otherwise.
   GET  /__slop/server-reads, POST /__slop/screens-404 {on}, POST /__slop/server-wire {path, mode}  the HTML's
        inline boot: the reads the Next server sent, bundles 404 for every caller, and the server's reads of one
-       path refused 403 or held (`_wire_inline_boot`).
+       path refused 403 or held (`lib/screen_bundle_relay.py`).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
   POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
@@ -543,6 +543,8 @@ WAIT_BOUNDS_MS = (0.5, 1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, float
 
 
 def _db_probe():
+    from procmon import socket_fds
+
     """Counters on the product's SQLAlchemy pool, from SQLAlchemy's own pool events
     (read-only listeners, no product code changed): connections opened / closed so
     far, checked out now and the peak since the last poll, and `nested`: checkouts
@@ -560,6 +562,10 @@ def _db_probe():
     held: dict[int, object] = {}  # id(pool record) -> the task that checked it out
     per_task: Counter = Counter()
     nested_at: Counter = Counter()  # where nested checkouts come from (top frames in service/)
+    # SLOP_DB_HOLDERS=1 (diagnostic, a stack walk per checkout): checkouts and connection-seconds held
+    # per opening site (top service/ frames), and the sites holding the connections out now
+    holders = ({"by": Counter(), "held_s": Counter(), "out": {}}
+               if os.environ.get("SLOP_DB_HOLDERS") == "1" else None)
 
     def task():
         try:
@@ -596,9 +602,16 @@ def _db_probe():
                                           for f in reversed(frames[-4:]))] += 1
             per_task[t] += 1
         held[id(rec)] = t
+        if holders is not None:
+            frames = [f for f in stack() if "/service/" in f.filename]
+            where = " <- ".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in reversed(frames[-4:]))
+            holders["by"][where] += 1
+            holders["out"][id(rec)] = (where, time.monotonic())
 
     def on_checkin(_dbapi, rec):
         c["out"] -= 1
+        if holders is not None and (got := holders["out"].pop(id(rec), None)):
+            holders["held_s"][got[0]] += time.monotonic() - got[1]
         t = held.pop(id(rec), None)
         if t is not None:
             per_task[t] -= 1
@@ -638,7 +651,15 @@ def _db_probe():
 
     def snap() -> dict:
         out = {**c, "nested_at": dict(nested_at.most_common(5)),
-               "spills": getattr(pool, "spills", None), "wait": {**wait, "hist": list(wait["hist"])}}
+               "spills": getattr(pool, "spills", None), "wait": {**wait, "hist": list(wait["hist"])},
+               # the pool's bound (db/engine.py POOL_SIZE + MAX_SPILL; max_overflow -1 = unbounded) and
+               # checkouts that found the spills at it
+               "size": pool.size(), "max_overflow": getattr(pool, "_max_overflow", None),
+               "capped": getattr(pool, "capped", None), "sockets": socket_fds()}  # procmon.socket_fds
+        if holders is not None:
+            out["holders"] = {"checkouts": dict(holders["by"].most_common(8)),
+                              "held_s": {k: round(v, 1) for k, v in holders["held_s"].most_common(8)},
+                              "out_now": dict(Counter(w for w, _ in holders["out"].values()).most_common(5))}
         c["out_peak"] = c["out"]
         wait.update(hist=[0] * len(WAIT_BOUNDS_MS), max_ms=0.0, n=0)
         return out
@@ -839,6 +860,13 @@ def _wire(app) -> None:
             raise HTTPException(status_code=503, detail="slop fault loop-cpu-polls-dropped")
         return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db(), "sched": _schedstat()}
 
+    async def socket_inventory(request: Request) -> dict:
+        _loopback(request)
+        import asyncio
+        from procmon import socket_endpoints
+        ports = {int(port) for port in request.query_params.getlist("port")}
+        return await asyncio.to_thread(socket_endpoints, ports)
+
     async def coverage_save(request: Request) -> dict:
         """`slop/run --map` (lib/stack.py runs the relay under coverage.py): write what ran so far, so a
         relay the scenario SIGKILLs (crash_relay, kill_group) still leaves its data. 404 otherwise."""
@@ -940,97 +968,16 @@ def _wire(app) -> None:
     app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])
     app.add_api_route("/__slop/fake/calls", fake_calls, methods=["GET"])
     app.add_api_route("/__slop/loop-cpu", loop_cpu, methods=["GET"])
+    app.add_api_route("/__slop/socket-inventory", socket_inventory, methods=["GET"])
     app.add_api_route("/__slop/coverage-save", coverage_save, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_stage, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_dump, methods=["GET"])
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])
     app.add_api_route("/__slop/stats", stats, methods=["GET"])
     app.add_api_route("/__slop/telemetry-flush", telemetry_flush, methods=["POST"])
-    _wire_inline_boot(app, _loopback, server)
     for m in PLUGINS:
         m.wire(app, _loopback, _SELF)
 
-
-def _wire_inline_boot(app, _loopback, server) -> None:
-    """The HTML's inline boot (app/lib/inlineBoot.server.ts) seen from the relay, outermost hook (no product code):
-
-      GET  /__slop/server-reads   the reads the Next server sent for a document's HTML (Node's fetch: user agent
-           `node` / `undici*`; the browser's own calls through the rewrites keep its user agent), each
-           {path (+query), status, t0, t1} in wall-clock seconds, since this relay's start.
-      POST /__slop/screens-404 {on}  every /admin/screens/* answers 404 (the per-Creator path), for the browser and
-           the Next server alike: a page route would only reach the browser's calls.
-      The Next server's /admin/screens/* read for a browser with the `slop_no_bundles=1` cookie (actors/ui.py
-      NO_BUNDLES_COOKIE: its page route 404s the bundles) answers 404 too.
-      POST /__slop/server-wire {path, mode}  the Next server's reads of `path` (exact) meet what a scenario's page
-           route does to the browser's: mode 403 (a blocking proxy's HTML 403) or "hold" (a relay that never
-           answers: held until the mode changes, at most HOLD_MAX_S, then a 504 nobody waits for; the server's own
-           INLINE_TIMEOUT_MS gives up first); null lifts it. The proxy and the silent relay a scenario stands in for
-           sit in front of the relay, on the leg the browser's rewrites and the server's reads both take (RELAY_URL).
-    """
-    import asyncio as _asyncio
-    import time as _time
-
-    from fastapi import Request
-    from starlette.responses import HTMLResponse, JSONResponse
-
-    reads: list[dict] = []
-    screens_404 = {"on": False}
-    server_wire: dict[str, object] = {}
-    hold_max_s = 10.0  # HOLD_MAX_S
-
-    async def held(path: str) -> JSONResponse:
-        t_end = _time.monotonic() + hold_max_s
-        while server_wire.get(path) == "hold" and _time.monotonic() < t_end:
-            await _asyncio.sleep(0.05)
-        return JSONResponse({"detail": "slop: held"}, status_code=504)
-
-    async def inline_hook(request, call_next):
-        t0 = _time.time()
-        path = request.url.path
-        ua = request.headers.get("user-agent", "")
-        server_read = ua == "node" or ua.startswith("undici")
-        no_bundles = server_read and "slop_no_bundles=1" in request.headers.get("cookie", "")
-        wire = server_wire.get(path) if server_read else None
-        if (screens_404["on"] or no_bundles) and path.startswith("/admin/screens/"):
-            resp = JSONResponse({"detail": "slop: per-Creator path"}, status_code=404)
-        elif wire == 403:
-            resp = HTMLResponse("<h1>403 Forbidden</h1>", status_code=403)
-        elif wire == "hold":
-            resp = await held(path)
-        else:
-            resp = await call_next(request)
-        if server_read:
-            q = request.url.query
-            reads.append({"path": path + (f"?{q}" if q else ""), "status": resp.status_code,
-                          "t0": t0, "t1": _time.time()})
-        return resp
-
-    server._http_hooks.add(inline_hook)
-
-    async def server_reads(request: Request) -> dict:
-        _loopback(request)
-        return {"reads": reads}
-
-    async def set_screens_404(request: Request) -> dict:
-        _loopback(request)
-        screens_404["on"] = bool((await request.json()).get("on"))
-        return dict(screens_404)
-
-    async def set_server_wire(request: Request) -> dict:
-        _loopback(request)
-        body = await request.json()
-        mode = body.get("mode")
-        if mode not in (None, 403, "hold"):
-            return JSONResponse({"detail": f"mode {mode!r}: 403, 'hold' or null"}, status_code=400)
-        if mode is None:
-            server_wire.pop(body["path"], None)
-        else:
-            server_wire[body["path"]] = mode
-        return dict(server_wire)
-
-    app.add_api_route("/__slop/server-reads", server_reads, methods=["GET"])
-    app.add_api_route("/__slop/screens-404", set_screens_404, methods=["POST"])
-    app.add_api_route("/__slop/server-wire", set_server_wire, methods=["POST"])
 
 
 def _wire_pumps(app, _loopback, server) -> None:

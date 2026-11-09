@@ -536,36 +536,94 @@ describe("AccountsTable modals — Escape", () => {
   });
 });
 
-/** The header's Add creator modal, step 1: a double-click on "Next: Link creator account" saves the Creator once
- *  (the second click lands before React re-renders, on the step the first left busy). */
-describe("AddCreatorModal — Next: Link creator account", () => {
-  it("a double-click saves the Creator once, then Back walks proxy → platform → details", async () => {
+/** The Add creator modal's linked step: a double-click on Done saves the account details once (the second click lands
+ *  before React re-renders, on the step the first left busy). */
+describe("AddCreatorModal — Done on the linked step", () => {
+  it("a double-click saves the account details once, then closes", async () => {
     let release = () => {};
     relayGet.mockImplementation((p: string) => p === "/admin/settings/account"
       ? Promise.resolve({ tab: "account", config: { language: "en" } })
       : p === "/admin/proxies" ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] }, accounts: [] })
         : Promise.resolve({}));
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-new", user_id: 7, session_file: "s.json", x_of_rev: "rev-1" } : {}));
     relayPut.mockImplementation((_p: string, body: unknown) =>
       new Promise((r) => { release = () => r({ tab: "account", config: body }); }));
-    render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    const onClose = vi.fn();
+    render(<AddCreatorModal extInstalled={null} onClose={onClose} />, { wrapper });
     const d = () => screen.getByRole("dialog");
     const btn = (n: string) => within(d()).getByRole("button", { name: n });
-    fireEvent.change(within(d()).getByLabelText("Creator name"), { target: { value: "Nova" } });
+    expect(btn("Next")).toBeDisabled();
+    fireEvent.change(within(d()).getByLabelText("Creator name"), { target: { value: "Bella" } });
+    expect(btn("Next")).toBeDisabled();
     fireEvent.change(within(d()).getByLabelText("Gender"), { target: { value: "Female" } });
-    await waitFor(() => expect(btn("Done")).toBeEnabled());
-    const next = btn("Next: Link creator account");
+    fireEvent.click(btn("Next"));
+    expect(within(d()).getByRole("radio", { name: "OnlyFans" })).toBeChecked();
+    fireEvent.click(btn("Back"));
+    expect(within(d()).getByLabelText("Creator name")).toHaveValue("Bella");
+    fireEvent.click(btn("Next"));
+    fireEvent.click(btn("Next"));
+    fireEvent.click(within(d()).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d()).getByLabelText("Copied cURL"), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
+    fireEvent.click(btn("Link account"));
+    await within(d()).findByText("Account details");
+    const done = btn("Done");
     // Both clicks inside ONE act: no re-render between them.
-    act(() => { next.click(); next.click(); });
+    act(() => { done.click(); done.click(); });
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(relayPut.mock.calls.filter(([p]) => p === "/admin/settings/account")).toHaveLength(1);
+    expect(relayPatch).toHaveBeenCalledWith("/admin/accounts/acct-new", { nickname: "Bella" });
+    expect(relayPut).toHaveBeenCalledWith("/admin/settings/account", expect.objectContaining({
+      creators: expect.objectContaining({ profiles: expect.objectContaining({ "acct-new": expect.objectContaining({ name: "Bella", gender: "Female" }) }) }),
+    }));
+    expect(btn("Saving…")).toBeDisabled();
     await act(async () => { release(); });
-    await within(d()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    await within(d()).findByText("Proxy selection");
-    fireEvent.click(btn("Back"));
-    await within(d()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Back"));
-    expect(within(d()).getByLabelText("Creator name")).toHaveValue("Nova");
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+});
+
+/** The linked step reads the account's own OF profile (/users/me): its photo (through /img), its name in the
+ *  Nickname field (a typed one kept), and its initials when it has no photo. */
+describe("AddCreatorModal — the linked step prefills from the OF profile", () => {
+  async function link(me: () => Promise<unknown>) {
+    relayGet.mockImplementation((p: string) => p === "/api/of/v2/users/me" ? me()
+      : p === "/admin/proxies" ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] }, accounts: [] })
+        : Promise.resolve({}));
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "990000102", user_id: 7, session_file: "s.json", x_of_rev: "rev-1" } : {}));
+    // Existing unnamed drafts still use the profile fallback; new creators supply their name before sign-in.
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} draft={{ id: "draft-blank", name: "", gender: "", created_at: "2026-11-09T00:00:00Z" }} />, { wrapper });
+    const d = screen.getByRole("dialog");
+    fireEvent.click(within(d).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d).getByLabelText("Copied cURL"), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
+    fireEvent.click(within(d).getByRole("button", { name: "Link account" }));
+    await within(d).findByText("Account details");
+    return d;
+  }
+  const AV = "https://public.onlyfans.com/files/m/mia.jpg";
+
+  it("photo, name, @username, id, and the Nickname prefilled with the OF name", async () => {
+    const d = await link(() => Promise.resolve({ id: 990000102, name: "Mia Rose", username: "miarose", avatar: AV }));
+    await waitFor(() => expect(within(d).getByLabelText("Nickname")).toHaveValue("Mia Rose"));
+    const img = d.querySelector('img[src^="/img?"]')!;
+    expect(new URLSearchParams(img.getAttribute("src")!.slice(5)).get("u")).toBe(AV);
+    expect(within(d).getByText("@miarose")).toBeInTheDocument();
+    expect(within(d).getByText("ID 990000102")).toBeInTheDocument();
+  });
+
+  it("no photo: the name's initials; no display name: the username fills the Nickname", async () => {
+    const d = await link(() => Promise.resolve({ id: 990000102, name: "", username: "miarose" }));
+    await waitFor(() => expect(within(d).getByLabelText("Nickname")).toHaveValue("miarose"));
+    expect(within(d).getByText("Mi")).toBeInTheDocument();
+  });
+
+  it("a nickname typed before the read lands is kept", async () => {
+    let answer: (v: unknown) => void = () => {};
+    const d = await link(() => new Promise((r) => { answer = r; }));
+    fireEvent.change(within(d).getByLabelText("Nickname"), { target: { value: "Mimi" } });
+    await act(async () => { answer({ id: 990000102, name: "Mia Rose", username: "miarose" }); });
+    await within(d).findByText("@miarose");
+    expect(within(d).getByLabelText("Nickname")).toHaveValue("Mimi");
   });
 });

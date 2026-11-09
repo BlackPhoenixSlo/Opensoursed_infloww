@@ -104,6 +104,24 @@ def case_lacks_names_the_lists_read_else_none():
     assert "sensitiveWords" in got and "savedReplies" not in got and "bogus" not in got, sorted(got)
 
 
+def case_back_to_back_fans_keep_their_own_reads():
+    import screens_api
+    screens_api._SHARED.clear()
+    first = OWNER_A.get("/admin/screens/chat", params={"account": A1, "fan": FAN})
+    second_fan = FAN + 1
+    second = OWNER_A.get("/admin/screens/chat", params={"account": A1, "fan": second_fan})
+    assert first.status_code == second.status_code == 200
+    answers = {a["read"]: a for a in second.json()["answers"]}
+    for name, path in {"seed": f"/admin/messages/{A1}/{second_fan}",
+                       "fan": f"/admin/fans/{A1}/{second_fan}",
+                       "attribution": f"/admin/messages/{A1}/{second_fan}/attribution"}.items():
+        route = OWNER_A.get(path, params={"limit": 30} if name == "seed" else {})
+        if route.status_code == 200:
+            assert answers[name]["body"] == route.json(), name
+        else:
+            assert answers[name]["status"] == route.status_code, name
+
+
 def _role(pages: dict[str, bool] | None) -> None:
     blob = {"enforce": False} if pages is None else {
         "enforce": True, "assignments": {str(EMP_A): "fx"},

@@ -21,14 +21,11 @@
  * for the formats. Overturned by an Infloww export file.
  */
 
-import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useReducer, useState } from "react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
-import { IfButton } from "@/components/ui/infloww";
-import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
-import { IF_FIELD } from "@/components/ui/ifSelect";
+import { IfButton, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
 import { initialRecordForm, recordFormReducer, validateRecord } from "@/components/stats/recordEditor";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { rangeOffsetLabel } from "@/lib/creatorClock";
@@ -39,9 +36,8 @@ import {
   type ClockRecord,
 } from "@/lib/shifts";
 
-const INPUT = `${IF_FIELD} h-8 px-[11px] tabular-nums`;
-/** A vertical form label (IfLabel's 14px T1, 8px over its field) that wraps its input. */
-const LABEL = "flex flex-col gap-2 text-[14px] text-fg";
+/** IfLabel's 14px T1, 8px over its field, as a column that wraps its input. */
+const LABEL = "mb-0 flex flex-col gap-2";
 const HOUR_MS = 3_600_000;
 
 /** Infloww's "MMM D, YYYY h:mm:ss A" in `tz`. */
@@ -128,49 +124,44 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
   }
 
   return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <Dialog.Portal>
-        {/* IfModal's look on Radix: the 70% mask, the kit box, title 22px 24px, body 24px, footer right. */}
-        <Dialog.Overlay className={`fixed inset-0 z-40 ${IF_MODAL_MASK}`} />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className={`fixed left-1/2 top-1/2 z-50 w-[486px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 ${IF_MODAL_BOX}`}
-        >
-          <div className="px-6 pt-[22px]">
-            <Dialog.Title className="text-[16px] font-semibold">Clocked hours</Dialog.Title>
-            <p className="mt-0.5 text-[12px] text-muted">{employeeName}</p>
-          </div>
-          <div className="space-y-4 p-6 text-[14px]">
-            <div className="flex flex-wrap items-end gap-2">
-              <label className={LABEL}>
-                From
-                <input type="datetime-local" step={3600} max={maxValue} aria-label="From" className={INPUT}
-                  value={fromValue} onChange={(e) => e.target.value && setFromInput(toHour(e.target.value))} />
-              </label>
-              <label className={LABEL}>
-                To
-                <input type="datetime-local" step={3600} max={maxValue} aria-label="To" className={INPUT}
-                  value={toValue} onChange={(e) => e.target.value && setToInput(toHour(e.target.value))} />
-              </label>
-              {exportAllowed && (
-                <IfButton className="ml-auto" onClick={exportCsv}
-                  disabled={!ranged || !records.isSuccess || list.length === 0}>
-                  Export
-                </IfButton>
-              )}
-            </div>
-            <p className="text-[12px] text-muted">{`Times in ${zoneLabel}`}</p>
-            {body}
-          </div>
-          <div className="flex items-center justify-between gap-3 px-6 pb-5">
-            <p className="text-[12px] text-muted">{"Edit is ours: Infloww can't edit clock records."}</p>
-            <Dialog.Close asChild>
-              <IfButton>Close</IfButton>
-            </Dialog.Close>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    // No ×, as before: the footer's Close (and Escape) close it.
+    <IfModal
+      title="Clocked hours"
+      width={486}
+      closable={false}
+      keyboard
+      onClose={onClose}
+      footer={(
+        <>
+          <p className="mr-auto text-[12px] text-muted">{"Edit is ours: Infloww can't edit clock records."}</p>
+          <IfButton onClick={onClose}>Close</IfButton>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        <p className="mb-2 text-[12px] text-muted">{employeeName}</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <IfLabel className={LABEL}>
+            From
+            <IfInput type="datetime-local" step={3600} max={maxValue} aria-label="From" className="tabular-nums"
+              value={fromValue} onChange={(e) => e.target.value && setFromInput(toHour(e.target.value))} />
+          </IfLabel>
+          <IfLabel className={LABEL}>
+            To
+            <IfInput type="datetime-local" step={3600} max={maxValue} aria-label="To" className="tabular-nums"
+              value={toValue} onChange={(e) => e.target.value && setToInput(toHour(e.target.value))} />
+          </IfLabel>
+          {exportAllowed && (
+            <IfButton className="ml-auto" onClick={exportCsv}
+              disabled={!ranged || !records.isSuccess || list.length === 0}>
+              Export
+            </IfButton>
+          )}
+        </div>
+        <p className="text-[12px] text-muted">{`Times in ${zoneLabel}`}</p>
+        {body}
+      </div>
+    </IfModal>
   );
 }
 
@@ -239,18 +230,18 @@ export function RecordEditor({ record: r, tz, closing, onDone }: {
     <div className="space-y-2 pt-1">
       <div className="flex flex-wrap gap-2">
         {!closing && (
-          <label className={LABEL}>
+          <IfLabel className={LABEL}>
             Clock in
-            <input type="datetime-local" aria-label="Clock in" className={INPUT}
+            <IfInput type="datetime-local" aria-label="Clock in" className="tabular-nums"
               value={form.inV} onChange={(e) => dispatch({ type: "in", value: e.target.value })} />
-          </label>
+          </IfLabel>
         )}
         {(closing || r.out_utc) && (
-          <label className={LABEL}>
+          <IfLabel className={LABEL}>
             Clock out
-            <input type="datetime-local" aria-label="Clock out" className={INPUT}
+            <IfInput type="datetime-local" aria-label="Clock out" className="tabular-nums"
               value={form.outV} onChange={(e) => dispatch({ type: "out", value: e.target.value })} />
-          </label>
+          </IfLabel>
         )}
       </div>
       {form.error && <p className="text-[12px] text-err" role="alert">{form.error}</p>}

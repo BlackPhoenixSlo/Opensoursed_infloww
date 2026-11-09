@@ -29,6 +29,10 @@ import server  # noqa: E402
 from audiences import broadcast_lock  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account  # noqa: E402
+from db.models import MassRun  # noqa: E402
+from of_client import OFAPIError  # noqa: E402
+from curl_cffi import requests as curl  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 AUTO_LID = 555_001
 
@@ -157,6 +161,47 @@ async def case_failed_post_releases_the_lock():
             raise AssertionError("the OF error surfaces")
     assert [held for _, held, _ in fake.posts] == [True], fake.posts
     assert not broadcast_lock(aid).locked(), "a failed POST frees the lock"
+
+
+async def _failed_real_proxy(kind: str, expected: str):
+    aid = f"acc_lock_{kind}"
+    await _account(aid)
+    fake = FakeOF(aid)
+    minted = []
+    def fail(*_a, **_k):
+        if kind == "proxy":
+            raise curl.exceptions.ProxyError("CONNECT tunnel failed")
+        if kind == "of400":
+            response = type("Response", (), {"status_code": 400, "text": "rejected"})()
+            raise OFAPIError("rejected", response=response)
+        raise curl.exceptions.ReadTimeout("timeout")
+    fake.send_mass_message = fail
+    async def mint(*_a, **_k):
+        async with get_session() as s:
+            mr = MassRun(account_id=aid, audience_filter="{}", recipient_count=0, status="running")
+            s.add(mr)
+            await s.flush()
+            minted.append(mr.id)
+        return aid, None, minted[-1]
+    with _Patch(fake):
+        mass_queue_api._open_mass_run = mint
+        try:
+            await mass_queue_api.of_send_or_schedule_mass(
+                None, mass_queue_api._MassScheduleBody(text="hey", user_ids=[1]))
+        except HTTPException as e:
+            assert e.__cause__ is not None, kind
+        else:
+            raise AssertionError("failure must surface")
+    async with get_session() as s:
+        mr = await s.get(MassRun, minted[0])
+    assert mr.status == expected, (kind, mr.status)
+    assert (mr.completed_at is not None) is (expected != "running")
+
+
+async def case_real_proxy_failure_classifies_minted_run():
+    await _failed_real_proxy("proxy", "refused")
+    await _failed_real_proxy("of400", "failed")
+    await _failed_real_proxy("timeout", "running")
 
 
 async def case_concurrent_rewrite_waits_for_the_post():

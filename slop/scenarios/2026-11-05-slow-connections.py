@@ -79,8 +79,8 @@ app/lib/inlineBoot.server.ts): `--net=jp --break --fault=inline-boot-relay-refus
 answered 503: the page falls back to its own fetches; targets C_INLINE only).
 
 Wire profiles (`--net=jp-lossy` / `--net=jp-lossy-bad`, never in the default set; the run stops at once, naming
-`sudo slop/install-netloss`, without the helper; one wire run per machine, lib/net.py `wire_lock`): real TCP through
-macOS dummynet on the edge's browser-facing port (lib/net.py `wired`, switched on after the profile's cold relay, off
+`sudo slop/install-netloss`, without the helper; one wire run per machine, lib/netloss.py `wire_lock`): real TCP through
+macOS dummynet on the edge's browser-facing port (lib/netloss.py `wired`, switched on after the profile's cold relay, off
 when it ends): RTT, bandwidth and loss per packet each way, CDP emulation off. Every correctness check above runs;
 budgets per flow from `WIRE_BUDGET_MS` (receive included: the /events stream rides the shaped line, so it has its
 own budget per wire profile instead of RECEIVE_MS), request caps REQ_MAX (receive's per DM `REQ_PER_DM_WIRE`: loss
@@ -124,8 +124,11 @@ from slop.actors import fan_dm, manager
 from slop.actors.ui import LAUNCH_ARGS, track
 from slop.lib.chat_open_faults import THREAD_BUNDLE, THREAD_ONCE
 from slop.lib.img_relay import arm_run, policy_exp, signed
-from slop.lib.net import DEFAULT_PROFILES, HELPER, INSTALL, PROFILES, Meter, calibrate, emulate, is_wire, wired
+from slop.lib.net import DEFAULT_PROFILES, PROFILES, Meter, emulate, is_wire
+from slop.lib.netloss import HELPER, INSTALL, calibrate, wired
 from slop.lib.net_faults import LOSSY_SI_FORCED, SI_FORCED, budget_check
+from slop.lib.procmon import pct
+from slop.lib.slow_connections_metrics import idle as _idle, req_ms as _req_ms, reqs as _reqs, thread_reads as _thread_reads
 from slop.lib.screens_faults import C_AGAIN, C_INLINE
 from slop.lib.wan import WanEdge
 from slop.seed import agency, chat_media, fans, of_sessions, threads
@@ -135,6 +138,7 @@ UI = True
 APP_MODE = "prod"
 RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test"}  # push on, as in prod (else GET /push/key 503)
 OF_WIRE = True
+WIRE_NET = True  # this scenario drives the browser through a shaped edge port
 FAULT = SI_FORCED
 CREATORS = 13
 OF_MS = 300      # a guess between the fake's 50 ms and prod's cold 0.9-1.3 s (dashboard-load's docstring)
@@ -317,37 +321,10 @@ SEEN_JS = r"""() => { if (window.__seen) return; window.__seen = {};
   mark(); new MutationObserver(mark).observe(document.body, {childList: true, subtree: true}); }"""
 
 
-def _route(path: str) -> str:
-    """A request's route for the idle table: the query dropped, ids (digit runs) as {n}."""
-    return re.sub(r"\d+", "{n}", path.split("?", 1)[0])
 
 
-def _idle(win: list[dict], seconds: float) -> dict:
-    """The idle window's requests (SSE and beacon aside) per minute, in total, /img, and by route."""
-    reqs = [q for q in win if Meter._counted(q)]
-    img = [q for q in reqs if q["path"].startswith("/img")]
-    per = 60 / seconds
-    by: dict[str, int] = {}
-    for q in reqs:
-        by[_route(q["path"])] = by.get(_route(q["path"]), 0) + 1
-    return {"seconds": seconds, "requests": len(reqs), "per_min": round(len(reqs) * per, 1), "img": len(img),
-            "img_per_min": round(len(img) * per, 1),
-            "by_route": dict(sorted(by.items(), key=lambda kv: -kv[1])[:30])}
 
 
-def _thread_reads(reqs: list[dict]) -> dict:
-    """The thread open's reads: routes GET more than once (/img aside), the bundle calls, local reads per route, and
-    waves (start clusters)."""
-    gets = [q for q in reqs if q.get("method", "GET") == "GET" and not q["path"].startswith("/img")]
-    by: dict[str, int] = {}
-    for q in gets:
-        by[q["path"].split("?", 1)[0]] = by.get(q["path"].split("?", 1)[0], 0) + 1
-    starts = sorted(q["start"] for q in reqs if q.get("start") is not None)
-    waves = sum(1 for i, t in enumerate(starts) if i == 0 or t - starts[i - 1] > WAVE_GAP_MS)
-    return {"dupes": {k: v for k, v in by.items() if v > 1},
-            "bundle": sum(1 for q in gets if q["path"].startswith("/admin/screens/chat")),
-            "local": [q["path"][:160] for q in gets if any(rx.match(q["path"]) for rx in THREAD_LOCAL)],
-            "waves": waves}
 
 
 def _resign(url: str, gen: int) -> str:
@@ -448,6 +425,11 @@ def _fans(texts: list[str]) -> list[int | None]:
 def req_check(p: str, f: str) -> str:
     return f"{p}: {f} requests within cap"
 
+def profile_checks(p: str):
+    """Budget and request check names for one profile."""
+    return ((f, budget_check(p, f) if f in BUDGET_MS.get(p, {}) or is_wire(p) else None,
+             req_check(p, f)) for f in FLOWS)
+
 
 def _budget(p: str, f: str) -> int | None:
     if is_wire(p):
@@ -464,24 +446,9 @@ def cal_check(p: str) -> str:
 WIRE_SKIP = "wire profile: receive judged per wire profile (its budget check), not by RECEIVE_MS"
 
 
-def _req_ms(r: dict) -> dict:
-    """One flow's request durations (the SSE stream and the beacon aside): n, p50 / p95 / max ms, the slowest's path,
-    how many over 10 s and 60 s, unfinished, and failed (not the page's own ERR_ABORTED)."""
-    qs = [q for q in r.get("reqs", []) if q["kind"] not in ("sse", "beacon")]
-    done = sorted((q["ms"], q["path"]) for q in qs if q["ms"] is not None)
-    ms = [m for m, _ in done]
-    return {"n": len(qs), "p50": _p(ms, 0.5), "p95": _p(ms, 0.95), "max": ms[-1] if ms else None,
-            "max_path": done[-1][1][:120] if done else None, "over_10s": sum(m > 10_000 for m in ms),
-            "over_60s": sum(m > 60_000 for m in ms), "unfinished": len(qs) - len(done),
-            "failed": sum(1 for q in qs if q.get("failed") and q["failed"] != "net::ERR_ABORTED")}
-
-
 _IDS = itertools.count(fan_dm.INJECT_ID_BASE)  # one count for every burst of the run: no id twice
 
 
-def _p(xs: list[float], q: float) -> float | None:
-    s = sorted(xs)
-    return round(s[min(len(s) - 1, int(q * len(s)))], 1) if s else None
 
 
 async def _burst(ctx, targets: list[dict], opened_fan: dict | None) -> dict:
@@ -603,7 +570,11 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
     try:
         page = await bctx.new_page()
         cdp = await bctx.new_cdp_session(page)
-        out["conditions"] = await emulate(cdp, prof)
+        if is_wire(prof):
+            await cdp.send("Network.enable")
+            out["conditions"] = {"wire": True}
+        else:
+            out["conditions"] = await emulate(cdp, prof)
         meter = Meter(cdp)
 
         async def flow(name: str, act, key: str, *, shot_before: bool = True, idle_ms: int = 1500,
@@ -635,11 +606,7 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
                 r["html_ttfb_ms"] = html["resp"]
                 r["html_end_ms"] = html["end"]
                 r["html_cache_control"] = html.get("cache_control")
-            r["reqs"] = [{"path": q["path"][:300], "method": q["method"], "kind": q["kind"], "status": q["status"],
-                          "bytes": q["bytes"], "start": q["start"],
-                          "ms": None if q["end"] is None else q["end"] - q["start"],
-                          "ttfb": None if q["resp"] is None else q["resp"] - q["start"],
-                          "cached": q["cached"], "failed": q["failed"]} for q in meter.window()]
+            r["reqs"] = _reqs(meter)
             out["flows"][name] = r
             return r
 
@@ -715,9 +682,7 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
         await page.screenshot(path=str(shots / f"{prof}-receive-settled.png"))
         settled = round(max(vis)) if vis and len(vis) == len(mids) else None
         r.update(settled_ms=settled, ready_ms=settled, how="ws-frame", key_ms=round(min(vis)) if vis else None,
-                 reqs=[{"path": q["path"][:300], "kind": q["kind"], "status": q["status"], "bytes": q["bytes"],
-                        "start": q["start"], "ms": None if q["end"] is None else q["end"] - q["start"],
-                        "failed": q["failed"]} for q in meter.window()])
+                 reqs=_reqs(meter))
         out["flows"]["receive"] = r
         out["burst"] = b
 
@@ -823,21 +788,21 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     if not ctx.ui:
         b = await _burst(ctx, chunks[profiles[0]], None)
         missing, disorder = await _db_checks(ctx, b["sent"])
-        ctx.metric("receive", {"sent": len(b["sent"]), "frame_to_sse_p50": _p(b["e2e"], 0.5),
-                               "frame_to_sse_p95": _p(b["e2e"], 0.95), "relay": b["stats"]})
+        ctx.metric("receive", {"sent": len(b["sent"]), "frame_to_sse_p50": pct(b["e2e"], 0.5),
+                               "frame_to_sse_p95": pct(b["e2e"], 0.95), "relay": b["stats"]})
         ctx.check(C_DB, len(b["sent"]) == len(b["recs"]) and missing == 0, sent=len(b["sent"]),
                   recs=len(b["recs"]), missing=missing)
         ctx.check(C_THREAD_ORDER, disorder == 0, threads_out_of_order=disorder)
         ctx.check(C_SSE_ALL, b["missing_sse"] == 0, missing=b["missing_sse"])
-        p95 = _p(b["e2e"], 0.95)
+        p95 = pct(b["e2e"], 0.95)
         ctx.check(SSE_CHECK, p95 is not None and p95 <= SSE_P95_MS, budget=True, p95=p95, n=len(b["e2e"]))
         for c in UI_CHECKS:
             ctx.skip(c, "--no-ui: no browser")
         for p in PROFILES:
-            for f in FLOWS:
-                if f in BUDGET_MS.get(p, {}) or is_wire(p):
-                    ctx.skip(budget_check(p, f), "--no-ui: no browser")
-                ctx.skip(req_check(p, f), "--no-ui: no browser")
+            for _f, budget_name, request_name in profile_checks(p):
+                if budget_name:
+                    ctx.skip(budget_name, "--no-ui: no browser")
+                ctx.skip(request_name, "--no-ui: no browser")
             if is_wire(p):
                 ctx.skip(cal_check(p), "--no-ui: no browser")
         ctx.skip(C_NO_5XX, "--no-ui: no browser")
@@ -903,7 +868,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                                   "how", "converged_ms", "html_ttfb_ms", "html_end_ms")}
                              for f in FLOWS} for p in profiles})
     ctx.metric("target_ms", TARGET_MS)
-    reads = {p: _thread_reads(res[p]["flows"].get("thread", {}).get("reqs", [])) for p in profiles}
+    reads = {p: _thread_reads(res[p]["flows"].get("thread", {}).get("reqs", []), WAVE_GAP_MS, THREAD_LOCAL) for p in profiles}
     ctx.metric("thread_reads", reads)
     ctx.note("thread open: waves, routes read twice, /admin/screens/chat calls, local reads per route:",
              *(f"{p:10} waves {d['waves']}  dupes {d['dupes'] or '-'}  bundle {d['bundle']}  local {len(d['local'])}"
@@ -981,7 +946,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_VISIBLE, all(res[p]["flows"]["receive"].get("settled_ms") is not None for p in profiles),
               frame_to_visible={p: res[p]["flows"]["receive"].get("settled_ms") for p in profiles})
     e2e = [x for p in profiles for x in res[p]["burst"]["e2e"]]
-    p95 = _p(e2e, 0.95)
+    p95 = pct(e2e, 0.95)
     ctx.check(SSE_CHECK, p95 is not None and p95 <= SSE_P95_MS, budget=True, p95=p95, limit_ms=SSE_P95_MS,
               n=len(e2e))
     rcv = {p: res[p]["flows"]["receive"].get("ready_ms") for p in profiles if not is_wire(p)}
@@ -1000,39 +965,40 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             if p not in res:
                 not_run = f"wire profile: run alone with --net={p}" + (
                     "" if HELPER.exists() else f" (helper not installed: {INSTALL})")
-                for f in FLOWS:
-                    ctx.skip(budget_check(p, f), not_run)
-                    ctx.skip(req_check(p, f), not_run)
+                for _f, budget_name, request_name in profile_checks(p):
+                    if budget_name:
+                        ctx.skip(budget_name, not_run)
+                    ctx.skip(request_name, not_run)
                 ctx.skip(cal_check(p), not_run)
                 continue
-            for f in FLOWS:
+            for f, budget_name, request_name in profile_checks(p):
                 r = res[p]["flows"].get(f, {})
                 lim = _budget("si", f) if lossy_forced else WIRE_BUDGET_MS[p].get(f)
                 v = r.get("ready_ms")
                 if lim is not None:  # dashboard-again: no wire budget yet (recorded)
-                    ctx.check(budget_check(p, f), v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
+                    ctx.check(budget_name, v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
                               ready_ms=v, limit_ms=lim, settled_ms=r.get("settled_ms"), pending=r.get("pending"),
                               req_max_ms=req_ms[p][f]["max"])
                 cap = int(REQ_PER_DM_WIRE * len(res[p]["burst"]["sent"])) if f == "receive" else REQ_MAX[f]
-                ctx.check(req_check(p, f), (r.get("requests") or 0) <= cap, requests=r.get("requests"), limit=cap,
+                ctx.check(request_name, (r.get("requests") or 0) <= cap, requests=r.get("requests"), limit=cap,
                           by_kind=r.get("by_kind"))
             cal, rtt = res[p]["wire"]["calibrate"], PROFILES[p]["rtt_ms"]
             tol = max(CAL_TOL_MS, CAL_TOL * rtt)
             ctx.check(cal_check(p), cal["median_ms"] is not None and abs(cal["median_ms"] - rtt) <= tol,
                       median_ms=cal["median_ms"], rtt_ms=rtt, tolerance_ms=tol, failed=cal["failed"])
             continue
-        for f in FLOWS:
+        for f, budget_name, request_name in profile_checks(p):
             if p not in res:
-                if f in BUDGET_MS[p]:
-                    ctx.skip(budget_check(p, f), f"--net={ctx.net}: profile not run")
-                ctx.skip(req_check(p, f), f"--net={ctx.net}: profile not run")
+                if budget_name:
+                    ctx.skip(budget_name, f"--net={ctx.net}: profile not run")
+                ctx.skip(request_name, f"--net={ctx.net}: profile not run")
                 continue
             r = res[p]["flows"].get(f, {})
             if f in BUDGET_MS[p]:
                 lim = BUDGET_MS["si"][f] if forced else BUDGET_MS[p][f]
                 v = r.get("ready_ms")
-                ctx.check(budget_check(p, f), v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
+                ctx.check(budget_name, v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
                           ready_ms=v, limit_ms=lim, settled_ms=r.get("settled_ms"), pending=r.get("pending"))
             cap = int(REQ_PER_DM * len(res[p]["burst"]["sent"])) if f == "receive" else REQ_MAX[f]
-            ctx.check(req_check(p, f), (r.get("requests") or 0) <= cap, requests=r.get("requests"), limit=cap,
+            ctx.check(request_name, (r.get("requests") or 0) <= cap, requests=r.get("requests"), limit=cap,
                       by_kind=r.get("by_kind"))

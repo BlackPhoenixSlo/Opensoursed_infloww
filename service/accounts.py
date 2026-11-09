@@ -450,6 +450,12 @@ def _write_active_unlocked(account_id: str | None) -> None:
     ACTIVE_FILE.write_text(json.dumps({"active_account_id": account_id}, indent=2))
 
 
+def get_stored_active_account_id() -> str | None:
+    """Read the explicit default without the session fallback or a write."""
+    with _lock:
+        return _read_active_unlocked()
+
+
 def get_active_account_id() -> str | None:
     """Return the explicitly-set active account, or — if none, or it is a
     watcher (never the default) — the newest Creator that has a session (so a

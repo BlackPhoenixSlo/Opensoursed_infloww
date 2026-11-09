@@ -25,7 +25,7 @@ ROOTS = PY_ROOTS + ("deploy/fleet/", "desktop/", APP)  # what a diff is read und
 APP_LAYOUT_FILES = re.compile(r"app/(next\.config\.\w+|package\.json|pnpm-lock\.yaml|postcss\.config\.\w+|"
                               r"tsconfig\.json|app/globals\.css|app/fonts/.+|public/.+)$")
 # Entry points whose import trees every page runs: the root layout and the middleware.
-APP_ROOT_ENTRIES = re.compile(r"app/(app/layout|middleware)\.(tsx|ts|jsx|js)$")
+APP_ROOT_ENTRIES = re.compile(r"app/(app/layout|middleware|proxy)\.(tsx|ts|jsx|js)$")
 APP_TEST = re.compile(r"(\.test\.|(^|/)test-utils\.tsx$|(^|/)test-import-graph\.ts$|(^|/)vitest\.)")
 APP_IGNORED = re.compile(r"app/(eslint\.config\.mjs|next-env\.d\.ts|[^/]+\.config\.[^/]+)$")  # after APP_LAYOUT_FILES
 PREFIX_FILES = {"layout", "template", "loading", "error", "not-found", "default", "global-error"}
@@ -272,7 +272,7 @@ def needs_ui(reasons: list[tuple[str, str]]) -> bool:
 
 
 def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict, untracked: list[str],
-         deleted=frozenset()):
+         deleted=frozenset(), map_missing: dict[str, set[str]] | None = None):
     """-> ({scenario: [(tier, reason)]}, [warnings]); reasons best tier first.
 
     Tiers: `own` its scenario file changed; `flow` reached through a function, a module-level hunk,
@@ -324,6 +324,9 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
         add(name, "flow" if k <= FLOW_SHARE * n_all else "shared", f"{head} ({detail} {k}/{n_all})", path)
 
     all_changed = set(untracked) | {f for fs in changed_files.values() for f in fs}
+    map_missing = map_missing or {}
+    unknown = {f for f in all_changed if any(f in fs for fs in map_missing.values()) and not ignored(f)}
+    warns |= {f"WARN map cannot judge {f} (absent at map sha); refresh: slop/run all --map" for f in unknown}
     for f in sorted(all_changed):  # a scenario's own file: always (new or mapped)
         if f.startswith(SCEN) and f.endswith(".py") and "/" not in f[len(SCEN):]:
             name = PurePosixPath(f).stem
@@ -337,13 +340,15 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
         for f in sorted(files):
             if ignored(f):
                 continue
+            if f in map_missing.get(sha, ()):
+                add(name, "shared", f"{f} (absent at map sha: every scenario)", f)
             if f.startswith(APP):
                 rel = f[len(APP):]
                 if f in deleted or APP_LAYOUT_FILES.match(f) or f in root_tree:
                     if pages if f in deleted else browser:  # a deleted route.ts: http pages too
                         add(name, "layout", f"app: every page <- {rel}" + (" (deleted)" if f in deleted else ""), f)
                     if f in deleted:
-                        warns.add(f"deleted app file: conservative pick: {f}")
+                        warns.add(f"WARN deleted app file: conservative pick: {f}")
                 for ent in reach.get(f, []):
                     if APP_ROOT_ENTRIES.match(ent):
                         continue  # the root layout itself: the layout reason
@@ -357,7 +362,7 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
             if who is not None:
                 if who == "all":
                     add(name, "shared", f"{f} (non-.py runtime file: every scenario)", f)
-                    warns.add(f"non-.py runtime file, every scenario picked: {f}")
+                    warns.add(f"WARN non-.py runtime file, every scenario picked: {f}")
                 elif who == PAGES:
                     if browser:
                         add(name, "layout", f"app: every page <- {f}", f)
@@ -385,11 +390,11 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
                 else:
                     add_counted(name, f"{f}::{q}", f"hunk @ L{ln}; run by", f, (f, q))
     unexec = {(f, q) for f, q in touched_fns if not runs((f, q))}
-    warns |= {f"not executed by any scenario: {f}::{q}" for f, q in unexec}
+    warns |= {f"WARN not executed by any scenario: {f}::{q}" for f, q in unexec}
     for r in picked.values():
         r.sort(key=lambda x: TIERS.index(x[0]))
     unexec_files = {f for f, _ in unexec}
-    warns |= {f"uncovered (no mapped scenario reaches it): {f}" for f in all_changed
+    warns |= {f"NOT VERIFIED (no scenario reaches): {f}" for f in all_changed
               if f not in hit and f not in unexec_files and not ignored(f)
               and not (f.startswith(SCEN) and f.endswith(".py"))}
     return picked, sorted(warns)

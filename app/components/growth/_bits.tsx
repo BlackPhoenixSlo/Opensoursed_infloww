@@ -9,36 +9,12 @@
  *  `@/lib/runStats` directly; the compatibility re-export that stood here while
  *  the importers were repointed is gone. */
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/primitives";
-import { IfButton, IfInput, IfModal } from "@/components/ui/infloww";
-import { cn } from "@/lib/utils";
 import { errText } from "@/lib/errText";
 
-/** antd's `Modal.confirm` as an awaited `IfModal` (416px): `ask(title, body, ok)` resolves true on the primary
- *  button, false on Cancel, ×, or Escape. Render `modal` once in the component. */
-export function useIfConfirm() {
-  const [q, setQ] = useState<{ title: string; body?: ReactNode; ok: string; resolve: (yes: boolean) => void } | null>(null);
-  const ask = (title: string, body?: ReactNode, ok = "Confirm") =>
-    new Promise<boolean>((resolve) => setQ({ title, body, ok, resolve }));
-  const done = (yes: boolean) => { q?.resolve(yes); setQ(null); };
-  const modal = q && (
-    <IfModal
-      title={q.title}
-      width={416}
-      onClose={() => done(false)}
-      footer={(
-        <>
-          <IfButton onClick={() => done(false)}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={() => done(true)}>{q.ok}</IfButton>
-        </>
-      )}
-    >
-      {q.body}
-    </IfModal>
-  );
-  return { ask, modal };
-}
+export { useIfConfirm } from "@/hooks/useIfConfirm";
+export { Field, NumInput } from "@/components/ui/fields";
 
 export function fmtUsd(cents: number): string {
   return `$${(Math.max(0, cents) / 100).toFixed(2)}`;
@@ -47,41 +23,6 @@ export function fmtUsd(cents: number): string {
 
 /** Message off a thrown value, with a fallback — `errText` under the name the Growth catches import. */
 export const errMsg = (e: unknown, fallback: string) => errText(e, fallback);
-
-export function Field({
-  label, children,
-}: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      {/* `IfLabel`'s look (14px, no colon); the label still wraps its field. */}
-      <span className="mb-2 block text-[14px] text-fg">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-export function NumInput({
-  value, onChange, min = 0, className,
-}: { value: number; onChange: (v: number) => void; min?: number; className?: string }) {
-  // Hold the raw keystrokes. Binding the number straight to the input let a
-  // field sitting at 0 render "040" once you typed 40 in front of it, and made
-  // the box impossible to clear while typing. The draft keeps typing natural;
-  // blur normalises it back to the real number.
-  const [draft, setDraft] = useState<string | null>(null);
-  return (
-    <IfInput
-      type="number" min={min} className={cn("w-full", className)}
-      value={draft ?? String(value)}
-      onChange={(e) => {
-        const raw = e.target.value;
-        setDraft(raw);
-        const n = Number(raw);
-        if (raw !== "" && Number.isFinite(n)) onChange(n);
-      }}
-      onBlur={() => setDraft(null)}
-    />
-  );
-}
 
 /** A native select over `{value, label}` options (OF's / Infloww's dropdown lists), numbers in and out. */
 export function SelectInput({

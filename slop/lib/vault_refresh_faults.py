@@ -11,14 +11,20 @@ REFRESH_WIRE = ("vault refresh: one Refresh click = one POST /admin/vault-ai/syn
                 "relay re-cached the folder list (DB)")
 REFRESH_FAIL_SHOWN = ("vault refresh: a Refresh while OnlyFans' vault listing fails (500) says so in Vault Pro "
                       "(\"Couldn't reach OnlyFans, showing saved vault\", desktop and phone) and the grid stays")
+ALL_COUNTS = ("vault all media: Vault Pro's \"All media\" row shows the whole vault's per-type counts OnlyFans "
+              "answers (`all` on GET /api/of/v2/vault/lists, as the browser got it, after Refresh), desktop and phone, "
+              "and under it the type chips of an empty type are off")
+ALL_TAP = ("vault all media: on a phone (and desktop) tapping a folder then \"All media\" shows the whole vault in "
+           "the grid (newest first, in view), and tapping \"All media\" again keeps it")
 THUMBS_RELOAD = ("vault picker: page 1 served from the relay's cache with expired thumb urls (CDN 403) reloads "
                  "itself once (one cache invalidate), the CDN then serves each of those paths 200 and every top "
                  "tile draws (desktop and phone); the relay's cached page 1 is the fresh one (DB)")
+PICKER_FAILURE = "vault_picker_refresh_pending_single_post_and_failure_note"
 SYNC_LOAD = ("vault refresh at volume: --users owners pressing Refresh at once on the load Creators: every POST "
              "/admin/vault-ai/sync 200, and each mirror then holds exactly OnlyFans' media (nothing dropped, no "
              "extra, folder membership as OF's)")
-SYNC_COALESCED = ("vault refresh at volume: concurrent Refreshes of one Creator share OF walks (OF media reads < "
-                  "Refresh presses, per Creator)")
+SYNC_COALESCED = ("vault refresh at volume: at least five concurrent Refresh presses per Creator start no more "
+                  "than two offset-zero OF media walks")
 
 # The app's own code (served unminified by `next dev`), the fix's seams (app/hooks/vaultRefresh.ts,
 # app/hooks/useThumbAutoRefresh.ts). `browser_files=2`: `next dev` bundles both modules into each served chunk that
@@ -26,6 +32,7 @@ SYNC_COALESCED = ("vault refresh at volume: concurrent Refreshes of one Creator 
 # components_chat_VaultMediaDetails_tsx chunk (the picker); each pattern lands in both.
 _SYNC_URL = (r"/admin/vault-ai/sync\?", "/admin/vault-ai/no-such-sync?")
 _AUTO_REFRESH = (r"if \(!thumbCooldown\.claim\(accountId, Date\.now\(\)\)\) return arm\(\);", "return;")  # never reloads
+_NO_ALL = (r"\ball: d\.all\b", "all: undefined")   # useVaultMedia.ts: the folder list's `all` dropped (pre-fix)
 _FAIL_SILENT = (r"(if \(ofUnreachable\(e\)\) )return false;", r"\1return true;")   # OF unreachable reads as synced
 
 
@@ -45,11 +52,15 @@ def _no_coalesce() -> None:
 def register(Fault) -> dict:
     return {
         # slop/run vault-refresh --break: the pre-fix Refresh (only invalidateVaultGrid; the sync URL 404s and the
-        # client falls through to the reload, which the relay answers from its day-long cache and the mirror)
-        "vault-refresh-cache-only": Fault(None, (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE),
+        # client falls through to the reload, which the relay answers from its day-long cache and the mirror).
+        # Every sync POST 404s, including the deliberate OF-failure phase and the picker's refresh.
+        "vault-refresh-cache-only": Fault(None, (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE,
+                                                REFRESH_FAIL_SHOWN, PICKER_FAILURE),
                                           browser=(_SYNC_URL,), browser_files=2),
         # slop/run vault-refresh --break --fault=vault-refresh-fail-silent: a failed sync shows the old grid, no word
         "vault-refresh-fail-silent": Fault(None, (REFRESH_FAIL_SHOWN,), browser=(_FAIL_SILENT,), browser_files=2),
+        # slop/run vault-refresh --break --fault=vault-all-media-no-counts: All media shows "—", every chip on
+        "vault-all-media-no-counts": Fault(None, (ALL_COUNTS,), browser=(_NO_ALL,), browser_files=2),
         # slop/run vault-refresh --break --fault=vault-thumbs-no-auto-refresh: a broken thumb never reloads
         "vault-thumbs-no-auto-refresh": Fault(None, (THUMBS_RELOAD,), browser=(_AUTO_REFRESH,), browser_files=2),
         # slop/run vault-refresh --break --fault=vault-sync-no-coalesce --no-ui

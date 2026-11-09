@@ -76,7 +76,7 @@ describe("/creators/proxy", () => {
     renderWithProviders(<Page />);
     // creators-proxy#3: the page title; #7: the header button.
     expect(screen.getByRole("heading", { name: "Manage your custom proxies" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "+ Add new proxy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add new proxy" })).toBeInTheDocument();
     await screen.findByText("px-1");
     expect(within(proxyTable()).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
       "Proxy label", // creators-proxy#11
@@ -316,7 +316,7 @@ describe("/creators/proxy", () => {
   it("a chatter refused the proxies read sees its controls not wired and no error banner", async () => {
     relayGet.mockRejectedValue(new RelayError(403, { detail: "owner only" }, "owner only"));
     renderWithProviders(<Page />);
-    const add = screen.getByRole("button", { name: "+ Add new proxy" });
+    const add = screen.getByRole("button", { name: "Add new proxy" });
     await waitFor(() => expect(add).toHaveAttribute("title", "not wired"));
     expect(add).toBeDisabled();
     // The form and the paste box live in the modal (ticket 18), which the disabled button cannot open.
@@ -330,7 +330,7 @@ describe("/creators/proxy", () => {
 
 /** Opens the Add new proxy modal and returns it. */
 async function openAdd(): Promise<HTMLElement> {
-  const add = screen.getByRole("button", { name: "+ Add new proxy" });
+  const add = screen.getByRole("button", { name: "Add new proxy" });
   await waitFor(() => expect(add).toBeEnabled());
   fireEvent.click(add);
   return screen.getByRole("dialog", { name: "Add new proxy" });

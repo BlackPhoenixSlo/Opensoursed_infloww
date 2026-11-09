@@ -7,7 +7,7 @@
  * ticket 25 adds the Net / Gross switch and the channel tiles; ticket 26 wires
  * Employee sales to the per-employee read. Page-parity ticket 01 moves it onto
  * ticket 00's primitives (the `IfSelect` earnings select, the `IfSegmented`
- * period strip, `EmptyState`) and wires Scheduled hours to the Timesheet.
+ * period strip, `EmptyState`) and wires Worked hours to the Timesheet.
  *
  * The fixture zone is Pacific/Honolulu: west of UTC (UTC-10:00, the Inventory's
  * example label) and without daylight saving, so every instant below is fixed.
@@ -121,6 +121,7 @@ beforeEach(() => {
     if (u.pathname === "/admin/stats/per-employee") {
       return (perEmployee.length > 1 ? perEmployee.shift()! : perEmployee[0])();
     }
+    if (u.pathname === "/admin/shifts") return jsonRes({ occurrences: [] });
     if (u.pathname === "/admin/shifts/clocked-in") return jsonRes({ time_tracking_enabled: false, clocked_in: [] });
     if (u.pathname === "/admin/shifts/timesheet") return timesheet();
     if (u.pathname === "/admin/shifts/me") {
@@ -300,9 +301,9 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     fireEvent.click(tab("This month"));
     expect(window.location.search).toBe("?window=month");
     await waitFor(() => expect(lastWindow()).toEqual(["2026-10-01T10:00:00.000Z", "2026-11-01T09:59:59.999Z"]));
-    fireEvent.click(tab("Last month"));
-    expect(window.location.search).toBe("?window=lastMonth");
-    await waitFor(() => expect(lastWindow()).toEqual(["2026-09-01T10:00:00.000Z", "2026-10-01T09:59:59.999Z"]));
+    fireEvent.click(tab("Last 30 days"));
+    expect(window.location.search).toBe("?window=last30Days");
+    await waitFor(() => expect(lastWindow()).toEqual(["2026-09-15T10:00:00.000Z", "2026-10-15T09:59:59.999Z"]));
   });
 
   it("a seeded ?window= opens that tab", async () => {
@@ -706,43 +707,46 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
 });
 
 describe("the Dashboard body: the capture's blocks, then one labelled extra (ticket 27)", () => {
-  it("puts My shifts on the left across the right column's rows and the clocked-in card beside it (capture #64, #65, #75)", async () => {
+  it("puts My shifts on the left across the right column's rows with sales beside it and no clocked-in card", async () => {
     await mountHome();
     const left = cell("my-shifts");
     expect(follows(screen.getByRole("region", { name: "Creator earnings overview" }), left)).toBe(true);
-    expect(cell("earnings")).toHaveClass("md:col-span-12");
-    expect(within(left).getByRole("region", { name: "My shifts" })).toBeInTheDocument();
-    // #67: from `md` the card is `position:absolute` at full height in a cell spanning the right column's three rows,
+    expect(cell("earnings")).toHaveClass("md:col-span-2");
+    expect(within(left).getByRole("region", { name: "Scheduled shifts" })).toBeInTheDocument();
+    // #67: from `md` the card is `position:absolute` at full height in a cell spanning the right column's two rows,
     // so it takes their height (jsdom does no layout; the shot checks it).
-    expect(left).toHaveClass("md:relative", "md:row-span-3", "md:col-span-4", "xl:col-span-3");
-    expect(within(left).getByRole("region", { name: "My shifts" })).toHaveClass("md:absolute", "md:inset-0");
-    const right = cell("clocked-in");
-    expect(right).toHaveClass("md:col-span-8", "xl:col-span-9");
-    expect(within(right).getByRole("region", { name: "Current clocked-in employees" })).toBeInTheDocument();
+    expect(left).toHaveClass("md:relative", "md:row-span-2", "md:col-start-1");
+    expect(within(left).getByRole("region", { name: "Scheduled shifts" })).toHaveClass("md:absolute", "md:inset-0");
+    const right = cell("employee-sales");
+    expect(right).toHaveClass("md:col-start-2");
+    expect(within(right).getByRole("region", { name: "Employee sales" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Current clocked-in employees" })).toBeNull();
+    expect(calls().filter(({ url }) => url.pathname === "/admin/shifts/clocked-in")).toHaveLength(0);
     expect(left.nextElementSibling).toBe(right);
-    expect(screen.getByTestId("dashboard-grid")).toHaveClass("md:grid-cols-12", "md:grid-flow-row-dense");
+    expect(screen.getByTestId("dashboard-grid")).toHaveClass("md:grid-cols-[240px_minmax(0,1fr)]", "md:grid-flow-row-dense");
   });
 
-  it("puts Scheduled hours in the right column after the clocked-in card, with the empty state (capture #86, #87, #92)", async () => {
+  it("puts Worked hours in the right column after the sales card, with the empty state (capture #86, #87, #92)", async () => {
     await mountHome();
-    const card = within(cell("scheduled-hours")).getByRole("region", { name: "Scheduled hours" });
-    expect(cell("scheduled-hours")).toHaveClass("md:col-span-8", "xl:col-span-9");
-    expect(within(card).getByTitle("Number of hours worked based on shift schedule")).toBeInTheDocument();
+    const card = within(cell("scheduled-hours")).getByRole("region", { name: "Worked hours" });
+    expect(cell("scheduled-hours")).toHaveClass("md:col-start-2");
+    expect(within(card).getByTitle("Recorded hours worked during this period")).toBeInTheDocument();
+    expect(within(card).getByRole("group", { name: "Worked hours list" })).toHaveClass("max-h-[280px]", "overflow-y-auto");
     expect(await within(card).findByText("No data")).toBeInTheDocument();
-    expect(follows(screen.getByRole("region", { name: "Current clocked-in employees" }), card)).toBe(true);
+    expect(follows(screen.getByRole("region", { name: "Employee sales" }), card)).toBe(true);
   });
 
-  it("draws one Scheduled hours bar per Employee from the Timesheet's scheduled minutes, over the header's period", async () => {
+  it("draws one Worked hours bar per Employee from the Timesheet's worked minutes, over the header's period", async () => {
     timesheet = async () => jsonRes({ rows: [
       { key: "7", display_name: "Fixture Chatter One", scheduled_shifts: 2, shifts_worked: 1, scheduled_minutes: 600,
         worked_minutes: 300, recorded_earnings_cents: 0, open_now: false, employee_id: 7, group_name: null },
       { key: "8", display_name: "Fixture Chatter Two", scheduled_shifts: 1, shifts_worked: 0, scheduled_minutes: 150,
-        worked_minutes: 0, recorded_earnings_cents: 0, open_now: false, employee_id: 8, group_name: null },
+        worked_minutes: 75, recorded_earnings_cents: 0, open_now: false, employee_id: 8, group_name: null },
       { key: "9", display_name: "Fixture Chatter Three", scheduled_shifts: 0, shifts_worked: 0, scheduled_minutes: 0,
         worked_minutes: 0, recorded_earnings_cents: 0, open_now: false, employee_id: 9, group_name: null },
     ] });
     await mountHome();
-    const card = screen.getByRole("region", { name: "Scheduled hours" });
+    const card = screen.getByRole("region", { name: "Worked hours" });
     await waitFor(() => expect(card.querySelectorAll("[data-employee]")).toHaveLength(2));
     const bars = Array.from(card.querySelectorAll<HTMLElement>("[data-employee]"), (r) => ({
       name: r.querySelector("[data-name]")?.textContent,
@@ -750,8 +754,8 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
       width: r.querySelector<HTMLElement>("[data-bar]")?.style.width,
     }));
     expect(bars).toEqual([
-      { name: "Fixture Chatter One", hours: "10h", width: "100%" },
-      { name: "Fixture Chatter Two", hours: "2.5h", width: "25%" },
+      { name: "Fixture Chatter One", hours: "5h", width: "100%" },
+      { name: "Fixture Chatter Two", hours: "1.3h", width: "25%" },
     ]);
     const read = fetchMock.mock.calls.map(([u]) => new URL(String(u), "http://localhost"))
       .find((u) => u.pathname === "/admin/shifts/timesheet")!;
@@ -760,45 +764,23 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     });
   });
 
-  it("has no Scheduled hours card and sends no Timesheet read for a chatter session", async () => {
+  it("has no Worked hours card and sends no Timesheet read for a chatter session", async () => {
     session = { user: null, chatter: { username: "chatter_one" } };
     await mountHome();
     await shows(TOTAL_NET);
-    expect(screen.queryByRole("region", { name: "Scheduled hours" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Worked hours" })).toBeNull();
     expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith("/admin/shifts/timesheet"))).toBe(false);
   });
 
-  it("puts only the Per-model KPIs cards under the extras label, last on the page after the shift cards", async () => {
+  it("ends with Worked hours and does not read the removed KPI block", async () => {
     await mountHome();
-    const extras = screen.getAllByRole("region", { name: EXTRA_LABEL });
-    expect(extras).toHaveLength(1);
-    const [extra] = extras;
-    expect(within(extra).getByRole("heading", { name: EXTRA_LABEL })).toHaveAttribute("title", EXTRA_LABEL);
-    expect(follows(cell("scheduled-hours"), extra)).toBe(true);
-    expect(cell("per-model")).toBe(extra.parentElement);
-    expect(cell("per-model").nextElementSibling).toBeNull();
-    const kpis = await within(extra).findByTestId("per-model-kpis-stub");
-    expect(extra.children).toHaveLength(2);
-    expect(extra.nextElementSibling).toBeNull();
-    expect(screen.queryByText(/Total revenue · all models/)).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Creator reports" })).toBeNull();
-    expect([kpis.dataset.from, kpis.dataset.to]).toEqual(lastWindow());
-  });
-
-  it("reads the Per-model KPIs over the header's period when a tab is picked", async () => {
-    await mountHome();
-    await screen.findByTestId("per-model-kpis-stub");
-    fireEvent.click(tab("This month"));
-    const [from, to] = periodWindow("month", HONOLULU, "sunday");
-    await waitFor(() => {
-      const kpis = screen.getByTestId("per-model-kpis-stub");
-      expect([kpis.dataset.from, kpis.dataset.to]).toEqual([from, to]);
-    });
+    expect(cell("scheduled-hours").nextElementSibling).toBeNull();
+    expect(screen.queryByRole("region", { name: EXTRA_LABEL })).toBeNull();
+    expect(calls().some(({ url }) => url.pathname === "/admin/stats/per-model")).toBe(false);
   });
 
   it("shows no developer strip and no status card", async () => {
     await mountHome();
-    await screen.findByTestId("per-model-kpis-stub");
     for (const gone of [/Chatting as/, /^switch$/, /\+ Add Model/, /^scope:$/, /Inflowwww is live/, /Relay \/health/]) {
       expect(screen.queryByText(gone), String(gone)).toBeNull();
     }
@@ -829,12 +811,12 @@ describe("periodWindow: a capture tab, the report time zone and the week start g
       ["2026-10-25T10:00:00.000Z", "2026-11-01T09:59:59.999Z"]],
     ["yesterday across the month boundary in UTC", MONTH_END, "yesterday", "sunday",
       ["2026-10-30T10:00:00.000Z", "2026-10-31T09:59:59.999Z"]],
-    ["last month: the whole calendar month before this one", WEDNESDAY, "lastMonth", "monday",
-      ["2026-09-01T10:00:00.000Z", "2026-10-01T09:59:59.999Z"]],
-    ["last month on this month's last day, already next month in UTC", MONTH_END, "lastMonth", "monday",
-      ["2026-09-01T10:00:00.000Z", "2026-10-01T09:59:59.999Z"]],
-    ["last month in January: December of the year before", "2027-01-15T22:00:00Z", "lastMonth", "monday",
-      ["2026-12-01T10:00:00.000Z", "2027-01-01T09:59:59.999Z"]],
+    ["last 30 days including today", WEDNESDAY, "last30Days", "monday",
+      ["2026-09-15T10:00:00.000Z", "2026-10-15T09:59:59.999Z"]],
+    ["last 30 days at month end", MONTH_END, "last30Days", "monday",
+      ["2026-10-02T10:00:00.000Z", "2026-11-01T09:59:59.999Z"]],
+    ["last 30 days across the year boundary", "2027-01-15T22:00:00Z", "last30Days", "monday",
+      ["2026-12-17T10:00:00.000Z", "2027-01-16T09:59:59.999Z"]],
   ])("%s", (_name, now, period, weekStart, want) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(now));
@@ -850,6 +832,11 @@ describe("periodWindow: a capture tab, the report time zone and the week start g
 
 /** The per-employee answer, ranked by the Relay (revenue, highest first), the "Unattributed" bucket among them. */
 const PER_EMPLOYEE = {
+  series: [
+    { start: "2026-10-13", revenue_cents: 4200, messages_cents: 3000, tips_cents: 1200 },
+    { start: "2026-10-14", revenue_cents: 1250, messages_cents: 0, tips_cents: 1250 },
+    { start: "2026-10-15", revenue_cents: 0, messages_cents: 0, tips_cents: 0 },
+  ],
   employees: [
     { employee_id: 7, display_name: "Fixture Chatter One", messages_sent: 9, ppv_conversions: 2, revenue_cents: 4200,
       revenue_by_kind: { ppv: 3000, tip: 1200 } },
@@ -863,23 +850,18 @@ const PER_EMPLOYEE = {
 
 describe("Employee sales reads the per-employee figures for the selected window (ticket 26)", () => {
   const card = () => tile("employeeSales");
-  /** Each ranked row as read: "<name> <figure>". */
-  const ranking = () => Array.from(card().querySelectorAll<HTMLElement>("[data-employee]"),
-    (r) => `${r.querySelector("[data-name]")?.textContent} ${r.querySelector("[data-figure]")?.textContent}`);
+  const ranking = () => Array.from(card().querySelectorAll('[data-testid="sales-point"]'), (p) => p.getAttribute("aria-label")?.split("\n")[0]);
   const ranked = (want: string[]) => waitFor(() => expect(ranking()).toEqual(want));
-  const WANT = ["Fixture Chatter One $42", "Unattributed $13", "Fixture Chatter Two $0"];
+  const WANT = ["Oct 13", "Oct 14", "Oct 15"];
 
-  it("ranks every Employee, Unattributed included, as the Relay credits them, in the capture's 350px card", async () => {
+  it("draws a daily curved earnings line with markers and the sales breakdown", async () => {
     await mountHome();
     await ranked(WANT);
-    expect(card()).not.toBeDisabled();
-    expect(card()).not.toHaveAttribute("title", "not wired");
-    expect(card().querySelector("[data-chart]")).toHaveClass("h-[350px]");
-    // Each row's tooltip is the capture's first point line (#84), labelled as part of the ranking: no "Growth:" or
-    // "From …:" lines.
-    expect(card().querySelector("[data-employee]")).toHaveAttribute("title", "Inflowwww extra · Earnings: $42");
-    // The ranking stands in for the capture's daily line, so it is labelled as ours.
-    expect(card().querySelector("[data-chart]")).toHaveAttribute("title", "Inflowwww extra");
+    expect(within(card()).getByRole("img", { name: "Earnings" })).toHaveAttribute("d", expect.stringContaining("C"));
+    expect(card().querySelectorAll("[data-chart] circle")).toHaveLength(3);
+    fireEvent.mouseEnter(card().querySelectorAll('[data-testid="sales-point"]')[1]);
+    expect(within(card()).getByRole("tooltip")).toHaveTextContent("Growth: -70.24%");
+    expect(within(card()).getByRole("tooltip")).toHaveTextContent("From Tips: $12.50");
   });
 
   it("reads the period's from/to with no account_id, and a tab click reads the new period", async () => {
@@ -888,12 +870,12 @@ describe("Employee sales reads the per-employee figures for the selected window 
     await ranked(WANT);
     // The exact query string service/tests/test_dashboard_reads.py calls for Yesterday.
     expect(perEmployeeReads().map(({ url }) => url.search)).toEqual([
-      "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z",
+      "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z&include_series=true",
     ]);
     fireEvent.click(tab("This month"));
     await waitFor(() => expect(perEmployeeReads()).toHaveLength(2));
     expect(perEmployeeReads()[1].url.search).toBe(
-      "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z");
+      "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z&include_series=true");
     // The switch does not drive Employee sales: the bundle's read takes no basis.
     pickBasis("Gross");
     await shows("$18");
@@ -905,7 +887,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
     perEmployee = [
       async () => jsonRes(PER_EMPLOYEE),
       () => new Promise((done) => {
-        answer = () => done(jsonRes({ ...PER_EMPLOYEE, employees: [PER_EMPLOYEE.employees[1]] }));
+        answer = () => done(jsonRes({ ...PER_EMPLOYEE, series: [PER_EMPLOYEE.series[1]] }));
       }),
     ];
     await mountHome();
@@ -917,7 +899,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
     expect(within(card()).getByRole("status")).toHaveTextContent(/^$/);
     expect(ranking()).toEqual([]);
     answer();
-    await ranked(["Unattributed $13"]);
+    await ranked(["Oct 14"]);
   });
 
   it("shows the capture's retry box on an error, and Retry reads again", async () => {
@@ -931,12 +913,12 @@ describe("Employee sales reads the per-employee figures for the selected window 
     expect(perEmployeeReads()).toHaveLength(2);
   });
 
-  it("sits in the right column, after the clocked-in card and before Scheduled hours (capture #79)", async () => {
+  it("sits in the right column, after the sales card and before Worked hours (capture #79)", async () => {
     await mountHome();
     expect(within(cell("employee-sales")).getByRole("region", { name: "Employee sales" })).toBe(card());
-    expect(cell("employee-sales")).toHaveClass("md:col-span-8", "xl:col-span-9");
-    expect(follows(screen.getByRole("region", { name: "Current clocked-in employees" }), card())).toBe(true);
-    expect(follows(card(), screen.getByRole("region", { name: "Scheduled hours" }))).toBe(true);
+    expect(cell("employee-sales")).toHaveClass("md:col-start-2");
+    expect(follows(cell("my-shifts"), card())).toBe(true);
+    expect(follows(card(), screen.getByRole("region", { name: "Worked hours" }))).toBe(true);
     // The earnings card keeps the capture's 16px to the cards under it (#11): the grid's gap.
     expect(screen.getByTestId("dashboard-grid")).toHaveClass("gap-4");
   });
@@ -961,7 +943,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
 
 describe("Home: the static card set and per-card permissions", () => {
   const shownCards = () => Array.from(screen.getByTestId("dashboard-grid").children, (c) => (c as HTMLElement).dataset.card);
-  const DEFAULT = ["earnings", "my-shifts", "clocked-in", "employee-sales", "scheduled-hours", "per-model"];
+  const DEFAULT = ["earnings", "my-shifts", "employee-sales", "scheduled-hours"];
 
   it("draws the old Dashboard's card set in its order, with no Customize", async () => {
     await mountHome();
@@ -974,9 +956,8 @@ describe("Home: the static card set and per-card permissions", () => {
     applied = async () => jsonRes({ ...(await appliedRes().json()), permissions: {
       enforced: true, pages: ["/"], scope: "self", denied_cards: ["/#card-earnings", "/#card-employee-sales"] } });
     renderWithProviders(<HomePage />);
-    // The owner-only cards (Current clocked-in employees, Scheduled hours) take no cell for a chatter either.
-    await waitFor(() => expect(shownCards()).toEqual(["my-shifts", "per-model"]));
-    await screen.findByTestId("per-model-kpis-stub");
+    // The owner-only cards (Current clocked-in employees, Worked hours) take no cell for a chatter either.
+    await waitFor(() => expect(shownCards()).toEqual(["my-shifts"]));
     expect(revenueReads()).toHaveLength(0);
     expect(perEmployeeReads()).toHaveLength(0);
   });
@@ -986,11 +967,11 @@ describe("Home: the static card set and per-card permissions", () => {
     applied = async () => jsonRes({ ...(await appliedRes().json()), permissions: {
       enforced: true, pages: ["/"], scope: "self", denied_cards: ["/#card-earnings"] } });
     renderWithProviders(<HomePage />);
-    const stub = await screen.findByTestId("per-model-kpis-stub");
+    await screen.findByRole("radio", { name: "This week" });
     expect(document.querySelector('[data-control="title"]')).toBeNull();
     const toolbar = screen.getByTestId("dashboard-toolbar");
     expect(within(toolbar).getByRole("radio", { name: "This week" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(within(toolbar).getByRole("radio", { name: "This month" }));
-    await waitFor(() => expect([stub.dataset.from, stub.dataset.to]).toEqual(periodWindow("month", HONOLULU, "sunday")));
+    await waitFor(() => expect(perEmployeeReads().at(-1)?.url.searchParams.get("from")).toBe(periodWindow("month", HONOLULU, "sunday")[0]));
   });
 });

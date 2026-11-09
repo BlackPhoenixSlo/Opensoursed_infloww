@@ -19,7 +19,8 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "@/components/chat/TagCreatorsPicker";
 import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
 import { GifPickerButton, GifPickerStrip, type PickedGif } from "@/components/chat/GifPicker";
-import { Button, Input, Textarea } from "@/components/ui/primitives";
+import { Input, Textarea } from "@/components/ui/primitives";
+import { IfButton } from "@/components/ui/infloww";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -143,10 +144,10 @@ export function TemplateDraftEditor({
     !draft.text.trim() || saving || sensitiveHits.length > 0 || (script && plainLength(draft.text) > SCRIPT_TEXT_MAX) ||
     (script && (!draft.title.trim() || belowMin || (!!draft.scriptId.trim() && !/^\d+$/.test(draft.scriptStep.trim()))));
   const saveButton = (
-    <Button size="sm" onClick={onSave} disabled={saveDisabled}>
+    <IfButton variant="primary" onClick={onSave} disabled={saveDisabled}>
       {/* The bundle's footer is antd Modal's Cancel / OK (`onOk`, @9318571). */}
       {script ? "OK" : saving ? "Saving…" : "Save"}
-    </Button>
+    </IfButton>
   );
 
   const tagCreators = (
@@ -578,7 +579,7 @@ export function TemplateDraftEditor({
               />
             </div>
             <div className="flex items-center justify-end gap-2 pt-1">
-              <Button size="sm" variant="secondary" onClick={() => setDraft(null)}>Cancel</Button>
+              <IfButton onClick={() => setDraft(null)}>Cancel</IfButton>
               {saveButton}
             </div>
           </>

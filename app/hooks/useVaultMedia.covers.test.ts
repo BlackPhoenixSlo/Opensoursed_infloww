@@ -12,6 +12,7 @@ beforeEach(() => {
   get.mockReset();
   get.mockResolvedValue({
     hasMore: false,
+    all: { photosCount: 9, videosCount: 4, gifsCount: 1, audiosCount: 3, medias: [{ id: 501, type: "photo", url: SIGNED }] },
     list: [
       { id: 1, type: "custom", name: "With ids", hasMedia: true, medias: [{ id: 501, type: "photo", url: SIGNED }, { type: "video", url: SIGNED }] },
       { id: 2, type: "custom", name: "No ids", hasMedia: true, medias: [{ type: "photo", url: SIGNED }] },
@@ -29,6 +30,11 @@ describe("fetchAllVaultLists covers", () => {
       [],
     ]);
     expect(JSON.stringify(r)).not.toMatch(/Policy=|Signature=|Key-Pair-Id/);
+  });
+
+  it("keeps OF's whole-vault counts (`all`, the All media row's), counts only", async () => {
+    const r = await fetchAllVaultLists({ accountId: "acct 1" });
+    expect(r.all).toEqual({ photosCount: 9, videosCount: 4, gifsCount: 1, audiosCount: 3 });
   });
 
   it("drops every cover when no account is known (no thumb url can be built)", async () => {

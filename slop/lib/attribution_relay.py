@@ -9,8 +9,9 @@ line with the same row id is OF's newer view of that row, e.g. a status flip to
 `transaction_ingest.run_one_tick` pages) answers as OF did on 2026-11-07 (measured,
 service/of_reads.py `transactions`; lib/sweep_pacing_wire.py the same): `start` /
 `end` ignored; `start_date` YYYY-MM-DD -> createdAt's date >= it, an ISO one -> empty;
-at most the latest `latest[account]` (LEDGER_LATEST, 600: INFERRED from AE's walks)
-rows, newest first, `limit` per page from `offset`, `hasMore`; read from the file when
+at most the latest `latest[account]` when the scenario sets it (an OF window),
+rows newest first; offset walks stop at OF's 600-row cap, while marker walks
+continue beyond it. `nextMarker` names the next page's first row timestamp; read from the file when
 the call arrives (a line still being written is skipped). No file: the read fails as
 before. Latency: none (the real ledger walk sleeps 0.4 s between pages).
 
@@ -28,11 +29,12 @@ first by it, `limit` capped at 100 (OF's), from `offset`. No file: the read fail
 """
 
 import json
+import math
 import os
 import threading
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 LEDGER_LATEST = 600
@@ -69,7 +71,7 @@ def _lines(name: str, account_id: str, err: Exception) -> list[dict]:
 
 
 class OF:
-    def transactions(self, *, limit=10, offset=0, start_date=None, **_kw) -> dict:
+    def transactions(self, *, limit=10, offset=0, start_date=None, marker=None, **_kw) -> dict:
         by_id: dict = {}
         for rec in _lines("of-ledger.jsonl", self.account_id, self._err):
             by_id[rec["row"]["id"]] = rec["row"]     # the newest line of a row is OF's view of it
@@ -80,12 +82,23 @@ class OF:
                            and (not start_date or at.date().isoformat() >= start_date)),
                           key=lambda x: x[0], reverse=True)
         with _lock:
-            rows = rows[:_latest.get(str(self.account_id), LEDGER_LATEST)]
-        page = [r for _, r in rows[offset:offset + limit]]
+            latest = _latest.get(str(self.account_id))
+        if latest is not None:
+            rows = rows[:latest]
+        if marker is not None:
+            bound = datetime.utcfromtimestamp(float(marker))
+            rows = [(at, r) for at, r in rows if at <= bound]
+            offset = 0
+        limit = min(int(limit), 100)
+        page = ([r for _, r in rows[offset:offset + limit if marker is not None else min(offset + limit, LEDGER_LATEST)]]
+                if marker is not None or offset < LEDGER_LATEST
+                else [])
+        more = offset + limit < len(rows) if page else False
+        next_marker = math.ceil(rows[offset + limit][0].replace(tzinfo=timezone.utc).timestamp()) if more else None
         with _lock:
             _ledger["calls"] += 1
             _ledger["rows_served"] += len(page)
-        return {"list": page, "hasMore": offset + limit < len(rows)}
+        return {"list": page, "hasMore": more, **({"nextMarker": next_marker} if more else {})}
 
     def chargebacks(self, *, start=None, end=None, limit=10, offset=0, **_kw) -> dict:
         lo, hi = (str(start)[:10] if start else None), (str(end)[:10] if end else None)

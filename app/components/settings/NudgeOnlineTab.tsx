@@ -16,19 +16,17 @@
  * applies one shared text-only config across many models at once.
  */
 
-import { useEffect, useId, useMemo, useReducer, useState, type ReactNode } from "react";
-import { Play, ChevronDown, X, Image as ImageIcon } from "lucide-react";
+import { useEffect, useMemo, useReducer, useState, type ReactNode } from "react";
+import { Play, ChevronDown } from "lucide-react";
 
 import {
-  IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfNativeSelect, IfSegmented, IfSwitch, IfTextArea,
+  IfButton, IfHelp, IfInput, IfLearn, IfNativeSelect, IfSegmented, IfSwitch, IfTextArea,
 } from "@/components/ui/infloww";
+import { Field, NumInput } from "@/components/ui/fields";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
-import { VaultPicker } from "@/components/chat/VaultPicker";
-import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
-import { mergeCaptions } from "@/lib/parseCaptions";
+import { MediaThumb, NudgeSlotPools } from "@/components/settings/NudgeSlotPools";
 import { type VaultMedia } from "@/lib/relay";
-import { proxyImage } from "@/lib/mediaUrl";
 import { clearDraft, readDraft, usePendingDraft } from "@/lib/pendingDraft";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
@@ -62,16 +60,6 @@ import {
   type FormKey,
 } from "@/components/settings/nudgeOnlineReducer";
 
-// The 6 time-of-day slots (same buckets send_welcome uses), with friendly labels.
-const SLOT_DEFS: [string, string][] = [
-  ["morning_1", "Morning · early (5–9)"],
-  ["morning_2", "Morning · late (9–12)"],
-  ["afternoon_1", "Afternoon · early (12–15)"],
-  ["afternoon_2", "Afternoon · late (15–18)"],
-  ["evening", "Evening (18–21)"],
-  ["night", "Night (21–5)"],
-];
-
 // Quick time presets for the preview (representative hour per slot).
 const TIME_PRESETS: [string, number][] = [
   ["Morning", 8], ["Midday", 13], ["Afternoon", 16], ["Evening", 19], ["Night", 23],
@@ -91,6 +79,8 @@ export default function NudgeOnlineTab({
   // The picker's one copy: every pick is an `account` dispatch, which resets
   // the old account's draft and lines in the same update.
   const { accountId } = state;
+  const [previewFan, setPreviewFan] = useState("");
+  const [previewHour, setPreviewHour] = useState<number | "">("");
   useEffect(() => {
     if (!accountId && accounts.length > 0) dispatch({ type: "account", accountId: accounts[0].id });
   }, [accounts, accountId]);
@@ -107,8 +97,8 @@ export default function NudgeOnlineTab({
   const bulkM = useBulkApplyNudgeConfig();
   const previewM = useNudgePreview();
 
-  /** THE save gate and its note — one value for the in-flow Save and the
-   *  pinned bar. Why each half is there: nudgeOnlineReducer `canSave`. */
+  /** THE save gate and its note, read by the footer's Save. Why each half is
+   *  there: nudgeOnlineReducer `canSave`. */
   const gate = {
     accountId, drafted: state.base !== null, cfgError: cfgQ.isError,
     rulesHasData: rulesQ.data !== undefined, rulesPlaceholder: rulesQ.isPlaceholderData,
@@ -116,7 +106,7 @@ export default function NudgeOnlineTab({
   };
   const saveAllowed = canSave(gate);
   const { form, slots, jsonDraft, jsonErr, save: saved, runMsg, previewErr, bulkMsg } = state;
-  /** THE save verdict, read once: the in-flow lines and the pinned bar. */
+  /** THE save verdict, shown in the footer beside the Save. */
   const savedOk = saved?.ok === true;
   const saveErr = saved?.ok === false ? saved.err : null;
   /** A save PUT in flight for the SHOWN account: after a switch the PUT is the
@@ -124,9 +114,8 @@ export default function NudgeOnlineTab({
    *  second whole-blob PUT must not overlap it. */
   const busy = useNudgeSavePending(accountId);
   const saveDisabled = busy || !saveAllowed;
-  /** …and THE label, hoisted for the same reason the gate is: it is a statement
-   *  about which branch save() will take, and the two controls must not answer
-   *  it differently. */
+  /** …and THE label: which branch save() will take (create the rule or save
+   *  the config). */
   const saveLabel = rule ? "Save changes" : "Create automation";
   const note = gateNote(gate);
 
@@ -136,13 +125,8 @@ export default function NudgeOnlineTab({
   const allIds = accounts.map((a) => a.id);
   const picked = pickedIds(state.selected, allIds);
 
-  // Preview controls.
-  const [previewFan, setPreviewFan] = useState("");
-  const [previewHour, setPreviewHour] = useState<number | "">("");
-
-  // Image picking: which slot's picker is open + a cache of picked media so we
-  // can render thumbnails by id (in the slot editor AND the preview).
-  const [pickerSlot, setPickerSlot] = useState<string | null>(null);
+  // A cache of picked media so we can render thumbnails by id (in the slot
+  // editor AND the preview).
   const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
 
   // Load the effective config into the draft when it arrives — a refetch
@@ -265,14 +249,12 @@ export default function NudgeOnlineTab({
 
       {accounts.length > 1 && (
         <Field label="Account">
-          {(id) => (
-            <IfNativeSelect id={id} className="w-full" value={accountId ?? ""}
-              onChange={(e) => dispatch({ type: "account", accountId: e.target.value })}>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>{a.nickname || a.id}</option>
-              ))}
-            </IfNativeSelect>
-          )}
+          <IfNativeSelect className="w-full" value={accountId ?? ""}
+            onChange={(e) => dispatch({ type: "account", accountId: e.target.value })}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.nickname || a.id}</option>
+            ))}
+          </IfNativeSelect>
         </Field>
       )}
 
@@ -311,13 +293,11 @@ export default function NudgeOnlineTab({
             <IfHelp className="mt-0">One time-of-day greeting; by default with an image.</IfHelp>
             <div className="max-w-xs">
               <Field label="On re-engagement">
-                {(id) => (
-                  <IfNativeSelect id={id} className="w-full" value={form.repeat_mode ?? "new"}
-                    onChange={(e) => set("repeat_mode", e.target.value as "new" | "same")}>
-                    <option value="new">New line each time</option>
-                    <option value="same">Same line again</option>
-                  </IfNativeSelect>
-                )}
+                <IfNativeSelect className="w-full" value={form.repeat_mode ?? "new"}
+                  onChange={(e) => set("repeat_mode", e.target.value as "new" | "same")}>
+                  <option value="new">New line each time</option>
+                  <option value="same">Same line again</option>
+                </IfNativeSelect>
               </Field>
               <IfHelp>What a returning fan gets the next time he re-qualifies.</IfHelp>
             </div>
@@ -325,12 +305,15 @@ export default function NudgeOnlineTab({
 
           <Section title="Timing">
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-              <NumField label="Delay (min)" value={num("delay_minutes", 4)}
-                onChange={(v) => set("delay_minutes", v)} min={0} />
-              <NumField label="Jitter (min)" value={num("jitter_minutes", 3)}
-                onChange={(v) => set("jitter_minutes", v)} min={0} />
-              <NumField label="Online gap (min)" value={num("gap_minutes", 5)}
-                onChange={(v) => set("gap_minutes", v)} min={1} />
+              <Field label="Delay (min)">
+                <NumInput value={num("delay_minutes", 4)} onChange={(v) => set("delay_minutes", v)} min={0} />
+              </Field>
+              <Field label="Jitter (min)">
+                <NumInput value={num("jitter_minutes", 3)} onChange={(v) => set("jitter_minutes", v)} min={0} />
+              </Field>
+              <Field label="Online gap (min)">
+                <NumInput value={num("gap_minutes", 5)} onChange={(v) => set("gap_minutes", v)} min={1} />
+              </Field>
             </div>
             <IfHelp className="mt-0">
               Wait the delay plus 0 to jitter minutes after a fan comes online; offline for the gap before a return counts again.
@@ -339,12 +322,15 @@ export default function NudgeOnlineTab({
 
           <Section title="Limits">
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-              <NumField label="Min hours between" value={num("min_hours_between_nudges", 12)}
-                onChange={(v) => set("min_hours_between_nudges", v)} min={0} />
-              <NumField label="Max per tick" value={num("max_per_tick", 25)}
-                onChange={(v) => set("max_per_tick", v)} min={1} />
-              <NumField label="Online recent (min)" value={num("online_recent_minutes", 5)}
-                onChange={(v) => set("online_recent_minutes", v)} min={1} />
+              <Field label="Min hours between">
+                <NumInput value={num("min_hours_between_nudges", 12)} onChange={(v) => set("min_hours_between_nudges", v)} min={0} />
+              </Field>
+              <Field label="Max per tick">
+                <NumInput value={num("max_per_tick", 25)} onChange={(v) => set("max_per_tick", v)} min={1} />
+              </Field>
+              <Field label="Online recent (min)">
+                <NumInput value={num("online_recent_minutes", 5)} onChange={(v) => set("online_recent_minutes", v)} min={1} />
+              </Field>
             </div>
             <IfHelp className="mt-0">
               One nudge per fan per min hours; max fans started per 60s scan (extras roll over); skipped if he left during the delay.
@@ -359,8 +345,9 @@ export default function NudgeOnlineTab({
                 onChange={(c) => set("max_lifetime_spend_cents", c)} />
             </div>
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-              <NumField label="Recent window (days)" value={num("recent_spend_days", 30)}
-                onChange={(v) => set("recent_spend_days", v)} min={1} />
+              <Field label="Recent window (days)">
+                <NumInput value={num("recent_spend_days", 30)} onChange={(v) => set("recent_spend_days", v)} min={1} />
+              </Field>
               <DollarField label="Min recent spend ($)" cents={num("min_recent_spend_cents", 0)}
                 onChange={(c) => set("min_recent_spend_cents", c)} />
               <DollarField label="Max recent spend ($)" cents={num("max_recent_spend_cents", 0)}
@@ -371,17 +358,15 @@ export default function NudgeOnlineTab({
 
           <div>
             <Field label="Quiet hours">
-              {(id) => (
-                <div className="flex items-center gap-2">
-                  <IfInput id={id} type="number" min={0} max={23} className="w-20"
-                    value={form.quiet_hours?.[0] ?? 0}
-                    onChange={(e) => set("quiet_hours", [Number(e.target.value), form.quiet_hours?.[1] ?? 0])} />
-                  <span>to</span>
-                  <IfInput type="number" min={0} max={23} className="w-20" aria-label="Quiet hours end"
-                    value={form.quiet_hours?.[1] ?? 0}
-                    onChange={(e) => set("quiet_hours", [form.quiet_hours?.[0] ?? 0, Number(e.target.value)])} />
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                <NumInput min={0} max={23} className="w-20"
+                  value={form.quiet_hours?.[0] ?? 0}
+                  onChange={(v) => set("quiet_hours", [v, form.quiet_hours?.[1] ?? 0])} />
+                <span>to</span>
+                <NumInput min={0} max={23} className="w-20" aria-label="Quiet hours end"
+                  value={form.quiet_hours?.[1] ?? 0}
+                  onChange={(v) => set("quiet_hours", [form.quiet_hours?.[0] ?? 0, v])} />
+              </div>
             </Field>
             <IfHelp>No nudges in this window, creator-local time; equal = off.</IfHelp>
           </div>
@@ -390,21 +375,17 @@ export default function NudgeOnlineTab({
           <Section title="Preview">
             <div className="flex flex-wrap items-end gap-3">
               <Field label="Fan id">
-                {(id) => (
-                  <IfInput id={id} className="w-40" placeholder="Sample fan"
-                    value={previewFan} onChange={(e) => setPreviewFan(e.target.value)} />
-                )}
+                <IfInput className="w-40" placeholder="Sample fan" value={previewFan}
+                  onChange={(e) => setPreviewFan(e.target.value)} />
               </Field>
               <Field label="Hour">
-                {(id) => (
-                  <IfInput id={id} type="number" min={0} max={23} className="w-24" placeholder="Now"
-                    value={previewHour} onChange={(e) =>
-                      setPreviewHour(e.target.value === "" ? "" : Number(e.target.value))} />
-                )}
+                <IfInput type="number" min={0} max={23} className="w-24" placeholder="Now"
+                  value={previewHour} onChange={(e) => setPreviewHour(e.target.value === "" ? "" : Number(e.target.value))} />
               </Field>
-              <IfSegmented aria-label="Preview time" className="mb-px"
+              <IfSegmented aria-label="Preview time" className="mb-px max-w-full overflow-x-auto"
                 options={TIME_PRESETS.map(([label, h]) => ({ value: String(h), label }))}
-                value={String(previewHour)} onChange={(h) => setPreviewHour(Number(h))} />
+                value={String(previewHour)}
+                onChange={(h) => setPreviewHour(Number(h))} />
               <IfButton onClick={runPreview} disabled={previewM.isPending || !accountId}>
                 {previewM.isPending ? "…" : "Preview"}
               </IfButton>
@@ -438,17 +419,13 @@ export default function NudgeOnlineTab({
             <IfHelp className="mt-0">
               {"{name} {city} {age} {job} {hobby} {pet}"} fill from the fan&apos;s profile. One image per nudge; several rotate.
             </IfHelp>
-            {SLOT_DEFS.map(([key, label]) => (
-              <SlotEditor
-                key={key}
-                label={label}
-                entry={slots.default?.[key] ?? { text: [], image: [] }}
-                onChange={(entry) => setDefaultSlot(key, entry)}
-                accountId={accountId}
-                mediaCache={mediaCache}
-                onPickImages={() => setPickerSlot(key)}
-              />
-            ))}
+            <NudgeSlotPools accountId={accountId} slots={slots.default ?? {}} mediaCache={mediaCache}
+              onMediaPicked={(picked) => setMediaCache((prev) => {
+                const next = { ...prev };
+                picked.forEach((m) => { next[m.id] = m; });
+                return next;
+              })}
+              onSlot={setDefaultSlot} />
           </Section>
 
           {/* Advanced JSON (copy in/out, weekend/friday, full control) */}
@@ -470,11 +447,7 @@ export default function NudgeOnlineTab({
             </div>
           </Collapsible>
 
-          {(previewErr ?? saveErr) && <div className="text-err">{previewErr ?? saveErr}</div>}
-
-          {(runMsg ?? savedOk) && (
-            <div className="text-accent">{runMsg ?? "Saved."}</div>
-          )}
+          {previewErr && <div className="text-err">{previewErr}</div>}
 
           {rule && last && (
             <div className="text-[12px] text-muted">
@@ -519,34 +492,16 @@ export default function NudgeOnlineTab({
         </Section>
       )}
 
-      {/* Vault image picker for a slot (opened from a slot's "Add image"). */}
-      {pickerSlot && accountId && (
-        <VaultPicker
-          open
-          onClose={() => setPickerSlot(null)}
-          accountId={accountId}
-          fanId={null}
-          initialSelectedIds={slots.default?.[pickerSlot]?.image ?? []}
-          onConfirm={(picked) => {
-            setMediaCache((prev) => {
-              const next = { ...prev };
-              picked.forEach((m) => { next[m.id] = m; });
-              return next;
-            });
-            const cur = slots.default?.[pickerSlot] ?? { text: [], image: [] };
-            setDefaultSlot(pickerSlot, { ...cur, image: picked.map((m) => m.id) });
-            setPickerSlot(null);
-          }}
-        />
-      )}
       {/* The one Save, in the dialog's footer (`EditorFooter`: `AutomatedEditor`'s IfModal). Drawn outside the
-       *  `drafted` ternary, so it reads the full `canSave` gate — load half included — and says why it is off. It
-       *  shows only the save's own verdict, never Run now's or Preview's line. */}
+       *  `drafted` ternary, so it reads the full `canSave` gate — load half included — and says why it is off.
+       *  Its status column beside the buttons answers them: the gate note, the save's verdict ("Saved." or its
+       *  error) and Run now's line — in view however far the form is scrolled, and Run now's even while the
+       *  form is not drawn. */}
       <EditorFooter>
-      <div data-testid="sticky-save-bar" className="contents">
-        <div className="mr-auto flex flex-col text-[12px]">
+        <div role="status" className="mr-auto flex flex-col text-[12px]">
           {note && <span className={note.failed ? "text-err" : "text-muted"}>{note.text}</span>}
           {saveErr && <span className="text-err">{saveErr}</span>}
+          {(runMsg ?? savedOk) && <span className="text-accent">{runMsg ?? "Saved."}</span>}
         </div>
         {rule && (
           <IfButton icon={Play} onClick={runNow} disabled={runM.isPending}
@@ -557,24 +512,12 @@ export default function NudgeOnlineTab({
         <IfButton variant="primary" onClick={save} disabled={saveDisabled}>
           {busy ? "Saving…" : saveLabel}
         </IfButton>
-      </div>
       </EditorFooter>
     </div>
   );
 }
 
 // ── small bits ────────────────────────────────────────────────────────
-
-/** A labelled field: the kit label above its control, tied by an id. */
-function Field({ label, children }: { label: string; children: (id: string) => ReactNode }) {
-  const id = useId();
-  return (
-    <div>
-      <IfLabel htmlFor={id}>{label}</IfLabel>
-      {children(id)}
-    </div>
-  );
-}
 
 /** A titled group of the form; `extra` sits at the title row's right. */
 function Section({ title, extra, children }: { title: string; extra?: ReactNode; children: ReactNode }) {
@@ -589,19 +532,6 @@ function Section({ title, extra, children }: { title: string; extra?: ReactNode;
   );
 }
 
-function NumField({
-  label, value, onChange, min,
-}: { label: string; value: number; onChange: (v: number) => void; min?: number }) {
-  return (
-    <Field label={label}>
-      {(id) => (
-        <IfInput id={id} type="number" min={min} value={value} className="w-full"
-          onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onChange(n); }} />
-      )}
-    </Field>
-  );
-}
-
 /** Dollar input that stores CENTS; 0/empty saves `null` (= off), so a bound of
  *  0 never accidentally means "skip every paying fan". */
 function DollarField({
@@ -610,39 +540,14 @@ function DollarField({
   const dollars = cents > 0 ? cents / 100 : 0;
   return (
     <Field label={label}>
-      {(id) => (
-        <IfInput id={id} type="number" min={0} step="0.01" placeholder="off" className="w-full"
-          value={dollars || ""}
-          onChange={(e) => {
-            const d = Number(e.target.value);
-            if (!Number.isFinite(d)) return;
-            onChange(d > 0 ? Math.round(d * 100) : null);
-          }} />
-      )}
+      <IfInput type="number" min={0} step="0.01" placeholder="off" className="w-full"
+        value={dollars || ""}
+        onChange={(e) => {
+          const d = Number(e.target.value);
+          if (!Number.isFinite(d)) return;
+          onChange(d > 0 ? Math.round(d * 100) : null);
+        }} />
     </Field>
-  );
-}
-
-function thumbSrc(media: VaultMedia | undefined, accountId: string | null): string {
-  const raw = media?.files?.thumb?.url || media?.files?.squarePreview?.url
-    || media?.files?.preview?.url || "";
-  return raw ? proxyImage(raw, accountId) : "";
-}
-
-function MediaThumb({
-  id, media, accountId, onRemove,
-}: { id: number; media?: VaultMedia; accountId: string | null; onRemove?: () => void }) {
-  const url = thumbSrc(media, accountId);
-  return (
-    <div className="relative w-12 h-12 rounded md:overflow-hidden border border-border bg-bg shrink-0">
-      {url
-        ? <img src={url} alt="" loading="lazy" className="w-full h-full object-cover rounded md:rounded-none" />
-        : <span className="w-full h-full grid place-items-center text-[12px] text-fg-dim">#{id}</span>}
-      {onRemove && (
-        <button type="button" onClick={onRemove} title="Remove" aria-label="Remove image"
-          className="absolute -top-2 -right-2 md:-top-1 md:-right-1 bg-panel border border-border rounded-full w-7 h-7 md:w-4 md:h-4 grid place-items-center hover:text-err"><X className="size-3 md:size-2.5" aria-hidden /></button>
-      )}
-    </div>
   );
 }
 
@@ -670,59 +575,6 @@ function PreviewBox({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/** One time-slot's editable list of message lines + a vault image picker. */
-function SlotEditor({
-  label, entry, onChange, accountId, mediaCache, onPickImages,
-}: {
-  label: string;
-  entry: NudgeSlotEntry;
-  onChange: (e: NudgeSlotEntry) => void;
-  accountId: string | null;
-  mediaCache: Record<number, VaultMedia>;
-  onPickImages: () => void;
-}) {
-  const texts = entry.text ?? [];
-  const images = entry.image ?? [];
-  const setLine = (i: number, v: string) => {
-    const next = [...texts]; next[i] = v;
-    onChange({ ...entry, text: next });
-  };
-  const removeLine = (i: number) => onChange({ ...entry, text: texts.filter((_, j) => j !== i) });
-  const addLine = () => onChange({ ...entry, text: [...texts, ""] });
-  const removeImage = (id: number) => onChange({ ...entry, image: images.filter((x) => x !== id) });
-
-  return (
-    <div className="rounded-md border border-border p-3 space-y-2">
-      <div className="font-medium">{label}</div>
-      {texts.length === 0 && <div className="text-[12px] text-muted">No lines yet.</div>}
-      {texts.map((t, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <IfInput className="flex-1" value={t} onChange={(e) => setLine(i, e.target.value)}
-            placeholder="e.g. hey {name}" />
-          <button type="button" className="text-fg-dim hover:text-err" title="Remove" aria-label="Remove line"
-            onClick={() => removeLine(i)}><X className="size-4" /></button>
-        </div>
-      ))}
-      <div className="flex flex-wrap items-center gap-4">
-        <IfButton variant="link" onClick={addLine}>Add line</IfButton>
-        <ImportCaptionsButton current={texts}
-          onImport={(items) => onChange({ ...entry, text: mergeCaptions(texts, items).pool })} />
-      </div>
-      {/* Images: thumbnails + an add-from-vault tile (the "Add script" media tile). Sends ONE (rotated) if several. */}
-      <div className="flex flex-wrap items-center gap-4 md:gap-2">
-        {images.map((id) => (
-          <MediaThumb key={id} id={id} media={mediaCache[id]} accountId={accountId}
-            onRemove={() => removeImage(id)} />
-        ))}
-        <button type="button" onClick={onPickImages} title="Add image from vault" aria-label="Add image from vault"
-          className="w-12 h-12 rounded-md border border-dashed border-border grid place-items-center text-fg-dim hover:border-accent hover:text-accent">
-          <ImageIcon className="size-4" />
-        </button>
-      </div>
     </div>
   );
 }

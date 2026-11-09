@@ -9,15 +9,29 @@ import pytest
 from slop.lib import nightly as nt
 
 NAMES = ["a-ui", "b-vol", "c-vol", "d-new", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"]
-DOC = {"scenarios": {"a-ui": {"sha": "x"}, "b-vol": {"sha": "x", "volume": True}, "c-vol": {"sha": "x", "volume": True},
-                     "2026-11-03-os-ping-push": {"sha": "x", "volume": True},
-                     "2026-11-01-notifications-feed-volume": {"sha": "x", "volume": True}}}
+DOC = {"scenarios": {"a-ui": {"sha": "x"}, "b-vol": {"sha": "x"}, "c-vol": {"sha": "x"},
+                     "2026-11-03-os-ping-push": {"sha": "x"},
+                     "2026-11-01-notifications-feed-volume": {"sha": "x"}}}
+
+
+def test_volume_runs_medium_120_without_ui(tmp_path):
+    assert nt.KNOBS["volume"] == ["--scale=medium", "--users=120", "--no-ui"]
+    night = nt.Night(tmp_path, tee=False)
+    calls = []
+
+    def capture(argv, cwd, env):
+        calls.append((argv, cwd, env))
+        return 0, None, "", False, ""
+
+    night.stream = capture
+    assert night.run("volume", "example")["verdict"] == "OK"
+    assert calls[0][0] == [str(nt.RUN), "example", "--scale=medium", "--users=120", "--no-ui"]
 
 
 @pytest.mark.parametrize("ages,weekday,full,word", [
     ({}, 0, True, "no map entry"),
-    ({"a" * 40: 101}, 0, True, "101 commits behind HEAD (> 100)"),
-    ({"a" * 40: 101, "b" * 40: 100}, 0, False, "100 commits"),  # the newest sha counts
+    ({"a" * 40: 201}, 0, True, "201 commits behind HEAD (> 200)"),
+    ({"a" * 40: 500, "b" * 40: 1}, 0, True, "500 commits"),  # the oldest sha counts
     ({"a" * 40: 3, "b" * 40: None}, 0, True, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
     ({"a" * 40: 0}, 6, True, "Sunday"),
     ({"a" * 40: 5}, 5, False, "not Sunday"),
@@ -35,8 +49,10 @@ def test_map_rule(ages, weekday, full, word):
     (True, ["all", "volume", "map"], {"x": 300}, 6,  # smoke: never the full map; a missing smoke name dropped
      {"all": ["2026-11-03-os-ping-push"], "volume": ["2026-11-01-notifications-feed-volume"], "map": ["d-new"]}),
 ])
-def test_build_plan(smoke, phases, ages, weekday, want):
-    plan, why = nt.build_plan(NAMES, DOC, phases, smoke, ages, weekday)
+def test_build_plan(smoke, phases, ages, weekday, want, monkeypatch):
+    monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in
+                        {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"})
+    plan, why = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, DOC, phases, smoke, ages, weekday)
     assert plan == want and list(plan) == list(want)
     assert why.startswith("smoke") == smoke
 
@@ -139,7 +155,9 @@ def test_child_env_leaves_the_gate():
     env = {"PATH": "/bin", "SLOP_GATED": "1", "SLOP_GATE_PID": "9", "SLOP_GATE_WAIT_S": "3",
            "SLOP_GATE_LOAD": "2.0", "SLOP_LOCK_WAIT_S": "60"}
     assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200"}
-    assert env["SLOP_GATED"] == "1"  # the caller's untouched
+    nt.scrub_gate_env(env)
+    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200"}
+    assert "SLOP_GATED" not in env
 
 
 @pytest.mark.parametrize("env,had,left", [
@@ -178,26 +196,12 @@ def test_tree_order_children_first(root, kids, want):
     assert nt.tree_order(root, kids) == want
 
 
-def test_install_deadline_includes_gate_wait(tmp_path, monkeypatch):
-    (tmp_path / "pnpm-lock.yaml").write_text("x\n")
-    monkeypatch.setattr(nt, "APP", tmp_path)
-    seen = {}
-
-    def fake(self, cmd, cwd, env=None, timeout=None):
-        seen["timeout"] = timeout
-        self.gate_line = ""
-        return 0, None, "", True
-    monkeypatch.setattr(nt.Night, "stream", fake)
-    err = nt.Night(tmp_path, tee=False).install_app_deps("missing")
-    assert seen["timeout"] == 7200 + 1200 == nt.INSTALL_DEADLINE_S and "timed out after 8400s" in err
-
-
 def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
     """As gate.py run: the workload sits in a session of its own, holding the pipe; the timeout reaps it too."""
     inner = "import subprocess, time; subprocess.Popen(['sh', '-c', 'echo $$; exec sleep 60'], start_new_session=True); time.sleep(60)"
     n = nt.Night(tmp_path, tee=True)
     t0 = nt.time.time()
-    code, _, tail, killed = n.stream([nt.sys.executable, "-c", inner], tmp_path, timeout=1)
+    code, _, tail, killed, _ = n.stream([nt.sys.executable, "-c", inner], tmp_path, timeout=3)
     assert killed and code < 0 and nt.time.time() - t0 < 20
     assert not nt._alive(int(tail))
 
@@ -210,9 +214,10 @@ def R(phase, name, v, p95=None, **kw):
 def test_changes():
     prev = [R("all", "a", "OK", {"GET /x": 100}), R("all", "b", "FAIL"), R("volume", "c", "OK", {"k": 10})]
     now = [R("all", "a", "FAIL", {"GET /x": 125}), R("all", "b", "FLAKY"), R("volume", "c", "OK", {"k": 11}),
-           R("volume", "new", "FAIL")]
+           R("volume", "new", "FAIL"), R("all", "infra-new", "INFRA")]
     c = nt.changes(now, prev)
     assert c["newly_red"] == ["all a", "volume new"] and c["newly_green"] == ["all b"]
+    assert c["newly_infra"] == ["all infra-new"]
     assert c["p95"] == ["all a GET /x: 100 -> 125 ms (+25%)"]  # c: +10% stays out
     assert nt.changes(now, None)["first"] is True
 
@@ -257,6 +262,35 @@ def test_digest_green_night_is_short():
     assert len(md.splitlines()) <= 60 and "60 OK rows not listed" in md
 
 
+def test_digest_invalid_map_has_no_refresh_or_unmapped_list():
+    s = {"headline": "NIGHTLY INFRA S", "sha": "abc", "smoke": False,
+         "started": "", "ended": "", "load_start": 0.0, "load_end": 0.0,
+         "cores": 1, "rows": [], "phases": {}, "changes": {"first": True},
+         "map": {"rule": "refresh", "mapped": ["a"], "unmapped_left": ["b"],
+                 "restored": "restored", "map_error": "invalid JSON"}}
+    md = nt.digest(s)
+    assert "- INFRA: invalid JSON" in md
+    assert "- entries refreshed: n/a" in md
+    assert "unmapped left" not in md
+    assert "ship:" not in md
+
+
+def test_dry_invalid_map_is_one_line_infra(tmp_path, monkeypatch, capsys):
+    bad_map = tmp_path / "map.json"
+    bad_map.write_text("{invalid")
+    monkeypatch.setattr(nt.covmap, "MAP", bad_map)
+    monkeypatch.setattr(nt, "scrub_gate_env", lambda _env: False)
+    monkeypatch.setattr(nt.gate, "nice10", lambda: None)
+
+    assert nt.main(["--dry"], {}) == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("slop: INFRA slop/map.json invalid: Expecting property name")
+    assert lines[0].endswith("(restore: git checkout slop/map.json, or slop/run all --map)")
+
+
 def test_prev_same_phases_and_smoke_earlier_only(tmp_path, monkeypatch):
     monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
     def night(name, smoke, phases, done=True):
@@ -277,7 +311,7 @@ def test_prev_same_phases_and_smoke_earlier_only(tmp_path, monkeypatch):
 
 def test_stream_timeout_kills_and_logs(tmp_path):
     n = nt.Night(tmp_path, tee=True)
-    code, folder, tail, killed = n.stream(["sh", "-c", "echo started; sleep 30"], tmp_path, timeout=0.5)
+    code, folder, tail, killed, _ = n.stream(["sh", "-c", "echo started; sleep 30"], tmp_path, timeout=0.5)
     assert killed and code < 0 and tail == "started" and folder is None and n.proc is None
     assert "started" in (tmp_path / "run.log").read_text()
     assert n.stream(["sh", "-c", "echo slop: folder /x/y; exit 2"], tmp_path, timeout=5)[:2] == (2, nt.Path("/x/y"))
@@ -293,8 +327,68 @@ def test_app_deps_install_runs_in_the_gate(tmp_path, monkeypatch):
     (tmp_path / "app" / "pnpm-lock.yaml").write_text("lock\n")
     monkeypatch.setattr(nt, "GATE_PY", gate)
     monkeypatch.setattr(nt, "APP", tmp_path / "app")
-    monkeypatch.setenv("SLOP_GATED", "1")
+    monkeypatch.setenv("SLOP_GATED", "stale")
     n = nt.Night(tmp_path, tee=True)
     assert n.install_app_deps("app/node_modules missing") == "pnpm install preflight: machine gate: no slot free after 7200s"
     log = (tmp_path / "run.log").read_text()
     assert "argv run -- pnpm install --frozen-lockfile gated None wait 7200" in log
+
+
+def test_app_deps_install_timeout_includes_gate_wait(tmp_path, monkeypatch):
+    (tmp_path / "app").mkdir()
+    monkeypatch.setattr(nt, "APP", tmp_path / "app")
+    night = nt.Night(tmp_path, tee=False)
+    seen = []
+    def timed_out(argv, cwd, *, env, timeout):
+        seen.append(timeout)
+        return -9, None, "", True, ""
+    monkeypatch.setattr(night, "stream", timed_out)
+    err = night.install_app_deps("missing")
+    assert seen == [nt.INSTALL_DEADLINE_S]
+    assert f"timed out after {nt.INSTALL_DEADLINE_S}s" in err
+    assert "gate wait 7200s" in err
+
+
+def test_apply_map_invalid_current_map_is_infra(tmp_path, monkeypatch):
+    import json
+    d = tmp_path / "night"
+    d.mkdir()
+    (d / "summary.json").write_text(json.dumps({"map": {"mapped": ["a"]}}))
+    (d / "map.json").write_text(json.dumps({"scenarios": {"a": {"sha": "x"}}}))
+    current = tmp_path / "map.json"
+    current.write_text("{")
+    monkeypatch.setattr(nt.covmap, "MAP", current)
+    assert nt.apply_map(str(d)) == 3
+
+
+def test_invalid_map_phase_keeps_rows_and_reports_infra(tmp_path, monkeypatch):
+    map_file = tmp_path / "map.json"
+    map_file.write_text("{")
+    night_out = tmp_path / "night"
+    night_out.mkdir()
+    monkeypatch.setattr(nt.covmap, "MAP", map_file)
+    calls = iter([{"scenarios": {}}, nt.covmap.MapInvalid("invalid JSON")])
+    def load():
+        value = next(calls)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    monkeypatch.setattr(nt.covmap, "load_map", load)
+    monkeypatch.setattr(nt.covmap, "git", lambda *a: "")
+    class Night:
+        out = night_out
+        status = {"done": 0}
+        def mark(self, **kw):
+            pass
+        def run(self, phase, name):
+            return R(phase, name, "OK")
+        def stop_child(self):
+            pass
+        def say(self, *lines):
+            pass
+    rows, result = nt._map_phase(Night(), ["a"], "refresh", ["a"])
+    assert rows[0]["verdict"] == "INFRA"
+    assert "invalid JSON" in rows[0]["infra"]
+    assert result["map_error"] == rows[0]["infra"]
+    assert result["mapped"] == [] and result["unmapped_left"] == []
+    assert (night_out / "map.json").read_text() == "{"

@@ -251,7 +251,7 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
   return (
     <form id={formId} onSubmit={(e) => { e.preventDefault(); if (canSave) saveM.mutate(); }} className="space-y-4">
       {!employee && (
-        <IfSegmented aria-label="How they sign in" value={signIn} onChange={setSignIn}
+        <IfSegmented aria-label="How they sign in" className="max-w-full overflow-x-auto" value={signIn} onChange={setSignIn}
           options={SIGN_IN.map((o) => ({ value: o.key, label: o.label }))} />
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

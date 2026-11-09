@@ -24,7 +24,8 @@ vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 
 import LinkMetaFields, { useLinkMetaFields } from "@/components/growth/LinkMetaFields";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
-import { PremadeForm } from "@/components/compose/PremadeForm";
+import { PremadeFields } from "@/components/compose/PremadeFields";
+import { blankRow } from "@/components/compose/premadeRows";
 import { makeTestQueryClient } from "@/test-utils";
 
 function ListSelect() {
@@ -38,7 +39,7 @@ const options = () => (document.getElementById("shared-list") as HTMLSelectEleme
 
 describe("the shared fan-lists cache", () => {
   it.each([
-    ["the Mass premade composer", <PremadeForm key="c" kind="mass_premade" accountId="acct1" title="Compose" onClose={() => {}} onComposePayload={() => {}} />],
+    ["the Mass premade composer", <PremadeFields key="c" kind="mass_premade" accountId="acct1" row={blankRow()} dispatch={() => {}} />],
     ["the funnel launch panel", <FunnelLaunchPanel key="f" funnel={{ id: 1, name: "F", description: null, opening_message: "hi", step_count: 1 }}
       accountId="acct1" onClose={() => {}} />],
   ])("holds every list when %s fills it first", async (_name, first) => {

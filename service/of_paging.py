@@ -20,18 +20,23 @@ MAX_PAGES = 200              # backstop: 200 × 100 = 20k rows
 
 
 def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], bool]:
-    """`page_all` plus an explicit truncation flag: (rows, hit_backstop).
-    The audience-fence / include-mirror paths must treat a truncated crawl as a
-    FAILED sync (loud), never as a complete snapshot — a silently short read
-    would drop every member past the ceiling and un-fence / un-admit them.
+    """`page_all` plus an explicit INCOMPLETE flag: (rows, incomplete).
+    Incomplete = the crawl hit the backstop, or OF answered a non-empty page
+    that added nothing new (a repeated page: offset ignored), so rows past it
+    were never read. Callers that act on "everyone else" (the audience fence,
+    the include mirror, Auto_Exclude removals, "Dismiss the rest") must treat
+    it as a FAILED / partial read, never as a complete snapshot — a silently
+    short read would drop every unread member and un-fence / dismiss them.
     `max_pages` (opt-in) moves the backstop for one crawl; None = MAX_PAGES."""
     cap = MAX_PAGES if max_pages is None else max_pages
     out: list[dict] = []
     seen_ids: set = set()
     offset = 0
-    for _ in range(cap):
+    for page in range(cap):
         r = fetch(offset)
         items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+        if not items:                                 # exhausted
+            return out, False
         added = 0
         for it in items:
             if not isinstance(it, dict):
@@ -43,16 +48,16 @@ def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], b
                 seen_ids.add(iid)
             out.append(it)
             added += 1
-        if not items or added == 0:                   # exhausted / repeated page
-            break
+        if added == 0:                                # repeated page: no progress
+            log.warning("page_all_checked: page %d (offset %d) added nothing new (%d rows "
+                        "read) — repeated page, read marked incomplete", page, offset, len(out))
+            return out, True
         if isinstance(r, dict) and not r.get("hasMore"):
-            break
+            return out, False
         offset += len(items)
-    else:
-        log.warning("page_all_checked hit the %d-page backstop (%d rows) — repeated-page "
-                    "guard never fired; result may be truncated", cap, len(out))
-        return out, True
-    return out, False
+    log.warning("page_all_checked hit the %d-page backstop (%d rows) — result may be "
+                "truncated", cap, len(out))
+    return out, True
 
 
 def page_all(fetch):
@@ -70,12 +75,13 @@ def page_all(fetch):
     hasMore=true forever (verified live on /users/me/stats/messages/group) —
     an unguarded exhaustion loop then spins forever inside a to_thread worker
     on the mass-broadcast hot path. Dedup by item id and stop on a page that
-    adds nothing new, plus a hard page ceiling as the backstop."""
+    adds nothing new, plus a hard page ceiling as the backstop. `page_all`
+    drops the flag: use `page_all_checked` where a short read must not pass."""
     return page_all_checked(fetch)[0]
 
 
 def ids_from_pages(fetch, **paging) -> tuple[set[int], bool]:
-    """(user ids, hit_backstop) for any paged OF user list. Blocking.
+    """(user ids, incomplete) for any paged OF user list. Blocking.
     Rows without an int-able `id` are skipped. `paging`: `page_all_checked`'s
     keywords (`max_pages`), forwarded as given."""
     rows, truncated = page_all_checked(fetch, **paging)
@@ -92,7 +98,7 @@ def ids_from_pages(fetch, **paging) -> tuple[set[int], bool]:
 
 
 def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
-    """(member ids, hit_backstop) of an OF custom list (`/lists/{id}/users`). Blocking.
+    """(member ids, incomplete) of an OF custom list (`/lists/{id}/users`). Blocking.
     `paging`: `page_all_checked`'s keywords; Auto_Exclude's background refresh
     crawls past 20k with `max_pages` (audiences `_refresh_auto_exclude`)."""
     return ids_from_pages(

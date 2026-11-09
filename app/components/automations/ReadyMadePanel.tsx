@@ -4,10 +4,10 @@
  * ReadyMadePanel — the ready-made posts & broadcasts page, pinned to one of
  * two rule kinds:
  *
- *   Auto Posts   (auto_posts)   — post a list one-by-one; each optionally
- *                                 auto-deletes after N hours (self-cleaning feed).
- *   Premade Mass (mass_premade) — ready broadcasts; resend on a timer and/or
- *                                 auto-unsend later. My Automations calls it
+ *   Auto Posts   (auto_posts)   — one post per rule, posted on the rule's
+ *                                 schedule, optionally auto-deleted after N hours.
+ *   Premade Mass (mass_premade) — one ready broadcast per rule, sent on the
+ *                                 rule's schedule, optionally auto-unsent. My Automations calls it
  *                                 Auto Mass (/growth/auto-mass).
  *
  * Unlike the old fire-once tabs, these are now SAVED, persisted definitions

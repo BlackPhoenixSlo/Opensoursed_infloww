@@ -362,7 +362,8 @@ def failover_due(label: str) -> bool:
 
 
 def _due_labels() -> set[str]:
-    return {label for label in list(_state) if failover_due(label)}
+    with _lock:
+        return {label for label, state in _state.items() if ph.failover_due(state)}
 
 
 # The attach request (a login's last step) waits on its probes: a short
@@ -420,6 +421,9 @@ def _probe(label: str) -> bool | None:
     p = proxies.get_by_label(label)
     if p is None:
         _step(label, ph.Gone)
+        with _tele_lock:
+            if (_tele.get(label) or {}).get("inflight", 0) <= 0:
+                _tele.pop(label, None)
         return None
     result = proxy_probe.probe_of(p)
     _keep_probe(label, result)

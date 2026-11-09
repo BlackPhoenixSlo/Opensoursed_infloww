@@ -10,7 +10,6 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 
 import { renderWithProviders } from "@/test-utils";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
-import { GENDERS } from "@/lib/creatorProfiles";
 
 vi.mock("@/lib/relay", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/relay")>()),
@@ -146,7 +145,7 @@ describe("/creators — the creator table leads", () => {
   });
 
 
-  it("fills Creator ID with the OnlyFans @username from the /users/me read the avatar makes", async () => {
+  it("fills Creator ID with the stored account id (the OF user id), not the /users/me @username", async () => {
     accounts = [{ id: "acct-o", nickname: "Oscar", platform: "onlyfans", has_session: true }];
     const base = relayGet.getMockImplementation()!;
     relayGet.mockImplementation((path: string, opts?: unknown) =>
@@ -154,7 +153,7 @@ describe("/creators — the creator table leads", () => {
     renderWithProviders(<Page />);
     await screen.findAllByText("Oscar");
     const i = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Creator ID");
-    await waitFor(() => expect(within(rowOf("Oscar")).getAllByRole("cell")[i]).toHaveTextContent("@oscar_of"));
+    await waitFor(() => expect(within(rowOf("Oscar")).getAllByRole("cell")[i]).toHaveTextContent(/^acct-o$/));
     // The Account cell: the platform's name after its mark.
     expect(within(rowOf("Oscar")).getByText("OnlyFans")).toBeInTheDocument();
     // The default Creator's badge follows its nickname.
@@ -356,7 +355,7 @@ describe("/creators — the filter bar narrows the table", () => {
   });
 });
 
-describe("/creators — Add creator, Infloww's steps", () => {
+describe("/creators — Add creator: Browser login first, Extension second", () => {
   const relayPost = relay.post as unknown as Mock;
   const relayPatch = relay.patch as unknown as Mock;
   const dialog = () => screen.getByRole("dialog");
@@ -365,22 +364,17 @@ describe("/creators — Add creator, Infloww's steps", () => {
     return screen.getByRole("dialog", { name: "Add creator" });
   };
   const btn = (name: string | RegExp) => within(dialog()).getByRole("button", { name });
-  /** Step 1, filled in: Creator name and Gender. */
-  const details = (name = "Nova") => {
-    fireEvent.change(within(dialog()).getByLabelText("Creator name"), { target: { value: name } });
-    fireEvent.change(within(dialog()).getByLabelText("Gender"), { target: { value: "Female" } });
-  };
-  /** Steps 1 to 3 with an OnlyFans account and the automatic proxy: the sign-in step. */
-  const toLogin = async () => {
+  const choice = (name: "Browser login" | "Extension") => within(dialog()).getByRole("radio", { name: new RegExp(`^${name}`) });
+  /** The Extension choice, its panel shown. */
+  const toExtension = async () => {
     await open();
-    details();
-    await waitFor(() => expect(btn("Done")).toBeEnabled()); // the profile store answered
-    fireEvent.click(btn("Next: Link creator account"));
-    await within(dialog()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    await within(dialog()).findByText("Proxy selection");
-    fireEvent.click(btn("Connect OnlyFans"));
-    return within(dialog()).findByText("Link OnlyFans account");
+    fireEvent.click(choice("Extension"));
+    return within(dialog()).getByRole("region", { name: "Extension" });
+  };
+  const CURL = "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'";
+  const bootstrap = (paste: HTMLElement) => {
+    fireEvent.change(within(paste).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    fireEvent.click(btn("Link account"));
   };
   beforeEach(() => {
     relayPost.mockReset();
@@ -389,7 +383,7 @@ describe("/creators — Add creator, Infloww's steps", () => {
     relayPatch.mockResolvedValue({});
   });
 
-  it("sits in the page header and opens at Creator details: Display image, Creator name, Gender, Done and Next", async () => {
+  it("sits in the page header and opens on the two ways in: Browser login (recommended) first, Extension second", async () => {
     accounts = [{ id: "acct-a", nickname: "Alpha", has_session: true }];
     renderWithProviders(<Page />);
     await screen.findAllByText("Alpha");
@@ -399,147 +393,55 @@ describe("/creators — Add creator, Infloww's steps", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(add);
     const d = screen.getByRole("dialog", { name: "Add creator" });
-    expect(within(d).getByText("Creator details")).toBeInTheDocument();
-    expect(within(d).getByRole("button", { name: "Display image" })).toBeInTheDocument();
-    expect(within(d).getByLabelText("Creator name")).toHaveAttribute("maxLength", "50");
-    expect([...within(d).getByLabelText("Gender").querySelectorAll("option")].map((o) => o.textContent))
-      .toEqual(["", ...GENDERS]); // Infloww's `genderOptions`, in its order
-    // The old placeholder chips are gone.
-    expect(within(d).queryByRole("region", { name: "Add creator steps" })).toBeNull();
+    const group = within(d).getByRole("radiogroup", { name: "Login method" });
+    const radios = within(group).getAllByRole("radio");
+    expect(radios).toHaveLength(2);
+    expect(radios[0]).toHaveAccessibleName(/^Browser login\s*Recommended/);
+    expect(radios[1]).toHaveAccessibleName(/^Extension\s*If browser login doesn't work/);
+    expect(radios[0]).toBeChecked();
+    // Browser login's panel is shown, its Start in the footer after Cancel; the Extension's panel waits hidden.
+    const bb = within(d).getByRole("region", { name: "Browserbase login" });
+    expect(within(bb).getByLabelText("OnlyFans email")).toBeInTheDocument();
+    expect(within(d).queryByRole("region", { name: "Extension" })).toBeNull();
+    expect(within(d).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    expect(within(d).getByRole("button", { name: "Start browser login" })).toBeDisabled();
+    expect(follows(within(d).getByRole("button", { name: "Cancel" }), within(d).getByRole("button", { name: "Start browser login" }))).toBe(true);
+    // Nothing else on the way in: no Creator details, platform or proxy step, no proxy picker, no last-resort screens.
+    expect(within(d).queryByLabelText("Creator name")).toBeNull();
+    expect(within(d).queryByText("Proxy selection")).toBeNull();
+    expect(within(d).queryByRole("combobox")).toBeNull();
+    expect(within(d).queryByText(/Still unable/)).toBeNull();
+    expect(within(d).queryByRole("button", { name: /Try Browserbase login|How it works|Next/ })).toBeNull();
+    expect(within(d).getByRole("button", { name: "Link a Fansly account instead" })).toBeInTheDocument();
 
-    // Both buttons wait for a valid form (employee0118, employee0121).
-    expect(within(d).getByRole("button", { name: "Done" })).toBeDisabled();
-    expect(within(d).getByRole("button", { name: "Next: Link creator account" })).toBeDisabled();
-    fireEvent.change(within(d).getByLabelText("Creator name"), { target: { value: "No-dash!" } });
-    fireEvent.blur(within(d).getByLabelText("Creator name"));
-    expect(within(d).getByText("Please input [0-9] or [a-z] or [A-Z]")).toBeInTheDocument();
-    details("Nova Star");
-    await waitFor(() => expect(within(d).getByRole("button", { name: "Done" })).toBeEnabled());
-    expect(within(d).getByRole("button", { name: "Next: Link creator account" })).toBeEnabled();
-
-    // Close (×) shuts it; the backdrop does not (`maskClosable:false`, creators-manage#54).
+    // Close (×) shuts it; the backdrop does not (`maskClosable:false`, creators-manage#54); Cancel does too.
     fireEvent.click(d.parentElement!);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     fireEvent.click(within(d).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("Done saves the Creator to the profile store and lists it as Pending connection, with Link, Edit and Delete", async () => {
-    renderWithProviders(<Page />);
-    await screen.findByText("No data");
     await open();
-    details("Nova");
-    await waitFor(() => expect(btn("Done")).toBeEnabled());
-    fireEvent.click(btn("Done"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(relayPut).toHaveBeenCalledWith("/admin/settings/account", expect.objectContaining({
-      language: "en", // every other key rides along
-      creators: { drafts: [expect.objectContaining({ name: "Nova", gender: "Female" })] },
-    }));
-    expect(screen.getByText("New creator added")).toBeInTheDocument();
-    await waitFor(() => expect(connCell("Nova")).toHaveTextContent("Pending connection"));
-
-    // Its Link creator account opens the flow at the platform step, under the later steps' title.
-    fireEvent.click(within(rowOf("Nova")).getByRole("button", { name: "Link creator account" }));
-    expect(screen.getByRole("dialog", { name: "Link creator account" })).toHaveTextContent("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Close"));
-
-    // Edit creator details, then Delete with Infloww's message and survey.
-    fireEvent.click(within(rowOf("Nova")).getByRole("button", { name: "More actions for Nova" }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Edit", "Delete"]);
-    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Edit" }));
-    const edit = screen.getByRole("dialog", { name: "Edit creator details" });
-    fireEvent.change(within(edit).getByLabelText("Creator name"), { target: { value: "Nova Two" } });
-    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    await waitFor(() => expect(rowOf("Nova Two")).toBeDefined());
-
-    fireEvent.click(within(rowOf("Nova Two")).getByRole("button", { name: "More actions for Nova Two" }));
-    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Delete" }));
-    const del = screen.getByRole("dialog", { name: "Delete Nova Two" });
-    expect(del).toHaveTextContent("All platform accounts and related data under Nova Two will be permanently deleted from Inflowwww.");
-    fireEvent.click(within(del).getByRole("button", { name: "Delete creator" }));
-    fireEvent.click(within(del).getByRole("button", { name: "Submit" }));
-    await waitFor(() => expect(screen.getByText("No data")).toBeInTheDocument());
-    expect((settings as { creators: { drafts: unknown[] } }).creators.drafts).toEqual([]);
-    expect(screen.getByText("Nova Two deleted")).toBeInTheDocument();
-  });
-
-  it("goes platform, then proxy, then the sign-in: Paste cURL and Browserbase login, extras, preset with the name", async () => {
-    renderWithProviders(<Page />);
-    await toLogin();
-    // Step 1's Next saved the Creator first (addCreators).
-    expect(relayPut).toHaveBeenCalledWith("/admin/settings/account", expect.objectContaining({
-      creators: { drafts: [expect.objectContaining({ name: "Nova" })] },
-    }));
-    const d = dialog();
-    expect(d).toHaveAccessibleName("Link creator account");
-    // The OnlyFans sign-in keeps the proxy step's dots (#68).
-    expect(within(d).getByText("Step 1 of 3")).toBeInTheDocument();
-    const sections = within(d).getAllByRole("region");
-    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Paste cURL", "Browserbase login"]);
-    for (const s of sections) {
-      expect(s).toHaveAttribute("title", EXTRA_LABEL);
-      expect(within(s).getByText(EXTRA_LABEL)).toBeInTheDocument();
-    }
-    expect(within(sections[0]).getByRole("heading", { name: "Paste cURL" })).toBeInTheDocument();
-    expect(within(sections[0]).getByDisplayValue("Nova")).toBeInTheDocument();
-    // The only password sign-in is the Browserbase card (a remote browser through a required proxy).
-    expect(within(d).queryByRole("heading", { name: "Log in to OnlyFans" })).toBeNull();
-    expect(within(sections[0]).queryByText(/Password/)).toBeNull();
-    expect(within(sections[1]).getByRole("heading", { name: "Try Browserbase login" })).toBeInTheDocument();
-    expect(within(sections[1]).getByRole("button", { name: "Try Browserbase login" })).toBeDisabled();
-    // No proxy (the default): Paste cURL keeps its own Attach proxy select.
-    expect(within(sections[0]).getByRole("combobox")).toHaveValue("");
-    // Infloww's last resort: Select your role, then the alternative method.
-    fireEvent.click(btn(/Still unable to perform verification/));
-    expect(within(dialog()).getByText("Select your role")).toBeInTheDocument();
-    fireEvent.click(within(dialog()).getByLabelText("Admin/employee"));
-    fireEvent.click(btn("Next"));
-    expect(within(dialog()).getByText("Linking OnlyFans account (Alternative method)")).toBeInTheDocument();
-    fireEvent.click(btn("Back"));
-    // Cancel goes back to the proxy step.
     fireEvent.click(btn("Cancel"));
-    expect(within(dialog()).getByText("Proxy selection")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("offers three proxy choices with No proxy checked by default; Inflowwww proxy is disabled while the relay has no pool", async () => {
+  it("the Extension choice swaps the panel and the footer button, and back", async () => {
     renderWithProviders(<Page />);
-    await open();
-    details();
-    fireEvent.click(btn("Next: Link creator account"));
-    await within(dialog()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    const group = within(dialog()).getByRole("radiogroup", { name: "Proxy selection" });
-    expect(within(group).getAllByRole("radio").map((r) => r.closest("label")!.querySelector("span > span")!.textContent))
-      .toEqual(["Inflowwww proxy", "No proxy (server IP)", "Custom proxy"]);
-    expect(within(group).getByRole("radio", { name: /^No proxy/ })).toBeChecked();
-    await waitFor(() => expect(within(group).getByText("No Inflowwww proxies are set up on this server.")).toBeInTheDocument());
-    expect(within(group).getByRole("radio", { name: /^Inflowwww proxy/ })).toBeDisabled();
-    expect(btn("Connect OnlyFans")).toBeEnabled();
-  });
-
-  it("with a pool, Inflowwww proxy is the default, and Browserbase login starts on it with no proxy picker of its own", async () => {
-    poolRelay();
-    renderWithProviders(<Page />);
-    await open();
-    details();
-    fireEvent.click(btn("Next: Link creator account"));
-    await within(dialog()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    await waitFor(() => expect(within(dialog()).getByRole("radio", { name: /^Inflowwww proxy/ })).toBeChecked());
-    fireEvent.click(btn("Connect OnlyFans"));
-    const bb = await within(dialog()).findByRole("region", { name: "Browserbase login" });
-    expect(within(bb).getByText("Proxy for this account:").parentElement).toHaveTextContent("Proxy for this account: Inflowwww proxy");
-    expect(within(bb).queryByRole("combobox")).toBeNull();
-    // Paste cURL binds the pool too: no Attach proxy select.
-    expect(within(within(dialog()).getByRole("region", { name: "Paste cURL" })).queryByRole("combobox")).toBeNull();
-    fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
-    fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
-    fireEvent.click(within(bb).getByRole("button", { name: "Try Browserbase login" }));
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({
-      backend: "browserbase", proxy: "infloww", nickname: "Nova",
-    })));
+    const paste = await toExtension();
+    expect(choice("Extension")).toBeChecked();
+    expect(within(dialog()).queryByRole("region", { name: "Browserbase login" })).toBeNull();
+    expect(within(paste).getByText(/Open the extension, click Copy cURL/)).toBeInTheDocument();
+    expect(btn("Link account")).toBeDisabled();
+    expect(within(dialog()).queryByRole("button", { name: "Start browser login" })).toBeNull();
+    // No nickname field, proxy select, Download app or confirm: only the copy, and Troubleshooting folded.
+    expect(within(paste).queryByRole("combobox")).toBeNull();
+    expect(within(paste).queryByLabelText("Nickname")).toBeNull();
+    expect(within(paste).queryByRole("link", { name: /Download app/ })).toBeNull();
+    expect(within(paste).getByText("Troubleshooting").closest("details")).not.toHaveAttribute("open");
+    fireEvent.change(within(paste).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    expect(btn("Link account")).toBeEnabled();
+    fireEvent.click(choice("Browser login"));
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: "Link account" })).toBeNull();
   });
 
   /** A relay with a 3-proxy pool: `proxy-pool/assign` puts the account on it (or fails with `assignError`); the
@@ -562,43 +464,33 @@ describe("/creators — Add creator, Infloww's steps", () => {
         reloadFailures -= 1;
         return Promise.reject(new Error("relay 500"));
       }
-      if (path === "/admin/automation/enqueue") return Promise.resolve({ enqueued_job_id: 42 });
       return Promise.resolve({ ok: true });
     });
   };
-  /** Inflowwww proxy picked, then the sign-in step: the Paste cURL region. */
-  const toPoolLogin = async () => {
-    await open();
-    details();
-    fireEvent.click(btn("Next: Link creator account"));
-    await within(dialog()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    const pool = within(dialog()).getByRole("radio", { name: /^Inflowwww proxy/ });
-    await waitFor(() => expect(pool).toBeEnabled());
-    fireEvent.click(pool);
-    expect(within(dialog()).queryByRole("list", { name: "Proxies" })).toBeNull();
-    expect(within(dialog()).queryByRole("link", { name: "New proxy" })).toBeNull();
-    expect(btn("Connect OnlyFans")).toBeEnabled();
-    fireEvent.click(btn("Connect OnlyFans"));
-    return within(dialog()).findByRole("region", { name: "Paste cURL" });
-  };
-  const bootstrap = (paste: HTMLElement) => {
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
-    fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
-  };
 
-  it("Inflowwww proxy hides the Attach proxy select, binds a pool proxy in the card's attach step, then the linked step reads the binding", async () => {
+  it("Browser login starts with no proxy picked: the relay assigns one itself", async () => {
     poolRelay();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<Page />);
-    const paste = await toPoolLogin();
-    expect(within(paste).queryByRole("combobox")).toBeNull();
-    expect(within(paste).queryByText("Attach proxy (optional)")).toBeNull();
-    expect(within(paste).getByText(/Teleport warning:/)).toBeInTheDocument();
+    await open();
+    const bb = within(dialog()).getByRole("region", { name: "Browserbase login" });
+    expect(within(bb).getByText(/^Proxy assigned automatically\./)).toBeInTheDocument();
+    fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(btn("Start browser login"));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", {
+      email: "a@b.c", password: "pw", backend: "browserbase", proxy: undefined, nickname: undefined,
+    }));
+  });
+
+  it("with a pool, the Extension binds a pool proxy after the capture, says so inline, and the linked step reads it", async () => {
+    poolRelay();
+    const confirm = vi.spyOn(window, "confirm");
+    renderWithProviders(<Page />);
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByText(/A proxy is assigned automatically after linking/)).toBeInTheDocument());
     bootstrap(paste);
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
-    // The attach step ran (bind, then reload) before the card handed the account to the flow.
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
     const posts = relayPost.mock.calls.map(([p]) => String(p));
     expect(posts.indexOf("/admin/proxy-pool/assign")).toBeGreaterThan(posts.indexOf("/admin/session/bootstrap"));
     expect(posts.indexOf("/admin/reload-session?account_id=acct-new")).toBeGreaterThan(posts.indexOf("/admin/proxy-pool/assign"));
@@ -609,100 +501,68 @@ describe("/creators — Add creator, Infloww's steps", () => {
     confirm.mockRestore();
   });
 
-  it("a failed Inflowwww attach is shown in the card; Continue goes on, queues nothing, and the linked step reads No proxy", async () => {
+  it("a failed pool attach is shown in the panel; Continue goes on and the linked step reads No proxy", async () => {
     poolRelay(new Error("no Inflowwww proxies are set up on this relay"));
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<Page />);
-    const paste = await toPoolLogin();
-    // Onboarding old fans moved to My Automations > Gen-Info: the card offers no such box.
-    expect(within(paste).queryByLabelText(/Onboard the 100 most-recent subscribers/)).toBeNull();
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
     bootstrap(paste);
     expect(await within(paste).findByText(/but proxy attach failed:\s+no Inflowwww proxies are set up on this relay/)).toBeInTheDocument();
     expect(within(dialog()).queryByText("Creator account is linked to Inflowwww")).toBeNull();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/reload-session?account_id=acct-new");
-    expect(relayPost).not.toHaveBeenCalledWith("/admin/automation/enqueue", expect.anything(), expect.anything());
     fireEvent.click(within(paste).getByRole("button", { name: "Continue" }));
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
-    expect(relayPost).not.toHaveBeenCalledWith("/admin/automation/enqueue", expect.anything(), expect.anything());
     expect(await within(dialog()).findByText("No proxy (server IP)")).toBeInTheDocument();
     expect(within(dialog()).queryByText("Inflowwww proxy")).toBeNull();
-    confirm.mockRestore();
   });
 
-  it("when the bind worked but the session reload failed, the card says so and Retry finishes the attach", async () => {
+  it("when the bind worked but the session reload failed, the panel says so and Retry finishes the attach", async () => {
     poolRelay(undefined, 1);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<Page />);
-    const paste = await toPoolLogin();
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
     bootstrap(paste);
     expect(await within(paste).findByText(/the proxy is attached, but reloading the session failed:\s+relay 500\s+Press Retry/)).toBeInTheDocument();
-    expect(within(paste).queryByText(/Change proxy/)).toBeNull();
     fireEvent.click(within(paste).getByRole("button", { name: "Retry" }));
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
     expect(relayPost.mock.calls.filter(([p]) => p === "/admin/reload-session?account_id=acct-new")).toHaveLength(2);
     expect(await within(dialog()).findByText("Inflowwww proxy")).toBeInTheDocument();
-    confirm.mockRestore();
   });
 
   it("the linked step shows an error, not a cached proxy, when the proxies read fails", async () => {
     poolRelay();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<Page />);
-    const paste = await toPoolLogin();
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
     proxies = () => Promise.reject(new RelayError(500, null, "relay 500"));
     bootstrap(paste);
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
     expect(await within(dialog()).findByText("Couldn't read this account's proxy.")).toBeInTheDocument();
     expect(within(dialog()).queryByText("No proxy (server IP)")).toBeNull();
     expect(within(dialog()).queryByText("Inflowwww proxy")).toBeNull();
-    confirm.mockRestore();
   });
 
-  it("a custom proxy must pass its check before Connect OnlyFans, and the sign-in takes it", async () => {
-    proxies = () => Promise.resolve({
-      proxies: [{ label: "px-1", scheme: "http", host: "10.0.0.1", port: 8000, assigned_account_ids: [] }],
-      pool: { size: 0, account_ids: [] }, accounts: [],
-    });
-    relayPost.mockImplementation((path: string) =>
-      Promise.resolve(path === "/admin/proxies/px-1/test" ? { ok: true, ip: "10.0.0.1" } : {}));
+  it("the Fansly link swaps to the Fansly paste session: Browser login off, Done beside Cancel", async () => {
     renderWithProviders(<Page />);
     await open();
-    details();
-    fireEvent.click(btn("Next: Link creator account"));
-    await within(dialog()).findByText("Which platform’s account would you like to link?");
-    fireEvent.click(btn("Next"));
-    expect(within(dialog()).getByRole("radio", { name: /^No proxy/ })).toBeChecked();
-    fireEvent.click(within(dialog()).getByRole("radio", { name: /^Custom proxy/ }));
-    expect(btn("Connect OnlyFans")).toBeDisabled();
-    fireEvent.click(await within(dialog()).findByRole("button", { name: "px-1 http 10.0.0.1:8000" }));
-    await waitFor(() => expect(btn("Connect OnlyFans")).toBeEnabled());
-    expect(relayPost).toHaveBeenCalledWith("/admin/proxies/px-1/test");
-    expect(within(dialog()).getByRole("link", { name: "New proxy" })).toHaveAttribute("href", "/creators/proxy");
-    fireEvent.click(btn("Connect OnlyFans"));
-    const paste = await within(dialog()).findByRole("region", { name: "Paste cURL" });
-    expect(within(paste).getByRole("combobox")).toHaveValue("px-1");
-  });
-
-  it("Fansly skips the proxy and signs in with the Fansly paste session", async () => {
-    renderWithProviders(<Page />);
-    await open();
-    details();
-    fireEvent.click(btn("Next: Link creator account"));
-    fireEvent.click(await within(dialog()).findByLabelText("Fansly"));
-    fireEvent.click(btn("Next"));
-    expect(within(dialog()).getByText("Link Fansly account")).toBeInTheDocument();
+    fireEvent.click(btn("Link a Fansly account instead"));
     expect(within(dialog()).getAllByRole("region").map((s) => s.getAttribute("aria-label"))).toEqual(["Fansly paste session"]);
-    expect(within(dialog()).getByRole("heading", { name: /^Connect Fansly/ })).toBeInTheDocument();
+    expect(choice("Browser login")).toBeDisabled();
+    expect(choice("Extension")).toBeChecked();
+    expect(btn("Done")).toBeInTheDocument();
+    fireEvent.click(btn("Link an OnlyFans account instead"));
+    expect(choice("Browser login")).toBeChecked();
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toBeInTheDocument();
   });
 
-  it("runs the extension probe once on mount with the unchanged URL, and the sign-in step reads its result", async () => {
+  it("runs the extension probe once on mount with the unchanged URL, and the Extension panel reads its result", async () => {
     fetchMock.mockImplementation(() => Promise.resolve({ ok: true }));
     renderWithProviders(<Page />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith(PROBE_URL, { method: "GET", cache: "no-store" });
 
-    await toLogin();
-    await waitFor(() => expect(within(dialog()).getByText(/Extension installed/)).toBeInTheDocument());
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByText("Extension installed")).toBeInTheDocument());
     fireEvent.click(btn("Close"));
     await open();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -711,51 +571,27 @@ describe("/creators — Add creator, Infloww's steps", () => {
   it("shows Install Chrome Extension when the probe found no extension", async () => {
     renderWithProviders(<Page />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await toLogin();
-    await waitFor(() => expect(within(dialog()).getByRole("link", { name: "Install Chrome Extension" })).toBeInTheDocument());
+    const paste = await toExtension();
+    await waitFor(() => expect(within(paste).getByRole("link", { name: "Install Chrome Extension" })).toBeInTheDocument());
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("puts Download app, a plain link to /download, right after the extension link on the web", async () => {
-    renderWithProviders(<Page />);
-    await toLogin();
-    const ext = await within(dialog()).findByRole("link", { name: "Install Chrome Extension" });
-    const download = within(dialog()).getByRole("link", { name: /Download app/ });
-    expect(download).toHaveAttribute("href", "/download");
-    expect(download).not.toHaveAttribute("target");
-    expect(ext.nextElementSibling).toBe(download);
-  });
-
-  it("leaves Download app out inside the desktop app, so the extension link ends its row", async () => {
-    (window as Window & { fasttShell?: { isDesktop: boolean } }).fasttShell = { isDesktop: true };
-    try {
-      renderWithProviders(<Page />);
-      await toLogin();
-      const ext = await within(dialog()).findByRole("link", { name: "Install Chrome Extension" });
-      expect(within(dialog()).queryByRole("link", { name: /Download app/ })).toBeNull();
-      expect(ext.nextElementSibling).toBeNull();
-    } finally {
-      delete (window as Window & { fasttShell?: unknown }).fasttShell;
-    }
-  });
-
-  it("is reachable from the empty roster, and on a phone the sign-in is Browserbase login, Paste cURL desktop-only", async () => {
+  it("is reachable from the empty roster, and on a phone the Extension panel says to use Browser login", async () => {
     renderWithProviders(<Page />);
     await screen.findByText("No data");
-    await toLogin();
-    // No extension on a phone: Paste cURL is hidden below md, Browserbase login (a remote browser) shows at every width.
-    const paste = within(dialog()).getByRole("region", { name: "Paste cURL" }).parentElement!;
-    expect(paste).toHaveClass("hidden", "md:block");
-    const bb = within(dialog()).getByRole("region", { name: "Browserbase login" });
-    expect(bb.closest(".hidden")).toBeNull();
-    expect(within(bb).getByLabelText("OnlyFans email")).toBeInTheDocument();
-    const line = within(dialog()).getByText("Paste cURL needs the desktop browser extension.");
+    const paste = await toExtension();
+    // No extension on a phone: its panel is hidden below md, a line says so; Browser login shows at every width.
+    const body = within(paste).getByLabelText("Copied cURL").closest(".hidden")!;
+    expect(body).toHaveClass("hidden", "md:block");
+    const line = within(paste).getByText("The extension needs desktop Chrome. On a phone, use Browser login.");
     expect(line).toHaveClass("md:hidden");
-    expect(paste).not.toContainElement(line);
-    expect(within(dialog()).queryByText(/Session capture, proxies and keys are desktop-only/)).toBeNull();
+    expect(body).not.toContainElement(line);
+    expect(btn("Link account")).toHaveClass("max-md:hidden");
+    fireEvent.click(choice("Browser login"));
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" }).closest(".hidden")).toBeNull();
   });
 
-  it("captures through the same route, then Linked, Account details and success save the account's details", async () => {
+  it("captures, then one linked screen: the account, its proxy and the account details; Done saves and closes", async () => {
     employees = () => Promise.resolve({
       employees: [
         { id: 1, display_name: "Emp One", color: null, is_active: true, account_ids: ["acct-x"], chatter_id: "c1" },
@@ -768,22 +604,17 @@ describe("/creators — Add creator, Infloww's steps", () => {
         : Promise.resolve({}),
     );
     renderWithProviders(<Page />);
-    await toLogin();
-    const paste = within(dialog()).getByRole("region", { name: "Paste cURL" });
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
-    fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
+    bootstrap(await toExtension());
 
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
-    expect(relayPost).toHaveBeenCalledWith("/admin/session/bootstrap", expect.objectContaining({ mode: "paste-curl", nickname: "Nova" }));
+    expect(relayPost).toHaveBeenCalledWith("/admin/session/bootstrap", expect.objectContaining({ mode: "paste-curl" }));
+    // No pool: nothing bound.
     expect(await within(dialog()).findByText("No proxy (server IP)")).toBeInTheDocument();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
-    expect(within(dialog()).getByText("Step 2 of 3")).toBeInTheDocument();
-    await waitFor(() => expect(relayGet.mock.calls.filter(([p]) => p === "/admin/accounts").length).toBeGreaterThanOrEqual(2));
-
-    fireEvent.click(btn("Next"));
+    expect(within(dialog()).queryByRole("radiogroup", { name: "Login method" })).toBeNull();
     expect(within(dialog()).getByText("Account details")).toBeInTheDocument();
-    expect(within(dialog()).getByText("Step 3 of 3")).toBeInTheDocument();
-    expect(within(dialog()).getByLabelText("Nickname")).toHaveValue("Nova");
+    expect(within(dialog()).getByLabelText("Nickname")).toHaveValue("");
+    fireEvent.change(within(dialog()).getByLabelText("Nickname"), { target: { value: "Nova" } });
     fireEvent.change(within(dialog()).getByLabelText("Tag (Optional)"), { target: { value: "VIP" } });
     fireEvent.change(within(dialog()).getByLabelText("Internal notes (Optional)"), { target: { value: "night shift" } });
     // Assigned employees: Emp Two can open every Creator, so it is checked and fixed.
@@ -791,17 +622,36 @@ describe("/creators — Add creator, Infloww's steps", () => {
     const list = within(dialog()).getByRole("listbox");
     expect(within(list).getByRole("option", { name: /Emp Two/ })).toBeDisabled();
     fireEvent.click(within(list).getByRole("option", { name: "Emp One" }));
-    fireEvent.click(btn("Next"));
+    await waitFor(() => expect(btn("Done")).toBeEnabled());
+    fireEvent.click(btn("Done"));
 
-    await within(dialog()).findByText("Creator account is linked to Inflowwww");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("Creator added")).toBeInTheDocument();
     expect(relayPatch).toHaveBeenCalledWith("/admin/accounts/acct-new", { nickname: "Nova" });
     expect(relayPut).toHaveBeenCalledWith("/admin/employees/1/access", { account_ids: ["acct-x", "acct-new"] });
-    expect((settings as { creators: unknown }).creators).toEqual({
-      drafts: [], // the Creator saved by step 1 is linked now
-      profiles: { "acct-new": expect.objectContaining({ name: "Nova", gender: "Female", tag: "VIP", notes: "night shift" }) },
+    expect((settings as { creators: { profiles: unknown } }).creators.profiles).toEqual({
+      "acct-new": expect.objectContaining({ tag: "VIP", notes: "night shift" }),
     });
-    fireEvent.click(btn("Done"));
-    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a Creator saved before (a draft) still opens from its row, and Edit and Delete still work", async () => {
+    settings = { language: "en", creators: { drafts: [{ id: "d1", name: "Nova", gender: "Female", created_at: "2026-11-01T00:00:00Z" }] } };
+    renderWithProviders(<Page />);
+    await waitFor(() => expect(connCell("Nova")).toHaveTextContent("Pending connection"));
+
+    // Its Link creator account opens the same two ways in, under the row's title.
+    fireEvent.click(within(rowOf("Nova")).getByRole("button", { name: "Link creator account" }));
+    expect(within(screen.getByRole("dialog", { name: "Link creator account" })).getByRole("radiogroup", { name: "Login method" })).toBeInTheDocument();
+    fireEvent.click(btn("Close"));
+
+    fireEvent.click(within(rowOf("Nova")).getByRole("button", { name: "More actions for Nova" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Edit", "Delete"]);
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Delete" }));
+    const del = screen.getByRole("dialog", { name: "Delete Nova" });
+    fireEvent.click(within(del).getByRole("button", { name: "Delete creator" }));
+    fireEvent.click(within(del).getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(screen.getByText("No data")).toBeInTheDocument());
+    expect((settings as { creators: { drafts: unknown[] } }).creators.drafts).toEqual([]);
   });
 
   it("reads the proxies list under one query key with the modal open", async () => {
@@ -1068,16 +918,14 @@ describe("/creators — the row's ⋮ menu", () => {
     }
   });
 
-  it("Link another account opens the flow at the platform step with this platform taken", async () => {
+  it("Link another account opens on the other platform's sign-in, the taken one not offered", async () => {
     fleet();
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Bravo")).toHaveTextContent("Connected"));
     fireEvent.click(within(openMenu("Bravo")).getByRole("menuitem", { name: "Link another account" }));
     const d = screen.getByRole("dialog", { name: "Link creator account" });
-    const of = within(d).getByLabelText("OnlyFans");
-    expect(of).toBeDisabled();
-    expect(of.closest("label")).toHaveAttribute("title", expect.stringContaining("already has an account from OnlyFans linked"));
-    expect(within(d).getByLabelText("Fansly")).toBeChecked();
+    expect(within(d).getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Fansly paste session"]);
+    expect(within(d).queryByRole("button", { name: /Link an OnlyFans account/ })).toBeNull();
   });
 
   it("Edit account details saves the nickname, Tag, notes and Creator access, and Change proxy rebinds the proxy", async () => {
@@ -1246,10 +1094,12 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(items(openMenu("Bravo")).map((i) => i.textContent)).not.toContain("Log in to account via OnlyFans");
     fireEvent.mouseDown(document.body);
 
-    // creators-manage#46, #58: any other row's link button, "Link creator account", opens at Paste cURL (the
-    // extension path, the owner's first way in), titled as the capture's later steps are (#56).
+    // creators-manage#46, #58: any other row's link button, "Link creator account", opens at Browser login (the
+    // first way in, Extension one click away), titled as the capture's later steps are (#56).
     fireEvent.click(within(rowOf("Charlie")).getByRole("button", { name: "Link creator account" }));
-    expect(within(dialog()).getByRole("region", { name: "Paste cURL" })).toHaveFocus();
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toHaveFocus();
+    // A re-link has no platform to swap to.
+    expect(within(dialog()).queryByRole("button", { name: /Link a Fansly account/ })).toBeNull();
     close();
 
     // creators-manage#46, #48: the row's menu holds Edit first, then the capture's three; the recovery actions follow.
@@ -1266,9 +1116,9 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(loginPlus).toHaveAttribute("title", "not wired");
     fireEvent.mouseDown(document.body); // an outside click closes the menu
 
-    // #59, re-link: the OnlyFans sign-in opens at Paste cURL (no password sign-in on the relay).
+    // #59, re-link: the OnlyFans sign-in opens at Browser login.
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
-    expect(within(dialog()).getByRole("region", { name: "Paste cURL" })).toHaveFocus();
+    expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toHaveFocus();
     close();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -1312,15 +1162,21 @@ describe("/creators — the row's ⋮ menu", () => {
     await waitFor(() => expect(connCell("Charlie")).toHaveTextContent("Disconnected"));
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
     const d = screen.getByRole("dialog", { name: "Link creator account" });
-    const paste = within(d).getByRole("region", { name: "Paste cURL" });
-    // A re-login keeps the account's proxy: Browserbase login binds nothing either.
+    // A re-login keeps the account's proxy: Browser login says so and binds nothing, and the Extension neither.
     const bb = within(d).getByRole("region", { name: "Browserbase login" });
-    expect(within(bb).getByText("Proxy for this account:").parentElement).toHaveTextContent("unchanged");
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
-    fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
+    expect(within(bb).getByText(/^Keeps its current proxy\./)).toBeInTheDocument();
+    fireEvent.click(within(d).getByRole("radio", { name: /^Extension/ }));
+    const paste = within(d).getByRole("region", { name: "Extension" });
+    expect(within(paste).queryByText(/assigned automatically/)).toBeNull();
+    fireEvent.change(within(paste).getByLabelText("Copied cURL"), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
+    fireEvent.click(within(d).getByRole("button", { name: "Link account" }));
     await within(d).findByText("Creator account is linked to Inflowwww");
     expect(await within(d).findByText("Inflowwww proxy")).toBeInTheDocument();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
+    // A recovery saves no details: Done just closes.
+    expect(within(d).queryByText("Account details")).toBeNull();
+    fireEvent.click(within(d).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("a re-login through Browserbase sends No proxy, so the relay keeps the account's binding", async () => {
@@ -1330,10 +1186,11 @@ describe("/creators — the row's ⋮ menu", () => {
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Charlie")).toHaveTextContent("Disconnected"));
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
-    const bb = within(screen.getByRole("dialog", { name: "Link creator account" })).getByRole("region", { name: "Browserbase login" });
+    const d = screen.getByRole("dialog", { name: "Link creator account" });
+    const bb = within(d).getByRole("region", { name: "Browserbase login" });
     fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
     fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
-    fireEvent.click(within(bb).getByRole("button", { name: "Try Browserbase login" }));
+    fireEvent.click(within(d).getByRole("button", { name: "Start browser login" }));
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({ proxy: "none" })));
   });
 });

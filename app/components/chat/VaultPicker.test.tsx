@@ -193,6 +193,25 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     expect(paths()).not.toContain("/admin/vault-ai/items");
   });
 
+  // U4: a live listing fired before the summary landed painted OF CDN tiles over a collected vault.
+  it("waits for the summary (loading, no grid read), then serves a complete mirror with no live read", async () => {
+    mirrorCount = 5;
+    let answer!: () => void;
+    const summary = new Promise((r) => {
+      answer = () => r({ account_id: "acct-1", count: 5, complete: true, running: false, last_run: null });
+    });
+    routeRelay("/admin/vault-ai/cache/summary", () => summary);
+    renderPicker(42);
+    await waitFor(() => expect(paths()).toContain("/admin/vault-ai/cache/summary"));
+    expect(screen.getByText("Loading vault…")).toBeInTheDocument();
+    expect(screen.queryByText("No media in this filter.")).toBeNull();
+    expect(paths()).not.toContain("/api/of/v2/vault/media");
+    expect(paths()).not.toContain("/admin/vault-ai/items");
+    answer();
+    await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
+    expect(paths()).not.toContain("/api/of/v2/vault/media");
+  });
+
   it("a complete mirror serves a restricted chatter too (the server applies the folder limits)", async () => {
     session.user = null;
     session.chatter = { id: 3 };
@@ -201,8 +220,7 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     }));
     mirrorCount = 5;
     renderPicker(42);
-    // Only the mirror's copy carries AI tags; the live grid (which may fire
-    // once before the summary lands) never does.
+    // Only the mirror's copy carries AI tags; the live grid never does.
     await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
     expect(paths()).toContain("/admin/vault-ai/items");
   });

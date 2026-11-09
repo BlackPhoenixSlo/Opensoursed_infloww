@@ -67,6 +67,7 @@ async def per_employee(
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
     by_account: bool = Query(False),
+    include_series: bool = Query(False),
     chatter_only: bool = Query(False),
 ) -> dict[str, Any]:
     """Per-employee revenue rollup. Each sale is credited by its Creator's
@@ -101,6 +102,11 @@ async def per_employee(
     zone = await stats._report_zone(None)
     start = _parse_date(from_, field="from", zone=zone)
     end = _parse_date(to, field="to", zone=zone)
+    series_bucket = None
+    if include_series:
+        end = end or datetime.utcnow()
+        start = start or end - timedelta(days=30)
+        series_bucket = "hour" if tx_rollup.whole_hours(zone, start, end) else "minute"
     # Clamp to the signed-in friend's accounts so per-employee rollups
     # don't mix in other friends' chatter activity.
     account_ids = clamp_account_filter(None)
@@ -154,13 +160,13 @@ async def per_employee(
         if account_ids is not None:
             acct_lookup_q = acct_lookup_q.where(Account.id.in_(account_ids))
         msg_rows, (credited, fallback), emp_rows, acct_rows = await asyncio.gather(
-            _run(mq), credited_sales(account_ids, start, end, grouped=True),
+            _run(mq), credited_sales(account_ids, start, end, grouped=True, bucket=series_bucket),
             _run(emp_lookup_q), _run(acct_lookup_q),
         )
         account_labels: dict[str, str | None] = {aid: nick for aid, nick in acct_rows}
     else:
         msg_rows, (credited, fallback), emp_rows = await asyncio.gather(
-            _run(mq), credited_sales(account_ids, start, end, grouped=True),
+            _run(mq), credited_sales(account_ids, start, end, grouped=True, bucket=series_bucket),
             _run(emp_lookup_q),
         )
         account_labels = {}
@@ -242,7 +248,22 @@ async def per_employee(
 
     rows = [r for r in by_emp.values() if own is None or r["employee_id"] in own]
     out = sorted(rows, key=lambda x: x["revenue_cents"], reverse=True)
-    return {"employees": out, "attribution_fallback": fallback}
+    result = {"employees": out, "attribution_fallback": fallback}
+    if include_series:
+        edges = stats_window.bucket_edges("day", start, end, zone, "monday")
+        points = [{"start": edge.replace(tzinfo=timezone.utc).astimezone(zone or timezone.utc).strftime("%Y-%m-%d"),
+                   "revenue_cents": 0, "messages_cents": 0, "tips_cents": 0} for edge in edges]
+        for sale in credited:
+            if sale.occurred_at is None or (own is not None and sale.employee_id not in own):
+                continue
+            point = points[max(0, bisect.bisect_right(edges, sale.occurred_at) - 1)]
+            point["revenue_cents"] += sale.amount_cents
+            if sale.kind in PPV_KINDS:
+                point["messages_cents"] += sale.amount_cents
+            if sale.kind in TIP_KINDS:
+                point["tips_cents"] += sale.amount_cents
+        result["series"] = points
+    return result
 
 
 # The counts of a Chatting statistics row, summed over an Employee's Creators.

@@ -14,7 +14,8 @@ throttling (12 / 4 Mbit/s, CPU x2), OnlyFans on lib/of_wire.py (`of_ms` a call, 
 
 A phone (390x844, touch, iPhone user agent) on one browser profile, each visit a new browser process:
   dash-first    `/` with nothing cached: settled time, request counts
-  dash-reload   `/` again: the Per-model cards' fan counts from the saved snapshot (C_SNAPSHOT)
+  dash-reload   `/` again: a normal document load for C_ENTRY and paint timing
+  dash-snapshot `/` again, with its bundle held: the Per-model cards' fan counts from the saved snapshot (C_SNAPSHOT)
   dash-slow     `/` again, the page's clock SLOW_SHIFT_S ahead (the snapshot past its 30 min staleTime: every card
                 refetches), the relay restarted, Creator 0's OF +SLOW_EXTRA_S (> the bundle's 2 s deadline): the cards
                 keep the snapshot, one follow-up bundle fetches Creator 0 (C_PARTIAL)
@@ -75,23 +76,24 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from slop.actors.ui import LAUNCH_ARGS, _client_fault, _patched
-from slop.lib.clicks_first_faults import PER_CREATOR, C_ABORT, C_BUNDLE, C_CAP, C_ENTRY, C_PARTIAL, C_SNAPSHOT
+from slop.lib.clicks_first_faults import C_ABORT, C_BUNDLE, C_CAP, C_ENTRY, C_PARTIAL, C_SNAPSHOT
+from slop.lib.faults import FAULTS
+from slop.lib.screen_bundle import DASH_SCREEN_PATH, bundle_view, late_reads
+from slop.lib.wan import WanEdge
+from slop.seed import agency, earnings, fans, of_sessions, threads
+from slop.seed import creators as creators_seed
 
 # The per-Creator /api/of reads the screen bundles replace (service/screens_api.py): Dashboard's three, Pro's two.
 BUNDLE_OF = frozenset(("/api/of/v2/users/me", "/api/of/v2/subscriptions/count/all",
                        "/api/of/v2/subscriptions/subscribers/chart", "/api/of/v2/chats",
                        "/api/of/v2/users/notifications/count"))
-from slop.lib.faults import FAULTS
-from slop.lib.screen_bundle import bundle_view, late_reads
-from slop.lib.wan import WanEdge
-from slop.seed import agency, earnings, fans, of_sessions, threads
-from slop.seed import creators as creators_seed
 
 UI = True
 APP_MODE = "prod"
 RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test"}
 OF_WIRE = True
 FAULT = "relay-scheduler-bypassed"
+PER_CREATOR = 2  # app/lib/relaySchedule.ts PER_CREATOR: the relay's background lane per Creator
 CREATORS = 13
 RTT_MS = 250
 OF_MS = 500
@@ -155,8 +157,9 @@ PROBE_JS = r"""(() => {
 
 # Legs kept in files of their own (lib/clicks_first_<leg>_leg.py; never a *_faults.py: the relay imports those). Each
 # defines `PROBE_MARKS` (JS joined into PROBE_JS), `CHECKS` (check names), `UNCAPPED` (background read paths not the
-# browser queue's to cap, C_CAP), `async visit(ctx, pw, edge, udir, v, *, cs, n, fake, visit_fn)` (after mp-click-N;
-# visit_fn = _visit) and `check(ctx, v, *, cs, n, click_budget_ms, max_inflight)` (after this file's checks).
+# browser queue's to cap, C_CAP), `setup(fake)` (FakeOF answers it adds, before the seed), `async visit(ctx, pw, edge,
+# udir, v, *, cs, n, fake, visit_fn)` (after mp-click-N; visit_fn = _visit) and `check(ctx, v, *, cs, n,
+# click_budget_ms, max_inflight)` (after this file's checks).
 LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
         for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("clicks_first_*_leg.py"))]
 PROBE_JS = PROBE_JS.replace("    // legs' marks\n", "".join(leg.PROBE_MARKS for leg in LEGS))
@@ -248,7 +251,8 @@ async def _quiet(page, quiet_s: float = 3.0, cap_s: float = 90.0) -> None:
 
 
 async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=None, early: bool = False,
-                 no_bundle: bool = False, shift_s: float = 0.0, done: str | None = None) -> dict:
+                 no_bundle: bool = False, shift_s: float = 0.0, done: str | None = None,
+                 hold_bundle: bool = False) -> dict:
     """One visit of `path` in a new browser process on profile `udir`; `act(page, net)` runs once the page painted
     (`early`: at once, the page still loading). `no_bundle`: /admin/screens/* answers 404 (the per-Creator path);
     `shift_s`: the page's clock that far ahead; `done`: the PROBE_JS mark that means painted (default: the Dashboard's
@@ -259,6 +263,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         str(udir), args=[*LAUNCH_ARGS, *edge.chrome_args], viewport={"width": 390, "height": 844},
         device_scale_factor=3, is_mobile=True, has_touch=True, user_agent=IPHONE_UA, timezone_id=ZONE)
     net = Net(urlsplit(edge.url).netloc)
+    held_bundles = []
     try:
         if first:
             await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url,
@@ -271,6 +276,13 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             await bctx.route("**/_next/static/**/*.js", lambda r: _patched(r, ctx, patches, origin=ctx.app))
         if no_bundle:  # at the relay: the HTML's inline bundle (the Next server's read) 404s too
             await ctx.owner.post("/__slop/screens-404", json={"on": True})
+        if hold_bundle:
+            await ctx.owner.post("/__slop/server-wire", json={"path": DASH_SCREEN_PATH, "mode": "hold"})
+
+            async def hold_dashboard(r):
+                held_bundles.append(r)
+
+            await bctx.route(f"**{DASH_SCREEN_PATH}**", hold_dashboard)
         if shift_s:
             await bctx.clock.set_system_time(time.time() + shift_s)
         page = bctx.pages[0] if bctx.pages else await bctx.new_page()
@@ -292,6 +304,10 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
                 await page.wait_for_function(f"() => window.__cf && '{done}' in window.__cf.marks", timeout=60_000)
             except Exception:  # noqa: BLE001  never painted: recorded, C_PAINT says so
                 painted = False
+        if hold_bundle:
+            await ctx.owner.post("/__slop/server-wire", json={"path": DASH_SCREEN_PATH, "mode": None})
+            for r in held_bundles:
+                await r.continue_()
         if path == "/" and not early:  # the Per-model cards, below the earnings card on a phone
             await page.evaluate(SHOW_CARDS_JS)
         await page.screenshot(path=str(ctx.out / "screenshots" / f"{name}-trigger.png"))
@@ -306,12 +322,19 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         await page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
         await asyncio.sleep(1.0)
     finally:
+        if hold_bundle:
+            await ctx.owner.post("/__slop/server-wire", json={"path": DASH_SCREEN_PATH, "mode": None})
         await bctx.close()
         if no_bundle:
             await ctx.owner.post("/__slop/screens-404", json={"on": False})
     # what came with the HTML: the Next server's reads for this document (relay-side log; reset by a relay restart)
     reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
     inline = [x for x in reads if x["t0"] >= t_nav - 0.05 and x["path"].startswith(INLINE_READS)]
+    if hold_bundle:
+        d["snapshot_held"] = len(held_bundles)
+        paint_wall = (d["origin"] + d["marks"].get("fans", float("inf"))) / 1000
+        d["snapshot_inline_held"] = any(x["path"].startswith(DASH_SCREEN_PATH)
+                                        and x["t0"] <= paint_wall <= x["t1"] for x in inline)
     d.update(painted=painted, done=done, net=list(net.reqs.values()), inline=inline, **(extra or {}))
     return d
 
@@ -345,7 +368,17 @@ def _summary(d: dict) -> dict:
             "relay_requests": len(res), "of_requests": len(of),
             "of_background": sum(1 for r in net_of if r["bg"]), "of_user": sum(1 for r in net_of if not r["bg"]),
             "max_bg_inflight": _max_inflight([r for r in net_of if r["bg"]]),
-            "painted_ms": round(d["marks"].get("fans", d["marks"].get("rows", d["marks"].get(d["done"], -1))))}
+            "painted_ms": round(paint if paint is not None else -1)}
+
+
+async def _restart(ctx) -> None:
+    await asyncio.to_thread(ctx.stack.crash_relay)
+    await asyncio.to_thread(ctx.stack.start_relay)
+
+
+def _message_open(path: str) -> tuple[str, str] | None:
+    parts = path.split("?")[0].split("/")
+    return (parts[3], parts[4]) if len(parts) == 5 and parts[:3] == ["", "admin", "messages"] else None
 
 
 async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
@@ -359,6 +392,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     earnings.seed(w, cs, ctx.stack.tmp, history_days=30, connected_days=9)
     fake = ctx.of_wire
     fake.latency_s = ctx.param("of_ms", OF_MS) / 1000
+    for leg in LEGS:
+        leg.setup(fake)
     for c in cs:
         fake.chats[c["id"]] = [
             {"withUser": {"id": f["id"], "_view": "s"}, "unreadMessagesCount": 0,
@@ -413,12 +448,12 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
 
     try:
         async with async_playwright() as pw:
-            await asyncio.to_thread(ctx.stack.crash_relay)
-            await asyncio.to_thread(ctx.stack.start_relay)
+            await _restart(ctx)
             v["dash-first"] = await _visit(ctx, pw, edge, udir, "dash-first", "/", first=True)
             v["dash-reload"] = await _visit(ctx, pw, edge, udir, "dash-reload", "/", first=False)
-            await asyncio.to_thread(ctx.stack.crash_relay)
-            await asyncio.to_thread(ctx.stack.start_relay)
+            v["dash-snapshot"] = await _visit(ctx, pw, edge, udir, "dash-snapshot", "/", first=False,
+                                               hold_bundle=True)
+            await _restart(ctx)
             n_slow = len(fake.calls)
             fake.extra_s[slow] = SLOW_EXTRA_S
             v["dash-slow"] = await _visit(ctx, pw, edge, udir, "dash-slow", "/", first=False, shift_s=SLOW_SHIFT_S)
@@ -432,7 +467,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             fake.extra_s.pop(slow, None)
             n_after = len(fake.calls)
             plain = _bundles(v["dash-slow"])[0]
-            r = await ctx.owner.get(plain[0] if plain else "/admin/screens/dashboard")
+            r = await ctx.owner.get(plain[0] if plain else DASH_SCREEN_PATH)
             after_body = bundle_view(r.json()) if r.status_code == 200 else None
             slow_after = {"status": r.status_code,
                           "counts": (after_body or {}).get("subscriberCounts", {}).get(slow),
@@ -441,19 +476,16 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                           "of_calls": sum(1 for c in fake.calls[n_after:] if c["account"] == slow
                                           and c["route"].startswith("GET /api2/")),
                           "of_calls_during_visit": sum(1 for c in fake.calls[n_slow:n_after] if c["account"] == slow)}
-            await asyncio.to_thread(ctx.stack.crash_relay)
-            await asyncio.to_thread(ctx.stack.start_relay)
+            await _restart(ctx)
             fake.latency_s = LEAVE_OF_MS / 1000
             v["dash-leave"] = await _visit(ctx, pw, edge, ctx.stack.tmp / "chrome-leave", "dash-leave", "/",
                                            first=True, act=leave, early=True, no_bundle=True)
             fake.latency_s = ctx.param("of_ms", OF_MS) / 1000
-            await asyncio.to_thread(ctx.stack.crash_relay)
-            await asyncio.to_thread(ctx.stack.start_relay)
+            await _restart(ctx)
             v["mp-first"] = await _visit(ctx, pw, edge, udir, "mp-first", "/messages-pro", first=False)
             for i in range(clicks):
                 t_last = time.time()
-                await asyncio.to_thread(ctx.stack.crash_relay)
-                await asyncio.to_thread(ctx.stack.start_relay)
+                await _restart(ctx)
                 await asyncio.sleep(max(0.0, STALE_S - (time.time() - t_last)))
                 v[f"mp-click-{i}"] = await _visit(ctx, pw, edge, udir, f"mp-click-{i}", "/messages-pro",
                                                   first=False, act=tap(i), no_bundle=True)
@@ -489,13 +521,17 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
         me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
-        pre = {"bundle": "/admin/screens/", "settings": "/admin/settings/applied"}
+        plain, _follow = _bundles(d)
+        page_bundles = [r for r in d["net"] if r["path"] in plain]
+        settings = "/admin/settings/applied"
         o = {"auth_me_end": round(min(me) - d["origin"]) if me else None, "auth_me_inline": _took_inline(d, "/auth/me"),
-             **{f"{k}_t0": first(p) for k, p in pre.items()}, **{f"{k}_inline": _took_inline(d, p) for k, p in pre.items()}}
+             "bundle_t0": min((r["t0"] for r in page_bundles), default=None),
+             "bundle_inline": bool(plain) and not page_bundles,
+             "settings_t0": first(settings), "settings_inline": _took_inline(d, settings)}
         want = ("bundle", "settings") if dash else ("bundle",)
         o["ok"] = (bool(me) or o["auth_me_inline"]) and all(
             o[f"{k}_inline"] or (bool(me) and o[f"{k}_t0"] is not None and o[f"{k}_t0"] < min(me)) for k in want)
-        for k in pre:
+        for k in ("bundle", "settings"):
             o[f"{k}_t0"] = None if o[f"{k}_t0"] is None else round(o[f"{k}_t0"] - d["origin"])
         return o
     ent = {k: entry(v[k], k.startswith("dash")) for k in ("dash-first", "dash-reload", "mp-first")}
@@ -515,8 +551,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
 
     # The queue's cap, over every visit (CDP: request sent -> body loaded).
     def tapped(d: dict) -> str | None:
-        r = [x for x in d["net"] if x["path"].startswith("/admin/messages/") and x["path"].count("/") == 4]
-        return r[0]["path"].split("/")[3] if r else None
+        r = [x for x in d["net"] if _message_open(x["path"]) is not None]
+        return _message_open(r[0]["path"])[0] if r else None
     inflight = {}
     for k, d in v.items():
         bg = [r for r in d["net"] if r["path"].startswith("/api/of/") and r["bg"] and r["account"] != tapped(d)
@@ -528,13 +564,15 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
 
     # The reload's cards from the snapshot: every fan count painted before any fan-count read answered, and the
     # figure OF answers (lib/of_wire.py: Creator id % 900 + 100) and the settled page shows.
-    d = v["dash-reload"]
+    d = v["dash-snapshot"]
     reads = [e["end"] for e in d["res"] if "/subscriptions/count/all" in e["name"]]
     painted = d["marks"].get("fans")
     want = sorted(f"{int(c['id']) % 900 + 100:,}" for c in cs)
-    ctx.check(C_SNAPSHOT, painted is not None and (not reads or painted < min(reads))
+    ctx.check(C_SNAPSHOT, painted is not None and (d["snapshot_held"] > 0 or d["snapshot_inline_held"])
+              and (not reads or painted < min(reads))
               and sorted(d["fans"] or []) == want and sorted(d["settledFans"]) == want,
               painted_ms=painted and round(painted), first_count_read_end=reads and round(min(reads)),
+              held_bundles=d["snapshot_held"], inline_held=d["snapshot_inline_held"],
               shown=d["fans"], settled=d["settledFans"], want=want)
 
     # Leaving the Dashboard drops its queued per-Creator reads.
@@ -558,9 +596,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
         lists = [r for r in d["net"] if r["path"].startswith("/api/of/v2/chats?")]
         open_ = {r["account"] for r in lists if click_wall is not None and (r["end"] is None or r["end"] > click_wall)}
         loading[i] = len(open_)
-        opened = [r for r in d["net"] if r["path"].startswith("/admin/messages/") and r["path"].count("/") == 4
+        opened = [r for r in d["net"] if _message_open(r["path"]) is not None
                   and click_wall is not None and r["t0"] >= click_wall - 50]
-        acc, fan = (opened[0]["path"].split("?")[0].split("/")[3:5]) if opened else (None, None)
+        acc, fan = _message_open(opened[0]["path"]) if opened else (None, None)
         head = [r for r in d["net"] if fan and r["path"].startswith(f"/api/of/v2/chats/{fan}/messages?")]
         rows = []
         if acc and d.get("msgIds"):

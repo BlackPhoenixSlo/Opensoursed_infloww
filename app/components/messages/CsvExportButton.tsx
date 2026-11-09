@@ -6,9 +6,8 @@
  * records (`/admin/stats/sales-records`), Fan reports' Top fans
  * (`/admin/stats/fan-report`), the Tips tab (`/admin/tips-list`) and Top
  * tippers (`/admin/top-tippers`). The caller builds the path and its query
- * string, `format=csv` included. Both looks are Infloww's outline button
- * (`IfButton`) with the caller's label and glyph; `look="legacy"` (the
- * default) also says "Starting…" while the click debounces.
+ * string, `format=csv` included. Infloww's outline button (`IfButton`) with
+ * the caller's label and glyph, including while the click debounces.
  *
  * Why an `<a download>` anchor click, NOT fetch().blob():
  *   • fetch().blob() materializes the whole body in JS memory before
@@ -48,13 +47,11 @@ interface Props {
   label?: string;
   /** The glyph before it; the download arrow when absent. */
   icon?: LucideIcon;
-  /** `legacy` (the default) shows "Starting…" while busy; `infloww` (the Analytics pages) keeps the label. */
-  look?: "legacy" | "infloww";
 }
 
 export default function CsvExportButton({
   path, query, disabled, title = "Download the filtered rows as CSV (up to 50,000 rows)", label = "Export CSV",
-  icon: Icon = Download, look = "legacy",
+  icon: Icon = Download,
 }: Props) {
   const [busy, setBusy] = useState(false);
   // Hidden where the role denies this page's Export CSV (lib/permissionActions.ts).
@@ -88,16 +85,9 @@ export default function CsvExportButton({
   };
 
   if (!allowed) return null;
-  if (look === "infloww") {
-    return (
-      <IfButton icon={Icon} onClick={onClick} disabled={disabled || busy} title={title}>
-        {label}
-      </IfButton>
-    );
-  }
   return (
     <IfButton icon={Icon} onClick={onClick} disabled={disabled || busy} title={title}>
-      {busy ? "Starting…" : label}
+      {label}
     </IfButton>
   );
 }

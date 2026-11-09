@@ -115,6 +115,19 @@ describe("ClockRecordsModal", () => {
     expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
+  it("is the kit's IfModal: the footer's Close and Escape close it, with no × beside them", async () => {
+    const onClose = vi.fn();
+    renderWithProviders(
+      <ClockRecordsModal employeeId={41} employeeName="Alpha One" groupName="" from={FROM} to={TO} onClose={onClose} />,
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Clocked hours" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(within(dialog).getAllByRole("button", { name: "Close" })).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ["the report's range reads its own offset, not now's", FROM, TO, "UTC-4"],
     ["a range crossing DST end reads both offsets", "2026-10-20T04:00:00.000Z", "2026-11-11T04:59:59.999Z", "UTC-4 → UTC-5"],

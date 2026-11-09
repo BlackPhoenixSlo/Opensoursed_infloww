@@ -149,24 +149,28 @@ export function priorRange(from: string | null, to: string | null): [string, str
 }
 
 /** The Dashboard's period tabs, by id (docs/infloww-layouts/dashboard.md,
- *  #22-#25 and #96; `week` and `lastMonth` are the bundles' own ids, #3, #96). */
-export type Period = "yesterday" | "today" | "week" | "month" | "lastMonth";
+ *  #22-#25 and #96; `last30Days` replaces the previous calendar-month tab). */
+export type Period = "yesterday" | "today" | "week" | "month" | "last30Days";
 
 /** A Dashboard period's `[from, to]` instants: whole days cut at midnight in
  *  `timeZone` (the Agency's report time zone, the browser's when null), `to`
  *  1 ms before the next period's first instant. `week` is the seven days from
  *  the last `weekStart`, `month` the whole calendar month, as the bundle cuts
  *  them (docs/spec/infloww-parity-round-2/phase-01-dashboard.md, Interfaces;
- *  stories 7, 8 and 10); `lastMonth` the whole calendar month before it. */
+ *  stories 7, 8 and 10); `last30Days` today and the preceding 29 calendar days. */
 export function periodWindow(
   period: Period, timeZone: string | null, weekStart: "monday" | "sunday",
 ): [string, string] {
-  if (period === "month" || period === "lastMonth") {
-    const [first, next] = monthRange(timeZone, period === "lastMonth" ? 1 : 0);
+  if (period === "month") {
+    const [first, next] = monthRange(timeZone);
     return [first.toISOString(), new Date(next.getTime() - 1).toISOString()];
   }
   let back = period === "yesterday" ? 1 : 0;
   let days = 1;
+  if (period === "last30Days") {
+    back = 29;
+    days = 30;
+  }
   if (period === "week") {
     const weekday = new Date(`${todayISO(timeZone)}T00:00:00Z`).getUTCDay();
     back = weekStart === "sunday" ? weekday : (weekday + 6) % 7;

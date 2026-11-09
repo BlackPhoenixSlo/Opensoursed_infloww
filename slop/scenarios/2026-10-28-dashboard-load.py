@@ -42,10 +42,14 @@ on OF); a visit with the saved query cache (return, after-deploy) painted the sa
 before its revenue read answered, the same figure the settled page shows (the revenue
 read and the Applied settings ride the IndexedDB snapshot, keyed by principal); the
 session-less Creator (no account on the host, so absent from `/admin/accounts`, as prod's
-800000779) sent no OnlyFans request from its card (each `/api/of/` request's
-`X-Account-Id`, from Playwright's request events) and wears its "Not connected" label,
-while on a first visit every live Creator's card still read OF (its own `/api/of/` read, or the
-screen bundle `/admin/screens/dashboard` naming it or, no `accounts=`, all; the bundle never names it either); never blank while the JS loads (2026-10-29,
+800000779) sent no OnlyFans request on any Dashboard visit (each `/api/of/` request's
+`X-Account-Id`, from Playwright's request events; no screen bundle `/admin/screens/dashboard`
+names it). Its Per-model card left the Dashboard (PR #374, 2026-11-09: the Dashboard is
+earnings, shifts, employee sales and worked hours) for Creator reports' extras panel
+(`/analytics/creator-reports`, CompetitorReports), so one more first visit (`reports`: its own
+profile, nothing cached, unthrottled) opens that panel: the card wears "Not connected" and
+sends no OnlyFans request either, while every live Creator's card read OF (its own `/api/of/`
+read, or the bundle naming it or, no `accounts=`, all); never blank while the JS loads (2026-10-29,
 the owner: "paint the layout right away, then the numbers fill in"): on every Dashboard
 load whose JS comes over the network and on Messages Pro's first visit, the route's frame
 from the server's HTML (AuthGate's BootSkeleton: the earnings card's labels with a bar
@@ -145,8 +149,8 @@ C_H2 = "every page request rode HTTP/2 through the TLS edge and none answered 5x
 C_NOWAIT = "Total earnings painted before the slow-proxy Creator's OnlyFans reads ended (it never waits on OF)"
 C_SAVED = ("a visit with the saved query cache painted the saved Total before its revenue read answered, "
            "the figure the settled page shows")
-C_OFFLINE = ("the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
-             "on a first visit every live Creator's card read OF")
+C_OFFLINE = ("the session-less Creator sent no OnlyFans request (Dashboard visits, Creator reports' Per-model card) "
+             "and its card shows 'Not connected'; on a first visit every live Creator's card read OF")
 
 
 C_FRAME = ("Dashboard loads whose JS comes over the network (first, after-deploy): the page's frame (the earnings "
@@ -205,8 +209,6 @@ COLLECT_JS = r"""() => {
            marks: window.__dash.marks, firstTotal: window.__dash.totalText, bootRoute: window.__dash.bootRoute || null,
            bootLeft: document.querySelectorAll('[data-boot-skeleton]').length,
            chatRows: document.querySelectorAll('[data-chat-row]').length,
-           offline: Array.from(document.querySelectorAll('[data-of-offline]')).map((b) =>
-             ({ label: b.textContent, card: ((b.closest('[class*="p-4"]') || {}).textContent || '') })),
            total: (document.querySelector('[data-control="total"] [data-figure]') || {}).textContent || null, busy: window.__dash.busy,
            longTasks: window.__dash.longTasks };
 }"""
@@ -304,9 +306,13 @@ async def _visit(ctx, pw, edge, net: str, visit: str, udir, slow: str, path: str
         # the caller's) on the relay: kept apart, `bundle` = the Creators it named (None: all).
         of_sent: list[dict] = []
         bundles: list[list[str] | None] = []
-        page.on("request", lambda r: of_sent.append({"path": _path(r.url), "account": r.headers.get("x-account-id")})
-                if "/api/of/" in r.url else bundles.append(_bundle_accounts(r.url))
-                if "/admin/screens/dashboard" in r.url else None)
+        def on_request(r):
+            if "/api/of/" in r.url:
+                of_sent.append({"path": _path(r.url), "account": r.headers.get("x-account-id")})
+            elif "/admin/screens/dashboard" in r.url:
+                bundles.append(_bundle_accounts(r.url))
+
+        page.on("request", on_request)
         cdp = await bctx.new_cdp_session(page)
         await cdp.send("Network.enable")
         if visit == "after-deploy":
@@ -361,6 +367,58 @@ async def _visit(ctx, pw, edge, net: str, visit: str, udir, slow: str, path: str
         calls = [c for c in ctx.of_wire.calls if c["account"] == slow and c["t"] * 1000 >= d["origin"]]
     d["slow_of_calls"] = [{"route": c["route"], "end": round(c["t"] * 1000 - d["origin"])} for c in calls]
     return d
+
+
+REPORTS_PATH = "/analytics/creator-reports"
+#: The Per-model cards' offline badges, each with its card's text (the card names its Creator's id).
+OFFLINE_JS = r"""() => Array.from(document.querySelectorAll('[data-of-offline]')).map((b) =>
+  ({ label: b.textContent, card: ((b.closest('[class*="p-4"]') || {}).textContent || '') }))"""
+
+
+async def _reports_visit(ctx, pw, edge, udir) -> dict:
+    """Creator reports on a profile that never loaded the app, its extras panel opened: the Per-model cards (PR #374
+    moved them off the Dashboard). Desktop, unthrottled: no timing is judged here, only who was asked OF."""
+    fault = FAULTS.get(ctx.fault or "")
+    bctx = await pw.chromium.launch_persistent_context(
+        str(udir), args=[*LAUNCH_ARGS, *edge.chrome_args], viewport={"width": 1280, "height": 900})
+    track(ctx, bctx)
+    of_sent: list[dict] = []
+    bundles: list[list[str] | None] = []
+    offline: list[dict] = []
+    try:
+        await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url,
+                                 "expires": time.time() + 30 * 86400} for c in ctx.owner.c.cookies.jar])
+        if fault and fault.browser_js and C_SWEEP not in fault.targets:
+            await bctx.add_init_script(fault.browser_js)
+        page = bctx.pages[0] if bctx.pages else await bctx.new_page()
+
+        def on_request(r):
+            if "/api/of/" in r.url:
+                of_sent.append({"path": _path(r.url), "account": r.headers.get("x-account-id")})
+            elif "/admin/screens/dashboard" in r.url:
+                bundles.append(_bundle_accounts(r.url))
+
+        page.on("request", on_request)
+        await page.goto(edge.url + REPORTS_PATH, wait_until="domcontentloaded", timeout=120_000)
+        toggle = page.locator('[aria-controls="creator-reports-extras"]')
+        await toggle.wait_for(timeout=60_000)
+        await toggle.click()
+        try:  # the cards drawn (a fault may hide the badge: the check says so)
+            await page.wait_for_selector("#creator-reports-extras [data-of-offline]", timeout=30_000)
+        except Exception:  # noqa: BLE001
+            pass
+        # Settled: no new request for 3 s (at most 45 s): the slow Creator's late read and its follow-up bundle in.
+        last_n, still, t0 = -1, 0.0, time.time()
+        while time.time() - t0 < 45 and still < 3:
+            n = await page.evaluate("() => performance.getEntriesByType('resource').length")
+            still = still + 0.25 if n == last_n else 0.0
+            last_n = n
+            await asyncio.sleep(0.25)
+        offline = await page.evaluate(OFFLINE_JS)
+        await page.screenshot(path=str(ctx.out / "screenshots" / "creator-reports-extras.png"), full_page=True)
+    finally:
+        await bctx.close()
+    return {"of_sent": of_sent, "bundles": bundles, "offline": offline}
 
 
 async def _no_ui(ctx) -> None:
@@ -601,6 +659,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     edge = await asyncio.to_thread(WanEdge, ctx.stack, rtt)
     visits: dict[str, dict] = {}
     mp_visits: dict[str, dict] = {}
+    reports: dict = {"of_sent": [], "bundles": [], "offline": []}
     sweep: dict[str, dict] = {}
     try:
         async with async_playwright() as pw:
@@ -621,6 +680,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                 (ctx.out / f"waterfall-{net}-mp-first.json").write_text(json.dumps(d, indent=1))
                 (ctx.out / f"waterfall-{net}-mp-first.txt").write_text(_table(d))
                 await asyncio.sleep(2)
+            # The Per-model cards, where they live since PR #374 (the slow proxy still on: its late read is asked too).
+            reports = await _reports_visit(ctx, pw, edge, ctx.stack.tmp / "chrome-reports")
+            (ctx.out / "creator-reports-visit.json").write_text(json.dumps(reports, indent=1))
             # Every other signed-in page, before and after its first data (one Messages Pro chat among them).
             fan = by_creator[cs[0]["id"]][0]["id"]
             # Fansly Manager ships dark; the Agency switches it on (its real route) so the sweep sees its pages, not
@@ -698,26 +760,26 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_SAVED, bool(saved) and len(early) == len(saved), visits=saved,
               late=sorted(set(saved) - set(early)))
 
-    # Side effect: which Creators the page's OnlyFans requests named, per visit.
+    # Side effect: which Creators the page's OnlyFans requests named, per visit (the Dashboard's, then Creator
+    # reports' with its Per-model cards: `reports`).
     off, live = cs[-1]["id"], [c["id"] for c in cs[:-1]]
-    of_by_visit: dict[str, dict[str, int]] = {k: {} for k in visits}
-    for k, d in visits.items():
+    seen = visits | {"reports": reports}
+    of_by_visit: dict[str, dict[str, int]] = {k: {} for k in seen}
+    for k, d in seen.items():
         for r in d["of_sent"]:
             of_by_visit[k][r["account"] or "-"] = of_by_visit[k].get(r["account"] or "-", 0) + 1
     ctx.metric("of_requests_by_creator", of_by_visit)
-    labelled = {k: any(o["label"] == "Not connected" and off in o["card"] for o in d["offline"])
-                for k, d in visits.items()}
-    def asked(k: str, a: str) -> bool:   # the page asked OF for `a`: its own read, or a bundle naming it (or all)
-        return of_by_visit[k].get(a, 0) > 0 or any(b is None or a in b for b in visits[k].get("bundles", []))
-    named_off = {k: any(b is not None and off in b for b in d.get("bundles", [])) for k, d in visits.items()}
+    labelled = any(o["label"] == "Not connected" and off in o["card"] for o in reports["offline"])
+    def asked(a: str) -> bool:   # the Per-model cards asked OF for `a`: its own read, or a bundle naming it (or all)
+        return of_by_visit["reports"].get(a, 0) > 0 or any(b is None or a in b for b in reports["bundles"])
+    named_off = {k: any(b is not None and off in b for b in d.get("bundles", [])) for k, d in seen.items()}
+    # The Dashboard draws no per-Creator card since PR #374, so only its no-read half is judged there.
     ctx.check(C_OFFLINE, all(n.get(off, 0) == 0 for n in of_by_visit.values()) and not any(named_off.values())
-              and all(labelled.values())
-              # A visit with the saved snapshot paints the cards' last OF figures (app/components/providers.tsx
-              # PERSIST_KEYS, 2026-11-05) and reads OF again only once they are stale, so only first visits must read.
-              and all(all(asked(k, a) for a in live) for k in visits if k.endswith("-first")),
+              and labelled and all(asked(a) for a in live),
               offline_creator=off, of_requests=of_by_visit, labelled=labelled,
-              bundles={k: d.get("bundles", []) for k, d in visits.items()}, bundle_named_offline=named_off,
-              labels={k: [o["label"] for o in d["offline"]] for k, d in visits.items()})
+              live_not_asked=[a for a in live if not asked(a)],
+              bundles={k: d.get("bundles", []) for k, d in seen.items()}, bundle_named_offline=named_off,
+              labels=[o["label"] for o in reports["offline"]])
 
     # Never blank while the JS loads: the server's HTML draws the page's frame (the boot skeleton), so it is on screen
     # before the app runs at all (its first relay read is /auth/me, from the hydrated app). The return visit is not

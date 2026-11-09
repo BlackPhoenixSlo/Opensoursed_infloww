@@ -503,7 +503,12 @@ async def of_send_or_schedule_mass(
                 user_ids=body.user_ids)
         else:
             post, extra = client.send_mass_message, dict(included_users=body.user_ids)
-        result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra)))
+        try:
+            result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra)))
+        except Exception as e:
+            from automations.send_mass_message import close_run_if_unsent
+            await close_run_if_unsent(mass_run_id, e)
+            raise
     # A funnel-linked send only works if the reply-walker runs on this account —
     # without it the opener goes out and no reply-check ever fires. Best-effort:
     # never blocks the broadcast (nor holds its lock).

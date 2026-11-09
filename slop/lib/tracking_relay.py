@@ -17,6 +17,15 @@ Each call waits `latency_s` (a guess at OF's latency); the reads are counted per
 
   GET /__slop/tracking-calls  {campaigns: {account: n}, claimers: {"account:campaign": [offset, ...]}}:
                                what OnlyFans received, in order.
+
+Cloudflare Turnstile's siteverify (custom redirect links' "Bot check before redirect") is faked at its
+wire: when the relay has TURNSTILE_SECRET_KEY (a scenario's RELAY_ENV) and no TURNSTILE_VERIFY_URL,
+`wire` points the product's TURNSTILE_VERIFY_URL env seam (read per call by tracking_links_api) at
+
+  POST /__slop/fake/turnstile-siteverify  Cloudflare's form body (secret, response, remoteip) -> {success}:
+                               success iff the secret is the relay's and the token starts with "pass-"
+                               (TURNSTILE_LATENCY_S a call, a guess at Cloudflare's).
+  GET  /__slop/turnstile-calls {n, bad_secret, no_remoteip, tokens: {token: n}}: what Cloudflare received.
 """
 
 import json
@@ -28,10 +37,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 CREATED_ID_BASE = 990_000_000
+TURNSTILE_LATENCY_S = 0.03   # a guess at Cloudflare's siteverify latency
 _lock = threading.Lock()  # the product calls OF from worker threads (asyncio.to_thread)
 _calls: dict = {"campaigns": defaultdict(int), "claimers": defaultdict(list)}
 _world: dict = {}   # of-campaigns.json, read on the first call that finds it
 _created: dict[str, list[dict]] = defaultdict(list)   # account -> rows created this run, newest first
+_turnstile: dict = {"n": 0, "bad_secret": 0, "no_remoteip": 0, "tokens": defaultdict(int)}
 
 
 def _data() -> dict | None:
@@ -93,3 +104,33 @@ def wire(app, loopback, _relay) -> None:
                     "claimers": {k: list(v) for k, v in _calls["claimers"].items()}}
 
     app.add_api_route("/__slop/tracking-calls", tracking_calls, methods=["GET"])
+
+    secret = os.environ.get("TURNSTILE_SECRET_KEY", "")
+    if not secret or os.environ.get("TURNSTILE_VERIFY_URL"):
+        return
+    os.environ["TURNSTILE_VERIFY_URL"] = (
+        f"http://127.0.0.1:{os.environ['DEMO_SHOTS_RELAY_PORT']}/__slop/fake/turnstile-siteverify")
+
+    async def siteverify(request: Request) -> dict:
+        import asyncio
+        from urllib.parse import parse_qs
+
+        loopback(request)
+        form = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
+        await asyncio.sleep(TURNSTILE_LATENCY_S)
+        token = form.get("response", "")
+        with _lock:
+            _turnstile["n"] += 1
+            _turnstile["bad_secret"] += form.get("secret") != secret
+            _turnstile["no_remoteip"] += not form.get("remoteip")
+            _turnstile["tokens"][token] += 1
+        ok = form.get("secret") == secret and token.startswith("pass-")
+        return {"success": ok, "error-codes": [] if ok else ["invalid-input-response"]}
+
+    async def turnstile_calls(request: Request) -> dict:
+        loopback(request)
+        with _lock:
+            return {**_turnstile, "tokens": dict(_turnstile["tokens"])}
+
+    app.add_api_route("/__slop/fake/turnstile-siteverify", siteverify, methods=["POST"])
+    app.add_api_route("/__slop/turnstile-calls", turnstile_calls, methods=["GET"])

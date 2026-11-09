@@ -1,0 +1,78 @@
+/* Compact report canvas; all colors follow the user's light/dark theme. */
+.report { background: var(--color-bg); color: var(--color-fg); }
+.report > header { padding: 12px 16px; border-bottom: 1px solid var(--color-border); }
+.report > header h1 { font-size: 16px; font-weight: 600; }
+.report > header span, .report > header button { font-size: 12px; }
+.toolbar > [role="tablist"] { margin: 0; gap: 24px; border-bottom: 1px solid var(--color-border); }
+.toolbar > [role="tablist"] button { border-radius: 0; padding: 12px 0; font-size: 12px; background: transparent !important; border-bottom: 2px solid transparent; }
+.toolbar > [role="tablist"] button[aria-selected="true"] { color: var(--color-accent) !important; border-bottom-color: var(--color-accent); }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--color-border); }
+.toolbar > [role="tablist"] { border: 0; padding: 0; flex-shrink: 0; }
+.toolbarControls { display: flex; align-items: center; gap: 10px; padding: 6px 0; min-width: 0; }
+.toolbarControls > select, .toolbarControls > div > button { min-height: 26px; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.toolbarControls > select { min-width: 118px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg); color: var(--color-fg); }
+.toolbarControls > div > button span { font-size: 12px; }
+@media (max-width: 1100px) {
+  .toolbar { flex-wrap: wrap; gap: 0; }
+  .toolbarControls { flex-wrap: wrap; width: 100%; padding-bottom: 10px; }
+  .toolbarControls > div:last-child { margin-left: auto; }
+}
+.overview { padding: 8px 16px 24px; font-size: 12px; }
+.overview h2, .overview h3 { font-size: 13px; font-weight: 600; line-height: 20px; }
+.overview h2 + span svg, .overview h3 + span svg { width: 13px; height: 13px; }
+.overview :global(.report-surface) { background: transparent !important; border-radius: 0; }
+.summary { padding: 0; margin: 0 0 22px; }
+.summaryGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, 78px); grid-auto-flow: column; }
+.summaryGrid > div { padding: 8px 24px; border-left: 1px solid var(--color-border); position: relative; justify-content: center; }
+.summaryGrid > div:first-child { grid-row: span 2; padding-left: 16px; border-left: 0; gap: 9px; }
+.summaryGrid > div:nth-child(2) { grid-column: 2; grid-row: 1; }
+.summaryGrid > div:nth-child(3) { grid-column: 3; grid-row: 1; }
+.summaryGrid > div:nth-child(4) { grid-column: 4; grid-row: 1; }
+.summaryGrid > div:nth-child(5) { grid-column: 2; grid-row: 2; }
+.summaryGrid > div:nth-child(6) { grid-column: 3; grid-row: 2; }
+.summaryGrid > div:nth-child(7) { grid-column: 4; grid-row: 2; }
+.summaryGrid dt { font-size: 12px; font-weight: 400; line-height: 17px; margin: 0; order: 2; }
+.summaryGrid dt svg { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; padding: 7px; border-radius: 50%; color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
+.summaryGrid dd:first-of-type { font-size: 21px; line-height: 28px; font-weight: 700; padding-right: 44px; letter-spacing: normal; }
+.summaryGrid dd:last-child { font-size: 10px; line-height: 12px; order: 3; }
+.summaryGrid > div:first-child dt { color: var(--color-accent) !important; order: 0; padding-top: 40px; font-weight: 500; }
+.summaryGrid > div:first-child dt svg { left: 16px; top: 0; transform: none; padding: 8px; width: 40px; height: 40px; color: white; background: var(--color-accent); }
+.summaryGrid > div:first-child dd:first-of-type { font-size: 34px; line-height: 45px; font-weight: 700; color: var(--color-accent) !important; padding: 0; }
+.trends { padding: 0; margin-bottom: 24px; position: relative; }
+.trendControls { position: absolute; right: 0; top: -3px; }
+.overview [aria-label$="granularity"] button { font-size: 11px; padding: 3px 7px; }
+.channels { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; margin-bottom: 24px; }
+.channelCard { padding: 0; }
+.legend { align-self: center; padding-top: 24px; }
+.legend ul { font-size: 11px; line-height: 20px; row-gap: 10px; column-gap: 12px; }
+.statisticsHeader { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.statisticsHeader h2 { margin-right: auto; }
+.overview [aria-label="Creator statistics cards"] { margin-bottom: 12px; }
+.overview [aria-label="Creator statistics cards"] [role="group"] { height: 86px; border: 1px solid var(--color-border); border-radius: 8px; background: transparent !important; flex-direction: column-reverse; gap: 4px; }
+.overview [aria-label="Creator statistics cards"] [role="group"] > span:first-child { font-size: 11px; font-weight: 400; }
+.overview [aria-label="Creator statistics cards"] [role="group"] > span:last-child { font-size: 23px; line-height: 28px; font-weight: 600; }
+@media (max-width: 900px) {
+  .summaryGrid > div { padding-left: 12px; padding-right: 12px; }
+  .summaryGrid dt svg { display: none; }
+  .summaryGrid dd:first-of-type { padding-right: 0; font-size: 17px; }
+  .channels { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .legend { padding: 0; }
+}
+@media (max-width: 600px) {
+  .summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto; grid-auto-flow: row; gap: 12px 0; }
+  .summaryGrid > div:nth-child(n) { grid-column: auto; grid-row: auto; min-height: 68px; }
+  .summaryGrid > div:first-child { grid-column: span 2; }
+  .summaryGrid > div:first-child dt { padding-top: 0; }
+  .summaryGrid > div:nth-child(even) { border-left: 0; }
+  .statisticsHeader { flex-wrap: wrap; }
+  .statisticsHeader h2 { flex-basis: 100%; }
+  .trendControls { position: static; display: flex; justify-content: flex-end; }
+}
+
+/* Keep chart labels quieter than the earnings figures. */
+.overview svg > g { font-size: 11px; }
+.summaryGrid > div:nth-child(2) dt svg, .summaryGrid > div:nth-child(3) dt svg { color: rgb(42, 212, 172); background: rgba(42, 212, 172, 0.1); }
+.summaryGrid > div:nth-child(4) dt svg { color: rgb(206, 99, 255); background: rgba(206, 99, 255, 0.1); }
+.summaryGrid > div:nth-child(6) dt svg, .summaryGrid > div:nth-child(7) dt svg { color: rgb(255, 124, 113); background: rgba(255, 124, 113, 0.1); }
+
+.summaryGrid > div:nth-child(5) dt svg { color: rgb(52, 103, 255); background: rgba(52, 103, 255, 0.1); }

@@ -32,6 +32,7 @@ import vault_cache
 import vault_dupes
 import vault_scripts
 from auth import assert_account_owned
+from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
 from vault_of_folders_decide import chunks, hide_selection, next_folder_ids, parse_folder_ids, parse_threshold, too_many
@@ -75,7 +76,8 @@ async def list_duplicates(
     renders both sides of every pair before the operator confirms.
     """
     assert_account_owned(account_id)
-    res = await vault_dupes.find_duplicates(account_id, threshold)
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    res = await vault_dupes.find_duplicates(account_id, threshold, allowed=allowed)
 
     def _slim(r: dict, **extra: Any) -> dict[str, Any]:
         return {
@@ -116,6 +118,8 @@ async def get_folder_plan(
     `solo` adds a `-solo` cut of each lane, keeping only the items nobody else
     is in."""
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
 
 
@@ -338,6 +342,8 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
 
     async with get_session() as s:
         folder = await s.get(VaultFolder, folder_id)
@@ -440,6 +446,8 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     if not payload.get("confirm"):
         raise HTTPException(status_code=400, detail={"error": "confirm_required"})
     keep = int(payload.get("keep") or 2)
@@ -475,11 +483,16 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
       · ids not in any duplicate set at the current threshold are refused;
       · copies with send_count > 0 are skipped unless `allow_sent` is set;
       · at most `_MAX_HIDE_PER_CALL` ids per request.
+
+    The keeper guarantee applies within one scope; chatter then owner hides can chain,
+    as can owner hides at two thresholds.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     media_ids = [int(x) for x in (payload.get("media_ids") or [])
                  if str(x).lstrip("-").isdigit()]
+    from vault_ai_api import assert_media_visible
+    await assert_media_visible(account_id, *media_ids)
     if not media_ids:
         raise HTTPException(status_code=400,
                             detail={"error": "media_ids_required"})
@@ -495,7 +508,9 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
                             detail={"error": "bad_threshold"}) from None
 
     # Re-derive the truth rather than trusting the payload's classification.
-    res = await vault_dupes.find_duplicates(account_id, threshold, rehash=False)
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    res = await vault_dupes.find_duplicates(account_id, threshold, rehash=False,
+                                            allowed=allowed)
     approved, refused = hide_selection(media_ids, res["clusters"], allow_sent)
 
     # Send OF a bounded body per call rather than one giant mediaIds array, and
@@ -565,6 +580,8 @@ async def _reject_foreign_media(account_id: str, media_ids: list[int]) -> None:
     The UI bug is fixed (the panel remounts per model), but "the client will
     always be right about which model it is on" is exactly the assumption that
     was already wrong once, and OF's folder-add and hide are not undoable.
+    OF has no unhide, so a chatter may hide only media it can see. This guard
+    also refuses media outside a folder-limited chatter's folders.
 
     Called from FIVE places across two modules, and the list is the contract —
     grep it before adding a route that forwards ids:
@@ -591,6 +608,8 @@ async def _reject_foreign_media(account_id: str, media_ids: list[int]) -> None:
     """
     if not media_ids:
         return
+    from vault_ai_api import assert_media_visible
+    await assert_media_visible(account_id, *media_ids)
     async with get_session() as s:
         known = set((await s.execute(
             select(VaultItem.media_id).where(
@@ -623,6 +642,8 @@ async def create_of_folder(payload: dict = Body(...)) -> dict[str, Any]:
     selected media. Invalidates the vault cache so the new folder shows at once."""
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail={"error": "name_required"})
@@ -655,6 +676,8 @@ async def add_to_of_folder(list_id: int, payload: dict = Body(...)) -> dict[str,
     """Add selected media to a REAL OF folder (POST /vault/lists/{id}/media)."""
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_folder_visible
+    await assert_folder_visible(account_id, list_id)
     media_ids = [int(x) for x in (payload.get("media_ids") or []) if str(x).lstrip("-").isdigit()]
     if not media_ids:
         raise HTTPException(status_code=400, detail={"error": "media_ids_required"})
@@ -677,6 +700,8 @@ async def remove_from_of_folder(list_id: int, payload: dict = Body(...)) -> dict
     The media stay in the vault. A move is /add to the target, then this."""
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_folder_visible
+    await assert_folder_visible(account_id, list_id)
     media_ids = [int(x) for x in (payload.get("media_ids") or []) if str(x).lstrip("-").isdigit()]
     if not media_ids:
         raise HTTPException(status_code=400, detail={"error": "media_ids_required"})
@@ -698,6 +723,8 @@ async def rename_of_folder(list_id: int, payload: dict = Body(...)) -> dict[str,
     """Rename a REAL OF folder (PATCH /vault/lists/{id})."""
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_folder_visible
+    await assert_folder_visible(account_id, list_id)
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail={"error": "name_required"})
@@ -720,6 +747,8 @@ async def delete_of_folder(
     """Delete a REAL OF folder (DELETE /vault/lists/{id}). `clear_media=False`
     keeps the media in the vault (only removes the folder)."""
     assert_account_owned(account_id)
+    from vault_ai_api import assert_folder_visible
+    await assert_folder_visible(account_id, list_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         await asyncio.to_thread(client.delete_vault_list, list_id, clear_media)
@@ -744,6 +773,8 @@ async def sort_of_folders(payload: dict = Body(...)) -> dict[str, Any]:
     {custom_order: [list_id,...]} drag order."""
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
+    from vault_ai_api import assert_owner_scope
+    await assert_owner_scope(account_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
     custom_order = payload.get("custom_order")
     try:

@@ -1,12 +1,12 @@
 """
 The relay's one OFClient pool.
 
-Why this module exists: `OFClient.__init__` opens a curl_cffi Session and the
-class has no usable `close()` — curl_cffi 0.15.0's `Session.close()` closes the
-*calling thread's* handle (and creates one if that thread has none), so an
-evicting thread cannot release handles the worker threads opened. A client per
-call was therefore an fd per call. Under a proxy swap every IP-signed vault url
-died at once, every tile took the re-sign path, and the relay hit EMFILE.
+Why this module exists: curl_cffi's default Session has a handle per thread.
+An evicting thread cannot close those worker handles. Signed OF calls now use
+bounded, non-thread-local leased handles that eviction retires and closes;
+legacy raw media calls still use the original Session. A client per call was
+an fd per call. Under a proxy swap every IP-signed vault url died at once,
+every tile took the re-sign path, and the relay hit EMFILE.
 
 So clients are pinned per account. Steady-state handle count is bounded by
 (accounts x threadpool size) instead of growing with request count.
@@ -73,10 +73,16 @@ def evict(account_id: str | None = None) -> None:
     # would otherwise land in the pool after this pop and pin the old route.
     with _LOCK:
         if account_id is None:
+            retired = list(_POOL.values())
             _POOL.clear()
         else:
-            _POOL.pop(account_id, None)
+            old = _POOL.pop(account_id, None)
+            retired = [old] if old is not None else []
     relay_coalesce.forget(account_id)   # no caller joins a flight on the evicted client
+    for client in retired:
+        close = getattr(client, "close_signed_sessions", None)
+        if close is not None:
+            close()
     # Fansly accounts are pooled in fansly_backend, not here (their client is
     # the shim, not an OFClient). Invalidation still has ONE home — this
     # function — so a re-capture or proxy edit can't leave a stale shim behind

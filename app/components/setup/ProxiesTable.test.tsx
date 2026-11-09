@@ -46,7 +46,7 @@ describe("ProxiesTable paste proxies", () => {
     render(<ProxiesTable />, { wrapper });
     await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/proxies"));
     // The paste box sits in the Add new proxy modal (ticket 18).
-    fireEvent.click(screen.getByRole("button", { name: "+ Add new proxy" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add new proxy" }));
     // page-parity 03: antd dark's modal (#1f1f1f); the kit's field box (IF_FIELD).
     expect(screen.getByRole("dialog", { name: "Add new proxy" })).toHaveClass("bg-[#1f1f1f]");
     expect(screen.getByLabelText("Paste proxies (one per line)")).toHaveClass("bg-bg", "border-border");
@@ -64,6 +64,33 @@ describe("ProxiesTable paste proxies", () => {
     for (const m of client.getMutationCache().getAll()) {
       expect(JSON.stringify(m.state.variables ?? null)).not.toContain("secret");
     }
+  });
+});
+
+describe("ProxiesTable Add new proxy modal", () => {
+  it("says a taken label under Proxy label, other problems only on Add proxy's tooltip; a reopen starts the paste box empty", async () => {
+    relayGet.mockResolvedValue({ proxies: [{ label: "1.2.3.4:9090" }], pool: { size: 0, account_ids: [] }, accounts: [] });
+    render(<ProxiesTable />, { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/proxies"));
+    fireEvent.click(screen.getByRole("button", { name: "Add new proxy" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Add new proxy" }));
+    const add = dialog.getByRole("button", { name: "Add proxy" });
+    await waitFor(() => expect(add).toHaveAttribute("title", "Fill in Proxy label"));
+    expect(dialog.queryByText("Fill in Proxy label")).toBeNull();
+
+    fireEvent.click(dialog.getByRole("radio", { name: "http" }));
+    fireEvent.change(dialog.getByLabelText("IP address"), { target: { value: "1.2.3.4" } });
+    fireEvent.change(dialog.getByLabelText("Port"), { target: { value: "9090" } });
+    expect(dialog.getByText('A proxy named "1.2.3.4:9090" already exists')).toBeInTheDocument();
+    expect(add).toBeDisabled();
+
+    fireEvent.change(dialog.getByLabelText("Paste proxies (one per line)"), { target: { value: "u:p@5.5.5.5:1" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add new proxy" }));
+    expect(screen.getByLabelText("Paste proxies (one per line)")).toHaveValue("");
+    expect(screen.getByLabelText("IP address")).toHaveValue("");
+    expect(screen.getByLabelText("Port")).toHaveValue("");
+    expect(screen.getByRole("radio", { name: "http" })).not.toBeChecked();
   });
 });
 

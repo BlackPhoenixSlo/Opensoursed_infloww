@@ -110,8 +110,8 @@ def _bf_offset_walk() -> None:
 
     def fetch(client, start_date, marker):
         off = offsets.get(id(client), 0)
-        offsets[id(client)] = off + 100
-        return client.transactions(limit=100, offset=off, start_date=start_date)
+        offsets[id(client)] = off + ti._PAGE_LIMIT
+        return client.transactions(limit=ti._PAGE_LIMIT, offset=off, start_date=start_date)
 
     def step(*, rows, has_more, sent_marker, **_kw):
         if rows == 0 or not has_more:

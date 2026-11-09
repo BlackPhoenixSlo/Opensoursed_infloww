@@ -211,10 +211,10 @@ async def _dry_run(account_id: str, run_id: int, p: smd.Plan, client, pol,
     return {**smd.dry_run_result(p, would_send), **stats}
 
 
-async def _close_unsent_run(mass_run_id: int, e: BaseException) -> None:
-    """A minted run whose POST surely did not send (`_may_have_sent(e)` False) ends
-    MASS_RUN_REFUSED when the proxy refused it, else MASS_RUN_FAILED (OF's 4xx, never
-    connected): closed here, the one owner, before the error reaches any caller."""
+async def close_run_if_unsent(mass_run_id: int | None, e: BaseException) -> None:
+    """Close a minted run only when the failed POST surely did not send."""
+    if not mass_run_id or _may_have_sent(e):
+        return
     async with get_session() as s:
         mr = await s.get(MassRun, mass_run_id)
         if mr is not None and mr.status == MASS_RUN_RUNNING:
@@ -469,8 +469,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # connected): the minted run ends refused / failed, not 'running' for the
             # job's retry and the boot heal to read as "may have sent". One OF may
             # have taken stays 'running' (the boot heal, a stream's orphan match).
-            if mass_run_id and not _may_have_sent(e):
-                await _close_unsent_run(mass_run_id, e)
+            await close_run_if_unsent(mass_run_id, e)
             raise
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.

@@ -25,8 +25,8 @@
  */
 
 import { useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Play } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Play } from "lucide-react";
 
 import {
   resolveDispute,
@@ -35,20 +35,9 @@ import {
 } from "@/hooks/useVaultCache";
 import { mirrorFullSrc, mirrorPosterSrc } from "@/lib/mediaUrl";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { MediaMeta, OverLines, REGION_LABEL, Reasons, STATE_TONE } from "@/components/vault/regionBits";
 import { IfButton, IfHelp, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
-
-const REGION_LABEL: Record<string, string> = {
-  vulva_vis: "vulva",
-  breasts_vis: "breasts",
-  anus_vis: "anus",
-};
-
-const STATE_STYLE: Record<string, string> = {
-  bare: "border-err/50 bg-err/10 text-err",
-  covered: "border-info/50 bg-info/10 text-info",
-  not_in_frame: "border-muted/50 bg-muted/10 text-muted",
-};
 
 /** Render a proposed write the way it will actually land, so nothing about the
  *  choice is hidden behind a friendly label. */
@@ -142,22 +131,14 @@ function DisputeCard({
   d: VaultDispute;
   onDone: () => void;
 }) {
-  const [busy, setBusy] = useState<"flags" | "describe" | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [zoom, setZoom] = useState(false);
-
-  async function pick(side: "flags" | "describe") {
-    setBusy(side);
-    setErr(null);
-    try {
-      await resolveDispute(accountId, d.media_id, d.propose[side]);
-      onDone();
-    } catch (e) {
-      setErr(errText(e));
-    } finally {
-      setBusy(null);
-    }
-  }
+  const pickM = useMutation({
+    mutationFn: (side: "flags" | "describe") => resolveDispute(accountId, d.media_id, d.propose[side]),
+    onSuccess: () => onDone(),
+  });
+  /** The side being saved, while one is. */
+  const busy = pickM.isPending ? pickM.variables : null;
+  const pick = (side: "flags" | "describe") => pickM.mutate(side);
 
   const flagsSide = d.propose.flags;
   const descSide = d.propose.describe;
@@ -174,7 +155,7 @@ function DisputeCard({
             <span
               key={r}
               className={`px-1.5 py-px rounded-full border text-[12px] font-medium ${
-                STATE_STYLE[state] ?? STATE_STYLE.not_in_frame
+                STATE_TONE.soft[state] ?? STATE_TONE.soft.not_in_frame
               }`}
             >
               {REGION_LABEL[r] ?? r}: {state}
@@ -182,29 +163,12 @@ function DisputeCard({
           ))}
         </div>
 
-        {Object.entries(d.over).some(([, v]) => v) && (
-          <p className="text-[12px] text-muted leading-snug">
-            {Object.entries(d.over)
-              .filter(([, v]) => v)
-              .map(([r, v]) => (
-                <span key={r} className="block">
-                  {REGION_LABEL[r] ?? r}: <b className="text-fg">{v}</b>
-                </span>
-              ))}
-          </p>
-        )}
+        <OverLines over={d.over} />
 
         <p className="text-[12px] text-fg-dim line-clamp-3 leading-snug">{d.description}</p>
-        <p className="text-[12px] text-muted">
-          #{d.media_id} · {d.kind} · {d.explicitness} · {d.clothing_state}
-        </p>
+        <MediaMeta item={d} />
 
-        {d.reasons.map((r) => (
-          <p key={r} className="flex items-start gap-1 text-[12px] text-err leading-snug">
-            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-            {r}
-          </p>
-        ))}
+        <Reasons items={d.reasons} tone="err" />
 
         <div className="mt-auto pt-2 grid grid-cols-2 gap-2">
           <button
@@ -230,7 +194,7 @@ function DisputeCard({
             <ProposalLines values={descSide} />
           </button>
         </div>
-        {err && <p className="text-[12px] text-err">{err}</p>}
+        {pickM.error && <p className="text-[12px] text-err">{errText(pickM.error)}</p>}
       </div>
     </div>
   );

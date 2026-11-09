@@ -121,10 +121,10 @@ VAULT_QUICK_RELOAD = ("vault folder rail: a reload 1 s after Done (QUICK_RELOAD_
 VAULT_SORT_LABEL = "vault folder rail: the sort label ('Custom' after Done) survives a reload (kept per Creator)"
 VAULT_MIRROR_SORT_LABEL = ("vault folder rail: a folder sort set on the OF-mirror Vault page ('Name', one sort POST) is "
                            "the rail's label after")
-PREMADE_ROWS = ("premade composer: added rows and text variants, a removed variant and a removed row leave the "
-                "expected rows on screen (captions, prices, delays)")
-PREMADE_PAYLOAD = ("premade composer: Use in rule + Create POSTs one /admin/automation-rules whose posts[] are the "
-                   "rows' items (order, text/texts, price, delays, hours to live)")
+PREMADE_ROWS = ("premade composer: added text variants and a removed variant leave the expected post on screen "
+                "(captions, price, hours to live)")
+PREMADE_PAYLOAD = ("premade composer: Create POSTs one /admin/automation-rules whose posts[] is the "
+                   "one post (texts, price, hours to live; no delay / resend key)")
 PREMADE_STORED = "premade composer: the created rule's posts[] are stored as sent (GET /admin/automation-rules and the automation_rules row)"
 FANLIST_SCOPE = ("fan list: a Creator switch while the old Creator's next page is in flight never shows an old "
                  "Creator row (sampled every frame from the switch), the old page lands after, and the settled list "
@@ -511,12 +511,6 @@ def register(Fault) -> dict:
         "warmup-skips-paged-list": Fault(None, (FANLIST_REWARM,), browser=(
             (r'return !\(q\.state\.fetchStatus !== \\?"idle\\?" && q\.state\.fetchMeta\?\.fetchMore\);',
              "return !q.state.fetchMeta?.fetchMore;"),
-        )),
-        # slop/run 2026-10-29-state-reducers --break --fault=premade-remove-drops-wrong-row
-        # app/components/compose/premadeRows.ts `rowsReducer` remove: the row after the clicked one goes, so
-        # removing Post 2 of 3 keeps Post 2 and drops Post 3, on screen and in the rule.
-        "premade-remove-drops-wrong-row": Fault(None, (PREMADE_ROWS, PREMADE_PAYLOAD, PREMADE_STORED), browser=(
-            (r"rows\.filter\(\(_,\s*idx\)\s*=>\s*idx !== a\.i\)", "rows.filter((_, idx) => idx !== a.i + 1)"),
         )),
         # slop/run 2026-10-29-state-reducers --break --fault=rowToItem-drops-price
         # app/components/compose/premadeRows.ts `rowToItem`: the price is never put on the item, so a PPV post is

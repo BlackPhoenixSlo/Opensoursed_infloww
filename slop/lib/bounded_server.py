@@ -18,6 +18,12 @@ the first one is logged, so a scenario that needs more concurrency says so (rais
 
 Drop-in: `ThreadingHTTPServer(addr, Handler)` -> `BoundedHTTPServer(addr, Handler)`;
 `serve_forever` / `shutdown` / `server_close` / `daemon_threads` unchanged.
+
+`idle_close_s` (default None: parked forever, as before): a connection parked longer than that is
+closed, as a real server's keep-alive timeout does; curl reconnects on its next call. Set it on a
+running server (`srv.idle_close_s = 5`) to bound the parked set by recent use instead of (accounts x
+relay threads): relay-admission's fault run parked ~12k of them at small/20 until the socket guard
+killed it (2026-11-09, -9217).
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 from collections import deque
 from http.server import HTTPServer
 
@@ -44,6 +51,7 @@ class _Pool:
         self.idle = threading.Semaphore(0)
         self.lock = threading.Lock()
         self.started = 0
+        self.threads: list[threading.Thread] = []
         self.saturated = 0  # submits that found every worker busy at the ceiling: they queued
 
     def submit(self, fn, *args) -> None:
@@ -53,7 +61,9 @@ class _Pool:
         with self.lock:
             if self.started < self.workers:
                 self.started += 1
-                threading.Thread(target=self._run, name=f"{self.name}-{self.started}", daemon=True).start()
+                worker = threading.Thread(target=self._run, name=f"{self.name}-{self.started}", daemon=True)
+                self.threads.append(worker)
+                worker.start()
                 return
             self.saturated += 1
             first = self.saturated == 1
@@ -72,11 +82,20 @@ class _Pool:
                 pass
             self.idle.release()
 
+    def close(self) -> None:
+        for _ in self.threads:
+            self.q.put((None, ()))
+        deadline = time.monotonic() + 1
+        for worker in self.threads:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+
 
 class BoundedHTTPServer(HTTPServer):
     daemon_threads = True  # kept for callers that set it: every thread here is a daemon
     request_queue_size = 512  # listen() backlog (socketserver: 5)
     workers = WORKERS
+    idle_close_s: float | None = None
+    idle_closed = 0  # parked connections closed by idle_close_s
 
     def server_activate(self) -> None:
         super().server_activate()
@@ -88,7 +107,8 @@ class BoundedHTTPServer(HTTPServer):
         self._sel.register(self._wake_r, selectors.EVENT_READ)
         self._to_park: deque = deque()
         self._closed = False
-        threading.Thread(target=self._park_loop, name=f"{name}-park", daemon=True).start()
+        self._park_thread = threading.Thread(target=self._park_loop, name=f"{name}-park", daemon=True)
+        self._park_thread.start()
 
     @property
     def saturated(self) -> int:
@@ -158,8 +178,10 @@ class BoundedHTTPServer(HTTPServer):
                 pass
 
     def _park_loop(self) -> None:
+        parked_at: dict = {}  # handler -> monotonic time it was parked
         while True:
-            for key, _ev in self._sel.select():
+            idle = self.idle_close_s
+            for key, _ev in self._sel.select(None if idle is None else min(1.0, idle)):
                 if key.fileobj is self._wake_r:
                     try:
                         while self._wake_r.recv(4096):
@@ -172,11 +194,23 @@ class BoundedHTTPServer(HTTPServer):
                         h = self._to_park.popleft()
                         try:
                             self._sel.register(h.connection, selectors.EVENT_READ, h)
+                            parked_at[h] = time.monotonic()
                         except (ValueError, OSError):
                             self._close(h)
                     continue
                 self._sel.unregister(key.fileobj)
+                parked_at.pop(key.data, None)
                 self.pool.submit(self._serve, key.data)
+            if idle is not None:
+                cut = time.monotonic() - idle
+                for h in [h for h, t in parked_at.items() if t < cut]:
+                    del parked_at[h]
+                    try:
+                        self._sel.unregister(h.connection)
+                    except (KeyError, ValueError, OSError):
+                        pass
+                    self._close(h)
+                    self.idle_closed += 1
 
     def _close_parked(self) -> None:
         for key in list(self._sel.get_map().values()):
@@ -192,3 +226,7 @@ class BoundedHTTPServer(HTTPServer):
                 self._wake_w.send(b"\0")
             except OSError:
                 pass
+            self._park_thread.join(timeout=1)
+            self.pool.close()
+            self._wake_r.close()
+            self._wake_w.close()

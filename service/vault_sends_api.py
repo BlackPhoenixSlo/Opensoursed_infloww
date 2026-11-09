@@ -144,7 +144,7 @@ async def admin_vault_sends_backfill(body: _VaultBackfillBody = Body(...)) -> di
         return {"ok": True, "inserted": 0, "skipped": skipped}
     # The fan's new history (GET /admin/vault/fan-history's body): the chat open sets it instead of reading it
     # again, one round trip less (every page granting /admin/vault/sends grants fan-history: permissions._PICKER).
-    history = await admin_vault_fan_history(account_id=body.account_id, fan_id=body.fan_id)
+    history = await _fan_history(account_id=body.account_id, fan_id=body.fan_id)
     return {"ok": True, "inserted": inserted, "skipped": skipped, "history": history}
 
 
@@ -414,6 +414,10 @@ async def admin_vault_fan_history(
     transaction with the same message_id is observed.
     `last_purchase_at` / `total_paid_cents` come from joining the
     transactions table (kind in {message, ppv}) on message_id."""
+    return await _fan_history(account_id, fan_id)
+
+
+async def _fan_history(account_id: str, fan_id: int) -> dict[str, Any]:
     from db.engine import get_session
     from db.models import Transaction, VaultSend
     from sqlalchemy import select

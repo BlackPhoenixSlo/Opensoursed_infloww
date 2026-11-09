@@ -6,6 +6,8 @@ from __future__ import annotations
 
 SELECT = ("vault download: Download selected (3 photos + 1 video) saves each as <creator>/<folder>/<id>.<ext> with "
           "the CDN's exact bytes, every one direct (browser -> CDN), 0 relay downloads, the panel settles N of N")
+PICK_HINT = ("vault download: while the folder picker is open the card says Chrome refuses Desktop / Documents / "
+             "Downloads themselves (New Folder inside them); closing the picker removes it, no download starts")
 FOLDER = ("vault download: the rail's Download folder saves exactly that folder's media under <creator>/<folder>/, "
           "exact bytes, all direct, 0 relay downloads")
 VAULT = ("vault download: Download whole vault saves every mirror media once (count = mirror, nothing dropped), "

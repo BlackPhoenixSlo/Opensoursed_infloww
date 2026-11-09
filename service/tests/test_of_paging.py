@@ -4,9 +4,14 @@ of_paging — table tests over the guarded OF pager. No DB, no OF: each row is a
 fake `fetch(offset)` -> (rows, truncated, fetch offsets).
 
   case_page_all_checked_table: offset ignored + hasMore forever stops on a page
-                               adding nothing; bare list pages until empty;
+                               adding nothing, INCOMPLETE; bare list pages until empty;
                                hasMore false stops; offset advances by len(rows);
                                non-dict items skipped; id-less rows kept.
+  case_repeat_short_end:       a repeated page (bare / envelope / non-dict only) is
+                               incomplete, never complete; a short page then empty
+                               is complete; normal end (hasMore false / empty) complete.
+  case_list_members_repeat:      a repeated members page returns all seen IDs
+                               and marks the result truncated.
   case_backstop:               200 pages of fresh ids -> truncated=True + warning.
   case_ids_from_pages:         ids as ints; id-less / non-int ids dropped; flag kept.
   case_same_objects:           audiences' old private names ARE of_paging's objects.
@@ -44,8 +49,8 @@ def case_page_all_checked_table():
     same = {"list": [{"id": 1}, {"id": 2}], "hasMore": True}
     rows = [
         # (name, pages, want ids, want truncated, want offsets)
-        ("offset ignored + hasMore forever -> stop on page adding nothing",
-         {0: same, 2: same, 4: same}, [1, 2], False, [0, 2]),
+        ("offset ignored + hasMore forever -> stop on page adding nothing, incomplete",
+         {0: same, 2: same, 4: same}, [1, 2], True, [0, 2]),
         ("bare list pages until empty",
          {0: [{"id": 1}, {"id": 2}], 2: [{"id": 3}]}, [1, 2, 3], False, [0, 2, 3]),
         ("hasMore false stops",
@@ -69,6 +74,50 @@ def case_page_all_checked_table():
             bad.append(f"{name}: {(_ids(got), trunc, seen)!r} != "
                        f"{(want_ids, want_trunc, want_offs)!r}")
     assert not bad, "\n".join(bad)
+
+
+def case_repeat_short_end():
+    full = [{"id": i} for i in range(100)]
+    rows = [
+        # (name, pages, want n rows, want incomplete, want offsets)
+        ("bare: OF repeats page 1 at offset 100 -> incomplete",
+         {0: full, 100: full}, 100, True, [0, 100]),
+        ("envelope: repeat with hasMore -> incomplete",
+         {0: {"list": full, "hasMore": True}, 100: {"list": full, "hasMore": True}}, 100, True, [0, 100]),
+        ("bare: a later page repeats an earlier one -> incomplete",
+         {0: full, 100: [{"id": 500}], 101: full}, 101, True, [0, 100, 101]),
+        ("non-dict-only page adds nothing -> incomplete",
+         {0: full, 100: ["x", 7]}, 100, True, [0, 100]),
+        ("short page then empty -> complete",
+         {0: full, 100: [{"id": 200}, {"id": 201}]}, 102, False, [0, 100, 102]),
+        ("envelope short page with hasMore then empty -> complete",
+         {0: {"list": full[:30], "hasMore": True}, 30: {"list": [], "hasMore": False}}, 30, False, [0, 30]),
+        ("normal end: hasMore false -> complete",
+         {0: {"list": full, "hasMore": True}, 100: {"list": [{"id": 300}], "hasMore": False}},
+         101, False, [0, 100]),
+        ("normal end: bare empty page -> complete",
+         {0: full, 100: []}, 100, False, [0, 100]),
+    ]
+    bad = []
+    for name, pages, want_n, want_inc, want_offs in rows:
+        fetch, seen = _rec(pages)
+        got, inc = of_paging.page_all_checked(fetch)
+        if (len(got), inc, seen) != (want_n, want_inc, want_offs):
+            bad.append(f"{name}: {(len(got), inc, seen)!r} != {(want_n, want_inc, want_offs)!r}")
+    assert not bad, "\n".join(bad)
+    fetch, _ = _rec({0: full, 100: full})
+    assert of_paging.ids_from_pages(fetch) == (set(range(100)), True)
+
+
+def case_list_members_repeat():
+    """Repeating page 1 of list members returns their IDs with `truncated`."""
+    full = [{"id": i} for i in range(1, 101)]
+
+    class C:
+        def list_users_in(self, lid, limit, offset):
+            return list(full)                      # offset ignored: page 1 forever
+    ids, truncated = of_paging.list_member_ids(C(), 7)
+    assert ids == set(range(1, 101)) and truncated is True, (len(ids), truncated)
 
 
 def case_backstop():

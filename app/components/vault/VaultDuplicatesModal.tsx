@@ -33,6 +33,7 @@ import {
 } from "@/hooks/useVaultCache";
 import { mirrorThumbSrc } from "@/lib/mediaUrl";
 import { IfButton, IfHelp, IfLabel, IfModal, IfNativeSelect } from "@/components/ui/infloww";
+import { Notice } from "@/components/vault/Notice";
 import { errText } from "@/lib/errText";
 
 import {
@@ -197,38 +198,36 @@ export default function VaultDuplicatesModal({
       closable={!busy}
       onClose={onClose}
       footer={
-        <div className="flex w-full flex-wrap items-center justify-end gap-2">
-          {!confirming ? (
-            <>
-              {/* "Done", not "Close": the kit's × already owns that name. */}
-              <IfButton onClick={onClose}>Done</IfButton>
-              <IfButton
-                variant="primary"
-                className="bg-err hover:bg-err/90"
-                disabled={selectedIds.length === 0}
-                onClick={() => dispatch({ type: "confirm", ids: selectedIds })}
-              >
-                Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
-                OnlyFans…
-              </IfButton>
-            </>
-          ) : (
-            <>
-              <span className="min-w-0 flex-1 basis-60 text-[12px] text-err">
-                Removes {phase.frozenIds.length} from your real vault. Originals are kept
-                and sent PPVs keep working — but OnlyFans has no undo.
-              </span>
-              <IfButton disabled={busy} onClick={() => dispatch({ type: "cancel" })}>
-                Cancel
-              </IfButton>
-              <IfButton variant="primary" className="bg-err hover:bg-err/90" disabled={busy} onClick={doHide}>
-                {phase.kind === "hiding"
-                  ? `Removing ${phase.done}/${phase.frozenIds.length}…`
-                  : "Yes, remove them"}
-              </IfButton>
-            </>
-          )}
-        </div>
+        !confirming ? (
+          <>
+            {/* "Done", not "Close": the kit's × already owns that name. */}
+            <IfButton onClick={onClose}>Done</IfButton>
+            <IfButton
+              variant="primary"
+              className="bg-err hover:bg-err/90"
+              disabled={selectedIds.length === 0}
+              onClick={() => dispatch({ type: "confirm", ids: selectedIds })}
+            >
+              Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
+              OnlyFans…
+            </IfButton>
+          </>
+        ) : (
+          <>
+            <span className="min-w-0 flex-1 basis-60 text-[12px] text-err">
+              Removes {phase.frozenIds.length} from your real vault. Originals are kept
+              and sent PPVs keep working — but OnlyFans has no undo.
+            </span>
+            <IfButton disabled={busy} onClick={() => dispatch({ type: "cancel" })}>
+              Cancel
+            </IfButton>
+            <IfButton variant="primary" className="bg-err hover:bg-err/90" disabled={busy} onClick={doHide}>
+              {phase.kind === "hiding"
+                ? `Removing ${phase.done}/${phase.frozenIds.length}…`
+                : "Yes, remove them"}
+            </IfButton>
+          </>
+        )
       }
     >
       <IfHelp className="mt-0">
@@ -266,7 +265,7 @@ export default function VaultDuplicatesModal({
       </div>
 
       {done && (
-        <div className={`mt-4 rounded-md border px-3 py-2 ${done.result.of_error ? "border-warn/40 bg-warn/10 text-warn" : "border-ok/40 bg-ok/10 text-ok"}`}>
+        <Notice tone={done.result.of_error ? "warn" : "ok"}>
           <span>{doneText(done.result, done.total)}</span>
           {Object.entries(done.result.refused).map(([why, ids]) => (
             <span key={why} className="block text-warn">
@@ -278,14 +277,10 @@ export default function VaultDuplicatesModal({
               {done.result.not_hidden.length} not removed — re-scan and try again.
             </span>
           )}
-        </div>
+        </Notice>
       )}
 
-      {error && (
-        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-err">
-          {error}
-        </div>
-      )}
+      {error && <Notice tone="err">{error}</Notice>}
 
       <div className="mt-4 flex flex-col gap-3">
         {scan.isLoading && (

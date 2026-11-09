@@ -592,8 +592,13 @@ describe("the sent list's head, empty row and Actions menu follow the bundle", (
     expect(box.querySelector("svg")).toHaveAttribute("height", "90");
   });
 
+  /** Unsend's confirm is the kit's IfModal now (the window.confirm it replaced is gone). */
+  const confirmUnsend = async (title: string) => {
+    const ask = await screen.findByRole("dialog", { name: title });
+    await act(async () => { fireEvent.click(within(ask).getByRole("button", { name: "Unsend" })); });
+  };
+
   it("opens Actions as a menu: Unsent unsends after a confirm, Duplicate is Not wired", async () => {
-    vi.stubGlobal("confirm", () => true);
     expectWrites("DELETE /api/of/v2/messages/queue/7");
     relayDelete.mockResolvedValue({});
     const table = await mountSentList([{ id: 7, date: "2026-01-01T15:05:00Z", text: "hi", isFree: true, canUnsend: true, sentCount: 3 }]);
@@ -609,21 +614,22 @@ describe("the sent list's head, empty row and Actions menu follow the bundle", (
     const unsend = within(menu).getByRole("menuitem", { name: SM_MASS_ACTIONS.unsend.label });
     expect(unsend).toHaveAttribute("title", SM_MASS_ACTIONS.unsendTip.label);
     await act(async () => { fireEvent.click(unsend); });
+    expect(relayDelete).not.toHaveBeenCalled();
+    await confirmUnsend("Unsend mass message");
     await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(1));
     expect(relayDelete.mock.calls[0][0]).toBe("/api/of/v2/messages/queue/7");
     expect(screen.queryByRole("menu")).toBeNull();
-    vi.unstubAllGlobals();
   });
 
   it("keeps bulk unsend working beside the menu", async () => {
-    vi.stubGlobal("confirm", () => true);
     expectWrites("DELETE /api/of/v2/messages/queue/7");
     relayDelete.mockResolvedValue({});
     await mountSentList([{ id: 7, date: "2026-01-01T15:05:00Z", text: "hi", isFree: true, canUnsend: true }]);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Unsend all (1)" })); });
+    expect(relayDelete).not.toHaveBeenCalled();
+    await confirmUnsend("Unsend ALL visible broadcasts");
     await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(1));
     expect(relayDelete.mock.calls[0][0]).toBe("/api/of/v2/messages/queue/7");
-    vi.unstubAllGlobals();
   });
 });
 

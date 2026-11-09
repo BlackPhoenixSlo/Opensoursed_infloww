@@ -20,6 +20,9 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
+import threading  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 from contextvars import ContextVar  # noqa: E402
@@ -238,15 +241,56 @@ def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
         "session_middleware",            # auth (owner) session
         "chatter_session_middleware",    # chatter session
         "_account_isolation_middleware",
+        "_bg_admission_route",           # background reads wait before per-request role DB reads
         "role_enforcement_middleware",
         "_deactivated_write_guard",
         "audit_middleware",
-        "_bg_admission_sync_route",      # a background sync-route read waits for its lane on the loop
+        "label_request_calls",           # of_call_counter: labels the request's OF calls
         "label_request_writes",          # db/write_telemetry: innermost, labels the request's writes
     ], names
     layers = server.app.user_middleware
-    assert [m.cls.__name__ for m in layers] == ["RequestLog", "BaseHTTPMiddleware", "GZipMiddleware"], layers
-    assert layers[1].kwargs["dispatch"] == server._http_hooks.dispatch
+    assert [m.cls.__name__ for m in layers] == [
+        "RequestLog", "_DbBusy503", "BaseHTTPMiddleware", "GZipMiddleware"], layers
+    assert layers[2].kwargs["dispatch"] == server._http_hooks.dispatch
+
+
+def case_queued_background_read_checks_the_current_role_when_admitted():
+    """A role revocation while the read waits must take effect before its route."""
+    entered, release = threading.Event(), threading.Event()
+    original = server._bg_admission
+    original_client = server._get_client
+    original_account = server.account_registry.get_account
+    fake = _FakeOF()
+    server._get_client = lambda *_a, **_k: fake
+    server.account_registry.get_account = lambda aid: (
+        {"id": aid} if aid == IDS["creator_a"] else original_account(aid))
+
+    @contextlib.asynccontextmanager
+    async def held(_request=None):
+        entered.set()
+        await asyncio.to_thread(release.wait)
+        yield
+
+    server._bg_admission = held
+    _roles(OWNER_A, False, {})
+    try:
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            pending = workers.submit(
+                CHATTER_A.get, "/api/of/v2/users/me",
+                headers={"X-Account-Id": IDS["creator_a"], "X-Priority": "background"})
+            try:
+                assert entered.wait(5), "background request never reached admission"
+                _roles(OWNER_A, True, {EMP_A: "role-none"}, _role("role-none"))
+            finally:
+                release.set()
+            response = pending.result(timeout=10)
+        assert response.status_code == 403, (response.status_code, response.text)
+    finally:
+        release.set()
+        server._bg_admission = original
+        server._get_client = original_client
+        server.account_registry.get_account = original_account
+        _reset_roles()
 
 
 def case_a_chatter_denied_by_role_is_refused_before_the_route_and_the_audit_writer():

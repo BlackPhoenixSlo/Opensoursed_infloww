@@ -11,27 +11,42 @@ the fans a link brought in. A TrackingClick carries no fan-joinable identity
 from here, so it needs one of the three approaches in
 library/TRACKING_LINK_SPEND_PARKED.md. Parked, not forgotten.
 
+A link may ask for a "Bot check before redirect" (`bot_check`, Cloudflare
+Turnstile, needs TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY): GET /t/{slug} then
+answers a blank page holding only the widget (the target is nowhere in it) and
+the click counts once POST /t/{slug}/verify passes Cloudflare's siteverify.
+Keys unset → the feature is off and a gated link is a plain 302 (a fan is never
+stranded on a check that cannot pass).
+
 Routes:
   Public (share-token exempt in server.py):
     GET  /t/{slug}                                record click → 302 target_url
+                                                  (bot_check: Turnstile page, no click)
+    POST /t/{slug}/verify {token}                 siteverify → record click → {url}
 
   Owner-gated (/admin/*):
     GET    /admin/tracking-links?account_id=      list links (+ click_count)
     POST   /admin/tracking-links                  create (auto or custom slug)
+    PATCH  /admin/tracking-links/{link_id}        {bot_check}
     DELETE /admin/tracking-links/{link_id}        delete (cascades clicks)
     GET    /admin/tracking-links/{link_id}/analytics?account_id=
                                                   total + recent + by-day series
 """
 from __future__ import annotations
 
+import asyncio
+import html
 import logging
+import os
 import re
 import secrets
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -54,8 +69,127 @@ def _slugify(text: str) -> str:
     return base[:_MAX_SLUG] or "link"
 
 
-def _valid_target(url: str) -> bool:
-    return isinstance(url, str) and url.startswith(("http://", "https://")) and len(url) <= 2000
+# "javascript:", "data:", "mailto:" … — a scheme with no "//" after it. A host
+# with a port ("ofl.ink:8080/x") is not one: digits follow its colon.
+_BARE_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:(?!\d)", re.I)
+
+
+def _normalize_target(url: Any) -> str | None:
+    """The http(s) URL to store, or None. No scheme → https:// is prepended
+    (`ofl.ink/nora` → `https://ofl.ink/nora`); any other scheme is
+    refused, and so is a host with no dot. Mirror: app/components/growth/customRedirectForm.ts."""
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url or len(url) > 2000 or any(c.isspace() for c in url):
+        return None
+    if url.startswith("//"):
+        url = "https:" + url
+    elif "://" not in url:
+        if _BARE_SCHEME_RE.match(url):
+            return None
+        url = "https://" + url
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        parts.port  # noqa: B018 — raises on a malformed port
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or "." not in host.strip("."):
+        return None
+    return url if len(url) <= 2000 else None
+
+
+# ── Cloudflare Turnstile ("Bot check before redirect") ────────────────
+# Read per call so a key set later (or a test) takes effect without a restart.
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+_TURNSTILE_TIMEOUT_S = 5.0
+_MAX_TOKEN = 2048  # Turnstile's documented token ceiling
+
+
+def _turnstile_keys() -> tuple[str, str] | None:
+    site = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+    secret = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
+    return (site, secret) if site and secret else None
+
+
+def bot_check_available() -> bool:
+    return _turnstile_keys() is not None
+
+
+# One client per event loop, kept: a new AsyncClient per verify builds an SSL
+# context each time, which under a click burst ate the event loop (measured in
+# slop tracking-links-clicks, medium/200: /t/ p95 25 -> 276 ms).
+_verify_http: tuple[Any, httpx.AsyncClient] | None = None
+
+
+def _verify_client() -> httpx.AsyncClient:
+    global _verify_http
+    loop = asyncio.get_running_loop()
+    if _verify_http is None or _verify_http[0] is not loop or _verify_http[1].is_closed:
+        _verify_http = (loop, httpx.AsyncClient(timeout=_TURNSTILE_TIMEOUT_S,
+                                                limits=httpx.Limits(max_connections=32)))
+    return _verify_http[1]
+
+
+async def _turnstile_passes(secret: str, token: str, remoteip: str | None) -> bool | None:
+    """True/False = Cloudflare's verdict; None = Cloudflare unreachable / garbled.
+    TURNSTILE_VERIFY_URL (env) points the call elsewhere (a test double)."""
+    url = os.environ.get("TURNSTILE_VERIFY_URL", "").strip() or TURNSTILE_VERIFY_URL
+    data = {"secret": secret, "response": token}
+    if remoteip:
+        data["remoteip"] = remoteip
+    try:
+        r = await _verify_client().post(url, data=data)
+        return bool(r.json().get("success"))
+    except (httpx.HTTPError, ValueError, AttributeError):
+        log.warning("turnstile siteverify unreachable", exc_info=True)
+        return None
+
+
+# The page a gated link answers: dark, blank, the widget alone. It must never
+# hold the target URL (a bot reading the HTML would skip the check).
+_GATE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>&#8203;</title>
+<style nonce="{nonce}">html,body{{margin:0;height:100%;background:#0b0b0f;color:#9a9aa5;
+font:14px system-ui,sans-serif}}body{{display:flex;align-items:center;justify-content:center}}
+#m{{display:flex;flex-direction:column;align-items:center;gap:12px}}#r{{display:none}}
+button{{background:#1d1d25;color:#e5e5ea;border:1px solid #33333d;border-radius:8px;padding:6px 14px;
+cursor:pointer}}</style>
+<script nonce="{nonce}">
+function okTs(t){{fetch(location.pathname.replace(/[/]+$/,"")+"/verify",{{method:"POST",
+headers:{{"content-type":"application/json"}},body:JSON.stringify({{token:t}})}})
+.then(function(r){{return r.ok?r.json():Promise.reject(r.status)}})
+.then(function(j){{location.replace(j.url)}}).catch(failTs)}}
+function failTs(){{document.getElementById("r").style.display="block"}}
+function retryTs(){{document.getElementById("r").style.display="none";
+if(window.turnstile)turnstile.reset("#w")}}
+</script>
+<script nonce="{nonce}" src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head><body><div id="m">
+<div id="w" class="cf-turnstile" data-sitekey="{site_key}" data-theme="dark" data-appearance="interaction-only"
+ data-callback="okTs" data-error-callback="failTs" data-expired-callback="retryTs"></div>
+<div id="r"><button type="button" onclick="retryTs()">Retry</button></div>
+</div></body></html>
+"""
+
+
+def _gate_page(site_key: str) -> HTMLResponse:
+    nonce = secrets.token_urlsafe(16)
+    body = _GATE_PAGE.format(nonce=nonce, site_key=html.escape(site_key, quote=True))
+    return HTMLResponse(body, headers={
+        "Cache-Control": "no-store",
+        "X-Robots-Tag": "noindex, nofollow",
+        "Referrer-Policy": "no-referrer",
+        # Turnstile's own CSP needs: script + frame from challenges.cloudflare.com.
+        "Content-Security-Policy": (
+            f"default-src 'none'; script-src 'nonce-{nonce}' https://challenges.cloudflare.com; "
+            f"style-src 'nonce-{nonce}'; frame-src https://challenges.cloudflare.com; "
+            "connect-src 'self'; base-uri 'none'; form-action 'none'"),
+    })
 
 
 def _serialize(row: TrackingLink) -> dict:
@@ -66,6 +200,7 @@ def _serialize(row: TrackingLink) -> dict:
         "slug": row.slug,
         "target_url": row.target_url,
         "click_count": row.click_count,
+        "bot_check": bool(row.bot_check),
         "path": f"/t/{row.slug}",
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -73,34 +208,10 @@ def _serialize(row: TrackingLink) -> dict:
 
 # ── Public redirect (NO auth — a fan clicks this) ─────────────────────
 
-@router.get("/t/{slug}")
-async def follow_tracking_link(slug: str, request: Request):
-    """Record a click and 302 to the target. An unknown slug 404s; a known slug
-    ALWAYS redirects.
-
-    The click write is deliberately kept OUT of the lookup's transaction. It
-    used to share it, and the try/except around it could not deliver on
-    "best-effort": `s.execute(update(...))` triggers autoflush, so the INSERT is
-    what raises, the swallow leaves the transaction poisoned, and the auto-commit
-    in get_session.__aexit__ — which is OUTSIDE the try — then raises
-    PendingRollbackError. The fan got `Internal Server Error` instead of their
-    redirect, and the click wasn't recorded either. Any write failure did it:
-    disk-full, corruption, a constraint, or simply another writer holding
-    SQLite's write lock past busy_timeout.
-
-    This is the one URL a real fan touches — it goes in the creator's bio — so
-    resolve the target, leave the session, and only then attempt the write.
-    """
-    async with get_session() as s:
-        row = (await s.execute(
-            select(TrackingLink).where(TrackingLink.slug == slug)
-        )).scalar_one_or_none()
-        if row is None:
-            raise HTTPException(404, "unknown link")
-        link_id, target = row.id, row.target_url
-
-    # Separate session, and the try WRAPS the commit — a failed click costs us
-    # the stat, never the fan's redirect.
+async def _record_click(link_id: int, slug: str, request: Request) -> None:
+    """Best-effort click write in its OWN session, the try WRAPPING the commit —
+    a failed click costs us the stat, never the fan's redirect (see
+    follow_tracking_link for why it must not share the lookup's transaction)."""
     try:
         async with get_session() as s2:
             s2.add(TrackingClick(
@@ -117,8 +228,69 @@ async def follow_tracking_link(slug: str, request: Request):
     except Exception:
         log.warning("tracking click record failed slug=%s", slug, exc_info=True)
 
+
+async def _lookup(slug: str) -> tuple[int, str, bool]:
+    async with get_session() as s:
+        row = (await s.execute(
+            select(TrackingLink).where(TrackingLink.slug == slug)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "unknown link")
+        return row.id, row.target_url, bool(row.bot_check)
+
+
+@router.get("/t/{slug}")
+async def follow_tracking_link(slug: str, request: Request):
+    """Record a click and 302 to the target. An unknown slug 404s; a known slug
+    ALWAYS redirects — or, with bot_check on and Turnstile keys set, answers the
+    check page (no click yet; POST /t/{slug}/verify counts it).
+
+    The click write is deliberately kept OUT of the lookup's transaction. It
+    used to share it, and the try/except around it could not deliver on
+    "best-effort": `s.execute(update(...))` triggers autoflush, so the INSERT is
+    what raises, the swallow leaves the transaction poisoned, and the auto-commit
+    in get_session.__aexit__ — which is OUTSIDE the try — then raises
+    PendingRollbackError. The fan got `Internal Server Error` instead of their
+    redirect, and the click wasn't recorded either. Any write failure did it:
+    disk-full, corruption, a constraint, or simply another writer holding
+    SQLite's write lock past busy_timeout.
+
+    This is the one URL a real fan touches — it goes in the creator's bio — so
+    resolve the target, leave the session, and only then attempt the write.
+    """
+    link_id, target, gated = await _lookup(slug)
+    keys = _turnstile_keys()
+    if gated and keys:
+        return _gate_page(keys[0])
+    await _record_click(link_id, slug, request)
     # 302 so the browser doesn't cache the hop (each click must re-record).
     return RedirectResponse(url=target, status_code=302)
+
+
+class _VerifyBody(BaseModel):
+    token: str = ""
+
+
+@router.post("/t/{slug}/verify")
+async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = Body(...)):
+    """The gate page's widget callback: Cloudflare's siteverify on the token, then
+    the click and the target. A link that is not gated (or keys unset) passes as
+    its GET would. Fail → 403 (rejected) / 503 (Cloudflare unreachable): the page
+    shows Retry."""
+    link_id, target, gated = await _lookup(slug)
+    keys = _turnstile_keys()
+    if gated and keys:
+        token = (body.token or "").strip()
+        ok = False
+        if token and len(token) <= _MAX_TOKEN:
+            ip = str(client_addr.client_address(request)) if request.client else None
+            ok = await _turnstile_passes(keys[1], token, ip)
+        if not ok:
+            log.info("tracking bot check failed slug=%s verdict=%s", slug, ok)
+            return JSONResponse({"detail": "bot check failed"}, status_code=503 if ok is None else 403,
+                                headers={"Cache-Control": "no-store"})
+    await _record_click(link_id, slug, request)
+    return JSONResponse({"url": target}, headers={"Cache-Control": "no-store"})
 
 
 # ── Owner-gated CRUD ──────────────────────────────────────────────────
@@ -131,7 +303,7 @@ async def list_tracking_links(account_id: str = Query(...)) -> dict[str, Any]:
             select(TrackingLink).where(TrackingLink.account_id == account_id)
             .order_by(TrackingLink.created_at.desc())
         )).scalars().all()
-    return {"links": [_serialize(r) for r in rows]}
+    return {"links": [_serialize(r) for r in rows], "bot_check_available": bot_check_available()}
 
 
 class _CreateBody(BaseModel):
@@ -139,6 +311,7 @@ class _CreateBody(BaseModel):
     name: str
     target_url: str
     slug: str | None = None
+    bot_check: bool = False
 
 
 @router.post("/admin/tracking-links")
@@ -147,8 +320,9 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(422, "name is required")
-    if not _valid_target(body.target_url):
-        raise HTTPException(422, "target_url must be an http(s) URL")
+    target = _normalize_target(body.target_url)
+    if target is None:
+        raise HTTPException(422, "target_url must be an http(s) URL with a dotted host")
     base = _slugify(body.slug) if body.slug else _slugify(name)
     now = datetime.utcnow()
 
@@ -164,7 +338,8 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
         try:
             async with get_session() as s:
                 row = TrackingLink(account_id=body.account_id, name=name, slug=slug,
-                                   target_url=body.target_url, click_count=0, created_at=now)
+                                   target_url=target, click_count=0, bot_check=body.bot_check,
+                                   created_at=now)
                 s.add(row)
                 await s.flush()
                 out = _serialize(row)
@@ -175,6 +350,24 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
             last_err = e
             continue
     raise HTTPException(409, f"could not allocate a unique slug: {repr(last_err)[:120]}")
+
+
+class _PatchBody(BaseModel):
+    bot_check: bool
+
+
+@router.patch("/admin/tracking-links/{link_id}")
+async def patch_tracking_link(link_id: int, body: _PatchBody = Body(...)) -> dict[str, Any]:
+    async with get_session() as s:
+        row = await s.get(TrackingLink, link_id)
+        if row is None:
+            raise HTTPException(404, "tracking link not found")
+        assert_account_owned(row.account_id)
+        row.bot_check = body.bot_check
+        await s.flush()
+        out = _serialize(row)
+    log.info("tracking_link_patched id=%s bot_check=%s", link_id, body.bot_check)
+    return out
 
 
 @router.delete("/admin/tracking-links/{link_id}")

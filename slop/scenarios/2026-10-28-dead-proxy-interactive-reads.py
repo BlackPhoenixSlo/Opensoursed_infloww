@@ -102,6 +102,8 @@ ARRIVE_S = 5.0          # people open their Creator over this window (seeded tim
 THINK_S = 1.0           # the owner's pause between adding the proxy and binding Creators
 EARLY_S = 5.0           # the health read after the death, while most 5-try chains still retry
 DOWN_AFTER = 3          # service/proxy_health.py: counted failures that would start the confirm
+BG_TRIES = 5            # full proxy retry policy for background reads
+BG_RECORD_SLACK_S = 0.5  # a chain records its failure just before its 502 lands
 TORN = 5                # proxied Creators whose first client is built while proxies.json is rewritten
 SETTLE_S = 3.0          # the binds' SQL mirror syncs (db/import_legacy reads proxies.json) end before the rewrites
 
@@ -258,7 +260,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
         rows = r.json().get("proxies", []) if r.status_code == 200 else []
         return next((p.get("health") or {} for p in rows if p.get("label") == LABEL), {})
 
-    async def early() -> tuple[float, dict]:
+    async def early() -> tuple[float, dict, float]:
         await asyncio.sleep(max(0.0, killed_at + EARLY_S - time.time()))
         t = time.time()
         h = await health()
@@ -309,7 +311,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
         ctx.skip(C_FAST, "no person opened a dead Creator (--users too low)")
 
     bms = [x["ms"] for x in bgs]
-    refused_ms = 5 * proxy.refuse_s * 1000
+    refused_ms = BG_TRIES * proxy.refuse_s * 1000
     floor_ms = refused_ms + BG_PAUSE_CAP_MS / 2
     ceil_ms = refused_ms + BG_PAUSE_CAP_MS + BG_SLACK_MS
     ctx.check(C_BG, bool(bms) and floor_ms <= min(bms) and max(bms) <= ceil_ms,
@@ -338,8 +340,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
               probe_connects=probes)
 
     failed_early = sum(1 for x in inter if x["end"] <= early_at)
-    # A chain records its failure just before its 502 lands: ended by the read's answer (+0.5 s).
-    bg_early = sum(1 for x in bgs if x["end"] <= early_read_at + 0.5)
+    bg_early = sum(1 for x in bgs if x["end"] <= early_read_at + BG_RECORD_SLACK_S)
     if failed_early < DOWN_AFTER:   # nothing to tell apart yet (few people, or reads slower than the budget)
         ctx.skip(C_COUNT, f"only {failed_early} interactive reads had failed {EARLY_S} s after the death "
                           f"(need {DOWN_AFTER})")

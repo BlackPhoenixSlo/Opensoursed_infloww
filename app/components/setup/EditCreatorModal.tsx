@@ -103,7 +103,7 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
             {connected ? (
               <FlowButton disabled title={NOT_WIRED}>{T.unlink}</FlowButton>
             ) : (
-              <FlowButton onClick={() => { onClose(); onLink?.(of ? "paste" : "fansly"); }}>{T.linkAccount}</FlowButton>
+              <FlowButton onClick={() => { onClose(); onLink?.(of ? "browserbase" : "fansly"); }}>{T.linkAccount}</FlowButton>
             )}
           </div>
           {!of && conn === "Disconnected" && <p className="mt-1 text-sm text-err">{FANSLY_T.rebind}</p>}
@@ -120,7 +120,7 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
                 <span className={cn("block truncate text-xs", HB_DIM)}>{proxyText(bound, proxiesQ.data)}</span>
               </span>
               <span className="flex shrink-0 gap-2">
-                {!connected && <FlowButton onClick={() => { onClose(); onLink?.("paste"); }}>{T.linkAccount}</FlowButton>}
+                {!connected && <FlowButton onClick={() => { onClose(); onLink?.("browserbase"); }}>{T.linkAccount}</FlowButton>}
                 {/* Until the proxies read answers, `bound` is a guess ("No proxy") that Save would act on. */}
                 <FlowButton disabled={!proxiesQ.isSuccess} onClick={() => setChanging(true)}>{T.change}</FlowButton>
                 <FlowButton disabled title={NOT_WIRED}>{T.del}</FlowButton>

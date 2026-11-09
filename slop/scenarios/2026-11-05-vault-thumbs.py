@@ -84,11 +84,12 @@ from urllib.parse import urlsplit
 
 from slop.lib.client import Http
 from slop.lib.img_relay import arm_run, picture_bytes, policy_ip
-from slop.lib.proxy_wire import ProxyWire
-from slop.lib.vault_collect_faults import (DEAD_LINK, GIF_CDN_ONCE, GIF_DETAILS, GIF_TILES, PROXY, RESTRICTED, ROTATION,
+from slop.lib.vault_collect_faults import (UI_TILES, GIF_PICKER, DEAD_LINK, GIF_CDN_ONCE, GIF_DETAILS, GIF_TILES, PROXY, RESTRICTED, ROTATION,
                                            SCOPED, SECOND_OPEN, STALE_IP, UI_HOVER)
 from slop.lib.vault_collect_relay import stills_dir
+from slop.lib.vault_ui import open_vault_picker, cdn_count, cdn_calls, proxy_bind, captured
 from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
+from slop.seed.vault_cache import grant_folder_access
 from slop.seed import chatters, ts, vault_week
 
 PROFILE = "flat_agency"
@@ -214,7 +215,7 @@ async def run(ctx):
     await ctx.build(PROFILE)
     every = [c["id"] for c in w.data["creators"]]
     if ctx.app:
-        assert every[-1] not in vw._v, "the UI Creator's vault was made before its gifs were set"
+        assert not vw.has_vault(every[-1]), "the UI Creator's vault was made before its gifs were set"
         vw.gifs[every[-1]] = set(GIF_KS)
     vault_week.mirror(w, vw, every)
     assets = vw.assets(every)
@@ -223,12 +224,6 @@ async def run(ctx):
     owner = ctx.owner
     pool = owner.share(limits=max(10, ctx.users))
     sem = asyncio.Semaphore(max(1, ctx.users))
-
-    async def cdn_since(n: int) -> list[dict]:
-        return (await owner.get(f"/__slop/img/calls?since={n}")).json()["calls"]
-
-    async def cdn_n() -> int:
-        return (await owner.get("/__slop/img/stats")).json()["n"]
 
     async def open_picker(http, aid: str) -> list[int]:
         """The picker's reads: folder list, All page 0 + its prefetch (useVaultMedia.ts); the tiles' ids."""
@@ -251,10 +246,10 @@ async def run(ctx):
 
     async def tiles(stage: str, per: dict[str, list[int]]) -> dict:
         ctx.rec.stage = stage
-        n0, v0 = await cdn_n(), len(fake.vault_calls)
+        n0, v0 = await cdn_count(ctx), len(fake.vault_calls)
         res = await asyncio.gather(*(thumb(pool, a, m) for a, ms in per.items() for m in ms))
         ctx.rec.stage = None
-        calls = await cdn_since(n0)
+        calls = await cdn_calls(ctx, n0)
         by_key: dict[str, list] = {}
         for c in calls:
             by_key.setdefault(c["key"], []).append(c["status"])
@@ -263,15 +258,10 @@ async def run(ctx):
                 "cdn": len(calls), "by_key": by_key, "by_id": [c for c in fake.vault_calls[v0:] if c["route"] == "by_id"]}
 
     # ── proxy A on Creator 1 before anything reaches OF (its first open goes through A) ──
-    pa, pb = ProxyWire().__enter__(), ProxyWire().__enter__()
-    try:
-        paid = cs[1 % len(cs)]
-        for label, p in (("slop-vault-a", pa), ("slop-vault-b", pb)):
-            await owner.post("/admin/proxies", json={"label": label, "scheme": "socks5", "host": "127.0.0.1",
-                                                     "port": p.port, "notes": "slop: vault-thumbs"})
-            await asyncio.sleep(1.0)  # proxies.json writes apart (dead-proxy scenario's measured race)
-        bind_a = (await owner.post("/admin/proxies/assign", json={"label": "slop-vault-a", "account_id": paid})).status_code
-        await asyncio.sleep(1.0)
+    paid = cs[1 % len(cs)]
+    async with proxy_bind(owner, "slop-vault-a", notes="slop: vault-thumbs", account_id=paid) as pa, \
+               proxy_bind(owner, "slop-vault-b", notes="slop: vault-thumbs") as pb:
+        bind_a = pa.assign_status
 
         # ── cold + second ──
         ctx.rec.stage = "listing"
@@ -334,8 +324,7 @@ async def run(ctx):
         rec = (await chatters.seed(w, owner, w.user_id, ["vaultthumbs"], account_ids=[[aid]]))[0]
         con = w.sql()
         with con:
-            con.execute("INSERT INTO chatter_folder_access (chatter_id, account_id, folder_id, folder_name, created_at)"
-                        " VALUES (?, ?, ?, ?, ?)", (rec["chatter_id"], aid, f0["id"], f0["name"], ts(w.now)))
+            grant_folder_access(con, rec["chatter_id"], aid, f0["id"], f0["name"], w.now)
         con.close()
         ch = Http(str(owner.c.base_url), ctx.rec)
         try:
@@ -373,32 +362,25 @@ async def run(ctx):
         r1 = (await owner.get(f"{LISTS}?view=main&limit=50&offset=0", headers=hdr)).status_code
         warm_calls = lists_calls(v0)
         a_conn = len(pa.connects)
-        bind_b = (await owner.post("/admin/proxies/assign", json={"label": "slop-vault-b", "account_id": paid})).status_code
-        await asyncio.sleep(1.0)
+        await pb.assign(paid)
+        bind_b = pb.assign_status
         v1 = len(fake.vault_calls)
         r2 = (await owner.get(f"{LISTS}?view=main&limit=50&offset=0", headers=hdr)).status_code
         fresh_calls = lists_calls(v1)
-        ctx.check(PROXY, bind_a == 200 and bind_b == 200 and r1 == 200 and r2 == 200 and warm_calls == 0
-                  and fresh_calls >= 1 and len(pb.connects) >= 1, bind=(bind_a, bind_b), reopen_of_calls=warm_calls,
-                  after_switch_of_calls=fresh_calls, proxy_a_connects=a_conn, proxy_b_connects=len(pb.connects))
+        ctx.check(PROXY, bind_a == 200 and bind_b == 200 and pa.bound and pb.bound
+                  and r1 == 200 and r2 == 200 and warm_calls == 0
+                  and fresh_calls >= 1 and a_conn >= 1 and len(pb.connects) >= 1, bind=(bind_a, bind_b), reopen_of_calls=warm_calls,
+                  bound=(pa.bound, pb.bound), after_switch_of_calls=fresh_calls,
+                  proxy_a_connects=a_conn, proxy_b_connects=len(pb.connects))
 
         # ── stale IP: the mirror's video urls signed for A, the account on B ──
         vids = [m["id"] for m in vw.vault(paid)["media"] if m["type"] == "video"][:STALE_VIDS]
-        ok, detail = await _stale_ip(w, vw, fake, pool, paid, vids, f"127.0.0.1:{pa.port}",
-                                     f"127.0.0.1:{pb.port}", cdn_n, cdn_since)
+        ok, detail = await _stale_ip(ctx, w, vw, fake, pool, paid, vids, f"127.0.0.1:{pa.port}",
+                                     f"127.0.0.1:{pb.port}")
         ctx.check(STALE_IP, ok, **detail)
-    finally:
-        # Back to direct egress before the wires close: a Creator left on a dead proxy makes the UI's roster
-        # counts (and anything else reading OF for it) log tracebacks.
-        for label in ("slop-vault-a", "slop-vault-b"):
-            await owner.post(f"/admin/proxies/{label}/unbind", json={"account_id": paid})
-        await asyncio.sleep(1.0)
-        pa.__exit__(None, None, None)
-        pb.__exit__(None, None, None)
-
     # ── UI: the owner's picker (two screenshots) ──
     if ctx.app:
-        await _ui(ctx, w, vw, every[-1], cdn_n, cdn_since)
+        await _ui(ctx, w, vw, every[-1])
 
     keys = {"cold thumb": ("cold", f"GET {THUMB}"), "warm thumb": ("warm", f"GET {THUMB}"),
             "listing media": ("listing", f"GET {MEDIA}")}
@@ -427,16 +409,16 @@ def _ip(u: str) -> str | None:
     return policy_ip(q["Policy"]) if q.get("Policy") else None
 
 
-async def _stale_ip(w, vw, fake, http, aid: str, vids: list[int], old: str, new: str, cdn_n, cdn_since):
+async def _stale_ip(ctx, w, vw, fake, http, aid: str, vids: list[int], old: str, new: str):
     """The account on `new`, its videos' mirror urls signed for `old`: (ok, detail). Docstring: `stale IP`."""
     vault_week.set_urls(w, vw, aid, vids, egress=old)
     raw = _mirror_media(w, aid, vids)
     src = {m: raw[m]["videoSources"]["240"] for m in vids}
     thumb = {m: raw[m]["files"]["thumb"]["url"] for m in vids}
-    n0, v0 = await cdn_n(), len(fake.vault_calls)
+    n0, v0 = await cdn_count(ctx), len(fake.vault_calls)
     # Control: the route without a media id, as before the fix; the fake must deny an `old` url through `new`.
     ctrl = (await http.get("/img", params={"u": raw[vids[0]]["files"]["full"]["url"], "account_id": aid})).status_code
-    n1 = await cdn_n()
+    n1 = await cdn_count(ctx)
 
     async def frame(m: int, i: int):
         r = await http.get("/img/scrub", params={"u": src[m], "account_id": aid, "i": i, "dur": 12,
@@ -450,7 +432,7 @@ async def _stale_ip(w, vw, fake, http, aid: str, vids: list[int], old: str, new:
     got = await asyncio.gather(*(frame(m, i) for m in vids for i in range(12)), *(poster(m) for m in vids))
     frames = [g for g in got if len(g) == 4]
     posters = [g for g in got if len(g) == 3]
-    calls = await cdn_since(n1)
+    calls = await cdn_calls(ctx, n1)
     by_id = [c for c in fake.vault_calls[v0:] if c["route"] == "by_id" and c["account"] == aid]
     files = {f"{HOST}{cdn_path(aid, m, v)}" for m in vids for v in ("thumb", "240p")}
     per_file: dict[str, list] = {}
@@ -465,7 +447,7 @@ async def _stale_ip(w, vw, fake, http, aid: str, vids: list[int], old: str, new:
     wrong_egress = sorted({c["egress"] for c in calls if c["egress"] != new} | {c["egress"] for c in by_id} - {new})
     bad_files = {k: v for k, v in per_file.items() if not v or v[-1] != 200 or v.count(403) > 1}
     unsigned = [m for m in vids if _ip(now[m]["files"]["thumb"]["url"]) != new]
-    ok = (len(vids) == STALE_VIDS and ctrl != 200 and await cdn_n() > n0 and not bad_frames and not bad_posters
+    ok = (len(vids) == STALE_VIDS and ctrl != 200 and await cdn_count(ctx) > n0 and not bad_frames and not bad_posters
           and set(by_id_n.values()) == {1} and not wrong_egress and set(per_file) == files and not bad_files
           and any(403 in v for v in per_file.values()) and not unsigned)
     return ok, {"videos": vids, "control_no_media_id": ctrl, "frames": len(frames), "bad_frames": bad_frames[:5],
@@ -473,7 +455,7 @@ async def _stale_ip(w, vw, fake, http, aid: str, vids: list[int], old: str, new:
                 "wrong_egress": wrong_egress, "cdn_per_file": per_file, "mirror_not_resigned": unsigned}
 
 
-async def _ui(ctx, w, vw, aid: str, cdn_n, cdn_since) -> None:
+async def _ui(ctx, w, vw, aid: str) -> None:
     """Owner's Messages Pro Vault picker on the UI-only Creator: open 1 cold (trigger shot as the dialog opens),
     settled; open 2 in a fresh browser (no HTTP cache: every tile from the relay's disk), settled shot, 0 CDN;
     then a phone (touch) open, settled shot, 0 CDN. Side effects recorded: thumbs on disk, cache/summary."""
@@ -484,12 +466,7 @@ async def _ui(ctx, w, vw, aid: str, cdn_n, cdn_since) -> None:
     got: dict = {}
 
     async def open_picker(page, shot_open: str | None, shot_settled: str) -> dict:
-        await page.goto(f"{ctx.app}/messages-pro/{aid}/{fans[0]}", wait_until="domcontentloaded", timeout=60_000)
-        vault = page.get_by_role("button", name="Vault", exact=True).first
-        await vault.wait_for(timeout=60_000)
-        await vault.click(timeout=60_000)
-        dialog = page.get_by_role("dialog", name="Vault picker")
-        await dialog.wait_for(timeout=60_000)
+        await open_vault_picker(page, ctx, aid, fans[0])
         if shot_open:
             got[shot_open] = await ui.shot(ctx, page, shot_open)
         t0 = time.time()
@@ -510,33 +487,31 @@ async def _ui(ctx, w, vw, aid: str, cdn_n, cdn_since) -> None:
     steps = (("cold", VIEWPORT, False, "vault-thumbs-trigger", "vault-thumbs-cold-settled"),
              ("second", VIEWPORT, False, None, "vault-thumbs-settled"),
              ("phone", PHONE, True, None, "phone-vault-thumbs-settled"))
-    n_ui0 = await cdn_n()
+    n_ui0 = await cdn_count(ctx)
     for name, vp, touch, s_open, s_settled in steps:
-        n0 = await cdn_n()
+        n0 = await cdn_count(ctx)
         async with ui.owner_browser(ctx, viewport=vp, through=(THUMB, LISTS, MEDIA), touch=touch) as page:
-            try:
-                got[name] = await open_picker(page, s_open, s_settled)
-            except Exception as e:  # noqa: BLE001 — a step that cannot complete is the check's FAIL
-                got[name] = {"error": f"{type(e).__name__}: {e}"}
-                await ui.shot(ctx, page, f"failed-vault-thumbs-{name}")
+            got[name] = {}
+            async with captured(ctx, page, got[name], f"failed-vault-thumbs-{name}"):
+                got[name].update(await open_picker(page, s_open, s_settled))
         # Thumbs only: an on-screen gif's clip (`/img`, a <video> Range) is counted apart in `cdn_gif`.
-        calls = await cdn_since(n0)
+        calls = await cdn_calls(ctx, n0)
         got[name]["cdn"] = sum(1 for c in calls if not c["key"].endswith("/gif.mp4"))
         got[name]["cdn_gif"] = len(calls) - got[name]["cdn"]
     got["thumbs_on_disk"] = len(list((stills_dir(ctx.stack.tmp) / "thumbs" / aid).glob("*.jpg")))
     summ = (await ctx.owner.get(f"/admin/vault-ai/cache/summary?account_id={aid}")).json()
     got["summary"] = {k: summ.get(k) for k in ("count", "complete")}
     ok = all("error" not in got[n] and got[n]["thumb"] == [200] and got[n]["thumb_n"] >= 24 for n in ("cold", "second", "phone"))
-    ctx.check("ui: picker tiles are /admin/vault-ai/thumb (all 200, cold fills disk, second + phone open 0 CDN)",
+    ctx.check(UI_TILES,
               ok and got["cold"]["cdn"] >= 24 and got["second"]["cdn"] == 0 and got["phone"]["cdn"] == 0
               and got["thumbs_on_disk"] >= 24 and got["summary"]["complete"] is True, **got)
-    ok, detail = await _ui_hover(ctx, w, vw, aid, fans[0], cdn_n, cdn_since)
+    ok, detail = await _ui_hover(ctx, w, vw, aid, fans[0])
     ctx.check(UI_HOVER, ok, **detail)
-    await _ui_gif(ctx, vw, aid, fans[0], cdn_n, cdn_since, n_ui0,
+    await _ui_gif(ctx, vw, aid, fans[0], n_ui0,
                   relay_gif_n=sum(got[n].get("img_gif_n", 0) for n, *_ in steps))
 
 
-async def _ui_hover(ctx, w, vw, aid: str, fan: int, cdn_n, cdn_since):
+async def _ui_hover(ctx, w, vw, aid: str, fan: int):
     """The mirror's video urls of `aid` signed for OLD_EGRESS (it is direct now); a fresh browser hovers the first
     video tile of the picker: (ok, detail). Docstring: UI."""
     from slop.actors import ui
@@ -547,14 +522,11 @@ async def _ui_hover(ctx, w, vw, aid: str, fan: int, cdn_n, cdn_since):
     vault_week.set_urls(w, vw, aid, [m["id"] for m in vw.vault(aid)["media"] if m["type"] == "video"],
                         egress=OLD_EGRESS)
     mid = first[0]
-    n0, v0 = await cdn_n(), len(ctx.of_wire.vault_calls)
+    n0, v0 = await cdn_count(ctx), len(ctx.of_wire.vault_calls)
     d: dict = {"media_id": mid}
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(THUMB, LISTS, MEDIA)) as page:
-        try:
-            await page.goto(f"{ctx.app}/messages-pro/{aid}/{fan}", wait_until="domcontentloaded", timeout=60_000)
-            vault = page.get_by_role("button", name="Vault", exact=True).first
-            await vault.wait_for(timeout=60_000)
-            await vault.click(timeout=60_000)
+        async with captured(ctx, page, d, "failed-vault-hover"):
+            await open_vault_picker(page, ctx, aid, fan)
             tile = page.get_by_role("dialog", name="Vault picker").locator(f'[data-tile-id="{mid}"]')
             await tile.wait_for(timeout=60_000)
             await page.wait_for_timeout(1500)  # the mirror's page settles (docstring: load-sensitive)
@@ -576,10 +548,8 @@ async def _ui_hover(ctx, w, vw, aid: str, fan: int, cdn_n, cdn_since):
             d["frames_shown"] = await tile.evaluate(
                 "t => [...t.querySelectorAll('img')].filter(i => i.src.includes('/img/scrub') && i.complete"
                 " && i.naturalWidth > 0).length")
-        except Exception as e:  # noqa: BLE001 — a step that cannot complete is the check's FAIL
-            d["error"] = f"{type(e).__name__}: {e}"
-            await ui.shot(ctx, page, "failed-vault-hover")
-    calls = [c for c in await cdn_since(n0) if c["key"] == f"{HOST}{cdn_path(aid, mid, '240p')}"]
+
+    calls = [c for c in await cdn_calls(ctx, n0) if c["key"] == f"{HOST}{cdn_path(aid, mid, '240p')}"]
     d["cdn_240p"] = [c["status"] for c in calls]
     d["by_id"] = sum(1 for c in ctx.of_wire.vault_calls[v0:] if c["route"] == "by_id" and c["query"]["id"] == mid)
     ok = ("error" not in d and d["scrub_statuses"] == [200] and d["scrub_n"] >= 12 and d["frames_shown"] >= 2
@@ -606,7 +576,7 @@ def _playing(a: dict, b: dict) -> bool:
         and b.get("opacity", "1") == "1"
 
 
-async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, relay_gif_n: int) -> None:
+async def _ui_gif(ctx, vw, aid: str, fan: int, n_ui0: int, relay_gif_n: int) -> None:
     """The owner's picker on the UI Creator's gifs (GIF_KS), desktop (GIF_VIEWPORT): up to four on-screen gif tiles
     loop their clips (src attached, playing, time moving, painted over the still) while gifs below the fold have
     no src and cost no CDN call; scrolling gives new visible gifs a slot and detaches those that left (GIF_TILES). Its ⓘ Media
@@ -622,7 +592,7 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
     key = {m: f"{HOST}{cdn_path(aid, m, 'gif')}" for m in gifs}
     d: dict = {"gifs": {m: order.index(m) for m in gifs}}
     t_ok = det_ok = False
-    n0 = await cdn_n()
+    n0 = await cdn_count(ctx)
 
     async def states(dialog) -> dict:
         out = {}
@@ -632,15 +602,12 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
         return out
 
     async def cdn_gif() -> dict:
-        calls = await cdn_since(n0)
+        calls = await cdn_calls(ctx, n0)
         return {m: [c["status"] for c in calls if c["key"] == key[m]] for m in gifs}
 
     async with ui.owner_browser(ctx, viewport=GIF_VIEWPORT, through=(THUMB, LISTS, MEDIA)) as page:
         try:
-            await page.goto(f"{ctx.app}/messages-pro/{aid}/{fan}", wait_until="domcontentloaded", timeout=60_000)
-            vault = page.get_by_role("button", name="Vault", exact=True).first
-            await vault.wait_for(timeout=60_000)
-            await vault.click(timeout=60_000)
+            await open_vault_picker(page, ctx, aid, fan)
             dialog = page.get_by_role("dialog", name="Vault picker")
             await dialog.locator(f'[data-tile-id="{gifs[19]}"]').wait_for(state="attached", timeout=60_000)
             d["trigger"] = await ui.shot(ctx, page, "vault-gif-trigger")
@@ -724,10 +691,7 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
             # prefers-reduced-motion: the still until hovered.
             await page.emulate_media(reduced_motion="reduce")
             await page.reload(wait_until="domcontentloaded", timeout=60_000)
-            vault = page.get_by_role("button", name="Vault", exact=True).first
-            await vault.wait_for(timeout=60_000)
-            await vault.click(timeout=60_000)
-            dialog = page.get_by_role("dialog", name="Vault picker")
+            dialog = await open_vault_picker(page, ctx, aid, fan, navigate=False)
             g0 = dialog.locator(f'[data-tile-id="{gifs[0]}"]')
             await g0.wait_for(timeout=60_000)
             await page.wait_for_timeout(2000)
@@ -746,15 +710,15 @@ async def _ui_gif(ctx, vw, aid: str, fan: int, cdn_n, cdn_since, n_ui0: int, rel
             d["reduced"] = [r0, r1, r2]
             d["reduced_ok"] = r0["in_view"] and r0["src"] is None and _playing(r1, r2)
             t_ok = t_ok and d["reduced_ok"]
-        except Exception as e:  # noqa: BLE001 — a step that cannot complete is the check's FAIL
-            d["error"] = f"{type(e).__name__}: {e}"
-            await ui.shot(ctx, page, "failed-vault-gif")
+        except Exception:  # noqa: BLE001 — a step that cannot complete is the check's FAIL
+            async with captured(ctx, page, d, "failed-vault-gif"):
+                raise
         d["relay_gif_img"] = sum(1 for _, u in page.slop["statuses"] if urlsplit(u).path == "/img" and "gif.mp4" in u)
     d["cdn_gif"] = await cdn_gif()
     ctx.check(GIF_TILES, t_ok and "error" not in d, **d)
-    ctx.check("ui_gif_picker_caps_attached_loops_and_detaches_offscreen", d.get("cap_ok") is True and "error" not in d,
+    ctx.check(GIF_PICKER, d.get("cap_ok") is True and "error" not in d,
               gif_count=len(gifs), samples=d.get("loop_samples"), trigger=d.get("trigger"), settled=d.get("scrolled"))
-    calls = await cdn_since(n_ui0)
+    calls = await cdn_calls(ctx, n_ui0)
     per = {m: [[c["status"], c["range"]] for c in calls if c["key"] == key[m]] for m in gifs}
     relay_n = relay_gif_n + d["relay_gif_img"]
     fetched = [v for v in per.values() if v]

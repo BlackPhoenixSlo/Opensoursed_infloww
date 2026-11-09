@@ -699,7 +699,7 @@ def agency_chatter():
     return chatter
 
 
-async def _enforcing_roles() -> dict[str, dict[str, Any]] | None:
+async def _enforcing_roles(*, db_session=None) -> dict[str, dict[str, Any]] | None:
     """The applied `roles` blob of each Agency the session's chatter is
     linked to, or None when the session is not a chatter some linked Agency
     enforces roles on (`agency_chatter` is None, or every linked Agency's
@@ -708,8 +708,11 @@ async def _enforcing_roles() -> dict[str, dict[str, Any]] | None:
     if chatter is None:
         return None
     from settings_api import applied_blob  # settings_api imports this module
-    async with get_session() as s:
-        roles = {a: await applied_blob(s, a, "roles") for a in sorted(chatter.owner_user_ids)}
+    if db_session is None:
+        async with get_session() as s:
+            roles = {a: await applied_blob(s, a, "roles") for a in sorted(chatter.owner_user_ids)}
+    else:
+        roles = {a: await applied_blob(db_session, a, "roles") for a in sorted(chatter.owner_user_ids)}
     return roles if any(enforced(blob) for blob in roles.values()) else None
 
 
@@ -855,15 +858,34 @@ async def role_enforcement_middleware(request, call_next):
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         return await call_next(request)
-    if (roles := await _enforcing_roles()) is None:
+    try:
+        if agency_chatter() is None:
+            return await call_next(request)
+        # One fresh checkout for this request's roles, Agency mapping and
+        # existing Mirror Employee; release it before the route runs.
+        async with get_session() as s:
+            roles = await _enforcing_roles(db_session=s)
+            contexts = []
+            if roles is not None:
+                for one in ids:
+                    contexts.extend(await agency_contexts(account_id=one, db_session=s))
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    if roles is None:
         return await call_next(request)
     try:
         # Every context's Agency is one of the chatter's linked Agencies, so its
         # blob was read above; a missing key raises (500) rather than allow.
         action = route_action(request.method, request.url.path, request.query_params)
-        for one in ids:
-            for ctx in await agency_contexts(account_id=one):
-                require_permission(ctx, roles[ctx.agency_user_id], pages, request.url.path, action)
+        for ctx in contexts:
+            require_permission(ctx, roles[ctx.agency_user_id], pages, request.url.path, action)
     except HTTPException as exc:
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    chatter = agency_chatter()
+    if (chatter is not None and len(chatter.owner_user_ids) == 1
+            and len(ids) == len(contexts) == 1 and ids[0]
+            and contexts[0].employee_id is not None):
+        # The route's attribution resolver would re-read this same Mirror
+        # Employee. Only the single-Agency case has the same owner tie-break.
+        request.state.chatter_role_employee = (chatter.id, ids[0], contexts[0].employee_id)
     return await call_next(request)

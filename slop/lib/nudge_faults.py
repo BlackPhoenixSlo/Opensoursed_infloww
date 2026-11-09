@@ -21,6 +21,9 @@ NUDGE_TAB_CLOSED = ("nudge online: a tab whose Save PUT was aborted at the wire 
                     "localStorage)")
 NUDGE_ACK_LOST = ("nudge online: a tab closed after its Save PUT reached the relay but before the answer reached the "
                   "tab reopens on the stored config with no restored note, and the kept draft is gone (localStorage)")
+NUDGE_PRESETS_PHONE = ("nudge online, 390x844 phone: the Preview time presets row stays inside the dialog (it may "
+                       "scroll sideways itself), the page has no sideways scroll, and tapping the last preset (Night) "
+                       "sets Hour to 23")
 
 
 def register(Fault) -> dict:

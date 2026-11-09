@@ -117,9 +117,13 @@ async def run(ctx) -> None:
             await _open_health(page, ctx.app)
             await page.wait_for_timeout(1_000)
             left = await page.get_by_text(STALLED, exact=True).count() + await page.get_by_text(WORKING, exact=True).count()
-            scans = await page.get_by_text("last scan").count()
+            seeded = [(f"@{h['display_name']}" if h.get("display_name") else aid)
+                      for h, aid in ((h_stall, stall), (h_long, long_))]
+            scans = [await page.get_by_role("listitem").filter(
+                has=page.get_by_text(str(name), exact=True)).get_by_text("last scan").count()
+                     for name in seeded]
             settled = await ui.shot(ctx, page, "settled")
-            ctx.check(HEALTH, left == 0 and scans >= 2, labels_left=left, rows=scans, screenshot=settled)
+            ctx.check(HEALTH, left == 0 and scans == [1, 1], labels_left=left, seeded_rows=scans, screenshot=settled)
 
     con = w.sql()
     wrong = {}

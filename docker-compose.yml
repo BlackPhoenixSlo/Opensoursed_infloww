@@ -189,6 +189,10 @@ services:
       # `cloudflare-tunnel` also from loopback (a cloudflared tunnel on the host).
       # Unset = the header is never read.
       EDGE_PROXIES: "${EDGE_PROXIES:-}"
+      # Custom redirect links' "Bot check before redirect" (service/tracking_links_api.py,
+      # Cloudflare Turnstile). Both unset = the option is off and a gated link is a plain 302.
+      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
+      TURNSTILE_SECRET_KEY: "${TURNSTILE_SECRET_KEY:-}"
     volumes:
       # The SQLite event store: a DIRECTORY, not the file. SQLite keeps its
       # -wal and -shm beside the DB; with only the file mounted (until
@@ -264,13 +268,13 @@ services:
       traefik.http.routers.openinflowwww-relay.entrypoints: "websecure"
       traefik.http.routers.openinflowwww-relay.tls.certresolver: "mytlschallenge"
       traefik.http.services.openinflowwww-relay.loadbalancer.server.port: "8787"
-    # Cap container log growth. Without this the JSON-file driver writes
-    # forever; a week of OF traffic at INFO can balloon to 1+ GB.
+    # Bounded either way, no options (each driver rejects the other's). Default
+    # `local`: 5 x 20 MB compressed, works everywhere (Docker Desktop has no
+    # journald). RELAY_LOG_DRIVER=journald in .env (deploy/enable-persistent-journal.sh,
+    # AE + public hosts) keeps the lines across a container recreation, so the
+    # health sweep reads a whole interval through a redeploy.
     logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: ${RELAY_LOG_DRIVER:-local}
 
   openinflowwww-app:
     build:

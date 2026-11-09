@@ -27,7 +27,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
-import { useOfRefresh, vaultWholeSource } from "@/hooks/vaultRefresh";
+import { useOfRefresh, vaultPickerSource } from "@/hooks/vaultRefresh";
 import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
@@ -151,25 +151,23 @@ export function VaultPicker(props: VaultPickerProps) {
   // open, infinite-scroll FROM CACHE, and local (of_terms-aware) search. A
   // partial mirror stays on the live-OF path. A restricted chatter takes the
   // mirror too: the server applies their folder limits on the mirror routes.
-  // Both hooks always mount; only the enabled one fetches.
+  // Both hooks always mount; only the enabled one fetches, and neither before the summary's first answer
+  // (`vaultPickerSource` "pending": the grid shows loading, never a false "No media in this filter"). A live
+  // listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race (U4).
   const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
-  const source = open ? vaultWholeSource(cacheSummary.data) : "live";
-  const useLocalVault = source === "mirror";
+  const pickerSource = open ? vaultPickerSource(cacheSummary) : "live";
+  const source = pickerSource === "pending" ? "live" : pickerSource;
+  const useLocalVault = pickerSource === "mirror";
   const vaultLive = useVaultMedia({
     accountId, type, listId, sort: ofSort, query,
-    // Fire the live OF path immediately whenever we're NOT on the cache path.
-    // (Deliberately NOT gated on the summary call: under relay load a slow
-    // summary would leave the live query disabled → items:[] → a false
-    // "No media in this filter". For a cached account useLocalVault flips true
-    // within a few ms and the mirror — 8ms — wins the race anyway, so the
-    // worst case is one throwaway OF fetch on the very first cold open.)
-    enabled: open && !useLocalVault,
+    enabled: open && pickerSource === "live",
   });
   const vaultMirror = useMirrorItems({
     accountId, type, query, sort: ofSort, ofFolderId: listId, enabled: useLocalVault,
   });
-  const vault = useLocalVault ? vaultMirror : vaultLive;
+  const vaultShown = useLocalVault ? vaultMirror : vaultLive;
+  const vault = pickerSource === "pending" ? { ...vaultShown, isLoading: true } : vaultShown;
 
   // A broken thumbnail (an expired signed url) reloads the grid once per Creator per cooldown (reloadBrokenThumbs:
   // the mirror's items, or the live listing past the relay's cache); reopening the picker resets the tiles only.

@@ -232,6 +232,9 @@ def case_403_after_resign_is_403():
     assert r.status_code == 403, (r.status_code, r.text[:200])
     assert len(c.gets) == 2 and c.byid == [201], (c.gets, c.byid)
     assert admission.VAULT_DOWNLOAD.busy == 0
+    again = _dl(owner, 201)
+    assert again.status_code == 403 and c.byid == [201], (again.status_code, c.byid)
+    assert len(c.gets) == 3, c.gets  # failure memory prevents another OF by-id read
 
 
 def case_drm_only_is_422_and_unknown_404():

@@ -378,6 +378,29 @@ def case_make_default_is_the_owners_own_creator_only():
     assert account_registry._read_active_unlocked() == CREATOR_A
 
 
+def case_only_the_defaults_owner_can_clear_it():
+    account_registry.account_dir(CREATOR_A).joinpath("latest.json").write_text('{"session":"fake.json"}')
+    account_registry.set_active_account_id(CREATOR_A)
+    denied = OWNER_B.post("/admin/accounts/active", json={"account_id": None})
+    assert denied.status_code == 403, denied.text
+    assert account_registry._read_active_unlocked() == CREATOR_A
+    cleared = OWNER_A.post("/admin/accounts/active", json={"account_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert account_registry._read_active_unlocked() is None
+
+
+def case_owner_clears_sessionless_stored_default_without_fallback():
+    a_session = account_registry.account_dir(CREATOR_A) / "latest.json"
+    b_session = account_registry.account_dir(CREATOR_B) / "latest.json"
+    a_session.unlink(missing_ok=True)
+    b_session.write_text('{"session":"fake.json"}')
+    account_registry.set_active_account_id(CREATOR_A)
+    assert account_registry.get_stored_active_account_id() == CREATOR_A
+    cleared = OWNER_A.post("/admin/accounts/active", json={"account_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert account_registry.get_stored_active_account_id() is None
+
+
 def case_reload_session_is_the_owners_own_creator_only():
     """POST /admin/reload-session with no id acts on the relay-wide default, which may be another Agency's
     Creator: 403 for A (nothing reloaded, no user_id read), 200 for its owner B and the Master."""

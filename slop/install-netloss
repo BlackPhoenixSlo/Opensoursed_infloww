@@ -28,10 +28,10 @@ case "${1:-}" in
     exit 0 ;;
   --uninstall)
     [ "$(id -u)" = 0 ] || die "run with sudo: sudo $0 --uninstall"
-    [ ! -x "$DEST" ] || "$DEST" off || true
+    [ ! -x "$DEST" ] || "$DEST" off || die "shaping off failed; helper retained for retry"
     rm -f "$SUDOERS" "$DEST"
     rmdir /usr/local/libexec 2>/dev/null || true
-    echo "install-netloss: removed $SUDOERS and $DEST (shaping off)"
+    echo "install-netloss: removed $SUDOERS and $DEST"
     exit 0 ;;
   "") ;;
   *) die "usage: sudo $0 [--uninstall] | $0 --print" ;;

@@ -251,6 +251,25 @@ async def case_enqueue_raises_after_broadcast_parks():
     assert len(fake.send_calls) == 1, "no re-broadcast"
 
 
+async def case_failed_send_does_not_schedule_legs():
+    aid = "acc_mp_failed_send"
+    await _seed_account(aid)
+    real = smm.run
+
+    async def failed(*args, **kwargs):
+        return {"status": "error", "reason": "exclude_list_sync_failed"}
+
+    smm.run = failed
+    try:
+        res = await mp.run(aid, {"messages": [{"text": "hello", "resend_count": 1,
+                                               "resend_after_hours": 1, "unsend_after_hours": 1}]}, run_id=1)
+    finally:
+        smm.run = real
+    assert res["status"] == "error" and res["reason"] == "exclude_list_sync_failed", res
+    assert await _jobs(aid, KIND) == []
+    assert await _jobs(aid, "unsend_messages") == []
+
+
 _harness.run(
     case_send_and_schedule_unsend,
     case_resend_chain,
@@ -259,4 +278,5 @@ _harness.run(
     case_dry_run_plans_nothing,
     case_randomizer,
     case_enqueue_raises_after_broadcast_parks,
+    case_failed_send_does_not_schedule_legs,
 )

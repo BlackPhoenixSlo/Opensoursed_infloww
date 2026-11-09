@@ -168,8 +168,11 @@ const nextConfig: NextConfig = {
       { source: "/lanes-panel/:path*", destination: `${RELAY_URL}/lanes-panel/:path*` },
       // Public tracking-link redirect (Growth → Tracking Links). A fan hits
       // /t/<slug>; the relay records the click and 302s to the target. Must be
-      // a top-level rewrite — it's outside the /admin/* prefix.
+      // a top-level rewrite — it's outside the /admin/* prefix. A link with
+      // "Bot check before redirect" answers a Turnstile page whose widget POSTs
+      // /t/<slug>/verify (the click + the target).
       { source: "/t/:slug", destination: `${RELAY_URL}/t/:slug` },
+      { source: "/t/:slug/verify", destination: `${RELAY_URL}/t/:slug/verify` },
       // A share link's public report (Growth → Share links): the page
       // /share/<key> is Next's; only its /data read goes to the relay.
       { source: "/share/:key/data", destination: `${RELAY_URL}/share/:key/data` },

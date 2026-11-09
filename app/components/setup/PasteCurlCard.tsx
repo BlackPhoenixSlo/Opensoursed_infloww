@@ -1,86 +1,60 @@
 "use client";
 
 /**
- * PasteCurlCard — the primary bootstrap path.
+ * PasteCurlCard — the Add creator flow's Extension way in (the fallback when Browser login does not work).
  *
- * User installs the Chatterly Login (or No-Teleport Login) browser extension,
- * signs in to OF, clicks "Copy curl," and pastes the result here. We POST it
- * to /admin/session/bootstrap with `mode: 'paste-curl'`. The relay parses
- * cookies + signed headers + the `x-relay-static-param` extension header to
+ * Three steps: install the Chatterly Login Capture extension (or see that it is installed), sign in to OnlyFans in
+ * Chrome, then click "Copy cURL" in the extension and paste the copy here. We POST it to /admin/session/bootstrap with
+ * `mode: 'paste-curl'`. The relay parses cookies + signed headers + the `x-relay-static-param` extension header to
  * derive signing rules for the current OF revision.
  *
- * Optional fields:
- *   • Proxy to attach — drop-down of registered proxies; we surface a
- *     teleport-warning confirm since cookies are minted on the user's home
- *     IP and outbound traffic now routes through the proxy. (Plan §13.3.)
- *     "Paste a new proxy…" takes one line in any format; it is registered via
- *     POST /admin/proxies/bulk first and its label goes through the same
- *     assign step. The line (it can carry a password) is never a mutation
- *     variable, query key or URL.
- *   • Advanced override — manual static_param for a brand-new OF rev we
- *     haven't seen, fallback if the extension didn't capture it. Hidden
- *     by default under a <details>.
+ * The proxy is the flow's: `attach` (a new account when the relay has a proxy pool: the pool's automatic pick) runs as
+ * the card's attach step after the capture, then the session reloads through it; a line under the box says so (the
+ * cookies were minted on this computer's IP). Without `attach` (a row's re-link, or no pool) nothing is bound.
+ * "Troubleshooting", folded at the foot: a manual static_param for a brand-new OF revision the extension did not
+ * inject one for.
  *
- * Result panel shows the parsed response so you can see the new account_id
- * + which session file was written.
+ * Inside the modal (`IfModal footerSlot`) its Link account button sits in the modal's footer, only while `active`.
+ * The result panel shows the relay's answer (the new account_id and session file, or the error).
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useReducer } from "react";
-import { Download } from "lucide-react";
 
-import { relay, type BootstrapResponse, type ProxyMeta, RelayError } from "@/lib/relay";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import { relay, type BootstrapResponse, RelayError } from "@/lib/relay";
+import { EditorFooter } from "@/components/ui/ifModal";
+import { IfButton, IfHelp, IfInput, IfLabel, IfTextArea } from "@/components/ui/infloww";
 import { EXTENSION_ID } from "@/components/setup/useExtensionProbe";
-import { useInDesktopApp } from "@/hooks/useInDesktopApp";
-import { BRAND_NAME } from "@/lib/brand";
 import {
-  PASTE_PROXY, buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError,
-  type BootstrapBody,
+  buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError, type BootstrapBody,
 } from "@/components/setup/pasteCurl";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
 
-interface ProxiesResp {
-  proxies: ProxyMeta[];
-}
+/** The textarea's form: the footer's Link account submits it. */
+const PASTE_FORM_ID = "extension-login-form";
 
 /** `extInstalled` is the page-mount probe's answer (useExtensionProbe): null while checking. The card never probes.
  *  Inside the Add creator flow, `onLinked` hears the new account (when the proxy attach failed, only after Retry
- *  succeeds or Continue is pressed), and the flow's Nickname and Proxy selection come in as `initialNickname` and
- *  `initialProxyLabel`. `attach` (the flow picked Inflowwww proxy) replaces the "Attach proxy" select: it runs as the
- *  card's attach step, after the session is captured and before `onLinked`. */
-export default function PasteCurlCard({ extInstalled, onLinked, initialNickname = "", initialProxyLabel = "", attach }: {
+ *  succeeds or Continue is pressed), and the flow's nickname comes in as `initialNickname`. */
+export default function PasteCurlCard({ extInstalled, onLinked, initialNickname = "", attach, active = true }: {
   extInstalled: boolean | null;
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
-  initialProxyLabel?: string;
   attach?: (accountId: string) => Promise<void>;
+  /** Shown (Link account in the footer); false while the other sign-in is. */
+  active?: boolean;
 }) {
   const qc = useQueryClient();
-  const inApp = useInDesktopApp();
-  const [state, dispatch] = useReducer(
-    pasteCurlReducer, { nickname: initialNickname, proxyLabel: initialProxyLabel }, initialPasteCurl,
-  );
+  const [state, dispatch] = useReducer(pasteCurlReducer, { nickname: initialNickname }, initialPasteCurl);
   // `pending`: an account captured but whose attach failed. `onLinked` waits for Retry or Continue, so the error
   // stays readable.
-  const { curl, nickname, makeActive, proxyLabel, pastedProxy, staticOverride, result, pending } = state;
+  const { curl, staticOverride, result, pending } = state;
   // Why the pasted curl would be refused (no cookies, no user-agent, …), shown under the textarea.
   const hint = curlHint(curl);
 
-  const proxiesQ = useQuery<ProxiesResp>({
-    queryKey: ["proxies", "list"],
-    queryFn: () => relay.get<ProxiesResp>("/admin/proxies"),
-    staleTime: 60_000,
-  });
-
   const bootstrapM = useMutation<BootstrapResponse, RelayError, BootstrapBody>({
     mutationFn: (body) => relay.post<BootstrapResponse>("/admin/session/bootstrap", body),
-  });
-
-  const attachProxyM = useMutation({
-    mutationFn: ({ label, account_id }: { label: string; account_id: string }) =>
-      relay.post<unknown>("/admin/proxies/assign", { label, account_id }),
   });
 
   const reloadM = useMutation({
@@ -95,43 +69,12 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       dispatch({ type: "submitErr", text: invalid });
       return;
     }
-    const pasting = proxyLabel === PASTE_PROXY;
-    if (attach || proxyLabel) {
-      const confirmed = window.confirm(
-        `Attach ${attach ? "the chosen proxy" : pasting ? "proxy (the pasted one)" : `proxy "${proxyLabel}"`} to this account?\n\n` +
-        `OnlyFans will see every signed call egress from the proxy IP. The ` +
-        `cookies you're pasting were minted from your own browsing IP, so ` +
-        `OF effectively sees the account "teleport" to the proxy. Only safe ` +
-        `when the proxy IP is geographically/ASN-close to where you logged in.\n\n` +
-        `OK to attach. Cancel to go back; nothing is sent.`,
-      );
-      if (!confirmed) return;
-    }
-
-    let label = proxyLabel;
-    if (pasting) {
-      try {
-        const r = await relay.post<{ added: Array<{ label: string }>; errors: Array<{ reason: string }> }>(
-          "/admin/proxies/bulk",
-          { text: pastedProxy.trim(), scheme: "http" },
-        );
-        if (!r.added[0]) {
-          dispatch({ type: "submitErr", text: `Proxy not added: ${r.errors[0]?.reason ?? "unrecognised format"}` });
-          return;
-        }
-        label = r.added[0].label;
-      } catch (err) {
-        dispatch({ type: "submitErr", text: `Proxy not added: ${(err as Error).message}` });
-        return;
-      }
-    }
-
     try {
       const data = await bootstrapM.mutateAsync(buildBootstrapBody(state));
-      if (data.account_id && !(await attachStep(data.account_id, label))) return;
+      if (data.account_id && !(await attachStep(data.account_id))) return;
       await finish(
         data.account_id || null,
-        `✓ Bootstrapped account ${data.account_id} (user_id ${data.user_id})\n` +
+        `Linked account ${data.account_id} (user_id ${data.user_id})\n` +
         `Session file: ${data.session_file}\n` +
         `x-of-rev: ${data.x_of_rev}`,
       );
@@ -153,26 +96,24 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
     qc.invalidateQueries({ queryKey: ["health-all"] });
   }
 
-  /** The attach step: bind the chosen proxy (`attach`, else the selected label), then reload the session. True when
-   *  there is nothing to attach or it all worked; on failure the error stays in the card with Retry and Continue. */
-  async function attachStep(accountId: string, label: string): Promise<boolean> {
-    if (!attach && !label) return true;
+  /** The attach step: bind the flow's proxy (`attach`), then reload the session. True when there is nothing to attach
+   *  or it all worked; on failure the error stays in the card with Retry and Continue. */
+  async function attachStep(accountId: string): Promise<boolean> {
+    if (!attach) return true;
     let bound = false;
     try {
-      if (attach) await attach(accountId);
-      else await attachProxyM.mutateAsync({ label, account_id: accountId });
+      await attach(accountId);
       bound = true;
       await reloadM.mutateAsync(accountId);
       return true;
     } catch (err) {
       const msg = (err as Error).message;
       dispatch({
-        type: "attachErr", accountId, label,
+        type: "attachErr", accountId,
         text: bound
           ? `Session captured (account ${accountId}) and the proxy is attached, but reloading the session failed:\n` +
             `${msg}\n\nPress Retry to reload it.`
-          : `Session captured (account ${accountId}), but proxy attach failed:\n${msg}\n\n` +
-            (attach ? "Press Retry, or Continue without it." : "Press Retry, or attach it later under Creators → Custom proxy."),
+          : `Session captured (account ${accountId}), but proxy attach failed:\n${msg}\n\nPress Retry, or Continue without it.`,
       });
       // The account was created before the proxy step, so refresh even on the failure path.
       refreshCaches();
@@ -189,151 +130,70 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
 
   async function retry() {
     if (!pending) return;
-    const { accountId, label } = pending;
+    const { accountId } = pending;
     dispatch({ type: "retryStart" });
-    if (await attachStep(accountId, label)) {
-      await finish(accountId, `✓ Proxy attached to account ${accountId}`);
+    if (await attachStep(accountId)) {
+      await finish(accountId, `Proxy attached to account ${accountId}`);
     }
   }
 
   return (
-    <Card className="space-y-4">
-      <div>
-        <h2 className="text-base font-semibold mb-1">Paste cURL</h2>
-        <p className="text-sm text-fg-dim leading-relaxed mb-3">
-          Install the <strong>Chatterly Login Capture</strong> extension, sign
-          in to OnlyFans, click <strong>Copy cURL</strong>, and paste here.
-          The extension injects <code>x-relay-static-param</code> so this
-          works on any new OF revision.
-        </p>
-        {extInstalled === true ? (
-          <div className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-ok/10 border border-ok/30 text-ok font-medium text-sm">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-            </svg>
-            Extension installed — click the puzzle icon in your Chrome toolbar to open it
-          </div>
-        ) : (
-          <a
-            href={EXTENSION_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white hover:bg-accent-hover font-medium text-sm"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3a7 7 0 016.32 4H12a3 3 0 00-2.83 2H5.68A7 7 0 0112 5zm-7 7c0-.69.1-1.36.28-2L8.5 17.5A7 7 0 015 12zm7 7a7 7 0 01-1.5-.16L13.83 13a3 3 0 002.83-2h2.96A7 7 0 0112 19zm0-4a3 3 0 110-6 3 3 0 010 6z" />
-            </svg>
-            {extInstalled === null ? "Open Chrome Extension" : "Install Chrome Extension"}
-          </a>
-        )}
-        {/* The desktop app, in the same row (a plain <a>: /download is a static file outside the router). Left
-            out inside the app, where desktop/preload.js finds the "Install Chrome Extension" link by its text and
-            puts "Connect OnlyFans (app)" right after it. */}
-        {!inApp && (
-          <a
-            href="/download"
-            title={`Get the ${BRAND_NAME} desktop app for Mac and Windows`}
-            className="ml-2 inline-flex items-center gap-2 px-4 py-[9px] rounded-lg border border-border text-fg hover:bg-bg-elev-1 font-medium text-sm"
-          >
-            <Download aria-hidden className="w-[18px] h-[18px]" />
-            Download app
-          </a>
-        )}
-      </div>
-
-      <Textarea
-        rows={6}
-        placeholder="curl 'https://onlyfans.com/api2/v2/...' -H 'sign: …' -H 'time: …' -H 'user-id: …' -H 'x-bc: …' -H 'x-of-rev: …' -H 'x-relay-static-param: …' -b 'auth_id=…; sess=…; …'"
-        value={curl}
-        onChange={(e) => dispatch({ type: "setField", field: "curl", value: e.target.value })}
-        aria-invalid={!!hint}
-        aria-describedby={hint ? "paste-curl-hint" : undefined}
-      />
-      {hint && (
-        <p id="paste-curl-hint" role="status" aria-live="polite" className="text-xs text-err leading-relaxed break-words">
-          {hint}
-        </p>
-      )}
-
-      {/* Optional fields */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-fg-dim mb-1">Nickname (optional)</label>
-          <Input
-            placeholder="e.g. Bella, Mia, Test-burner"
-            value={nickname}
-            onChange={(e) => dispatch({ type: "setField", field: "nickname", value: e.target.value })}
-          />
-        </div>
-        {!attach && <div>
-          <label className="block text-xs text-fg-dim mb-1">Attach proxy (optional)</label>
-          <select
-            value={proxyLabel}
-            onChange={(e) => dispatch({ type: "setField", field: "proxyLabel", value: e.target.value })}
-            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent"
-          >
-            <option value="">— none (relay egresses on server WAN IP) —</option>
-            {(proxiesQ.data?.proxies || []).map((p) => (
-              <option key={p.label} value={p.label}>
-                {p.label} · {p.host}:{p.port}
-              </option>
-            ))}
-            <option value={PASTE_PROXY}>Paste a new proxy…</option>
-          </select>
-          {proxyLabel === PASTE_PROXY && (
-            <Input
-              aria-label="New proxy"
-              className="mt-2 font-mono"
-              placeholder="user:pass@host:port or host:port:user:pass"
-              autoComplete="off"
-              spellCheck={false}
-              value={pastedProxy}
-              onChange={(e) => dispatch({ type: "setField", field: "pastedProxy", value: e.target.value })}
-            />
+    <form id={PASTE_FORM_ID} className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (canSubmit(state) && !bootstrapM.isPending) void submit(); }}>
+      <ol className="space-y-3 text-[14px] leading-[22px]">
+        <li className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <span><span className="text-muted">1.</span> Install the Chatterly Login Capture extension in Chrome.</span>
+          {extInstalled === true ? (
+            <span className="text-ok">Extension installed</span>
+          ) : (
+            // Its text is what desktop/preload.js finds to put "Connect OnlyFans (app)" beside it inside the desktop app.
+            <a
+              href={EXTENSION_URL} target="_blank" rel="noopener noreferrer"
+              className="inline-flex h-8 items-center rounded-md border border-border px-[15px] text-fg hover:border-accent hover:text-accent"
+            >
+              {extInstalled === null ? "Open Chrome Extension" : "Install Chrome Extension"}
+            </a>
           )}
-        </div>}
-      </div>
+        </li>
+        <li><span className="text-muted">2.</span> Sign in to OnlyFans in Chrome and open any chat.</li>
+        <li><span className="text-muted">3.</span> Open the extension, click Copy cURL and paste it below.</li>
+      </ol>
 
-      <label className="flex items-center gap-2 text-xs text-fg-dim">
-        <input
-          type="checkbox"
-          checked={makeActive}
-          onChange={(e) => dispatch({ type: "setField", field: "makeActive", value: e.target.checked })}
-          className="accent-accent"
+      <div>
+        <IfLabel htmlFor="paste-curl-text">Copied cURL</IfLabel>
+        <IfTextArea
+          id="paste-curl-text"
+          rows={5}
+          placeholder="curl 'https://onlyfans.com/api2/v2/...' -H 'sign: …' -H 'x-bc: …' -b 'auth_id=…; sess=…; …'"
+          value={curl}
+          onChange={(e) => dispatch({ type: "setField", field: "curl", value: e.target.value })}
+          aria-invalid={!!hint}
+          aria-describedby={hint ? "paste-curl-hint" : undefined}
         />
-        Flip this account to the relay&apos;s default after bootstrap
-      </label>
-
-      {(attach || proxyLabel) && (
-        <div className="text-[11px] text-warn bg-warn/10 border border-warn/30 rounded-lg p-3 leading-relaxed">
-          ⚠ <strong>Teleport warning:</strong> the curl&apos;s cookies were minted
-          from <em>your</em> browsing IP. Attaching this proxy makes every signed
-          call afterwards egress from the proxy IP — OF sees the account hop
-          continents. Only safe when the proxy IP is geographically close to
-          your sign-in IP.
-        </div>
-      )}
+        {hint && (
+          <p id="paste-curl-hint" role="status" aria-live="polite" className="mt-1 text-xs text-err leading-relaxed break-words">
+            {hint}
+          </p>
+        )}
+        {attach && (
+          <IfHelp>
+            A proxy is assigned automatically after linking, so OnlyFans may see this account sign in from a new place.
+          </IfHelp>
+        )}
+      </div>
 
       <details className="text-xs">
-        <summary className="cursor-pointer text-fg-dim hover:text-fg">
-          advanced: override <code>static_param</code> (only if you&apos;re on an
-          OF revision we haven&apos;t seen and the extension didn&apos;t inject one)
-        </summary>
-        <Input
-          placeholder="static_param (32 chars; usually leave blank)"
+        <summary className="cursor-pointer text-muted hover:text-fg">Troubleshooting</summary>
+        <IfLabel htmlFor="paste-curl-static" className="mt-2 text-[12px] text-muted">
+          static_param override (only for a new OnlyFans revision the extension did not inject one for)
+        </IfLabel>
+        <IfInput
+          id="paste-curl-static"
+          placeholder="32 characters; usually leave blank"
           value={staticOverride}
           onChange={(e) => dispatch({ type: "setField", field: "staticOverride", value: e.target.value })}
-          className="mt-2 font-mono"
+          className="w-full font-mono"
         />
       </details>
-
-      <Button
-        type="button"
-        onClick={submit}
-        disabled={!canSubmit(state) || bootstrapM.isPending}
-      >
-        {bootstrapM.isPending ? "Bootstrapping…" : "Bootstrap from cURL"}
-      </Button>
 
       {/* Result panel */}
       {result && (
@@ -348,15 +208,21 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       )}
       {pending && (
         <div className="flex gap-2">
-          <Button type="button" onClick={() => void retry()}>Retry</Button>
-          <Button
-            type="button" variant="secondary"
-            onClick={() => void finish(pending.accountId, `✓ Bootstrapped account ${pending.accountId} without a proxy`)}
-          >
+          <IfButton variant="primary" onClick={() => void retry()}>Retry</IfButton>
+          <IfButton onClick={() => void finish(pending.accountId, `Linked account ${pending.accountId} without a proxy`)}>
             Continue
-          </Button>
+          </IfButton>
         </div>
       )}
-    </Card>
+
+      {active && (
+        // No phone: the extension is desktop Chrome's.
+        <EditorFooter>
+          <IfButton type="submit" form={PASTE_FORM_ID} variant="primary" disabled={!canSubmit(state) || bootstrapM.isPending} className="max-md:hidden">
+            {bootstrapM.isPending ? "Linking…" : "Link account"}
+          </IfButton>
+        </EditorFooter>
+      )}
+    </form>
   );
 }

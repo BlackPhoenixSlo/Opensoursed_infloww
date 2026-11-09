@@ -33,10 +33,12 @@ asked a CONNECT to refuse. `refuse_s` (0.33 s) is measured: the gap between prod
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import socket
 import threading
 import time
+
 
 REFUSE_S = 0.33
 _LOOPBACK = ("127.0.0.1", "::1")
@@ -48,6 +50,21 @@ def egress_of(peer_port: int) -> str:
     return "direct" if p is None else f"127.0.0.1:{p}"
 
 
+def registry_bindings(path) -> dict[str, str]:
+    """Read the relay's registry as written, tolerating a concurrent partial write."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {aid: p["label"] for p in data.get("proxies", []) for aid in (p.get("assigned_account_ids") or [])}
+
+
+def registry_pool(path) -> dict[str, int]:
+    """Pool proxy labels and ports from the relay's registry, in registry order."""
+    data = json.loads(path.read_text())
+    return {p["label"]: p["port"] for p in data["proxies"] if p.get("pool")}
+
+
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tuple,
                 mark: asyncio.Event | None = None, once: asyncio.Event | None = None) -> None:
     """Copy src to dst; `mark` is set once a chunk went through; with `once` (the answer's mark),
@@ -55,11 +72,10 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tup
     direction ending shuts both sockets, which ends the other."""
     try:
         while chunk := await src.read(65536):
+            if once is not None and b"upgrade: websocket" in chunk.lower():
+                once = None  # the first request upgrades this tunnel before its 101 answer
             if once is not None and once.is_set():
-                if b"upgrade: websocket" in chunk.lower():
-                    once = None
-                else:
-                    break
+                break
             dst.write(chunk)
             await dst.drain()
             if mark is not None:
@@ -85,6 +101,9 @@ class ProxyWire:
         self._open: set = set()  # the open tunnels' sockets (both ends), shut by kill()
         self._srv: socket.socket | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: asyncio.AbstractServer | None = None
+        self._thread: threading.Thread | None = None
+        self._tasks: set[asyncio.Task] = set()
 
     @property
     def port(self) -> int:
@@ -102,15 +121,26 @@ class ProxyWire:
             up.set()
             self._loop.run_forever()
 
-        threading.Thread(target=main, name=f"slop-proxy-wire-{self.port}", daemon=True).start()
+        self._thread = threading.Thread(target=main, name=f"slop-proxy-wire-{self.port}", daemon=True)
+        self._thread.start()
         if not up.wait(10):
             raise SystemExit("slop: the fake proxy did not start")
         return self
 
     def __exit__(self, *_a) -> None:
-        self._loop.call_soon_threadsafe(self._server.close)
         self.kill()
+        async def shutdown() -> None:
+            self._server.close()
+            for task in tuple(self._tasks):
+                task.cancel()
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            await self._server.wait_closed()
+        asyncio.run_coroutine_threadsafe(shutdown(), self._loop).result(timeout=10)
         self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=10)
+        if self._thread.is_alive():
+            raise RuntimeError("slop fake proxy thread did not stop")
+        self._loop.close()
 
     def kill(self) -> float:
         """The proxy dies: open tunnels end, every later CONNECT is refused. Returns the time."""
@@ -135,9 +165,12 @@ class ProxyWire:
             self.refuse_share = share
 
     async def _serve(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        self._tasks.add(task)
         uw = None
         c = cw.get_extra_info("socket")
         u = None
+        up = None
         try:
             _ver, n = await cr.readexactly(2)
             await cr.readexactly(n)
@@ -180,7 +213,9 @@ class ProxyWire:
                 self._open.discard(c)
                 if u is not None:
                     self._open.discard(u)
-                    _EGRESS.pop(up, None)
+                    if up is not None:
+                        _EGRESS.pop(up, None)
             for w in (cw, uw):
                 if w is not None:
                     w.close()
+            self._tasks.discard(task)

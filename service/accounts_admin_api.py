@@ -529,7 +529,8 @@ def admin_accounts_activate(body: _ActivateBody = Body(...)) -> dict[str, Any]:
     """Flip which account is the default (no X-Account-Id header → this one)."""
     # The caller's own Creators only (the id is body-carried: the isolation middleware never sees it). First, so
     # another Agency's id answers 403 whether it exists or not.
-    assert_account_owned(body.account_id)
+    assert_account_owned(body.account_id if body.account_id is not None
+                         else account_registry.get_stored_active_account_id())
     if body.account_id is not None and account_registry.get_account(body.account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {body.account_id!r}")
     # A watcher (a fan account) is never the default: the registry refuses it.
@@ -595,7 +596,10 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
         await vault_cache.invalidate(account_id)
     except Exception as e:  # noqa: BLE001
         log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
-    await notifications_api.drop_pinned(account_id)   # every Agency's pinned row for it goes with it
+    try:
+        await notifications_api.drop_pinned(account_id)   # every Agency's pinned row for it goes with it
+    except Exception as e:  # noqa: BLE001
+        log.warning("notifications: drop-pinned-on-delete failed for %s: %s", account_id, e)
     ok = account_registry.delete_account(account_id)
     _kick_db_sync(f"accounts-delete-{account_id}")
     return {"ok": ok}

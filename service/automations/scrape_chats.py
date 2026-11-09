@@ -613,8 +613,7 @@ async def _automation_scrape_chats(
                 if not payload and not chats_scanned and chats_broken >= _SWEEP_FAIL_FAST:
                     # The account is failing (proxy, 429 burst), not one chat: don't spend the
                     # remaining ~95 chats x 3 attempts on it. Same effect as the post-loop raise.
-                    raise RuntimeError(f"full sweep scraped 0 chats, {chats_broken} failed "
-                                       f"of the first {chats_failed} of {len(targets)}")
+                    break
         await asyncio.sleep(_PAGE_SLEEP_S)
 
     out = {
@@ -630,7 +629,7 @@ async def _automation_scrape_chats(
         # failed for a reason other than OF's 404 (fan gone): not a sweep. Raise, so the
         # job retries, then parks 'error' (the cadence's backoff).
         if chats_broken and not chats_scanned:
-            raise RuntimeError(f"full sweep scraped 0 of {len(targets)} chats")
+            raise RuntimeError(f"full sweep scraped 0 of {len(targets)} chats: "
+                               f"{chats_broken} failed of the first {chats_failed} of {len(targets)}")
         out["full_sweep"] = True
     return out
-

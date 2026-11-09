@@ -2,7 +2,7 @@
  * CsvExportButton hides itself once the session's role denies the Export CSV Function permission
  * (any `<page>#export` in the Applied settings' `denied_actions`); the Relay refuses the download either way.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 let denied: string[] | undefined;
@@ -28,5 +28,15 @@ describe("CsvExportButton", () => {
     denied = ["/messages-pro#export"];
     renderButton();
     expect(screen.queryByRole("button", { name: /Export CSV/ })).toBeNull();
+  });
+
+  it("keeps its label while the download click is debounced", () => {
+    denied = undefined;
+    renderButton();
+    const button = screen.getByRole("button", { name: "Export CSV" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Export CSV");
+    expect(screen.queryByText("Starting…")).toBeNull();
   });
 });

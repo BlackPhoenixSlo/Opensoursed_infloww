@@ -29,8 +29,11 @@ load_dotenv(_ENV_FILE, override=False)
 @dataclass(frozen=True)
 class LLMProvider:
     name: str          # "deepseek" | "deepinfra" | "zai" | "anthropic"
-    base_url: str      # OpenAI-compatible base
-    api_key_env: str   # env var holding the bearer key
+    base_url: str      # API base (path appended by llm_client per `wire`)
+    api_key_env: str   # env var holding the key
+    # Request/response shape: "openai" = POST {base}/chat/completions with a
+    # Bearer key; "anthropic" = native POST {base}/messages (llm_anthropic).
+    wire: str = "openai"
 
 
 # Both keys are CONFIRMED present in service/.env (verified 2026-06-04, 19 §4).
@@ -44,13 +47,12 @@ PROVIDERS: dict[str, LLMProvider] = {
     # caller that trusts the status code sees a successful request with no
     # choices rather than a routing error. Probed 2026-08-27.
     "zai": LLMProvider("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
-    # Anthropic (Claude) through its OpenAI-compatibility layer: same
-    # /chat/completions path, `Authorization: Bearer <key>` accepted, so no
-    # second client. The layer is not the native API — no prompt caching,
-    # `reasoning_effort` ignored, `temperature` and `response_format:
-    # json_object` are 400s on current models (see llm_models). Probed
-    # 2026-11-07; docs: platform.claude.com/docs/en/api/openai-sdk.
-    "anthropic": LLMProvider("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
+    # Anthropic (Claude) on its NATIVE Messages API (llm_anthropic), not the
+    # OpenAI-compat layer: the layer does not prompt-cache, so the help bot's
+    # ~39k-token system prompt billed in full every answer (measured
+    # 2026-11-07). `x-api-key` header; same key resolution as every provider.
+    "anthropic": LLMProvider("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY",
+                             wire="anthropic"),
 }
 
 

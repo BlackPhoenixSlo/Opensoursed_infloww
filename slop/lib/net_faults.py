@@ -12,13 +12,7 @@ def budget_check(profile: str, flow: str) -> str:
     return f"{profile}: {flow} within budget"
 
 
-# The far-profile budgets whose measured ready (min over 345a) is >= 2x si's budget, so si's budget fails them for
-# the network alone: jp-mobile dashboard (4651 vs 1550), jp-mobile fan-list (2033 vs 950), jp-mobile vault (6055 vs
-# 1900), jp-bad dashboard (9973 vs 1550), jp-bad fan-list (4292 vs 950), jp-bad vault (9429 vs 1900). Not targets (<
-# 2x, could pass under si's budget on a quiet run): jp dashboard (2246 vs 1550), jp creators (935 vs 1000), jp
-# fan-list (1101 vs 950), jp thread (834 vs 1200), jp vault (1285 vs 1900), jp send (878 vs 950), jp-mobile creators
-# (1114 vs 1000), jp-mobile thread (1064 vs 1200), jp-mobile send (950 vs 950), jp-bad creators (1699 vs 1000),
-# jp-bad thread (1330 vs 1200), jp-bad send (1280 vs 950); and receive (one budget for every profile).
+# Far-profile flows measured at least twice si's budget in the 345a baseline; other flows are not targets.
 TARGETS: tuple[str, ...] = (
     budget_check("jp-mobile", "dashboard"),
     budget_check("jp-mobile", "fan-list"),
@@ -29,9 +23,7 @@ TARGETS: tuple[str, ...] = (
 )
 
 
-# jp-lossy (dummynet, 2 % loss) under si's budgets: its flows measured >= 2x si's in both baselines (b548, aa1e):
-# dashboard (16207 vs 1550), creators (2469 vs 1000), fan-list (3982 vs 950), vault (14171 vs 1900). Not targets:
-# thread (1651 vs 1200), send (1137 vs 950), receive (255-305 vs si's 800).
+# jp-lossy flows measured at least twice si's budget in baselines b548 and aa1e; other flows are not targets.
 LOSSY_TARGETS: tuple[str, ...] = tuple(budget_check("jp-lossy", f) for f in ("dashboard", "creators", "fan-list", "vault"))
 
 

@@ -15,6 +15,7 @@ Run from the repo root with whichever venv has curl_cffi + fastapi + uvicorn:
 from __future__ import annotations
 
 import hashlib
+import importlib
 import logging
 import os
 import re
@@ -39,7 +40,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_SKIP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
-from starlette.routing import BaseRoute, Match
 from pydantic import BaseModel, Field, field_validator
 
 HERE = Path(__file__).resolve().parent
@@ -59,6 +59,7 @@ import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError  # noqa: E402
+from of_rich_text import MARKUP_MAX  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
@@ -97,9 +98,11 @@ import gdrive  # noqa: E402  # the Drive key's reader, for the import card's on/
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
 import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
+import of_call_counter  # noqa: E402  # every OF call counted (Caller kind, path, Creator, status), to a file
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 from bg_lane import BgLane, BgLease  # noqa: E402  # a Creator's background sub-cap, loop + threads
-import chats_page  # noqa: E402  # one logical page of OF /chats (inbox, badge)
+import relay_hooks  # noqa: E402
+import chats_page  # noqa: E402  # one logical page of OF /chats
 import db_retention  # noqa: E402  # DB retention loops (raw_json, audit, optimize, payload cap)
 from lists import router as _lists_router  # noqa: E402
 from automation_rules_api import router as _automation_rules_router  # noqa: E402
@@ -266,10 +269,44 @@ app.add_middleware(
 # it, as each hook's own layer was.
 _http_hooks = HookChain()
 app.add_middleware(BaseHTTPMiddleware, dispatch=_http_hooks.dispatch)
+
+
+class _DbBusy503:
+    """Outside the hook chain (a hook's own DB read raises past call_next): a
+    request whose DB checkout timed out at the pool's spill cap (db/engine.py
+    MAX_SPILL, WAIT_MAX_S) answers 503 + Retry-After, not a 500. Pure ASGI."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = False
+
+        async def tracked(msg):
+            nonlocal started
+            started = started or msg["type"] == "http.response.start"
+            await send(msg)
+
+        try:
+            await self.app(scope, receive, tracked)
+        except _sqla_exc.TimeoutError:
+            if started:
+                raise
+            log.warning("db pool busy: 503 %s %s", scope.get("method"), scope.get("path"))
+            await JSONResponse(status_code=503, headers={"Retry-After": "5"},
+                               content={"detail": "database busy, retry shortly"})(scope, receive, send)
+
+
+from sqlalchemy import exc as _sqla_exc  # noqa: E402
+app.add_middleware(_DbBusy503)
 # Added first, so innermost: labels the request's SQLite writes for
 # db/write_telemetry (outer hooks' writes after call_next see the label too).
 from db import write_telemetry as _write_telemetry  # noqa: E402
 _http_hooks.add(_write_telemetry.label_request_writes)
+# Labels the request's OF calls `route:<METHOD> <folded path>` (of_call_counter).
+_http_hooks.add(of_call_counter.label_request_calls)
 
 import llm_client as _llm_client  # noqa: E402  (the key-error handler below)
 
@@ -531,15 +568,18 @@ async def _deactivated_write_guard(request: Request, call_next):
     script. A hook rather than a check in `_resolve_account_id` because that
     is sync and the flag lives in the database, and because only writes are
     refused. The id checked is the one the route will use: the explicit one
-    (header or ?account_id=), else the default-account fallback, which may
-    still point at a deactivated Creator (the default is never moved: its
-    file is shared across agencies). Every other OF write (the /admin/*
+    (header or ?account_id=), else the default-account fallback only when
+    the caller owns that default (its file is shared across agencies).
+    Every other OF write (the /admin/*
     routes, background jobs) is refused one layer down, in OFClient
     (`account_health.refuses_writes`); this hook only makes /api/of/'s a 409."""
     if request.method in ("GET", "HEAD", "OPTIONS") or not request.url.path.startswith("/api/of/"):
         return await call_next(request)
-    aid = (request.headers.get("x-account-id") or request.query_params.get("account_id")
-           or account_registry.get_active_account_id())
+    aid = request.headers.get("x-account-id") or request.query_params.get("account_id")
+    if not aid:
+        default = account_registry.get_active_account_id()
+        owned = _require_actor_account_ids()
+        aid = default if default and (owned is None or default in owned) else None
     if aid and await account_health.is_deactivated(aid):
         return JSONResponse(status_code=409, content={"detail": _DEACTIVATED_DETAIL})
     return await call_next(request)
@@ -551,20 +591,19 @@ async def _deactivated_write_guard(request: Request, call_next):
 # ones reach the audit writer. The decorator-registered middlewares below
 # are added before this line, so we add this one via the imperative API to
 # control ordering explicitly.
-# Background admission (`_bg_admission`, beside the lanes). Added before every
-# gate, so it runs inside them all: only a signed-in request that reached its
-# own Creator waits for a background slot.
-async def _bg_admission_sync_route(request: Request, call_next):
-    """A background `/api/of/` read whose route is a sync `def` is admitted here,
-    on the loop, for the whole request (its thread borrows the slot)."""
+# Background admission (`_bg_admission`, beside the lanes) runs after the
+# signed-in principal and account isolation are known, but before role reads.
+# A queued background request therefore holds neither a worker nor a DB
+# checkout. Role permissions are still read when it enters, not when it queues.
+async def _bg_admission_route(request: Request, call_next):
+    """Admit a background OF read on the loop before its DB and OF work."""
     if ((request.headers.get("x-priority") or "").lower() == "background"
-            and request.url.path.startswith("/api/of/") and _sync_route(request.method, request.url.path)):
+            and request.method in ("GET", "HEAD")
+            and request.url.path.startswith("/api/of/")):
         async with _bg_admission(request):
             return await call_next(request)
     return await call_next(request)
 
-
-_http_hooks.add(_bg_admission_sync_route)
 
 _http_hooks.add(_audit_middleware)
 
@@ -577,6 +616,10 @@ _http_hooks.add(_deactivated_write_guard)
 # it: a refused request reaches no handler and writes no `actions` row. It runs
 # inside both session middlewares, so it sees the chatter they resolved.
 _http_hooks.add(role_enforcement_middleware)
+
+# Admission is inside tenant isolation and outside role enforcement. The
+# queued request's role is checked only after it receives a background slot.
+_http_hooks.add(_bg_admission_route)
 
 # Tenant isolation. Registered here — BEFORE both session middlewares — so that
 # it RUNS AFTER them (Starlette: last registered = outermost) and can see the
@@ -879,7 +922,9 @@ async def _persist_unhandled_errors(request: Request, call_next):
     those are deliberate, structured replies, not bugs."""
     try:
         return await call_next(request)
-    except HTTPException:
+    except (HTTPException, _sqla_exc.TimeoutError):
+        # A pool timeout is backpressure (_DbBusy503), not a bug: writing its
+        # row would take one more connection from the pool that just ran out.
         raise
     except Exception as exc:
         import traceback as _tb
@@ -1159,9 +1204,10 @@ def _do_start_account_pump(account_id: str) -> None:
     task = _account_pumps.get(account_id)
     if task and not task.done():
         return
-    task = _account_pumps[account_id] = asyncio.create_task(
-        _ws_pump_for_account(account_id), name=f"ws-pump-{account_id}",
-    )
+    with of_call_counter.caller("loop:ws-pump"):   # its OF calls, the Creator id left out
+        task = _account_pumps[account_id] = asyncio.create_task(
+            _ws_pump_for_account(account_id), name=f"ws-pump-{account_id}",
+        )
     old = _pump_runs.get(account_id)
     _pump_runs[account_id] = _PumpRun(_time_mod.monotonic(), old.restarts if old else 0)
     task.add_done_callback(functools.partial(_on_pump_exit, account_id))
@@ -1309,7 +1355,8 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn_bg(coro, name: str) -> asyncio.Task:
-    task = asyncio.create_task(coro, name=name)
+    with of_call_counter.caller(f"loop:{name}"):   # its OF calls (ids in `name` fold)
+        task = asyncio.create_task(coro, name=name)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
@@ -1529,24 +1576,24 @@ async def _start_event_pumps() -> None:
     sign_rules.enable_background()
 
     # Missed clock-ins become agency notifications, and old ones are pruned (notifications_api.tick).
-    asyncio.create_task(_periodic("clock-in missed", notifications_api.TICK_S, notifications_api.tick,
-                                  first_after_s=60), name="clock-in-missed")
+    _spawn_bg(_periodic("clock-in missed", notifications_api.TICK_S, notifications_api.tick,
+                        first_after_s=60), "clock-in-missed")
 
     # Tracking / free trial / promotion link figures, read hourly per live
     # account so Growth pages open from cache (link_metrics.prewarm_all). First
     # pass 10 min in, clear of the boot herd.
     import link_metrics
-    asyncio.create_task(_periodic(
+    _spawn_bg(_periodic(
         "link figures prewarm", link_metrics.PREWARM_PAUSE_S, link_metrics.prewarm_all,
-        first_after_s=600), name="link-figures-prewarm")
+        first_after_s=600), "link-figures-prewarm")
 
     # Vault week cache: one Creator at a time, paced ≥5 s between OF calls on the
     # background lane — folder list, each dropdown folder's first page, All's
     # first two pages, one full walk, top-100 thumbs (vault_collect docstring).
     import vault_collect
     if vault_collect.ENABLED:
-        asyncio.create_task(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
-                                      first_after_s=vault_collect.FIRST_AFTER_S), name="vault-collect")
+        _spawn_bg(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
+                            first_after_s=vault_collect.FIRST_AFTER_S), "vault-collect")
 
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 15-min ticks
@@ -1561,7 +1608,7 @@ async def _start_event_pumps() -> None:
     # notification feed (no ledger read) per online/selling account so a PPV
     # unlock flips messages.is_paid within ~30s and the automations see it the
     # next tick. Shares the per-account lock with the supervisor. Cancelled in _stop_event_pumps.
-    _tx_fast_task = asyncio.create_task(_start_tx_fast(), name="tx-ingest-fast-poll")
+    _tx_fast_task = _spawn_bg(_start_tx_fast(), "tx-ingest-fast-poll")
 
     # OnlyFans Statistics figures per Creator per UTC day (visitors, new subs,
     # renewals) for Creator reports' windows: three reads per Creator once a
@@ -1581,8 +1628,8 @@ async def _start_event_pumps() -> None:
     # finished sweep, at most one open per account; duplicates collapse. Replaces the
     # once-per-boot seed that stacked a sweep per account on every restart.
     import sweep_cadence
-    asyncio.create_task(_periodic("chat sweep cadence", sweep_cadence.TICK_S, sweep_cadence.tick,
-                                  first_after_s=sweep_cadence.FIRST_AFTER_S), name="chat-sweep-cadence")
+    _spawn_bg(_periodic("chat sweep cadence", sweep_cadence.TICK_S, sweep_cadence.tick,
+                        first_after_s=sweep_cadence.FIRST_AFTER_S), "chat-sweep-cadence")
 
 
 @app.on_event("startup")
@@ -1608,6 +1655,7 @@ async def _stop_event_pumps() -> None:
     # Save the lane counters before anything else can raise — a clean stop is
     # the one restart where we can avoid losing the last flush interval.
     _lane_stats_flush(force=True)
+    of_call_counter.flush()
     # Finish every automation run that has claimed a send (a mass message on
     # its way to OF) before anything below stops, and start no new one: a restart
     # never leaves a send half done (automation_executor.drain, bounded).
@@ -1636,11 +1684,16 @@ async def _stop_event_pumps() -> None:
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await _stop_persist_worker()
 
+    # Idle signed curl handles close now; any in-flight lease closes on return.
+    client_pool.evict()
+
     # Close the pooled SQLite connections (db/engine.py), so the last one out
     # checkpoints the WAL as a closed NullPool connection used to.
     from db.engine import engine as _db_engine
     with contextlib.suppress(Exception):
         await _db_engine.dispose()
+    # Last: catches the OF calls a send finished inside the drain above.
+    of_call_counter.flush()
 
 
 def _load_client(account_id: str) -> OFClient:
@@ -2182,6 +2235,9 @@ def _lane_stats_flush(force: bool = False) -> None:
 
 
 _lane_stats_load()
+# The OF call counter's file beside the DB (OF_CALL_STATS_PATH): loaded, written at once,
+# then flushed every OF_CALL_STATS_FLUSH_S by its own thread; again at shutdown.
+of_call_counter.start(of_call_counter.stats_path())
 # Persist immediately rather than waiting for the first lane exit. Two reasons:
 # the bumped `boots` should be durable even on a relay that then serves no OF
 # traffic at all, and a path we cannot write to should surface as
@@ -2282,7 +2338,7 @@ async def _bg_admission(request: Request | None = None):
     background request's OF read takes a worker thread; a no-op for user priority,
     for a request whose account does not resolve (it fails in the route as before)
     and inside an admission for the same Creator. Entered by the coalesce leader and
-    relay_cache's sync fetch (relay_coalesce.admission), `_bg_admission_sync_route`
+    relay_cache's sync fetch (relay_coalesce.admission), `_bg_admission_route`
     and the direct `to_thread(_proxy, ...)` background reads."""
     req = request if request is not None else _request_ctx.get()
     aid = None
@@ -2312,27 +2368,6 @@ async def _bg_admission(request: Request | None = None):
     finally:
         _bg_lease.reset(token)
         lease.close()
-
-
-_route_sync: list[tuple[BaseRoute, bool]] = []   # app's routes in match order, each: a sync `def`?
-
-
-def _sync_route(method: str, path: str) -> bool:
-    """The route `method path` matches is a sync `def`: it goes straight to the
-    threadpool (an `_account_ttl` route is async: its cache wrapper). The routes'
-    kinds are read once, at the first call: every route is registered at import
-    (app.include_router / decorators, none at runtime), before any request; refilled
-    if the app's route count ever moves."""
-    if len(_route_sync) != len(app.router.routes):
-        _route_sync.clear()
-        for r in app.router.routes:
-            call = getattr(getattr(r, "dependant", None), "call", None)
-            _route_sync.append((r, call is not None and not asyncio.iscoroutinefunction(call)))
-    scope = {"type": "http", "method": method, "path": path, "root_path": ""}
-    for r, sync in _route_sync:
-        if r.matches(scope)[0] is Match.FULL:
-            return sync
-    return False
 
 
 relay_coalesce.priority_class = lambda: "background" if _current_priority() == "background" else "user"
@@ -2455,12 +2490,12 @@ def _proxy(call):
                 token = INTERACTIVE_READ.set(True)
         with _priority_lane(aid):
             return call()
-    except OFDeactivatedError:
-        raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from None
+    except OFDeactivatedError as e:
+        raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
     except OFDeniedError as e:
         # The Relay's own deny-list (of_client._denied), never sent: not an upstream failure.
         raise HTTPException(status_code=403,
-                            detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)})
+                            detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)}) from e
     except OFAPIError as e:
         r = e.response
         status = r.status_code if r is not None else 500
@@ -2477,7 +2512,7 @@ def _proxy(call):
         raise HTTPException(
             status_code=502,
             detail={"upstream_status": status, "upstream_body": body},
-        )
+        ) from e
     except curl_requests.exceptions.ProxyError as e:
         # of_client._http_call already logged the structured details
         # (account, proxy label, endpoint). Surface a clean 502 to the UI.
@@ -2486,19 +2521,19 @@ def _proxy(call):
             status_code=502,
             detail={"upstream_status": "proxy_unreachable",
                     "upstream_body": _pool_safe_error(aid, str(e)[:500])},
-        )
+        ) from e
     except curl_requests.exceptions.Timeout as e:
         log.warning("upstream_timeout: %s", str(e)[:200])
         raise HTTPException(
             status_code=504,
             detail={"upstream_status": "timeout", "upstream_body": _pool_safe_error(aid, str(e)[:500])},
-        )
+        ) from e
     except curl_requests.exceptions.RequestException as e:
         log.warning("upstream_network_error: %s %s", type(e).__name__, str(e)[:200])
         raise HTTPException(
             status_code=502,
             detail={"upstream_status": "network", "upstream_body": _pool_safe_error(aid, str(e)[:500])},
-        )
+        ) from e
     finally:
         if token is not None:
             INTERACTIVE_READ.reset(token)
@@ -3117,6 +3152,13 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
     return {**resp, rows_key: out_rows}
 
 
+# Each optional *_wiring.py gets wire(app) mid-import here, after the helpers
+# above exist. Binding routes here retains their precedence; extensions
+# may be absent from a deployment.
+for _wiring_path in sorted(HERE.glob("*_wiring.py")):
+    importlib.import_module(_wiring_path.stem).wire(app)
+
+
 # Short on purpose. Folder edits are rare but they are OPERATOR edits — a
 # rename or a pin that stays invisible for minutes reads as a failed write. 60s
 # is long enough to collapse the inbox-open burst (chip strip + picker + the
@@ -3208,6 +3250,9 @@ async def get_messages(
         # Head page: skip cache entirely. New inbound DMs arrive via the
         # WS pump + SSE; caching the head would mask them for ~TTL.
         payload = await _fetch()
+        if isinstance(payload, dict) and aid:
+            # A reply sent from OF web / app has no event of its own.
+            relay_hooks.fire_thread_head(aid, chat_id, payload.get("list"))
     else:
         # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
         # on an old message when a fan pays — so cap the cache at 5min (not
@@ -3432,7 +3477,7 @@ async def _sync_of_user_overlay(
 # ── Send a message ─────────────────────────────────────────────
 
 class SendMessageBody(BaseModel):
-    text: str = Field(..., max_length=130_000, description="Message body. Plain text or HTML. At most of_rich_text.MARKUP_MAX (422).")
+    text: str = Field(..., max_length=MARKUP_MAX, description="Message body. Plain text or HTML. At most of_rich_text.MARKUP_MAX (422).")
     locked_text: bool = Field(False, description="Lock the text behind the PPV price.")
     price: float = Field(0, ge=0, description="PPV price; 0 = free message.")
     # Either: ints (existing vault ids) or dicts (fresh-upload claim objects
@@ -3553,28 +3598,32 @@ async def send_message(
     await _reject_if_resale(account_id, int(chat_id), body)
 
     # Bridge sync _proxy from this async handler.
-    result = await asyncio.to_thread(
-        _proxy,
-        lambda: _get_client().send_message(
-            chat_id,
-            text=body.text,
-            locked_text=body.locked_text,
-            price=body.price,
-            media_files=body.media_files,
-            previews=body.previews,
-            is_forward=body.is_forward,
-            reply_to_message_id=body.reply_to_message_id,
-            tagged_users=body.tagged_users,
-            giphy_id=body.giphy_id,
-            rf_guest=body.rf_guest,
-            rf_partner=body.rf_partner,
-            # A human is composing this one and has the tag picker right there,
-            # so their choice stands as made — the co-performer auto-tag
-            # (media_cotag) covers the automated senders, which have no operator
-            # to make it. Flip to True to auto-tag the composer too.
-            auto_tag=False,
-        ),
-    )
+    try:
+        result = await asyncio.to_thread(
+            _proxy,
+            lambda: _get_client().send_message(
+                chat_id,
+                text=body.text,
+                locked_text=body.locked_text,
+                price=body.price,
+                media_files=body.media_files,
+                previews=body.previews,
+                is_forward=body.is_forward,
+                reply_to_message_id=body.reply_to_message_id,
+                tagged_users=body.tagged_users,
+                giphy_id=body.giphy_id,
+                rf_guest=body.rf_guest,
+                rf_partner=body.rf_partner,
+                # A human is composing this one and has the tag picker right there,
+                # so their choice stands as made — the co-performer auto-tag
+                # (media_cotag) covers the automated senders, which have no operator
+                # to make it. Flip to True to auto-tag the composer too.
+                auto_tag=False,
+            ),
+        )
+    except HTTPException as e:
+        relay_hooks.fire_send_failed(account_id, int(chat_id), e)
+        raise
 
     await _record_fan_send(account_id, int(chat_id), result,
                            employee_id=employee_id, price=body.price)
@@ -4699,13 +4748,17 @@ async def of_mark_chat_unread(chat_id: int):
     return result
 
 @app.post("/api/of/v2/chats/{chat_id}/mute")
-def of_mute_chat(chat_id: int):
+async def of_mute_chat(chat_id: int):
     """Mute notifications for a chat."""
-    return _proxy(lambda: _get_client().mute_chat(chat_id))
+    r = await asyncio.to_thread(_proxy, lambda: _get_client().mute_chat(chat_id))
+    relay_hooks.fire_mute(chat_id, True)
+    return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/mute")
-def of_unmute_chat(chat_id: int):
-    return _proxy(lambda: _get_client().unmute_chat(chat_id))
+async def of_unmute_chat(chat_id: int):
+    r = await asyncio.to_thread(_proxy, lambda: _get_client().unmute_chat(chat_id))
+    relay_hooks.fire_mute(chat_id, False)
+    return r
 
 @app.post("/api/of/v2/chats/{chat_id}/hide")
 def of_hide_chat(chat_id: int):

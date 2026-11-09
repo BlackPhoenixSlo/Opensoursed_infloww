@@ -11,7 +11,8 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       `paced` (OFClient.get_json calls it). No claim: every walker is single-flight by
       its own lock or loop already. `account_id` names the walk (None: a pass over many
       Creators; logged as walk= on a 429 retry); pages pace on their client's
-      account (a client with none: unpaced).
+      account (a client with none: unpaced). Its OF calls count as `walk:<kind>`
+      (of_call_counter).
   paced(account_id, call)          (sync, in the walk's worker thread)
       Outside a walk: `call()` as before. Inside: `account_id`'s pacer, then `call()`; on
       OF's 429 it waits what OF asks and sends the SAME request once more. A second 429
@@ -35,7 +36,7 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
 The pacer is ONE per Creator, shared by every job: a background GET leaves PAGE_GAP_S
 (+ 0..JITTER_S) after the Creator's previous one, whichever walk sent it, so two jobs'
 1 s loops cannot burst together. Pages only: CDN, media and /img fetches never come here.
-User reads never do either: no walk, no pause, no retry. Stdlib only (a leaf: of_client
+User reads never do either: no walk, no pause, no retry. Stdlib only plus of_call_counter (a leaf: of_client
 imports it).
 
 Ledger pages are paced per proxy endpoint too (AE 2026-11-08, measured: the ledger's 429s
@@ -77,6 +78,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
+
+import of_call_counter
 
 log = logging.getLogger("of-relay.of_pacing")
 
@@ -214,6 +217,7 @@ async def retry_429(account_id: Any, call: Callable[[], Awaitable[Any]]) -> Any:
 async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:
     tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind))
     try:
-        return await run()
+        with of_call_counter.caller(f"walk:{kind}"):
+            return await run()
     finally:
         _WALK.reset(tok)   # the caller's context never sees the walk

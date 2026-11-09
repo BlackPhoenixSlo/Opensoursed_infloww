@@ -207,7 +207,7 @@ export function daysFrom(from: string | null, to: string | null): string[] {
 /** A range preset: one of `datePresets`' keys, "custom" for days typed in. */
 export type RangeKey = string;
 /** #21: the default range, the bundle's `defaultSelectDate`. */
-export const DEFAULT_RANGE: RangeKey = "last7";
+export const DEFAULT_RANGE: RangeKey = "last30";
 /** #23, #24: the bundle's presets in its order, their days in `tz`. "Custom" carries the default range as its value
  *  (the bundle's `defineSelectDateArr`). Where the bundle's Last ones and its year end yesterday, ours run through
  *  today on the shared `presetRange` (the other reports' "Last N days", so one label is one window everywhere, and

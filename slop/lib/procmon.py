@@ -361,3 +361,62 @@ def render(stage: str, p: dict, n: int, hz: int) -> list[str]:
             out += [f"{title}:"] + [f"  {c / busy * 100:5.1f}%  {c / 1000:7.1f}s  {f}"
                                     for f, c in sorted(q[key].items(), key=lambda kv: -kv[1])[:n]]
     return out
+
+
+def socket_fds() -> int | None:
+    """Socket fds this process holds (TCP and unix, as ~/.slop/gate.py's socket guard counts them)."""
+    import stat
+
+    try:
+        names = os.listdir("/dev/fd")
+    except OSError:
+        return None
+    n = 0
+    for name in names:
+        try:
+            n += stat.S_ISSOCK(os.fstat(int(name)).st_mode)
+        except (OSError, ValueError):
+            pass
+    return n
+
+
+def socket_endpoints(ports: set[int]) -> dict:
+    """Opt-in socket inventory for a slop process, grouped by TCP endpoint ports.
+
+    A socket wrapper is detached before it can close the process's original fd.
+    This is intentionally sampled sparingly: it inspects every open descriptor.
+    """
+    import socket
+    import stat
+    from collections import Counter
+
+    roles: Counter = Counter()
+    total = 0
+    for name in os.listdir("/dev/fd"):
+        try:
+            fd = int(name)
+            if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+                continue
+            total += 1
+            sock = socket.socket(fileno=fd)
+        except (OSError, ValueError):
+            continue
+        try:
+            local = sock.getsockname()
+            try:
+                peer = sock.getpeername()
+            except OSError:
+                peer = None
+            if isinstance(local, tuple) and len(local) >= 2:
+                local_port = int(local[1])
+                peer_port = int(peer[1]) if isinstance(peer, tuple) and len(peer) >= 2 else None
+                roles[(local_port if local_port in ports else 0,
+                       peer_port if peer_port in ports else 0 if peer_port is not None else None)] += 1
+            else:
+                roles[(None, None)] += 1
+        except OSError:
+            roles[(None, None)] += 1
+        finally:
+            sock.detach()
+    return {"total": total, "endpoints": [{"local_port": local, "peer_port": peer, "count": count}
+                                           for (local, peer), count in roles.most_common()]}

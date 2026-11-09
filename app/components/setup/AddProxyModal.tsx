@@ -5,16 +5,19 @@
  * (`docs/infloww-layouts/creators-proxy.md`, #24 to #36; ticket 18). The capture's fields come first: Proxy label,
  * Type, IP address and Port side by side, Username and Password. The label defaults to `host:port`, as the bulk paste
  * labels its rows, because the relay keys a proxy by its label. That default, the https type, Notes, the storage hint
- * and the bulk paste section are ours, each titled `EXTRA_LABEL`. Presentational: `ProxiesTable` owns the state and
- * the mutations and passes them in, and shows a failed add as its toast (#27; ticket 62).
+ * and the bulk paste section are ours, each titled `EXTRA_LABEL`. The modal owns its single-add draft;
+ * `ProxiesTable` owns the mutation and shows a failed add as its toast (#27; ticket 62). The bulk
+ * paste (`BulkPaste`) keeps its own text, type and request; the pasted text is gone once the modal closes.
  */
 
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 
 import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfTextArea } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { relay } from "@/lib/relay";
 
 export type ProxyScheme = "http" | "https" | "socks5";
 
@@ -42,19 +45,27 @@ export function draftLabel(d: ProxyDraft): string {
   return host && d.port ? `${host}:${d.port}` : "";
 }
 
+/** What stops the add: `notWired` (the Relay cannot take it, or the list has not loaded), `invalid` (a field to fill
+ *  or fix), `duplicate` (the label is taken; said under Proxy label). */
+export interface DraftProblem {
+  kind: "notWired" | "invalid" | "duplicate";
+  text: string;
+}
+
 /** The first thing stopping the add, in the form's order, or null. #27 keeps Add proxy off until the form is valid.
  *  `takenLabels` is null until the proxies read lands, and the duplicate guard cannot run before it does. */
-export function draftProblem(d: ProxyDraft, takenLabels: readonly string[] | null): string | null {
+export function draftProblem(d: ProxyDraft, takenLabels: readonly string[] | null): DraftProblem | null {
   const label = draftLabel(d).trim();
   const port = Number(d.port);
-  if (!takenLabels) return "not wired: the proxy list has not loaded";
-  if (!label) return "Fill in Proxy label";
-  if (!d.scheme) return "Choose a Type";
-  if (!d.host.trim()) return "Fill in IP address";
+  const invalid = (text: string): DraftProblem => ({ kind: "invalid", text });
+  if (!takenLabels) return { kind: "notWired", text: "not wired: the proxy list has not loaded" };
+  if (!label) return invalid("Fill in Proxy label");
+  if (!d.scheme) return invalid("Choose a Type");
+  if (!d.host.trim()) return invalid("Fill in IP address");
   // #32: the bundle's Port takes 0; the Relay refuses it (`service/proxies.py`, "port out of range (1-65535)").
-  if (d.port !== "" && port === 0) return "not wired: port 0, as the Relay takes 1–65535";
-  if (!d.port || !Number.isInteger(port) || port < 1 || port > 65535) return "Port must be 1–65535";
-  if (takenLabels.includes(label)) return `A proxy named "${label}" already exists`;
+  if (d.port !== "" && port === 0) return { kind: "notWired", text: "not wired: port 0, as the Relay takes 1–65535" };
+  if (!d.port || !Number.isInteger(port) || port < 1 || port > 65535) return invalid("Port must be 1–65535");
+  if (takenLabels.includes(label)) return { kind: "duplicate", text: `A proxy named "${label}" already exists` };
   return null;
 }
 
@@ -78,28 +89,17 @@ function Field({ id, label, extra, children }: { id?: string; label: string; ext
 }
 
 export default function AddProxyModal({
-  draft, onDraft, takenLabels, onSave, saving,
-  bulkText, onBulkText, bulkScheme, onBulkScheme, onBulk, bulkPending, bulkError, bulkResult,
-  onClose,
+  takenLabels, onSave, saving, onClose,
 }: {
-  draft: ProxyDraft;
-  onDraft: (d: ProxyDraft) => void;
   takenLabels: readonly string[] | null;
-  onSave: () => void;
+  onSave: (draft: ProxyDraft) => void;
   saving: boolean;
-  bulkText: string;
-  onBulkText: (t: string) => void;
-  bulkScheme: ProxyScheme;
-  onBulkScheme: (s: ProxyScheme) => void;
-  onBulk: () => void;
-  bulkPending: boolean;
-  bulkError: string | null;
-  bulkResult: BulkResp | undefined;
   onClose: () => void;
 }) {
+  const [draft, setDraft] = useState<ProxyDraft>(EMPTY_DRAFT);
   const problem = draftProblem(draft, takenLabels);
-  const duplicate = problem?.startsWith("A proxy named") ? problem : null;
-  const set = (patch: Partial<ProxyDraft>) => onDraft({ ...draft, ...patch });
+  const duplicate = problem?.kind === "duplicate" ? problem.text : null;
+  const set = (patch: Partial<ProxyDraft>) => setDraft({ ...draft, ...patch });
   const [showPassword, setShowPassword] = useState(false);
   return (
     // #24: centred, 800px; no close cross (Escape still closes), and a mask click does not close it.
@@ -113,8 +113,8 @@ export default function AddProxyModal({
         // #27: Cancel, then Add proxy, right-aligned 8px apart.
         <>
           <IfButton onClick={onClose}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={onSave} disabled={problem !== null || saving}
-            title={saving ? "saving…" : problem ?? undefined}>
+          <IfButton variant="primary" onClick={() => onSave(draft)} disabled={problem !== null || saving}
+            title={saving ? "saving…" : problem?.text}>
             Add proxy
           </IfButton>
         </>
@@ -224,51 +224,69 @@ export default function AddProxyModal({
         </IfHelp>
       </Field>
 
-      {/* Ours: the bundle adds one proxy at a time (#42); the relay's bulk add takes one proxy per line. */}
-      <section className="border-t border-border pt-6" title={EXTRA_LABEL}>
-        <div className="mb-2 flex items-center gap-2">
-          <IfLabel htmlFor="proxies-bulk" className="mb-0">Paste proxies (one per line)</IfLabel>
-          <ExtraTag />
-        </div>
-        <IfTextArea
-          id="proxies-bulk"
-          rows={4}
-          placeholder={"user:pass@host:port\nhost:port:user:pass"}
-          value={bulkText}
-          onChange={(e) => onBulkText(e.target.value)}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <IfNativeSelect
-            aria-label="Scheme"
-            value={bulkScheme}
-            onChange={(e) => onBulkScheme(e.target.value as ProxyScheme)}
-          >
-            <option value="http">http</option>
-            <option value="https">https</option>
-            <option value="socks5">socks5</option>
-          </IfNativeSelect>
-          <IfButton onClick={onBulk} disabled={!bulkText.trim() || bulkPending}>
-            {bulkPending ? "Adding…" : "Add all"}
-          </IfButton>
-          {bulkError && <span className="text-[12px] text-err">{bulkError}</span>}
-        </div>
-        {bulkResult && (
-          <div className="mt-2 space-y-1 text-[12px]">
-            <div className="text-ok">
-              Added {bulkResult.added.length}
-              {bulkResult.added.length > 0 && `: ${bulkResult.added.map((a) => a.label).join(", ")}`}
-            </div>
-            {bulkResult.errors.map((e) => (
-              <div key={e.line} className="text-err">
-                Line {e.line}: {e.reason}
-                {e.text_redacted && <span className="text-muted"> ({e.text_redacted})</span>}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      <BulkPaste />
     </IfModal>
+  );
+}
+
+/** Ours: the bundle adds one proxy at a time (#42); the relay's bulk add takes one proxy per line. */
+function BulkPaste() {
+  const qc = useQueryClient();
+  const [bulkText, setBulkText] = useState("");
+  const [bulkScheme, setBulkScheme] = useState<ProxyScheme>("http");
+  // The pasted text carries proxy passwords, so it is read from state in the
+  // closure and never becomes a mutation variable (mutations can be persisted).
+  const bulkM = useMutation({
+    mutationFn: () => relay.post<BulkResp>("/admin/proxies/bulk", { text: bulkText, scheme: bulkScheme }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["proxies"] });
+      if (r.errors.length === 0) setBulkText("");
+    },
+  });
+  return (
+    <section className="border-t border-border pt-6" title={EXTRA_LABEL}>
+      <div className="mb-2 flex items-center gap-2">
+        <IfLabel htmlFor="proxies-bulk" className="mb-0">Paste proxies (one per line)</IfLabel>
+        <ExtraTag />
+      </div>
+      <IfTextArea
+        id="proxies-bulk"
+        rows={4}
+        placeholder={"user:pass@host:port\nhost:port:user:pass"}
+        value={bulkText}
+        onChange={(e) => setBulkText(e.target.value)}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <IfNativeSelect
+          aria-label="Scheme"
+          value={bulkScheme}
+          onChange={(e) => setBulkScheme(e.target.value as ProxyScheme)}
+        >
+          <option value="http">http</option>
+          <option value="https">https</option>
+          <option value="socks5">socks5</option>
+        </IfNativeSelect>
+        <IfButton onClick={() => bulkM.mutate()} disabled={!bulkText.trim() || bulkM.isPending}>
+          {bulkM.isPending ? "Adding…" : "Add all"}
+        </IfButton>
+        {bulkM.error && <span className="text-[12px] text-err">{bulkM.error.message}</span>}
+      </div>
+      {bulkM.data && (
+        <div className="mt-2 space-y-1 text-[12px]">
+          <div className="text-ok">
+            Added {bulkM.data.added.length}
+            {bulkM.data.added.length > 0 && `: ${bulkM.data.added.map((a) => a.label).join(", ")}`}
+          </div>
+          {bulkM.data.errors.map((e) => (
+            <div key={e.line} className="text-err">
+              Line {e.line}: {e.reason}
+              {e.text_redacted && <span className="text-muted"> ({e.text_redacted})</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

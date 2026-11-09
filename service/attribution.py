@@ -27,6 +27,7 @@ import re
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import relay_hooks
 # `_norm_body` (the placeholder pairing key) and `_seconds_apart` live in the pure
 # `attribution_pair`; re-exported here because other modules import them from us.
 from attribution_pair import (  # noqa: F401
@@ -358,6 +359,7 @@ async def write_outbound_attribution(
         having run, or anything else), log a WARNING and write NULL —
         attribution is degraded but the row still lands.
     """
+    relay_hooks.fire_outbound_sent(account_id, fan_id, message_id, created_at)
     # The Automation sentinel's id, looked up at most ONCE per write: by the
     # fallback below when it runs, else for the tag / yield decision further down.
     auto_id: int | None = None

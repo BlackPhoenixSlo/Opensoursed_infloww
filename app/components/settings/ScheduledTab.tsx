@@ -10,21 +10,25 @@
  */
 
 import { useMemo } from "react";
-import { Lock, Paperclip, RotateCw } from "lucide-react";
+import { Lock, Paperclip } from "lucide-react";
 
 import { IfButton, IfCard, IfHelp } from "@/components/ui/infloww";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
 import type { OFScheduledMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
 import { ofPlainText } from "@/lib/ofRichText";
 
+import { RefreshButton } from "./RefreshButton";
+
 export default function ScheduledTab() {
   const accounts = useActiveAccounts();
   const accountIds = useMemo(() => accounts.map((a) => a.id), [accounts]);
   const { rows, isLoading, isFetching, error, queries } = useScheduledMessages(accountIds);
   const cancelM = useCancelScheduled();
+  const { ask, modal: confirmModal } = useIfConfirm();
 
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -36,10 +40,7 @@ export default function ScheduledTab() {
   return (
     <div className="space-y-4">
       <IfCard title="Scheduled messages" extra={(
-        <IfButton onClick={refresh} disabled={isFetching}>
-          <RotateCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} aria-hidden />
-          {isFetching ? "Refreshing…" : "Refresh"}
-        </IfButton>
+        <RefreshButton onClick={refresh} refreshing={isFetching} />
       )}>
         <IfHelp className="mb-4">All queued sends across the agency. Cancel before they fire.</IfHelp>
 
@@ -64,15 +65,17 @@ export default function ScheduledTab() {
               m={m}
               accountLabel={accountName(m.__accountId)}
               busy={cancelM.isPending && cancelM.variables?.id === m.id}
-              onCancel={() => {
-                if (!m.__accountId) return;
-                if (!confirm("Cancel this scheduled send?")) return;
-                cancelM.mutate({ id: m.id, accountId: m.__accountId });
+              onCancel={async () => {
+                const accountId = m.__accountId;
+                if (!accountId) return;
+                if (!(await ask("Cancel this scheduled send?", undefined, "Cancel send"))) return;
+                cancelM.mutate({ id: m.id, accountId });
               }}
             />
           ))}
         </div>
       </IfCard>
+      {confirmModal}
     </div>
   );
 }

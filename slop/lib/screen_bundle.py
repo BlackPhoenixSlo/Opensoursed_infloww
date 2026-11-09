@@ -4,6 +4,9 @@ service/tests/test_screens_api.py `_view` is the same shape (tests never import 
 from __future__ import annotations
 
 LATE = {"upstream_status": "bundle_deadline"}
+CHAT_SCREEN_PATH = "/admin/screens/chat"
+DASH_SCREEN_PATH = "/admin/screens/dashboard"
+NO_BUNDLES_COOKIE = "slop_no_bundles"
 
 
 def bundle_view(env: dict | None) -> dict | None:

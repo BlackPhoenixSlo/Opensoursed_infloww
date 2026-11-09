@@ -150,13 +150,18 @@ async def audit_middleware(request: Request, call_next):
                     if emp_id is not None:
                         employees._warn_chatter_header_ignored_once()
                         emp_id = None
-                    emp_id = await employees.resolve_chatter_employee_id(
-                        chatter_id=chatter.id,
-                        owner_user_ids=chatter.owner_user_ids,
-                        account_id=account_id,
-                        display_name=chatter.display_name or chatter.username,
-                        color=chatter.color,
-                    )
+                    resolved = getattr(request.state, "chatter_outbound_employee", None)
+                    if (resolved is not None and resolved[0] == chatter.id
+                            and resolved[1] == account_id):
+                        emp_id = resolved[2]
+                    else:
+                        emp_id = await employees.resolve_chatter_employee_id(
+                            chatter_id=chatter.id,
+                            owner_user_ids=chatter.owner_user_ids,
+                            account_id=account_id,
+                            display_name=chatter.display_name or chatter.username,
+                            color=chatter.color,
+                        )
             # Cross-user spoof guard: if a signed-in friend passes an
             # X-Employee-Id, the chatter MUST belong to them. Otherwise
             # drop the attribution to NULL (or Automation downstream for

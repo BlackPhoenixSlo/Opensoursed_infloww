@@ -5,7 +5,7 @@
  * title (docs/spec/infloww-parity-round-2/phase-03-creator-reports.md, ticket 21).
  *
  * Ticket 60: the page lies flush (#41) while the Dashboard's embed keeps its card; it opens with "Show net earnings"
- * on (#33) and on its own range, the last 7 days through today, with the bundle's presets and bounds (#21 to #24);
+ * on (#33) and on its own range, the last 30 days through today, with the bundle's presets and bounds (#21 to #24);
  * with no Creator the tiles print "$0", and the loading and error texts are labelled; the statistics header stays
  * in view (#108); Creator performance has its own bar and donut geometry (#161, #164, #167), its growth rows the count
  * (#166); and the letter tracking is applied (#53, #165). The clock is pinned to Fri 16 Oct 2026 12:00Z, the report
@@ -115,24 +115,41 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
   it("opens with Show net earnings on, the net read asked for", async () => {
     relayWith([CREATOR]);
     renderCard();
-    expect(await screen.findByRole("switch", { name: "Show net earnings" })).toHaveAttribute("aria-checked", "true");
+    expect(await screen.findByRole("combobox", { name: "Earnings basis" })).toHaveValue("net");
     await waitFor(() => expect(revenueReads().length).toBeGreaterThan(0));
     expect(revenueReads().every((q) => q.get("include_net") === "true")).toBe(true);
   });
 
-  it("opens on the last 7 days through today, in the report time zone", async () => {
+  it("changes the revenue basis and keeps secondary controls behind Filters", async () => {
+    relayWith([CREATOR]);
+    renderCard();
+    const basis = await screen.findByRole("combobox", { name: "Earnings basis" });
+    await waitFor(() => expect(revenueReads().length).toBeGreaterThan(0));
+    get.mockClear();
+    fireEvent.change(basis, { target: { value: "gross" } });
+    await waitFor(() => expect(revenueReads().some((q) => !q.has("include_net"))).toBe(true));
+    expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByRole("button", { name: "Creator tag" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reset" })).toBeVisible();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Additional filters" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Shown by" })).toHaveValue("day");
+  });
+
+  it("opens on the last 30 days through today, in the report time zone", async () => {
     relayWith([CREATOR]);
     renderCard();
     const pill = await screen.findByRole("button", { name: "Date range" });
-    expect(pill).toHaveTextContent("Oct 10, 2026");
+    expect(pill).toHaveTextContent("Sep 17, 2026");
     expect(pill).toHaveTextContent("Oct 16, 2026");
     await waitFor(() => expect(revenueReads().length).toBeGreaterThan(0));
     const window = revenueReads().find((q) => q.get("group_by") === "day")!;
-    expect(window.get("from")).toBe("2026-10-10T00:00:00.000Z");
+    expect(window.get("from")).toBe("2026-09-17T00:00:00.000Z");
     expect(window.get("to")).toBe("2026-10-16T23:59:59.999Z");
   });
 
-  it("offers the bundle's presets and bounds, and Reset goes back to the last 7 days", async () => {
+  it("offers the bundle's presets and bounds, and Reset goes back to the last 30 days", async () => {
     relayWith([CREATOR]);
     renderCard();
     const pill = await screen.findByRole("button", { name: "Date range" });
@@ -162,8 +179,9 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
     expect(pill).toHaveTextContent("Sep 30, 2026");
     expect(within(presets).getByRole("button", { name: "September" })).toHaveAttribute("aria-pressed", "true");
 
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
-    expect(pill).toHaveTextContent("Oct 10, 2026");
+    expect(pill).toHaveTextContent("Sep 17, 2026");
     expect(pill).toHaveTextContent("Oct 16, 2026");
   });
 });
@@ -228,12 +246,11 @@ describe("CompetitorReports Creator performance (#161, #164, #166, #167)", () =>
     await openPerformance();
     const section = screen.getByRole("heading", { name: "Earnings", level: 3 }).closest("section")!;
     const bar = await within(section).findByRole("img", { name: /^Oct 12: / });
-    const d = bar.getAttribute("d")!;
-    const left = Number(/^M([\d.]+),/.exec(d)![1]);
-    const right = Number(/Q([\d.]+),[\d.]+ [\d.]+,[\d.]+V[\d.]+Z$/.exec(d)![1]);
-    expect(right - left).toBeCloseTo(25, 5);
+    expect(bar.tagName.toLowerCase()).toBe("rect");
+    expect(bar).not.toHaveAttribute("rx");
+    expect(Number(bar.getAttribute("width"))).toBeCloseTo(25, 5);
     // The plot's bottom is 30px above the 336px chart's: the label's 11px baseline sits 16px under it.
-    const label = within(section).getByText("Oct 12", { selector: "text" });
+    const label = within(section).getByText("Sep 17", { selector: "text" });
     expect(Number(label.getAttribute("y"))).toBe(306 + 16 + 11);
   });
 
@@ -289,10 +306,10 @@ describe("CompetitorReports growth against a window with unknown days", () => {
     const base = get.getMockImplementation()!;
     const half = KIND_ROWS.map((r) => ({ ...r, total_cents: r.total_cents / 2, net_cents: r.net_cents / 2 }));
     let missing = 3;
-    // The window before Oct 10-16 is Oct 3-9: half the earnings, and (first) 3 Creator-days with no figure.
+    // The window before Sep 17-Oct 16 is Aug 18-Sep 16: half the earnings, and (first) 3 Creator-days with no figure.
     get.mockImplementation(async (path: string) => {
       const q = new URLSearchParams(path.split("?")[1] ?? "");
-      if (path.startsWith("/admin/stats/revenue") && q.get("group_by") === "kind" && q.get("from")?.startsWith("2026-10-03"))
+      if (path.startsWith("/admin/stats/revenue") && q.get("group_by") === "kind" && q.get("from")?.startsWith("2026-08-18"))
         return { rows: half, history_missing_days: missing };
       return base(path);
     });
@@ -325,7 +342,7 @@ describe("CompetitorReports referrals (#50, #75)", () => {
     expect(within(card).getByRole("group", { name: "Referrals" })).toHaveTextContent("$10");
     expect(screen.getByText(/Referrals from OnlyFans are unavailable for 1 creator/)).toHaveAttribute("title", "Inflowwww extra");
     const read = get.mock.calls.map(([p]) => String(p)).find((p) => p.startsWith("/admin/stats/referrals"))!;
-    expect(Object.fromEntries(new URLSearchParams(read.split("?")[1]))).toEqual({ from: "2026-10-10", to: "2026-10-16" });
+    expect(Object.fromEntries(new URLSearchParams(read.split("?")[1]))).toEqual({ from: "2026-09-17", to: "2026-10-16" });
   });
 });
 

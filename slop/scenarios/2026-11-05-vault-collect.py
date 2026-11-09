@@ -20,9 +20,9 @@ Checks (lib/vault_collect_faults.py names):
   collect_pacing         per quiet Creator, consecutive OF vault calls >= GAP_S - 50 ms apart.
   collect_one_at_a_time  per-Creator collector spans (its OF vault calls + its CDN fetches, split on 20 s
                          gaps) never overlap another Creator's.
-  collect_skips_busy     no collector span on a busy Creator starts within USER_QUIET_S after a user picker
-                         refresh on it (only refreshes since the relay last started: the product keeps that
-                         clock in RAM; exempt past MAX_SKIP_S).
+  collect_skips_busy     no collector OF page read on a busy Creator is admitted within USER_QUIET_S after a user
+                         picker refresh (only refreshes since the relay last started: the product keeps that clock
+                         in RAM; exempt past MAX_SKIP_S). CDN thumbs already queued behind the user are excluded.
   collect_fills_mirror   per quiet Creator: latest auto run done/auto:done, vault_items == the fake's count,
                          /admin/vault-ai/cache/summary complete + count, the picker's hot keys in vault_response_cache.
   collect_thumbs_warm    per quiet Creator: the thumbs store holds exactly the newest 100 media; no image /
@@ -52,9 +52,12 @@ from pathlib import Path
 from slop.actors import fan_dm
 from slop.actors.chatter import Chatters
 from slop.lib.img_relay import arm_run
+from service.of_pacing import PAGE_GAP_S, JITTER_S
 from slop.lib.vault_collect_faults import (FILLS_MIRROR, ONE_AT_A_TIME, PACING, RESUME, SKIPS_BUSY, THUMBS_WARM,
                                            USER_P95)
 from slop.lib.vault_collect_relay import stills_dir
+from slop.lib.vault_ui import cdn_calls
+from slop.seed.vault_cache import LISTS_KEY
 from slop.lib.vault_wire import VaultWire, owner_of
 
 PROFILE = "flat_agency"
@@ -82,6 +85,7 @@ def _q(path: str, **kv) -> str:
 
 
 async def run(ctx):
+    assert GAP_S > PAGE_GAP_S + JITTER_S + 0.5, "collector gap cannot be masked by OF pacing"
     w, fake = ctx.world, ctx.of_wire
     n_items = int(ctx.param("items", w.size["vault_collect_items"]))
     vw = VaultWire(fake, seed=ctx.seed, items=n_items)
@@ -164,10 +168,6 @@ async def run(ctx):
         for p in seg["pools"]:
             await p.aclose()
 
-    async def cdn_calls() -> list[dict]:
-        r = await ctx.owner.get("/__slop/img/calls")
-        return r.json()["calls"] if r.status_code == 200 else []
-
     segs: list[dict] = []
     segs.append(segment())
     cdn: list[dict] = []
@@ -182,7 +182,7 @@ async def run(ctx):
                     break
             if resume:
                 await end(segs[-1])
-                cdn += await cdn_calls()
+                cdn += await cdn_calls(ctx, allow_failure=True)
                 resume["wire_i"] = len(fake.vault_calls)
                 t_term, took = await asyncio.to_thread(ctx.stack.stop_relay, 0, 20.0)
                 row = runs("id=?", (resume["run_id"],))[0]
@@ -199,7 +199,7 @@ async def run(ctx):
         await asyncio.sleep(0.2)
     await end(segs[-1])
     ctx.rec.stage = None
-    cdn += await cdn_calls()
+    cdn += await cdn_calls(ctx, allow_failure=True)
     t_up = resume.get("t_up", t_run0)
     ctx.metric("vault_collect_load", {"seconds": round(time.time() - t_run0, 1), "quiet_done": done_at is not None,
                                       "picks": len(picks), "wire_vault_calls": len(fake.vault_calls),
@@ -246,18 +246,23 @@ async def run(ctx):
     overlaps = [(x[0], y[0], round(x[2] - y[1], 3)) for x, y in zip(spans, spans[1:]) if y[1] < x[2] - TOL_S]
     ctx.check(ONE_AT_A_TIME, not overlaps and bool(spans), spans=len(spans), overlaps=overlaps[:10])
 
-    # collect_skips_busy
+    # collect_skips_busy: OF page reads admitted during a user's quiet window are forbidden.
+    # Thumbnail work already queued on the CDN lane can arrive after the user request.
     viol, active = [], 0
     for a in busy:
-        refs = [p["t1"] for p in picks if p["aid"] == a and p["refresh"] and p["status"] == 200]
+        refs = [p for p in picks if p["aid"] == a and p["refresh"] and p["status"] == 200]
         active += bool(refs)
-        for s in (s for s in spans if s[0] == a):
-            since = t_up if s[1] >= t_up else t_run0
-            if s[1] - t_run0 >= MAX_SKIP_S:
+        collector = by_aid.get(a, [])
+        for call in collector:
+            t = call["t"]
+            since = t_up if t >= t_up else t_run0
+            if t - t_run0 >= MAX_SKIP_S:
                 continue
-            last = max((t for t in refs if since <= t < s[1]), default=None)
-            if last is not None and s[1] - last < QUIET_S:
-                viol.append({"aid": a, "span_start": round(s[1] - t_run0, 1), "user_s_before": round(s[1] - last, 2)})
+            # A call admitted before the user's request can arrive after it through OF pacing.
+            last = max((p["t1"] for p in refs if since <= p["t1"] <= t
+                        and t > p["t0"] + PAGE_GAP_S + JITTER_S + TOL_S), default=None)
+            if last is not None and t - last < QUIET_S:
+                viol.append({"aid": a, "call_s": round(t - t_run0, 1), "user_s_before": round(t - last, 2)})
     if not active:
         ctx.skip(SKIPS_BUSY, "no busy Creator had a user refresh reach OF")
     else:
@@ -277,7 +282,7 @@ async def run(ctx):
     for a in quiet:
         la = latest_auto(a) or {}
         summ = (await ctx.owner.get(f"/admin/vault-ai/cache/summary?account_id={a}")).json()
-        want = {"lists:view=main|limit=50|offset=0"} | {
+        want = {LISTS_KEY} | {
             f"media:type=all|list={f['id']}|offset=0|limit=24|sort=desc|field=recent|query="
             for f in vw.vault(a)["folders"]} | {
             f"media:type=all|list=None|offset={o}|limit=24|sort=desc|field=recent|query=" for o in (0, 24)}

@@ -2,7 +2,7 @@
  * My Automations > Auto Post (/growth/auto-post) is `ReadyMadePanel` pinned to
  * `auto_posts`, on Infloww's legacy list page (page-parity ticket 16). Rendered
  * with `@/lib/relay` mocked. What is pinned: no Card heading (the page header
- * is the heading), one table row per rule with its Status switch, previous runs
+ * is the heading), one table row per rule with its Status switch and post read-out, previous runs
  * behind the Name cell's chevron, Delete through a dialog (never
  * `window.confirm`), and the no-creator empty state.
  */
@@ -73,6 +73,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     expect(within(rows[0]).getByRole("switch", { name: "Enabled: Morning feed" })).toHaveAttribute("aria-checked", "true");
     expect(within(rows[1]).getByRole("switch", { name: "Enabled: Night feed" })).toHaveAttribute("aria-checked", "false");
     expect(within(rows[0]).getByText("Every 2 hours")).toBeTruthy();
+    expect(within(rows[0]).getByText("Free · hi")).toBeTruthy(); // the rule's one post, under its name
     expect(within(rows[1]).getByText("paused")).toBeTruthy();
     for (const name of ["Run now", "Edit", "Delete"]) expect(within(rows[0]).getByRole("button", { name })).toBeTruthy();
   });

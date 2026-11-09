@@ -289,8 +289,7 @@ describe("PlatformGate", () => {
     fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
     // Never a blank between the two: the prompt stays until the Add creator flow has loaded.
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(await screen.findByText("Link Fansly account")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Fansly paste session" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Fansly paste session" })).toBeInTheDocument();
   });
 
   // PlatformGate loads the Add creator flow with import(); these hold that load, or fail it, until the test says. The

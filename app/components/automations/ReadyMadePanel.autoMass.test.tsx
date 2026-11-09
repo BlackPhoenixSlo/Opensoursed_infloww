@@ -74,7 +74,8 @@ describe("Auto Mass (ReadyMadePanel only=mass_premade)", () => {
     await screen.findByText("Evening tease");
     fireEvent.click(screen.getByRole("button", { name: "New auto mass" }));
     const dialog = screen.getByRole("dialog", { name: "New auto mass message" });
-    expect(within(dialog).getByText("Messages")).toBeTruthy();
+    expect(within(dialog).getByRole("group", { name: "Message" })).toBeTruthy();
+    expect(within(dialog).getByPlaceholderText(/broadcast text/i)).toBeTruthy(); // the fields are in the popup
     expect(within(dialog).getByRole("switch", { name: "Enabled" })).toHaveAttribute("aria-checked", "true");
     expect(within(dialog).getByRole("combobox", { name: "Interval unit" })).toHaveTextContent("hours");
   });

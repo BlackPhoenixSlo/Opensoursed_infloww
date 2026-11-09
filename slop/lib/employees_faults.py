@@ -27,6 +27,9 @@ EMP_ACCESS_SAVED_STALE = ("employees: Access limits shows no 'Saved.' after a sa
 EMP_ACCESS_PARTIAL = ("employees: Access limits save whose account-access PUT lands and folder-access PUT fails says "
                       "'Accounts saved; folders failed — <error>', no 'Saved.', refetches the access and the employee "
                       "list, and the API holds the new Creators with the old folders")
+EMP_ADD_PHONE = ("employees: Add on a 390x844 phone: the 'How they sign in' control's box stays inside the dialog (it "
+                 "may scroll sideways itself), the page has no sideways scroll, each option scrolls into the control's "
+                 "visible box, and tapping Existing login switches the form (no Password, the existing-username box)")
 EMP_NO_5XX = "employees: no 5xx on any request the browser made"
 
 

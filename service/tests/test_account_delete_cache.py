@@ -53,6 +53,7 @@ import accounts_admin_api  # noqa: E402
 import relay_cache  # noqa: E402
 import vault_cache  # noqa: E402
 import accounts as account_registry  # noqa: E402
+import notifications_api  # noqa: E402
 
 _TEST_AID = "acctDelTest"
 
@@ -125,6 +126,18 @@ async def main() -> None:
     res = await accounts_admin_api.admin_accounts_remove(_TEST_AID)
     assert res.get("ok") is True, f"case3: a cache failure broke the delete: {res}"
     assert deleted.get(_TEST_AID) is True, "case3: delete_account skipped after cache failure"
+
+    # ── Case 4: pinned-notification cleanup also stays best-effort.
+    deleted.clear()
+    real_drop = notifications_api.drop_pinned
+    async def _drop_boom(_aid):
+        raise RuntimeError("database is locked")
+    notifications_api.drop_pinned = _drop_boom
+    try:
+        res = await accounts_admin_api.admin_accounts_remove(_TEST_AID)
+    finally:
+        notifications_api.drop_pinned = real_drop
+    assert res.get("ok") is True and deleted.get(_TEST_AID) is True, res
 
     print("[account_delete_cache] all cases passed")
 

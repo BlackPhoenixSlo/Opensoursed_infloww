@@ -45,8 +45,8 @@ def _claimed_row_resent_after_crash() -> None:
 
 def _cancel_keeps_pending() -> None:
     """priority_mass_api.py `cancel_run` without its sweep: the run turns cancelled, its pending
-    fans stay pending. The body mirrors the product's `cancel_run` lines 234-236 and 243, without
-    its pending -> skipped UPDATE (237-241); swapped in on the app's router (FastAPI calls the
+    fans stay pending. The body mirrors the product's `cancel_run` status transition and public response, without
+    its pending -> skipped UPDATE; swapped in on the app's router (FastAPI calls the
     route's endpoint, not the module attribute)."""
     from fastapi import HTTPException
     from fastapi.routing import APIRoute

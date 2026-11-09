@@ -57,8 +57,10 @@ from slop.actors import ui
 from slop.lib import app_ts
 from slop.lib.client import Http
 from slop.lib.picker_faults import RESTRICTED_MENU
+from slop.lib.vault_ui import TOURS_SEEN, open_vault_picker, open_vault_pro, captured
 from slop.lib.vault_faults import DB_ROWS, OF_BYTES, PROTOCOL, RUN_ITEMS, SENT_FILES, SETTLED_UI
-from slop.seed import chatters, ts
+from slop.seed.vault_cache import LISTS_KEY, cache_row, grant_folder_access
+from slop.seed import chatters, vault_week
 
 PROFILE = "agency_inbox"
 UI = True
@@ -68,8 +70,6 @@ WAIT_MS = 120_000  # first visit of a page compiles it in next dev
 CHECKS = (SENT_FILES, PROTOCOL, RUN_ITEMS, OF_BYTES, DB_ROWS, SETTLED_UI)
 BATCH, APPEND, STATUS = "/api/of/v2/vault/upload/batch", "/api/of/v2/vault/upload/batch/append", \
     "/api/of/v2/vault/upload/status"
-TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', "
-              "uploadPageStep: '1', batchEdit: '1', uploadBtn: '1'}));")
 ROW_BOXES = "input[type=checkbox][aria-label^='Select ']:not([aria-label='Select all media'])"
 SEED_MEDIA = 9001  # the mirror's one pre-existing row
 FILES = {  # name -> ffmpeg lavfi source (distinct bytes each)
@@ -89,7 +89,6 @@ WANT_META = {"a.jpg": {"hashtags": ["slopa", "beach"], "price_cents": 1250}, "c.
 PICKER_TS = Path(__file__).resolve().parents[1] / "lib" / "picker_ts.mjs"
 LISTS = "/api/of/v2/vault/lists"
 LISTS_PAGE = 50  # fetchAllVaultLists' page
-LISTS_KEY = f"lists:view=main|limit={LISTS_PAGE}|offset=0"  # vault_cache.vault_lists_cache_key of its first page
 # Creator 1's OF folders: (id, name, photos, videos); the granted one is empty on OF (hasMedia false).
 PICKER_FOLDERS = ((7101, "Slop picker customs", 0, 0), (7102, "Slop picker teasers", 4, 1),
                   (7103, "Slop picker vip", 2, 3))
@@ -108,14 +107,6 @@ def _make_files(ctx) -> dict:
     return out
 
 
-def _seed_mirror(w, aid: str) -> None:
-    con = w.sql()
-    with con:
-        con.execute("INSERT INTO vault_items (account_id, media_id, kind, tags, send_count, created_at, updated_at)"
-                    " VALUES (?, ?, 'photo', '[]', 0, ?, ?)", (aid, SEED_MEDIA, ts(w.now), ts(w.now)))
-    con.close()
-
-
 async def _restricted_picker(ctx, w, creator: dict) -> None:
     """A folder-restricted chatter's picker folder menu (module docstring), also --no-ui."""
     aid = creator["id"]
@@ -125,10 +116,8 @@ async def _restricted_picker(ctx, w, creator: dict) -> None:
     rec = (await chatters.seed(w, ctx.owner, w.user_id, ["pickerchatter"], account_ids=[[aid]]))[0]
     con = w.sql()
     with con:
-        con.execute("INSERT OR REPLACE INTO vault_response_cache (account_id, query_key, response_json, fetched_at)"
-                    " VALUES (?, ?, ?, ?)", (aid, LISTS_KEY, json.dumps(body), ts(w.now)))
-        con.execute("INSERT INTO chatter_folder_access (chatter_id, account_id, folder_id, folder_name, created_at)"
-                    " VALUES (?, ?, ?, ?, ?)", (rec["chatter_id"], aid, ALLOWED[0], ALLOWED[1], ts(w.now)))
+        cache_row(con, aid, LISTS_KEY, body, w.now, replace=True)
+        grant_folder_access(con, rec["chatter_id"], aid, ALLOWED[0], ALLOWED[1], w.now)
     con.close()
     http = Http(str(ctx.owner.c.base_url), ctx.rec)
     shown = None
@@ -182,14 +171,8 @@ async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
             await route.continue_()  # page routes run before the context's hold
 
         await page.route(lambda u: urlsplit(u).path == LISTS, lists_through)
-        try:
-            await page.goto(f"{ctx.app}/messages-pro/{aid}/{fans[0]}", wait_until="domcontentloaded",
-                            timeout=WAIT_MS)
-            vault = page.get_by_role("button", name="Vault", exact=True).first
-            await vault.wait_for(timeout=WAIT_MS)
-            await vault.click(timeout=WAIT_MS)
-            dialog = page.get_by_role("dialog", name="Vault picker")
-            await dialog.wait_for(timeout=60_000)
+        async with captured(ctx, page, got, "failed-restricted-picker"):
+            dialog = await open_vault_picker(page, ctx, aid, fans[0], timeout=WAIT_MS)
             for _ in range(300):  # settled: both the access and the lists reads answered
                 seen = [s for s, u in page.slop["statuses"] if urlsplit(u).path in (LISTS, "/chatter/me/folder-access")]
                 if len(seen) >= 2:
@@ -208,12 +191,6 @@ async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
             got["menu_shot"] = await ui.shot(ctx, page, "restricted-picker-menu")
             got["reads"] = [[s, urlsplit(u).path] for s, u in page.slop["statuses"]
                             if urlsplit(u).path in (LISTS, "/chatter/me/folder-access")]
-        except Exception as e:  # noqa: BLE001 — the check reports it
-            got["error"] = f"{type(e).__name__}: {e}"[:600]
-            try:
-                await ui.shot(ctx, page, "failed-restricted-picker")
-            except Exception:  # noqa: BLE001
-                pass
     return got
 
 
@@ -243,7 +220,7 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
             sent.append({"path": p, "account": req.headers.get("x-account-id"), "fields": _parts(req)})
 
     page.on("request", on_request)
-    await page.goto(f"{ctx.app}/growth/vault-pro", wait_until="domcontentloaded")
+    await open_vault_pro(page, ctx)
     await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
     await page.get_by_role("button", name=re.compile(r"Add media")).first.click(timeout=WAIT_MS)
     picker = page.locator("input[type=file][accept^='image/']")
@@ -334,7 +311,7 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     creator = w.data["creators"][0]
-    _seed_mirror(w, creator["id"])
+    vault_week.import_stub(w, creator["id"], SEED_MEDIA)
     (ctx.stack.tmp / "of-vault.json").write_text("{}")
     await _restricted_picker(ctx, w, w.data["creators"][1])
     if ctx.app is None:

@@ -15,7 +15,7 @@
 #     sub-anchor com.apple/slop-netloss, which /etc/pf.conf's `dummynet-anchor "com.apple/*"` / `scrub-anchor
 #     "com.apple/*"` already evaluate: the main ruleset is never loaded or flushed. pf enabled with -E (a reference;
 #     its token kept in the state file) so `off` releases only ours: pf stays on only if something else holds it.
-# off: idempotent. Loads an empty ruleset into the sub-anchor (never -F: that reaches global states / counters), deletes the two pipes, releases the token. Safe with nothing on.
+# off: with state, clears our anchor and pipes; a missing state means nothing of ours to remove.
 # status: pf's enable state and references, the sub-anchor's rules, the pipes. Read-only.
 # --dry-run: validate and print the commands and rules `on` / `off` would run; touches nothing (no root needed).
 set -euo pipefail
@@ -27,9 +27,10 @@ ANCHOR="com.apple/slop-netloss"
 PIPE_UP=7401
 PIPE_DOWN=7402
 MSS=1460
-STATE=/var/run/slop-netloss.state   # root 644: "token=<n>" while on; its existence = shaping may be on
+STATE=/var/run/slop-netloss.state   # root 644: on, enable-pending, or token=<n>; existence = shaping may be on
 PFCTL=/sbin/pfctl
 DNCTL=/usr/sbin/dnctl
+OP_LOCK=/var/run/slop-netloss.operation.lock
 
 die() { echo "slop-netloss: $*" >&2; exit 2; }
 usage() { die "usage: slop-netloss [--dry-run] on <port[,port...]> <rtt_ms> <plr> <down_kbit> <up_kbit> | [--dry-run] off | status"; }
@@ -92,17 +93,29 @@ run() {  # run <cmd...>: print in dry-run, else execute
 }
 
 need_root() { [ "$(id -u)" = 0 ] || die "$CMD needs root (sudo -n /usr/local/libexec/slop-netloss $CMD ...); --dry-run does not"; }
+read_token() { sed -n 's/^token=\([0-9][0-9]*\)$/\1/p' "$STATE" | head -1; }
+pipe_listing() { "$DNCTL" pipe show "$PIPE_UP" 2>&1 || true; "$DNCTL" pipe show "$PIPE_DOWN" 2>&1 || true; }
+has_our_pipes() { grep -Eq "^[[:space:]]*0*($PIPE_UP|$PIPE_DOWN):"; }
 
 do_off() {
+  if [ $DRY = 0 ] && [ ! -f "$STATE" ]; then echo "slop-netloss: off (nothing on)"; return 0; fi
   run "$PFCTL" -q -a "$ANCHOR" -f /dev/null 2>/dev/null || true   # an empty ruleset: every rule type in it gone
   run "$DNCTL" -q pipe delete "$PIPE_UP" 2>/dev/null || true
   run "$DNCTL" -q pipe delete "$PIPE_DOWN" 2>/dev/null || true
-  if [ $DRY = 1 ]; then echo "+ $PFCTL -X <token from $STATE>"; echo "+ rm -f $STATE"; return 0; fi
-  if [ -f "$STATE" ]; then
-    local tok; tok=$(sed -n 's/^token=\([0-9][0-9]*\)$/\1/p' "$STATE" | head -1)
-    [ -z "$tok" ] || "$PFCTL" -X "$tok" >/dev/null 2>&1 || true
-    rm -f "$STATE"
+  if [ $DRY = 1 ]; then run "$PFCTL" -X "<token from $STATE>"; run rm -f "$STATE"; return 0; fi
+  local anchor_rules pipes kind
+  for kind in rules dummynet; do
+    anchor_rules=$("$PFCTL" -a "$ANCHOR" -s "$kind" 2>&1 || true)
+    if printf '%s\n' "$anchor_rules" | grep -Eq '^[[:space:]]*(scrub|dummynet|pass|block|match)[[:space:]]'; then die "anchor $kind remain; state retained"; fi
+  done
+  pipes=$(pipe_listing)
+  if printf '%s\n' "$pipes" | has_our_pipes; then die "pipes remain; state retained"; fi
+  local tok; tok=$(read_token)
+  if grep -qx enable-pending "$STATE" || { [ -n "$tok" ] && ! "$PFCTL" -X "$tok" >/dev/null 2>&1; }; then
+    echo 'slop-netloss: warning: pf enable reference may remain; sudo pfctl -d only if nothing else uses pf' >&2
   fi
+  rm -f "$STATE"
+  echo "slop-netloss: off"
 }
 
 do_on() {
@@ -112,26 +125,30 @@ do_on() {
     if err=$(rules | "$PFCTL" -nf - 2>&1); then echo "syntax ok"
     else echo "$err" | grep -v -e 'could result in flushing' -e 'present in the main ruleset' \
       -e '/etc/pf.conf for further' -e '^$' >&2; die "pfctl rejected the rules"; fi
-    echo "+ $DNCTL pipe $PIPE_UP config $(pipe_args "$UP")"
-    echo "+ $DNCTL pipe $PIPE_DOWN config $(pipe_args "$DOWN")"
-    echo "+ printf 'rules...' | $PFCTL -a $ANCHOR -f -"
-    echo "+ $PFCTL -E   (token -> $STATE)"
-    return 0
+  else
+    "$PFCTL" -s dummynet 2>/dev/null | grep -qF 'dummynet-anchor "com.apple/*"' \
+      || die "the main ruleset has no dummynet-anchor \"com.apple/*\" (/etc/pf.conf's, loaded at boot); refusing to load a main ruleset"
+    local tok=""
+    if [ -f "$STATE" ]; then
+      tok=$(read_token)
+      if grep -qx enable-pending "$STATE"; then die "pf enable token may be unrecorded; refusing on"; fi
+    else
+      local pipes; pipes=$(pipe_listing)
+      if printf '%s\n' "$pipes" | has_our_pipes; then die "pipe $PIPE_UP or $PIPE_DOWN exists without our state; refusing to overwrite"; fi
+    fi
+    echo "on" > "$STATE"   # before any change: a crash from here on leaves the marker the harness's stale-off reads
+    [ -z "$tok" ] || echo "token=$tok" > "$STATE"
   fi
-  "$PFCTL" -s dummynet 2>/dev/null | grep -qF 'dummynet-anchor "com.apple/*"' \
-    || die "the main ruleset has no dummynet-anchor \"com.apple/*\" (/etc/pf.conf's, loaded at boot); refusing to load a main ruleset"
-  local tok=""
-  [ -f "$STATE" ] && tok=$(sed -n 's/^token=\([0-9][0-9]*\)$/\1/p' "$STATE" | head -1)
-  echo "on" > "$STATE"   # before any change: a crash from here on leaves the marker the harness's stale-off reads
-  [ -z "$tok" ] || echo "token=$tok" > "$STATE"
   # shellcheck disable=SC2046  # pipe_args is a word list on purpose
-  "$DNCTL" -q pipe "$PIPE_UP" config $(pipe_args "$UP")
+  run "$DNCTL" -q pipe "$PIPE_UP" config $(pipe_args "$UP")
   # shellcheck disable=SC2046
-  "$DNCTL" -q pipe "$PIPE_DOWN" config $(pipe_args "$DOWN")
-  rules | "$PFCTL" -q -a "$ANCHOR" -f -
+  run "$DNCTL" -q pipe "$PIPE_DOWN" config $(pipe_args "$DOWN")
+  run "$PFCTL" -q -a "$ANCHOR" -f - <<<"$(rules)"
+  if [ $DRY = 1 ]; then run "$PFCTL" -E; return 0; fi
   if [ -z "$tok" ]; then
+    echo "enable-pending" > "$STATE"  # off must not claim a lost -E token was released
     tok=$("$PFCTL" -E 2>&1 | sed -n 's/.*Token : \([0-9][0-9]*\).*/\1/p' | head -1)
-    [ -n "$tok" ] || { do_off; die "pfctl -E gave no token; shaping rolled back"; }
+    [ -n "$tok" ] || die "pfctl -E gave no token; cleanup will retry from the state marker"
     echo "token=$tok" > "$STATE"
   fi
   do_status
@@ -145,12 +162,19 @@ do_status() {
   "$PFCTL" -a "$ANCHOR" -s dummynet 2>/dev/null | sed 's/^/  /' || true
   "$PFCTL" -a "$ANCHOR" -s rules 2>/dev/null | sed 's/^/  /' || true
   echo "pipes:"
-  "$DNCTL" pipe show "$PIPE_UP" "$PIPE_DOWN" 2>/dev/null | sed 's/^/  /' || true
+  pipe_listing | sed 's/^/  /' || true
 }
 
 case "$CMD" in
-  on) parse_on "$@"; [ $DRY = 1 ] || need_root; do_on ;;
-  off) [ $# -eq 0 ] || usage; [ $DRY = 1 ] || need_root; do_off; [ $DRY = 1 ] || echo "slop-netloss: off" ;;
+  on|off)
+    if [ "$CMD" = on ]; then parse_on "$@"; else [ $# -eq 0 ] || usage; fi
+    if [ $DRY = 0 ]; then
+      need_root
+      trap '' INT TERM HUP
+      exec 9>"$OP_LOCK"
+      /usr/bin/lockf -s -t 120 9 || die "operation lock busy"
+    fi
+    if [ "$CMD" = on ]; then do_on; else do_off; fi ;;
   status) [ $# -eq 0 ] && [ $DRY = 0 ] || usage; do_status ;;
   *) usage ;;
 esac

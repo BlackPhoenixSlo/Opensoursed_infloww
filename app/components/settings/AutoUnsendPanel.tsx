@@ -3,14 +3,18 @@
 /** The Mass messages tab's hourly Auto-unsend card, one panel per model
  *  (moved out of MassMessagesTab.tsx as is). */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 
-import { IfButton, IfInput, IfSwitch } from "@/components/ui/infloww";
+import { IfButton, IfSwitch } from "@/components/ui/infloww";
+import { NumInput } from "@/components/ui/fields";
 import {
   useAutomationRules,
   useCreateRule,
   useUpdateRule,
 } from "@/hooks/useAutomations";
+import {
+  autoUnsendReducer, buildPayload, canSave, initialAutoUnsendForm, type ClassSetting,
+} from "./autoUnsendForm";
 
 /** Name + cadence of the scheduled auto-unsend rule this tab manages (one
  *  `unsend_messages` automation_rules row per account, keyed by this name). */
@@ -33,36 +37,25 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
     [rulesQ.data],
   );
 
-  const [enabled, setEnabled] = useState(false);
-  const [text, setText] = useState({ on: true, h: 4 });
-  const [img, setImg] = useState({ on: false, h: 24 });
-  const [price, setPrice] = useState({ on: false, h: 48 });
+  const [form, dispatch] = useReducer(autoUnsendReducer, initialAutoUnsendForm);
+  const { enabled } = form;
 
-  // Hydrate the form once from the saved rule when it first loads.
-  const hydratedRef = useRef(false);
+  // Hydrate the form once from the saved rule when it first loads (the reducer ignores later loads).
   useEffect(() => {
-    if (hydratedRef.current || !existing) return;
-    hydratedRef.current = true;
-    setEnabled(existing.is_enabled);
-    const p = (existing.payload?.policy ?? {}) as Record<string, number>;
-    setText(p.mass_text_hours != null ? { on: true, h: p.mass_text_hours } : { on: false, h: 4 });
-    setImg(p.mass_media_hours != null ? { on: true, h: p.mass_media_hours } : { on: false, h: 24 });
-    setPrice(p.mass_price_hours != null ? { on: true, h: p.mass_price_hours } : { on: false, h: 48 });
+    if (!existing) return;
+    dispatch({
+      type: "hydrate", isEnabled: existing.is_enabled,
+      policy: (existing.payload?.policy ?? {}) as Record<string, number>,
+    });
   }, [existing]);
 
   const saving = createM.isPending || updateM.isPending;
   const err = createM.error || updateM.error;
-  // Save guard: an empty policy is never sent. The Relay reads one as the
-  // per-chat sweep of outbound DMs (`not wants_mass`, unsend_messages.py).
-  const noClass = !text.on && !img.on && !price.on;
+  const noClass = !canSave(form);
 
   const save = () => {
     if (noClass) return;
-    const policy: Record<string, number> = {};
-    if (text.on) policy.mass_text_hours = text.h;
-    if (img.on) policy.mass_media_hours = img.h;
-    if (price.on) policy.mass_price_hours = price.h;
-    const payload = { policy };
+    const payload = buildPayload(form);
     if (existing) {
       updateM.mutate({
         id: existing.id,
@@ -86,16 +79,19 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
     <div className="rounded-md border border-border p-4 space-y-3 text-[14px]">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <IfSwitch label={<span className="font-medium">{label}</span>} checked={enabled} onChange={setEnabled} />
+          <IfSwitch label={<span className="font-medium">{label}</span>} checked={enabled}
+            onChange={(on) => dispatch({ type: "enabled", on })} />
           {existing?.is_enabled && (
             <span className="rounded-[4px] bg-accent/15 px-1.5 text-[12px] text-accent">Active</span>
           )}
         </div>
         <span className="text-[12px] text-fg-dim">Runs hourly</span>
       </div>
-      <AutoClassRow label="Free text-only" v={text} set={setText} />
-      <AutoClassRow label="With image / video" v={img} set={setImg} />
-      <AutoClassRow label="PPV (priced)" v={price} set={setPrice} />
+      {([["text", "Free text-only"], ["img", "With image / video"], ["price", "PPV (priced)"]] as const).map(([cls, l]) => (
+        <AutoClassRow key={cls} label={l} v={form[cls]}
+          onOn={(on) => dispatch({ type: "classOn", cls, on })}
+          onHours={(hours) => dispatch({ type: "hours", cls, hours })} />
+      ))}
       <div className="flex items-center gap-3 pt-1 flex-wrap">
         <IfButton onClick={save} disabled={saving || noClass}>
           {saving ? "Saving…" : existing ? "Update" : "Save"}
@@ -118,24 +114,24 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
 }
 
 function AutoClassRow({
-  label, v, set,
+  label, v, onOn, onHours,
 }: {
   label: string;
-  v: { on: boolean; h: number };
-  set: (x: { on: boolean; h: number }) => void;
+  v: ClassSetting;
+  onOn: (on: boolean) => void;
+  onHours: (hours: number) => void;
 }) {
   return (
     <div className="flex items-center gap-2 flex-wrap md:flex-nowrap">
-      <IfSwitch className="w-full md:w-52" label={label} checked={v.on} onChange={(on) => set({ ...v, on })} />
+      <IfSwitch className="w-full md:w-52" label={label} checked={v.on} onChange={onOn} />
       <span className="text-fg-dim">after</span>
-      <IfInput
-        type="number"
+      <NumInput
         min={1}
         aria-label={`${label} hours`}
         className={v.on ? "w-20" : "w-20 opacity-50"}
         value={v.h}
         disabled={!v.on}
-        onChange={(e) => set({ ...v, h: Math.max(1, Number(e.target.value) || 1) })}
+        onChange={onHours}
       />
       <span className="text-fg-dim">hours</span>
     </div>

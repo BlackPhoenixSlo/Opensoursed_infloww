@@ -29,7 +29,8 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from slop.lib.faults import FAULTS
-from slop.lib.net import PROFILES, emulate
+from slop.lib.net import emulate
+from slop.lib.screen_bundle import CHAT_SCREEN_PATH, NO_BUNDLES_COOKIE
 
 # Light theme; hide Next's dev overlay so screenshots show only the app.
 INIT_JS = """try { localStorage.setItem('chatterly:theme', 'light'); } catch (e) {}
@@ -40,22 +41,7 @@ document.addEventListener('DOMContentLoaded', () => { const s = document.createE
 OF_LIVE_PATHS = ("/admin/vault/wall-media",)
 SCREEN_BUNDLES = "/admin/screens/"   # one call per screen (service/screens_api.py): `screen_bundle_404`
 # On a browser whose bundles 404 (`screen_bundle_404`): the relay answers 404 to the bundle the Next server reads for
-# its HTML too (app/lib/inlineBoot.server.ts forwards the page's cookies; lib/relay.py `_wire_inline_boot`).
-NO_BUNDLES_COOKIE = "slop_no_bundles"
-
-
-async def screen_bundle_404(r) -> bool:
-    """Declared bypass, for every page that holds OnlyFans reads: a screen bundle mixes OnlyFans reads with DB ones and
-    a whole request can only be held or not, so it answers 404 (app/lib/screenBundle.ts: a failed bundle) and every
-    read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
-    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered.
-    The HTML's inline bundle (the Next server's read, past this route): 404 at the relay for a browser carrying
-    NO_BUNDLES_COOKIE (set where this route is installed). Chromium logs each of these 404s as a failed load: the
-    page's `slop["bundles_404"]` lists them, so a console check can tell the harness's from the app's."""
-    if not urlsplit(r.request.url).path.startswith(SCREEN_BUNDLES):
-        return False
-    await r.fulfill(status=404, content_type="application/json", body='{"detail":"Not Found"}')
-    return True
+# its HTML too (app/lib/inlineBoot.server.ts forwards the page's cookies; lib/screen_bundle_relay.py).
 SEND_PATH = re.compile(r"/api/of/v2/chats/\d+/messages")
 # precise-memory-info: without it performance.memory is bucketed and never moves.
 LAUNCH_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
@@ -128,6 +114,67 @@ PROBE_JS = r"""(() => {
 })();"""
 
 
+async def screen_bundle_404(r) -> bool:
+    """Declared bypass, for every page that holds OnlyFans reads: a screen bundle mixes OnlyFans reads with DB ones and
+    a whole request can only be held or not, so it answers 404 (app/lib/screenBundle.ts: a failed bundle) and every
+    read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
+    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered.
+    The HTML's inline bundle (the Next server's read, past this route): 404 at the relay for a browser carrying
+    NO_BUNDLES_COOKIE (set where this route is installed). Chromium logs each of these 404s as a failed load: the
+    page's `slop["offhost_aborted"]` lists them alongside aborted offhost requests, so a console check can tell
+    the harness's from the app's."""
+    path = urlsplit(r.request.url).path
+    if not path.startswith(SCREEN_BUNDLES) or path == CHAT_SCREEN_PATH:
+        return False
+    await r.fulfill(status=404, content_type="application/json", body='{"detail":"Not Found"}')
+    return True
+
+
+async def route_held_read(r, held: list, aborted: list | None = None, on_hold=None) -> None:
+    """Answer bundle bypasses (their URLs into `aborted`), hold live OF reads, and pass everything else through."""
+    path = urlsplit(r.request.url).path
+    if await screen_bundle_404(r):
+        if aborted is not None:
+            aborted.append(r.request.url)
+        return
+    if path.startswith("/api/of/") or path in OF_LIVE_PATHS:
+        held.append(r)
+        if on_hold:
+            await on_hold(r)
+    else:
+        await r.continue_()
+
+
+async def set_no_bundles_cookie(bctx, host: str) -> None:
+    """Make the Next server's inline bundle take the same 404 path as the browser."""
+    await bctx.add_cookies([{"name": NO_BUNDLES_COOKIE, "value": "1", "domain": host, "path": "/"}])
+
+
+async def hold_of_reads(bctx, host: str, held: list, *, on_hold=None) -> None:
+    """Install the browser OF hold and the matching server-side inline-bundle bypass."""
+    await set_no_bundles_cookie(bctx, host)
+
+    async def route(r):
+        await route_held_read(r, held, on_hold=on_hold)
+
+    await bctx.route("**/*", route)
+
+
+async def end_held_background_reads(page, seconds: float) -> int:
+    """Abort held background OF reads so the browser's per-Creator slots can advance."""
+    held, n, end = page.slop["held_of_reads"], 0, time.monotonic() + seconds
+    while time.monotonic() < end:
+        for r in [r for r in held if r.request.headers.get("x-priority") == "background"]:
+            held.remove(r)
+            n += 1
+            try:
+                await r.abort()
+            except Exception:  # noqa: BLE001 — the page dropped it meanwhile
+                pass
+        await page.wait_for_timeout(100)
+    return n
+
+
 def _client_fault(ctx) -> tuple:
     """The run's client fault (lib/faults.py `browser=`): compiled (regex, replacement) pairs."""
     from slop.lib.faults import FAULTS
@@ -195,14 +242,12 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
                                      service_workers="block" if ctx.net else "allow")
     host = urlsplit(app or ctx.app).hostname
     await bctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"}
-                            for c in (http or ctx.owner).c.cookies.jar]
-                           + [{"name": NO_BUNDLES_COOKIE, "value": "1", "domain": host, "path": "/"}])
+                            for c in (http or ctx.owner).c.cookies.jar])
     fault = FAULTS.get(ctx.fault or "")
     for js in (INIT_JS, *init_scripts, *((fault.browser_js,) if fault and fault.browser_js else ())):
         await bctx.add_init_script(js)
 
     patches = _client_fault(ctx)
-    bundles_404: list[str] = []  # screen_bundle_404 answers: Chromium logs each as a failed load (the harness's)
 
     async def route(r):
         u = urlsplit(r.request.url)
@@ -217,26 +262,20 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
                 else (r.request.method == "GET" and t.fullmatch(u.path))
                 for t in through):
             await r.continue_()
-        elif await screen_bundle_404(r):
-            bundles_404.append(r.request.url)
-        elif u.path.startswith("/api/of/") or u.path in OF_LIVE_PATHS:
-            held.append(r)  # never answered: OF is not reachable from a slop run
         else:
-            await r.continue_()
+            await route_held_read(r, held, aborted)
 
+    await set_no_bundles_cookie(bctx, host)
     await bctx.route("**/*", route)
     track(ctx, bctx)
     page = await bctx.new_page()
     cdp = None
     if ctx.net:
-        if PROFILES[ctx.net].get("wire"):
-            raise RuntimeError(f"--net={ctx.net}: a wire profile shapes an edge port (lib/net.py wired); "
-                               "only slow-connections drives one")
         cdp = await bctx.new_cdp_session(page)
         await emulate(cdp, ctx.net)
     statuses: list[tuple[int, str]] = []
     page.on("response", lambda resp: statuses.append((resp.status, resp.url)))
-    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "bundles_404": bundles_404, "statuses": statuses,
+    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "statuses": statuses,
                  "crashed": None, "cdp": cdp}
     page.on("crash", lambda _p: page.slop.update(crashed=time.time() * 1000))
     return page

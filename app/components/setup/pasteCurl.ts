@@ -7,9 +7,6 @@
  * header). The signed headers (sign, time, x-bc, …) stay the relay's to parse: it answers 422 with the reason.
  */
 
-/** Select value for "Paste a new proxy…"; never a real label. */
-export const PASTE_PROXY = "__paste__";
-
 export interface BootstrapBody {
   mode: "paste-curl";
   curl: string;
@@ -22,17 +19,13 @@ export interface PasteCurlForm {
   curl: string;
   nickname: string;
   makeActive: boolean;
-  /** A proxy label, "" for none, or PASTE_PROXY. */
-  proxyLabel: string;
-  /** The pasted proxy line (PASTE_PROXY only). */
-  pastedProxy: string;
   staticOverride: string;
 }
 
 export interface PasteCurlState extends PasteCurlForm {
   result: { ok: boolean; text: string } | null;
   /** An account captured but whose attach failed: Retry re-runs the attach step, Continue goes on without it. */
-  pending: { accountId: string; label: string } | null;
+  pending: { accountId: string } | null;
 }
 
 type Field<K extends keyof PasteCurlForm = keyof PasteCurlForm> = K extends K ? { type: "setField"; field: K; value: PasteCurlForm[K] } : never;
@@ -45,13 +38,13 @@ export type PasteCurlAction =
   | { type: "retryStart" }
   | { type: "submitErr"; text: string }
   /** Captured, but the attach step failed. */
-  | { type: "attachErr"; text: string; accountId: string; label: string }
+  | { type: "attachErr"; text: string; accountId: string }
   /** Captured (and attached, or Continue): the curl is cleared. */
   | { type: "submitOk"; text: string };
 
-/** `nickname` / `proxyLabel`: the flow's (the card's props, which default them). */
-export function initialPasteCurl({ nickname, proxyLabel }: { nickname: string; proxyLabel: string }): PasteCurlState {
-  return { curl: "", nickname, makeActive: true, proxyLabel, pastedProxy: "", staticOverride: "", result: null, pending: null };
+/** `nickname`: the flow's (the card's prop, which defaults it). */
+export function initialPasteCurl({ nickname }: { nickname: string }): PasteCurlState {
+  return { curl: "", nickname, makeActive: true, staticOverride: "", result: null, pending: null };
 }
 
 export function pasteCurlReducer(state: PasteCurlState, action: PasteCurlAction): PasteCurlState {
@@ -65,13 +58,13 @@ export function pasteCurlReducer(state: PasteCurlState, action: PasteCurlAction)
     case "submitErr":
       return { ...state, result: { ok: false, text: action.text }, pending: null };
     case "attachErr":
-      return { ...state, result: { ok: true, text: action.text }, pending: { accountId: action.accountId, label: action.label } };
+      return { ...state, result: { ok: true, text: action.text }, pending: { accountId: action.accountId } };
     case "submitOk":
       return { ...state, curl: "", result: { ok: true, text: action.text }, pending: null };
   }
 }
 
-const HOW_TO_COPY = "In DevTools → Network, right-click a /api2/v2 request → Copy → Copy as cURL (bash).";
+const HOW_TO_COPY = "Open the extension, click Copy cURL again and paste the whole copy.";
 
 /** A `-H`/`--header` whose name is `name` (case-insensitive), in any quoting Chrome uses ('…', "…", $'…'). */
 const header = (name: string) => new RegExp(String.raw`(?:^|\s)(?:-H|--header)\s+\$?['"]?\s*${name}\s*:`, "i");
@@ -92,13 +85,8 @@ export function validateCurl(text: string): string | null {
   return missing.length ? `No ${missing.join(" and no ")} in this curl. ${HOW_TO_COPY}` : null;
 }
 
-/** Why the form is refused before anything is sent (curl first, then the pasted proxy); null = go on. */
-export function submitError(form: PasteCurlForm): string | null {
-  const curlErr = validateCurl(form.curl);
-  if (curlErr) return curlErr;
-  if (form.proxyLabel === PASTE_PROXY && !form.pastedProxy.trim()) return "Paste a proxy line or pick another option.";
-  return null;
-}
+/** Why the form is refused before anything is sent; null = go on. */
+export const submitError = (form: PasteCurlForm): string | null => validateCurl(form.curl);
 
 /** The Bootstrap button: off while the curl is blank or refused (its hint shows under the textarea). */
 export const canSubmit = (form: PasteCurlForm) => !validateCurl(form.curl);

@@ -2,3 +2,4 @@
 evidence/*
 !evidence/.gitkeep
 __pycache__/
+.*.slop-tmp-*

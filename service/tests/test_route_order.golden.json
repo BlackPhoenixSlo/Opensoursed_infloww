@@ -1,4 +1,4 @@
-{"openapi_sha1": "4e02ebb2d63ad20727f81ce7eb304d054c29e5f4",
+{"openapi_sha1": "c0e0e61b646994481f0cc002b229cef70108c769",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -270,8 +270,10 @@
   ["POST", "/admin/trial-links", "create_trial_link"],
   ["DELETE", "/admin/trial-links/{mirror_id}", "delete_trial_link"],
   ["GET", "/t/{slug}", "follow_tracking_link"],
+  ["POST", "/t/{slug}/verify", "verify_tracking_link"],
   ["GET", "/admin/tracking-links", "list_tracking_links"],
   ["POST", "/admin/tracking-links", "create_tracking_link"],
+  ["PATCH", "/admin/tracking-links/{link_id}", "patch_tracking_link"],
   ["DELETE", "/admin/tracking-links/{link_id}", "delete_tracking_link"],
   ["GET", "/admin/tracking-links/{link_id}/analytics", "tracking_link_analytics"],
   ["GET", "/admin/of-tracking-links", "list_of_tracking_links"],

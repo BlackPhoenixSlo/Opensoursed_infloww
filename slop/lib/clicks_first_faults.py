@@ -3,9 +3,7 @@
 """
 from __future__ import annotations
 
-PER_CREATOR = 2  # app/lib/relaySchedule.ts PER_CREATOR: the relay's background lane per Creator
-C_CAP = (f"no Creator (but the tapped one) has more than {PER_CREATOR} background OnlyFans reads on the wire at once "
-         "(the queue holds the rest)")
+C_CAP = "no Creator (but the tapped one) exceeds the background OnlyFans read cap on the wire"
 C_ABORT = "leaving the Dashboard mid-load sends none of its queued fan-count / new-fan reads after the switch"
 C_SNAPSHOT = ("a reload paints every Per-model card's fan count from the saved snapshot before any fan-count read "
               "answers, the figure the settled page shows")

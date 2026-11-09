@@ -14,7 +14,8 @@ vi.mock("@/hooks/useVaultCache", () => ({
 
 import { invalidateVaultGrid } from "@/hooks/useVaultCache";
 import {
-  ofUnreachable, refreshVaultFromOf, reloadBrokenThumbs, useOfRefresh, vaultBrowseSource, vaultWholeSource, type VaultSource,
+  ofUnreachable, refreshVaultFromOf, reloadBrokenThumbs, useOfRefresh, vaultBrowseSource, vaultPickerSource, vaultWholeSource,
+  type VaultSource,
 } from "@/hooks/vaultRefresh";
 import { relay, RelayError } from "@/lib/relay";
 
@@ -46,6 +47,20 @@ describe("vaultWholeSource", () => {
     // H1 (#329): a restricted chatter's count is its folders' only; `complete` is still the whole-vault flag.
     ["restricted chatter, walk done, its folders hold media", { count: 12, complete: true }, "mirror"],
   ])("%s", (_n, summary, want) => expect(vaultWholeSource(summary)).toBe(want));
+});
+
+// U4: the picker waits for the summary's first answer; it never paints the live listing over a collected vault.
+describe("vaultPickerSource", () => {
+  const done = { count: 300, complete: true };
+  it.each<[string, Parameters<typeof vaultPickerSource>[0], VaultSource | "pending"]>([
+    ["summary in flight", { data: undefined, isLoading: true }, "pending"],
+    ["summary failed (chatter's 403)", { data: undefined, isLoading: false }, "live"],
+    ["summary disabled (no Creator)", { data: undefined, isLoading: false }, "live"],
+    ["collected vault", { data: done, isLoading: false }, "mirror"],
+    ["partial mirror", { data: { count: 300, complete: false }, isLoading: false }, "live"],
+    ["cached answer while refetching", { data: done, isLoading: false }, "mirror"],
+    ["null answer", { data: null, isLoading: false }, "live"],
+  ])("%s", (_n, summary, want) => expect(vaultPickerSource(summary)).toBe(want));
 });
 
 // F15: the browse rule (manager grid, its thumb reload + selection download): a partial mirror is the mirror.

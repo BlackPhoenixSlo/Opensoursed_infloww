@@ -274,6 +274,9 @@ async def case_of_write_to_deactivated_creator_is_409() -> None:
     assert _ACTIVE["id"] == OFF
     r = owner.post("/api/of/v2/chats/123/mark-as-read")
     assert r.status_code == 409, f"fallback write to a deactivated Creator: {r.status_code} {r.text}"
+    other = _login("/auth/login", "other")
+    foreign_default = other.post("/api/of/v2/chats/123/mark-as-read")
+    assert foreign_default.status_code != 409, foreign_default.text
 
     # The guard passes everything else through to the handler.
     class _Req:
@@ -289,12 +292,15 @@ async def case_of_write_to_deactivated_creator_is_409() -> None:
     assert await server._deactivated_write_guard(_Req("GET", OFF), _next) == "handler", "read refused"
     assert await server._deactivated_write_guard(_Req("POST", ON), _next) == "handler", \
         "write to an active Creator refused"
+    owned_ids = server._require_actor_account_ids
+    server._require_actor_account_ids = lambda: frozenset((OFF, ON))
     _ACTIVE["id"] = ON
     try:
         assert await server._deactivated_write_guard(_Req("POST", None), _next) == "handler", \
             "fallback write to an active default refused"
     finally:
         _ACTIVE["id"] = OFF
+        server._require_actor_account_ids = owned_ids
 
 
 class _Wired:

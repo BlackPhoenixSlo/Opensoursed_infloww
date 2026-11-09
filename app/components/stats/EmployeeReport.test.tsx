@@ -34,7 +34,7 @@ import EmployeeReport from "@/components/stats/EmployeeReport";
 
 const EMPLOYEE_PAGE = "/analytics/employee-reports";
 const SALES_PAGE = "/analytics/sales-records";
-const NOTICE = "The sales data is based on your organization's sales settings.";
+const NOTICE = /The sales data is based on the sales settings/;
 
 let fetchMock: ReturnType<typeof vi.fn>;
 

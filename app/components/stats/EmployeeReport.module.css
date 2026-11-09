@@ -1,0 +1,30 @@
+.report { min-width: 0; background: var(--color-bg); color: var(--color-fg); }
+.report > header { height: 40px; padding: 0 16px; }
+.report > header h1 { font-size: 14px; }
+.body { padding: 8px 16px 24px; }
+.notice { min-height: 28px; padding: 5px 8px; border-radius: 3px; background: color-mix(in srgb, var(--color-accent) 20%, var(--color-bg)); font-size: 12px; }
+.notice a:hover { text-decoration: underline; }
+.notice > span { display: inline-flex; margin-left: 4px; color: var(--color-fg-dim); }
+.toolbar { height: auto; min-height: 42px; flex-wrap: wrap; gap: 8px 20px; }
+.toolbar > [role="tablist"] { min-height: 42px; gap: 26px; }
+.toolbar [role="tab"] { height: 42px; font-size: 12px; }
+.toolbar > :last-child:not([role="tablist"]) { gap: 8px; padding: 6px 0; flex-wrap: wrap; }
+.toolbar button:not([role="tab"]) { height: 26px; font-size: 11px; }
+.toolbar [aria-label="Refresh"] { width: 26px; background: transparent; color: var(--color-accent); }
+.toolbar [aria-haspopup="dialog"] { background: transparent; border: 1px solid var(--color-border); }
+.filter { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--color-accent); border-radius: 3px; color: var(--color-accent); }
+.filters { position: absolute; z-index: 20; right: 0; top: 32px; width: 200px; padding: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; box-shadow: 0 4px 16px #0002; font-size: 12px; }
+.content { padding-top: 14px; display: flex; flex-direction: column; gap: 28px; }
+.content section { min-width: 0; }
+.content h3 { font-size: 13px; margin-bottom: 10px; }
+.content svg > g { font-size: 10px; }
+.content svg > g > g > line:first-child { stroke-dasharray: 3 3; }
+.content [aria-label="Employee comparison"] [role="combobox"] { width: 110px; height: 28px; font-size: 12px; }
+.content [aria-label="Sales ranking"] li { font-size: 12px; min-height: 30px; }
+.content [aria-label="Sales ranking"] header { margin-bottom: 12px; }
+@media (max-width: 760px) {
+  .toolbar > :last-child:not([role="tablist"]) { margin-left: 0; width: 100%; }
+  .body { padding-inline: 12px; }
+  .content [aria-label="Employee comparison"] [role="combobox"] { width: 92px; }
+  .toolbar > [role="tablist"] { gap: 20px; }
+}

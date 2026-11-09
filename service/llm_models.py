@@ -61,6 +61,10 @@ class LLMModel:
     # cost by ~50× on the cached portion (real dashboard spend confirmed this).
     input_per_1k_cents: float = 0.0
     input_cache_hit_per_1k_cents: float = 0.0
+    # Rate for tokens WRITTEN to a provider cache (Anthropic
+    # `cache_creation_input_tokens`, 1.25x input on the 5-min TTL). 0 = the
+    # provider bills no write; such tokens (never reported) would bill as miss.
+    input_cache_write_per_1k_cents: float = 0.0
     output_per_1k_cents: float = 0.0
     # The body keys that state this model's reasoning mode, VERBATIM. Empty =
     # the model has no reasoning control at all.
@@ -253,42 +257,44 @@ MODELS: dict[str, LLMModel] = {
         # it, so offering it would be offering a setting that does nothing.
         reasoning_body=_body(thinking={"type": "disabled"}),
     ),
-    # Claude (Anthropic) via the OpenAI-compat layer. Registered for the help
-    # assistant (`_model_pick` defaults it to Opus when an Anthropic key is
-    # resolvable); offerable elsewhere, but NOT for a lane that asks for
-    # `response_format: json_object` — the layer 400s on it (json_schema only).
+    # Claude (Anthropic) via the native Messages API (llm_anthropic). Registered
+    # for the help assistant (`_model_pick` defaults it to Opus when an
+    # Anthropic key is resolvable); offerable elsewhere, but NOT for a lane that
+    # asks for `response_format: json_object` (refused before it fires).
     #
     # Prices: list, per 1M (platform.claude.com/docs/en/about-claude/pricing,
-    # read 2026-11-07) → cents/1k = ÷10. Hit rate = 0.05x base on Opus/Sonnet
-    # 5.5, 0.1x on Haiku 5.5. The compat layer does NOT cache ("Prompt caching
-    # is not supported") and reports no cached tokens, so today every input
-    # token bills at the MISS rate; the hit rate is seeded for honesty only.
-    #   opus-5-5:   $4 in / $0.20 hit / $20 out   → 0.4 / 0.02 / 2.0
-    #   sonnet-5-5: $2 in / $0.10 hit / $10 out   → 0.2 / 0.01 / 1.0
-    #   haiku-5-5:  $0.10 / $0.01 / $0.50 (≤100k-token prompts; over 100k it is
-    #               5x — no route here sends that much) → 0.01 / 0.001 / 0.05
+    # re-read 2026-11-07) → cents/1k = ÷10. Cache hit = 0.05x base on
+    # Opus/Sonnet 5.5, 0.1x on Haiku 5.5; 5-min cache write = 1.25x base. The
+    # system prompt rides a `cache_control` block, so repeats bill the hit rate.
+    #   opus-5-5:   $4 in / $5 write / $0.20 hit / $20 out → 0.4 / 0.5 / 0.02 / 2.0
+    #   sonnet-5-5: $2 / $2.50 / $0.10 / $10 → 0.2 / 0.25 / 0.01 / 1.0
+    #   haiku-5-5:  $0.10 / $0.125 / $0.01 / $0.50 (≤100k-token prompts; over
+    #               100k it is 5x — no route here sends that much)
+    #               → 0.01 / 0.0125 / 0.001 / 0.05
     #
-    # Reasoning (measured 2026-11-07): Claude 5 thinks by default; the layer
-    # ignores `reasoning_effort` and `output_config` (a bogus effort is a 200),
-    # so no `effort_choices`. Opus 5.5 400s on `thinking: disabled` and Sonnet
-    # 5.5 does too (wants `between_tools`); `enabled` + budget is accepted and
-    # the layer turns it into adaptive thinking, so that is the stated mode.
-    # Haiku 5.5 takes `disabled`: it is the cheap fast one.
+    # Reasoning (measured 2026-11-07 on /v1/messages): all three 400 on
+    # `thinking: enabled` ("Use thinking.type.adaptive"); Opus 5.5 400s on
+    # `disabled` and Sonnet 5.5 wants `between_tools`, so both state
+    # `adaptive` (model-default effort: no `effort_choices`). Haiku 5.5 takes
+    # `disabled`: it is the cheap fast one.
     "claude-opus-5-5": LLMModel(
         "claude-opus-5-5", "anthropic",
         input_per_1k_cents=0.4, input_cache_hit_per_1k_cents=0.02,
+        input_cache_write_per_1k_cents=0.5,
         output_per_1k_cents=2.0, sends_temperature=False, json_object_ok=False,
-        reasoning_body=_body(thinking={"type": "enabled", "budget_tokens": 1024}),
+        reasoning_body=_body(thinking={"type": "adaptive"}),
     ),
     "claude-sonnet-5-5": LLMModel(
         "claude-sonnet-5-5", "anthropic",
         input_per_1k_cents=0.2, input_cache_hit_per_1k_cents=0.01,
+        input_cache_write_per_1k_cents=0.25,
         output_per_1k_cents=1.0, sends_temperature=False, json_object_ok=False,
-        reasoning_body=_body(thinking={"type": "enabled", "budget_tokens": 1024}),
+        reasoning_body=_body(thinking={"type": "adaptive"}),
     ),
     "claude-haiku-5-5": LLMModel(
         "claude-haiku-5-5", "anthropic",
         input_per_1k_cents=0.01, input_cache_hit_per_1k_cents=0.001,
+        input_cache_write_per_1k_cents=0.0125,
         output_per_1k_cents=0.05, sends_temperature=False, json_object_ok=False,
         reasoning_body=_body(thinking={"type": "disabled"}),
     ),

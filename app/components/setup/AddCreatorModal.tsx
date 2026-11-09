@@ -1,97 +1,138 @@
 "use client";
 
 /**
- * AddCreatorModal — Infloww's Add creator / Link creator account modal (docs/infloww-layouts/creators-manage.md #54
- * to #76), step for step from the Dashboard bundle (`AddCreatorsModal`, index.9f50f370.js), with Infloww's
- * English (creatorFlow.tsx's `T`):
+ * AddCreatorModal — Add creator / Link creator account: the main Add creator route restores Infloww's Creator details
+ * and platform steps before the sign-in; existing drafts and relink actions keep their direct sign-in entry:
  *
- *   creators-details  "Creator details": Display image, Creator name, Gender. Done saves the Creator and closes;
- *                     "Next: Link creator account" saves it and goes on. Both say "New creator added".
- *   select-platform   OnlyFans or Fansly; a platform the Creator already has an account on is disabled.
- *   select-proxy      OnlyFans only, step 1 of 3: Inflowwww proxy (the relay's pool; the default when it has one, else
- *                     No proxy), No proxy or a custom proxy whose check passed; "Connect OnlyFans".
- *   login             Infloww's embedded OnlyFans sign-in (`OfLogin`) is ours: Paste cURL (the browser extension) and
- *                     Try Browserbase login (a remote browser on Browserbase's network, a human solving any challenge),
- *                     Inflowwww extras, preset with the flow's Creator name and Proxy selection, which both bind after
- *                     the capture (under Inflowwww proxy Paste cURL has no proxy select, and its attach step binds a
- *                     pool proxy; the Browserbase job binds the same on the relay). On a phone only Browserbase login
- *                     shows (no extension there), with a line saying Paste cURL is desktop-only. Fansly's is the
- *                     Fansly paste session, desktop-only. "Still unable…" opens Infloww's Select your role and
- *                     Alternative method screens.
- *   linked            "Creator account is linked to Inflowwww": the account and the proxy the relay has it on (read
- *                     back from GET /admin/proxies, not the radio picked); step 2 of 3.
- *   creator-details   "Account details": Nickname, Tag, Assigned employees, Internal notes; step 3 of 3. Saved to the
- *                     account (nickname), Creator access (employees) and the `creators` profile (useCreatorProfiles).
- *   success           "Creator account is linked to Inflowwww", Done.
+ *   details and platform   the new Creator's image, name and gender, followed by the platform choice.
+ *   login   the two ways in as two big choices at the top (a radiogroup, "Login method"):
+ *             Browser login  (first, Recommended): BrowserbaseLoginCard, a remote browser on Browserbase's network;
+ *                            email + password, any check solved in the live view, a 2FA code typed on the card.
+ *             Extension      (the fallback, "if browser login doesn't work"): PasteCurlCard, the Chrome extension's
+ *                            Copy cURL pasted here. Desktop only: on a phone the panel says so.
+ *           Under them, small, "Link a Fansly account" swaps to the Fansly paste session (the extension's session
+ *           copy, so Browser login is off there). The proxy is the relay's automatic one (its pool's tier-aware pick
+ *           for a new login; a row's re-link keeps the account's).
+ *           Both OnlyFans sign-ins stay mounted (the other one hidden), so a Browser login still running links even
+ *           while the Extension panel is open; the shown one's primary button sits in the footer after Cancel.
+ *   linked  "Creator account is linked": the account (its OF photo, name, @username and id, from its own /users/me),
+ *           the proxy the relay has it on (read back from GET /admin/proxies), and below it the account details
+ *           (Nickname, prefilled with the OF name once that read lands; Tag, Assigned employees, Internal notes);
+ *           Done saves them (a blank nickname takes the account's own name) and closes. A row's recovery shows the
+ *           account only, and Done closes.
  *
- * Not drawn: the second-proxy offer, which the bundle switches off (#76, `const Mt=false`); Infloww's Face ID
- * Verification screen, which its embedded browser raises on OnlyFans' Face ID page, a page our sign-in does not reach.
+ * Kept out of the way, not dropped: a custom proxy (Creators › Custom proxy, a row's Change proxy), Make default (a
+ * row's menu), the extension's static_param override (folded under Troubleshooting). Creators are no longer saved
+ * before a login; drafts saved earlier still open here from their row.
  *
- * Entry points: the header's Add creator (step 1); a Creator row with no account, "Link creator account" (`draft`, at
- * select-platform); a row's "Link another account" (`linkAnother`, at select-platform, its platforms disabled); a
- * row's recovery actions (`at`, straight to the sign-in section that performs it, and Done once linked).
+ * Entry points: the header's Add creator; a draft's "Link creator account" (`draft`) and a row's "Link another
+ * account" (`linkAnother`, its platforms taken: Fansly when OnlyFans is); a row's recovery actions and the 2FA
+ * notification's `?relink=browserbase` (`at`, the sign-in that performs it, focused).
  */
 
-import { ExternalLink, UserPlus } from "lucide-react";
+import { Globe, Puzzle, User, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import {
-  buildAccountPayload, canBack, canNext, useWizardReducer, type Platform,
+  buildAccountPayload, canNext, canPickPlatform, profileName, useWizardReducer, type Method, type Platform, type WizardState,
 } from "@/components/setup/addCreatorWizard";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
-  CreatorsDetailsForm, EditCreatorForm, FlowButton, FlowModal, HB_DIM, LinkedLine, RADIO, RADIO_GROUP, RADIO_ITEM,
-  STEP_TITLE, SelectProxyUI, StepIndicator, T,
+  CreatorsDetailsForm, EditCreatorForm, HB_DIM, LinkedLine, T, creatorDetailsError,
   assignedIds, bindPoolProxy, currentProxy, proxyText, toast, useProxyList,
-  useRoster, useSaveAccountDetails, type ProxyChoice,
+  useRoster, useSaveAccountDetails,
 } from "@/components/setup/creatorFlow";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
-import { HbButton } from "@/components/ui/infloww";
+import { HbButton, IfButton, IfModal } from "@/components/ui/infloww";
 import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/lib/creatorProfiles";
-import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { proxyImage } from "@/lib/mediaUrl";
+import { textAvatar } from "@/lib/ofMirrorAvatar";
 import { cn } from "@/lib/utils";
-import { BRAND_NAME } from "@/lib/brand";
 
 /** The page's one line for phones (spec, Mobile). */
-export const DESKTOP_ONLY_LINE = "Paste cURL (the browser extension) and keys are desktop-only. On a phone, link a creator with Browserbase login.";
-/** The OnlyFans sign-in's line for phones, under the Browserbase card. */
-export const MOBILE_PASTE_LINE = "Paste cURL needs the desktop browser extension.";
+export const DESKTOP_ONLY_LINE = "The extension and keys are desktop-only. On a phone, link a creator with Browser login.";
+/** The Extension panel's line for phones. */
+export const MOBILE_PASTE_LINE = "The extension needs desktop Chrome. On a phone, use Browser login.";
 /** The Fansly sign-in's line for phones. */
 export const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
 
-/** Our sign-in sections. */
+/** Our sign-in sections (the region names a row's recovery and the 2FA notification focus). */
 const SECTIONS = {
-  paste: { id: "add-creator-paste-curl", name: "Paste cURL", platform: "onlyfans" },
-  browserbase: { id: "add-creator-browserbase", name: "Browserbase login", platform: "onlyfans" },
-  fansly: { id: "add-creator-fansly", name: "Fansly paste session", platform: "fansly" },
+  paste: { id: "add-creator-paste-curl", name: "Extension", platform: "onlyfans", method: "extension" },
+  browserbase: { id: "add-creator-browserbase", name: "Browserbase login", platform: "onlyfans", method: "browser" },
+  fansly: { id: "add-creator-fansly", name: "Fansly paste session", platform: "fansly", method: "extension" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
 
 export const PLATFORM_LABEL: Record<Platform, string> = { onlyfans: "OnlyFans", fansly: "Fansly" };
 
-function Section({ k, children }: { k: SectionKey; children: ReactNode }) {
+function Section({ k, hidden, children }: { k: SectionKey; hidden?: boolean; children: ReactNode }) {
   const s = SECTIONS[k];
   return (
-    <section id={s.id} aria-label={s.name} title={EXTRA_LABEL} tabIndex={-1} className="space-y-2 focus:outline-none">
-      {/* Dropped on a phone, where the space goes to the sign-in itself; the section's title still says it. */}
-      <p className="hidden md:block text-xs text-muted">{EXTRA_LABEL}</p>
+    <section id={s.id} aria-label={s.name} hidden={hidden} tabIndex={-1} className="focus:outline-none">
       {children}
     </section>
   );
 }
 
-/** Every step after the first, and a row's entry points, read `creators0174`. */
+/** A row's entry points, and a draft's, read `creators0174`. */
 export const ROW_LINK_TITLE = T.linkCreatorAccount;
+
+/** The two ways in, the two big choices at the top. */
+const METHODS: { method: Method; title: string; sub: string; icon: typeof Globe; tag?: string }[] = [
+  {
+    method: "browser", title: "Browser login", icon: Globe, tag: "Recommended",
+    sub: "Sign in with the creator's email and password. No extension, works on a phone too.",
+  },
+  {
+    method: "extension", title: "Extension", icon: Puzzle,
+    sub: "If browser login doesn't work. Sign in on your own Chrome and paste the copy.",
+  },
+];
+
+function MethodChoice({ state, onChange }: { state: WizardState; onChange: (m: Method) => void }) {
+  const fansly = state.platform === "fansly";
+  return (
+    <div role="radiogroup" aria-label="Login method" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {METHODS.map(({ method, title, sub, icon: Icon, tag }) => {
+        const off = fansly && method === "browser";
+        const on = state.method === method;
+        return (
+          <label
+            key={method} title={off ? "Browser login is for OnlyFans accounts" : undefined}
+            className={cn(
+              "flex cursor-pointer flex-col gap-1.5 rounded-lg border p-4 transition-colors",
+              "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent/40",
+              on ? "border-accent bg-accent/10" : "border-border hover:border-accent",
+              off && "cursor-not-allowed opacity-40 hover:border-border",
+            )}
+          >
+            <input
+              type="radio" name="login-method" value={method} checked={on} disabled={off}
+              onChange={() => onChange(method)} className="sr-only"
+            />
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[16px] font-semibold text-fg">
+              <Icon className={cn("h-5 w-5", on ? "text-accent" : "text-muted")} aria-hidden />
+              <span className="whitespace-nowrap">{title}</span>
+              {tag && !fansly && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[12px] font-medium text-accent">{tag}</span>}
+            </span>
+            <span className="text-[13px] leading-[18px] text-muted">{sub}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function AddCreatorModal({ extInstalled, onClose, at, draft, linkAnother }: {
   extInstalled: boolean | null;
   onClose: () => void;
-  /** A row's recovery action: straight to the sign-in section that performs it. */
+  /** A row's recovery action: straight to the sign-in that performs it. */
   at?: SectionKey;
-  /** A Creator saved with Done and not linked yet: its details, at select-platform. */
+  /** A Creator saved before (a draft), not linked yet: its details ride along. */
   draft?: DraftCreator;
   /** "Link another account": the Creator's details and the platforms it has an account on. */
   linkAnother?: { creator: CreatorDetails; linked: Platform[] };
@@ -101,16 +142,22 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const save = useSaveAccountDetails(profiles);
   // `dispatch` answers whether the wizard took the action: a save runs only when its submitStart was taken, so a
   // double-click's second click saves nothing (useWizardReducer).
-  const [state, dispatch] = useWizardReducer({ recovery: at && SECTIONS[at].platform, draft, linkAnother });
-  const { step, details, draftId, taken, platform, picked } = state;
-  // The Proxy selection: the Inflowwww proxy by default when the relay has a pool, else No proxy. A row's recovery
-  // (`at`) skips the step and binds nothing, so the account keeps the proxy it is on.
+  const [state, dispatch] = useWizardReducer({
+    recovery: at && SECTIONS[at].platform, method: at && SECTIONS[at].method, draft, linkAnother,
+  });
+  const { step, details, platform, method, recovery } = state;
+  // The automatic proxy: a new account goes on the relay's pool when it has one (Browser login: the relay picks the
+  // same itself). A row's re-link binds nothing, so the account keeps the proxy it is on.
   const proxiesQ = useProxyList();
-  const proxy: ProxyChoice = picked ?? (proxiesQ.data?.pool?.size ? { type: "infloww" } : { type: "none" });
-  const next = () => { dispatch({ type: "next" }); };
-  const back = () => { dispatch({ type: "back" }); };
+  const autoPool = !recovery && !!proxiesQ.data?.pool?.size;
   const of = platform === "onlyfans";
-  const count = of ? 3 : 2;
+  const linkedId = step.kind === "linked" ? step.accountId : null;
+  const meQ = useAccountAvatar(linkedId);
+  const ofName = profileName(meQ.data);
+  // The OF profile read prefills a blank nickname (the reducer keeps a typed one).
+  useEffect(() => {
+    if (linkedId && ofName) dispatch({ type: "profile", accountId: linkedId, name: ofName });
+  }, [linkedId, ofName, dispatch]);
 
   useEffect(() => {
     if (!at) return;
@@ -119,183 +166,158 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
     el?.focus();
   }, [at]);
 
-  // Done / Next on step 1 (`addCreators`): the Creator is saved before any account; saved, the flow moves on
-  // (submitOk). True when it saved.
-  const saveDetails = async () => {
-    if (!dispatch({ type: "submitStart" })) return false;
-    try {
-      let id: string | undefined;
-      if (draftId) await profiles.updateDraft(draftId, details);
-      else id = (await profiles.addDraft(details)).id;
-      toast(T.newCreatorAdded);
-      dispatch({ type: "submitOk", draftId: id });
-      return true;
-    } catch (e) {
-      toast((e as Error).message, "err");
-      dispatch({ type: "submitErr" });
-      return false;
-    }
-  };
-
-  const linked = (id: string) => dispatch({
-    type: "linked", accountId: id,
+  const linked = (platform: Platform) => (id: string) => dispatch({
+    type: "linked", accountId: id, platform,
     account: { nickname: details.name, tag: profiles.profiles[id]?.tag ?? "", employeeIds: assignedIds(roster, id), notes: profiles.profiles[id]?.notes ?? "" },
   });
 
-  const title = step.kind === "creators-details" ? T.addCreator : ROW_LINK_TITLE;
-  const proxyLabel = proxy.type === "custom" ? proxy.label : "";
+  const title = at || draft || linkAnother ? ROW_LINK_TITLE : T.addCreator;
+  const nickname = recovery ? "" : details.name;
+  const other: Platform = of ? "fansly" : "onlyfans";
+  const cancel = <IfButton onClick={onClose}>{T.cancel}</IfButton>;
 
   let body: ReactNode;
   let footer: ReactNode;
   switch (step.kind) {
-    case "creators-details":
-      body = <CreatorsDetailsForm value={details} onChange={(value) => dispatch({ type: "setField", field: "details", value })} showTitle />;
+    case "details":
+      body = (
+        <div className="space-y-4">
+          <p className={cn("text-sm", HB_DIM)}>{T.stepOf(1, 3)} · {T.creatorDetails}</p>
+          <CreatorsDetailsForm value={details} onChange={(value) => dispatch({ type: "setDetails", value })} />
+        </div>
+      );
       footer = (
         <>
-          <FlowButton
-            disabled={!canNext(state) || !profiles.wired} title={!profiles.wired ? "not wired" : undefined}
-            onClick={async () => { if (await saveDetails()) onClose(); }}
-          >
-            {T.done}
-          </FlowButton>
-          <FlowButton
-            primary disabled={!canNext(state)}
-            // A chatter cannot save a Creator; the flow still links the account.
-            onClick={() => (profiles.wired ? void saveDetails() : next())}
-          >
-            {T.nextLink}
-          </FlowButton>
+          {cancel}
+          <IfButton variant="primary" disabled={!!creatorDetailsError(details)} onClick={() => dispatch({ type: "detailsNext" })}>
+            {T.next}
+          </IfButton>
         </>
       );
       break;
-    case "select-platform":
+    case "platform":
       body = (
         <div className="space-y-4">
-          <p className={STEP_TITLE}>{T.whichPlatform}</p>
-          <div role="radiogroup" aria-label="Platform" className={RADIO_GROUP}>
-            {(["onlyfans", "fansly"] as const).map((p) => {
-              const off = taken.includes(p);
-              return (
-                <label
-                  key={p} title={off ? T.onePerPlatform(PLATFORM_LABEL[p]) : undefined}
-                  className={cn(RADIO_ITEM, "items-center")}
-                >
-                  <input type="radio" name="platform" checked={platform === p} disabled={off} onChange={() => dispatch({ type: "setField", field: "platform", value: p })} className={cn(RADIO, "mt-0")} />
-                  {/* `HBIconWrapper size:"intermediate"` with the platform's mark, the label 4px after it (#63). */}
-                  <span className="flex items-center gap-1"><PlatformLogo platform={p} />{PLATFORM_LABEL[p]}</span>
-                </label>
-              );
-            })}
+          <p className={cn("text-sm", HB_DIM)}>{T.stepOf(2, 3)}</p>
+          <p className="text-sm font-medium text-fg">{T.whichPlatform}</p>
+          <div role="radiogroup" aria-label={T.platform} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {(["onlyfans", "fansly"] as const).map((value) => (
+              <label key={value} className={cn(
+                "flex cursor-pointer items-center gap-3 rounded-lg border p-4 transition-colors",
+                platform === value ? "border-accent bg-accent/10" : "border-border hover:border-accent",
+                state.taken.includes(value) && "cursor-not-allowed opacity-40",
+              )}>
+                <input
+                  type="radio" name="creator-platform" value={value} checked={platform === value}
+                  disabled={state.taken.includes(value)}
+                  onChange={() => dispatch({ type: "setField", field: "platform", value })} className="sr-only"
+                />
+                <PlatformLogo platform={value} className="h-5 w-5" />
+                <span className="text-base font-medium">{PLATFORM_LABEL[value]}</span>
+              </label>
+            ))}
           </div>
         </div>
       );
       footer = (
         <>
-          {canBack(state) && <FlowButton onClick={back}>{T.back}</FlowButton>}
-          <FlowButton primary disabled={!canNext(state)} onClick={next}>
-            {T.next}
-          </FlowButton>
+          {cancel}
+          <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>
+          <IfButton variant="primary" onClick={() => dispatch({ type: "platformNext" })}>{T.next}</IfButton>
         </>
-      );
-      break;
-    case "select-proxy":
-      body = <SelectProxyUI value={proxy} onChange={(value) => dispatch({ type: "setField", field: "proxy", value })} />;
-      footer = (
-        <StepIndicator active={0} count={3}>
-          {canBack(state) && <FlowButton onClick={back}>{T.back}</FlowButton>}
-          <FlowButton primary disabled={!canNext(state)} onClick={next}>{T.connectOnlyFans}</FlowButton>
-        </StepIndicator>
       );
       break;
     case "login":
       body = (
-        <div className="space-y-4">
-          <p className={STEP_TITLE}>{T.linkPlatformAccount(PLATFORM_LABEL[platform])}</p>
-          {of ? (
-            <div className="space-y-6">
-              {/* No extension on a phone: Paste cURL is desktop-only, and Browserbase login is the step's content. */}
-              <div className="hidden md:block">
-                <Section k="paste">
-                  <PasteCurlCard
-                    extInstalled={extInstalled} onLinked={linked} initialNickname={at ? "" : details.name} initialProxyLabel={proxyLabel}
-                    attach={proxy.type === "infloww" ? bindPoolProxy : undefined}
-                  />
-                </Section>
-              </div>
-              <Section k="browserbase">
-                <BrowserbaseLoginCard onLinked={linked} initialNickname={at ? "" : details.name} proxy={at ? undefined : proxy} />
-              </Section>
-              <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{MOBILE_PASTE_LINE}</p>
-              <button type="button" onClick={next} className="text-sm text-cta hover:underline">
-                {T.stillUnable}
-              </button>
+        <div className="space-y-6">
+          {!recovery && !state.draftId && !state.taken.length && (
+            <p className={cn("text-sm", HB_DIM)}>{T.stepOf(3, 3)} · {T.linkPlatformAccount(PLATFORM_LABEL[platform])}</p>
+          )}
+          <MethodChoice state={state} onChange={(value) => dispatch({ type: "setField", field: "method", value })} />
+          <Section k="browserbase" hidden={!of || method !== "browser"}>
+            <BrowserbaseLoginCard onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"} />
+          </Section>
+          <Section k="paste" hidden={!of || method !== "extension"}>
+            {/* No extension on a phone. */}
+            <div className="hidden md:block">
+              <PasteCurlCard
+                extInstalled={extInstalled} onLinked={linked("onlyfans")} initialNickname={nickname}
+                attach={autoPool ? bindPoolProxy : undefined} active={of && method === "extension"}
+              />
             </div>
-          ) : (
-            <>
-              <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{MOBILE_FANSLY_LINE}</p>
+            <p className="md:hidden text-sm text-muted">{MOBILE_PASTE_LINE}</p>
+          </Section>
+          {!of && (
+            <Section k="fansly">
+              <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
               <div className="hidden md:block">
-                <Section k="fansly"><FanslyPasteSessionCard onLinked={linked} initialNickname={at ? "" : details.name} formId={FANSLY_FORM_ID} /></Section>
+                <FanslyPasteSessionCard onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} />
               </div>
-            </>
+            </Section>
+          )}
+          {canPickPlatform(state, other) && (
+            <button
+              type="button" onClick={() => dispatch({ type: "setField", field: "platform", value: other })}
+              className="inline-flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"
+            >
+              <PlatformLogo platform={other} className="h-3.5 w-3.5" />
+              {of ? "Link a Fansly account instead" : "Link an OnlyFans account instead"}
+            </button>
           )}
         </div>
       );
-      footer = at ? <FlowButton onClick={onClose}>{T.cancel}</FlowButton> : (
-        <FlowButton onClick={back}>{T.cancel}</FlowButton>
+      // Infloww's Fansly sign-in: Done beside Cancel submits the session (`creators0108`, @12411710). OnlyFans: the
+      // shown sign-in puts its own button after Cancel (footerSlot).
+      footer = (
+        <>
+          {cancel}
+          {!recovery && !state.draftId && !state.taken.length && <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>}
+          {!of && <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID}>{T.done}</IfButton>}
+        </>
       );
-      // OnlyFans: the sign-in is step 1's second half (the proxy's "Connect OnlyFans" opens it, #68), so it keeps the
-      // proxy step's dots. Fansly counts from linked (`dotCount:2`); its sign-in comes before step 1 and has none.
-      if (of && !at) footer = <StepIndicator active={0} count={3}>{footer}</StepIndicator>;
-      // Infloww's Fansly sign-in: Done beside Cancel submits the session (`creators0108`, @12411710).
-      if (!of) footer = <>{footer}<FlowButton primary type="submit" form={FANSLY_FORM_ID}>{T.done}</FlowButton></>;
-      break;
-    case "role":
-      body = <SelectRole onAdmin={next} onCreator={back} onCancel={back} />;
-      footer = null;
-      break;
-    case "alt":
-      body = <AlternativeMethod />;
-      footer = <FlowButton onClick={back}>{T.back}</FlowButton>;
       break;
     case "linked":
-      body = <LinkedAccount accountId={step.accountId} platform={platform} />;
-      footer = at ? <FlowButton primary onClick={onClose}>{T.done}</FlowButton> : (
-        <StepIndicator active={of ? 1 : 0} count={count}>
-          <FlowButton primary disabled={!canNext(state)} onClick={next}>{T.next}</FlowButton>
-        </StepIndicator>
-      );
-      break;
-    case "creator-details":
       body = (
-        <div className="space-y-4">
-          <p className={STEP_TITLE}>{T.accountDetails}</p>
-          <EditCreatorForm value={step.account} onChange={(value) => dispatch({ type: "setField", field: "account", value })} tags={profiles.tags} roster={roster} />
+        <div className="space-y-6">
+          <LinkedAccount accountId={step.accountId} platform={platform} />
+          {!recovery && (
+            <div>
+              <p className="mb-4 text-[14px] font-semibold text-fg">{T.accountDetails}</p>
+              <EditCreatorForm
+                value={step.account} onChange={(value) => dispatch({ type: "setField", field: "account", value })}
+                tags={profiles.tags} roster={roster}
+              />
+            </div>
+          )}
         </div>
       );
-      footer = (
-        <StepIndicator active={of ? 2 : 1} count={count}>
-          <FlowButton
-            primary disabled={!canNext(state)}
-            onClick={() => {
-              if (!dispatch({ type: "submitStart" })) return;
-              save.mutate(buildAccountPayload(state, step, roster), {
-                onSuccess: () => { toast(T.updateSuccess); dispatch({ type: "submitOk" }); },
-                onError: (e) => { toast((e as Error).message, "err"); dispatch({ type: "submitErr" }); },
-              });
-            }}
-          >
-            {T.next}
-          </FlowButton>
-        </StepIndicator>
+      footer = recovery ? <IfButton variant="primary" onClick={onClose}>{T.done}</IfButton> : (
+        <IfButton
+          variant="primary" disabled={!canNext(state)}
+          onClick={() => {
+            if (!dispatch({ type: "submitStart" })) return;
+            save.mutate(buildAccountPayload(state, step, roster, ofName), {
+              onSuccess: () => { toast(at || draft || linkAnother ? T.updateSuccess : "Creator added"); dispatch({ type: "submitOk" }); onClose(); },
+              onError: (e) => { toast((e as Error).message, "err"); dispatch({ type: "submitErr" }); },
+            });
+          }}
+        >
+          {step.busy ? "Saving…" : T.done}
+        </IfButton>
       );
       break;
     case "success":
       body = <LinkedLine />;
-      footer = <FlowButton primary onClick={onClose}>{T.done}</FlowButton>;
+      footer = <IfButton variant="primary" onClick={onClose}>{T.done}</IfButton>;
       break;
   }
 
-  return <FlowModal title={title} onClose={onClose} footer={footer}>{body}</FlowModal>;
+  return (
+    // `maskClosable:false` (creators-manage#54): the mask does not close it; Escape and the × do.
+    <IfModal title={title} width={600} onClose={onClose} footer={footer} footerSlot={step.kind === "login" && of}>
+      {body}
+    </IfModal>
+  );
 }
 
 /** The linked step's account: avatar, name, @username (Fansly: fansly.com/username, read through the relay's Fansly
@@ -310,7 +332,7 @@ function LinkedAccount({ accountId, platform }: { accountId: string; platform: P
     <div className="space-y-4">
       <LinkedLine />
       <AccountChip
-        accountId={accountId} name={me?.name} username={me?.username} avatar={pickAvatarUrl(me)}
+        accountId={accountId} name={me?.name} username={me?.username} avatar={fansly ? pickAvatarUrl(me) : proxyImage(pickAvatarUrl(me), accountId)}
         sub={fansly && me?.username ? fanslyProfile(me.username) : undefined}
       />
       {fansly && meQ.isSuccess && !me && <p className="text-sm text-err">{FANSLY_T.accountInfoError}</p>}
@@ -325,72 +347,36 @@ function LinkedAccount({ accountId, platform }: { accountId: string; platform: P
 /** A Fansly account's profile address, as Infloww's linked Fansly account reads. */
 export const fanslyProfile = (username: string) => `fansly.com/${username}`;
 
+/** The linked account: its photo (else the name's initials, else a profile icon), its name (else its id), and under it
+ *  @username (or `sub`) and the OF user id. */
 export function AccountChip({ accountId, name, username, avatar, sub }: {
   accountId: string; name?: string | null; username?: string | null; avatar?: string | null;
   /** The line under the name in place of @username (a Fansly account's fansly.com/username). */
   sub?: string;
 }) {
+  const [broken, setBroken] = useState(false);
+  const letters = textAvatar((name || username || "").trim());
+  const handle = sub ?? (username ? `@${username}` : null);
+  const named = !!(name || username);
   return (
     <div className="flex items-center gap-3">
-      {avatar
-        ? <img src={avatar} alt="" className="h-10 w-10 rounded-full object-cover" />
-        : <span aria-hidden className="grid h-10 w-10 place-items-center rounded-full bg-white/[.09] text-sm">{(name || accountId).slice(0, 1).toUpperCase()}</span>}
+      {avatar && !broken
+        ? <img src={avatar} alt="" onError={() => setBroken(true)} className="h-10 w-10 shrink-0 rounded-full object-cover" />
+        : (
+          <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/[.09] text-sm font-medium">
+            {letters || <User className="h-5 w-5 text-muted" />}
+          </span>
+        )}
       <span className="min-w-0">
-        <span className="block truncate text-sm font-medium">{name || accountId}</span>
-        {(sub || username) && <span className={cn("block truncate text-xs", HB_DIM)}>{sub ?? `@${username}`}</span>}
+        <span className="block truncate text-sm font-medium">{name || username || accountId}</span>
+        {(handle || named) && (
+          <span className={cn("block truncate text-xs", HB_DIM)}>
+            {handle && <span>{handle}</span>}
+            {handle && named && " · "}
+            {named && <span>ID {accountId}</span>}
+          </span>
+        )}
       </span>
-    </div>
-  );
-}
-
-/** "Select your role": Admin/employee goes to the alternative method; Creator signs in. */
-function SelectRole({ onAdmin, onCreator, onCancel }: { onAdmin: () => void; onCreator: () => void; onCancel: () => void }) {
-  const [role, setRole] = useState<"admin" | "creator" | null>(null);
-  return (
-    <div className="space-y-4">
-      <p className={STEP_TITLE}>{T.selectRoleTitle}</p>
-      <div role="radiogroup" aria-label={T.selectRoleTitle} className={RADIO_GROUP}>
-        {([["admin", "Admin/employee"], ["creator", "Creator (Owner of the OnlyFans account)"]] as const).map(([v, l]) => (
-          <label key={v} className={RADIO_ITEM}>
-            <input type="radio" name="role" checked={role === v} onChange={() => setRole(v)} className={RADIO} />
-            {l}
-          </label>
-        ))}
-      </div>
-      <div className="flex justify-end gap-2">
-        <FlowButton onClick={onCancel}>{T.cancel}</FlowButton>
-        <FlowButton primary disabled={!role} onClick={role === "admin" ? onAdmin : onCreator}>{T.next}</FlowButton>
-      </div>
-    </div>
-  );
-}
-
-/** "Linking OnlyFans account (Alternative method)", Infloww's four steps with our pages named. */
-function AlternativeMethod() {
-  const steps = [
-    `Add the creator to your organization on ${BRAND_NAME} as a user, restricting their permissions to add creators only. Note that the creator can view the information of other creators linked to your organization’s ${BRAND_NAME} account when you do this.`,
-    `Have the creator activate their employee account via email, and log in to ${BRAND_NAME}.`,
-    "Direct the creator to “Manage creators” and to click on “Link creator account” to complete the steps and verification of their OnlyFans account on their computer.",
-    `Once the creator’s OnlyFans account is linked to ${BRAND_NAME}, delete the creator’s ${BRAND_NAME} user account.`,
-  ];
-  return (
-    <div className="space-y-4">
-      <p className={STEP_TITLE}>{T.altMethodTitle}</p>
-      <p role="alert" className="rounded-lg bg-[rgba(255,161,95,.12)] p-3 text-sm text-[#ffa15f]">
-        Caution: This method exposes your organization’s data to external risk. This should be used as a last resort only
-        if all other attempts to link the creator’s OnlyFans account have failed.
-      </p>
-      <ol className="space-y-3">
-        {steps.map((s, i) => (
-          <li key={i} className="text-sm">
-            <span className="block font-medium">Step {i + 1}</span>
-            <span className={HB_DIM}>{s}</span>
-          </li>
-        ))}
-      </ol>
-      <a href="/employees" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-cta hover:underline">
-        Employees <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-      </a>
     </div>
   );
 }

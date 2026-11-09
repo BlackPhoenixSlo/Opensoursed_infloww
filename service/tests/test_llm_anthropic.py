@@ -1,53 +1,60 @@
 #!/usr/bin/env python3
-"""Anthropic (Claude) through its OpenAI-compatibility layer — no new client.
+"""Anthropic (Claude) through its NATIVE Messages API with prompt caching.
 
 Each case pins a wire fact measured live on 2026-11-07 against
-https://api.anthropic.com/v1/chat/completions:
+https://api.anthropic.com/v1/messages:
 
-  1. Bearer auth on /v1/chat/completions works; the row is a PROVIDERS entry.
-  2. `temperature` < 1 is a 400 on Claude 4.7+ ("deprecated for this model"),
-     so it must not travel for these models — and still must for the rest.
-  3. Opus/Sonnet 5.5 400 on `thinking: disabled`; `enabled` + budget is
-     accepted (the layer converts it to adaptive). Haiku 5.5 takes `disabled`.
-     `reasoning_effort` is ignored by the layer → no effort choices.
-  4. The help assistant may fall back to the deployment's own Anthropic key
-     (HELP_ASSISTANT_ANTHROPIC_KEY), a separate credential from the house key.
+  1. `x-api-key` + `anthropic-version` on POST /v1/messages; the system prompt
+     travels as a text block with `cache_control: ephemeral`, and usage splits
+     the prompt into input / cache_creation / cache_read tokens.
+  2. `temperature` < 1 is a 400 on Claude 4.7+, so it must not travel for
+     these models — and still must for the rest.
+  3. Every 5.5 model 400s on `thinking: enabled`; Opus/Sonnet 5.5 also on
+     `disabled`, so they state `adaptive`. Haiku 5.5 takes `disabled`.
+  4. Cache reads bill the hit rate, cache writes 1.25x input.
+  5. Error statuses map to the same kinds as every provider (401 key invalid,
+     429/529 retried, 400 not retried).
 
 Offline: the transport is stubbed, nothing leaves the process.
 
-Run: cd service && ALLOW_ANONYMOUS_ADMIN=1 ../venv/bin/python tests/test_llm_anthropic.py
+Run: cd service/tests && ../../venv/bin/python test_llm_anthropic.py
 """
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
 
+import httpx  # noqa: E402
+
+import llm_anthropic  # noqa: E402
 import llm_client  # noqa: E402
 import llm_providers  # noqa: E402
 import secrets_store  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, AccountAiConfig  # noqa: E402
-from llm_client import MODELS, chat  # noqa: E402
+from db.models import Account, AccountAiConfig, GrokCall  # noqa: E402
+from llm_client import (LLMConfigError, LLMHTTPError, LLMKeyError, MODELS,  # noqa: E402
+                        chat)
 
 CLAUDE = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+SYSTEM = "You are the help bot. " * 50
 
 
-class _FakeResp:
-    status_code = 200
-
-    def __init__(self, data):
-        self._data = data
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._data
+def _native(usage: dict, content=None, stop="end_turn") -> dict:
+    return {"id": "msg_x", "type": "message", "role": "assistant", "model": "m",
+            "content": content if content is not None else [{"type": "text", "text": "ok"}],
+            "stop_reason": stop, "usage": usage}
 
 
-class _CapturingClient:
-    last_body: dict = {}
-    last_url: str = ""
-    last_bearer: str = ""
+_COLD = {"input_tokens": 50, "cache_creation_input_tokens": 38900,
+         "cache_read_input_tokens": 0, "output_tokens": 300}
+_WARM = {"input_tokens": 50, "cache_creation_input_tokens": 0,
+         "cache_read_input_tokens": 38900, "output_tokens": 300}
+
+
+class _Client:
+    """httpx.AsyncClient stand-in: records each POST, answers from `script`
+    (a list of (status, json) consumed in order; the last one repeats)."""
+    calls: list = []
+    script: list = [(200, _native(_COLD))]
 
     def __init__(self, *a, **k):
         pass
@@ -60,15 +67,19 @@ class _CapturingClient:
 
     async def post(self, url, headers=None, json=None):
         cls = type(self)
-        cls.last_body = dict(json or {})
-        cls.last_url = str(url)
-        cls.last_bearer = (headers or {}).get("Authorization", "")[len("Bearer "):]
-        # The compat layer's real usage shape: no cached-token field at all.
-        return _FakeResp({
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1000, "completion_tokens": 100,
-                      "total_tokens": 1100},
-        })
+        cls.calls.append({"url": str(url), "headers": dict(headers or {}),
+                          "body": dict(json or {})})
+        status, data = cls.script[min(len(cls.calls) - 1, len(cls.script) - 1)]
+        return httpx.Response(status, json=data, request=httpx.Request("POST", url))
+
+    @classmethod
+    def reset(cls, *script):
+        cls.calls = []
+        cls.script = list(script) or [(200, _native(_COLD))]
+
+    @classmethod
+    def last(cls) -> dict:
+        return cls.calls[-1]
 
 
 async def _seed_account(aid: str) -> None:
@@ -79,23 +90,36 @@ async def _seed_account(aid: str) -> None:
             s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=1_000_000))
 
 
-async def _fire(model: str, aid: str):
+async def _fire(model: str, aid: str, messages=None, **kw):
     orig = llm_client.httpx.AsyncClient
     real_key = llm_providers._api_key
-    llm_client.httpx.AsyncClient = _CapturingClient
+    backoff = llm_client._LLM_RETRY_BACKOFF_S
+    llm_client.httpx.AsyncClient = _Client
+    llm_client._LLM_RETRY_BACKOFF_S = 0
     llm_providers._api_key = lambda env: (
         "sk-ant-test-house" if env == "ANTHROPIC_API_KEY" else real_key(env))
     try:
-        return await chat(model=model, messages=[{"role": "user", "content": "hi"}],
-                          purpose="help_assistant", account_id=aid, temperature=0.3)
+        return await chat(model=model, messages=messages or [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": "hi"}],
+            purpose="help_assistant", account_id=aid, temperature=0.3, **kw)
     finally:
         llm_client.httpx.AsyncClient = orig
+        llm_client._LLM_RETRY_BACKOFF_S = backoff
         llm_providers._api_key = real_key
+
+
+async def _row(call_id: int) -> GrokCall:
+    async with get_session() as s:
+        return await s.get(GrokCall, call_id)
 
 
 async def case_provider_row_and_house_key():
     prov = llm_providers.PROVIDERS["anthropic"]
     assert prov.base_url == "https://api.anthropic.com/v1", prov.base_url
+    assert prov.wire == "anthropic", prov.wire
+    assert all(p.wire == "openai" for n, p in llm_providers.PROVIDERS.items()
+               if n != "anthropic")
     assert prov.api_key_env == "ANTHROPIC_API_KEY", prov.api_key_env
     assert prov.api_key_env in secrets_store.KNOWN, "no Setup → Keys box"
     real = llm_providers._api_key
@@ -111,56 +135,263 @@ async def case_provider_row_and_house_key():
         assert p.name == "anthropic" and mdl.wire_model() == mid, (mid, p.name)
 
 
-async def case_body_has_no_temperature_and_states_thinking():
+async def case_native_request_shape_with_cached_system_block():
     await _seed_account("acct_claude_body")
     for mid in CLAUDE:
+        _Client.reset()
         await _fire(mid, "acct_claude_body")
-        body = _CapturingClient.last_body
-        assert _CapturingClient.last_url == \
-            "https://api.anthropic.com/v1/chat/completions", _CapturingClient.last_url
-        assert _CapturingClient.last_bearer == "sk-ant-test-house"
+        call = _Client.last()
+        body, h = call["body"], call["headers"]
+        assert call["url"] == "https://api.anthropic.com/v1/messages", call["url"]
+        assert h.get("x-api-key") == "sk-ant-test-house", "key header"
+        assert h.get("anthropic-version") == "2023-06-01", h
+        assert "Authorization" not in h, "bearer must not travel natively"
         assert body["model"] == mid, body
-        assert "temperature" not in body, (mid, body)   # 400 on Claude 4.7+
-        assert "reasoning_effort" not in body, (mid, body)   # ignored by the layer
-        assert "thinking" in body, f"{mid} states its mode by omission"
+        assert body["max_tokens"] == llm_anthropic.MAX_TOKENS == 4096, body
+        assert body["system"] == [{"type": "text", "text": SYSTEM,
+                                   "cache_control": {"type": "ephemeral"}}], body["system"]
+        assert body["messages"] == [{"role": "user", "content": "hi"}], body["messages"]
+        for k in ("temperature", "reasoning_effort", "stream", "response_format"):
+            assert k not in body, (mid, k, body)
         if mid == "claude-haiku-5-5":
             assert body["thinking"] == {"type": "disabled"}, body
-        else:   # `disabled` is a 400 on Opus/Sonnet 5.5
-            assert body["thinking"]["type"] == "enabled", body
+        else:   # `enabled` and `disabled` are 400s on Opus/Sonnet 5.5 natively
+            assert body["thinking"] == {"type": "adaptive"}, body
         assert MODELS[mid].effort_choices == (), mid
 
 
-async def case_other_models_still_send_temperature():
+def case_adapter_puts_the_breakpoint_on_the_last_system_block():
+    out = llm_anthropic.to_native_body({
+        "model": "m", "stream": False, "thinking": {"type": "adaptive"},
+        "messages": [
+            {"role": "system", "content": "A"},
+            {"role": "system", "content": [{"type": "text", "text": "B"}]},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": [{"type": "text", "text": "q"},
+                                         {"type": "text", "text": "2"}]}]})
+    assert out["system"] == [{"type": "text", "text": "A"},
+                             {"type": "text", "text": "B",
+                              "cache_control": {"type": "ephemeral"}}], out
+    assert out["messages"] == [{"role": "user", "content": "q1"},
+                               {"role": "assistant", "content": "a1"},
+                               {"role": "user", "content": "q2"}], out
+    assert "stream" not in out and out["thinking"] == {"type": "adaptive"}
+    no_sys = llm_anthropic.to_native_body({"model": "m", "messages": [
+        {"role": "user", "content": "x"}]})
+    assert "system" not in no_sys, no_sys
+
+
+def case_response_is_normalized_to_the_openai_shape():
+    data = llm_anthropic.to_openai_response(_native(
+        {"input_tokens": 7, "cache_creation_input_tokens": 100,
+         "cache_read_input_tokens": 900, "output_tokens": 40,
+         "output_tokens_details": {"thinking_tokens": 25}},
+        content=[{"type": "thinking", "thinking": "hmm", "signature": "s"},
+                 {"type": "text", "text": "Hel"}, {"type": "text", "text": "lo"}],
+        stop="max_tokens"))
+    ch = data["choices"][0]
+    assert ch["message"]["content"] == "Hello", ch
+    assert ch["message"]["reasoning_content"] == "hmm", ch
+    assert ch["finish_reason"] == "length", ch
+    u = data["usage"]
+    assert u["prompt_tokens"] == 1007 and u["completion_tokens"] == 40, u
+    assert u["prompt_tokens_details"] == {"cached_tokens": 900}, u
+    assert u["cache_creation_input_tokens"] == 100, u
+    assert u["completion_tokens_details"] == {"reasoning_tokens": 25}, u
+    assert llm_client._cache_hit_tokens(u) == 900
+    assert llm_anthropic.to_openai_response(_native(_WARM))["choices"][0][
+        "finish_reason"] == "stop"
+
+
+async def case_cache_write_then_read_bill_their_own_rates():
+    """Opus, 50 fresh + 38.9k system + 300 out:
+      write call: 50*0.4 + 38900*0.5 + 300*2.0 per 1k = 20.07c = 2007 mc
+      read  call: 50*0.4 + 38900*0.02 + 300*2.0 per 1k = 1.398c = 140 mc
+    against 38950*0.4 + 0.6 = 16.18c = 1618 mc when nothing caches."""
+    aid = "acct_claude_cache"
+    await _seed_account(aid)
+    _Client.reset((200, _native(_COLD)), (200, _native(_WARM)))
+    cold = await _fire("claude-opus-5-5", aid)
+    warm = await _fire("claude-opus-5-5", aid)
+    assert (cold.tokens_in, cold.cache_hit_tokens, cold.cache_write_tokens) == \
+        (38950, 0, 38900), cold
+    assert (warm.tokens_in, warm.cache_hit_tokens, warm.cache_write_tokens) == \
+        (38950, 38900, 0), warm
+    assert cold.cost_cents == 2007, cold.cost_cents
+    assert warm.cost_cents == 140, warm.cost_cents
+    assert llm_client._cost_millicents("claude-opus-5-5", 38950, 300) == 1618
+    for res in (cold, warm):
+        row = await _row(res.call_id)
+        assert row.status == "done" and row.cost_cents == res.cost_cents, row
+        assert row.cache_hit_tokens == res.cache_hit_tokens, row
+        assert row.tokens_in == 38950 and row.endpoint == "/v1/messages", row
+    # Sonnet / Haiku write rates are 1.25x their input too.
+    assert llm_client._cost_millicents("claude-sonnet-5-5", 1000, 0, 0, 1000) == 25
+    assert llm_client._cost_millicents("claude-haiku-5-5", 8000, 0, 0, 8000) == 10
+    # Clamp: write can't exceed what the hit left of tokens_in.
+    assert llm_client._cost_millicents("claude-opus-5-5", 1000, 0, 900, 900) == \
+        llm_client._cost_millicents("claude-opus-5-5", 1000, 0, 900, 100)
+    # A model with no write rate bills a (never-reported) write at miss.
+    assert llm_client._cost_millicents("deepseek-v4-flash", 1000, 0, 0, 1000) == \
+        llm_client._cost_millicents("deepseek-v4-flash", 1000, 0)
+
+
+async def case_help_http_route_caches_prompt_and_persists_costs():
+    """Real HTTP route + resolver + client + DB, only provider wire stubbed.
+
+    Bypasses: local anonymous-admin mode, seeded account, scripted provider
+    usage. Proves integration/accounting, not Anthropic's actual cache hit.
+    """
+    import json
+    import os
+    from fastapi import FastAPI
+    from sqlalchemy import select
+    import assistant_api
+    from db.models import AssistantTurn
+
+    aid = "acct_claude_http"
+    await _seed_account(aid)
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, aid)
+        cfg.model_by_purpose = json.dumps({"help_assistant": "claude-opus-5-5"})
+    app = FastAPI()
+    app.include_router(assistant_api.router)
+    real_client = httpx.AsyncClient
+    real_key = llm_providers._api_key
+    old_admin = os.environ.get("ALLOW_ANONYMOUS_ADMIN")
+    calls = []
+
+    def provider(request):
+        assert str(request.url) == "https://api.anthropic.com/v1/messages"
+        assert request.headers["x-api-key"] == "sk-ant-test-http"
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=_native(_COLD if len(calls) == 1 else _WARM))
+
+    # Construct the inbound ASGI client before replacing outbound clients.
+    async with real_client(transport=httpx.ASGITransport(app=app),
+                           base_url="http://test") as client:
+        os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
+        llm_providers._api_key = lambda env: "sk-ant-test-http" if env == "ANTHROPIC_API_KEY" else ""
+        llm_client.httpx.AsyncClient = lambda **kw: real_client(
+            **kw, transport=httpx.MockTransport(provider))
+        try:
+            turn_ids = []
+            for question in ("How do I make autopost?", "Where are my scripts?"):
+                response = await client.post("/admin/assistant/ask", json={
+                    "account_id": aid, "question": question})
+                assert response.status_code == 200, response.text
+                result = response.json()
+                assert result["error"] is None and result["answer"] == "ok", result
+                turn_ids.append(result["id"])
+        finally:
+            llm_client.httpx.AsyncClient = real_client
+            llm_providers._api_key = real_key
+            if old_admin is None:
+                os.environ.pop("ALLOW_ANONYMOUS_ADMIN", None)
+            else:
+                os.environ["ALLOW_ANONYMOUS_ADMIN"] = old_admin
+
+    assert len(calls) == 2, calls
+    assert calls[0]["system"] == calls[1]["system"]
+    assert calls[0]["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "# NOT SUPPORTED" in calls[0]["system"][0]["text"]
+    assert calls[0]["messages"] != calls[1]["messages"]
+    async with get_session() as s:
+        rows = (await s.scalars(select(GrokCall).where(
+            GrokCall.account_id == aid).order_by(GrokCall.id))).all()
+        assert [r.cost_cents for r in rows] == [2007, 140]
+        assert [r.cache_hit_tokens for r in rows] == [0, 38900]
+        assert all(r.status == "done" and r.endpoint == "/v1/messages" for r in rows)
+        turns = [await s.get(AssistantTurn, tid) for tid in turn_ids]
+        assert all(t is not None and t.answer == "ok" for t in turns)
+
+
+async def case_error_statuses_map_to_the_shared_kinds():
+    aid = "acct_claude_err"
+    await _seed_account(aid)
+    err = {"type": "error", "error": {"type": "x", "message": "key sk-ant-…abcd bad"}}
+    _Client.reset((401, err))
+    try:
+        await _fire("claude-opus-5-5", aid)
+        raise AssertionError("401 did not raise")
+    except LLMKeyError as e:
+        assert e.kind == "invalid" and e.status == 401 and e.provider == "anthropic", e
+        assert "abcd" not in str(e), "provider body (can echo the key) leaked"
+    assert len(_Client.calls) == 1, "a key refusal was retried"
+
+    _Client.reset((400, err))
+    try:
+        await _fire("claude-opus-5-5", aid)
+        raise AssertionError("400 did not raise")
+    except LLMKeyError:
+        raise AssertionError("400 is not a key error")
+    except LLMHTTPError as e:
+        assert e.status == 400, e
+    assert len(_Client.calls) == 1, "a 400 was retried"
+
+    for status in (429, 529):
+        _Client.reset((status, err), (200, _native(_WARM)))
+        res = await _fire("claude-opus-5-5", aid)
+        assert len(_Client.calls) == 2 and res.content == "ok", (status, _Client.calls)
+        _Client.reset((status, err))
+        try:
+            await _fire("claude-opus-5-5", aid)
+            raise AssertionError(f"{status} exhausted did not raise")
+        except LLMHTTPError as e:
+            assert e.status == status and not isinstance(e, LLMKeyError), e
+        assert len(_Client.calls) == llm_client._LLM_MAX_ATTEMPTS, status
+
+
+async def case_untranslatable_body_is_refused_before_it_fires():
+    aid = "acct_claude_img"
+    await _seed_account(aid)
+    _Client.reset()
+    try:
+        await _fire("claude-opus-5-5", aid, messages=[{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]}])
+        raise AssertionError("image part was not refused")
+    except LLMConfigError as e:
+        assert not isinstance(e, LLMKeyError), e
+    assert _Client.calls == [], "a refused call still went out"
+    try:
+        await _fire("claude-opus-5-5", aid,
+                    response_format={"type": "json_schema", "json_schema": {}})
+        raise AssertionError("response_format was not refused")
+    except LLMConfigError as e:
+        assert "response_format" in str(e), e
+    assert _Client.calls == []
+
+
+async def case_other_models_still_speak_openai_with_temperature():
     await _seed_account("acct_ds_temp")
     orig = llm_client.httpx.AsyncClient
-    llm_client.httpx.AsyncClient = _CapturingClient
+    llm_client.httpx.AsyncClient = _Client
+    _Client.reset((200, {"choices": [{"message": {"content": "ok"}}],
+                         "usage": {"prompt_tokens": 10, "completion_tokens": 1}}))
     try:
-        await chat(model="deepseek-v4-flash", messages=[{"role": "user", "content": "hi"}],
-                   purpose="gen_info", account_id="acct_ds_temp", temperature=0.3)
+        res = await chat(model="deepseek-v4-flash",
+                         messages=[{"role": "system", "content": "s"},
+                                   {"role": "user", "content": "hi"}],
+                         purpose="gen_info", account_id="acct_ds_temp", temperature=0.3)
     finally:
         llm_client.httpx.AsyncClient = orig
-    assert _CapturingClient.last_body.get("temperature") == 0.3, _CapturingClient.last_body
-
-
-async def case_cost_bills_list_price_with_no_cache_field():
-    """1000 in (no cached field → all miss) + 100 out on Opus = 0.4 + 0.2 = 0.6c
-    = 60 millicents. A cap that under-counts Opus is the expensive mistake."""
-    await _seed_account("acct_claude_cost")
-    res = await _fire("claude-opus-5-5", "acct_claude_cost")
-    assert res.cost_cents == 60, res
-    assert llm_client._cost_millicents("claude-opus-5-5", 1000, 100) == 60
-    assert llm_client._cost_millicents("claude-sonnet-5-5", 1000, 100) == 30
-    assert llm_client._cost_millicents("claude-haiku-5-5", 1000, 100) == 2
+    call = _Client.last()
+    assert call["url"].endswith("/chat/completions"), call["url"]
+    assert call["headers"]["Authorization"].startswith("Bearer "), call["headers"]
+    assert call["body"].get("temperature") == 0.3, call["body"]
+    assert call["body"]["messages"][0] == {"role": "system", "content": "s"}
+    assert "max_tokens" not in call["body"], call["body"]
+    assert res.cache_write_tokens is None, res
 
 
 async def case_json_object_on_claude_is_refused_before_it_fires():
-    """The compat layer 400s on json_object; the call must die here, free —
-    no request, no cap slot — while a DeepSeek JSON call still goes out."""
-    from llm_client import LLMConfigError
+    """Claude 400s on json_object; the call must die here, free — no request,
+    no cap slot — while a DeepSeek JSON call still goes out."""
     await _seed_account("acct_claude_json")
-    _CapturingClient.last_url = ""
+    _Client.reset((200, {"choices": [{"message": {"content": "{}"}}], "usage": {}}))
     orig = llm_client.httpx.AsyncClient
-    llm_client.httpx.AsyncClient = _CapturingClient
+    llm_client.httpx.AsyncClient = _Client
     try:
         for mid in CLAUDE:
             assert MODELS[mid].json_object_ok is False, mid
@@ -171,11 +402,11 @@ async def case_json_object_on_claude_is_refused_before_it_fires():
                 raise AssertionError(f"{mid} json_object call was not refused")
             except LLMConfigError as e:
                 assert "json_object" in str(e), e
-        assert _CapturingClient.last_url == "", "a refused call still went out"
+        assert _Client.calls == [], "a refused call still went out"
         await chat(model="deepseek-v4-flash", messages=[{"role": "user", "content": "hi"}],
                    purpose="gen_info", account_id="acct_claude_json",
                    response_format={"type": "json_object"})
-        assert _CapturingClient.last_body.get("response_format") == {"type": "json_object"}
+        assert _Client.last()["body"].get("response_format") == {"type": "json_object"}
     finally:
         llm_client.httpx.AsyncClient = orig
 
@@ -206,7 +437,12 @@ _harness.run(
     case_json_object_on_claude_is_refused_before_it_fires,
     case_json_purposes_never_resolve_to_claude,
     case_provider_row_and_house_key,
-    case_body_has_no_temperature_and_states_thinking,
-    case_other_models_still_send_temperature,
-    case_cost_bills_list_price_with_no_cache_field,
+    case_native_request_shape_with_cached_system_block,
+    case_adapter_puts_the_breakpoint_on_the_last_system_block,
+    case_response_is_normalized_to_the_openai_shape,
+    case_cache_write_then_read_bill_their_own_rates,
+    case_help_http_route_caches_prompt_and_persists_costs,
+    case_error_statuses_map_to_the_shared_kinds,
+    case_untranslatable_body_is_refused_before_it_fires,
+    case_other_models_still_speak_openai_with_temperature,
 )

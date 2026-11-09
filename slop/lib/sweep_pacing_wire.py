@@ -81,6 +81,10 @@ def _epoch(created_at: str) -> int:
     return calendar.timegm(datetime.fromisoformat(created_at.replace("Z", "+00:00")).utctimetuple())
 
 
+def _page(query: dict) -> tuple[int, int]:
+    return int((query.get("offset") or ["0"])[0]), int((query.get("limit") or ["10"])[0])
+
+
 def body_429(text: str = TOO_MANY) -> dict:
     return {"error": {"code": 429, "message": text}}
 
@@ -114,7 +118,7 @@ class SweepWire:
                     uid = self.headers.get("User-ID") or ""
                     sw._arrive(uid, "chargebacks", urlsplit(self.path).query, status=200)
                     q = parse_qs(urlsplit(self.path).query)
-                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                    off, lim = _page(q)
                     return self._record(uid, f"GET {path}", 200, {"list": sw.disputes.get(uid, [])[off:off + lim],
                                                                   "marker": int(time.time())})
                 if method == "GET" and path in LOGGED:
@@ -130,7 +134,7 @@ class SweepWire:
         uid = h.headers.get("User-ID") or ""
         name = ROUTES[u.path]
         route = f"GET {u.path}"
-        off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+        off, lim = _page(q)
         view = "m" if "m[]" in q else "x" if "x[]" in q else None
         now = time.time()
         with self._lock:

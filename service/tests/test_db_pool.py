@@ -9,7 +9,10 @@ own engine stays on NullPool.
 The pool is bounded (`_SpillQueuePool`, 03-write-storm): a burst of sessions far
 larger than the pool opens no more than POOL_SIZE connections and every write in
 it lands; a task that nests a second session while the pool is exhausted gets
-a spill connection after SPILL_AFTER_S instead of waiting on itself.
+a spill connection after SPILL_AFTER_S instead of waiting on itself. Spills stop
+at MAX_SPILL (the pool's max_overflow): past it a checkout waits for a returned
+connection, up to WAIT_MAX_S, then raises TimeoutError, which server.py's
+_DbBusy503 answers 503 + Retry-After.
 """
 from __future__ import annotations
 
@@ -121,6 +124,89 @@ async def case_a_nested_session_on_an_exhausted_pool_spills_instead_of_waiting_o
         assert eng.pool.checkedin() == engine_mod.POOL_SIZE, eng.pool.status()  # spills closed on return
     finally:
         await _cleanup(path, eng)
+
+
+async def _hold_all(eng, n: int):
+    """`n` tasks each hold one connection until `release` is set; returns once all hold."""
+    release, holding = asyncio.Event(), asyncio.Semaphore(0)
+
+    async def hold() -> None:
+        async with eng.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+            holding.release()
+            await release.wait()
+
+    tasks = [asyncio.create_task(hold()) for _ in range(n)]
+    for _ in range(n):
+        await holding.acquire()
+    return release, tasks
+
+
+async def case_spills_stop_at_the_cap_and_the_next_checkout_waits_for_a_returned_connection():
+    """The 2026-11-09 thread storm (relay-admission medium/200: 2,856 spills, one
+    thread each): with pool_size + cap connections out, one more checkout opens
+    nothing, waits, and gets the first one returned."""
+    path, eng, opened = _temp_engine()
+    try:
+        pool = eng.sync_engine.pool
+        pool._timeout, pool._max_overflow = 0.2, 4   # small knobs, same code path
+        cap = engine_mod.POOL_SIZE + 4
+        release, tasks = await _hold_all(eng, cap)
+        assert len(opened) == cap and pool.spills == 4, (len(opened), pool.spills)
+
+        async def late() -> int:
+            async with eng.connect() as conn:
+                return (await conn.execute(text("SELECT 7"))).scalar()
+
+        t = asyncio.create_task(late())
+        await asyncio.sleep(0.5)               # past the spill wait: capped, still waiting
+        assert not t.done() and pool.capped == 1, (t.done(), pool.capped)
+        release.set()
+        assert await asyncio.wait_for(t, 5) == 7
+        await asyncio.gather(*tasks)
+        assert len(opened) == cap, f"{len(opened)} connections opened, cap {cap}"
+    finally:
+        await _cleanup(path, eng)
+
+
+async def case_a_checkout_at_the_cap_raises_timeout_after_wait_max_s_and_503s():
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+    path, eng, opened = _temp_engine()
+    wait_max = engine_mod.WAIT_MAX_S
+    try:
+        pool = eng.sync_engine.pool
+        pool._timeout, pool._max_overflow = 0.1, 2
+        engine_mod.WAIT_MAX_S = 0.3
+        release, tasks = await _hold_all(eng, engine_mod.POOL_SIZE + 2)
+        t0 = time.monotonic()
+        try:
+            async with eng.connect():
+                raise AssertionError("checked out past the cap")
+        except PoolTimeout as e:
+            assert "DB pool busy" in str(e), e
+        waited = time.monotonic() - t0
+        assert 0.35 <= waited < 3, waited
+        assert len(opened) == engine_mod.POOL_SIZE + 2, len(opened)
+        release.set()
+        await asyncio.gather(*tasks)
+    finally:
+        engine_mod.WAIT_MAX_S = wait_max
+        await _cleanup(path, eng)
+
+    # server.py's outer layer answers that TimeoutError 503 + Retry-After
+    import server
+    sent: list[dict] = []
+
+    async def app(scope, receive, send):
+        raise PoolTimeout("DB pool busy")
+
+    async def send(msg):
+        sent.append(msg)
+
+    await server._DbBusy503(app)({"type": "http", "method": "GET", "path": "/x", "headers": []},
+                                 None, send)
+    assert sent[0]["status"] == 503, sent[0]
+    assert (b"retry-after", b"5") in sent[0]["headers"], sent[0]["headers"]
 
 
 if __name__ == "__main__":

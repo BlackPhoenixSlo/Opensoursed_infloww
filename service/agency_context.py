@@ -10,9 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fastapi import HTTPException
+from sqlalchemy import select
 
 from auth import assert_account_owned, get_request_user
 from db.engine import get_session
+from db.models import ChatterAccountAccess, Employee, UserAccount
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,7 @@ class AgencyContext:
     is_master: bool            # users.is_admin
 
 
-async def agency_context(*, account_id: str | None = None) -> AgencyContext:
+async def agency_context(*, account_id: str | None = None, db_session=None) -> AgencyContext:
     """The Agency context of the current request, from the session cookies'
     ContextVars and the database only — never from client-supplied input.
 
@@ -62,26 +64,69 @@ async def agency_context(*, account_id: str | None = None) -> AgencyContext:
         )
     if not chatter.owner_user_ids:
         raise HTTPException(status_code=403, detail="chatter is not linked to an agency")
+    if account_id and db_session is not None and len(chatter.owner_user_ids) == 1:
+        # The role hook already owns a fresh session. Read the current holder,
+        # allowlist and Mirror in one round trip, then release it before the
+        # handler. A revoked account/access still fails on this request.
+        (agency_user_id,) = chatter.owner_user_ids
+        holder = select(UserAccount.user_id).where(
+            UserAccount.user_id == agency_user_id,
+            UserAccount.account_id == account_id,
+        ).exists()
+        restricted = select(ChatterAccountAccess.account_id).where(
+            ChatterAccountAccess.chatter_id == chatter.id,
+            ChatterAccountAccess.user_id == agency_user_id,
+        ).exists()
+        allowed = select(ChatterAccountAccess.account_id).where(
+            ChatterAccountAccess.chatter_id == chatter.id,
+            ChatterAccountAccess.user_id == agency_user_id,
+            ChatterAccountAccess.account_id == account_id,
+        ).exists()
+        mirror = select(Employee.id).where(
+            Employee.chatter_id == chatter.id,
+            Employee.user_id == agency_user_id,
+        ).scalar_subquery()
+        owns, has_allowlist, is_allowed, employee_id = (await db_session.execute(
+            select(holder, restricted, allowed, mirror)
+        )).one()
+        if not owns or (has_allowlist and not is_allowed):
+            raise HTTPException(status_code=403, detail="not your account")
+        if employee_id is None:
+            import employees
+            employee_id = await employees.get_or_create_mirror_employee(
+                chatter.id, agency_user_id,
+                display_name=chatter.display_name or chatter.username,
+                color=chatter.color,
+            )
+        if employee_id is None:
+            raise HTTPException(status_code=503, detail="mirror employee unavailable")
+        return AgencyContext(agency_user_id, employee_id, False, False)
     if account_id:
         agency_user_id = await _chatter_agency_for_creator(
-            chatter.id, chatter.owner_user_ids, account_id,
+            chatter.id, chatter.owner_user_ids, account_id, db_session=db_session,
         )
     elif len(chatter.owner_user_ids) == 1:
         (agency_user_id,) = chatter.owner_user_ids
     else:
         raise HTTPException(status_code=400, detail="name a creator to choose the agency")
-    return await _chatter_context(chatter, agency_user_id)
+    return await _chatter_context(chatter, agency_user_id, db_session=db_session)
 
 
-async def _chatter_context(chatter, agency_user_id: str) -> AgencyContext:
+async def _chatter_context(chatter, agency_user_id: str, *, db_session=None) -> AgencyContext:
     """A Chatter session's context in one linked Agency, as its Mirror
     Employee there (created on first use); 503 when it cannot be resolved."""
     import employees  # lazy: employees re-exports this module; patched there by tests
-    employee_id = await employees.get_or_create_mirror_employee(
-        chatter.id, agency_user_id,
-        display_name=chatter.display_name or chatter.username,
-        color=chatter.color,
-    )
+    # The role middleware already holds a session for the current blob read.
+    # Reuse it for the common existing Mirror row; a missing row takes the
+    # original create path in its own transaction (and grants its default role).
+    employee_id = (await employees._mirror_id(db_session, chatter.id, agency_user_id)
+                   if db_session is not None else None)
+    if employee_id is None:
+        employee_id = await employees.get_or_create_mirror_employee(
+            chatter.id, agency_user_id,
+            display_name=chatter.display_name or chatter.username,
+            color=chatter.color,
+        )
     if employee_id is None:
         # ASSUMPTION: the 503 detail is `mirror employee unavailable`; the spec
         # fixes only the status. Overturned if a later Phase's UI needs
@@ -112,7 +157,7 @@ async def owner_context(account_id: str | None, detail: str) -> AgencyContext:
     return await agency_context(account_id=account_id)
 
 
-async def agency_contexts(*, account_id: str | None = None) -> list[AgencyContext]:
+async def agency_contexts(*, account_id: str | None = None, db_session=None) -> list[AgencyContext]:
     """Every Agency context the current request acts in: `agency_context`'s
     one, except for a chatter linked to several Agencies that names no
     Creator, which gets one per linked Agency (in Agency id order) instead of
@@ -123,15 +168,16 @@ async def agency_contexts(*, account_id: str | None = None) -> list[AgencyContex
         from chatters import get_request_chatter as _grc
         chatter = _grc()
         if chatter is not None and len(chatter.owner_user_ids) > 1:
-            return [await _chatter_context(chatter, agency_user_id)
+            return [await _chatter_context(chatter, agency_user_id, db_session=db_session)
                     for agency_user_id in sorted(chatter.owner_user_ids)]
-    return [await agency_context(account_id=account_id)]
+    return [await agency_context(account_id=account_id, db_session=db_session)]
 
 
 async def _chatter_agency_for_creator(
     chatter_id: str,
     owner_user_ids: set[str] | frozenset[str],
     account_id: str,
+    db_session=None,
 ) -> str:
     """The Agency a chatter acts in for a Creator it named (and that already
     passed `assert_account_owned`): the alphabetically first linked owner
@@ -144,9 +190,15 @@ async def _chatter_agency_for_creator(
     """
     import employees  # lazy: employees re-exports this module
     from chatters import _account_restrictions_for, _filter_owner_accounts
-    async with get_session() as s:
+    async def _read(s):
         holders = await employees._sorted_holder_owner_ids(s, account_id, owner_user_ids)
         restrictions = await _account_restrictions_for(s, chatter_id)
+        return holders, restrictions
+    if db_session is None:
+        async with get_session() as s:
+            holders, restrictions = await _read(s)
+    else:
+        holders, restrictions = await _read(db_session)
     allowed = [
         uid for uid in holders
         if _filter_owner_accounts([(uid, account_id)], restrictions)

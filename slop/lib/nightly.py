@@ -2,7 +2,7 @@
 
 Phases, each scenario a plain `slop/run <name> <knobs>` subprocess (its own stack and evidence folder,
 as `slop/run all` would run it): `all` (small, UI on), `volume` (every map entry tagged volume,
-medium/200, no UI), `map` (`--map` for the unmapped; every scenario when map_rule fires). A FAIL in
+medium/120, no UI), `map` (`--map` for the unmapped; every scenario when map_rule fires). A FAIL in
 `all`/`volume` is re-run once: green = FLAKY. The map phase hands its entries over in <folder>/map.json
 and restores slop/map.json (`--apply-map=<folder>` merges them elsewhere). Evidence:
 evidence/<stamp>-nightly-<hex>/ with plan.txt, run.log, status.json, summary.{json,md}, map.json, done
@@ -29,23 +29,22 @@ import traceback
 from collections import deque
 from pathlib import Path
 
-from slop.lib import covmap
-from slop.lib.report import EVIDENCE, parse_folder_line
+from slop.lib import covmap, gate
+from slop.lib.report import EVIDENCE, parse_folder_line, write_atomic
 
 SLOP = Path(__file__).resolve().parents[1]
 RUN, APP = SLOP / "run", SLOP.parent / "app"
 PHASES = ("all", "volume", "map")
-KNOBS = {"all": [], "volume": ["--scale=medium", "--users=200", "--no-ui"], "map": ["--map"]}
+KNOBS = {"all": [], "volume": ["--scale=medium", "--users=120", "--no-ui"], "map": ["--map"]}
 SMOKE = {"all": ("2026-11-03-os-ping-push", "2026-10-23-inbox-unread-fan-burst"),
          "volume": ("2026-11-01-notifications-feed-volume",)}
-MAP_FULL_BEHIND = 100  # newest map sha further behind HEAD than this: full `--map` refresh
 P95_MOVE = 0.20  # a p95_vs_last_green key moved more than this vs the previous nightly: listed
 COV_RED = "RED (coverage)"  # a --map run red only on budgets: coverage overhead, counted with OK
 GREEN, RED = ("OK", "FLAKY", COV_RED), ("FAIL",)
 FULL_TABLE_MAX = 10  # a phase with more rows lists only its non-OK ones (a green night stays short)
 LOCK_SHA = ".slop-lock-sha"  # in app/node_modules: sha256 of the pnpm-lock.yaml it was installed from
 INSTALL_TIMEOUT_S = 1200  # pnpm install past this (after its gate wait): killed, the night INFRA
-GATE_PY = Path.home() / ".slop" / "gate.py"
+GATE_PY = gate.GATE
 GATE_ENV = ("SLOP_GATED", "SLOP_GATE_PID", "SLOP_GATE_WAIT_S", "SLOP_GATE_LOAD")
 CHILD_LOCK_WAIT_S = "7200"  # a child queues this long for the gate before its INFRA (exit 75)
 GATE_INFRA = 75  # gate.py: gave up (lock/load) or its thread guard tripped; an `INFRA: <reason>` line
@@ -58,21 +57,18 @@ TERM_GRACE_S = 30  # a tree's SIGTERM -> SIGKILL
 def map_rule(ages: dict[str, int | None], weekday: int) -> tuple[bool, str]:
     """(full refresh?, why). `ages`: per map sha, commits it is behind HEAD, None when it is not an
     ancestor of HEAD (divergent or newer: its count says nothing, so it is stale); `weekday` 0 = Monday."""
-    odd = sorted(sha[:7] for sha, n in ages.items() if n is None)
-    known = [n for n in ages.values() if n is not None]
-    behind = min(known) if known and not odd else None
-    if behind is None:
-        return True, ("map sha(s) not ancestors of HEAD: " + ", ".join(odd) if odd else "no map entry") + ": full refresh"
-    if behind > MAP_FULL_BEHIND:
-        return True, f"newest map sha {behind} commits behind HEAD (> {MAP_FULL_BEHIND}): full refresh"
+    stale, reason = covmap.map_stale(ages)
+    if stale:
+        return True, reason + ": full refresh"
     if weekday == 6:
         return True, "Sunday: weekly full refresh"
-    return False, f"newest map sha {behind} commits behind HEAD (<= {MAP_FULL_BEHIND}), not Sunday: unmapped only"
+    return False, reason + ", not Sunday: unmapped only"
 
 
-def build_plan(names: list[str], doc: dict, phases: list[str], smoke: bool, ages: dict[str, int | None],
+def build_plan(paths: dict[str, Path], doc: dict, phases: list[str], smoke: bool, ages: dict[str, int | None],
                weekday: int) -> tuple[dict[str, list[str]], str]:
     """({phase: scenarios}, map rule line), phases in PHASES order. `doc`: this worktree's map."""
+    names = list(paths)
     mapped = doc.get("scenarios", {})
     unmapped = [n for n in names if n not in mapped]
     full, why = map_rule(ages, weekday)
@@ -81,7 +77,7 @@ def build_plan(names: list[str], doc: dict, phases: list[str], smoke: bool, ages
                 "volume": [n for n in SMOKE["volume"] if n in names], "map": unmapped}
         why = f"smoke: unmapped only (full rule: {why})"
     else:
-        plan = {"all": list(names), "volume": [n for n in names if (mapped.get(n) or {}).get("volume")],
+        plan = {"all": list(names), "volume": [n for n in names if covmap.is_volume(paths[n])],
                 "map": list(names) if full else unmapped}
     return {p: plan[p] for p in PHASES if p in phases}, why
 
@@ -188,20 +184,22 @@ def changes(rows: list[dict], prev: list[dict] | None) -> dict:
     """vs the previous nightly's rows: newly red (now FAIL, before not), newly green (now OK/FLAKY,
     before FAIL), p95_vs_last_green keys that moved > P95_MOVE."""
     if prev is None:
-        return {"newly_red": [], "newly_green": [], "p95": [], "first": True}
+        return {"newly_red": [], "newly_infra": [], "newly_green": [], "p95": [], "first": True}
     before = {(r["phase"], r["scenario"]): r for r in prev}
-    red, green, p95 = [], [], []
+    red, infra, green, p95 = [], [], [], []
     for r in rows:
         k, b = (r["phase"], r["scenario"]), before.get((r["phase"], r["scenario"]))
         if r["verdict"] in RED and (b is None or b["verdict"] not in RED):
             red.append(f"{k[0]} {k[1]}")
+        if r["verdict"] == "INFRA" and (b is None or b["verdict"] != "INFRA"):
+            infra.append(f"{k[0]} {k[1]}")
         if r["verdict"] in GREEN and b is not None and b["verdict"] in RED:
             green.append(f"{k[0]} {k[1]}")
         for key, now in (r.get("p95") or {}).items():
             last = ((b or {}).get("p95") or {}).get(key)
             if now is not None and last and abs(now - last) / last > P95_MOVE:
                 p95.append(f"{k[0]} {k[1]} {key}: {last} -> {now} ms ({(now - last) / last:+.0%})")
-    return {"newly_red": red, "newly_green": green, "p95": p95, "first": False}
+    return {"newly_red": red, "newly_infra": infra, "newly_green": green, "p95": p95, "first": False}
 
 
 def _cell(r: dict) -> str:
@@ -248,25 +246,23 @@ def digest(s: dict) -> str:
     out += ["", f"## changes vs previous nightly {s.get('prev') or '(none)'}"]
     if not c["first"]:
         out += [f"- newly red: {', '.join(c['newly_red']) or 'none'}",
+                f"- newly infra: {', '.join(c['newly_infra']) or 'none'}",
                 f"- newly green: {', '.join(c['newly_green']) or 'none'}",
                 f"- p95 moved > {P95_MOVE:.0%}:" + ("" if c["p95"] else " none")]
         out += [f"  - {x}" for x in c["p95"][:15]] + ([f"  - (+{len(c['p95']) - 15} more)"] if len(c["p95"]) > 15 else [])
     if s.get("map"):
         m = s["map"]
-        out += ["", "## map", f"- rule: {m['rule']}",
-                f"- entries refreshed: {len(m['mapped'])} -> map.json here; slop/map.json {m['restored']}; "
-                "ship: `slop/run nightly --apply-map=<this folder>` on a branch from origin/main",
-                f"- unmapped left: {', '.join(m['unmapped_left']) or 'none'}"]
+        out += ["", "## map", f"- rule: {m['rule']}"]
+        if m.get("map_error"):
+            out += [f"- INFRA: {m['map_error']}", "- entries refreshed: n/a"]
+        else:
+            out += [f"- entries refreshed: {len(m['mapped'])} -> map.json here; slop/map.json {m['restored']}; "
+                    "ship: `slop/run nightly --apply-map=<this folder>` on a branch from origin/main",
+                    f"- unmapped left: {', '.join(m['unmapped_left']) or 'none'}"]
     return "\n".join(out) + "\n"
 
 
 # ---- I/O ----
-
-def write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
-
 
 def row_of(phase: str, name: str, folder: Path | None, seconds: float, code: int, tail: str = "",
            gate_line: str = "") -> dict:
@@ -287,8 +283,6 @@ def row_of(phase: str, name: str, folder: Path | None, seconds: float, code: int
 def app_deps_stale() -> str | None:
     """Why app/node_modules is not this worktree's own install of app/pnpm-lock.yaml, or None."""
     nm = APP / "node_modules"
-    if nm.is_symlink():
-        return "app/node_modules is a symlink (APP_MODE=prod's Turbopack build refuses it)"
     if not nm.is_dir():
         return "app/node_modules missing"
     want = hashlib.sha256((APP / "pnpm-lock.yaml").read_bytes()).hexdigest()
@@ -318,10 +312,10 @@ class Night:
         write_atomic(self.out / "status.json", json.dumps(self.status, indent=1) + "\n")
 
     def stream(self, cmd: list[str], cwd: Path, env: dict | None = None,
-               timeout: float | None = None) -> tuple[int, Path | None, str, bool]:
+               timeout: float | None = None) -> tuple[int, Path | None, str, bool, str]:
         """Run `cmd` as self.proc (stop_child reaches it), its output into run.log as it comes.
-        -> (exit code, report.FOLDER_LINE's folder, last lines, killed by `timeout`)."""
-        folder, last, self.gate_line = None, deque(maxlen=4), ""
+        -> (exit code, report.FOLDER_LINE's folder, last lines, killed by `timeout`, gate line)."""
+        folder, last, gate_line = None, deque(maxlen=4), ""
         self.proc = p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True)
         fired = threading.Event()  # past `timeout`: its whole tree (grandchildren hold the pipe too)
@@ -334,7 +328,7 @@ class Night:
                 self.say(line)
                 folder = parse_folder_line(line) or folder
                 if line.startswith("INFRA: "):
-                    self.gate_line = line.strip()
+                    gate_line = line.strip()
                 if line.strip():
                     last.append(line.strip())
             code = p.wait()
@@ -342,13 +336,13 @@ class Night:
             if timer:
                 timer.cancel()
         self.proc = None
-        return code, folder, " | ".join(last)[:400], fired.is_set()
+        return code, folder, " | ".join(last)[:400], fired.is_set(), gate_line
 
     def run(self, phase: str, name: str) -> dict:
         """One `slop/run <name> <knobs>`; its folder from report.FOLDER_LINE."""
         t0 = time.time()
-        code, folder, tail, _ = self.stream([str(RUN), name, *KNOBS[phase]], SLOP.parent, env=child_env(os.environ))
-        r = row_of(phase, name, folder, time.time() - t0, code, tail, self.gate_line)
+        code, folder, tail, _, gate_line = self.stream([str(RUN), name, *KNOBS[phase]], SLOP.parent, env=child_env(os.environ))
+        r = row_of(phase, name, folder, time.time() - t0, code, tail, gate_line)
         self.say(f"slop: nightly {phase} {r['verdict']} {name} ({r['seconds']:.0f}s) {r['folder']}")
         return r
 
@@ -368,12 +362,10 @@ class Night:
         """pnpm install from this worktree's lockfile, in a gate slot like any heavy child; -> error or None."""
         nm = APP / "node_modules"
         self.say(f"slop: nightly app deps: {why}: gate.py run -- pnpm install --frozen-lockfile in app/")
-        if nm.is_symlink():
-            nm.unlink()
-        code, _, tail, killed = self.stream(["python3", str(GATE_PY), "run", "--", "pnpm", "install", "--frozen-lockfile"],
+        code, _, tail, killed, gate_line = self.stream(["python3", str(GATE_PY), "run", "--", "pnpm", "install", "--frozen-lockfile"],
                                             APP, env={**child_env(os.environ), "CI": "true"}, timeout=INSTALL_DEADLINE_S)
         if code == GATE_INFRA:
-            return f"pnpm install preflight: machine gate: {self.gate_line.removeprefix('INFRA: ') or tail[:200]}"
+            return f"pnpm install preflight: machine gate: {gate_line.removeprefix('INFRA: ') or tail[:200]}"
         if killed:
             return (f"pnpm install --frozen-lockfile in app/ timed out after {INSTALL_DEADLINE_S}s "
                     f"(gate wait {CHILD_LOCK_WAIT_S}s + install {INSTALL_TIMEOUT_S}s); see run.log")
@@ -407,15 +399,6 @@ def kill_tree(p: subprocess.Popen) -> None:
         p.wait(5)
 
 
-def _map_ages(doc: dict) -> dict[str, int | None]:
-    """Per map sha: commits behind HEAD, None when not an ancestor of HEAD (or unknown here)."""
-    ages = {}
-    for sha in {e.get("sha") for e in doc.get("scenarios", {}).values() if e.get("sha")}:
-        anc = subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"], cwd=SLOP.parent, capture_output=True)
-        ages[sha] = int(covmap.git("rev-list", "--count", f"{sha}..HEAD").strip()) if anc.returncode == 0 else None
-    return ages
-
-
 def gate_status() -> str:
     """`python3 ~/.slop/gate.py status` now (who holds the machine, who queues, load)."""
     try:
@@ -429,7 +412,7 @@ def _plan_text(stamp: str, sha: str, smoke: bool, plan: dict, why: str) -> str:
     lines = [f"nightly plan {stamp} @ {sha}{' (smoke)' if smoke else ''}: "
              f"{sum(map(len, plan.values()))} runs, each `slop/run <scenario> <knobs>`; a FAIL in all/volume re-runs once"]
     for p, names in plan.items():
-        how = {"all": "every scenario (as slop/run all)", "volume": "map entries tagged volume",
+        how = {"all": "every scenario (as slop/run all)", "volume": "scenarios declaring volume gates",
                "map": why}[p] if not smoke else ("smoke set" if p != "map" else why)
         lines += [f"{p} `{' '.join(KNOBS[p]) or 'small, UI on'}` ({len(names)}): {how}"]
         lines += [f"  {n}" for n in names]
@@ -455,15 +438,21 @@ def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -
     """`--map` per scenario; finally its slop/map.json goes to <out>/map.json and the worktree's is
     restored (when it was clean before), so the worktree stays clean and the next pull never conflicts."""
     was_dirty = covmap.git("status", "--porcelain", "--", "slop/map.json").strip()
-    before, rows = covmap.load_map()["scenarios"], []
+    before, rows, map_error = {}, [], None
     try:
+        before = covmap.load_map()["scenarios"]
         for name in names:
             night.mark(phase="map", scenario=name)
             rows.append(night.run("map", name))
             night.mark(done=night.status["done"] + 1)
+    except covmap.MapInvalid as e:
+        map_error = e
     finally:
         night.stop_child()  # a killed night: its --map child must not write the map after the restore
-        after = covmap.load_map()["scenarios"]
+        try:
+            after = covmap.load_map()["scenarios"] if not map_error else {}
+        except covmap.MapInvalid as e:
+            after, map_error = {}, e
         if covmap.MAP.exists():
             shutil.copyfile(covmap.MAP, night.out / "map.json")
         if was_dirty:
@@ -472,11 +461,16 @@ def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -
             covmap.git("checkout", "--", "slop/map.json")
             restored = "restored (git checkout)"
         night.say(f"slop: nightly map: entries -> {night.out / 'map.json'}; slop/map.json {restored}")
-    return rows, {"rule": why, "mapped": sorted(n for n in names if after.get(n) != before.get(n)),
-                  "unmapped_left": sorted(n for n in all_names if n not in after), "restored": restored}
+    if map_error:
+        reason = f"nightly map invalid after phase: {covmap.map_invalid_reason(map_error)}"
+        for row in rows:
+            row.update(verdict="INFRA", infra=reason)
+    return rows, {"rule": why, "mapped": [] if map_error else sorted(n for n in names if after.get(n) != before.get(n)),
+                  "unmapped_left": [] if map_error else sorted(n for n in all_names if n not in after), "restored": restored,
+                  "map_error": reason if map_error else None}
 
 
-def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str) -> int:
+def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_names: list[str]) -> int:
     if shutil.which("caffeinate"):  # macOS: no idle sleep while this process lives
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -493,7 +487,7 @@ def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str) -> int
         if deps_err:
             rows = [{**row_of(phase, n, None, 0, 3), "infra": deps_err} for n in names]
         elif phase == "map":
-            rows, s["map"] = _map_phase(night, names, why, args.names)
+            rows, s["map"] = _map_phase(night, names, why, all_names)
         else:
             rows = []
             for name in names:
@@ -509,9 +503,9 @@ def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str) -> int
     s["prev"], prev_rows = _prev(night.out, args.smoke, list(plan))
     s["changes"] = changes(s["rows"], prev_rows)
     s.update(load_end=os.getloadavg()[0], ended=time.strftime("%Y-%m-%d %H:%M %Z"))
-    s["infra"] = deps_err
-    s["headline"] = headline(stamp, [r["verdict"] for r in s["rows"]], bool(deps_err))
-    s["exit"] = exit_code([r["verdict"] for r in s["rows"]], bool(deps_err))
+    s["infra"] = deps_err or s.get("map", {}).get("map_error")
+    s["headline"] = headline(stamp, [r["verdict"] for r in s["rows"]], bool(s["infra"]))
+    s["exit"] = exit_code([r["verdict"] for r in s["rows"]], bool(s["infra"]))
     write_atomic(night.out / "summary.json", json.dumps(s, indent=1) + "\n")
     md = digest(s)
     write_atomic(night.out / "summary.md", md)
@@ -528,8 +522,14 @@ def apply_map(arg: str) -> int:
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"slop: --apply-map: {d}: no map phase result ({type(e).__name__}: {e})")
         return 2
-    doc, replaced, added, missing = merge_map(covmap.load_map(), got, names)
-    write_atomic(covmap.MAP, covmap.dump(doc))
+    try:
+        with covmap.locked_map() as current:
+            merged, replaced, added, missing = merge_map(current, got, names)
+            current.clear()
+            current.update(merged)
+    except covmap.MapInvalid as e:
+        print(f"slop: --apply-map INFRA: {covmap.map_invalid_reason(e)}")
+        return 3
     print(f"slop: --apply-map {d.name} -> {covmap.MAP.relative_to(SLOP.parent)}: replaced {len(replaced)}, "
           f"added {len(added)}" + "".join(f"\n  replaced {n}" for n in replaced) + "".join(f"\n  added {n}" for n in added)
           + (f"\nslop: WARN not in its map.json: {', '.join(missing)}" if missing else ""))
@@ -545,17 +545,20 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
     ap.add_argument("--apply-map", metavar="FOLDER", help="merge that nightly's map entries into slop/map.json")
     ap.add_argument("--folder", help=argparse.SUPPRESS)  # the detached child's: the parent made it
     args = ap.parse_args(argv)
-    if scrub_gate_env(os.environ):  # children get a clean env anyway; the driver itself never holds the gate
+    if scrub_gate_env(os.environ):  # the driver never holds the gate; child_env also scrubs each child
         print("slop: nightly: ignoring inherited SLOP_GATED")
-    os.setpriority(os.PRIO_PROCESS, 0, max(10, os.getpriority(os.PRIO_PROCESS, 0)))  # nice 10, as gate holders
+    gate.nice10()
     if args.apply_map:
         return apply_map(args.apply_map)
     phases = [p for p in args.phases.split(",") if p]
     if not phases or set(phases) - set(PHASES):
         ap.error(f"--phases: comma list of {','.join(PHASES)}")
-    args.names = list(all_s)
     if args.dry:
-        plan, why, sha = _plan(args, phases)
+        try:
+            plan, why, sha = _plan(args, phases, all_s)
+        except covmap.MapInvalid as e:
+            print(f"slop: INFRA {covmap.map_invalid_reason(e)}", file=sys.stderr)
+            return 3
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         print(_plan_text(stamp, sha, args.smoke, plan, why) + f"gate now:\n{gate_status()}\n"
               f"app deps: {app_deps_stale() or 'up to date'}"
@@ -585,10 +588,10 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
         try:
             night = Night(out, tee=not args.folder)
             night.mark(phase="plan")
-            plan, why, sha = _plan(args, phases)
+            plan, why, sha = _plan(args, phases, all_s)
             write_atomic(out / "plan.txt", _plan_text(stamp, sha, args.smoke, plan, why)
                          + f"\ngate at start (`python3 ~/.slop/gate.py status`):\n{gate_status()}\n")
-            code = sweep(night, args, plan, why, stamp, sha)
+            code = sweep(night, args, plan, why, stamp, sha, list(all_s))
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 3
             why_infra = f"stopped (SIGTERM or exit {code})" + (
@@ -616,9 +619,9 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
     return code
 
 
-def _plan(args, phases: list[str]) -> tuple[dict, str, str]:
+def _plan(args, phases: list[str], paths: dict[str, Path]) -> tuple[dict, str, str]:
     doc = covmap.load_map()  # this worktree's map: unmapped = what it lacks now
-    plan, why = build_plan(args.names, doc, phases, args.smoke, _map_ages(doc), time.localtime().tm_wday)
+    plan, why = build_plan(paths, doc, phases, args.smoke, covmap.map_ages(doc), time.localtime().tm_wday)
     return plan, why, covmap.git("rev-parse", "--short", "HEAD").strip()
 
 

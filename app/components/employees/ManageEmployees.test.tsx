@@ -473,6 +473,11 @@ describe("ManageEmployees", () => {
     expect(within(role).getAllByRole("option").map((o) => o.textContent))
       .toEqual(["Choose a role", "Admin", "Team Leader", "Chatter", "Creator", "Closer"]);
     expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+    // The role selector's content block must not contain the dialog actions.
+    const body = role.parentElement!;
+    for (const name of ["Cancel", "Save"]) {
+      expect(within(body).queryByRole("button", { name })).toBeNull();
+    }
     choose(role, "Admin");
     fireEvent.click(dialog.getByRole("button", { name: "Save" }));
 

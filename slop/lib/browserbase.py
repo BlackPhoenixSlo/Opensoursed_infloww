@@ -206,7 +206,7 @@ class World:
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
                         "-out", str(cert), "-days", "2", "-subj", "/CN=onlyfans.com",
                         "-addext", "subjectAltName=DNS:onlyfans.com"], check=True, capture_output=True)
-        from slop.lib.bounded_server import BoundedHTTPServer  # lazy, as nice_child below
+        from slop.lib.bounded_server import BoundedHTTPServer
         of = BoundedHTTPServer(("127.0.0.1", 0), self._of_handler())
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
@@ -229,15 +229,13 @@ class World:
 
     # ── the remote browser ──
     def _launch(self) -> dict:
-        from slop.lib.stack import nice_child  # lazy: keeps this module's imports stdlib
         sid = f"slopbb{len(self.sessions) + 1:02d}"
         cdp, d = _free_port(), Path(tempfile.mkdtemp(prefix=f"{sid}-", dir=self.tmp))
         proc = subprocess.Popen([
             self.chromium, "--headless=new", f"--remote-debugging-port={cdp}", "--remote-debugging-address=127.0.0.1",
             f"--user-data-dir={d}", "--no-first-run", "--no-default-browser-check", "--ignore-certificate-errors",
             f"--host-resolver-rules=MAP onlyfans.com 127.0.0.1:{self.of_port}, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-            "--window-size=1280,800", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            preexec_fn=nice_child)
+            "--window-size=1280,800", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.time() + 20
         while True:
             try:

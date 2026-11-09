@@ -188,8 +188,8 @@ describe("datePresets", () => {
       { key: "month-5", label: "October", days: ["2025-10-01", "2025-10-31"] },
     ]);
   });
-  it("DEFAULT_RANGE is Last 7 days", () => {
-    expect(datePresets("UTC").find((p) => p.key === DEFAULT_RANGE)?.label).toBe("Last 7 days");
+  it("DEFAULT_RANGE is Last 30 days", () => {
+    expect(datePresets("UTC").find((p) => p.key === DEFAULT_RANGE)?.label).toBe("Last 30 days");
   });
 });
 

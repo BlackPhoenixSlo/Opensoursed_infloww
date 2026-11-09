@@ -1,8 +1,8 @@
 """
 chats_page.py — one logical page of a model's OF chats, read from /chats.
 
-Shared by the inbox list and the roster badge (server, which turns a cut-short
-page into OF's own error).
+Shared by the inbox list, roster badge, and paged chat readers. A cut-short
+page carries OF's own error and the partial rows already read.
 """
 
 from __future__ import annotations

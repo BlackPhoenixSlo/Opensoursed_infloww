@@ -124,6 +124,19 @@ async def assert_media_visible(account_id: str, *media_ids: int) -> None:
         raise HTTPException(status_code=404, detail="not_found")
 
 
+async def assert_owner_scope(account_id: str) -> None:
+    """Refuse a whole-vault operation for a folder-limited chatter."""
+    if await allowed_folder_ids_for_chatter(account_id) is not None:
+        raise HTTPException(status_code=403, detail={"error": "folder_not_allowed"})
+
+
+async def assert_folder_visible(account_id: str, folder_id: int) -> None:
+    """Refuse an OF folder outside a folder-limited chatter's scope."""
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    if allowed is not None and folder_id not in allowed:
+        raise HTTPException(status_code=403, detail={"error": "folder_not_allowed"})
+
+
 # In-memory storyboard-warming progress per account (surfaced in /collect/status).
 _warm_progress: dict[str, dict[str, Any]] = {}
 
@@ -1376,7 +1389,6 @@ async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     if not account_id:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
-    await assert_media_visible(account_id, media_id)   # OF has no unhide: a chatter hides only what it sees
     await vault_of_folders._reject_foreign_media(account_id, [int(media_id)])
 
     client = await asyncio.to_thread(ax._make_client, account_id)

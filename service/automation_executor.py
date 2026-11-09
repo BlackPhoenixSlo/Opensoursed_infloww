@@ -66,6 +66,7 @@ from db.models import (
 
 from of_client import OUTBOUND_TEXT_GUARD, OFClient, proxy_refused
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
+import of_call_counter
 import accounts as account_registry  # platform lookup (OF vs Fansly) for _make_client
 from automation_registry import (get_automation, canonical_kind,
                                  kind_family, load_automation_plugins,
@@ -891,7 +892,9 @@ async def run_once(
         try:
             ran = "ok"
             try:
-                stats = await fn(account_id, payload, run_id=run_id) or {}
+                # Its OF calls count as `auto:<canonical kind>` (of_call_counter; a walk inside: the walk).
+                with of_call_counter.caller(f"auto:{kind}"):
+                    stats = await fn(account_id, payload, run_id=run_id) or {}
             except OutboundWordsBlocked:
                 # The sender let a word-guard block abort the run: its own stats
                 # died with it, the guard's summary below is what is left. Never

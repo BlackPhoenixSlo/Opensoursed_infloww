@@ -69,7 +69,7 @@ export function permissionTabs(sidebar: NavNode[] = SIDEBAR): { tab: PermissionT
     groups[tab].push({
       title: n.label,
       pages: n.children.filter(isPermissionPage).map(({ label, href }) => ({ label, href })),
-      ...(n.chatterOptIn ? { optIn: optInNote(n.children.filter((c) => c.notOptIn).map((c) => c.label)) } : {}),
+      ...(n.chatterOptIn ? { optIn: optInNote(n.children.filter((c) => c.notOptIn && !c.chatterHidden).map((c) => c.label)) } : {}),
     });
   }
   return TABS.map((tab) => ({ tab, groups: groups[tab] }));

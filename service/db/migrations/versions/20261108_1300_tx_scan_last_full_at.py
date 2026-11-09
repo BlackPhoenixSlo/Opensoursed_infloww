@@ -22,7 +22,9 @@ down_revision: str | Sequence[str] | None = "0105_of_consent_accepts"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLE, _COL = "transaction_scan_history", "last_full_at"
+_TABLE = "transaction_scan_history"
+_COLUMNS = (sa.Column("last_full_at", sa.DateTime(), nullable=True),
+            sa.Column("backfill_stalls", sa.Integer(), nullable=True))
 
 
 def _live() -> set[str]:
@@ -30,10 +32,14 @@ def _live() -> set[str]:
 
 
 def upgrade() -> None:
-    if _COL not in _live():
-        op.add_column(_TABLE, sa.Column(_COL, sa.DateTime(), nullable=True))
+    live = _live()
+    for col in _COLUMNS:
+        if col.name not in live:
+            op.add_column(_TABLE, col)
 
 
 def downgrade() -> None:
-    if _COL in _live():
-        op.drop_column(_TABLE, _COL)
+    live = _live()
+    for col in reversed(_COLUMNS):
+        if col.name in live:
+            op.drop_column(_TABLE, col.name)

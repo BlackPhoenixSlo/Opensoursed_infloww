@@ -49,7 +49,7 @@ browser context: the blocking proxy and the silent relay in front of the relay a
 (a 403 from the proxy, a TCP connection that never answers). They sit on the leg to the relay
 (RELAY_URL) that the Next server's own reads take too: a document load of `/` reads /auth/me and
 /chatter/me server-side for its HTML (app/lib/inlineBoot.server.ts), so the same 403 / hold is put
-on those reads at the relay (lib/relay.py `POST /__slop/server-wire`; a held one meets the
+on those reads at the relay (lib/screen_bundle_relay.py `POST /__slop/server-wire`; a held one meets the
 server's INLINE_TIMEOUT_MS and the browser fetches it itself). The relay stays up behind them;
 the released requests go on to it unchanged, except 8a's /auth/me, answered 200 `null` at the
 wire (a signed-out cookie's answer, standing in for a session revoked meanwhile). Step 8 removes
@@ -196,7 +196,7 @@ async def run(ctx) -> None:
 
         @contextlib.asynccontextmanager
         async def server_wire(mode, *paths: str):
-            """The same on the Next server's reads of `paths` for the HTML (403 or "hold", lib/relay.py
+            """The same on the Next server's reads of `paths` for the HTML (403 or "hold", lib/screen_bundle_relay.py
             `/__slop/server-wire`): the proxy / silent relay is on the leg to the relay both take."""
             for p in paths:
                 (await ctx.owner.post("/__slop/server-wire", json={"path": p, "mode": mode})).raise_for_status()

@@ -201,14 +201,14 @@ def case_mute_unmute_hide_paths():
     ], c.sent
 
 
-def case_mute_and_hide_routes_call_the_client():
+async def case_mute_and_hide_routes_call_the_client():
     c = _client()
     orig = server._get_client, server._bust_chat_list_cache
     server._get_client = lambda: c
     server._bust_chat_list_cache = lambda *a, **k: None
     try:
-        server.of_mute_chat(FAN)
-        server.of_unmute_chat(FAN)
+        await server.of_mute_chat(FAN)
+        await server.of_unmute_chat(FAN)
         server.of_hide_chat(FAN)
     finally:
         server._get_client, server._bust_chat_list_cache = orig

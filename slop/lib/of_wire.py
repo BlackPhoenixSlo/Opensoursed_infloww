@@ -13,7 +13,9 @@ concurrently and are recorded in arrival order.
                                            synthetic one): a paste-curl bootstrap
                                            derives its rules from it
   GET  /api2/v2/users/me                   the Creator: {id, username, name, wsUrl,
-                                           wsAuthToken}: the WS pump's ticket
+                                           wsAuthToken}: the WS pump's ticket; a scenario's
+                                           `profiles[uid]` (name, username, avatar,
+                                           avatarThumbs, ...) is laid over it
   GET  /api2/v2/chats                      OF's chat list, empty (`{"list": []}`): what
                                            the Creators strip's badges read while a
                                            pump is live (bypass, declared: no chats);
@@ -86,7 +88,8 @@ concurrently and are recorded in arrival order.
   POST /api2/v2/lists                      a custom list made: `{id, type, name, usersCount}`
   GET  /api2/v2/lists/{id}/users           its members, a BARE page (`[{id}]`, no hasMore) as
                                            audiences._page_all documents OF's; another
-                                           Creator's or unknown list: 404
+                                           Creator's or unknown list: 404; a list in
+                                           `repeat_pages` ignores `offset` (page 1 again)
   POST /api2/v2/lists/{id}/users/{user}    a member added / removed (`list_users[id]`); answers
   DELETE (same)                            `{"success": true}` (bypass, declared: OF's answer
                                            body is a guess)
@@ -152,6 +155,9 @@ reconnects through /users/me.
 `"POST /api2/v2/messages/queue"`): while armed, that Creator's every call on that route is answered
 500 (`FAIL_BODY`, a guess at OF's error body) after the usual wait, recorded in `calls` and never kept
 in `queue` / `posts` / `unsends`: OnlyFans failing one model of a fan-out.
+`throttle` ((uid, route) -> n, set by the scenario at any time): that Creator's next n calls on that route are
+answered 429 with OF's rate-limit body (`TOO_MANY_BODY`, "Please allow 1 seconds", the text of_pacing reads), after
+the usual wait, recorded in `calls`; the call after them is answered as usual (a 429 the pacer's one retry gets past).
 
 A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
 asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
@@ -195,6 +201,7 @@ OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
                  "phoneLast4": "", "phoneCode": {}, "faceCode": {}, "emailCode": {}},
     "strong": False}}}
 FAIL_BODY = {"error": {"code": 0, "message": "slop fake: OF internal error"}}
+TOO_MANY_BODY = {"error": {"code": 429, "message": "Too many requests. Please allow 1 seconds"}}
 CONSENT_BODY = {"error": {"code": 0, "message": "Consent not accepted"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
@@ -209,6 +216,7 @@ class FakeOF:
         self.latency_s = latency_s
         self.otp: set[str] = set()
         self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
+        self.throttle: dict[tuple[str, str], int] = {}  # (Creator, route) -> its next n calls answered 429
         self.consent: dict[str, str] = {}  # Creator -> its consent law ("NC" / "AL"): media sends refused
         self.consent_signed: set[str] = set()  # of `consent`: signed, /users/me approved, sends go through
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
@@ -223,6 +231,7 @@ class FakeOF:
         self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
         self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
         self.fan_counts: dict[str, int] = {}  # per Creator, `subscribers.active` (else id % 900 + 100)
+        self.profiles: dict[str, dict] = {}  # per Creator, fields laid over its /users/me (name, username, avatar)
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
@@ -233,6 +242,7 @@ class FakeOF:
         self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
         self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
         self.list_users: dict[int, list[int]] = {}  # list id -> its members, added order
+        self.repeat_pages: set[int] = set()  # list ids whose /users ignores `offset`: page 1 again (OF's way)
         self.upload = UploadWire(self)  # the media upload's routes and records (lib/of_wire_upload.py)
         # a flow's own routes, consulted before the built-ins: fn(h, method, u, uid, route, raw) -> True when
         # it answered (h._record). lib/vault_wire.py is one.
@@ -406,6 +416,12 @@ class FakeOF:
                 if failing:
                     return self._record(uid, route, 500, FAIL_BODY)
                 with fake.lock:
+                    limited = fake.throttle.get((uid, route), 0) > 0
+                    if limited:
+                        fake.throttle[(uid, route)] -= 1
+                if limited:
+                    return self._record(uid, route, 429, TOO_MANY_BODY)
+                with fake.lock:
                     law = fake.consent.get(uid)
                     signed = uid in fake.consent_signed
                 if (law and not signed and method == "POST"
@@ -418,6 +434,7 @@ class FakeOF:
                 if method == "GET" and u.path == "/api2/v2/users/me":
                     me = {"id": int(uid or 0), "username": f"u{uid}", "name": f"Creator {uid}", "isPerformer": True,
                           "wsUrl": f"ws://127.0.0.1:{fake._ws_port}/ws3/{uid}", "wsAuthToken": f"slop-ws-{uid}"}
+                    me |= fake.profiles.get(uid, {})
                     if law:
                         me |= {"needConsent": True, "needConsentState": law,
                                "consentStatus": "approved" if signed else None}
@@ -523,6 +540,7 @@ class FakeOF:
                         if members is not None and method == "GET" and not lm.group(2):
                             q = parse_qs(u.query)
                             off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                            off = 0 if lid in fake.repeat_pages else off
                             page = [{"id": i} for i in members[off:off + lim]]
                         elif members is not None and lm.group(2) and method in ("POST", "DELETE"):
                             fan = int(lm.group(2))

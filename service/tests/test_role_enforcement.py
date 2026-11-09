@@ -19,6 +19,7 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import importlib.util  # noqa: E402
 import re  # noqa: E402
 from datetime import datetime  # noqa: E402
@@ -26,13 +27,14 @@ from pathlib import Path  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import auth  # noqa: E402
+import agency_context as agency_ctx  # noqa: E402
 import employees  # noqa: E402
 import permissions  # noqa: E402
 import server  # noqa: E402
 from chatters import _CHATTER_BLOCKED_ADMIN_PREFIXES  # noqa: E402
-from db.engine import get_session  # noqa: E402
-from db.models import Action, Message, SavedReply, Transaction  # noqa: E402
-from sqlalchemy import func, select, text  # noqa: E402
+from db.engine import engine, get_session  # noqa: E402
+from db.models import Action, ChatterAccountAccess, Message, SavedReply, Transaction  # noqa: E402
+from sqlalchemy import delete, event, func, select, text  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 NAV = Path(__file__).resolve().parents[2] / "app" / "lib" / "nav.ts"
@@ -1523,6 +1525,119 @@ def case_owner_only_settings_tabs_refuse_a_chatter_by_url_even_one_holding_admin
         assert CHATTER_A.get("/admin/employees").status_code == 403
         assert OWNER_A.get("/admin/settings/roles").status_code == 200
     finally:
+        _reset()
+
+
+def case_role_and_agency_reads_share_one_fresh_checkout():
+    """A named Creator still checks roles and Agency mapping on this request."""
+    _roles(OWNER_A, True, {EMP_A: "admin"})
+    counts = {"roles": 0, "agency": 0, "mirror": 0}
+    agency_queries = []
+    originals = (permissions.get_session, agency_ctx.get_session, employees.get_session)
+    original_contexts = permissions.agency_contexts
+
+    def counted(name, original):
+        @contextlib.asynccontextmanager
+        async def wrapped():
+            counts[name] += 1
+            async with original() as session:
+                yield session
+        return wrapped
+
+    permissions.get_session = counted("roles", originals[0])
+    agency_ctx.get_session = counted("agency", originals[1])
+    employees.get_session = counted("mirror", originals[2])
+    async def counted_contexts(*args, **kwargs):
+        def record(_conn, _cursor, statement, _params, _context, _many):
+            agency_queries.append(statement)
+        event.listen(engine.sync_engine, "before_cursor_execute", record)
+        try:
+            return await original_contexts(*args, **kwargs)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", record)
+    permissions.agency_contexts = counted_contexts
+    resolve, server._resolve_account_id = server._resolve_account_id, lambda _req: IDS["creator_a"]
+    try:
+        def check(_fake):
+            r = CHATTER_A.get(f"{ME}?account_id={IDS['creator_a']}")
+            assert r.status_code == 200, (r.status_code, r.text)
+        _with_fake_of(check)
+        assert counts == {"roles": 1, "agency": 0, "mirror": 0}, counts
+        assert len(agency_queries) == 1, agency_queries
+    finally:
+        server._resolve_account_id = resolve
+        permissions.get_session, agency_ctx.get_session, employees.get_session = originals
+        permissions.agency_contexts = original_contexts
+        _reset()
+
+
+def case_single_agency_role_guard_reads_current_allowlist():
+    """A stale session identity cannot preserve access revoked in the DB."""
+    _roles(OWNER_A, True, {EMP_A: "admin"})
+    account_id = IDS["creator_a"]
+    other_account = IDS["creator_b"]
+    resolve = server._resolve_account_id
+    server._resolve_account_id = lambda _req: account_id
+    # Warm the chatter identity while Creator A is still available.
+    def warm(_fake):
+        r = CHATTER_A.get(f"{ME}?account_id={account_id}",
+                          headers={"X-Account-Id": account_id})
+        assert r.status_code == 200, r.text
+
+    async def change(restrict: bool):
+        async with get_session() as s:
+            if restrict:
+                s.add(ChatterAccountAccess(chatter_id=IDS["chatter_a"],
+                                           user_id=IDS["agency_a_owner"],
+                                           account_id=other_account))
+            else:
+                await s.execute(delete(ChatterAccountAccess).where(
+                    ChatterAccountAccess.chatter_id == IDS["chatter_a"],
+                    ChatterAccountAccess.user_id == IDS["agency_a_owner"],
+                    ChatterAccountAccess.account_id == other_account,
+                ))
+
+    try:
+        _with_fake_of(warm)
+        asyncio.run(change(True))
+        r = CHATTER_A.get(f"{ME}?account_id={account_id}",
+                          headers={"X-Account-Id": account_id})
+        assert r.status_code == 403 and r.json() == {"detail": "not your account"}, r.text
+    finally:
+        server._resolve_account_id = resolve
+        asyncio.run(change(False))
+        _reset()
+
+
+def case_send_and_audit_resolve_one_chatter_employee_per_request():
+    """The message and its action row use one freshly resolved Employee."""
+    _roles(OWNER_A, True, {EMP_A: "admin"})
+    original = employees.resolve_chatter_employee_id
+    resolve = server._resolve_account_id
+    calls = []
+
+    async def counted(*args, **kwargs):
+        employee_id = await original(*args, **kwargs)
+        calls.append((kwargs.get("account_id"), employee_id))
+        return employee_id
+
+    employees.resolve_chatter_employee_id = counted
+    server._resolve_account_id = lambda _req: IDS["creator_a"]
+    try:
+        def check(_fake):
+            response = CHATTER_A.post(
+                "/api/of/v2/chats/627000001/messages",
+                headers={"X-Account-Id": IDS["creator_a"]}, json={"text": "test send"},
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+        _with_fake_of(check)
+        assert calls == [], calls  # the same-request role context already resolved it
+        _reset()  # with enforcement off there is no role context to reuse
+        _with_fake_of(check)
+        assert calls == [(IDS["creator_a"], EMP_A)], calls
+    finally:
+        server._resolve_account_id = resolve
+        employees.resolve_chatter_employee_id = original
         _reset()
 
 

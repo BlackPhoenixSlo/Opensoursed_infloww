@@ -85,6 +85,10 @@ async def run(ctx) -> None:
     truth = earnings.seed(w, creators, ctx.stack.tmp, history_days=history, connected_days=connected_days,
                           chargebacks=True)
     today = w.now.date()
+    def require_same_utc_day() -> None:
+        if datetime.now(timezone.utc).date() != today:
+            raise RuntimeError("INFRA: UTC day rolled over since the earnings seed; retry with a fresh world")
+    require_same_utc_day()
     yesterday = today - timedelta(days=1)
     win = {"month": (_iso(today.replace(day=1)), _iso(today, True)),
            "range": (_iso(today - timedelta(days=29)), _iso(today, True)),
@@ -190,6 +194,7 @@ async def run(ctx) -> None:
     ctx.check("a complete history makes no more OF earnings reads", bool(passes) and passes[-1]["of_earnings_reads"] == 0,
               last=passes[-1] if passes else None)
 
+    require_same_utc_day()
     # ── After: OF's days, the ledger's today. ─────────────────────────────────
     ctx.rec.stage = "after"
     stop = asyncio.Event()
@@ -343,6 +348,7 @@ async def run(ctx) -> None:
     ctx.check(UI_CHECKS[5], cb_api["month"] > 0 and cb_api["month"] == cb_api["range"]
               and all(g and g[0] == cb_want and g[1] for g in cb_got.values()),
               want=cb_want, got=cb_got, shots=[ui_after["dashboard_shot"], ui_after["reports_shot"], *phone["shots"]])
+    require_same_utc_day()
 
 
 CB_API = ("chargebacks_api: the reversed read's net (This month, Last 30 days) == the seeded chargedback + refunded "

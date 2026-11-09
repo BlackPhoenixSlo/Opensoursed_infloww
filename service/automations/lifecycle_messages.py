@@ -282,10 +282,8 @@ async def refresh_roster(account_id: str, client, *, now: datetime,
     if force and lock.locked():
         return {"roster": "in_progress"}
     async with lock:
-        if force:
-            return await _refresh_roster(account_id, client, now=now, force=True)
-        return await of_pacing.walk(account_id, "subscribers", lambda: _refresh_roster(
-            account_id, client, now=now))
+        run = lambda: _refresh_roster(account_id, client, now=now, force=force)
+        return await (run() if force else of_pacing.walk(account_id, "subscribers", run))
 
 
 async def _refresh_roster(account_id: str, client, *, now: datetime,

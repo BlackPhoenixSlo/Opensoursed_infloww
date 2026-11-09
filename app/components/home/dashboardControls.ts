@@ -54,7 +54,7 @@ export const DASHBOARD_HEADER = [
     sources: [`${J} @7143613`, `${J} @11242265`], inventory: "[CL]", wired: true },
   { key: "timeZoneTip", id: "dashboard#19", kind: "label", labels: ["Set by your organization"],
     sources: [`${J} @11242336`], inventory: null, wired: true },
-  // Right: `FilterBtns$1`, the earnings select then the four period tabs, then the later bundle's Last month.
+  // Earnings basis and period tabs; the final tab uses our rolling 30-day range.
   { key: "basis", id: "dashboard#20", kind: "switch", labels: ["Gross earnings", "Net earnings"],
     sources: [`${J} @11232424`, `${J} @11232463`], inventory: "[CL]", wired: true },
   { key: "yesterday", id: "dashboard#22", kind: "tab", labels: ["Yesterday"],
@@ -65,8 +65,8 @@ export const DASHBOARD_HEADER = [
     sources: [`${J} @11232222`], inventory: "[CL]", wired: true, period: "week" },
   { key: "month", id: "dashboard#25", kind: "tab", labels: ["This month"],
     sources: [`${J} @11232255`], inventory: "[CL]", wired: true, period: "month" },
-  { key: "lastMonth", id: "dashboard#96", kind: "tab", labels: ["Last month"],
-    sources: [`${J2} @11252393`], inventory: null, wired: true, period: "lastMonth" },
+  { key: "last30Days", id: "dashboard#96", kind: "tab", labels: ["Last 30 days"],
+    sources: [`${J2} @11252393`], inventory: null, wired: true, ours: true, period: "last30Days" },
   // `IncomeOverview`: Total earnings, then three columns of two channels.
   { key: "total", id: "dashboard#36", kind: "tile", labels: ["Total earnings"],
     sources: [`${J} @11237146`], inventory: "[CL, PAL]", wired: true },

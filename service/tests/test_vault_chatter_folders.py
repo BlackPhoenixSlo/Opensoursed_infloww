@@ -78,12 +78,14 @@ def _review_fields(graded: bool) -> dict:
     return fields
 
 
-def _item(mid: int, folders: list[int], *, graded: bool = False) -> VaultItem:
+def _item(mid: int, folders: list[int], *, graded: bool = False,
+          created_at: datetime | None = None) -> VaultItem:
     raw = {"id": mid, "type": "photo",
            "listStates": [{"id": f, "type": "custom", "hasMedia": True, "name": f"f{f}"}
                           for f in folders]}
     return VaultItem(account_id=AID, media_id=mid, kind="photo", raw_json=json.dumps(raw),
-                     of_folder_ids=json.dumps(folders), created_at=datetime(2026, 1, mid - 100),
+                     of_folder_ids=json.dumps(folders),
+                     created_at=created_at or datetime(2026, 1, mid - 100),
                      search_text="photo", tags="[]", of_terms='["bikini"]',
                      ai_fields_json=json.dumps(_review_fields(graded)))
 
@@ -146,6 +148,165 @@ def case_of_folders_filtered():
     q = f"/admin/vault-ai/of-folders?account_id={AID}"
     assert sorted(_ids(owner.get(q))) == [12, 123]
     assert _ids(chatter.get(q)) == [12]
+
+
+def case_folder_actions_refuse_outside_chatter_scope():
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    assert chatter.get(f"/admin/vault-ai/folder-plan?account_id={AID}").status_code == 403
+    assert chatter.post("/admin/vault-ai/folder-plan/apply",
+                        json={"account_id": AID, "confirm": True}).status_code == 403
+    assert chatter.post("/admin/vault-ai/of-folders",
+                        json={"account_id": AID, "name": "x", "media_ids": [101]}).status_code == 403
+    for path in ("add", "remove", "rename"):
+        r = chatter.post(f"/admin/vault-ai/of-folders/123/{path}",
+                         json={"account_id": AID, "media_ids": [101], "name": "x"})
+        assert r.status_code == 403, (path, r.status_code, r.text)
+    assert chatter.delete(f"/admin/vault-ai/of-folders/123?account_id={AID}").status_code == 403
+    assert chatter.post("/admin/vault-ai/of-folders/sort", json={"account_id": AID}).status_code == 403
+    assert chatter.post("/admin/vault-ai/of-folders/12/add",
+                        json={"account_id": AID, "media_ids": [102]}).status_code == 404
+    assert chatter.post("/admin/vault-ai/duplicates/hide",
+                        json={"account_id": AID, "media_ids": [102]}).status_code == 404
+    assert owner.get(f"/admin/vault-ai/folder-plan?account_id={AID}").status_code == 200
+
+
+def case_duplicate_list_hides_foreign_folder_media():
+    import vault_dupes
+    from sqlalchemy import select, update
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    async def seed():
+        async with get_session() as s:
+            originals = {item.media_id: (item.content_hash, item.content_hash_kind)
+                         for item in (await s.execute(select(VaultItem).where(
+                             VaultItem.account_id == AID,
+                             VaultItem.media_id.in_([101, 102])))).scalars()}
+            s.add(_item(104, [12]))
+            for mid in (101, 102, 104):
+                await s.execute(update(VaultItem).where(VaultItem.account_id == AID,
+                    VaultItem.media_id == mid).values(
+                    content_hash=vault_dupes.pack_hash("same", 0, 0),
+                    content_hash_kind=vault_dupes.HASH_KIND))
+            return originals
+    import asyncio
+    originals = asyncio.run(seed())
+    try:
+        own = owner.get(f"/admin/vault-ai/duplicates?account_id={AID}")
+        restricted = chatter.get(f"/admin/vault-ai/duplicates?account_id={AID}")
+        assert own.status_code == 200 and own.json()["sets"] == 1, own.text
+        assert own.json()["scanned"] == 3 and own.json()["unhashed"] == 1
+        assert own.json()["removable"] == 2
+        assert restricted.status_code == 200, restricted.text
+        got = restricted.json()
+        assert got["sets"] == got["removable"] == got["returned"] == 1, got
+        assert got["scanned"] == 2 and got["unhashed"] == 0, got
+        assert got["clusters"][0]["original"]["media_id"] == 101
+        assert [d["media_id"] for d in got["clusters"][0]["dupes"]] == [104]
+    finally:
+        async def cleanup():
+            from sqlalchemy import delete
+            async with get_session() as s:
+                await s.execute(delete(VaultItem).where(VaultItem.account_id == AID,
+                    VaultItem.media_id == 104))
+                for mid, (content_hash, content_hash_kind) in originals.items():
+                    await s.execute(update(VaultItem).where(VaultItem.account_id == AID,
+                        VaultItem.media_id == mid).values(
+                        content_hash=content_hash, content_hash_kind=content_hash_kind))
+        asyncio.run(cleanup())
+
+
+def case_duplicate_hide_uses_chatter_folder_scope():
+    """A~B~C is not transitive: hiding C must use the visible B/C pair."""
+    import asyncio
+    import automation_executor as ax
+    import vault_dupes
+
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    original_make_client = ax._make_client
+    async def seed():
+        async with get_session() as s:
+            for mid, day, folder, bits in ((201, 1, 123, 3 << 60),
+                                            (202, 2, 12, (3 << 60) | 1),
+                                            (203, 3, 12, (3 << 60) | 3)):
+                item = _item(mid, [folder], created_at=datetime(2025, 1, day))
+                item.content_hash = vault_dupes.pack_hash(f"chain-{mid}", bits, bits)
+                item.content_hash_kind = vault_dupes.HASH_KIND
+                s.add(item)
+    asyncio.run(seed())
+    try:
+        def pair(response):
+            assert response.status_code == 200, response.text
+            return next(c for c in response.json()["clusters"]
+                        if c["original"]["media_id"] in (201, 202))
+
+        q = f"/admin/vault-ai/duplicates?account_id={AID}&threshold=1"
+        own, restricted = pair(owner.get(q)), pair(chatter.get(q))
+        assert own["original"]["media_id"] == 201
+        assert [d["media_id"] for d in own["dupes"]] == [202], own
+        assert restricted["original"]["media_id"] == 202
+        assert [d["media_id"] for d in restricted["dupes"]] == [203], restricted
+
+        class FakeOF:
+            def __init__(self):
+                self.hidden = []
+
+            def hide_vault_media(self, media_ids):
+                self.hidden.append(list(media_ids))
+                return {"success": True}
+
+        fake = FakeOF()
+        ax._make_client = lambda *_a, **_k: fake
+        body = {"account_id": AID, "threshold": 1}
+        owner_c = owner.post("/admin/vault-ai/duplicates/hide",
+                             json={**body, "media_ids": [203]})
+        assert owner_c.status_code == 200, owner_c.text
+        assert owner_c.json()["hidden"] == 0
+        assert owner_c.json()["refused"] == {"not_a_duplicate": [203]}
+        assert fake.hidden == []
+
+        chatter_b = chatter.post("/admin/vault-ai/duplicates/hide",
+                                 json={**body, "media_ids": [202]})
+        assert chatter_b.status_code == 200, chatter_b.text
+        assert chatter_b.json()["hidden"] == 0
+        assert chatter_b.json()["refused"] == {"is_original": [202]}
+        assert fake.hidden == []
+
+        chatter_c = chatter.post("/admin/vault-ai/duplicates/hide",
+                                 json={**body, "media_ids": [203]})
+        assert chatter_c.status_code == 200, chatter_c.text
+        assert chatter_c.json()["hidden_ids"] == [203], chatter_c.json()
+        assert chatter_c.json()["refused"] == {}, chatter_c.json()
+        assert fake.hidden == [[203]]
+
+        owner_b = owner.post("/admin/vault-ai/duplicates/hide",
+                             json={**body, "media_ids": [202]})
+        assert owner_b.status_code == 200, owner_b.text
+        assert owner_b.json()["hidden_ids"] == [202], owner_b.json()
+        assert fake.hidden == [[203], [202]], fake.hidden
+    finally:
+        ax._make_client = original_make_client
+        async def cleanup():
+            from sqlalchemy import delete
+            async with get_session() as s:
+                await s.execute(delete(VaultItem).where(VaultItem.account_id == AID,
+                    VaultItem.media_id.in_([201, 202, 203])))
+        asyncio.run(cleanup())
+
+
+def case_vision_routes_stay_in_chatter_folders():
+    owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
+    for route, body in (("describe", {"media_id": 102}),
+                        ("flags-all", {"media_ids": [102]})):
+        r = chatter.post(f"/admin/vault-ai/{route}", json={"account_id": AID, **body})
+        assert r.status_code == 404, (route, r.status_code, r.text)
+    for route in ("describe-all/plan", "flags-all/status", "describe-all/status"):
+        r = chatter.get(f"/admin/vault-ai/{route}?account_id={AID}")
+        assert r.status_code == 403 and r.json()["detail"] == {"error": "folder_not_allowed"}, (route, r.status_code, r.text)
+    for route, body in (("flags-all", {}), ("describe-all", {})):
+        r = chatter.post(f"/admin/vault-ai/{route}", json={"account_id": AID, **body})
+        assert r.status_code == 403 and r.json()["detail"] == {"error": "folder_not_allowed"}, (route, r.status_code, r.text)
+    assert owner.get(f"/admin/vault-ai/describe-all/plan?account_id={AID}").status_code == 200
+    for route in ("flags-all/status", "describe-all/status"):
+        assert owner.get(f"/admin/vault-ai/{route}?account_id={AID}").status_code == 200
 
 
 def case_summary_counts_allowed_only():

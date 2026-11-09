@@ -13,7 +13,8 @@
  *    an empty state, with the Creator select off and reading "No creators";
  *  - (ticket 57) the header is a bar with a bottom rule over the flush rail and grid; the Creator selector is a
  *    select; the row menu's trigger is the 20px icon; the move opens the "Add to category" modal; per-folder
- *    statistics and the vault-wide totals show as Not wired; the loading spinner, our no-Creator line and Back;
+ *    statistics show as Not wired, All media carries OF's vault-wide totals; the loading spinner, our no-Creator line
+ *    and Back;
  *  - switching the Creator selector remounts the grid and the import card, and the next Vault read
  *    carries the new Creator's `account_id`; a dropped session is said and nothing is written;
  *  - folder create, rename, delete and reorder reach the same Vault routes as before;
@@ -90,11 +91,17 @@ const FOLDERS = [
   { id: 11, name: "Folder one", type: "custom", hasMedia: true, photosCount: 3, videosCount: 1, gifsCount: 0, audiosCount: 0 },
   { id: 12, name: "Folder two", type: "custom", hasMedia: false, photosCount: 0, videosCount: 0, gifsCount: 0, audiosCount: 0 },
 ];
+/** OF's whole-vault counts on the folder list (`all`), every type present; its `medias` must not be kept. */
+const ALL = { photosCount: 7, videosCount: 5, gifsCount: 2, audiosCount: 1, medias: [{ id: 1, type: "photo", url: "https://cdn/signed" }] };
+/** A vault with no video and no audio, unlike Folder one (no GIF, no audio). */
+const ALL_NO_VIDEO = { ...ALL, videosCount: 0, audiosCount: 0 };
+let listsAll: typeof ALL | undefined = ALL;
 
 let roster: Array<typeof A> = [A, B];
 
 beforeEach(() => {
   roster = [A, B];
+  listsAll = ALL;
   window.localStorage.clear();
   // The guided tours show once per browser (the bundle's "vaultProOnboarding" store); every test but the tours'
   // own starts with both seen, so no tour overlays the page under test.
@@ -103,7 +110,7 @@ beforeEach(() => {
   relayGet.mockImplementation((path: string) => {
     const p = String(path);
     if (p === "/admin/accounts") return Promise.resolve({ accounts: roster, active_account_id: null });
-    if (p.startsWith("/api/of/v2/vault/lists")) return Promise.resolve({ list: FOLDERS, hasMore: false });
+    if (p.startsWith("/api/of/v2/vault/lists")) return Promise.resolve({ list: FOLDERS, hasMore: false, all: listsAll });
     if (p.startsWith("/api/of/v2/vault/media")) return Promise.resolve({ list: [], hasMore: false });
     if (p.startsWith("/api/of/v2/vault/upload/status")) return Promise.resolve({ running: false });
     if (p.startsWith("/admin/vault-ai/cache/summary")) return Promise.resolve({ count: 0, running: false, last_run: null });
@@ -232,7 +239,7 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     expect(within(one).getByText("1")).toBeTruthy();
   });
 
-  it("shows per-folder statistics (#33) and the vault-wide totals (#58) as Not wired", async () => {
+  it("shows per-folder statistics (#33) as Not wired", async () => {
     await mount();
     expectInCapture("growth-vault-pro#33", "send count");
     for (const name of ["Folder one", "Folder two"]) {
@@ -241,8 +248,19 @@ describe("Vault Pro header and rail, in the capture's order", () => {
       expect(stats).toHaveAttribute("title", "not wired");
       expect(stats.textContent).not.toMatch(/\d/);
     }
-    const all = within(rail()).getByText("All media").closest("button") as HTMLElement;
-    expect(within(all).getByTitle("not wired").textContent).not.toMatch(/\d/);
+  });
+
+  it("shows the whole vault's per-type counts (OF's `all`) on the All media row, \"—\" when the read has none", async () => {
+    listsAll = ALL_NO_VIDEO;
+    await mount();
+    const all = () => within(rail()).getByText("All media").closest("button") as HTMLElement;
+    await waitFor(() => expect(within(all()).getByTitle("photo").textContent).toBe("7"));
+    expect(within(all()).getByTitle("gif").textContent).toBe("2");
+    expect(within(all()).queryByTitle("video")).toBeNull();
+    cleanup();
+    listsAll = undefined; // a folder-limited chatter: the relay drops `all`
+    await mount();
+    expect(all().textContent).toBe("All media—");
   });
 
   it("opens the sort popover with the capture's options, in its order", async () => {
@@ -818,16 +836,24 @@ describe("the wired toolbar controls call the reads they used before", () => {
   });
 
   it("disables a type chip whose count in the chosen folder is 0", async () => {
+    listsAll = ALL_NO_VIDEO;
     await mount();
     expectInCapture("growth-vault-pro#58", "a type with no files is disabled");
-    // All media: no per-type count, so every chip is on.
-    for (const l of ["Photo", "Video", "GIF", "Audio"]) expect(within(grid()).getByRole("button", { name: l })).toBeEnabled();
+    // All media: the whole vault's counts (OF's `all`): no video, no audio.
+    await waitFor(() => expect(within(grid()).getByRole("button", { name: "Video" })).toBeDisabled());
+    expect(within(grid()).getByRole("button", { name: "Audio" })).toBeDisabled();
+    expect(within(grid()).getByRole("button", { name: "Photo" })).toBeEnabled();
+    expect(within(grid()).getByRole("button", { name: "GIF" })).toBeEnabled();
     // Folder one: 3 photos, 1 video, no GIF, no audio.
     fireEvent.click(within(rail()).getByText("Folder one"));
     await waitFor(() => expect(within(grid()).getByRole("button", { name: "GIF" })).toBeDisabled());
     expect(within(grid()).getByRole("button", { name: "Audio" })).toBeDisabled();
     expect(within(grid()).getByRole("button", { name: "Photo" })).toBeEnabled();
     expect(within(grid()).getByRole("button", { name: "Video" })).toBeEnabled();
+    // Back to All media: its own counts again.
+    fireEvent.click(within(rail()).getByText("All media"));
+    await waitFor(() => expect(within(grid()).getByRole("button", { name: "Video" })).toBeDisabled());
+    expect(within(grid()).getByRole("button", { name: "GIF" })).toBeEnabled();
   });
 
   it("Select all selects every loaded file and opens the capture's selection bar, whose move adds them to a folder", async () => {

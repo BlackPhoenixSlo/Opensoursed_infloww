@@ -48,7 +48,7 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    as `upsert_many` writes OF's feed: free text, GIF-only, image, paid text, each 5-9 h old; fresh ones (1 h, and
    3 h: under the 4 h gate, an hour's margin for a slow run); an already unsent one; one OF says can no longer
    be unsent; x3 at small, x8 above), Creator 0's model chip on, "Unsend free text >4h" (its count the expected rows'),
-   confirm() accepted -> the browser's DELETEs, the relay's answers (200), OF's wire unsends (one per expected
+   the IfModal confirm's Unsend clicked -> the browser's DELETEs, the relay's answers (200), OF's wire unsends (one per expected
    row, no other) and the cache's `is_canceled` flips are exactly Creator 0's free, image-less, >= 4 h,
    unsendable rows; every other row (Creator 1's matching ones included) unchanged. Screenshots
    mass-bulk-unsend-trigger, mass-bulk-unsend-settled; the id sets in mass-bulk-unsend.json.
@@ -86,7 +86,16 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    refreshed the account it wrote). Then Save there lands ("Saved") and the editor switches to a
    third Creator whose config GET fails: no "Saved" under it (the picker resets the verdict, not
    the config's arrival). Screenshots nudge-edit-during-save, nudge-after-refetch,
-   nudge-switch-landed, nudge-switch-back, nudge-stale-saved.
+   nudge-switch-landed, nudge-switch-back, nudge-stale-saved. Then the editor on a 390x844 phone (a touch context of
+   its own): the Preview time presets row's box inside the dialog, no sideways page scroll, the last preset (Night)
+   scrolled to and tapped -> Hour 23. Screenshots nudge-presets-phone-trigger, nudge-presets-phone-settled; boxes in
+   nudge-presets-phone.json.
+5b. Add new proxy on a 390x844 phone (/creators/proxy, a touch context of its own; ProxiesTable > AddProxyModal):
+   the dialog on screen with no sideways page scroll, each field (label, type, host, port, username, password)
+   scrolled to and its box inside the dialog, Cancel and Add proxy on screen; Cancel -> no dialog left, no POST
+   /admin/proxies from the page, GET /admin/proxies unchanged (nobody is forced to add one). Screenshots
+   proxy-add-phone-trigger, proxy-add-phone-open, proxy-add-phone-settled; boxes in proxy-add-phone.json. Fault
+   `add-proxy-row-overflows` (lib/add_proxy_faults.py, client: a 640 px min-width on the IP address / Port row).
 6. /admin/manage (6-8 as the master, the second Agency's owner, in a context of its own; the run's
    owner is a plain owner everywhere else): the key-status roster loads EMPTY -> "Only agencies with a live model session"
    shows "(0 of N)", not "(N of N)". Screenshot admin-live-only-empty.
@@ -180,10 +189,9 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    rail's label reads "Name" (both pages save it through `sortOfFolders`). Screenshots vault-customize-trigger,
    vault-order-after-reload, vault-quick-reload-trigger, vault-quick-reload-settled, vault-sort-label-after-mirror.
 16. Premade composer (app/components/compose/premadeRows.ts `rowsReducer`, `rowToItem` / `rowsToItems`),
-   Creator 2 on Auto Post: New auto post > Compose: Post 1 with variants A, B, C then B removed, $12,
-   5 min; Post 2 ($3, 30 min) and Post 3 ($7, 45 min, 6 h to live) added, Post 2 removed -> the form shows
-   Posts 1 and 3; Use in rule > Create POSTs one /admin/automation-rules whose posts[] are
-   [{texts: [A, C], price 12, delay 5}, {text, price 7, delay 45, hours_to_live 6}], and GET
+   Creator 2 on Auto Post: New auto post (the post's fields in the popup itself): the one post with variants A, B,
+   C then B removed, $12, 6 h to live -> the form shows A, C; Create POSTs one /admin/automation-rules whose posts[] is
+   [{texts: [A, C], price 12, hours_to_live 6}], and GET
    /admin/automation-rules and the automation_rules row hold the same. Screenshots premade-compose-trigger,
    premade-rule-saved.
 17. Delayed welcome (Smart Messages > New Message > Subscriber welcome, Creator 1): type a message,
@@ -430,7 +438,7 @@ check), `funnel-start-before-seed` (Start no longer waits for the MASSDMEXCLUDE 
 funnel seed check), `paged-filter-keeps-page` (a filter `set` keeps the page), `clock-out-before-in-allowed` (`validateRecord`
 drops the inverted-interval rule),
 `move-folder-off-by-one` (`moveFolder` inserts one slot after the hovered folder: the drag, sort and reload
-checks), `premade-remove-drops-wrong-row` (remove drops the next row: the rows, payload and stored checks),
+checks),
 `rowToItem-drops-price` (no price on the item: the payload and stored checks),
 `smartlist-edit-keeps-preview` (a rule edit keeps the old count), `smartlist-between-unchecked`
 (every rule valid, so a one-bound between saves),
@@ -501,7 +509,8 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         SMARTLIST_SAVED, SMARTLIST_STALE, VAULT_CANCEL, VAULT_DRAG, VAULT_QUICK_RELOAD,
                                         VAULT_RELOAD, VAULT_SORT, VAULT_SORT_LABEL, VAULT_MIRROR_SORT_LABEL, PICKER_SHIMMER,
                                         REDESCRIBE_KEEPS, REDESCRIBE_SHOWS, VM_PRICE, VM_TICKS)
-from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_TAB_CLOSED
+from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_PRESETS_PHONE, NUDGE_TAB_CLOSED
+from slop.lib.add_proxy_faults import PROXY_ADD_PHONE
 from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
 from slop.lib.composer_faults import PPV_SEND_BODY
 from slop.lib.rich_text_faults import (RT_AA, RT_AA_PHONE, RT_BUBBLE, RT_FANSLY, RT_MASS, RT_SCRIPT_DESKTOP,
@@ -533,7 +542,9 @@ SECTIONS = {
     "dupes": (DUPES_CONFIRM, DUPES_HIDE),
     "dupes-partial": (DUPES_PARTIAL,),
     "group": (GROUP_ACK, GROUP_FANSLY, GROUP_BURST, GROUP_ACK_MS),
-    "nudge": (NUDGE_KEEP, NUDGE_STORED, NUDGE_SWITCH, NUDGE_STALE, NUDGE_ABA, NUDGE_TAB_CLOSED, NUDGE_ACK_LOST),
+    "nudge": (NUDGE_KEEP, NUDGE_STORED, NUDGE_SWITCH, NUDGE_STALE, NUDGE_ABA, NUDGE_TAB_CLOSED, NUDGE_ACK_LOST,
+              NUDGE_PRESETS_PHONE),
+    "proxy-phone": (PROXY_ADD_PHONE,),
     "admin": (ADMIN_EMPTY,),
     "smartlist": (SMARTLIST_STALE, SMARTLIST_GATE, SMARTLIST_SAVED),
     "admin-roster": (ADMIN_ROSTER_FAILED,),
@@ -633,11 +644,8 @@ REDESCRIBE_EDIT = "slop typed before the redescribe"
 PICKER_VIDEO = 9101  # Creator 1's one vault video: a 240p progressive source, no OF poster frames
 QUICK_DRAG = ("slop Bravo", "slop Echo")  # the second order, reloaded QUICK_RELOAD_MS after Done
 QUICK_RELOAD_MS = 1_000  # under PERSIST_SETTLE_MS: only a save on Done itself can have the new order on disk
-# Post 1: variants A, B, C, then B removed; Post 2 added then removed; Post 3 kept.
-PREMADE_WANT = [
-    {"texts": ["slop post one A", "slop post one C"], "price": 12, "delay_minutes": 5},
-    {"text": "slop post three", "price": 7, "delay_minutes": 45, "hours_to_live": 6},
-]
+# The one post: variants A, B, C, then B removed; $12, 6 h to live (no delay / resend key).
+PREMADE_WANT = [{"texts": ["slop post one A", "slop post one C"], "price": 12, "hours_to_live": 6}]
 
 
 def move_folder(order: list, src, dst) -> list:
@@ -1154,7 +1162,9 @@ async def _mass_unsend(ctx, page, chk) -> None:
         listed = await page.locator("tbody tr").count()
         await _painted(page)
         await ui.shot(ctx, page, "mass-bulk-unsend-trigger")
-        await bulk.click(timeout=10_000)  # confirm() accepted (the page's dialog handler)
+        await bulk.click(timeout=10_000)
+        # The bulk action uses an in-page IfModal confirmation, not a native browser dialog.
+        await page.get_by_role("dialog").get_by_role("button", name="Unsend", exact=True).click(timeout=10_000)
         await _until(lambda: len(sent()) >= len(want), 60)
         await page.get_by_role("button", name=re.compile(r"^Unsend free text >4h \(0\)$")).wait_for(timeout=30_000)
         await page.wait_for_timeout(1_000)  # a pick past the expected rows would land within this
@@ -1515,6 +1525,22 @@ async def _group(ctx, page, chk) -> None:
 
 
 async def _nudge(ctx, page, chk) -> None:
+    # The section's held PUT/GET handlers fall through this page route, instead of the broad
+    # context OF hold route. Nudge config is a relay route, never an OF read.
+    def nudge_url(url):
+        return urlsplit(url).path == "/admin/nudge-config"
+
+    async def pass_nudge(route):
+        await route.continue_()
+
+    await page.route(nudge_url, pass_nudge)
+    try:
+        await _nudge_flow(ctx, page, chk)
+    finally:
+        await page.unroute(nudge_url, pass_nudge)
+
+
+async def _nudge_flow(ctx, page, chk) -> None:
     aid = ctx.world.data["creators"][0]["id"]
     before = (await ctx.owner.get(f"/admin/nudge-config?account_id={aid}")).json()
     eff = {**(before.get("defaults") or {}), **(before.get("config") or {})}
@@ -1808,6 +1834,127 @@ async def _nudge(ctx, page, chk) -> None:
         and pick(row_l)["delay"] == lost_want and shown_b == str(lost_want) and note_b == 0 and key_lost is None,
         **ack_lost)
     await page.bring_to_front()
+    await _nudge_presets_phone(ctx, page, chk)
+
+
+# A dialog on a phone: the page's sideways scroll, the dialog's box and (optionally) one element's box, its own
+# sideways scroll included.
+DIALOG_FIT = """([dlg, el]) => {
+  const box = (e) => { const r = e.getBoundingClientRect();
+    return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height }; };
+  return { page: { scroll: document.scrollingElement.scrollWidth, inner: innerWidth, innerH: innerHeight },
+           dialog: box(dlg), el: el ? { ...box(el), scroll: el.scrollWidth, client: el.clientWidth } : null };
+}"""
+POP_MS = 450  # the modal pop-in / exit ghost (globals.css .pop-modal, useExitGhost 260 ms)
+
+
+async def _fit(page, dlg, el=None) -> dict:
+    return await page.evaluate(DIALOG_FIT, [await dlg.element_handle(), await el.element_handle() if el else None])
+
+
+def _page_fits(f: dict) -> bool:  # no sideways page scroll, and no mobile zoom-out widening the viewport past the phone
+    return f["page"]["scroll"] <= f["page"]["inner"] <= PHONE[0] and f["dialog"]["l"] >= 0 \
+        and f["dialog"]["r"] <= f["page"]["inner"]
+
+
+def _x_inside(a: dict, b: dict) -> bool:  # a's box within b's, sideways (half a px for subpixel layout)
+    return a["w"] > 0 and a["l"] >= b["l"] - 0.5 and a["r"] <= b["r"] + 0.5
+
+
+async def _phone_page(ctx, page):
+    phone = await ui._owner_page(page.context.browser, ctx, PHONE, [], [], touch=True)
+    await phone.context.add_init_script(TOURS_SEEN)
+    phone.context.set_default_navigation_timeout(WAIT_MS)
+    return phone
+
+
+async def _nudge_presets_phone(ctx, page, chk) -> None:
+    """NUDGE_PRESETS_PHONE: the Nudge editor on a 390x844 phone; the Preview time presets row fits the dialog and
+    its last preset is reachable by a tap."""
+    phone = await _phone_page(ctx, page)
+    try:
+        await _open_create_message(ctx, phone, re.compile(r"^Nudge"))
+        dlg = phone.get_by_role("dialog").filter(has=phone.get_by_role("heading", name="Nudge online", exact=True))
+        await dlg.get_by_label("Delay (min)", exact=True).wait_for(timeout=WAIT_MS)
+        presets = dlg.get_by_role("radiogroup", name="Preview time")
+        hour = dlg.get_by_label("Hour", exact=True)
+        night = presets.get_by_role("radio", name="Night", exact=True)
+        await presets.scroll_into_view_if_needed(timeout=10_000)
+        await phone.wait_for_timeout(POP_MS)
+        await _painted(phone)
+        row = await _fit(phone, dlg, presets)
+        await ui.shot(ctx, phone, "nudge-presets-phone-trigger")
+        await night.scroll_into_view_if_needed(timeout=10_000)
+        night_fit = await _fit(phone, dlg, night)
+        await night.tap(timeout=10_000)
+        shown = await _wait_value(hour, "23", 10_000)
+        checked = await night.get_attribute("aria-checked")
+        await _painted(phone)
+        await ui.shot(ctx, phone, "nudge-presets-phone-settled")
+    finally:
+        await phone.context.close()
+    (ctx.out / "nudge-presets-phone.json").write_text(json.dumps({"row": row, "night": night_fit}, indent=2))
+    chk(NUDGE_PRESETS_PHONE, _page_fits(row) and _x_inside(row["el"], row["dialog"])
+        and _x_inside(night_fit["el"], night_fit["dialog"]) and shown == "23" and checked == "true",
+        page=row["page"], dialog=row["dialog"], presets=row["el"], night=night_fit["el"], hour=shown,
+        night_checked=checked)
+
+
+async def _proxy_phone(ctx, page, chk) -> None:
+    """PROXY_ADD_PHONE: Add new proxy on a 390x844 phone fits; Cancel closes it with nothing added."""
+    async def labels() -> list[str]:
+        r = await ctx.owner.get("/admin/proxies")
+        r.raise_for_status()
+        return sorted(p["label"] for p in r.json()["proxies"])
+
+    before = await labels()
+    phone = await _phone_page(ctx, page)
+    try:
+        await phone.goto(f"{ctx.app}/creators/proxy", wait_until="domcontentloaded")
+        add = phone.get_by_role("button", name="Add new proxy", exact=True)
+        await add.wait_for(timeout=WAIT_MS)
+        await phone.wait_for_function("(b) => b && !b.disabled", arg=await add.element_handle(), timeout=WAIT_MS)
+        await _painted(phone)
+        await ui.shot(ctx, phone, "proxy-add-phone-trigger")
+        with recorded(phone, "POST", "/admin/proxies") as posts:
+            await add.tap(timeout=10_000)
+            dlg = phone.get_by_role("dialog", name="Add new proxy")
+            await dlg.wait_for(timeout=30_000)
+            await phone.wait_for_timeout(POP_MS)
+            await _painted(phone)
+            opened = await _fit(phone, dlg)
+            await ui.shot(ctx, phone, "proxy-add-phone-open")
+            fields = {"label": dlg.locator("#add-proxy-label"), "type": dlg.get_by_role("radiogroup", name="Type"),
+                      "host": dlg.locator("#add-proxy-host"), "port": dlg.locator("#add-proxy-port"),
+                      "username": dlg.locator("#add-proxy-user"), "password": dlg.locator("#add-proxy-pass")}
+            boxes = {}
+            for name, loc in fields.items():
+                await loc.scroll_into_view_if_needed(timeout=10_000)
+                f = await _fit(phone, dlg, loc)
+                boxes[name] = {"visible": await loc.is_visible(), **f["el"], "inside": f["el"]["l"] >= f["dialog"]["l"]
+                               - 0.5 and f["el"]["r"] <= f["dialog"]["r"] + 0.5 and f["el"]["t"] >= f["dialog"]["t"]
+                               - 0.5 and f["el"]["b"] <= f["dialog"]["b"] + 0.5}
+            buttons = {}
+            for name in ("Cancel", "Add proxy"):
+                b = dlg.get_by_role("button", name=name, exact=True)
+                await b.scroll_into_view_if_needed(timeout=10_000)
+                f = await _fit(phone, b)  # the button as the box: on screen
+                buttons[name] = {**f["dialog"], "on_screen": f["dialog"]["l"] >= 0 and f["dialog"]["t"] >= 0
+                                 and f["dialog"]["r"] <= f["page"]["inner"] and f["dialog"]["b"] <= f["page"]["innerH"]}
+            await dlg.get_by_role("button", name="Cancel", exact=True).tap(timeout=10_000)
+            await dlg.wait_for(state="hidden", timeout=10_000)
+            await phone.wait_for_timeout(POP_MS)
+            left = await phone.get_by_role("dialog").count()
+            await _painted(phone)
+            await ui.shot(ctx, phone, "proxy-add-phone-settled")
+    finally:
+        await phone.context.close()
+    after = await labels()
+    out = {"opened": opened, "fields": boxes, "buttons": buttons, "dialogs_after_cancel": left,
+           "posts": posts, "proxies_before": before, "proxies_after": after}
+    (ctx.out / "proxy-add-phone.json").write_text(json.dumps(out, indent=2))
+    chk(PROXY_ADD_PHONE, _page_fits(opened) and all(b["visible"] and b["inside"] for b in boxes.values())
+        and all(b["on_screen"] for b in buttons.values()) and left == 0 and posts == [] and after == before, **out)
 
 
 ROSTER = "/admin/users/llm-key-status"
@@ -2248,40 +2395,27 @@ async def _premade(ctx, page, chk) -> None:
         await page.goto(f"{ctx.app}/growth/auto-post", wait_until="domcontentloaded")
         await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
         await page.get_by_role("button", name="New auto post").first.click(timeout=WAIT_MS)
-        await page.get_by_role("button", name="Compose", exact=True).click(timeout=30_000)
-        form = page.locator("div").filter(has=page.get_by_role("heading", name="Compose auto posts", exact=True)).last
+        form = page.get_by_role("dialog", name="New auto post")
         ta = form.locator("textarea")
         price = form.get_by_placeholder("0 (free)")
         await ta.first.wait_for(timeout=WAIT_MS)
-        # Post 1: three variants, the middle one removed; $12, 5 min.
+        # One post (one rule = one post): three variants, the middle one removed; $12, 6 h to live.
         await ta.nth(0).fill("slop post one A")
         await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(1).fill("slop post one B")
         await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(2).fill("slop post one C")
         await form.get_by_role("button", name="Remove variant 2").click()
-        await price.nth(0).fill("12")
-        await form.get_by_placeholder("0 (now)").fill("5")
-        # Post 2 (later removed) and Post 3.
-        for text, cents, delay in (("slop post two", "3", "30"), ("slop post three", "7", "45")):
-            await form.get_by_role("button", name="Add another post").click()
-            await ta.last.fill(text)
-            await price.last.fill(cents)
-            await form.get_by_placeholder("e.g. 30").last.fill(delay)
-        await form.get_by_placeholder("e.g. 6").last.fill("6")
-        await form.get_by_role("button", name="Remove", exact=True).nth(1).click()
+        await price.fill("12")
+        await form.get_by_placeholder("e.g. 6").fill("6")
         await page.wait_for_timeout(300)
         shown = {"texts": [await t.input_value() for t in await ta.all()],
                  "prices": [await p.input_value() for p in await price.all()],
-                 "delays": [await form.get_by_placeholder("0 (now)").input_value()]
-                 + [await d.input_value() for d in await form.get_by_placeholder("e.g. 30").all()],
                  "hours": [await h.input_value() for h in await form.get_by_placeholder("e.g. 6").all()]}
         await ui.shot(ctx, page, "premade-compose-trigger")
-        want_shown = {"texts": ["slop post one A", "slop post one C", "slop post three"], "prices": ["12", "7"],
-                      "delays": ["5", "45"], "hours": ["", "6"]}
+        want_shown = {"texts": ["slop post one A", "slop post one C"], "prices": ["12"], "hours": ["6"]}
         chk(PREMADE_ROWS, shown == want_shown, shown=shown, want=want_shown)
 
-        await form.get_by_role("button", name="Use in rule").click(timeout=10_000)
         async with page.expect_response(lambda r: r.request.method == "POST"
                                         and urlsplit(r.url).path == "/admin/automation-rules",
                                         timeout=30_000) as created:
@@ -5554,7 +5688,8 @@ async def run(ctx) -> None:
 
     for name, why in UNREACHED.items():
         ctx.skip(name, why)
-    # `--set only=rich-text,rich-volume`: just those sections / volume parts (iterating; a done run selects none).
+    # `--set only=rich-text,rich-volume`: just those sections / volume parts. The nudge section
+    # has been verified standalone from the seeded world (`--set only=nudge`).
     only = {x for x in str(ctx.param("only", "")).split(",") if x}
     if only - SECTIONS.keys() - VOLUME_PARTS.keys():
         raise SystemExit(f"slop: only= names no section: {sorted(only - SECTIONS.keys() - VOLUME_PARTS.keys())}")
@@ -5583,7 +5718,7 @@ async def run(ctx) -> None:
         for name, fn in (("mass", _mass), ("mass-retry", _mass_retry), ("mass-unsend", _mass_unsend),
                          ("post", _post), ("dupes", _dupes),
                          ("dupes-partial", _dupes_partial), ("group", _group),
-                         ("nudge", _nudge),
+                         ("nudge", _nudge), ("proxy-phone", _proxy_phone),
                          ("admin", lambda c, p, k: _as_master(c, p, k, master, "admin", _admin)),
                          ("smartlist", _smartlist),
                          ("admin-roster", lambda c, p, k: _as_master(c, p, k, master, "admin-roster", _admin_roster)),

@@ -21,7 +21,7 @@
 import { Info } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { type Gran, LineChart, granAllowed } from "@/components/stats/chart";
+import { type Gran, LineChart, granAllowed, ChartAxes, ChartMessage, BlankChart, niceMax, plotFrame, useChartWidth } from "@/components/stats/chart";
 import { EmptyState, IfSelect } from "@/components/ui/infloww";
 import {
   type ChattingSeriesFigures, type ChattingSeriesResp, type ChattingStatsRow, useChattingSeries, useChattingStats,
@@ -107,10 +107,9 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, onRetry }: C
   return (
     <>
       <Section title="Employee sales" tip="Sales of every employee, according to your sales settings">
-        <LineChart labels={labels} message={LOADING} valueFmt={fmtCents}
-          lines={data ? [{ name: "Employee sales", color: COLORS[0], values: (data.series ?? []).map((p) => p.sales_cents) }] : null} />
+        <EmployeeSalesBars labels={labels} values={data ? (data.series ?? []).map((p) => p.sales_cents) : null} />
       </Section>
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
         <Section title="Employee comparison" tip="Compare sales and performance of up to three employees">
           <div className="flex flex-wrap items-center gap-2 mb-3">
             {slots.map((id, i) => (
@@ -126,7 +125,7 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, onRetry }: C
               </span>
             ))}
           </div>
-          <LineChart labels={labels} message={LOADING} valueFmt={fmtCents} lines={compared}
+          <LineChart height={210} labels={labels} message={LOADING} valueFmt={fmtCents} lines={compared}
             empty={(
               <p className="absolute inset-0 flex items-center justify-center text-sm text-fg-dim">
                 Select up to three employees to compare
@@ -137,6 +136,36 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, onRetry }: C
       </div>
     </>
   );
+}
+
+/** One bar per report bucket; zero buckets retain their tooltip and date. */
+function EmployeeSalesBars({ labels, values }: { labels: string[]; values: number[] | null }) {
+  const [ref, width] = useChartWidth();
+  const height = 270;
+  const frame = plotFrame(width, height);
+  const max = niceMax(Math.max(400, ...(values ?? [])), 4);
+  const slot = (frame.R - frame.L) / Math.max(1, labels.length);
+  const barWidth = Math.min(60, slot * 0.67);
+  const xAt = (i: number) => frame.L + slot * (i + 0.5);
+  return <div ref={ref} className="relative">
+    <ChartMessage message={values ? "" : LOADING} />
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} className="block">
+      {values ? <>
+        <ChartAxes W={width} H={height} max={max} labels={labels} xAt={xAt} />
+        {values.map((value, i) => {
+          const h = Math.max(0, value / max * (frame.B - frame.T));
+          return <g key={i}>
+            <rect role="img" aria-label={`${labels[i]}: ${fmtCents(value)}`} data-testid="sales-bar"
+              x={xAt(i) - barWidth / 2} y={frame.B - h} width={barWidth} height={h} fill="#2f55ff" />
+            <rect data-testid="chart-hover" x={xAt(i) - slot / 2} y={frame.T} width={slot}
+              height={frame.B - frame.T} fill="transparent">
+              <title>{`${labels[i]}\nEmployee sales: ${fmtCents(value)}`}</title>
+            </rect>
+          </g>;
+        })}
+      </> : <BlankChart W={width} H={height} />}
+    </svg>
+  </div>;
 }
 
 const axisCount = (n: number) => String(Math.round(n));

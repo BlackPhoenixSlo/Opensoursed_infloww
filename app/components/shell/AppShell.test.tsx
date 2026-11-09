@@ -295,6 +295,27 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     expect(rail.querySelector('a[aria-label="Dashboard"]')).not.toBeNull();
     expect(rail.textContent).not.toContain("Dashboard");
   });
+
+  it("opens one sidebar group at a time: opening one closes the open one", () => {
+    desktop();
+    pathname = "/analytics/creator-reports";
+    render(<AppShell>page</AppShell>);
+    const group = (name: string) => screen.getByRole("button", { name });
+    expect(group("Analytics")).toHaveAttribute("aria-expanded", "true");
+    expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(group("Growth"));
+    expect(group("Growth")).toHaveAttribute("aria-expanded", "true");
+    expect(group("Analytics")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(group("My AI Chatter"));
+    expect(group("My AI Chatter")).toHaveAttribute("aria-expanded", "true");
+    expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: "Full AI Chatter" })).toHaveAttribute("href", "/full-ai-chatter");
+
+    fireEvent.click(group("My AI Chatter"));
+    expect(screen.getAllByRole("button", { expanded: true }).map((b) => b.textContent)).not.toContain("My AI Chatter");
+  });
 });
 
 describe("AppShell on OF Manager from lg up: Infloww's icon rail", () => {

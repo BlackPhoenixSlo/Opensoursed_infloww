@@ -82,7 +82,7 @@ describe("PermissionEditor", () => {
     // Operations opens on the top-level links under "General", then each other group in nav order.
     const titles = within(screen.getByRole("tabpanel")).getAllByRole("heading").map((h) => h.textContent);
     expect(titles).toEqual(["General", "Analytics", "Share for Share", "My Automations", "My AI Chatter", "Creators", "Employees"]);
-    expect(operations.slice(0, 3)).toEqual(["/", "/messages-pro", "/full-ai-chatter"]);
+    expect(operations.slice(0, 2)).toEqual(["/", "/messages-pro"]);
   });
 
   it("keys a role by every SIDEBAR page in nav order, nav.ts's PERMISSION_PAGES being the one list", () => {
@@ -100,7 +100,7 @@ describe("PermissionEditor", () => {
     const pages = (tab: string, title: string) =>
       tabs.find((t) => t.tab === tab)!.groups.find((g) => g.title === title)!.pages.map((p) => p.href);
     expect(pages("Growth", "Growth")).toEqual([...childHrefs("Growth"), "/growth/fake"]);
-    expect(pages("Operations", "General")).toEqual(["/", "/messages-pro", "/full-ai-chatter", "/fake-top"]);
+    expect(pages("Operations", "General")).toEqual(["/", "/messages-pro", "/fake-top"]);
   });
 
   it("files no link that answers to another page's grant (`permission`), top-level or a group's child", () => {

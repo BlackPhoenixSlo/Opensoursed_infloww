@@ -26,7 +26,7 @@ export function NotWired({ label }: { label: string }) {
 /** #44: a report card, 16px padding and 12px radius by default, on our raised surface (ADR-0001 colours). */
 export function ReportCard({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
-    <div className={cn("rounded-xl p-4", className)} style={{ background: "var(--color-bg-elev-1)" }}>
+    <div className={cn("report-surface rounded-xl p-4", className)} style={{ background: "var(--color-bg-elev-1)" }}>
       {children}
     </div>
   );
@@ -76,7 +76,7 @@ export function SummaryTile({ label, Icon, total, value, growth, negative = fals
         className={cn("flex items-center gap-1 font-medium", total ? "text-xl leading-6 tracking-[0.034px]" : "text-base leading-5 tracking-[0.032px] mb-2")}
         style={{ color: "var(--color-fg-dim)" }}
       >
-        <Icon size={20} aria-hidden />
+        <Icon size={22} strokeWidth={1.75} aria-hidden />
         {label}
       </dt>
       <dd
@@ -156,13 +156,6 @@ export function Sparkline({ values, color }: { values: number[]; color: string }
 
 /* ───────── charts ───────── */
 
-/** #83: a bar with only its top corners rounded, 2px below 24px wide, 4px below 60px, else 8px, never more than half
- *  its width or its height. */
-function barPath(x: number, y: number, w: number, h: number): string {
-  const r = Math.min(w < 24 ? 2 : w < 60 ? 4 : 8, w / 2, h);
-  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
-}
-
 /** #67, #82, #83: Earnings trends, a 220px bar chart, each bar's tooltip its Earnings and its Growth over the bucket
  *  before. `perf` is Creator performance's Earnings (#161, #162): 336px high, 25px bars (never wider than their slot),
  *  the x labels 16px off the axis. `null` points draw the blank chart with `message`. */
@@ -191,15 +184,18 @@ export function TrendBars({ points, message, height = 220, perf = false }: {
               const growth = growthOf(p.value, i > 0 ? points[i - 1].value : null);
               const g = (growth.dir === "down" ? "-" : "") + growth.text;
               return (
-                <path
+                <rect
                   key={i}
                   role="img"
                   aria-label={`${p.label}: ${fmtUsd(p.value)}`}
-                  d={barPath(xAt(i) - bw / 2, f.B - h, bw, h)}
+                  x={xAt(i) - bw / 2}
+                  y={f.B - h}
+                  width={bw}
+                  height={h}
                   className="fill-accent"
                 >
                   <title>{`${p.label}\nEarnings ${fmtUsd(p.value)}\nGrowth ${g}`}</title>
-                </path>
+                </rect>
               );
             })}
           </>

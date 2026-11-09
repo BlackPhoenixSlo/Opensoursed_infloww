@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PASTE_PROXY, buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError, validateCurl,
+  buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError, validateCurl,
   type PasteCurlAction, type PasteCurlForm, type PasteCurlState,
 } from "@/components/setup/pasteCurl";
 
 const GOOD = "curl 'https://onlyfans.com/api2/v2/users/me' -H 'user-agent: Mozilla/5.0' -H 'x-bc: abc' -b 'auth_id=1; sess=s'";
-const BLANK = { nickname: "", proxyLabel: "" };
+const BLANK = { nickname: "" };
 const form = (over: Partial<PasteCurlForm> = {}): PasteCurlForm => ({ ...initialPasteCurl(BLANK), curl: GOOD, ...over });
 
 describe("validateCurl", () => {
   // Prefix, bash copy, cookies and user-agent are checked here; the signed headers stay the relay's (its 422 says which).
   const U = "curl 'https://onlyfans.com/api2/v2/users/me'";
-  const HOW = "In DevTools → Network, right-click a /api2/v2 request → Copy → Copy as cURL (bash).";
+  const HOW = "Open the extension, click Copy cURL again and paste the whole copy.";
   const NO_COOKIES = `No cookies (-b '…') in this curl. ${HOW}`;
   const NO_UA = `No user-agent (-H 'user-agent: …') in this curl. ${HOW}`;
   const NO_BOTH = `No cookies (-b '…') and no user-agent (-H 'user-agent: …') in this curl. ${HOW}`;
@@ -46,11 +46,8 @@ describe("validateCurl", () => {
 
 describe("submitError", () => {
   it.each([
-    ["good, no proxy", form(), null],
-    ["good, a proxy label", form({ proxyLabel: "p1" }), null],
-    ["paste proxy with a line", form({ proxyLabel: PASTE_PROXY, pastedProxy: "u:p@h:1" }), null],
-    ["paste proxy, blank line", form({ proxyLabel: PASTE_PROXY, pastedProxy: "  " }), "Paste a proxy line or pick another option."],
-    ["bad curl wins over the proxy line", form({ curl: "x", proxyLabel: PASTE_PROXY }), "Must start with `curl ...`"],
+    ["good", form(), null],
+    ["a bad curl", form({ curl: "x" }), "Must start with `curl ...`"],
   ])("%s", (_, f, err) => expect(submitError(f)).toBe(err));
 });
 
@@ -73,13 +70,12 @@ describe("buildBootstrapBody", () => {
     ["nickname and override trimmed", form({ nickname: "  Mia ", staticOverride: " sp " }),
       `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true,"nickname":"Mia","static_param_override":"sp"}`],
     ["blank nickname / override left out", form({ nickname: "  ", staticOverride: "\t" }), `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
-    ["proxy fields never in it", form({ proxyLabel: PASTE_PROXY, pastedProxy: "u:p@h:1" }), `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
   ])("%s", (_, f, json) => expect(JSON.stringify(buildBootstrapBody(f))).toBe(json));
 });
 
 describe("pasteCurlReducer", () => {
   const S = (over: Partial<PasteCurlState> = {}): PasteCurlState => ({ ...initialPasteCurl(BLANK), curl: GOOD, ...over });
-  const PENDING = { accountId: "of-1", label: "p1" };
+  const PENDING = { accountId: "of-1" };
   const ERR = { ok: false, text: "e" };
   const cases: [string, PasteCurlState, PasteCurlAction, Partial<PasteCurlState>][] = [
     ["setField", S(), { type: "setField", field: "nickname", value: "Mia" }, { nickname: "Mia" }],
@@ -95,9 +91,9 @@ describe("pasteCurlReducer", () => {
     const s = S();
     expect(pasteCurlReducer(s, { type: "retryStart" })).toBe(s);
   });
-  it("initialPasteCurl takes the flow's nickname and proxy label", () => {
-    expect(initialPasteCurl({ nickname: "Bella", proxyLabel: "p1" })).toEqual({
-      curl: "", nickname: "Bella", makeActive: true, proxyLabel: "p1", pastedProxy: "", staticOverride: "", result: null, pending: null,
+  it("initialPasteCurl takes the flow's nickname", () => {
+    expect(initialPasteCurl({ nickname: "Bella" })).toEqual({
+      curl: "", nickname: "Bella", makeActive: true, staticOverride: "", result: null, pending: null,
     });
   });
 });

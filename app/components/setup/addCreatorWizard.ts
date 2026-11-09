@@ -1,22 +1,21 @@
 /**
- * addCreatorWizard — AddCreatorModal's steps as a pure reducer. The step is a discriminated union and the steps after
- * the sign-in carry the account it captured, so `linked` / `creator-details` cannot exist without one. The two steps
- * that save carry their own `busy`.
+ * addCreatorWizard — AddCreatorModal's steps as a pure reducer. New creators start with details and platform, then
+ * sign in and review the linked account. Existing drafts and relinks continue at sign-in.
  *
- *   creators-details → select-platform → (OnlyFans) select-proxy → login → linked → creator-details → success
- *   login ⇄ role → alt ("Still unable…", OnlyFans only); login's Cancel goes back to select-proxy (OnlyFans) or
- *   select-platform; select-proxy's Back to select-platform, select-platform's to creators-details. Back never goes
- *   to a step before the one the modal opened on (`opened`, by FLOW_ORDER): a draft or "Link another account" opens at
- *   select-platform, so that step has no Back; a row's recovery opens at login, so login's Back goes nowhere.
+ *   login    the two ways in, Browser login (first, recommended) and Extension (the fallback), as the two choices at
+ *            the top (`method`); a small link swaps to Fansly (`platform`, whose sign-in is the extension's session
+ *            copy, so Browser login is off there). The main Add creator flow collects Creator details and platform
+ *            first. The proxy is the relay's automatic one.
+ *   linked   the captured account, with its account details below (nickname, tag, employees, notes): Done saves them
+ *            (`submitStart` / `submitOk` / `submitErr`, `busy` while it runs) and the modal closes. A row's recovery
+ *            (`recovery`) shows the account only, and Done just closes. The account's OF profile read (`profile`)
+ *            prefills a blank nickname with its name, never one already there (typed, or a draft's Creator name).
+ *   success  the save landed (the component closes the modal); nothing moves from here.
  *
- * `next` goes only where `canNext` allows — the same check every Next button is disabled by. A save's end
- * (`submitOk`) moves on by itself; `next` on a saving step is a no-op. Creator details, platform and proxy pick live
- * beside the step, so going back keeps them, and a late edit (an avatar upload, a proxy check settling after the step
- * moved) still lands. A sign-in that settles late still links, to the newest account, on any step but success or
- * one whose save is running.
- * Saving itself is the component's (toasts, the profile and mutation hooks).
+ * Both sign-ins stay mounted while the other is shown, so a sign-in that settles late (a Browser login running while
+ * the Extension tab is open) still links, to the newest account, on any step but success or a running save.
  *
- * An action the reducer refuses (a `next` canNext forbids, a `submitStart` while saving, a Back with nowhere to go)
+ * An action the reducer refuses (a taken platform, a method Fansly has no use for, a `submitStart` while saving)
  * returns the very same state object. `useWizardReducer` relies on that: its `dispatch` runs the reducer on the
  * newest state (not the render's, so a double-click's second click sees what the first did) and answers whether
  * the action was taken — the component starts a save only when its `submitStart` was.
@@ -24,212 +23,147 @@
 
 import { useCallback, useRef, useState } from "react";
 
-import {
-  creatorDetailsError, proxyChoiceReady, type AccountDetails, type ProxyChoice, type useSaveAccountDetails,
-} from "@/components/setup/creatorFlow";
+import type { AccountDetails, useSaveAccountDetails } from "@/components/setup/creatorFlow";
 import type { CreatorDetails } from "@/lib/creatorProfiles";
 import type { Employee } from "@/lib/relay";
 
 export type Platform = "onlyfans" | "fansly";
+/** The two ways in: a remote browser (Browserbase) or the Chrome extension's copy. */
+export type Method = "browser" | "extension";
 
-export type AccountStep = { kind: "creator-details"; accountId: string; account: AccountDetails; busy: boolean };
+export type LinkedStep = { kind: "linked"; accountId: string; account: AccountDetails; busy: boolean };
 
-export type WizardStep =
-  | { kind: "creators-details"; busy: boolean }
-  | { kind: "select-platform" }
-  | { kind: "select-proxy" }
-  | { kind: "login" }
-  | { kind: "role" }
-  | { kind: "alt" }
-  | { kind: "linked"; accountId: string; account: AccountDetails }
-  | AccountStep
-  | { kind: "success" };
+export type WizardStep = { kind: "details" } | { kind: "platform" } | { kind: "login" } | LinkedStep | { kind: "success" };
 
 export interface WizardState {
   step: WizardStep;
-  /** The step the modal opened on: Back never goes to a step before it in FLOW_ORDER. */
-  opened: WizardStep["kind"];
+  /** A row's recovery: the platform is fixed, and the linked step has no details to save. */
+  recovery: boolean;
+  /** Creator details entered for a new creator, or supplied by a draft / "Link another account". */
   details: CreatorDetails;
   /** The saved Creator (a draft) the account links to. */
   draftId?: string;
   /** Platforms the Creator already has an account on: not pickable. */
   taken: readonly Platform[];
   platform: Platform;
-  /** The Proxy selection picked; null = the default (the component's: Inflowwww proxy or No proxy, both ready). */
-  picked: ProxyChoice | null;
+  /** OnlyFans' way in; Fansly's is always the extension. */
+  method: Method;
 }
 
 export type WizardAction =
-  | { type: "next" }
+  | { type: "detailsNext" }
+  | { type: "platformNext" }
   | { type: "back" }
-  | { type: "setField"; field: "details"; value: CreatorDetails }
+  | { type: "setDetails"; value: CreatorDetails }
+  | { type: "setField"; field: "method"; value: Method }
   | { type: "setField"; field: "platform"; value: Platform }
-  | { type: "setField"; field: "proxy"; value: ProxyChoice }
   | { type: "setField"; field: "account"; value: AccountDetails }
-  /** A sign-in captured the account. */
-  | { type: "linked"; accountId: string; account: AccountDetails }
+  /** A sign-in captured the account, on its platform (a Browser login still running after a swap to Fansly links an
+   *  OnlyFans account). */
+  | { type: "linked"; accountId: string; account: AccountDetails; platform: Platform }
+  /** The linked account's OF profile read landed: its display name (else @username) fills a blank nickname. */
+  | { type: "profile"; accountId: string; name: string }
   | { type: "submitStart" }
-  /** The save worked: creators-details → select-platform (`draftId` when the Creator was new); creator-details →
-   *  success. */
-  | { type: "submitOk"; draftId?: string }
+  /** The account details saved: success. */
+  | { type: "submitOk" }
   | { type: "submitErr" };
 
-export function initialWizard({ recovery, draft, linkAnother }: {
-  /** A row's recovery action, on this platform: straight to the sign-in. */
+export function initialWizard({ recovery, method, draft, linkAnother }: {
+  /** A row's recovery action, on this platform. */
   recovery?: Platform;
+  /** The way in to open on (a row's re-link, the 2FA notification's Browser login); default Browser login. */
+  method?: Method;
   draft?: CreatorDetails & { id: string };
   linkAnother?: { creator: CreatorDetails; linked: readonly Platform[] };
 }): WizardState {
   const taken = linkAnother?.linked ?? [];
-  const step: WizardStep = recovery
-    ? { kind: "login" }
-    : draft || linkAnother ? { kind: "select-platform" } : { kind: "creators-details", busy: false };
+  const platform = recovery ?? (taken.includes("onlyfans") ? "fansly" : "onlyfans");
   return {
-    step,
-    opened: step.kind,
+    step: recovery || draft || linkAnother ? { kind: "login" } : { kind: "details" },
+    recovery: !!recovery,
     details: draft ?? linkAnother?.creator ?? { name: "", gender: "" },
     draftId: draft?.id,
     taken,
-    platform: recovery ?? (taken.includes("onlyfans") ? "fansly" : "onlyfans"),
-    // A recovery skips the proxy step and binds nothing.
-    picked: recovery ? { type: "none" } : null,
+    platform,
+    method: platform === "fansly" ? "extension" : method ?? "browser",
   };
 }
 
-/** May the step move on (its Next button, or the save that does)? */
+/** May the step's primary button go (Done on the linked step)? The sign-in's own buttons are the cards'. */
 export function canNext(s: WizardState): boolean {
-  const { step } = s;
-  switch (step.kind) {
-    case "creators-details":
-      return !step.busy && !creatorDetailsError(s.details);
-    case "select-platform":
-      return !s.taken.includes(s.platform);
-    case "select-proxy":
-      return !s.picked || proxyChoiceReady(s.picked);
-    case "login":
-      return s.platform === "onlyfans";
-    case "role":
-    case "linked":
-      return true;
-    case "creator-details":
-      return !step.busy && !!step.account.nickname.trim();
-    case "alt":
-    case "success":
-      return false;
-  }
+  return s.step.kind === "linked" && !s.step.busy;
 }
+
+/** May the sign-in swap to `p` (the small platform link): not in a recovery, not to a taken one. */
+export const canPickPlatform = (s: WizardState, p: Platform): boolean =>
+  (s.step.kind === "login" || s.step.kind === "platform") && !s.recovery && !s.taken.includes(p);
 
 const go = (state: WizardState, step: WizardStep): WizardState => ({ ...state, step });
+/** A save running: its submitOk / submitErr must still land on it. */
+const saving = (step: WizardStep): step is LinkedStep => step.kind === "linked" && step.busy;
 
-type SaveStep = Extract<WizardStep, { busy: boolean }>;
-/** A step that saves (creators-details, creator-details). */
-const savesHere = (step: WizardStep): step is SaveStep => "busy" in step;
-/** A step whose save is running. */
-const saving = (step: WizardStep): step is SaveStep => savesHere(step) && step.busy;
-
-function next(state: WizardState): WizardState {
-  if (!canNext(state)) return state;
-  const { step } = state;
-  switch (step.kind) {
-    case "creators-details":
-      // Unsaved (a chatter, who cannot save a Creator): the flow still links the account.
-      return go(state, { kind: "select-platform" });
-    case "select-platform":
-      return go(state, { kind: state.platform === "onlyfans" ? "select-proxy" : "login" });
-    case "select-proxy":
-      return go(state, { kind: "login" });
-    case "login":
-      return go(state, { kind: "role" });
-    case "role": // Admin/employee
-      return go(state, { kind: "alt" });
-    case "linked":
-      return go(state, { ...step, kind: "creator-details", busy: false });
-    case "creator-details": // its Next is the save (submitOk)
-    case "alt":
-    case "success":
-      return state;
-  }
-}
-
-/** The steps Back moves between, in flow order (role / alt only ever go back to login). */
-const FLOW_ORDER: readonly WizardStep["kind"][] = ["creators-details", "select-platform", "select-proxy", "login"];
-/** May Back land on `kind`? Not on a step before the one the modal opened on. */
-const notBeforeOpened = (state: WizardState, kind: WizardStep["kind"]): boolean =>
-  FLOW_ORDER.indexOf(kind) >= FLOW_ORDER.indexOf(state.opened);
-
-/** The step Back goes to, or null where it has none. */
-function backTo(state: WizardState): WizardStep | null {
-  switch (state.step.kind) {
-    case "login":
-      return { kind: state.platform === "onlyfans" ? "select-proxy" : "select-platform" };
-    case "role": // Creator, or Cancel
-    case "alt":
-      return { kind: "login" };
-    case "select-proxy":
-      return { kind: "select-platform" };
-    case "select-platform":
-      return { kind: "creators-details", busy: false };
-    case "creators-details":
-    case "linked":
-    case "creator-details":
-    case "success":
-      return null;
-  }
-}
-
-function back(state: WizardState): WizardState {
-  const to = backTo(state);
-  return to && notBeforeOpened(state, to.kind) ? go(state, to) : state;
-}
-
-/** Does the step have a Back (its button is drawn)? */
-export const canBack = (s: WizardState): boolean => back(s) !== s;
-
-/** Details, platform and proxy apply on any step (a late edit lands); the account only where it is edited. */
 function setField(state: WizardState, action: Extract<WizardAction, { type: "setField" }>): WizardState {
+  const { step } = state;
   switch (action.field) {
-    case "details":
-      return { ...state, details: action.value };
+    case "method":
+      if (step.kind !== "login" || state.platform === "fansly" || state.method === action.value) return state;
+      return { ...state, method: action.value };
     case "platform":
-      return state.taken.includes(action.value) ? state : { ...state, platform: action.value };
-    case "proxy":
-      return { ...state, picked: action.value };
+      if (state.platform === action.value || !canPickPlatform(state, action.value)) return state;
+      // Fansly signs in with the extension's session copy; back on OnlyFans, Browser login comes first again.
+      return { ...state, platform: action.value, method: action.value === "fansly" ? "extension" : "browser" };
     case "account":
-      return state.step.kind === "creator-details" ? go(state, { ...state.step, account: action.value }) : state;
+      return step.kind === "linked" && !step.busy ? go(state, { ...step, account: action.value }) : state;
   }
 }
 
 export function wizardReducer(state: WizardState, action: WizardAction): WizardState {
   const { step } = state;
   switch (action.type) {
-    case "next":
-      return next(state);
+    case "setDetails":
+      return step.kind === "details" ? { ...state, details: action.value } : state;
+    case "detailsNext":
+      return step.kind === "details" ? go(state, { kind: "platform" }) : state;
+    case "platformNext":
+      return step.kind === "platform" ? go(state, { kind: "login" }) : state;
     case "back":
-      return back(state);
+      if (step.kind === "platform") return go(state, { kind: "details" });
+      if (step.kind === "login" && !state.recovery && !state.draftId && !state.taken.length) return go(state, { kind: "platform" });
+      return state;
     case "setField":
       return setField(state, action);
     case "linked":
-      // A save running keeps its step: its submitOk / submitErr still land.
       if (step.kind === "success" || saving(step)) return state;
-      return go(state, { kind: "linked", accountId: action.accountId, account: action.account });
+      return { ...state, platform: action.platform, step: { kind: "linked", accountId: action.accountId, account: action.account, busy: false } };
+    case "profile":
+      if (step.kind !== "linked" || step.busy || state.recovery || step.accountId !== action.accountId
+          || !action.name.trim() || step.account.nickname.trim()) return state;
+      return go(state, { ...step, account: { ...step.account, nickname: action.name.trim() } });
     case "submitStart":
-      if (!savesHere(step) || !canNext(state)) return state;
+      if (step.kind !== "linked" || state.recovery || !canNext(state)) return state;
       return go(state, { ...step, busy: true });
     case "submitOk":
-      if (!saving(step)) return state;
-      return step.kind === "creators-details"
-        ? { ...state, step: { kind: "select-platform" }, draftId: action.draftId ?? state.draftId }
-        : go(state, { kind: "success" });
+      return saving(step) ? go(state, { kind: "success" }) : state;
     case "submitErr":
       return saving(step) ? go(state, { ...step, busy: false }) : state;
   }
 }
 
-/** useSaveAccountDetails' variables for creator-details' save. */
+/** The name an OF profile read gives an account: its display name, else its @username (bare), else "". */
+export const profileName = (me: { name?: string | null; username?: string | null } | null | undefined): string =>
+  me?.name?.trim() || me?.username?.trim() || "";
+
+/** useSaveAccountDetails' variables for the linked step's Done. A blank nickname falls back to `fallbackName` (the
+ *  account's OnlyFans / Fansly name), so Done never needs a typed one. The Creator details ride along only when there
+ *  are some (new creator, draft, Link another); empty details never overwrite the profile. */
 export function buildAccountPayload(
-  s: Pick<WizardState, "details" | "draftId">, step: AccountStep, roster: Employee[] | null,
+  s: Pick<WizardState, "details" | "draftId">, step: LinkedStep, roster: Employee[] | null, fallbackName = "",
 ): Parameters<ReturnType<typeof useSaveAccountDetails>["mutate"]>[0] {
-  return { accountId: step.accountId, before: "", roster, details: step.account, creator: s.details, draftId: s.draftId };
+  const nickname = step.account.nickname.trim() || fallbackName.trim();
+  return {
+    accountId: step.accountId, before: "", roster, details: { ...step.account, nickname },
+    creator: s.details.name.trim() ? s.details : undefined, draftId: s.draftId,
+  };
 }
 
 /** The wizard for a component: `[state, dispatch]`, where `dispatch` runs `wizardReducer` on the newest state (a

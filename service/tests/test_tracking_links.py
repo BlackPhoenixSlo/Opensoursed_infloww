@@ -5,6 +5,12 @@
                                      click_count increments per hit.
   case_unknown_slug_404             a slug that doesn't exist → 404 (no redirect).
   case_crud_and_analytics           create → list → analytics(total) → delete.
+  case_target_normalization         no scheme → https:// prepended; other schemes /
+                                     undotted hosts refused (unit + create route).
+  case_gated_*/case_verify_*        "Bot check before redirect" (Turnstile): the gated
+                                     GET holds no target and counts nothing; verify counts
+                                     once on pass, zero on fail; keys unset → plain 302.
+                                     siteverify is mocked at the HTTP transport.
 
 Run: ./venv/bin/python service/tests/test_tracking_links.py
 """
@@ -23,6 +29,10 @@ import os  # noqa: E402
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
+from urllib.parse import parse_qs  # noqa: E402
+
+import httpx  # noqa: E402
 
 from sqlalchemy import func, select  # noqa: E402
 
@@ -32,11 +42,11 @@ from db.models import Account, TrackingClick, TrackingLink  # noqa: E402
 _client = _harness.make_client()
 
 
-async def _seed_link(aid, slug, target):
+async def _seed_link(aid, slug, target, bot_check=False):
     async with get_session() as s:
         s.add(Account(id=aid))
         s.add(TrackingLink(account_id=aid, name="Promo", slug=slug,
-                           target_url=target, click_count=0))
+                           target_url=target, click_count=0, bot_check=bot_check))
 
 
 async def _link_state(slug):
@@ -142,10 +152,184 @@ def case_redirect_survives_a_failed_click_write():
     assert r.headers["location"] == target, r.headers
 
 
+# ── target normalization ──────────────────────────────────────────────
+
+def case_target_normalization():
+    from tracking_links_api import _normalize_target as n
+    for raw, want in [
+        ("ofl.ink/nora", "https://ofl.ink/nora"),
+        ("  ofl.ink/nora  ", "https://ofl.ink/nora"),
+        ("www.example.com", "https://www.example.com"),
+        ("ofl.ink:8080/x", "https://ofl.ink:8080/x"),
+        ("//ofl.ink/x", "https://ofl.ink/x"),
+        ("https://ofl.ink/nora", "https://ofl.ink/nora"),
+        ("http://example.com/a?b=c", "http://example.com/a?b=c"),
+        ("HTTPS://Example.com", "HTTPS://Example.com"),
+        ("javascript:alert(1)", None),
+        ("JavaScript:alert(1)", None),
+        ("javascript://ofl.ink/%0Aalert(1)", None),
+        ("data:text/html,<b>x</b>", None),
+        ("ftp://ofl.ink/x", None),
+        ("mailto:a@b.com", None),
+        ("nora", None),
+        ("https://localhost/x", None),
+        ("", None),
+        ("   ", None),
+        ("ofl.ink/a b", None),
+        ("https://ofl.ink:99999/x", None),
+        ("a" * 1990 + ".com/xxxxxxxxxx", None),
+        (None, None),
+    ]:
+        assert n(raw) == want, f"{raw!r}: got {n(raw)!r}, want {want!r}"
+
+    aid = "tl_norm"
+    asyncio.run(_seed_link(aid, "norm-seed", "https://example.com"))
+    r = _client.post("/admin/tracking-links", json={
+        "account_id": aid, "name": "Nora", "target_url": "ofl.ink/nora"})
+    assert r.status_code == 200, r.text
+    assert r.json()["target_url"] == "https://ofl.ink/nora", r.json()
+    assert r.json()["bot_check"] is False, r.json()
+    r = _client.get(f"/t/{r.json()['slug']}", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "https://ofl.ink/nora", r.headers
+    for bad in ("javascript:alert(1)", "data:text/html,x", "ftp://ofl.ink/x", "nora"):
+        b = _client.post("/admin/tracking-links", json={"account_id": aid, "name": "Bad", "target_url": bad})
+        assert b.status_code == 422, (bad, b.status_code, b.text)
+
+
+# ── Bot check before redirect (Turnstile) ─────────────────────────────
+
+SITE, SECRET = "1x00000000000000000000AA", "test-turnstile-secret"
+
+
+@contextlib.contextmanager
+def _turnstile(verdict=True, *, keys=True):
+    """Keys in the env, and Cloudflare's siteverify answered at the HTTP transport:
+    `verdict` True/False = its `success`; None = unreachable. Yields the form posts it got."""
+    calls: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append({k: v[0] for k, v in parse_qs(req.content.decode()).items()} | {"_url": str(req.url)})
+        if verdict is None:
+            raise httpx.ConnectError("cloudflare down", request=req)
+        return httpx.Response(200, json={"success": verdict, "error-codes": [] if verdict else ["invalid-input-response"]})
+
+    real = httpx.AsyncClient
+    saved = {k: os.environ.get(k) for k in ("TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "TURNSTILE_VERIFY_URL")}
+    httpx.AsyncClient = lambda **kw: real(**{**kw, "transport": httpx.MockTransport(handler)})  # type: ignore[misc]
+    if keys:
+        os.environ.update(TURNSTILE_SITE_KEY=SITE, TURNSTILE_SECRET_KEY=SECRET)
+    else:
+        os.environ.pop("TURNSTILE_SITE_KEY", None)
+        os.environ.pop("TURNSTILE_SECRET_KEY", None)
+    os.environ.pop("TURNSTILE_VERIFY_URL", None)
+    try:
+        yield calls
+    finally:
+        httpx.AsyncClient = real  # type: ignore[misc]
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+GATED_TARGET = "https://secret-landing.example.org/nora?utm=bio"
+
+
+def case_gated_get_serves_check_page_without_target():
+    asyncio.run(_seed_link("tl_gate", "gate-a", GATED_TARGET, bot_check=True))
+    with _turnstile() as calls:
+        r = _client.get("/t/gate-a", follow_redirects=False)
+    assert r.status_code == 200, r.status_code
+    body = r.text
+    assert "secret-landing" not in body and "example.org" not in body, "target leaked into the gate page"
+    assert 'data-sitekey="%s"' % SITE in body, body[:400]
+    assert "challenges.cloudflare.com/turnstile/v0/api.js" in body
+    assert r.headers["cache-control"] == "no-store", r.headers
+    assert "noindex" in r.headers["x-robots-tag"] and 'name="robots" content="noindex' in body
+    assert "location" not in r.headers
+    assert "frame-src https://challenges.cloudflare.com" in r.headers["content-security-policy"]
+    assert calls == [], "GET must not call siteverify"
+    assert asyncio.run(_link_state("gate-a")) == (0, 0), "GET of a gated link must not count a click"
+
+
+def case_verify_pass_counts_once():
+    asyncio.run(_seed_link("tl_pass", "gate-pass", GATED_TARGET, bot_check=True))
+    with _turnstile(True) as calls:
+        r = _client.post("/t/gate-pass/verify", json={"token": "tok-1"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"url": GATED_TARGET}, r.json()
+    assert r.headers["cache-control"] == "no-store"
+    assert len(calls) == 1, calls
+    c = calls[0]
+    assert c["_url"] == "https://challenges.cloudflare.com/turnstile/v0/siteverify", c
+    assert c["secret"] == SECRET and c["response"] == "tok-1" and c.get("remoteip"), c
+    assert asyncio.run(_link_state("gate-pass")) == (1, 1)
+
+
+def case_verify_fail_counts_zero():
+    asyncio.run(_seed_link("tl_fail", "gate-fail", GATED_TARGET, bot_check=True))
+    with _turnstile(False) as calls:
+        r = _client.post("/t/gate-fail/verify", json={"token": "bad"})
+        assert r.status_code == 403, r.status_code
+        assert "secret-landing" not in r.text
+        empty = _client.post("/t/gate-fail/verify", json={"token": ""})
+        assert empty.status_code == 403, empty.status_code
+        huge = _client.post("/t/gate-fail/verify", json={"token": "x" * 3000})
+        assert huge.status_code == 403, huge.status_code
+    assert len(calls) == 1, f"empty / oversized tokens must not reach Cloudflare: {calls}"
+    with _turnstile(None):
+        down = _client.post("/t/gate-fail/verify", json={"token": "t"})
+    assert down.status_code == 503, down.status_code
+    assert "secret-landing" not in down.text
+    assert asyncio.run(_link_state("gate-fail")) == (0, 0)
+    assert _client.post("/t/nope-nope/verify", json={"token": "t"}).status_code == 404
+
+
+def case_gated_keys_unset_falls_back_to_302():
+    asyncio.run(_seed_link("tl_nokeys", "gate-nokeys", GATED_TARGET, bot_check=True))
+    with _turnstile(keys=False) as calls:
+        r = _client.get("/t/gate-nokeys", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == GATED_TARGET, r.status_code
+        v = _client.post("/t/gate-nokeys/verify", json={"token": ""})
+        assert v.status_code == 200 and v.json() == {"url": GATED_TARGET}, v.text
+        lst = _client.get("/admin/tracking-links?account_id=tl_nokeys").json()
+        assert lst["bot_check_available"] is False, lst
+    assert calls == []
+    assert asyncio.run(_link_state("gate-nokeys")) == (2, 2)
+    with _turnstile():
+        assert _client.get("/admin/tracking-links?account_id=tl_nokeys").json()["bot_check_available"] is True
+
+
+def case_create_and_patch_bot_check():
+    aid = "tl_patch"
+    asyncio.run(_seed_link(aid, "patch-seed", "https://example.com"))
+    r = _client.post("/admin/tracking-links", json={
+        "account_id": aid, "name": "Gated", "target_url": "ofl.ink/g", "bot_check": True})
+    assert r.status_code == 200 and r.json()["bot_check"] is True, r.text
+    lid, slug = r.json()["id"], r.json()["slug"]
+    with _turnstile():
+        assert _client.get(f"/t/{slug}", follow_redirects=False).status_code == 200
+        p = _client.patch(f"/admin/tracking-links/{lid}", json={"bot_check": False})
+        assert p.status_code == 200 and p.json()["bot_check"] is False, p.text
+        g = _client.get(f"/t/{slug}", follow_redirects=False)
+        assert g.status_code == 302 and g.headers["location"] == "https://ofl.ink/g", g.status_code
+    lst = _client.get(f"/admin/tracking-links?account_id={aid}").json()["links"]
+    assert [x["bot_check"] for x in lst if x["id"] == lid] == [False], lst
+    assert _client.patch("/admin/tracking-links/999999", json={"bot_check": True}).status_code == 404
+    assert _client.patch(f"/admin/tracking-links/{lid}", json={}).status_code == 422
+
+
 _harness.run(
     case_redirect_survives_a_failed_click_write,
     case_click_records_and_redirects,
     case_unknown_slug_404,
     case_crud_and_analytics,
     case_slug_collision_retries_not_500,
+    case_target_normalization,
+    case_gated_get_serves_check_page_without_target,
+    case_verify_pass_counts_once,
+    case_verify_fail_counts_zero,
+    case_gated_keys_unset_falls_back_to_302,
+    case_create_and_patch_bot_check,
 )

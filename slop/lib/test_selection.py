@@ -216,7 +216,7 @@ OVERRIDE = _f(_ins(SRC, 20, "\n    def close(self):\n        return 0\n"), (20, 
 ALL = set(MAP["scenarios"])
 BROWSER = {n for n, e in MAP["scenarios"].items() if set(e["pages"]) - set(e.get("http_pages", ()))}
 PAGES = {n for n, e in MAP["scenarios"].items() if e["pages"]}
-UNC = "uncovered (no mapped scenario reaches it): "
+UNC = "NOT VERIFIED (no scenario reaches): "
 SWEPT = {q for q, *_ in sel.defs(SRC)}  # names the map sha's file had
 RENAMED = SRC.replace("def top(a)", "def top2(a)")  # renamed on main after the sweep
 ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")  # added on main after the sweep (body L16)
@@ -304,7 +304,7 @@ def test_pick(name, hunks, changed, untracked, want, warns):
     deleted = {"app/components/Gone.tsx", "service/v.py"}
     picked, got = sel.pick(MAP, hunks, EDGES, changed, untracked, deleted)
     assert {n: sel.tier(r) for n, r in picked.items()} == want, name
-    assert got == warns, name
+    assert got == sorted(w if w.startswith("NOT VERIFIED ") else "WARN " + w for w in warns), name
 
 
 def test_side_effect_import_picks_through_app_edges(tmp_path):
@@ -429,3 +429,155 @@ def test_py_reach_paths(tmp_path):
                  str(covmap.ROOT / "service" / "never_ran.py"): []})
     d.write()
     assert covmap.py_reach(tmp_path) == {"slop/lib/selection.py": ["tier"]}
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    import subprocess
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-b", "main")
+    git("config", "user.email", "slop@example.test")
+    git("config", "user.name", "Slop")
+    return git
+
+
+def test_gather_git_tree_and_worktree(tmp_path, monkeypatch, git_repo):
+    git = git_repo
+    service = tmp_path / "service"
+    service.mkdir()
+    for name in ("committed.py", "staged.py", "unstaged.py", "deleted.py"):
+        (service / name).write_text("def f():\n    return 1\n")
+    git("add", ".")
+    git("commit", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-b", "feature")
+    (service / "committed.py").write_text("def f():\n    return 2\n")
+    git("commit", "-am", "branch")
+    (service / "staged.py").write_text("def f():\n    return 3\n")
+    git("add", "service/staged.py")
+    (service / "unstaged.py").write_text("def f():\n    return 4\n")
+    (service / "deleted.py").unlink()
+    (service / "untracked.py").write_text("def f():\n    return 5\n")
+    monkeypatch.setattr(covmap, "ROOT", tmp_path)
+    monkeypatch.setattr(covmap, "app_edges", lambda: {})
+    gathered = covmap.gather({"scenarios": {"x": {"sha": base}}})
+    changed = set(gathered["changed"][base])
+    assert changed == {"service/committed.py", "service/staged.py", "service/unstaged.py",
+                       "service/deleted.py"}
+    assert gathered["untracked"] == ["service/untracked.py"]
+    assert gathered["deleted"] == {"service/deleted.py"}
+    assert gathered["hunks"][base]["service/committed.py"]["old"].endswith("return 1\n")
+    assert gathered["hunks"][base]["service/committed.py"]["new"].endswith("return 2\n")
+    assert gathered["map_age"][base] == 1
+
+
+def test_gather_missing_only_old_files_or_dynamic_loads(tmp_path, monkeypatch, git_repo):
+    git = git_repo
+    (tmp_path / "service").mkdir()
+    (tmp_path / "service/anchor.py").write_text("x = 1\n")
+    git("add", ".")
+    git("commit", "-m", "map")
+    map_sha = git("rev-parse", "HEAD")
+    (tmp_path / "service/later.py").write_text("def clip():\n    return 1\n")
+    (tmp_path / "slop/scenarios").mkdir(parents=True)
+    (tmp_path / "slop/scenarios/new_flow.py").write_text("x = 1\n")
+    git("add", ".")
+    git("commit", "-m", "base")
+    git("checkout", "-b", "feature")
+    (tmp_path / "service/later.py").write_text("def clip():\n    return 2\n")
+    (tmp_path / "slop/scenarios/new_flow.py").write_text("x = 2\n")
+    (tmp_path / "slop/seed").mkdir(parents=True)
+    (tmp_path / "slop/seed/new.py").write_text("x = 1\n")
+    (tmp_path / "service/automations").mkdir()
+    (tmp_path / "service/automations/new.py").write_text("x = 1\n")
+    monkeypatch.setattr(covmap, "ROOT", tmp_path)
+    monkeypatch.setattr(covmap, "app_edges", lambda: {})
+    gathered = covmap.gather({"scenarios": {"x": {"sha": map_sha}}})
+    assert gathered["map_missing"][map_sha] == {"service/later.py", "service/automations/new.py"}
+
+
+def test_map_ages_marks_diverged_sha(tmp_path, monkeypatch, git_repo):
+    git = git_repo
+    (tmp_path / "x").write_text("base")
+    git("add", ".")
+    git("commit", "-m", "base")
+    git("checkout", "-b", "other")
+    (tmp_path / "x").write_text("other")
+    git("commit", "-am", "other")
+    other = git("rev-parse", "HEAD")
+    git("checkout", "main")
+    (tmp_path / "x").write_text("main")
+    git("commit", "-am", "main")
+    monkeypatch.setattr(covmap, "ROOT", tmp_path)
+    assert covmap.map_ages({"scenarios": {"x": {"sha": other}}}) == {other: None}
+
+
+def test_map_update_keeps_concurrent_entries_and_no_ui_reach(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    monkeypatch.setattr(covmap, "MAP", tmp_path / "map.json")
+    monkeypatch.setattr(covmap, "MAP_LOCK", tmp_path / "map.lock")
+    gate = Barrier(2)
+    def reach(path):
+        gate.wait(timeout=5)
+        return {"service/x.py": [path.name]}
+    monkeypatch.setattr(covmap, "py_reach", reach)
+    names = {"a", "b"}
+    def write(name):
+        return covmap.update(name, tmp_path / name, sha="s", seconds=1, scale="small",
+                             ui=True, pages=[], names=names)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(write, names))
+    assert set(covmap.load_map()["scenarios"]) == names
+    monkeypatch.setattr(covmap, "py_reach", lambda _: {"service/x.py": ["backend"]})
+    covmap.update("a", tmp_path / "a", sha="s", seconds=2, scale="small", ui=False,
+                  pages=[], names=names, no_ui_run=True)
+    assert covmap.load_map()["scenarios"]["a"]["py"]["service/x.py"] == ["a", "backend"]
+    covmap.MAP.write_text("{bad")
+    with pytest.raises(covmap.MapInvalid, match="invalid JSON"):
+        write("a")
+
+
+def test_missing_at_map_sha_picks_every_scenario():
+    doc = {"scenarios": {"a": {"sha": "old", "py": {}, "pages": []},
+                         "b": {"sha": "old", "py": {}, "pages": []}}}
+    picked, warnings = sel.pick(doc, {"old": {}}, {}, {"old": ["service/new.py"]}, [],
+                                map_missing={"old": {"service/new.py"}})
+    assert set(picked) == {"a", "b"}
+    assert all(sel.tier(reasons) == "shared" for reasons in picked.values())
+    assert any("service/new.py" in w and "slop/run all --map" in w for w in warnings)
+
+
+def test_mixed_map_shas_keep_precise_flow_reason():
+    f = "service/new.py"
+    doc = {"scenarios": {"a": {"sha": "old", "py": {}, "pages": []},
+                         "b": {"sha": "new", "py": {f: ["clip"]}, "pages": []},
+                         "c": {"sha": "new", "py": {}, "pages": []},
+                         "d": {"sha": "new", "py": {}, "pages": []},
+                         "e": {"sha": "new", "py": {}, "pages": []},
+                         "f": {"sha": "new", "py": {}, "pages": []},
+                         "g": {"sha": "new", "py": {}, "pages": []}}}
+    fd = {"old": {f: {"old": "def clip():\n    return 1\n", "new": "def clip():\n    return 2\n",
+                        "hunks": [(2, 1, 2, 1)]}},
+          "new": {f: {"old": "def clip():\n    return 1\n", "new": "def clip():\n    return 2\n",
+                        "hunks": [(2, 1, 2, 1)]}}}
+    picked, _ = sel.pick(doc, fd, {}, {"old": [f], "new": [f]}, [],
+                         map_missing={"old": {f}, "new": set()})
+    assert sel.tier(picked["b"]) == "flow"
+    assert any("::clip" in why for _, why in picked["b"])
+
+
+def test_proxy_import_tree_is_root_layout():
+    doc = {"scenarios": {"a": {"sha": "old", "py": {}, "pages": ["/"]}}}
+    edges = {"app/proxy.ts": ["app/lib/headers.ts"], "app/lib/headers.ts": []}
+    picked, _ = sel.pick(doc, {}, edges, {"old": ["app/proxy.ts"]}, [])
+    assert sel.tier(picked["a"]) == "layout"
+
+
+def test_volume_tag_before_mapping(tmp_path):
+    scenario = tmp_path / "new.py"
+    scenario.write_text("P95_VS_LAST = (1.5, 100)\n")
+    assert covmap.is_volume(scenario)
+    scenario.write_text("def run():\n    P95_VS_LAST = (1.5, 100)\n")
+    assert not covmap.is_volume(scenario)

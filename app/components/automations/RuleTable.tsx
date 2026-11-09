@@ -15,6 +15,8 @@ import { fmtAgo, fmtDateTime } from "@/lib/format";
 import type { AutomationRule } from "@/hooks/useAutomations";
 import type { AutomationRunRow } from "@/hooks/useStats";
 import { splitInterval } from "@/components/automations/ruleInterval";
+import { summarize } from "@/components/automations/readyMadeContent";
+import type { Kind } from "@/components/compose/premadeRows";
 
 /** "in 2 h" / "in 30 min" for an upcoming due time (or null if past/missing). */
 function timeUntil(iso: string | null): string | null {
@@ -51,7 +53,8 @@ function scheduleText(secs: number | null): string {
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 /** The saved rules as Smart Messages' antd table: a row per rule, the Status
- *  switch, previous runs behind the Name cell's chevron, Actions fixed right. */
+ *  switch, what the rule posts / sends under its name, previous runs behind the
+ *  Name cell's chevron, Actions fixed right. */
 export function RuleTable({
   rules, runs, loading, error, empty, busy, rowErr, onToggle, onRun, onEdit, onDelete,
 }: {
@@ -100,6 +103,7 @@ export function RuleTable({
             const expanded = open.has(r.id);
             const due = timeUntil(r.next_due_at);
             const ago = fmtAgo(r.last_run?.started_at ?? null);
+            const summary = summarize(r.payload ?? {}, r.kind as Kind);
             return (
               <Fragment key={r.id}>
                 <tr className={cn(IF_TABLE.row, expanded && "border-b-0")}>
@@ -112,6 +116,10 @@ export function RuleTable({
                       <span className="truncate">{r.name}</span>
                       {r.has_pending_job && <Badge color="warn">queued</Badge>}
                     </div>
+                    {/* one rule = one post / message: its read-out, so the list shows every rule's content */}
+                    {summary && <div className={cn("mt-0.5 max-w-[360px] pl-7 text-[12px] text-muted",
+                      r.kind === "mass_premade" ? "line-clamp-6 whitespace-normal break-words" : "truncate")}
+                      title={summary}>{summary}</div>}
                     {r.last_run?.error_text && (
                       <div className="mt-1 whitespace-pre-wrap break-words pl-7 text-[12px] text-err">{r.last_run.error_text}</div>
                     )}

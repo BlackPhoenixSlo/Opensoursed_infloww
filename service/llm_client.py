@@ -6,7 +6,10 @@ call instead of POSTing a provider directly (see library/db_data/19_llm_provider
 library/db_data/05_grok_extraction.md §1+§7).
 
 Every provider here speaks the OpenAI `/chat/completions` shape, so the client is
-one code path; `base_url` + `api_key` + `model` differ, and so — per MODEL, not
+one code path — except Anthropic, whose native Messages API (for prompt
+caching) is a request/response adapter at the edges of that path
+(`llm_anthropic`, picked by `LLMProvider.wire`); `base_url` + `api_key` +
+`model` differ, and so — per MODEL, not
 per provider — does the field that states the reasoning mode. That field is
 carried verbatim by the registry (`llm_models.LLMModel.reasoning_body`) rather
 than derived here; getting it wrong is silent on some models.
@@ -58,6 +61,7 @@ import httpx
 from sqlalchemy import select, update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import llm_anthropic
 import tenant_keys
 from db.engine import get_session
 from db.models import AccountAiConfig, GrokCall, GrokDailyCost, GrokUserDailyCost
@@ -95,7 +99,7 @@ _REQUEST_TIMEOUT_S = 120.0
 # outside the loop, and released once on final give-up.
 _LLM_MAX_ATTEMPTS = 3
 _LLM_RETRY_BACKOFF_S = 1.5          # ×attempt: 1.5s, then 3.0s
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})  # 529 = Anthropic overloaded
 
 # Defensive: strip a <think>…</think> reasoning block if a provider ever inlines
 # it into `content` instead of the separate `reasoning_content` field.
@@ -272,6 +276,9 @@ class LLMResult:
     cost_cents: int               # MILLICENTS (cents x100) — see _cost_millicents
     latency_ms: int
     raw: dict = field(repr=False, default_factory=dict)
+    # Tokens WRITTEN to the provider cache (Anthropic; billed 1.25x input).
+    # Logged + returned, not a grok_calls column (cost_cents already holds it).
+    cache_write_tokens: int | None = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -547,7 +554,7 @@ def _estimate_input_tokens(messages: list[dict]) -> int:
 
 
 def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
-                     cache_hit_tokens: int = 0) -> int:
+                     cache_hit_tokens: int = 0, cache_write_tokens: int = 0) -> int:
     """Cost in MILLICENTS (cents x100), the internal unit for the cap rollup.
 
     Counting in millicents is the whole point of this path: DeepSeek's per-call
@@ -561,15 +568,21 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
     `tokens_in` billed at the cheap cache-hit rate; the remainder is cache-miss.
     Clamped to tokens_in so a malformed usage block can't go negative. Pass 0
     (the default) for the pre-flight reservation — no cache info exists yet, and
-    assuming all-miss keeps the reserve conservative for the cap."""
+    assuming all-miss keeps the reserve conservative for the cap.
+
+    `cache_write_tokens` (Anthropic `cache_creation_input_tokens`) is the slice
+    written to the cache, billed at the write rate (1.25x input), else at miss.
+    Same clamp: hit + write never exceed tokens_in."""
     mdl = MODELS.get(model)
     if mdl is None:
         return 0
     hit = max(0, min(cache_hit_tokens, tokens_in))
-    miss = tokens_in - hit
+    write = max(0, min(cache_write_tokens, tokens_in - hit))
+    miss = tokens_in - hit - write
     cents = (
         miss / 1000.0 * mdl.input_per_1k_cents
         + hit / 1000.0 * mdl.input_cache_hit_per_1k_cents
+        + write / 1000.0 * (mdl.input_cache_write_per_1k_cents or mdl.input_per_1k_cents)
         + tokens_out / 1000.0 * mdl.output_per_1k_cents
     )
     return int(round(cents * _MILLICENTS_PER_CENT))
@@ -973,7 +986,8 @@ async def chat(
       2. ATOMICALLY reserve the estimated cost against the daily soft cap
          (05 §7) BEFORE firing — raises LLMCapExceeded if it doesn't fit.
       3. Write a pending `grok_calls` row.
-      4. POST {base_url}/chat/completions.
+      4. POST {base_url}/chat/completions (Anthropic: /messages, via the
+         llm_anthropic body/response adapter).
       5. Fill tokens/cost + finalize the call row; reconcile the daily rollup.
 
     Args:
@@ -1009,9 +1023,13 @@ async def chat(
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
     mdl, prov = _resolve(model)
+    native = prov.wire == "anthropic"
     if (response_format or {}).get("type") == "json_object" and not mdl.json_object_ok:
-        # A guaranteed provider 400 (Anthropic compat); refuse at no cost.
+        # A guaranteed provider 400 on Claude; refuse at no cost.
         raise LLMConfigError(f"model {mdl.id!r} does not support response_format=json_object")
+    if native and response_format is not None:
+        raise LLMConfigError(f"model {mdl.id!r}: response_format is not translated "
+                             "to the native Messages API")
     # Before the cap reservation and the audit row, exactly where the old
     # combined _resolve raised: a call with no usable credential must cost
     # neither a cap slot nor a grok_calls row. Same for an effort string the
@@ -1021,8 +1039,8 @@ async def chat(
     api_key = (await _user_api_key(user_id, prov, purpose) if user_id is not None
                else await _tenant_api_key(account_id, prov, purpose))
 
-    url = prov.base_url.rstrip("/") + "/chat/completions"
-    endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek)
+    url = prov.base_url.rstrip("/") + ("/messages" if native else "/chat/completions")
+    endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek), "/v1/messages"
 
     now = datetime.utcnow()
 
@@ -1056,6 +1074,15 @@ async def chat(
     body.update(mdl.reasoning_keys())
     if effort:
         body["reasoning_effort"] = effort
+    if native:
+        # Same body, native shape: system → cached block, max_tokens, thinking.
+        # Before the audit row, so a body it can't translate costs no row; the
+        # hold is released (the refusal is ours, made pre-fire).
+        try:
+            body = llm_anthropic.to_native_body(body)
+        except llm_anthropic.NativeShapeError as e:
+            await hold.refund()
+            raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
@@ -1064,7 +1091,7 @@ async def chat(
         request_body=body, now=now,
     )
 
-    headers = {
+    headers = llm_anthropic.headers(api_key) if native else {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -1072,6 +1099,8 @@ async def chat(
 
     data, latency_ms = await _fire(url, headers, body, call_id=call_id, hold=hold,
                                    model=model, purpose=purpose)
+    if native:
+        data = llm_anthropic.to_openai_response(data)
     return await _finalize_ok(data, latency_ms, call_id=call_id, hold=hold,
                               model=model, purpose=purpose,
                               response_format=response_format)
@@ -1202,10 +1231,11 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     tokens_in = usage.get("prompt_tokens")
     tokens_out = usage.get("completion_tokens")
     cache_hit_tokens = _cache_hit_tokens(usage)
+    cache_write_tokens = usage.get("cache_creation_input_tokens")  # Anthropic only
     reasoning_tokens = _reasoning_tokens(usage)
 
     actual_mc = _cost_millicents(model, tokens_in or 0, tokens_out or 0,
-                                 cache_hit_tokens or 0)
+                                 cache_hit_tokens or 0, cache_write_tokens or 0)
 
     parsed: Any | None = None
     if response_format and response_format.get("type") == "json_object":
@@ -1241,9 +1271,9 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     # counter that only ever answers "is this model thinking more than we think"
     # is not proportionate. Absent (None) on providers that don't report it.
     log.info("llm_client: %s %s purpose=%s latency=%dms in=%s out=%s cache_hit=%s "
-             "reasoning=%s cost=%dmc",
+             "cache_write=%s reasoning=%s cost=%dmc",
              hold.provider, model, purpose, latency_ms, tokens_in, tokens_out,
-             cache_hit_tokens, reasoning_tokens, actual_mc)
+             cache_hit_tokens, cache_write_tokens, reasoning_tokens, actual_mc)
 
     return LLMResult(
         call_id=call_id,
@@ -1258,4 +1288,5 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
         cost_cents=actual_mc,  # millicents (see _cost_millicents)
         latency_ms=latency_ms,
         raw=data,
+        cache_write_tokens=cache_write_tokens,
     )

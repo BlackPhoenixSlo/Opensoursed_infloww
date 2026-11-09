@@ -39,6 +39,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+import vault_mirror
 from db.engine import get_session
 from db.models import VaultItem
 
@@ -141,7 +142,8 @@ def fingerprint_file(path: Path) -> tuple[str, int, int] | None:
 
 # ── Persistence ─────────────────────────────────────────────────────
 
-async def ensure_hashes(account_id: str, *, force: bool = False) -> dict[str, int]:
+async def ensure_hashes(account_id: str, *, force: bool = False,
+                        allowed: frozenset[int] | None = None) -> dict[str, int]:
     """Fill `content_hash` for every mirrored item whose thumb is cached.
 
     Incremental: rows that already carry a current-kind hash are skipped unless
@@ -152,12 +154,14 @@ async def ensure_hashes(account_id: str, *, force: bool = False) -> dict[str, in
     from vault_stills import thumb_path  # the permanent, signature-free store
 
     async with get_session() as s:
-        rows = (await s.execute(
+        q = (
             select(VaultItem.media_id, VaultItem.content_hash,
                    VaultItem.content_hash_kind)
             .where(VaultItem.account_id == account_id,
-                   VaultItem.removed_at.is_(None))
-        )).all()
+                   VaultItem.removed_at.is_(None),
+                   vault_mirror.visible_to(allowed))
+        )
+        rows = (await s.execute(q)).all()
 
     todo = [int(mid) for mid, h, kind in rows
             if force or not h or kind != HASH_KIND]
@@ -257,17 +261,19 @@ def cluster(items: list[dict], threshold: int) -> list[dict]:
     return clusters
 
 
-async def load_fingerprints(account_id: str) -> tuple[list[dict], int]:
+async def load_fingerprints(account_id: str, allowed: frozenset[int] | None = None) -> tuple[list[dict], int]:
     """Every mirrored item that carries a usable hash, + the count that doesn't
     (no cached thumb yet — those are simply not candidates)."""
     async with get_session() as s:
-        rows = (await s.execute(
+        q = (
             select(VaultItem.media_id, VaultItem.kind, VaultItem.created_at,
                    VaultItem.duration_seconds, VaultItem.content_hash,
                    VaultItem.send_count)
             .where(VaultItem.account_id == account_id,
-                   VaultItem.removed_at.is_(None))
-        )).all()
+                   VaultItem.removed_at.is_(None),
+                   vault_mirror.visible_to(allowed))
+        )
+        rows = (await s.execute(q)).all()
     items: list[dict] = []
     unhashed = 0
     for mid, kind, created, dur, packed, sends in rows:
@@ -283,12 +289,13 @@ async def load_fingerprints(account_id: str) -> tuple[list[dict], int]:
 
 
 async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
-                          *, rehash: bool = True) -> dict[str, Any]:
+                          *, rehash: bool = True,
+                          allowed: frozenset[int] | None = None) -> dict[str, Any]:
     """Full scan: (re)hash new media, then cluster. The result feeds the review
     UI — nothing is hidden here."""
     threshold = max(0, min(MAX_THRESHOLD, int(threshold)))
-    hashed = await ensure_hashes(account_id) if rehash else {}
-    items, unhashed = await load_fingerprints(account_id)
+    hashed = await ensure_hashes(account_id, allowed=allowed) if rehash else {}
+    items, unhashed = await load_fingerprints(account_id, allowed=allowed)
     clusters = await asyncio.to_thread(cluster, items, threshold)
     return {
         "threshold": threshold,

@@ -2596,7 +2596,7 @@ class TransactionScanHistory(Base):
     last_full_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Backfill ticks in a row that stopped short of done (transaction_ingest_decide.scan_after_success):
     # the walk is under way whatever a later failure writes to last_error; 3 give it up (kept: backfill_given_up).
-    # Nullable/additive: init_db self-heals it via ALTER TABLE (no migration); NULL reads 0.
+    # Nullable/additive: init_db self-heals it via ALTER TABLE; NULL reads 0.
     backfill_stalls: Mapped[int | None] = mapped_column(Integer)
     rows_inserted_total: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
@@ -3422,6 +3422,11 @@ class TrackingLink(Base):
     # Denormalized click counter (kept in sync on each capture) so the list
     # renders without an aggregate per row; TrackingClick holds the detail.
     click_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # "Bot check before redirect": GET /t/{slug} serves a Cloudflare Turnstile page
+    # (no target in it) and the click counts only on a passed check (tracking_links_api).
+    # Additive with a server default: init_db self-heals it via ALTER TABLE.
+    bot_check: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0"), default=False)
     created_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (

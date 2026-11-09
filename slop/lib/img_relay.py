@@ -58,6 +58,7 @@ of_client sets them per request).
 """
 
 import base64
+from functools import cache
 import hashlib
 import json
 import os
@@ -203,6 +204,7 @@ def _leave() -> None:
         _state["inflight"] -= 1
 
 
+@cache
 def video_bytes() -> bytes:
     """A 12 s 64x64 clip at 1 fps (ffmpeg testsrc: a counter that changes every second), H.264 mp4."""
     import subprocess
@@ -234,17 +236,19 @@ def _body(key: str, size: int) -> bytes:
     return b
 
 
-def _range(h: str | None, n: int):
-    """CloudFront's answer to one `Range: bytes=` spec on an n-byte object: (first, last), "unsatisfiable", or None
-    (no / unparsable header: the whole object, 200)."""
+UNSATISFIABLE_RANGE = (-1, -1)
+
+
+def _range(h: str | None, n: int) -> tuple[int, int] | None:
+    """Return a byte span, UNSATISFIABLE_RANGE, or None for a full 200 answer."""
     m = re.fullmatch(r"bytes=(\d*)-(\d*)", (h or "").strip())
     if not m or not (m.group(1) or m.group(2)):
         return None
     if not m.group(1):
-        return (max(0, n - int(m.group(2))), n - 1) if int(m.group(2)) else "unsatisfiable"
+        return (max(0, n - int(m.group(2))), n - 1) if int(m.group(2)) else UNSATISFIABLE_RANGE
     a = int(m.group(1))
     if a >= n:
-        return "unsatisfiable"
+        return UNSATISFIABLE_RANGE
     return a, min(n - 1, int(m.group(2))) if m.group(2) else n - 1
 
 
@@ -254,17 +258,20 @@ def policy_b64(policy: dict) -> str:
     return raw.translate(str.maketrans("+=/", "-_~"))
 
 
+def _policy_doc(policy: str) -> dict:
+    raw = policy.translate(str.maketrans("-_~", "+=/"))
+    return json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+
+
 def policy_exp(policy: str) -> float:
     """A CloudFront custom Policy's expiry (`Statement[0].Condition.DateLessThan["AWS:EpochTime"]`, epoch s)."""
-    raw = policy.translate(str.maketrans("-_~", "+=/"))
-    doc = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    doc = _policy_doc(policy)
     return float(doc["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
 
 
 def policy_ip(policy: str) -> str | None:
     """A CloudFront custom Policy's `IpAddress.AWS:SourceIp`, or None when it names none."""
-    raw = policy.translate(str.maketrans("-_~", "+=/"))
-    doc = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    doc = _policy_doc(policy)
     return (doc["Statement"][0]["Condition"].get("IpAddress") or {}).get("AWS:SourceIp")
 
 
@@ -313,19 +320,20 @@ def _serve() -> int:
                     status, body = 200, _body(key, int(asset))
                     ct = "video/mp4" if key.endswith(".mp4") else "image/jpeg"
                 part = _range(self.headers.get("range"), len(body)) if status == 200 else None
-                if part == "unsatisfiable":
-                    status, part, body = 416, f"bytes */{len(body)}", b""
-                elif part:
+                range_header = None
+                if part == UNSATISFIABLE_RANGE:
+                    status, range_header, body = 416, f"bytes */{len(body)}", b""
+                elif part is not None:
                     a, b = part
-                    status, part, body = 206, f"bytes {a}-{b}/{len(body)}", body[a:b + 1]
+                    status, range_header, body = 206, f"bytes {a}-{b}/{len(body)}", body[a:b + 1]
                 rec.update(status=status, bytes=len(body))
                 if status not in (200, 206):  # the relay drops its slot on the status line alone
                     leave()
                 self.send_response(status)
                 self.send_header("Content-Type", ct)
                 self.send_header("Content-Length", str(len(body)))
-                if part:
-                    self.send_header("Content-Range", part)
+                if range_header:
+                    self.send_header("Content-Range", range_header)
                 self.end_headers()
                 if not body:
                     return

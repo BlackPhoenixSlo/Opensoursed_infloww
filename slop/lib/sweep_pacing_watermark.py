@@ -27,18 +27,17 @@ supervisor's 900 s sleep is `/__slop/sweep-pacing/run` as in the rest of the sce
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from slop.lib.sweep_pacing_evidence import TX_START as _TX_START, held_count, scan_many
 from slop.lib.sweep_pacing_faults import TX_FAILED_FULL, TX_RESTART
 from slop.lib.sweep_pacing_wire import TOO_MANY
 from slop.seed import ts
 
 MARGIN_S = 300.0          # a Creator this close to its next boundary is seeded due
 PASS_TIMEOUT_S = 300
-_TX_START = re.compile(r"ingest_tx_scan_start account=(\S+) mode=(\w+)")
 
 
 def _utc(epoch: float) -> datetime:
@@ -60,12 +59,13 @@ async def _runs(http, ids=()) -> dict:
     return r.json()
 
 
-async def _pass(http, sw) -> dict:
-    """One supervisor pass; per Creator its walk modes and its unfiltered ledger GETs at OF."""
+async def tx_pass(http, sw, timeout_s: float = PASS_TIMEOUT_S) -> dict:
+    """One supervisor pass, returned once it ended; per Creator its walk modes and its unfiltered
+    ledger GETs at OF."""
     n0 = len((await _runs(http))["runs"])
     t0 = time.time()
     (await http.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
-    until = time.monotonic() + PASS_TIMEOUT_S
+    until = time.monotonic() + timeout_s
     while True:
         got = await _runs(http)
         mine = got["runs"][n0:]
@@ -85,30 +85,12 @@ async def _pass(http, sw) -> dict:
             "ended": bool(mine) and all(x["t1"] for x in mine), "errors": [x["error"] for x in mine if x["error"]]}
 
 
-def _scan(w, aids) -> dict[str, dict]:
-    con = w.sql()
-    q = ("SELECT account_id, last_full_at, current_status, consecutive_failures, last_error, fully_backfilled "
-         f"FROM transaction_scan_history WHERE account_id IN ({','.join('?' * len(aids))})")
-    out = {r[0]: {"last_full_at": r[1], "status": r[2], "failures": r[3], "last_error": r[4], "done": r[5]}
-           for r in con.execute(q, list(aids))}
-    con.close()
-    return out
-
-
 def _stamp(w, at: dict[str, datetime]) -> None:
     con = w.sql()
     with con:
         con.executemany("UPDATE transaction_scan_history SET last_full_at = ? WHERE account_id = ?",
                         [(ts(v), a) for a, v in at.items()])
     con.close()
-
-
-def _held(w, aid: str) -> int:
-    con = w.sql()
-    n = con.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ? AND provider_transaction_id IS NOT NULL",
-                    (aid,)).fetchone()[0]
-    con.close()
-    return n
 
 
 async def run(ctx, w, sw, *, shared: set[str]) -> None:
@@ -135,9 +117,9 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
     http = ctx.owner.share()
     (await http.post("/__slop/sweep-pacing/knobs", json={"PHASE_PIN": False})).raise_for_status()
     after = await _runs(http, done)
-    a_pass = await _pass(http, sw)
-    scan_a = _scan(w, done)
-    b_pass = await _pass(http, sw)
+    a_pass = await tx_pass(http, sw)
+    scan_a = scan_many(w, done)
+    b_pass = await tx_pass(http, sw)
     restart_at = _utc(killed)
     wrong = {}
     for a in asserted:
@@ -173,17 +155,17 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
         return
     start = _bucket_start(now, phases[f], every)
     _stamp(w, {f: _utc(start - 1)})
-    before, held0 = _scan(w, [f])[f], _held(w, f)
+    before, held0 = scan_many(w, [f])[f], held_count(w, f)
     sw.inject[(f, "transactions")] = {"offset": 0, "full": True, "text": TOO_MANY, "times": 2}
-    p1 = await _pass(http, sw)
-    s1, held1 = _scan(w, [f])[f], _held(w, f)
-    p2 = await _pass(http, sw)
-    s2 = _scan(w, [f])[f]
+    p1 = await tx_pass(http, sw)
+    s1, held1 = scan_many(w, [f])[f], held_count(w, f)
+    p2 = await tx_pass(http, sw)
+    s2 = scan_many(w, [f])[f]
     stamped = _dt(s1["last_full_at"])
     if stamped is not None:
         _stamp(w, {f: stamped - timedelta(seconds=every)})   # the boundary crossed (declared)
-    p3 = await _pass(http, sw)
-    s3, held3 = _scan(w, [f])[f], _held(w, f)
+    p3 = await tx_pass(http, sw)
+    s3, held3 = scan_many(w, [f])[f], held_count(w, f)
     steps = {
         "fail_pass_walks_full": p1["modes"].get(f) == ["refresh"],
         "exactly_two_429s": p1["full"].get(f) == [429, 429],

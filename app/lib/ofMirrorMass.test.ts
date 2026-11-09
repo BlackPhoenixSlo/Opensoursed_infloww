@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   bindMass,
   collectMass,
@@ -394,6 +394,9 @@ describe("New message: Save for later, the schedule dialog and Edit message", ()
   });
 
   it("an edit of a message with recipients and lists, only its date changed: Send saves it with PUT /messages/queue/{id} (the request shape)", async () => {
+    // The fixture's date (2026-11-07) must stay ahead of "now", or Send refuses it as TOO_SOON: pin the clock before it.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T12:00:00Z") });
+    onTestFinished(() => { vi.useRealTimers(); });
     const doc = loadPage("send");
     const storage = memoryStorage();
     const want = requests.rescheduleMessage.relay!;

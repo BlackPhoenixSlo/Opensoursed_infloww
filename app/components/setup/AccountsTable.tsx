@@ -36,7 +36,6 @@ import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState, HB_TABLE, HbPager } from "@/components/ui/infloww";
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
-import { useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { fetchAccounts, type AccountsResp } from "@/hooks/useAccounts";
 import { useOutsideClose } from "@/components/ui/Menu";
 // The capture's row title, `creators0174` (creators-manage#46, #56), shared with the modal it opens.
@@ -192,13 +191,11 @@ function AccountCell({ platform }: { platform: Platform }) {
   );
 }
 
-/** Creator ID (creators-manage#37; 01-home.png's "@founder"): the account's `@username`, from the `/users/me` read
- *  the avatar already makes (useAccountAvatar, one cache entry), so no new read. A Fansly row is never asked (as its
- *  avatar is not), and its cell stays empty. */
+/** Creator ID (creators-manage#37): the platform's user id, which is the account's id (OF user id = our account id).
+ *  Stored, so never blank: 01-home.png's "@founder" was the `/users/me` @username, and a row whose read had not
+ *  answered (or failed) showed nothing; the @username is on the linked chip and the OF profile. */
 function CreatorIdCell({ account }: { account: AccountMeta }) {
-  const of = (account.platform ?? "onlyfans") === "onlyfans";
-  const username = useAccountAvatar(of ? account.id : null).data?.username;
-  return username ? <span className="block truncate">@{username}</span> : null;
+  return <span className="block truncate tabular-nums">{account.id}</span>;
 }
 
 /** HB's horizontal scrollbar under the rows (01-home.png): an 8px rounded #666 thumb on no track. */
@@ -674,10 +671,10 @@ function Row({
             <Pencil className="h-4 w-4" aria-hidden />
           </button>
         ) : (
-          // `creators0174`, "Link creator account" (#46, #58): the extension path, the owner's first way in.
+          // `creators0174`, "Link creator account" (#46, #58): opens on Browser login, Extension one click away.
           <button
             type="button" aria-label={ROW_LINK} title={ROW_LINK}
-            onClick={() => onLink?.("paste")}
+            onClick={() => onLink?.("browserbase")}
             className={ACT}
           >
             <Link2 className="h-4 w-4" aria-hidden />
@@ -798,7 +795,7 @@ function RowMenu({
           {item("Delete", onDelete, { danger: true, icon: Trash2 })}
           {caps.recovery && (
             <div role="group" aria-label="Recovery" className={MENU_RULE}>
-              {item("Log in to account via OnlyFans", onLink && (() => onLink("paste")))}
+              {item("Log in to account via OnlyFans", onLink && (() => onLink("browserbase")))}
               {item("Log in to account via Login+")}
             </div>
           )}

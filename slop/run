@@ -10,14 +10,19 @@ set -euo pipefail
 if [ -z "${SLOP_GATED:-}" ] && [ -f "$HOME/.slop/gate.py" ] && [ "${1:-}" != nightly ]; then
   skip=; nw=
   for a in "$@"; do case "$a" in --list|--dry|-h|--help) skip=1;; --no-wait) nw=--no-wait;; esac; done
-  [ -n "$skip" ] || exec python3 "$HOME/.slop/gate.py" run $nw -- "$0" "$@"
+  # --scale >= medium with --users >= 120 runs alone (lib/gate.py exclusive(); README "The machine gate")
+  [ -n "$skip" ] || { ex=$(python3 "$(dirname "${BASH_SOURCE[0]}")/lib/gate.py" "$@") || ex=
+    exec python3 "$HOME/.slop/gate.py" run $nw $ex -- "$0" "$@"; }
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# A linked worktree (git worktree add) has no venv/ or node_modules of its own: link the
-# main checkout's, the ones it has, where the worktree has none (never over a real dir).
+# A linked worktree borrows the main checkout's venv and non-app dependencies.
+# Next/Turbopack needs app/node_modules inside this worktree, so copy it.
 MAIN="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$ROOT/.git")")"
 if [ "$MAIN" != "$ROOT" ]; then
-  for d in venv app/node_modules web/node_modules desktop/node_modules; do
+  if [ -d "$MAIN/app/node_modules" ]; then
+    nice -n 10 python3 "$ROOT/slop/lib/clone_modules.py" "$MAIN" "$ROOT"
+  fi
+  for d in venv web/node_modules desktop/node_modules; do
     if [ ! -e "$ROOT/$d" ] && [ ! -L "$ROOT/$d" ] && [ -d "$MAIN/$d" ]; then
       ln -s "$MAIN/$d" "$ROOT/$d" && echo "slop: worktree: linked $d -> $MAIN/$d" >&2
     fi

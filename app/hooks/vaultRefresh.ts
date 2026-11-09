@@ -62,6 +62,14 @@ export function vaultWholeSource(summary: SourceSummary): VaultSource {
   return summary?.complete === true && summary.count > 0 ? "mirror" : "live";
 }
 
+/** The picker's grid source while its summary may be in flight: "pending" until the summary's first answer (no
+ *  grid query runs; the grid shows loading), then `vaultWholeSource`; a failed summary (a chatter's 403) is "live".
+ *  A live listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race
+ *  (U4: a slow phone network), and spent an OF listing call the mirror answers. */
+export function vaultPickerSource(summary: { data?: SourceSummary; isLoading: boolean }): VaultSource | "pending" {
+  return summary.data === undefined && summary.isLoading ? "pending" : vaultWholeSource(summary.data);
+}
+
 /** Browse rule: the mirror once it holds anything. For the manager's grid (and its thumb reload, selection
  *  download): AI-tag search, describe results and custom folder order live only in the mirror, and the collector's
  *  page cap means a big vault may never read `complete`. */

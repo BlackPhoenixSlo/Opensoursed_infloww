@@ -49,11 +49,9 @@
  * the read Employee reports makes, so each sale is credited by Sales Settings
  * and the "Unattributed" bucket is a row of its own. It sends no `account_id`
  * either, and the Relay's account clamp and Data scope bound what it shows.
- * The bundle draws one daily "Earnings" line (capture #81), which needs a
- * per-day read the Relay does not make; the card ranks the Employees in the
- * Relay's order instead, labelled as an Inflowwww extra, and draws the
- * bundle's bare axes when there is no row. The select does not drive it: the
- * bundle's read takes no basis.
+ * The optional daily series uses the same sales attribution and scope as the
+ * employee totals, including Unattributed, with message and tip breakdowns.
+ * The earnings basis select does not drive this card.
  */
 
 import { createContext, useContext, useState, type ReactNode } from "react";
@@ -72,6 +70,7 @@ import { periodWindow, type Period } from "@/lib/dateRange";
 // `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints two decimals at every size.
 import { fmtCents, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { EmployeeSalesChart } from "./EmployeeSalesChart";
 import { relay } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
@@ -269,16 +268,7 @@ function EmptyAxes() {
   );
 }
 
-/**
- * The Employee sales card's body (capture #81-#85): the bundle's `Spin` and
- * 300px `CommonRetryBox` around a 350px chart. The chart is a ranking of the
- * per-employee read's rows in the Relay's order (revenue, highest first, as
- * Employee reports ranks them), Unattributed included; each row's tooltip is
- * the capture's first point line, led by "Inflowwww extra" since it is a
- * ranking row without the bundle's "Growth:" and "From …:" lines (#84). A
- * period not read yet spins, never showing the last period's ranking; a period
- * with no row draws the bundle's bare axes.
- */
+/** Daily sales with loading and retry states. */
 function EmployeeSales({ sales, ready }: { sales: UseQueryResult<PerEmployeeResp>; ready: boolean }) {
   if (!ready || sales.isPending) {
     return (
@@ -298,29 +288,9 @@ function EmployeeSales({ sales, ready }: { sales: UseQueryResult<PerEmployeeResp
       </div>
     );
   }
-  const rows = Array.isArray(sales.data?.employees) ? sales.data.employees : [];
-  if (rows.length === 0) return <EmptyAxes />;
-  const max = Math.max(...rows.map((r) => r.revenue_cents), 1);
-  return (
-    <ol data-chart title={EXTRA_LABEL} className="h-[350px] overflow-y-auto flex flex-col gap-3 py-2">
-      {rows.map((r) => (
-        <li
-          key={r.employee_id ?? "unattributed"}
-          data-employee
-          title={`${EXTRA_LABEL} · Earnings: ${fmtCents(r.revenue_cents)}`}
-          className="flex items-center gap-3 text-[12px]"
-        >
-          <span data-name className="w-40 shrink-0 truncate text-fg">
-            {r.display_name ?? `Employee #${r.employee_id}`}
-          </span>
-          <span className="flex-1 min-w-0 h-[5px] rounded-full bg-bg-elev-2">
-            <span className="block h-full rounded-full bg-accent" style={{ width: `${(r.revenue_cents / max) * 100}%` }} />
-          </span>
-          <span data-figure className={cn("w-20 shrink-0 text-right font-bold tabular-nums", WHITE)}>{fmtCents(r.revenue_cents)}</span>
-        </li>
-      ))}
-    </ol>
-  );
+  const points = sales.data?.series ?? [];
+  if (points.length === 0) return <EmptyAxes />;
+  return <EmployeeSalesChart points={points} />;
 }
 
 /** The selected period, its `[from, to]` in the report time zone, and whether the Applied settings have answered. */
@@ -386,13 +356,13 @@ export function DashboardPeriodTabs() {
 export function EmployeeSalesCard() {
   const { from, to, ready } = useDashboardPeriod();
   const sales = useQuery<PerEmployeeResp>({
-    queryKey: ["dashboard", "per-employee", from, to],
-    queryFn: () => relay.get<PerEmployeeResp>(`/admin/stats/per-employee?${new URLSearchParams({ from, to }).toString()}`),
+    queryKey: ["dashboard", "per-employee", "daily", from, to],
+    queryFn: () => relay.get<PerEmployeeResp>(`/admin/stats/per-employee?${new URLSearchParams({ from, to, include_series: "true" }).toString()}`),
     enabled: ready,
     staleTime: 30_000,
   });
   return (
-    <IfCard data-control="employeeSales" aria-labelledby="dash-employee-sales-title" className="min-w-0">
+    <IfCard data-control="employeeSales" aria-labelledby="dash-employee-sales-title" className="min-w-0 md:h-[426px]">
       <div className="flex items-center mb-4">
         <h2 id="dash-employee-sales-title" className={cn("text-[16px] font-medium mr-[9px]", WHITE)}>
           {label("employeeSales")}

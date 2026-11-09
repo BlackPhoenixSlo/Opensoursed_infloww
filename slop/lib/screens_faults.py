@@ -30,8 +30,8 @@ def _screen_bundle_user_priority() -> None:
     def copy_priority(outer, path, query, aid, focus):
         inner = real(outer, path, query, aid, focus)
         hdrs = [(k, v) for k, v in inner.scope["headers"] if k != b"x-priority"]
-        if pri := outer.headers.get("x-priority") or "user":
-            hdrs.append((b"x-priority", pri.encode()))
+        pri = outer.headers.get("x-priority") or "user"
+        hdrs.append((b"x-priority", pri.encode()))
         inner.scope["headers"] = hdrs
         return type(inner)(inner.scope)
 

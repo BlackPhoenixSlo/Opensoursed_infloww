@@ -1,10 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import { Badge, Button, Card, ExtraTag, Input } from "@/components/ui/primitives";
 import { ConfirmDeleteButton, CopyButton, Field, errMsg } from "@/components/growth/_bits";
-import { useTrackingLinks, useCreateTrackingLink, useDeleteTrackingLink, useTrackingAnalytics } from "@/hooks/useGrowth";
+import {
+  useTrackingLinks, useCreateTrackingLink, useDeleteTrackingLink, useTrackingAnalytics, useUpdateTrackingLink,
+} from "@/hooks/useGrowth";
+import { buildPayload, formError, INITIAL_FORM, redirectFormReducer } from "@/components/growth/customRedirectForm";
+
+const BOT_CHECK_HINT = "Fans pass a Cloudflare bot check (Turnstile) before the redirect; only passed checks count as clicks.";
+const BOT_CHECK_OFF = "Unavailable: the server has no Turnstile keys (TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY).";
 
 /** The internal link is same-origin (Next rewrites /t/* to the relay). */
 function publicUrl(path: string): string {
@@ -17,23 +23,23 @@ export function CustomRedirects({ accountId }: { accountId: string | null }) {
   const linksQ = useTrackingLinks(accountId);
   const createM = useCreateTrackingLink(accountId);
   const deleteM = useDeleteTrackingLink(accountId);
+  const updateM = useUpdateTrackingLink(accountId);
 
-  const [name, setName] = useState("");
-  const [target, setTarget] = useState("");
-  const [err, setErr] = useState<string | null>(null);
+  const [form, dispatch] = useReducer(redirectFormReducer, INITIAL_FORM);
   const [openId, setOpenId] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
 
-  const links = linksQ.data ?? [];
+  const links = linksQ.data?.links ?? [];
+  const botAvailable = !!linksQ.data?.bot_check_available;
+  const err = form.err;
 
   async function create() {
-    setErr(null);
-    if (!name.trim()) { setErr("Name is required."); return; }
-    if (!/^https?:\/\//.test(target.trim())) { setErr("Target must be an http(s) URL."); return; }
+    const body = buildPayload(form, botAvailable);
+    if (!body) { dispatch({ type: "fail", err: formError(form) ?? "Invalid link." }); return; }
     try {
-      await createM.mutateAsync({ name: name.trim(), target_url: target.trim() });
-      setName(""); setTarget("");
-    } catch (e) { setErr(errMsg(e, "Create failed")); }
+      await createM.mutateAsync(body);
+      dispatch({ type: "reset" });
+    } catch (e) { dispatch({ type: "fail", err: errMsg(e, "Create failed") }); }
   }
 
   return (
@@ -61,13 +67,21 @@ export function CustomRedirects({ accountId }: { accountId: string | null }) {
           <Card className="p-4 space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Name">
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Linktree" />
+                <Input value={form.name} onChange={(e) => dispatch({ type: "edit", field: "name", value: e.target.value })}
+                  placeholder="e.g. Linktree" />
               </Field>
               <Field label="Target URL">
-                <Input value={target} onChange={(e) => setTarget(e.target.value)}
-                  placeholder="https://linktr.ee/creator" />
+                <Input value={form.target} onChange={(e) => dispatch({ type: "edit", field: "target", value: e.target.value })}
+                  placeholder="linktr.ee/creator" />
               </Field>
             </div>
+            <label className={`flex select-none items-center gap-2 text-sm ${botAvailable ? "cursor-pointer text-fg" : "text-fg-dim"}`}
+              title={botAvailable ? BOT_CHECK_HINT : BOT_CHECK_OFF}>
+              <input type="checkbox" checked={botAvailable && form.botCheck} disabled={!botAvailable}
+                onChange={(e) => dispatch({ type: "setBotCheck", on: e.target.checked })} className="h-4 w-4 accent-accent" />
+              Bot check before redirect
+              <span className="text-fg-dim text-[11px]">{botAvailable ? "· Cloudflare Turnstile" : "· not set up on this server"}</span>
+            </label>
             <div className="flex items-center gap-2">
               {err && <span className="text-err text-xs mr-auto">{err}</span>}
               <Button size="sm" onClick={create} disabled={createM.isPending || !accountId}
@@ -86,7 +100,14 @@ export function CustomRedirects({ accountId }: { accountId: string | null }) {
               <li key={l.id} className="py-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-fg truncate">{l.name}</div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-medium text-fg truncate">{l.name}</span>
+                      {l.bot_check && (
+                        <Badge color="info" title={botAvailable ? BOT_CHECK_HINT : BOT_CHECK_OFF}>
+                          bot check{botAvailable ? "" : " (off)"}
+                        </Badge>
+                      )}
+                    </div>
                     <div className="text-[11px] text-fg-dim truncate">
                       <span className="text-accent">{l.path}</span> → {l.target_url}
                     </div>
@@ -95,6 +116,14 @@ export function CustomRedirects({ accountId }: { accountId: string | null }) {
                     {l.click_count} <span className="text-fg-dim text-[11px]">clicks</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    <label className={`flex select-none items-center gap-1 text-[11px] ${botAvailable ? "cursor-pointer text-fg" : "text-fg-dim"}`}
+                      title={botAvailable ? BOT_CHECK_HINT : BOT_CHECK_OFF}>
+                      <input type="checkbox" aria-label={`Bot check for ${l.name}`} checked={l.bot_check}
+                        disabled={(!botAvailable && !l.bot_check) || updateM.isPending}
+                        onChange={(e) => updateM.mutate({ id: l.id, bot_check: e.target.checked })}
+                        className="h-3.5 w-3.5 accent-accent" />
+                      Bot check
+                    </label>
                     <CopyButton text={publicUrl(l.path)} label="Copy link" />
                     <Button size="sm" variant="ghost" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                       {openId === l.id ? "Hide" : "Analytics"}

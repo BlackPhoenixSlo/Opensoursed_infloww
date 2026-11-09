@@ -56,12 +56,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, Plus } from "lucide-react";
 import { useEffect, useReducer, useState, type ReactNode } from "react";
 
-import { Button } from "@/components/ui/primitives";
-import { EmptyState, IfButton, IfInput, IfPager, IfSelect, IF_TABLE, type IfOption } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfInput, IfModal, IfPager, IfSelect, IF_TABLE, type IfOption } from "@/components/ui/infloww";
 import { GateNoteText, type GateNote } from "@/components/settings/StickySaveBar";
 import type { PermissionRole } from "@/components/settings/PermissionEditor";
 import {
-  AccessLimitsModal, EmployeeFormModal, InviteLinkModal, ManageRolesLink, Modal, ResetPasswordModal, RoleModal, RowMenu,
+  AccessLimitsModal, EmployeeFormModal, InviteLinkModal, ManageRolesLink, ResetPasswordModal, RoleModal, RowMenu,
   type InviteResp,
 } from "@/components/employees/EmployeeModals";
 import GroupTree, { useAgencyName } from "@/components/employees/GroupTree";
@@ -648,18 +647,25 @@ function BatchDialog({ open, title, children, canSave, note = null, saving, erro
   note?: GateNote | null;
   onSave: () => void;
 }) {
+  if (!open) return null;
   return (
-    <Modal open={open} onOpenChange={(o) => !o && onCancel()} title={title}>
+    <IfModal
+      title={title}
+      width={440}
+      onClose={onCancel}
+      footer={(
+        <>
+          {note && <span className="mr-auto"><GateNoteText note={note} /></span>}
+          <IfButton onClick={onCancel}>Cancel</IfButton>
+          <IfButton variant="primary" disabled={!canSave || saving} onClick={onSave}>{saving ? "Saving…" : "Save"}</IfButton>
+        </>
+      )}
+    >
       <div className="space-y-3">
         {children}
         {error && <p role="alert" className="text-err text-xs">{error}</p>}
-        <div className="flex items-center justify-end gap-2">
-          {note && <span className="mr-auto"><GateNoteText note={note} /></span>}
-          <Button size="sm" variant="ghost" type="button" onClick={onCancel}>Cancel</Button>
-          <Button size="sm" type="button" disabled={!canSave || saving} onClick={onSave}>{saving ? "Saving…" : "Save"}</Button>
-        </div>
       </div>
-    </Modal>
+    </IfModal>
   );
 }
 

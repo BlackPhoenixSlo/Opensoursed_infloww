@@ -126,7 +126,6 @@ not its target: with no recheck armed that stage cannot be set up).
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 from collections import Counter
@@ -134,9 +133,11 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from slop.lib.browserbase import paste_curl
-from slop.lib.client import Recorder
+from slop.lib.client import Recorder, actor_call as _call
 from slop.lib.procmon import pct
-from slop.lib.proxy_wire import REFUSE_S, ProxyWire
+from slop.lib.proxy_wire import REFUSE_S, ProxyWire, registry_bindings, registry_pool
+from slop.lib.service_constant import service_number
+from slop.lib.proxy_failover_faults import C_BIND, C_MOVE, C_TIER, C_SURF, C_LOGIN, C_SENDS, C_HEALTHY, C_BACK, C_NOSTANDBY, C_LOGIN_ALL_DEAD, C_REWATCH, C_RECHECK_GAP, C_WIRE, C_PROBE_OF
 from slop.seed import of_sessions
 
 PROFILE = "one_agency"
@@ -165,74 +166,13 @@ REV = "slop-of-rev-202610281200"
 
 READ = "/api/of/v2/users/me"                      # the warm-up and the new Creator's first read (cached 60 s after)
 PEOPLE_READ = "/api/of/v2/chats?limit=5&refresh=1"  # the Fan List's manual refresh: bypasses relay_cache, reaches OF
-C_BIND = "pool: ON_POOL Creators bound least-used through /admin/proxy-pool/assign, each warm-up tunneled"
-C_MOVE = "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again"
-C_TIER = ("pool tiers: the dead tier-0 proxy's Creators all moved to the other tier-0 proxy, none to the idler "
-          "tier-1 one (INFLOWW_PROXIES `|`)")
-C_SURF = "dead pool proxy: surfaced before the move (pool bad=1, proxy_down on exactly its Creators)"
-C_LOGIN = "login during the outage: bound once, to a healthy pool proxy, and never moved"
-C_SENDS = "sends never duplicated: each 200 once in OnlyFans' record, each 502 never, no text twice"
-C_HEALTHY = "healthy pool proxies: every read and send of their Creators answered 200 throughout"
-C_BACK = ("revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
-          "proxy (the revived one, once its Creators moved) and reads through it")
-C_NOSTANDBY = "every pool proxy dead: nobody moves (bindings identical) and every pool Creator reads proxy_down"
-C_LOGIN_ALL_DEAD = ("login during a pool-wide outage: no probe answers, yet the session is saved and bound to a pool "
-                    "proxy within budget (a login is never lost; every-proxy-bad: test_proxy_health)")
-C_REWATCH = ("re-watch: a pool proxy that dies for good right after a blip ended its watcher is watched again and "
-             "surfaced within budget (its Creator reads proxy_down)")
-C_RECHECK_GAP = ("recheck-gap: a bad proxy an answer brings back while its watcher sleeps before a recheck, then "
-                 "DOWN_AFTER failed sends before it wakes, is confirmed bad again by that watcher within budget; "
-                 "a Test click while it is bad leaves it bad")
-C_WIRE = "lib/of_wire.py saw only signed calls it models"
-C_PROBE_OF = ("the watcher's confirm and rechecks probe OnlyFans' API host (robots.txt) with no account and no cookie "
-              "(proxy_probe.probe_of)")
 
 
-def _service_int(module: str, name: str) -> int:
-    """A service constant, read from the source the relay runs (this harness never imports service/)."""
-    src = (Path(__file__).resolve().parents[2] / "service" / f"{module}.py").read_text()
-    return int(re.search(rf"^{name} = (\d+)", src, re.M).group(1))
-
-
-DOWN_AFTER = _service_int("proxy_health_decide", "DOWN_AFTER")   # counted failures in a row that start the watcher
+DOWN_AFTER = service_number("proxy_health_decide", "DOWN_AFTER")   # counted failures in a row that start the watcher
 
 
 def _plain(html: str) -> str:
     return re.sub(r"</?p>", "", html or "")
-
-
-class _Registry:
-    """The relay's registry file (its own temp dir): label per Creator, read as the relay wrote it."""
-
-    def __init__(self, path):
-        self.path = path
-
-    def bindings(self) -> dict[str, str]:
-        try:
-            data = json.loads(self.path.read_text())
-        except (OSError, ValueError):
-            return {}
-        return {aid: p["label"] for p in data.get("proxies", []) for aid in (p.get("assigned_account_ids") or [])}
-
-    def pool_labels(self) -> dict[str, int]:
-        data = json.loads(self.path.read_text())
-        return {p["label"]: p["port"] for p in data["proxies"] if p.get("pool")}
-
-
-async def _call(http, kind: str, aid: str, path: str, method: str = "GET", body=None, text=None) -> dict:
-    t0 = time.perf_counter()
-    try:
-        if method == "GET":
-            r = await http.get(path, headers={"X-Account-Id": aid})
-        else:
-            r = await http.post(path, headers={"X-Account-Id": aid}, json=body)
-        status = r.status_code
-        detail = (r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json")
-                  else None) if status >= 400 else None
-    except Exception:  # noqa: BLE001  transport error: 599 as the recorder does
-        status, detail = 599, None
-    return {"kind": kind, "aid": aid, "status": status, "ms": (time.perf_counter() - t0) * 1000,
-            "t0": t0, "t1": time.perf_counter(), "text": text, "detail": detail}
 
 
 async def run(ctx) -> None:
@@ -243,34 +183,35 @@ async def run(ctx) -> None:
     n_on = int(ctx.param("on_pool", ON_POOL))
     on_pool, login_aid, back_aid, late_aid = aids[:n_on], aids[n_on], aids[n_on + 1], aids[n_on + 2]
     refuse = float(ctx.param("refuse_ms", REFUSE_S * 1000)) / 1000
-    reg = _Registry(ctx.stack.sessions.parent / "proxies.json")
+    reg = ctx.stack.sessions.parent / "proxies.json"
     fake = ctx.of_wire
     n0 = len(fake.calls)
     with ExitStack() as stack:
         wires = [stack.enter_context(ProxyWire(refuse)) for _ in range(POOL)]
         spare = stack.enter_context(ProxyWire(refuse))    # joins the pool for the re-watch only
         custom = stack.enter_context(ProxyWire(refuse))   # the recheck-gap's custom proxy
-        text = await _run(ctx, w, reg, wires, on_pool, login_aid, back_aid, late_aid)
-        await _rewatch(ctx, reg, text, spare, aids[n_on + 3], w.data["fans"])
+        pool_text, revived_at, back_wall = await _run(ctx, w, reg, wires, on_pool, login_aid, back_aid, late_aid)
+        await _rewatch(ctx, reg, pool_text, spare, aids[n_on + 3], w.data["fans"])
         await _recheck_gap(ctx, custom, aids[n_on + 4], w.data["fans"])
     ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
               unmodelled=dict(fake.unmodelled), of_calls=len(fake.calls) - n0)
-    # The watcher's probe names nobody. Only the probes that got through reach OF: the revived
-    # proxy's recheck, at least.
-    probes = [c for c in fake.calls[n0:] if c["route"] == "GET /robots.txt" and not c["account"]]
+    # The revived proxy's recheck is the only probe in this window: verify_pick runs
+    # later, when the new Creator is assigned. Count this window, not every robots.txt.
+    watcher_calls = [c for c in fake.calls[n0:] if revived_at <= c["t"] <= back_wall]
+    probes = [c for c in watcher_calls if c["route"] == "GET /robots.txt" and not c["account"]]
     ctx.check(C_PROBE_OF, bool(probes) and not any(c["cookie"] for c in probes), probes=len(probes),
               with_cookie=sum(1 for c in probes if c["cookie"]))
 
 
-async def _rewatch(ctx, reg: _Registry, pool_text: str, spare: ProxyWire, aid: str, fans: dict) -> None:
+async def _rewatch(ctx, reg: Path, pool_text: str, spare: ProxyWire, aid: str, fans: dict) -> None:
     """A fourth pool proxy, one Creator on it: a blip whose watcher the confirm's wait ends, then dead for
     good with exactly DOWN_AFTER failures (its sends, together) landing just after that end (module docstring)."""
     owner = ctx.owner
     budget_ms = float(ctx.param("rewatch_ms", REWATCH_MS))
     r = await owner.post("/__slop/proxy-pool", json={"text": f"{pool_text},socks5://127.0.0.1:{spare.port}"})
-    label = next((lb for lb, port in reg.pool_labels().items() if port == spare.port), None)
+    label = next((lb for lb, port in registry_pool(reg).items() if port == spare.port), None)
     bound = (await owner.post("/admin/proxy-pool/assign", json={"account_id": aid})).status_code
-    on = reg.bindings().get(aid)   # w0-w2 still bad right after their revive: the new proxy is the only pick
+    on = registry_bindings(reg).get(aid)   # w0-w2 still bad right after their revive: the new proxy is the only pick
     http = owner.share(rec=Recorder(), limits=2 * DOWN_AFTER + 4)   # declared: its dead sends 502 on purpose
     to = [f["id"] for f in fans[aid]]
 
@@ -381,9 +322,9 @@ async def _recheck_gap(ctx, wire: ProxyWire, aid: str, fans: dict) -> None:
               final_state=bad.get("state"))
 
 
-async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str], login_aid: str, back_aid: str,
-               late_aid: str) -> str:
-    """The pool stages (bind, death and move, revival, pool-wide outage). Returns the pool's sync text."""
+async def _run(ctx, w, reg: Path, wires: list[ProxyWire], on_pool: list[str], login_aid: str, back_aid: str,
+               late_aid: str) -> tuple[str, float, float]:
+    """Run the pool stages; return pool text, revival wall time, and recheck window end wall time."""
     owner, fake = ctx.owner, ctx.of_wire
     load_s = float(ctx.param("load_s", LOAD_S))
     failover_ms = float(ctx.param("failover_ms", FAILOVER_MS))
@@ -395,9 +336,9 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
     r = await owner.post("/__slop/proxy-pool", json={"text": text})
     synced = r.status_code == 200 and r.json().get("size") == POOL
     by_port = {p.port: p for p in wires}
-    label_wire = {label: by_port[port] for label, port in reg.pool_labels().items()}
+    label_wire = {label: by_port[port] for label, port in registry_pool(reg).items()}
     bound = [(await owner.post("/admin/proxy-pool/assign", json={"account_id": a})).status_code for a in on_pool]
-    binding = reg.bindings()
+    binding = registry_bindings(reg)
     per_label = Counter(binding.get(a) for a in on_pool)
     warm = await asyncio.gather(*(_call(owner, "warm", a, READ) for a in on_pool))
     tunneled = {label: sum(1 for c in wire.connects if c["alive"]) for label, wire in label_wire.items()}
@@ -441,16 +382,17 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
 
     async def poll(until: float) -> None:
         while time.perf_counter() < until:
-            b = reg.bindings()
+            t_b = time.perf_counter()   # the poll's time is its bindings read's: the GETs below can take seconds under load
+            b = registry_bindings(reg)
             pr = await owner.get("/admin/proxies")
             ac = await owner.get("/admin/accounts")
             pool = pr.json().get("pool", {}) if pr.status_code == 200 else {}
             down = sorted(a["id"] for a in ac.json().get("accounts", []) if a.get("proxy_down")) \
                 if ac.status_code == 200 else None
-            polls.append({"t": time.perf_counter(), "on_dead": sorted(a for a in on_pool if b.get(a) == dead_label),
+            polls.append({"t": t_b, "on_dead": sorted(a for a in on_pool if b.get(a) == dead_label),
                           "bad": pool.get("bad"), "down": down, "bindings": b})
             if not polls[-1]["on_dead"] and not moved_at:
-                moved_at.append(time.perf_counter())
+                moved_at.append(t_b)
             await asyncio.sleep(0.5)
 
     async def login(at: float, aid: str = login_aid) -> dict:
@@ -460,7 +402,7 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
         t_att = time.perf_counter()
         att = await owner.post("/admin/proxy-pool/assign", timeout=60, json={"account_id": aid})
         assign_ms = round((time.perf_counter() - t_att) * 1000, 1)
-        label = reg.bindings().get(aid)
+        label = registry_bindings(reg).get(aid)
         rel = await owner.post(f"/admin/reload-session?account_id={aid}")
         return {"bootstrap": boot.status_code, "assign": att.status_code, "assign_ms": assign_ms,
                 "kept": att.json().get("kept") if att.status_code == 200 else None,
@@ -474,7 +416,7 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
                                          *(person(n, a, until) for n, a in enumerate(picks)))
     ctx.rec.stage = None
     await asyncio.sleep(0.5)
-    final = reg.bindings()
+    final = registry_bindings(reg)
 
     t_moved = (moved_at[0] - t_dead) * 1000 if moved_at else None
     after = [x for x in seen if x["aid"] in dead and moved_at and x["t0"] > moved_at[0] + 1.0]
@@ -522,6 +464,7 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
 
     # ── the dead proxy revives: the recheck brings it back, the next Creator lands on it ──
     t_rev = time.perf_counter()
+    revived_at = time.time()
     dead_wire.revive()
     back_at = None
     while time.perf_counter() - t_rev < back_ms / 1000:
@@ -530,18 +473,19 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
             back_at = time.perf_counter()
             break
         await asyncio.sleep(0.5)
+    back_wall = time.time()
     # Least-used before the bind: the revived proxy alone once its Creators moved (0 held). Judged from the
     # bindings, so a run where nobody moved (a fault) is not read as a wrong pick.
-    held = Counter(reg.bindings().get(a) for a in [*on_pool, login_aid])
+    held = Counter(registry_bindings(reg).get(a) for a in [*on_pool, login_aid])
     least = min(held.get(label, 0) for label in label_wire)
     least_used = sorted(label for label in label_wire if held.get(label, 0) == least)
     r = await owner.post("/admin/proxy-pool/assign", json={"account_id": back_aid})
-    back_label = reg.bindings().get(back_aid)
+    back_label = registry_bindings(reg).get(back_aid)
     back_wire = label_wire.get(back_label)
     c1 = len(back_wire.connects) if back_wire else 0
     back_read = await _call(owner, "back", back_aid, READ)
     through = sum(1 for c in back_wire.connects[c1:] if c["alive"]) if back_wire else 0
-    stayed = {a: reg.bindings().get(a) for a in dead}
+    stayed = {a: registry_bindings(reg).get(a) for a in dead}
     ctx.check(C_BACK, back_at is not None and r.status_code == 200 and back_label in least_used
               and back_read["status"] == 200 and through >= 1
               and all(lbl == now_on[a] for a, lbl in stayed.items()), budget=True,
@@ -550,8 +494,8 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
               tunneled=through, moved_stayed=all(lbl == now_on[a] for a, lbl in stayed.items()))
 
     # ── every pool proxy dies: nobody can move, nobody does; every pool Creator is surfaced ──
-    all_pool = sorted(a for a, lbl in reg.bindings().items() if lbl in label_wire)
-    b0 = reg.bindings()
+    all_pool = sorted(a for a, lbl in registry_bindings(reg).items() if lbl in label_wire)
+    b0 = registry_bindings(reg)
     for p in wires:
         p.kill()
     ctx.rec.stage = "all-dead"
@@ -563,7 +507,7 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
     late, *_ = await asyncio.gather(login(float(ctx.param("login_all_dead_at_s", LOGIN_ALL_DEAD_AT_S)), late_aid),
                                     poll(until), *(person(n, a, until) for n, a in enumerate(picks2)))
     ctx.rec.stage = None
-    b1 = reg.bindings()
+    b1 = registry_bindings(reg)
     late_bound = b1.get(late_aid) in label_wire
     old = {a: lbl for a, lbl in b1.items() if a != late_aid}
     last = polls[-1] if polls else {}
@@ -601,4 +545,4 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
              f"{round((back_at - t_rev) * 1000, 1) if back_at else None} ms after revival",
              f"people {len(picks)}: healthy reads p95 {pct(lms, 0.95)} ms (n {len(lms)}); dead reads before the "
              f"move p95 {pct(dms, 0.95)} ms (n {len(dms)}); sends {dict(Counter(x['status'] for x in sends))}")
-    return text
+    return text, revived_at, back_wall

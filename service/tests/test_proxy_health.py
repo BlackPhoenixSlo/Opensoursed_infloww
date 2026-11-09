@@ -331,7 +331,7 @@ def case_of_calls_feed_the_state():
         assert w.probed == ["hu-1"], "three refused calls confirm with one probe"
         _fail("hu-1", proxy_health_decide.DOWN_AFTER - 1)
         proxy_health._state["hu-1"]["down"] = True   # as after a failed confirm
-        ok = _bare_client(lambda url, **kw: types.SimpleNamespace(headers={}, ok=True))
+        ok = _bare_client(lambda url, **kw: types.SimpleNamespace(headers={}, ok=True, status_code=200))
         ok._http_call("GET", "https://onlyfans.com/api2/v2/users/me")
     assert not proxy_health.snapshot("hu-1")["down"]
 
