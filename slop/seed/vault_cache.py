@@ -28,3 +28,4 @@ def grant_folder_access(con, chatter_id: str, account_id: str, folder_id: int,
                         folder_name: str, at) -> None:
     con.execute("INSERT INTO chatter_folder_access (chatter_id, account_id, folder_id, folder_name, created_at) "
                 "VALUES (?,?,?,?,?)", (chatter_id, account_id, folder_id, folder_name, ts(at)))
+
