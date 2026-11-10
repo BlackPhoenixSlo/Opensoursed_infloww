@@ -113,6 +113,20 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     expect(post).toHaveBeenCalledTimes(2);
   });
 
+  it("dismisses one row with its ✕ and every row with Clear all", async () => {
+    get.mockImplementation(route);
+    post.mockResolvedValue({ unread: 0 });
+    renderWithProviders(<HeaderBell />);
+    await screen.findByTestId("bell-count");
+    await openBell();
+    await screen.findByText("Ana was deactivated");
+    fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/7/dismiss"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/dismiss-all"));
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
   it("makes a row with a link (a 2FA relink) open it, and reads the row", async () => {
     const otp = { id: 9, kind: "session_dead", text: "Kim needs a 2FA code on OnlyFans: sign in to Kim's OnlyFans account again with Browserbase login to resume",
       account_id: "acct-k", employee_id: null, data: { reason: "otp_required", href: "/creators?relink=browserbase" },
@@ -150,7 +164,7 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     renderWithProviders(<HeaderBell />);
     await screen.findByTestId("bell-count");
     await openBell();
-    fireEvent.click(screen.getByRole("button", { name: "Notification settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agency notification settings" }));
     const missed = await screen.findByRole("checkbox", { name: "Missed clock-ins" });
     await waitFor(() => expect(missed).not.toBeDisabled());
     expect(missed).not.toBeChecked();
@@ -165,7 +179,7 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     session = { user: null, chatter: { id: 1 } };
     renderWithProviders(<HeaderBell />);
     await openBell();
-    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["OnlyFans", "Settings"]);
     expect(get.mock.calls.some(([p]) => String(p).startsWith("/admin/agency-notifications"))).toBe(false);
   });
 });

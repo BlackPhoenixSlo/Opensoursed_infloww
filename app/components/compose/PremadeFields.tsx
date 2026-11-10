@@ -170,7 +170,7 @@ export function PremadeFields({
           <h4 className="text-[14px] font-medium text-fg">Audience</h4>
           <div>
             <IfLabel>Send to</IfLabel>
-            {/* System audiences are include-only; Online now toggles the same online_only payload flag. */}
+            {/* System audiences are include-only; Send to online only toggles the same online_only payload flag. */}
             <div className="flex flex-wrap gap-2" role="group" aria-label="Send to">
               {SYSTEM_AUDIENCES.map((b) => (
                 <AudienceChip
@@ -180,9 +180,10 @@ export function PremadeFields({
                   label={b.label}
                 />
               ))}
-              <AudienceChip active={r.onlineOnly} label="Online now"
+              <AudienceChip active={r.onlineOnly} label="Send to online only"
                 onClick={() => patchRow({ onlineOnly: !r.onlineOnly })} />
             </div>
+            <IfHelp>When selected, only users online at send time receive the message.</IfHelp>
           </div>
 
           {/* One multi-select picker, with Include / Exclude tabs both visible. */}
@@ -295,7 +296,7 @@ function AudienceChip({ active, label, onClick }: { active: boolean; label: stri
   return (
     <button type="button" aria-pressed={active} onClick={onClick}
       className={cn("h-8 rounded-full border px-3 text-[13px] transition-colors",
-        active ? "border-accent/30 bg-accent/10 text-accent" : "border-border text-fg-dim hover:border-accent hover:text-fg")}>
+        active ? "border-[#3563ff]/30 bg-[#3563ff]/10 text-[#3563ff]" : "border-border text-fg-dim hover:border-accent hover:text-fg")}>
       {label}
     </button>
   );

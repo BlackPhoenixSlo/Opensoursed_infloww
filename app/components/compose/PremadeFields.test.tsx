@@ -165,7 +165,7 @@ describe("PremadeFields", () => {
     fireEvent.change(screen.getByPlaceholderText(/broadcast text/i), { target: { value: "x" } });
     const fans = screen.getByRole("button", { name: /All fans/ });
     fireEvent.click(fans); // included → off
-    expect(fans).toHaveTextContent("OF built-in");
+    expect(fans).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(fans); // off → included, never "exclude"
     fireEvent.click(fans);
     fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));

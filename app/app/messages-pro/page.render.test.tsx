@@ -875,9 +875,10 @@ describe("the Messages Pro page", () => {
     await userEvent.click(notifications());
     expect(await screen.findByText("subscribed to your profile")).toBeInTheDocument();
     // The bell's own filters ("All" is the Fan List's chip too) and its settings.
-    for (const name of ["Subscriptions", "Purchases", "Tips", "Comments", "Likes", "Toast settings"]) {
+    for (const name of ["Subscriptions", "Purchases", "Tips", "Comments", "Likes"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+    expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
     const listReads = relayGet.mock.calls.filter(([path]) => path.includes("/api/of/v2/users/notifications?"));
     expect(listReads.map(([, ctx]) => ctx?.accountId)).toEqual([ACCOUNT_ID]);
 
@@ -922,7 +923,7 @@ describe("the Messages Pro page", () => {
     expect(storedSurfaces()).toEqual(["popup", "group"]);
 
     await userEvent.click(notifications());
-    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Toast settings" })).toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument());
 
     await userEvent.click(railSwitch());
     expect(railSwitch()).toHaveAttribute("aria-checked", "true");

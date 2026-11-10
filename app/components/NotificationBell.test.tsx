@@ -226,7 +226,7 @@ describe("NotificationBell (OS notifications: Web Push)", () => {
     const user = userEvent.setup();
     renderWithProviders(<NotificationBell />);
     await user.click(screen.getByRole("button", { name: "Notifications" }));
-    await user.click(await screen.findByRole("button", { name: "Toast settings" }));
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
     return user;
   }
 

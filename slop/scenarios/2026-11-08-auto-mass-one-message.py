@@ -149,10 +149,20 @@ async def run(ctx) -> None:
                   and _fits(form["fits"]), **form, screenshots=shots)
 
         send_to = compose.get_by_role("group", name="Send to")
-        chip_names = ["All fans", "Following", "Online now"]
+        chip_names = ["All fans", "Following", "Send to online only"]
         audience_buttons = [send_to.get_by_role("button", name=name) for name in chip_names]
         visible_chips = [await button.count() for button in audience_buttons]
         chip_tops = [await button.evaluate("el => el.getBoundingClientRect().top") for button in audience_buttons]
+        online = audience_buttons[2]
+        await online.click(timeout=10_000)  # off, then on: selected blue after a click
+        await online.click(timeout=10_000)
+        await online.scroll_into_view_if_needed(timeout=10_000)
+        shots.append(await _shot(ctx, page, "online-only-selected"))
+        online_color = await online.evaluate("el => getComputedStyle(el).color")
+        await page.evaluate("() => document.documentElement.removeAttribute('data-theme')")
+        shots.append(await _shot(ctx, page, "online-only-selected-dark"))
+        dark_color = await online.evaluate("el => getComputedStyle(el).color")
+        await page.evaluate("() => document.documentElement.setAttribute('data-theme', 'light')")
         list_tabs = compose.get_by_role("tablist", name="Custom lists")
         visible_list_tabs = [await list_tabs.get_by_role("tab", name=name).count() for name in ("Include", "Exclude")]
         await list_tabs.get_by_role("tab", name="Exclude").click(timeout=10_000)
@@ -161,15 +171,18 @@ async def run(ctx) -> None:
         await list_tabs.get_by_role("tab", name="Include").click(timeout=10_000)
         await compose.get_by_role("checkbox", name="Audience list (3)", exact=True).check(timeout=10_000)
         await send_to.get_by_role("button", name="All fans").click(timeout=10_000)
-        await send_to.get_by_role("button", name="Online now").click(timeout=10_000)
+        await send_to.get_by_role("button", name="Send to online only").click(timeout=10_000)
         await chips.get_by_role("radio", name="1h").wait_for(timeout=10_000)
         audience_state = {
             "chips": visible_chips,
-            "all_fans_selected": "bg-accent/10" in (await send_to.get_by_role("button", name="All fans").get_attribute("class") or ""),
-            "following_selected": "bg-accent/10" in (await send_to.get_by_role("button", name="Following").get_attribute("class") or ""),
-            "online_pressed": await send_to.get_by_role("button", name="Online now").get_attribute("aria-pressed"),
+            "online_color": online_color,
+            "dark_color": dark_color,
+            "all_fans_selected": "bg-[#3563ff]/10" in (await send_to.get_by_role("button", name="All fans").get_attribute("class") or ""),
+            "following_selected": "bg-[#3563ff]/10" in (await send_to.get_by_role("button", name="Following").get_attribute("class") or ""),
+            "online_pressed": await send_to.get_by_role("button", name="Send to online only").get_attribute("aria-pressed"),
         }
         chip_state_ok = visible_chips == [1, 1, 1] and max(chip_tops) - min(chip_tops) < 1 \
+            and online_color == dark_color == "rgb(53, 99, 255)" \
             and visible_list_tabs == [1, 1] and exclude_tab_visible == 1 \
             and audience_state["all_fans_selected"] is False \
             and audience_state["following_selected"] is True and audience_state["online_pressed"] == "false"

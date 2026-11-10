@@ -24,6 +24,8 @@ describe("notificationBellReducer", () => {
     ["…until the OnlyFans tab is shown", [
       { type: "open", agencyUnread: 2 }, ...arrive(1), { type: "pane", pane: "of" }, { type: "close" }], 0],
     ["switching to Agency while closed doesn't clear", [...arrive(2), { type: "pane", pane: "agency" }], 2],
+    ["arrivals while open on the Settings tab count", [
+      OPEN_TOPBAR, { type: "pane", pane: "settings" }, ...arrive(2), { type: "close" }], 2],
     ["switching to OnlyFans while closed doesn't clear", [...arrive(2), { type: "pane", pane: "of" }], 2],
   ])("%s", (_n, actions, arrivals) => {
     expect(run(actions).arrivals).toBe(arrivals);

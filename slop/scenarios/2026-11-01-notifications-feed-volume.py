@@ -36,7 +36,10 @@ owner-made logins (`POST /admin/employees/login`, role Chatter, one Creator each
 4. UI (not --no-ui): login 1's role toggled (one fresh row), then /notifications (shot
    notifications-page), the bell's badge = the API unread, re-read until they agree or BADGE_WAIT_S
    (shot bell-trigger), its Agency tab with the newest row (shot bell-agency-open), Mark all read
-   -> badge gone (shot bell-agency-settled); side effect: SQL and API unread 0.
+   -> badge gone (shot bell-agency-settled); side effect: SQL and API unread 0. Its Settings tab
+   (shot bell-settings): the default toasts on in a fresh browser. Back on Agency, Clear all (shot
+   bell-agency-cleared): API list empty, SQL has no undismissed/unread row, and one sweep after it
+   files none of the cleared missed clock-ins again (DISMISSED).
 
 Load (a guess at humans): PAGE_THINK_S 1-3 s between one session's pages, THINK_S 0.2-1 s between
 its clicks in phase 3; each phase's requests, offered req/s and peak in-flight (from the recorder's
@@ -58,7 +61,7 @@ scenario writes `$DEMO_SHOTS_TMP/notifications-tick.json`; `now` is passed only 
 (the seed's clock, so the boundary rows are exact). Everything else is real routes.
 Break-it-once (lib/notifications_faults.py): read-all-marks-later-rows (FAULT): only LATER_UNREAD;
 --fault=notif-page-skips-offset: only PAGED; --fault=notif-prune-ignores-retention: only PRUNED;
---fault=notif-prune-not-pushed: only PRUNE_PUSHED.
+--fault=notif-prune-not-pushed: only PRUNE_PUSHED; --fault=notif-dismiss-deletes: only DISMISSED.
 """
 from __future__ import annotations
 
@@ -72,8 +75,8 @@ from datetime import datetime, timedelta
 from slop.actors import ui
 from slop.actors.manager import SseListener
 from slop.lib.client import Recorder
-from slop.lib.notifications_faults import (BADGE, CLICK_SYNC, LATER_UNREAD, PAGED, PRUNE_PUSHED, PRUNED,
-                                           READ_ALL_LAG_S, READ_ONE, UI_FEED)
+from slop.lib.notifications_faults import (BADGE, CLICK_SYNC, DISMISSED, LATER_UNREAD, PAGED, PRUNE_PUSHED,
+                                           PRUNED, READ_ALL_LAG_S, READ_ONE, UI_FEED, UI_SETTINGS)
 from slop.seed import agency_notifications, agency_notifications_bulk, ts
 
 PROFILE = "agency_inbox"
@@ -431,7 +434,8 @@ async def _ui(s: _State) -> None:
     ctx, w = s.ctx, s.w
     ctx.rec.stage = "ui"
     if ctx.app is None:
-        ctx.skip(UI_FEED, "--no-ui")
+        for name in (UI_FEED, UI_SETTINGS, DISMISSED):
+            ctx.skip(name, "--no-ui")
         return
     # One fresh row first (a role toggle, real route), so the bell has news whatever phase 3 left.
     await _toggle_role(s, s.logins[1])
@@ -439,6 +443,11 @@ async def _ui(s: _State) -> None:
     try:
         async with ui.owner_browser(ctx, viewport=(1440, 900)) as page:
             await page.goto(f"{ctx.app}/notifications", wait_until="domcontentloaded")
+            # A browser that saved its toasts before the 2026-11-10 defaults (Messages, Subscribers,
+            # Tips off, master off): the app's one-time migration must turn them on (UI_SETTINGS).
+            await page.evaluate("""() => localStorage.setItem('chatterly:notif-settings:v1', JSON.stringify(
+                {enabled: false, toast: {message: false, purchases: true, tip: false, subscribed: false}}))""")
+            await page.reload(wait_until="domcontentloaded")
             await page.get_by_role("tablist", name="Notification types").wait_for(timeout=WAIT_MS)
             await ui.shot(ctx, page, "notifications-page")
             # The badge and the API both settle (a lagging push, a late write): re-read both each poll.
@@ -475,8 +484,50 @@ async def _ui(s: _State) -> None:
             detail["five_xx"] = five[:10]
             ctx.check(UI_FEED, detail["badge"] == want and detail["read_all_status"] == 200
                       and detail["after"] == {"sql_unread": 0, "api_unread": 0} and not five, **detail)
+            await _ui_settings(s, page, panel)
+            await _ui_clear(s, page, panel)
     except Exception as e:  # noqa: BLE001 — a UI step that cannot complete is the check's FAIL
-        ctx.check(UI_FEED, False, error=f"{type(e).__name__}: {e}"[:600], **detail)
+        for name in (UI_FEED, UI_SETTINGS, DISMISSED):
+            if name not in {c["name"] for c in ctx.report.checks}:
+                ctx.check(name, False, error=f"{type(e).__name__}: {e}"[:600], **detail)
+
+
+DEFAULT_ON = ("Messages", "Purchases", "Tips", "Subscribers")
+
+
+async def _ui_settings(s: _State, page, panel) -> None:
+    await panel.get_by_role("tab", name="Settings", exact=True).click()
+    await panel.get_by_text("Notification settings", exact=True).wait_for(timeout=STEP_MS)
+    on = {name: await panel.get_by_role("checkbox", name=f"{name} toast", exact=True).is_checked()
+          for name in DEFAULT_ON}
+    on["Enabled"] = await panel.get_by_role("checkbox", name="Enabled", exact=True).is_checked()
+    await ui.shot(s.ctx, page, "bell-settings")
+    s.ctx.check(UI_SETTINGS, all(on.values()), toasts=on)
+
+
+def _undismissed(w) -> int:
+    return _q(w, "SELECT COUNT(*) FROM agency_notifications WHERE agency_user_id=? AND dismissed_at IS NULL "
+                 "AND kind != 'consent_required'", w.user_id)[0][0]
+
+
+async def _ui_clear(s: _State, page, panel) -> None:
+    ctx, w = s.ctx, s.w
+    await panel.get_by_role("tab", name=re.compile(r"^Agency")).click()
+    before = _undismissed(w)
+    async with page.expect_response(lambda resp: resp.url.endswith(f"{FEED}/dismiss-all"), timeout=STEP_MS) as rr:
+        await panel.get_by_role("button", name="Clear all", exact=True).click()
+    status = (await rr.value).status
+    await panel.get_by_text("No agency notifications yet.", exact=True).wait_for(timeout=STEP_MS)
+    await page.wait_for_timeout(SHOT_SETTLE_MS)
+    await ui.shot(ctx, page, "bell-agency-cleared")
+    after = {"sql_undismissed": _undismissed(w), "sql_unread": _unread(w),
+             "api_rows": len((await ctx.owner.get(f"{FEED}?limit=30")).json()["notifications"])}
+    # The cleared missed clock-ins' Shifts are still running: a sweep must not file them again.
+    await _tick(s)
+    refiled = (await ctx.owner.get(f"{FEED}?limit=30")).json()["notifications"]
+    ctx.check(DISMISSED, status == 200 and before > 0 and after == {"sql_undismissed": 0, "sql_unread": 0, "api_rows": 0}
+              and refiled == [], before=before, http_status=status, after=after,
+              refiled=[(n["kind"], n["text"]) for n in refiled][:5])
 
 
 async def run(ctx) -> None:

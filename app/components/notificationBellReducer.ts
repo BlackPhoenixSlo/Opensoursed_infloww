@@ -1,6 +1,7 @@
 /**
  * NotificationBell's panel and arrival badge as a pure reducer: whether the
- * panel is open, which tab it shows (OnlyFans, or the owner's Agency), the
+ * panel is open, which tab it shows (OnlyFans, the owner's Agency, or the
+ * notification Settings), the
  * OnlyFans arrivals counted since they were last seen, and (Messages Pro) the
  * "Fan tabs full" note.
  *
@@ -29,7 +30,7 @@ export const BADGE_MAX = 999;
 /** Window event: open the top bar bell on its Agency tab (ConsentBanner's "View"). */
 export const OPEN_AGENCY_EVENT = "chatterly:open-agency-notifications";
 
-export type BellPane = "of" | "agency";
+export type BellPane = "of" | "agency" | "settings";
 
 export interface BellState {
   open: boolean;

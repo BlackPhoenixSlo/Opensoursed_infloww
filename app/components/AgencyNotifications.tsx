@@ -12,7 +12,9 @@
  * The count is the server's unread, kept live by the owner-scoped
  * `agency_notifications` SSE event (useAccountStateEvents refetches this
  * query on it) with a slow safety poll; the bell adds it to its badge. A row
- * click marks it read; "Mark all read" reads the rest. The gear's switches
+ * click marks it read; "Mark all read" reads the rest; a row's ✕ dismisses it
+ * and "Clear all" dismisses every row (gone from the list; the server keeps
+ * them for the dedupe, so a sweep does not file them again). The gear's switches
  * save the `notifications` key of the preferences blob — a kind switched off
  * is no longer filed. A row whose `data.href` names a page (a 2FA relink:
  * /creators?relink=browserbase) is a link to it; the click reads it too.
@@ -28,7 +30,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Settings2, TriangleAlert } from "lucide-react";
+import { Settings2, TriangleAlert, X } from "lucide-react";
 
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
@@ -116,6 +118,11 @@ export function AgencyFeed() {
       relay.post(id == null ? "/admin/agency-notifications/read-all" : `/admin/agency-notifications/${id}/read`),
     onSettled: () => void qc.invalidateQueries({ queryKey: AGENCY_NOTIFICATIONS_KEY }),
   });
+  const dismiss = useMutation({
+    mutationFn: (id: number | null) =>
+      relay.post(id == null ? "/admin/agency-notifications/dismiss-all" : `/admin/agency-notifications/${id}/dismiss`),
+    onSettled: () => void qc.invalidateQueries({ queryKey: AGENCY_NOTIFICATIONS_KEY }),
+  });
 
   const unread = q.data?.unread ?? 0;
   const rows = q.data?.notifications ?? [];
@@ -137,8 +144,16 @@ export function AgencyFeed() {
         </button>
         <button
           type="button"
+          disabled={rows.length === 0 || dismiss.isPending}
+          onClick={() => dismiss.mutate(null)}
+          className="text-fg-dim hover:text-fg disabled:opacity-40"
+        >
+          Clear all
+        </button>
+        <button
+          type="button"
           onClick={() => setSettings((v) => !v)}
-          aria-label="Notification settings"
+          aria-label="Agency notification settings"
           aria-pressed={settings}
           className="text-fg-dim hover:text-fg"
         >
@@ -178,10 +193,7 @@ export function AgencyFeed() {
       <ul>
         {rows.map((n) => {
           const onClick = () => { if (!n.read) read.mutate(n.id); };
-          const cls = cn(
-            "block w-full text-left px-3 py-2 border-b border-border/40 last:border-0 hover:bg-bg-elev-2",
-            !n.read && "bg-accent/5",
-          );
+          const cls = "block flex-1 min-w-0 text-left px-3 py-2";
           const body = (
             <>
               <div className={cn("text-sm", n.read ? "text-fg-dim" : "text-fg font-medium")}>{n.text}</div>
@@ -190,10 +202,23 @@ export function AgencyFeed() {
           );
           const href = hrefOf(n);
           return (
-            <li key={n.id}>
+            <li key={n.id} className={cn(
+              "flex items-start border-b border-border/40 last:border-0 hover:bg-bg-elev-2",
+              !n.read && "bg-accent/5",
+            )}>
               {href
                 ? <Link href={href} onClick={onClick} className={cls}>{body}</Link>
                 : <button type="button" onClick={onClick} className={cls}>{body}</button>}
+              <button
+                type="button"
+                aria-label="Dismiss"
+                title="Dismiss"
+                disabled={dismiss.isPending}
+                onClick={() => dismiss.mutate(n.id)}
+                className="shrink-0 m-1.5 w-8 h-8 sm:w-6 sm:h-6 grid place-items-center rounded text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+              >
+                <X aria-hidden className="w-4 h-4" />
+              </button>
             </li>
           );
         })}

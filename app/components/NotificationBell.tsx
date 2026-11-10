@@ -57,7 +57,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import Link from "next/link";
-import { Bell } from "lucide-react";
+import { Bell, Settings2 } from "lucide-react";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -93,7 +93,7 @@ import {
   type SoundPref,
 } from "@/lib/notifSettings";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { initialBellState, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT } from "./notificationBellReducer";
+import { type BellPane, initialBellState, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT } from "./notificationBellReducer";
 import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
 
 /** The bell's tabs, shared with the full Notifications page
@@ -320,6 +320,15 @@ export type NotificationBellProps =
       classNames: NotificationBellClassNames;
     };
 
+/** The panel's tabs: OnlyFans, the owner's Agency (with its unread count), and Settings. */
+function paneTabs(agency: BellAgencyTab | undefined): (readonly [BellPane, string, number])[] {
+  return [
+    ["of", "OnlyFans", 0],
+    ...(agency ? [["agency", "Agency", agency.unread] as const] : []),
+    ["settings", "Settings", 0],
+  ];
+}
+
 export function NotificationBell(props: NotificationBellProps = {}) {
   /** The Messages Pro variant's props, or null for the top bar. */
   const proProps = props.variant === "messages-pro" ? props : null;
@@ -334,6 +343,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   if (!agency && bell.pane === "agency") dispatch({ type: "pane", pane: "of" });
   const { open, pane, tabsFull } = bell;
   const onAgency = open && pane === "agency";
+  const onSettings = open && pane === "settings";
   const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
   // Restore the last-used filter chip. Safe against hydration mismatch:
@@ -346,7 +356,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     setFilter(f);
     writeNotifFilterId(f.id);
   };
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const push = usePushState();
   const openFan = proProps?.onOpenFan;
   const ref = useRef<HTMLDivElement | null>(null);
@@ -515,27 +524,138 @@ export function NotificationBell(props: NotificationBellProps = {}) {
             : "fixed inset-x-2 top-[var(--chrome-top)] w-auto max-h-[70vh] sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-1 sm:w-[380px] sm:max-h-[480px]",
           "bg-panel border border-border rounded-lg shadow-xl z-40 flex flex-col",
         )}>
-          {agency && (
-            <div role="tablist" aria-label="Notification feeds" className="flex gap-1 border-b border-border p-2">
-              {([["of", "OnlyFans", 0], ["agency", "Agency", agency.unread]] as const).map(([id, label, n]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={pane === id}
-                  onClick={() => dispatch({ type: "pane", pane: id })}
-                  className={cn(
-                    "h-7 px-3 inline-flex items-center gap-1.5 rounded-md text-xs font-medium",
-                    pane === id ? "bg-nav-surface text-fg" : "text-fg-dim hover:text-fg",
-                  )}
-                >
-                  {label}
-                  {n > 0 && <span className="min-w-4 h-4 px-1 grid place-items-center rounded-full bg-pink text-white text-[10px] leading-none tabular-nums">{n > 99 ? "99+" : n}</span>}
-                </button>
-              ))}
+          <div role="tablist" aria-label="Notification feeds" className="flex gap-1 border-b border-border p-2">
+            {paneTabs(agency).map(([id, label, n]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={pane === id}
+                onClick={() => dispatch({ type: "pane", pane: id })}
+                className={cn(
+                  "h-7 px-3 inline-flex items-center gap-1.5 rounded-md text-xs font-medium",
+                  pane === id ? "bg-nav-surface text-fg" : "text-fg-dim hover:text-fg",
+                )}
+              >
+                {id === "settings" && <Settings2 aria-hidden className="w-3.5 h-3.5" />}
+                {label}
+                {n > 0 && <span className="min-w-4 h-4 px-1 grid place-items-center rounded-full bg-pink text-white text-[10px] leading-none tabular-nums">{n > 99 ? "99+" : n}</span>}
+              </button>
+            ))}
+          </div>
+          {onSettings ? (
+            <div className="flex-1 overflow-y-auto">
+              <div className="border-b border-border p-2.5 bg-bg-elev-1/30">
+                <div className="flex items-center justify-between mb-2 gap-2">
+                  <span className="text-[11px] font-medium text-fg">Notification settings</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dispatch({ type: "cleared" });
+                        dispatchNotifCleared();
+                      }}
+                      className="px-2 py-0.5 text-[11px] rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+                      title="Reset the badge to zero"
+                    >
+                      Mark all read
+                    </button>
+                    <label
+                      className="flex items-center gap-1.5 text-[11px] text-fg-dim cursor-pointer"
+                      title="Off mutes popups, badges and OS pings. The feed and the Buys & tips rail stay live."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={settings.enabled}
+                        onChange={(e) => update({ enabled: e.target.checked })}
+                      />
+                      Enabled
+                    </label>
+                  </div>
+                </div>
+                <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 gap-y-1 text-[11px]">
+                  <span className="text-fg-dim">Type</span>
+                  <span className="text-fg-dim text-center w-12" title="Show toast">Toast</span>
+                  <span className="text-fg-dim text-center w-12" title="Bubble emphasis">Bubble</span>
+                  {NOTIF_TYPES.map((t) => (
+                    <Fragment key={t.key}>
+                      <span className="text-fg">{t.icon} {t.label}</span>
+                      <input
+                        type="checkbox"
+                        className="justify-self-center"
+                        aria-label={`${t.label} toast`}
+                        checked={settings.toast[t.key]}
+                        onChange={(e) => setToast(t.key, e.target.checked)}
+                        disabled={!settings.enabled}
+                      />
+                      <input
+                        type="checkbox"
+                        className="justify-self-center"
+                        aria-label={`${t.label} bubble`}
+                        checked={settings.bubble[t.key]}
+                        onChange={(e) => setBubble(t.key, e.target.checked)}
+                        disabled={!settings.enabled || !settings.toast[t.key]}
+                        title="Larger sticker + coloured ring"
+                      />
+                    </Fragment>
+                  ))}
+                </div>
+                <OsPingSettings settings={settings} update={update} />
+                <div className="mt-2 grid grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-1 text-[11px]">
+                  <span className="col-span-3 text-fg-dim">Sounds</span>
+                  {ALERT_KINDS.map((k) => {
+                    const pref = settings.sounds[k.key];
+                    const set = (patch: Partial<SoundPref>) =>
+                      update({ sounds: { ...settings.sounds, [k.key]: { ...pref, ...patch } } });
+                    return (
+                      <Fragment key={k.key}>
+                        <label className="flex items-center gap-1.5 text-fg cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={pref.on}
+                            onChange={(e) => set({ on: e.target.checked })}
+                            // The master toggle mutes the message sound; the reminder ignores it.
+                            disabled={k.key === "message" && !settings.enabled}
+                          />
+                          {k.label}
+                        </label>
+                        <select
+                          aria-label={`${k.label} sound`}
+                          value={pref.sound}
+                          onChange={(e) => {
+                            if (!isAlertSoundId(e.target.value)) return;
+                            set({ sound: e.target.value });
+                            playAlertSound(e.target.value);
+                          }}
+                          className="bg-panel border border-border rounded px-1 py-0.5 text-[11px] text-fg"
+                        >
+                          {ALERT_SOUNDS.map((s, i) => (
+                            <option key={s.id} value={s.id}>{i + 1}. {s.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => { e.stopPropagation(); }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            playAlertSound(pref.sound);
+                          }}
+                          className="w-6 h-6 grid place-items-center rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+                          aria-label={`Preview ${k.label} sound`}
+                          title="Preview"
+                        >
+                          ▶
+                        </button>
+                      </Fragment>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-          )}
-          {onAgency ? (
+          ) : onAgency ? (
             // A row that links into the app (e.g. a 2FA row's Browserbase login) closes the panel.
             <div className="flex-1 overflow-y-auto"
               onClick={(e) => { if ((e.target as Element).closest("a[href]")) closePanel(); }}>{agency?.panel}</div>
@@ -561,142 +681,19 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen((v) => !v)}
-                  className={
-                    "shrink-0 w-9 h-9 sm:w-6 sm:h-6 grid place-items-center rounded text-sm sm:text-[11px] border " +
-                    (settingsOpen
-                      ? "border-accent text-fg bg-bg-elev-1"
-                      : "border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1")
-                  }
-                  title="Toast settings"
-                  aria-label="Toast settings"
-                >
-                  ⚙
-                </button>
               </div>
               {/* Money-rail rescue hatch — the bell is mounted everywhere, so
                   it hosts the rail's un-hide control. Renders null when the
                   rail isn't hidden on the current surface. */}
               <MoneyRailRestoreButton />
-              {!settingsOpen && pushHintShown(settings, push) && (
+              {pushHintShown(settings, push) && (
                 <button
                   type="button"
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => dispatch({ type: "pane", pane: "settings" })}
                   className="w-full px-3 py-1.5 border-b border-border text-left text-[11px] text-warn hover:bg-bg-elev-1"
                 >
                   {PUSH_HINT}
                 </button>
-              )}
-              {settingsOpen && (
-                <div className="border-b border-border p-2.5 bg-bg-elev-1/30">
-                  <div className="flex items-center justify-between mb-2 gap-2">
-                    <span className="text-[11px] font-medium text-fg">Toast settings</span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          dispatch({ type: "cleared" });
-                          dispatchNotifCleared();
-                        }}
-                        className="px-2 py-0.5 text-[11px] rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
-                        title="Reset the badge to zero"
-                      >
-                        Mark all read
-                      </button>
-                      <label
-                        className="flex items-center gap-1.5 text-[11px] text-fg-dim cursor-pointer"
-                        title="Off mutes popups, badges and OS pings. The feed and the Buys & tips rail stay live."
-                      >
-                        <input
-                          type="checkbox"
-                          checked={settings.enabled}
-                          onChange={(e) => update({ enabled: e.target.checked })}
-                        />
-                        Enabled
-                      </label>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 gap-y-1 text-[11px]">
-                    <span className="text-fg-dim">Type</span>
-                    <span className="text-fg-dim text-center w-12" title="Show toast">Toast</span>
-                    <span className="text-fg-dim text-center w-12" title="Bubble emphasis">Bubble</span>
-                    {NOTIF_TYPES.map((t) => (
-                      <Fragment key={t.key}>
-                        <span className="text-fg">{t.icon} {t.label}</span>
-                        <input
-                          type="checkbox"
-                          className="justify-self-center"
-                          checked={settings.toast[t.key]}
-                          onChange={(e) => setToast(t.key, e.target.checked)}
-                          disabled={!settings.enabled}
-                        />
-                        <input
-                          type="checkbox"
-                          className="justify-self-center"
-                          checked={settings.bubble[t.key]}
-                          onChange={(e) => setBubble(t.key, e.target.checked)}
-                          disabled={!settings.enabled || !settings.toast[t.key]}
-                          title="Larger sticker + coloured ring"
-                        />
-                      </Fragment>
-                    ))}
-                  </div>
-                  <OsPingSettings settings={settings} update={update} />
-                  <div className="mt-2 grid grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-1 text-[11px]">
-                    <span className="col-span-3 text-fg-dim">Sounds</span>
-                    {ALERT_KINDS.map((k) => {
-                      const pref = settings.sounds[k.key];
-                      const set = (patch: Partial<SoundPref>) =>
-                        update({ sounds: { ...settings.sounds, [k.key]: { ...pref, ...patch } } });
-                      return (
-                        <Fragment key={k.key}>
-                          <label className="flex items-center gap-1.5 text-fg cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={pref.on}
-                              onChange={(e) => set({ on: e.target.checked })}
-                              // The master toggle mutes the message sound; the reminder ignores it.
-                              disabled={k.key === "message" && !settings.enabled}
-                            />
-                            {k.label}
-                          </label>
-                          <select
-                            aria-label={`${k.label} sound`}
-                            value={pref.sound}
-                            onChange={(e) => {
-                              if (!isAlertSoundId(e.target.value)) return;
-                              set({ sound: e.target.value });
-                              playAlertSound(e.target.value);
-                            }}
-                            className="bg-panel border border-border rounded px-1 py-0.5 text-[11px] text-fg"
-                          >
-                            {ALERT_SOUNDS.map((s, i) => (
-                              <option key={s.id} value={s.id}>{i + 1}. {s.label}</option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            onMouseDown={(e) => { e.stopPropagation(); }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              playAlertSound(pref.sound);
-                            }}
-                            className="w-6 h-6 grid place-items-center rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
-                            aria-label={`Preview ${k.label} sound`}
-                            title="Preview"
-                          >
-                            ▶
-                          </button>
-                        </Fragment>
-                      );
-                    })}
-                  </div>
-                </div>
               )}
               <div className="flex-1 overflow-y-auto">
                 {tabsFull && (
@@ -720,7 +717,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
           )}
           {/* The top bar's way to the full page (story 44); Messages Pro's
               signed-off panel is unchanged. */}
-          {!pro && !onAgency && (
+          {!pro && !onAgency && !onSettings && (
             <Link
               href="/notifications"
               onClick={closePanel}

@@ -5,7 +5,8 @@ roadmap W6 6.7 and 6.10) and the audit log's names and date filter (6.16).
 Over HTTP with real session cookies from the shared two-Agency fixture: the
 audit middleware's hook files a row per real change (a role, a deactivation,
 a chatter's unsend) and none for a save that changed nothing; each row is its
-own Agency's; read / read-all and the unread count; a kind switched off in
+own Agency's; read / read-all, dismiss / dismiss-all (kept for the dedupe)
+and the unread count; a kind switched off in
 the `preferences` blob files nothing; an assignment naming another Agency's
 Employee files nothing; a dead session files once per episode; the clock-in
 sweep files once per missed occurrence (not on a cancelled date, and past a
@@ -189,6 +190,26 @@ def case_the_list_read_and_read_all_are_the_owners_own_and_chatters_are_refused(
         async with get_session() as s:
             return (await s.execute(select(Action.id).where(Action.action.like("%agency-notifications%")))).first()
     assert asyncio.run(_audited()) is None
+
+
+def case_dismiss_takes_rows_off_the_list_reads_them_and_keeps_the_dedupe():
+    _clear()
+    asyncio.run(notifications_api.notify(A, [Notice("session_dead", "a0", dedupe="dead:x"),
+                                             Notice("role_changed", "a1"), Notice("role_changed", "a2")]))
+    asyncio.run(notifications_api.notify(B, [Notice("role_changed", "b0")]))
+    ids = {n["text"]: n["id"] for n in OWNER_A.get("/admin/agency-notifications").json()["notifications"]}
+    assert OWNER_B.post(f"/admin/agency-notifications/{ids['a0']}/dismiss").status_code == 404
+    assert OWNER_A.post(f"/admin/agency-notifications/{ids['a0']}/dismiss").json() == {"unread": 2}
+    body = OWNER_A.get("/admin/agency-notifications").json()
+    assert [n["text"] for n in body["notifications"]] == ["a2", "a1"] and body["unread"] == 2, body
+    # The dismissed row stays, so the same event is not filed again.
+    assert asyncio.run(notifications_api.notify(A, [Notice("session_dead", "a0", dedupe="dead:x")])) == 0
+    assert OWNER_A.post(f"/admin/agency-notifications/{ids['a1']}/read").json() == {"unread": 1}
+    assert OWNER_A.post("/admin/agency-notifications/dismiss-all").json() == {"unread": 0}
+    assert OWNER_A.get("/admin/agency-notifications").json()["notifications"] == []
+    assert all(r.read_at is not None and r.dismissed_at is not None for r in _rows(A))
+    assert [n["text"] for n in OWNER_B.get("/admin/agency-notifications").json()["notifications"]] == ["b0"]
+    assert CHATTER_A.post("/admin/agency-notifications/dismiss-all").status_code == 403
 
 
 def _stream_agencies(client) -> frozenset:

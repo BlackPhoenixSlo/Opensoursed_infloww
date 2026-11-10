@@ -12,6 +12,12 @@ read is a mutation and refused like any other while impersonating.
   GET  /admin/agency-notifications?limit&offset → {notifications[], unread, pinned[]}
   POST /admin/agency-notifications/{id}/read    → {unread}
   POST /admin/agency-notifications/read-all     → {unread}
+  POST /admin/agency-notifications/{id}/dismiss → {unread}   (read + off the list)
+  POST /admin/agency-notifications/dismiss-all  → {unread}
+
+A dismissed row (`dismissed_at`) is read and gone from the list, but kept
+until the retention prune: its `dedupe_key` still stops a sweep (a missed
+clock-in, a dead session) from filing the same event again.
 
 Where the rows come from (settings_schema.NOTIFICATION_KINDS):
 
@@ -492,7 +498,8 @@ async def list_notifications(
         pinned = await _pinned(s, user.id)
         rows = (await s.execute(
             select(AgencyNotification).where(AgencyNotification.agency_user_id == user.id,
-                                             (AgencyNotification.kind != PINNED_KIND))
+                                             (AgencyNotification.kind != PINNED_KIND),
+                                             AgencyNotification.dismissed_at.is_(None))
             .order_by(AgencyNotification.created_at.desc(), AgencyNotification.id.desc())
             .limit(limit).offset(offset)
         )).scalars().all()
@@ -500,11 +507,13 @@ async def list_notifications(
                 "pinned": [_row(n) for n in pinned]}
 
 
-async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int]:
+async def _mark_read(user_id: str, notification_id: int | None, *, dismiss: bool = False) -> dict[str, int]:
+    """Read one row (or all), and with `dismiss` take it off the list too."""
+    now = datetime.utcnow()
     async with get_session() as s:
         q = update(AgencyNotification).where(
-            AgencyNotification.agency_user_id == user_id, AgencyNotification.read_at.is_(None),
-            (AgencyNotification.kind != PINNED_KIND))
+            AgencyNotification.agency_user_id == user_id, (AgencyNotification.kind != PINNED_KIND),
+            AgencyNotification.dismissed_at.is_(None) if dismiss else AgencyNotification.read_at.is_(None))
         if notification_id is not None:
             n = await s.get(AgencyNotification, notification_id)
             if n is None or n.agency_user_id != user_id:
@@ -512,7 +521,10 @@ async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int
             if n.kind == PINNED_KIND:
                 raise HTTPException(status_code=409, detail=_PINNED_REFUSED)
             q = q.where(AgencyNotification.id == notification_id)
-        await s.execute(q.values(read_at=datetime.utcnow()).execution_options(synchronize_session=False))
+        # A dismissed row is read too (an earlier read time stays).
+        values: dict[str, Any] = ({"dismissed_at": now, "read_at": func.coalesce(AgencyNotification.read_at, now)}
+                                  if dismiss else {"read_at": now})
+        await s.execute(q.values(**values).execution_options(synchronize_session=False))
         unread = await _unread(s, user_id)
     _push(user_id, unread)
     return {"unread": unread}
@@ -526,3 +538,13 @@ async def read_all() -> dict[str, int]:
 @router.post("/{notification_id}/read")
 async def read_one(notification_id: int) -> dict[str, int]:
     return await _mark_read(require_user(detail=_SIGN_IN).id, notification_id)
+
+
+@router.post("/dismiss-all")
+async def dismiss_all() -> dict[str, int]:
+    return await _mark_read(require_user(detail=_SIGN_IN).id, None, dismiss=True)
+
+
+@router.post("/{notification_id}/dismiss")
+async def dismiss_one(notification_id: int) -> dict[str, int]:
+    return await _mark_read(require_user(detail=_SIGN_IN).id, notification_id, dismiss=True)

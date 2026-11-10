@@ -72,19 +72,19 @@ export const ALERT_KINDS: { key: AlertKind; label: string }[] = [
 export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
   enabled: true,
   toast: {
-    message: false,
+    message: true,
     purchases: true,
     tip: true,
-    subscribed: false,
+    subscribed: true,
     mentioned: false,
     commented: false,
     favorited: false,
   },
   bubble: {
-    message: false,
+    message: true,
     purchases: true,
     tip: true,
-    subscribed: false,
+    subscribed: true,
     mentioned: false,
     commented: false,
     favorited: false,
@@ -109,12 +109,20 @@ function readSoundPref(raw: unknown, def: SoundPref): SoundPref {
 
 const STORAGE_KEY = "chatterly:notif-settings:v1";
 
+/** Stored beside the settings: the defaults round they were last saved under. Settings saved
+ *  before round 2 (2026-11-10: Messages, Purchases, Tips, Subscribers on by default) get those
+ *  toasts and the master switch turned on once; a save after that keeps the user's choice. */
+const DEFAULTS_ROUND = 2;
+const ROUND_2_ON: NotifTypeKey[] = ["message", "purchases", "tip", "subscribed"];
+
 export function readNotifSettings(): NotifSettings {
-  const parsed = readJSON<Partial<NotifSettings>>(STORAGE_KEY);
+  const parsed = readJSON<Partial<NotifSettings> & { defaultsRound?: number }>(STORAGE_KEY);
   if (!parsed) return DEFAULT_NOTIF_SETTINGS;
+  const stale = (parsed.defaultsRound ?? 1) < DEFAULTS_ROUND;
+  const forced = stale ? Object.fromEntries(ROUND_2_ON.map((k) => [k, true])) : {};
   return {
-    enabled: parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled,
-    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}) },
+    enabled: stale ? true : (parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled),
+    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}), ...forced },
     bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, ...(parsed.bubble ?? {}) },
     osPing: parsed.osPing ?? DEFAULT_NOTIF_SETTINGS.osPing,
     platforms: { ...DEFAULT_NOTIF_SETTINGS.platforms, ...(parsed.platforms ?? {}) },
@@ -126,7 +134,7 @@ export function readNotifSettings(): NotifSettings {
 }
 
 export function writeNotifSettings(s: NotifSettings): void {
-  persistJSON(STORAGE_KEY, s);
+  persistJSON(STORAGE_KEY, { ...s, defaultsRound: DEFAULTS_ROUND });
   // Defer the dispatch so subscribers (other instances of the hook in
   // the bell + toaster) don't run their setSettings while the original
   // caller is still inside React's render/commit phase. queueMicrotask

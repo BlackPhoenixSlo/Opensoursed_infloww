@@ -257,7 +257,9 @@ class AgencyNotification(Base):
     missed clock-in or a Creator's dead session. `text` is the sentence the
     panel shows; `data_json` the ids behind it. `dedupe_key` (unique per
     Agency, NULL = none) keeps a sweep from filing one event twice. Unread
-    while `read_at` is NULL. Migration 0089_agency_notifications."""
+    while `read_at` is NULL; off the list once `dismissed_at` is set (the row
+    stays for its dedupe until the retention prune). Migrations
+    0089_agency_notifications, 0109_agency_notification_dismissed."""
     __tablename__ = "agency_notifications"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -274,6 +276,7 @@ class AgencyNotification(Base):
     dedupe_key: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = _ts_now()
     read_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (
         UniqueConstraint("agency_user_id", "dedupe_key", name="uq_agency_notifications_dedupe"),
