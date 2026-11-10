@@ -1122,7 +1122,6 @@ async def _ws_pump_for_account(account_id: str) -> bool:
         return False
     while True:
         try:
-            client = _load_client(account_id)
             meta = account_registry.get_account(account_id) or {}
             nickname = meta.get("nickname") or account_id
             color = meta.get("color")
@@ -1134,9 +1133,10 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             platform = account_registry.get_platform(account_id)
             if platform == "fansly":
                 from fansly_ws import FanslyWebSocket
-                ws = FanslyWebSocket(client)
+                ws = FanslyWebSocket(_load_client(account_id))
             else:
-                ws = OFWebSocket(client, session_dead=account_health.is_session_dead_error)
+                ws = OFWebSocket(lambda: _load_client(account_id),
+                                 session_dead=account_health.is_session_dead_error)
             # Publish this live pump so the automation layer can push outbound
             # frames (e.g. the typing indicator) on the same socket. Both
             # platforms share this registry, so `of_ws.emit_typing` finds a

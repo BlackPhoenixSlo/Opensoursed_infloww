@@ -1,19 +1,14 @@
-# Slop tests — use when relevant
-- Slop is recommended for changed user flows, concurrency, volume, or shared runtime behavior. It is not a universal completion gate: skip it when it adds no useful coverage (for example docs/skills-only edits), and give a one-line reason. Run appropriate focused checks instead.
-- When running slop, read slop/README.md first.
-- Fresh worktree: `slop/run --list` once links the main checkout's `venv/` and `web/node_modules`, and clones `app/node_modules` into the worktree (then `venv/bin/python` runs service tests too).
-- Who runs it: the top-level session spawns the user-level `slop-runner` agent (Sonnet) for every `slop/run` command; the Opus implementer gets back only verdict + folder + red checks and judges reds itself. No sleep-poll loops.
-- Iterate: `slop/run <scenario> --scale=small`. When slop is relevant, prefer `slop/run --changed` green (diffs the branch + working tree vs merge-base with origin/main; own/flow picks always run, a 15 min budget for the rest; `--budget=0` when touching shared code on purpose). Quote the run folder under `slop/evidence/`, never `latest`.
-- For a selected `own` pick that declares `FAULT`: `slop/run <it> --break --baseline=<its green folder>` (must print CAUGHT, exit 0). Only an own/flow pick tagged `volume` also gets `--scale=medium --users=200 --no-ui`.
-- `slop/run nightly` = the daily full sweep incl. medium/200 volume runs and map refresh (README "Nightly"); never hold the gate around it (each child queues itself); use `--changed` for tasks where slop is relevant.
-- `slop/run all` only on demand, before deploy-all, or when `--changed` picks most scenarios; `slop/run all --map` refreshes `slop/map.json` (README "Which scenarios to run").
-- Stacks reuse `scripts/demo-shots/relay_guarded.py` + `fetch-guard.cjs`: temp DB, loopback only; never `service/chatterly.db` or prod.
-- Fan traffic enters via `POST /__slop/of-ws-frame` (`slop/lib/relay.py`), serial per Creator like the real pump (`fan_dm.serial`, `--rate` for open-loop). Never add test hooks inside `service/`.
-- Seeders in `slop/seed/` (SQL bulk, deterministic from `--seed`, only rows the product could have written), actors in `slop/actors/`, faults with `targets=[check names]` in `slop/lib/faults.py`, one scenario per user flow in `slop/scenarios/`.
-- Latency budgets live in the scenario file (end-to-end frame→SSE, plus real routes), never here.
+# Slop tests — read slop/README.md first
+- Fresh worktree: `slop/run --list` once links `venv/` + `web/node_modules`, clones `app/node_modules`.
+- Iterate `slop/run <scenario> --scale=small`. Before done: `slop/run --changed` green (own/flow picks always; 15 min budget for the rest; `--budget=0` when touching shared code on purpose). Quote the `slop/evidence/` folder, never `latest`.
+- Own pick with `FAULT`: `slop/run <it> --break --baseline=<green folder>` must print CAUGHT. Own/flow pick tagged `volume` also runs `--scale=medium --users=200 --no-ui`.
+- `slop/run nightly` = daily sweep incl. volume + map refresh; never hold the gate around it. `slop/run all` only on demand / pre-deploy / when `--changed` picks most; `all --map` refreshes `slop/map.json`.
+- Stacks: `scripts/demo-shots/relay_guarded.py` + `fetch-guard.cjs`, temp DB, loopback only; never `service/chatterly.db` or prod.
+- Fan traffic via `POST /__slop/of-ws-frame` (`slop/lib/relay.py`), serial per Creator (`fan_dm.serial`, `--rate` open-loop). No test hooks in `service/`.
+- Seeders `slop/seed/` (SQL, deterministic from `--seed`, only product-writable rows); actors `slop/actors/`; faults with `targets=[checks]` in `slop/lib/faults.py`; one scenario per user flow in `slop/scenarios/`. Latency budgets live in the scenario file.
 
 # State logic — reducers, not setState chains
-- When ≥2 `useState`s change together or gate each other, or validity/payload depends on several of them: a pure `(state, action) => state` reducer with a typed `Action` union in a plain `.ts` next to the component, plus pure `canSubmit`/`buildPayload` helpers, tested with vitest tables (template: `app/components/chat/fanDrawerForm.ts` + its test). The component only dispatches. Single booleans stay `useState`; no global store.
+- ≥2 `useState`s that change together / gate each other / jointly decide validity or payload → pure `(state, action) => state` reducer with typed `Action` union in a `.ts` beside the component, plus pure `canSubmit`/`buildPayload`, vitest tables (template `app/components/chat/fanDrawerForm.ts` + test). Component only dispatches. Single booleans stay `useState`; no global store.
 
-# Reviews
-- For reviews and review loops, explicitly read root `REVIEW.md`. `.claude/REVIEW.md` is its backup mirror; root wins. Keep both identical when editing review rules.
+# Review
+- Root `REVIEW.md` holds review rules (mirror `.claude/REVIEW.md`, keep identical); rwl skill reads it.

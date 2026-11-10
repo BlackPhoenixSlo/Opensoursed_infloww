@@ -33,7 +33,9 @@ settled, cancelled): OF's MASSDMEXCLUDE is pre-ticked in Exclude (screenshot
 priority-mass-ui-1-massdm-preticked), "slop vip" ticked in Include, Send; the run's legs driven to its
 end; Priority mass messages lists it Done with its DB sent count (screenshot
 priority-mass-ui-2-run-settled); the POST body (priority-mass-ui-body.json), the run row's audience,
-its frozen fans and OF's record are read for UI_SEED.
+its frozen fans and OF's record are read for UI_SEED. Then the Automated tab's column picks C and
+New Message > OF mass message / Message online fans open on C (screenshots sm-creator-*), the OF
+one's Broadcast caught in the browser and aborted (sm-creator-sends.json): UI_CREATOR.
 
 Checks (names in lib/priority_mass_faults.py): FROZEN (per run: OF include lists minus the OF
 exclude list, minus blacklist / MASSdmEXCLUDE / contact guard (seeded messages out GUARD_H["out"]
@@ -44,7 +46,7 @@ resolved / excluded / capped counts too); ONCE (OF's record: no fan twice per Cr
 price); CRASH (the hung fan's row was `claimed` at the kill
 and the next leg's stale sweep turned it `unknown`/`interrupted`); SETTLED; CANCEL; REFUSE;
 REPEAT; RESUME; LEG_SCAN (S: error naming SCAN_WORD, its fans frozen, none sent by OF; the word
-added while S was still `resolving` with no row); UI_SEED (UI run only); budget p95 GET
+added while S was still `resolving` with no row); UI_SEED, UI_CREATOR (UI run only); budget p95 GET
 /admin/priority-mass/runs <= GET_P95_MS; P95_VS_LAST over that and A's leg time per fan sent.
 
 Bypasses (declared): OF's lists and sends are faked at the client boundary (lib/automation_relay.py's
@@ -56,6 +58,8 @@ gate itself is the product's); the account DM rate raised to DM_PER_MIN through 
 Concurrency panel route (`POST /lanes-panel/config`); the supervisor's cadence (the drivers claim
 legs in between); the hung send's blocked worker thread (OF never answering, HANG_S); the
 import's .xlsx is built with the product's own stdlib writer (service/xlsx_io.py `write_xlsx`).
+UI_CREATOR's OF-mass Broadcast is aborted at the browser after its request is read (a send to C's
+fans would enter ONCE / ROWS's OF record).
 S's ordering behind A's hung leg (the hang hook above).
 The legs' own Recorder keeps the crash's in-flight transport error out of the stock no-5xx check
 (checked here instead).
@@ -63,7 +67,9 @@ Break-it-once: `pm-claimed-row-resent-after-crash` (FAULT: `_leg` requeues a cra
 ONCE + CRASH; `pm-cancel-keeps-pending` (cancel_run without its sweep): CANCEL;
 `pm-sensitive-word-ignored` (`_sensitive_words` reads nothing): REFUSE; `pm-leg-exact-scan-only`
 (the leg's `priority_mass.sensitive_hits` finds nothing): LEG_SCAN; `pm-ui-no-massdm-seed` (the
-composer's MASSDMEXCLUDE seed reverted, client side; UI run only): UI_SEED.
+composer's MASSDMEXCLUDE seed reverted, client side; UI run only): UI_SEED;
+`sm-mass-composer-first-creator` (Smart Messages' mass composers get no Creator, client side; UI run
+only): UI_CREATOR.
 """
 from __future__ import annotations
 
@@ -82,7 +88,7 @@ import httpx
 
 from slop.lib.client import Recorder
 from slop.lib.priority_mass_faults import (CANCEL, CRASH, FROZEN, LEG_SCAN, ONCE, REFUSE, REPEAT, RESUME,
-                                           ROWS, SETTLED, UI_SEED)
+                                           ROWS, SETTLED, UI_CREATOR, UI_SEED)
 from slop.lib.priority_mass_relay import read_sends
 from slop.seed import priority_mass_audience as pma
 
@@ -593,10 +599,11 @@ async def run(ctx) -> None:
     ui_word = "UI: a word added in Sensitive words' Add dialog is listed and refuses a run"
     ui_listed = "UI: a run launched from the composer is listed Done with its sent / total as the DB counts"
     if ctx.app is None:
-        for n in (ui_runs, ui_word, UI_SEED, ui_listed):
+        for n in (ui_runs, ui_word, UI_SEED, ui_listed, UI_CREATOR):
             ctx.skip(n, "--no-ui")
     else:
         await _ui(ctx, A, C, runs[A], q, ui_runs, ui_word)
+        await _ui_creator(ctx, C, w.data["creators"])
         await _ui_seed(ctx, B, lists[B], aud[B], q, ui_listed)
     for h in (*https, legs_http):
         await h.aclose()
@@ -660,6 +667,60 @@ async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> N
     rows = q("SELECT COUNT(*) FROM priority_mass_runs WHERE text=?", ("join me on OnlyFriends",))[0][0]
     ctx.check(ui_word, listed and word in after and 400 <= r.status_code < 500 and detail == SENSITIVE_BLOCK_MESSAGE
               and rows == 0, listed=listed, words=after, http=r.status_code, detail=detail, run_rows=rows)
+
+
+async def _ui_creator(ctx, C: str, creators: list[dict]) -> None:
+    """Smart Messages: the column picks C (not the first Creator); New Message > OF mass message and
+    > Message online fans each open their composer posting as C. The OF one's Broadcast is caught at
+    the browser and aborted (declared bypass: a real send to C's fans would enter ONCE / ROWS's OF
+    record); its X-Account-Id is the side effect checked."""
+    from slop.actors import ui
+
+    nick = next(c["nickname"] for c in creators if c["id"] == C)
+    seen: dict[str, str] = {}
+    sends: list[dict] = []
+
+    async def queue_route(route):
+        if route.request.method == "POST":
+            sends.append({"account": route.request.headers.get("x-account-id"), "body": route.request.post_data_json})
+        await route.abort()
+
+    async with ui.owner_browser(ctx) as page:
+        await page.route(lambda u: urlsplit(u).path == "/api/of/v2/messages/queue", queue_route)
+        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+        await page.goto(f"{ctx.app}/growth/smart-messages", wait_until="domcontentloaded", timeout=180_000)
+        col = page.get_by_test_id("of-creator-column")
+        await col.get_by_role("button", name=re.compile(re.escape(nick))).first.click(timeout=120_000)
+        for card, title, slug in (("OF mass message", "New mass message", "of"),
+                                  ("Message online fans", "New Mass Online message", "online")):
+            await page.get_by_role("button", name="New Message").first.click(timeout=30_000)
+            await page.get_by_role("button", name=re.compile(rf"^{re.escape(card)}")).first.click(timeout=30_000)
+            await ui.shot(ctx, page, f"sm-creator-{slug}-1-card-picked")
+            await page.get_by_role("button", name="Next", exact=True).click(timeout=10_000)
+            dlg = page.get_by_role("dialog", name=title)
+            await dlg.wait_for(timeout=120_000)
+            post_as = dlg.locator("select").first
+            try:
+                await page.wait_for_function("([el, v]) => el && el.value === v",
+                                             arg=[await post_as.element_handle(), C], timeout=15_000)
+            except Exception:  # noqa: BLE001 — recorded as UI_CREATOR's failure
+                pass
+            seen[slug] = await post_as.input_value()
+            await ui.shot(ctx, page, f"sm-creator-{slug}-2-composer-open")
+            if slug == "of":
+                await dlg.get_by_role("textbox").first.fill("slop sm creator check")
+                try:
+                    async with page.expect_request(lambda r: r.method == "POST"
+                                                   and urlsplit(r.url).path == "/api/of/v2/messages/queue",
+                                                   timeout=30_000):
+                        await dlg.get_by_role("button", name="Broadcast", exact=True).click(timeout=30_000)
+                except Exception:  # noqa: BLE001 — no send recorded: UI_CREATOR's failure
+                    pass
+            await dlg.get_by_role("button", name="Cancel").click(timeout=10_000)
+            await dlg.wait_for(state="hidden", timeout=30_000)
+    (ctx.out / "sm-creator-sends.json").write_text(json.dumps(sends, indent=2))
+    ctx.check(UI_CREATOR, seen == {"of": C, "online": C} and [x["account"] for x in sends] == [C],
+              picked=C, nickname=nick, post_as=seen, sent_as=[x["account"] for x in sends])
 
 
 async def _ui_seed(ctx, B: str, of_lists: list[dict], aud_b: dict, q, ui_listed: str) -> None:

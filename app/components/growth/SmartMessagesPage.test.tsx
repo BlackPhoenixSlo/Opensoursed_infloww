@@ -66,6 +66,12 @@ vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => ({}) }));
 vi.mock("@/components/growth/MassMessagesSection", () => ({
   default: () => <div data-testid="mass-section">mass section</div>,
 }));
+// The mass composer's own contexts (employee, vault) are its tests'; here, only the Creator it opens on.
+vi.mock("@/components/compose/LazyMassMessageComposer", () => ({
+  LazyMassMessageComposer: ({ mode, forcedAccountId }: { mode?: string; forcedAccountId?: string }) => (
+    <div role="dialog" aria-label={`mass composer ${mode}`} data-account={forcedAccountId ?? ""} />
+  ),
+}));
 
 import SmartMessagesPage from "@/components/growth/SmartMessagesPage";
 import { SM, SM_AUTOMATED_COLUMNS, SM_TRIGGERS } from "@/components/growth/smartMessagesControls";
@@ -703,6 +709,19 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     await act(async () => { fireEvent.click(nextButton()); });
     const dialog = screen.getByRole("dialog", { name: "Priority mass message" });
     await waitFor(() => expect((within(dialog).getAllByRole("combobox")[0] as HTMLSelectElement).value).toBe(B.id));
+  });
+
+  it.each([
+    [108, "mass composer standard"],
+    ["Message online fans", "mass composer online"],
+  ] as const)("Mass card %s, then Next, opens its composer posting as the chip's Creator", async (card, title) => {
+    await mount();
+    await pickCreator(B.nickname);
+    await openPopUp();
+    const name = typeof card === "number" ? new RegExp(`^${valueOf(card).split(" / ")[0]}`) : new RegExp(`^${card}`);
+    await act(async () => { fireEvent.click(within(popUp()).getByRole("button", { name })); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    expect(screen.getByRole("dialog", { name: title })).toHaveAttribute("data-account", B.id);
   });
 
   it("Start from scratch is disabled, titled not wired, picks nothing and calls nothing; every card is wired", async () => {

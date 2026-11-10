@@ -33,8 +33,9 @@ The sidebar, top to bottom:
   Profile promotion, Free trial links, Tracking links and Sensitive words.
 - **Share for Share** — Discover creators, Requests, S4S schedule and S4S
   settings.
-- **My Automations** — Auto Post, Auto Story, Auto Mass and Gen-Info.
-- **My AI Chatter** — Auto-reply, Auto Funnel, Get to know fans and Full AI
+- **My Automations** — Auto Mass, Auto Post, Auto Story, Auto Funnel and
+  Gen-Info.
+- **My AI Chatter** — Auto-reply, Get to know fans and Full AI
   Chatter (a fully autonomous AI chatter, coming soon; owner only).
 - **Creators** — Manage creators (connecting and watching OnlyFans accounts)
   and Custom proxy.
@@ -78,10 +79,10 @@ a chatter needs to know when a fan is owed a custom.
 Automations are set up in these places:
 
 - **My Automations** — one page per automation: **Auto Post**, **Auto Story**,
-  **Auto Mass** (ready-made broadcasts on timers), and **Gen-Info**. Each page has its own creator select and its own
-  switch.
-- **My AI Chatter** — the AI chat lanes, laid out the same way: **Auto-reply**,
-  **Auto Funnel** and **Get to know fans**.
+  **Auto Mass** (ready-made broadcasts on timers), **Auto Funnel** and
+  **Gen-Info**. Each page has its own creator select and its own switch.
+- **My AI Chatter** — the AI chat lanes, laid out the same way: **Auto-reply**
+  and **Get to know fans**.
 - **Growth → Smart Messages → Automated Messages** — the per-fan triggers:
   **Nudge**, **Delayed welcome**, **Purchased**, **Nearing expiry**,
   **Expired**, **Resubscribe** and **Birthday**. A trigger that is not set up
@@ -396,7 +397,7 @@ him.
 
 ## Building and sending a funnel
 
-**Where:** My AI Chatter → **Auto Funnel** (`/growth/auto-funnel`). Pick the
+**Where:** My Automations → **Auto Funnel** (`/growth/auto-funnel`). Pick the
 model in the creator select in the page header first — Start, Media and
 reply walking all act on the selected model.
 
@@ -642,7 +643,7 @@ And Nudge Online's box flips: it cuts **strictly above**, so "under $400" is
    on, Save.
 5. **My AI Chatter → Auto-reply** — switch on, pick who it answers, Save.
 6. Only then add selling: the mass sends, **My Automations → Auto Mass** and
-   **My AI Chatter → Auto Funnel**.
+   **My Automations → Auto Funnel**.
 
 There is no one-click onboarding wizard — every step is its own Save button.
 
@@ -1135,7 +1136,7 @@ include or exclude.
 **What it does:** Watches fans who replied to a funnel broadcast and walks each
 through the funnel's follow-up and PPV steps.
 
-**Where:** My AI Chatter → **Auto Funnel** → the **Reply walking** switch at
+**Where:** My Automations → **Auto Funnel** → the **Reply walking** switch at
 the top of the page.
 
 **How to enable:** Turn the **Reply walking** switch on (it runs every 2

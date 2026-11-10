@@ -300,7 +300,7 @@ def case_log_lines_hide_proxy_credentials():
     c.user_agent = "ua"
     assert c._proxy_ip() == "custom.invalid:9000", c._proxy_ip()
 
-    ws = OFWebSocket(c)
+    ws = OFWebSocket(lambda: c)
     lines: list[str] = []
 
     class _H(logging.Handler):

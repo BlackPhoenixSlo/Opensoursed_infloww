@@ -146,7 +146,8 @@ call in `calls` also carries its arrival time `t0`, its path `path` and its quer
 OF's chat WebSocket (`wsUrl`, ws://127.0.0.1:<port>/ws3/<uid>; the relay's real
 of_ws pump connects here): the client's `{"act":"connect","token":…}` is answered
 `{"connected":true,"v":"5.4.0"}` as OF does; then the socket stays open, reading
-what the client sends (pings) and pushing nothing. Each connect is recorded
+what the client sends (pings) and pushing only what `push_ws(id, frame)` sends (a
+fan's DM as OF pushes it, on that Creator's open sockets). Each connect is recorded
 (`ws_connects`: t, account, token as issued). `drop_ws(ids)` closes those
 Creators' sockets, as OF does when it ends a session's socket: the pump
 reconnects through /users/me.
@@ -331,6 +332,15 @@ class FakeOF:
             socks = [ws for a in account_ids for ws in self._ws_open.get(str(a), ())]
         for ws in socks:
             asyncio.run_coroutine_threadsafe(ws.close(), self._ws_loop).result(10)
+        return len(socks)
+
+    def push_ws(self, account_id, frame: dict) -> int:
+        """Push one frame (OF's JSON) on this Creator's open sockets, as OF pushes a fan's DM.
+        Returns how many sockets it went out on (0: none open, nothing sent)."""
+        with self.lock:
+            socks = list(self._ws_open.get(str(account_id), ()))
+        for ws in socks:
+            asyncio.run_coroutine_threadsafe(ws.send(json.dumps(frame)), self._ws_loop).result(10)
         return len(socks)
 
     def ws_live(self) -> dict[str, int]:

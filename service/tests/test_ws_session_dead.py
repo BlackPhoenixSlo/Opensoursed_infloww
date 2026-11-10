@@ -75,7 +75,7 @@ class _Client:
 
 async def case_events_gives_up_on_a_dead_session() -> None:
     c = _Client(DEAD, OFAPIError(OTP_ERR))
-    ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
+    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error)
     t0 = time.monotonic()
     try:
         async for _ in ws.events():
@@ -90,7 +90,7 @@ async def case_events_gives_up_on_a_dead_session() -> None:
 
     # Any other failure still reconnects with backoff (1 s, then 2 s).
     other = _Client(LIVE, OFAPIError("500 for https://onlyfans.com/api2/v2/users/me\n{}"))
-    ws = of_ws.OFWebSocket(other, session_dead=account_health.is_session_dead_error)
+    ws = of_ws.OFWebSocket(lambda: other, session_dead=account_health.is_session_dead_error)
 
     async def _drain():
         async for _ in ws.events():
@@ -112,7 +112,8 @@ async def case_the_pump_flags_the_account_and_exits() -> None:
     finally:
         server._load_client = orig
     assert parked is True, "a parked exit tells the supervisor's backoff it parked"
-    assert [c.me_calls for c in clients] == [4], [c.me_calls for c in clients]  # 1 + 3 retries
+    # 1 + 3 retries; each attempt gets a fresh client (test_ws_pump_evict).
+    assert [c.me_calls for c in clients] == [1] * 4, [c.me_calls for c in clients]
     stamp = (await account_health.dead_session_map()).get(DEAD)
     assert stamp is not None and stamp.reason == "otp_required", stamp
     assert DEAD not in of_ws._LIVE_PUMPS
@@ -210,7 +211,8 @@ async def case_a_cancelled_pump_leaves_no_orphaned_read() -> None:
     loop = asyncio.get_running_loop()
     orphans: list[dict] = []
     loop.set_exception_handler(lambda _l, ctx: orphans.append(ctx))
-    ws = of_ws.OFWebSocket(_Live(LIVE, None), session_dead=account_health.is_session_dead_error)
+    live = _Live(LIVE, None)
+    ws = of_ws.OFWebSocket(lambda: live, session_dead=account_health.is_session_dead_error)
     got: list[dict] = []
 
     async def consume() -> None:

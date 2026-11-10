@@ -61,6 +61,21 @@ describe("findPaths", () => {
     });
   });
 
+  it("links the Settings page a sentence names without an arrow", () => {
+    // Live answer (public, 2026-11): bare "Settings" linked /settings, the page went unlinked.
+    const text = "Settings has an Audit log page (owners only), but the manual doesn't describe it.";
+    expect(findPaths(text).map((h) => [text.slice(h.start, h.end), h.href])).toEqual([
+      ["Settings", "/settings/audit"],
+      ["Audit log", "/settings/audit"],
+    ]);
+    const t2 = "In Settings, open Role Settings and tick it.";
+    expect(findPaths(t2).map((h) => h.href)).toEqual(["/settings/roles", "/settings/roles"]);
+    // Next sentence, or another path in between, is not this Settings' page.
+    expect(only("Open Settings for it. Billing is elsewhere.")?.href).toBe("/settings");
+    expect(findPaths("Settings, then Growth → Auto-follow, then AI keys").map((h) => h.href))
+      .toEqual(["/settings", "/growth/auto-follow"]);
+  });
+
   it("matches a label that carries brackets", () => {
     expect(only("Open Settings → Security (personal) to change it.")).toEqual({
       href: "/settings/security-personal",

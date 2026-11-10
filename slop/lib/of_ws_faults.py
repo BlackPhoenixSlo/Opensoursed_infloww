@@ -1,8 +1,8 @@
-"""The OnlyFans WebSocket pump's break-it-once faults (scenarios/2026-10-25-session-health-otp.py,
-the one scenario whose Creators run the REAL of_ws pump, against lib/of_wire.py's socket): lib/faults.py
-merges `register(Fault)` into FAULTS. Each patches `service/of_ws_decide.decide`, the pure reconnect rules
-of_ws.OFWebSocket.events() performs, inside the relay. WS_PARKED and WS_RETRIES, the scenario's WS pump
-checks, are owned by lib/pump_faults.py.
+"""OnlyFans WebSocket pump faults for session-health-otp and ws-pump-evict.
+
+lib/faults.py merges register(Fault) into FAULTS. Session-health faults patch
+of_ws_decide.decide; the eviction fault pins OFWebSocket's client source. WS_PARKED
+and WS_RETRIES are owned by lib/pump_faults.py.
 """
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ try:
     from .pump_faults import WS_PARKED, WS_RETRIES
 except ImportError:  # loaded as a top-level module (lib/ on sys.path, inside the relay)
     from pump_faults import WS_PARKED, WS_RETRIES
+
+
+WS_EVICT_RECONNECT = ("after the evict and OF dropping every socket, every Creator's pump reconnected within "
+                      "RECONNECT_S on a fresh pooled client: /users/me 200, then a socket with OF's token")
+WS_EVICT_NO_RETIRED = "relay.log has no 'signed session retired' after the evict"
 
 
 def _of_ws_dead_session_keeps_reconnecting() -> None:
@@ -41,10 +46,31 @@ def _of_ws_dead_gives_up_first() -> None:
     of_ws_decide.decide = decide
 
 
+def _ws_pump_keeps_evicted_client() -> None:
+    """Pin the first pooled client; after eviction its signed sessions stay retired."""
+    import of_ws
+    real = of_ws.OFWebSocket.__init__
+
+    def init(self, client_source, *args, **kwargs):
+        first = []
+
+        def pinned_source():
+            if not first:
+                first.append(client_source())
+            return first[0]
+
+        real(self, pinned_source, *args, **kwargs)
+
+    of_ws.OFWebSocket.__init__ = init
+
+
 def register(Fault) -> dict:
     return {
         # slop/run 2026-10-25-session-health-otp --break --fault=of-ws-dead-session-keeps-reconnecting
         "of-ws-dead-session-keeps-reconnecting": Fault(_of_ws_dead_session_keeps_reconnecting, (WS_PARKED,)),
         # slop/run 2026-10-25-session-health-otp --break --fault=of-ws-dead-gives-up-first
         "of-ws-dead-gives-up-first": Fault(_of_ws_dead_gives_up_first, (WS_RETRIES,)),
+        # slop/run 2026-11-10-ws-pump-evict --break
+        "ws-pump-keeps-evicted-client": Fault(_ws_pump_keeps_evicted_client,
+                                              (WS_EVICT_RECONNECT, WS_EVICT_NO_RETIRED)),
     }

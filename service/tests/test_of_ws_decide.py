@@ -239,7 +239,7 @@ async def case_shell_refreshes_ticket_before_every_reconnect() -> None:
     hellos: list = []
     srv, port = await _dropping_server(hellos)
     c = _Client(port)
-    ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
+    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error)
     try:
         with _Spy() as spy:
             task = asyncio.create_task(_drain(ws))
@@ -267,7 +267,7 @@ async def case_shell_transient_then_dead() -> None:
     srv, port = await _dropping_server(hellos)
     otp = OFAPIError(f"400 for {ME}\n{OTP_BODY}")
     c = _Client(port, answers=[None] + [otp] * (DEAD_RETRIES + 1))
-    ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
+    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error)
     try:
         with _Spy() as spy, _Logs() as logs:
             try:
@@ -297,7 +297,7 @@ async def case_shell_transient_then_dead() -> None:
 async def case_shell_without_classifier_never_gives_up() -> None:
     otp = OFAPIError(f"400 for {ME}\n{OTP_BODY}")
     c = _Client(9, answers=[otp, otp, otp])
-    ws = of_ws.OFWebSocket(c)  # no session_dead: the CLI tailer's shape
+    ws = of_ws.OFWebSocket(lambda: c)  # no session_dead: the CLI tailer's shape
     with _Spy() as spy:
         task = asyncio.create_task(_drain(ws))
         await _until(lambda: len(c.issued) == 2, 5)
@@ -309,7 +309,7 @@ async def case_shell_without_classifier_never_gives_up() -> None:
 async def case_shell_logs_a_retry_only_when_decide_retries() -> None:
     otp = OFAPIError(f"400 for {ME}\n{OTP_BODY}")
     c = _Client(9, answers=[otp, otp, otp])
-    ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
+    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error)
     real = d.decide
     d.decide = lambda state, ev: real(state, Failed(None))  # the classifier's answer ignored
     try:

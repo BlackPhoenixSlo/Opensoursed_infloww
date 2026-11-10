@@ -17,6 +17,8 @@ REPEAT = "the same message to the same Creator again inside 120 s is refused 409
 RESUME = "resume: a live run keeps one leg queued (never two); a cancelled run is 409"
 LEG_SCAN = ("a run created clean stops at its first leg (error, banned_words) once a Sensitive word its text "
             "holds across odd whitespace is listed before that leg; OF gets nothing from it")
+UI_CREATOR = ("UI: Smart Messages' OF mass and Message online fans composers open on the column's picked "
+              "Creator ('Post as'; the OF one's Broadcast sends as it), not the first one")
 UI_SEED = ("UI: the composer pre-ticks the Creator's OF MASSDMEXCLUDE list in Exclude; the POST and its run row "
            "exclude it and none of its fans is frozen or got an OF send")
 
@@ -108,6 +110,12 @@ def register(Fault) -> dict:
         # dispatching and Send no longer waits for the seed (the fix reverted). Only the composer's chunk
         # holds `!lists || isFetching` / `!seeded` on the pages this scenario opens (FunnelLaunchPanel's
         # twin is in growth/auto-funnel's, Mass's composer reads `listsQ`).
+        # slop/run priority-mass-5k --break --fault=sm-mass-composer-first-creator --baseline=... (not --no-ui)
+        # app/components/growth/CreateMessagePopUp.tsx as before the fix: the mass composer gets no
+        # forcedAccountId, so it opens on the first Creator whatever the column picked.
+        "sm-mass-composer-first-creator": Fault(None, (UI_CREATOR,), browser=(
+            (r"forcedAccountId:(?:\s|\\n)*accountId \?\? undefined", "forcedAccountId: undefined"),
+        )),
         "pm-ui-no-massdm-seed": Fault(None, (UI_SEED,), browser=(
             (r"if \(!accountId \|\| !lists \|\| isFetching\) return;", "return;"),
             (r"disabled: send\.isPending \|\| !seeded", "disabled: send.isPending"),

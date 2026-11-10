@@ -61,9 +61,12 @@ class SessionDead(Exception):
 class OFWebSocket:
     """Long-lived WS connection that yields parsed events."""
 
-    def __init__(self, client: OFClient,
+    def __init__(self, client_source: Callable[[], OFClient],
                  session_dead: Callable[[BaseException], str | None] | None = None):
-        self.client = client
+        self.client: OFClient | None = None
+        # Each (re)connect takes /users/me, proxy and UA from the account's
+        # current client. Eviction retires the prior client's signed sessions.
+        self._client_source = client_source
         # Classifies a (re)connect failure: a reason is retried
         # of_ws_decide.DEAD_RETRIES times, then ends events() with SessionDead
         # instead of reconnecting forever (server.py's pump passes
@@ -100,13 +103,16 @@ class OFWebSocket:
 
     @classmethod
     def from_latest_session(cls) -> "OFWebSocket":
-        return cls(OFClient.from_latest_session())
+        return cls(OFClient.from_latest_session)
 
-    def _refresh_auth(self) -> None:
-        """Fetch a fresh wsUrl + wsAuthToken from /users/me."""
-        me = self.client.me()
+    def _refresh_auth(self) -> OFClient:
+        """Fetch a fresh wsUrl + wsAuthToken from /users/me on the current client."""
+        client = self._client_source()
+        self.client = client
+        me = client.me()
         self._ws_url = me["wsUrl"]
         self._token = me["wsAuthToken"]
+        return client
 
     async def events(self) -> AsyncIterator[dict]:
         """Async generator: yields each event dict as it arrives. Reconnects
@@ -129,9 +135,9 @@ class OFWebSocket:
                 # _refresh_auth() does a blocking GET /users/me; run it off the
                 # event loop so a (re)connect doesn't freeze every account's pump
                 # and every HTTP handler (observed loop-stall during reconnects).
-                await asyncio.to_thread(self._refresh_auth)
+                client = await asyncio.to_thread(self._refresh_auth)
                 assert self._ws_url and self._token
-                proxy_url = getattr(self.client, "proxy_url", None) or None
+                proxy_url = getattr(client, "proxy_url", None) or None
                 if proxy_url:
                     log.info("connecting account=%s %s via proxy %s",
                              self._account_id(), self._ws_url, self._proxy_desc())
@@ -141,7 +147,7 @@ class OFWebSocket:
                 async with websockets.connect(
                     self._ws_url,
                     origin="https://onlyfans.com",
-                    user_agent_header=self.client.user_agent,
+                    user_agent_header=client.user_agent,
                     additional_headers={
                         "Accept-Language": "sl-SI,sl;q=0.9",
                     },

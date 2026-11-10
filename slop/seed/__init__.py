@@ -116,6 +116,8 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "sweep_pacing_transactions": (400, 1_000, 2_000),
     # consent-required-notice: media sends through the real send route over every Creator's fans
     "consent_sends": (120, 2_000, 5_000),
+    # ws-pump-evict: Creators (each its real WS pump) when one proxy edit evicts every pooled client
+    "ws_pump_evict_creators": (5, 50, 50),
 }
 
 

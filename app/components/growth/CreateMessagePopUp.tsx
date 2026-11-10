@@ -42,7 +42,7 @@ export default function CreateMessage({
 }: {
   open: boolean;
   onClose: () => void;
-  /** The page header's Creator: the Priority mass composer's "Post as" on open. */
+  /** The page's Creator: every mass composer's "Post as" on open. */
   accountId?: string | null;
   /** Phase 2's cards for the "Automated messages" section, placed after "Mass messages". */
   automatedMessageCards?: ReactNode;
@@ -59,7 +59,9 @@ export default function CreateMessage({
       )}
       {composer === "priority" && <PriorityMassComposer open initialAccountId={accountId} onClose={() => setComposer(null)} />}
       {composer && composer !== "priority" && (
-        <LazyMassMessageComposer mode={composer} labelExtras onClose={() => setComposer(null)} />
+        <LazyMassMessageComposer
+          mode={composer} labelExtras forcedAccountId={accountId ?? undefined} onClose={() => setComposer(null)}
+        />
       )}
     </>
   );

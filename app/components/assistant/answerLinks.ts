@@ -100,6 +100,32 @@ const RUN_END_RE = new RegExp(`\\n|${ARROW}`);
  *  the link text. */
 const SEG_END = new RegExp(`[\\n,;:()[\\]"“”*\`]|\\s—\\s|\\.(?=\\s|$)|${ARROW}`);
 
+/** Settings' pages by their label as the nav writes it, longest first. The bot
+ *  sometimes names one in prose instead of a path ("Settings has an Audit log
+ *  page"); matched case-sensitively, like the heads, so "billing" in a sentence
+ *  stays plain. */
+const SETTINGS_NAMED: Array<[string, string]> = SETTINGS_TABS
+  .map((l): [string, string] => [l.label, l.href])
+  .sort((a, b) => b[0].length - a[0].length);
+/** Where a sentence ends: the look-ahead for a Settings page stops here. */
+const SENTENCE_END_RE = /[\n!?]|\.(?=\s|$)/;
+
+/** A Settings page named later in the same sentence as a bare "Settings", with
+ *  no arrow and no other head in between: its label's span and href. */
+function settingsPageAfter(text: string, from: number): { start: number; end: number; href: string } | null {
+  const tail = text.slice(from);
+  const sentence = tail.slice(0, SENTENCE_END_RE.exec(tail)?.index ?? tail.length);
+  let best: { start: number; end: number; href: string } | null = null;
+  for (const [label, href] of SETTINGS_NAMED) {
+    const at = new RegExp(`(?<![\\p{L}\\p{N}])${esc(label)}(?![\\p{L}\\p{N}])`, "u").exec(sentence)?.index;
+    if (at !== undefined && (!best || at < best.start - from)) best = { start: from + at, end: from + at + label.length, href };
+  }
+  if (!best) return null;
+  const between = text.slice(from, best.start);
+  if (new RegExp(ARROW).test(between) || new RegExp(HEAD_RE.source).test(between)) return null;
+  return best;
+}
+
 export interface PathHit {
   /** Index of the first character of the linked run. */
   start: number;
@@ -143,7 +169,6 @@ function leadingLabel(raw: string, labels: Record<string, Place>): { place: Plac
  */
 export function findPaths(text: string): PathHit[] {
   const hits: PathHit[] = [];
-  HEAD_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
 
   while ((m = HEAD_RE.exec(text))) {
@@ -189,6 +214,15 @@ export function findPaths(text: string): PathHit[] {
     // A group with no page recognised under it names no page. With nothing
     // consumed past the head, only some pages stand alone.
     if (!at.href || (end === headEnd && !head.bare)) continue;
+
+    // A bare "Settings" whose sentence goes on to name one of its pages links
+    // that page, and the page's own label with it.
+    const named = end === headEnd && m[1] === "Settings" ? settingsPageAfter(text, headEnd) : null;
+    if (named) {
+      hits.push({ start: m.index, end, href: named.href }, named);
+      HEAD_RE.lastIndex = named.end;
+      continue;
+    }
 
     hits.push({ start: m.index, end, href: at.href });
     HEAD_RE.lastIndex = end; // never emit overlapping hits
