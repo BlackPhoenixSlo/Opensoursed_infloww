@@ -8,6 +8,7 @@ Contracts › Harness and Harness: processes / network / fixtures and login / sh
 ## Running
 
 ```sh
+UI_SHOTS_KEYBOARD=1 scripts/ui-shots.sh     # phone keyboard regression only
 scripts/ui-shots.sh                        # real run: exit 0 only when every gated shot and flow passes
 UI_SHOTS_SELFTEST=1 scripts/ui-shots.sh    # self-test: injects faults and MUST exit non-zero
 UI_SHOTS_SWEEP=1 scripts/ui-shots.sh       # overflow sweep only (Sweep below)
@@ -273,3 +274,13 @@ Binding for every UI ticket (`docs/plans/messages-pro-parity.md`, "Visual loop")
 3. Up to three rounds. Whatever still differs after round three goes into the ticket as a
    `VISUAL GAP:` line with the reason and the owning Phase.
 4. Commit the final PNGs and the report with the code.
+
+### Phone keyboard regression
+
+`UI_SHOTS_KEYBOARD=1` opens a fixture conversation, types a draft, and dispatches
+visualViewport resize/scroll events with height 420px and offsetTop 80px. It checks
+that the conversation and composer stay inside that visible area, the help bot
+is absent, dismissal restores full height, and `/auth/me` still responds 200.
+This simulates Safari geometry in Chromium; it does not operate a physical iOS keyboard.
+Outputs: `messages-pro-phone-keyboard.png`, `messages-pro-phone-thread.png`, and
+`messages-pro-keyboard-report.json` under `docs/screenshots/`.

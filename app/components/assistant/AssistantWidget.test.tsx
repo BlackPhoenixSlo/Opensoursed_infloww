@@ -86,6 +86,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AssistantWidget", () => {
+  it.each(["/messages-pro", "/messages-pro/1001/9001"])(
+    "hides the launcher and an already-open panel on %s", async (path) => {
+      const view = renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+      await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+      nav.pathname = path;
+      view.rerender(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+      expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
+      expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
+    },
+  );
+
   it("starts collapsed and remembers being opened", async () => {
     const bubble = await openPanel();
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();

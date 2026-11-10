@@ -221,3 +221,66 @@ Quoted verbatim from each spec. Items this review added are marked.
 - Added by this review: the sidebar reading. D3 (`:479`): "ASSUMPTION: plan:36 binds only the below-1024px rules, so D3 may change the sidebar from lg up on Messages Pro routes to meet plan:196's three panes at 1280. This is overturned if the human reads plan:36 as freezing the docked sidebar at lg and up".
 
 **Phases 0, 3 and 7**: none open. Phase 7's request that the human amend ADR-0003 is resolved by this review's amendment.
+
+---
+
+# Plan review: Slop local feedback
+
+Review of `docs/spec/phase-01-slop-local-feedback.md` for `.scratch/slop-local-feedback/plan.md`, 2026-11-10. Inputs: the spec, its codex adversary review (blind + draft, verbatim in `.scratch/slop-local-feedback/adversary-*.md`) and a six-hats report on plan + spec (verbatim in `.scratch/slop-local-feedback/six-hats.md`). Design only: no code. The Messages Pro sections above are a separate effort and are unchanged.
+
+## Workstreams
+
+| Wave | Phase | Spec | Depends on |
+|---|---|---|---|
+| 0 | 01. Local feedback without duplicate work | `docs/spec/phase-01-slop-local-feedback.md` | none |
+
+Tickets inside the Phase run serially: T1 identity → T2 phases + 10 before runs → T3 decision on T2's numbers (may close `no-change` with no new runs) → T4 `--share`, smallest form. T2 needs T1 only for shared test fixtures; T4 needs T1's `identity` module.
+
+## Adversary
+
+- Phase 01 — codex (read-only, effort high). Draft: 12 accepted, 1 partial (D4), 0 rejected; D6 later superseded by six-hats G1. Blind: 18 accepted, 5 partial (B10, B12, B13, B26, B27), 5 rejected (B2, B5, B6, B7, B22). Needs-human: none.
+
+## Six hats
+
+Per-bullet reconcile lines live in the spec's `## Review › ### Six hats`. Bullets about the set:
+- Recommendation (ship T1 and T2 as specced, T3 closes on T2's numbers, T4 smallest form disclosed near-zero until the slop-runner passes `--share`) — **accept**: Slicing, US 27, Further Notes and Out of Scope now say exactly this.
+- W3 / R3 (the Phase buys safety and measurement more than speed; no end-to-end before/after) — **partial**: disclosed in Further Notes; the final report quotes T2's measured `run_phases` and nightly totals and claims no saving; no dev-loop benchmark (YAGNI).
+- B3 (slop-runner must learn `--share`) — **accept**: coordinator follow-up after T4 merges and its Acceptance is green, a one-line edit to `~/.claude/agents/slop-runner.md`. Not a human blocker.
+
+## Cut (YAGNI)
+
+- Seed cache: seeding share measured 1.22 % (631 runs) / 1.7 % (148 runs), under the plan's 15 % trigger.
+- Production-build cache: the relay URL is baked into each build (plan constraint).
+- Any gate change (slots, limits, stagger, exclusive rule, quiet scheduling, KVMs): plan item 3.
+- Historical result caching: plan item 6 prefers the in-flight opt-in seam.
+- Cross-checkout sharing: per-checkout is narrower and reversible. The only measured overlap (137 s) was cross-checkout.
+- Immutable execution snapshot: costs a copy per run. The A→B→A edit gap is disclosed instead.
+- Changing thresholds, budgets, observation windows or teardown grace: plan constraint.
+- Shared-run re-key/re-election on a source change: fails closed to INFRA instead (six-hats G1, coordinator).
+- End-to-end dev-loop benchmark: T2's phases and nightly totals are the measurement.
+- External scheduler/monitor integration: no caller found. New selection machinery: `--changed` exists.
+- Nightly's `verdict(0, None, None)` = OK: pre-existing, and nightly never shares.
+
+## Not yet specified
+
+- Deploy step: the plan says "no deployment necessary unless repository configuration proves otherwise". The spec names no deploy target. Inferred: `slop/` is a local-only harness, so merging is the end state. The coordinator confirms this before closing.
+- Post-deploy WATCH line (repo CLAUDE.md): applies only to changes that reach prod. None is expected here (inferred).
+
+## Open questions
+
+Sharpest first:
+1. `env_id` keeps `PATH`, `CONDA_*`, `FPATH` and `INFOPATH` (measured to differ between an agent shell and `zsh -lic`). If owners routinely record in one kind of shell and reuse in another, every such reuse is refused and costs a fresh baseline. The cross-shell Acceptance file shows this. The fix is a measured `VOLATILE` extension, never `PATH`.
+2. T3 closes on T2's 10 before runs. If those were taken under unusual machine load, the `few-sleeps` verdict is wrong and the readiness saving (≤ 0.5 s/wait, guess) is left on the table.
+3. A source change ends followers INFRA, with no re-key. If agents in one checkout edit during runs often, followers keep re-running. The fix would be to bring back re-key/re-elect.
+4. The publication-gap loop is bounded (≤ 10 s), not a single retry. If seam 4 shows it equivalent to one retry, the simpler form could replace it.
+5. `source_id` covers the whole tree. If another session edits the worktree mid-run, the run comes back `raced`. This is fail-closed by design; a broken one-run-owner-per-worktree rule makes it noisy.
+6. Shared runs are per checkout. If cross-checkout duplicates turn out to be common, T4 still saves nothing.
+7. `source_id` misses an in-place `pip install` into the venv. If a venv package change flips a reused baseline, the venv must be hashed.
+8. Legacy baselines (no `source_id`) are refused. An owner who wants a fallback breaks this.
+9. `SLOP_SHARE_WAIT_S` defaults to 7200 s. A measured follower wait that hits it means the default is too low.
+10. The README section lands in T1 and the `--share` lines in T4. If T4 is dropped, the README has no `--share` lines, which is correct.
+11. `--set` of a reserved knob is left as is. A caller passing one breaks this.
+
+## Needs the human
+
+Phase 01: none.

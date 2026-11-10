@@ -64,9 +64,9 @@ function start(onLinked = vi.fn(), keepProxy = false) {
 }
 
 describe("BrowserbaseLoginCard", () => {
-  it("says in one line that the proxy is automatic and where a 2FA code goes", () => {
+  it("says the proxy is automatic and can be changed later", () => {
     render(<BrowserbaseLoginCard />, { wrapper });
-    expect(screen.getByText(/^Proxy assigned automatically\. Asked for a 2FA code\? Enter it here\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Proxy assigned automatically\. You can assign yours later\.$/)).toBeInTheDocument();
     // No proxy picker, no How it works fold.
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByRole("button", { name: "How it works" })).toBeNull();

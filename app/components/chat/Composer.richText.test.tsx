@@ -28,7 +28,6 @@ const onSend = vi.fn(async (_a: { text: string }): Promise<undefined> => undefin
 beforeEach(() => {
   resetComposerHarness();
   window.sessionStorage.clear();
-  window.localStorage.setItem("chatterly:lockedText-default-changed-seen", "1");
   saved = [row(1, HTML)];
   routeRelay("/admin/saved-replies", () => ({ list: saved }));
 });

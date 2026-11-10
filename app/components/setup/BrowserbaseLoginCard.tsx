@@ -168,7 +168,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   return (
     <div className="space-y-4">
       <IfHelp className="mt-0 text-[14px] leading-[22px]">
-        {keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically."} Asked for a 2FA code? Enter it here.
+        {keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically. You can assign yours later."}
       </IfHelp>
 
       {!running && !done && (

@@ -232,14 +232,10 @@ export function useAssistant(): AssistantState {
 export function AssistantWidget() {
   const a = useAssistant();
   const pathname = usePathname();
-  // Messages Pro's composer spans the full width below lg (one pane at a
-  // time), so the corner launcher would sit on its send button there.
-  const onMessagesPro = pathname?.startsWith("/messages-pro") ?? false;
-  // Below the corner launcher's breakpoint the bot is a draggable icon and a
-  // full-screen sheet instead (PhoneLauncher).
-  const phone = useMediaQuery(onMessagesPro ? "(max-width: 1023.98px)" : "(max-width: 767.98px)");
+  const onMessagesPro = pathname === "/messages-pro" || pathname?.startsWith("/messages-pro/");
+  const phone = useMediaQuery("(max-width: 767.98px)");
 
-  if (!a.hydrated || pathname === HELP_PATH) return null;
+  if (!a.hydrated || pathname === HELP_PATH || onMessagesPro) return null;
 
   if (phone) {
     return (

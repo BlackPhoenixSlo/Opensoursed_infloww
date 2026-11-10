@@ -373,6 +373,20 @@ html:has([data-trial-banner]), html:has([data-consent-banner]) { --chrome-top: 1
 html:has([data-trial-banner]):has([data-consent-banner]) { --chrome-top: 148px; }
 .h-chat { height: calc(var(--vvh) - var(--shell-top, 3.5rem)); }
 
+/* Safari pans the visual viewport while focusing the composer. Keep the whole
+ * phone conversation in that viewport, rather than leaving its header above it.
+ * The existing --vvh/--vvt tracker follows keyboard resize AND viewport scroll. */
+@media (max-width: 1023.98px) {
+  .messages-pro-viewport {
+    position: fixed;
+    top: var(--vvt, 0px);
+    left: 0;
+    right: 0;
+    height: var(--vvh);
+    overflow: hidden;
+  }
+}
+
 /* `.vault-video` — the vault preview player.
  * Chrome's native control bar is near-black, which on dark media made the
  * timeline almost invisible and scrubbing to a time a guessing game. Lighten

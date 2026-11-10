@@ -110,8 +110,8 @@ def test_settle(first, rerun, want):
 ])
 def test_merge_rerun(again, verdict, folder, failed, infra):
     first = {"phase": "all", "scenario": "s", "verdict": "FAIL", "seconds": 10.0, "folder": "F1", "failed": ["x"],
-             "infra": None, "p95": {"k": 1}, "exit": 1}
-    m = nt.merge_rerun(first, {**again, "seconds": 5.0})
+             "infra": None, "p95": {"k": 1}, "exit": 1, "untimed": []}
+    m = nt.merge_rerun(first, {**again, "seconds": 5.0, "untimed": []})
     assert (m["verdict"], m["folder"], m["rerun_folder"], m["failed"], m["infra"]) == (verdict, "F1", folder, failed, infra)
     assert m["first_verdict"] == "FAIL" and m["seconds"] == 15.0 and m["p95"] == (again["p95"] or {"k": 1})
     assert nt._folders(m) == f"F1 -> re-run {folder or '-'}"
@@ -207,8 +207,9 @@ def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
 
 
 def R(phase, name, v, p95=None, **kw):
-    return {"phase": phase, "scenario": name, "verdict": v, "p95": p95 or {}, "seconds": 1.0, "folder": f"F-{name}",
-            "failed": [], "infra": None, **kw}
+    r = {"phase": phase, "scenario": name, "verdict": v, "p95": p95 or {}, "seconds": 1.0, "folder": f"F-{name}",
+         "failed": [], "infra": None, "run_phases": None, **kw}
+    return {"untimed": [] if r["run_phases"] else [r["seconds"]], **r}  # as row_of: no run phases = untimed
 
 
 def test_changes():
@@ -392,3 +393,68 @@ def test_invalid_map_phase_keeps_rows_and_reports_infra(tmp_path, monkeypatch):
     assert result["map_error"] == rows[0]["infra"]
     assert result["mapped"] == [] and result["unmapped_left"] == []
     assert (night_out / "map.json").read_text() == "{"
+
+
+def _ph(startup, seeding, execution, teardown, calls=1, failed=0, waits=()):
+    return {"startup_s": startup, "seeding_s": seeding, "execution_s": execution, "teardown_s": teardown,
+            "seed_calls": calls, "seed_failed": failed, "waits": list(waits)}
+
+
+def test_merge_rerun_sums_both_attempts_gate_wait_and_run_phases():
+    """Red on the first-attempt-only merge: a FAIL's re-run gate wait and phases were dropped (2 + 3 -> 2)."""
+    first = {"phase": "all", "scenario": "s", "verdict": "FAIL", "seconds": 10.0, "folder": "F1", "failed": ["x"],
+             "infra": None, "p95": {}, "exit": 1, "gate_wait_s": 2.0, "untimed": [],
+             "run_phases": _ph(1.0, 2.0, 3.0, 4.0, waits=[{"name": "relay", "seconds": 1.0, "polls": 2}])}
+    again = {**first, "verdict": "OK", "seconds": 20.0, "folder": "F2", "failed": [], "gate_wait_s": 3.0,
+             "run_phases": _ph(10.0, 20.0, 30.0, 40.0, calls=2, failed=1,
+                               waits=[{"name": "relay", "seconds": 3.0, "polls": 4}])}
+    m = nt.merge_rerun(first, again)
+    assert m["seconds"] == 30.0 and m["gate_wait_s"] == 5.0
+    assert m["run_phases"] == _ph(11.0, 22.0, 33.0, 44.0, calls=3, failed=1,
+                                  waits=[{"name": "relay", "seconds": 1.0, "polls": 2},
+                                         {"name": "relay", "seconds": 3.0, "polls": 4}])
+
+
+@pytest.mark.parametrize("a,b,want,untimed", [
+    (None, None, None, [1.0, 2.0]),  # neither attempt reached a folder with phases
+    (_ph(1.0, None, None, 0.5, calls=0), None, _ph(1.0, None, None, 0.5, calls=0), [2.0]),  # re-run died early
+    (_ph(1.0, None, None, 0.5, calls=0), _ph(2.0, 3.0, 4.0, 5.0), _ph(3.0, 3.0, 4.0, 5.5), []),  # null + n = n
+])
+def test_merge_rerun_phases_with_missing_attempts(a, b, want, untimed):
+    """A partial merge (one attempt untimed) keeps that attempt's wall seconds apart, not inside the phases."""
+    first = {"verdict": "FAIL", "seconds": 1.0, "folder": "F1", "failed": ["x"], "infra": None, "p95": {},
+             "gate_wait_s": None, "run_phases": a, "untimed": [] if a else [1.0]}
+    m = nt.merge_rerun(first, {**first, "verdict": "INFRA", "folder": None, "seconds": 2.0, "gate_wait_s": 4.0,
+                               "run_phases": b, "untimed": [] if b else [2.0]})
+    assert m["run_phases"] == want and m["gate_wait_s"] == 4.0 and m["untimed"] == untimed and m["seconds"] == 3.0
+
+
+def test_row_of_copies_run_phases_and_gate_wait(tmp_path):
+    ph = _ph(1.5, 0.5, 2.0, 1.0, waits=[{"name": "relay", "seconds": 1.2, "polls": 2}])
+    d = _folder(tmp_path, "T-a", {"params": {"lock_wait_s": 4.5}, "run_phases": ph}, [C("pass")])
+    r = nt.row_of("all", "a", d, 9.0, 0)
+    assert r["run_phases"] == ph and r["gate_wait_s"] == 4.5 and r["untimed"] == []
+    none = nt.row_of("all", "a", None, 61.0, 75)  # e.g. a gate exit 75 after a long slot wait: no folder
+    assert none["run_phases"] is None and none["untimed"] == [61.0]
+    nulls = _folder(tmp_path, "T-b", {"run_phases": _ph(None, None, None, None, calls=0)}, [C("pass")])
+    assert nt.row_of("all", "b", nulls, 3.0, 3)["untimed"] == [3.0]  # never reached a stack: phases cover nothing
+
+
+def test_digest_totals_timed_attempts_and_lists_untimed_apart(tmp_path):
+    """A timed FAIL whose re-run died untimed, a timed OK, an untimed INFRA with seconds: the share's denominator is
+    the timed attempts' measured run seconds; untimed attempts and gate wait are shown apart."""
+    first = {**R("all", "f", "FAIL"), "seconds": 40.0, "gate_wait_s": 2.0, "run_phases": _ph(10.0, 2.0, 20.0, 5.0),
+             "untimed": []}
+    again = {**R("all", "f", "INFRA", seconds=30.0), "folder": None, "gate_wait_s": None}
+    ok = {**R("all", "o", "OK"), "seconds": 100.0, "gate_wait_s": 3.0, "run_phases": _ph(30.0, 4.0, 50.0, 10.0),
+          "untimed": []}
+    rows = [nt.merge_rerun(first, again), ok, {**R("volume", "i", "INFRA", seconds=25.0), "gate_wait_s": None}]
+    s = {"headline": "H", "sha": "a", "smoke": False, "started": "", "ended": "", "load_start": 0.0,
+         "load_end": 0.0, "cores": 1, "rows": rows, "phases": {"all": {"wall_s": 1}, "volume": {"wall_s": 1}},
+         "changes": nt.changes(rows, None), "prev": None}
+    md = nt.digest(s)
+    # 4 attempts (f, its re-run, o, i), 2 timed; startup 10+30, seeding 2+4, execution 20+50, teardown 5+10;
+    # share 6 / 131 s = 4.6 %; untimed f's re-run 30 s + i 25 s; gate 2 + 3
+    assert ("run phases (2 of 4 attempts timed): startup 40s · seeding 6s · execution 70s · teardown 15s; seeding "
+            "4.6% of 131s measured run seconds; untimed 2 attempts, 55s wall (no run phases); gate wait 5s"
+            ) in md.splitlines(), md

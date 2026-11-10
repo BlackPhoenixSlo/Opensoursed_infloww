@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # slop/run <scenario|all> [--scale=small|medium|huge] [--users=N] [--seed=N] [--break] [--no-ui] [--timeout=S] [--set k=v]
 #          --changed [--dry] (only the scenarios the diff reaches, slop/map.json) | <target> --map (rebuild it)
+#          <args> --share (join an exact live run of this checkout; not with --map/nightly)
 #          nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach] [--apply-map=F] (daily full sweep)
 # Throwaway loopback stack per scenario; evidence in slop/evidence/<stamp>-<scenario>/ (latest -> newest).
 set -euo pipefail
+# --share (README "Fast local feedback"): lib/share.py, before the gate: a follower takes no slot and no stack;
+# a leader runs this script again without --share, which queues for the gate as usual. Only the flag enables it.
+for a in "$@"; do [ "$a" = --share ] && exec python3 "$(dirname "${BASH_SOURCE[0]}")/lib/share.py" "$@"; done
 # The machine gate (README "The machine gate"): outside one, re-exec this under ~/.slop/gate.py
 # (it sets SLOP_GATED for us). Listings take no lock; a missing gate is lib/cli.py's loud INFRA.
 # nightly never holds it: each of its child slop/run's queues for it in turn.

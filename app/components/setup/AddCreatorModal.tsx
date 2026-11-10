@@ -21,7 +21,8 @@
  *           Done saves them (a blank nickname takes the account's own name) and closes. A row's recovery shows the
  *           account only, and Done closes.
  *
- * Kept out of the way, not dropped: a custom proxy (Creators › Custom proxy, a row's Change proxy), Make default (a
+ * Custom proxies can be added after linking, or from Creators › Custom proxy and a row's Change proxy.
+ * Kept out of the way, not dropped: Make default (a
  * row's menu), the extension's static_param override (folded under Troubleshooting). Creators are no longer saved
  * before a login; drafts saved earlier still open here from their row.
  *
@@ -33,6 +34,7 @@
 import { Globe, Puzzle, User, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import LinkedCreatorProxy from "./LinkedCreatorProxy";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import {
   buildAccountPayload, canNext, canPickPlatform, profileName, useWizardReducer, type Method, type Platform, type WizardState,
@@ -137,6 +139,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   /** "Link another account": the Creator's details and the platforms it has an account on. */
   linkAnother?: { creator: CreatorDetails; linked: Platform[] };
 }) {
+  const [proxyBusy, setProxyBusy] = useState(false);
   const profiles = useCreatorProfiles();
   const roster = useRoster();
   const save = useSaveAccountDetails(profiles);
@@ -289,11 +292,12 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               />
             </div>
           )}
+          {of && <LinkedCreatorProxy accountId={step.accountId} onBusy={setProxyBusy} />}
         </div>
       );
-      footer = recovery ? <IfButton variant="primary" onClick={onClose}>{T.done}</IfButton> : (
+      footer = recovery ? <IfButton variant="primary" disabled={proxyBusy} onClick={onClose}>{T.done}</IfButton> : (
         <IfButton
-          variant="primary" disabled={!canNext(state)}
+          variant="primary" disabled={proxyBusy || !canNext(state)}
           onClick={() => {
             if (!dispatch({ type: "submitStart" })) return;
             save.mutate(buildAccountPayload(state, step, roster, ofName), {

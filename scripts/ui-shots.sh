@@ -2,6 +2,7 @@
 # ui-shots.sh — render Messages Pro to PNGs from a throwaway localhost stack.
 #
 #   scripts/ui-shots.sh                         real run; exit 0 only if every gated shot passes
+#   UI_SHOTS_KEYBOARD=1 scripts/ui-shots.sh     phone keyboard regression only
 #   UI_SHOTS_SELFTEST=1 scripts/ui-shots.sh     self-test; injects faults, MUST exit non-zero
 #   UI_SHOTS_SWEEP=1 scripts/ui-shots.sh        overflow sweep only: 4 sizes x (app, Pop-out window),
 #                                               writes messages-pro-sweep.json (Phase 6 ticket 109)
@@ -34,6 +35,11 @@ REPORT_NAME=messages-pro-report.json
 if [ "${UI_SHOTS_SWEEP:-}" = 1 ]; then
   OUTPUTS=(messages-pro-1280 messages-pro-768)
   REPORT_NAME=messages-pro-sweep.json
+fi
+
+if [ "${UI_SHOTS_KEYBOARD:-}" = 1 ]; then
+  OUTPUTS=(messages-pro-phone-thread messages-pro-phone-keyboard)
+  REPORT_NAME=messages-pro-keyboard-report.json
 fi
 
 # Before anything under docs/screenshots/ is written or deleted: a git worktree has no venv.
@@ -292,7 +298,7 @@ STARTED_AT = int(os.environ["UI_SHOTS_STARTED_AT"])
 SELFTEST = os.environ.get("UI_SHOTS_SELFTEST") == "1"
 SWEEP = os.environ.get("UI_SHOTS_SWEEP") == "1"
 OUT = "docs/screenshots"
-REPORT = ROOT / OUT / "messages-pro-report.json"
+REPORT = ROOT / OUT / ("messages-pro-keyboard-report.json" if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else "messages-pro-report.json")
 
 # ── Fixtures (shapes follow app/lib/relay.ts and the hooks that read them) ────
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1317,6 +1323,56 @@ OPEN_FIRST_FAN = [pick_employee, open_first_fan]
 # The desktop shot only: two Fan tabs, the first Fan's last, so its conversation stays open and
 # every earlier desktop check (selected row, Thread, PPV, Fan insights) still reads the first Fan.
 OPEN_TWO_FAN_TABS = [pick_employee, open_second_fan, open_in_new_tab, open_first_fan, open_in_new_tab]
+
+
+def check_phone_keyboard(page):
+    """Exercise the real viewport listener with Safari's keyboard geometry.
+
+    Chromium desktop has no OS keyboard; emulate its visualViewport events,
+    including Safari's nonzero pan offset, without replacing app handlers.
+    """
+    page.locator("textarea").first.fill("Phone keyboard draft")
+    page.evaluate("""() => {
+      const vv = window.visualViewport;
+      Object.defineProperty(vv, 'height', {configurable: true, value: 420});
+      Object.defineProperty(vv, 'offsetTop', {configurable: true, value: 80});
+      vv.dispatchEvent(new Event('resize'));
+      vv.dispatchEvent(new Event('scroll'));
+    }""")
+    page.wait_for_timeout(200)
+    geometry = page.evaluate("""() => {
+      const shell = document.querySelector('main').getBoundingClientRect();
+      const composer = document.querySelector('textarea').getBoundingClientRect();
+      return {top: shell.top, bottom: shell.bottom, composerTop: composer.top,
+              composerBottom: composer.bottom};
+    }""")
+    checks = [
+        {"name": "no obsolete lock-text migration notice", "ok":
+         page.get_by_text("Text is no longer locked by default", exact=False).count() == 0},
+        {"name": "keyboard pan keeps chat inside visual viewport", "ok":
+         abs(geometry["top"] - 80) < 1 and abs(geometry["bottom"] - 500) < 1},
+        {"name": "keyboard keeps composer visible", "ok":
+         geometry["composerTop"] >= 80 and geometry["composerBottom"] <= 500},
+        {"name": "no help chatbot in Messages Pro", "ok":
+         page.get_by_role("button", name="Help assistant", exact=True).count() == 0},
+    ]
+    page.screenshot(path=str(ROOT / OUT / "messages-pro-phone-keyboard.png"))
+    page.evaluate("""() => {
+      const vv = window.visualViewport;
+      delete vv.height; delete vv.offsetTop;
+      vv.dispatchEvent(new Event('resize'));
+      vv.dispatchEvent(new Event('scroll'));
+    }""")
+    page.wait_for_timeout(100)
+    restored = page.locator("main").bounding_box()
+    checks.append({"name": "keyboard dismissal restores chat", "ok":
+                   abs(restored["y"]) < 1 and abs(restored["height"] - 844) < 1})
+    page.locator("textarea").first.fill("")
+    checks.append({"name": "authenticated API remains available", "ok":
+                   page.evaluate("async () => (await fetch('/auth/me')).status") == 200})
+    return checks
+
+
 SHOTS = [
     {"name": "messages-pro-desktop", "url": "/messages-pro", "viewport": [1440, 900], "steps": OPEN_TWO_FAN_TABS,
      "checks": [check_no_top_bar, check_sidebar, check_fan_names, check_selected_row, check_thread, check_ppv, check_insights,
@@ -1338,7 +1394,7 @@ SHOTS = [
      "steps": [pick_employee, show_fan_list], "checks": [check_fan_names, check_no_thread, check_top_bar_below_lg, check_row_height]},
     {"name": "messages-pro-phone-thread", "url": "/messages-pro", "viewport": [390, 844], "steps": OPEN_FIRST_FAN,
      "checks": [check_thread, check_back, check_fan_list_hidden, check_phone_header,
-                check_chat_header_two_lines_phone, check_bubble_actions_phone]},
+                check_chat_header_two_lines_phone, check_bubble_actions_phone, check_phone_keyboard]},
     {"name": "messages-pro-composer-ppv", "url": "/messages-pro", "viewport": [1440, 900],
      "steps": OPEN_FIRST_FAN + [type_ppv_price], "checks": [check_ppv_price, check_composer_in_viewport, check_composer_rows,
                                                          check_ppv_row_between]},
@@ -1954,10 +2010,10 @@ def main():
     shots, flows = [], []
     with sync_playwright() as p:
         browser = p.chromium.launch(args=LAUNCH_ARGS)
-        for n, spec in enumerate(SHOTS):
+        for n, spec in enumerate([s for s in SHOTS if s["name"] == "messages-pro-phone-thread"] if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else SHOTS):
             print(f"ui-shots: {spec['name']} …")
             shots.append(run_shot(browser, n, spec))
-        for n, spec in enumerate(FLOWS, start=len(SHOTS)):
+        for n, spec in enumerate([] if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else FLOWS, start=len(SHOTS)):
             print(f"ui-shots: flow {spec['name']} …")
             flows.append(run_flow(browser, n, spec))
         browser.close()
@@ -1980,7 +2036,7 @@ def main():
         for e in fl["consoleErrors"]:
             print(f"    console: {e[:300]}")
     print(f"ui-shots: serverOffHostAttempts={len(report['serverOffHostAttempts'])} (recorded, refused)")
-    print(f"ui-shots: report {OUT}/messages-pro-report.json ok={ok}")
+    print(f"ui-shots: report {REPORT.relative_to(ROOT)} ok={ok}")
     sys.exit(0 if ok else 1)
 
 

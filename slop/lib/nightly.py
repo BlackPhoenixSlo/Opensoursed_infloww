@@ -29,7 +29,8 @@ import traceback
 from collections import deque
 from pathlib import Path
 
-from slop.lib import covmap, gate
+from slop.lib import covmap, gate, phases
+from slop.lib.identity import GATE_ENV, LOCK_SHA  # LOCK_SHA in app/node_modules
 from slop.lib.report import EVIDENCE, parse_folder_line, write_atomic
 
 SLOP = Path(__file__).resolve().parents[1]
@@ -42,10 +43,8 @@ P95_MOVE = 0.20  # a p95_vs_last_green key moved more than this vs the previous 
 COV_RED = "RED (coverage)"  # a --map run red only on budgets: coverage overhead, counted with OK
 GREEN, RED = ("OK", "FLAKY", COV_RED), ("FAIL",)
 FULL_TABLE_MAX = 10  # a phase with more rows lists only its non-OK ones (a green night stays short)
-LOCK_SHA = ".slop-lock-sha"  # in app/node_modules: sha256 of the pnpm-lock.yaml it was installed from
 INSTALL_TIMEOUT_S = 1200  # pnpm install past this (after its gate wait): killed, the night INFRA
 GATE_PY = gate.GATE
-GATE_ENV = ("SLOP_GATED", "SLOP_GATE_PID", "SLOP_GATE_WAIT_S", "SLOP_GATE_LOAD")
 CHILD_LOCK_WAIT_S = "7200"  # a child queues this long for the gate before its INFRA (exit 75)
 GATE_INFRA = 75  # gate.py: gave up (lock/load) or its thread guard tripped; an `INFRA: <reason>` line
 INSTALL_DEADLINE_S = int(CHILD_LOCK_WAIT_S) + INSTALL_TIMEOUT_S  # the gated install: slot wait + the install
@@ -114,11 +113,15 @@ def settle(first: str, rerun: str | None) -> str:
 
 def merge_rerun(first: dict, again: dict) -> dict:
     """The row of a FAIL and its re-run: the settled verdict, both folders (the re-run's None if it died
-    before making one), the re-run's failed checks (else the first's), infra and p95, seconds summed."""
+    before making one), the re-run's failed checks (else the first's), infra and p95; seconds, gate wait and
+    run phases summed (every attempt counts), untimed attempts' seconds kept per attempt."""
     return {**first, "verdict": settle(first["verdict"], again["verdict"]), "first_verdict": first["verdict"],
             "rerun_verdict": again["verdict"], "rerun_folder": again["folder"],
             "failed": again["failed"] or first["failed"], "infra": again["infra"],
-            "p95": again["p95"] or first["p95"], "seconds": round(first["seconds"] + again["seconds"], 1)}
+            "p95": again["p95"] or first["p95"], "seconds": round(first["seconds"] + again["seconds"], 1),
+            "gate_wait_s": phases.add(first.get("gate_wait_s"), again.get("gate_wait_s")),
+            "run_phases": phases.merge(first.get("run_phases"), again.get("run_phases")),
+            "untimed": first["untimed"] + again["untimed"]}
 
 
 def exit_code(verdicts: list[str], infra: bool = False) -> int:
@@ -218,6 +221,22 @@ def _folders(r: dict) -> str:
     return r["folder"] or "-"
 
 
+def _phase_totals(rows: list[dict], gate_s: float) -> str:
+    """One line: the four Run phases summed over the timed attempts (a merged row holds both of its attempts'),
+    seeding's share of their measured run seconds, the untimed attempts (no run phases) with their wall seconds
+    apart, and the gate wait apart."""
+    attempts = sum(2 if "rerun_verdict" in r else 1 for r in rows)
+    untimed = [x for r in rows for x in r["untimed"]]
+    tot = {k: sum((r["run_phases"] or {}).get(k) or 0 for r in rows) for k in phases.KEYS}  # null = not reached
+    run_s = sum(tot.values())
+    share = f"{100 * tot['seeding_s'] / run_s:.1f}%" if run_s else "-"
+    return (f"run phases ({attempts - len(untimed)} of {attempts} attempts timed): "
+            + " · ".join(f"{k[:-2]} {tot[k]:.0f}s" for k in phases.KEYS)
+            + f"; seeding {share} of {run_s:.0f}s measured run seconds; untimed "
+            + (f"{len(untimed)} attempts, {sum(untimed):.0f}s wall (no run phases)" if untimed else "none")
+            + f"; gate wait {gate_s:.0f}s")
+
+
 def digest(s: dict) -> str:
     """summary.md from summary.json's dict."""
     v = [r["verdict"] for r in s["rows"]]
@@ -231,6 +250,8 @@ def digest(s: dict) -> str:
     waits = [(r["gate_wait_s"], r["scenario"]) for r in s["rows"] if r.get("gate_wait_s")]
     if waits:
         out.append(f"gate wait: {sum(w for w, _ in waits):.0f}s total, max {max(waits)[0]:.0f}s ({max(waits)[1]})")
+    if s["rows"]:
+        out.append(_phase_totals(s["rows"], sum(w for w, _ in waits)))
     for p in s["phases"]:
         rows = [r for r in s["rows"] if r["phase"] == p]
         ok = [r for r in rows if r["verdict"] == "OK"]
@@ -277,7 +298,9 @@ def row_of(phase: str, name: str, folder: Path | None, seconds: float, code: int
     return {"phase": phase, "scenario": name, "verdict": v, "seconds": round(seconds, 1),
             "folder": folder.name if folder else None, "failed": failed, "infra": infra,
             "p95": (meta or {}).get("p95_vs_last_green") or {}, "exit": code,
-            "gate_wait_s": ((meta or {}).get("params") or {}).get("lock_wait_s")}
+            "gate_wait_s": ((meta or {}).get("params") or {}).get("lock_wait_s"),
+            "run_phases": (meta or {}).get("run_phases"),
+            "untimed": [] if phases.timed((meta or {}).get("run_phases")) else [round(seconds, 1)]}
 
 
 def app_deps_stale() -> str | None:
@@ -347,16 +370,7 @@ class Night:
         return r
 
     def stop_child(self) -> None:
-        """SIGINT a running `slop/run` (gate.py run forwards it; KeyboardInterrupt: its stack tears down),
-        past 60 s its whole tree (kill_tree)."""
-        p = self.proc
-        if p is None or p.poll() is not None:
-            return
-        p.send_signal(signal.SIGINT)
-        try:
-            p.wait(60)
-        except subprocess.TimeoutExpired:
-            kill_tree(p)
+        stop_child(self.proc)
 
     def install_app_deps(self, why: str) -> str | None:
         """pnpm install from this worktree's lockfile, in a gate slot like any heavy child; -> error or None."""
@@ -373,6 +387,18 @@ class Night:
             return f"pnpm install --frozen-lockfile in app/ failed (exit {code}): {tail[:200]}"
         (nm / LOCK_SHA).write_text(hashlib.sha256((APP / "pnpm-lock.yaml").read_bytes()).hexdigest() + "\n")
         return None
+
+
+def stop_child(p: subprocess.Popen | None) -> None:
+    """SIGINT a running `slop/run` (gate.py run forwards it; KeyboardInterrupt: its stack tears down),
+    past 60 s its whole tree (kill_tree). Also lib/share.py's leader on its own cancellation."""
+    if p is None or p.poll() is not None:
+        return
+    p.send_signal(signal.SIGINT)
+    try:
+        p.wait(60)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
 
 
 def kill_tree(p: subprocess.Popen) -> None:

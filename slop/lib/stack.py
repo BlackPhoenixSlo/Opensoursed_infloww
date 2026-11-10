@@ -47,9 +47,9 @@ from slop.lib import recovery, selection
 ROOT = Path(__file__).resolve().parents[2]
 PY = Path(os.environ.get("SLOP_PY") or ROOT / "venv/bin/python")
 DEMO = ROOT / "scripts/demo-shots"
-RESTORE = ("tsconfig.json", "next-env.d.ts")
-APP_LOCK = ROOT / "app/.next/slop.lock"
-APP_STATE = ROOT / "app/.next/slop.state.json"  # lib/recovery.py AppFiles
+RESTORE = recovery.APP_FILES
+APP_LOCK = ROOT / recovery.APP_LOCK
+APP_STATE = ROOT / recovery.APP_STATE
 
 
 def _lock_app() -> int:
@@ -131,6 +131,8 @@ class Stack:
         self.app = self.app_urls.get(0) if not fleet and ui else None
         self._relay_port, self._dead = self.relay_ports[0], dead
         self._lock: int | None = None
+        self.waits: list[dict] = []  # each readiness wait: {name, seconds, polls (requests sent)}
+        self.teardown_s: float | None = None  # its latest __exit__ (a failed start's partial one too)
 
     def box_root(self, box: str) -> Path:
         """A box's /opt/oi (boxes= runs)."""
@@ -323,24 +325,37 @@ class Stack:
         return p
 
     def _wait(self, name: str, url: str, timeout: int, proc: subprocess.Popen) -> None:
-        """Ready = an HTTP answer below 500 (a 5xx while booting is not ready)."""
-        t0, last = time.time(), "no answer"
-        while time.time() - t0 < timeout:
-            if self._lock is not None:  # `next` rewrites the app files while it boots
-                self._app_files.note_written()
-            if proc.poll() is not None:
-                raise SystemExit(f"slop: {name} exited during startup; see {self.logdir}")
-            try:
-                r = httpx.get(url, timeout=60)
-                if r.status_code < 500:
-                    return
-                last = f"HTTP {r.status_code}"
-            except httpx.HTTPError as e:
-                last = type(e).__name__
-            time.sleep(1)
-        raise SystemExit(f"slop: {name} not ready at {url} after {timeout}s (last: {last}); see {self.logdir}")
+        """Ready = an HTTP answer below 500 (a 5xx while booting is not ready). Recorded in `waits`, failed ones too.
+
+        Polls back off 0.1, 0.2, 0.4, 0.8 s then every 1 s; each sleep is capped at what is left of `timeout`.
+        Each request's httpx timeout is min(60 s, what is left): 60 s so a stuck request still returns to the
+        process-exit check. httpx applies it per operation (connect, each read, write, pool), an inactivity bound,
+        not a total one: a server that trickles bytes can hold a request longer. The run's `--timeout` is the final
+        bound."""
+        last, m0, polls, delay = "no answer", time.monotonic(), 0, 0.1
+        deadline = m0 + timeout
+        try:
+            while (left := deadline - time.monotonic()) > 0:
+                if self._lock is not None:  # `next` rewrites the app files while it boots
+                    self._app_files.note_written()
+                if proc.poll() is not None:
+                    raise SystemExit(f"slop: {name} exited during startup; see {self.logdir}")
+                try:
+                    polls += 1
+                    r = httpx.get(url, timeout=min(60.0, left))
+                    if r.status_code < 500:
+                        return
+                    last = f"HTTP {r.status_code}"
+                except httpx.HTTPError as e:
+                    last = type(e).__name__
+                time.sleep(max(0.0, min(delay, deadline - time.monotonic())))
+                delay = min(delay * 2, 1.0)
+            raise SystemExit(f"slop: {name} not ready at {url} after {timeout}s (last: {last}); see {self.logdir}")
+        finally:
+            self.waits.append({"name": name, "seconds": round(time.monotonic() - m0, 3), "polls": polls})
 
     def __exit__(self, *exc) -> None:
+        t0 = time.monotonic()
         for p in self.procs:
             try:
                 os.killpg(p.pid, signal.SIGTERM)
@@ -365,3 +380,4 @@ class Stack:
         if self._lock is not None:
             os.close(self._lock)  # releases the flock
             self._lock = None
+        self.teardown_s = round(time.monotonic() - t0, 3)

@@ -18,8 +18,10 @@ from pathlib import Path
 
 SLOP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` import
+sys.modules.setdefault("slop.lib.cli", sys.modules[__name__])  # one module when run as a script (lib/breakit.py)
 
-from slop.lib import covmap, gate, selection  # noqa: E402
+from slop.lib import covmap, gate, identity, phases, selection  # noqa: E402
+from slop.lib.breakit import break_one  # noqa: E402
 from slop.lib.client import Http, Recorder  # noqa: E402
 from slop.lib.faults import FAULTS  # noqa: E402
 from slop.lib import net, netloss  # noqa: E402
@@ -32,7 +34,7 @@ from slop.seed import SCALES, World  # noqa: E402
 SCEN = SLOP / "scenarios"
 # params that are facts of the run, not knobs: never compared when matching a baseline
 RUN_FACTS = ("git_sha", "git_dirty", "lock_wait_s", "load_at_start", "wire_lock_wait_s", "net_wire_stale",
-             "max_threads_proc", "max_sockets_run")
+             "max_threads_proc", "max_sockets_run", "source_id", "source_id_end", "env_id", "env_names")
 
 
 def scenarios() -> dict[str, Path]:
@@ -88,7 +90,7 @@ class Ctx:
     A fleet run (`--shards=N`, N > 1) also gets `shards` (one Shard each; shard 0
     is `owner` / `world`) and `fleet` (lib/edge.py: the Caddy edge and the map)."""
 
-    def __init__(self, name, stack, report, rec, args, params, *, ui=False, fault=None, fleet=None):
+    def __init__(self, name, stack, report, rec, args, params, *, ui=False, fault=None, fleet=None, run_phases):
         self.name, self.stack, self.report, self.rec = name, stack, report, rec
         self.scale, self.users, self.seed = args.scale, args.users, args.seed
         self.relay, self.app, self.out = stack.relay, stack.app, report.out
@@ -109,6 +111,7 @@ class Ctx:
         self.browser_fault_files: dict[str, int] = {}
         self.app_ts_fault_files: dict[str, int] = {}
         self.ui_pages: set[str] = set()  # main-frame paths the browsers navigated to (actors/ui.track)
+        self.run_phases = run_phases  # lib/phases.py: build() charges seeding
 
     def param(self, key: str, default):
         v = self.params.get(key, default)
@@ -116,21 +119,22 @@ class Ctx:
 
     async def build(self, profile: str):
         """The profile's World; a fleet profile (`build_fleet`) gets every shard's
-        World and returns them as a list."""
-        t0 = time.time()
-        mod = importlib.import_module(f"slop.seed.profiles.{profile}")
-        if hasattr(mod, "build_fleet"):
-            ws = await mod.build_fleet([s.world for s in self.shards])
-            self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2), "shards": len(ws),
-                                 "creators": sum(len(w.data.get("creators", [])) for w in ws),
-                                 "fans_total": sum(len(v) for w in ws for v in w.data.get("fans", {}).values()),
-                                 "threads": sum(len(w.data.get("threads", [])) for w in ws)})
-            return ws
-        w = await mod.build(self.world)
-        self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2),
-                             **{k: len(v) for k, v in w.data.items() if isinstance(v, list)},
-                             "fans_total": sum(len(v) for v in w.data.get("fans", {}).values())})
-        return w
+        World and returns them as a list. Its seconds are Run phase seeding, a raising profile's too."""
+        with self.run_phases.seed():
+            t0 = time.time()
+            mod = importlib.import_module(f"slop.seed.profiles.{profile}")
+            if hasattr(mod, "build_fleet"):
+                ws = await mod.build_fleet([s.world for s in self.shards])
+                self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2), "shards": len(ws),
+                                     "creators": sum(len(w.data.get("creators", [])) for w in ws),
+                                     "fans_total": sum(len(v) for w in ws for v in w.data.get("fans", {}).values()),
+                                     "threads": sum(len(w.data.get("threads", [])) for w in ws)})
+                return ws
+            w = await mod.build(self.world)
+            self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2),
+                                 **{k: len(v) for k, v in w.data.items() if isinstance(v, list)},
+                                 "fans_total": sum(len(v) for v in w.data.get("fans", {}).values())})
+            return w
 
 
 def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
@@ -369,6 +373,16 @@ def _git() -> dict:
             "git_dirty": bool(git("status", "--porcelain").strip())}
 
 
+def _source_id() -> str | None:
+    """This checkout's Run identity source (lib/identity.py); None, with one WARN line, if it could not be read
+    (no baseline matches it, and a baseline recorded with it is refused)."""
+    try:
+        return identity.source_id(SLOP.parent)
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        print(f"slop: WARN source_id unreadable: {type(e).__name__}: {e}")
+        return None
+
+
 class ScenarioTimeout(BaseException):
     """--timeout ran out. A BaseException, so a scenario's `except Exception` cannot swallow it."""
 
@@ -417,6 +431,7 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
     set when the stack or the scenario itself broke, or it timed out (no verdict possible)."""
     out = run_dir(name, tag)
     cov = _harness_coverage(out) if args.map else None  # before the scenario module is imported
+    source_id = _source_id()  # before the scenario module is imported
     load_error = None
     try:
         mod = load(path)
@@ -424,9 +439,10 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
     except Exception:
         mod, ui, shards = None, False, 1
         load_error = traceback.format_exc()
-    p = {**_run_knobs(name, args, params, ui, shards, fault), **_git()}
+    p = {**_run_knobs(name, args, params, ui, shards, fault), **_git(), "source_id": source_id,
+         "env_id": args.env_id, "env_names": args.env_names}
     report, rec = Report(name, out, p), Recorder()
-    t0, live, terminated = time.time(), {}, None
+    ph, live, terminated = phases.RunPhases(), {}, None  # restarted after the gate: the four phases sum to `seconds`
     print(FOLDER_LINE.format(path=out))
     if load_error:
         (out / "scenario-traceback.txt").write_text(load_error)
@@ -446,15 +462,15 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
                 if facts.get("net_wire_stale"):
                     print(f"slop: {facts['net_wire_stale']}")
                 report.params.update(g)
-                t0 = time.time()
+                ph.restart()
                 with _deadline(args.timeout):
                     try:
-                        asyncio.run(_run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live))
+                        asyncio.run(_run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, ph, live))
                     except (ScenarioTimeout, RunTerminated) as e:
                         signal.alarm(0)
                         stack = live.get("stack")
                         if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
-                            stack.__exit__(None, None, None)
+                            stack.__exit__(None, None, None)  # teardown already open, or cut in startup: teardown_s
                         if isinstance(e, RunTerminated):
                             terminated = e
                             _infra_first(report, f"{e}; stack torn down")
@@ -471,7 +487,10 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
         except RunTerminated as e:
             terminated = e
             _infra_first(report, f"{e}; stack torn down")
-    report.metric("seconds", round(time.time() - t0, 1))
+    report.metric("run_phases", run_phases := ph.as_dict())
+    report.metric("seconds", round(ph.elapsed(), 1))
+    report.note(phases.line(run_phases, report.params.get("lock_wait_s")))
+    report.params["source_id_end"] = _source_id()  # after teardown: != source_id means the run raced an edit
     try:
         _stock_checks(report, rec, out, mod)
         report.write(rec.summary(), rec.errors)
@@ -532,13 +551,15 @@ def _map_update(name: str, report: Report, cov, out: Path, args, ui: bool, pages
           f"{covmap.MAP.relative_to(SLOP.parent)}")
 
 
-async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live) -> None:
+async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, ph, live) -> None:
+    ph.enter("startup")
     try:
         stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile, shards=shards,
                       apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
                       boxes=getattr(mod, "BOXES", None),
                       shards_per_box=getattr(mod, "SHARDS_PER_BOX", None),
                       app_mode=getattr(mod, "APP_MODE", "dev"))
+        ph.stack = stack  # its waits; a failed start's own cleanup is teardown
         for i in range(stack.shards):  # a scenario's RELAY_ENV: extra env for every relay it starts
             stack.relay_env[i].update(getattr(mod, "RELAY_ENV", {}))
         fleet = None
@@ -553,10 +574,10 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                 stack.relay_env[i]["OF_API_ORIGIN"] = of_wire.origin
         with wire, stack, (fleet or contextlib.nullcontext()):  # the fake OF outlives the relays it serves
             live["stack"] = stack  # entered: a timeout that cuts its teardown short finishes it (run_one)
-            print(f"slop: stack up in {time.time() - t0:.0f}s (relay {stack.relay}{', app ' + stack.app if stack.app else ''}"
+            print(f"slop: stack up in {ph.elapsed():.0f}s (relay {stack.relay}{', app ' + stack.app if stack.app else ''}"
                   f"{f', {shards} shards, apps on ' + ','.join(stack.shard_ids[i] for i in stack.apps) if shards > 1 else ''}"
                   f"{', edge ' + fleet.edge_url if fleet and fleet.edge_url else ''})")
-            ctx = Ctx(name, stack, report, rec, args, params, ui=ui, fault=fault, fleet=fleet)
+            ctx = Ctx(name, stack, report, rec, args, params, ui=ui, fault=fault, fleet=fleet, run_phases=ph)
             live["ctx"] = ctx
             # An actor's plain HTTP call to the app or the edge reaches an app path (a route.ts).
             live["app_hosts"] = {u.split("//", 1)[-1] for u in (*stack.app_urls.values(), stack.app,
@@ -572,12 +593,14 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
             for m in mons.values():
                 m.start()
             try:
+                ph.enter("execution")
                 await mod.run(ctx)
             except Exception as e:  # a crashed scenario has no verdict, but keeps its evidence
                 report.infra = f"scenario crashed: {type(e).__name__}: {e}"
                 report.check("scenario ran to completion", False, error=f"{type(e).__name__}: {e}")
                 (out / "scenario-traceback.txt").write_text(traceback.format_exc())
             finally:
+                ph.enter("teardown")  # monitors, resources, closes and the stack's exit
                 _client_fault_applied(report, ctx, fault)
                 if args.map:  # the relays' data so far: a relay SIGKILLed at teardown keeps it
                     for m in mons.values():
@@ -646,91 +669,6 @@ def _knobs(mod, args, params: dict | None = None) -> tuple[bool, int]:
     `shards_for(params)` (a layout knob that changes the shard count), else its SHARDS, else 1."""
     n = args.shards or (mod.shards_for(params or {}) if hasattr(mod, "shards_for") else getattr(mod, "SHARDS", 1))
     return bool(getattr(mod, "UI", False)) and not args.no_ui, int(n or 1)
-
-
-def _status(checks: list[dict]) -> dict[str, str]:
-    return {c["name"]: c.get("status") or ("pass" if c["ok"] else "fail") for c in checks}
-
-
-def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1) -> tuple[dict, str | None]:
-    """(statuses, problem) from a previous no-fault run of the same scenario and knobs."""
-    try:
-        checks = json.loads((d / "invariants.json").read_text())
-        meta = json.loads((d / "metrics.json").read_text())
-    except (OSError, ValueError) as e:
-        return {}, f"baseline {d} unreadable: {e}"
-    bp = meta.get("params", {})
-    want = _run_knobs(name, args, params, ui, shards, None)
-    diff = _same_knobs(bp, want)
-    if diff:
-        return {}, f"baseline {d} was run with other knobs (have, want): {diff}"
-    if meta.get("infra"):
-        return {}, f"baseline {d} had an infra failure: {meta['infra']}"
-    return _status(checks), None
-
-
-def break_one(name: str, path: Path, args, params) -> str:
-    """Break-it-once. Returns CAUGHT, NOT CAUGHT or INCONCLUSIVE."""
-    try:
-        mod = load(path)
-    except Exception as e:
-        print(f"slop: {name} break INCONCLUSIVE: scenario import failed: {type(e).__name__}: {e}")
-        return "INCONCLUSIVE"
-    fault = args.fault or getattr(mod, "FAULT", None)
-    if not fault or fault not in FAULTS:
-        print(f"slop: {name} declares no known FAULT ({fault!r}); --break needs one of {', '.join(FAULTS)}")
-        return "INCONCLUSIVE"
-    targets = FAULTS[fault].targets
-    if args.baseline:
-        base_dir = Path(args.baseline).resolve()
-        ui, shards = _knobs(mod, args, params)
-        base, problem = _load_baseline(base_dir, name, ui, args, params, shards)
-    else:
-        print(f"slop: break-it-once {fault}: green baseline first")
-        b = run_one(name, path, args, params, tag="baseline")
-        base_dir, base, problem = b.out, _status(b.checks), (f"baseline infra failure: {b.infra}" if b.infra else None)
-    broken_dir, broken, broken_problem = None, {}, None
-    if not problem:
-        r = run_one(name, path, args, params, fault=fault, tag="break")
-        broken_dir, broken = r.out, _status(r.checks)
-        broken_problem = f"fault run infra failure: {r.infra}" if r.infra else None
-
-    missing = [t for t in targets if t not in base or (broken_dir and t not in broken)]
-    not_green = [t for t in targets if base.get(t) not in (None, "pass")]
-    went_red = [t for t in targets if base.get(t) == "pass" and broken.get(t) == "fail"]
-    stayed = [f"{t} ({base.get(t)} -> {broken.get(t)})" for t in targets if t not in went_red]
-    noise = [f"{n}: {base.get(n, 'absent')} -> {st}" for n, st in broken.items()
-             if n not in targets and base.get(n) in ("pass", "fail") and st in ("pass", "fail")
-             and base[n] != st]
-    reasons = [x for x in (problem, broken_problem) if x]
-    reasons += [f"fault targets check(s) the scenario never ran: {missing}"] if missing and not problem else []
-    reasons += [f"targeted check(s) not green in the baseline: {not_green}"] if not_green and not problem else []
-    skipped = [t for t in targets if broken.get(t) == "skip"]
-    reasons += [f"targeted check(s) skipped in the fault run: {skipped}"] if skipped else []
-    if reasons:
-        verdict = "INCONCLUSIVE"
-    else:
-        verdict = "CAUGHT" if len(went_red) == len(targets) else "NOT CAUGHT"
-    base_red = sorted(n for n, st in base.items() if st == "fail" and n not in targets)
-
-    lines = [f"break-it-once {fault}: mutation {verdict}",
-             f"  baseline: {base_dir}", f"  fault run: {broken_dir}",
-             f"  targeted checks PASS -> FAIL: {went_red or 'none'}"]
-    lines += [f"  targeted checks NOT turned red: {stayed}"] if stayed and not reasons else []
-    lines += [f"  inconclusive: {r_}" for r_ in reasons]
-    lines += [f"  noise (non-targeted checks that changed; they catch nothing): {noise or 'none'}"]
-    lines += [f"  note: baseline already red on non-targeted: {base_red}"] if base_red else []
-    print("slop: " + "\n".join(lines))
-    if broken_dir:
-        # Line 1 is the fault run's own status, red by design: label it so it is not read as the verdict.
-        summary = broken_dir / "summary.txt"
-        head, _, rest = summary.read_text().partition("\n")
-        head += f"  (under injected fault {fault}: red expected; break verdict {verdict}, see the end / break.json)"
-        summary.write_text(f"{head}\n{rest}\n" + "\n".join(lines) + "\n")
-        (broken_dir / "break.json").write_text(json.dumps({
-            "fault": fault, "verdict": verdict, "targets": list(targets), "went_red": went_red,
-            "noise": noise, "inconclusive": reasons, "baseline": str(base_dir)}, indent=2))
-    return verdict
 
 
 def _estimates(names, doc: dict, args, all_s: dict[str, Path], params: dict) -> tuple[dict[str, float | None], str]:
@@ -843,7 +781,7 @@ def _main() -> int:
                     help="run a green baseline, then the scenario's FAULT; CAUGHT only if every check "
                          "the fault targets goes PASS -> FAIL")
     ap.add_argument("--baseline", metavar="RUN_DIR",
-                    help="with --break: reuse this no-fault run (same knobs) instead of running one")
+                    help="with --break: reuse this no-fault run (same knobs and Run identity) instead of running one")
     ap.add_argument("--fault", metavar="NAME", help="with --break: inject this lib/faults.py fault instead of "
                     "the scenario's FAULT (e.g. to prove another check can go red)")
     ap.add_argument("--profile", action="store_true",
@@ -877,6 +815,7 @@ def _main() -> int:
                     help="with --changed: own/flow picks always run; shared/layout ones only while the mapped "
                          "estimate stays within MIN minutes (default 15, 0 = no cap)")
     args, extra = ap.parse_known_args()
+    args.env_id, args.env_names = identity.env_id(os.environ)  # the caller's, before this process sets any
     # Any other `--some-knob=value` is a scenario param, same as `--set some_knob=value`.
     for e in extra:
         if not (e.startswith("--") and "=" in e):

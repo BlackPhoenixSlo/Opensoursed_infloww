@@ -10,7 +10,7 @@ slop/run --list
 slop/run inbox                                   # any substring of a scenario name
 slop/run inbox --scale=medium --users=120        # standard volume check, 120 concurrent users
 slop/run inbox --break                           # break-it-once: green baseline, then the fault
-slop/run inbox --break --baseline=slop/evidence/<run-dir>   # reuse a no-fault run (same knobs)
+slop/run inbox --break --baseline=slop/evidence/<run-dir>   # reuse a no-fault run (same knobs, same Run identity)
 slop/run inbox --rate=20                         # open loop: 20 frames/s per Creator
 slop/run all --no-ui                             # every scenario, skip next dev/Playwright
 slop/run inbox --set per_fan=20 --seed=7         # scenario params, another deterministic world
@@ -56,11 +56,13 @@ the remaining scenarios are skipped, exit 3.
 
 Each fault in `lib/faults.py` patches one product function and names the checks it
 `targets`. `--break` runs a no-fault baseline (or reads `--baseline <run-dir>`, which
-must have the same scenario, scale, users, seed, UI and params), then the fault run.
+must have the same scenario, scale, users, seed, UI and params and the same Run identity: see
+"Fast local feedback"), then the fault run.
 CAUGHT only if every targeted check went PASS -> FAIL. Any other check that changed is
 printed as noise and catches nothing (a p95 miss or a flaky screen is not a catch).
 INCONCLUSIVE: either run hit infra, the baseline is not green on a target, a target
-was skipped, or a target name matches no check. The verdict is appended to the fault
+was skipped, a target name matches no check, or the source changed between or during the
+baseline and the fault run (`raced`). The verdict is appended to the fault
 run's `summary.txt` and written to its `break.json`.
 
 A client fault (`Fault(None, targets, browser=((regex, replacement), ...))`) breaks the
@@ -87,6 +89,52 @@ several page chunks is still one source file in node).
 The load must not depend on the fault: actors pick what to do from the seed, not from
 what the faulted route answered, else the fault also changes the load and a latency
 budget goes red as noise.
+
+## Fast local feedback
+
+The loop while developing, all of it already here (no other selection exists):
+
+```sh
+slop/run --changed --dry          # what the diff reaches, with estimates; runs nothing, takes no gate slot
+slop/run --changed                # run those picks (own/flow always, the shared tail within --budget)
+slop/run <pick> --break --baseline=slop/evidence/<its green folder>   # each own pick that declares FAULT
+```
+
+`--changed` is for development. `slop/run all` and `slop/run nightly` stay the complete sweep: deploys,
+harness-wide changes, the daily run.
+
+`--baseline` reuses a green folder only at the same Run identity: same knobs, same source (HEAD, the
+tracked diff, every untracked non-ignored file, `app/.env*`, `app/node_modules/.slop-lock-sha`, the venv's
+python; `app/tsconfig.json` / `next-env.d.ts` as a live run's saved originals while it rewrites them) and
+the same caller environment (every env var but shell noise, the gate's bookkeeping and admission-only
+waits; `PATH`, `SLOP_GATE` and the guard limits count). Record and reuse from the same kind of shell: a
+conda-activated shell differs by `PATH`. Every run folder's `metrics.json` `params` carries `source_id`
+(at start), `source_id_end` (after teardown), `env_id` and `env_names` (names only, never values). A
+mismatch is INCONCLUSIVE, exit 3, before any fault run, with one `inconclusive:` line naming `source`, the
+added/removed env vars, or `env value changed (values are not stored)`; a folder from before Run identity
+says `re-run without --baseline`. `raced` (the baseline's own start and end source differ, or the fault
+run's differ from the baseline's; also for `--break` without `--baseline`): re-run with nobody editing the
+checkout. Source is read at a run's start and end only: an edit made and reverted within one run is not
+detected. p95-vs-last-green and `--changed` estimates still match on knobs and world only, across commits.
+
+`slop/run <args> --share` (opt-in; `lib/share.py`): when another session asks for exactly the same run at
+the same time (the same args in the same order, checkout, working directory, source and caller env: the Run
+identity; reordered flags never share), the later caller waits outside the gate (no slot, no stack) and
+gets the live run's output verbatim after one `slop: shared run of pid N (started T)` line, and its exit code (0, 1, 3, gate 75, a signal exit as 128+N). Use it
+when parallel agents may ask for the same pick. It never serves a finished run: a request after the live
+one ended runs fresh. Repeats and flake hunts must omit it (without `--share` every run is a Fresh run);
+nightly never passes it, no env var turns it on, and it is refused (exit 2) with `--map` and `nightly`.
+The follower ends INFRA exit 3, with the leader's log so far, when the leader was cancelled or died without
+a result, its source changed during the run (re-run; no automatic re-run), it did not publish within 10 s,
+or `SLOP_SHARE_WAIT_S` (default 7200 s) ran out. Cancelling a follower stops only that follower (exit 3).
+A cancelled leader stops its child as nightly does (SIGINT, its tree after 60 s) and publishes no result.
+Files: `slop/evidence/.share/` (per checkout), all kept (one small log per shared run: no age-based cleanup can
+know how long another caller's follower waits); delete them by hand only while no `--share` run is live.
+
+The machine gate's limits, as observed (see "The machine gate"): 6 slots, admission at load < 12 and
+machine threads < 12000, a 20 s stagger between starts, medium/120 and larger runs exclusive. The
+2026-11-09 nightly (5h03m) spent 1129 s (6.2 %) waiting in it. This loop changes none of them: never speed
+up by raising slots or limits.
 
 ## Which scenarios to run
 
@@ -188,7 +236,11 @@ The machine gate owns admission: the nightly parent never holds it (`slop/run` s
 -m slop.lib.nightly`, untouched by the venv hook; an inherited `SLOP_GATE*` is dropped with `slop: nightly:
 ignoring inherited SLOP_GATED`); each child `slop/run` takes its own gate slot (queues when none is free), env without `SLOP_GATE*`, with
 `SLOP_LOCK_WAIT_S=7200`; a child's gate exit 75 = INFRA with the gate's `INFRA: <reason>`. plan.txt
-records `python3 ~/.slop/gate.py status` at the start, summary.md the children's total gate wait. First
+records `python3 ~/.slop/gate.py status` at the start, summary.md the children's total gate wait and one `run phases
+(T of N attempts timed):` line: the four Run phases summed over every timed attempt (a FAIL's re-run included),
+seeding's share of their measured run seconds (the seed-cache trigger is 15 %), then the untimed attempts (no run
+phases: died before a folder, gate exit 75, load error) with their wall seconds, and the gate wait, both kept out of
+the share. First
 `app/node_modules` must be this worktree's own install: a missing dir or a
 `pnpm-lock.yaml` sha256 other than `app/node_modules/.slop-lock-sha` runs `gate.py run -- pnpm install
 --frozen-lockfile` (in a slot, same env; output in run.log, cap 7200 s slot wait + 1200 s install; failure, timeout or gate exit 75:
@@ -234,6 +286,7 @@ update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `
 | `lib/report.py` | Invariants, metrics and the evidence writer. `ctx.check(..., budget=True)` labels a latency budget (a miss is still FAIL); `ctx.check(name, None)` or `ctx.skip(name, reason)` records SKIP (no samples, `--no-ui`), shown and never a pass. `ctx.note(...)` adds lines (e.g. a per-stage table) to `summary.txt`. |
 | `lib/hold.py` | A page's save held at the browser's wire: `async with held(page, match, method) as h` records each `method` body (`h.bodies`), holds the first until `h.release` (`h.seen` once it arrived), always released on exit; `release_settled(page, h, refetch=, save=)` lets it through and waits for its response, the refetch GET and the Save button enabled again. `with recorded(page, method, path) as sent` records every such request unaltered (`url`, `body`, `status`: None until answered, `failed: <reason>` if it failed before an answer). |
 | `lib/cli.py` | Discovers scenarios, handles the knobs, uses the invocation's machine gate (`lib/gate.py`; harness at nice 10), adds the stock invariants, and runs the break-it-once logic. A scenario that crashes leaves `scenario-traceback.txt`. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
+| `lib/breakit.py`, `lib/identity.py` | `--break` ("Break-it-once"; re-exported by `lib/cli.py`) and the Run identity it reuses a `--baseline` at ("Fast local feedback"): `source_id`, `env_id`, `baseline_problem`, `raced`. |
 | `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`, `agency_notifications` (one unread owner row per Creator, as `notify` files them, without its SSE push), `chatters` (employees via the real `POST /admin/chatters/invite` + `POST /chatter/register`; `account_ids=` per username is the invite's Employee setup, the Creators that chatter may work), `earnings` (OF Statistics' daily net per Creator and category in `<tmp>/of-statistics.json`, plus the `transactions` rows the ledger caught: a trickle before the Creator was connected, most of it since, some sales today; `accounts.created_at` = the connection day), `of_sessions` (a captured session file per Creator, `session_wire.json` in the bootstrap's shape with `lib/browserbase.py`'s synthetic signing rules, and `latest.json` pointed at it, so the relay builds a REAL `OFClient`; only for an `OF_WIRE` run). Sizes come from `seed.SCALES`. A World's `stream` gives a fleet shard its own RNG streams and `user_prefix` its own usernames. |
 | `seed/profiles/` | Named world shapes that only compose seeders: `agency_inbox`, `agency_pool` (`agency_inbox` with at least 7 Creators at every scale: more than the 4 run slots), `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big), `one_agency` (one relay: one Agency with 50 Creators, 9 big, plus a neighbour Agency with 1 Creator and no chatters). |
 | `actors/` | Simulated people: `fan_dm` (fans DMing: `serial`, the pump's shape, one frame in flight per Creator, optional `rate`; `say`, given lines per fan, serial per Creator; `burst`, many in flight per Creator; or open-loop `Paced` DMs/minute with tips, PPV purchases and typing), `chatter` (head page, thread, mark read, reply; `Crowd`: employee mode, each chatter its own `POST /chatter/login` cookie, own `/events` stream and the request pattern of a real chatter tab (tab open, chat open, send, 60 s polls, perflog), human-paced, only its assigned Creators), `manager` (SSE listener with arrival times, each chat message's (account, fan) and every event's `__account_id`; `states=(types)` also keeps those `state` events as (type, fields, `__account_id`), batch frames unwrapped; ready on the stream's first body line, the subscriber is registered by then; `ended` if the stream died; plus inbox reads), `ui` (signed-in Chromium, screenshots; `owner_browser(..., through=, send=)` lets exact `/api/of/` paths or compiled GET path patterns, and the chat send, through to the relay; `close_popup(opener, pop)` closes a window the page opened, its held `/api/of/` reads aborted first (Chromium lets paused requests through when their page closes); `touch=True` is a phone's context (touch input, mobile viewport) and `swipe(page, x0, y0, x1, y1, cancel=, via=, legs=, mid=, hold_ms=)` one finger as Chromium touch input (CDP, each event stamped with the finger's own time); `touch_log`/`touches` log the touch events the page sees, `sheet_probe(page, sel, pt)`/`sheet_read` record one sheet gesture (release, off screen, unmount, touchstarts, clicks); `chatter_tab` signs in as a chatter and lets its chat send through; `owner_tabs` + `PROBE_JS` for SSE receipt/handler time, long tasks, heap, rows, marker text), `reports` (owners reading the Dashboard's earnings card and Creator reports' Overview with the app's own report reads, human think time), `notif_click` (the owner clicking a fan DM's notification from each place it shows, in headless Chromium and in the real Electron app (temp userData, never the user's profile; SKIP without the binary); each click must leave one Messages Pro window, never reloaded, with a Fan that had no tab now active, stored and its chat open; its bypasses are in the module docstring), `clock` (chatters clocking in and out on their own logins: a clock-in storm, the top bar's day; `README.shifts.md`). `fan_dm.serial(..., ids=)` shares one message-id counter across calls; `phase=` staggers each Creator's open-loop start; `stop=` (an Event) ends an open-ended flood and `out=` receives records as they are sent. |
@@ -260,7 +313,14 @@ update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `
    `metrics.json`, `http.json` (per route: n, 4xx, 5xx, p50, p95), `relay.log`,
    `next.log`, `relay-offhost-refused.jsonl`, `resources.json` (relay CPU/RSS per stage),
    `screenshots/*.png` and, with `--profile`, `profile-*`. `params` in
-   `metrics.json` records the knobs plus `git_sha` and `git_dirty`.
+   `metrics.json` records the knobs plus `git_sha` and `git_dirty`. `run_phases` (lib/phases.py) splits the
+   run's `seconds` (monotonic, from after the gate) into `startup_s` (stack, fake OF, fleet, readiness),
+   `seeding_s` (every `ctx.build`, a raising one too; `seed_calls`/`seed_failed`), `execution_s` (the rest of
+   the scenario) and `teardown_s`, plus `waits` (each readiness wait's `name`, `seconds`, `polls` = requests
+   sent, so `polls - 1` sleeps; it also lists a scenario's mid-run relay restarts, whose time counts in
+   `execution_s`, so `waits` need not fit inside `startup_s`); on every path: a stack that fails to start charges its own cleanup to
+   teardown, a timeout or SIGTERM keeps the phases it reached; a phase never reached is null. summary.txt
+   shows them on one `run phases:` line with the gate wait (`lock_wait_s`, not a phase).
 
 ### The machine gate
 

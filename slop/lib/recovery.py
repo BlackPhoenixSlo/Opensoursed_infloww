@@ -31,6 +31,8 @@ from slop.lib.report import write_atomic
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "slop/evidence"
+APP_FILES = ("tsconfig.json", "next-env.d.ts")
+APP_LOCK, APP_STATE = "app/.next/slop.lock", "app/.next/slop.state.json"
 PROC = Path("/proc")
 _warned = False
 
@@ -203,26 +205,83 @@ class AppFiles:
         old = _read_json(self.state_path)
         if old is None:
             return
-        written = old.get("written") or {}
-        for name, encoded in (old.get("originals") or {}).items():
+        originals, written = _saved(old)
+        for name, encoded in originals.items():
             if name not in self.names:
                 continue
             path = self.app / name
-            now = content_hash(path)
-            orig = None if encoded is None else hashlib.sha256(base64.b64decode(encoded)).hexdigest()
-            if now == orig:
+            try:
+                action = _reap_action(path, name, encoded, written)
+            except ValueError:
+                print(f"slop: WARN {self.state_path}: saved original of {name} is corrupt; keeping {path}",
+                      file=sys.stderr)
                 continue
-            if name not in written or now != written[name]:
+            if action == "conflict":
                 print(f"slop: WARN {path} changed since a killed slop run last saw it; keeping it", file=sys.stderr)
-                continue
-            _put(path, encoded)
+            elif action == "restore":
+                _put(path, encoded)
         self.state_path.unlink(missing_ok=True)
 
 
-def _put(path: Path, encoded: str | None) -> None:
+def _reap_action(path: Path, name: str, encoded: str | None, written: dict) -> str:
+    """What the next holder does to a dead holder's file: "keep" (it holds the original), "restore" (it still
+    holds what slop last saw there) or "conflict" (changed since: a user's edit or branch switch, kept).
+    `encoded` None = the original was absent; "" = it was empty. ValueError: corrupt (not base64 text)."""
+    now = content_hash(path)
+    orig = _original(encoded)
+    orig = None if orig is None else hashlib.sha256(orig).hexdigest()
+    if now == orig:
+        return "keep"
+    if name not in written or now != written[name]:
+        return "conflict"
+    return "restore"
+
+
+def checkout_view(app: Path, names: tuple[str, ...], state_path: Path, live: bool) -> dict[str, bytes | None]:
+    """`names` under `app` as the checkout holds them once slop is done with them (None = absent, b"" = empty):
+    a live holder's saved originals (its exit restores them, whatever `next` wrote); a dead holder's originals
+    where the next holder's _reap restores them; else disk. Read-only: never writes, warns or unlinks; a
+    malformed state file or entry reads as no state for that file (disk). Unreadable disk raises OSError."""
+    try:
+        originals, written = _saved(json.loads(state_path.read_text()))
+    except (OSError, ValueError):
+        originals, written = {}, {}
+    out: dict[str, bytes | None] = {}
+    for name in names:
+        path = app / name
+        out[name] = path.read_bytes() if path.exists() else None
+        if name not in originals:
+            continue
+        encoded = originals[name]
+        try:
+            if live or _reap_action(path, name, encoded, written) == "restore":
+                out[name] = _original(encoded)
+        except ValueError:
+            pass  # corrupt: disk stands
+    return out
+
+
+def _saved(state) -> tuple[dict, dict]:
+    """(originals, written) of a state file's JSON; a malformed part reads as empty."""
+    if not isinstance(state, dict):
+        return {}, {}
+    originals, written = state.get("originals"), state.get("written")
+    return (originals if isinstance(originals, dict) else {}), (written if isinstance(written, dict) else {})
+
+
+def _original(encoded) -> bytes | None:
+    """A saved original: None = it was absent, b"" = empty. ValueError if corrupt (lenient base64 would read
+    junk as b"", an empty file)."""
     if encoded is None:
+        return None
+    if not isinstance(encoded, str):
+        raise ValueError(f"not a string: {encoded!r}")
+    return base64.b64decode(encoded, validate=True)
+
+
+def _put(path: Path, encoded: str | None) -> None:
+    b = _original(encoded)
+    if b is None:
         path.unlink(missing_ok=True)
-    else:
-        b = base64.b64decode(encoded)
-        if not path.exists() or path.read_bytes() != b:  # unchanged: leave its mtime to watchers
-            path.write_bytes(b)
+    elif not path.exists() or path.read_bytes() != b:  # unchanged: leave its mtime to watchers
+        path.write_bytes(b)

@@ -367,3 +367,28 @@ _Avoid_: recipient resolve, mass crawl, audience fetch
 **Silent mass-only chat**:
 A chat holding only our mass messages and no fan reply; its deep history backfill waits until the chat is opened, the fan replies or an automation needs it.
 _Avoid_: dead chat, cold chat, empty chat
+
+
+### Slop feedback
+
+**Run identity**:
+What makes two slop runs the same run: the knobs, the source tree (with the ignored inputs a stack loads) and the caller environment that reaches the stack. A Shared run and a reused Break baseline need an equal Run identity: knobs (`_same_knobs`, `slop/lib/cli.py`) plus source and environment (`slop/lib/identity.py`). The p95-vs-last-green comparison still matches knobs and world only.
+_Avoid_: same knobs (one part of it), cache key, fingerprint
+
+**Shared run**:
+One execution that answers several exact, concurrent requests with the same Run identity; each caller gets that run's exit code, run folder, failures and cancellation as if it had started it. Never an earlier finished run.
+_Avoid_: cache, cached result, reuse (that is a Break baseline's), dedup on its own
+
+**Fresh run**:
+A run that executes itself even while a Shared run with its Run identity is live: an explicit repeat or flake run, and every nightly re-run of a FAIL.
+_Avoid_: retry, re-run on its own (nightly's word for the second attempt of a FAIL, `slop/lib/nightly.py`)
+
+**Break baseline**:
+The green no-fault run a `--break` compares its fault run against: run first, or read from `--baseline=<run folder>` only at an equal Run identity.
+_Avoid_: Baseline (the Capacity campaign's first 24 h), Baseline run (the Fetch diet's pinned sweep), last green (`P95_VS_LAST`'s comparison run)
+
+**Run phase**:
+One of a slop run's startup, seeding, execution and teardown, each timed on its own.
+_Avoid_: stage (a load step a scenario sets as `ctx.rec.stage`), step
+
+- **Machine gate** (`~/.slop/gate.py`: slots, load and thread admission across every checkout), **`--changed` pick**, **CAUGHT / NOT CAUGHT / INCONCLUSIVE**, **run folder**: `slop/README.md`

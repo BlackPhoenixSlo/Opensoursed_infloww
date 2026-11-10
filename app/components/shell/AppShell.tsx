@@ -97,7 +97,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // (`--shell-top`, globals.css) is 0 and the panes fill the window.
   if (popout) {
     return (
-      <main className="min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
+      <main className="messages-pro-viewport min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
         <LeaveDesktopMainWindow pathname={pathname} />
         <PlatformSync />
         <ClockHeartbeat />

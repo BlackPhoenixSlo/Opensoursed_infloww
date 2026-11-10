@@ -6,6 +6,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from slop.lib import recovery, stack
 
 OLD_START = "Mon Jan  1 00:00:00 2001"
@@ -187,3 +189,56 @@ def test_node_modules_copy_is_atomic_for_concurrent_first_runs(tmp_path):
     assert not dest.is_symlink()
     assert len(list((main / "app/node_modules").iterdir())) == 100
     assert not list((work / "app/.next").glob("slop-node_modules.tmp.*"))
+
+
+def _disk(app):
+    return {f: (app / f).read_bytes() if (app / f).exists() else None for f in stack.RESTORE}
+
+
+@pytest.mark.parametrize("case", ["rewrite-unchanged", "user-edit-after", "user-deleted-after",
+                                  "empty-original-deleted", "absent-original-created", "never-rewritten"])
+def test_dead_holders_view_is_what_the_next_holder_leaves(tmp_path, case):
+    """checkout_view(live=False) before the next holder's _reap == disk after it, file by file."""
+    app, files = _app(tmp_path)
+    if case == "empty-original-deleted":
+        (app / "next-env.d.ts").write_text("")
+    files.save()
+    if case != "never-rewritten":
+        (app / "tsconfig.json").write_text("next dev rewrite")
+        if case == "empty-original-deleted":
+            (app / "next-env.d.ts").unlink()
+        else:
+            (app / "next-env.d.ts").write_text("generated")
+        files.note_written()  # then SIGKILL
+    if case == "user-edit-after":
+        (app / "tsconfig.json").write_text("user edit")
+    elif case == "user-deleted-after":
+        (app / "tsconfig.json").unlink()
+    view = recovery.checkout_view(app, stack.RESTORE, files.state_path, live=False)
+    recovery.AppFiles(app, stack.RESTORE, files.state_path).save()  # the next holder reaps
+    assert view == _disk(app)
+    if case == "empty-original-deleted":
+        assert view["next-env.d.ts"] == b""  # empty, not absent
+
+
+def test_live_holders_view_is_what_its_exit_restores(tmp_path):
+    app, files = _app(tmp_path)
+    files.save()
+    (app / "tsconfig.json").write_text("next dev rewrite")
+    (app / "next-env.d.ts").write_text("generated")  # not yet noted: restore() puts it back anyway
+    view = recovery.checkout_view(app, stack.RESTORE, files.state_path, live=True)
+    files.restore()
+    assert view == _disk(app) == {"tsconfig.json": b"original", "next-env.d.ts": None}
+
+
+@pytest.mark.parametrize("state", ["{", "[]", '{"originals": 1}', '{"originals": {"tsconfig.json": "%%%"}}',
+                                   '{"originals": {"tsconfig.json": 7}, "written": {}}'])
+def test_view_of_malformed_state_is_disk_and_read_only(tmp_path, state, capsys):
+    app, files = _app(tmp_path)
+    files.state_path.write_text(state)
+    for live in (True, False):
+        assert recovery.checkout_view(app, stack.RESTORE, files.state_path, live) == _disk(app)
+    assert files.state_path.read_text() == state and capsys.readouterr().err == ""
+    before = _disk(app)
+    recovery.AppFiles(app, stack.RESTORE, files.state_path).save()  # the next holder: never raises on it
+    assert _disk(app) == before

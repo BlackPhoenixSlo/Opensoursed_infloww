@@ -384,19 +384,6 @@ export function Composer({
   // everything locked). The ± stepper lets the user opt into a leading
   // free teaser when they want one.
 
-  // One-time migration banner: the lockedText default flipped from true →
-  // false (asks #6 + #17). Returning users who had muscle memory for the
-  // old "lock text auto-on" need a heads-up. localStorage flag fires once
-  // per browser, not per mount.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const key = "chatterly:lockedText-default-changed-seen";
-    if (localStorage.getItem(key)) return;
-    showToast("Text is no longer locked by default in paid messages. Tap ‘lock text’ to lock.", { ms: 4000 });
-    localStorage.setItem(key, "1");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
-  }, []);
-
   function onKeyDown(e: React.KeyboardEvent<HTMLElement>) {
     // An IME's Enter picks its candidate: no key here sends or moves on.
     if (isImeComposing(e)) return;
