@@ -168,7 +168,7 @@ export function useNudgePreview() {
   return useMutation<
     NudgePreviewResult,
     Error,
-    NudgeConfigWrite & { fan_id?: FanId | null; hour?: number | null }
+    NudgeConfigWrite & { fan_id?: FanId | null; hour?: number | null; weekday?: string | null }
   >({
     mutationFn: (vars) => relay.post(`/admin/nudge-config/preview`, vars),
   });

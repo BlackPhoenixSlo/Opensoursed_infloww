@@ -12,6 +12,10 @@ No DB, no OF.
                               an unknown user_list refuses before any crawl.
   case_exclude_sync_truncated_logs_loud: a truncated Auto_Exclude crawl syncs as
                               before (no raise) and logs an ERROR.
+  case_exclude_verified_membership: ensure_exclude_list's exact path reports the list
+                              as crawled + confirmed adds - confirmed removes (a failed
+                              remove stays in it, a failed add never joins); its return
+                              and the calls are as without `verified`.
   case_include_decide_table:  off | shadow | enforce (+ kill switch / unhealthy).
 
 Run: ./venv/bin/python service/tests/test_audience_decide.py   (exit 0 = pass)
@@ -130,20 +134,26 @@ def case_recipients_truncation_stops_crawl():
 
 
 class _AutoExclude(_Roster):
-    """Fake OF client holding an Auto_Exclude list (id 50) for _sync_exclude_list_blocking."""
+    """Fake OF client holding an Auto_Exclude list (id 50) for _sync_exclude_list_blocking.
+    `fail_add` / `fail_remove`: ids OF refuses (403) to add / remove."""
 
-    def __init__(self, **kw):
+    def __init__(self, *, fail_add=(), fail_remove=(), **kw):
         super().__init__(**kw)
         self.added: list[int] = []
         self.removed: list[int] = []
+        self.fail_add, self.fail_remove = set(fail_add), set(fail_remove)
 
     def get_lists(self, **kw):
         return {"list": [{"id": 50, "name": audiences.AUTO_EXCLUDE_LIST_NAME}], "hasMore": False}
 
     def add_user_to_list(self, lid, uid):
+        if uid in self.fail_add:
+            raise RuntimeError("Unable to add user to user list")
         self.added.append(uid)
 
     def remove_user_from_list(self, lid, uid):
+        if uid in self.fail_remove:
+            raise RuntimeError("403")
         self.removed.append(uid)
 
 
@@ -171,6 +181,24 @@ def case_exclude_sync_truncated_logs_loud():
         assert (ok.added, ok.removed, logged) == ([2], [9], []), (ok.added, ok.removed, logged)
     finally:
         audiences.log.removeHandler(h)
+
+
+async def case_exclude_verified_membership():
+    audiences._ae_mirrors.clear()
+    members = {50: [{"id": 1}, {"id": 8}, {"id": 9}]}
+    c = _AutoExclude(members=members, fail_add={3}, fail_remove={8})
+    verified: dict = {}
+    assert await audiences.ensure_exclude_list("acc_v", {1, 2, 3}, client=c, verified=verified) == 50
+    # crawled {1, 8, 9} + confirmed add 2 (3 refused) - confirmed remove 9 (8's remove failed)
+    assert verified == {50: frozenset({1, 2, 8})}, verified
+    assert (c.added, c.removed) == ([2], [9]), (c.added, c.removed)
+    # existing callers: same return, same calls
+    plain = _AutoExclude(members=members, fail_add={3}, fail_remove={8})
+    assert await audiences.ensure_exclude_list("acc_v", {1, 2, 3}, client=plain) == 50
+    assert (plain.added, plain.removed, plain.calls) == (c.added, c.removed, c.calls)
+    # nothing to exclude: nothing synced, nothing verified
+    v2: dict = {}
+    assert await audiences.ensure_exclude_list("acc_v", set(), client=c, verified=v2) is None and v2 == {}
 
 
 def P(mode, *, healthy=True, paused=False, reason=None, members=()):

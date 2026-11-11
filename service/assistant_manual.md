@@ -493,18 +493,19 @@ Save. The table shows each link with its claims ("3 / ∞") and what its fans
 spent. OnlyFans owns these — when it is unreachable the page says so and shows
 the saved links only.
 
-**Tracking links** — two different kinds on one page, and the difference
-matters:
+**Tracking links** — tabs Links list, Dashboard, Share links (owner only), then an
+Inflowwww extra, Redirect links. Two different kinds of link, and the
+difference matters:
 - **Tracking links** (the Links list tab, **Create tracking link**; the OnlyFans
   kind) point at the creator's profile. OnlyFans reports real clicks **and how
   many of those clicks subscribed** — true attribution — and the Dashboard tab
   sums them. Share links makes a public read-only report on picked links.
-- **Custom redirect links** (the collapsed section below — click the heading to
-  open it) are for a target that is not the profile: a Linktree, a landing page,
-  an X profile. Give a **Name** and a **Target URL** (`ofl.ink/name` is fine — a
-  missing `https://` is added). These are Inflowwww's own short
-  links and they count **clicks only** — the visitor never lands on OnlyFans, so
-  subscribers cannot be attributed, and the per-link **Analytics** panel says so.
+- **Custom redirect links** (the **Redirect links** tab) are for a target that is not the
+  profile: a Linktree, a landing page, an X profile. Give a **Name** and a
+  **Target URL** (`ofl.ink/name` is fine — a missing `https://` is added).
+  These are Inflowwww's own short links and they count **clicks only** — the
+  visitor never lands on OnlyFans, so subscribers cannot be attributed, and the
+  per-link **Analytics** panel says so.
   **Bot check before redirect** (in the form, or the **Bot check** box on a link's
   row; gated links show a "bot check" badge) makes visitors pass a Cloudflare
   check on a blank page first; only passed checks count as clicks. It is greyed

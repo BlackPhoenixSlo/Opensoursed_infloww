@@ -34,7 +34,7 @@ actors/fan_dm.serial (`make=`): per Creator one frame in flight, Creators in par
    headless Chromium (`channel="chromium"`: the default headless shell denies notifications even when
    granted, .scratch/os-notify-push/app-smoke.md), notifications granted, PushManager.subscribe /
    getSubscription stubbed by an init script to push_wire's endpoint + this device's keys. A fresh
-   Agency-0 owner sign-in opens the bell, Toast settings, the OS checkbox on, Test -> PUT 200 and "Push
+   Agency-0 owner sign-in opens the bell, Settings tab, the OS checkbox on, Test -> PUT 200 and "Push
    on" (shot push-test-trigger). Then a purchase frame; the plaintext the relay pushed to that
    subscription (decrypted by push_wire) goes to the real service worker by CDP
    `ServiceWorker.deliverPushMessage` with no window of the app open (the page on about:blank: the app
@@ -663,7 +663,7 @@ async def _ui(s: _S) -> None:
                 cdp.on("ServiceWorker.workerRegistrationUpdated", lambda e: regs.extend(e["registrations"]))
                 await cdp.send("ServiceWorker.enable")
                 await page.get_by_role("button", name="Notifications", exact=True).click()
-                await page.get_by_role("button", name="Toast settings").click()
+                await page.get_by_role("tablist", name="Notification feeds").get_by_role("tab", name="Settings", exact=True).click()
                 box = page.get_by_label("OS notification when tab is unfocused")
                 await box.wait_for(timeout=STEP_MS)
                 if not await box.is_checked():

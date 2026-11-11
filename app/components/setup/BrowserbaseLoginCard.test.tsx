@@ -15,6 +15,7 @@
  *   - the field drops only spaces and dashes: a pasted "1234-5678" is the 8-digit code, anything else stays visibly
  *     wrong (Submit off) instead of turning into another code.
  */
+import { onAccountSessionCaptured } from "@/lib/accountSession";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -107,6 +108,21 @@ describe("BrowserbaseLoginCard", () => {
     current = job({ state: "done", account_id: "778", proxy: "infloww", proxy_label: "" });
     start();
     expect(await screen.findByText("Account 778 added. The Inflowwww proxy is attached for all later traffic.")).toBeInTheDocument();
+  });
+
+  it("signals capture once per completed login, not on ordinary status refresh", async () => {
+    const captured = vi.fn();
+    const other = vi.fn();
+    const stop = onAccountSessionCaptured("777", captured);
+    const stopOther = onAccountSessionCaptured("778", other);
+    try {
+      current = job({ state: "done", account_id: "777" });
+      start();
+      await waitFor(() => expect(captured).toHaveBeenCalledTimes(1));
+      await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); });
+      expect(captured).toHaveBeenCalledTimes(1);
+      expect(other).not.toHaveBeenCalled();
+    } finally { stop(); stopOther(); }
   });
 
   it("names the attached proxy and hands the account on at once", async () => {

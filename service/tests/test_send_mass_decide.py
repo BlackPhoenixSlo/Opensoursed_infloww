@@ -13,7 +13,7 @@ No DB, no OF: every row is (payload, rows already read) -> value.
   case_opener_table:        funnel send with no explicit media sends the opener media; a
                             funnel with NO opener media sends none; payload previews kept.
   case_opener_media_of:     FunnelAccountMedia JSON -> media ids; unreadable -> no media.
-  case_audience_filter_shape:  the stored mass_runs JSON (key order + sorted excludes).
+  case_audience_filter_shape:  the stored mass_runs JSON (key order + sorted excludes; online / filters).
   case_echoed_of_table:     OF's per-fan echo -> (fan, msg) pairs; malformed dropped.
   case_dry_run_table:       dry_run flag; the in-memory excludes (guard ∪ fence, sorted);
                             the stats: sent 0, the list or None + why, never a partial list.
@@ -135,11 +135,18 @@ def case_audience_filter_shape():
     p = replace(p, recipients=[1], excluded_user_lists=["x", 5])
     raw = smd.audience_filter(p, ref=41, fence=True)
     assert list(json.loads(raw)) == ["user_lists", "included_users", "excluded_users",
-                                     "list_ids", "ref", "excluded_user_lists", "fence"], raw
+                                     "list_ids", "ref", "excluded_user_lists", "fence",
+                                     "online", "filters"], raw
     assert json.loads(raw) == {"user_lists": ["fans"], "included_users": [1],
                                "excluded_users": [3, 9], "list_ids": [7], "ref": "41",
-                               "excluded_user_lists": ["x", 5], "fence": True}, raw
+                               "excluded_user_lists": ["x", 5], "fence": True,
+                               "online": False, "filters": False}, raw
     assert json.loads(smd.audience_filter(p, ref=None, fence=False))["ref"] is None
+    # online / filtered sends say so (the boot re-crawl skips them: OF resolves those audiences)
+    af = json.loads(smd.audience_filter(replace(p, online_only=True), ref=None, fence=False))
+    assert (af["online"], af["filters"]) == (True, False), af
+    af = json.loads(smd.audience_filter(replace(p, filters={"online": 1}), ref=None, fence=False))
+    assert (af["online"], af["filters"]) == (False, True), af
 
 
 def case_echoed_of_table():

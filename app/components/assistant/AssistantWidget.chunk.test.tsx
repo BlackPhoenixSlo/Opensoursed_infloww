@@ -20,15 +20,19 @@ vi.mock("@/lib/relay", () => ({
 vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [] }));
+const OWNED = { data: { accounts: [] }, isSuccess: true, dataUpdatedAt: 1 };
+vi.mock("@/hooks/useAccounts", () => ({ useAccounts: () => OWNED }));
+// An owner: the "Add creator" connect hint is theirs.
+vi.mock("@/contexts/UserContext", () => ({ useOptionalUser: () => ({ user: { username: "owner" } }) }));
 
 import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget } from "./AssistantWidget";
+import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
 
 describe("AssistantWidget without its answer renderer", () => {
   it("shows the answer and the connect hint as plain text", async () => {
     relayPost.mockResolvedValue({ answer: "Growth → **Auto Post**.", error: null, id: 1 });
-    renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+    renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
     await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
     expect(screen.getByText(/No account connected yet/)).toBeTruthy();
     await userEvent.type(screen.getByPlaceholderText("Ask a question…"), "autopost?");

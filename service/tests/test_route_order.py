@@ -11,6 +11,17 @@ Pins: the ordered (methods, path, endpoint __name__) list over
 test_route_order.golden.json. Regenerate ONLY for a deliberate route change
 and say so in the PR:  ./venv/bin/python service/tests/test_route_order.py --write-golden
 
+Golden refresh (2026-11-09): inspected ce072f9ce -> 40cd38d1e OpenAPI diff:
+- GET /admin/stats/per-employee adds optional include_series: bool = false
+  (9d5c8d811, dashboard daily employee sales).
+Routes/order and all other schema fields are unchanged; Phase 2's schema is
+identical to 40cd38d1e. Keep these intentional base changes in the golden.
+
+Golden refresh (2026-11-10): main 8ab4d6fb4 intentionally adds POST
+/admin/agency-notifications/dismiss-all and /{notification_id}/dismiss.
+Removing exactly those paths reproduces the prior OpenAPI hash; remaining
+routes retain their order. Refresh after integrating main into Phase 2.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

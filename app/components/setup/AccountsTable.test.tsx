@@ -22,6 +22,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() } }));
 
 import AccountsTable, { connectivity } from "@/components/setup/AccountsTable";
+import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import AddCreatorModal from "@/components/setup/AddCreatorModal";
 import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import { relay, type AccountMeta } from "@/lib/relay";
@@ -625,5 +626,108 @@ describe("AddCreatorModal — the linked step prefills from the OF profile", () 
     await act(async () => { answer({ id: 990000102, name: "Mia Rose", username: "miarose" }); });
     await within(d).findByText("@miarose");
     expect(within(d).getByLabelText("Nickname")).toHaveValue("Mimi");
+  });
+});
+
+
+describe("AccountsTable health identity reuse", () => {
+  it("waits for health for Creators, preserves custom images and Watchers/Fansly paths", async () => {
+    let finishHealth!: (value: unknown) => void;
+    const health = new Promise((resolve) => { finishHealth = resolve; });
+    relayGet.mockImplementation((path: string, options?: { accountId?: string }) => {
+      if (path === "/admin/accounts") return Promise.resolve({ accounts: [
+        { id: "11", nickname: "Own", has_session: true },
+        { id: "22", nickname: "Custom", has_session: true },
+        { id: "33", nickname: "Watcher", has_session: true, role: "watcher" },
+        { id: "44", nickname: "Fansly", has_session: true, platform: "fansly" },
+      ] });
+      if (path.startsWith("/health")) return health;
+      if (path === "/admin/settings/account") return Promise.resolve({ config: { creators: { profiles: {
+        "22": { avatar: "data:image/png;base64,custom" },
+      } } } });
+      if (path === "/api/of/v2/users/me") return Promise.resolve({ id: options?.accountId, avatar: "https://cdn/watcher.jpg" });
+      return Promise.resolve({});
+    });
+    const view = render(<AccountsTable />, { wrapper });
+    await screen.findByRole("button", { name: "More actions for Own" });
+    await waitFor(() => expect(relayGet.mock.calls.filter(([p]) => p === "/api/of/v2/users/me")).toHaveLength(1));
+    expect(relayGet.mock.calls.find(([p]) => p === "/api/of/v2/users/me")?.[1]).toMatchObject({ accountId: "33" });
+    await act(async () => finishHealth({ ok: true, accounts: [
+      { account_id: "11", ok: true, profile: { id: 11, avatar: "https://cdn/own.jpg" } },
+      { account_id: "22", ok: true, profile: { id: 22, avatar: "https://cdn/not-custom.jpg" } },
+    ] }));
+    await waitFor(() => expect(Array.from(view.container.querySelectorAll("img")).some((img) => img.src.includes("own.jpg"))).toBe(true));
+    expect(view.container.querySelector('img[src="data:image/png;base64,custom"]')).not.toBeNull();
+    expect(Array.from(view.container.querySelectorAll("img")).some((img) => img.src.includes("not-custom"))).toBe(false);
+    expect(relayGet.mock.calls.filter(([p]) => p === "/api/of/v2/users/me")).toHaveLength(1);
+    expect(client.getQueryData(["of-profile", "11"])).toBeUndefined();
+  });
+
+  it("falls back only after a failed health read settles", async () => {
+    let failHealth!: (error: Error) => void;
+    const health = new Promise((_resolve, reject) => { failHealth = reject; });
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") return Promise.resolve({ accounts: [{ id: "11", nickname: "Own", has_session: true }] });
+      if (path.startsWith("/health")) return health;
+      if (path === "/api/of/v2/users/me") return Promise.resolve({ id: 11, avatar: "https://cdn/fallback.jpg" });
+      return Promise.resolve({});
+    });
+    const view = render(<AccountsTable />, { wrapper });
+    await screen.findByRole("button", { name: "More actions for Own" });
+    expect(relayGet.mock.calls.filter(([p]) => p === "/api/of/v2/users/me")).toHaveLength(0);
+    await act(async () => failHealth(new Error("health unavailable")));
+    await waitFor(() => expect(Array.from(view.container.querySelectorAll("img")).some((img) => img.src.includes("fallback.jpg"))).toBe(true));
+    expect(relayGet.mock.calls.filter(([p]) => p === "/api/of/v2/users/me")).toHaveLength(1);
+  });
+});
+
+
+describe("Creators avatar recovery across actual session relinking", () => {
+  it.each(["pending", "exhausted"])("resets %s recovery on every relink, but not ordinary health refresh", async (state) => {
+    const same = { id: 11, avatar: "https://cdn/same.jpg" };
+    const health = { ok: true, accounts: [{ account_id: "11", ok: true, profile: same }] };
+    let healthCalls = 0;
+    let finishHealth!: (value: unknown) => void;
+    const recoveries: Array<{ resolve: (value: unknown) => void; signal: AbortSignal }> = [];
+    relayGet.mockImplementation((path: string, _options: unknown, signal: AbortSignal) => {
+      if (path === "/admin/accounts") return Promise.resolve({ accounts: [{ id: "11", nickname: "Own", has_session: true }] });
+      if (path.startsWith("/health")) {
+        healthCalls++;
+        return healthCalls === 1 ? Promise.resolve(health) : new Promise((resolve) => { finishHealth = resolve; });
+      }
+      // Intentionally ignore abort: a late response must still be rejected.
+      if (path === "/api/of/v2/users/me") return new Promise((resolve) => { recoveries.push({ resolve, signal }); });
+      return Promise.resolve({});
+    });
+    relayPost.mockResolvedValue({ account_id: "11", user_id: 11, session_file: "same.json" });
+    const view = render(<><AccountsTable /><PasteCurlCard extInstalled /></>, { wrapper });
+    const image = () => view.container.querySelector("table img")!;
+    await waitFor(() => expect(image()).not.toBeNull());
+    fireEvent.error(image());
+    await waitFor(() => expect(recoveries).toHaveLength(1));
+    if (state === "exhausted") await act(async () => recoveries[0].resolve(same));
+    // This is the actual invalidation semantics: old data/profile/URL remain.
+    act(() => { void client.invalidateQueries({ queryKey: ["health-all"] }); });
+    await waitFor(() => expect(healthCalls).toBe(2));
+    expect(client.getQueryData(["health-all"])).toEqual(health);
+    expect(recoveries[0].signal.aborted).toBe(false);
+    expect(image()).toBeNull(); // ordinary refresh must not reset exhausted/pending recovery
+    await act(async () => finishHealth(health));
+    expect(image()).toBeNull();
+    for (let link = 0; link < 3; link++) {
+      const old = recoveries[link];
+      fireEvent.change(screen.getByLabelText("Copied cURL"), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
+      fireEvent.submit(screen.getByLabelText("Copied cURL").closest("form")!);
+      await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(link + 1));
+      await waitFor(() => expect(healthCalls).toBe(link + 3));
+      expect(client.getQueryData(["health-all"])).toEqual(health);
+      await act(async () => old.resolve({ id: 11, avatar: "https://cdn/OLD-SESSION.jpg" }));
+      await waitFor(() => expect(image()).toHaveAttribute("src", expect.stringContaining("same.jpg")));
+      expect(old.signal.aborted).toBe(true);
+      await act(async () => finishHealth(health));
+      fireEvent.error(image());
+      await waitFor(() => expect(recoveries).toHaveLength(link + 2));
+      if (state === "exhausted") await act(async () => recoveries[link + 1].resolve(same));
+    }
   });
 });

@@ -36,7 +36,7 @@
  * Filters: Creator, the name search, Date created (a client-side range on
  * `created_at` in the report time zone, with the bundle's six presets), "Show
  * deactivated links" and "Show net earnings" (on by default as the bundle's, one
- * state shared by both tabs, drawn while an earnings column has data), and Source
+ * state shared by Links list and Dashboard, drawn while an earnings column has data), and Source
  * and Tag over the values the Edit dialog set. Export downloads a CSV of the
  * filtered rows and shown columns (the bundle emails one).
  *
@@ -53,10 +53,12 @@
  * permanent and cannot be undone"), and OF keeps the deleted link and its counts,
  * which the list shows as "Deactivated" behind "Show deactivated links".
  *
- * Ours, after every capture element and labelled "Inflowwww extra": custom
- * redirect links (internal /t/<slug>) for a NON-profile target (a Linktree, a
- * landing page). We count clicks; we can't see subscribers, because the
- * visitor never lands on OnlyFans.
+ * Ours, a tab after the bundle's carrying "Inflowwww extra": "Redirect links"
+ * (`RedirectLinksPanel`, every viewer of the page, with the same creator
+ * filter): custom redirect links (internal /t/<slug>) for a NON-profile target
+ * (a Linktree, a landing page). We count clicks; we can't see subscribers,
+ * because the visitor never lands on OnlyFans. Each TABS entry says whether it
+ * is `ownerOnly` (a chatter doesn't get it) and `extra` (ours, tagged).
  *
  * Ticket 59 (the regrade's follow-up): the title carries the Agency's report
  * time zone (#6 to #9) from the Applied settings, as the Dashboard reads it,
@@ -68,13 +70,14 @@
  * labelled as ours.
  *
  * Files: this tab shell; the Links list, its columns, `useLinks` and Export in `TrackingLinksList`; Details in
- * `TrackingLinkDetails`; the Dashboard in `TrackingDashboard`; `CreateLinkModal`; `CustomRedirects` with its
- * Analytics; the formulas and tooltips in `linkMetrics`.
+ * `TrackingLinkDetails`; the Dashboard in `TrackingDashboard`; `CreateLinkModal`; Redirect links in `RedirectLinksPanel`
+ * with its Analytics; the formulas and tooltips in `linkMetrics`.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
-import { FrameTabs, GrowthHbFrame } from "@/components/growth/LinksListFrame";
+import { RedirectLinksPanel } from "@/components/growth/RedirectLinksPanel";
+import { FrameTabs, GrowthHbFrame, type FrameTab } from "@/components/growth/LinksListFrame";
 import ShareLinksPanel from "@/components/growth/ShareLinksPanel";
 import { LinksList } from "@/components/growth/TrackingLinksList";
 import { Dashboard } from "@/components/growth/TrackingDashboard";
@@ -82,11 +85,12 @@ import { useOfTrackingLinks } from "@/hooks/useGrowth";
 import { useGrowthCreator } from "@/hooks/useAccounts";
 import { useUser } from "@/contexts/UserContext";
 
-type TabKey = "list" | "dashboard" | "share";
-const TABS: Array<{ key: TabKey; label: string }> = [
+type TabKey = "list" | "dashboard" | "share" | "redirects";
+const TABS: Array<FrameTab<TabKey> & { ownerOnly?: true }> = [
   { key: "list", label: "Links list" },
   { key: "dashboard", label: "Dashboard" },
-  { key: "share", label: "Share links" },
+  { key: "share", label: "Share links", ownerOnly: true },
+  { key: "redirects", label: "Redirect links", extra: true },
 ];
 
 export default function TrackingLinksTab({
@@ -100,19 +104,21 @@ export default function TrackingLinksTab({
 }) {
   const owner = !!useUser().user;
   const [chosen, setTab] = useState<TabKey>("list");
-  // Share links is the owner's: a chatter sees the two other tabs.
-  const tab = !owner && chosen === "share" ? "list" : chosen;
-  // #25: "Show net earnings", on by default as the bundle's, and one state across both tabs (`getSharedValues`).
+  const tabs = TABS.filter((t) => owner || !t.ownerOnly);
+  const tab = tabs.some((t) => t.key === chosen) ? chosen : "list";
+  // #25: "Show net earnings", on by default as the bundle's, and one state across Links list and Dashboard (`getSharedValues`).
   const [net, setNet] = useState(true);
+  const panels: Record<TabKey, ReactNode> = {
+    list: <LinksList accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} accountsLoading={accountsLoading} />,
+    dashboard: <Dashboard accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} />,
+    share: <TrackingShares accountId={accountId} onAccountChange={onAccountChange} />,
+    redirects: <RedirectLinksPanel accountId={accountId} onAccountChange={onAccountChange} />,
+  };
   return (
     <div>
-      <FrameTabs tabs={owner ? TABS : TABS.slice(0, 2)} value={tab} onChange={setTab} label="Tracking links" idPrefix="tl" />
+      <FrameTabs tabs={tabs} value={tab} onChange={setTab} label="Tracking links" idPrefix="tl" />
       <div role="tabpanel" id={`tl-panel-${tab}`} aria-labelledby={`tl-tab-${tab}`}>
-        {tab === "list"
-          ? <LinksList accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} accountsLoading={accountsLoading} />
-          : tab === "share"
-            ? <TrackingShares accountId={accountId} onAccountChange={onAccountChange} />
-            : <Dashboard accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} />}
+        {panels[tab]}
       </div>
     </div>
   );

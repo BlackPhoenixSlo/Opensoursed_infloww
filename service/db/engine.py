@@ -432,6 +432,24 @@ async def init_db() -> None:
             # (the catch-up above adds by name only): drop the old.
             _drop_retired_indexes(sync_engine)
 
+            # One-way DATA catch-up (help-bot threads, revision 0110): a turn
+            # from before `assistant_turns.thread_id` gets `legacy-<first id>`
+            # of its run (db/assistant_threads.py). Idempotent: a no-op once no
+            # NULL row is left; asks never write one. The only copy (0110 adds
+            # the column alone). DELETE once every box has booted it, exactly
+            # three items: this init_db block, service/db/assistant_threads.py,
+            # and the boot test `case_init_db_backfills_legacy_threads_at_boot`
+            # in service/tests/test_assistant_api.py (plus the grouping test
+            # beside it that imports the module). Nothing else.
+            try:
+                from .assistant_threads import backfill_thread_ids
+                with sync_engine.begin() as conn:
+                    n = backfill_thread_ids(conn)
+                if n:
+                    _log.info("assistant thread backfill: %s turn(s) given a thread", n)
+            except Exception:
+                _log.exception("assistant thread backfill failed")
+
             # One-way DATA catch-up (10-21 exclude merge): MASSppvEXCLUDE folded
             # into MASSdmEXCLUDE. Idempotent; a no-op once no PPV row is left.
             if _is_sqlite:

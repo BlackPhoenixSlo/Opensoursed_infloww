@@ -21,10 +21,12 @@ vi.mock("@/lib/relay", () => ({
 vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: "1001" }) }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "1001", nickname: "Blake1" }] }));
+const OWNED = { data: { accounts: [{ id: "1001", nickname: "Blake1", has_session: true, is_active: true }] }, isSuccess: true, dataUpdatedAt: 1 };
+vi.mock("@/hooks/useAccounts", () => ({ useAccounts: () => OWNED }));
 
 import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget } from "./AssistantWidget";
+import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
 import HelpCenterPage from "./HelpCenterPage";
 
 beforeEach(() => {
@@ -36,7 +38,7 @@ afterEach(cleanup);
 
 describe("HelpCenterPage", () => {
   it("is the messenger itself: greeting, Ask card, composer; no title, no placeholder", () => {
-    renderWithProviders(<AssistantProvider><HelpCenterPage /></AssistantProvider>);
+    renderWithProviders(<PageCreatorProvider><AssistantProvider><HelpCenterPage /></AssistantProvider></PageCreatorProvider>);
     expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("How can we help?");
     expect(screen.getByRole("button", { name: /Ask a question/ })).toBeTruthy();
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
@@ -49,7 +51,7 @@ describe("HelpCenterPage", () => {
   it("shares the conversation with the dock", async () => {
     relayPost.mockResolvedValue({ answer: "Growth → 📣 Promotion.", error: null });
     const { rerender } = renderWithProviders(
-      <AssistantProvider><HelpCenterPage /><AssistantWidget /></AssistantProvider>,
+      <PageCreatorProvider><AssistantProvider><HelpCenterPage /><AssistantWidget /></AssistantProvider></PageCreatorProvider>,
     );
     await userEvent.type(screen.getByPlaceholderText("Ask a question…"), "how do I set up auto posts?");
     await userEvent.click(screen.getByRole("button", { name: "Ask" }));
@@ -57,7 +59,7 @@ describe("HelpCenterPage", () => {
 
     // Leave the page: the dock's launcher returns, and its panel holds the same turn.
     nav.pathname = "/";
-    rerender(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+    rerender(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
     await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
     expect(await screen.findByText("how do I set up auto posts?")).toBeTruthy();
   });

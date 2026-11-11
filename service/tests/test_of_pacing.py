@@ -5,6 +5,8 @@ one retry, no claim; the browser name fill's retry; link_metrics.prewarm_all's
 busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
 
   case_parse_allow_table:   "Please allow N seconds" -> N; none -> default; cap.
+  case_upstream_and_allow_s_table: (status, body, Retry-After) from an OFAPIError-like
+                            response or a _proxy 502 detail (no header); "allow N" uncapped.
   case_retry_after_table:   OFAPIError-like 429 response; _proxy 502 detail with
                             upstream_status 429; anything else -> None.
   case_outside_walk_plain:  no walk -> call() as is: no pause, a 429 raises at once.
@@ -13,6 +15,8 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_pacer_shared:        two walks (different kinds) on one Creator: every GET
                             >= PAGE_GAP_S after the previous; other Creator unpaced.
   case_retry_once:          a 429 retries the SAME call once; a second 429 raises.
+  case_retry_429_off:       walk(retry_429=False): paced still waits its turn, but OF's 429
+                            re-raises at once (one call, no wait); the default walk retries.
   case_walk_no_claim:       two walks with one key both run (each its own result);
                             a nested same-key walk runs; the caller never sees the walk.
   case_retry_429_unpaced:   the name fill: 8 at once leave at once (no pacer); a 429
@@ -88,6 +92,26 @@ def case_retry_after_table():
     p.detail = "plain string detail"
     assert of_pacing.retry_after(p) is None
     assert of_pacing.retry_after(ValueError("x")) is None
+
+
+def case_upstream_and_allow_s_table():
+    _knobs()
+    e = Exception()
+    e.response = SimpleNamespace(status_code=429, text="Please allow 45 seconds", headers={"Retry-After": "120"})
+    assert of_pacing.upstream(e) == (429, "Please allow 45 seconds", "120"), of_pacing.upstream(e)
+    assert of_pacing.upstream(_E429("x")) == (429, "x", None)   # a response with no headers
+    p = Exception()
+    p.detail = {"upstream_status": 429, "upstream_body": "Please allow 4 seconds"}
+    assert of_pacing.upstream(p) == (429, "Please allow 4 seconds", None)
+    assert of_pacing.upstream(ValueError("x")) == (None, "", None)
+    for text, want in [
+        ('{"error":{"code":429,"message":"Too many requests. Please allow 45 seconds"}}', 45.0),
+        ("Please allow 600 seconds", 600.0),   # uncapped, unlike parse_allow
+        ("please ALLOW 2.5 sec", 2.5),
+        ("Too many requests", None),
+        (None, None),
+    ]:
+        assert of_pacing.allow_s(text) == want, (text, of_pacing.allow_s(text))
 
 
 def case_outside_walk_plain():
@@ -174,6 +198,76 @@ def case_retry_once():
     except RuntimeError:
         pass
     assert len(calls) == 1, "only a 429 is retried"
+
+
+def case_retry_429_off():
+    gap = 0.08
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0, RETRY_MAX_S=0.5)
+    sent: list[float] = []
+
+    def page():
+        sent.append(time.monotonic())
+        return {"ok": True}
+
+    def throttled():
+        sent.append(time.monotonic())
+        raise _E429("Please allow 0.4 seconds")
+
+    async def job():
+        await asyncio.to_thread(of_pacing.paced, "a1", page)
+        t0 = time.monotonic()
+        try:
+            await asyncio.to_thread(of_pacing.paced, "a1", throttled)
+            raise AssertionError("a 429 must reach the caller with retry_429=False")
+        except _E429:
+            pass
+        return time.monotonic() - t0
+
+    took = asyncio.run(of_pacing.walk("a1", "audience_crawl", job, retry_429=False))
+    assert len(sent) == 2, f"no in-place retry: {len(sent)} calls"
+    assert sent[1] - sent[0] >= gap - 0.01, "still paced: the page waits its turn"
+    assert took < 0.3, f"re-raised at once, not after OF's 0.4 s: {took:.2f}"
+    sent.clear()
+    try:   # the default walk keeps the in-place retry
+        asyncio.run(of_pacing.walk("a1", "k", lambda: asyncio.to_thread(of_pacing.paced, "a1", throttled)))
+    except _E429:
+        pass
+    assert len(sent) == 2, sent
+
+
+def case_admission_after_pacing_and_retry():
+    from unittest.mock import patch
+    _knobs(PAGE_GAP_S=0.0, JITTER_S=0.0, RETRY_MAX_S=0.0)
+
+    class Expired(Exception):
+        pass
+
+    for aid, retry in (("a1", False), (None, False), ("a1", True)):
+        events = []
+
+        def admit():
+            events.append("admit")
+            if not retry or events.count("admit") == 2:
+                raise Expired
+
+        def call():
+            events.append("call")
+            raise _E429()
+
+        async def run():
+            try:
+                await of_pacing.walk(aid, "audience_crawl", lambda: asyncio.to_thread(of_pacing.paced, aid, call),
+                                     before_call=admit)
+                raise AssertionError("expired admission must refuse the departure")
+            except Expired:
+                pass
+            assert of_pacing._WALK.get() is None
+
+        with patch.object(of_pacing, "_wait_turn", lambda *keys: events.append("pace")):
+            asyncio.run(run())
+        expected = ["pace", "admit", "call", "pace", "admit"] if retry else (
+            ["admit"] if aid is None else ["pace", "admit"])
+        assert events == expected, events
 
 
 def case_walk_no_claim():

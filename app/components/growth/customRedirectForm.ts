@@ -1,6 +1,6 @@
 /**
  * Custom redirect links' Create form: Name, Target URL, "Bot check before
- * redirect" and the form's error. A pure reducer (CustomRedirects only
+ * redirect" and the form's error. A pure reducer (RedirectLinksPanel only
  * dispatches), `normalizeTarget` (the relay's `_normalize_target` mirror) and
  * `formError` / `buildPayload`.
  */

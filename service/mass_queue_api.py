@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -43,14 +44,17 @@ router = APIRouter()
 
 
 @contextlib.asynccontextmanager
-async def _exclude_list_held(account_id: str, excluded_users: list[int]):
+async def _exclude_list_held(account_id: str, excluded_users: list[int], verified: dict | None = None):
     """The composer's Auto_Exclude sync, yielding its OF list id with the
     account's `broadcast_lock` held until the caller's block ends: the block is
-    the blast's OF POST. Looked up per call: slop's `auto-exclude-manual-lock-early`
+    the blast's OF POST. `verified` (out-param): the list's membership once the
+    sync reconciled it on its exact path (`ensure_exclude_list`), for the Audience
+    crawl. Looked up per call: slop's `auto-exclude-manual-lock-early`
     fault (slop/lib/auto_exclude_faults.py) wraps it to release the lock early."""
     from audiences import broadcast_lock, ensure_exclude_list
     async with broadcast_lock(account_id):
-        yield await ensure_exclude_list(account_id, excluded_users, client=_get_client())
+        yield await ensure_exclude_list(account_id, excluded_users, client=_get_client(),
+                                        verified=verified)
 
 
 async def _open_mass_run(
@@ -61,6 +65,8 @@ async def _open_mass_run(
     excluded_users: list[int],
     excluded_user_lists: list | None = None,
     funnel_id: int | None = None,
+    online_only: bool = False,
+    filters: dict | None = None,
 ) -> tuple[str, int | None, int | None]:
     """Resolve account + X-Employee-Id and mint a `mass_runs` row so every
     per-fan outbound row downstream can reference it. Returns
@@ -85,6 +91,9 @@ async def _open_mass_run(
         # ride in the Auto_Exclude list attached here. Forensics only — who
         # RECEIVED the blast is recorded on `recipients_json` at close.
         "excluded_user_lists": list(excluded_user_lists or []),
+        # OF resolves an online / filtered audience itself (audience_crawl.recover_at_boot skips those).
+        "online": bool(online_only),
+        "filters": bool(filters),
     })
     mass_run_id: int | None = None
     try:
@@ -118,6 +127,7 @@ async def _close_mass_run(
     recipient_ids: list[int] | None = None,
     audience: dict | None = None,
     scheduled: bool = False,
+    verified_lists: dict | None = None,
 ) -> None:
     """After OF returns, persist a `messages` row per recipient of the
     broadcast. Two sources, handled in order:
@@ -146,9 +156,12 @@ async def _close_mass_run(
     `excluded_users`, `excluded_user_lists`, `filters`, `online_only`); omit it
     and the recipient set is simply not recorded. `scheduled=True` says OF has
     NOT sent this yet — the run gets no body and no stamp, because there is
-    nothing on anyone's thread to splice."""
+    nothing on anyone's thread to splice. `verified_lists`: the exclude lists the
+    send verified under `broadcast_lock` (`_exclude_list_held`), which the Audience
+    crawl subtracts without reading them again (`paced` mode)."""
     if mass_run_id is None:
         return
+    sent_at = time.monotonic()   # OF just accepted: the Audience crawl's deadline runs from here
     from attribution import (
         reconcile_mass_placeholder,
         write_mass_optimistic_rows,
@@ -233,30 +246,49 @@ async def _close_mass_run(
     # human is watching this response. It fails closed on its own (None →
     # `recipients_json` stays NULL → the run is never spliced), so there is
     # nothing for the request to wait on and nothing it could do about a failure.
+    # `paced` (the default): the Creator's Audience crawl (audience_crawl);
+    # `legacy`: today's unpaced task below.
     if audience is not None and not scheduled:
-        async def _record_recipients() -> None:
+        import audience_crawl_decide
+        aud = dict(
+            user_lists=audience.get("user_lists") or [],
+            included_users=recipient_ids or [],
+            excluded_users=audience.get("excluded_users") or [],
+            excluded_user_lists=audience.get("excluded_user_lists") or [],
+            filters=audience.get("filters"),
+            online_only=bool(audience.get("online_only")),
+        )
+        if audience_crawl_decide.knobs().mode != "legacy":
             try:
-                from attribution import stamp_mass_recipients
-                from audiences import resolve_recipients_blocking
-                # `_load_client(account_id)`, never `_get_client()`: this runs
-                # detached from the request, so the middleware contextvar the
-                # bare form reads is gone and it would fall back to the ACTIVE
-                # account — another creator's roster, on the wrong run.
-                recorded = await asyncio.to_thread(
-                    resolve_recipients_blocking, _load_client(account_id),
-                    user_lists=audience.get("user_lists") or [],
-                    included_users=recipient_ids or [],
-                    excluded_users=audience.get("excluded_users") or [],
-                    excluded_user_lists=audience.get("excluded_user_lists") or [],
-                    filters=audience.get("filters"),
-                    online_only=bool(audience.get("online_only")),
+                import audience_crawl
+                # `_load_client(account_id)`, never `_get_client()`: the crawl runs
+                # detached from the request (see the legacy task below).
+                await audience_crawl.record_after_send(
+                    account_id, _load_client(account_id), mass_run_id,
+                    **aud, verified_lists=verified_lists, sent_at=sent_at,
                 )
-                await stamp_mass_recipients(mass_run_id, recorded)
             except Exception:
-                log.warning("mass recipient record failed (account=%s run=%s) — "
+                log.warning("mass recipient record hand-off failed (account=%s run=%s) — "
                             "the blast is sent, it just will not be spliced",
                             account_id, mass_run_id, exc_info=True)
-        _spawn_bg(_record_recipients(), f"mass-recipients-{mass_run_id}")
+        else:
+            async def _record_recipients() -> None:
+                try:
+                    from attribution import stamp_mass_recipients
+                    from audiences import resolve_recipients_blocking
+                    # `_load_client(account_id)`, never `_get_client()`: this runs
+                    # detached from the request, so the middleware contextvar the
+                    # bare form reads is gone and it would fall back to the ACTIVE
+                    # account — another creator's roster, on the wrong run.
+                    recorded = await asyncio.to_thread(
+                        resolve_recipients_blocking, _load_client(account_id), **aud,
+                    )
+                    await stamp_mass_recipients(mass_run_id, recorded)
+                except Exception:
+                    log.warning("mass recipient record failed (account=%s run=%s) — "
+                                "the blast is sent, it just will not be spliced",
+                                account_id, mass_run_id, exc_info=True)
+            _spawn_bg(_record_recipients(), f"mass-recipients-{mass_run_id}")
 
 
 class _MassScheduleBody(BaseModel):
@@ -452,7 +484,8 @@ async def of_send_or_schedule_mass(
     # this blast's sync and OF reading its `excludedLists`. Errors bubble up
     # (500) — a broadcast without its guard is the bug itself.
     _later = bool(body.scheduled_date or body.save_for_later)
-    _held = (_exclude_list_held(_aid, body.excluded_users) if mass_queue_decide.needs_exclude_list(
+    _verified: dict = {}
+    _held = (_exclude_list_held(_aid, body.excluded_users, verified=_verified) if mass_queue_decide.needs_exclude_list(
         body.excluded_users, body.user_lists, body.online_only, body.filters) else contextlib.nullcontext())
     async with _held as auto_lid:
         if auto_lid is not None and auto_lid not in (body.excluded_user_lists or []):
@@ -464,6 +497,8 @@ async def of_send_or_schedule_mass(
             excluded_users=body.excluded_users,
             excluded_user_lists=body.excluded_user_lists,
             funnel_id=body.funnel_id,
+            online_only=body.online_only,
+            filters=body.filters,
         )
         client = _get_client()
         # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
@@ -543,6 +578,7 @@ async def of_send_or_schedule_mass(
             # the day a scheduled run learns to close itself, the flag is
             # already where it belongs.
             scheduled=False,
+            verified_lists=_verified,
         )
         # Auto-unsend timer: schedule a one-shot `unsend_messages` job for the
         # forever-window mass unsend (DELETE /messages/queue/{id}) at send_time

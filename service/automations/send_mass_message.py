@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import replace
 from datetime import datetime
 
@@ -383,12 +384,16 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # is the first question asked of any audience surprise, and the fence list id
     # alone does not answer it.
     fence_attached = False
+    # The exclude lists verified under the lock below (AUTOFENCE read back equal to its
+    # target; Auto_Exclude reconciled on its exact path): {OF list id: members}, handed
+    # to the Audience crawl in step 6 so it never reads them again.
+    verified: dict = {}
     async with broadcast_lock(account_id):
         if audience_pol.mode != "off" and is_list_audience:
             try:
                 fence_ids = await _audiences.audience_fence_for_broadcast(
                     account_id, client=client, policy=audience_pol,
-                    stats=audience_stats)
+                    stats=audience_stats, verified=verified)
             except _audiences.AudienceHalt as e:
                 # HALT loudly — an enforce-mode blast never sends unfenced.
                 log.error("send_mass_message: AUTOFENCE unhealthy account=%s "
@@ -402,7 +407,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if p.excl_set and is_list_audience:
             try:
                 auto_lid = await ensure_exclude_list(
-                    account_id, set(p.excl_set), client=client)
+                    account_id, set(p.excl_set), client=client, verified=verified)
             except Exception as e:
                 # The proxy refused the sync (OF never saw it): raised, so a stream's
                 # send / a job waits out the proxy as for a refused POST.
@@ -464,6 +469,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 send_purpose="fenced",
                 before_write=_mint,
             )
+            sent_at = time.monotonic()   # OF accepted: the Audience crawl's deadline runs from here
         except Exception as e:
             # Surely not sent (the proxy refused it, OF answered 4xx, it never
             # connected): the minted run ends refused / failed, not 'running' for the
@@ -537,27 +543,40 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # This is the one thing `audience_filter` cannot tell us: 4 of 27 chat fans on
     # the incident account are consistent non-recipients (expired subs) with no
     # local tell, so an inferred audience would splice 15% of repliers a blast
-    # they never got. A full list crawl (≤17 pages on the largest account),
-    # off-thread, and it FAILS CLOSED — None leaves
-    # `recipients_json` NULL and the run is simply never spliced. Its own
-    # try/except on top of that: the broadcast has already gone out and nothing
-    # about recording it may fail the run.
-    try:
-        from audiences import resolve_recipients_blocking
-        recorded = await asyncio.to_thread(
-            resolve_recipients_blocking, client,
-            user_lists=list(p.user_lists),
-            included_users=p.recipients,
-            excluded_users=sorted(p.excl_set),
-            excluded_user_lists=list(p.excluded_user_lists),
-            filters=p.filters,
-            online_only=p.online_only,
-        )
-        await stamp_mass_recipients(mass_run_id, recorded)
-    except Exception:
-        log.warning("send_mass_message: recipient record failed account=%s run=%s "
-                    "— the blast is sent, it just will not be spliced",
-                    account_id, mass_run_id, exc_info=True)
+    # they never got. It FAILS CLOSED — None leaves `recipients_json` NULL and the
+    # run is simply never spliced. Its own try/except on top of that: the broadcast
+    # has already gone out and nothing about recording it may fail the run.
+    # `paced` (the default): handed to the Creator's Audience crawl (audience_crawl,
+    # paced and resumable, in the background), so this run returns now and never
+    # holds its run slot through a 429 backoff. `legacy`: today's inline crawl.
+    import audience_crawl_decide
+    aud = dict(
+        user_lists=list(p.user_lists),
+        included_users=p.recipients,
+        excluded_users=sorted(p.excl_set),
+        excluded_user_lists=list(p.excluded_user_lists),
+        filters=p.filters,
+        online_only=p.online_only,
+    )
+    if audience_crawl_decide.knobs().mode == "legacy":
+        try:
+            from audiences import resolve_recipients_blocking
+            recorded = await asyncio.to_thread(resolve_recipients_blocking, client, **aud)
+            await stamp_mass_recipients(mass_run_id, recorded)
+        except Exception:
+            log.warning("send_mass_message: recipient record failed account=%s run=%s "
+                        "— the blast is sent, it just will not be spliced",
+                        account_id, mass_run_id, exc_info=True)
+    else:
+        try:
+            import audience_crawl
+            await audience_crawl.record_after_send(
+                account_id, client, mass_run_id, **aud, verified_lists=verified, sent_at=sent_at,
+            )
+        except Exception:
+            log.warning("send_mass_message: recipient record hand-off failed account=%s run=%s "
+                        "— the blast is sent, it just will not be spliced",
+                        account_id, mass_run_id, exc_info=True)
 
     # NOTE: a pure list/online broadcast leaves NO per-fan rows here (OF echoes
     # no ids), so its silent (non-replying) recipients aren't individually

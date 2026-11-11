@@ -6,7 +6,9 @@ the toast types that are on, the platform switches). `scope`: the Creators the s
 (the oracle, from the seed: never asked of the relay)."""
 from __future__ import annotations
 
+import asyncio
 import secrets
+import weakref
 from dataclasses import dataclass, field
 
 from slop.lib.client import Http
@@ -43,13 +45,24 @@ class PushDevice:
             and self.platforms.get(platform, True)
 
 
+# per event loop: --break runs baseline and fault in one process, each on its own loop
+_SAME_USER: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[tuple[str, str], asyncio.Lock]]" = \
+    weakref.WeakKeyDictionary()
+
+
 async def sign_in(dev: PushDevice, base: str, rec) -> None:
-    """A fresh client and a real sign-in: its own cookie."""
+    """A fresh client and a real sign-in: its own cookie. A session is (principal, issued ms) with no
+    nonce (service/auth.py _make_cookie), so two devices of one user signing in within the same ms
+    share it and one's logout deletes both subscriptions. Same-user sign-ins go one at a time with
+    2 ms after each response (the next cookie is minted later on the same clock); users stay parallel."""
     from cryptography.hazmat.primitives.asymmetric import ec
     dev.http = Http(base, rec, limits=4)
     route = "/auth/login" if dev.kind == "user" else "/chatter/login"
-    r = await dev.http.post(route, json={"username": dev.username, "password": dev.password})
-    r.raise_for_status()
+    locks = _SAME_USER.setdefault(asyncio.get_running_loop(), {})
+    async with locks.setdefault((dev.kind, dev.username), asyncio.Lock()):
+        r = await dev.http.post(route, json={"username": dev.username, "password": dev.password})
+        r.raise_for_status()
+        await asyncio.sleep(0.002)
     if dev.priv is None:
         dev.priv, dev.auth = ec.generate_private_key(ec.SECP256R1()), secrets.token_bytes(16)
 

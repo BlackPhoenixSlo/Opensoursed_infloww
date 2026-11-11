@@ -6,13 +6,16 @@ Why (measured on AE, 18 h to 2026-11-05): OF answered "Too many requests. Please
 seconds" 281 times, every one to a background walk (promotions 121, /users/list 148,
 payouts 11), none to a click. The walks paged as fast as OF answered.
 
-  walk(account_id, kind, run)
+  walk(account_id, kind, run, *, retry_429=True, before_call=None)
       Runs `run()` as a background walk: inside it, every OFClient GET goes through
       `paced` (OFClient.get_json calls it). No claim: every walker is single-flight by
       its own lock or loop already. `account_id` names the walk (None: a pass over many
       Creators; logged as walk= on a 429 retry); pages pace on their client's
       account (a client with none: unpaced). Its OF calls count as `walk:<kind>`
-      (of_call_counter).
+      (of_call_counter). `retry_429=False`: `paced` still waits its turn but re-raises
+      OF's 429 at once; the caller owns the retry (audience_crawl's Backoff ladder).
+      `before_call`, when given, runs in the worker after pacing, before each departure
+      (including a retry or bare client). It may raise to refuse a now-expired read.
   paced(account_id, call)          (sync, in the walk's worker thread)
       Outside a walk: `call()` as before. Inside: `account_id`'s pacer, then `call()`; on
       OF's 429 it waits what OF asks and sends the SAME request once more. A second 429
@@ -25,6 +28,10 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       background` /users/list name fill, server.py): user-triggered, so never paced. The
       wait is on the loop (no worker thread), but inside the request's background
       admission: it holds the Creator's background lane slot (<= RETRY_MAX_S).
+  upstream(exc) / allow_s(text)
+      The one reader of OF's answer behind an exception: (status, body, Retry-After header);
+      "Please allow N seconds" as N, uncapped. retry_after (this module's capped wait) and
+      audience_crawl's Backoff ladder both read through them.
   note_user(account_id) / last_user_at(account_id) / user_active(account_id)
       A person's request for the Creator (server._lane_entered: a non-background lane entry
       made from a real request; the Promotions page) / its monotonic time (vault_collect) /
@@ -59,8 +66,9 @@ Limits, as built (kept on purpose):
     only Creators whose Growth page was opened; ledger supervisor 4 (refresh 4, then backfill 2);
     roster crawl <= 8 (inside automation runs: run_slot.auto_runs(50) = 6 + 2 operator);
     promo_reactivate shares those 8 slots; auto-exclude <= 1 per Creator with a big list due
-    (single-flight per Creator, no global cap). Worst case
-    ~1 + 50 + 4 + 8 + 50 = 113 of the 378-thread default executor (server._EXECUTOR_THREADS).
+    (single-flight per Creator, no global cap); audience crawl <= 1 page thread per Creator
+    (one crawler per Creator, its waits on the loop). Worst case
+    ~1 + 50 + 4 + 8 + 50 + 50 = 163 of the 378-thread default executor (server._EXECUTOR_THREADS).
   * Only reads are paced: OFClient.get_json is the one seam wrapped. Writes inside a walk
     (link_metrics.sync_lists' add-to-list, audiences' batch list adds) are not, by the owner's
     rule that writes are never throttled; sync_lists keeps its own 0.4 s gap between adds.
@@ -98,6 +106,8 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 class _Walk:
     account_id: str | None
     kind: str
+    retry_429: bool = True
+    before_call: Callable[[], None] | None = None
 
 
 _WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
@@ -120,23 +130,36 @@ def user_active(account_id: Any, now: float | None = None) -> bool:
     return t is not None and (time.monotonic() if now is None else now) - t < USER_WINDOW_S
 
 
+def allow_s(text: str | None) -> float | None:
+    """OF's "Please allow N seconds" as N (uncapped, >= 0), None when the text names none."""
+    m = _ALLOW.search(text or "")
+    return max(float(m.group(1)), 0.0) if m else None
+
+
 def parse_allow(text: str | None) -> float:
     """OF's asked wait ("Please allow N seconds"), RETRY_DEFAULT_S when it names none,
     never above RETRY_MAX_S."""
-    m = _ALLOW.search(text or "")
-    return min(max(float(m.group(1)), 0.0) if m else RETRY_DEFAULT_S, RETRY_MAX_S)
+    a = allow_s(text)
+    return min(RETRY_DEFAULT_S if a is None else a, RETRY_MAX_S)
+
+
+def upstream(exc: BaseException) -> tuple[int | None, str, str | None]:
+    """OF's answer behind `exc`: (status, body text, Retry-After header). An OFAPIError's
+    `response`, or server._proxy's 502 whose detail carries upstream_status / upstream_body
+    (no header there: None). Anything else: (None, "", None)."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        return detail.get("upstream_status"), str(detail.get("upstream_body") or ""), None
+    resp = getattr(exc, "response", None)
+    header = (getattr(resp, "headers", None) or {}).get("Retry-After")   # curl_cffi headers: case-insensitive
+    return getattr(resp, "status_code", None), getattr(resp, "text", "") or "", header
 
 
 def retry_after(exc: BaseException) -> float | None:
-    """The wait OF asks for when `exc` is its 429 (an OFAPIError's response, or
-    server._proxy's 502 whose detail carries upstream_status 429), else None."""
-    detail = getattr(exc, "detail", None)
-    if isinstance(detail, dict):
-        return parse_allow(str(detail.get("upstream_body") or "")) if detail.get("upstream_status") == 429 else None
-    resp = getattr(exc, "response", None)
-    if getattr(resp, "status_code", None) != 429:
-        return None
-    return parse_allow(getattr(resp, "text", "") or "")
+    """The wait OF asks for when `exc` is its 429 (see `upstream`), capped (parse_allow),
+    else None."""
+    status, body, _ = upstream(exc)
+    return parse_allow(body) if status == 429 else None
 
 
 def egress(proxy_url: str | None, label: str | None = None) -> tuple[str, str]:
@@ -182,11 +205,19 @@ def _wait_turn(*keys: str) -> None:
 
 def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] | None = None) -> Any:
     w = _WALK.get()
-    if w is None or account_id is None:   # None: a bare client, no Creator to pace on
+    if w is None:
+        return call()
+    if account_id is None:   # a bare client has no Creator to pace on, but still needs admission
+        if w.before_call is not None:
+            w.before_call()
         return call()
     aid = str(account_id)
     keys = (aid,) if egress_key is None else (aid, f"egress {egress_key[0]}")
     _wait_turn(*keys)
+    if w.before_call is not None:
+        w.before_call()
+    if not w.retry_429:
+        return call()
     try:
         return call()
     except Exception as e:
@@ -199,6 +230,8 @@ def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] 
              w.account_id or "-", egress_key[1] if egress_key else "-", wait)
     time.sleep(wait)
     _wait_turn(*keys)
+    if w.before_call is not None:
+        w.before_call()
     return call()
 
 
@@ -214,8 +247,9 @@ async def retry_429(account_id: Any, call: Callable[[], Awaitable[Any]]) -> Any:
     return await call()
 
 
-async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:
-    tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind))
+async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]], *,
+               retry_429: bool = True, before_call: Callable[[], None] | None = None) -> Any:
+    tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind, retry_429, before_call))
     try:
         with of_call_counter.caller(f"walk:{kind}"):
             return await run()

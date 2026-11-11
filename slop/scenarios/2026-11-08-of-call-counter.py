@@ -11,7 +11,8 @@ Dashboard's per-Creator subscriber counts and subscribers chart, the bell's coun
 list and the notifications feed), 1-3 s think. Before it every Creator's WS pump comes up on FakeOF's socket
 (`/__slop/pump-supervise`: the real `_reconcile_pumps`), each connect reading `/users/me`, and the owner sends two
 mass messages to `fans` + `following` on the last Creator through the composer's real `POST /api/of/v2/messages/queue`:
-each spawns the Relay's `mass-recipients-<run id>` task (`_spawn_bg`), which pages both OF rosters. Meanwhile WALKS ledger walks: one real
+each hands its Audience crawl to the Creator's crawler (service/audience_crawl.py), which pages both OF rosters
+inside `of_pacing.walk("audience_crawl")`. Meanwhile WALKS ledger walks: one real
 `transaction_ingest.supervisor_cycle()` (lib/sweep_pacing_relay.py), every Creator walked inside
 `of_pacing.walk`, with FakeOF answering Creator 0's first ledger page 429 (`throttle`: the pacer's one retry
 sends it again) and every ledger page of Creator 1 500 (`fail`). Then, once the wire is quiet, the file is
@@ -29,7 +30,7 @@ Checks:
                      `route:GET <Relay path>`, the ledger walk `walk:transactions` (its disputes read
                      `walk:chargebacks`), the held send its leg's KIND, the WS pumps' `/users/me` `loop:ws-pump`
                      (no Creator id), the composer's sends `route:POST /api/of/v2/messages/queue` and both
-                     recipient tasks' roster pages one `loop:mass-recipients-{}` (run id folded); each driven one
+                     Audience crawls' roster pages `walk:audience_crawl` (service/audience_crawl.py); each driven one
                      seen; zero `unlabelled`.
   survives_restart   the held send (if a leg) was answered after the SIGTERM and is in the file the stopped relay left;
                      the file's counts since phase 1 equal the wire's at the stop and again after the restart
@@ -72,7 +73,7 @@ LEDGER = "GET /api2/v2/payouts/transactions"
 QUEUE = "POST /api2/v2/messages/queue"
 ME = "GET /api2/v2/users/me"
 SUBS, FOLLOWING = "GET /api2/v2/subscriptions/subscribers", "GET /api2/v2/subscriptions/subscribes"
-MASS_RECIPIENTS = "loop:mass-recipients-{}"   # `_spawn_bg(..., f"mass-recipients-{run id}")`, the id folded
+AUDIENCE_CRAWL = "walk:audience_crawl"   # audience_crawl's pages, inside of_pacing.walk (innermost label wins)
 MASS_SENDS = 2
 MASS_TIMEOUT_S = 30.0
 PUMP_UP_S = 30.0
@@ -102,11 +103,11 @@ CALLERS = {**{"GET /api2/v2/" + p.split("?")[0].removeprefix("/api/of/v2/"): {"r
               for p in USER_READS},
            LEDGER: {"walk:transactions"}, "GET /api2/v2/payouts/chargebacks": {"walk:chargebacks"},
            QUEUE: {"route:POST /api/of/v2/messages/queue", *SENDER},
-           SUBS: {MASS_RECIPIENTS, *SENDER}, FOLLOWING: {MASS_RECIPIENTS, *SENDER},
+           SUBS: {AUDIENCE_CRAWL, *SENDER}, FOLLOWING: {AUDIENCE_CRAWL, *SENDER},
            ME: {"loop:ws-pump"}}
 REQUIRED = ({(k, c) for k, v in CALLERS.items() for c in v if c.startswith("route:GET ")}
             | {(LEDGER, "walk:transactions"), (ME, "loop:ws-pump"), *((QUEUE, k) for k in SENDER),
-               (QUEUE, "route:POST /api/of/v2/messages/queue"), (SUBS, MASS_RECIPIENTS), (FOLLOWING, MASS_RECIPIENTS)})
+               (QUEUE, "route:POST /api/of/v2/messages/queue"), (SUBS, AUDIENCE_CRAWL), (FOLLOWING, AUDIENCE_CRAWL)})
 
 _ID_SEG = re.compile(r"/(?:\d+|[0-9a-fA-F-]{16,})(?=/|$)")
 _STATIC_USERS = {"me", "list", "notifications", "performers", "settings"}
@@ -195,7 +196,7 @@ async def run(ctx) -> None:
             break
         await asyncio.sleep(0.25)
 
-    # ── two composer mass sends: each spawns its `mass-recipients-<run id>` roster task ──
+    # ── two composer mass sends: each hands its Audience crawl to the Creator's crawler ──
     mass_aid = cs[-1]
     mass_runs = []
     for i in range(MASS_SENDS):

@@ -26,6 +26,7 @@ import { Field, NumInput } from "@/components/ui/fields";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { MediaThumb, NudgeSlotPools } from "@/components/settings/NudgeSlotPools";
+import { useNudgeImageUploads } from "@/components/settings/useNudgeImageUploads";
 import { type VaultMedia } from "@/lib/relay";
 import { clearDraft, readDraft, usePendingDraft } from "@/lib/pendingDraft";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -42,7 +43,6 @@ import {
   effectiveConfig,
   nudgeDraftKey,
   type NudgeConfig,
-  type NudgeSlotEntry,
 } from "@/hooks/useNudgeConfig";
 import {
   buildConfig,
@@ -64,6 +64,7 @@ import {
 const TIME_PRESETS: [string, number][] = [
   ["Morning", 8], ["Midday", 13], ["Afternoon", 16], ["Evening", 19], ["Night", 23],
 ];
+const PREVIEW_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
 export default function NudgeOnlineTab({
   initialAccountId = null,
@@ -81,6 +82,7 @@ export default function NudgeOnlineTab({
   const { accountId } = state;
   const [previewFan, setPreviewFan] = useState("");
   const [previewHour, setPreviewHour] = useState<number | "">("");
+  const [previewDay, setPreviewDay] = useState("");
   useEffect(() => {
     if (!accountId && accounts.length > 0) dispatch({ type: "account", accountId: accounts[0].id });
   }, [accounts, accountId]);
@@ -113,7 +115,23 @@ export default function NudgeOnlineTab({
    *  other account's (B is not "Saving…"), and back on A it is A's again — a
    *  second whole-blob PUT must not overlap it. */
   const busy = useNudgeSavePending(accountId);
-  const saveDisabled = busy || !saveAllowed;
+
+  // A cache of picked media so we can render thumbnails by id (in the slot
+  // editor AND the preview).
+  const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
+  const addMedia = (list: VaultMedia[]) => setMediaCache((prev) => {
+    const next = { ...prev };
+    list.forEach((m) => { next[m.id] = m; });
+    return next;
+  });
+  // Images dropped on a slot import into the vault; a landed one joins its slot.
+  const uploads = useNudgeImageUploads((l) => {
+    addMedia(l.ids.map((id, i) => ({ id, type: "photo", files: null, _localPreview: l.previews[i] ?? undefined })));
+    dispatch({ type: "addImages", accountId: l.accountId, bucket: l.bucket, key: l.slotKey, ids: l.ids });
+  });
+  // Save waits for this account's imports: saved before they land, the images would be missing.
+  const uploading = uploads.chips.some((c) => c.accountId === accountId && !c.error);
+  const saveDisabled = busy || !saveAllowed || uploading;
   /** …and THE label: which branch save() will take (create the rule or save
    *  the config). */
   const saveLabel = rule ? "Save changes" : "Create automation";
@@ -124,10 +142,6 @@ export default function NudgeOnlineTab({
   // Roll-out checklist (every model checked by default, founder included).
   const allIds = accounts.map((a) => a.id);
   const picked = pickedIds(state.selected, allIds);
-
-  // A cache of picked media so we can render thumbnails by id (in the slot
-  // editor AND the preview).
-  const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
 
   // Load the effective config into the draft when it arrives — a refetch
   // while the draft has unsaved edits keeps them, and a config from before
@@ -160,13 +174,6 @@ export default function NudgeOnlineTab({
     return typeof v === "number" ? v : fallback;
   };
 
-  // Friendly slot edits keep the JSON view in sync (single source = `slots`).
-  const setDefaultSlot = (key: string, entry: NudgeSlotEntry) => {
-    const def = { ...(slots.default ?? {}) };
-    def[key] = entry;
-    dispatch({ type: "slots", slots: { ...slots, default: def } });
-  };
-
   // Bulk "Roll out to models" applies the in-memory config to OTHER accounts, so
   // require the active account's edits to be saved (and valid) first — otherwise
   // we'd push unsaved/partial changes the operator hasn't committed here.
@@ -193,7 +200,7 @@ export default function NudgeOnlineTab({
 
   async function runPreview() {
     if (!accountId) return;
-    const p = previewPayload(previewFan, previewHour);
+    const p = previewPayload(previewFan, previewHour, previewDay);
     if ("error" in p) {
       dispatch({ type: "previewErr", msg: `Preview failed: ${p.error}` });
       return;
@@ -249,7 +256,9 @@ export default function NudgeOnlineTab({
 
       {accounts.length > 1 && (
         <Field label="Account">
-          <IfNativeSelect className="w-full" value={accountId ?? ""}
+          {/* Held while this account's images import: they land in its slots. */}
+          <IfNativeSelect className="w-full" value={accountId ?? ""} disabled={uploading}
+            title={uploading ? "Wait for the image uploads to finish" : undefined}
             onChange={(e) => dispatch({ type: "account", accountId: e.target.value })}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>{a.nickname || a.id}</option>
@@ -382,6 +391,12 @@ export default function NudgeOnlineTab({
                 <IfInput type="number" min={0} max={23} className="w-24" placeholder="Now"
                   value={previewHour} onChange={(e) => setPreviewHour(e.target.value === "" ? "" : Number(e.target.value))} />
               </Field>
+              <Field label="Day">
+                <IfNativeSelect className="w-32" value={previewDay} onChange={(e) => setPreviewDay(e.target.value)}>
+                  <option value="">Today</option>
+                  {PREVIEW_DAYS.map((d) => <option key={d} value={d}>{d[0].toUpperCase() + d.slice(1)}</option>)}
+                </IfNativeSelect>
+              </Field>
               <IfSegmented aria-label="Preview time" className="mb-px max-w-full overflow-x-auto"
                 options={TIME_PRESETS.map(([label, h]) => ({ value: String(h), label }))}
                 value={String(previewHour)}
@@ -414,18 +429,18 @@ export default function NudgeOnlineTab({
             )}
           </Section>
 
-          {/* ── Tease pools: friendly editor ────────────────────────── */}
-          <Section title="Message lines (default times)">
+          {/* ── Tease pools: friendly editor, per day ───────────────── */}
+          <Section title="Message lines & images">
             <IfHelp className="mt-0">
               {"{name} {city} {age} {job} {hobby} {pet}"} fill from the fan&apos;s profile. One image per nudge; several rotate.
+              Drop images on a time to upload them.
             </IfHelp>
-            <NudgeSlotPools accountId={accountId} slots={slots.default ?? {}} mediaCache={mediaCache}
-              onMediaPicked={(picked) => setMediaCache((prev) => {
-                const next = { ...prev };
-                picked.forEach((m) => { next[m.id] = m; });
-                return next;
-              })}
-              onSlot={setDefaultSlot} />
+            <NudgeSlotPools accountId={accountId} slots={slots} mediaCache={mediaCache}
+              onMediaPicked={addMedia}
+              onSlot={(bucket, key, entry) => dispatch({ type: "slot", bucket, key, entry })}
+              uploads={uploads.chips}
+              onUpload={(bucket, key, files) => accountId && uploads.upload(accountId, bucket, key, files)}
+              onDismissUpload={uploads.dismiss} />
           </Section>
 
           {/* Advanced JSON (copy in/out, weekend/friday, full control) */}
@@ -510,7 +525,7 @@ export default function NudgeOnlineTab({
           </IfButton>
         )}
         <IfButton variant="primary" onClick={save} disabled={saveDisabled}>
-          {busy ? "Saving…" : saveLabel}
+          {busy ? "Saving…" : uploading ? "Uploading images…" : saveLabel}
         </IfButton>
       </EditorFooter>
     </div>

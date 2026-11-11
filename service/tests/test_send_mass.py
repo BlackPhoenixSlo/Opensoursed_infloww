@@ -32,6 +32,19 @@ seam exactly like a real scheduled job.
       for online / an unreadable roster; an enforce halt (kill switch, unhealthy
       mirror, fence_scale) is the real run's; every answer says dry_run, sent 0;
       the job ends done; other queued dry runs never shrink it.
+  case_the_run_returns_before_the_crawl_ends:
+      the run (and its automation run) closes while OF's roster page is still held:
+      the Audience crawl is detached (audience_crawl), and `drain` stamps the run.
+  case_the_crawl_reuses_the_verified_auto_exclude:
+      an automation list send with guard ids: the Auto_Exclude its sync reconciled
+      under broadcast_lock is handed to the crawl (verified_lists) and never read
+      again; the stamp subtracts its members.
+  case_the_composer_hands_its_verified_auto_exclude:
+      the same through the Composer's POST /api/of/v2/messages/queue.
+  case_close_mass_run_legacy_mode_spawns_the_record_task:
+      AUDIENCE_CRAWL_MODE=legacy: the composer close spawns today's
+      `mass-recipients-<id>` task, which stamps the run; no Audience crawl.
+  Cases that read recipients_json await `audience_crawl.drain()` first.
 
 Run: ./venv/bin/python service/tests/test_send_mass.py  (exit 0 = pass)
 """
@@ -47,6 +60,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
 
+import audience_crawl  # noqa: E402 — the detached Audience crawl (drain before reading recipients)
 import automation_executor as ax  # noqa: E402 — shared _make_client seam
 import automations.send_mass_message as a10  # noqa: E402,F401 — module under test (registers)
 from attribution import mass_placeholder_message_id  # noqa: E402
@@ -738,6 +752,7 @@ async def case_the_run_records_body_stamp_and_recipients():
     })
     res = await run_once(aid, "send_mass_message")
     assert res["status"] == "ok", res
+    await audience_crawl.drain()     # the crawl runs detached from the run (audience_crawl)
     async with get_session() as s:
         run = (await s.execute(
             select(MassRun).where(MassRun.account_id == aid)
@@ -771,12 +786,113 @@ async def case_an_unreadable_roster_leaves_the_run_unrecorded():
     })
     res = await run_once(aid, "send_mass_message")
     assert res["status"] == "ok", res            # the SEND is unaffected
+    await audience_crawl.drain()
     async with get_session() as s:
         run = (await s.execute(
             select(MassRun).where(MassRun.account_id == aid)
             .order_by(MassRun.id.desc()))).scalars().first()
     assert run.body == "just say please", run.body
     assert run.recipients_json is None, run.recipients_json
+
+
+async def case_the_run_returns_before_the_crawl_ends():
+    """The run answers and closes as soon as OF accepts: the Audience crawl is handed
+    off (audience_crawl) and stamps the run later, so a slow roster never holds the
+    run slot. Here OF's roster page is held until the run has returned."""
+    import threading
+    aid = "acc_mass_detached"
+    await _seed_account(aid)
+    release = threading.Event()
+
+    class Held(FakeRosterClient):
+        def subscribers(self, **kw):
+            assert release.wait(10), "the page was never released"
+            return super().subscribers(**kw)
+    _use_fake(Held(fans=[8301, 8302]))
+    await enqueue_job(aid, "send_mass_message", payload={
+        "text": "detached", "user_lists": ["fans"],
+        "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+    })
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok", res
+    async with get_session() as s:
+        run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
+        arun = (await s.execute(select(AutomationRun).where(AutomationRun.account_id == aid))).scalars().one()
+    assert run.status == "ok" and run.recipients_json is None, (run.status, run.recipients_json)
+    assert arun.status == "ok", arun.status       # the automation run closed with the crawl in flight
+    assert aid in audience_crawl._crawlers and not audience_crawl._crawlers[aid].done()
+    release.set()
+    await audience_crawl.drain()
+    async with get_session() as s:
+        run = await s.get(MassRun, run.id)
+    assert json.loads(run.recipients_json) == [8301, 8302], run.recipients_json
+
+
+class CountingRosterClient(FakeRosterClient):
+    """FakeRosterClient counting its Auto_Exclude list reads (offset 0 = one read)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.list_reads = 0
+
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        if offset == 0:
+            self.list_reads += 1
+        return super().list_users_in(list_id, limit=limit, offset=offset)
+
+
+async def case_the_crawl_reuses_the_verified_auto_exclude():
+    aid = "acc_mass_verified"
+    await _seed_account(aid)
+    await _seed_message(aid, 8402, "out", 84002)   # we replied -> the guard excludes 8402
+    fake = CountingRosterClient(fans=[8401, 8402, 8403])
+    fake.lists.append({"id": FakeListClient.AUTO_LID, "name": "Auto_Exclude"})
+    fake.members[FakeListClient.AUTO_LID] = {9999}  # stale: removed by the sync
+    _use_fake(fake)
+    await enqueue_job(aid, "send_mass_message", payload={"text": "verified", "user_lists": ["fans"]})
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok", res
+    assert FakeListClient.AUTO_LID in fake.sent[0]["excluded_user_lists"], fake.sent
+    await audience_crawl.drain()
+    # one read: the sync's own, under broadcast_lock; the crawl never reads it again
+    assert fake.list_reads == 1, fake.list_reads
+    async with get_session() as s:
+        run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
+    assert json.loads(run.recipients_json) == [8401, 8403], run.recipients_json
+
+
+async def case_the_composer_hands_its_verified_auto_exclude():
+    import mass_queue_api  # noqa: E402
+    import server  # noqa: E402
+    aid = "acc_mass_verified_composer"
+    await _seed_account(aid)
+    fake = CountingRosterClient(fans=[8501, 8502, 8503])
+    run_ids: list[int] = []
+
+    async def _open(_request, **kw):
+        async with get_session() as s:
+            mr = MassRun(account_id=aid, audience_filter="{}", recipient_count=0, status="running")
+            s.add(mr)
+            await s.flush()
+            run_ids.append(int(mr.id))
+        return aid, None, run_ids[-1]
+    orig = (server._resolve_account_id, server._get_client, server._load_client, mass_queue_api._open_mass_run)
+    server._resolve_account_id = lambda _req: aid
+    server._get_client = lambda *_a: fake
+    server._load_client = lambda _aid: fake
+    mass_queue_api._open_mass_run = _open
+    try:
+        await mass_queue_api.of_send_or_schedule_mass(None, mass_queue_api._MassScheduleBody(
+            text="composer verified", user_lists=["fans"], excluded_users=[8502]))
+        assert FakeListClient.AUTO_LID in fake.sent[0]["excluded_user_lists"], fake.sent
+        await audience_crawl.drain()
+    finally:
+        (server._resolve_account_id, server._get_client, server._load_client,
+         mass_queue_api._open_mass_run) = orig
+    assert fake.list_reads == 1, fake.list_reads   # the sync's own read only
+    async with get_session() as s:
+        run = await s.get(MassRun, run_ids[0])
+    assert json.loads(run.recipients_json) == [8501, 8503], run.recipients_json
 
 
 async def case_close_mass_run_skips_a_scheduled_send():
@@ -807,9 +923,9 @@ async def case_close_mass_run_skips_a_scheduled_send():
         text="just say please", price=0,
         result={"id": 990001, "createdAt": "2026-06-04T10:00:00+00:00"},
         recipient_ids=[], audience=audience, scheduled=False)
-    # The recipient record is backgrounded so the composer response never waits
-    # on a 17-page roster crawl — drain it before asserting.
-    await asyncio.gather(*list(server._bg_tasks))
+    # The recipient record is handed to the Audience crawl so the composer response
+    # never waits on a roster crawl — drain it before asserting.
+    await audience_crawl.drain()
 
     later = await _mint()
     await mass_queue_api._close_mass_run(
@@ -817,7 +933,7 @@ async def case_close_mass_run_skips_a_scheduled_send():
         text="tomorrow's blast", price=0,
         result={"id": 990002, "createdAt": "2026-06-04T10:00:01+00:00"},
         recipient_ids=[], audience=audience, scheduled=True)
-    await asyncio.gather(*list(server._bg_tasks))
+    await audience_crawl.drain()
 
     async with get_session() as s:
         a = await s.get(MassRun, immediate)
@@ -830,6 +946,41 @@ async def case_close_mass_run_skips_a_scheduled_send():
     # Both still CLOSE — the queue id is what the Mass Messages tab joins on.
     assert a.status == "ok" and b.status == "ok", (a.status, b.status)
     assert b.queue_id == 990002, b.queue_id
+
+
+async def case_close_mass_run_legacy_mode_spawns_the_record_task():
+    """AUDIENCE_CRAWL_MODE=legacy: the composer's close step is today's — a
+    `mass-recipients-<id>` background task (unpaced, no Audience crawl) stamps the run."""
+    import os
+    import server  # noqa: E402
+    import mass_queue_api  # noqa: E402
+    aid = "acc_mass_close_legacy"
+    await _seed_account(aid)
+    fake = FakeRosterClient(fans=[8211, 8212])
+    server._load_client = lambda account_id: fake  # type: ignore[attr-defined]
+    async with get_session() as s:
+        mr = MassRun(account_id=aid, audience_filter="{}", recipient_count=0, status="running")
+        s.add(mr)
+        await s.flush()
+        run_id = int(mr.id)
+    os.environ["AUDIENCE_CRAWL_MODE"] = "legacy"
+    try:
+        await mass_queue_api._close_mass_run(
+            account_id=aid, employee_id=None, mass_run_id=run_id,
+            text="legacy close", price=0,
+            result={"id": 990011, "createdAt": "2026-06-04T10:00:00+00:00"},
+            recipient_ids=[], audience={"user_lists": ["fans"], "excluded_users": [8212]},
+            scheduled=False)
+        tasks = [t for t in server._bg_tasks if t.get_name() == f"mass-recipients-{run_id}"]
+        assert len(tasks) == 1, [t.get_name() for t in server._bg_tasks]
+        assert aid not in audience_crawl._crawlers, "legacy never hands off"
+        await asyncio.gather(*tasks)
+    finally:
+        os.environ.pop("AUDIENCE_CRAWL_MODE", None)
+    async with get_session() as s:
+        run = await s.get(MassRun, run_id)
+    assert json.loads(run.recipients_json) == [8211], run.recipients_json
+    assert run.status == "ok", run.status
 
 
 def case_init_db_heals_the_four_columns_and_the_index():
@@ -1074,6 +1225,7 @@ async def case_dry_run_list_reads_the_roster_and_writes_no_list():
     # The real run syncs Auto_Exclude and records the same recipients off OF.
     res2 = await run_once(aid, "send_mass_message", payload=payload)
     assert res2["status"] == "ok" and fake.sent and fake.writes, (res2, fake.writes)
+    await audience_crawl.drain()
     async with get_session() as s:
         run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
     assert json.loads(run.recipients_json) == res["would_send"], run.recipients_json
@@ -1185,6 +1337,7 @@ async def case_dry_run_unreadable_roster_and_exclude_lists():
     assert res["would_send"] == [9873] and res["audience"] == "explicit", res
     payload.pop("dry_run")
     await run_once(aid, "send_mass_message", payload=payload)
+    await audience_crawl.drain()
     async with get_session() as s:
         run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
     assert json.loads(run.recipients_json) == res["would_send"], run.recipients_json
@@ -1252,7 +1405,11 @@ _harness.run(
     case_resolve_recipients_fails_closed,
     case_the_run_records_body_stamp_and_recipients,
     case_an_unreadable_roster_leaves_the_run_unrecorded,
+    case_the_run_returns_before_the_crawl_ends,
+    case_the_crawl_reuses_the_verified_auto_exclude,
+    case_the_composer_hands_its_verified_auto_exclude,
     case_close_mass_run_skips_a_scheduled_send,
+    case_close_mass_run_legacy_mode_spawns_the_record_task,
     case_init_db_heals_the_four_columns_and_the_index,
     case_mass_premade_dry_run_never_reaches_this_sender,
     case_no_id_response_still_persists,

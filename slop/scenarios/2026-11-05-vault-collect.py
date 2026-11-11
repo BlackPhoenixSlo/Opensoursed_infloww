@@ -46,19 +46,22 @@ import asyncio
 import itertools
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
 from slop.actors import fan_dm
 from slop.actors.chatter import Chatters
 from slop.lib.img_relay import arm_run
-from service.of_pacing import PAGE_GAP_S, JITTER_S
 from slop.lib.vault_collect_faults import (FILLS_MIRROR, ONE_AT_A_TIME, PACING, RESUME, SKIPS_BUSY, THUMBS_WARM,
                                            USER_P95)
 from slop.lib.vault_collect_relay import stills_dir
 from slop.lib.vault_ui import cdn_calls
 from slop.seed.vault_cache import LISTS_KEY
 from slop.lib.vault_wire import VaultWire, owner_of
+
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))  # the pacer's leaf dependencies
+from of_pacing import PAGE_GAP_S, JITTER_S
 
 PROFILE = "flat_agency"
 UI = False

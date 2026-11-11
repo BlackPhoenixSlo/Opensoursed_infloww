@@ -209,6 +209,39 @@ async def case_every_failure_shape_lands_on_its_own_row() -> None:
     assert rows["acct3"]["error"] == "ValueError: kaboom", rows["acct3"]
 
 
+def case_health_reuses_only_its_own_small_identity_projection() -> None:
+    calls = []
+    def me(aid):
+        calls.append(aid)
+        return {"id": 123, "name": "Ava", "avatar": "https://cdn/avatar.jpg",
+                "avatarThumbs": {"c50": "https://cdn/small.jpg"}, "private": "not exported"}
+    with _fleet([], me_fn=me):
+        row = server._probe_account_blocking("123")
+        assert row["profile"] == {"id": 123, "avatar": "https://cdn/avatar.jpg",
+                                  "avatarThumbs": {"c50": "https://cdn/small.jpg"}}, row
+        assert row["ok"] and row["user_id"] == 123 and row["name"] == "Ava", row
+        other = server._probe_account_blocking("456")
+        assert other["ok"] and other["user_id"] == 123 and "profile" not in other, other
+    assert calls == ["123", "456"], calls
+    for reply, expected in [({"id": "123"}, {"id": "123", "avatar": None, "avatarThumbs": None}),
+                            ({"avatar": "wrong"}, None), ({"id": None}, None)]:
+        with _fleet([], me_fn=lambda aid: reply):
+            row = server._probe_account_blocking("123")
+            assert row.get("profile") == expected, row
+            assert row["ok"], row
+
+
+async def case_health_profiles_remain_inside_the_ownership_clamp() -> None:
+    with _fleet(_accts(2), me_fn=lambda aid: {"id": aid, "avatar": f"https://cdn/{aid}.jpg"}):
+        snapshot = await server._health_all_accounts()
+    own = server._clamp_health_all(snapshot, frozenset({"acct0"}))
+    assert len(own["accounts"]) == 1, own
+    assert own["accounts"][0]["profile"]["id"] == "acct0", own
+    assert own["accounts"][0]["profile"]["avatar"] == "https://cdn/acct0.jpg", own
+    assert len(snapshot["accounts"]) == 2, snapshot
+    assert server._clamp_health_all(snapshot, frozenset())["accounts"] == []
+
+
 async def case_a_timeout_does_not_cancel_the_probe() -> None:
     """The budget stops WAITING; it does not stop the OF call.
 

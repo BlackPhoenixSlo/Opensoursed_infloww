@@ -31,11 +31,12 @@ perf log's 10 s beacon aside):
   send       type a line, tap Send: the bubble, and OF's POST
   receive    `--users` Fans DM through `/__slop/of-ws-frame` (fan_dm.serial: per Creator one frame in flight), then
              the opened Fan: settled = its frames handed to the relay -> their bubbles on the page
-  dashboard-again  last, at least AGAIN_AFTER_S after the first visit (the relay's 60 s OF caches expired, as a
-             phone coming back): one Creator's OF fan count changed (`fan_counts`), the page's clock AGAIN_SHIFT_S
-             ahead (the saved snapshot past the cards' 30 min staleTime: every card reads again), `/` typed: every
-             Per-model card's fan count shown (key: the cards painted, the snapshot's counts or the bundle's), then
-             C_AGAIN: the painted counts converge to OF's (the changed one's new count)
+  dashboard-again  `/` typed again: Total earnings and the original return request budget
+  reports-first  after every original cold flow: Creator reports extras activated, every card's fan count saved
+  reports-again  at least AGAIN_AFTER_S after those cards settled (relay OF cache expired), one Creator's OF fan
+             count changed and the browser clock AGAIN_SHIFT_S ahead: extras activated again, C_AGAIN checks
+             every count converges to OF's, including the changed count. Card timings start at activation;
+             document-entry reads are retained as reports-entry-first / reports-entry-again flows.
 Screenshots `screenshots/<profile>-<flow>-trigger.png` (the screen the user acts on; dashboard: just after the
 navigation commits; receive: the open thread before the first frame) and `-settled.png`; every request per flow
 (path, status, bytes, ms) in `net-<profile>.json`.
@@ -144,8 +145,8 @@ CREATORS = 13
 OF_MS = 300      # a guess between the fake's 50 ms and prod's cold 0.9-1.3 s (dashboard-load's docstring)
 CDN_MS = 50
 PER_FAN = 2      # DMs per Fan in receive: two, so a thread's order can be wrong
-FLOWS = ("dashboard", "creators", "fan-list", "thread", "vault", "send", "receive", "dashboard-again")
-# dashboard-again: past the relay's OF caches (screens_api CACHE_TTL_S, users/me's 60 s) and the cards' staleTime.
+FLOWS = ("dashboard", "creators", "fan-list", "thread", "vault", "send", "receive", "dashboard-again", "reports-first", "reports-again")
+# reports-again: past the relay's OF caches (screens_api CACHE_TTL_S, users/me's 60 s) and the cards' staleTime.
 AGAIN_AFTER_S = 65
 AGAIN_SHIFT_S = 31 * 60
 AGAIN_BUMP = 1_000       # the changed Creator's new count: + this (every seeded count is < 1000: none collides)
@@ -250,7 +251,7 @@ RECEIVE_MS = 800  # frame -> bubble, any profile (CDP leaves the open /events st
 # refetches follow the DMs and where they land, so a fixed cap tracks --users and the scale; measured 27-34 for 42
 # DMs at small, 40 at medium, 20261105T172951Z-...-dde2): one read per DM + 25 %.
 REQ_MAX: dict[str, int] = {"dashboard": 52, "creators": 16, "fan-list": 140, "thread": 30, "vault": 73, "send": 6,
-                           "dashboard-again": 52}   # again: 39-45 measured (20261106T112352Z-...-de4d)
+                           "dashboard-again": 52, "reports-first": 52, "reports-again": 52}   # again: 39-45 measured (20261106T112352Z-...-de4d)
 REQ_PER_DM = 1.25
 IDLE_S = 60  # the open thread left alone this long after receive (calls/min; `--set idle_s=0`: none)
 WAVE_GAP_MS = 100  # a thread request starting this long after the previous start opens a new wave (dependent reads)
@@ -309,7 +310,7 @@ ROWS_JS = "() => [...document.querySelectorAll('table tbody tr')].filter(r => r.
 FANS_JS = ("() => [...document.querySelectorAll('dt')].filter(d => d.textContent.trim() === 'Fans')"
            ".map(d => ((d.nextElementSibling || {}).textContent || '').trim())")
 CARDS_JS = f"() => {{ const f = ({FANS_JS})(); return f.length > 0 && f.every(t => /^[\\d,]+$/.test(t)); }}"
-# dashboard-again: when a card first painted the changed Creator's new count (epoch ms), from the document's start.
+# reports-again: when a card first painted the changed Creator's new count (epoch ms), from the document's start.
 CONV_JS = r"""(() => { const want = %d; const chk = () => { if (window.__conv) return;
   for (const d of document.querySelectorAll('dt')) if (d.textContent.trim() === 'Fans'
     && Number(((d.nextElementSibling || {}).textContent || '').replace(/,/g, '')) === want) {
@@ -614,11 +615,19 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
             await page.goto(edge.url + "/", wait_until="commit", timeout=plan["timeout_ms"])
             return "typed"
         await flow("dashboard", goto, '[data-control="total"] [data-figure]', shot_before=False)
-        t_dash = time.time()
-        out["found"]["fans_first"] = await page.evaluate(FANS_JS)
         n_rows = min(CREATORS_PAGE, len(plan["creators"]))
         out["found"]["drawer_error"] = await _drawer(page, "Creators")
-        await flow("creators", lambda: _nav(page, "/creators"), f"() => ({ROWS_JS})() >= {n_rows}", drain=True)
+        # Observe the actual cold navigation response; never issue an extra
+        # health/profile read (or warm reports) to collect identity evidence.
+        async with page.expect_response(lambda r: "/health?all_accounts=1" in r.url) as health_response:
+            await flow("creators", lambda: _nav(page, "/creators"), f"() => ({ROWS_JS})() >= {n_rows}", drain=True)
+        health = await health_response.value
+        out["found"]["creator_health"] = {"status": health.status, "body": await health.json()}
+        with ctx.of_wire.lock:
+            out["found"]["creator_upstream_me"] = [dict(c) for c in ctx.of_wire.calls
+                if c["route"] == "GET /api2/v2/users/me" and c.get("t0", c["t"]) >= meter.t0]
+        out["found"]["creator_images"] = await page.locator("table img").evaluate_all(
+            "imgs => imgs.map(i => ({src:i.getAttribute('src'), complete:i.complete, width:i.naturalWidth}))")
         out["found"]["creator_rows"] = await page.evaluate(ROWS_JS)
         async def mp():  # nav.ts opens Messages Pro as its own window (a phone: a tab): a new document, cache warm
             await page.goto(edge.url + "/messages-pro", wait_until="commit", timeout=plan["timeout_ms"])
@@ -713,32 +722,54 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
         out["found"]["vault_tiles"] = await dlg.locator("[data-tile-id]").count()
         await close_vault()
 
-        # dashboard-again (untimed set-up): the relay's OF caches expired, one painted Creator's count changed at OF.
-        await asyncio.sleep(max(0.0, AGAIN_AFTER_S - (time.time() - t_dash)))
-        count = lambda aid: ctx.of_wire.fan_counts.get(aid, int(aid) % 900 + 100)  # noqa: E731  lib/of_wire.py's
+        # Preserve the original Dashboard return and its request budget. Cards moved
+        # to Creator reports extras in #374; do not warm them before Dashboard -> Creators.
+        async def dashboard_again():
+            await page.goto(edge.url + "/", wait_until="commit", timeout=plan["timeout_ms"])
+            return "typed"
+        await flow("dashboard-again", dashboard_again, '[data-control="total"] [data-figure]',
+                   shot_before=False, drain=True)
+
+        async def reports_document(name):
+            async def navigate():
+                await page.goto(edge.url + "/analytics/creator-reports", wait_until="commit", timeout=plan["timeout_ms"])
+                await page.locator('[aria-controls="creator-reports-extras"]').wait_for(timeout=plan["timeout_ms"])
+                return "typed"
+            # Keep document reads in the same 5xx/image/private-HTML checks as every other flow.
+            return await flow(name, navigate, "body", shot_before=False, drain=True)
+
+        async def extras():
+            await page.locator('[aria-controls="creator-reports-extras"]').click()
+            return "extras-activation"
+
+        await reports_document("reports-entry-first")
+        await flow("reports-first", extras, CARDS_JS, drain=True)
+        out["found"]["fans_first"] = await page.evaluate(FANS_JS)
+        # Expire the relay's OF caches from this first card visit, then change one
+        # actually painted Creator's count. Browser snapshots age by the same shift.
+        await asyncio.sleep(AGAIN_AFTER_S)
+        count = lambda aid: ctx.of_wire.fan_counts.get(aid, int(aid) % 900 + 100)  # noqa: E731
         first = set(_fans(out["found"]["fans_first"]))
         bumped = next((c["id"] for c in plan["creators"] if count(c["id"]) in first), None)
         if bumped is not None:
             with ctx.of_wire.lock:
                 ctx.of_wire.fan_counts[bumped] = count(bumped) + AGAIN_BUMP
-
-        async def again():
-            await bctx.add_init_script(CONV_JS % (count(bumped) if bumped is not None else -1))
-            await bctx.clock.set_system_time(time.time() + AGAIN_SHIFT_S)
-            await page.goto(edge.url + "/", wait_until="commit", timeout=plan["timeout_ms"])
-            return "typed"
-        r = await flow("dashboard-again", again, CARDS_JS, shot_before=False, drain=True)
+        await bctx.add_init_script(CONV_JS % (count(bumped) if bumped is not None else -1))
+        await bctx.clock.set_system_time(time.time() + AGAIN_SHIFT_S)
+        await reports_document("reports-entry-again")
+        r = await flow("reports-again", extras, CARDS_JS, drain=True)
         want = sorted(count(c["id"]) for c in plan["creators"])
-        conv = f"() => {{ const f = ({FANS_JS})(); return f.length > 0 && f.every(t => {json.dumps(want)}.includes(" \
-               f"Number(t.replace(/,/g, '')))) && f.some(t => Number(t.replace(/,/g, '')) === " \
-               f"{count(bumped) if bumped is not None else -1}); }}"
+        conv = f"() => {{ const f = ({FANS_JS})(); " \
+               f"return f.length === {len(plan['creators'])} && " \
+               "JSON.stringify(f.map(t => Number(t.replace(/,/g, ''))).sort((a,b) => a-b)) === " \
+               f"JSON.stringify({json.dumps(want)}); }}"
         try:  # every count OF's: then the changed one's first paint, from the trigger
             await page.wait_for_function(conv, timeout=AGAIN_WAIT_MS)
             at = await page.evaluate("() => window.__conv || null")
             r["converged_ms"] = round(at - AGAIN_SHIFT_S * 1000 - meter.t0 * 1000) if at else None  # the page's clock
         except Exception:  # noqa: BLE001  judged by C_AGAIN
             r["converged_ms"] = None
-        await page.screenshot(path=str(shots / f"{prof}-dashboard-again-converged.png"))
+        await page.screenshot(path=str(shots / f"{prof}-reports-again-converged.png"))
         out["found"]["again"] = {"bumped": bumped, "new_count": count(bumped) if bumped is not None else None,
                                  "fans": await page.evaluate(FANS_JS), "converged_ms": r["converged_ms"]}
     finally:
@@ -922,7 +953,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_NO_5XX, not five, n=len(five), bad=five[:10])
     again = {p: res[p]["found"].get("again", {}) for p in profiles}
     ctx.check(C_AGAIN, all(a.get("bumped") is not None and a.get("converged_ms") is not None for a in again.values()),
-              again=again, cards_ms={p: res[p]["flows"].get("dashboard-again", {}).get("key_ms") for p in profiles})
+              again=again, cards_ms={p: res[p]["flows"].get("reports-again", {}).get("key_ms") for p in profiles})
 
     fetched = {f"{p} {f}": paths for p in profiles for f, rxs in INLINE_READS.items()
                if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])

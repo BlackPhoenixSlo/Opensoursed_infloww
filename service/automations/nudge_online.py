@@ -322,19 +322,18 @@ async def _gate_skip_reason(
 # ── Content composition (tease pools) ────────────────────────────────
 
 def _pick_pool(slots: dict, slot: str, weekday_name: str) -> dict:
-    """Day-bucket lookup order: per-day (e.g. 'friday') → weekend/weekday →
-    default, for this time-slot. Always returns an entry with a non-empty
-    'text' list (generic fallback if a slot is unconfigured)."""
+    """Day-bucket lookup for this time-slot, per FIELD: the lines come from the
+    most specific bucket that has lines and the images from the most specific
+    that has images — per-day (e.g. 'friday') → weekend/weekday → default. So a
+    day can swap just its image (or just its lines) and keep the rest. Always
+    returns a non-empty 'text' list (generic fallback if no bucket has lines)."""
     wd = (weekday_name or "").lower()
     is_weekend = wd in ("saturday", "sunday")
-    for bucket in (wd, "weekend" if is_weekend else "weekday", "default"):
-        b = slots.get(bucket)
-        if isinstance(b, dict) and isinstance(b.get(slot), dict) and b[slot].get("text"):
-            return b[slot]
-    d = slots.get("default", {})
-    if isinstance(d.get(slot), dict) and d[slot].get("text"):
-        return d[slot]
-    return {"text": ["hey {name} 👀 saw you pop online"], "image": []}
+    entries = [b[slot] for b in (slots.get(k) for k in (wd, "weekend" if is_weekend else "weekday", "default"))
+               if isinstance(b, dict) and isinstance(b.get(slot), dict)]
+    text = next((e["text"] for e in entries if e.get("text")), None)
+    image = next((e["image"] for e in entries if e.get("image")), [])
+    return {"text": text or ["hey {name} 👀 saw you pop online"], "image": image}
 
 
 def _choose_idx(st, fan_id: int, pool_len: int, repeat_mode: str) -> int:
@@ -378,19 +377,20 @@ def _slot_media(cfg: dict, pool: dict, hour: int, idx: int) -> list[int]:
 
 async def _compose_messages(
     account_id: str, fan_id: int | None, cfg: dict, fan_obj: dict | None, st,
-    *, hour: int | None = None, randomize: bool = False,
+    *, hour: int | None = None, weekday: str | None = None, randomize: bool = False,
 ) -> tuple[list[dict], str]:
     """Build the list of messages a nudge would send, plus the slot. SIDE-EFFECT
     FREE. Each message: {kind, text, media, idx}. Today that is at most ONE: the
     nudge line — a time-of-day greeting (+ image), text off for image-only.
 
-    `fan_id` None → a sample fan (for previews). `hour` overrides the slot clock.
+    `fan_id` None → a sample fan (for previews). `hour` / `weekday` override the
+    slot clock / the model's day (the preview's pickers).
     `randomize` → pick a RANDOM line (the preview uses this so each click shows a
     different sample); real sends use repeat_mode rotation."""
     off = cfg.get("utc_offset") or 0
     h = (int(hour) if hour is not None else welcome_compose._model_hour(off)) % 24
     slot = welcome_compose._slot_key(h)
-    weekday = welcome_compose._model_weekday(off)
+    weekday = weekday or welcome_compose._model_weekday(off)
 
     if fan_id is not None:
         async with get_session() as s:
@@ -425,11 +425,12 @@ async def _compose_messages(
 
 async def preview_compose(
     account_id: str, cfg: dict, *, fan_id: int | None = None, hour: int | None = None,
+    weekday: str | None = None,
 ) -> dict:
     """Preview the full message list a nudge would send (NO send, NO state write).
     Randomized so each click shows a different sample line."""
     msgs, slot = await _compose_messages(account_id, fan_id, cfg, None, None,
-                                         hour=hour, randomize=True)
+                                         hour=hour, weekday=weekday, randomize=True)
     name = "Jack"
     if fan_id is not None:
         name = await welcome_compose._resolve_welcome_name(

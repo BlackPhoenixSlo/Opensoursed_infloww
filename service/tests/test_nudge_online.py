@@ -381,7 +381,16 @@ def case_compose_helpers():
     assert any("weekend" in t.lower() or "friday" in t.lower() for t in sat["text"]), sat
     # A weekday with no per-day/weekend override → default.
     wed = nudge_online._pick_pool(slots, "night", "Wednesday")
-    assert wed is slots["default"]["night"], wed
+    assert wed == slots["default"]["night"], wed
+    # Per field: a day that only swaps the image keeps the lines it falls back to,
+    # and a day with only lines keeps the image of the bucket below.
+    mixed = {"default": {"night": {"text": ["d"], "image": [1]}},
+             "weekend": {"night": {"text": ["w"], "image": []}},
+             "saturday": {"night": {"text": [], "image": [7]}}}
+    assert nudge_online._pick_pool(mixed, "night", "Saturday") == {"text": ["w"], "image": [7]}
+    assert nudge_online._pick_pool(mixed, "night", "Sunday") == {"text": ["w"], "image": [1]}
+    assert nudge_online._pick_pool(mixed, "night", "Monday") == {"text": ["d"], "image": [1]}
+    assert nudge_online._pick_pool({}, "night", "Monday")["text"], "generic fallback line"
 
     # Rotation: new advances, same holds, never-nudged seeds off fan id.
     class _St:
@@ -430,6 +439,18 @@ async def case_legacy_info_line_keys_ignored():
     cfg = await nudge_online._load_nudge_config(aid)
     prev = await nudge_online.preview_compose(aid, cfg, fan_id=20001)
     assert [m["kind"] for m in prev["messages"]] == ["nudge"], prev
+
+
+async def case_preview_picks_the_asked_day():
+    """The preview's day picker: a Friday-only image on the default lines shows on
+    a Friday preview and not on a Monday one (per-field day fallthrough)."""
+    slots = {"default": {"afternoon_2": {"text": ["hey {name}"], "image": [11]}},
+             "friday": {"afternoon_2": {"text": [], "image": [77]}}}
+    cfg = {**nudge_online._DEFAULT_NUDGE_CONFIG, "slots": slots, "utc_offset": 0, "time_images": {}}
+    fri = await nudge_online.preview_compose("n_prev_day", cfg, hour=16, weekday="friday")
+    mon = await nudge_online.preview_compose("n_prev_day", cfg, hour=16, weekday="monday")
+    assert [(m["text"], m["media"]) for m in fri["messages"]] == [("hey Jack", [77])], fri
+    assert [(m["text"], m["media"]) for m in mon["messages"]] == [("hey Jack", [11])], mon
 
 
 # ── with_image: the rule payload layered over the account config ──────
@@ -491,4 +512,5 @@ _harness.run(
     case_with_image_layers_the_payload_over_the_account_cfg,
     case_compose_helpers,
     case_legacy_info_line_keys_ignored,
+    case_preview_picks_the_asked_day,
 )

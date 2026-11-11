@@ -224,18 +224,23 @@ describe("Auto Mass audience", () => {
     expect(screen.getByLabelText("Exclude I replied to")).toHaveValue("2");
   });
 
-  it("maps recipient chips and chat skip to the existing payload fields", async () => {
+  it.each([true, false])("maps recipient chips and chat skip, online only=%s", async (onlineOnly) => {
     post.mockResolvedValueOnce({});
     renderWithProviders(<ReadyMadeRuleEditor kind="mass_premade" accountId="acc-a" editing={null} onClose={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText(/broadcast text/i), { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: /Following/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Online now" }));
+    const online = screen.getByRole("button", { name: "Send to online only" });
+    expect(online).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(online);
+    expect(online).toHaveAttribute("aria-pressed", "false");
+    if (onlineOnly) fireEvent.click(online);
+    expect(online).toHaveAttribute("aria-pressed", String(onlineOnly));
     fireEvent.click(screen.getByRole("radio", { name: "3h" }));
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(post.mock.calls[0][1].payload.messages[0]).toMatchObject({
       user_lists: ["fans"], exclude_last_chat_hours: 3,
     });
-    expect(post.mock.calls[0][1].payload.messages[0].online_only).toBeUndefined();
+    expect(post.mock.calls[0][1].payload.messages[0].online_only).toBe(onlineOnly ? true : undefined);
   });
 });

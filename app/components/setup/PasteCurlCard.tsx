@@ -22,6 +22,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useReducer } from "react";
 
 import { relay, type BootstrapResponse, RelayError } from "@/lib/relay";
+import { accountSessionCaptured } from "@/lib/accountSession";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { IfButton, IfHelp, IfInput, IfLabel, IfTextArea } from "@/components/ui/infloww";
 import { EXTENSION_ID } from "@/components/setup/useExtensionProbe";
@@ -55,6 +56,8 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
 
   const bootstrapM = useMutation<BootstrapResponse, RelayError, BootstrapBody>({
     mutationFn: (body) => relay.post<BootstrapResponse>("/admin/session/bootstrap", body),
+    // Capture already replaced the session, even if proxy attach later fails.
+    onSuccess: (data) => { if (data.account_id) accountSessionCaptured(data.account_id); },
   });
 
   const reloadM = useMutation({

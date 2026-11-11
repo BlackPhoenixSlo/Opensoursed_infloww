@@ -365,9 +365,24 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
   };
   const btn = (name: string | RegExp) => within(dialog()).getByRole("button", { name });
   const choice = (name: "Browser login" | "Extension") => within(dialog()).getByRole("radio", { name: new RegExp(`^${name}`) });
+  const CREATOR_NAME = "Creator draft";
+  /** New creators enter details and choose a platform; recovery and draft rows bypass these steps. */
+  const enterLogin = () => {
+    expect(btn("Next")).toBeDisabled();
+    fireEvent.change(within(dialog()).getByLabelText("Creator name"), { target: { value: CREATOR_NAME } });
+    fireEvent.change(within(dialog()).getByLabelText("Gender"), { target: { value: "Female" } });
+    expect(btn("Next")).toBeEnabled();
+    fireEvent.click(btn("Next"));
+    const platform = within(dialog()).getByRole("radiogroup", { name: "Platform" });
+    expect(within(platform).getByRole("radio", { name: "OnlyFans" })).toBeChecked();
+    expect(within(platform).getByRole("radio", { name: "Fansly" })).toBeEnabled();
+    fireEvent.click(btn("Next"));
+    expect(within(dialog()).getByRole("radiogroup", { name: "Login method" })).toBeInTheDocument();
+  };
   /** The Extension choice, its panel shown. */
   const toExtension = async () => {
     await open();
+    enterLogin();
     fireEvent.click(choice("Extension"));
     return within(dialog()).getByRole("region", { name: "Extension" });
   };
@@ -383,7 +398,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     relayPatch.mockResolvedValue({});
   });
 
-  it("sits in the page header and opens on the two ways in: Browser login (recommended) first, Extension second", async () => {
+  it("sits in the page header, enters details and platform, then Browser login (recommended) first, Extension second", async () => {
     accounts = [{ id: "acct-a", nickname: "Alpha", has_session: true }];
     renderWithProviders(<Page />);
     await screen.findAllByText("Alpha");
@@ -393,6 +408,8 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(add);
     const d = screen.getByRole("dialog", { name: "Add creator" });
+    expect(within(d).queryByRole("radiogroup", { name: "Login method" })).toBeNull();
+    enterLogin();
     const group = within(d).getByRole("radiogroup", { name: "Login method" });
     const radios = within(group).getAllByRole("radio");
     expect(radios).toHaveLength(2);
@@ -406,7 +423,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(within(d).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(within(d).getByRole("button", { name: "Start browser login" })).toBeDisabled();
     expect(follows(within(d).getByRole("button", { name: "Cancel" }), within(d).getByRole("button", { name: "Start browser login" }))).toBe(true);
-    // Nothing else on the way in: no Creator details, platform or proxy step, no proxy picker, no last-resort screens.
+    // Details and platform are complete: the login step has no proxy picker or last-resort screens.
     expect(within(d).queryByLabelText("Creator name")).toBeNull();
     expect(within(d).queryByText("Proxy selection")).toBeNull();
     expect(within(d).queryByRole("combobox")).toBeNull();
@@ -472,13 +489,14 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     poolRelay();
     renderWithProviders(<Page />);
     await open();
+    enterLogin();
     const bb = within(dialog()).getByRole("region", { name: "Browserbase login" });
     expect(within(bb).getByText(/^Proxy assigned automatically\./)).toBeInTheDocument();
     fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
     fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
     fireEvent.click(btn("Start browser login"));
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", {
-      email: "a@b.c", password: "pw", backend: "browserbase", proxy: undefined, nickname: undefined,
+      email: "a@b.c", password: "pw", backend: "browserbase", proxy: undefined, nickname: CREATOR_NAME,
     }));
   });
 
@@ -545,6 +563,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
   it("the Fansly link swaps to the Fansly paste session: Browser login off, Done beside Cancel", async () => {
     renderWithProviders(<Page />);
     await open();
+    enterLogin();
     fireEvent.click(btn("Link a Fansly account instead"));
     expect(within(dialog()).getAllByRole("region").map((s) => s.getAttribute("aria-label"))).toEqual(["Fansly paste session"]);
     expect(choice("Browser login")).toBeDisabled();
@@ -613,7 +632,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
     expect(within(dialog()).queryByRole("radiogroup", { name: "Login method" })).toBeNull();
     expect(within(dialog()).getByText("Account details")).toBeInTheDocument();
-    expect(within(dialog()).getByLabelText("Nickname")).toHaveValue("");
+    expect(within(dialog()).getByLabelText("Nickname")).toHaveValue(CREATOR_NAME);
     fireEvent.change(within(dialog()).getByLabelText("Nickname"), { target: { value: "Nova" } });
     fireEvent.change(within(dialog()).getByLabelText("Tag (Optional)"), { target: { value: "VIP" } });
     fireEvent.change(within(dialog()).getByLabelText("Internal notes (Optional)"), { target: { value: "night shift" } });

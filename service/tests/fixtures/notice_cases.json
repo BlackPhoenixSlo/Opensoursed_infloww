@@ -41,7 +41,8 @@
       ]
     },
     {
-      "name": "inbound DM muted by default (message toast off)",
+      "name": "inbound DM explicitly muted (message toast off)",
+      "settings": { "toast": { "message": false } },
       "frame": {
         "__account_id": "100",
         "__account_name": "Creator One",
@@ -397,7 +398,8 @@
       ]
     },
     {
-      "name": "toast subscribed muted by default",
+      "name": "toast subscribed explicitly muted",
+      "settings": { "toast": { "subscribed": false } },
       "frame": {
         "__account_id": "100",
         "__account_name": "Creator One",

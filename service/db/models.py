@@ -3711,6 +3711,11 @@ class AssistantTurn(Base):
     user_id: Mapped[str | None] = mapped_column(String)
     chatter_id: Mapped[str | None] = mapped_column(String)
     account_id: Mapped[str | None] = mapped_column(String)
+    # The conversation id: the widget's, or the server's for a client that
+    # sends none (assistant_api `_thread_for`); rows from before threads get
+    # `legacy-<first id>` at boot (db/assistant_threads.py). The prompt's
+    # PREVIOUS TURNS come from the ask's own thread.
+    thread_id: Mapped[str | None] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)

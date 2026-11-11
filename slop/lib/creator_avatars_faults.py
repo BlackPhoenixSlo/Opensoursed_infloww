@@ -10,8 +10,11 @@ OWN_SHOWN = "creators table: every Creator answered as itself shows its own OF p
 def register(Fault) -> dict:
     return {
         # slop/run creator-avatars --break: the identity guard reverted (useAccountAvatar's fetchOwnProfile keeps any
-        # /users/me body), so the rows the fake OF answers as the default Creator paint its face (the AE bug).
+        # /users/me body, and the cache/health selector accepts it), so the rows the fake OF answers as the default Creator paint its face (the AE bug).
+        # Replace only the identity comparison: keep null for absent profiles,
+        # otherwise a false health value would mask the fallback and hide the fault.
         # `next dev` bundles the hook into the layout's chunk and /creators' page chunk: 2 files.
         "avatar-keeps-other-creators-body": Fault(None, (OWN_ONLY,), browser=(
-            (r"String\(me\.id\) === accountId \? me : null", "me"),), browser_files=2),
+            (r"String\(me\.id\) === accountId", "true"),
+            (r"String\(profile\.id\) === accountId", "true"),), browser_files=2),
     }

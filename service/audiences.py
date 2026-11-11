@@ -851,7 +851,8 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
 
 def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
     """A crawled Auto_Exclude to exactly `ids`: `_add_missing_blocking`, then
-    remove `members − ids`. Blocking."""
+    remove `members − ids`. Blocking. `members` ends as the list's membership:
+    crawled + confirmed adds − confirmed removes (a failed remove stays)."""
     # Stale members are REMOVED, not just superseded — a fan left behind from
     # a previous tick would be excluded from every future broadcast forever.
     stale = sorted(members - ids)
@@ -861,6 +862,8 @@ def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: se
             client.remove_user_from_list(list_id, uid)
         except Exception:  # noqa: BLE001 — a stale member we can't drop is harmless
             log.warning("auto_exclude remove failed account-list=%s uid=%s", list_id, uid)
+            continue
+        members.discard(uid)
 
 
 def _add_missing_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
@@ -927,11 +930,13 @@ _ae_refreshes: dict[str, asyncio.Task] = {}    # account -> its refresh task (si
 AE_PAGE_TRIES = 3             # a refresh page retried in place: the crawl resumes, never restarts
 
 
-def _ensure_exclude_blocking(account_id: str, client, ids: set[int]) -> tuple[int, bool]:
+def _ensure_exclude_blocking(account_id: str, client, ids: set[int],
+                             verified: dict | None = None) -> tuple[int, bool]:
     """(Auto_Exclude list id, schedule a background refresh). Blocking; the
     caller holds `broadcast_lock`. Same list id as a warm mirror: adds only.
-    Else one checked crawl as today; not truncated -> today's reconcile;
-    truncated -> a new mirror (its crawl cost logged), adds only, refresh."""
+    Else one checked crawl as today; not truncated -> today's reconcile
+    (`verified[list id]` = the membership after it); truncated -> a new mirror
+    (its crawl cost logged), adds only, refresh. A mirror never verifies."""
     list_id = int(_auto_exclude_list_id_blocking(client))
     m = _ae_mirrors.get(account_id)
     if m is not None and m.list_id == list_id:
@@ -946,6 +951,8 @@ def _ensure_exclude_blocking(account_id: str, client, ids: set[int]) -> tuple[in
     members, truncated = of_paging.list_member_ids(client, list_id)
     if not truncated:
         _reconcile_exclude_list_blocking(client, list_id, members, ids)
+        if verified is not None:
+            verified[list_id] = frozenset(members)
         return list_id, False
     log.warning("auto_exclude: Auto_Exclude list=%s past the paging backstop (%d read in "
                 "%.1fs) — incremental: adds only, stale members go in the background refresh",
@@ -1080,6 +1087,7 @@ async def ensure_exclude_list(
     ids: Iterable[int],
     *,
     client=None,
+    verified: dict | None = None,
 ) -> int | None:
     """Mirror `ids` into the per-account Auto_Exclude OF custom list and return
     its id — the ONLY way to exclude individual fans from a `userLists`/online
@@ -1095,6 +1103,12 @@ async def ensure_exclude_list(
     A list past the 20k paging backstop is kept incrementally (the block above
     `_ensure_exclude_blocking`): every `ids` is on it at return, bar ids OF
     refused to list; its stale members go in a background refresh.
+
+    `verified` (out-param, like `audience_fence_for_broadcast`'s `stats`): on the
+    exact path (the list crawled whole) it gains `{list id: frozenset(members)}`,
+    the membership after the reconcile (crawled + confirmed adds − confirmed
+    removes; a failed remove stays), which the send's Audience crawl subtracts
+    without reading the list again. The mirror path sets nothing.
     """
     idset = {int(x) for x in (ids or set())}
     if not idset:
@@ -1104,7 +1118,7 @@ async def ensure_exclude_list(
         import automation_executor as ax
         c = await asyncio.to_thread(ax._make_client, account_id)
     aid = str(account_id)
-    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset)
+    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset, verified)
     if refresh:
         _schedule_auto_exclude_refresh(aid, c)
     log.info("auto_exclude synced account=%s list=%s ids=%d",

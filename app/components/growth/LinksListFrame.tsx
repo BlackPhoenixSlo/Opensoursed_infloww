@@ -123,17 +123,20 @@ export function Tip({ text }: { text: string }) {
 /** HB's `hb-button--color-toggle-active`: #2c2c2c with white text (light #e5e5e5 with T1). */
 export const TOGGLE_ACTIVE = "bg-[#2c2c2c] text-white [html[data-theme=light]_&]:bg-[#e5e5e5] [html[data-theme=light]_&]:text-fg";
 
+export type FrameTab<T extends string> = { key: T; label: string; extra?: boolean };
+
 /** #10, #12: 16px from the edge, 16px weight 500. The bundle's `HBTab` draws each tab as a 36px toggle button, 12px
- *  padding, 8px radius, the selected one filled. The panel is the caller's, `${idPrefix}-panel-${key}`. */
+ *  padding, 8px radius, the selected one filled. The panel is the caller's, `${idPrefix}-panel-${key}`. A tab with
+ *  `extra` (ours, not the bundle's) carries `ExtraTag` from `sm` up. Too wide for the screen (a phone), the strip scrolls. */
 export function FrameTabs<T extends string>({ tabs, value, onChange, label, idPrefix }: {
-  tabs: Array<{ key: T; label: string }>;
+  tabs: Array<FrameTab<T>>;
   value: T;
   onChange: (key: T) => void;
   label: string;
   idPrefix: string;
 }) {
   return (
-    <div role="tablist" aria-label={label} className="ml-4 flex w-fit max-w-full items-center overflow-x-auto">
+    <div role="tablist" aria-label={label} className="ml-4 flex w-fit max-w-[calc(100%-1rem)] items-center overflow-x-auto">
       {tabs.map((t) => (
         <button
           key={t.key}
@@ -143,12 +146,15 @@ export function FrameTabs<T extends string>({ tabs, value, onChange, label, idPr
           aria-selected={t.key === value}
           aria-controls={`${idPrefix}-panel-${t.key}`}
           onClick={() => onChange(t.key)}
+          title={t.extra ? `${EXTRA_LABEL}: ${t.label}` : undefined}
           className={cn(
             "h-9 px-3 rounded-lg text-base font-medium transition-colors whitespace-nowrap",
+            "inline-flex items-center gap-1.5",
             t.key === value ? TOGGLE_ACTIVE : "text-fg hover:bg-white/5 [html[data-theme=light]_&]:hover:bg-black/5",
           )}
         >
           {t.label}
+          {t.extra && <span className="hidden sm:inline-flex"><ExtraTag /></span>}
         </button>
       ))}
     </div>

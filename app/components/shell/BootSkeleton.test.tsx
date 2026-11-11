@@ -19,8 +19,13 @@ describe("BootSkeleton", () => {
     for (const k of ["title", "total", "subscriptions", "tips", "posts", "referrals", "messages", "chargebacks"] as const) {
       expect(screen.getByText(control(k).labels[0])).toBeTruthy();
     }
-    for (const t of PERIOD_TABS) expect(screen.getByText(t.labels[0])).toBeTruthy();
-    expect(document.body.textContent).not.toMatch(/\$|\d/);
+    let nonPeriodText = document.body.textContent ?? "";
+    for (const t of PERIOD_TABS) {
+      expect(screen.getByText(t.labels[0])).toBeTruthy();
+      // Verified period labels can contain numbers (e.g. Last 30 days); figures cannot.
+      nonPeriodText = nonPeriodText.replace(t.labels[0], "");
+    }
+    expect(nonPeriodText).not.toMatch(/\$|\d/);
     // Total earnings and the six channel tiles each hold a placeholder bar.
     expect(document.querySelectorAll("[data-loading]").length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole("status").textContent).toBe("Loading");

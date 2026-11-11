@@ -2012,34 +2012,37 @@ async def case_a_failed_turn_write_never_costs_the_answer():
 
 async def _seed_turns(rows):
     """Bulk-insert turn rows the product could have written: (asker kwargs,
-    account_id, question, error, age)."""
+    account_id, question, error, age[, thread_id])."""
     from db.models import AssistantTurn
     now = datetime.utcnow()
     async with get_session() as s:
-        for who, acc, q, err, age in rows:
+        for who, acc, q, err, age, *thread in rows:
             s.add(AssistantTurn(**who, account_id=acc, role="an owner/admin",
                                 question=q, answer=f"answer to {q}", error=err,
-                                ts=now - age))
+                                ts=now - age, thread_id=(thread or [None])[0]))
 
 
 async def case_the_server_owns_the_prompt_context():
     """PREVIOUS TURNS come from the asker's OWN rows, never the body: the last
-    3 answered turns on the SAME account from the last 2 h, oldest first."""
+    3 answered turns of the ask's thread on the SAME account, oldest first. A
+    client that sends no thread (from before threads) continues the thread of
+    its newest answered turn on that account from the last 2 h."""
     assert "history" not in AskBody.model_fields, AskBody.model_fields.keys()
     uid, other = "u_ctx", "acc_ctx_other"
     me = {"user_id": uid}
     m = timedelta(minutes=1)
     await _seed_turns([
-        (me, AID, "ctx too old", None, timedelta(hours=3)),
-        (me, AID, "ctx q1", None, 50 * m),
-        (me, AID, "ctx q2", None, 40 * m),
-        (me, AID, "ctx q3", None, 30 * m),
-        (me, AID, "ctx q4", None, 20 * m),
-        (me, AID, "ctx failed", "cap", 10 * m),
-        (me, other, "ctx other account", None, 5 * m),
-        (me, other, "ctx other too old", None, timedelta(hours=2, minutes=5)),
-        (me, None, "ctx no account", None, 5 * m),
-        ({"user_id": "u_ctx_someone_else"}, AID, "ctx not mine", None, 1 * m),
+        (me, AID, "ctx too old", None, timedelta(hours=3), "c-old"),
+        (me, AID, "ctx q1", None, 50 * m, "c-run"),
+        (me, AID, "ctx q2", None, 40 * m, "c-run"),
+        (me, AID, "ctx q3", None, 30 * m, "c-run"),
+        (me, AID, "ctx side thread", None, 25 * m, "c-side"),
+        (me, AID, "ctx q4", None, 20 * m, "c-run"),
+        (me, AID, "ctx failed", "cap", 10 * m, "c-side"),   # newest, but no answer
+        (me, other, "ctx other account", None, 5 * m, "c-o1"),
+        (me, other, "ctx other too old", None, timedelta(hours=2, minutes=5), "c-o0"),
+        (me, None, "ctx no account", None, 5 * m, "c-gen"),
+        ({"user_id": "u_ctx_someone_else"}, AID, "ctx not mine", None, 1 * m, "c-run"),
     ])
     spy = _Spy("Here are the steps.")
     _patch(spy)
@@ -2052,7 +2055,7 @@ async def case_the_server_owns_the_prompt_context():
         assert got == ["ctx q2", "ctx q3", "ctx q4"], u[:800]
         assert u.index("PREVIOUS TURNS") < u.index("ctx q2") < u.index("ctx q3") \
             < u.index("ctx q4") < u.index("Question: yes"), u[:800]
-        for absent in ("ctx too old", "ctx failed", "ctx other account",
+        for absent in ("ctx too old", "ctx failed", "ctx side thread", "ctx other account",
                        "ctx no account", "ctx not mine"):
             assert absent not in u, absent
         assert "ctx q" not in system["content"], "a turn reached the cached system prompt"
@@ -2060,7 +2063,7 @@ async def case_the_server_owns_the_prompt_context():
         await _ask("and then?")
         u2 = spy.calls[-1]["messages"][1]["content"]
         assert "ctx q2" not in u2 and "Asker: yes" in u2, u2[:800]
-        # Under 3 turns in the window: the 2 h cut, not the count, drops the old one.
+        # The newest thread on that account is continued, not an older one.
         await _ask("and on the other one?", account_id=other)
         u3 = spy.calls[-1]["messages"][1]["content"]
         assert "ctx other account" in u3 and "ctx other too old" not in u3, u3[:800]
@@ -2081,6 +2084,256 @@ async def case_the_server_owns_the_prompt_context():
         "history changed the cached system prompt — prefix cache busted"
 
 
+async def case_a_thread_is_its_own_context():
+    """With a `thread_id` the PREVIOUS TURNS are that thread's — at any age,
+    never another thread's on the same account, never another asker's thread
+    with the same id — and the row the ask writes carries it."""
+    from db.models import AssistantTurn
+    uid = "u_thr"
+    me = {"user_id": uid}
+    await _seed_turns([
+        (me, AID, "thr old in t1", None, timedelta(days=3), "t1"),
+        (me, AID, "thr other thread", None, timedelta(minutes=5), "t2"),
+        (me, AID, "thr no thread", None, timedelta(minutes=4)),
+        ({"user_id": "u_thr_else"}, AID, "thr foreign t1", None, timedelta(minutes=3), "t1"),
+    ])
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser(uid, "thr", frozenset({AID})))
+    try:
+        out = await ask(AskBody(question="thr yes", account_id=AID, thread_id="t1"))
+        u = spy.calls[-1]["messages"][1]["content"]
+        assert "thr old in t1" in u, u[:800]
+        for absent in ("thr other thread", "thr no thread", "thr foreign t1"):
+            assert absent not in u, absent
+        async with get_session() as s:
+            assert (await s.get(AssistantTurn, out["id"])).thread_id == "t1"
+        # A new thread starts with no context, even right after other turns.
+        await ask(AskBody(question="thr fresh", account_id=AID, thread_id="t3"))
+        assert "PREVIOUS TURNS (" not in spy.calls[-1]["messages"][1]["content"]
+    finally:
+        auth._request_user.reset(token)
+    try:
+        AskBody(question="q", thread_id="x" * 65)
+    except Exception:
+        pass
+    else:
+        raise AssertionError("an unbounded thread_id was accepted")
+
+
+async def case_general_with_accounts_is_no_account_in_focus():
+    """An owner WITH accounts who picks General asks with no account_id: the
+    note says none is in focus (not "none connected"), billed to the agency."""
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser("u_gen", "gen", frozenset({AID})))
+    try:
+        await ask(AskBody(question="where is the vault?", thread_id="g1"))
+    finally:
+        auth._request_user.reset(token)
+    kw = spy.calls[-1]
+    assert kw["account_id"] is None and kw["user_id"] == "u_gen", kw
+    system, user = kw["messages"]
+    assert assistant_api.GENERAL_NOTE in user["content"], user["content"]
+    assert assistant_api.NO_ACCOUNT_NOTE not in user["content"], user["content"]
+    assert "NO ACCOUNT IN FOCUS" in system["content"]
+
+
+async def case_watchers_only_is_no_account_connected():
+    """An agency whose only reach is a watcher (a fan account, not a Creator):
+    the widget lists no model and shows the connect hint, so the note says
+    none is connected — never "pick a model under Currently selected"."""
+    w = "acc_help_watcher_only"
+    # The role lives in the account's meta.json on disk; this suite has no
+    # isolated registry dir, so the lookup is stood in for (role "watcher").
+    real = assistant_api.account_registry.is_watcher
+    assistant_api.account_registry.is_watcher = lambda aid: aid == w
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser("u_watch_only", "wo", frozenset({w})))
+    try:
+        await ask(AskBody(question="where is the vault?", thread_id="w1"))
+    finally:
+        auth._request_user.reset(token)
+        assistant_api.account_registry.is_watcher = real
+    user = spy.calls[-1]["messages"][1]["content"]
+    assert assistant_api.NO_ACCOUNT_NOTE in user and assistant_api.GENERAL_NOTE not in user, user
+
+
+async def case_a_no_thread_ask_stores_the_thread_it_continues():
+    """A client from before threads (no `thread_id`): the row stores the thread
+    of its newest context turn — the one it continues — else a fresh id;
+    never NULL, so the widget lists and continues it like any other."""
+    from db.models import AssistantTurn
+    uid = "u_nothr"
+    me = {"user_id": uid}
+    await _seed_turns([(me, AID, "nothr recent", None, timedelta(minutes=10), "t-recent"),
+                       (me, None, "nothr stale", None, timedelta(hours=3), "t-stale")])
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser(uid, "nothr", frozenset({AID})))
+    try:
+        out = await ask(AskBody(question="nothr and then?", account_id=AID))
+        assert "nothr recent" in spy.calls[-1]["messages"][1]["content"]
+        # General: its only turn is >2 h old, so a new thread with no context.
+        fresh = await ask(AskBody(question="nothr general"))
+        assert "nothr stale" not in spy.calls[-1]["messages"][1]["content"]
+        async with get_session() as s:
+            assert (await s.get(AssistantTurn, out["id"])).thread_id == "t-recent"
+            tid = (await s.get(AssistantTurn, fresh["id"])).thread_id
+        assert tid and tid not in ("t-recent", "t-stale"), tid
+    finally:
+        auth._request_user.reset(token)
+
+
+def _backfill_now() -> int:
+    """init_db's thread backfill, on the suite's DB."""
+    from sqlalchemy import create_engine
+    from db.assistant_threads import backfill_thread_ids
+    eng = create_engine(f"sqlite:///{_harness.DB_PATH}")
+    try:
+        with eng.begin() as c:
+            return backfill_thread_ids(c)
+    finally:
+        eng.dispose()
+
+
+async def case_a_legacy_thread_continues_with_its_turns():
+    """A row from before threads, once backfilled, is `legacy-<first id>`; an
+    ask continuing that thread gets its turns as PREVIOUS TURNS (days old)."""
+    from sqlalchemy import select
+    from db.models import AssistantTurn
+    uid = "u_legacy"
+    me = {"user_id": uid}
+    await _seed_turns([
+        (me, AID, "legacy first", None, timedelta(days=3, minutes=30)),
+        (me, AID, "legacy second", None, timedelta(days=3)),
+    ])
+    assert _backfill_now() >= 2
+    async with get_session() as s:
+        rows = (await s.execute(select(AssistantTurn).where(AssistantTurn.user_id == uid)
+                                .order_by(AssistantTurn.id))).scalars().all()
+    thread = f"legacy-{rows[0].id}"
+    assert [r.thread_id for r in rows] == [thread, thread], [r.thread_id for r in rows]
+    spy = _Spy("ok")
+    _patch(spy)
+    token = auth._request_user.set(auth.AuthedUser(uid, "legacy", frozenset({AID})))
+    try:
+        await ask(AskBody(question="legacy yes", account_id=AID, thread_id=thread))
+    finally:
+        auth._request_user.reset(token)
+    u = spy.calls[-1]["messages"][1]["content"]
+    assert "legacy first" in u and "legacy second" in u, u[:800]
+
+
+def _legacy_db(name: str):
+    """A temp DB holding assistant_turns as revision 0103 built it (no thread_id)."""
+    import importlib.util
+    from sqlalchemy import create_engine
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    f = next((Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions")
+             .glob("*_assistant_turns.py"))
+    sp = importlib.util.spec_from_file_location(f.stem, f)
+    m = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(m)
+    path = Path(tempfile.mkdtemp(prefix=f"{name}_")) / "t.db"
+    eng = create_engine(f"sqlite:///{path}")
+    with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+        m.upgrade()
+    return path, eng
+
+
+# (row id, user, chatter, account, minutes after t0, stored thread) → want thread
+_LEGACY_ROWS = [
+    (1, "u1", None, "A", 0, None, "legacy-1"),
+    (2, "u1", None, "B", 1, None, "legacy-2"),       # other account: its own run
+    (3, "u1", None, "A", 119, None, "legacy-1"),     # ≤2h after 1, B between: same run
+    (4, "u1", None, "A", 245, None, "legacy-4"),     # >2h after 3: new run
+    (5, "u2", None, "A", 10, None, "legacy-5"),      # other asker
+    (6, None, "c1", "A", 11, None, "legacy-6"),      # a chatter
+    (7, "u1", None, None, 12, None, "legacy-7"),     # General is its own "account"
+    (8, None, None, None, 13, None, "legacy-8"),     # anonymous (ALLOW_ANONYMOUS_ADMIN)
+    (9, None, None, None, 14, None, "legacy-8"),
+    (10, "u1", None, "A", 246, "t-kept", "t-kept"),  # already threaded: untouched
+]
+
+
+def _insert_legacy(eng, thread_col: bool) -> None:
+    from sqlalchemy import text
+    t0 = datetime(2026, 11, 1, 10, 0)
+    with eng.begin() as c:
+        for rid, u, ch, acc, mins, thr, _ in _LEGACY_ROWS:
+            if not thread_col and thr is not None:
+                continue
+            c.execute(text(
+                "INSERT INTO assistant_turns (id, ts, user_id, chatter_id, account_id, role, "
+                "question, answer" + (", thread_id" if thread_col else "") + ") VALUES "
+                "(:id, :ts, :u, :ch, :acc, 'r', 'q', 'a'" + (", :thr" if thread_col else "") + ")"),
+                {"id": rid, "ts": t0 + timedelta(minutes=mins), "u": u, "ch": ch, "acc": acc,
+                 "thr": thr})
+
+
+def _threads(eng) -> dict:
+    from sqlalchemy import text
+    with eng.connect() as c:
+        return dict(c.execute(text("SELECT id, thread_id FROM assistant_turns")).all())
+
+
+def case_the_backfill_groups_legacy_turns_per_asker_account_and_gap():
+    """db/assistant_threads.backfill_thread_ids: NULL rows → `legacy-<first
+    id>` per (asker, account) run ≤2h apart (= CONTEXT_WINDOW); a stored
+    thread is untouched; a second run changes nothing."""
+    from sqlalchemy import text
+    from db.assistant_threads import LEGACY_GAP, backfill_thread_ids
+    assert LEGACY_GAP == assistant_api.CONTEXT_WINDOW
+    _, eng = _legacy_db("thread_backfill")
+    try:
+        with eng.begin() as c:
+            assert backfill_thread_ids(c) == 0              # no column yet: a no-op
+            c.execute(text("ALTER TABLE assistant_turns ADD COLUMN thread_id VARCHAR"))
+        _insert_legacy(eng, thread_col=True)
+        with eng.begin() as c:
+            assert backfill_thread_ids(c) == 9
+        want = {rid: w for rid, *_, w in _LEGACY_ROWS}
+        assert _threads(eng) == want, _threads(eng)
+        with eng.begin() as c:
+            assert backfill_thread_ids(c) == 0              # idempotent
+        assert _threads(eng) == want
+    finally:
+        eng.dispose()
+
+
+def case_init_db_backfills_legacy_threads_at_boot():
+    """The relay DB never runs alembic: booting a box whose assistant_turns
+    predates threads adds the column AND backfills it; a second boot changes
+    nothing."""
+    import importlib
+    from sqlalchemy import text
+    path, eng = _legacy_db("thread_backfill_boot")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        c.execute(text("INSERT INTO alembic_version VALUES ('0109_agency_notification_dismissed')"))
+    _insert_legacy(eng, thread_col=False)
+    db_engine = importlib.import_module("db.engine")
+    prev_url = db_engine.DATABASE_URL
+
+    def boot() -> dict:
+        try:
+            db_engine.DATABASE_URL = f"sqlite+aiosqlite:///{path}"
+            asyncio.run(db_engine.init_db())
+        finally:
+            db_engine.DATABASE_URL = prev_url
+        return _threads(eng)
+
+    try:
+        want = {rid: w for rid, *_, thr, w in _LEGACY_ROWS if thr is None}
+        assert boot() == want, _threads(eng)
+        assert boot() == want
+    finally:
+        eng.dispose()
+
+
 async def case_a_long_stored_turn_is_capped_in_the_prompt():
     """A stored answer (or question) rides PREVIOUS TURNS cut to
     HISTORY_SIDE_CHARS code points with "…" — never the whole thing on every ask."""
@@ -2089,7 +2342,7 @@ async def case_a_long_stored_turn_is_capped_in_the_prompt():
     long_q, long_a = "Q" * 3000 + "QTAIL", "é" * 5000 + "ATAIL"
     async with get_session() as s:
         s.add(AssistantTurn(user_id=uid, account_id=AID, role="an owner/admin",
-                            question=long_q, answer=long_a,
+                            question=long_q, answer=long_a, thread_id="t-cap",
                             ts=datetime.utcnow() - timedelta(minutes=1)))
     spy = _Spy("ok")
     _patch(spy)
@@ -2122,15 +2375,18 @@ async def case_an_unlinked_chatter_loses_those_turns():
         await _ask("unlink: about other", account_id=other)
         both = [t["question"] for t in (await assistant_api.history(limit=50))["turns"]]
         assert both == ["unlink: about other", "unlink: about AID"], both
-        assert [t.question for t in await assistant_api._context_turns(AID)] == ["unlink: about AID"]
+        threads = {t["question"]: t["thread_id"]
+                   for t in (await assistant_api.history(limit=50))["turns"]}
+        t_aid, t_other = threads["unlink: about AID"], threads["unlink: about other"]
+        assert [t.question for t in await assistant_api._context_turns(AID, t_aid)] == ["unlink: about AID"]
     finally:
         chatters._request_chatter.reset(token)
     token = _chatter({other})                           # unlinked from AID
     try:
         left = [t["question"] for t in (await assistant_api.history(limit=50))["turns"]]
         assert left == ["unlink: about other"], left
-        assert await assistant_api._context_turns(AID) == []
-        assert [t.question for t in await assistant_api._context_turns(other)] == \
+        assert await assistant_api._context_turns(AID, t_aid) == []
+        assert [t.question for t in await assistant_api._context_turns(other, t_other)] == \
             ["unlink: about other"]
     finally:
         chatters._request_chatter.reset(token)
@@ -2275,7 +2531,13 @@ def case_history_over_http_is_the_askers_own():
     assert [t["question"] for t in turns] == ["third from a", "second from a", "first from a"], turns
     assert [t["id"] for t in turns[1:]] == ids[::-1], (turns, ids)
     # The asker's own row and nothing about cost, model or who: chatters read this.
-    assert set(turns[0]) == {"id", "ts", "question", "answer", "error"}, turns[0]
+    assert set(turns[0]) == {"id", "ts", "question", "answer", "error", "account_id",
+                             "thread_id"}, turns[0]
+    # A client that sends no thread still gets one stored (never NULL).
+    assert turns[0]["account_id"] is None and turns[0]["thread_id"], turns[0]
+    r = a.post("/admin/assistant/ask", json={"question": "fourth from a", "thread_id": "th-a"})
+    assert r.status_code == 200, r.text
+    assert a.get("/admin/assistant/history?limit=1").json()["turns"][0]["thread_id"] == "th-a"
     assert [t["question"] for t in b.get("/admin/assistant/history").json()["turns"]] == ["only from b"]
     assert len(a.get("/admin/assistant/history?limit=1").json()["turns"]) == 1
     assert a.get("/admin/assistant/history?limit=501").status_code == 422
@@ -2305,15 +2567,30 @@ def case_the_migration_creates_the_table_on_a_bare_db():
     assert str(path) != str(_harness.DB_PATH)
     sqlite3.connect(path).close()
     eng = create_engine(f"sqlite:///{path}")
+    # The table, then the columns later migrations add to it (thread_id).
+    f = mig / "versions" / "20261110_1300_assistant_turn_thread.py"
+    sp = importlib.util.spec_from_file_location(f.stem, f)
+    thread_mod = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(thread_mod)
+    assert thread_mod.down_revision == "0109_agency_notification_dismissed", thread_mod.down_revision
+    with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+        mod.upgrade()
+    _insert_legacy(eng, thread_col=False)            # turns from before threads…
     for _ in range(2):                              # idempotent
-        with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
-            mod.upgrade()
+        for m in (mod, thread_mod):
+            with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+                m.upgrade()
+    # …keep NULL here: the column alone (init_db's boot backfill gives them one).
+    assert set(_threads(eng).values()) == {None}, _threads(eng)
     insp = _insp(eng)
     cols = {c["name"] for c in insp.get_columns("assistant_turns")}
     from db.models import AssistantTurn
     assert cols == {c.name for c in AssistantTurn.__table__.columns}, cols
     assert {i["name"] for i in insp.get_indexes("assistant_turns")} == {
         i.name for i in AssistantTurn.__table__.indexes}
+    with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+        thread_mod.downgrade()
+    assert "thread_id" not in {c["name"] for c in _insp(eng).get_columns("assistant_turns")}
     with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
         mod.downgrade()
     assert "assistant_turns" not in _insp(eng).get_table_names()
@@ -2384,6 +2661,13 @@ _harness.run(
     case_a_chatter_turn_is_keyed_by_the_chatter,
     case_a_failed_turn_write_never_costs_the_answer,
     case_the_server_owns_the_prompt_context,
+    case_a_thread_is_its_own_context,
+    case_general_with_accounts_is_no_account_in_focus,
+    case_watchers_only_is_no_account_connected,
+    case_a_no_thread_ask_stores_the_thread_it_continues,
+    case_a_legacy_thread_continues_with_its_turns,
+    case_the_backfill_groups_legacy_turns_per_asker_account_and_gap,
+    case_init_db_backfills_legacy_threads_at_boot,
     case_a_long_stored_turn_is_capped_in_the_prompt,
     case_an_unlinked_chatter_loses_those_turns,
     case_turns_are_pruned_to_the_newest_500_per_asker,

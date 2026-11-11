@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
@@ -183,17 +183,20 @@ class _PreviewBody(BaseModel):
     config: dict
     fan_id: int | None = None
     hour: int | None = None
+    # A day name ("friday") to preview that day's lines; None = the model's today.
+    weekday: str | None = Field(None, pattern="^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$")
 
 
 @router.post("/admin/nudge-config/preview")
 async def preview_nudge(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     """Preview the EXACT message list a nudge would send for the current config —
     the nudge line, honoring its text/image toggles — for a chosen
-    fan (or a sample) at a chosen hour. NO send, NO state write."""
+    fan (or a sample) at a chosen hour and day. NO send, NO state write."""
     assert_account_owned(body.account_id)
     cfg = await _effective_cfg(body.account_id, body.config)
     from automations.nudge_online import preview_compose
-    res = await preview_compose(body.account_id, cfg, fan_id=body.fan_id, hour=body.hour)
+    res = await preview_compose(body.account_id, cfg, fan_id=body.fan_id, hour=body.hour,
+                                weekday=body.weekday)
     return {"account_id": body.account_id, "fan_id": body.fan_id, **res}
 
 

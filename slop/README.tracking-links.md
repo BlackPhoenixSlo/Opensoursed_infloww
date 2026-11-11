@@ -24,8 +24,8 @@ attribution rule, bypasses).
   Links list and one link's Details; then browsing until the storm ends. Bot check: `--gated=` (2) links per
   Creator made through the real Create with a scheme-less `ofl.ink/...` target (even ones `bot_check` at
   create, odd ones by `PATCH`), and `--gated_clicks=` (clicks / 10) fans on their own clients, at a tenth of
-  the rate, each GET the gate page then POST `/verify` (3 in 4 tokens pass). With UI, /growth/tracking-links, Custom
-  redirect links (screenshot `tracking-links-trigger`), a link's Analytics (`tracking-links-settled`). Checks
+  the rate, each GET the gate page then POST `/verify` (3 in 4 tokens pass). With UI, /growth/tracking-links, the Redirect
+  links tab, Custom redirect links (screenshot `tracking-links-trigger`), a link's Analytics (`tracking-links-settled`). Checks
   (`lib/tracking_faults.py`): `CLICKS` (rows, `click_count`, list == seeded + the 302s answered), `REDIRECT`,
   `BY_DAY`, `CREATED`, `EARNINGS` (the oracle; INFRA unless every branch of the rule occurs in the seed),
   `CLAIMERS` (one walk per link with subscribers, `ceil(n / 50)` pages, none for zero-subscriber or created

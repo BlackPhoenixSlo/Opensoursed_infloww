@@ -22,6 +22,7 @@
  * is replaced by its progress and the live view. Any failure ends the job with the error shown here.
  */
 
+import { accountSessionCaptured } from "@/lib/accountSession";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
@@ -125,6 +126,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   useEffect(() => {
     if (!done || linkedRef.current === status!.id) return;
     linkedRef.current = status!.id;
+    accountSessionCaptured(status!.account_id!);
     for (const key of ["accounts", "proxies", "health-all"]) qc.invalidateQueries({ queryKey: [key] });
     onLinked?.(status!.account_id!);
   }, [done, status, qc, onLinked]);

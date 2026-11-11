@@ -84,14 +84,14 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
 
   return (
     <div className={styles.report}>
-      <InflowwPageHeader title="Employee Reports" />
+      <InflowwPageHeader title="Employee Reports" utc={reportTz} />
       <IfBody className={styles.body}>
         <SalesSettingsNotice fallback={stats.data?.attribution_fallback ?? null} />
         <IfTabs<EmployeeTab> aria-label="Employee reports" className={cn(styles.toolbar, "px-0", BRIGHT_BAR)} value={tab}
           onChange={go} tabs={tabs}
           extra={tab === "sales" ? <StatsRefreshButton /> : (
             <>
-              <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} timeZone={reportTz} />
+              <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} timeZone={reportTz} hours />
               <span className="flex items-center gap-2">
                 <ShownBySelect days={days} value={bucket} onChange={setPicked} />
                 <span role="img" aria-label={GRAN_TIP} title={GRAN_TIP} className="cursor-help text-fg-dim">

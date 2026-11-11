@@ -380,12 +380,14 @@ class FakeOF:
             def log_message(self, *_a):
                 pass
 
-            def _send(self, code: int, body, ctype: str = "application/json") -> None:
+            def _send(self, code: int, body, ctype: str = "application/json", headers=()) -> None:
                 data = body if isinstance(body, bytes) else (
                     body.encode() if isinstance(body, str) else json.dumps(body).encode())
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
+                for k, v in headers:   # extra response headers (an extra_routes handler's Retry-After)
+                    self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -609,13 +611,14 @@ class FakeOF:
                     fake.unmodelled[route] += 1
                 return self._record(uid, route, 404, {"error": {"code": 0, "message": "slop fake: not modelled"}})
 
-            def _record(self, uid: str, route: str, status: int, body, ctype: str = "application/json") -> None:
+            def _record(self, uid: str, route: str, status: int, body, ctype: str = "application/json",
+                        headers=()) -> None:
                 with fake.lock:
                     fake.calls.append({"t0": getattr(self, "_t0", None), "t": time.time(), "account": uid,
                                        "route": route, "path": urlsplit(self.path).path,
                                        "query": urlsplit(self.path).query, "status": status,
                                        "cookie": bool(self.headers.get("Cookie"))})
-                self._send(status, body, ctype)
+                self._send(status, body, ctype, headers)
 
             def do_GET(self):  # noqa: N802
                 self._serve("GET")

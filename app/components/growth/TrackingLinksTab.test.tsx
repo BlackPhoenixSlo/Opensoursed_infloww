@@ -14,8 +14,9 @@
  *  - the earnings read (claimers x the ledger) fills Earnings, Fans who spent, Spending CVR, EPC, AEPS and the
  *    Dashboard's Total earnings; "Show net earnings" (on by default) switches them, one state across both tabs; a link
  *    with no figure shows "—"; Details opens the link's fans with the bundle's columns, a "Total:" row and a search;
- *  - the custom redirect links sit in one section carrying `EXTRA_LABEL`, after the capture's elements; the
- *    "OnlyFans not reachable" note shows under its condition, and the old "Confirm the link once" note is gone;
+ *  - our Redirect links tab after the capture's, carrying `EXTRA_LABEL`: the custom redirect links with the creator
+ *    filter, a chatter's too (Share links is the owner's); the "OnlyFans not reachable" note shows under its
+ *    condition, and the old "Confirm the link once" note is gone;
  *  - "Create tracking link" opens the capture's editor pop-up (ticket 39): its labels in the capture's order, the name
  *    creating the link through the existing write for the picked Creator, and Source / Promo cost / Tag / List (the
  *    Edit dialog's fields) sent in the same request; a reply without an id says the fields were not saved;
@@ -38,6 +39,7 @@ import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { ChatterFlatAccountDTO, ChatterMeDTO } from "@/contexts/ChatterContext";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -47,17 +49,30 @@ vi.mock("@/lib/relay", async (importOriginal) => {
     relay: { ...mod.relay, get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   };
 });
-// An owner session, so `useAccounts` reads `/admin/accounts` through the mocked relay.
+// An owner session reads `/admin/accounts`; a chatter session reads the mocked chatter account list.
+const session = vi.hoisted(() => ({ chatter: null as ChatterMeDTO | null }));
 vi.mock("@/contexts/UserContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/UserContext")>()),
-  useUser: () => ({ user: { user_id: "owner-1" } }),
+  useUser: () => ({ user: session.chatter ? null : { user_id: "owner-1" } }),
 }));
 // The Applied settings read rides the Creator in scope; none here.
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 vi.mock("@/contexts/ChatterContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/ChatterContext")>()),
-  useChatter: () => ({ chatter: null }),
+  useChatter: () => ({ chatter: session.chatter }),
 }));
+vi.mock("@/lib/chatterAccounts", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/chatterAccounts")>();
+  return {
+    ...mod,
+    chatterAccountsQuery: {
+      ...mod.chatterAccountsQuery,
+      queryFn: async (): Promise<ChatterFlatAccountDTO[]> => [
+        { account_id: "1000001", nickname: "Creator A", color: null, owner_id: "owner-1", owner_username: "Owner", is_active: true },
+      ],
+    },
+  };
+});
 
 import { TrackingLinksPage } from "@/components/growth/TrackingLinksTab";
 import { SmartListsPage } from "@/components/growth/SmartListsTab";
@@ -117,6 +132,7 @@ let fanLists: unknown[];
 let deniedActions: string[];
 
 beforeEach(() => {
+  session.chatter = null;
   deniedActions = [];
   ofResult = { links: LINKS, username: "creator_a", url_verified: false, of_available: true };
   earnings = { available: false, links: [] };
@@ -251,11 +267,27 @@ describe("Tracking links, in the capture's order", () => {
     for (let i = 1; i < items.length; i++) expectBefore(items[i - 1].el, items[i].el);
   });
 
-  it("opens on Links list, with Share links (#11) third for the owner", async () => {
+  it("opens on Links list, with Share links (#11) third and our Redirect links after it for the owner", async () => {
     await mount();
     expect(screen.getByRole("tab", { name: "Links list" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Links list" }).getAttribute("title")).toBeNull();
+    expect(screen.getByRole("tab", { name: /^Redirect links/ }).getAttribute("title")).toBe(`${EXTRA_LABEL}: Redirect links`);
     expect(screen.getByRole("tab", { name: "Dashboard" }).getAttribute("aria-selected")).toBe("false");
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Links list", "Dashboard", "Share links"]);
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent?.replace(EXTRA_LABEL, ""))).toEqual(
+      ["Links list", "Dashboard", "Share links", "Redirect links"],
+    );
+    // Only ours carries the tag.
+    expect(tabs.map((t) => within(t).queryByTitle(EXTRA_LABEL) !== null)).toEqual([false, false, false, true]);
+  });
+
+  it("gives a chatter Links list, Dashboard and Redirect links: Share links is the owner's", async () => {
+    session.chatter = { chatter_id: "chatter-1", username: "helper", display_name: "Helper", color: null, owners: [] };
+    renderWithProviders(<TrackingLinksPage />);
+    await waitFor(() => expect(screen.getAllByRole("tab").length).toBe(3));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent?.replace(EXTRA_LABEL, ""))).toEqual(
+      ["Links list", "Dashboard", "Redirect links"],
+    );
   });
 
   it("shows a selection column, then only the capture's columns that have data, in its order", async () => {
@@ -679,14 +711,15 @@ describe("Export", () => {
 });
 
 describe("our notes and extras", () => {
-  it("puts the redirect links in one section carrying EXTRA_LABEL, after the table", async () => {
+  it("puts the redirect links in their own Redirect links tab, with the creator filter, carrying EXTRA_LABEL", async () => {
     await mount();
-    const section = screen.getByRole("region", { name: /Custom redirect links/ });
-    expect(within(section).getByTitle(EXTRA_LABEL)).toBeTruthy();
-    expectBefore(table(), section);
-    expectBefore(screen.getByRole("button", { name: "Create tracking link" }), section);
-    // Its existing body: open it, and the redirect read's link is listed.
-    fireEvent.click(within(section).getByRole("button", { name: /Custom redirect links/ }));
+    expect(screen.queryByRole("region", { name: /Custom redirect links/ })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
+    const panel = screen.getByRole("tabpanel");
+    const section = within(panel).getByRole("region", { name: /Custom redirect links/ });
+    expect(within(screen.getByRole("tab", { name: /^Redirect links/ })).getByTitle(EXTRA_LABEL)).toBeTruthy();
+    expectBefore(within(panel).getByRole("combobox", { name: "Creator" }), section);
+    // The redirect read's link is listed without opening a second control.
     await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
   });
 

@@ -19,6 +19,40 @@ ROSTER_PAGE = 50             # OF caps subscriber pages low; offset math is len-
 MAX_PAGES = 200              # backstop: 200 × 100 = 20k rows
 
 
+def take_page(r, seen: set) -> tuple[list[dict], int, bool]:
+    """One OF page step: (new rows, rows on the page, more pages?). `r` is the
+    `{list, hasMore}` envelope or a bare list. Rows whose `id` is in `seen` are
+    dropped and new ids added to it; id-less rows always count as new. `more` is
+    False on an empty page or an envelope without hasMore."""
+    items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+    rows: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        iid = it.get("id")
+        if iid is not None:
+            if iid in seen:
+                continue
+            seen.add(iid)
+        rows.append(it)
+    more = bool(items) and not (isinstance(r, dict) and not r.get("hasMore"))
+    return rows, len(items), more
+
+
+def int_ids(rows) -> set[int]:
+    """The int-able `id`s of `rows`; others skipped."""
+    ids: set[int] = set()
+    for u in rows:
+        uid = u.get("id")
+        if uid is None:
+            continue
+        try:
+            ids.add(int(uid))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], bool]:
     """`page_all` plus an explicit INCOMPLETE flag: (rows, incomplete).
     Incomplete = the crawl hit the backstop, or OF answered a non-empty page
@@ -33,28 +67,17 @@ def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], b
     seen_ids: set = set()
     offset = 0
     for page in range(cap):
-        r = fetch(offset)
-        items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
-        if not items:                                 # exhausted
+        rows, n, more = take_page(fetch(offset), seen_ids)
+        out.extend(rows)
+        if not n:                                    # exhausted
             return out, False
-        added = 0
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            iid = it.get("id")
-            if iid is not None:
-                if iid in seen_ids:
-                    continue
-                seen_ids.add(iid)
-            out.append(it)
-            added += 1
-        if added == 0:                                # repeated page: no progress
+        if not rows:                                 # repeated page: no progress
             log.warning("page_all_checked: page %d (offset %d) added nothing new (%d rows "
                         "read) — repeated page, read marked incomplete", page, offset, len(out))
             return out, True
-        if isinstance(r, dict) and not r.get("hasMore"):
+        if not more:
             return out, False
-        offset += len(items)
+        offset += n
     log.warning("page_all_checked hit the %d-page backstop (%d rows) — result may be "
                 "truncated", cap, len(out))
     return out, True
@@ -85,16 +108,7 @@ def ids_from_pages(fetch, **paging) -> tuple[set[int], bool]:
     Rows without an int-able `id` are skipped. `paging`: `page_all_checked`'s
     keywords (`max_pages`), forwarded as given."""
     rows, truncated = page_all_checked(fetch, **paging)
-    ids: set[int] = set()
-    for u in rows:
-        uid = u.get("id")
-        if uid is None:
-            continue
-        try:
-            ids.add(int(uid))
-        except (TypeError, ValueError):
-            continue
-    return ids, truncated
+    return int_ids(rows), truncated
 
 
 def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:

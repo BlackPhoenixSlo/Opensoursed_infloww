@@ -22,8 +22,8 @@
  * launcher in the bottom-right corner, and above it a light panel (always
  * light, `data-look="messenger"` in app/globals.css) with a dark header that
  * fades into the body (Intercom's sizes: a 48px launcher, a 400px panel).
- * The bot chat plus a Status card from the app's error log — no news, search,
- * team avatars or tab bar. The MoneyRail's never-dragged corner sits left of
+ * The bot chat plus an "Earlier conversations" card — no news, search, team
+ * avatars or tab bar. The MoneyRail's never-dragged corner sits left of
  * the launcher to make room.
  *
  * ERRORS ARE ANSWERS. The endpoint is a 200-always contract — a used-up cap, a
@@ -33,41 +33,49 @@
  * when someone needs config help is the failure mode the whole endpoint exists
  * to avoid, and a red toast would reintroduce it in the last 40 lines.
  *
- * Deliberately thin: no streaming, no feedback buttons. Earlier sessions'
- * turns come back from the server (GET /admin/assistant/history, once per page
- * load, on the first open) and render under "Earlier". The ask carries no
- * history: the server adds the asker's own recent turns to the prompt, so a
- * bare "yes" can take up the last answer's offer.
+ * Deliberately thin: no streaming, no feedback buttons. CONVERSATIONS are
+ * threads (assistantReducer.ts): every ask carries its thread id, and the
+ * server's prompt context is that thread's earlier turns — the ask carries no
+ * history itself, so a bare "yes" takes up the last answer's offer. Earlier
+ * threads come back from the server (GET /admin/assistant/history, once per
+ * page load, on the first open) and live behind the "Earlier conversations"
+ * card / header button, in a list by day; picking one opens it to read or
+ * continue. They are never dumped into a new chat. The header's back arrow
+ * leaves a thread for a new chat.
  *
- * ALL-MODELS SCOPE: the product's default scope is "all models", which used to
- * replace the composer with "pick an account first" — a help bot dead in the
- * app's default state. The server still requires exactly one account_id (it
- * bills the answer to that account's cap and scopes every live-state read to
- * it), so the fix lives HERE: in all-models scope the composer unlocks and
- * carries an inline "Answering about" picker. A human picks the account —
- * visibly — and the request goes out exactly as it does under a scoped model.
- * The server is never handed a null account, so billing scope and answer scope
- * stay the same thing.
+ * FOCUS — "Currently selected: …" above the composer: General (manual-only
+ * answers, billed to the agency) or one model (its live state, billed to its
+ * cap). It follows the app's model — the scope switcher, or a page's own
+ * creator rail (Vault Pro…, contexts/PageCreatorContext.ts) while that page is open — so
+ * switching model anywhere focuses the bot on it (all models → General); a
+ * pick in the bot holds until the next switch. Once a conversation has started its focus is locked — the
+ * server's context is per thread and account — so a switch then is only
+ * offered ("<model> in app · New chat"), and picking another focus starts a
+ * new chat. Any OWNED model can be the focus — an offline one (no session,
+ * deactivated) is marked in the menu — and the reducer resolves every focus
+ * against that roster (assistantReducer.ts, ROSTER). A chatter session cannot
+ * ask without an account (the server 401s), so for one, General falls back to
+ * the first account (and waits for the roster). The account in play is always
+ * on screen, never inferred silently server-side.
  *
- * NO ACCOUNT AT ALL (a new agency that has connected nothing yet) is the one
- * case the request carries no `account_id`: the server then answers from the
- * manual alone and bills the signed-in agency (service/assistant_api.py). The
- * composer stays live, and a hint names the connect path — rendered through
- * AnswerText, so it is a link to the page that does it.
+ * NO ACCOUNT AT ALL (a new agency that has connected nothing yet): General is
+ * the only focus, so the request carries no `account_id` and the server
+ * answers from the manual alone (service/assistant_api.py). A hint names the
+ * connect path — rendered through AnswerText, so it is a link to the page
+ * that does it.
  */
 
-import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, SendHorizontal, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, SendHorizontal, X } from "lucide-react";
 
 import { IfMark } from "@/components/auth/SiteLook";
-import { useRecentErrors } from "@/components/ErrorBadge";
 
 import { useOptionalChatter } from "@/contexts/ChatterContext";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useOptionalUser } from "@/contexts/UserContext";
-import { useScope } from "@/contexts/ScopeContext";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAppCreator } from "@/contexts/PageCreatorContext";
+import { useAccounts } from "@/hooks/useAccounts";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useDragPress } from "@/components/useDragPress";
 import { relay, type AccountMeta } from "@/lib/relay";
@@ -75,10 +83,13 @@ import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { BRAND_NAME } from "@/lib/brand";
 import {
-  assistantReducer, groupByDay, HISTORY_LIMIT, historyFromRows, initialAssistantState,
-  settledFrom, settledFromError, type AskResponse, type AssistantCore, type HistoryRow, type Turn,
+  appFocusOf, assistantReducer, canGeneralOf, HISTORY_LIMIT, historyFromRows, initialAssistantState,
+  sendFocusOf, settledFrom, settledFromError, threadsOf, turnsOf,
+  type AskResponse, type AssistantCore, type Focus, type HistoryRow, type ThreadSummary, type Turn,
 } from "./assistantReducer";
 import { useBodyScrollLock } from "./useBodyScrollLock";
+import { FocusLine } from "./FocusLine";
+import { ThreadList } from "./ThreadList";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
 } from "./launcherDockReducer";
@@ -106,42 +117,71 @@ const MAX_QUESTION_CHARS = 1000;
  *  own ("Connecting an OnlyFans account"), so AnswerText links it. */
 const NO_ACCOUNT_HINT =
   "No account connected yet — answers come from the manual. To connect one: Creators → Manage creators → Add creator.";
+/** The same for a chatter: they cannot connect one, so no path. */
+const NO_ACCOUNT_CHATTER = "No creator assigned to you yet — ask your agency to share one, then ask here.";
 
 // ── The provider ───────────────────────────────────────────────────
 
 /** The reducer fields surfaces read (assistantReducer.ts) plus the provider's own. */
-interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "turns" | "unread" | "history"> {
+interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unread" | "active" | "held"> {
   toggle: () => void;
   ask: (question: string) => void;
-  accountId: string | null;
+  /** The focus asks go out with (sendFocusOf): an account id, null = General,
+   *  undefined = none yet (a chatter's General while the roster loads). */
+  accountId: Focus | undefined;
+  /** The reducer's roster as accounts — offline ones too ([] while loading). */
   accounts: AccountMeta[];
-  /** True when the scope (ScopeContext) is a single model. */
-  scoped: boolean;
-  setPicked: (id: string) => void;
+  /** The reducer has the roster (the accounts query succeeded). */
+  rosterLoaded: boolean;
+  /** A signed-in user (not a chatter): the "Add creator" hint is theirs. */
+  isUser: boolean;
+  /** General is on offer (a signed-in user, or nothing connected). */
+  canGeneral: boolean;
+  /** The app switcher's focus, resolved, for the "<model> in app" offer while `held`. */
+  appFocus: Focus;
+  /** The open thread's turns ([] on the home screen). */
+  shown: Turn[];
+  /** Every conversation with a turn, newest first. */
+  threads: ThreadSummary[];
+  pick: (focus: Focus) => void;
+  newChat: () => void;
+  openThread: (t: ThreadSummary) => void;
   /** For the "Hi <name>" greeting; null falls back to "Hi there". */
   userName: string | null;
 }
 
+/** A conversation id: made here, stored by the server as-is. Not
+ *  crypto.randomUUID — that needs a secure context, and a phone on the LAN
+ *  testing over http has none. Unique per asker is all it needs. */
+const newThreadId = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
 const AssistantContext = createContext<AssistantState | null>(null);
+const NO_ACCOUNTS: AccountMeta[] = [];
 
 /** One conversation for both surfaces: the corner dock and the /help-center
  *  page (HelpCenterPage.tsx) read it, so a question asked on one is on the
- *  other. Mounted in app/layout.tsx inside AuthGate, where the scope, roster
- *  and employee contexts resolve. */
+ *  other. Mounted in app/layout.tsx inside AuthGate and PageCreatorProvider,
+ *  where the app's model, roster and employee contexts resolve. */
 export function AssistantProvider({ children }: { children: ReactNode }) {
   // The server doesn't know the persisted bit, so the first client render
   // must not either — read it in an effect and paint nothing until then.
   // hydrated / open / turns / unread move together: assistantReducer.ts.
   const [state, dispatch] = useReducer(assistantReducer, initialAssistantState);
-  const { hydrated, open, history, turns, unread } = state;
+  const { hydrated, open, history, turns, unread, active, held } = state;
   const pathname = usePathname();
   // A reply is "read" if the dock is open or the help page is on screen; the
   // reducer holds both and reads them when the answer lands.
   useEffect(() => { dispatch({ type: "route", onHelpPage: pathname === HELP_PATH }); }, [pathname]);
   const nextId = useRef(0);
 
-  const { accountId: scopedId } = useScope();
-  const accounts = useActiveAccounts();
+  // OWNED accounts, a dropped session or a deactivated Creator included: the
+  // server answers about any of them (its reach), and a page may pick one
+  // (Vault Pro keeps a session-dropped model). The reducer resolves against
+  // them. Only FETCHED data is a roster (`dataUpdatedAt` > 0: a success now or
+  // before a failed refetch): a chatter's loading query carries
+  // `accounts: []`, which would read as "nothing connected" (General).
+  const accountsQ = useAccounts();
+  const owned = accountsQ.dataUpdatedAt > 0 ? accountsQ.data?.accounts : undefined;
   const { current } = useEmployee();
   const employeeId = current?.id ?? null;
   // For the greeting only, the same name the avatar menu shows.
@@ -149,20 +189,17 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const chatter = useOptionalChatter()?.chatter;
   const userName = user?.username ?? chatter?.username ?? null;
 
-  // The widget's own account pick, used only while the switcher says "all
-  // models". It lives here for the same reason `turns` does: collapsing
-  // unmounts the panel, and a pick that reset every time the bubble closed
-  // would quietly re-bill the next question to the first account in the list.
-  const [picked, setPicked] = useState<string | null>(null);
-
-  // A scoped model always wins — under one, the switcher IS the picker and
-  // this widget behaves exactly as before. In all-models scope, fall back to
-  // the user's pick, then to the first live account. That default is fine
-  // ONLY because the picker row renders it: the account being billed and
-  // answered about is on screen, never inferred silently server-side.
-  const pickedValid =
-    picked !== null && accounts.some((a) => a.id === picked) ? picked : null;
-  const accountId = scopedId ?? pickedValid ?? accounts[0]?.id ?? null;
+  // The focus follows the app's model (PageCreatorContext: a page's own pick,
+  // else the scope switcher; all models → General). The reducer decides
+  // whether a change lands now or is only offered (a started chat). It lives
+  // here, not in the panel, for the same reason `turns` does: collapsing
+  // unmounts the panel.
+  const appFocus = useAppCreator();
+  useEffect(() => { dispatch({ type: "scope", focus: appFocus }); }, [appFocus]);
+  const ids = useMemo(() => owned?.map((a) => a.id) ?? null, [owned]);
+  const isUser = !!user;
+  useEffect(() => { dispatch({ type: "roster", ids, isUser }); }, [ids, isUser]);
+  const accountId = sendFocusOf(state);
 
   useEffect(() => {
     let stored = false;
@@ -196,29 +233,55 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [wantHistory]);
 
   const ask = useCallback(async (question: string) => {
+    if (accountId === undefined) return;   // the composer is disabled meanwhile
     const id = nextId.current++;
-    dispatch({ type: "asked", id, question });
+    // The open thread, or a new one this first ask names — made here only.
+    const thread = active ?? newThreadId();
+    dispatch({ type: "asked", id, question, ts: new Date().toISOString(), thread, accountId });
     try {
       const r = await relay.post<AskResponse>(
         "/admin/assistant/ask",
         // No `role` — the server derives who is asking from the session, and a
         // role read out of this body would be client-supplied theater. No
-        // history either: the server reads the asker's own previous turns.
-        // No account connected yet → no `account_id`: a manual-only answer.
-        accountId ? { question, account_id: accountId } : { question },
+        // history either: the server reads the thread's previous turns.
+        // General (or no account connected) → no `account_id`: a manual-only answer.
+        accountId ? { question, account_id: accountId, thread_id: thread } : { question, thread_id: thread },
         { accountId, employeeId },
       );
       dispatch(settledFrom(id, r));
     } catch (e) {
       dispatch(settledFromError(id, e));
     }
-  }, [accountId, employeeId]);
+  }, [accountId, employeeId, active]);
 
+  const pick = useCallback((focus: Focus) => dispatch({ type: "pick", focus }), []);
+  const newChat = useCallback(() => dispatch({ type: "new_chat" }), []);
+  const openThread = useCallback(
+    (t: ThreadSummary) => dispatch({ type: "open_thread", thread: t.id, focus: t.focus }), []);
+
+  // Stable while the conversation is unchanged: the panel's scroll-to-bottom
+  // effect keys on `shown`, and a route change must not re-fire it.
+  const shown = useMemo(() => turnsOf(active, history, turns), [active, history, turns]);
+  const threads = useMemo(() => threadsOf(history, turns), [history, turns]);
+  // The panel shows the REDUCER's roster (what sends resolve against), with
+  // the query's metadata for names and offline marks.
+  const rosterIds = state.roster.ids;
+  const accounts = useMemo(() => {
+    if (rosterIds === null) return NO_ACCOUNTS;
+    const meta = new Map((owned ?? []).map((a) => [a.id, a]));
+    return rosterIds.flatMap((id) => meta.get(id) ?? []);
+  }, [rosterIds, owned]);
   const value: AssistantState = {
-    hydrated, open, turns, unread, history, toggle, ask, accountId, accounts,
-    scoped: scopedId !== null, setPicked, userName,
+    hydrated, open, unread, active, held, toggle, ask, accountId,
+    accounts, rosterLoaded: rosterIds !== null, isUser: state.roster.isUser,
+    canGeneral: canGeneralOf(state.roster),
+    appFocus: appFocusOf(state),
+    shown, threads,
+    pick, newChat, openThread, userName,
   };
-  return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
+  return (
+    <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>
+  );
 }
 
 export function useAssistant(): AssistantState {
@@ -390,18 +453,17 @@ const VARIANT = {
     column: "",
     composerPad: "",
     inputText: "text-[14px]",
-    earlierOpen: true,
     // The dock sits beside the page it links to: it stays open.
     closeOnNavigate: false,
     lockPage: false,
   },
   page: {
-    frame: "h-chat min-h-0 w-full",
+    // `relative`: the conversations list overlays the frame.
+    frame: "relative h-chat min-h-0 w-full",
     // The page spans the shell panel; its content keeps the messenger's measure.
     column: "mx-auto w-full max-w-[720px]",
     composerPad: "",
     inputText: "text-[14px]",
-    earlierOpen: true,
     closeOnNavigate: false,
     lockPage: false,
   },
@@ -412,8 +474,6 @@ const VARIANT = {
     composerPad: "pb-[max(1rem,env(safe-area-inset-bottom))]",
     // 16px on the phone: iOS zooms the page into any smaller input.
     inputText: "text-[16px]",
-    // Collapsed, so earlier turns never bury the composer.
-    earlierOpen: false,
     // A link tapped in the full-screen sheet closes it, or the page it opened
     // stays hidden under the sheet.
     closeOnNavigate: true,
@@ -427,9 +487,8 @@ const VARIANT = {
  *  close button (the sidebar is the way out). `sheet`: the phone's full-screen
  *  messenger, pinned to the visual viewport over a locked body
  *  (useBodyScrollLock) so the keyboard never covers its composer nor scrolls
- *  the page out from under it. Earlier sessions' turns sit above this one's
- *  under an "Earlier" toggle, collapsed on the sheet so they never bury the
- *  composer. */
+ *  the page out from under it. Earlier conversations open from a list over
+ *  the panel (ThreadList), one at a time. */
 export function AssistantPanel({
   variant,
   onClose,
@@ -437,18 +496,21 @@ export function AssistantPanel({
   variant: "dock" | "page" | "sheet";
   onClose?: () => void;
 }) {
-  const { turns, history, userName, accountId, accounts, scoped, setPicked, ask } = useAssistant();
+  const {
+    shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus,
+    ask, pick, newChat, openThread,
+  } = useAssistant();
   const answer = useLazyModule(answerText);
   const [draft, setDraft] = useState("");
+  const [listOpen, setListOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // An in-flight answer does NOT lock the composer: concurrent turns are fine —
   // `settled` (assistantReducer) matches answers to turns by id, never by order.
-  const canSend = draft.trim().length > 0;
-  const empty = turns.length === 0;
+  const canSend = draft.trim().length > 0 && accountId !== undefined;
+  const empty = shown.length === 0;
   const v = VARIANT[variant];
   useBodyScrollLock(v.lockPage);
-  const [earlierOpen, setEarlierOpen] = useState<boolean>(v.earlierOpen);
   const leave = v.closeOnNavigate ? onClose : undefined;
   const column = v.column;
   const text = (body: string, muted = false) => answer
@@ -456,13 +518,14 @@ export function AssistantPanel({
     : <span className="whitespace-pre-wrap">{body}</span>;
 
   // Follow the newest row — both when a question lands and when its answer
-  // replaces the "thinking…" line (which is usually the taller of the two).
+  // replaces the "thinking…" line (which is usually the taller of the two),
+  // and to the end of a conversation just opened.
   // Scrolls the list BOX, not a sentinel: scrollIntoView walks up to the
   // nearest scrollable ancestor, which on a short page is the document.
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, history.length]);
+  }, [shown]);
 
   const send = () => {
     if (!canSend) return;
@@ -517,19 +580,43 @@ export function AssistantPanel({
       >
         <div className={cn("px-10", column)}>
           <div className="flex h-8 items-center gap-5">
-            <IfMark className="size-7" />
-            <span className="text-[18px] font-bold">{BRAND_NAME.toUpperCase()}</span>
-            {onClose && (
+            {active !== null && (
               <button
                 type="button"
-                onClick={onClose}
-                className="-mr-4 ml-auto grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10"
-                title="Close"
-                aria-label="Close help"
+                onClick={newChat}
+                className="-ml-6 -mr-3 grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10"
+                title="Back — start a new chat"
+                aria-label="New chat"
               >
-                <X className="h-5 w-5" aria-hidden />
+                <ChevronLeft className="h-5 w-5" aria-hidden />
               </button>
             )}
+            <IfMark className="size-7" />
+            <span className="text-[18px] font-bold">{BRAND_NAME.toUpperCase()}</span>
+            <span className="-mr-4 ml-auto flex items-center gap-1">
+              {threads.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setListOpen(true)}
+                  className="grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10"
+                  title="Earlier conversations"
+                  aria-label="Earlier conversations"
+                >
+                  <History className="h-[18px] w-[18px]" aria-hidden />
+                </button>
+              )}
+              {onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10"
+                  title="Close"
+                  aria-label="Close help"
+                >
+                  <X className="h-5 w-5" aria-hidden />
+                </button>
+              )}
+            </span>
           </div>
           {empty ? (
             <h2 className="mt-[70px] text-[30px] font-bold leading-[1.1] text-[#fafafa]">
@@ -561,64 +648,42 @@ export function AssistantPanel({
                 </span>
                 <SendHorizontal className="h-5 w-5 shrink-0 fill-black text-black" aria-hidden />
               </button>
-              <StatusCard />
+              {threads.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setListOpen(true)}
+                  className={cn(CARD, "flex items-center gap-4 text-left hover:border-[#dcdcdc]")}
+                >
+                  <History className="h-[22px] w-[22px] shrink-0 text-[#14161a]" aria-hidden />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[15px] font-semibold text-[#14161a]">Earlier conversations</span>
+                    <span className="block text-[15px] text-[#6d6f74]">
+                      {threads.length} conversation{threads.length === 1 ? "" : "s"} · last {WHEN.format(new Date(threads[0].last))}
+                    </span>
+                  </span>
+                  <ChevronRight className="h-5 w-5 shrink-0 text-[#14161a]" aria-hidden />
+                </button>
+              )}
             </>
           )}
-          {history.length > 0 && (
-            <section aria-label="Earlier questions" className="flex flex-col gap-3">
-              <button
-                type="button"
-                onClick={() => setEarlierOpen((o) => !o)}
-                aria-expanded={earlierOpen}
-                className="flex items-center gap-1 self-center rounded-full px-3 py-1 text-[12px] font-medium text-fg-dim hover:text-fg"
-              >
-                Earlier ({history.length})
-                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", earlierOpen && "rotate-180")} aria-hidden />
-              </button>
-              {earlierOpen && groupByDay(history, new Date()).map((g, i) => (
-                <div key={`${i}-${g.label}`} className="flex flex-col gap-3">
-                  <div className="self-center text-[11px] text-muted">{g.label}</div>
-                  {g.turns.map(renderTurn)}
-                </div>
-              ))}
-            </section>
-          )}
-          {turns.map(renderTurn)}
+          {shown.map(renderTurn)}
         </div>
       </div>
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
       <div className="shrink-0 border-t border-[#ededed] bg-white">
         <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", v.composerPad, column)}>
-          {/* No live account at all (none connected yet, or the roster has
-              not loaded): the server answers from the manual alone, and the
-              one thing worth pointing at is where to connect one. */}
-          {!accountId && (
-            <div className="px-1 text-[11px] leading-4 text-muted">
-              {text(NO_ACCOUNT_HINT)}
-            </div>
-          )}
-          {/* In all-models scope nothing on screen names an account, but the
-              server bills each answer to one and scopes its live-state reads
-              to it — so the account in play must be visible, not inferred. */}
-          {accountId && !scoped && (
-            <label className="flex items-center gap-1.5 px-1">
-              <span className="text-[11px] text-muted shrink-0">
-                Answering about
-              </span>
-              <select
-                value={accountId}
-                onChange={(e) => setPicked(e.target.value)}
-                className="min-w-0 max-w-[60%] truncate bg-transparent text-[11px] font-medium text-fg-dim hover:text-fg focus:outline-none cursor-pointer"
-                aria-label="Account the help bot answers about"
-              >
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.nickname || a.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+          {/* Both read the reducer's roster. No account at all: General is
+              all there is, and for a user the one thing worth pointing at is
+              where to connect one (a chatter can't: neutral copy). Nothing
+              while the roster loads. */}
+          {accounts.length > 0 && accountId !== undefined ? (
+            <FocusLine
+              focus={accountId} accounts={accounts} canGeneral={canGeneral} started={active !== null}
+              held={held} appFocus={appFocus} onPick={pick} onNewChat={newChat}
+            />
+          ) : rosterLoaded && accounts.length === 0 && (
+            <div className="px-1 text-[11px] leading-4 text-muted">{isUser ? text(NO_ACCOUNT_HINT) : NO_ACCOUNT_CHATTER}</div>
           )}
           <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
             <textarea
@@ -654,39 +719,23 @@ export function AssistantPanel({
           </div>
         </div>
       </div>
+
+      {listOpen && (
+        <ThreadList
+          threads={threads}
+          active={active}
+          accounts={accounts}
+          onPick={(t) => { openThread(t); setListOpen(false); }}
+          onClose={() => setListOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
 const CARD = "rounded-xl border border-[#ededed] bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
 
-const UPDATED = new Intl.DateTimeFormat("en-US", {
-  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC",
+/** Local time on the card: "Nov 10, 22:24". */
+const WHEN = new Intl.DateTimeFormat("en-US", {
+  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
 });
-
-/** Intercom's status card, driven by the app's own error log (the Top bar's
- *  error triage badge reads the same 24h count, ErrorBadge.tsx). Nothing until
- *  the first read lands, so a refused or failed read never claims "Operational". */
-function StatusCard() {
-  const { q, count } = useRecentErrors();
-  if (!q.data) return null;
-  const ok = count === 0;
-  return (
-    <div className={cn(CARD, "flex items-center gap-3")}>
-      {/* Intercom's 26px filled status circle: a tick, or a bang while errors are logged. */}
-      <svg viewBox="0 0 26 26" className="h-[26px] w-[26px] shrink-0" aria-hidden>
-        <circle cx="13" cy="13" r="13" fill={ok ? "#2fb344" : "#f5a623"} />
-        <path
-          d={ok ? "m7.5 13.5 3.5 3.5 7.5-8" : "M13 7.5v7M13 18.5v.01"}
-          fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"
-        />
-      </svg>
-      <span className="min-w-0">
-        <span className="block text-[15px] font-semibold text-[#14161a]">
-          {ok ? "Status: All Systems Operational" : `Status: Partial Outage (${count} error${count === 1 ? "" : "s"} in 24h)`}
-        </span>
-        <span className="block text-[15px] text-[#6d6f74]">Updated {UPDATED.format(q.dataUpdatedAt)} UTC</span>
-      </span>
-    </div>
-  );
-}

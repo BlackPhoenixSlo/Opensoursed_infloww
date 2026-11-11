@@ -12,6 +12,7 @@ import { IdleOverlay } from "@/components/IdleOverlay";
 import { ApiKeyToaster } from "@/components/ApiKeyToaster";
 import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
+import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
 
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
 import { BOOT_PATH_HEADER } from "@/lib/inlineBoot";
@@ -217,16 +218,19 @@ export default async function RootLayout({
         <InlineBoot data={inline} />
         <Providers>
           <AuthGate signedIn={signedIn}>
-            {/* One help conversation for the corner dock and /help-center. */}
-            <AssistantProvider>
-              <ImpersonationBanner />
-              <AppShell>{children}</AppShell>
-              <NotificationToaster />
-              <IdleOverlay />
-              <ApiKeyToaster />
-              <MoneyRail />
-              <AssistantWidget />
-            </AssistantProvider>
+            {/* The app's model (a page's creator rail, else the switcher). */}
+            <PageCreatorProvider>
+              {/* One help conversation for the corner dock and /help-center. */}
+              <AssistantProvider>
+                <ImpersonationBanner />
+                <AppShell>{children}</AppShell>
+                <NotificationToaster />
+                <IdleOverlay />
+                <ApiKeyToaster />
+                <MoneyRail />
+                <AssistantWidget />
+              </AssistantProvider>
+            </PageCreatorProvider>
           </AuthGate>
         </Providers>
       </body>

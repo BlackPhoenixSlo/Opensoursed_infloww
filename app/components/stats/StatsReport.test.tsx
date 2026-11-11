@@ -113,8 +113,23 @@ const lastRange = (path?: string) => ranges(path).at(-1);
 /** Creator reports open with "Show net earnings" on (analytics-creator-reports#33, ticket 60); a test written against
  *  the gross figures turns it off first. */
 async function showGross() {
-  const net = await screen.findByRole("switch", { name: "Show net earnings" });
-  if (net.getAttribute("aria-checked") === "true") fireEvent.click(net);
+  await selectSevenDays();
+  fireEvent.change(screen.getByRole("combobox", { name: "Earnings basis" }), { target: { value: "gross" } });
+}
+
+/** Worked amounts, prior growth and exports below use an explicit seven-day window. */
+async function selectSevenDays() {
+  await waitFor(() => expect(lastRange("/admin/stats/per-model")).toBeDefined());
+  openRange();
+  fireEvent.click(screen.getByRole("button", { name: "Last 7 days" }));
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(lastRange("/admin/stats/per-model")?.from)
+    .toBe(reportTz === "America/New_York" ? "2026-10-08T04:00:00.000Z" : "2026-10-09T00:00:00.000Z"));
+}
+
+function openFilters() {
+  const button = screen.getByRole("button", { name: /^Filters(?: \(\d+\))?$/ });
+  if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button);
 }
 
 /** Opens the range box's popover (page-parity ticket 25): the presets, From / To and the hours live in it. */
@@ -129,13 +144,21 @@ function pickHour(name: string, label: string) {
 
 // Infloww's legacy header (page-parity ticket 25): the title, the report time zone's UTC offset, the icon Refresh.
 describe("StatsReport report header", () => {
-  it.each([["employee", "Employee reports"], ["fan", "Fan reports"]] as const)(
+  it.each([["employee", "Employee Reports"], ["fan", "Fan reports"]] as const)(
     "%s: the title, the report time zone's offset and the icon Refresh", async (view, title) => {
       reportTz = "America/New_York";
       renderWithProviders(<StatsReport view={view} />);
       const header = screen.getByRole("heading", { level: 1, name: title }).closest("header")!;
       await waitFor(() => expect(within(header).getByText("UTC-04:00")).toBeInTheDocument());
-      const refresh = within(header).getByRole("button", { name: "Refresh" });
+      const refresh = screen.getByRole("button", { name: "Refresh" });
+      if (view === "employee") {
+        // IfTabs owns the toolbar: the named tablist and its sibling controls share this parent.
+        const toolbar = screen.getByRole("tablist", { name: "Employee reports" }).parentElement!;
+        expect(within(toolbar).getByRole("button", { name: "Refresh" })).toBe(refresh);
+        expect(within(toolbar).getByRole("button", { name: /^Date range/ })).toBeInTheDocument();
+        expect(header).not.toContainElement(refresh);
+      }
+      else expect(header).toContainElement(refresh);
       expect(refresh).toHaveAttribute("title", "Re-fetch all stats now");
       expect(refresh).not.toHaveTextContent("Refresh");
     });
@@ -237,23 +260,25 @@ describe("StatsReport date range", () => {
 });
 
 describe("StatsReport Employee reports notice", () => {
-  const NOTICE = "The sales data is based on your organization's sales settings.";
+  const NOTICE = "The sales data is based on the sales settings. View your settings at Settings > Sales Settings.";
   const FALLBACK = "Shift schedule needs Time tracking on; credited by Converters.";
 
   it("names the sales settings and links to them, with no fallback line when none is reported", async () => {
     renderWithProviders(<StatsReport view="employee" />);
-    expect(await screen.findByText(NOTICE)).toBeInTheDocument();
+    expect(await screen.findByRole("note")).toHaveTextContent(NOTICE);
     expect(screen.getByRole("link", { name: "View sales settings" })).toHaveAttribute("href", "/settings/sales");
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith("/admin/stats/per-employee")))
       .toBe(true));
-    expect(screen.queryByText(FALLBACK)).toBeNull();
+    expect(screen.queryByRole("img", { name: FALLBACK })).toBeNull();
   });
 
   it("shows the Relay's fallback line while Shift schedule is credited by Converters", async () => {
     fallback = FALLBACK;
     renderWithProviders(<StatsReport view="employee" />);
-    expect(await screen.findByText(FALLBACK)).toBeInTheDocument();
-    expect(screen.getByText(NOTICE)).toBeInTheDocument();
+    const fallbackIcon = await screen.findByRole("img", { name: FALLBACK });
+    expect(fallbackIcon).toHaveAttribute("title", FALLBACK);
+    expect(screen.getByRole("note")).toHaveAttribute("title", FALLBACK);
+    expect(screen.getByRole("note")).toHaveTextContent(NOTICE);
   });
 
   it("asks for the Chatter role's Employees only once the toggle is on", async () => {
@@ -272,7 +297,7 @@ describe("StatsReport Employee reports notice", () => {
   it("shows no notice on Creator reports", async () => {
     renderWithProviders(<StatsReport view="creator" />);
     await waitFor(() => expect(lastRange("/admin/stats/per-model")).toBeDefined());
-    expect(screen.queryByText(NOTICE)).toBeNull();
+    expect(screen.queryByRole("link", { name: "View sales settings" })).toBeNull();
   });
 });
 
@@ -336,30 +361,30 @@ describe("StatsReport Creator reports frame", () => {
     expect(tabs[1]).toHaveAttribute("aria-selected", "false");
     before(refresh, tabs[0]);
     // analytics-creator-reports#18: the filter bar after the tabs.
-    const bar = screen.getByRole("group", { name: "Filters" });
+    const bar = screen.getByRole("group", { name: "Report controls" });
     before(tabs[1], bar);
     const controls = [
       within(bar).getByRole("button", { name: "Date range" }), // analytics-creator-reports#21
-      within(bar).getByRole("button", { name: "Creator tag" }), // analytics-creator-reports#25
-      within(bar).getByRole("button", { name: "Creator" }), // analytics-creator-reports#26
-      within(bar).getByRole("switch", { name: "Show net earnings" }), // analytics-creator-reports#30, #33
-      within(bar).getByRole("button", { name: "Reset" }), // analytics-creator-reports#37
+      within(bar).getByRole("combobox", { name: "Shown by" }),
+      within(bar).getByRole("combobox", { name: "Earnings basis" }), // analytics-creator-reports#30, #33
+      within(bar).getByRole("button", { name: "Filters" }),
     ];
     for (let i = 1; i < controls.length; i++) before(controls[i - 1], controls[i]);
     // The body is the Creator Reports card's Overview.
     expect(screen.getByText("Earnings summary")).toBeInTheDocument();
   });
 
-  it("marks Creator tag Not wired, and leaves Show net earnings a working switch, on", async () => {
+  it("marks Creator tag unavailable in Filters, and leaves Earnings basis enabled, net selected", async () => {
     renderWithProviders(<StatsReport view="creator" />);
-    const bar = await screen.findByRole("group", { name: "Filters" });
+    const bar = await screen.findByRole("group", { name: "Report controls" });
+    openFilters();
     const tag = within(bar).getByRole("button", { name: "Creator tag" }); // analytics-creator-reports#25
     expect(tag).toBeDisabled();
-    expect(tag).toHaveAttribute("title", "not wired");
-    const net = within(bar).getByRole("switch", { name: "Show net earnings" }); // analytics-creator-reports#33
+    expect(tag).toHaveAttribute("title", "Creator tags are not available");
+    const net = within(bar).getByRole("combobox", { name: "Earnings basis" }); // analytics-creator-reports#33
     expect(net).toBeEnabled();
     expect(net).not.toHaveAttribute("title", "not wired");
-    expect(net).toHaveAttribute("aria-checked", "true");
+    expect(net).toHaveValue("net");
   });
 
   it("opens Creator performance from ?tab=performance", async () => {
@@ -388,7 +413,21 @@ describe("StatsReport Creator reports frame", () => {
   it("sends the report time zone's midnights on the revenue and per-model reads", async () => {
     reportTz = "America/New_York";
     renderWithProviders(<StatsReport view="creator" />);
-    // The page's own default (analytics-creator-reports#21), the last 7 days through today there: Thu 8 Oct 00:00 EDT
+    await waitFor(() => expect(lastRange("/admin/stats/per-model"))
+      .toEqual({ from: "2026-09-15T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" }));
+    expect(ranges("/admin/stats/per-model").every((r) => r.from === "2026-09-15T04:00:00.000Z")).toBe(true);
+    // Initial thirty-day revenue reads must never leak browser-local boundaries either.
+    // The preceding thirty calendar days are Aug 16 through Sep 14 in New York (EDT).
+    const initial = { from: "2026-09-15T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" };
+    const initialPrior = { from: "2026-08-16T04:00:00.000Z", to: "2026-09-15T03:59:59.999Z" };
+    const initialSent = () => [...new Set(revenue().map((r) => `${r.group_by} ${r.from} ${r.to}`))].sort();
+    await waitFor(() => expect(initialSent()).toEqual([
+      `day ${initial.from} ${initial.to}`,
+      `kind ${initialPrior.from} ${initialPrior.to}`, `kind ${initial.from} ${initial.to}`,
+    ]));
+    const beforeSeven = revenue().length;
+    await selectSevenDays();
+    // Explicit seven days through today there: Thu 8 Oct 00:00 EDT
     // through Wed 14 Oct 23:59:59.999 EDT (it is still Wed 14 Oct in New York).
     const want = { from: "2026-10-08T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" };
     await waitFor(() => expect(lastRange("/admin/stats/per-model")).toEqual(want));
@@ -396,11 +435,11 @@ describe("StatsReport Creator reports frame", () => {
     // (analytics-creator-reports#58): Thu 1 Oct 00:00 EDT through Wed 7 Oct 23:59:59.999 EDT. None went out
     // first with the browser's (UTC) days.
     const prior = { from: "2026-10-01T04:00:00.000Z", to: "2026-10-08T03:59:59.999Z" };
-    const sent = () => [...new Set(revenue().map((r) => `${r.group_by} ${r.from} ${r.to}`))].sort();
+    const sent = () => [...new Set(revenue().slice(beforeSeven).map((r) => `${r.group_by} ${r.from} ${r.to}`))].sort();
     await waitFor(() => expect(sent()).toEqual([
       `day ${want.from} ${want.to}`, `kind ${prior.from} ${prior.to}`, `kind ${want.from} ${want.to}`,
     ]));
-    expect(ranges("/admin/stats/per-model").every((r) => r.from === want.from)).toBe(true);
+    expect(ranges("/admin/stats/per-model").every((r) => r.from.endsWith("T04:00:00.000Z") && r.to === want.to)).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Date range" }));
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-01" } });
@@ -413,13 +452,14 @@ describe("StatsReport Creator reports frame", () => {
   it("lists the Agency's Creators, narrows the reads to the picked one, and Reset restores every default", async () => {
     creators = [creator("acct-a", "Creator A", 1200), creator("acct-b", "Creator B", 3400)];
     renderWithProviders(<StatsReport view="creator" />);
-    const bar = await screen.findByRole("group", { name: "Filters" });
+    const bar = await screen.findByRole("group", { name: "Report controls" });
     // Both Creators in the statistics table.
     expect(await screen.findByText("Creator B")).toBeInTheDocument();
     expect(screen.getByText("Creator A")).toBeInTheDocument();
     const rangeLabel = within(bar).getByRole("button", { name: "Date range" }).textContent;
 
     // analytics-creator-reports#26: the Creator pop lists the per-model read's Creators; untick Creator B.
+    openFilters();
     fireEvent.click(within(bar).getByRole("button", { name: "Creator" }));
     expect(screen.getByRole("checkbox", { name: "Creator A" })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "Creator B" }));
@@ -427,6 +467,7 @@ describe("StatsReport Creator reports frame", () => {
     expect(revenue().some((r) => r.account_id === "acct-b")).toBe(false);
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByText("Creator B")).toBeNull());
+    openFilters();
     expect(within(bar).getByRole("button", { name: "Creator A" })).toBeInTheDocument();
 
     // A changed range and bucket too.
@@ -438,7 +479,8 @@ describe("StatsReport Creator reports frame", () => {
     expect(within(trendTabs).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).not.toBe(rangeLabel);
 
-    // analytics-creator-reports#37: Reset puts the default range, every Creator and Day back.
+    // Reset puts the default 30-day range, every Creator and Day back.
+    openFilters();
     fireEvent.click(within(bar).getByRole("button", { name: "Reset" }));
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).toBe(rangeLabel);
     expect(within(bar).getByRole("button", { name: "Creator" })).toBeInTheDocument();
@@ -508,7 +550,7 @@ describe("StatsReport Creator reports frame", () => {
  * The Overview's sections (docs/infloww-layouts/analytics-creator-reports.md, ticket 21): Earnings summary, Earnings
  * trends, the channel row (Earnings by channel beside Earnings breakdown), then Creator statistics, each wired to the
  * revenue read or Not wired. The clock is Thu 15 Oct 2026 02:00Z in a UTC browser with no report time zone, so the
- * default window, the last 7 days through today (#21), is Fri 9 Oct through Thu 15 Oct, and the 7 days before it run
+ * selected window, the last 7 days through today (#21), is Fri 9 Oct through Thu 15 Oct, and the 7 days before it run
  * Fri 2 Oct through Thu 8 Oct. The figures are gross, so each test turns "Show net earnings" off first. Each
  * expectation cites the capture's Item ID.
  */
@@ -628,7 +670,7 @@ describe("StatsReport Creator reports Overview", () => {
     // analytics-creator-reports#65: Hour / Day / Week / Month, Day the default.
     expect(within(tabs).getAllByRole("button").map((b) => b.textContent)).toEqual(["Hour", "Day", "Week", "Month"]);
     expect(tab("Day")).toHaveAttribute("aria-pressed", "true");
-    // The 7-day default rules Hour out (#28, #29).
+    // The selected 7-day window rules Hour out (#28, #29).
     for (const g of [tab("Hour"), within(screen.getByRole("group", { name: "Earnings by channel granularity" }))
       .getByRole("button", { name: "Hour" })]) {
       expect(g).toBeDisabled();
@@ -737,8 +779,12 @@ describe("StatsReport Creator reports Overview", () => {
       expect(figures(within(summary).getByRole("group", { name }))).toEqual(["$0", "-"]);
     }
     expect(screen.queryByText("No creators in this selection")).toBeNull();
-    // analytics-creator-reports#84: the donut's empty ring.
-    expect(within(section("Earnings breakdown")).getByRole("img", { name: "No earnings" })).toBeInTheDocument();
+    // Overview keeps truthful unavailable legend rows; its decorative donut was removed.
+    const breakdown = within(section("Earnings breakdown"));
+    expect(breakdown.queryByRole("img")).toBeNull();
+    expect(within(breakdown.getByRole("list", { name: "Earnings breakdown legend" }))
+      .getAllByRole("listitem").map((row) => row.textContent))
+      .toEqual(["Subscription--", "Tips--", "Posts--", "Messages--", "Referrals--", "Chargebacks--"]);
     // No other section invents a zero.
     for (const name of ["Earnings trends", "Earnings by channel", "Earnings breakdown", "Creator statistics", "Earnings ledger"]) {
       expect(section(name)).not.toHaveTextContent("$0");
@@ -811,7 +857,7 @@ async function exportFrom(region: HTMLElement, pick: string[] = []) {
 /**
  * Creator statistics (docs/infloww-layouts/analytics-creator-reports.md #87 to #153, ticket 22): the title and
  * Export, the notice, the four stat cards, Custom metrics and the table of the capture's columns, each read from the
- * per-model read or Not wired. The default window is Thu 8 Oct through Wed 14 Oct, 7 days (168 hours); the figures
+ * per-model read or Not wired. The selected window is Thu 8 Oct through Wed 14 Oct, 7 days (168 hours); the figures
  * are gross, so the tests that read them turn "Show net earnings" off first.
  */
 describe("StatsReport Creator reports Creator statistics", () => {
@@ -974,6 +1020,7 @@ describe("StatsReport Creator reports Creator performance", () => {
     renderWithProviders(<StatsReport view="creator" />);
     await waitFor(() => expect(screen.getByRole("tab", { name: "Creator performance" }))
       .toHaveAttribute("aria-selected", "true"));
+    await selectSevenDays();
   };
   const pickRange = (from: string, to: string) => {
     fireEvent.click(screen.getByRole("button", { name: "Date range" }));
@@ -1024,17 +1071,17 @@ describe("StatsReport Creator reports Creator performance", () => {
     expect(screen.queryByRole("heading", { name: "Per-model KPIs" })).toBeNull();
   });
 
-  it("swaps Creator tag and Creator for the Shown by select, Day the default", async () => {
+  it("keeps secondary filters collapsed and offers Shown by, Day selected for seven days", async () => {
     creators = [CREATOR_A];
     mockCreatorA();
     await openPerformance();
-    const bar = screen.getByRole("group", { name: "Filters" });
+    const bar = screen.getByRole("group", { name: "Report controls" });
     // analytics-creator-reports#18: date range, Shown by, Show net earnings, Reset.
     expect(within(bar).queryByRole("button", { name: "Creator tag" })).toBeNull();
     expect(within(bar).queryByRole("button", { name: "Creator" })).toBeNull();
     const shownBy = within(bar).getByRole("combobox", { name: "Shown by" });
     const order = [within(bar).getByRole("button", { name: "Date range" }), shownBy,
-      within(bar).getByRole("switch", { name: "Show net earnings" }), within(bar).getByRole("button", { name: "Reset" })];
+      within(bar).getByRole("combobox", { name: "Earnings basis" }), within(bar).getByRole("button", { name: "Filters" })];
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
@@ -1044,7 +1091,7 @@ describe("StatsReport Creator reports Creator performance", () => {
     expect(shownBy).toHaveValue("day");
     expect(options[0]).toBeDisabled();
     expect(options[0]).toHaveAttribute("title", "Date range must be 2 days or less for this option");
-    // #28, #29: the 7-day default allows Day only.
+    // #28, #29: the selected 7-day window allows Day only.
     expect(options[2]).toBeDisabled();
     expect(options[2]).toHaveAttribute("title", "Date range must be between 14 to 365 days for this option");
     expect(options[3]).toBeDisabled();
@@ -1127,7 +1174,7 @@ describe("StatsReport Creator reports Creator performance", () => {
     expect((await csv.blob!.text()).split("\n")[2]).toBe("Creator B,0,0,0,,0,0,,,,0,,,,,,,,,0,0,0");
 
     // Net, as the export pop-up writes it: the header first, no note lines; a cell with no net read empty.
-    fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Earnings basis" }), { target: { value: "net" } });
     fireEvent.click(within(tools).getByRole("button", { name: "Export CSV" }));
     expect((await csv.blob!.text()).split("\n")[0]).toBe(CSV_HEADER);
   });
@@ -1196,7 +1243,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
   const section = (name: string) => screen.getByRole("region", { name });
   const tile = (name: string) => within(section("Earnings summary")).getByRole("group", { name });
   const value = (t: HTMLElement) => within(t).getAllByRole("definition")[0].textContent;
-  const netSwitch = () => within(screen.getByRole("group", { name: "Filters" })).getByRole("switch", { name: "Show net earnings" });
+  const earningsBasis = () => within(screen.getByRole("group", { name: "Report controls" })).getByRole("combobox", { name: "Earnings basis" });
   const table = () => within(section("Creator statistics")).getByRole("table");
   const MISSING = "2 sales in this period have no net figure from OnlyFans yet, so net earnings leave them out.";
   beforeEach(() => {
@@ -1212,7 +1259,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
     renderWithProviders(<StatsReport view="creator" />);
     // analytics-creator-reports#33: on by default, so every read asks for the net from the first.
     await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
-    expect(netSwitch()).toHaveAttribute("aria-checked", "true");
+    expect(earningsBasis()).toHaveValue("net");
     expect(revenue().every((r) => r.include_net === "true")).toBe(true);
     // The day read keeps `by_kind=true` for Earnings by channel; the kind read serves the tiles and the donut.
     expect(revenue().map((r) => `${r.group_by} ${r.by_kind ?? ""}`)).toEqual(expect.arrayContaining(["day true", "kind "]));
@@ -1249,8 +1296,8 @@ describe("StatsReport Creator reports Show net earnings", () => {
       expect(cell).toHaveAttribute("title", "not wired");
     }
 
-    fireEvent.click(netSwitch());
-    expect(netSwitch()).toHaveAttribute("aria-checked", "false");
+    fireEvent.change(earningsBasis(), { target: { value: "gross" } });
+    expect(earningsBasis()).toHaveValue("gross");
     await waitFor(() => expect(value(tile("Total earnings"))).toBe("$290"));
     expect(value(tile("Subscriptions"))).toBe("$150");
     expect(tableRows(table())[0].slice(0, 7))
@@ -1319,6 +1366,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
     const csv = captureCsv();
     renderWithProviders(<StatsReport view="creator" />);
     await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200"));
+    await selectSevenDays();
     const before = revenue().length;
     await exportFrom(section("Creator statistics"), ["All data fields", "Display by day"]);
     const lines = (await csv.blob!.text()).split("\n");
@@ -1330,7 +1378,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(head).not.toContain("OF ranking");
     expect(lines.slice(3, 5)).toEqual(["", "By day"]);
     expect(lines[5]).toBe("Creator,Day,Total earnings,Subscription,Tips,Posts,Messages,Other,Chargebacks");
-    // The default window's seven days; OF's net by channel on the one with sales.
+    // The selected window's seven days; OF's net by channel on the one with sales.
     expect(lines.slice(6)).toHaveLength(7);
     expect(lines).toContain("Creator A,2026-10-09,0,0,0,0,0,0,0");
     expect(lines).toContain("Creator A,2026-10-10,232,120,24,16,64,8,-23.1");

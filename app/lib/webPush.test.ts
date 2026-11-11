@@ -56,7 +56,7 @@ let calls: { method: string; path: string; body: unknown }[];
 let routes: Record<string, () => Response>;
 const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
 
-const settings: NotifSettings = DEFAULT_NOTIF_SETTINGS; // purchases + tip, osPing on
+const settings: NotifSettings = DEFAULT_NOTIF_SETTINGS; // message + purchases + tip + subscribed, osPing on
 const off: NotifSettings = { ...DEFAULT_NOTIF_SETTINGS, osPing: false };
 
 beforeEach(() => {
@@ -102,7 +102,7 @@ afterEach(() => {
 const putBody = {
   endpoint: "https://fcm.googleapis.com/fcm/send/abc",
   keys: { p256dh: "P256", auth: "AUTH" },
-  types: ["purchases", "tip"],
+  types: ["message", "purchases", "tip", "subscribed"],
   platforms: { onlyfans: true, fansly: true },
 };
 
@@ -270,18 +270,18 @@ describe("syncPush (no gesture)", () => {
   beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); });
 
   it("is debounced: three settings changes in a second are one PUT, with the last", async () => {
-    const msgs: NotifSettings = { ...settings, toast: { ...settings.toast, message: true } };
+    const latest: NotifSettings = { ...settings, toast: { ...settings.toast, favorited: true } };
     syncPush(settings);
     await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS / 2);
     syncPush(settings);
-    await sync(msgs);
+    await sync(latest);
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
-    expect(calls.at(-1)?.body).toMatchObject({ types: ["message", "purchases", "tip"] });
+    expect(calls.at(-1)?.body).toMatchObject({ types: ["message", "purchases", "tip", "subscribed", "favorited"] });
 
     // The same prefs again: left alone. Forced (tab return, SSE reconnect): PUT again.
-    await sync(msgs);
+    await sync(latest);
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
-    await sync(msgs, { force: true });
+    await sync(latest, { force: true });
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2);
   });
 

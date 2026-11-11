@@ -47,7 +47,8 @@
  *   • `selected` null = every model (the default and "All").
  */
 
-import type { NudgeConfig, NudgeSlots } from "@/hooks/useNudgeConfig";
+import type { NudgeConfig, NudgeSlotEntry, NudgeSlots } from "@/hooks/useNudgeConfig";
+import { setSlot, type DayBucket } from "@/components/settings/nudgeDayBuckets";
 import type { GateNote } from "@/components/settings/StickySaveBar";
 import { stableJSON } from "@/lib/pendingDraft";
 
@@ -101,6 +102,11 @@ export type NudgeOnlineAction =
   | { type: "discardDraft" }
   | { type: "field"; k: FormKey; v: NudgeConfig[FormKey] }
   | { type: "slots"; slots: NudgeSlots }
+  /** One day bucket's time slot edited in the friendly editor. */
+  | { type: "slot"; bucket: DayBucket; key: string; entry: NudgeSlotEntry }
+  /** Images an upload landed in the vault, for `accountId`'s slot: added to the
+   *  slot as it is NOW (the upload took a while; the operator kept editing). */
+  | { type: "addImages"; accountId: string; bucket: DayBucket; key: string; ids: number[] }
   | { type: "jsonDraft"; text: string }
   | { type: "applyJson" }
   /** `accountId` = the account being saved. */
@@ -201,11 +207,11 @@ export function rolloutBlock(
 
 /** Preview's fan id + hour, or why not (a typo must not preview the sample fan). */
 export function previewPayload(
-  fan: string, hour: number | "",
-): { fan_id: number | null; hour: number | null } | { error: string } {
+  fan: string, hour: number | "", day = "",
+): { fan_id: number | null; hour: number | null; weekday: string | null } | { error: string } {
   const f = fan.trim();
   if (f && !/^\d+$/.test(f)) return { error: "Fan id must be a number." };
-  return { fan_id: f ? Number(f) : null, hour: hour === "" ? null : hour };
+  return { fan_id: f ? Number(f) : null, hour: hour === "" ? null : hour, weekday: day || null };
 }
 
 export interface SaveGateInput {
@@ -329,6 +335,15 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
       return { ...state, save: null, form: { ...state.form, [action.k]: action.v } };
     case "slots":
       return withSlots(state, action.slots);
+    case "slot":
+      return withSlots(state, setSlot(state.slots, action.bucket, action.key, action.entry));
+    case "addImages": {
+      // Landed after a switch to another account (or before any draft): not this form's.
+      if (action.accountId !== state.accountId || state.base === null || action.ids.length === 0) return state;
+      const cur = state.slots[action.bucket]?.[action.key] ?? { text: [] };
+      const image = [...new Set([...(cur.image ?? []), ...action.ids])];
+      return withSlots(state, setSlot(state.slots, action.bucket, action.key, { ...cur, image }));
+    }
     case "jsonDraft":
       return { ...state, jsonDraft: action.text };
     case "applyJson": {

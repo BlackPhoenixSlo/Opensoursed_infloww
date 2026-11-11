@@ -36,7 +36,7 @@ shipped in f96535be0); --fault=reports-ignore-of-earnings (the ledger alone);
 --fault=chargebacks-lose-sign (the tiles drop the minus).
 Screenshots: dashboard-month-{before,after}, creator-reports-30d-{before,after},
 creator-reports-zero-day-after (gross), creator-performance-zero-day-after,
-dashboard-month-390, creator-reports-7d-390.
+dashboard-month-390, creator-reports-30d-390.
 """
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ async def run(ctx) -> None:
               stored_before == 0 and (before["prior"].get("history_missing_days") or 0) > 0,
               stored_rows=stored_before, prior_missing=before["prior"].get("history_missing_days"))
     emp_before = await employee_total(*win["month"])
-    ui_before = await _ui_pass(ctx, "before", win["prior"][0]) if ctx.app else None
+    ui_before = await _ui_pass(ctx, "before", win) if ctx.app else None
 
     # ── The OF job passes while the owners read the reports. ──────────────────
     stop = asyncio.Event()
@@ -320,11 +320,11 @@ async def run(ctx) -> None:
     ctx.rec.stage = None
 
     if not ctx.app:
-        for n in UI_CHECKS:
+        for n in (*UI_CHECKS, *RANGE_CHECKS.values()):
             ctx.skip(n, "--no-ui")
         return
-    ui_after = await _ui_pass(ctx, "after", win["prior"][0], zero_day=z, chargebacks=True)
-    phone = await _ui_phone(ctx)
+    ui_after = await _ui_pass(ctx, "after", win, zero_day=z, chargebacks=True)
+    phone = await _ui_phone(ctx, win)
     ctx.metric("ui", {"before": ui_before, "after": ui_after, "phone": phone})
     ctx.check(UI_CHECKS[0], ui_before["reports_growth"] == "-", growth=ui_before["reports_growth"])
     month_api = sum(by_kind(after["month"]).values()) / 100
@@ -361,6 +361,21 @@ UI_CHECKS = ("UI before: Creator reports' growth against unknown days shows '-'"
              "chargebacks_tile_negative: Dashboard This month, Creator reports Last 30 days and both at 390px show "
              "Chargebacks == -(the reversed read's net) on the err token")
 
+RANGE_CHECKS = {tag: f"UI {tag}: Creator reports defaults to the requested Last 30 days"
+                for tag in ("before", "after", "phone")}
+
+
+async def _rendered_range(ctx, page, windows: dict, tag: str) -> list[str]:
+    await page.get_by_role("button", name="Date range").first.click()
+    shown = [await page.get_by_label("From date").input_value(),
+             await page.get_by_label("To date").input_value()]
+    ctx.check(RANGE_CHECKS[tag], shown == [v[:10] for v in windows["range"]]
+              and await page.get_by_role("button", name="Last 30 days", exact=True).get_attribute("aria-pressed") == "true",
+              rendered=shown, want=[v[:10] for v in windows["range"]])
+    await page.keyboard.press("Escape")
+    return shown
+
+
 # The Dashboard's Chargebacks figure, once its read answered: (text, on the err token).
 _CB_DASH = ("() => { const f = [...document.querySelectorAll('[data-control=chargebacks] [data-figure]')].pop();"
             " return f && /\\d/.test(f.textContent) ? [f.textContent.trim(), f.classList.contains('text-err')] : null; }")
@@ -377,8 +392,8 @@ async def _cb_read(page, js: str) -> list | None:
         return await page.evaluate(js)
 
 
-async def _ui_phone(ctx) -> dict:
-    """The Dashboard (This month) and Creator reports (its default Last 7 days, today in it) at 390px: their
+async def _ui_phone(ctx, windows: dict) -> dict:
+    """The Dashboard (This month) and Creator reports (its default Last 30 days, today in it) at 390px: their
     Chargebacks figures, screenshots with the tile in view."""
     out: dict = {"shots": []}
     async with ui.owner_browser(ctx, viewport=(390, 844)) as page:
@@ -389,14 +404,15 @@ async def _ui_phone(ctx) -> dict:
         out["shots"].append(await ui.shot(ctx, page, "dashboard-month-390"))
         await page.goto(f"{ctx.app}/analytics/creator-reports", wait_until="domcontentloaded")
         out["cb_reports"] = await _cb_read(page, _CB_REPORTS)
+        out["rendered_range"] = await _rendered_range(ctx, page, windows, "phone")
         await page.get_by_role("group", name="Chargebacks").scroll_into_view_if_needed()
         await page.wait_for_timeout(800)
-        out["shots"].append(await ui.shot(ctx, page, "creator-reports-7d-390"))
+        out["shots"].append(await ui.shot(ctx, page, "creator-reports-30d-390"))
         out["5xx"] = [u for s, u in page.slop["statuses"] if s >= 500 and "/api/of/" not in u][:10]
     return out
 
 
-async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None, chargebacks: bool = False) -> dict:
+async def _ui_pass(ctx, tag: str, windows: dict, zero_day: str | None = None, chargebacks: bool = False) -> dict:
     out = {}
     async with ui.owner_browser(ctx, viewport=(1440, 1000)) as page:
         await page.goto(f"{ctx.app}/?window=month", wait_until="domcontentloaded")
@@ -411,14 +427,20 @@ async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None, 
         out["dashboard_shot"] = await ui.shot(ctx, page, f"dashboard-month-{tag}")
         out["dashboard_total"] = _dollars(await total.inner_text())
 
-        await page.goto(f"{ctx.app}/analytics/creator-reports", wait_until="domcontentloaded")
-        await page.get_by_role("button", name="Date range").first.wait_for(timeout=120_000)
-        await page.get_by_role("button", name="Date range").first.click()
-        async with page.expect_response(lambda r: "/admin/stats/revenue" in r.url and "group_by=kind" in r.url
-                                        and parse_qs(urlsplit(r.url).query).get("from", [""])[0][:10]
-                                        == prior_from[:10], timeout=60_000):
-            await page.get_by_role("button", name="Last 30 days").click()
-        await page.keyboard.press("Escape")
+        # PR #383 made 30 days the default. Observe both reads before navigation;
+        # choosing the already-selected preset need not issue a fresh cached request.
+        def revenue_window(response, key):
+            q = parse_qs(urlsplit(response.url).query)
+            return ("/admin/stats/revenue" in response.url and response.status == 200
+                    and q.get("group_by") == ["kind"] and q.get("include_net") == ["true"] and q.get("status") != ["reversed"]
+                    and q.get("from", [""])[0][:10] == windows[key][0][:10]
+                    and q.get("to", [""])[0][:10] == windows[key][1][:10])
+
+        async with page.expect_response(lambda r: revenue_window(r, "range"), timeout=60_000) as current, \
+                page.expect_response(lambda r: revenue_window(r, "prior"), timeout=60_000) as prior:
+            await page.goto(f"{ctx.app}/analytics/creator-reports", wait_until="domcontentloaded")
+        out["range_responses"] = {"current": (await current.value).url, "prior": (await prior.value).url}
+        out["rendered_range"] = await _rendered_range(ctx, page, windows, tag)
         tile = page.get_by_role("group", name="Total earnings")
         await page.wait_for_function(
             "() => { const g = document.querySelector('[role=group][aria-label=\"Total earnings\"]');"
@@ -440,9 +462,15 @@ async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None, 
                                             timeout=60_000):
                 await page.get_by_label("To date").fill(zero_day)
             await page.keyboard.press("Escape")
-            # Gross ("Show net earnings" off): the $14 a fan paid, as the owner reads a sale.
-            async with page.expect_response(lambda r: "/admin/stats/" in r.url, timeout=60_000):
-                await page.get_by_role("switch", name="Show net earnings").click()
+            # PR #380 replaced the net switch with Earnings basis; still assert the gross read.
+            async with page.expect_response(
+                    lambda r: "/admin/stats/revenue" in r.url and r.status == 200
+                    and parse_qs(urlsplit(r.url).query).get("group_by") == ["kind"]
+                    and "include_net" not in parse_qs(urlsplit(r.url).query)
+                    and parse_qs(urlsplit(r.url).query).get("from", [""])[0][:10] == zero_day
+                    and parse_qs(urlsplit(r.url).query).get("to", [""])[0][:10] == zero_day,
+                    timeout=60_000):
+                await page.get_by_role("combobox", name="Earnings basis").select_option("gross")
             await page.wait_for_timeout(2500)
             out["zero_shot"] = await ui.shot(ctx, page, f"creator-reports-zero-day-{tag}")
             out["zero_total"] = _dollars(await dds.nth(0).inner_text())

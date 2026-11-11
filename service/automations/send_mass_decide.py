@@ -144,6 +144,10 @@ def audience_filter(p: Plan, *, ref, fence: bool) -> str:
         # OF's rosters at close (plans/blast-splice A.2).
         "excluded_user_lists": list(p.excluded_user_lists),
         "fence": fence,
+        # OF resolves an online / filtered audience itself: no roster read can record it,
+        # so the boot re-crawl (audience_crawl.recover_at_boot) skips such runs.
+        "online": bool(p.online_only),
+        "filters": bool(p.filters),
     })
 
 

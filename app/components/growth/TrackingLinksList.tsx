@@ -14,7 +14,6 @@ import LinksListFrame, {
 import { createdDay } from "@/components/growth/frameDates";
 import { PARTIAL, TIPS, costPer, count, cvr, money, per, profitCents, roi, share } from "@/components/growth/linkMetrics";
 import { CreateLinkModal } from "@/components/growth/CreateLinkModal";
-import { CustomRedirects } from "@/components/growth/CustomRedirects";
 import { LinkDetails } from "@/components/growth/TrackingLinkDetails";
 import { useOfTrackingLinks, useOfTrackingEarnings, useDeleteOfTrackingLink, type OfTrackingLink } from "@/hooks/useGrowth";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -287,10 +286,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
           onClose={() => setCreating(false)}
         />
       )}
-
-      <div className="px-4">
-        <CustomRedirects accountId={accountId} />
-      </div>
     </div>
   );
 }

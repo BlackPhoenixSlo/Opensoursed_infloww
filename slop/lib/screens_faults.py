@@ -13,7 +13,7 @@ C_SCOPE = ("scope: a restricted chatter naming Creators not its own, and an owne
 
 C_PRIORITY = ("priority: a user bundle with focus=Creator 1 leaves every other Creator background (only "
               "Creator 1 user-active in lane stats); a tap on Creator 2 meanwhile never waited for a lane")
-C_AGAIN = "dashboard-again: the Per-model cards' fan counts converge to OF's (one Creator's changed since the first visit)"
+C_AGAIN = "reports-again extras: the Per-model cards' fan counts converge to OF's (one Creator's changed since the first visit)"
 C_INLINE = ("inline boot: each document load of the Dashboard / Messages Pro fetched none of /auth/me, /chatter/me, "
             "the Dashboard's Applied settings and its screen bundle itself (they came with its HTML)")
 C_NO_SKIP = ("no skip: a cold inbox bundle answered at 300 ms; every (Creator, read) still reached OF "

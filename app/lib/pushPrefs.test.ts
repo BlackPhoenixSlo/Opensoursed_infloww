@@ -8,12 +8,12 @@ const s = (over: Partial<NotifSettings> = {}): NotifSettings => ({ ...DEFAULT_NO
 describe("pushPrefs", () => {
   it.each([
     // [label, settings, types]
-    ["defaults: the money types", s(), ["purchases", "tip"]],
+    ["defaults: messages, purchases, tips and subscribers", s(), ["message", "purchases", "tip", "subscribed"]],
     ["master off", s({ enabled: false }), []],
     ["OS ping off", s({ osPing: false }), []],
-    ["every toast off", s({ toast: { ...DEFAULT_NOTIF_SETTINGS.toast, purchases: false, tip: false } }), []],
-    ["messages on, in NOTIF_TYPES order", s({ toast: { ...DEFAULT_NOTIF_SETTINGS.toast, message: true, favorited: true } }),
-      ["message", "purchases", "tip", "favorited"]],
+    ["every toast off", s({ toast: { message: false, purchases: false, tip: false, subscribed: false, mentioned: false, commented: false, favorited: false } }), []],
+    ["likes enabled too, in NOTIF_TYPES order", s({ toast: { ...DEFAULT_NOTIF_SETTINGS.toast, favorited: true } }),
+      ["message", "purchases", "tip", "subscribed", "favorited"]],
   ] as const)("%s", (_l, settings, types) => {
     expect(pushTypes(settings)).toEqual(types);
     expect(pushWanted(settings)).toBe(types.length > 0);
@@ -21,7 +21,7 @@ describe("pushPrefs", () => {
 
   it("the body carries the types and the platform switches", () => {
     expect(pushBody(s({ platforms: { onlyfans: true, fansly: false } }))).toEqual({
-      types: ["purchases", "tip"], platforms: { onlyfans: true, fansly: false },
+      types: ["message", "purchases", "tip", "subscribed"], platforms: { onlyfans: true, fansly: false },
     });
   });
 });

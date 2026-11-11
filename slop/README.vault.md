@@ -34,10 +34,23 @@ oracles, bypasses).
 | `scenarios/2026-11-05-vault-thumbs.py` | Durable picker thumbs. |
 | `lib/vault_refresh_faults.py` | Vault Refresh's check names and faults (below). |
 | `scenarios/2026-11-05-vault-refresh.py` | Vault Pro's Refresh and the picker's broken-thumb reload. |
+| `scenarios/2026-11-10-nudge-day-images.py`, `lib/nudge_day_faults.py` | Nudge online's day picker and slot images (drop / Upload through the vault import, `lib/vault_relay.py`), its check names and client fault (below). |
 | `lib/vault_download_faults.py` | Vault Pro download's check names and its fault (below). |
 | `scenarios/2026-11-08-vault-download.py` | Download selected / folder / whole vault, direct vs relay; its `Disk` (the picker stub's far side). |
 
 ## Scenarios
+
+- `2026-11-10-nudge-day-images`: Nudge online's per-day editor (`NudgeSlotPools`, `nudgeDayBuckets`,
+  `useNudgeImageUploads` → `lib/vaultImport.ts` `importAndWait`) on the real UI and relay (one owner, 1440x900,
+  `agency_inbox`; Creator 0's `account_ai_config.nudge_config_json` and one `vault_items` row by SQL). Day chip Sat,
+  one image dropped (synthetic DragEvent) and one chosen (Upload button, file chooser) on Night, Evening's "Edit for
+  Saturdays" + first line retyped while they import, Save (screenshots `nudge-day-trigger`, `nudge-day-settled`).
+  Checks (`lib/nudge_day_faults.py`): each file one `/vault/upload/batch` run, done, bytes at OnlyFans
+  (`lib/vault_relay.py`); the stored row's `slots.saturday` (night = the two vault ids in order, evening = the edited
+  copy) and `default` unchanged; Save "Uploading images…" and disabled across both imports (in-page recorder);
+  `POST /admin/nudge-config/preview` at 23:00 Saturday = every-day night line + Saturday's first id, Monday = the
+  every-day image; no 5xx. Layout flow, no budget. Fault `nudge-upload-lands-every-day` (client: `addImages` to the
+  every-day bucket) turns the stored-config and preview checks red.
 
 - `2026-11-08-vault-download`: `flat_agency` (2 Creators), `OF_WIRE` + `lib/vault_wire.py` (`ip_bound`, `full_mp4`:
   a video's `files.full` is its source mp4), mirror by SQL (`seed/vault_week`), CDN armed (exact seeded bytes).

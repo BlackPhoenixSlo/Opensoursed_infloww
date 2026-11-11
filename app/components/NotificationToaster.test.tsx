@@ -945,7 +945,7 @@ describe("NotificationToaster — Web Push", () => {
     fire("api2_chat_message", {
       __account_id: "900",
       api2_chat_message: {
-        id: 9005, text: "rich row", createdAt: "2026-11-03T10:00:00+00:00",
+        id: 9005, text: "rich row", createdAt: RECENT_OF_TS,
         fromUser: { id: 777, name: "Pushy", username: "pushy_u", avatar: "https://cdn.example/a.jpg" },
       },
     });
@@ -954,7 +954,7 @@ describe("NotificationToaster — Web Push", () => {
     expect(rows[0]).toMatchObject({
       id: "m9005",
       user: { id: 777, name: "Pushy", username: "pushy_u", avatar: "https://cdn.example/a.jpg" },
-      createdAt: "2026-11-03T10:00:00.000Z",
+      createdAt: RECENT_OF_TS_UTC,
     });
   });
 

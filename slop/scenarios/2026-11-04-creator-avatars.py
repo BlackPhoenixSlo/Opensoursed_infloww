@@ -16,6 +16,8 @@ Checks:
   OWN_ONLY  — no row's picture names another Creator (the data URL's `#<account id>` fragment == the row's id).
   OWN_SHOWN — every row answered as itself shows its own picture, so the guard does not just blank rows.
   The table's rows are /admin/accounts' Creators (the side-effect read).
+  The navigation's health response carries only matching profile IDs; only crossed rows fall back to /users/me.
+  Every displayed image has finished decoding (the fixture uses distinct inline SVGs, no CDN performance claim).
 
 FAULT `avatar-keeps-other-creators-body` reverts the guard in the served JS: OWN_ONLY goes red.
 UI only (`--no-ui` skips): not a volume path, proven once on the real page.
@@ -23,6 +25,7 @@ UI only (`--no-ui` skips): not a volume path, proven once on the real page.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import time
 
 from slop.actors import ui
@@ -57,7 +60,14 @@ async def run(ctx) -> None:
              f"{sorted(set(ids) - crossed)}")
 
     async with ui.owner_browser(ctx, viewport=(1440, 900), through=("/api/of/v2/users/me",)) as page:
-        await page.goto(f"{ctx.app}/creators", wait_until="domcontentloaded")
+        profile_reads = []
+        page.on("request", lambda r: profile_reads.append(r.headers.get("x-account-id"))
+                if "/api/of/v2/users/me" in r.url else None)
+        async with page.expect_response(lambda r: "/health?all_accounts=1" in r.url) as health_response:
+            await page.goto(f"{ctx.app}/creators", wait_until="domcontentloaded")
+        health = await health_response.value
+        health_body = await health.json()
+        (ctx.out / "creator-health.json").write_text(json.dumps(health_body, indent=2))
         await ui.shot(ctx, page, "creators-trigger")
         own = set(ids) - crossed
         rows: list[dict] = []
@@ -70,6 +80,10 @@ async def run(ctx) -> None:
         await page.wait_for_timeout(2000)  # any late answer lands before the read
         rows = await page.evaluate(_ROWS)
         await ui.shot(ctx, page, "creators-settled")
+        images = await page.locator("table img").evaluate_all(
+            "imgs => imgs.map(i => ({src:i.src, complete:i.complete, width:i.naturalWidth}))")
+        ctx.metric("creator_images", images)
+        ctx.metric("profile_reads", dict(Counter(profile_reads)))
 
     by_id = {x["id"]: x["src"] for x in rows}
     frag = {i: (s.rsplit("#", 1)[-1] if s and "#" in s else None) for i, s in by_id.items()}
@@ -80,3 +94,13 @@ async def run(ctx) -> None:
     srcs = [by_id.get(i) for i in own]
     ctx.check(OWN_SHOWN, all(frag.get(i) == i for i in own) and len(set(srcs)) == len(own),
               own=len(own), shown={i: frag.get(i) for i in own})
+
+    health_rows = {str(row["account_id"]): row for row in health_body.get("accounts", [])}
+    ctx.check("creators health reuses only matching identities", health.status == 200
+              and all(str(health_rows.get(i, {}).get("profile", {}).get("id")) == i for i in own)
+              and all("profile" not in health_rows.get(i, {}) for i in crossed),
+              own=sorted(own), crossed=sorted(crossed))
+    ctx.check("creators only mismatched health identities need fallback profile reads",
+              Counter(profile_reads) == Counter({i: 1 for i in crossed}), reads=dict(Counter(profile_reads)))
+    ctx.check("creators own avatar images finish decoding", bool(images)
+              and all(i["complete"] and i["width"] > 0 for i in images), images=len(images))

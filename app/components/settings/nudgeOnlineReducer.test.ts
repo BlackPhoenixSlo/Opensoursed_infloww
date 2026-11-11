@@ -471,14 +471,15 @@ describe("roll-out checklist", () => {
 });
 
 describe("previewPayload", () => {
-  it.each<[string, string, number | "", ReturnType<typeof previewPayload>]>([
-    ["blank fan + hour = sample now", "", "", { fan_id: null, hour: null }],
-    ["fan id + hour", " 123456789 ", 13, { fan_id: 123456789, hour: 13 }],
-    ["hour 0 is midnight, not blank", "", 0, { fan_id: null, hour: 0 }],
-    ["non-numeric fan id refuses", "abc", "", { error: "Fan id must be a number." }],
-    ["mixed fan id refuses", "12a", 8, { error: "Fan id must be a number." }],
-  ])("%s", (_name, fan, hour, want) => {
-    expect(previewPayload(fan, hour)).toEqual(want);
+  it.each<[string, string, number | "", string, ReturnType<typeof previewPayload>]>([
+    ["blank fan + hour + day = sample now", "", "", "", { fan_id: null, hour: null, weekday: null }],
+    ["fan id + hour", " 123456789 ", 13, "", { fan_id: 123456789, hour: 13, weekday: null }],
+    ["hour 0 is midnight, not blank", "", 0, "", { fan_id: null, hour: 0, weekday: null }],
+    ["a picked day goes as weekday", "", 16, "friday", { fan_id: null, hour: 16, weekday: "friday" }],
+    ["non-numeric fan id refuses", "abc", "", "", { error: "Fan id must be a number." }],
+    ["mixed fan id refuses", "12a", 8, "", { error: "Fan id must be a number." }],
+  ])("%s", (_name, fan, hour, day, want) => {
+    expect(previewPayload(fan, hour, day)).toEqual(want);
   });
 });
 
@@ -506,5 +507,31 @@ describe("canSave / gateNote", () => {
     if (noteKind === "none") expect(n).toBeNull();
     else if (noteKind === "loading") expect(n).toEqual(LOADING);
     else expect(n?.failed).toBe(true);
+  });
+});
+
+describe("day-bucket slot edits and landed uploads", () => {
+  it("a day's slot edit lands in its bucket and the JSON view; clearing it drops the bucket", () => {
+    const s = run([{ type: "slot", bucket: "friday", key: "night", entry: { text: ["fri {name}"], image: [] } }], loaded());
+    expect(s.slots.friday).toEqual({ night: { text: ["fri {name}"], image: [] } });
+    expect(JSON.parse(s.jsonDraft).friday.night.text).toEqual(["fri {name}"]);
+    expect(s.slots.default).toEqual(SLOTS.default);
+    const cleared = run([{ type: "slot", bucket: "friday", key: "night", entry: { text: [], image: [] } }], s);
+    expect(cleared.slots.friday).toBeUndefined();
+  });
+
+  it.each<[string, string, boolean, number[]]>([
+    ["adds to the slot as it is now, deduped", A, true, [5, 9]],
+    ["another account's landing is ignored", B, true, [5]],
+    ["before the draft is seeded it is ignored", A, false, [5]],
+  ])("addImages: %s", (_n, accountId, seeded, want) => {
+    const from = seeded ? loaded() : run([to(A)]);
+    const s = run([{ type: "addImages", accountId, bucket: "default", key: "morning_1", ids: [5, 9] }], from);
+    expect(s.slots.default?.morning_1?.image ?? [5]).toEqual(want);
+  });
+
+  it("addImages on an empty day slot creates it (image only, lines inherited)", () => {
+    const s = run([{ type: "addImages", accountId: A, bucket: "saturday", key: "evening", ids: [42] }], loaded());
+    expect(s.slots.saturday).toEqual({ evening: { text: [], image: [42] } });
   });
 });

@@ -64,7 +64,7 @@ two is the database, so every line of the pack is testable without one. THIS
 file is the HTTP layer: the prompt, the drift gate, the route, and no
 diagnosis at all.
 
-  POST /admin/assistant/ask  {question, account_id?} → {answer, error, id}
+  POST /admin/assistant/ask  {question, account_id?, thread_id?} → {answer, error, id}
   GET  /admin/assistant/history?limit=50  → the caller's own turns, newest first
 
 HISTORY. Every non-blank ask past the account gate writes one `assistant_turns`
@@ -74,10 +74,15 @@ who, model/provider/cost/latency; never a key, never the prompt blocks — and
 their newest MAX_TURNS_KEPT rows. The SERVER owns the context: `_own_turns` is
 the one read, scoped to the asker AND their CURRENT reach (a row about an
 account they were unlinked from is gone from both reads). The history GET
-returns it; the prompt gets the last CONTEXT_TURNS answered turns on the SAME
-account from the last CONTEXT_WINDOW, under PREVIOUS TURNS in the USER message,
-so a bare "yes" can take up the last answer's offer while the system prompt
-stays byte-stable. The client sends no history — text it sent would land in
+returns it; the prompt gets the last CONTEXT_TURNS answered turns of the ask's
+THREAD (`thread_id`, the widget's conversation) on the SAME account, at any
+age, under PREVIOUS TURNS in the USER message, so a bare "yes" can take up the
+last answer's offer while the system prompt stays byte-stable. A thread id is
+only a filter inside the asker's own rows, so a guessed one reads nothing.
+Every row stores one (`_thread_for`): the client's, else — a client from
+before threads — the thread of the asker's newest answered turn on that
+account from the last CONTEXT_WINDOW, else a new one; rows from before threads
+got `legacy-<first id>` per run (db/assistant_threads.py, run at boot). The client sends no history — text it sent would land in
 the prompt as "your answers".
 
 LENGTH. The prompt asks a how-to answer to AIM for ≤300 characters and end
@@ -92,7 +97,9 @@ points anything that needs an account at Creators → Manage creators → Add
 creator (the widget links the path). It takes a signed-in USER (`require_user`;
 no anonymous asker, and a chatter always has an account in scope), and it bills
 that agency: its own key, else the help-bot fallback, under a per-agency daily
-cap (`llm_client.chat(user_id=…)`, `grok_user_daily_cost`).
+cap (`llm_client.chat(user_id=…)`, `grok_user_daily_cost`). An owner WITH
+accounts who picks "General" in the widget asks the same way; the note then
+says no account is in focus, and points at the widget's picker instead.
 
 `error` is a machine tag for the log (null on success); `answer` is ALWAYS a
 human sentence — a used-up cap or a missing agency key comes back 200 with a
@@ -112,6 +119,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -121,6 +129,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, and_, delete, or_, select
 
+import accounts as account_registry
 import assistant_fan_pack
 import assistant_state
 import llm_client
@@ -259,7 +268,11 @@ Rules:
   questions from the manual as usual. When the answer needs a connected
   account — connecting one, or anything that acts on a creator's chats, fans,
   posts or stats — say to connect an account first, and write the path exactly
-  as **Creators → Manage creators → Add creator**."""
+  as **Creators → Manage creators → Add creator**.
+- If the question says NO ACCOUNT IN FOCUS, answer from the manual as usual.
+  When the answer needs one creator's live rows (why a fan got no reply,
+  whether an automation ran), say to pick that model under "Currently
+  selected" just above the help chat's text box, and ask again."""
 
 # EXAMPLE beats the rule — a refusal the model can imitate is worth more than
 # another sentence telling it to refuse. Both cases below are the ones staff
@@ -517,6 +530,10 @@ def _user_block(question: str, role: str, state: str | None = None,
 NO_ACCOUNT_NOTE = (
     "NO ACCOUNT IS CONNECTED YET: this asker has no OnlyFans account in the "
     "app, so there is no live state to read.")
+# …and when they have accounts but picked "General" in the widget.
+GENERAL_NOTE = (
+    "NO ACCOUNT IN FOCUS: the asker picked General in the help chat, so there "
+    "is no live state to read.")
 
 
 class AskBody(BaseModel):
@@ -524,6 +541,9 @@ class AskBody(BaseModel):
     # Omitted = no account connected yet (see the module docstring). Empty is
     # still refused: "" would no-op `assert_account_owned`.
     account_id: str | None = Field(None, min_length=1)
+    # The widget's conversation. Omitted (a client from before threads): the
+    # server picks one (`_thread_for`).
+    thread_id: str | None = Field(None, min_length=1, max_length=64)
     # No `role` field and no `history`, deliberately — see the module docstring.
 
 
@@ -638,17 +658,48 @@ async def _own_turns(limit: int, *narrow: ColumnElement[bool]) -> list[Assistant
             .limit(limit))).scalars().all())
 
 
-async def _context_turns(account_id: str | None) -> list[AssistantTurn]:
-    """The prompt's PREVIOUS TURNS, oldest first: answered turns on the ask's
-    own account (none for a no-account ask) from the last CONTEXT_WINDOW.
-    A failed read is no context, never a failed ask."""
+def _answered_on(account_id: str | None) -> tuple[ColumnElement[bool], ...]:
+    """Answered turns on the ask's own account (the no-account rows for a no-account ask)."""
+    return (AssistantTurn.error.is_(None),
+            AssistantTurn.account_id.is_(None) if account_id is None
+            else AssistantTurn.account_id == account_id)
+
+
+async def _thread_for(account_id: str | None, thread_id: str | None) -> str:
+    """The ask's thread: the client's; else (a client from before threads)
+    the thread of the asker's newest answered turn on that account from the
+    last CONTEXT_WINDOW — the old context rule — else a new one. Never NULL."""
+    if thread_id is not None:
+        return thread_id
     try:
         rows = await _own_turns(
-            CONTEXT_TURNS,
-            AssistantTurn.error.is_(None),
-            AssistantTurn.account_id.is_(None) if account_id is None
-            else AssistantTurn.account_id == account_id,
+            1, *_answered_on(account_id),
             AssistantTurn.ts >= datetime.now(timezone.utc).replace(tzinfo=None) - CONTEXT_WINDOW)
+    except Exception:
+        log.warning("assistant: thread lookup failed", exc_info=True)
+        rows = []
+    return (rows[0].thread_id if rows else None) or _new_thread_id()
+
+
+def _has_creator() -> bool:
+    """The asker reaches a Creator: what the widget lists (GET /admin/accounts
+    `accounts`). A watcher (a fan account, `role` "watcher") is in the reach
+    but no Creator, so an agency with watchers only is "none connected yet"
+    here as on screen."""
+    return any(not account_registry.is_watcher(a) for a in (require_actor_account_ids() or ()))
+
+
+def _new_thread_id() -> str:
+    return f"s{uuid.uuid4().hex}"
+
+
+async def _context_turns(account_id: str | None, thread_id: str) -> list[AssistantTurn]:
+    """The prompt's PREVIOUS TURNS, oldest first: the last CONTEXT_TURNS
+    answered turns of the ask's thread on its own account, at any age. A
+    failed read is no context, never a failed ask."""
+    try:
+        rows = await _own_turns(CONTEXT_TURNS, *_answered_on(account_id),
+                                AssistantTurn.thread_id == thread_id)
     except Exception:
         log.warning("assistant: previous-turns read failed", exc_info=True)
         return []
@@ -656,7 +707,8 @@ async def _context_turns(account_id: str | None) -> list[AssistantTurn]:
 
 
 async def _record_turn(*, question: str, reply: Reply, role: str,
-                       account_id: str | None, started: float) -> int | None:
+                       account_id: str | None, thread_id: str,
+                       started: float) -> int | None:
     """Write this ask's `assistant_turns` row and prune the asker's rows past
     their newest MAX_TURNS_KEPT; the new row's id. Best-effort: a failed write
     is logged, returns None, and never costs the asker the answer."""
@@ -665,7 +717,7 @@ async def _record_turn(*, question: str, reply: Reply, role: str,
         async with get_session() as s:
             row = AssistantTurn(
                 user_id=user_id, chatter_id=chatter_id, account_id=account_id,
-                role=role, question=question, answer=reply.answer,
+                thread_id=thread_id, role=role, question=question, answer=reply.answer,
                 error=reply.error, model=reply.model, provider=reply.provider,
                 cost_millicents=reply.cost_millicents,
                 latency_ms=int((time.monotonic() - started) * 1000))
@@ -700,21 +752,24 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
         return {"answer": "Ask me something about the product.",
                 "error": "empty_question", "id": None}
     role = _asker_role()
-    reply = await _ask(body, question, role)
+    thread_id = await _thread_for(body.account_id, body.thread_id)
+    reply = await _ask(body, question, role, await _context_turns(body.account_id, thread_id))
     row_id = await _record_turn(question=question, reply=reply, role=role,
-                                account_id=body.account_id, started=started)
+                                account_id=body.account_id, thread_id=thread_id,
+                                started=started)
     return {"answer": reply.answer, "error": reply.error, "id": row_id}
 
 
-async def _ask(body: AskBody, question: str, role: str) -> Reply:
-    """The gated, non-blank ask → the Reply the asker sees."""
-    prev = await _context_turns(body.account_id)
+async def _ask(body: AskBody, question: str, role: str,
+               prev: list[AssistantTurn]) -> Reply:
+    """The gated, non-blank ask → the Reply the asker sees (`prev`: its PREVIOUS TURNS)."""
     if body.account_id is None:
         # Manual only, billed to the asking agency. No account → no pin to
         # read, so the model is the purpose default.
         model, fallback = await resolve_model_and_fallback("", PURPOSE)
+        note = GENERAL_NOTE if _has_creator() else NO_ACCOUNT_NOTE
         return await _complete(
-            model, _user_block(question, role, NO_ACCOUNT_NOTE, history=prev),
+            model, _user_block(question, role, note, history=prev),
             account_id=None, user_id=_asker_ids()[0], fallback=fallback,
             capped="Today's help-bot budget is used up — try again tomorrow.")
 
@@ -745,7 +800,8 @@ async def _ask(body: AskBody, question: str, role: str) -> Reply:
 
 def _turn_row(t: AssistantTurn) -> dict[str, Any]:
     return {"id": t.id, "ts": t.ts.replace(tzinfo=timezone.utc).isoformat(),
-            "question": t.question, "answer": t.answer, "error": t.error}
+            "question": t.question, "answer": t.answer, "error": t.error,
+            "account_id": t.account_id, "thread_id": t.thread_id}
 
 
 @router.get("/admin/assistant/history")

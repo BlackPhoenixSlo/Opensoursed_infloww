@@ -32,7 +32,7 @@ import { useState, type ReactNode } from "react";
 
 import { relay, RelayError, type AccountMeta, type Employee } from "@/lib/relay";
 import { Badge, ExtraTag, Input } from "@/components/ui/primitives";
-import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
+import { AccountAvatarPicture, type AvatarHealth } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState, HB_TABLE, HbPager } from "@/components/ui/infloww";
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
@@ -65,6 +65,7 @@ interface HealthAllResp {
     nickname?: string | null;
     ok: boolean;
     name?: string;
+    profile?: AvatarHealth["profile"];
     error?: string;
     timed_out?: boolean;
     message?: string;
@@ -440,6 +441,10 @@ export default function AccountsTable({ onLink, onAdd, children }: {
                     key={a.id}
                     account={a}
                     profile={profile}
+                    avatarHealth={a.role === "watcher" ? undefined : {
+                      profile: healthByAid.get(a.id)?.ok ? healthByAid.get(a.id)?.profile : undefined,
+                      settled: healthQ.isSuccess || healthQ.isError,
+                    }}
                     conn={conn}
                     proxy={proxyOf(a.id)}
                     employees={employeesOf(a.id)}
@@ -568,6 +573,7 @@ function ConnectivityCell({ account, conn }: { account: AccountMeta; conn: Conne
 function Row({
   account,
   profile,
+  avatarHealth,
   conn,
   proxy,
   employees,
@@ -583,6 +589,7 @@ function Row({
   account: AccountMeta;
   /** The account's stored Creator details, Tag and notes (useCreatorProfiles). */
   profile?: CreatorProfile;
+  avatarHealth?: AvatarHealth;
   conn: RowConnectivity;
   /** The bound proxy, for the Creator cell's title. */
   proxy: string | null;
@@ -630,7 +637,7 @@ function Row({
         : (account.platform ?? "onlyfans") === "onlyfans"
           ? (
             <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full" aria-hidden>
-              <AccountAvatarPicture account={{ ...account, color: account.color || "#888" }} letters={0} initialClassName="" />
+              <AccountAvatarPicture account={{ ...account, color: account.color || "#888" }} letters={0} initialClassName="" health={avatarHealth} />
             </span>
           )
           : <span className="h-6 w-6 rounded-full shrink-0" style={{ background: account.color || "#888" }} aria-hidden />}

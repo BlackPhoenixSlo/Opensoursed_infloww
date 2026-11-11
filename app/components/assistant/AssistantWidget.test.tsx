@@ -9,18 +9,25 @@
  * someone needs config help is the failure mode the endpoint exists to avoid.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Hoisted with the vi.mock factories below — anything they close over has to
 // be, or it is still in its TDZ when the mocked module is first imported.
-const { relayPost, relayGet, nav, scope, employee, roster } = vi.hoisted(() => ({
+const { relayPost, relayGet, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
   relayPost: vi.fn(),
   relayGet: vi.fn(),
   nav: { pathname: "/", pushed: [] as string[] },
   scope: { accountId: "1001" as string | null },
   employee: { current: { id: 7 } as { id: number } | null },
-  roster: { list: [] as Array<{ id: string; nickname?: string | null }> },
+  // The OWNED accounts (useAccounts); `loaded` false = the query still loading,
+  // in the hook's real chatter shape: `accounts: []`, isSuccess false, dataUpdatedAt 0.
+  roster: {
+    list: [] as Array<{ id: string; nickname?: string | null; has_session?: boolean; is_active?: boolean }>,
+    loaded: true,
+  },
+  // A signed-in user (an owner) can ask about General; a chatter session can't.
+  signedIn: { user: { username: "vaerunner" } as { username: string } | null },
 }));
 
 vi.mock("@/lib/relay", () => {
@@ -50,18 +57,35 @@ vi.mock("next/link", () => ({
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => employee }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.list }));
+vi.mock("@/hooks/useAccounts", () => ({
+  useAccounts: () => (roster.loaded
+    ? { data: { accounts: roster.list }, isSuccess: true, dataUpdatedAt: 1 }
+    : { data: { accounts: [] }, isSuccess: false, dataUpdatedAt: 0 }),
+}));
+vi.mock("@/contexts/UserContext", () => ({ useOptionalUser: () => (signedIn.user ? { user: signedIn.user } : null) }));
 
 import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget, LAUNCHER_KEY } from "./AssistantWidget";
+import { PageCreatorProvider, usePageCreator } from "@/contexts/PageCreatorContext";
+
+const tree = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>;
+let view: ReturnType<typeof renderWithProviders>;
 
 /** The widget starts collapsed; every case here works in the open panel. */
 async function openPanel() {
-  renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+  view = renderWithProviders(tree());
   const bubble = await screen.findByRole("button", { name: "Help assistant" });
   await userEvent.click(bubble);
   return bubble;
 }
+
+/** The app's model switcher moves (ScopeContext). */
+function switchApp(accountId: string | null) {
+  scope.accountId = accountId;
+  view.rerender(tree());
+}
+
+const focusButton = () => screen.getByRole("button", { name: /^Help bot focus:/ });
 
 async function ask(question: string) {
   await userEvent.type(screen.getByPlaceholderText("Ask a question…"), question);
@@ -77,10 +101,12 @@ beforeEach(() => {
   nav.pushed = [];
   scope.accountId = "1001";
   employee.current = { id: 7 };
+  signedIn.user = { username: "vaerunner" };
   roster.list = [
-    { id: "1001", nickname: "Blake1" },
-    { id: "1002", nickname: "Blake2" },
+    { id: "1001", nickname: "Blake1", has_session: true, is_active: true },
+    { id: "1002", nickname: "Blake2", has_session: true, is_active: true },
   ];
+  roster.loaded = true;
   window.localStorage.clear();
 });
 afterEach(cleanup);
@@ -88,10 +114,10 @@ afterEach(cleanup);
 describe("AssistantWidget", () => {
   it.each(["/messages-pro", "/messages-pro/1001/9001"])(
     "hides the launcher and an already-open panel on %s", async (path) => {
-      const view = renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+      const view = renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
       await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
       nav.pathname = path;
-      view.rerender(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+      view.rerender(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
       expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
       expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
     },
@@ -107,7 +133,7 @@ describe("AssistantWidget", () => {
     expect(window.localStorage.getItem("chatterly:assistant_open")).toBe("0");
   });
 
-  it("sends {question, account_id} and NO role, scoped to the picked account", async () => {
+  it("sends {question, account_id, thread_id} and NO role, focused on the switcher's model", async () => {
     relayPost.mockResolvedValue({ answer: "Growth → Profile promotion.", error: null });
     await openPanel();
     await ask("how do I set up auto posts?");
@@ -115,16 +141,13 @@ describe("AssistantWidget", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
     const [path, body, ctx] = relayPost.mock.calls[0];
     expect(path).toBe("/admin/assistant/ask");
-    expect(body).toEqual({ question: "how do I set up auto posts?", account_id: "1001" });
+    expect(body).toEqual({ question: "how do I set up auto posts?", account_id: "1001", thread_id: expect.any(String) });
     // The server derives who is asking from the session — a role in the body
     // would be client-supplied theater, so it must not be there at all.
     expect(Object.keys(body as object)).not.toContain("role");
     expect(ctx).toMatchObject({ accountId: "1001", employeeId: 7 });
-    // Under a scoped model the switcher IS the picker — the widget must not
-    // grow a second one that could disagree with it.
-    expect(
-      screen.queryByLabelText("Account the help bot answers about"),
-    ).toBeNull();
+    // The model in play is on screen, not inferred.
+    expect(focusButton().textContent).toBe("Blake1");
     // The answer renders, and its click path is a real destination rather than
     // a route to read and re-type. AnswerText.test.tsx owns the rendering
     // rules; what matters here is that the widget hands the answer to it.
@@ -172,36 +195,168 @@ describe("AssistantWidget", () => {
     expect(await screen.findByText("first answer")).toBeTruthy();
   });
 
-  it("unlocks in all-models scope with a visible account picker", async () => {
-    // The product's DEFAULT scope is "all models". The composer must work
-    // there — the server still gets exactly one account_id, chosen in the
-    // inline picker (defaulting to the first live account), never null.
+  it("all-models scope is General: no account_id; a pick focuses a model and survives a collapse", async () => {
     relayPost.mockResolvedValue({ answer: "ok", error: null });
     scope.accountId = null;
     const bubble = await openPanel();
-
-    const picker = screen.getByLabelText(
-      "Account the help bot answers about",
-    ) as HTMLSelectElement;
-    expect(picker.value).toBe("1001");
-    await ask("is my welcome on?");
+    expect(focusButton().textContent).toBe("General");
+    await ask("where is the vault?");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
-    expect(relayPost.mock.calls[0][1]).toMatchObject({ account_id: "1001" });
-    expect(relayPost.mock.calls[0][2]).toMatchObject({ accountId: "1001" });
+    const [, body0, ctx0] = relayPost.mock.calls[0];
+    expect(body0).toEqual({ question: "where is the vault?", thread_id: expect.any(String) });
+    expect(ctx0).toMatchObject({ accountId: null });
 
-    // Re-picking re-scopes the next question…
-    await userEvent.selectOptions(picker, "1002");
+    // Mid-chat, another focus is a new chat about it.
+    await userEvent.click(focusButton());
+    expect(screen.getByText("Picking another starts a new chat")).toBeTruthy();
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /Blake2/ }));
+    expect(screen.queryByText("where is the vault?")).toBeNull();
+    expect(focusButton().textContent).toBe("Blake2");
     await ask("is my welcome on?");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(2));
-    expect(relayPost.mock.calls[1][1]).toMatchObject({ account_id: "1002" });
+    const body1 = relayPost.mock.calls[1][1] as { account_id: string; thread_id: string };
+    expect(body1.account_id).toBe("1002");
+    expect(body1.thread_id).not.toBe((body0 as { thread_id: string }).thread_id);
 
-    // …and the pick survives collapsing the panel: it lives in the gate, so a
-    // close/reopen must not silently re-bill to the first account in the list.
+    // The pick lives in the provider: a close/reopen keeps it and the chat.
     await userEvent.click(bubble);
     await userEvent.click(bubble);
-    await ask("is my welcome on?");
+    await ask("and the follow-up?");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(3));
-    expect(relayPost.mock.calls[2][1]).toMatchObject({ account_id: "1002" });
+    expect(relayPost.mock.calls[2][1]).toMatchObject({ account_id: "1002", thread_id: body1.thread_id });
+  });
+
+  it("a chatter session has no General: all models falls back to the first account", async () => {
+    signedIn.user = null;
+    scope.accountId = null;
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    await openPanel();
+    expect(focusButton().textContent).toBe("Blake1");
+    await userEvent.click(focusButton());
+    expect(screen.queryByRole("menuitemradio", { name: /General/ })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    await ask("q");
+    await waitFor(() => expect(relayPost.mock.calls[0][1]).toMatchObject({ account_id: "1001" }));
+  });
+
+  it("a page's own creator pick (Vault Pro's rail) is the app's model while that page is open", async () => {
+    function Page({ focus }: { focus: string | null | undefined }) {
+      usePageCreator(focus);
+      return null;
+    }
+    const withPage = (focus?: string | null) => (
+      <PageCreatorProvider><AssistantProvider><AssistantWidget />{focus !== undefined && <Page focus={focus} />}</AssistantProvider></PageCreatorProvider>
+    );
+    view = renderWithProviders(withPage("1002"));
+    await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+    expect(focusButton().textContent).toBe("Blake2");
+    view.rerender(withPage("1001"));        // the rail moves
+    expect(focusButton().textContent).toBe("Blake1");
+    view.rerender(withPage(null));          // its "All" row
+    expect(focusButton().textContent).toBe("General");
+    view.rerender(withPage("1002"));
+    view.rerender(withPage(undefined));     // leaving the page: the switcher again
+    expect(focusButton().textContent).toBe("Blake1");
+  });
+
+  it("a page's pick of a session-dropped model (Vault Pro keeps one) stays focused, marked offline", async () => {
+    roster.list = [...roster.list, { id: "1003", nickname: "Blake3", has_session: false, is_active: true }];
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    function Page() {
+      usePageCreator("1003");
+      return null;
+    }
+    view = renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /><Page /></AssistantProvider></PageCreatorProvider>);
+    await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+    expect(focusButton().textContent).toBe("Blake3");
+    await userEvent.click(focusButton());
+    expect(screen.getByRole("menuitemradio", { name: /Blake3/ }).textContent).toMatch(/Offline/);
+    expect(screen.getByRole("menuitemradio", { name: /Blake1/ }).textContent).not.toMatch(/Offline/);
+    await userEvent.keyboard("{Escape}");
+    await ask("why is he quiet?");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    expect(relayPost.mock.calls[0][1]).toMatchObject({ account_id: "1003" });
+  });
+
+  it("an owner whose only model has no session still gets the focus line, not 'none connected'", async () => {
+    roster.list = [{ id: "1003", nickname: "Blake3", has_session: false, is_active: false }];
+    scope.accountId = null;
+    await openPanel();
+    expect(focusButton().textContent).toBe("General");
+    expect(screen.queryByText(/No account connected yet/)).toBeNull();
+  });
+
+  it("a chatter cannot send General while the roster loads; once loaded it goes to the first account", async () => {
+    signedIn.user = null;
+    scope.accountId = null;
+    roster.loaded = false;
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    await openPanel();
+    await userEvent.type(screen.getByPlaceholderText("Ask a question…"), "q");
+    expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/No account connected yet|No creator assigned/)).toBeNull();
+    roster.loaded = true;
+    view.rerender(tree());
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    expect(relayPost.mock.calls[0][1]).toMatchObject({ account_id: "1001" });
+  });
+
+  it("a chatter's loading roster (accounts: []) never turns the app's model into General", async () => {
+    signedIn.user = null;
+    scope.accountId = "1002";
+    roster.loaded = false;
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    await openPanel();
+    expect(screen.queryByText(/No account connected yet|No creator assigned/)).toBeNull();
+    expect(screen.queryByRole("link", { name: /Add creator/ })).toBeNull();
+    roster.loaded = true;
+    view.rerender(tree());
+    expect(focusButton().textContent).toBe("Blake2");
+    await ask("first after load");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    expect(relayPost.mock.calls[0][1]).toMatchObject({ account_id: "1002" });
+    expect(relayPost.mock.calls[0][2]).toMatchObject({ accountId: "1002" });
+  });
+
+  it("a chatter with no account gets neutral copy, never the 'Add creator' path", async () => {
+    signedIn.user = null;
+    scope.accountId = null;
+    roster.list = [];
+    await openPanel();
+    expect(screen.getByText(/No creator assigned to you yet/)).toBeTruthy();
+    expect(screen.queryByText(/No account connected yet/)).toBeNull();
+    expect(screen.queryByRole("link", { name: /Creators → Manage creators/ })).toBeNull();
+    // The server 401s a chatter's account-less ask: nothing to send.
+    await userEvent.type(screen.getByRole("textbox"), "anything");
+    expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(relayPost).not.toHaveBeenCalled();
+  });
+
+  it("follows the app's model switcher until a chat starts, then offers the switch", async () => {
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    await openPanel();
+    expect(focusButton().textContent).toBe("Blake1");
+    switchApp("1002");
+    expect(focusButton().textContent).toBe("Blake2");
+    // A manual pick holds until the app switches again.
+    await userEvent.click(focusButton());
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /General/ }));
+    expect(focusButton().textContent).toBe("General");
+    switchApp("1001");
+    expect(focusButton().textContent).toBe("Blake1");
+
+    // Started: the switch is held, the chat stays on its model…
+    await ask("why is he quiet?");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    switchApp("1002");
+    expect(focusButton().textContent).toBe("Blake1");
+    // …and offered as a new chat.
+    await userEvent.click(screen.getByRole("button", { name: "Blake2 in app · New chat" }));
+    expect(focusButton().textContent).toBe("Blake2");
+    expect(screen.queryByText("why is he quiet?")).toBeNull();
+    expect(screen.getByRole("heading", { name: /How can we help\?/ })).toBeTruthy();
   });
 
   it("dots the launcher when a reply lands while the panel is closed", async () => {
@@ -233,13 +388,13 @@ describe("AssistantWidget", () => {
     // The hint above the composer is itself a link to the connect page.
     const hint = screen.getByRole("link", { name: /Creators → Manage creators/ });
     expect(hint.getAttribute("href")).toBe("/creators");
-    expect(screen.queryByLabelText("Account the help bot answers about")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Help bot focus:/ })).toBeNull();
 
     await ask("how do I connect my OnlyFans account?");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
     const [, body, ctx] = relayPost.mock.calls[0];
     // Omitted, not null or "": the server reads a missing id as "no account yet".
-    expect(body).toEqual({ question: "how do I connect my OnlyFans account?" });
+    expect(body).toEqual({ question: "how do I connect my OnlyFans account?", thread_id: expect.any(String) });
     expect(ctx).toMatchObject({ accountId: null, employeeId: 7 });
     await waitFor(() =>
       expect(screen.getAllByRole("link", { name: /Creators → Manage creators/ })).toHaveLength(2),
@@ -252,22 +407,17 @@ describe("AssistantWidget", () => {
   it("hides the launcher and the dock on /help-center, where the page is the panel", async () => {
     window.localStorage.setItem("chatterly:assistant_open", "1");
     nav.pathname = "/help-center";
-    renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+    renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
     // render() flushes the hydration effect, so "open" has been read by now.
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
   });
 
-  it("shows All Systems Operational when the error log is empty", async () => {
+  it("has no Status card, and no Earlier card with no earlier conversations", async () => {
     await openPanel();
-    expect(await screen.findByText("Status: All Systems Operational")).toBeTruthy();
-    expect(relayGet.mock.calls[0][0]).toBe("/admin/errors?since_hours=24&limit=50");
-  });
-
-  it("shows a Partial Outage with the 24h error count", async () => {
-    relayGet.mockResolvedValue({ count: 2, since_hours: 24, list: [] });
-    await openPanel();
-    expect(await screen.findByText("Status: Partial Outage (2 errors in 24h)")).toBeTruthy();
+    expect(screen.getByText("Ask a question")).toBeTruthy();
+    expect(screen.queryByText(/Status:/)).toBeNull();
+    expect(screen.queryByText("Earlier conversations")).toBeNull();
   });
 
   it("focuses the composer from the Ask a question card, without a scroll-into-view", async () => {
@@ -291,10 +441,12 @@ describe("AssistantWidget", () => {
 
   describe("history", () => {
     const rows = [
-      { id: 12, ts: new Date().toISOString(), question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?", error: null, model: "m" },
-      { id: 11, ts: new Date(Date.now() - 3 * 86_400_000).toISOString(), question: "old q", answer: "old a", error: null, model: "m" },
-      { id: 10, ts: new Date(Date.now() - 4 * 86_400_000).toISOString(), question: "capped", answer: "Cap used up.", error: "cap", model: "m" },
+      { id: 12, ts: new Date().toISOString(), question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?", error: null, account_id: "1002", thread_id: "th-a" },
+      { id: 11, ts: new Date(Date.now() - 3 * 86_400_000).toISOString(), question: "old q", answer: "old a", error: null, account_id: null, thread_id: "th-b" },
+      // From before threads: grouped client-side.
+      { id: 10, ts: new Date(Date.now() - 4 * 86_400_000).toISOString(), question: "capped", answer: "Cap used up.", error: "cap", account_id: "1001", thread_id: null },
     ];
+    const earlierCard = () => screen.findByRole("button", { name: /^Earlier conversations\s*3 conversations/ });
     beforeEach(() => {
       relayGet.mockImplementation((path: string) => Promise.resolve(
         path.startsWith("/admin/assistant/history") ? { turns: rows } : { count: 0, since_hours: 24, list: [] },
@@ -302,30 +454,43 @@ describe("AssistantWidget", () => {
     });
     const historyCalls = () => relayGet.mock.calls.filter(([p]) => String(p).startsWith("/admin/assistant/history"));
 
-    it("loads once on the first open and shows earlier turns, by day, open in the dock", async () => {
+    it("loads once on the first open; earlier conversations sit in a list by day, never inline", async () => {
       const bubble = await openPanel();
-      const earlier = await screen.findByRole("button", { name: "Earlier (3)" });
-      expect(earlier.getAttribute("aria-expanded")).toBe("true");
-      expect(screen.getByText("where are auto posts?")).toBeTruthy();
-      expect(screen.getByText("Today")).toBeTruthy();
+      await userEvent.click(await earlierCard());
+      expect(screen.queryByText("Growth → Auto Posts. Want the steps?")).toBeNull();
+      const list = screen.getByRole("dialog", { name: "Earlier conversations" });
+      expect(within(list).getByRole("region", { name: "Today" })).toBeTruthy();
+      expect(within(list).getByText("where are auto posts?")).toBeTruthy();
+      expect(within(list).getByText(/^Blake2 · 1 question · /)).toBeTruthy();
+      expect(within(list).getByText(/^General · 1 question · /)).toBeTruthy();
       expect(historyCalls()).toHaveLength(1);
-      expect(historyCalls()[0][0]).toBe("/admin/assistant/history?limit=50");
+      expect(historyCalls()[0][0]).toBe("/admin/assistant/history?limit=500");
 
       await userEvent.click(bubble); // close
       await userEvent.click(bubble); // reopen: no second read
-      await screen.findByRole("button", { name: "Earlier (3)" });
+      await earlierCard();
       expect(historyCalls()).toHaveLength(1);
     });
 
-    it("sends no history: the server picks the previous turns", async () => {
+    it("opening one shows it alone and continues it: its thread, its model", async () => {
       relayPost.mockResolvedValue({ answer: "Here are the steps.", error: null, id: 13 });
       await openPanel();
-      await screen.findByRole("button", { name: "Earlier (3)" });
+      await userEvent.click(await earlierCard());
+      await userEvent.click(screen.getByRole("button", { name: /where are auto posts\?/ }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("where are auto posts?")).toBeTruthy();
+      expect(screen.queryByText("old q")).toBeNull();
+      expect(focusButton().textContent).toBe("Blake2");
       await ask("yes");
       await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
-      expect(relayPost.mock.calls[0][1]).toEqual({ question: "yes", account_id: "1001" });
+      // No history in the body: the server reads the thread's turns.
+      expect(relayPost.mock.calls[0][1]).toEqual({ question: "yes", account_id: "1002", thread_id: "th-a" });
       // The read is the asker's own across accounts: no account/employee header.
       expect(historyCalls()[0]).toHaveLength(1);
+      // Back is a new chat, with the switcher's model again.
+      await userEvent.click(screen.getByRole("button", { name: "New chat" }));
+      expect(screen.queryByText("yes")).toBeNull();
+      expect(focusButton().textContent).toBe("Blake2");
     });
 
     it("a turn asked while the history read failed shows once after the retry", async () => {
@@ -334,7 +499,7 @@ describe("AssistantWidget", () => {
         if (!path.startsWith("/admin/assistant/history")) return Promise.resolve({ count: 0, since_hours: 24, list: [] });
         if (fail) return Promise.reject(new Error("relay 502"));
         // The retry already holds the row the ask wrote (id 20).
-        return Promise.resolve({ turns: [{ id: 20, ts: new Date().toISOString(), question: "fresh q", answer: "fresh a", error: null }, ...rows] });
+        return Promise.resolve({ turns: [{ id: 20, ts: new Date().toISOString(), question: "fresh q", answer: "fresh a", error: null, account_id: "1001", thread_id: "th-x" }, ...rows] });
       });
       relayPost.mockResolvedValue({ answer: "fresh a", error: null, id: 20 });
       const bubble = await openPanel();
@@ -344,8 +509,11 @@ describe("AssistantWidget", () => {
       fail = false;
       await userEvent.click(bubble);
       await userEvent.click(bubble);
-      await screen.findByRole("button", { name: "Earlier (3)" });
-      expect(screen.getAllByText("fresh q")).toHaveLength(1);
+      await waitFor(() => expect(historyCalls()).toHaveLength(2));
+      await userEvent.click(await screen.findByRole("button", { name: "Earlier conversations" }));
+      const list = screen.getByRole("dialog", { name: "Earlier conversations" });
+      expect(within(list).getAllByText("fresh q")).toHaveLength(1);
+      expect(within(list).getAllByRole("button", { name: /question/ })).toHaveLength(4);
     });
 
     it("a failed history read is no history, and the next open retries", async () => {
@@ -353,7 +521,7 @@ describe("AssistantWidget", () => {
         ? Promise.reject(new Error("relay 401")) : Promise.resolve({ count: 0, since_hours: 24, list: [] }));
       const bubble = await openPanel();
       await waitFor(() => expect(historyCalls()).toHaveLength(1));
-      expect(screen.queryByRole("button", { name: /Earlier/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Earlier conversations/ })).toBeNull();
       await userEvent.click(bubble);
       await userEvent.click(bubble);
       await waitFor(() => expect(historyCalls()).toHaveLength(2));
@@ -386,7 +554,7 @@ describe("AssistantWidget on a phone", () => {
     vi.restoreAllMocks();
   });
 
-  const render = () => renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+  const render = () => renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
   const stored = () => JSON.parse(window.localStorage.getItem(LAUNCHER_KEY) || "null");
   /** Press the launcher, move by (dx, dy) in two steps, release. */
   async function drag(el: HTMLElement, dx: number, dy: number) {
@@ -477,17 +645,17 @@ describe("AssistantWidget on a phone", () => {
     expect(document.body.style.position).toBe("");
   });
 
-  it("earlier turns sit collapsed under Earlier on the sheet", async () => {
+  it("earlier conversations never bury the composer on the sheet: they open from the card", async () => {
     window.localStorage.setItem("chatterly:assistant_open", "1");
     relayGet.mockImplementation((path: string) => Promise.resolve(path.startsWith("/admin/assistant/history")
-      ? { turns: [{ id: 1, ts: new Date().toISOString(), question: "old q", answer: "old a", error: null, model: "m" }] }
+      ? { turns: [{ id: 1, ts: new Date().toISOString(), question: "old q", answer: "old a", error: null, account_id: null, thread_id: "t1" }] }
       : { count: 0, since_hours: 24, list: [] }));
     render();
-    const earlier = await screen.findByRole("button", { name: "Earlier (1)" });
-    expect(earlier.getAttribute("aria-expanded")).toBe("false");
+    const card = await screen.findByRole("button", { name: /^Earlier conversations\s*1 conversation · / });
     expect(screen.queryByText("old q")).toBeNull();
-    await userEvent.click(earlier);
-    expect(screen.getByText("old q")).toBeTruthy();
+    await userEvent.click(card);
+    await userEvent.click(screen.getByRole("button", { name: /old q/ }));
+    expect(screen.getByText("old a")).toBeTruthy();
   });
 
   it("a drag moves it and snaps to the nearest edge, swallowing the release click", async () => {

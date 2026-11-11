@@ -43,8 +43,8 @@ links), CLAIMERS (`GET
 /__slop/tracking-calls`: one walk, a call at offset 0, per link with subscribers, of ceil(n / 50) pages; 0 for
 zero-subscriber and created links). Budgets: p95 `/t/` <= 150 ms, earnings (the page's reads) <= 2 s, p95 vs
 the last green run (routes with >= 20 calls in both).
-UI (`UI = True`): /growth/tracking-links for the Creator the page picks, Custom redirect links opened
-(screenshot `tracking-links-trigger`), a link's Analytics opened (`tracking-links-settled`): it shows the
+UI (`UI = True`): /growth/tracking-links for the Creator the page picks, its Redirect links tab (screenshot
+`tracking-links-trigger`), a link's Analytics opened (`tracking-links-settled`): it shows the
 link's stored clicks, which the API and the DB hold.
 
 Bypasses (declared): Cloudflare's siteverify is lib/tracking_relay.py's loopback fake (the product's
@@ -514,7 +514,7 @@ async def _ui(ctx, tc, stored, gated) -> None:
         if aid is None:
             ctx.check(name, False, shown=shown, reason="the page's first OF link is none of the seeded ones")
             return
-        await page.get_by_role("button", name=re.compile("Custom redirect links")).click()
+        await page.get_by_role("tab", name=re.compile("^Redirect links")).click()
         api = (await ctx.owner.get(f"/admin/tracking-links?account_id={aid}")).json().get("links", [])
         first = api[0] if api else None
         if first is None:

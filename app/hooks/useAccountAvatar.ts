@@ -24,7 +24,7 @@ import { relay } from "@/lib/relay";
 import { REFRESH_KEYS } from "@/lib/screenBundle";
 
 export interface AccountAvatar {
-  id?: number;
+  id?: number | string;
   name?: string | null;
   username?: string | null;
   avatar?: string | null;
@@ -38,7 +38,7 @@ export async function fetchOwnProfile<T extends { id?: number | string }>(
 ): Promise<T | null> {
   try {
     const me = await relay.get<T>("/api/of/v2/users/me", { accountId, priority: "background" }, signal);
-    return me && String(me.id) === accountId ? me : null;
+    return me?.id != null && String(me.id) === accountId ? me : null;
   } catch {
     return null;
   }
@@ -57,8 +57,18 @@ export function ofProfileQuery<T extends AccountAvatar = AccountAvatar>(accountI
   };
 }
 
-export function useAccountAvatar(accountId: string | null | undefined) {
-  return useQuery<AccountAvatar | null>({ ...ofProfileQuery(accountId), staleTime: Infinity });
+/** Validate cached bodies too: a shared reader may have populated this key. */
+export function ownAvatar(profile: AccountAvatar | null | undefined, accountId: string | null | undefined) {
+  return profile?.id != null && String(profile.id) === accountId ? profile : null;
+}
+
+export function useAccountAvatar(accountId: string | null | undefined, fetchEnabled = true) {
+  return useQuery<AccountAvatar | null>({
+    ...ofProfileQuery(accountId), enabled: !!accountId && fetchEnabled,
+    // A poisoned cache entry must not block the fallback forever.
+    staleTime: (query) => query.state.data && !ownAvatar(query.state.data, accountId) ? 0 : Infinity,
+    select: (profile) => ownAvatar(profile, accountId),
+  });
 }
 
 /** Pull the best-available thumbnail URL out of an `AccountAvatar`. Falls

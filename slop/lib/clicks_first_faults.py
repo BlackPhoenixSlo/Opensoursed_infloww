@@ -4,17 +4,17 @@
 from __future__ import annotations
 
 C_CAP = "no Creator (but the tapped one) exceeds the background OnlyFans read cap on the wire"
-C_ABORT = "leaving the Dashboard mid-load sends none of its queued fan-count / new-fan reads after the switch"
+C_ABORT = "leaving Creator reports extras mid-load sends none of its queued fan-count / new-fan reads after the switch"
 C_SNAPSHOT = ("a reload paints every Per-model card's fan count from the saved snapshot before any fan-count read "
               "answers, the figure the settled page shows")
-C_BUNDLE = ("one call per screen: dash-first and mp-first send 0 per-Creator OnlyFans reads of the bundle's "
+C_BUNDLE = ("one call per screen: dash-first, reports-first extras and mp-first send 0 per-Creator OnlyFans reads of the bundle's "
             "routes (by path; the money rail's feeds keep theirs), one screen bundle each (+ at most one follow-up for late Creators)")
 C_PARTIAL = ("a slow Creator (OF +3 s, bundle deadline 2 s): every card keeps its saved fan count (never blank), the "
              "page sends 1 bundle + at most 1 follow-up and 0 per-Creator OnlyFans reads; the late read landed in the "
              "relay's cache (the next bundle has that Creator complete, no OnlyFans call)")
-C_ENTRY = ("a document load sends its screen bundle with the auth probe: on dash-first, dash-reload and mp-first it comes "
-           "with the HTML (inline boot) or leaves before /auth/me answers (not a round trip or two after it); the "
-           "Dashboard's Applied settings read comes with the HTML (no client read leaves before /auth/me)")
+C_ENTRY = ("document entry: Messages Pro's bundle (and Dashboard's first-visit guess) comes with the HTML or "
+           "leaves before /auth/me answers; Dashboard first/reload Applied settings keep their entry timing; "
+           "Dashboard reload sends no card bundle (grid=false)")
 
 # app/components/auth/AuthGate.tsx before 2026-11-06: the screen bundle and the Applied settings read wait for the auth
 # probe (the bundle for its screen's first card, the settings for the principal in their query key). Emulated at the
