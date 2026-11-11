@@ -19,7 +19,7 @@
  * for a chatter (null on the wire), as the Timesheet is.
  */
 
-import { Info } from "lucide-react";
+
 import { useMemo, useState } from "react";
 
 import { CLOCKED_HOURS_TIP } from "@/components/stats/ClockedHoursCard";
@@ -30,6 +30,7 @@ import { type ChattingStatsRow, useChattingStats } from "@/hooks/useStats";
 import { fmtCents, fmtInt, fmtPrice, fmtReplyTime, growthOf } from "@/lib/format";
 import { calcMinutes } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** The row's figures: its numeric fields bar the id and the reply count. */
 type NumKey = Exclude<
@@ -153,9 +154,7 @@ function KpiCard({ label, tip, value, wired }: ReturnType<typeof chattingKpis>[n
       <span className="text-[28px] font-semibold leading-9 text-fg tabular-nums">{value}</span>
       <span className="mt-1 flex items-start justify-between gap-3 text-[12px] text-muted">
         {label}
-        <span role="img" aria-label={tip} title={tip} className="mt-0.5 shrink-0 cursor-help">
-          <Info className="h-3.5 w-3.5" aria-hidden />
-        </span>
+        <InfoTip text={tip} className="mt-0.5" />
       </span>
     </div>
   );

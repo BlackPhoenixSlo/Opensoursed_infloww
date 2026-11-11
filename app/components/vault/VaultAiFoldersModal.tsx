@@ -196,11 +196,9 @@ export default function VaultAiFoldersModal({
   // as breakage.
   const cov = solo ? plan.data?.solo_coverage : null;
   const soloGap = cov?.unknown ? cov : null;
-  // Without the flags pass the paid tiers fall back to `clothing_state`, which
-  // was measured wrong on ~1 in 3 of the stills the $50 tier is built from. The
-  // folders would come out quietly wrong rather than visibly broken, so block
-  // the button rather than warn beside it.
-  const flagsMissing = !!flags && !flags.ready;
+  // Unchecked stills are left out of the flag lanes (safe explicit, $10, $50) server-side (never
+  // guessed), so this informs and offers the catch-up; it does not block.
+  const flagsMissing = !!flags && flags.missing > 0;
 
   // A whole-vault sweep runs for minutes in the background, so this watches it
   // rather than holding a request open. Polling starts on the click AND on open
@@ -246,12 +244,7 @@ export default function VaultAiFoldersModal({
           <IfButton
             variant="primary"
             onClick={onCreate}
-            disabled={busy || flagsMissing || !plan.data?.folders.length}
-            title={
-              flagsMissing
-                ? "Run the flags pass first — the $10/$50 tiers would be built on an unreliable signal"
-                : undefined
-            }
+            disabled={busy || !plan.data?.folders.length}
           >
             {busy
               ? "Creating…"
@@ -266,16 +259,17 @@ export default function VaultAiFoldersModal({
         Scripts are one shoot, ordered tease to payoff; lanes are cut by heat and cover. Every folder is named AI- so you can tell it from your own.
       </IfHelp>
       {flagsMissing && (
-        <div className="mt-4 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 text-warn">
+        <div className="mt-4 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-accent">
           <p className="flex flex-wrap items-center gap-x-2">
-            <b>Run the flags pass first.</b>
-            <span>{flags!.missing} of {flags!.stills} stills are unchecked, so the $10 and $50 tiers would be guessed.</span>
+            <span>
+              <b>{flags!.missing} of {flags!.stills} stills not checked yet</b> — they&apos;re left out of the
+              safe-explicit, $10 and $50 folders until checked.
+            </span>
             <IfLearn
               tip={
                 <>
-                  Without the flags pass those tiers fall back to clothing_state — measured wrong on roughly 1 in 3
-                  of the stills they are built from. Takes ~3s per still and costs about $0.001 per 100. Anything
-                  described from now on is flagged in the same pass; this is a one-off catch-up.
+                  Guessing those from clothing_state was wrong on roughly 1 in 3 stills, so unchecked ones wait
+                  in explicit 1:1 instead. Check them, then Rebuild. ~3s per still, about $0.001 per 100.
                 </>
               }
             >
@@ -288,12 +282,12 @@ export default function VaultAiFoldersModal({
               {sweep?.progress?.total ?? flags!.missing} done
               {!!sweep?.progress?.failed && ` · ${sweep.progress.failed} failed`}
               {" · "}
-              <span className="text-warn/80">
+              <span className="text-accent/80">
                 keeps running if you close this
               </span>
             </p>
           ) : (
-            <IfButton className="mt-2 border-warn/60 text-warn hover:border-warn hover:text-warn" onClick={() => flagsM.mutate()} disabled={busy || flagsM.isPending}>
+            <IfButton className="mt-2 border-accent/60 text-accent hover:border-accent hover:text-accent" onClick={() => flagsM.mutate()} disabled={busy || flagsM.isPending}>
               Check {flags!.missing} stills
             </IfButton>
           )}

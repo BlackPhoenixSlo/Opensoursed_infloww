@@ -11,7 +11,7 @@
  * Panel saves the whole blob, so the key rides along. No new Relay route. The Relay caps a blob at 64 KB, so a Display
  * image is stored as a 64px JPEG data URL (about 3 KB).
  *
- * A chatter session gets a 401 on the blob: `wired` is false and every save is refused (Not wired).
+ * A chatter session gets a 401 on the blob: `wired` is false and every save is refused (`SETTINGS_NOT_LOADED`).
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,6 +54,9 @@ export interface CreatorsBlob {
 
 type AccountBlob = { creators?: CreatorsBlob } & Record<string, unknown>;
 
+/** Every write's refusal while the settings blob has not loaded (a failed read, or a chatter's 401). */
+export const SETTINGS_NOT_LOADED = "Settings not loaded — try again.";
+
 export function useCreatorProfiles() {
   const qc = useQueryClient();
   const q = useQuery<BlobResponse>({
@@ -76,7 +79,7 @@ export function useCreatorProfiles() {
    *  not undo each other); the Relay replaces the blob, so every other key rides along. */
   const write = async (next: (c: CreatorsBlob) => CreatorsBlob) => {
     const cur = qc.getQueryData<BlobResponse>(KEY);
-    if (!cur) throw new Error("not wired");
+    if (!cur) throw new Error(SETTINGS_NOT_LOADED);
     const config = cur.config as AccountBlob;
     const reply = await relay.put<BlobResponse>("/admin/settings/account", { ...config, creators: next(config.creators ?? {}) });
     qc.setQueryData(KEY, reply);
@@ -101,11 +104,6 @@ export function useCreatorProfiles() {
       })),
     saveProfile: (accountId: string, patch: CreatorProfile) =>
       write((c) => ({ ...c, profiles: { ...P(c), [accountId]: { ...P(c)[accountId], ...patch } } })),
-    addDraft: async (d: CreatorDetails) => {
-      const draft: DraftCreator = { ...d, id: `draft-${Date.now().toString(36)}`, created_at: new Date().toISOString() };
-      await write((c) => ({ ...c, drafts: [...D(c), draft] }));
-      return draft;
-    },
     updateDraft: (id: string, d: CreatorDetails) =>
       write((c) => ({ ...c, drafts: D(c).map((x) => (x.id === id ? { ...x, ...d } : x)) })),
     removeDraft: (id: string) => write((c) => ({ ...c, drafts: D(c).filter((x) => x.id !== id) })),

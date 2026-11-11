@@ -432,6 +432,9 @@ export interface IngestAccountRow {
   rows_inserted_total: number;
   rows_patched_total: number;
   fully_backfilled: boolean;
+  /** Ledger full walks failed or cut short since the last completed one. > 0: tier not green; status
+   *  full_walk_failed in place of idle/ok/backfill_partial (paused/error/stalled/in-flight keep their own word). */
+  full_walk_failures: number;
   minutes_since_scan: number | null;
   tier: IngestTier;
 }

@@ -15,10 +15,13 @@ Pass B: nobody walks full (a Creator whose period boundary falls between pass A 
 failed (tx_failed_full_consumes_period): one of those Creators F (not CROWD's shared bucket, the
 most time to its boundary), made due by SQL, its full walk's first page answered 429 twice (the
 send and of_pacing's one retry: the terminal second 429). Pass 1: F walks full and fails (exactly
-two 429s, no other unfiltered GET), error kept (status error, streak + 1, the 429 in last_error),
-rows held unchanged, watermark stamped in this period. Pass 2 (same period): F walks recent, no
-unfiltered GET. Its watermark moved back one period by SQL (the boundary crossed: time compression,
-declared); pass 3: F walks full again, completes, streak 0.
+two 429s, no other unfiltered GET), error kept (status error, streak + 1, the 429 in last_error,
+full_walk_failures 1), rows held unchanged, watermark stamped in this period. Pass 2 (same period):
+F walks recent, no unfiltered GET, and the passing recent walk leaves the failure showing (the
+count kept, the 429 still in last_error; GET /admin/ingest/transactions/health: status
+full_walk_failed, not green). Its watermark moved back one
+period by SQL (the boundary crossed: time compression, declared); pass 3: F walks full again,
+completes, streak 0, full_walk_failures 0, ok.
 
 Bypasses (declared): the watermarks are seeded by SQL (rows the product writes: a full walk's
 window end); the boundary crossing is the watermark moved back one period, not the clock; the
@@ -161,6 +164,9 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
     s1, held1 = scan_many(w, [f])[f], held_count(w, f)
     p2 = await tx_pass(http, sw)
     s2 = scan_many(w, [f])[f]
+    r = await ctx.owner.get("/admin/ingest/transactions/health")
+    r.raise_for_status()
+    h2 = next((a for a in r.json()["accounts"] if str(a["account_id"]) == f), {})
     stamped = _dt(s1["last_full_at"])
     if stamped is not None:
         _stamp(w, {f: stamped - timedelta(seconds=every)})   # the boundary crossed (declared)
@@ -170,20 +176,22 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
         "fail_pass_walks_full": p1["modes"].get(f) == ["refresh"],
         "exactly_two_429s": p1["full"].get(f) == [429, 429],
         "error_kept": s1["status"] == "error" and s1["failures"] == (before["failures"] or 0) + 1
-        and "429" in (s1["last_error"] or ""),
+        and "429" in (s1["last_error"] or "") and s1["full_walk_failures"] == (before["full_walk_failures"] or 0) + 1,
         "rows_kept": held1 == held0,
         "stamped_this_period": stamped is not None and stamped >= _utc(start),
         "same_period_recent": p2["modes"].get(f) == ["recent"] and not p2["full"].get(f)
         and s2["last_full_at"] == s1["last_full_at"],
+        "failure_survives_recent": h2.get("current_status") == "full_walk_failed" and h2.get("tier") != "green"
+        and s2["full_walk_failures"] == s1["full_walk_failures"] and "429" in (s2["last_error"] or ""),
         "next_period_full": p3["modes"].get(f) == ["refresh"] and bool(p3["full"].get(f))
         and all(st == 200 for st in p3["full"].get(f, [])),
-        "retry_completes": s3["failures"] == 0 and s3["status"] == "ok" and held3 >= held1,
+        "retry_completes": s3["failures"] == 0 and s3["status"] == "ok" and not s3["full_walk_failures"] and held3 >= held1,
         "injected_fired": bool(sw.inject[(f, "transactions")].get("done")),
     }
     ctx.check(TX_FAILED_FULL, all(steps.values()) and time.time() - now < left[f], creator=f, **steps,
               modes=[p.get("modes", {}).get(f) for p in (p1, p2, p3)],
               full_gets=[p.get("full", {}).get(f) for p in (p1, p2, p3)],
-              scan_before=before, scan_fail=s1, scan_same=s2, scan_next=s3, held=(held0, held1, held3),
+              scan_before=before, scan_fail=s1, scan_same=s2, health_same=h2, scan_next=s3, held=(held0, held1, held3),
               seconds_to_boundary=round(left[f]), stage_s=round(time.time() - now, 1))
     ctx.metric("tx_watermark", {"every_s": every, "due": sorted(due), "creators": done, "failed_creator": f,
                                 "restart_pass_s": [round(p["t1"] - p["t0"], 1) for p in (a_pass, b_pass)],

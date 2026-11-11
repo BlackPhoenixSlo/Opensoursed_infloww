@@ -3,7 +3,7 @@
 beside of_pacing; `of_client._Transport._http_call` calls `record` once per
 request that reached the send (a refused call never does).
 
-Caller kind: `caller(name)` / `labelled(name)` set it for everything inside (tasks and
+Caller kind: `caller(name)` sets it for everything inside (tasks and
 to_thread work too; innermost wins): `walk:<kind>` (of_pacing.walk), `auto:<kind>`
 (automation_executor.run_once), `route:<METHOD> <folded path>` (`label_request_calls`, a server
 hook), `loop:<task name>` (server's background tasks). Ids in any name fold (`fold_caller`).
@@ -19,10 +19,17 @@ calls `start` (a script, a test importing of_client) never writes a file.
 File (`v` 1), the cumulative view since `started_at` across `boots` restarts:
   {"v": 1, "started_at": <epoch s>, "flushed_at": <epoch s>, "boots": n,
    "rows": [[caller kind, "METHOD folded-path", creator id or "-", status class, count], ...],
-   "folded": <calls folded into the "other" rows past MAX_ROWS>, "write_error": null | "<Type: msg>"}
-A missing, unreadable or other-version file starts a fresh window; never fails the boot.
+   "folded": <calls folded into the "other" rows past MAX_ROWS>, "write_error": null | "<Type: msg>",
+   "unobserved_s": <s>, "unobserved_since": <epoch s>}
+A missing, unreadable or other-version file, or any malformed field or row in it, starts a fresh
+window (logged); never fails the boot.
+`unobserved_s`: the seconds no Relay process counted (each boot adds boot time - the loaded file's
+`flushed_at`), summed since `unobserved_since`. A boot that cannot measure its gap (no or a bad tally or
+`flushed_at` in the file, a gap < 0 or non-finite: a clock step) restarts the tally at 0 from its own boot
+time, so a reader comparing two snapshots with different `unobserved_since` knows the gap between them is
+unknown (never 0). Measured once per boot: no per-call cost.
 
-Knobs (read here only):
+Knobs (read here only; a non-positive, non-finite or unparsable number -> the default, logged):
   OF_CALL_STATS_PATH      unset: of_call_stats.json in the SQLite DB's directory; empty: memory only
   OF_CALL_STATS_FLUSH_S   30
   OF_CALL_STATS_MAX_ROWS  20000 distinct keys; past it a new key counts as
@@ -33,9 +40,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import functools
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -46,7 +53,6 @@ from urllib.parse import urlsplit
 log = logging.getLogger("of-relay.of_call_counter")
 
 SCHEMA = 1
-STATUS_CLASSES = ("2xx", "3xx", "401", "403", "429", "4xx", "5xx", "error")
 # db/write_telemetry._ID_SEG (a numeric or 16+ hex/dash segment); copied so this module stays a
 # stdlib leaf (importing db/ pulls in the engine).
 _ID_SEG = re.compile(r"/(?:\d+|[0-9a-fA-F-]{16,})(?=/|$)")
@@ -55,11 +61,15 @@ _USERS_SEG = re.compile(r"(/users/)(?!(?:me|list|notifications|performers|settin
 
 
 def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "")
     try:
-        v = float(os.environ.get(name, "") or default)
-        return v if v > 0 else default
+        v = float(raw or default)
     except ValueError:
-        return default
+        v = math.nan
+    if math.isfinite(v) and v > 0:
+        return v
+    log.warning("of_call_stats_bad_knob %s=%r; default %g", name, raw[:40], default)
+    return default
 
 
 FLUSH_S = _env_float("OF_CALL_STATS_FLUSH_S", 30.0)
@@ -89,10 +99,12 @@ _boots = 1
 _flushed_at: float | None = None
 _write_error: str | None = None
 _path: Path | None = None
+_unobserved_s = 0.0               # the tally (see the module doc): Relay downtime since _unobserved_since
+_unobserved_since = _started_at
 
 
 def status_class(status) -> str:
-    """OF's answer as one of STATUS_CLASSES; None (no answer came back) is `error`."""
+    """OF's answer as a status class (2xx 3xx 401 403 429 4xx 5xx error); None (no answer came back) is `error`."""
     if not isinstance(status, int):
         return "error"
     if status in (401, 403, 429):
@@ -131,17 +143,6 @@ def caller(name: str):
         yield
     finally:
         _caller.reset(token)
-
-
-def labelled(name: str):
-    """Decorator: `caller(name)` around every call of an async function."""
-    def wrap(fn):
-        @functools.wraps(fn)
-        async def run(*a, **kw):
-            with caller(name):
-                return await fn(*a, **kw)
-        return run
-    return wrap
 
 
 async def label_request_calls(request, call_next):
@@ -186,7 +187,7 @@ def snapshot() -> dict:
         folded = _folded
     return {"v": SCHEMA, "started_at": _started_at, "flushed_at": _flushed_at, "boots": _boots,
             "rows": [[*k, n] for k, n in sorted(counts.items())], "folded": folded,
-            "write_error": _write_error}
+            "write_error": _write_error, "unobserved_s": _unobserved_s, "unobserved_since": _unobserved_since}
 
 
 def flush() -> None:
@@ -209,39 +210,58 @@ def flush() -> None:
             _write_error = f"{type(exc).__name__}: {exc}"[:200]
 
 
+def _count(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and 0 <= x < 2 ** 63
+
+
+def _time(x) -> bool:
+    """An epoch-s / seconds number: finite (an int too large for a float is not, never an OverflowError)."""
+    try:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    except OverflowError:
+        return False
+
+
 def _load(p: Path) -> None:
-    """Fold the file back in; anything but a readable v1 file leaves a fresh window."""
-    global _started_at, _boots, _folded
+    """Fold the file back in; anything but a wholly valid v1 file leaves a fresh window (logged), never
+    a part of one under its old started_at. Every check runs before any state changes, inside the try."""
+    global _started_at, _boots, _folded, _unobserved_s, _unobserved_since
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("v") != SCHEMA:
+            log.warning("of_call_stats_schema_mismatch path=%s; fresh window", p)
+            return
+        rows, started = raw.get("rows"), raw.get("started_at")
+        bad = next((why for why, ok in (
+            ("rows", isinstance(rows, list) and all(
+                isinstance(r, list) and len(r) == 5 and all(isinstance(x, str) for x in r[:4]) and _count(r[4]) and r[4] > 0
+                for r in rows)),
+            ("started_at", _time(started) and started > 0),
+            ("boots", _count(raw.get("boots"))), ("folded", _count(raw.get("folded")))) if not ok), None)
+        if bad:
+            log.warning("of_call_stats_bad_field path=%s field=%s; fresh window", p, bad)
+            return
+        now, fl = time.time(), raw.get("flushed_at")
+        us, since = raw.get("unobserved_s"), raw.get("unobserved_since")
+        gap = now - fl if _time(fl) else None
+        tally = (us + gap, float(since)) if (_time(us) and us >= 0 and _time(since) and gap is not None
+                                             and math.isfinite(gap) and gap >= 0) else None
+        started = float(started)
     except FileNotFoundError:
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — a bad file never fails the boot
         log.warning("of_call_stats_unreadable path=%s %s: %s; fresh window", p, type(exc).__name__, str(exc)[:120])
         return
-    if not isinstance(raw, dict) or raw.get("v") != SCHEMA:
-        log.warning("of_call_stats_schema_mismatch path=%s; fresh window", p)
-        return
-    try:
-        base: dict[tuple[str, str, str, str], int] = {}
-        for row in raw.get("rows") or []:
-            if (isinstance(row, list) and len(row) == 5 and all(isinstance(x, str) for x in row[:4])
-                    and isinstance(row[4], int) and row[4] > 0):
-                k = tuple(row[:4])
-                base[k] = base.get(k, 0) + row[4]
-        started = float(raw.get("started_at") or 0.0)
-        boots = int(raw.get("boots") or 0) + 1
-        folded = int(raw.get("folded") or 0)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("of_call_stats_bad_rows path=%s %s; fresh window", p, type(exc).__name__)
-        return
+    if tally is None:
+        log.warning("of_call_stats_unobserved_unknown path=%s; downtime tally restarts at this boot", p)
+        tally = (0.0, now)
     with _lock:
-        for k, n in base.items():
-            _counts[k] = _counts.get(k, 0) + n
-        _folded += max(folded, 0)
-    if started > 0:
-        _started_at = started
-    _boots = boots
+        for r in rows:
+            k = tuple(r[:4])
+            _counts[k] = _counts.get(k, 0) + r[4]
+        _folded += raw["folded"]
+    _started_at, _boots = started, raw["boots"] + 1
+    _unobserved_s, _unobserved_since = tally
 
 
 def _flusher() -> None:

@@ -16,6 +16,7 @@ import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, RotateCw, Search } from
 
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState } from "@/components/ui/infloww";
+import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorProfiles } from "@/lib/creatorProfiles";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
@@ -82,6 +83,9 @@ export function CreatorColumn(props: {
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
 }) {
+  // A controlled column is its page's pick (PageCreatorContext: the help bot follows it); no "All" row and no value
+  // is no pick yet. A scoped column's page (OfManagerChrome) reports the scope.
+  usePageCreator(props.onChange ? props.value ?? (props.all ? null : undefined) : undefined);
   return props.onChange ? <ColumnBody {...props} onChange={props.onChange} /> : <ScopedColumn {...props} />;
 }
 

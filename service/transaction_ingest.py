@@ -254,7 +254,6 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     scan_backfill_queued,
     scan_backfill_restart,
     scan_interrupted,
-    scan_seeded,
     scan_started,
     subscription_fans,
     tip_window,
@@ -286,7 +285,10 @@ _FULL_EVERY_S = _clamped_env("INGEST_FULL_EVERY_S", _DEFAULT_FULL_EVERY_S, 900.0
 # restart re-walks only accounts due): every attempted full walk stamps its window's
 # end (when it started) with its finalization, completed, failed or cut short; one
 # per period, a failed one included (measured AE 2026-11-08: unstamped failures
-# re-walked every tick until paused). Admin /run mode=refresh counts.
+# re-walked every tick until paused), but not one a proxy refused before its first page
+# (never reached OF: the next tick walks full again). A failed or cut-short one also counts
+# in full_walk_failures (/health: not green, status full_walk_failed between ticks) until one completes.
+# Admin /run mode=refresh counts.
 # Accounts whose recent walk got a row older than its `startDate` minus a day (OF
 # ignored `startDate`): warned once per process.
 _recent_window_warned: set[str] = set()
@@ -1088,13 +1090,11 @@ async def _decide_mode(account_id: str) -> str:
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
         facts = scan_facts(row) if row is not None else None
-        if facts is not None:
-            seeded = scan_seeded(facts, now, full_every_s=_FULL_EVERY_S, phase_s=phase)
-            if seeded is not facts:   # persisted (this session commits) before the tick
-                store_scan(row, seeded)
-                log.info("ingest_tx_full_watermark_seeded account=%s", account_id)
-                facts = seeded
-        return decide_mode(facts, now=now, full_every_s=_FULL_EVERY_S, phase_s=phase)
+        mode, seeded = decide_mode(facts, now=now, full_every_s=_FULL_EVERY_S, phase_s=phase)
+        if seeded is not facts:   # the watermark seed: persisted (this session commits) before the tick
+            store_scan(row, seeded)
+            log.info("ingest_tx_full_watermark_seeded account=%s", account_id)
+        return mode
 
 
 def _window_for(mode: str, state: TransactionScanHistory) -> tuple[datetime, datetime]:
@@ -1173,7 +1173,7 @@ async def _clear_stale_inflight() -> int:
 
 
 async def _record_failure(account_id: str, exc: Exception, *, progressed: bool = False,
-                          full_at: datetime | None = None) -> None:
+                          full_at: datetime | None = None, reached: bool = False) -> None:
     # A proxy refusal (of_client.proxy_refused; _proxy_retry already retried
     # it) never reached OF: it says nothing about the account or its session.
     # Nor does a backfill that committed pages before failing (`progressed`, e.g.
@@ -1184,7 +1184,8 @@ async def _record_failure(account_id: str, exc: Exception, *, progressed: bool =
     async with get_session() as s:
         row = await scan_state(s, account_id)
         state = scan_after_failure(scan_facts(row), refusal, datetime.utcnow(),
-                                   error=repr(exc)[:500], full_at=full_at, progressed=progressed)
+                                   error=repr(exc)[:500], full_at=full_at, progressed=progressed,
+                                   reached=reached)
         store_scan(row, state)
     if refusal:
         # Not counted toward the pause: the next tick retries for free.
@@ -1276,7 +1277,8 @@ async def _offset_walk(account_id: str, client: OFClient, w: transaction_backfil
                        start_dt: datetime, end_dt: datetime, start_date: str | None,
                        newest_seen: datetime | None) -> None:
     """The recent / full walks' offset pages, into `w`: an empty page or hasMore false is
-    `complete` (OF's offset cap at 600 rows looks the same: a full walk reads its latest 600)."""
+    `complete` (OF's offset cap at 600 rows looks the same: a full walk reads its latest 600);
+    a repeated page or _PAGE_CEILING stops it short (`w.stop` says which)."""
     offset = 0
     # Repeated-page guard: some OF endpoints IGNORE `offset` and report
     # hasMore=true forever (verified live 2026-07-04 on the group-stats
@@ -1291,6 +1293,7 @@ async def _offset_walk(account_id: str, client: OFClient, w: transaction_backfil
                 "ingest_tx_page_ceiling account=%s pages=%d — scan truncated",
                 account_id, w.pages,
             )
+            w.stop = "page_ceiling"
             return
         # NO `type=` — capture proves it's a filter, not a partition
         # (synthesis §2 row 5). One unfiltered request per page.
@@ -1322,6 +1325,7 @@ async def _offset_walk(account_id: str, client: OFClient, w: transaction_backfil
                 "OF ignored the offset cursor; stopping scan",
                 account_id, w.pages, offset,
             )
+            w.stop = "repeated_page"
             return
         seen_tx_ids |= page_ids
         for raw in rows:
@@ -1351,7 +1355,9 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 
     recent:   window = (utcnow - _RECENT_WINDOW_H, utcnow)
     refresh:  window = (utcnow - 7d, utcnow); completed, failed or cut short, it
-              stamps last_full_at (its window end) with its finalization
+              stamps last_full_at (its window end) with its finalization (a proxy refusal
+              before its first page: not); failed or cut short, it counts in
+              full_walk_failures (/health: not green) until one completes
     backfill: window = (backfill_floor, oldest_seen_occurred_at or utcnow), walked
               by transaction_backfill.backfill_tick (marker pages, per-tick cap,
               resumes at the cursor; backfill_step says where a page stops it)
@@ -1458,7 +1464,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             # OF's date-only filter, the recent walk's and the backfill's (the full
             # walk sends none: OF's latest 600). start/end stay there, ignored by OF.
             start_date = recent_start_date(start_dt) if mode in ("recent", "backfill") else None
-            # Completed, failed or cut short (repeated page, ceiling): one full walk a period.
+            # Completed, failed or cut short (repeated page, ceiling): one full walk a period
+            # (scan_after_failure: a proxy refusal before the first page spends none).
             full_at = end_dt if mode == "refresh" else None
             w = transaction_backfill.WalkResult()
 
@@ -1475,8 +1482,11 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 if not proxy_refused(e):  # a refusal logs one line in _record_failure
                     log.warning("ingest_tx_scan_failed account=%s", account_id, exc_info=True)
                 # A failed full walk spends its period too: else it re-walks every tick
-                # (a finished account) or freezes the unfinished walk behind it.
-                await _record_failure(account_id, e, progressed=w.walked > 0, full_at=full_at)
+                # (a finished account) or freezes the unfinished walk behind it. Unless a
+                # proxy refused it before its first page (`reached`): nothing reached OF,
+                # the next tick retries for free.
+                await _record_failure(account_id, e, progressed=w.walked > 0, full_at=full_at,
+                                      reached=w.pages > 0)
                 finalized = True
                 if account_id in _reinstated:
                     await _poll_disputes(account_id, client)

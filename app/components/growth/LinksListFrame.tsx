@@ -15,7 +15,7 @@
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
-  Calendar, ChevronDown, EllipsisVertical, GitMerge, Info, MessageSquareWarning, Pencil, Plus, Search, Tag, Upload, X,
+  Calendar, ChevronDown, EllipsisVertical, GitMerge, MessageSquareWarning, Pencil, Plus, Search, Tag, Upload, X,
 } from "lucide-react";
 
 import { ExtraTag } from "@/components/ui/primitives";
@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { usePagedFilters } from "@/hooks/pagedFilters";
 import { addDays, createdDay, dayKey, monthStartBefore } from "@/components/growth/frameDates";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 export const NOT_WIRED = "not wired";
 
@@ -61,9 +62,7 @@ function ReportTimeZone() {
   return (
     <span className="mx-2 flex items-center text-sm leading-normal text-fg-dim">
       <span className="mr-2 tabular-nums">{ready ? utcOffsetLabel(reportTz) : "UTC"}</span>
-      <span title="Set by your organization" className="inline-flex">
-        <Info size={16} aria-hidden />
-      </span>
+      <InfoTip text="Set by your organization" iconClassName="h-4 w-4" />
     </span>
   );
 }
@@ -112,9 +111,7 @@ export function TipHead({ title, tip }: { title: string; tip: string }) {
 
 export function Tip({ text }: { text: string }) {
   return (
-    <span title={text} className="ml-2 inline-flex align-middle text-fg-dim cursor-help">
-      <Info size={16} aria-hidden />
-    </span>
+    <InfoTip text={text} iconClassName="h-4 w-4" className="ml-2 align-middle text-fg-dim" />
   );
 }
 

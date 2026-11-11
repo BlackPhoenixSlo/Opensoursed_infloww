@@ -23,7 +23,7 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Info, Maximize, PanelRight, RotateCw } from "lucide-react";
+import { ExternalLink, Maximize, PanelRight, RotateCw } from "lucide-react";
 
 import { CreatorColumn, PALETTE, liveSession } from "@/components/of-manager/CreatorColumn";
 import { popoutReady } from "@/components/of-manager/popoutReady";
@@ -34,6 +34,7 @@ import { TemplatePicker } from "@/components/chat/TemplatePicker";
 import { ScopeSelect } from "@/components/shell/ScopeSelect";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { EmptyState } from "@/components/ui/infloww";
+import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope, WatcherScope } from "@/contexts/ScopeContext";
 import { ofManagerWatcher, useAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { findFanChatRow } from "@/hooks/useInboxRealtime";
@@ -45,6 +46,7 @@ import { OF_INSIGHTS_ATTR } from "@/lib/ofMirrorChrome";
 import { mirrorQuery } from "@/lib/ofMirrorData";
 import { chatPath } from "@/lib/ofMirrorDataQueries";
 import { type OFChatItem } from "@/lib/relay";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** "UTC+02:00": this computer's offset (Infloww's OF Manager shows the local zone, not the Agency's). */
 function localOffsetLabel(): string {
@@ -108,6 +110,8 @@ function Chrome({ children }: { children: React.ReactNode }) {
   const accounts = useOfManagerAccounts();
   const noCreators = accountsQ.isSuccess && accounts.length === 0;
   const { scope, setScope } = useScope();
+  // The scope is this page's Creator pick (PageCreatorContext: the help bot follows it).
+  usePageCreator(scope.kind === "model" ? scope.accountId : null);
   // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own, applied once
   // (`popoutReady`: when the id is known as a Creator or a watcher, so a watcher's id stays OF Manager's
   // (WatcherScope), never the window's scope; an unknown id only after a successful read: it could be a watcher).
@@ -183,7 +187,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
           {tz && (
             <span className={`mx-4 flex items-center gap-2 text-base text-fg-dim tabular-nums${insights ? " max-sm:hidden" : ""}`}>
               {tz}
-              <span title="The time zone of this computer"><Info aria-hidden className="w-4 h-4" /></span>
+              <InfoTip text="The time zone of this computer" iconClassName="w-4 h-4" />
             </span>
           )}
         </div>

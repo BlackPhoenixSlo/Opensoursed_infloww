@@ -539,7 +539,7 @@ async def of_send_or_schedule_mass(
         else:
             post, extra = client.send_mass_message, dict(included_users=body.user_ids)
         try:
-            result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra)))
+            result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra), client=client))
         except Exception as e:
             from automations.send_mass_message import close_run_if_unsent
             await close_run_if_unsent(mass_run_id, e)

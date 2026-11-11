@@ -17,6 +17,7 @@ import { type FanRecord } from "@/lib/relay";
 import { cn, fmtRelTime, type SubStatusDisplay } from "@/lib/utils";
 import { MENU, MENU_ITEM, MENU_ROW } from "./MenuParts";
 import { type InsightsBlockId } from "./useInsightsBlocks";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** 🚫 Mass-exclude toggle — flags a fan onto MASSdmEXCLUDE so every mass send,
  *  priced or not (mass DM / mass PPV / online blast / nudge), skips them. It
@@ -404,15 +405,15 @@ export function Badge({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The Clone's 14px `.info-i` (`messages.html:302`); `title` is its tooltip. */
-export function InfoIcon({ title }: { title?: string }) {
+/** The Clone's 14px `.info-i` (`messages.html:302`); `title` is its tooltip (`InfoTip`). */
+export function InfoIcon({ title }: { title: string }) {
   return (
-    <span title={title} className="shrink-0">
-      <svg role="img" aria-label="info" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+    <InfoTip text={title} icon={
+      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
            className={cn(MP.insights.info, "shrink-0")}>
         <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" strokeLinecap="round" />
       </svg>
-    </span>
+    } />
   );
 }
 

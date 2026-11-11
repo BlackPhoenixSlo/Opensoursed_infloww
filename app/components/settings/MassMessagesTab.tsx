@@ -11,7 +11,8 @@
  * Bulk actions run client-side over the model chips' scope (massUnsendRules.ts
  * `bulkTargets`; "Hide unsent" never matters); each row's cancel mutation
  * already write-throughs the cache + invalidates the read query, so the UI
- * converges without manual refetch logic.
+ * converges without manual refetch logic. The hourly Auto-unsend card is its
+ * own Smart Messages tab (`AutoUnsendCard`).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,7 +31,6 @@ import { SM, SM_MASS_COLUMNS } from "@/components/growth/smartMessagesControls";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { cn } from "@/lib/utils";
 
-import { AutoUnsendPanel } from "./AutoUnsendPanel";
 import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
 import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
@@ -155,28 +155,7 @@ export default function MassMessagesTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Auto-unsend automation — a scheduled `unsend_messages` rule per model.
-       *  Hourly sweep that unsends broadcasts older than the set hours, by type
-       *  (free text / image / PPV). Leave a type off to keep it forever.
-       *  An Inflowwww extra: Infloww has per-message Auto-unsend only, and no
-       *  per-Creator sweep by message type (docs/spec/infloww-parity-round-2/
-       *  phase-02b-auto-mass-messages.md). */}
-      <IfCard className="order-2 md:order-1"
-        title={<span className="flex items-center gap-2"><span>Auto-unsend (automation)</span><ExtraTag /></span>}>
-        <IfHelp className="mb-4">
-          Runs hourly per model: unsends broadcasts older than the chosen hours, by type; an unchecked type is kept.
-        </IfHelp>
-        <div className="space-y-3">
-          {accounts.length === 0 && (
-            <div className="text-[14px] text-fg-dim">No active models.</div>
-          )}
-          {accounts.map((a) => (
-            <AutoUnsendPanel key={a.id} accountId={a.id} label={a.nickname || a.id} />
-          ))}
-        </div>
-      </IfCard>
-
-      <IfCard className="order-1 md:order-2" title="Mass messages" extra={(
+      <IfCard title="Mass messages" extra={(
         <div className="flex items-center gap-3 flex-wrap justify-end">
           {/* An Inflowwww extra: the list's own filters, where Infloww's
            *  OF list has the filter bar above it. */}

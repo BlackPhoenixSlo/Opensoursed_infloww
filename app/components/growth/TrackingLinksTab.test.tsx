@@ -871,7 +871,7 @@ describe("the page header (ticket 59)", () => {
     const zone = await screen.findByText("UTC+05:30");
     const title = screen.getByRole("heading", { level: 1, name: "Tracking links" });
     expectBefore(title, zone);
-    const tip = screen.getByTitle("Set by your organization");
+    const tip = screen.getByRole("img", { name: "Set by your organization" });
     expectBefore(zone, tip);
     expect(tip.querySelector("svg")).toBeTruthy();
     expectInCapture("growth-tracking-links#9", "Set by your organization");
@@ -939,7 +939,7 @@ describe("the tabs, filters and tooltips (ticket 59)", () => {
     await mount();
     const ths = within(table()).getAllByRole("columnheader");
     const th = (t: string) => ths[headers().indexOf(t)];
-    expect(within(th("Subscription CVR")).getByTitle(
+    expect(within(th("Subscription CVR")).getByLabelText(
       "Subscription conversion rate: Percentage of clicks that become subscribers. Includes those who signed up for free trial subscription through the tracking link",
     ).querySelector("svg")).toBeTruthy();
     for (const t of ["Tracking link", "Date created", "Clicks", "Subs"]) expect(th(t).querySelector("svg"), t).toBeNull();
@@ -956,7 +956,7 @@ describe("the tabs, filters and tooltips (ticket 59)", () => {
       "Subscription CVR": "Subscription conversion rate: Percentage of clicks that become subscribers. Includes those who signed up for free trial subscription through the tracking link",
       "Avg ROI": "Return of investment: Profit divided by Promo cost, multiplied by 100.",
     };
-    for (const [t, tip] of Object.entries(tips)) expect(within(card(t)).getByTitle(tip), t).toBeTruthy();
+    for (const [t, tip] of Object.entries(tips)) expect(within(card(t)).getByRole("img", { name: tip }), t).toBeTruthy();
     for (const t of ["Total clicks", "Total subs", "Total earnings"]) expect(card(t).querySelector("svg"), t).toBeNull();
   });
 });

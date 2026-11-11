@@ -168,8 +168,9 @@ function stubReads(rules: unknown[]) {
   });
 }
 
-/** Mount the REAL page over one active Creator and a rules list of `rules`. */
+/** Mount the REAL page's Mass Auto Unsend Messages tab over one active Creator and a rules list of `rules`. */
 async function mount(rules: unknown[]) {
+  window.history.replaceState(null, "", "/growth/smart-messages?tab=unsend");
   stubReads(rules);
   render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
   // Wait for the button the loaded state shows: "Save" is also the pre-fetch
@@ -189,9 +190,23 @@ async function setClass(label: string, on: boolean) {
   expect(classOn(label)).toBe(on);
 }
 
+/** The model's own switch (its label is the Creator's name). */
+const MODEL = "Model A";
+
 describe("the hourly Auto-unsend card on Smart Messages", () => {
+  it("shows the three class rows only while the model's switch is on", async () => {
+    await mount([]);
+    expect(classOn(MODEL)).toBe(false);
+    for (const l of ["Free text-only", "With image / video", "PPV (priced)"]) expect(screen.queryByRole("switch", { name: l })).toBeNull();
+    await setClass(MODEL, true);
+    for (const l of ["Free text-only", "With image / video", "PPV (priced)"]) expect(screen.getByRole("switch", { name: l })).toBeTruthy();
+    await setClass(MODEL, false);
+    expect(screen.queryByRole("switch", { name: "Free text-only" })).toBeNull();
+  });
+
   it("disables Save with every class off, shows the reason, and sends nothing", async () => {
     await mount([]);
+    await setClass(MODEL, true);
     await setClass("Free text-only", false);
     await setClass("With image / video", false);
     await setClass("PPV (priced)", false);
@@ -210,6 +225,7 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
   it("with one class on, Save creates the 'Auto-unsend mass' rule holding that class only", async () => {
     expectWrites("POST /admin/automation-rules");
     await mount([]);
+    await setClass(MODEL, true);
     await setClass("Free text-only", false);
     await setClass("With image / video", true);
     expect(screen.queryByText(REASON)).toBeNull();
@@ -222,6 +238,7 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
     expect(body.account_id).toBe(ACC);
     // The card's default media hours (24) — the class's own field.
     expect(body.payload).toEqual({ policy: { mass_media_hours: 24 } });
+    expect(body.is_enabled).toBe(true);
     expect(relayPatch).not.toHaveBeenCalled();
   });
 
@@ -251,6 +268,18 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
     await act(async () => { fireEvent.click(update); });
     expect(relayPatch).not.toHaveBeenCalled();
     expect(rulePosts()).toHaveLength(0);
+  });
+
+  it("that rule can still be turned off: Update sends is_enabled false and keeps the saved policy", async () => {
+    expectWrites(`PATCH /admin/automation-rules/${RULE_ID}`);
+    await mount([savedRule({})]);
+    await setClass(MODEL, false);
+    expect(screen.queryByText(REASON)).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Update" })); });
+    await waitFor(() => expect(relayPatch).toHaveBeenCalledTimes(1));
+    const [, body] = relayPatch.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.is_enabled).toBe(false);
+    expect(body).not.toHaveProperty("payload");
   });
 
   it("carries the visible 'Inflowwww extra' tag with title={EXTRA_LABEL}", async () => {
@@ -335,7 +364,7 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
     expect(screen.queryByTestId("of-creator-column")).toBeNull();
 
-    expect(tabNames(parentTabs())).toEqual(["Automated Messages", "Mass Messages"]);
+    expect(tabNames(parentTabs())).toEqual(["Automated Messages", "Mass Messages", "Mass Auto Unsend Messages", "Scheduled"]);
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
 
     // The right box: Learn (Not wired), then New Message, in the header row
@@ -348,11 +377,15 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     expect(before(create, parentTabs())).toBe(true);
   });
 
-  it("?tab=mass and ?tab=scheduled open Mass Messages; an unknown or absent value opens the default, Automated Messages (ticket 41)", async () => {
-    for (const url of ["?tab=mass", "?tab=scheduled"]) {
+  it("?tab= opens its tab: mass, unsend, scheduled; an unknown or absent value opens the default, Automated Messages (ticket 41)", async () => {
+    for (const [url, tab, text] of [
+      ["?tab=mass", "Mass Messages", "OF mass messages"],
+      ["?tab=unsend", "Mass Auto Unsend Messages", "Auto-unsend (automation)"],
+      ["?tab=scheduled", "Scheduled", "Scheduled messages"],
+    ]) {
       await mountFrame(`/growth/smart-messages${url}`);
-      expect(selected(parentTabs())).toEqual(["Mass Messages"]);
-      expect(screen.getByText("Auto-unsend (automation)")).toBeTruthy();
+      expect(selected(parentTabs())).toEqual([tab]);
+      expect(within(screen.getByRole("tabpanel", { name: tab })).getByText(text)).toBeTruthy();
       cleanup();
     }
     for (const url of ["?tab=bogus", ""]) {
@@ -391,12 +424,13 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
       .toContain("/admin/priority-mass/runs/9/cancel"));
   });
 
-  it('the sent history, its bulk unsend and the Auto-unsend card render under "OF mass messages"', async () => {
+  it('the sent history and its bulk unsend render under "OF mass messages"; the Auto-unsend card and scheduled list do not', async () => {
     await mountFrame();
     const of = within(childTabs()).getByRole("tab", { name: "OF mass messages" });
     const panel = screen.getByRole("tabpanel", { name: "OF mass messages" });
     expect(of.getAttribute("aria-controls")).toBe(panel.id);
-    expect(within(panel).getByText("Auto-unsend (automation)")).toBeTruthy();
+    expect(screen.queryByText("Auto-unsend (automation)")).toBeNull();
+    expect(screen.queryByText("Scheduled messages")).toBeNull();
     expect(within(panel).getByRole("heading", { name: "Mass messages" })).toBeTruthy();
     // Ours, each with the extra tag: the bulk-unsend toolbar and the list's own filters.
     extraTagBeside(within(panel).getByText(/^Bulk actions/));
@@ -439,19 +473,17 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
       if (i) expect(before(controls[i - 1], controls[i])).toBe(true);
     }
     // The bar sits above the list.
-    expect(before(controls[0], within(panel).getByText("Auto-unsend (automation)"))).toBe(true);
+    expect(before(controls[0], within(panel).getByRole("heading", { name: "Mass messages" }))).toBe(true);
   });
 
-  it("the scheduled list is its own list, headed for every scheduled send, direct and mass, labelled Inflowwww extra", async () => {
-    await mountFrame();
-    const heading = screen.getByRole("heading", { name: "Every scheduled send, direct and mass" });
-    extraTagBeside(heading);
-    const list = heading.closest("section")!;
-    expect(within(list).getByText("Scheduled messages")).toBeTruthy();
-    // Not filed under a send type.
-    const panel = screen.getByRole("tabpanel", { name: "OF mass messages" });
-    expect(panel.contains(list)).toBe(false);
-    expect(screen.getByRole("tabpanel", { name: "Mass Messages" }).contains(list)).toBe(true);
+  it("Mass Auto Unsend Messages and Scheduled are their own tabs, each card labelled Inflowwww extra", async () => {
+    await mountFrame("/growth/smart-messages?tab=unsend");
+    extraTagBeside(within(screen.getByRole("tabpanel", { name: "Mass Auto Unsend Messages" })).getByText("Auto-unsend (automation)"));
+    expect(screen.queryByRole("tablist", { name: "Mass Messages" })).toBeNull();
+    cleanup();
+    await mountFrame("/growth/smart-messages?tab=scheduled");
+    expect(within(screen.getByRole("tabpanel", { name: "Scheduled" })).getByText("Scheduled messages")).toBeTruthy();
+    expect(screen.queryByText("Auto-unsend (automation)")).toBeNull();
   });
 });
 
@@ -782,7 +814,7 @@ async function mountMass() {
   window.history.replaceState(null, "", "/growth/smart-messages?tab=mass");
   stubReads([]);
   render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
-  await waitFor(() => expect(screen.getByText("Auto-unsend (automation)")).toBeTruthy(), SETTLE);
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Mass messages" })).toBeTruthy(), SETTLE);
   await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
 }
 
@@ -814,13 +846,10 @@ describe("the Mass Messages tab in a chatter-only session", () => {
     vi.stubGlobal("fetch", fetchMock);
     await mountMass();
 
-    // The rest of the tab: the child tabs, the sent history with its
-    // Auto-unsend card, the scheduled list, and the header's New Message.
+    // The rest of the tab: the child tabs, the sent history, and the header's New Message.
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
     const panel = screen.getByRole("tabpanel", { name: "OF mass messages" });
     expect(within(panel).getByRole("heading", { name: "Mass messages" })).toBeTruthy();
-    expect(within(panel).getByText("Auto-unsend (automation)")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Every scheduled send, direct and mass" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Message" })).toBeTruthy();
     // Its Creators came from the chatter's own list, never the owner registry.
     expect(fetchMock).toHaveBeenCalledWith("/chatter/me/accounts", expect.anything());

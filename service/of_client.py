@@ -296,12 +296,19 @@ class OFDeactivatedError(OFDeniedError):
     Transient for every caller: the Creator may be activated again."""
 
 
+class OFSessionRetired(OFAPIError):
+    """A signed request on an OFClient client_pool evicted (close_signed_sessions),
+    refused before THAT request is sent. A call that already sent others (a
+    multi-request write) may have landed some of them."""
+    def __init__(self):
+        super().__init__("signed session retired; retry with current account session")
+
+
 # Calls that end or report on the Creator's own OF account: logout, account
 # deletion, ending login sessions, OF's client telemetry and its bug reporter.
 # No relay route makes one today; this backstop keeps a future route from it.
 _DENIED_API_PATHS = ("/api2/v2/users/logout", "/api2/v2/users/delete/request", "/api2/v2/log")
 _SESSIONS_PATH = "/api2/v2/sessions"
-_LEDGER_PATH = "/payouts/transactions"   # its background pages: paced per bound proxy too (of_pacing)
 
 
 def _denied(method: str, url: str) -> str | None:
@@ -429,7 +436,7 @@ class _SignedSessionPool:
             try:
                 while True:
                     if self._closed:
-                        raise OFAPIError("signed session retired; retry with current account session")
+                        raise OFSessionRetired()
                     if self._waiters[0] is ticket and self._available:
                         session = self._available.popleft()
                         self._waiters.popleft()
@@ -539,7 +546,7 @@ class _Transport:
             return nullcontext(self.http)
         with self._signed_pool_lock:
             if self._signed_retired:
-                raise OFAPIError("signed session retired; retry with current account session")
+                raise OFSessionRetired()
             if self._signed_pool is None:
                 self._signed_pool = _SignedSessionPool(self.http)
             pool = self._signed_pool
@@ -923,13 +930,17 @@ class _Transport:
                     proxy_health.record(self.proxy_label, False, str(e))
                 raise
 
+    def pace_key(self) -> str:
+        """The exit this client leaves from, now: proxies.egress_identity of its OWN endpoint
+        (proxy_url, the one it was built with, never a fresh account->proxy lookup: after an
+        ADR-0030 move an outstanding client keeps its old exit's slot) against the registry read
+        now, so a probe's verified_ip reaches clients already out. No credentials; "direct"."""
+        return proxy_registry.egress_identity(self.proxy_url, proxy_registry.registry())
+
     def get_json(self, path_or_url: str, **kw) -> Any:
         # Inside a background walk: the Creator's pacer and OF's 429 retried once (of_pacing);
-        # a ledger page also takes its bound proxy endpoint's slot (this client's transport).
-        eg = None
-        if urlsplit(path_or_url).path.rstrip("/").endswith(_LEDGER_PATH):
-            eg = of_pacing.egress(self.proxy_url, self.proxy_label)
-        return of_pacing.paced(self.account_id, lambda: self._get_json(path_or_url, **kw), eg)
+        # a ledger walk's pages also take this client's exit's slot (pace_key, resolved per page).
+        return of_pacing.paced(self.account_id, lambda: self._get_json(path_or_url, **kw), self.pace_key)
 
     def _get_json(self, path_or_url: str, **kw) -> Any:
         r = self.get(path_or_url, **kw)

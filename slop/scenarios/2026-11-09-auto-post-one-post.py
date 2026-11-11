@@ -7,7 +7,8 @@ World: `agency_inbox`. Creator 0 gets an older Auto Post rule through the real P
 posts, a delay on the second, a repost cycle; disabled, so nothing fires).
 Flow, on a 390x844 phone: the owner opens /growth/auto-post, New auto post: the popup holds the caption box at once
 (screenshot `popup-top`), types a caption, sets Price 12 (`popup-media-price`: the free preview pool appears) and
-Auto-delete after 6 (`popup-bottom`: no More settings, no repost cycle), Create (`saved`: the new row reads its post);
+Auto-delete after 6 (`popup-bottom`: no More settings, no repost cycle; with no image Create waits, `ppv-wait`),
+clears the price (no vault media in this world to attach), Create (`saved`: the new row reads its post);
 then Edit on the older rule (`legacy-notice`), Edit in Raw JSON (`legacy-raw`), Cancel.
 
 Checks (names in lib/auto_post_faults.py):
@@ -18,7 +19,7 @@ Checks (names in lib/auto_post_faults.py):
              resend_* / delay_minutes key; the rule's list row reads its post.
   AP_LEGACY  the older rule's notice, no post fields, Raw JSON holds its payload, the row unchanged after Cancel.
 
-FAULT `auto-post-legacy-composer` (client: `isLegacy` always false): AP_LEGACY goes red, alone.
+FAULT `auto-post-legacy-composer` (client: `formHoldReason` always null): AP_LEGACY goes red, alone.
 UI only (`--no-ui` skips): not a volume path, proven once on the real page.
 """
 from __future__ import annotations
@@ -39,8 +40,10 @@ LEGACY_NAME = "slop legacy post drip"
 LEGACY = {"posts": [{"text": "slop legacy one", "hours_to_live": 6},
                     {"text": "slop legacy two", "delay_minutes": 30}],
           "resend_count": 1, "resend_after_hours": 24}
-WANT = [{"text": TEXT, "price": 12, "hours_to_live": 6}]
-SUMMARY = f"$12 · {TEXT} · deletes after 6h"
+WANT = [{"text": TEXT, "hours_to_live": 6}]
+SUMMARY = f"Free · {TEXT} · deletes after 6h"
+# A priced post with no image never posts (auto_posts `paid_no_media`): Create waits with this line.
+PPV_HELP = "A paid post needs an image: add one or a vault folder, or make it free, to enable Create."
 TIMER_KEYS = ("resend_count", "resend_after_hours", "delay_minutes")
 GONE = ("Delay before posting", "Delay after previous", "Repost whole list after", "Repost this many times")
 NOTICE = "Older multi-post rule — edit in Raw JSON."
@@ -119,6 +122,12 @@ async def run(ctx) -> None:
         await ttl.fill("6")
         await pick_preview.scroll_into_view_if_needed(timeout=10_000)
         shots.append(await _shot(ctx, page, "popup-bottom"))
+        create = editor.get_by_role("button", name="Create", exact=True)
+        ppv_help = editor.get_by_text(PPV_HELP, exact=True)
+        ppv_wait = {"create_disabled": await create.is_disabled(), "help": await ppv_help.count()}
+        if ppv_wait["help"]:
+            await ppv_help.scroll_into_view_if_needed(timeout=10_000)
+        shots.append(await _shot(ctx, page, "ppv-wait"))
         form = {
             "one_popup": one_popup,
             "post_heading": await editor.get_by_role("heading", name="Post 1").count(),
@@ -133,17 +142,20 @@ async def run(ctx) -> None:
             },
             "preview_pool_free": free_preview,
             "preview_pool_paid": await pick_preview.count(),
+            "ppv_wait": ppv_wait,
             "fits": await page.evaluate(_FITS),
         }
         ctx.check(AP_FORM, one_popup == {"compose_button": 0, "use_in_rule": 0, "dialogs": 1}
                   and form["post_heading"] == 0 and form["repost_heading"] == 0 and form["add_another"] == 0
                   and not any(form["gone_fields"].values()) and form["more_settings"] == 0
                   and all(v == 1 for v in form["shown"].values()) and form["preview_pool_free"] == 0
-                  and form["preview_pool_paid"] == 1 and _fits(form["fits"]), **form, screenshots=shots)
+                  and form["preview_pool_paid"] == 1 and ppv_wait == {"create_disabled": True, "help": 1}
+                  and _fits(form["fits"]), **form, screenshots=shots)
+        await price.fill("")  # free: no vault media in this world to attach
 
         async with page.expect_response(lambda x: x.request.method == "POST" and urlsplit(x.url).path == RULES,
                                         timeout=30_000) as created:
-            await editor.get_by_role("button", name="Create", exact=True).click(timeout=10_000)
+            await create.click(timeout=10_000)
         resp = await created.value
         status, body, rule = resp.status, resp.request.post_data_json or {}, await resp.json()
         await editor.wait_for(state="hidden", timeout=30_000)

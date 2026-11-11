@@ -68,7 +68,12 @@ import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget, LAUNCHER_KEY } from "./AssistantWidget";
 import { PageCreatorProvider, usePageCreator } from "@/contexts/PageCreatorContext";
 
-const tree = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>;
+/** A scope-driven page on screen (Messages Pro, OF Manager) reports the scope as its pick. */
+function ScopedPage() {
+  usePageCreator(scope.accountId);
+  return null;
+}
+const tree = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /><ScopedPage /></AssistantProvider></PageCreatorProvider>;
 let view: ReturnType<typeof renderWithProviders>;
 
 /** The widget starts collapsed; every case here works in the open panel. */
@@ -79,7 +84,7 @@ async function openPanel() {
   return bubble;
 }
 
-/** The app's model switcher moves (ScopeContext). */
+/** The scope switcher moves on a scope-driven page. */
 function switchApp(accountId: string | null) {
   scope.accountId = accountId;
   view.rerender(tree());
@@ -256,8 +261,20 @@ describe("AssistantWidget", () => {
     view.rerender(withPage(null));          // its "All" row
     expect(focusButton().textContent).toBe("General");
     view.rerender(withPage("1002"));
-    view.rerender(withPage(undefined));     // leaving the page: the switcher again
-    expect(focusButton().textContent).toBe("Blake1");
+    view.rerender(withPage(undefined));     // leaving for a page with no picker: all models
+    expect(focusButton().textContent).toBe("General");
+  });
+
+  it("an agency-wide page (Dashboard: no picker) is General even with one Creator's scope saved", async () => {
+    scope.accountId = "1002";
+    const dashboard = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>;
+    view = renderWithProviders(dashboard());
+    await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+    expect(focusButton().textContent).toBe("General");
+    view.rerender(tree());                   // to OF Manager: its scope is the pick
+    expect(focusButton().textContent).toBe("Blake2");
+    view.rerender(dashboard());              // back to the Dashboard
+    expect(focusButton().textContent).toBe("General");
   });
 
   it("a page's pick of a session-dropped model (Vault Pro keeps one) stays focused, marked offline", async () => {
@@ -359,6 +376,27 @@ describe("AssistantWidget", () => {
     expect(screen.getByRole("heading", { name: /How can we help\?/ })).toBeTruthy();
   });
 
+  it("a started chat kept on a page with no picker (Dashboard): no offer, the chat stays; New chat is General", async () => {
+    relayPost.mockResolvedValue({ answer: "ok", error: null });
+    function Rail({ id }: { id: string }) {
+      usePageCreator(id);
+      return null;
+    }
+    const at = (rail?: string) => (
+      <PageCreatorProvider><AssistantProvider><AssistantWidget />{rail && <Rail id={rail} />}</AssistantProvider></PageCreatorProvider>
+    );
+    scope.accountId = "1001";                // a saved scope a page with no picker ignores
+    view = renderWithProviders(at("1002")); // Vault Pro, rail on Blake2
+    await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+    await ask("why is she quiet?");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    view.rerender(at());                     // to the Dashboard
+    expect(focusButton().textContent).toBe("Blake2");
+    expect(screen.queryByRole("button", { name: / in app · New chat$/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "New chat" }));
+    expect(focusButton().textContent).toBe("General");
+  });
+
   it("dots the launcher when a reply lands while the panel is closed", async () => {
     let settle: (v: unknown) => void = () => {};
     relayPost.mockImplementation(() => new Promise((res) => { settle = res; }));
@@ -387,7 +425,7 @@ describe("AssistantWidget", () => {
 
     // The hint above the composer is itself a link to the connect page.
     const hint = screen.getByRole("link", { name: /Creators → Manage creators/ });
-    expect(hint.getAttribute("href")).toBe("/creators");
+    expect(hint.getAttribute("href")).toBe("/creators#go=Add+creator");
     expect(screen.queryByRole("button", { name: /^Help bot focus:/ })).toBeNull();
 
     await ask("how do I connect my OnlyFans account?");
@@ -400,7 +438,7 @@ describe("AssistantWidget", () => {
       expect(screen.getAllByRole("link", { name: /Creators → Manage creators/ })).toHaveLength(2),
     );
     for (const a of screen.getAllByRole("link", { name: /Creators → Manage creators/ })) {
-      expect(a.getAttribute("href")).toBe("/creators");
+      expect(a.getAttribute("href")).toBe("/creators#go=Add+creator");
     }
   });
 

@@ -159,6 +159,9 @@ in `queue` / `posts` / `unsends`: OnlyFans failing one model of a fan-out.
 `throttle` ((uid, route) -> n, set by the scenario at any time): that Creator's next n calls on that route are
 answered 429 with OF's rate-limit body (`TOO_MANY_BODY`, "Please allow 1 seconds", the text of_pacing reads), after
 the usual wait, recorded in `calls`; the call after them is answered as usual (a 429 the pacer's one retry gets past).
+`min_gap` ((uid, route) -> seconds, set by the scenario at any time): that Creator's call on that route arriving sooner
+than this after its previous one (refused ones count) is answered 429 `TOO_MANY_BODY`: OF's per-account rate limit
+(AE 2026-11-10, measured: 76 unpaced by-id reads in 19 s, then 429; the real budget is a guess, declared).
 
 A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
 asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
@@ -218,6 +221,8 @@ class FakeOF:
         self.otp: set[str] = set()
         self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
         self.throttle: dict[tuple[str, str], int] = {}  # (Creator, route) -> its next n calls answered 429
+        self.min_gap: dict[tuple[str, str], float] = {}  # (Creator, route) -> a call sooner after the last: 429
+        self._gap_last: dict[tuple[str, str], float] = {}
         self.consent: dict[str, str] = {}  # Creator -> its consent law ("NC" / "AL"): media sends refused
         self.consent_signed: set[str] = set()  # of `consent`: signed, /users/me approved, sends go through
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
@@ -432,6 +437,15 @@ class FakeOF:
                     if limited:
                         fake.throttle[(uid, route)] -= 1
                 if limited:
+                    return self._record(uid, route, 429, TOO_MANY_BODY)
+                with fake.lock:
+                    gap = fake.min_gap.get((uid, route))
+                    now = time.monotonic()
+                    last = fake._gap_last.get((uid, route))
+                    too_soon = bool(gap) and last is not None and now - last < gap
+                    if gap:
+                        fake._gap_last[(uid, route)] = now
+                if too_soon:
                     return self._record(uid, route, 429, TOO_MANY_BODY)
                 with fake.lock:
                     law = fake.consent.get(uid)

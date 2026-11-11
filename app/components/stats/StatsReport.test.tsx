@@ -488,16 +488,17 @@ describe("StatsReport Creator reports frame", () => {
     expect(await screen.findByText("Creator B")).toBeInTheDocument();
   });
 
-  it("words the ledger backfill's between-ticks statuses on an Ingest health row", async () => {
+  it("words the ledger backfill's between-ticks statuses and a failing full walk on an Ingest health row", async () => {
     creators = [creator("acct-a", "Creator A", 1200)];
     const ingest = (id: string, status: string, error: string | null, t: string) => ({
       account_id: id, display_name: id, last_scan_at: "2026-10-15T01:50:00Z", current_status: status, last_error: error,
       consecutive_failures: 0, paused_until: null, rows_inserted_total: 3, rows_patched_total: 0,
-      fully_backfilled: false, minutes_since_scan: 10, tier: t,
+      fully_backfilled: false, full_walk_failures: status === "full_walk_failed" ? 2 : 0, minutes_since_scan: 10, tier: t,
     });
     ingestRows = [
       ingest("acct-a", "backfill_partial", null, "green"),
       ingest("acct-b", "backfill_stalled", "backfill_stopped: no_next_marker", "yellow"),
+      ingest("acct-c", "full_walk_failed", "full_walk_failed: OFAPIError('500')", "yellow"),
     ];
     renderWithProviders(<StatsReport view="creator" />);
     fireEvent.click(await screen.findByRole("button", { name: "Inflowwww extras" }));
@@ -507,6 +508,8 @@ describe("StatsReport Creator reports frame", () => {
     expect(within(panel).getByText("backfill stalled")).toHaveAttribute("title", "backfill_stopped: no_next_marker");
     expect(within(panel).queryByText("backfill_partial")).toBeNull();
     expect(within(panel).queryByText("backfill_stalled")).toBeNull();
+    expect(within(panel).getByText("full walk failing")).toHaveAttribute("title", "full_walk_failed: OFAPIError('500')");
+    expect(within(panel).queryByText("full_walk_failed")).toBeNull();
   });
 
   it("keeps Ingest health, All messages… and the per-model KPI cards in the Inflowwww extras overflow", async () => {
@@ -621,11 +624,11 @@ describe("StatsReport Creator reports Overview", () => {
     before(breakdown, stats);
     // The tooltips, verbatim: analytics-creator-reports#46, #61, #70.
     expect(within(section("Earnings summary"))
-      .getByTitle("An overview of total earnings based on your managed creators during this period")).toBeInTheDocument();
+      .getByRole("img", { name: "An overview of total earnings based on your managed creators during this period" })).toBeInTheDocument();
     expect(within(section("Earnings trends"))
-      .getByTitle("Sales growth and trends of all earnings from your managed creators")).toBeInTheDocument();
+      .getByRole("img", { name: "Sales growth and trends of all earnings from your managed creators" })).toBeInTheDocument();
     expect(within(section("Earnings by channel"))
-      .getByTitle("Track trends and growth of your managed creators’ earning channels")).toBeInTheDocument();
+      .getByRole("img", { name: "Track trends and growth of your managed creators’ earning channels" })).toBeInTheDocument();
     // analytics-creator-reports#50: the seven tiles, in order (the hidden cell between Messages and Tips is not one).
     expect(within(section("Earnings summary")).getAllByRole("group").map((t) => t.getAttribute("aria-label")))
       .toEqual(["Total earnings", "Subscriptions", "Posts", "Messages", "Tips", "Referrals", "Chargebacks"]);
@@ -885,7 +888,7 @@ describe("StatsReport Creator reports Creator statistics", () => {
       ["Message earnings", "Earnings from creators’ messages during the selected time frame"],
       ["Total earnings", "Earnings from all creators’ subscriptions, tips, posts, messages, streams and referrals during the selected time frame"],
       ["Refunded", "Amount of refunds during the selected time frame"],
-    ]) expect(within(card(name)).getByTitle(tip)).toBeInTheDocument();
+    ]) expect(within(card(name)).getByRole("img", { name: tip })).toBeInTheDocument();
     await waitFor(() => expect(card("Creators")).toHaveTextContent("2"));
     expect(card("Message earnings")).toHaveTextContent("$60");
     expect(card("Total earnings")).toHaveTextContent("$250");
@@ -1061,7 +1064,7 @@ describe("StatsReport Creator reports Creator performance", () => {
       ["Earnings breakdown", "A detailed view of Creator earnings broken down by channel"],
       ["Earnings heatmap", "Heat intensity shows the number of PPVs bought per time slot, identifying top performing days and hours within a week"],
       ["Chargebacks", "Growth and trends of earnings refunded from the Creator"],
-    ]) expect(within(section(name)).getByTitle(tip)).toBeInTheDocument();
+    ]) expect(within(section(name)).getByRole("img", { name: tip })).toBeInTheDocument();
     // #168 reads the weekday x hour read, #170 the reversed sales.
     for (const name of ["Earnings heatmap", "Chargebacks"]) {
       expect(await within(section(name)).findByRole("img", { name: `${name} chart` })).toBeInTheDocument();

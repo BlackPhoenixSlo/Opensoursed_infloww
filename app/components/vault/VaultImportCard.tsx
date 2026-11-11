@@ -39,7 +39,7 @@
 
 import { useEffect, useReducer, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Info, Plus, SquarePen, Trash2, X } from "lucide-react";
+import { Plus, SquarePen, Trash2, X } from "lucide-react";
 
 import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
 import { invalidateVaultGrid } from "@/hooks/useVaultCache";
@@ -61,6 +61,7 @@ import {
   type RunStatus,
 } from "@/components/vault/importRunText";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 const POLL_MS = 2500;
 /** How long to keep polling after a start even if the server has not yet said
@@ -378,9 +379,7 @@ export default function VaultImportCard() {
             title={
               <>
                 <span className="mr-[6px]">Link a fan account (optional)</span>
-                <span role="img" aria-label="About linking a fan account" title={FAN_TIP} className="text-fg-dim">
-                  <Info size={16} aria-hidden />
-                </span>
+                <InfoTip text={FAN_TIP} label="About linking a fan account" iconClassName="h-4 w-4" className="text-fg-dim" />
               </>
             }
           >

@@ -1,9 +1,12 @@
 "use client";
 
 /** Vault Pro's download: `useVaultDownload` (the reducer, its ref for the runner, the abort, the share sink's files)
- *  and the progress card. The card only dispatches; the queue is `vaultDownload.ts`, the rules `vaultDownloadReducer.ts`. */
+ *  and the progress card. The card only dispatches; the queue is `vaultDownload.ts`, the rules `vaultDownloadReducer.ts`.
+ *  `VaultDownloadProvider` holds it above the page's per-model remount (VaultProPage keys the panel by model):
+ *  switching model mid-download used to unmount the hook, whose cleanup aborted the run, so it "finished" with part
+ *  of the files. The run keeps the model it started on; the card stays up while another model is browsed. */
 
-import { useCallback, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { Download, X } from "lucide-react";
 
@@ -26,7 +29,9 @@ export interface VaultDownload {
   error: string;
   /** Folder sink: the picker is open (the hint shows). */
   picking: boolean;
-  start: (a: Omit<StartArgs, "accountId" | "creator">) => void;
+  /** `accountId` / `creator` = the model the run is for (kept in the state by its `start`); retry and the links
+   *  file stay on it after a switch. */
+  start: (a: StartArgs) => void;
   cancel: () => void;
   retryFailed: () => void;
   close: () => void;
@@ -36,9 +41,14 @@ export interface VaultDownload {
   saveLinks: () => void;
 }
 
-export function useVaultDownload(accountId: string, creator: string): VaultDownload {
+export function useVaultDownload(): VaultDownload {
   const [state, dispatch] = useReducer(vaultDownloadReducer, initialDownloadState);
   const ref = useRef(state);
+  // Between start() and its `start` action (the picker, the direct check) nothing is busy yet: this holds the slot
+  // so a second start() or a retry in that gap can't run a queue of its own. Released the moment the `start` is
+  // accepted (isBusy guards from there) or refused / the picker closed / it threw, never at the queue's end: a
+  // cancelled queue winding down or a phone run holding unsaved files must not block Retry or the next start.
+  const starting = useRef(false);
   const abort = useRef<AbortController | null>(null);
   const sinkRef = useRef<Sink | null>(null);
   // Share sink: the fetched files by media id until their batch is saved.
@@ -54,30 +64,43 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
     ref.current = vaultDownloadReducer(ref.current, a);
     dispatch(a);
   }, []);
-  const deps = (ac: AbortController) => ({ accountId, send, get: () => ref.current, signal: ac.signal });
-
-  const start = (a: Omit<StartArgs, "accountId" | "creator">) => {
-    if (isBusy(ref.current)) return;
-    setError("");
+  const deps = (ac: AbortController) => ({ send, get: () => ref.current, signal: ac.signal });
+  // Each run gets its own controller and aborts the previous one: a cancelled queue's late workers (or a done phone
+  // run's held ones) stop, and the runner drops any action they send after their abort (vaultDownload.ts).
+  const next = () => {
+    abort.current?.abort();
     const ac = new AbortController();
     abort.current = ac;
+    return ac;
+  };
+
+  const start = (a: StartArgs) => {
+    if (starting.current || isBusy(ref.current)) return;
+    starting.current = true;
+    setError("");
+    const ac = next();
     files.current.clear();
     const keep = sink === "share" ? (id: number, f: File) => { files.current.set(id, f); } : null;
     setPicking(sink === "folder");
-    startDownload({ ...a, accountId, creator }, deps(ac), (k) => { sinkRef.current = k; }, keep)
+    let held = true;
+    const release = () => {
+      if (!held) return;   // once: a later start may hold the slot by the time this queue ends
+      held = false;
+      starting.current = false;
+      setPicking(false);
+    };
+    startDownload(a, deps(ac), (k) => { sinkRef.current = k; release(); }, keep)
       .catch((e) => setError((e as Error)?.message || String(e)))
-      .finally(() => setPicking(false));
+      .finally(release);
   };
   const cancel = () => {
     abort.current?.abort();
     send({ type: "cancel" });
   };
   const retryFailed = () => {
-    if (!canRetry(ref.current) || !sinkRef.current) return;
+    if (starting.current || !canRetry(ref.current) || !sinkRef.current) return;
     send({ type: "retryFailed" });
-    const ac = new AbortController();
-    abort.current = ac;
-    void runQueue({ ...deps(ac), sink: sinkRef.current });
+    void runQueue({ ...deps(next()), sink: sinkRef.current });
   };
   const close = () => {
     send({ type: "close" });
@@ -98,7 +121,7 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
   const saveLinks = () => {
     const s = ref.current;
     if (s.sink !== "share" || !s.items.length || s.linksSaved) return;
-    const fs = linksShareFiles(linksFor(accountId, s));
+    const fs = linksShareFiles(linksFor(s));
     if (!fs.length) {
       setError("This browser can't share the links file");
       return;
@@ -108,6 +131,26 @@ export function useVaultDownload(accountId: string, creator: string): VaultDownl
       .catch((e) => setError((e as Error)?.message || String(e)));
   };
   return { state, sink, error, picking, start, cancel, retryFailed, close, saveBatch, saveLinks };
+}
+
+const DownloadCtx = createContext<VaultDownload | null>(null);
+
+/** One download for the whole page, with its progress card; see the header. */
+export function VaultDownloadProvider({ children }: { children: ReactNode }) {
+  const dl = useVaultDownload();
+  return (
+    <DownloadCtx.Provider value={dl}>
+      {children}
+      <VaultDownloadPanel dl={dl} />
+    </DownloadCtx.Provider>
+  );
+}
+
+/** The page's download (`VaultDownloadProvider`, which VaultProPage mounts above its per-model remount). */
+export function useVaultDownloadContext(): VaultDownload {
+  const dl = useContext(DownloadCtx);
+  if (!dl) throw new Error("useVaultDownloadContext: no VaultDownloadProvider above this component");
+  return dl;
 }
 
 function mb(n: number): string {

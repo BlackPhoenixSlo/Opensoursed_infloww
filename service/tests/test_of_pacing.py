@@ -24,17 +24,21 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_prewarm_busy_table:  prewarm_all walks idle Creators in order and skips one with a
                             person's read in the last USER_WINDOW_S (no waiting); the next
                             pass walks it once idle.
-  case_egress_key_table:    the endpoint key: scheme://host:port, no credentials, case-folded;
-                            DIRECT; the log label never a host, port or credential.
-  case_proxy_slot_shared:   ledger pages of two Creators on one endpoint: every departure on it
-                            >= PAGE_GAP_S apart; a third Creator on another endpoint unpaced by them.
-  case_proxy_retry_shares_slot: a 429's retry takes the endpoint slot too (spaced from the other
-                            Creator's pages), still exactly one retry; its log names the label.
-  case_link_stats_per_creator: through OFClient.get_json, two Creators on one proxy: link-stats
-                            pages leave together (per Creator only), ledger pages are spaced.
+  case_egress_identity_table: proxies.egress_identity, the pace key: a client's proxy URL against
+                            a registry (Ok or Torn's last good): the IP verified for its host:port,
+                            else host:port; no proxy "direct"; never a credential.
+  case_proxy_slot_shared:   ledger pages of two Creators on one exit: every departure on it
+                            >= PAGE_GAP_S apart; a third Creator on another exit unpaced by them.
+  case_proxy_retry_shares_slot: a 429's retry takes the exit slot too (spaced from the other
+                            Creator's pages), still exactly one retry; its log names the exit, no credential.
+  case_only_the_ledger_walk_is_proxy_paced: through OFClient.get_json, two Creators on one proxy:
+                            a link-refresh walk's pages leave together (per Creator only), a
+                            transactions walk's are spaced; outside a walk never paced.
   case_failover_old_new_client: ADR-0030 move through real OFClient.from_session_file + get_json:
-                            the old client keeps the old endpoint's slot, the new one shares the
-                            new endpoint's slot with the Creator already there.
+                            the old client keeps the old exit's slot, the new one shares the
+                            new exit's slot with the Creator already there; two endpoints verified
+                            on one exit IP share one slot; two clients built either side of a probe
+                            verifying the endpoint's IP key that IP (resolved per page), one slot.
 
 Run: ./venv/bin/python service/tests/test_of_pacing.py   (exit 0 = pass)
 """
@@ -378,6 +382,7 @@ def case_prewarm_busy_table():
 
 E1 = ("socks5://u:pw@10.0.0.1:1080", "pool-a")
 E2 = ("socks5://u:pw@10.0.0.2:1080", "pool-b")
+K1, K2 = "10.0.0.1:1080", "10.0.0.2:1080"   # their pace keys (proxies.egress_identity)
 
 
 def _spaced(ts: list[float], gap: float) -> bool:
@@ -385,24 +390,32 @@ def _spaced(ts: list[float], gap: float) -> bool:
     return all(b - a >= gap - 0.01 for a, b in zip(ts, ts[1:]))
 
 
-def case_egress_key_table():
-    for url, label, key, lb in [
-        (None, None, "direct", "direct"),
-        ("", "x", "direct", "direct"),
-        ("http://user:secret@Proxy.Example.com:8080", "hu-1", "http://proxy.example.com:8080", "hu-1"),
-        ("http://other:pw2@proxy.example.com:8080/", "hu-1", "http://proxy.example.com:8080", "hu-1"),
-        ("socks5://127.0.0.1:9050", "infloww-0a1b2c3d", "socks5://127.0.0.1:9050", "infloww-0a1b2c3d"),
-        ("http://u:p@1.2.3.4:3128", "1.2.3.4:3128", "http://1.2.3.4:3128", None),
-        ("http://u:p@1.2.3.4:3128", None, "http://1.2.3.4:3128", None),
-        ("http://u:p@h.example.com:1", "bad label;rm", "http://h.example.com:1", "badlabelrm"),
+def case_egress_identity_table():
+    import proxies as proxy_registry
+    a = {"label": "a", "host": "gw.example.com", "port": 8001, "verified_ip": "5.6.7.8"}
+    b = {"label": "b", "host": "gw.example.com", "port": 8001}
+    c = {"label": "c", "host": "gw.example.com", "port": 8002, "username": "user", "password": "secret"}
+    reg, bare = proxy_registry.Ok({"proxies": [a, b, c]}), proxy_registry.Ok({"proxies": [b]})
+    url = proxy_registry.proxy_url
+    for u, r, key in [
+        (None, reg, "direct"),
+        ("", reg, "direct"),
+        (url(b), reg, "5.6.7.8"),                          # its host:port verified on another entry
+        (url(b), bare, "gw.example.com:8001"),             # nothing verified known: host:port
+        (url(b), proxy_registry.Torn(reg.data), "5.6.7.8"),  # torn read: the last good one
+        (url(b), proxy_registry.Torn(None), "gw.example.com:8001"),
+        (url(c), reg, "gw.example.com:8002"),
+        ("http://user:p@ss@gw.example.com:8001", reg, "5.6.7.8"),   # an "@" in the password
+        ("http://user:secret@proxy.example.com:8080", reg, "proxy.example.com:8080"),  # no entry
+        ("socks5://127.0.0.1:9050", reg, "127.0.0.1:9050"),
+        ("1.2.3.4:3128", reg, "1.2.3.4:3128"),
+        ("http://first.last:12345@squid:3128", reg, "squid:3128"),  # paste parser read this as the login
+        ("socks5h://user:secret@gw.example.com:8001", reg, "5.6.7.8"),  # scheme outside SCHEMES
+        ("http://user:sec ret@[2001:db8::1]:8080", reg, "[2001:db8::1]:8080"),  # IPv6, space in password
     ]:
-        k, got = of_pacing.egress(url, label)
-        assert k == key, (url, k)
-        assert "secret" not in k and "pw" not in k and "user" not in k
-        if lb is None:
-            assert got.startswith("p-") and len(got) == 10 and "1.2.3.4" not in got, got
-        else:
-            assert got == lb, (url, label, got)
+        got = proxy_registry.egress_identity(u, r)
+        assert got == key, (u, got, key)
+        assert not any(w in got for w in ("secret", "sec ret", "ss", "user", "first", "12345", "@")), got
 
 
 def _ledger_walks(plan, pages, fail=None):
@@ -420,7 +433,7 @@ def _ledger_walks(plan, pages, fail=None):
 
     async def job(aid, eg):
         for _ in range(pages):
-            await asyncio.to_thread(of_pacing.paced, aid, lambda: get(aid), eg)
+            await asyncio.to_thread(of_pacing.paced, aid, lambda: get(aid), lambda: eg)
 
     async def main():
         await asyncio.gather(*(of_pacing.walk(a, "transactions", lambda a=a, eg=eg: job(a, eg))
@@ -432,8 +445,7 @@ def _ledger_walks(plan, pages, fail=None):
 def case_proxy_slot_shared():
     gap = 0.08
     _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
-    e1, e2 = of_pacing.egress(*E1), of_pacing.egress(*E2)
-    sent = _ledger_walks({"a1": e1, "a2": e1, "b1": e2}, 4)
+    sent = _ledger_walks({"a1": K1, "a2": K1, "b1": K2}, 4)
     on1 = [t for a, t in sent if a in ("a1", "a2")]
     on2 = [t for a, t in sent if a == "b1"]
     assert len(on1) == 8 and _spaced(on1, gap), sorted(on1)
@@ -447,7 +459,6 @@ def case_proxy_retry_shares_slot():
     import logging
     gap = 0.08
     _knobs(PAGE_GAP_S=gap, JITTER_S=0.0, RETRY_MAX_S=0.01, RETRY_DEFAULT_S=0.01)
-    e1 = of_pacing.egress(*E1)
     lines: list[str] = []
 
     class H(logging.Handler):
@@ -457,14 +468,14 @@ def case_proxy_retry_shares_slot():
     of_pacing.log.addHandler(h)
     of_pacing.log.setLevel(logging.INFO)
     try:
-        sent = _ledger_walks({"a1": e1, "a2": e1}, 3, fail="a1")
+        sent = _ledger_walks({"a1": K1, "a2": K1}, 3, fail="a1")
     finally:
         of_pacing.log.removeHandler(h)
     assert sum(1 for a, _ in sent if a == "a1") == 4 and sum(1 for a, _ in sent if a == "a2") == 3, sent
     assert _spaced([t for _, t in sent], gap), "the retry takes the endpoint slot too"
     retry = [x for x in lines if x.startswith("bg_walk_429_retry")]
-    assert len(retry) == 1 and "account=a1" in retry[0] and "proxy=pool-a" in retry[0], retry
-    assert "10.0.0.1" not in retry[0] and "pw" not in retry[0] and "1080" not in retry[0], retry
+    assert len(retry) == 1 and "account=a1" in retry[0] and f"proxy={K1}" in retry[0], retry
+    assert "pw" not in retry[0] and "u:" not in retry[0] and "@" not in retry[0], retry
 
 
 _SESSION = {"headers": {"user_id": "0", "x_bc": "bc", "x_of_rev": "rev", "user_agent": "ua"},
@@ -485,24 +496,25 @@ def _record(c, sent, tag):
     return c
 
 
-def _walk_gets(jobs, pages):
-    """jobs: [(account, client, url)] each its own walk, `pages` GETs at once."""
+def _walk_gets(jobs, pages, kind="transactions"):
+    """jobs: [(account, client, url)] each its own `kind` walk, `pages` GETs at once."""
     async def job(c, url):
         for _ in range(pages):
             await asyncio.to_thread(c.get_json, url)
 
     async def main():
-        await asyncio.gather(*(of_pacing.walk(a, "transactions", lambda c=c, u=u: job(c, u)) for a, c, u in jobs))
+        await asyncio.gather(*(of_pacing.walk(a, kind, lambda c=c, u=u: job(c, u)) for a, c, u in jobs))
     asyncio.run(main())
 
 
-def case_link_stats_per_creator():
+def case_only_the_ledger_walk_is_proxy_paced():
     gap = 0.08
     _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
     sent: list = []
     a1, a2 = _record(_client("a1", *E1), sent, "a1"), _record(_client("a2", *E1), sent, "a2")
+    assert a1.pace_key() == a2.pace_key() == K1, (a1.pace_key(), a2.pace_key())
     stats = "https://onlyfans.com/api2/v2/trial-links/stats"
-    _walk_gets([("a1", a1, stats), ("a2", a2, stats)], 3)
+    _walk_gets([("a1", a1, stats), ("a2", a2, stats)], 3, kind="link_refresh")
     t1 = [t for tag, _, t in sent if tag == "a1"]
     t2 = [t for tag, _, t in sent if tag == "a2"]
     assert _spaced(t1, gap) and _spaced(t2, gap), "each Creator keeps its own spacing"
@@ -566,6 +578,34 @@ def case_failover_old_new_client():
         _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
         _walk_gets([("y", y, ledger), ("x", new, ledger)], 3)
         assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "the new client shares pool-b's slot"
+        # Two endpoints a probe verified on one exit IP: one exit, one slot (proxies._egress_key's rule).
+        proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
+            {"label": "gw-1", "scheme": "http", "host": "gw.example.com", "port": 8001, "username": "u",
+             "password": "pw", "verified_ip": "9.9.9.9", "assigned_account_ids": ["x"]},
+            {"label": "gw-2", "scheme": "http", "host": "gw.example.com", "port": 8002, "username": "u",
+             "password": "pw", "verified_ip": "9.9.9.9", "assigned_account_ids": ["y"]}]}))
+        gx, gy = (_record(OFClient.from_account(a), sent, a) for a in ("x", "y"))
+        assert gx.pace_key() == gy.pace_key() == "9.9.9.9", (gx.pace_key(), gy.pace_key())
+        sent.clear()
+        _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+        _walk_gets([("x", gx, ledger), ("y", gy, ledger)], 3)
+        assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "one exit IP, two ports: one slot"
+        # A probe verifies the endpoint's IP between two clients on it: both key that IP (resolved
+        # per page against the registry read then), one slot, never a credential.
+        def gw(ip=None):
+            proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
+                {"label": "gw-1", "scheme": "http", "host": "gw.example.com", "port": 8001, "username": "u",
+                 "password": "pw", "assigned_account_ids": ["x", "y"], **({"verified_ip": ip} if ip else {})}]}))
+        gw()
+        before = _record(OFClient.from_account("x"), sent, "x")
+        assert before.pace_key() == "gw.example.com:8001", before.pace_key()
+        gw("7.7.7.7")
+        after = _record(OFClient.from_account("y"), sent, "y")
+        assert before.pace_key() == after.pace_key() == "7.7.7.7", (before.pace_key(), after.pace_key())
+        sent.clear()
+        _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
+        _walk_gets([("x", before, ledger), ("y", after, ledger)], 3)
+        assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "built either side of a probe: one slot"
     finally:
         proxy_registry.REGISTRY_PATH, account_registry.latest_session_path = real_path, real_latest
         proxy_registry._last_good_text = None

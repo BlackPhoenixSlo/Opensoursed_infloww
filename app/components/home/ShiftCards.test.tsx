@@ -295,7 +295,7 @@ describe("My shifts, for a chatter", () => {
     renderWithProviders(<MyShiftsCard />);
     expect(await screen.findByText(NO_DATA)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "My shifts" }).querySelector('[data-empty-art="data"]')).not.toBeNull();
-    expect(screen.getByRole("img", { name: MY_SHIFTS_TIP })).toHaveAttribute("title", MY_SHIFTS_TIP);
+    expect(screen.getByRole("img", { name: MY_SHIFTS_TIP })).toHaveAttribute("data-info-tip");
   });
 
   it("clocks in and out from the card in one click, on the agency-wide clock, with no dialog", async () => {

@@ -12,20 +12,24 @@ gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
   selection         live_describable (the base every vision sweep walks) and
                     describe_selection — the ONE predicate both the describe-all
                     sweep and its plan count read, so the two cannot drift.
+  order             priority_order — the ONE walk order of both sweeps.
+  reuse             reuse_plan, build_copy_update, build_flags_copy — one
+                    vision answer shared across a duplicate set.
 """
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from sqlalchemy import and_
 from sqlalchemy.sql.elements import ColumnElement
 
 import vault_ai_brief
 from db.models import VaultItem
+from vault_of_folders_decide import parse_folder_ids
 
 
 # What the model writes in an `over_` field when it means "nothing there". It
@@ -232,8 +236,9 @@ def build_flags_fields(prev: Mapping[str, Any], per_frame: list[dict[str, Any]],
         fields.pop(dead, None)
     fields["_flags_model"] = model
     fields["_flags_v"] = version
-    # A recovered item must stop reporting the failure it recovered from.
-    for stale in ("_flags_status", "_flags_failed_at", "_flags_error"):
+    # A recovered item must stop reporting the failure it recovered from, and
+    # flags of its OWN are no longer a copy of anyone's.
+    for stale in ("_flags_status", "_flags_failed_at", "_flags_error", FLAGS_COPY_MARK):
         fields.pop(stale, None)
     return fields
 
@@ -443,17 +448,10 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
     #
     # The flags are a different reading of the SAME image, so they stay valid
     # across a re-describe. A locked dispute fix outranks model and carried alike.
-    for key in (*vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
-                "_flags_v", "_flags_model", "_flags_frames", "_flags_arc"):
-        if key in prev_ai:
-            out[key] = prev_ai[key]
-    for key, val in overrides.items():
-        if key not in locked or key not in fixable:
-            continue
-        if val is None:
-            out.pop(key, None)
-        else:
-            out[key] = val
+    # `data` is fresh, so a `_copied_from` marker is gone with it: the
+    # description is this row's own now.
+    carry_flags(out, prev_ai, exact=False)
+    _apply_locked_fixes(out, overrides, locked, fixable)
     vals: dict[str, Any] = {
         "describe_status": "described",
         "describe_model": used_model,
@@ -462,18 +460,239 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
         "ai_fields_json": json.dumps(out, ensure_ascii=False, default=str),
         "frames_sampled": n_frames if is_video else None,
     }
-    # Human edits win: never overwrite an effective field the operator locked.
-    if "tip_vault_flag" not in locked:
-        vals["tip_vault_flag"] = sellable
-    if "tags" not in locked:
-        vals["tags"] = json.dumps(tags)
-    if "explicitness_tier" not in locked:
-        vals["explicitness_tier"] = ans["explicitness_tier"]
-    if "description" not in locked:
-        if is_video:
-            vals["video_description"] = desc
-        else:
-            vals["description"] = desc
-    if "search_text" not in locked:
-        vals["search_text"] = search_text
+    _put_unlocked(vals, locked, {
+        "tip_vault_flag": sellable, "tags": json.dumps(tags),
+        "explicitness_tier": ans["explicitness_tier"],
+        ("video_description" if is_video else "description"): desc,
+        "search_text": search_text})
     return vals
+
+
+# ── The flags blob + locked columns (describe, flags, copies) ───────
+
+COPY_MARK = "_copied_from"          # describe + flags copied from that media
+FLAGS_COPY_MARK = "_flags_copied_from"  # flags only copied from that media
+
+# Everything in `ai_fields_json` that belongs to the FLAGS pass rather than to
+# describe: the answers, the garments, its stamps, its failure record and the
+# provenance of a copied blob. One list, so a describe re-run, a flags copy and
+# a describe copy carry exactly the same thing — `_flags_status` means the same
+# on every row however the row got its flags.
+FLAGS_BLOB_KEYS: tuple[str, ...] = (
+    *vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
+    "_flags_v", "_flags_model", "_flags_frames", "_flags_arc",
+    "_flags_status", "_flags_failed_at", "_flags_error", FLAGS_COPY_MARK)
+
+# Keys in `ai_fields_json` that are about the ROW, not the picture — an
+# operator's grading verdict (`vault_ai_fix.GRADE_KEY`) was given on this item.
+ROW_OWN_KEYS: tuple[str, ...] = ("_graded",)
+
+
+def carry_flags(dst: dict[str, Any], src: Mapping[str, Any], *,
+                locked: Collection[str] = (), exact: bool) -> dict[str, Any]:
+    """Put `src`'s flags blob (`FLAGS_BLOB_KEYS`) on `dst`, in place.
+
+    `exact`: `dst`'s flags become exactly `src`'s (a key `src` lacks is
+    dropped) — a copy. Not exact: only keys `src` has are written — a
+    describe re-run keeping the row's own earlier flags. A `locked` key (an
+    operator fix) keeps `dst`'s value either way."""
+    for key in FLAGS_BLOB_KEYS:
+        if key in locked:
+            continue
+        if key in src:
+            dst[key] = src[key]
+        elif exact:
+            dst.pop(key, None)
+    return dst
+
+
+def _apply_locked_fixes(out: dict[str, Any], overrides: Mapping[str, Any],
+                        locked: Collection[str], fixable: Collection[str]) -> None:
+    """Restore the row's locked dispute fixes (`vault_ai_fix` writes INTO the
+    blob, see `build_describe_update`) onto a freshly-written blob."""
+    for key, val in overrides.items():
+        if key not in locked or key not in fixable:
+            continue
+        if val is None:
+            out.pop(key, None)
+        else:
+            out[key] = val
+
+
+# Column → the lock that guards it (`locked_fields_json` names effective fields).
+_COLUMN_LOCK = {"tip_vault_flag": "tip_vault_flag", "tags": "tags",
+                "explicitness_tier": "explicitness_tier", "description": "description",
+                "video_description": "description", "search_text": "search_text"}
+
+
+def _put_unlocked(vals: dict[str, Any], locked: Collection[str],
+                  cols: Mapping[str, Any]) -> None:
+    """Human edits win: write each of `cols` unless the operator locked it."""
+    for col, v in cols.items():
+        if _COLUMN_LOCK[col] not in locked:
+            vals[col] = v
+
+
+# ── Walk order ──────────────────────────────────────────────────────
+
+PRIORITY_HEAD = 100
+
+
+def priority_order(rows: Iterable[tuple[int, datetime | None, str | None]],
+                   head: int = PRIORITY_HEAD) -> list[int]:
+    """The order every vision sweep walks a vault, over (media_id, created_at,
+    of_folder_ids) rows — the account's WHOLE live describable set, so a rank is
+    a property of the item, not of what one sweep still has to do (a capped run
+    must not promote items 101-200 over the folders on the next press).
+
+      1. the newest `head` (created_at desc, media_id desc)
+      2. anything in an OF folder (`of_folder_ids` non-empty), newest first
+      3. the oldest `head` (created_at asc)
+      4. the rest, newest first
+
+    Order decides what a cap or a restart cuts off, so the tail is what nobody
+    is sending. Each id appears once, at its best rank."""
+    rows = list(rows)
+    newest = sorted(rows, key=lambda r: (r[1] is not None, r[1] or datetime.min,
+                                         int(r[0])), reverse=True)
+    out: list[int] = []
+    seen: set[int] = set()
+
+    def take(seq: Iterable[tuple]) -> None:
+        for r in seq:
+            mid = int(r[0])
+            if mid not in seen:
+                seen.add(mid)
+                out.append(mid)
+
+    take(newest[:head])
+    take(r for r in newest if parse_folder_ids(r[2]))
+    take(reversed(newest[-head:] if head else []))
+    take(newest)
+    return out
+
+
+# ── Answer reuse across a duplicate set ─────────────────────────────
+
+class ReusePlan(NamedTuple):
+    """How one sweep spends calls on duplicate sets (`vault_dupes.reuse_groups`).
+
+    copy_now   target -> a member already done before this sweep: copied at
+               the start, no call.
+    followers  leader -> the walked members copied right after the leader's
+               own call succeeds (never at the end, so a cap mid-sweep keeps
+               every copy whose leader made it)."""
+
+    copy_now: dict[int, int]
+    followers: dict[int, list[int]]
+
+    def riders(self) -> set[int]:
+        return {m for ms in self.followers.values() for m in ms}
+
+
+def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
+               done: Collection[int], bad: Collection[int] = ()) -> ReusePlan:
+    """`order` is the sweep's walk (priority order); `done` the members whose
+    answer is already current and may be copied from; `bad` members whose last
+    attempt failed (picked as leader last, so one broken media does not starve
+    its whole set on every press).
+
+    A set with a done member outside the walk copies from it. Otherwise the
+    walked member ranked best in `order` (good before bad) is the ONE call and
+    the rest follow it. Not the oldest — which member is the cluster's seed
+    shifts with collect order, the priority does not."""
+    rank = {int(m): i for i, m in enumerate(order)}
+    copy_now: dict[int, int] = {}
+    followers: dict[int, list[int]] = {}
+    for g in groups:
+        walked = sorted((int(m) for m in g if int(m) in rank),
+                        key=lambda m: (m in bad, rank[m]))
+        if not walked:
+            continue
+        src = next((int(m) for m in g if int(m) not in rank and int(m) in done), None)
+        if src is not None:
+            for m in walked:
+                copy_now[m] = src
+        elif len(walked) > 1:
+            followers[walked[0]] = walked[1:]
+    return ReusePlan(copy_now, followers)
+
+
+def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
+                     locked: Collection[str], src_id: int) -> dict[str, Any]:
+    """`prev` (the copy's ai_fields) with its flags blob replaced by the
+    source's, stamped `FLAGS_COPY_MARK`. Enrichment only, like a flags run;
+    an operator-locked flag or garment stays the copy's own."""
+    fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
+    for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
+        fields.pop(dead, None)  # what a flags run drops (`build_flags_fields`)
+    fields[FLAGS_COPY_MARK] = int(src_id)
+    return fields
+
+
+_COPY_COLUMNS = ("tip_vault_flag", "tags", "explicitness_tier", "description",
+                 "video_description", "search_text")
+
+
+def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
+                      locked: Collection[str], overrides: Mapping[str, Any],
+                      fixable: Collection[str], src_id: int,
+                      now: datetime) -> dict[str, Any]:
+    """The `VaultItem` column values that make a duplicate carry its source's
+    describe + flags answer without a call: the columns `build_describe_update`
+    writes, taken from `src` (the source row's columns), under the copy's OWN
+    locks and locked dispute fixes. The source's row-own keys (`ROW_OWN_KEYS`)
+    are not the copy's; the copy keeps its own. A source never flagged leaves
+    the copy's own flags. Stamped `COPY_MARK` — how a later re-describe of the
+    source finds its copies."""
+    src_ai = json.loads(src.get("ai_fields_json") or "{}") or {}
+    skip = {*FLAGS_BLOB_KEYS, *ROW_OWN_KEYS, COPY_MARK}
+    out = {k: v for k, v in src_ai.items() if k not in skip}
+    out.update({k: prev_ai[k] for k in ROW_OWN_KEYS if k in prev_ai})
+    carry_flags(out, prev_ai, exact=False)
+    if "_flags_v" in src_ai:
+        carry_flags(out, src_ai, locked=locked, exact=True)
+        # The flags came from `src_id` itself, which COPY_MARK names. The
+        # source's own flags marker names an item THIS copy was never
+        # compared with, so it must not ride along (reuse is never transitive).
+        out.pop(FLAGS_COPY_MARK, None)
+    out[COPY_MARK] = int(src_id)
+    _apply_locked_fixes(out, overrides, locked, fixable)
+    vals: dict[str, Any] = {
+        "describe_status": "described",
+        "describe_model": src.get("describe_model"),
+        "describe_call_id": src.get("describe_call_id"),
+        "describe_generated_at": now,
+        "ai_fields_json": json.dumps(out, ensure_ascii=False, default=str),
+        "frames_sampled": src.get("frames_sampled"),
+    }
+    _put_unlocked(vals, locked, {c: src.get(c) for c in _COPY_COLUMNS})
+    return vals
+
+
+def flags_current(fields: Mapping[str, Any], version: int) -> bool:
+    """Flags on this blob answer prompt `version` — nothing for a sweep to do."""
+    return (int(fields.get("_flags_v") or 0) >= version
+            and vault_ai_brief.flags_known(dict(fields)))
+
+
+_DESCRIBE_FAILED = frozenset({"failed", "refused", "blocked_drm", "fetch_failed", "gone"})
+
+
+def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any]]], *,
+                flags: bool, flags_version: int) -> tuple[set[int], set[int]]:
+    """(done, bad) over (media_id, describe_status, ai_fields) rows, for
+    `reuse_plan`: done = its answer may be copied (described / current flags);
+    bad = its last attempt failed."""
+    done: set[int] = set()
+    bad: set[int] = set()
+    for mid, status, f in rows:
+        if flags:
+            ok, failed = flags_current(f, flags_version), "_flags_status" in f
+        else:
+            ok, failed = status == "described", status in _DESCRIBE_FAILED
+        if ok:
+            done.add(int(mid))
+        elif failed:
+            bad.add(int(mid))
+    return done, bad

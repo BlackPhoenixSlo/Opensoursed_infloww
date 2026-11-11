@@ -1,80 +1,63 @@
 "use client";
 
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { EMPTY_DRAFT, draftLabel, draftProblem, type ProxyDraft } from "./AddProxyModal";
-import { currentProxy, useProxyList, type ProxyList } from "./creatorFlow";
-import { applyProxy, bindPoolProxy } from "./proxyApi";
+import { useReducer } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { draftProblem, type ProxyDraft } from "./AddProxyModal";
+import { useProxyList } from "./creatorFlow";
+import {
+  INITIAL_LINKED_PROXY, canSubmit, fallbackLabel, keepTarget, linkedProxyReducer, outcomeMessage, type Outcome,
+} from "./linkedProxyForm";
+import { connectNewProxy, reloadNewProxy } from "./linkedProxyRun";
+import { currentProxy } from "./proxyApi";
+import { useReportBusy } from "./useReportBusy";
 import { IfButton, IfInput, IfLabel, IfNativeSelect } from "@/components/ui/infloww";
-import { BRAND_NAME } from "@/lib/brand";
-import { relay } from "@/lib/relay";
 
-/** Optional post-login proxy setup. Test before moving the linked account off its working proxy. */
+/** Optional post-login proxy setup (the switch: `connectNewProxy`). The account's current proxy stays until the new
+ *  one passed its test and is assigned. Mount it keyed by the account, so another account starts a fresh form. */
 export default function LinkedCreatorProxy({ accountId, onBusy }: { accountId: string; onBusy: (busy: boolean) => void }) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<ProxyDraft>({ ...EMPTY_DRAFT, scheme: "http" });
-  const [message, setMessage] = useState("");
-  const [fallback, setFallback] = useState(true);
+  const [state, dispatch] = useReducer(linkedProxyReducer, INITIAL_LINKED_PROXY);
+  const { draft, open, fallback, busy, outcome } = state;
   const proxies = useProxyList();
   const qc = useQueryClient();
-  const problem = draftProblem(draft, proxies.data?.proxies.map((p) => p.label) ?? null);
-  const change = useMutation({
-    mutationFn: async () => {
-      const list = await relay.get<ProxyList>("/admin/proxies");
-      const invalid = draftProblem(draft, list.proxies.map((p) => p.label));
-      if (invalid) throw new Error(invalid.text);
-      const label = draftLabel(draft).trim();
-      try {
-        await relay.post("/admin/proxies", {
-          label, scheme: draft.scheme, host: draft.host.trim(), port: Number(draft.port),
-          username: draft.username.trim() || null, password: draft.password || null,
-        });
-        const path = `/admin/proxies/${encodeURIComponent(label)}`;
-        try {
-          const check = await relay.post<{ ok: boolean }>(`${path}/test`);
-          if (!check.ok) throw new Error("Proxy check failed. Check your details or switch to the default proxies.");
-        } catch (error) {
-          await relay.delete(path).catch(() => undefined);
-          throw error;
-        }
-        await applyProxy(accountId, currentProxy(list, accountId), { type: "custom", label, ok: true });
-        return false;
-      } catch (error) {
-        if (!fallback) throw error;
-        // Reload even if an earlier attempt already bound the default proxy.
-        await bindPoolProxy(accountId);
-        await relay.post(`/admin/reload-session?account_id=${encodeURIComponent(accountId)}`);
-        return true;
-      }
-    },
-    onSuccess: (usedFallback) => {
-      setDraft({ ...EMPTY_DRAFT, scheme: "http" });
-      setMessage(usedFallback ? `Your proxy could not connect. This creator is now using ${BRAND_NAME}'s default proxy.` : "Your proxy is connected.");
-    },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["proxies"] }),
-        qc.invalidateQueries({ queryKey: ["accounts"] }),
-      ]);
-      onBusy(false);
-    },
-  });
-  const submit = () => {
-    if (change.isPending) return;
-    setMessage(""); onBusy(true); change.mutate();
+  const taken = proxies.data?.proxies.map((p) => p.label) ?? null;
+  const problem = draftProblem(draft, taken);
+  const keep = keepTarget(currentProxy(proxies.data, accountId), proxies.data?.pool?.size ?? 0);
+  const shown = outcome && outcomeMessage(outcome);
+
+  useReportBusy(busy, onBusy);
+
+  const settle = async (run: Promise<Outcome>) => {
+    const result = await run;
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["proxies"] }),
+      qc.invalidateQueries({ queryKey: ["accounts"] }),
+    ]);
+    dispatch({ type: "settled", outcome: result });
   };
+  const submit = () => {
+    if (!canSubmit(state, taken)) return;
+    dispatch({ type: "submitStart" });
+    void settle(connectNewProxy(accountId, draft, fallback));
+  };
+  const retry = () => {
+    if (busy || outcome?.kind !== "reloadFailed") return;
+    dispatch({ type: "retryStart" });
+    void settle(reloadNewProxy(accountId, outcome.done));
+  };
+
   return (
     <div className="space-y-3">
       <button type="button" className="text-sm text-accent hover:text-accent-hover" aria-expanded={open}
-        onClick={() => setOpen(!open)} disabled={change.isPending}>
+        onClick={() => dispatch({ type: "toggle" })} disabled={busy}>
         Click here to add your proxy
       </button>
       {open && (
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <fieldset disabled={change.isPending} className="space-y-3">
+          <fieldset disabled={busy} className="space-y-3">
             <div>
               <IfLabel htmlFor="linked-proxy-type">Type</IfLabel>
-              <IfNativeSelect id="linked-proxy-type" value={draft.scheme} onChange={(e) => setDraft({ ...draft, scheme: e.target.value as ProxyDraft["scheme"] })}>
+              <IfNativeSelect id="linked-proxy-type" value={draft.scheme}
+                onChange={(e) => dispatch({ type: "edit", patch: { scheme: e.target.value as ProxyDraft["scheme"] } })}>
                 <option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option>
               </IfNativeSelect>
             </div>
@@ -83,26 +66,33 @@ export default function LinkedCreatorProxy({ accountId, onBusy }: { accountId: s
                 <IfLabel htmlFor={`linked-proxy-${key}`}>{label}</IfLabel>
                 <IfInput id={`linked-proxy-${key}`} value={draft[key]} type={key === "password" ? "password" : "text"}
                   inputMode={key === "port" ? "numeric" : undefined} autoComplete="off" className="w-full"
-                  onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} />
+                  onChange={(e) => dispatch({ type: "edit", patch: { [key]: e.target.value } })} />
               </div>
             ))}
             <label className="flex items-start gap-3 text-sm text-fg">
-              <input type="checkbox" checked={fallback} onChange={(e) => setFallback(e.target.checked)}
+              <input type="checkbox" checked={fallback} onChange={(e) => dispatch({ type: "setFallback", value: e.target.checked })}
                 aria-describedby="proxy-fallback-help" className="mt-1 h-4 w-4 shrink-0 accent-accent" />
-              <span>Use {BRAND_NAME}&apos;s default proxy if mine fails</span>
+              <span>{fallbackLabel(keep)}</span>
             </label>
             <p id="proxy-fallback-help" className="text-sm text-muted">
-              If your proxy cannot connect during setup, we&apos;ll automatically assign a {BRAND_NAME} proxy instead.
-              No extra proxy details needed. Uncheck to keep the error visible and fix your own proxy.
+              This creator&apos;s current proxy stays until yours passes its test and is assigned. Uncheck to keep the
+              form open with the error and fix your proxy.
             </p>
-            <IfButton onClick={() => submit()} disabled={!!problem || change.isPending} title={problem?.text}>
-              {change.isPending ? "Checking proxy…" : "Connect proxy"}
+            <IfButton onClick={submit} disabled={!canSubmit(state, taken)} title={problem?.text}>
+              {busy ? "Checking proxy…" : "Connect proxy"}
             </IfButton>
           </fieldset>
-          {change.isError && <p role="alert" className="text-sm text-err">Couldn&apos;t connect the proxy{fallback ? " or the default proxy" : ""}. Check your details and try again.</p>}
-          {message && <p role="status" className="text-sm text-fg">{message}</p>}
           {proxies.isSuccess && !proxies.data?.pool?.size && <p className="text-sm text-muted">Default proxies are currently unavailable.</p>}
         </div>
+      )}
+      {shown && (
+        <p role={shown.tone === "err" ? "alert" : "status"}
+          className={shown.tone === "err" ? "text-sm text-err" : shown.tone === "warn" ? "text-sm text-warn" : "text-sm text-fg"}>
+          {shown.text}
+        </p>
+      )}
+      {outcome?.kind === "reloadFailed" && (
+        <IfButton onClick={retry} disabled={busy}>{busy ? "Refreshing…" : "Retry session refresh"}</IfButton>
       )}
     </div>
   );

@@ -14,8 +14,12 @@ real run_one_tick with a fake OF client:
     case_backfill_sends_a_date_only_start_date  the backfill's wire: startDate a day before its
         floor, date only (its walk: test_tx_ingest_backfill.py)
     case_failed_full_stamps_its_period          a page that raises (a terminal second 429 too):
-        error kept, stamped; this period's next ticks recent, the next period's full
-    case_truncated_full_stamps                  OF ignoring `offset` (repeated page): stamped
+        error kept, stamped, counted; this period's next ticks recent and pass (ok), yet /health
+        reads full_walk_failed (yellow), the next period's full; one that completes clears it
+    case_truncated_full_stamps                  OF ignoring `offset` (repeated page): stamped,
+        counted (/health full_walk_failed, its reason in last_error)
+    case_refused_full_counts_only_after_a_page  a proxy refusal on page 1: no stamp, no count;
+        after page 1: stamped + counted; neither in the pause's streak
     case_unseeded_backfilled_account_seeds_once a backfilled row with NULL: seeded to now
         (persisted), recent; full at its next phase boundary
     case_admin_run_refresh_forces_and_stamps    /run mode=refresh: a full walk mid-period, stamped
@@ -31,6 +35,8 @@ real run_one_tick with a fake OF client:
         (NULL), the 0106 revision is guarded, idempotent, the single head after 0105
     case_legacy_schema_gains_backfill_stalls    a box without backfill_stalls (no migration): boot
         catch-up adds it (NULL), which reads 0: no walk started, nothing given up
+    case_legacy_schema_gains_full_walk_failures a box without full_walk_failures: boot catch-up
+        adds it (NULL, reads 0: ok stays ok), the 0111 revision guarded, idempotent, 0110's one child
 
 Run: ./venv/bin/python service/tests/test_tx_ingest_recent.py
 """
@@ -42,6 +48,7 @@ _harness.bootstrap()
 
 import logging  # noqa: E402
 import re  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import func, select  # noqa: E402
@@ -105,6 +112,8 @@ async def _ready() -> None:
         row.consecutive_failures = 0
         row.paused_until = None
         row.last_full_at = None
+        row.full_walk_failures = 0
+        row.last_error = None
     ti._recent_window_warned.discard(ACCT)
     ti._recent_empty_warned.discard(ACCT)
 
@@ -147,6 +156,13 @@ async def _tick(fake: _Fake) -> tuple[str, dict]:
 async def _scan() -> TransactionScanHistory:
     async with get_session() as s:
         return await s.get(TransactionScanHistory, ACCT)
+
+
+async def _health() -> tuple[str, str, int]:
+    """ACCT's /health row: (tier, current_status, full_walk_failures)."""
+    from tx_ingest_admin_api import admin_ingest_tx_health
+    h = {a["account_id"]: a for a in (await admin_ingest_tx_health())["accounts"]}[ACCT]
+    return h["tier"], h["current_status"], h["full_walk_failures"]
 
 
 def _at(iso: str) -> datetime:
@@ -239,12 +255,24 @@ async def case_failed_full_stamps_its_period():
         assert row.last_error and res["error"][:40] in row.last_error, row.last_error
         assert row.last_full_at is not None and row.last_full_at >= before, \
             f"a failed full walk ({boom.__name__}) did not spend its period"
+        assert row.full_walk_failures == 1 and row.last_error.startswith("full_walk_failed: "), row.last_error
         assert (await ti._decide_mode(ACCT)) == "recent", "a failed full walk re-walked in its period"
         _restart()
-        assert (await ti._decide_mode(ACCT)) == "recent"
-        # The next period's first tick walks full again.
+        # This period's recent walks pass: the failed full walk still shows on /health.
+        fail_err = res["error"]
+        mode, res = await _tick(_Fake([_page([_row(f"ok{boom.__name__}", datetime.utcnow() - timedelta(hours=1))])]))
+        row = await _scan()
+        assert mode == "recent" and res["error"] is None, (mode, res)
+        assert (row.current_status, row.consecutive_failures, row.full_walk_failures) == (
+            "ok", 0, 1), (row.current_status, row.consecutive_failures, row.full_walk_failures)
+        assert row.last_error.startswith("full_walk_failed: ") and fail_err[:40] in row.last_error, row.last_error
+        assert await _health() == ("yellow", "full_walk_failed", 1)
+        # The next period's first tick walks full again; completed, it clears the count.
         await _set_full(_period_start() - timedelta(seconds=1))
-        assert (await ti._decide_mode(ACCT)) == "refresh"
+        mode, res = await _tick(_Fake([_page([])]))
+        row = await _scan()
+        assert mode == "refresh" and res["error"] is None, (mode, res)
+        assert (row.current_status, row.full_walk_failures, row.last_error) == ("ok", 0, None), row.current_status
 
 
 async def case_truncated_full_stamps():
@@ -257,7 +285,35 @@ async def case_truncated_full_stamps():
     assert mode == "refresh" and res["error"] is None and res["pages"] == 1, (mode, res)
     assert len(fake.calls) == 2, fake.calls
     assert (await _full()) >= before, "a walk cut short by the repeated-page guard did not stamp"
+    row = await _scan()
+    assert (row.current_status, row.full_walk_failures, row.last_error) == (
+        "ok", 1, "full_walk_failed: cut_short: repeated_page"), (row.current_status, row.last_error)
+    assert await _health() == ("yellow", "full_walk_failed", 1)
     assert (await ti._decide_mode(ACCT)) == "recent"
+
+
+def _refused():
+    from curl_cffi.requests.exceptions import ProxyError
+    raise ProxyError("Failed to perform, curl: (56) CONNECT tunnel failed, response 403.")
+
+
+async def case_refused_full_counts_only_after_a_page():
+    """A proxy refusal on the first page never reached OF: no stamp, no count, the next tick walks
+    full. One after a page did: stamped and counted (else it re-walks every tick); neither is in
+    the pause's streak."""
+    for first, want_stamp, want_count in ((False, False, 0), (True, True, 1)):
+        await _ready()
+        due = _period_start() - timedelta(seconds=1)
+        await _set_full(due)
+        pages = ([_page([_row("rf1", datetime.utcnow() - timedelta(days=2))], more=True)] if first else []) + [_refused]
+        before = datetime.utcnow()
+        mode, res = await _tick(_Fake(pages))
+        row = await _scan()
+        assert mode == "refresh" and res["error"] and res["pages"] == int(first), (mode, res)
+        assert (row.current_status, row.consecutive_failures, row.full_walk_failures) == (
+            "idle", 0, want_count), (first, row.current_status, row.consecutive_failures, row.full_walk_failures)
+        assert (row.last_full_at >= before) == want_stamp and (row.last_full_at == due) != want_stamp, row.last_full_at
+        assert (await ti._decide_mode(ACCT)) == ("recent" if want_stamp else "refresh"), first
 
 
 async def case_unseeded_backfilled_account_seeds_once():
@@ -421,10 +477,13 @@ async def case_health_exposes_last_full_attempt_at():
     assert rows[ACCT]["last_full_attempt_at"] is None, rows[ACCT]
 
 
-def case_legacy_schema_gains_last_full_at():
+@contextmanager
+def _legacy_db(tag: str, revision: str, column: str, row: str):
+    """A box at alembic `revision` without `column` on transaction_scan_history, one row
+    (`row`: "(cols) VALUES (...)"), booted (init_db's additive catch-up). Yields its path, the
+    table's columns after boot and the row's `column` value; removed after."""
     import asyncio
     import importlib
-    import importlib.util
     import os
     import sqlite3
     import tempfile
@@ -432,22 +491,20 @@ def case_legacy_schema_gains_last_full_at():
 
     import sqlalchemy as sa
     import sqlalchemy.dialects.sqlite  # noqa: F401
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    old = Path(tempfile.gettempdir()) / f"tx_scan_old_{os.getpid()}.db"
-    old.unlink(missing_ok=True)
     from sqlalchemy.schema import CreateTable
+
+    old = Path(tempfile.gettempdir()) / f"tx_scan_{tag}_{os.getpid()}.db"
+    old.unlink(missing_ok=True)
     acct_ddl, ddl = (str(CreateTable(m.__table__).compile(dialect=sa.dialects.sqlite.dialect()))
                      for m in (Account, TransactionScanHistory))
     con = sqlite3.connect(old)
     con.executescript(f"""
         CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
-        INSERT INTO alembic_version VALUES ('0105_of_consent_accepts');
+        INSERT INTO alembic_version VALUES ('{revision}');
         {acct_ddl};
         {ddl};
-        ALTER TABLE transaction_scan_history DROP COLUMN last_full_at;
-        INSERT INTO transaction_scan_history (account_id, fully_backfilled) VALUES ('legacy1', 1);
+        ALTER TABLE transaction_scan_history DROP COLUMN {column};
+        INSERT INTO transaction_scan_history {row};
     """)
     con.commit()
     con.close()
@@ -460,19 +517,33 @@ def case_legacy_schema_gains_last_full_at():
         db_engine.DATABASE_URL = prev
     con = sqlite3.connect(old)
     cols = {r[1] for r in con.execute("PRAGMA table_info(transaction_scan_history)")}
-    val = con.execute("SELECT last_full_at FROM transaction_scan_history WHERE account_id='legacy1'").fetchone()
+    val = con.execute(f"SELECT {column} FROM transaction_scan_history").fetchone()
     con.close()
-    assert "last_full_at" in cols and val == (None,), (sorted(cols), val)
+    try:
+        yield old, cols, val
+    finally:
+        old.unlink(missing_ok=True)
+
+
+def _migration_roundtrip(db, file: str, revision: str, down_revision: str, column: str) -> None:
+    """Revision `file` on `db` (boot already added `column`): `down_revision`'s one child,
+    guarded and idempotent up and down."""
+    import importlib.util
+    from pathlib import Path
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
 
     versions = Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions"
-    spec = importlib.util.spec_from_file_location("mig_0106", versions / "20261108_1300_tx_scan_last_full_at.py")
+    spec = importlib.util.spec_from_file_location(f"mig_{revision}", versions / file)
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
-    assert (mig.revision, mig.down_revision) == ("0106_tx_scan_last_full_at", "0105_of_consent_accepts")
+    assert (mig.revision, mig.down_revision) == (revision, down_revision)
     downs = [line for f in versions.glob("*.py") for line in f.read_text().splitlines()
-             if line.startswith("down_revision") and "0105_of_consent_accepts" in line]
-    assert len(downs) == 1, f"0105 must have exactly one child: {downs}"
-    eng = sa.create_engine(f"sqlite:///{old}")
+             if line.startswith("down_revision") and down_revision in line]
+    assert len(downs) == 1, f"{down_revision} must have exactly one child: {downs}"
+    eng = sa.create_engine(f"sqlite:///{db}")
 
     def step(fn):
         with eng.begin() as conn:
@@ -480,7 +551,7 @@ def case_legacy_schema_gains_last_full_at():
                 fn()
 
     def has() -> bool:
-        return "last_full_at" in {c["name"] for c in sa.inspect(eng).get_columns("transaction_scan_history")}
+        return column in {c["name"] for c in sa.inspect(eng).get_columns("transaction_scan_history")}
 
     try:
         step(mig.upgrade)   # boot already added it: guarded
@@ -493,58 +564,41 @@ def case_legacy_schema_gains_last_full_at():
         assert has()
     finally:
         eng.dispose()
-        old.unlink()
+
+
+def case_legacy_schema_gains_last_full_at():
+    with _legacy_db("old", "0105_of_consent_accepts", "last_full_at",
+                    "(account_id, fully_backfilled) VALUES ('legacy1', 1)") as (db, cols, val):
+        assert "last_full_at" in cols and val == (None,), (sorted(cols), val)
+        _migration_roundtrip(db, "20261108_1300_tx_scan_last_full_at.py", "0106_tx_scan_last_full_at",
+                             "0105_of_consent_accepts", "last_full_at")
 
 
 def case_legacy_schema_gains_backfill_stalls():
-    import asyncio
-    import importlib
-    import os
-    import sqlite3
-    import tempfile
-    from pathlib import Path
-
-    import sqlalchemy as sa
-    import sqlalchemy.dialects.sqlite  # noqa: F401
-    from sqlalchemy.schema import CreateTable
-
     import transaction_ingest_decide as d
-
-    old = Path(tempfile.gettempdir()) / f"tx_scan_stalls_{os.getpid()}.db"
-    old.unlink(missing_ok=True)
-    acct_ddl, ddl = (str(CreateTable(m.__table__).compile(dialect=sa.dialects.sqlite.dialect()))
-                     for m in (Account, TransactionScanHistory))
-    con = sqlite3.connect(old)
-    con.executescript(f"""
-        CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
-        INSERT INTO alembic_version VALUES ('0106_tx_scan_last_full_at');
-        {acct_ddl};
-        {ddl};
-        ALTER TABLE transaction_scan_history DROP COLUMN backfill_stalls;
-        INSERT INTO transaction_scan_history (account_id, fully_backfilled, current_status)
-            VALUES ('legacy2', 0, 'idle');
-    """)
-    con.commit()
-    con.close()
-    db_engine = importlib.import_module("db.engine")
-    prev = db_engine.DATABASE_URL
-    try:
-        db_engine.DATABASE_URL = f"sqlite+aiosqlite:///{old}"
-        asyncio.run(db_engine.init_db())
-    finally:
-        db_engine.DATABASE_URL = prev
-    con = sqlite3.connect(old)
-    try:
-        cols = {r[1] for r in con.execute("PRAGMA table_info(transaction_scan_history)")}
-        val = con.execute("SELECT backfill_stalls FROM transaction_scan_history WHERE account_id='legacy2'").fetchone()
-    finally:
-        con.close()
-        old.unlink()
-    assert "backfill_stalls" in cols and val == (None,), (sorted(cols), val)
+    with _legacy_db("stalls", "0106_tx_scan_last_full_at", "backfill_stalls",
+                    "(account_id, fully_backfilled, current_status) VALUES ('legacy2', 0, 'idle')") as (_, cols, val):
+        assert "backfill_stalls" in cols and val == (None,), (sorted(cols), val)
     facts = ti.scan_facts(TransactionScanHistory(account_id="legacy2", fully_backfilled=False,
                                                  current_status="idle", backfill_stalls=val[0]))
     assert facts.backfill_stalls == 0 and not d.walk_started(facts), facts
-    assert d.decide_mode(facts, now=datetime(2026, 11, 8)) == "backfill", "a NULL is no stall"
+    assert d.decide_mode(facts, now=datetime(2026, 11, 8)).mode == "backfill", "a NULL is no stall"
+
+
+def case_legacy_schema_gains_full_walk_failures():
+    import transaction_ingest_decide as d
+    from tx_ingest_admin_api import _tx_ingest_tier
+    with _legacy_db("fwf", "0110_assistant_turn_thread", "full_walk_failures",
+                    "(account_id, fully_backfilled, current_status) VALUES ('legacy3', 1, 'ok')") as (db, cols, val):
+        assert "full_walk_failures" in cols and val == (None,), (sorted(cols), val)
+        facts = ti.scan_facts(TransactionScanHistory(account_id="legacy3", fully_backfilled=True,
+                                                     current_status="ok", full_walk_failures=val[0]))
+        ok = d.scan_after_success(facts, mode="recent", inserted=0, patched=0, last_marker=None, rows_min=None,
+                                  rows_max=None, floor_reached=True, now=datetime(2026, 11, 10)).state
+        assert (facts.full_walk_failures, _tx_ingest_tier(5.0, ok.current_status, ok.full_walk_failures)) == (
+            0, "green"), "a NULL is no failed full walk"
+        _migration_roundtrip(db, "20261111_0100_tx_scan_full_walk_failures.py", "0111_tx_scan_full_walk_failures",
+                             "0110_assistant_turn_thread", "full_walk_failures")
 
 
 _harness.run()

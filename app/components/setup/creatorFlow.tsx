@@ -13,9 +13,9 @@ import { Camera, Check, Info, Loader2, Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { FIELD, HB_DIM, RADIO, RADIO_GROUP, RADIO_ITEM, STEP_TITLE, T } from "@/components/setup/creatorFlowUi";
-import type { ProxyChoice } from "@/components/setup/proxyApi";
-import { relay, type Employee, type ProxyMeta } from "@/lib/relay";
-import { GENDERS, avatarDataUrl, type CreatorDetails, type CreatorProfile, type useCreatorProfiles } from "@/lib/creatorProfiles";
+import type { ProxyChoice, ProxyList } from "@/components/setup/proxyApi";
+import { relay, type Employee } from "@/lib/relay";
+import { GENDERS, SETTINGS_NOT_LOADED, avatarDataUrl, type CreatorDetails, type CreatorProfile, type useCreatorProfiles } from "@/lib/creatorProfiles";
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -23,7 +23,7 @@ import { BRAND_NAME } from "@/lib/brand";
 export {
   FIELD, FlowButton, FlowModal, HB_DIM, LinkedLine, RADIO, RADIO_GROUP, RADIO_ITEM, STEP_TITLE, StepIndicator, T,
 } from "@/components/setup/creatorFlowUi";
-export { applyProxy, bindPoolProxy, type ProxyChoice } from "@/components/setup/proxyApi";
+export { applyProxy, currentProxy, type ProxyChoice, type ProxyList } from "@/components/setup/proxyApi";
 
 // ── Toasts (Infloww's `message$4.success` / `showHBSnackbar`) ─────────────────────────────────────────────────────
 
@@ -263,6 +263,9 @@ export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProf
       creator?: Partial<CreatorDetails>;
       draftId?: string;
     }) => {
+      // The tag, notes and Creator details live in the settings blob: without it nothing is saved, rather than a
+      // half save the form calls done.
+      if (!profiles.wired) throw new Error(SETTINGS_NOT_LOADED);
       const nick = details.nickname.trim();
       if (nick && nick !== before) {
         await relay.patch(`/admin/accounts/${encodeURIComponent(accountId)}`, { nickname: nick });
@@ -276,7 +279,7 @@ export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProf
         await relay.put(`/admin/employees/${e.id}/access`, { account_ids: ids });
       }
       const profile: CreatorProfile = { ...creator, tag: details.tag.trim() || undefined, notes: details.notes.trim() || undefined };
-      if (profiles.wired) await profiles.linkAccount(accountId, profile, draftId);
+      await profiles.linkAccount(accountId, profile, draftId);
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -287,13 +290,6 @@ export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProf
 
 // ── Proxy selection: `SelectProxyUI` (index.9f50f370.js @12426358) ───────────────────────────────────────────────
 
-/** GET /admin/proxies: your proxies, and the Inflowwww pool as a count and the accounts on it (never its hosts);
- *  `bad`: how many pool proxies are unreachable right now (docs/adr/0030). A Creator still on one reads
- *  `proxy_down` in `/admin/accounts`. */
-export interface ProxyList {
-  proxies: ProxyMeta[];
-  pool: { size: number; account_ids: string[]; bad: number };
-}
 /** `fresh`: refetch on mount even when cached, for a caller that must show the relay's state after a write. */
 export function useProxyList(fresh = false) {
   return useQuery<ProxyList>({
@@ -307,12 +303,6 @@ export function useProxyList(fresh = false) {
 export const INFLOWWWW_PROXY = `${BRAND_NAME} proxy`;
 export const NO_PROXY = "No proxy (server IP)";
 
-/** An account's current choice, from the proxy list. */
-export function currentProxy(list: ProxyList | undefined, accountId: string): ProxyChoice {
-  if (list?.pool?.account_ids.includes(accountId)) return { type: "infloww" };
-  const bound = list?.proxies.find((p) => p.assigned_account_ids?.includes(accountId));
-  return bound ? { type: "custom", label: bound.label, ok: true } : { type: "none" };
-}
 
 /** One line for a choice: the pool by name, a custom proxy by label, scheme and address, else No proxy. */
 export function proxyText(choice: ProxyChoice, list?: ProxyList) {

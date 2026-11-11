@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  autoUnsendReducer, buildPayload, canSave, initialAutoUnsendForm, type AutoUnsendAction, type AutoUnsendForm,
+  autoUnsendReducer, buildPayload, canSave, initialAutoUnsendForm, saveBody, type AutoUnsendAction, type AutoUnsendForm,
 } from "./autoUnsendForm";
 
 const run = (actions: AutoUnsendAction[], from: AutoUnsendForm = initialAutoUnsendForm) => actions.reduce(autoUnsendReducer, from);
@@ -47,5 +47,19 @@ describe("canSave + buildPayload (the rule's payload, pinned)", () => {
     const s = run(actions);
     expect(canSave(s)).toBe(save);
     expect(buildPayload(s)).toEqual(payload);
+  });
+});
+
+describe("saveBody", () => {
+  const off = [{ type: "classOn", cls: "text", on: false }] as AutoUnsendAction[];
+  it.each<[string, AutoUnsendAction[], boolean, ReturnType<typeof saveBody>]>([
+    ["a class on: on/off plus the payload", [{ type: "enabled", on: true }], false,
+      { is_enabled: true, payload: { policy: { mass_text_hours: 4 } } }],
+    ["no class, rule on: nothing sent", [...off, { type: "enabled", on: true }], true, null],
+    ["no class, no rule yet, off: nothing sent", off, false, null],
+    ["no class, saved rule turned off: only is_enabled, the saved policy stays", [hydrate(true, {}), { type: "enabled", on: false }], true,
+      { is_enabled: false }],
+  ])("%s", (_name, actions, hasRule, want) => {
+    expect(saveBody(run(actions), hasRule)).toEqual(want);
   });
 });

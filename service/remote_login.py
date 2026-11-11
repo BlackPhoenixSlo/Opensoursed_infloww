@@ -30,7 +30,8 @@ Browserbase. The account's proxy is the Add creator flow's Proxy selection,
 bound the way the paste-curl path binds it (`bind_proxy`): the Inflowwww proxy
 through `proxy_health.assign_pool`, a custom proxy through `proxies.assign_account`
 (the registry calls behind POST /admin/proxy-pool/assign and /admin/proxies/
-assign), or nothing for No proxy. It is bound BEFORE the session is saved, so
+assign), or nothing for No proxy; the relay's default (no choice sent) keeps a
+custom proxy the account is already on. It is bound BEFORE the session is saved, so
 every later relay call for the account egresses through it. A session that
 can't be created, or an OnlyFans page that won't load, fails loudly.
 
@@ -199,6 +200,9 @@ class RemoteLoginJob:
     expires_at: float
     proxy: str = PROXY_INFLOWWW
     proxy_label: str = ""   # PROXY_CUSTOM only
+    # The relay's default, not the caller's pick: never replaces a binding the
+    # account already has (`bind_proxy`).
+    proxy_defaulted: bool = False
     backend: str = BACKEND_BROWSERBASE
     nickname: str | None = None
     make_active: bool = True
@@ -340,6 +344,7 @@ def _register(job: RemoteLoginJob) -> None:
 
 def start_login(*, email: str, password: str, principal: str | None,
                 proxy: str = PROXY_INFLOWWW, proxy_label: str = "",
+                proxy_defaulted: bool = False,
                 nickname: str | None = None, make_active: bool = True,
                 backend: str = BACKEND_LOCAL) -> RemoteLoginJob:
     """Start a served login and return its job. The password goes to the worker
@@ -362,6 +367,7 @@ def start_login(*, email: str, password: str, principal: str | None,
     job = RemoteLoginJob(
         id=uuid.uuid4().hex, email=email, principal=principal,
         proxy=proxy, proxy_label=proxy_label if proxy == PROXY_CUSTOM else "",
+        proxy_defaulted=proxy_defaulted,
         created_at=now, expires_at=now + JOB_WINDOW_S, backend=backend,
         nickname=nickname, make_active=make_active, message="starting browser",
     )
@@ -835,10 +841,23 @@ def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
     not bad, else (every pool proxy bad) the least-used; LookupError only
     when the pool is empty) and
     POST /admin/proxies/assign (`assign_account`). No proxy binds nothing, so
-    a re-login keeps whatever the account is on."""
+    a re-login keeps whatever the account is on. A defaulted Inflowwww proxy
+    (the caller sent no choice) never replaces a custom binding: an account on
+    one of your proxies keeps it and the job reports that proxy, so a
+    re-sign-in from the header's Add creator never moves an account off its
+    custom proxy. An account already on the pool still goes through
+    `assign_pool` (it keeps its proxy unless that one's failover is due).
+    The same holds when the default was No proxy (the relay has no pool): a
+    custom-bound account is reported on its proxy, never "no proxy"."""
     import proxies as proxy_registry
     import proxy_health
 
+    if job.proxy_defaulted and job.proxy in (PROXY_INFLOWWW, PROXY_NONE):
+        bound = proxy_registry.get_for_account(account_id)
+        if bound is not None and not proxy_registry.is_pool(bound):
+            with job._lock:
+                job.proxy, job.proxy_label = PROXY_CUSTOM, str(bound.get("label") or "")
+            return
     if job.proxy == PROXY_INFLOWWW:
         proxy_health.assign_pool(account_id)
     elif job.proxy == PROXY_CUSTOM:

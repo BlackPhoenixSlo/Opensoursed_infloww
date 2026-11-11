@@ -154,9 +154,9 @@ def test_folder_line_round_trip(tmp_path):
 def test_child_env_leaves_the_gate():
     env = {"PATH": "/bin", "SLOP_GATED": "1", "SLOP_GATE_PID": "9", "SLOP_GATE_WAIT_S": "3",
            "SLOP_GATE_LOAD": "2.0", "SLOP_LOCK_WAIT_S": "60"}
-    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200"}
+    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200", "SLOP_NIGHTLY": "1"}
     nt.scrub_gate_env(env)
-    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200"}
+    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200", "SLOP_NIGHTLY": "1"}
     assert "SLOP_GATED" not in env
 
 

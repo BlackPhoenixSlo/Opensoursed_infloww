@@ -17,6 +17,11 @@ Mirror rows: 201 photo in folder 12, 202 video in folder 99, 203 a DRM-only vide
                                           a `u` naming another media's file is ignored (the row's url is fetched).
   case_anonymous_refused                — no login: neither route answers bytes or urls.
   case_resign_returns_fresh_url         — GET /download/resign: {url} for the same file, one by-id read, no bytes.
+  case_resigns_paced_and_429_retried    — concurrent stale downloads: their by-id reads leave >= PAGE_GAP_S apart on
+                                          the Creator (of_pacing walk), OF's 429 waited out and retried, all 200
+                                          (AE 2026-11-10: unpaced, 76 re-signs in 19 s, then 429 and 26 failed).
+  case_transient_resign_failure_retries_soon — a by-id read that failed in transit (not 404) is remembered
+                                          FAIL_TRANSIENT_S, not FAIL_TTL_S: the panel's Retry re-asks OF.
 
 OF and its CDN are faked at `automation_executor._make_client`: no request leaves the process.
 Run: ./venv/bin/python service/tests/test_vault_download.py
@@ -29,6 +34,7 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 import json  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import uuid  # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
@@ -36,6 +42,7 @@ from types import SimpleNamespace  # noqa: E402
 import admission  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import cdn_resign  # noqa: E402
+import of_pacing  # noqa: E402
 import proxies  # noqa: E402
 import vault_download_api  # noqa: E402
 from _pre_enforcement import seed_pre_enforcement_install  # noqa: E402
@@ -286,6 +293,70 @@ def case_resign_returns_fresh_url():
     _use(c)
     r = owner.get(f"/admin/vault-ai/download/resign?account_id={AID}&media_id=201")
     assert r.status_code == 200 and r.json()["url"] == _full(201, "photo") + SIG_NEW, r.text
+
+
+
+class _PacedClient(_Client):
+    """By-id reads through `of_pacing.paced` as OFClient.get_json sends them; the first answered OF's 429."""
+
+    def __init__(self):
+        super().__init__(accept_old=False)
+        self.at: list[float] = []
+        self.too_many = 1
+
+    def vault_media_by_id(self, media_id: int):
+        def call():
+            with self.lock:
+                self.at.append(time.monotonic())
+                self.byid.append(int(media_id))
+                if self.too_many:
+                    self.too_many -= 1
+                    e = RuntimeError("OF 429")
+                    e.response = SimpleNamespace(status_code=429, text="Too many requests. Please allow 0 seconds")
+                    raise e
+            kind = ROWS[int(media_id)][0]
+            return _payload(int(media_id), kind, ROWS[int(media_id)][1], sig=SIG_NEW)
+        return of_pacing.paced(self.account_id, call)
+
+
+def case_resigns_paced_and_429_retried():
+    owner = _login("/auth/login", "ownerd")
+    c = _use(_PacedClient())
+    gap, jit = of_pacing.PAGE_GAP_S, of_pacing.JITTER_S
+    of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.3, 0.0
+    of_pacing._next_at.pop(AID, None)
+    try:
+        out: dict[int, int] = {}
+        ts = [threading.Thread(target=lambda m=m: out.__setitem__(m, _dl(owner, m).status_code)) for m in (201, 202)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(30)
+    finally:
+        of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
+    assert out == {201: 200, 202: 200}, out
+    assert sorted(c.byid) == [201, 201, 202] or sorted(c.byid) == [201, 202, 202], c.byid  # one 429, retried
+    gaps = [b - a for a, b in zip(c.at, c.at[1:])]
+    assert all(g >= 0.29 for g in gaps), gaps
+    assert admission.VAULT_DOWNLOAD.busy == 0
+
+
+def case_transient_resign_failure_retries_soon():
+    owner = _login("/auth/login", "ownerd")
+    c = _use(_Client(accept_old=False, fresh=_payload(201, "photo", [12], sig=SIG_NEW)))
+
+    def blip(media_id: int):
+        with c.lock:
+            c.byid.append(int(media_id))
+        raise RuntimeError("proxy reset")
+    c.vault_media_by_id = blip
+    assert _dl(owner, 201).status_code == 403
+    assert _dl(owner, 201).status_code == 403 and c.byid == [201], "a hover's frames: one OF call"
+    until = cdn_resign._failed[(AID, 201)]
+    assert until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S, until
+    cdn_resign._failed[(AID, 201)] = time.monotonic() - 1   # FAIL_TRANSIENT_S later
+    del c.vault_media_by_id                                  # OF answers again
+    assert _dl(owner, 201).status_code == 200 and c.byid == [201, 201], c.byid
 
 
 _harness.run()

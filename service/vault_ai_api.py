@@ -9,7 +9,8 @@ into the `vault_items` mirror, so afterward the grid + search are served LOCALLY
   GET  /admin/vault-ai/cache/summary?account_id=      → {count, last_run}
   GET  /admin/vault-ai/items?account_id=&...           → read from the mirror (local search)
 
-The sweep pages with sort=asc (stable order) and preserves every AI / operator
+The sweep takes the newest 100, the folders' first pages, then walks sort=asc (stable
+order), downloading each page's stills as it lands (`_run_collect`); it preserves every AI / operator
 field on conflict — only the mirror bookkeeping (raw_json, urls, last_seen_run_id)
 is refreshed. Describe (Qwen3-VL) and folder-membership passes layer on top later.
 """
@@ -162,90 +163,152 @@ async def _warm_store(client: Any, account_id: str, phase: str,
                                           "warm_total": total}
 
 
+def _paced_call():
+    """The manual sweep's OF call: on a thread, _PAGE_SLEEP_S after the previous one
+    (the same `call(fn, **kw)` shape `vault_collect.hot_folders` takes)."""
+    called = False
+
+    async def call(fn: Any, **kw: Any) -> Any:
+        nonlocal called
+        if called:
+            await asyncio.sleep(_PAGE_SLEEP_S)
+        called = True
+        return await asyncio.to_thread(fn, **kw)
+    return call
+
+
+class _Sweep:
+    """One manual Collect's tally + per-batch picture warming. A media seen again on
+    a later step (the newest 100 again in a folder, the asc walk reaching items
+    already taken) is still upserted (bookkeeping refresh) but neither counted nor
+    downloaded twice. Counted on upsert (`seen`); marked downloaded (`warmed`) only
+    once its page's warm finished, so a failed warm is retried when the walk meets
+    the media again."""
+
+    def __init__(self, client: Any, account_id: str, run_id: int) -> None:
+        self.client, self.account_id, self.run_id = client, account_id, run_id
+        self.seen: set[int] = set()
+        self.warmed: set[int] = set()
+        self.pages = 0
+        # media_id → (created_at, signed url, duration): storyboards warm at the end, newest first.
+        self.videos: dict[int, tuple[datetime, str, float]] = {}
+
+    async def batch(self, written: list) -> None:
+        """Count the new media in an upserted page and download their stills now,
+        so the first pages are usable before the walk goes on."""
+        thumbs: list[tuple[int, str]] = []
+        stills: list[tuple[int, str]] = []
+        drm_posters: list[tuple[int, list[str]]] = []
+        fresh: set[int] = set()
+        for m, vals in written:
+            mid = vals["media_id"]
+            self.seen.add(mid)
+            if mid in self.warmed or mid in fresh:
+                continue
+            fresh.add(mid)
+            if vals.get("thumb_url"):
+                thumbs.append((mid, vals["thumb_url"]))
+            # The full-FRAME preview, not just the 300px square: after OF's signature
+            # expires we can no longer fetch it, and a lazily-filled store means
+            # whatever nobody happened to open is lost.
+            still = vault_frames.describe_image_of(
+                m.get("files") if isinstance(m.get("files"), dict) else {})
+            if still:
+                stills.append((mid, still))
+            if m.get("type") == "video":
+                vurl = vault_frames.video_url(m)
+                if vurl:
+                    self.videos[mid] = (vals.get("created_at") or datetime.min, vurl,
+                                        float(m.get("duration") or 0))
+                else:
+                    # DRM: no sliceable mp4 → cache OF poster frames so the hover
+                    # preview serves from disk, not a cold fetch.
+                    pf = vault_frames.poster_frames(m)
+                    if pf:
+                        drm_posters.append((mid, pf))
+        aid = self.account_id
+        # All incremental: an already-cached file is skipped, so a re-collect only
+        # pays for what is new.
+        await _warm_store(self.client, aid, "thumbs",
+                          [(vault_stills.thumb_path(aid, mid), u) for mid, u in thumbs])
+        # ~960x1280, the copy the review UI reads.
+        await _warm_store(self.client, aid, "images",
+                          [(vault_stills.image_path(aid, mid), u) for mid, u in stills])
+        # DRM clips can't be ffmpeg-storyboarded: OF's poster frames ARE the hover preview.
+        await _warm_store(self.client, aid, "posters",
+                          [(vault_stills.poster_path(aid, mid, idx), u)
+                           for mid, frames in drm_posters for idx, u in enumerate(frames)])
+        self.warmed |= fresh
+        _warm_progress.pop(aid, None)   # back to the row's phase between batches
+
+    async def page(self, items: list) -> None:
+        """One All page (desc or asc): upsert, warm, report progress."""
+        written, _ = await vault_runs.upsert_page(self.account_id, items, self.run_id)
+        await self.batch(written)
+        self.pages += 1
+        await self.progress()
+
+    async def progress(self) -> None:
+        n = len(self.seen)
+        await vault_runs.update_run(self.run_id, pages_done=self.pages, total_seen=n,
+                                    upserted=n, phase="media")
+
+
 async def _run_collect(account_id: str, run_id: int) -> None:
-    """Background sweep: page the whole vault, upsert into the mirror."""
+    """Background sweep, the useful items first, each page's stills downloaded as soon
+    as it is upserted:
+      1. the newest 100 (one desc page)
+      2. the folder list + page 0 of each dropdown folder (`vault_collect.hot_folders`,
+         also refilling the picker's cache the start just invalidated)
+      3. the oldest 100 (asc page 0)
+      4. the rest of the asc walk (offset 100 → end, _MAX_PAGES asc pages at most;
+         only an uncapped one is a full walk, `vault_runs.full_walk_done`)
+    then the video storyboards, newest first."""
     try:
         # The button wins over the background collector: it stops its walk of
         # this account (cursor kept) before this one starts paging.
         await vault_collect.preempt(account_id)
         client = await asyncio.to_thread(ax._make_client, account_id)
+        call = _paced_call()
+        sweep = _Sweep(client, account_id, run_id)
+
+        resp = await call(client.vault_media, limit=_PAGE, offset=0, type="all", sort="desc")
+        await sweep.page((resp or {}).get("list") or [])
+
+        try:
+            await vault_collect.hot_folders(account_id, client, call, run_id=run_id,
+                                            on_page=sweep.batch)
+        except Exception as e:  # noqa: BLE001 — the folders are a head start, not the walk
+            log.warning("vault_collect: folder pass failed account=%s run=%s: %s",
+                        account_id, run_id, e)
+        await sweep.progress()
+
         offset = 0
-        pages = 0
-        total = 0
-        upserted = 0
-        videos: list[tuple[str, float]] = []   # (signed url, duration) to warm after
-        thumbs: list[tuple[int, str]] = []     # (media_id, thumb url) to cache after
-        stills: list[tuple[int, str]] = []     # (media_id, full-frame url) to cache after
-        drm_posters: list[tuple[int, list[str]]] = []  # DRM (media_id, poster urls)
+        walk_pages = 0
         more = True
-        while pages < _MAX_PAGES:
-            resp = await asyncio.to_thread(
-                client.vault_media, limit=_PAGE, offset=offset, type="all", sort="asc",
-            )
+        while walk_pages < _MAX_PAGES:
+            resp = await call(client.vault_media, limit=_PAGE, offset=offset,
+                              type="all", sort="asc")
             items = (resp or {}).get("list") or []
             if not items:
                 break
-            written, _ = await vault_runs.upsert_page(account_id, items, run_id)
-            for m, vals in written:
-                total += 1
-                upserted += 1
-                if vals.get("thumb_url"):
-                    thumbs.append((vals["media_id"], vals["thumb_url"]))
-                # The full-FRAME preview, not just the 300px square. Warmed
-                # here for the same reason as the thumb: after OF's signature
-                # expires we can no longer fetch it, and a lazily-filled
-                # store means whatever nobody happened to open is lost.
-                still = vault_frames.describe_image_of(
-                    m.get("files") if isinstance(m.get("files"), dict) else {}
-                )
-                if still:
-                    stills.append((vals["media_id"], still))
-                if (m.get("type") == "video"):
-                    vurl = vault_frames.video_url(m)
-                    if vurl:
-                        videos.append((vurl, float(m.get("duration") or 0)))
-                    else:
-                        # DRM: no sliceable mp4 → cache OF poster frames so
-                        # the hover preview serves from disk, not a cold fetch.
-                        pf = vault_frames.poster_frames(m)
-                        if pf:
-                            drm_posters.append((vals["media_id"], pf))
-            pages += 1
+            await sweep.page(items)
+            walk_pages += 1
             offset += _PAGE
-            await vault_runs.update_run(run_id, pages_done=pages, total_seen=total,
-                                        upserted=upserted, phase="media")
             more = bool((resp or {}).get("hasMore"))
             if not more:
                 break
-            await asyncio.sleep(_PAGE_SLEEP_S)
 
         # ── Storyboard-warming phase (incremental) ──────────────────
         # Extract + cache 12 frames for every video whose storyboard isn't
-        # already on disk. Metadata is already committed above, so search +
-        # the grid are usable while this (slower) phase runs. Re-collect only
-        # warms NEW videos — _warm_one_sync short-circuits cached ones.
-        await vault_runs.update_run(run_id, phase="thumbs")
-        # Fill the three permanent stores. All incremental — an already-cached file
-        # is skipped, so a re-collect only pays for what is new.
-        await _warm_store(client, account_id, "thumbs",
-                          [(vault_stills.thumb_path(account_id, mid), u)
-                           for mid, u in thumbs])
-        # The full frames too, not just the squares (~960x1280). This is the copy
-        # the review UI reads, and it is equally unrecoverable once the signature
-        # it came from has aged out.
-        await _warm_store(client, account_id, "images",
-                          [(vault_stills.image_path(account_id, mid), u)
-                           for mid, u in stills])
-        # DRM clips can't be ffmpeg-storyboarded, so OF's own poster frames ARE the
-        # hover preview — cached, a DRM hover is instant instead of a cold ~0.7s fetch.
-        await _warm_store(client, account_id, "posters",
-                          [(vault_stills.poster_path(account_id, mid, idx), u)
-                           for mid, frames in drm_posters
-                           for idx, u in enumerate(frames)])
+        # already on disk, newest first. Metadata and stills are already in,
+        # so search + the grid are usable while this (slower) phase runs.
+        # Re-collect only warms NEW videos — warm_one_sync short-circuits cached ones.
+        videos = sorted(sweep.videos.values(), key=lambda v: v[0], reverse=True)
         await vault_runs.update_run(run_id, phase="warming")
         warmed = 0
         _warm_progress[account_id] = {"phase": "warming", "warmed": 0, "warm_total": len(videos)}
-        for vurl, vdur in videos:
+        for _, vurl, vdur in videos:
             try:
                 await asyncio.to_thread(vault_frames.warm_one_sync, client, vurl, vdur)
             except Exception:  # noqa: BLE001
@@ -259,9 +322,10 @@ async def _run_collect(account_id: str, run_id: int) -> None:
 
         # Stopped by the page cap with OF still saying hasMore: done, but not a
         # whole-vault walk (`vault_runs.full_walk_done`).
-        capped = vault_runs.capped_error(_MAX_PAGES) if more and pages >= _MAX_PAGES else None
-        await vault_runs.update_run(run_id, status="done", phase="done", pages_done=pages,
-                                    total_seen=total, upserted=upserted, error=capped,
+        capped = vault_runs.capped_error(_MAX_PAGES) if more and walk_pages >= _MAX_PAGES else None
+        total = len(sweep.seen)
+        await vault_runs.update_run(run_id, status="done", phase="done", pages_done=sweep.pages,
+                                    total_seen=total, upserted=total, error=capped,
                                     finished_at=datetime.utcnow())
         log.info("vault_collect done account=%s run=%s items=%s", account_id, run_id, total)
     except Exception as e:  # noqa: BLE001

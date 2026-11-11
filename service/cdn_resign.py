@@ -16,7 +16,10 @@ signature for the file the caller already named.
 `current` lets the next request skip the 403: a fresh url seen for that host+path within FRESH_TTL_S is used up
 front (a hover asks 12 frames, a tile up to 9 posters, a <video> many ranges, all with the browser's stale url).
 A failed re-sign (no fresh url, or a fresh url that still answers 403) is remembered for FAIL_TTL_S per media
-so a dead clip costs one OF call per 5 min, not one per frame. RAM-only: a restart costs one OF call per media on its
+so a dead clip costs one OF call per 5 min, not one per frame. A by-id read that failed in transit (OF's 429, a proxy
+blip: `fetch_failed`) is remembered only FAIL_TRANSIENT_S: long enough that a hover's frames make one call, short
+enough that the download panel's Retry works (AE 2026-11-10, measured: a 118-file download 429'd at file 92 and every
+Retry inside the next 5 min failed with no OF call). RAM-only: a restart costs one OF call per media on its
 next 403. `fetch` is the one GET -> 403 -> re-sign -> retry sequence both routes run.
 """
 from __future__ import annotations
@@ -35,11 +38,12 @@ log = logging.getLogger("of-relay.cdn_resign")
 
 FRESH_TTL_S = 3600
 FAIL_TTL_S = 300
+FAIL_TRANSIENT_S = 15
 _CAP = 20_000
 
 _lock = threading.Lock()
 _fresh: dict[tuple[str, str], tuple[str, float]] = {}   # (account, host+path) -> (signed url, monotonic ts)
-_failed: dict[tuple[str, int], float] = {}              # (account, media id) -> monotonic ts
+_failed: dict[tuple[str, int], float] = {}              # (account, media id) -> monotonic time it may retry
 
 
 def _base(u: str) -> str:
@@ -84,11 +88,11 @@ def _remember(account_id: str, media: dict) -> None:
             _fresh[(account_id, _base(u))] = (u, now)
 
 
-def _fail(key: tuple[str, int]) -> None:
+def _fail(key: tuple[str, int], ttl: float = FAIL_TTL_S) -> None:
     with _lock:
         if len(_failed) > _CAP:
             _failed.clear()
-        _failed[key] = time.monotonic()
+        _failed[key] = time.monotonic() + ttl
 
 
 def _close(r: Any) -> None:
@@ -104,8 +108,8 @@ async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> 
     media share the read."""
     key = (account_id, int(media_id))
     with _lock:
-        t = _failed.get(key)
-    if t is not None and time.monotonic() - t < FAIL_TTL_S:
+        until = _failed.get(key)
+    if until is not None and time.monotonic() < until:
         return None
     cur = current(account_id, failed_u)
     if cur != failed_u:  # another request re-signed it meanwhile
@@ -117,7 +121,7 @@ async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> 
         _remember(account_id, fresh.media)
     new = current(account_id, failed_u)
     if new == failed_u:
-        _fail(key)
+        _fail(key, FAIL_TRANSIENT_S if fresh.reason == "fetch_failed" else FAIL_TTL_S)
         log.info("cdn_resign account=%s media=%s failed reason=%s", account_id, media_id,
                  fresh.reason if fresh.media is None else "no_same_path")
         return None

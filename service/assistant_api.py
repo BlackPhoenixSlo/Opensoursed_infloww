@@ -164,9 +164,11 @@ Rules:
 - Answer with WHERE in the UI it lives and WHAT to set. Use the manual's own
   names for tabs, cards and switches.
 - Write every place as its full click path, sidebar entry first, joined by
-  arrows: "Settings → Audit log", "Creators → Manage creators". The widget
-  turns that path into a link to the exact page; "Settings has an Audit log
-  page" links only to Settings.
+  arrows, down to the inner tab or card it lives on: "Settings → Audit log",
+  "Growth → Smart Messages → Mass Auto Unsend Messages → Auto-unsend (automation)".
+  Each step is the label exactly as the UI shows it. The widget turns that
+  path into a link that opens the page AND that tab or card; "Settings has an
+  Audit log page" links only to Settings.
 - KEEP IT UNDER 300 CHARACTERS. A how-to, where-is or can-I answer aims for 300
   characters or fewer. When the full answer would run longer, give only the
   essential part — where it lives and what to set, still within 300 characters

@@ -51,8 +51,10 @@ so a target can never name a check that does not exist.
                        stamped walks full whatever last_full_at says (a restart re-walks everyone).
   tx-failed-full-not-stamped  a failed full walk on a backfilled Creator leaves last_full_at (the
                        pre-fix rule, AE 2026-11-08): its next tick in the same period walks full again.
-  tx-proxy-pacing-bypassed  ledger pages paced per Creator only (of_pacing.egress answers None: no
-                       proxy slot): Creators on one proxy page at once.
+  tx-full-failure-hidden  /health ignores full_walk_failures (the pre-fix rule, W28 review #1/#9): F
+                       reads ok / green there after a passing recent walk although its full walk failed.
+  tx-proxy-pacing-bypassed  ledger walk pages paced per Creator only (of_pacing's proxy-paced kinds
+                       empty: no exit slot): Creators on one proxy page at once.
 """
 from __future__ import annotations
 
@@ -274,7 +276,7 @@ def _tx_full_watermark_forgotten() -> None:
         async with ti.get_session() as s:
             row = await s.get(ti.TransactionScanHistory, account_id)
             facts = ti.scan_facts(row) if row is not None else None
-        got = ti.decide_mode(facts if facts is None else replace(facts, last_full_at=None), now=datetime.utcnow())
+        got = ti.decide_mode(facts if facts is None else replace(facts, last_full_at=None), now=datetime.utcnow()).mode
         return "refresh" if got == "recent" else got
 
     ti._mark_success, ti._record_failure, ti._decide_mode = ok, fail, decide
@@ -293,9 +295,16 @@ def _tx_failed_full_not_stamped() -> None:
     ti._record_failure = record
 
 
+def _tx_full_failure_hidden() -> None:
+    import tx_ingest_admin_api as api
+    tier = api._tx_ingest_tier
+    api._health_status = lambda status, _fails: status
+    api._tx_ingest_tier = lambda mins, status, _fails: tier(mins, status, 0)
+
+
 def _tx_proxy_pacing_bypassed() -> None:
     import of_pacing
-    of_pacing.egress = lambda *_a, **_kw: None
+    of_pacing._PROXY_PACED_KINDS = frozenset()
 
 
 def register(Fault) -> dict:
@@ -327,5 +336,6 @@ def register(Fault) -> dict:
         "tx-backfill-dispute-repolled": Fault(_bf_dispute_repolled, (BF_DISPUTE, BF_LIFETIME)),
         "tx-full-watermark-forgotten": Fault(_tx_full_watermark_forgotten, (TX_RESTART,)),
         "tx-failed-full-not-stamped": Fault(_tx_failed_full_not_stamped, (TX_FAILED_FULL,)),
+        "tx-full-failure-hidden": Fault(_tx_full_failure_hidden, (TX_FAILED_FULL,)),
         "tx-proxy-pacing-bypassed": Fault(_tx_proxy_pacing_bypassed, (TX_PROXY_SPACED,)),
     }

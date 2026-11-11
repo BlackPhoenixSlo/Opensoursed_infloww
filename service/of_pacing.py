@@ -20,9 +20,11 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       Outside a walk: `call()` as before. Inside: `account_id`'s pacer, then `call()`; on
       OF's 429 it waits what OF asks and sends the SAME request once more. A second 429
       raises as before: a failed page, never an empty one.
-  paced(account_id, call, egress_key=egress(proxy_url, label))
-      A ledger page (OFClient.get_json, /payouts/transactions only): the Creator's slot AND
-      its bound proxy endpoint's, both free, both stamped at once.
+  paced(account_id, call, proxy_key)
+      OFClient.get_json passes its client's exit resolver (OFClient.pace_key). A page of a walk
+      whose kind is in _PROXY_PACED_KINDS (the ledger's `transactions`) resolves it (once a page)
+      and takes the Creator's slot AND that exit's, both free, both stamped at once; any other
+      walk's, the Creator's only (never resolved).
   retry_429(account_id, call)      (async)
       The 429 retry alone, for a request a person's page sends itself (`X-Priority:
       background` /users/list name fill, server.py): user-triggered, so never paced. The
@@ -46,13 +48,16 @@ The pacer is ONE per Creator, shared by every job: a background GET leaves PAGE_
 User reads never do either: no walk, no pause, no retry. Stdlib only plus of_call_counter (a leaf: of_client
 imports it).
 
-Ledger pages are paced per proxy endpoint too (AE 2026-11-08, measured: the ledger's 429s
+Ledger walk pages are paced per proxy exit too (AE 2026-11-08, measured: the ledger's 429s
 followed the proxy IP, not the Creator; 16 Creators on ~3 proxies, 4 walks at once). The slot
-is keyed on the endpoint the client was BUILT with (OFClient.proxy_url: its transport), never
-a fresh account->proxy lookup: after an ADR-0030 move an outstanding client keeps its old
-proxy's slot, the next client takes the new one's. Never rotated on a 429. Key: scheme, host,
-port (no credentials); DIRECT for a direct client. Limit: two endpoints that share one exit IP
-pace apart (nothing here can tell). Other routes stay per Creator.
+is keyed on the exit of the endpoint the client was BUILT with (OFClient.pace_key,
+proxies.egress_identity against the registry read per page: the verified exit IP, else host:port;
+no credentials; "direct" for a direct client), never a fresh account->proxy lookup: after an
+ADR-0030 move an outstanding client keeps its old exit's slot, the next client takes the new
+one's; a probe verifying an endpoint's IP later moves both clients on it to that IP's slot. Never rotated on a 429. By walk kind, not URL: the
+`transactions` walk's every page (its ledger pages and the purchases-feed read after them);
+the disputes poll (`chargebacks`, its own walk, a page or two a full walk) and every other walk
+stay per Creator.
 
 Limits, as built (kept on purpose):
   * Not fair between jobs: every waiter wakes and asks again, the first to ask gets the slot;
@@ -76,7 +81,6 @@ Limits, as built (kept on purpose):
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import random
 import re
@@ -85,7 +89,6 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit
 
 import of_call_counter
 
@@ -98,8 +101,7 @@ RETRY_MAX_S = 10.0
 USER_WINDOW_S = 10.0      # link_metrics.prewarm_all skips a Creator with a person's read this recent
 
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
-DIRECT = "direct"         # the egress key (and label) of a client with no proxy
-_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+_PROXY_PACED_KINDS = frozenset({"transactions"})   # walks whose pages also take their exit's slot
 
 
 @dataclass
@@ -112,7 +114,8 @@ class _Walk:
 
 _WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
 _lock = threading.Lock()
-_next_at: dict[str, float] = {}       # Creator -> monotonic time its next background GET may leave
+_next_at: dict[str, float] = {}       # pace key (a Creator, or "proxy <exit>") -> monotonic time its next
+                                      # background GET may leave
 _last_user: dict[str, float] = {}     # Creator -> monotonic time of its last user request
 
 
@@ -162,25 +165,6 @@ def retry_after(exc: BaseException) -> float | None:
     return parse_allow(body) if status == 429 else None
 
 
-def egress(proxy_url: str | None, label: str | None = None) -> tuple[str, str]:
-    """(key, log label) of a client's bound endpoint. key: `scheme://host:port`, lowercased,
-    no credentials; DIRECT with no proxy. label: the registry label when it names no host,
-    else `p-<8 hex of the key>`; never a host, port or credential."""
-    if not proxy_url:
-        return DIRECT, DIRECT
-    u = urlsplit(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
-    host = (u.hostname or "").lower()
-    try:
-        port = u.port
-    except ValueError:
-        port = None
-    key = f"{u.scheme.lower()}://{host}:{port or ''}"
-    lb = _UNSAFE.sub("", label or "")[:40]
-    if not lb or (host and host in lb.lower()) or re.fullmatch(r"[\d.]+", lb):
-        lb = "p-" + hashlib.sha1(key.encode()).hexdigest()[:8]
-    return key, lb
-
-
 def _turn(*keys: str) -> float:
     """0.0 when every key's next background GET may leave now (the departure is stamped on
     all of them at once: the next one leaves PAGE_GAP_S + jitter after it), else the seconds
@@ -203,7 +187,7 @@ def _wait_turn(*keys: str) -> None:
         time.sleep(d)
 
 
-def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] | None = None) -> Any:
+def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str] | None = None) -> Any:
     w = _WALK.get()
     if w is None:
         return call()
@@ -212,7 +196,8 @@ def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] 
             w.before_call()
         return call()
     aid = str(account_id)
-    keys = (aid,) if egress_key is None else (aid, f"egress {egress_key[0]}")
+    exit_ = proxy_key() if proxy_key is not None and w.kind in _PROXY_PACED_KINDS else None
+    keys = (aid,) if exit_ is None else (aid, f"proxy {exit_}")
     _wait_turn(*keys)
     if w.before_call is not None:
         w.before_call()
@@ -227,7 +212,7 @@ def paced(account_id: Any, call: Callable[[], Any], egress_key: tuple[str, str] 
     # Outside the except: OF's second 429 is the page's own error, not one "during handling" the first.
     # walk= after kind=: proxy-health's summarize.py matches "account=... kind=transactions".
     log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
-             w.account_id or "-", egress_key[1] if egress_key else "-", wait)
+             w.account_id or "-", exit_ or "-", wait)
     time.sleep(wait)
     _wait_turn(*keys)
     if w.before_call is not None:

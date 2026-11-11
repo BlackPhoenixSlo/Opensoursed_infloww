@@ -270,20 +270,6 @@ def case_a_caller_scope_labels_and_the_innermost_wins():
     assert _callers(c.account_id) == {"auto:outer": 2, "walk:inner": 1, "unlabelled": 1}, _rows(c.account_id)
 
 
-def case_the_decorator_form_labels_every_call():
-    c, _ = _client()
-
-    @of_call_counter.labelled("loop:decorated")
-    async def job(n):
-        for _ in range(n):
-            await asyncio.to_thread(c.request, "GET", "/api2/v2/chats")
-        return n
-
-    assert job.__name__ == "job"
-    assert asyncio.run(job(2)) == 2
-    assert _callers(c.account_id) == {"loop:decorated": 2}, _rows(c.account_id)
-
-
 def case_a_label_follows_child_tasks_and_to_thread_but_not_a_bare_thread():
     c, _ = _client()
 
@@ -482,13 +468,16 @@ def case_the_relay_persists_beside_the_db_and_counts_survive_a_restart():
     assert f.exists(), "server did not persist beside the DB"
     assert first["boots"] == 1 and first["v"] == 1, first
     disk = json.loads(f.read_text())
-    assert set(disk) == {"v", "started_at", "flushed_at", "boots", "rows", "folded", "write_error"}, disk
+    assert set(disk) == {"v", "started_at", "flushed_at", "boots", "rows", "folded", "write_error", "unobserved_s",
+                         "unobserved_since"}, disk
+    assert (disk["unobserved_s"], disk["unobserved_since"]) == (0.0, disk["started_at"]), disk
     assert disk["rows"] == [["unlabelled", "GET /api2/v2/users/me", "acct-r", "2xx", 3]], disk["rows"]
     assert disk["write_error"] is None and disk["folded"] == 0, disk
     second = _child(_REC3, server=True, db_dir=d)
     assert second["boots"] == 2, second
     assert second["started_at"] == first["started_at"], (first["started_at"], second["started_at"])
     assert second["rows"] == [["unlabelled", "GET /api2/v2/users/me", "acct-r", "2xx", 6]], second["rows"]
+    assert second["unobserved_since"] == first["unobserved_since"] and 0 < second["unobserved_s"] < 120, second
     assert json.loads(f.read_text())["rows"][0][4] == 6
 
 
@@ -510,9 +499,20 @@ def case_a_quiet_process_is_flushed_on_the_interval():
     assert out["c"]["flushed_at"] > out["b"]["flushed_at"] > out["a"]["flushed_at"], out
 
 
+_V1 = '{"v": 1, "started_at": 1.0, "boots": 9, "folded": 0, "rows": [["x", "GET /a", "acct-v", "2xx", 50]%s]%s}'
+
+
 def case_a_bad_or_other_version_file_starts_a_fresh_window():
+    """Anything but a wholly valid v1 file: a fresh window, never its valid part under the old started_at."""
     for content in ('{"v": 0, "started_at": 1.0, "boots": 9, "rows": [["x", "GET /a", "acct-v", "2xx", 50]]}',
-                    "{not json", '["a list"]'):
+                    "{not json", '["a list"]',
+                    _V1 % (', ["x", "GET /a", "acct-v", "2xx", "7"]', ""),     # one malformed row
+                    _V1 % (', ["x", "GET /a", "acct-v"]', ""),
+                    _V1 % ("", ', "boots": true'), _V1 % ("", ', "folded": -1'),
+                    _V1.replace('"started_at": 1.0', '"started_at": "1.0"') % ("", ""),
+                    _V1.replace('"started_at": 1.0', '"started_at": 1' + "0" * 400) % ("", ""),   # too large for a float
+                    _V1 % ("", ', "boots": 1' + "0" * 400),
+                    '{"v": 1, "started_at": 1.0, "boots": 9, "folded": 0}'):     # no rows
         d = Path(tempfile.mkdtemp(prefix="occ-bad-"))
         p = d / "stats.json"
         p.write_text(content)
@@ -522,6 +522,35 @@ def case_a_bad_or_other_version_file_starts_a_fresh_window():
         assert out["started_at"] >= t0 - 1, (content, out["started_at"], t0)
         assert out["rows"] == [["unlabelled", "GET /api2/v2/users/me", "acct-r", "2xx", 3]], (content, out)
         assert json.loads(p.read_text())["boots"] == 1
+    d = Path(tempfile.mkdtemp(prefix="occ-ok-"))                          # control: a valid v1 file folds in
+    p = d / "stats.json"
+    p.write_text(_V1 % ("", ""))
+    out = _child(f"of_call_counter.start({str(p)!r})\n" + _REC3, db_dir=d)
+    assert (out["boots"], out["started_at"]) == (10, 1.0), out
+    assert ["x", "GET /a", "acct-v", "2xx", 50] in out["rows"], out
+
+
+def case_the_downtime_tally_adds_each_boots_gap_and_restarts_when_unknown():
+    """unobserved_s += boot time - the loaded flushed_at; a gap it cannot measure (no tally in the file, a flush
+    in the future) restarts the tally at this boot (a new unobserved_since: unknown to a reader, never 0)."""
+    now = time.time()
+    tally = ', "flushed_at": %r, "unobserved_s": 5.0, "unobserved_since": 2.0'
+    for extra, want in ((tally % (now - 100), "added"), (tally % (now + 1000), "restart"),
+                        (', "flushed_at": %r' % (now - 100), "restart"),
+                        (tally.replace("5.0", "-1") % (now - 100), "restart"),
+                        (tally.replace("5.0", "1" + "0" * 400) % (now - 100), "restart"),   # too large for a float:
+                        (tally.replace("2.0", "1" + "0" * 400) % (now - 100), "restart"),   # the tally only, the
+                        (tally.replace("%r", "1" + "0" * 400), "restart")):                 # window carries on
+        d = Path(tempfile.mkdtemp(prefix="occ-unobs-"))
+        p = d / "stats.json"
+        p.write_text(_V1 % ("", extra))
+        t0 = time.time()
+        out = _child(f"of_call_counter.start({str(p)!r})\n" + _REC3, db_dir=d)
+        assert (out["boots"], out["started_at"]) == (10, 1.0), (extra, out)         # the counts carry on either way
+        if want == "added":
+            assert out["unobserved_since"] == 2.0 and 104 < out["unobserved_s"] < 160, (extra, out)
+        else:
+            assert out["unobserved_s"] == 0.0 and out["unobserved_since"] >= t0 - 1, (extra, out)
 
 
 def case_an_empty_path_writes_nothing():
@@ -567,6 +596,10 @@ def case_knobs_are_read_with_defaults():
     assert out == {"flush": 2.0, "rows": 50, "path": "/tmp/x/y.json"}, out
     out = _child("print(json.dumps({'path': of_call_counter.stats_path()}))\n", env={"OF_CALL_STATS_PATH": ""})
     assert out == {"path": None}, out
+    for bad in ("inf", "nan", "-5", "x"):                                 # never a failed import (the Relay boot)
+        out = _child("print(json.dumps({'flush': of_call_counter.FLUSH_S, 'rows': of_call_counter.MAX_ROWS}))\n",
+                     env={"OF_CALL_STATS_FLUSH_S": bad, "OF_CALL_STATS_MAX_ROWS": bad})
+        assert out == {"flush": 30.0, "rows": 20000}, (bad, out)
 
 
 _harness.run()

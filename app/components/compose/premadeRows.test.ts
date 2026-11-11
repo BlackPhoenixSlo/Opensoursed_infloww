@@ -3,53 +3,50 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { Kind } from "@/components/compose/payloadRules";
 import {
-  blankRow, buildPayload, hasMoreAudience, itemToRow, lastChatChips, payloadToRows, rowToItem, rowsReducer, rowsToItems,
-  type Row, type RowCtx, type RowsAction,
+  blankRow, buildPayload, customIncludes, hasMoreAudience, itemToRow, lastChatChips, payloadToRow, priceLabel,
+  rowReducer, rowToItem, type Row, type RowAction,
 } from "@/components/compose/premadeRows";
 import { mergeCaptions, parseCaptions } from "@/lib/parseCaptions";
 import type { VaultMedia } from "@/lib/relay";
 
-const run = (s: Row[], ...actions: RowsAction[]) => actions.reduce(rowsReducer, s);
+const run = (s: Row, ...actions: RowAction[]) => actions.reduce(rowReducer, s);
 const row = (over: Partial<Row> = {}): Row => ({ ...blankRow(), ...over });
 const media = (id: number) => ({ id, type: "photo" }) as VaultMedia;
-const POSTS: RowCtx = { kind: "auto_posts" };
-const MASS: RowCtx = { kind: "mass_premade" };
+const POSTS: Kind = "auto_posts";
+const MASS: Kind = "mass_premade";
 
-describe("rowsReducer", () => {
-  const two = () => [row({ texts: ["a"] }), row({ texts: ["b"] })];
-
-  it.each<[string, Row[], RowsAction[], Row[]]>([
-    ["patch merges into row i only", two(), [{ type: "patch", i: 1, patch: { price: "5", folderId: "7" } }],
-      [row({ texts: ["a"] }), row({ texts: ["b"], price: "5", folderId: "7" })]],
-    ["reset → one blank row", two(), [{ type: "reset" }], [blankRow()]],
+describe("rowReducer", () => {
+  it.each<[string, Row, RowAction[], Row]>([
+    ["patch merges", row({ texts: ["a"] }), [{ type: "patch", patch: { price: "5", folderId: "7" } }],
+      row({ texts: ["a"], price: "5", folderId: "7" })],
     // System chip: off ↔ include, never exclude (OF drops a built-in name in excludedLists).
-    ["system chip off → include", [row({ includes: [], excludes: [] })], [{ type: "toggleListInclude", i: 0, id: "fans" }],
-      [row({ includes: ["fans"], excludes: [] })]],
-    ["system chip include → off (no exclude state)", [row({ includes: ["fans"] })], [{ type: "toggleListInclude", i: 0, id: "fans" }],
-      [row({ includes: [], excludes: [] })]],
-    ["toggleListInclude adds + clears its exclude", [row({ includes: [], excludes: ["9"] })],
-      [{ type: "toggleListInclude", i: 0, id: "9" }], [row({ includes: ["9"], excludes: [] })]],
-    ["toggleListInclude again removes", [row({ includes: ["9"], excludes: [] })],
-      [{ type: "toggleListInclude", i: 0, id: "9" }], [row({ includes: [], excludes: [] })]],
-    ["toggleListExclude adds + clears its include", [row({ includes: ["9"], excludes: [] })],
-      [{ type: "toggleListExclude", i: 0, id: "9" }], [row({ includes: [], excludes: ["9"] })]],
-    ["toggleListExclude again removes", [row({ includes: [], excludes: ["9"] })],
-      [{ type: "toggleListExclude", i: 0, id: "9" }], [row({ includes: [], excludes: [] })]],
+    ["system chip off → include", row({ includes: [], excludes: [] }), [{ type: "toggleListInclude", id: "fans" }],
+      row({ includes: ["fans"], excludes: [] })],
+    ["system chip include → off (no exclude state)", row({ includes: ["fans"] }), [{ type: "toggleListInclude", id: "fans" }],
+      row({ includes: [], excludes: [] })],
+    ["toggleListInclude adds + clears its exclude", row({ includes: [], excludes: ["9"] }),
+      [{ type: "toggleListInclude", id: "9" }], row({ includes: ["9"], excludes: [] })],
+    ["toggleListInclude again removes", row({ includes: ["9"], excludes: [] }),
+      [{ type: "toggleListInclude", id: "9" }], row({ includes: [], excludes: [] })],
+    ["toggleListExclude adds + clears its include", row({ includes: ["9"], excludes: [] }),
+      [{ type: "toggleListExclude", id: "9" }], row({ includes: [], excludes: ["9"] })],
+    ["toggleListExclude again removes", row({ includes: [], excludes: ["9"] }),
+      [{ type: "toggleListExclude", id: "9" }], row({ includes: [], excludes: [] })],
   ])("%s", (_name, start, actions, want) => {
     expect(run(start, ...actions)).toEqual(want);
   });
 
-  it("leaves other rows untouched (same reference)", () => {
-    const s = two();
-    const next = rowsReducer(s, { type: "patch", i: 1, patch: { texts: ["q"] } });
-    expect(next[0]).toBe(s[0]);
-    expect(s[1].texts).toEqual(["b"]); // input not mutated
+  it("never mutates its input", () => {
+    const s = row({ texts: ["b"] });
+    rowReducer(s, { type: "patch", patch: { texts: ["q"] } });
+    expect(s.texts).toEqual(["b"]);
   });
 });
 
 describe("rowToItem", () => {
-  it.each<[string, Partial<Row>, RowCtx, Record<string, unknown>]>([
+  it.each<[string, Partial<Row>, Kind, Record<string, unknown>]>([
     ["blank post → {}", { includes: [] }, POSTS, {}],
     ["one variant → text (trimmed)", { texts: ["  hi  ", " "] }, POSTS, { text: "hi" }],
     ["many variants → texts pool", { texts: ["a", "b"] }, POSTS, { texts: ["a", "b"] }],
@@ -79,15 +76,15 @@ describe("rowToItem", () => {
       exclude_last_chat_hours: 3, exclude_replied_hours: 2, exclude_inbound_hours: 3,
       unread_limit: 10, recent_chat_hours: 5,
     }],
+    // Default-on guards (absent = 6h / 2h server-side): blank is the default, an explicit 0 turns them off.
+    ["mass replied / inbound blank → absent (backend default)", { includes: [], onlineOnly: false, excludeLastChatHours: "" },
+      MASS, {}],
+    ["mass replied / inbound 0 → sent as 0 (guard off)", { includes: [], onlineOnly: false, excludeLastChatHours: "",
+      excludeRepliedHours: "0", excludeInboundHours: "0" }, MASS, { exclude_replied_hours: 0, exclude_inbound_hours: 0 }],
+    ["mass replied / inbound fractional hours kept", { includes: [], onlineOnly: false, excludeLastChatHours: "",
+      excludeRepliedHours: "1.5", excludeInboundHours: "-1" }, MASS, { exclude_replied_hours: 1.5 }],
   ])("%s", (_name, over, ctx, want) => {
     expect(rowToItem(row(over), ctx)).toEqual(want);
-  });
-});
-
-describe("rowsToItems", () => {
-  it("drops rows with no text and no media; folder-only counts", () => {
-    const rows = [row({ texts: [" "] }), row({ texts: ["hi"] }), row({ folderId: "5" })];
-    expect(rowsToItems(rows, POSTS)).toEqual([{ text: "hi" }, { media_folder_id: 5 }]);
   });
 });
 
@@ -104,7 +101,7 @@ const FULL = row({
 });
 
 describe("rowToItem golden", () => {
-  it.each<[string, RowCtx, string]>([
+  it.each<[string, Kind, string]>([
     ["posts", POSTS, '{"texts":["hello","second"],"media_files":[11,12],"media_folder_id":7,"media_count":3,'
       + '"price":9.99,"preview_media_files":[21],"preview_media_folder_id":8,'
       + '"preview_media_count":1,"hours_to_live":48}'],
@@ -120,13 +117,14 @@ describe("rowToItem golden", () => {
 
 describe("itemToRow round-trip", () => {
   // item → row → item keeps every payload field.
-  it.each<[string, Partial<Row>, RowCtx]>([
+  it.each<[string, Partial<Row>, Kind]>([
     ["posts full", FULL, POSTS],
     ["mass full (custom excludes only)", { ...FULL, excludes: ["666"] }, MASS],
     ["one text", { texts: ["solo"] }, POSTS],
     ["mass blank (online off, no audience)", { includes: [], onlineOnly: false }, MASS],
     ["mass defaults", {}, MASS],
     ["free post, folder only", { folderId: "3", previewMedia: [media(9)] }, POSTS],
+    ["mass replied / inbound 0 (guard off)", { excludeRepliedHours: "0", excludeInboundHours: "0" }, MASS],
   ])("%s", (_name, over, ctx) => {
     const item = rowToItem(row(over), ctx);
     expect(rowToItem(itemToRow(item), ctx)).toEqual(item);
@@ -144,38 +142,46 @@ describe("itemToRow round-trip", () => {
   });
 });
 
-describe("payloadToRows", () => {
-  it.each<[string, Record<string, unknown> | undefined, RowCtx["kind"], Row[]]>([
-    ["missing → one blank row", undefined, "auto_posts", [blankRow()]],
-    ["empty list → one blank row", { posts: [] }, "auto_posts", [blankRow()]],
-    ["reads the kind's key only", { messages: [{ text: "m" }] }, "auto_posts", [blankRow()]],
-    ["posts", { posts: [{ text: "a" }, null] }, "auto_posts",
-      [row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "" }),
-        row({ onlineOnly: false, includes: [], excludeLastChatHours: "" })]],
+describe("payloadToRow", () => {
+  it.each<[string, Record<string, unknown> | undefined, Kind, Row]>([
+    ["missing → blank row", undefined, "auto_posts", blankRow()],
+    ["empty list → blank row", { posts: [] }, "auto_posts", blankRow()],
+    ["reads the kind's key only", { messages: [{ text: "m" }] }, "auto_posts", blankRow()],
+    ["posts: the first item", { posts: [{ text: "a" }, { text: "b" }] }, "auto_posts",
+      row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "" })],
+    ["[null] → an empty saved item", { posts: [null] }, "auto_posts",
+      row({ onlineOnly: false, includes: [], excludeLastChatHours: "" })],
     // A saved message without the key is Off (the 1h default is for new rules only).
     ["messages", { messages: [{ texts: ["a", "b"], online_only: true, user_lists: ["fans"] }] }, "mass_premade",
-      [row({ texts: ["a", "b"], includes: ["fans"], excludeLastChatHours: "" })]],
+      row({ texts: ["a", "b"], includes: ["fans"], excludeLastChatHours: "" })],
     ["messages, skip chatted-with 3h", { messages: [{ text: "a", exclude_last_chat_hours: 3 }] }, "mass_premade",
-      [row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "3" })]],
+      row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "3" })],
+    ["messages, replied / inbound 0 seed back as 0", { messages: [{ text: "a", exclude_replied_hours: 0,
+      exclude_inbound_hours: 0 }] }, "mass_premade",
+    row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "", excludeRepliedHours: "0",
+      excludeInboundHours: "0" })],
   ])("%s", (_name, payload, kind, want) => {
-    expect(payloadToRows(payload, kind)).toEqual(want);
+    expect(payloadToRow(payload, kind)).toEqual(want);
   });
 });
 
 describe("buildPayload", () => {
-  const rows = [row({ texts: ["hi"], includes: [], onlineOnly: false })];
+  const plain = row({ texts: ["hi"], includes: [], onlineOnly: false });
   // One rule = one item: no resend_* / delay_minutes key on either kind.
-  it.each<[string, Row[], RowCtx, string | null]>([
-    ["no usable row → null", [row({ texts: [" "] })], POSTS, null],
-    ["posts rule: one post", rows, POSTS, '{"posts":[{"text":"hi"}]}'],
-    ["paid post, auto-delete", [row({ texts: ["hi"], price: "12", hoursToLive: "6", previewFolderId: "3" })], POSTS,
+  it.each<[string, Row, Kind, string]>([
+    // Always the one item, even one that wouldn't send yet (readyMadeContent `sendGap` is the gate).
+    ["no text, no media: still the one item", row({ texts: [" "] }), POSTS, '{"posts":[{}]}'],
+    ["mass, audience but no text: the audience is kept", row({ texts: [""], includes: ["42"], onlineOnly: false }), MASS,
+      '{"messages":[{"user_lists":["42"],"exclude_last_chat_hours":1}]}'],
+    ["folder only counts", row({ texts: [""], folderId: "5" }), POSTS, '{"posts":[{"media_folder_id":5}]}'],
+    ["posts rule: one post", plain, POSTS, '{"posts":[{"text":"hi"}]}'],
+    ["paid post, auto-delete", row({ texts: ["hi"], price: "12", hoursToLive: "6", previewFolderId: "3" }), POSTS,
       '{"posts":[{"text":"hi","price":12,"preview_media_folder_id":3,"hours_to_live":6}]}'],
-    ["mass rule: one message", rows, MASS, '{"messages":[{"text":"hi","exclude_last_chat_hours":1}]}'],
-    ["mass, default audience", [row({ texts: ["hi"] })], MASS,
+    ["mass rule: one message", plain, MASS, '{"messages":[{"text":"hi","exclude_last_chat_hours":1}]}'],
+    ["mass, default audience", row({ texts: ["hi"] }), MASS,
       '{"messages":[{"text":"hi","online_only":true,"user_lists":["fans","following"],"exclude_last_chat_hours":1}]}'],
-  ])("%s", (_name, rs, ctx, want) => {
-    const p = buildPayload(rs, ctx);
-    expect(p === null ? null : JSON.stringify(p)).toBe(want);
+  ])("%s", (_name, r, kind, want) => {
+    expect(JSON.stringify(buildPayload(r, kind))).toBe(want);
   });
 });
 
@@ -183,11 +189,11 @@ describe("imported captions → payload", () => {
   it("all 251 fixture captions ride in one post's texts pool", () => {
     const raw = readFileSync(join(__dirname, "../../lib/__fixtures__/captions-general.csv"), "utf8");
     const { items } = parseCaptions(raw, { filename: "captions-general.csv" });
-    const rows = run([blankRow()], { type: "patch", i: 0, patch: { texts: mergeCaptions([""], items).pool } });
-    const p = buildPayload(rows, POSTS);
-    expect(p?.posts).toHaveLength(1);
-    expect(p?.posts?.[0].texts).toEqual(items);
-    expect((p?.posts?.[0].texts as string[]).length).toBe(251);
+    const r = run(blankRow(), { type: "patch", patch: { texts: mergeCaptions([""], items).pool } });
+    const p = buildPayload(r, POSTS);
+    expect(p.posts).toHaveLength(1);
+    expect(p.posts?.[0].texts).toEqual(items);
+    expect((p.posts?.[0].texts as string[]).length).toBe(251);
   });
 });
 
@@ -220,5 +226,20 @@ describe("hasMoreAudience", () => {
     ["unread", { unreadLimit: "4" }, true],
   ])("%s", (_name, over, want) => {
     expect(hasMoreAudience(row(over))).toBe(want);
+  });
+});
+
+describe("customIncludes", () => {
+  it("drops the system chips, keeps custom list ids in order", () => {
+    expect(customIncludes(row({ includes: ["fans", "42", "following", "7"] }))).toEqual(["42", "7"]);
+  });
+});
+
+describe("priceLabel (the backend's `price or 0`, a numeric string charges too)", () => {
+  it.each<[unknown, string]>([
+    [undefined, "Free"], [0, "Free"], ["", "Free"], ["0", "Free"], [-3, "Free"], ["abc", "Free"], [null, "Free"],
+    [12, "$12"], ["12", "$12"], [9.99, "$9.99"], ["9.99", "$9.99"],
+  ])("%j → %s", (v, want) => {
+    expect(priceLabel(v)).toBe(want);
   });
 });

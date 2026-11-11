@@ -18,7 +18,7 @@
  * throwing (the route walk's catch-all `{}`).
  */
 
-import { Info } from "lucide-react";
+
 import { useMemo, useState } from "react";
 
 import { type Gran, LineChart, granAllowed, ChartAxes, ChartMessage, BlankChart, niceMax, plotFrame, useChartWidth } from "@/components/stats/chart";
@@ -28,6 +28,7 @@ import {
 } from "@/hooks/useStats";
 import { fmtCents, fmtInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 // Infloww's comparison colours; the fourth for Message statistics' fourth line.
 const COLORS = ["#3467FF", "#2AD4AC", "#FFA15F", "#ac72d2"];
@@ -242,9 +243,7 @@ function Section({ title, tip, children }: { title: string; tip: string; childre
     <section aria-label={title}>
       <h3 className="mb-3 flex items-center gap-2 text-[16px] font-medium text-nav-fg-active">
         {title}
-        <span role="img" aria-label={tip} title={tip} className="cursor-help text-fg-dim">
-          <Info className="h-3.5 w-3.5" aria-hidden />
-        </span>
+        <InfoTip text={tip} className="text-fg-dim" />
       </h3>
       {children}
     </section>

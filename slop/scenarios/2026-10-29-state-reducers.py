@@ -188,10 +188,11 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    app/lib/ofMirrorVault.ts), its folder sort dropdown > Name -> one sort POST {sort: name}; back on Vault Pro the
    rail's label reads "Name" (both pages save it through `sortOfFolders`). Screenshots vault-customize-trigger,
    vault-order-after-reload, vault-quick-reload-trigger, vault-quick-reload-settled, vault-sort-label-after-mirror.
-16. Premade composer (app/components/compose/premadeRows.ts `rowsReducer`, `rowToItem` / `rowsToItems`),
-   Creator 2 on Auto Post: New auto post (the post's fields in the popup itself): the one post with variants A, B,
-   C then B removed, $12, 6 h to live -> the form shows A, C; Create POSTs one /admin/automation-rules whose posts[] is
-   [{texts: [A, C], price 12, hours_to_live 6}], and GET
+16. Premade composer (app/components/compose/premadeRows.ts `rowReducer`, `rowToItem` / `buildPayload`),
+   Creator 0 on Auto Post: New auto post (the post's fields in the popup itself): the one post with variants A, B,
+   C then B removed, vault tile 9020 picked into its image pool (Pick image pool, Attach: a paid post needs media to
+   save), $12, 6 h to live -> the form shows A, C and "1 in pool"; Create POSTs one /admin/automation-rules whose
+   posts[] is [{texts: [A, C], media_files: [9020], price 12, hours_to_live 6}], and GET
    /admin/automation-rules and the automation_rules row hold the same. Screenshots premade-compose-trigger,
    premade-rule-saved.
 17. Delayed welcome (Smart Messages > New Message > Subscriber welcome, Creator 1): type a message,
@@ -317,6 +318,14 @@ its sales from /api/of/* chat-media reads ui.py holds; vitest (FanDrawer.scrub.t
    Large and bold. Screenshots ofm-{chat,chat-typed,mass,post}-{desktop,phone}-{trigger,settled}; `ofm-rich-text.json`. Bypasses (declared): the chat
    list, a chat's row, its thread (OFM_FAN, then OF's wire sends to that fan) and /users/list are answered at the
    browser's wire from the relay's own chats; the word selection is set by script.
+27. Mass Auto Unsend Messages tab (app/components/settings/AutoUnsendPanel.tsx, autoUnsendForm.ts `saveBody`;
+   lib/mass_unsend_faults.py). `?tab=unsend`: Creator 0 has no rule, its class rows hidden; its switch on shows
+   the three, PPV on, Save -> one 'Auto-unsend mass' automation_rules row, on, policy {text 4, price 48}.
+   Creator 1 holds a legacy rule (by SQL: on, empty policy, a 'done' scheduled_jobs row fired now so the hourly
+   rule is not due during the run): hydrated with every class off, its switch off hides them and Update sends
+   is_enabled false, the row off with its policy kept. `?tab=mass` holds neither the card nor the scheduled list;
+   `?tab=scheduled` holds the scheduled list. Screenshots auto-unsend-{off,trigger,saved,legacy-off}, scheduled-tab;
+   `auto-unsend.json`.
 `--set only=<section>[,...]` (SECTIONS keys, `mass-volume`, `rich-volume`) runs just those while iterating; the
 rest SKIP as "not selected".
 
@@ -511,7 +520,7 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         REDESCRIBE_KEEPS, REDESCRIBE_SHOWS, VM_PRICE, VM_TICKS)
 from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_PRESETS_PHONE, NUDGE_TAB_CLOSED
 from slop.lib.add_proxy_faults import PROXY_ADD_PHONE
-from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
+from slop.lib.mass_unsend_faults import AUTO_UNSEND_OFF, AUTO_UNSEND_SAVE, AUTO_UNSEND_TABS, MASS_BULK_UNSEND
 from slop.lib.composer_faults import PPV_SEND_BODY
 from slop.lib.rich_text_faults import (RT_AA, RT_AA_PHONE, RT_BUBBLE, RT_FANSLY, RT_MASS, RT_SCRIPT_DESKTOP,
                                       RT_SCRIPT_PHONE, RT_SEND, RT_VOLUME)
@@ -538,6 +547,7 @@ SECTIONS = {
     "mass": (MASS_FREE, MASS_GATE, MASS_GATE_SEND, MASS_BODY, MASS_TEMPLATE_GIF, MASS_ALL),
     "mass-retry": (MASS_PARTIAL, MASS_RETRY),
     "mass-unsend": (MASS_BULK_UNSEND,),
+    "auto-unsend": (AUTO_UNSEND_SAVE, AUTO_UNSEND_OFF, AUTO_UNSEND_TABS),
     "post": (POST_PRICED, POST_ALL, POST_BODIES, POST_RETRY, POST_LOCKED),
     "dupes": (DUPES_CONFIRM, DUPES_HIDE),
     "dupes-partial": (DUPES_PARTIAL,),
@@ -644,8 +654,11 @@ REDESCRIBE_EDIT = "slop typed before the redescribe"
 PICKER_VIDEO = 9101  # Creator 1's one vault video: a 240p progressive source, no OF poster frames
 QUICK_DRAG = ("slop Bravo", "slop Echo")  # the second order, reloaded QUICK_RELOAD_MS after Done
 QUICK_RELOAD_MS = 1_000  # under PERSIST_SETTLE_MS: only a save on Done itself can have the new order on disk
-# The one post: variants A, B, C, then B removed; $12, 6 h to live (no delay / resend key).
-PREMADE_WANT = [{"texts": ["slop post one A", "slop post one C"], "price": 12, "hours_to_live": 6}]
+# The one post: variants A, B, C, then B removed; vault tile 9020 (Creator 0's loner, `PPV_PICK`) in its image pool
+# (a paid post with no media can't be saved); $12, 6 h to live (no delay / resend key).
+PREMADE_MEDIA = 9020
+PREMADE_WANT = [{"texts": ["slop post one A", "slop post one C"], "media_files": [PREMADE_MEDIA], "price": 12,
+                 "hours_to_live": 6}]
 
 
 def move_folder(order: list, src, dst) -> list:
@@ -1194,6 +1207,98 @@ async def _mass_unsend(ctx, page, chk) -> None:
         want_n=n, of_wire_n=len(wire), flipped_n=len(flipped),
         of_wire_extra=[x for x in wire if x not in want][:10], of_wire_missing=[x for x in want if x not in wire][:10],
         db_extra=[x for x in flipped if x not in want][:10], db_missing=[x for x in want if x not in flipped][:10])
+
+
+AUTO_RULE = "Auto-unsend mass"  # AutoUnsendPanel.tsx AUTO_RULE_NAME
+AUTO_CLASSES = ("Free text-only", "With image / video", "PPV (priced)")
+
+
+def _auto_rules(ctx, aid: str) -> list[tuple]:
+    """(id, is_enabled, policy) of the Creator's 'Auto-unsend mass' rules, from the run's DB."""
+    con = ctx.world.sql()
+    try:
+        rows = con.execute("SELECT id, is_enabled, steps_json FROM automation_rules WHERE account_id=? AND kind=? "
+                           "AND name=? ORDER BY id", (aid, "unsend_messages", AUTO_RULE)).fetchall()
+    finally:
+        con.close()
+    return [(rid, int(on), json.loads(steps or "{}").get("policy")) for rid, on, steps in rows]
+
+
+async def _auto_unsend(ctx, page, chk) -> None:
+    """Section 27: the Mass Auto Unsend Messages tab, its class rows gated on the model switch."""
+    (c0, c1) = ctx.world.data["creators"][:2]
+    a0, a1, nick0, nick1 = c0["id"], c1["id"], c0["nickname"], c1["nickname"]
+    now = ctx.world.now
+    con = ctx.world.sql()
+    with con:  # Creator 1's legacy rule: on, empty policy; fired now, so the hourly rule is not due mid-run.
+        legacy = con.execute(
+            "INSERT INTO automation_rules (account_id, name, kind, trigger_json, steps_json, is_enabled, created_at)"
+            " VALUES (?,?,?,?,?,1,?)", (a1, AUTO_RULE, "unsend_messages", json.dumps({"every_seconds": 3600}),
+                                        json.dumps({"policy": {}}), ts(now - timedelta(days=1)))).lastrowid
+        con.execute("INSERT INTO scheduled_jobs (account_id, kind, payload_json, run_at, status, attempts, rule_id,"
+                    " created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (a1, "unsend_messages", "{}", ts(now), "done", 1, legacy, ts(now)))
+    con.close()
+
+    def panel(nick: str):
+        return page.locator("div.rounded-md").filter(has=page.get_by_role("switch", name=nick, exact=True)).last
+
+    async def classes(nick: str) -> int:
+        return sum([await panel(nick).get_by_role("switch", name=c, exact=True).count() for c in AUTO_CLASSES])
+
+    await page.goto(f"{ctx.app}/growth/smart-messages?tab=unsend", wait_until="domcontentloaded")
+    p0, p1 = panel(nick0), panel(nick1)
+    await p0.get_by_role("button", name="Save", exact=True).wait_for(timeout=WAIT_MS)
+    await p1.get_by_role("button", name="Update", exact=True).wait_for(timeout=30_000)
+    selected = await page.get_by_role("tab", selected=True).inner_text()
+    off_rows = await classes(nick0)
+    await _painted(page)
+    await ui.shot(ctx, page, "auto-unsend-off")
+    await p0.get_by_role("switch", name=nick0, exact=True).click(timeout=10_000)
+    on_rows = await classes(nick0)
+    await p0.get_by_role("switch", name="PPV (priced)", exact=True).click(timeout=10_000)
+    await _painted(page)
+    await ui.shot(ctx, page, "auto-unsend-trigger")
+    await p0.get_by_role("button", name="Save", exact=True).click(timeout=10_000)
+    await p0.get_by_role("button", name="Update", exact=True).wait_for(timeout=30_000)
+    await _until(lambda: bool(_auto_rules(ctx, a0)), 30)
+    await _painted(page)
+    await ui.shot(ctx, page, "auto-unsend-saved")
+    saved = _auto_rules(ctx, a0)
+    chk(AUTO_UNSEND_SAVE, selected == "Mass Auto Unsend Messages" and off_rows == 0 and on_rows == 3
+        and [(on, pol) for _r, on, pol in saved] == [(1, {"mass_text_hours": 4, "mass_price_hours": 48})],
+        selected=selected, off_rows=off_rows, on_rows=on_rows, saved=saved)
+
+    # Creator 1: hydrated on with every class off; switch off hides the rows, Update turns the rule off.
+    legacy_rows = await classes(nick1)
+    await p1.get_by_role("switch", name=nick1, exact=True).click(timeout=10_000)
+    hidden_rows = await classes(nick1)
+    update = p1.get_by_role("button", name="Update", exact=True)
+    update_enabled = await update.is_enabled()
+    if update_enabled:
+        await update.click(timeout=10_000)
+        await _until(lambda: _auto_rules(ctx, a1)[0][1] == 0, 30)
+    await _painted(page)
+    await ui.shot(ctx, page, "auto-unsend-legacy-off")
+    after = _auto_rules(ctx, a1)
+    chk(AUTO_UNSEND_OFF, legacy_rows == 3 and hidden_rows == 0 and update_enabled and after == [(legacy, 0, {})],
+        legacy_rows=legacy_rows, hidden_rows=hidden_rows, update_enabled=update_enabled, after=after)
+
+    await page.goto(f"{ctx.app}/growth/smart-messages?tab=mass", wait_until="domcontentloaded")
+    await page.get_by_role("heading", name="Mass messages", exact=True).wait_for(timeout=WAIT_MS)
+    mass_card = await page.get_by_text("Auto-unsend (automation)").count()
+    mass_sched = await page.get_by_text("Scheduled messages", exact=True).count()
+    await page.goto(f"{ctx.app}/growth/smart-messages?tab=scheduled", wait_until="domcontentloaded")
+    sched = page.get_by_role("tabpanel", name="Scheduled").get_by_text("Scheduled messages", exact=True)
+    await sched.wait_for(timeout=WAIT_MS)
+    tabs = [t.strip() for t in await page.get_by_role("tablist", name="Smart Messages").get_by_role("tab").all_inner_texts()]
+    await _painted(page)
+    await ui.shot(ctx, page, "scheduled-tab")
+    chk(AUTO_UNSEND_TABS, mass_card == 0 and mass_sched == 0
+        and tabs == ["Automated Messages", "Mass Messages", "Mass Auto Unsend Messages", "Scheduled"],
+        mass_card=mass_card, mass_sched=mass_sched, tabs=tabs)
+    (ctx.out / "auto-unsend.json").write_text(json.dumps(
+        {"creator0": a0, "creator1": a1, "saved": saved, "legacy_after": after, "tabs": tabs}, indent=1))
 
 
 async def _post(ctx, page, chk) -> None:
@@ -2382,7 +2487,7 @@ async def _vault(ctx, page, chk) -> None:
 
 
 async def _premade(ctx, page, chk) -> None:
-    creator = ctx.world.data["creators"][2]
+    creator = ctx.world.data["creators"][0]  # its seeded vault holds PREMADE_MEDIA
     aid = creator["id"]
     bodies: list[dict] = []
 
@@ -2406,14 +2511,19 @@ async def _premade(ctx, page, chk) -> None:
         await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(2).fill("slop post one C")
         await form.get_by_role("button", name="Remove variant 2").click()
+        await form.get_by_role("button", name="Pick image pool").click(timeout=WAIT_MS)
+        await page.locator(f"[data-tile-id='{PREMADE_MEDIA}']").first.click(timeout=WAIT_MS)
+        await page.get_by_role("button", name=re.compile(r"^Attach")).last.click(timeout=10_000)
+        await form.get_by_role("button", name="1 in pool").wait_for(timeout=10_000)
         await price.fill("12")
         await form.get_by_placeholder("e.g. 6").fill("6")
         await page.wait_for_timeout(300)
         shown = {"texts": [await t.input_value() for t in await ta.all()],
                  "prices": [await p.input_value() for p in await price.all()],
-                 "hours": [await h.input_value() for h in await form.get_by_placeholder("e.g. 6").all()]}
+                 "hours": [await h.input_value() for h in await form.get_by_placeholder("e.g. 6").all()],
+                 "pool": await form.get_by_role("button", name="1 in pool").count()}
         await ui.shot(ctx, page, "premade-compose-trigger")
-        want_shown = {"texts": ["slop post one A", "slop post one C"], "prices": ["12"], "hours": ["6"]}
+        want_shown = {"texts": ["slop post one A", "slop post one C"], "prices": ["12"], "hours": ["6"], "pool": 1}
         chk(PREMADE_ROWS, shown == want_shown, shown=shown, want=want_shown)
 
         async with page.expect_response(lambda r: r.request.method == "POST"
@@ -5716,6 +5826,7 @@ async def run(ctx) -> None:
         page.context.set_default_navigation_timeout(WAIT_MS)  # a goto's first visit compiles the page too
         page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
         for name, fn in (("mass", _mass), ("mass-retry", _mass_retry), ("mass-unsend", _mass_unsend),
+                         ("auto-unsend", _auto_unsend),
                          ("post", _post), ("dupes", _dupes),
                          ("dupes-partial", _dupes_partial), ("group", _group),
                          ("nudge", _nudge), ("proxy-phone", _proxy_phone),

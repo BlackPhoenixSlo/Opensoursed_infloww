@@ -58,7 +58,7 @@ import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
-from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError  # noqa: E402
+from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired  # noqa: E402
 from of_rich_text import MARKUP_MAX  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
@@ -1713,6 +1713,11 @@ async def _stop_event_pumps() -> None:
     of_call_counter.flush()
 
 
+# The pooled OFClients a `_proxy` call's closure loaded, in order (the last is the
+# one a failure came from); None outside `_proxy`.
+_proxy_clients: ContextVar[list[OFClient] | None] = ContextVar("proxy_clients", default=None)
+
+
 def _load_client(account_id: str) -> OFClient:
     """Return the OFClient for `account_id`, loading it the first time.
     Raises a structured 503 if the account has no usable session yet.
@@ -1729,7 +1734,11 @@ def _load_client(account_id: str) -> OFClient:
         if account_registry.get_platform(account_id) == "fansly":
             import fansly_backend
             return fansly_backend.get_client(account_id)
-        return client_pool.get(account_id)
+        c = client_pool.get(account_id)
+        seen = _proxy_clients.get()
+        if seen is not None:
+            seen.append(c)
+        return c
     except (FileNotFoundError, ValueError, KeyError) as e:
         # (error, message) per failure.
         error, message = next(v for t, v in (
@@ -1843,11 +1852,12 @@ def _get_client(request: Request | None = None) -> OFClient:
     return _load_client(_resolve_account_id(request))
 
 
-def _invalidate_client(account_id: str | None = None) -> None:
+def _invalidate_client(account_id: str | None = None, only: OFClient | None = None) -> None:
     """Drop pooled OFClient(s) so the next request reloads from disk.
     Used after re-bootstrap or proxy reassignment. None = every account (a
-    proxy edit can affect any of them)."""
-    client_pool.evict(account_id)
+    proxy edit can affect any of them). `only`: just while the pool still
+    holds that client (client_pool.evict)."""
+    client_pool.evict(account_id, only=only)
 
 
 def _kick_clear_session_dead(account_id: str) -> None:
@@ -2483,7 +2493,7 @@ def _pool_safe_error(aid: str | None, text: str, label: str | None = None) -> st
     return POOL_PROXY_ERROR
 
 
-def _proxy(call):
+def _proxy(call, *, client: OFClient | None = None):
     """Translate OFAPIError + curl_cffi proxy/network errors into a structured
     502 so the frontend can react, and log a one-liner instead of a 200-line
     traceback for transient proxy failures (cf-tunnel 403s, timeouts, DNS).
@@ -2492,11 +2502,19 @@ def _proxy(call):
     lane, so a bulk background enrichment can't starve a user-initiated
     fetch (vault open, chat click). A request that is not `X-Priority:
     background` marks its reads interactive (of_client.INTERACTIVE_READ):
-    a dead proxy fails them after 2 tries, not 5; writes keep the 5."""
+    a dead proxy fails them after 2 tries, not 5; writes keep the 5.
+
+    A call whose client was evicted under it (OFSessionRetired) runs once more
+    on the account's current client when it is a GET; anything else answers
+    503 + Retry-After (a write retried from the top could repeat what it sent).
+    `client`: the one `call` runs on when it was loaded before `_proxy` (a bound
+    method), so a dead-session answer evicts only that client."""
     aid: str | None = None
     token = None
+    loaded: list[OFClient] = []
+    loaded_token = _proxy_clients.set(loaded)
+    req = _request_ctx.get()
     try:
-        req = _request_ctx.get()
         if req is not None:
             try:
                 aid = _resolve_account_id(req)
@@ -2506,13 +2524,26 @@ def _proxy(call):
             if _current_priority() != "background":
                 token = INTERACTIVE_READ.set(True)
         with _priority_lane(aid):
-            return call()
+            try:
+                return call()
+            except OFSessionRetired:
+                if req is None or req.method != "GET":
+                    raise
+                log.info("client evicted mid-read account=%s: re-run on the current client", aid)
+                return call()
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
     except OFDeniedError as e:
         # The Relay's own deny-list (of_client._denied), never sent: not an upstream failure.
         raise HTTPException(status_code=403,
                             detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)}) from e
+    except OFSessionRetired as e:
+        # This request never left (a multi-request write's earlier ones may have); the
+        # account's current client takes the caller's next try.
+        log.warning("client evicted mid-call account=%s method=%s: 503", aid,
+                    req.method if req is not None else None)
+        raise HTTPException(status_code=503, headers={"Retry-After": "1"},
+                            detail={"upstream_status": "session_retired", "upstream_body": str(e)}) from e
     except OFAPIError as e:
         r = e.response
         status = r.status_code if r is not None else 500
@@ -2523,7 +2554,9 @@ def _proxy(call):
         # still answers 502; the error middleware never sees an OFAPIError here.
         dead_reason = account_health.is_session_dead_error(e)
         if dead_reason and aid:
-            _invalidate_client(aid)
+            # Only the client that met it: a concurrent read already replaced it, keep the fresh one.
+            # Neither known (a Fansly shim, a stubbed loader): evict as before.
+            _invalidate_client(aid, only=loaded[-1] if loaded else client)
             _kick_mark_session_dead(aid, dead_reason, via="proxy")
         # 502 = bad gateway: we tried, OF didn't like it.
         raise HTTPException(
@@ -2554,6 +2587,7 @@ def _proxy(call):
     finally:
         if token is not None:
             INTERACTIVE_READ.reset(token)
+        _proxy_clients.reset(loaded_token)
 
 
 def _account_ttl(namespace: str, ttl_seconds: float):

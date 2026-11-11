@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import {
-  buildAccountPayload, canNext, canPickPlatform, initialWizard, profileName, useWizardReducer, wizardReducer,
+  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, initialWizard, profileName, useWizardReducer, wizardReducer,
   type LinkedStep, type WizardAction, type WizardState, type WizardStep,
 } from "@/components/setup/addCreatorWizard";
 import type { AccountDetails } from "@/components/setup/creatorFlow";
@@ -23,6 +23,7 @@ const START = { type: "submitStart" } as const;
 const OK = { type: "submitOk" } as const;
 const ERR = { type: "submitErr" } as const;
 const LINKED = { type: "linked", accountId: "of-1", account: ACCOUNT, platform: "onlyfans" } as const;
+const IDLE = { login: false, extension: false, proxy: false };
 const method = (value: "browser" | "extension") => ({ type: "setField", field: "method", value }) as const;
 const platform = (value: "onlyfans" | "fansly") => ({ type: "setField", field: "platform", value }) as const;
 
@@ -49,6 +50,14 @@ describe("initialWizard", () => {
   it("the header's Add creator has no Creator details", () => {
     expect(initialWizard({}).details).toEqual({ name: "", gender: "" });
   });
+  it.each<[string, Parameters<typeof initialWizard>[0], boolean]>([
+    ["header", {}, true],
+    ["draft", { draft: { ...BELLA, id: "d1" } }, false],
+    ["Link another", { linkAnother: { creator: BELLA, linked: ["onlyfans"] } }, false],
+    ["recovery", { recovery: "onlyfans" }, false],
+  ])("fresh: %s → %s", (_, props, fresh) => {
+    expect(initialWizard(props)).toMatchObject({ fresh, busy: { login: false, extension: false, proxy: false } });
+  });
 });
 
 describe("new creator setup", () => {
@@ -70,6 +79,18 @@ describe("new creator setup", () => {
   ])("existing entry cannot go back into new creator details: %j", (props) => {
     const s = initialWizard(props);
     expect(run(s, { type: "back" })).toBe(s);
+  });
+  it.each<[string, WizardState, boolean]>([
+    ["platform", on({ kind: "platform" }), true],
+    ["a new Creator's sign-in", on(LOGIN), true],
+    ["a new Creator's sign-in, a Browser login running", on(LOGIN, { busy: { ...IDLE, login: true } }), false],
+    ["a new Creator's sign-in, the Extension capturing or waiting on Retry / Continue", on(LOGIN, { busy: { ...IDLE, extension: true } }), false],
+    ["a draft's sign-in", on(LOGIN, { fresh: false }), false],
+    ["details", on({ kind: "details" }), false],
+    ["linked", on(ACC), false],
+  ])("canBack: %s", (_, s, ok) => {
+    expect(canBack(s)).toBe(ok);
+    expect(run(s, { type: "back" }) !== s).toBe(ok);
   });
 });
 
@@ -109,13 +130,19 @@ describe("platform (the small Fansly link)", () => {
 });
 
 describe("linked", () => {
-  it.each<[string, WizardState, WizardStep["kind"]]>([
-    ["from the sign-in", on(LOGIN), "linked"],
-    ["a late sign-in on the linked step: the newest account", on(ACC), "linked"],
-    ["while saving: ignored", on(ACC_SAVING), "linked"],
-    ["after success: ignored", on(SUCCESS), "success"],
-  ])("%s", (_, s, kind) => {
-    expect(run(s, LINKED).step.kind).toBe(kind);
+  it("from the sign-in", () => {
+    expect(run(on(LOGIN, { busy: { login: true, extension: true, proxy: false } }), LINKED))
+      .toMatchObject({ step: { kind: "linked", accountId: "of-1" }, busy: IDLE });
+  });
+  it.each<[string, WizardState]>([
+    // A Browser login settling after the Extension linked another account must not replace it (or its typed details).
+    ["a late sign-in for another account on the linked step", on(ACC)],
+    ["the same account again on the linked step (keeps its details)", on({ ...ACC, accountId: "of-1", account: { ...ACCOUNT, nickname: "Typed" } })],
+    ["while saving", on(ACC_SAVING)],
+    ["after success", on(SUCCESS)],
+    ["on details", on({ kind: "details" })],
+  ])("refused (same state): %s", (_, s) => {
+    expect(wizardReducer(s, LINKED)).toBe(s);
   });
   it("carries the account and its details, not busy", () => {
     expect(run(on(LOGIN), LINKED).step).toEqual({ kind: "linked", accountId: "of-1", account: ACCOUNT, busy: false });
@@ -176,6 +203,7 @@ describe("account details + Done", () => {
   });
   it.each<[string, WizardState, boolean]>([
     ["linked", on(ACC), true],
+    ["linked, the proxy editor working", on(ACC, { busy: { ...IDLE, proxy: true } }), false],
     ["saving", on(ACC_SAVING), false],
     ["sign-in", on(LOGIN), false],
     ["success", on(SUCCESS), false],
@@ -197,6 +225,25 @@ describe("account details + Done", () => {
   it("a refused action returns the very same state", () => {
     const s = on(ACC_SAVING);
     expect(wizardReducer(s, START)).toBe(s);
+  });
+  it.each<[string, WizardState, boolean]>([
+    ["details", on({ kind: "details" }), true],
+    ["sign-in, a Browser login running (unmount stops it)", on(LOGIN, { busy: { ...IDLE, login: true } }), true],
+    ["sign-in, the Extension capturing or waiting on Retry / Continue", on(LOGIN, { busy: { ...IDLE, extension: true } }), false],
+    ["linked", on(ACC), true],
+    ["linked, the proxy editor working", on(ACC, { busy: { ...IDLE, proxy: true } }), false],
+  ])("canClose: %s", (_, s, ok) => {
+    expect(canClose(s)).toBe(ok);
+  });
+  it("Done waits for the proxy editor", () => {
+    const s = on(ACC, { busy: { ...IDLE, proxy: true } });
+    expect(wizardReducer(s, START)).toBe(s);
+    expect(run(s, { type: "busy", source: "proxy", value: false }, START).step).toEqual(ACC_SAVING);
+  });
+  it.each(["login", "extension", "proxy"] as const)("busy %s: one source changes, an unchanged value is refused", (source) => {
+    const s = on(LOGIN);
+    expect(wizardReducer(s, { type: "busy", source, value: false })).toBe(s);
+    expect(wizardReducer(s, { type: "busy", source, value: true }).busy).toEqual({ ...IDLE, [source]: true });
   });
 });
 
@@ -223,7 +270,7 @@ describe("buildAccountPayload", () => {
 /** The component's dispatch: on the newest state, and true only when the wizard took the action. */
 describe("useWizardReducer", () => {
   it("two submitStarts before a re-render: the first is taken, the second refused", () => {
-    const { result } = renderHook(() => useWizardReducer({}));
+    const { result } = renderHook(() => useWizardReducer({ draft: { ...BELLA, id: "d1" } }));
     const dispatch = result.current[1];
     act(() => { dispatch(LINKED); });
     const taken: boolean[] = [];

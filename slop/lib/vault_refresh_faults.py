@@ -20,6 +20,11 @@ THUMBS_RELOAD = ("vault picker: page 1 served from the relay's cache with expire
                  "itself once (one cache invalidate), the CDN then serves each of those paths 200 and every top "
                  "tile draws (desktop and phone); the relay's cached page 1 is the fresh one (DB)")
 PICKER_FAILURE = "vault_picker_refresh_pending_single_post_and_failure_note"
+SEARCH_PENDING = ("vault search: a caption search only OnlyFans' own search answers spins \"Searching OnlyFans…\" "
+                  "in the empty grid while that search is in flight, and never shows \"No data\" from typing to the "
+                  "filled grid (desktop and phone)")
+SEARCH_FILLS = ("vault search: once OnlyFans answered, the grid is exactly its hits newest first, the spinner gone, "
+                "and the mirror holds the term on those media (DB of_terms)")
 SYNC_LOAD = ("vault refresh at volume: --users owners pressing Refresh at once on the load Creators: every POST "
              "/admin/vault-ai/sync 200, and each mirror then holds exactly OnlyFans' media (nothing dropped, no "
              "extra, folder membership as OF's)")
@@ -33,6 +38,8 @@ SYNC_COALESCED = ("vault refresh at volume: at least five concurrent Refresh pre
 _SYNC_URL = (r"/admin/vault-ai/sync\?", "/admin/vault-ai/no-such-sync?")
 _AUTO_REFRESH = (r"if \(!thumbCooldown\.claim\(accountId, Date\.now\(\)\)\) return arm\(\);", "return;")  # never reloads
 _NO_ALL = (r"\ball: d\.all\b", "all: undefined")   # useVaultMedia.ts: the folder list's `all` dropped (pre-fix)
+# VaultManagePanel.tsx before 2026-11-11: an empty grid says "No data" while OF's own search still runs.
+_SEARCH_NO_SPINNER = (r"(\.length === 0 && )searchingOf\b", r"\1false")
 _FAIL_SILENT = (r"(if \(ofUnreachable\(e\)\) )return false;", r"\1return true;")   # OF unreachable reads as synced
 
 
@@ -63,6 +70,8 @@ def register(Fault) -> dict:
         "vault-all-media-no-counts": Fault(None, (ALL_COUNTS,), browser=(_NO_ALL,), browser_files=2),
         # slop/run vault-refresh --break --fault=vault-thumbs-no-auto-refresh: a broken thumb never reloads
         "vault-thumbs-no-auto-refresh": Fault(None, (THUMBS_RELOAD,), browser=(_AUTO_REFRESH,), browser_files=2),
+        # slop/run vault-refresh --break --fault=vault-search-no-spinner: "No data" until OF's search answered
+        "vault-search-no-spinner": Fault(None, (SEARCH_PENDING,), browser=(_SEARCH_NO_SPINNER,), browser_files=1),
         # slop/run vault-refresh --break --fault=vault-sync-no-coalesce --no-ui
         "vault-sync-no-coalesce": Fault(_no_coalesce, (SYNC_COALESCED,)),
     }

@@ -14,6 +14,7 @@ import { IfButton, IfLabel, IfModal } from "@/components/ui/infloww";
 import { IF_FIELD, IfNativeSelect } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 import { BATCH_EDIT_INIT, CRITERIA, batchAll, batchEditReducer, batchShown, buildBatchPayload } from "@/components/vault/batchEditState";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** Step 3's per-file columns (growth-vault-pro#109), each a key of `RowMeta`. */
 export const STEP3_FIELDS = [
@@ -182,9 +183,7 @@ export function BatchEditModal({
     >
       <div className="mb-3 flex items-center gap-1">
         <span>Select criteria</span>
-        <span title="Select the criteria you want to batch-edit" className="text-muted">
-          <Info size={14} aria-hidden />
-        </span>
+        <InfoTip text="Select the criteria you want to batch-edit" className="text-muted" />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" aria-pressed={all} onClick={() => dispatch({ type: "all" })} className={chip(all)}>

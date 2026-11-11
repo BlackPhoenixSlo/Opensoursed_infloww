@@ -6,7 +6,7 @@
  * (`docs/infloww-layouts/growth-scripts.md`).
  */
 
-import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import {
   ArrowDown, ArrowRight, ArrowUp, AtSign, ChevronDown, LayoutTemplate, List, MinusCircle, MoreHorizontal, Pencil, Plus, PlusSquare,
   Share2, StickyNote, Tags, Trash2, Workflow, type LucideIcon,
@@ -397,6 +397,8 @@ export function ScriptRow({
     setSwitchSeen(expanded);
     setOpen(expanded);
   }
+  const textRef = useRef<HTMLDivElement>(null);
+  const overflows = useOverflowsLines(textRef, 2, r.text);
   const inSequence = stepLabel != null;
   return (
     <li
@@ -438,17 +440,17 @@ export function ScriptRow({
       <div className="flex-1 min-w-[200px] py-2">
         {inSequence && r.title && <div className="text-sm font-medium mb-0.5">{r.title}</div>}
         {/* #42: two lines, then the row's arrow or the Expand scripts switch lifts the clamp. */}
-        <div className="flex items-start gap-2">
+        <div ref={textRef} className="flex items-start gap-2">
           <OfRichText as="p" raw={r.text} className={cn("flex-1 text-sm whitespace-pre-wrap break-words", !open && "line-clamp-2")} />
-          <button
+          {overflows && <button
             type="button"
-            aria-label="Expand script"
+            aria-label={open ? "Collapse script" : "Expand script"}
             aria-expanded={open}
             onClick={() => setOpen((o) => !o)}
             className="mt-0.5 shrink-0 text-fg-dim hover:text-fg"
           >
             <ChevronDown size={12} aria-hidden className={cn("transition-transform", open && "rotate-180")} />
-          </button>
+          </button>}
         </div>
         {media.length > 0 && <MediaStrip media={media} accountId={accountId} />}
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-dim">
@@ -504,4 +506,24 @@ export function ScriptRow({
       </div>
     </li>
   );
+}
+
+/** #42: the arrow shows only once the text runs past `lines` lines (the bundle's `mn&&` guard). Read from the full
+ * height against the line height, so it holds whether the row is clamped or open; re-read when the width changes. */
+function useOverflowsLines(wrap: RefObject<HTMLElement | null>, lines: number, text: string): boolean {
+  const [over, setOver] = useState(false);
+  useLayoutEffect(() => {
+    const el = wrap.current?.firstElementChild as HTMLElement | null;
+    if (!el) return;
+    const measure = () => {
+      const lh = parseFloat(getComputedStyle(el).lineHeight);
+      setOver(lh > 0 && el.scrollHeight > lines * lh + 1);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [wrap, lines, text]);
+  return over;
 }

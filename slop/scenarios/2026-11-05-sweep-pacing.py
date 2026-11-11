@@ -197,8 +197,9 @@ tx-recent-window-ignored (`--fault=`, harness side: OF ignores startDate) turns 
 and tx_recent_window_kept red; every row still lands. tx-recent-startdate-iso (`--fault=`, harness
 side: the startDate reaches OF as ISO, answered empty) turns tx_recent_catches_new_row red.
 tx-backfill-* (`--fault=`, lib/sweep_pacing_faults.py): the walk's own, each to its tx_backfill_ checks.
-tx-full-watermark-forgotten / tx-failed-full-not-stamped (`--fault=`): tx_restart_keeps_full_schedule /
-tx_failed_full_consumes_period. tx-proxy-pacing-bypassed (`--fault=`): tx_proxy_pages_spaced.
+tx-full-watermark-forgotten / tx-failed-full-not-stamped / tx-full-failure-hidden (`--fault=`):
+tx_restart_keeps_full_schedule / tx_failed_full_consumes_period (both of the latter).
+tx-proxy-pacing-bypassed (`--fault=`): tx_proxy_pages_spaced.
 """
 from __future__ import annotations
 

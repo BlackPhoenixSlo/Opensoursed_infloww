@@ -21,12 +21,11 @@
  *   the select's Creator, every other is Not wired.
  * - "Automated Messages" (`AutomatedMessagesTab`) before "Mass Messages", and
  *   the default, as the bundle opens Automated Messages first when it is shown
- *   (#7).
+ *   (#7). Then our extras: "Mass Auto Unsend Messages" and "Scheduled" (direct
+ *   and mass sends together), both from `MassMessagesSection`.
  *
- * `?tab=mass` opens Mass Messages, and so does `?tab=scheduled`: the old
- * `/settings?tab=mass` and `/settings?tab=scheduled` redirects pass their query
- * through (next.config.ts), so both must still land on mass messages now that
- * Automated Messages comes first.
+ * `?tab=<key>` opens a tab; the old `/settings?tab=mass` and
+ * `/settings?tab=scheduled` redirects pass their query through (next.config.ts).
  */
 
 import { useState, type ReactNode } from "react";
@@ -40,14 +39,11 @@ import { SMART_MESSAGES_TABS, type SmartMessagesTab as TabKey } from "@/lib/page
 
 import AutomatedMessagesTab, { AutomatedEditor, AutomatedMessageCards, type WiredTrigger } from "./AutomatedMessagesTab";
 import CreateMessage from "./CreateMessagePopUp";
-import MassMessagesSection from "./MassMessagesSection";
+import MassMessagesSection, { MassAutoUnsendSection, ScheduledSection } from "./MassMessagesSection";
 import { SM } from "./smartMessagesControls";
 
-// `?tab=` values: each tab's key, and `scheduled`, an alias of Mass Messages.
-const LOOKUP: Record<string, TabKey> = {
-  ...Object.fromEntries(SMART_MESSAGES_TABS.map((t): [string, TabKey] => [t.key, t.key])),
-  scheduled: "mass",
-};
+// `?tab=` values: each tab's key.
+const LOOKUP: Record<string, TabKey> = Object.fromEntries(SMART_MESSAGES_TABS.map((t): [string, TabKey] => [t.key, t.key]));
 
 export default function SmartMessagesPage({
   automatedMessageCards,
@@ -68,6 +64,8 @@ export default function SmartMessagesPage({
       </CreatorRail>
     ),
     mass: <MassMessagesSection />,
+    unsend: <MassAutoUnsendSection />,
+    scheduled: <ScheduledSection />,
   };
   const [tab, setTab] = useState<TabKey>("automated");
   const [creating, setCreating] = useState(false);

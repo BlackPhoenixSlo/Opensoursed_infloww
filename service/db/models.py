@@ -2601,6 +2601,11 @@ class TransactionScanHistory(Base):
     # the walk is under way whatever a later failure writes to last_error; 3 give it up (kept: backfill_given_up).
     # Nullable/additive: init_db self-heals it via ALTER TABLE; NULL reads 0.
     backfill_stalls: Mapped[int | None] = mapped_column(Integer)
+    # Full walks failed or cut short since the last completed one (transaction_ingest_decide:
+    # a proxy refusal before the first page never counts; only a completed full walk resets it):
+    # > 0, /health is not green (status full_walk_failed between ticks), whatever the recent walks do. Nullable/additive
+    # (0111_tx_scan_full_walk_failures; init_db self-heals it too); NULL reads 0.
+    full_walk_failures: Mapped[int | None] = mapped_column(Integer)
     rows_inserted_total: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )

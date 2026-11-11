@@ -66,6 +66,11 @@ Cases:
       the mass-safe lane requires POSITIVE evidence. Absence of flags used to
       read as "nothing on show" — that is how the graded vault's penetration and dildo
       clips, and all 472 Ava members, got into the mass-safe folder.
+  case_unflagged_stills_wait_out_of_the_price_lanes:
+      a part-flagged vault (vision cap hit mid-pass) still plans: flagged
+      stills fill $10/$50/safe explicit, unflagged or half-flagged ones are
+      left out of all three — never priced off `clothing_state` — and sit in
+      `explicit 1:1`; `flags.missing` counts them.
   case_mass_safe_needs_to_know_what_is_in_frame:
       a SECOND vacuous-truth hole — the old `pussy_covered` answered FABRIC not
       visibility, so with body_focus empty every "nothing shown" test passed for
@@ -566,6 +571,45 @@ def case_unflagged_item_is_never_called_mass_safe() -> None:
         vault_scripts.collect_purpose_folders(aid))}
     safe = {r["media_id"] for r in lanes.get("covered_explicit", {}).get("items", [])}
     assert safe == {1401}, f"an unflagged item was called mass-safe: {safe}"
+
+
+def case_unflagged_stills_wait_out_of_the_price_lanes() -> None:
+    """The vision daily cap usually stops the flags pass part-way. The plan
+    must still build, from the checked stills only: an unchecked one is left
+    out of every flag lane rather than priced off `clothing_state`.
+
+    The half-flagged rows are the teeth: `breasts_vis: bare` with no
+    `underwear_visible` used to price at $10 (`_is_nude` fell back to the
+    enum), and a `vulva_vis: bare` one at $50."""
+    aid = _next_account()
+    asyncio.run(_seed(aid, [
+        # Flagged: $10, $50, safe explicit.
+        (1451, 0.0, {**_shot(["breasts"], "explicit", "pulled_down"),
+                     **_flags(breasts="bare")}, "photo"),
+        (1452, 0.1, {**_shot(["full_body"], "explicit", "fully_nude"),
+                     **_flags(vulva="bare", breasts="bare", underwear=False)}, "photo"),
+        (1453, 0.2, {**_shot(["ass"], "explicit", "fully_nude"),
+                     **_turned_away(underwear=False)}, "photo"),
+        # Unflagged, enum says fully nude.
+        (1454, 0.3, _shot(["full_body", "pussy"], "explicit", "fully_nude"), "photo"),
+        (1455, 0.4, _shot(["breasts"], "explicit", "fully_nude"), "photo"),
+        # Half-flagged: not checked either (`flags_known`).
+        (1456, 0.5, {**_shot(["breasts"], "explicit", "pulled_down"),
+                     "breasts_vis": "bare"}, "photo"),
+        (1457, 0.6, {**_shot(["pussy"], "explicit", "fully_nude"),
+                     "vulva_vis": "bare", "breasts_vis": "bare"}, "photo"),
+    ]))
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))
+    lanes = {f["lane"]: {r["media_id"] for r in f["items"]}
+             for f in plan["folders"] if f["source"] == "lane"}
+    unchecked = {1454, 1455, 1456, 1457}
+    assert lanes.get("tease_10") == {1451}, lanes
+    assert lanes.get("tease_50") == {1452}, lanes
+    assert lanes.get("covered_explicit") == {1453}, lanes
+    assert lanes.get("explicit_rest", set()) >= unchecked, \
+        f"unchecked paid stills fell out of every folder: {lanes}"
+    assert plan["flags"]["missing"] == 4 and plan["flags"]["ready"] is False, plan["flags"]
+    assert plan["summary"]["folders"] > 0, "a part-flagged vault must still plan"
 
 
 def case_mass_safe_needs_to_know_what_is_in_frame() -> None:
@@ -1664,6 +1708,7 @@ _harness.run(
     case_mass_lane_is_suggestive_only,
     case_nothing_on_show_is_never_a_tease,
     case_unflagged_item_is_never_called_mass_safe,
+    case_unflagged_stills_wait_out_of_the_price_lanes,
     case_mass_safe_needs_to_know_what_is_in_frame,
     case_partial_flags_do_not_count_as_checked,
     case_a_named_garment_beats_the_state_the_model_chose,

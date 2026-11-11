@@ -1,4 +1,4 @@
-"""Ledger pages paced per bound proxy (service/of_pacing.py `egress`), the last stage of
+"""Ledger walk pages paced per bound proxy exit (service/of_pacing.py, OFClient.pace_key), the last stage of
 scenarios/2026-11-05-sweep-pacing.py (tx_proxy_pages_spaced).
 
 PX_N Creators held out of every other check (an empty ledger until now, so the earlier passes
@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections import defaultdict
 from contextlib import ExitStack
 from datetime import timedelta
 
 from slop.lib.proxy_wire import ProxyWire
+from slop.lib.sweep_pacing_evidence import IN_FLIGHT, SCAN_END, held, scan_many
 from slop.lib.sweep_pacing_faults import TX_PROXY_SPACED
 from slop.lib.sweep_pacing_ledger import tx_row
 
@@ -86,27 +86,16 @@ def _labels(path) -> dict[str, str]:
 
 
 def _totals(w, aids) -> dict[str, tuple[int, int, int]]:
-    con = w.sql()
+    """Creator -> (ledger rows held, their amount cents, its fans' lifetime cents)."""
     out = {}
     for a in aids:
-        n, s = con.execute("SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions WHERE account_id = ? "
-                           "AND provider_transaction_id IS NOT NULL", (a,)).fetchone()
-        life = con.execute("SELECT COALESCE(SUM(lifetime_spend_cents), 0) FROM fans WHERE account_id = ?",
-                           (a,)).fetchone()[0]
-        out[a] = (n, s, life)
-    con.close()
+        ids, total, life = held(w, a)
+        out[a] = (sum(ids.values()), total, life)
     return out
 
 
 def _status(w, aids) -> dict[str, str]:
-    con = w.sql()
-    q = f"SELECT account_id, current_status FROM transaction_scan_history WHERE account_id IN ({','.join('?' * len(aids))})"
-    out = dict(con.execute(q, list(aids)).fetchall())
-    con.close()
-    return out
-
-
-_SCAN_END = re.compile(r"ingest_tx_scan_end account=(\S+) ")
+    return {a: s["status"] for a, s in scan_many(w, aids).items()}
 
 
 async def _walks(ctx, w, sw, aids) -> dict:
@@ -122,9 +111,9 @@ async def _walks(ctx, w, sw, aids) -> dict:
         await asyncio.sleep(1.0)
         st = _status(w, aids)
         ended = {m.group(1) for y in (await ctx.owner.get("/__slop/sweep-pacing/runs")).json()["log"]
-                 if y["t"] >= t0 and (m := _SCAN_END.search(y["msg"]))}
+                 if y["t"] >= t0 and (m := SCAN_END.search(y["msg"]))}
         gets = [e for e in sw.snapshot() if e["t"] >= t0 and e["route"] == "transactions" and e["account"] in aids]
-        if all(st.get(a) not in ("refreshing", "backfilling") and (a in ended or st.get(a) == "error") for a in aids) \
+        if all(st.get(a) not in IN_FLIGHT and (a in ended or st.get(a) == "error") for a in aids) \
                 and {e["account"] for e in gets} >= set(aids):
             break
     gets = [e for e in sw.snapshot() if e["t"] >= t0 and e["route"] == "transactions" and e["account"] in aids]
@@ -146,7 +135,7 @@ def _judge(p: dict, binding: dict[str, str], gap: float, slack: float) -> dict:
     return {"min_gap_s": gaps, "spaced": all(g >= gap - slack for g in gaps.values()),
             "endpoints_overlap": overlap, "off_binding": off_binding,
             "gets": dict(per), "non_200": [e["status"] for e in p["gets"] if e["status"] != 200],
-            "accepted": p["accepted"], "unsettled": {a: s for a, s in p["status"].items() if s in ("refreshing", "backfilling")},
+            "accepted": p["accepted"], "unsettled": {a: s for a, s in p["status"].items() if s in IN_FLIGHT},
             "wall_s": round(p["t1"] - p["t0"], 1)}
 
 

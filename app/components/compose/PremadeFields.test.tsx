@@ -1,6 +1,6 @@
 /**
  * PremadeFields, a ready-made rule's one post / message inline in the rule popup (ReadyMadeRuleEditor). Driven here
- * through a harness that owns the rows like the popup's reducer and builds the payload on "Use in rule" (premadeRows
+ * through a harness that owns the row like the popup's reducer and builds the payload on "Use in rule" (premadeRows
  * `buildPayload`, what Create saves). It has no send path of its own: it imports no relay write.
  */
 import { useReducer } from "react";
@@ -9,9 +9,8 @@ import { act, cleanup, fireEvent, screen, within } from "@testing-library/react"
 
 import { renderWithProviders } from "@/test-utils";
 import { PremadeFields } from "@/components/compose/PremadeFields";
-import {
-  buildPayload, payloadToRows, rowsReducer, type Kind, type PremadePayload,
-} from "@/components/compose/premadeRows";
+import { buildPayload, payloadToRow, rowReducer, type PremadePayload } from "@/components/compose/premadeRows";
+import { hasContent, type Kind } from "@/components/compose/payloadRules";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(async () => []) } }));
 vi.mock("@/contexts/EmployeeContext", () => ({
@@ -39,17 +38,17 @@ const lastPicker = () => picker.all[picker.all.length - 1];
 
 afterEach(() => cleanup());
 
-/** The popup's share of the job: own the row, build the payload (null → nothing to save). */
+/** The popup's share of the job: own the row, build the payload (no content → nothing to save). */
 function Harness({ kind, onComposePayload, initialPayload }: {
   kind: Kind;
   onComposePayload: (p: PremadePayload) => void;
   initialPayload?: Record<string, unknown>;
 }) {
-  const [rows, dispatch] = useReducer(rowsReducer, undefined, () => payloadToRows(initialPayload, kind));
+  const [row, dispatch] = useReducer(rowReducer, undefined, () => payloadToRow(initialPayload, kind));
   return (
     <>
-      <PremadeFields kind={kind} accountId="acct1" row={rows[0]} dispatch={dispatch} />
-      <button type="button" onClick={() => { const p = buildPayload(rows, { kind }); if (p) onComposePayload(p); }}>
+      <PremadeFields kind={kind} accountId="acct1" row={row} dispatch={dispatch} />
+      <button type="button" onClick={() => { const p = buildPayload(row, kind); if (hasContent(p, kind)) onComposePayload(p); }}>
         Use in rule
       </button>
     </>
@@ -202,6 +201,22 @@ describe("PremadeFields", () => {
     fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));
     expect(onComposePayload).toHaveBeenLastCalledWith({
       messages: [{ text: "x", online_only: true, user_lists: ["fans", "following"], exclude_replied_hours: 2 }],
+    });
+  });
+
+  it("mass_premade: replied / inbound guards say their defaults; 0 is sent (guard off)", () => {
+    const onComposePayload = vi.fn();
+    renderWithProviders(<Harness kind="mass_premade" onComposePayload={onComposePayload}
+      initialPayload={{ messages: [{ text: "x", user_lists: ["fans"], exclude_replied_hours: 0 }] }} />);
+    expect(screen.getByRole("button", { name: "More settings" })).toHaveAttribute("aria-expanded", "true");
+    const replied = screen.getByLabelText("Exclude I replied to");
+    expect(replied).toHaveValue("0");
+    expect(screen.getByText("last N hours · blank = default 6h · 0 = off")).toBeTruthy();
+    expect(screen.getByText("last N hours · blank = default 2h · 0 = off")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Exclude who messaged me"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));
+    expect(onComposePayload).toHaveBeenLastCalledWith({
+      messages: [{ text: "x", user_lists: ["fans"], exclude_replied_hours: 0, exclude_inbound_hours: 0 }],
     });
   });
 

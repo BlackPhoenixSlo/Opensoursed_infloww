@@ -13,7 +13,9 @@ change made on OnlyFans now: a new folder holding k new media, created now (the 
                                   per-type counts ({photos,videos,gifs,audios}Count, on every page), as OF's (Infloww's
                                   bundle reads `.all` into its "All media" row, index.640a8db9.js `classifyListsAll`).
   GET /api2/v2/vault/media        list ("all" or a folder id) / type (photo|video|gif, omitted = all) /
-                                  sort (asc|desc by createdAt, id) / offset / limit (default 24); list, hasMore.
+                                  sort (asc|desc by createdAt, id) / offset / limit (default 24) / query (OF's own
+                                  search: media whose PPV caption, `caption(uid, ids, text)`, holds it, any case;
+                                  none without a caption); list, hasMore.
   GET /api2/v2/vault/media/{id}   that media with FRESH signatures (a new `gen`, exp now + SIGN_TTL_S); 404 unknown.
 
 Media urls: `files.{thumb,full}.url` on cdn2.onlyfans.com, path /files/v/<uid>/<mid>/{thumb,full}.jpg,
@@ -89,6 +91,7 @@ class VaultWire:
         self.ip_bound, self.mp4, self.full_mp4 = ip_bound, mp4, full_mp4
         self.sizes = dict(sizes or {})
         self.gifs: dict[str, set[int]] = {}
+        self.captions: dict[str, dict[int, str]] = {}
         self.t0 = int(time.time())
         self.gen: dict[str, int] = {}
         self._v: dict[str, dict] = {}
@@ -178,6 +181,11 @@ class VaultWire:
         self.gen[uid] = self.gen.get(uid, 0) + 1
         return self.gen[uid]
 
+    def caption(self, uid: str, ids, text: str) -> None:
+        """A PPV caption these media were sent with on OnlyFans: OF's vault search (`query`) finds them by it."""
+        with self.fake.lock:
+            self.captions.setdefault(uid, {}).update({int(i): text for i in ids})
+
     def newest(self, uid: str, n: int) -> list[int]:
         return [m["id"] for m in self.vault(uid)["media"][:n]]
 
@@ -189,8 +197,11 @@ class VaultWire:
             n[m["type"]] += 1
         return {f"{t}sCount": c for t, c in n.items()}
 
-    def listing(self, uid: str, *, list_id=None, type_=None, sort="desc") -> list[dict]:
+    def listing(self, uid: str, *, list_id=None, type_=None, sort="desc", query=None) -> list[dict]:
         ms = self.vault(uid)["media"]
+        if query:
+            caps = self.captions.get(uid, {})
+            ms = [m for m in ms if query.lower() in caps.get(m["id"], "").lower()]
         if list_id not in (None, "all"):
             ms = [m for m in ms if int(list_id) in m["folders"]]
         if type_ and type_ != "all":
@@ -217,7 +228,8 @@ class VaultWire:
             return True
         if u.path == "/api2/v2/vault/media":
             off, lim = int(q.get("offset") or 0), int(q.get("limit") or 24)
-            ms = self.listing(uid, list_id=q.get("list"), type_=q.get("type"), sort=q.get("sort") or "desc")
+            ms = self.listing(uid, list_id=q.get("list"), type_=q.get("type"), sort=q.get("sort") or "desc",
+                              query=q.get("query"))
             self._rec(uid, "media", q, 200, eg)
             h._record(uid, route, 200, {"list": [self.of_media(uid, m, egress=eg) for m in ms[off:off + lim]],
                                         "hasMore": off + lim < len(ms)})

@@ -130,7 +130,7 @@ function MyShiftsFrame({ children, owner = false }: { children: ReactNode; owner
   return (
     <Card
       title={owner ? "Scheduled shifts" : "My shifts"}
-      tip="Your scheduled shifts during this period"
+      tip={owner ? "Shifts assigned to your employees during this period" : "Your scheduled shifts during this period"}
       className="flex max-h-[720px] flex-col md:absolute md:inset-0"
       scrollable
     >
@@ -345,7 +345,7 @@ function OwnerClockedIn({ q }: { q: ReturnType<typeof useClockedIn> }) {
     </span>
   ) : null;
   return (
-    <Card title={CLOCKED_IN} after={count}>
+    <Card title={CLOCKED_IN} after={count} tip="Employees clocked in right now, and since when. Refreshes every minute.">
       {loadGate(q, "clocked-in employees") ?? (
         <>
           {!q.data?.time_tracking_enabled && <TimeTrackingOff owner />}

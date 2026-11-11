@@ -1,32 +1,23 @@
 /**
- * premadeRows — PremadeForm's repeating rows: the Row shape, one reducer, and
- * the pure row ⇄ payload mapping the component only calls.
+ * premadeRows — a ready-made rule's ONE post / message (PremadeFields): the Row shape, its reducer, and the pure
+ * row ⇄ payload mapping the popup only calls (ruleEditorForm owns the state).
  *
- *   • `rowsReducer` is the form's one state and owns every row edit (patch,
- *     audience chips, reset). One rule = one post / message, its only clock the
- *     rule's "Run every": no add/remove, no delay, no resend (an older list or
- *     timer is edited in Raw JSON, readyMadeContent `isLegacy`).
- *   • `rowToItem` takes the `kind` explicitly.
- *   • `buildPayload` is the ONE `{posts|messages:[…]}` payload "Use in rule"
- *     stores: rows with no text and no media are dropped.
- *   • `payloadToRows` / `itemToRow` are the inverse (Re-compose seeds the form).
+ *   • `rowReducer` owns every edit of the row (patch, audience chips). One rule = one post / message, its only clock
+ *     the rule's "Run every": no list, delay or resend (readyMadeContent `formHoldReason` sends anything the row
+ *     can't hold losslessly to Raw JSON).
+ *   • `buildPayload` is the ONE `{posts|messages:[item]}` payload Create / Save stores — always one item, even one
+ *     that wouldn't send yet (payloadRules `sendGap` is the gate).
+ *   • `payloadToRow` / `itemToRow` are the inverse (editing seeds the row).
+ * What the backend does with the payload (the Save gate's rules) is payloadRules'.
  */
 
-import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
+import { DEFAULT_BROADCAST_LISTS, SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
+import { fmtPrice } from "@/lib/format";
 import type { VaultMedia } from "@/lib/relay";
+import { LIST_KEY, listItems, ppvPrice, type Kind } from "./payloadRules";
 
-export type Kind = "auto_posts" | "mass_premade";
-
-/** Each kind's payload list: `{posts:[…]}` | `{messages:[…]}`. */
-export const LIST_KEY: Record<Kind, "posts" | "messages"> = { auto_posts: "posts", mass_premade: "messages" };
-
-/** The kind's own list in `payload` (`posts` | `messages`); not an array → `[]`. */
-export function listItems(payload: Record<string, unknown> | undefined, kind: Kind): unknown[] {
-  const arr = payload?.[LIST_KEY[kind]];
-  return Array.isArray(arr) ? arr : [];
-}
-
-const SYSTEM_IDS = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
+/** The built-in audiences' ids ('fans' / 'following'): include-only chips, never a custom list. */
+export const SYSTEM_IDS: ReadonlySet<string> = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
 
 export interface Row {
   // Text variant POOL — one is picked at random per fire. Always ≥1 entry.
@@ -81,7 +72,7 @@ export function blankRow(): Row {
     onlineOnly: true,
     unsendAfterHours: "",
     // Default audience mirrors Mass Online: fans + following both included.
-    includes: ["fans", "following"],
+    includes: [...DEFAULT_BROADCAST_LISTS],
     excludes: [],
     // A new Auto Mass doesn't interrupt live chats (a saved one re-seeds its own value, itemToRow).
     excludeLastChatHours: "1",
@@ -93,18 +84,13 @@ export function blankRow(): Row {
   };
 }
 
-export type RowsAction =
-  | { type: "patch"; i: number; patch: Partial<Row> }
-  // Per-row audience toggles (mass_premade), the same UX as Mass Online: a system
-  // chip is include-only (toggleListInclude; OF drops a built-in name in
-  // `excludedLists`); a custom list is included or excluded, never both.
-  | { type: "toggleListInclude"; i: number; id: string }
-  | { type: "toggleListExclude"; i: number; id: string }
-  | { type: "reset" };
-
-function mapRow(rows: Row[], i: number, fn: (r: Row) => Row): Row[] {
-  return rows.map((r, idx) => (idx === i ? fn(r) : r));
-}
+export type RowAction =
+  | { type: "patch"; patch: Partial<Row> }
+  // Audience toggles (mass_premade), the same UX as Mass Online: a system chip is include-only
+  // (toggleListInclude; OF drops a built-in name in `excludedLists`); a custom list is included or excluded,
+  // never both.
+  | { type: "toggleListInclude"; id: string }
+  | { type: "toggleListExclude"; id: string };
 
 function mutAudience(r: Row, fn: (inc: Set<string>, exc: Set<string>) => void): Row {
   const inc = new Set(r.includes);
@@ -113,29 +99,27 @@ function mutAudience(r: Row, fn: (inc: Set<string>, exc: Set<string>) => void): 
   return { ...r, includes: [...inc], excludes: [...exc] };
 }
 
-export function rowsReducer(rows: Row[], a: RowsAction): Row[] {
+export function rowReducer(r: Row, a: RowAction): Row {
   switch (a.type) {
     case "patch":
-      return mapRow(rows, a.i, (r) => ({ ...r, ...a.patch }));
+      return { ...r, ...a.patch };
     case "toggleListInclude":
-      return mapRow(rows, a.i, (r) => mutAudience(r, (inc, exc) => {
+      return mutAudience(r, (inc, exc) => {
         if (inc.has(a.id)) inc.delete(a.id);
         else { inc.add(a.id); exc.delete(a.id); }
-      }));
+      });
     case "toggleListExclude":
-      return mapRow(rows, a.i, (r) => mutAudience(r, (inc, exc) => {
+      return mutAudience(r, (inc, exc) => {
         if (exc.has(a.id)) exc.delete(a.id);
         else { exc.add(a.id); inc.delete(a.id); }
-      }));
-    case "reset":
-      return [blankRow()];
+      });
   }
 }
 
 /** A blank/zero/garbage string → undefined; a positive number → the number.
  *  Keeps unset knobs out of the payload so the automation treats them as
  *  "not applied" (e.g. no hours_to_live = keep the post forever). */
-function posNum(s: string): number | undefined {
+export function posNum(s: string): number | undefined {
   const n = Number(s);
   return s.trim() !== "" && Number.isFinite(n) && n > 0 ? n : undefined;
 }
@@ -143,14 +127,26 @@ function nonNegInt(s: string): number | undefined {
   const n = Number(s);
   return s.trim() !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
 }
-
-export interface RowCtx {
-  kind: Kind;
+/** Blank → undefined (the backend default applies); 0 is kept: an explicit 0 turns a default-on guard off. */
+function nonNeg(s: string): number | undefined {
+  const n = Number(s);
+  return s.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-/** Build the per-item payload entry from a row, dropping unset knobs. The
+/** "Free" / "$12" / "$9.99" — the one price read-out (the field's PPV line, the rule summary). */
+export function priceLabel(v: unknown): string {
+  const p = ppvPrice(v);
+  return p > 0 ? fmtPrice(Math.round(p * 100)) : "Free";
+}
+
+/** The included custom lists (the system chips aside). */
+export function customIncludes(r: Row): string[] {
+  return r.includes.filter((id) => !SYSTEM_IDS.has(id));
+}
+
+/** Build the one payload item from the row, dropping unset knobs. The
  *  text/image POOLS go to the backend, which randomises per fire. */
-export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
+export function rowToItem(r: Row, kind: Kind): Record<string, unknown> {
   const posts = kind === "auto_posts";
   const media = r.media.map((m) => m.id).filter((id): id is number => typeof id === "number");
   const texts = r.texts.map((t) => t.trim()).filter(Boolean);
@@ -199,10 +195,11 @@ export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
     if (r.excludes.length) item.excluded_user_lists = r.excludes;
     const elc = posNum(r.excludeLastChatHours);
     if (elc) item.exclude_last_chat_hours = elc;
-    const erh = posNum(r.excludeRepliedHours);
-    if (erh) item.exclude_replied_hours = erh;
-    const eih = posNum(r.excludeInboundHours);
-    if (eih) item.exclude_inbound_hours = eih;
+    // Default-on guards (absent = 6h / 2h server-side): an explicit 0 turns them off, so 0 is sent.
+    const erh = nonNeg(r.excludeRepliedHours);
+    if (erh !== undefined) item.exclude_replied_hours = erh;
+    const eih = nonNeg(r.excludeInboundHours);
+    if (eih !== undefined) item.exclude_inbound_hours = eih;
     const ul = nonNegInt(r.unreadLimit);
     if (ul && ul > 0) item.unread_limit = ul;
     const rch = posNum(r.recentChatHours);
@@ -213,23 +210,15 @@ export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
   return item;
 }
 
-/** The payload's items: a row needs text or media. */
-export function rowsToItems(rows: Row[], ctx: RowCtx): Record<string, unknown>[] {
-  return rows
-    .map((r) => rowToItem(r, ctx))
-    .filter((it) => !!it.text || Array.isArray(it.texts)
-      || Array.isArray(it.media_files) || it.media_folder_id != null);
-}
-
 export type PremadePayload = {
   posts?: Record<string, unknown>[];
   messages?: Record<string, unknown>[];
 };
 
-/** The `{posts|messages:[one]}` payload — null if no usable row. A rule stores its own dry-run knob. */
-export function buildPayload(rows: Row[], ctx: RowCtx): PremadePayload | null {
-  const items = rowsToItems(rows, ctx);
-  return items.length === 0 ? null : { [LIST_KEY[ctx.kind]]: items };
+/** The `{posts|messages:[item]}` payload: always the row's one item, so Raw JSON and back keeps every field
+ *  (payloadRules `sendGap` says whether it would send). A rule stores its own dry-run knob. */
+export function buildPayload(r: Row, kind: Kind): PremadePayload {
+  return { [LIST_KEY[kind]]: [rowToItem(r, kind)] };
 }
 
 /** Number/anything → the string an input expects ("" when unset), the inverse
@@ -238,9 +227,9 @@ export function numStr(v: unknown): string {
   return v === undefined || v === null ? "" : String(v);
 }
 
-/** Reverse of `rowToItem` — turn one saved payload entry back into an editable
- *  Row so "Re-compose" opens pre-filled instead of blank. Media re-seeds as
- *  id-only stubs (no thumbnail until re-picked, but the ids round-trip exactly). */
+/** Reverse of `rowToItem` — one saved payload item back into the editable Row. Media re-seeds as id-only stubs
+ *  (no thumbnail until re-picked, but the ids round-trip exactly). Anything the Row can't hold is dropped here, which
+ *  is why the editor only shows the row for a payload that round-trips (readyMadeContent `formHoldReason`). */
 export function itemToRow(it: Record<string, unknown>): Row {
   const r = blankRow();
   if (typeof it.text === "string") r.texts = [it.text];
@@ -281,12 +270,12 @@ export function itemToRow(it: Record<string, unknown>): Row {
   return r;
 }
 
-/** Seed the repeating rows from a saved `{posts|messages:[…]}` payload (the
- *  inverse of buildPayload). Empty/missing → one blank row. */
-export function payloadToRows(payload: Record<string, unknown> | undefined, kind: Kind): Row[] {
-  const arr = listItems(payload, kind);
-  if (arr.length === 0) return [blankRow()];
-  return arr.map((it) => itemToRow((it ?? {}) as Record<string, unknown>));
+/** Seed the row from a saved `{posts|messages:[…]}` payload's first item (the inverse of buildPayload).
+ *  Empty/missing → a blank row. */
+export function payloadToRow(payload: Record<string, unknown> | undefined, kind: Kind): Row {
+  const first = listItems(payload, kind)[0];
+  if (first === undefined) return blankRow();
+  return itemToRow((first && typeof first === "object" ? first : {}) as Record<string, unknown>);
 }
 
 /** "Skip fans chatted with in last" chips (hours; "" = Off). A saved value off

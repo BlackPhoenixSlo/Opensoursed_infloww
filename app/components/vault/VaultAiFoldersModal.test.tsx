@@ -1,12 +1,12 @@
 /**
  * VaultAiFoldersModal's build and flags-pass requests: a failed build says why and an option change keeps that
- * error; a landed build shows its result until an option changes; the flags pass shows its own error. Same calls
- * as before. The vault hooks are faked at the module; every name is fake.
+ * error; a landed build shows its result until an option changes; the flags pass shows its own error. Unchecked
+ * stills only inform (the server leaves them out of safe explicit, $10 and $50), never block; zero folders does. The vault hooks are faked at the module; every name is fake.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
-const plan = vi.hoisted(() => ({ flagsReady: true }));
+const plan = vi.hoisted(() => ({ flagsReady: true, noFolders: false }));
 vi.mock("@/hooks/useVaultCache", () => ({
   mirrorThumbSrc: () => "",
   applyAiFolders: vi.fn(),
@@ -16,9 +16,9 @@ vi.mock("@/hooks/useVaultCache", () => ({
     isLoading: false, isError: false, isFetching: false, refetch: () => {},
     data: {
       account_id: "acc-1", keep: 2, solo: false, shoots_found: 1, solo_coverage: null,
-      folders: [{ name: "AI-tease 10", source: "lane", purpose: "tease", size: 0, kinds: {}, tiers: {},
-        closes_on_own: 0, items: [], solo: false }],
-      summary: { folders: 1, scripts: 0, lanes: 1, solo_cuts: 0, unique_media: 0, memberships: 0 },
+      folders: plan.noFolders ? [] : [{ name: "AI-tease 10", source: "lane", purpose: "tease", size: 0, kinds: {},
+        tiers: {}, closes_on_own: 0, items: [], solo: false }],
+      summary: { folders: plan.noFolders ? 0 : 1, scripts: 0, lanes: 1, solo_cuts: 0, unique_media: 0, memberships: 0 },
       flags: { stills: 10, flagged: plan.flagsReady ? 10 : 4, missing: plan.flagsReady ? 0 : 6, ready: plan.flagsReady },
     },
   }),
@@ -32,7 +32,7 @@ const apply = vi.mocked(applyAiFolders);
 const runFlags = vi.mocked(runVaultFlags);
 const RESULT = { folders: 1, new: 1, reused: 0, items: 3, of_mirrored: 1, of_failed: 0, created: [] };
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); plan.flagsReady = true; });
+afterEach(() => { cleanup(); vi.clearAllMocks(); plan.flagsReady = true; plan.noFolders = false; });
 
 describe("VaultAiFoldersModal", () => {
   it("a failed build says why, an option change keeps it; a landed build shows until an option changes", async () => {
@@ -64,10 +64,28 @@ describe("VaultAiFoldersModal", () => {
     plan.flagsReady = false;
     runFlags.mockRejectedValueOnce(new Error("flags busy"));
     renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
-    expect(screen.getByRole("button", { name: "Create 1 folders" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Check 6 stills" }));
     await waitFor(() => expect(screen.getByText("flags busy")).toHaveClass("text-err"));
     expect(runFlags).toHaveBeenCalledWith("acc-1");
+  });
+
+  it("unchecked stills inform but never block Create", async () => {
+    plan.flagsReady = false;
+    apply.mockResolvedValueOnce(RESULT);
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    expect(screen.getByText("6 of 10 stills not checked yet")).toBeInTheDocument();
+    expect(screen.getByText(/left out of the\s+safe-explicit, \$10 and \$50 folders/)).toBeInTheDocument();
+    const create = screen.getByRole("button", { name: "Create 1 folders" });
+    expect(create).toBeEnabled();
+    fireEvent.click(create);
+    expect(await screen.findByText(/Created 1 new/)).toBeInTheDocument();
+  });
+
+  it("all checked: no flags box; zero folders: Create disabled", () => {
+    plan.noFolders = true;
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    expect(screen.queryByText(/not checked yet/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Create 0 folders" })).toBeDisabled();
   });
 
   it("disables the flags pass while its request is pending", async () => {

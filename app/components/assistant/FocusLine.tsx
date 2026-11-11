@@ -24,8 +24,10 @@ export function focusLabel(focus: Focus, accounts: AccountMeta[]): string {
 const offline = (a: AccountMeta) => !a.has_session || !a.is_active;
 
 /** Click to focus the bot on General or one owned model (an offline one is
- *  marked). While a started chat holds off an app switch (`held`), it offers
- *  the app's model (`appFocus`) as a new chat. */
+ *  marked). While a started chat holds off an app switch (`held`) to a model,
+ *  it offers that model (`appFocus`) as a new chat. A move to all models (a
+ *  page with no creator picker: Dashboard, Settings) offers nothing — the chat
+ *  just stays on its model; New chat still lands on General. */
 export function FocusLine({
   focus, accounts, canGeneral, started, held, appFocus, onPick, onNewChat,
 }: {
@@ -59,7 +61,7 @@ export function FocusLine({
         <span className="truncate">{focusLabel(focus, accounts)}</span>
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-180")} aria-hidden />
       </button>
-      {held && (
+      {held && appFocus !== null && (
         <button
           type="button"
           onClick={onNewChat}

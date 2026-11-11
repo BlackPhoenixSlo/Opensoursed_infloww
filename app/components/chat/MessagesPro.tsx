@@ -40,6 +40,7 @@ import { useSfw } from "@/hooks/useBlurMode";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { keepChatEntry, useChatBackEntry } from "@/hooks/useChatBackEntry";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
+import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { MP } from "@/lib/messagesPro";
 import { FAN_TAB_PARAM, setFanTabOpener } from "@/lib/notificationLink";
@@ -75,6 +76,8 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   const accounts = usePlatformAccounts();
   const { pickAll } = usePickAllModels();
   const { scope, setScope } = useScope();
+  // The scope is this page's Creator pick (PageCreatorContext: the help bot follows it).
+  usePageCreator(scope.kind === "model" ? scope.accountId : null);
   // The opened Creator (the open chat's, else the scoped one): its background reads never wait (lib/relaySchedule).
   const focusAccountId = selected?.accountId ?? (scope.kind === "model" ? scope.accountId : null);
   useEffect(() => {

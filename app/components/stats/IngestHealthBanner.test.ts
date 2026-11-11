@@ -77,6 +77,7 @@ describe("statusLabel", () => {
     ["backfill_partial", "backfilling · still working"],
     ["backfill_stalled", "backfill stalled"],
     ["backfill_given_up", "backfill gave up"],
+    ["full_walk_failed", "full walk failing"],
     ["error", "error"],
   ])("%s", (status, want) => {
     expect(statusLabel(status)).toBe(want);

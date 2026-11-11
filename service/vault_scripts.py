@@ -738,6 +738,21 @@ def _decently_covered(fields: dict) -> bool:
     return True
 
 
+def _flag_lane_ok(why: dict, fields: dict, kind: str) -> bool:
+    """A paid-tier still the flags pass has looked at — the entry test for both
+    price lanes.
+
+    An unflagged still is LEFT OUT, never guessed: without the flags `_is_nude`
+    falls back to `clothing_state`, measured wrong on ~1 in 3 of the stills the
+    $50 tier is built from. The vision daily cap usually stops the flags pass
+    part-way, so the folders are built from what is checked and the rest join
+    on a rebuild once it is (`flags_coverage` says how many are waiting). They
+    still land in `explicit 1:1`, which asks nothing of the flags.
+    """
+    return (kind == "photo" and why["tier"] in _PAID_TIERS
+            and vault_ai_brief.flags_known(fields))
+
+
 def _lane_tease_10(why: dict, fields: dict, kind: str) -> bool:
     """$10 — a real reveal, but she is still a little hidden: breasts out,
     something still on, pussy not on show. Images only.
@@ -748,8 +763,10 @@ def _lane_tease_10(why: dict, fields: dict, kind: str) -> bool:
 
     Content lanes may overlap freely, but the two PRICE tiers must not: an item
     cannot carry two prices.
+
+    Flagged stills only (`_flag_lane_ok`).
     """
-    if kind != "photo" or why["tier"] not in _PAID_TIERS:
+    if not _flag_lane_ok(why, fields, kind):
         return False
     if _is_nude(fields):
         return False          # nude is a $50, not a $10
@@ -766,8 +783,10 @@ def _lane_tease_50(why: dict, fields: dict, kind: str) -> bool:
     whatever else the describe pass tagged — and that tag combination is usually
     a mislabel (panties pulled aside read as "lingerie on"), so trusting it
     would price a partial reveal at $50.
+
+    Flagged stills only (`_flag_lane_ok`).
     """
-    if kind != "photo" or why["tier"] not in _PAID_TIERS:
+    if not _flag_lane_ok(why, fields, kind):
         return False
     if vault_ai_brief.vis(fields, "vulva_vis") == "covered":
         return False          # something over her vulva is never the full reveal
@@ -939,9 +958,9 @@ async def collect_purpose_folders(
 async def flags_coverage(account_id: str) -> dict[str, Any]:
     """How many of the account's stills carry the exposure flags.
 
-    `ready` is False when ANY still is missing them: the paid tiers silently
-    fall back to `clothing_state` for those items, which is the unreliable
-    signal the flags exist to replace.
+    `ready` is False when ANY still is missing them. Informational: the folders
+    build anyway, and the `missing` stills are left out of the flag lanes
+    (safe explicit, $10, $50) until checked — see `_flag_lane_ok`.
     """
     async with get_session() as s:
         rows = (await s.execute(
@@ -1057,11 +1076,10 @@ async def plan_ai_folders(
 
     unique = {r["media_id"] for f in folders for r in f["items"]}
 
-    # How much of this account has been through the cheap flags pass. Without
-    # it `_is_nude()` falls back to `clothing_state`, which was measured wrong
-    # on ~1 in 3 of the stills the $50 tier is built from — so the folders would
-    # come out quietly wrong rather than visibly broken. The caller surfaces
-    # this so an operator is never one click from that.
+    # How much of this account has been through the cheap flags pass. The flag
+    # lanes (safe explicit, $10, $50) take flagged stills only, so `missing` is
+    # how many stills those folders are still waiting on. The UI says so; it
+    # does not block the build.
     coverage = await flags_coverage(account_id)
     # Only when asked: it is a second full read of the vault, and it answers a
     # question nobody has posed unless the box is ticked.

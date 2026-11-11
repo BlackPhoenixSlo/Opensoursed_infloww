@@ -371,14 +371,35 @@ describe("the saved replies are the scripts", () => {
 });
 
 describe("each row expands on its own (#42)", () => {
-  it("a row's expander lifts that row's clamp only, and the Expand scripts switch still opens every row", async () => {
+  // jsdom lays nothing out: "Hey there" is given three 20px lines, every other text one.
+  beforeEach(() => {
+    const cs = window.getComputedStyle;
+    vi.spyOn(window, "getComputedStyle").mockImplementation((el, pseudo) => {
+      const st = cs(el, pseudo);
+      Object.defineProperty(st, "lineHeight", { value: "20px" });
+      return st;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.textContent === "Hey there" ? 60 : 20;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("only a row whose text runs past two lines gets the arrow", async () => {
     await mount();
     expectInCapture("growth-scripts#42", "expandable");
+    expect(within(rows()[0]).getByRole("button", { name: "Expand script" })).toBeInTheDocument();
+    expect(within(rows()[1]).queryByRole("button", { name: /(Expand|Collapse) script/ })).toBeNull();
+  });
+
+  it("a row's expander lifts that row's clamp only, and the Expand scripts switch still opens every row", async () => {
+    await mount();
     const text = (i: number) => within(rows()[i]).getByText(i === 0 ? "Hey there" : "Unlock this one");
     const toggle = within(rows()[0]).getByRole("button", { name: "Expand script" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAccessibleName("Collapse script");
     expect(text(0)).not.toHaveClass("line-clamp-2");
     expect(text(1)).toHaveClass("line-clamp-2");
     fireEvent.click(toggle);

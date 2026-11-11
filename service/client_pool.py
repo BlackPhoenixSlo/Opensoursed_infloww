@@ -61,9 +61,13 @@ def get(account_id: str) -> OFClient:
     return c
 
 
-def evict(account_id: str | None = None) -> None:
+def evict(account_id: str | None = None, *, only: OFClient | None = None) -> None:
     """Drop pooled client(s) so the next `get()` re-reads session + proxy from
     disk. `None` evicts every account — a proxy edit can affect any of them.
+
+    `only` (with an `account_id`): evict only while the pool still holds that
+    exact client. A call that failed on a client someone already replaced must
+    not drop, and retire, the fresh one other calls are on.
 
     Explicitly `is None` and not a truthiness test: the failure mode of a
     falsy-but-not-None argument slipping through is silently dumping every
@@ -75,6 +79,8 @@ def evict(account_id: str | None = None) -> None:
         if account_id is None:
             retired = list(_POOL.values())
             _POOL.clear()
+        elif only is not None and _POOL.get(account_id) is not only:
+            return
         else:
             old = _POOL.pop(account_id, None)
             retired = [old] if old is not None else []

@@ -13,7 +13,12 @@
  *     in flight and while OnlyFans checks it (a poll read before the code was in never unlocks it); leaving the prompt
  *     (or a new job) clears the typed code and the error;
  *   - the field drops only spaces and dashes: a pasted "1234-5678" is the 8-digit code, anything else stays visibly
- *     wrong (Submit off) instead of turning into another code.
+ *     wrong (Submit off) instead of turning into another code;
+ *   - unmounting the card stops a running job (also one whose start answers after the unmount), never a finished one;
+ *     `onBusy` hears the job run and stop;
+ *   - a job the relay no longer knows (status 404) ends as lost: polling stops and the form comes back;
+ *   - a status read failing otherwise (500) shows its error under Stop login (never a blank card, also before the first
+ *     status) and the poll goes on; failing for POLL_GIVE_UP_MS straight it stops, with Stop login and Try again.
  */
 import { onAccountSessionCaptured } from "@/lib/accountSession";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -27,7 +32,7 @@ vi.mock("@/lib/relay", async (orig) => {
   return { ...real, relay: { get: vi.fn(), post: vi.fn() } };
 });
 
-import BrowserbaseLoginCard, { type RemoteLoginStatus } from "@/components/setup/BrowserbaseLoginCard";
+import BrowserbaseLoginCard, { POLL_GIVE_UP_MS, type RemoteLoginStatus } from "@/components/setup/BrowserbaseLoginCard";
 import { relay, RelayError } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
@@ -67,7 +72,7 @@ function start(onLinked = vi.fn(), keepProxy = false) {
 describe("BrowserbaseLoginCard", () => {
   it("says the proxy is automatic and can be changed later", () => {
     render(<BrowserbaseLoginCard />, { wrapper });
-    expect(screen.getByText(/^Proxy assigned automatically\. You can assign yours later\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Proxy assigned automatically \(an account already on one keeps it\)\. You can add yours after linking\.$/)).toBeInTheDocument();
     // No proxy picker, no How it works fold.
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByRole("button", { name: "How it works" })).toBeNull();
@@ -300,6 +305,104 @@ describe("BrowserbaseLoginCard", () => {
     start();
     await screen.findByText("OnlyFans is showing a verification check. Solve it in the live view.");
     expect(screen.queryByLabelText("2FA code")).toBeNull();
+  });
+
+  it("unmounting stops a running job and says it no longer runs", async () => {
+    current = job({ state: "challenge" });
+    const onBusy = vi.fn();
+    const { unmount } = render(<BrowserbaseLoginCard onBusy={onBusy} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(screen.getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
+    await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(true));
+    unmount();
+    expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/cancel");
+    expect(onBusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it("a start that answers after the unmount is stopped at once", async () => {
+    let answer: (v: RemoteLoginStatus) => void = () => {};
+    relayPost.mockImplementation((path: string) => path === "/admin/login/remote/start"
+      ? new Promise((r) => { answer = r; }) : Promise.resolve(job({})));
+    const { unmount } = render(<BrowserbaseLoginCard />, { wrapper });
+    fireEvent.change(screen.getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(screen.getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.anything()));
+    unmount();
+    await act(async () => { answer(job({ id: "late" })); });
+    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/late/cancel"));
+  });
+
+  it("unmounting after the job finished cancels nothing", async () => {
+    current = job({ state: "done", account_id: "777" });
+    const onLinked = vi.fn();
+    const { unmount } = render(<BrowserbaseLoginCard onLinked={onLinked} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(screen.getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
+    await waitFor(() => expect(onLinked).toHaveBeenCalledWith("777"));
+    unmount();
+    expect(relayPost.mock.calls.map(([p]) => p)).not.toContain("/admin/login/remote/job1/cancel");
+  });
+
+  it("a job the relay lost (404) ends: polling stops and the form comes back", async () => {
+    relayGet.mockImplementation(() => Promise.reject(new RelayError(404, { detail: "no such login job (expired?)" }, "relay 404")));
+    start();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Login failed: the relay lost this login");
+    expect(screen.getByLabelText("OnlyFans email")).toBeInTheDocument();
+    const polls = relayGet.mock.calls.length;
+    await act(async () => { await new Promise((r) => setTimeout(r, 1700)); });
+    expect(relayGet.mock.calls.length).toBe(polls);
+  });
+
+  describe("status reads failing (not 404)", () => {
+    const fail = () => relayGet.mockImplementation(() => Promise.reject(new RelayError(500, {}, "relay 500")));
+    const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("before the first status: progress, Stop login and the error, never a blank card; polling goes on", async () => {
+      fail();
+      start();
+      await tick(8_000); // the first read and its retries
+      expect(screen.getByRole("status")).toHaveTextContent("Waiting for the login's first status…");
+      expect(screen.getByRole("button", { name: "Stop login" })).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read this login's status (relay 500). Still trying…");
+      const polls = relayGet.mock.calls.length;
+      await tick(3_000);
+      expect(relayGet.mock.calls.length).toBeGreaterThan(polls);
+    });
+
+    it(`failing for ${POLL_GIVE_UP_MS / 1000} s straight stops the poll: Stop login and Try again; Try again polls again`, async () => {
+      fail();
+      start();
+      await tick(POLL_GIVE_UP_MS + 20_000);
+      expect(screen.getByRole("alert")).toHaveTextContent("so the card stopped checking");
+      expect(screen.getByRole("button", { name: "Stop login" })).toBeInTheDocument();
+      const polls = relayGet.mock.calls.length;
+      await tick(10_000);
+      expect(relayGet.mock.calls.length).toBe(polls);
+      current = job({ state: "otp", message: "OnlyFans asks for the 2FA code" });
+      relayGet.mockImplementation(() => Promise.resolve(current));
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await tick(100);
+      expect(screen.getByRole("status")).toHaveTextContent("OnlyFans is asking for the 2FA code.");
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("Stop login after the poll gave up stops the job and reads the stop back", async () => {
+      fail();
+      start();
+      await tick(POLL_GIVE_UP_MS + 20_000);
+      current = job({ state: "cancelled" });
+      relayGet.mockImplementation(() => Promise.resolve(current));
+      fireEvent.click(screen.getByRole("button", { name: "Stop login" }));
+      await tick(100);
+      expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/job1/cancel");
+      expect(screen.getByText("Login cancelled.")).toBeInTheDocument();
+      expect(screen.getByLabelText("OnlyFans email")).toBeInTheDocument();
+    });
   });
 
   it("says a refused start couldn't start", async () => {

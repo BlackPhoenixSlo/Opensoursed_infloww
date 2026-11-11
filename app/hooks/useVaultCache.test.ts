@@ -4,7 +4,9 @@
  * `hideDuplicates` stops on a later batch's failure one way, thrown or answered, its progress only what it hid.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QueryClient } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { renderHook, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => ({ post: vi.fn(), flush: vi.fn() }));
 vi.mock("@/lib/relay", async (orig) => {
@@ -17,7 +19,7 @@ vi.mock("@/lib/rqPersister", async (orig) => {
 });
 
 import { loadFolderSort, saveFolderSort } from "@/components/vault/vaultFolderSort";
-import { hideDuplicates, invalidateVaultGrid, sortOfFolders } from "@/hooks/useVaultCache";
+import { hideDuplicates, invalidateVaultGrid, mirrorItemsKey, sortOfFolders, useOfSearch } from "@/hooks/useVaultCache";
 
 const AID = "1000001";
 
@@ -98,4 +100,48 @@ describe("hideDuplicates", () => {
     expect(h.post.mock.calls.map(batchOf).map((b) => b.length)).toEqual([250, 250, 1]);
     expect(res).toEqual({ hidden: 501, hidden_ids: ids, refused: {} });
   });
+});
+
+describe("useOfSearch", () => {
+  const setup = (query: string, enabled = true) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
+    return { qc, ...renderHook(() => useOfSearch(AID, query, enabled), { wrapper }) };
+  };
+
+  it("searching until OF answered AND the mirror grid refetched with it", async () => {
+    let answer!: (v: unknown) => void;
+    h.post.mockReturnValue(new Promise((r) => { answer = r; }));
+    let refetched!: () => void;
+    const { qc, result } = setup("leggings");
+    // The mounted grid (fresh, so only the invalidate refetches it).
+    qc.setQueryData(mirrorItemsKey(AID), {});
+    const unsub = new QueryObserver(qc, {
+      queryKey: mirrorItemsKey(AID), staleTime: Infinity,
+      queryFn: () => new Promise<unknown>((r) => { refetched = () => r({}); }),
+    }).subscribe(() => {});
+    const grid = qc.getQueryCache().find({ queryKey: mirrorItemsKey(AID) })!;
+    expect(result.current).toBe(true);
+    expect(h.post).toHaveBeenCalledWith("/admin/vault-ai/search-of", { account_id: AID, query: "leggings" }, { accountId: AID });
+    answer({ ids: [1], count: 1, source: "of" });
+    await waitFor(() => expect(grid.state.fetchStatus).toBe("fetching"));
+    expect(result.current).toBe(true);
+    refetched();
+    await waitFor(() => expect(result.current).toBe(false));
+    unsub();
+  });
+
+  it("a failed OF search stops searching", async () => {
+    h.post.mockRejectedValue(new Error("502"));
+    const { result } = setup("leggings");
+    await waitFor(() => expect(result.current).toBe(false));
+    expect(h.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([["no query", "", true], ["the grid not on the mirror", "leggings", false]] as const)(
+    "%s: no OF call, not searching", (_, query, enabled) => {
+      const { result } = setup(query, enabled);
+      expect(result.current).toBe(false);
+      expect(h.post).not.toHaveBeenCalled();
+    });
 });

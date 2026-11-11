@@ -11,15 +11,24 @@
  *             Extension      (the fallback, "if browser login doesn't work"): PasteCurlCard, the Chrome extension's
  *                            Copy cURL pasted here. Desktop only: on a phone the panel says so.
  *           Under them, small, "Link a Fansly account" swaps to the Fansly paste session (the extension's session
- *           copy, so Browser login is off there). The proxy is the relay's automatic one (its pool's tier-aware pick
- *           for a new login; a row's re-link keeps the account's).
+ *           copy, so Browser login is off there; desktop only, so on a phone it says so and has no Done). The proxy
+ *           is the relay's automatic one: an account with no proxy yet goes on the default pool when it has one; an
+ *           account on a custom proxy (a re-sign-in from here) keeps it, one on the pool keeps its pool proxy unless
+ *           its failover is due; a row's re-link binds nothing.
  *           Both OnlyFans sign-ins stay mounted (the other one hidden), so a Browser login still running links even
  *           while the Extension panel is open; the shown one's primary button sits in the footer after Cancel.
+ *           Leaving the step (Cancel, ×, Escape, a link by the other sign-in) unmounts the Browser login card, which
+ *           stops its running job; Back is hidden while one runs, and while the Extension's capture is under way or
+ *           waits on Retry / Continue. While the Extension's capture is under way, or the linked step's proxy Connect
+ *           runs, the modal can't close (no ×, no Escape, Cancel off: `canClose`), so neither goes on unseen.
  *   linked  "Creator account is linked": the account (its OF photo, name, @username and id, from its own /users/me),
- *           the proxy the relay has it on (read back from GET /admin/proxies), and below it the account details
- *           (Nickname, prefilled with the OF name once that read lands; Tag, Assigned employees, Internal notes);
- *           Done saves them (a blank nickname takes the account's own name) and closes. A row's recovery shows the
- *           account only, and Done closes.
+ *           the proxy the relay has it on (read back from GET /admin/proxies), an optional "add your proxy" editor
+ *           (LinkedCreatorProxy), and below it the account details (Nickname, the Creator name; blank only for an
+ *           unnamed draft or Link another of an unnamed account, which the OF name fills once that read lands; Tag,
+ *           Assigned employees, Internal notes); Done saves them (a blank nickname takes the account's own name) and
+ *           closes. A draft's account with no Creator details yet takes the draft's as soon as it links, so closing here
+ *           leaves one row; one that has them keeps them and only the draft goes.
+ *           A row's recovery shows the account only, and Done closes.
  *
  * Custom proxies can be added after linking, or from Creators › Custom proxy and a row's Change proxy.
  * Kept out of the way, not dropped: Make default (a
@@ -32,20 +41,21 @@
  */
 
 import { Globe, Puzzle, User, UserPlus } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import LinkedCreatorProxy from "./LinkedCreatorProxy";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import {
-  buildAccountPayload, canNext, canPickPlatform, profileName, useWizardReducer, type Method, type Platform, type WizardState,
+  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, profileName, useWizardReducer, type Method, type Platform,
+  type BusySource, type WizardState,
 } from "@/components/setup/addCreatorWizard";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, HB_DIM, LinkedLine, T, creatorDetailsError,
-  assignedIds, bindPoolProxy, currentProxy, proxyText, toast, useProxyList,
-  useRoster, useSaveAccountDetails,
+  assignedIds, currentProxy, proxyText, toast, useProxyList, useRoster, useSaveAccountDetails,
 } from "@/components/setup/creatorFlow";
+import { attachDefaultProxy } from "@/components/setup/proxyApi";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { HbButton, IfButton, IfModal } from "@/components/ui/infloww";
 import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
@@ -57,9 +67,9 @@ import { cn } from "@/lib/utils";
 /** The page's one line for phones (spec, Mobile). */
 export const DESKTOP_ONLY_LINE = "The extension and keys are desktop-only. On a phone, link a creator with Browser login.";
 /** The Extension panel's line for phones. */
-export const MOBILE_PASTE_LINE = "The extension needs desktop Chrome. On a phone, use Browser login.";
+const MOBILE_PASTE_LINE = "The extension needs desktop Chrome. On a phone, use Browser login.";
 /** The Fansly sign-in's line for phones. */
-export const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
+const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
 
 /** Our sign-in sections (the region names a row's recovery and the 2FA notification focus). */
 const SECTIONS = {
@@ -139,7 +149,6 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   /** "Link another account": the Creator's details and the platforms it has an account on. */
   linkAnother?: { creator: CreatorDetails; linked: Platform[] };
 }) {
-  const [proxyBusy, setProxyBusy] = useState(false);
   const profiles = useCreatorProfiles();
   const roster = useRoster();
   const save = useSaveAccountDetails(profiles);
@@ -148,16 +157,19 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const [state, dispatch] = useWizardReducer({
     recovery: at && SECTIONS[at].platform, method: at && SECTIONS[at].method, draft, linkAnother,
   });
-  const { step, details, platform, method, recovery } = state;
-  // The automatic proxy: a new account goes on the relay's pool when it has one (Browser login: the relay picks the
-  // same itself). A row's re-link binds nothing, so the account keeps the proxy it is on.
-  const proxiesQ = useProxyList();
-  const autoPool = !recovery && !!proxiesQ.data?.pool?.size;
+  const { step, details, platform, method, recovery, fresh } = state;
+  // The automatic proxy (Extension: `attachDefaultProxy`; Browser login: the relay's own default): an account on no
+  // proxy goes on the pool when it has one; one on a custom proxy keeps it. A row's re-link binds nothing.
   const of = platform === "onlyfans";
   const linkedId = step.kind === "linked" ? step.accountId : null;
   const meQ = useAccountAvatar(linkedId);
   const ofName = profileName(meQ.data);
-  // The OF profile read prefills a blank nickname (the reducer keeps a typed one).
+  // Each child's busy report (useReportBusy), one stable callback per source.
+  const reportBusy = useMemo(() => {
+    const to = (source: BusySource) => (value: boolean) => { dispatch({ type: "busy", source, value }); };
+    return { login: to("login"), extension: to("extension"), proxy: to("proxy") };
+  }, [dispatch]);
+  // The OF profile read fills a blank nickname (the reducer keeps one already there).
   useEffect(() => {
     if (linkedId && ofName) dispatch({ type: "profile", accountId: linkedId, name: ofName });
   }, [linkedId, ofName, dispatch]);
@@ -169,15 +181,32 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
     el?.focus();
   }, [at]);
 
-  const linked = (platform: Platform) => (id: string) => dispatch({
-    type: "linked", accountId: id, platform,
-    account: { nickname: details.name, tag: profiles.profiles[id]?.tag ?? "", employeeIds: assignedIds(roster, id), notes: profiles.profiles[id]?.notes ?? "" },
-  });
+  // The link-time draft write in flight: Done waits for it, so its own whole-blob write is the last one (a reply
+  // landing after Done's would put the link-time blob back in the cache).
+  const linkWrite = useRef<Promise<void> | null>(null);
+  const linked = (platform: Platform) => (id: string) => {
+    const took = dispatch({
+      type: "linked", accountId: id, platform,
+      account: { nickname: details.name, tag: profiles.profiles[id]?.tag ?? "", employeeIds: assignedIds(roster, id), notes: profiles.profiles[id]?.notes ?? "" },
+    });
+    // A draft's account takes the draft now (its row goes), so closing before Done leaves one row, not two. An account
+    // that already has Creator details keeps them until Done (the one writer for them): only the draft goes. Settings
+    // not loaded: the write refuses with SETTINGS_NOT_LOADED, toasted as is.
+    if (took && state.draftId) {
+      const write = profiles.profiles[id]
+        ? profiles.removeDraft(state.draftId)
+        : profiles.linkAccount(id, { name: details.name, gender: details.gender, avatar: details.avatar }, state.draftId);
+      linkWrite.current = write.catch((e: Error) => toast(e.message, "err"));
+    }
+  };
 
-  const title = at || draft || linkAnother ? ROW_LINK_TITLE : T.addCreator;
+  const title = fresh ? T.addCreator : ROW_LINK_TITLE;
   const nickname = recovery ? "" : details.name;
   const other: Platform = of ? "fansly" : "onlyfans";
-  const cancel = <IfButton onClick={onClose}>{T.cancel}</IfButton>;
+  // Not closable while the Extension or the proxy Connect runs (canClose): no ×, no Escape, Cancel off.
+  const closable = canClose(state);
+  const close = () => { if (closable) onClose(); };
+  const cancel = <IfButton onClick={close} disabled={!closable}>{T.cancel}</IfButton>;
 
   let body: ReactNode;
   let footer: ReactNode;
@@ -220,6 +249,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               </label>
             ))}
           </div>
+          {platform === "fansly" && <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>}
         </div>
       );
       footer = (
@@ -233,19 +263,22 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
     case "login":
       body = (
         <div className="space-y-6">
-          {!recovery && !state.draftId && !state.taken.length && (
+          {fresh && (
             <p className={cn("text-sm", HB_DIM)}>{T.stepOf(3, 3)} · {T.linkPlatformAccount(PLATFORM_LABEL[platform])}</p>
           )}
           <MethodChoice state={state} onChange={(value) => dispatch({ type: "setField", field: "method", value })} />
           <Section k="browserbase" hidden={!of || method !== "browser"}>
-            <BrowserbaseLoginCard onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"} />
+            <BrowserbaseLoginCard
+              onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
+              onBusy={reportBusy.login}
+            />
           </Section>
           <Section k="paste" hidden={!of || method !== "extension"}>
             {/* No extension on a phone. */}
             <div className="hidden md:block">
               <PasteCurlCard
                 extInstalled={extInstalled} onLinked={linked("onlyfans")} initialNickname={nickname}
-                attach={autoPool ? bindPoolProxy : undefined} active={of && method === "extension"}
+                attach={recovery ? undefined : attachDefaultProxy} active={of && method === "extension"} onBusy={reportBusy.extension}
               />
             </div>
             <p className="md:hidden text-sm text-muted">{MOBILE_PASTE_LINE}</p>
@@ -269,13 +302,13 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
           )}
         </div>
       );
-      // Infloww's Fansly sign-in: Done beside Cancel submits the session (`creators0108`, @12411710). OnlyFans: the
-      // shown sign-in puts its own button after Cancel (footerSlot).
+      // Infloww's Fansly sign-in: Done beside Cancel submits the session (`creators0108`, @12411710); none on a phone,
+      // where the form is hidden. OnlyFans: the shown sign-in puts its own button after Cancel (footerSlot).
       footer = (
         <>
           {cancel}
-          {!recovery && !state.draftId && !state.taken.length && <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>}
-          {!of && <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID}>{T.done}</IfButton>}
+          {canBack(state) && <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>}
+          {!of && <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID} className="max-md:hidden">{T.done}</IfButton>}
         </>
       );
       break;
@@ -292,18 +325,20 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               />
             </div>
           )}
-          {of && <LinkedCreatorProxy accountId={step.accountId} onBusy={setProxyBusy} />}
+          {of && <LinkedCreatorProxy key={step.accountId} accountId={step.accountId} onBusy={reportBusy.proxy} />}
         </div>
       );
-      footer = recovery ? <IfButton variant="primary" disabled={proxyBusy} onClick={onClose}>{T.done}</IfButton> : (
+      footer = recovery ? <IfButton variant="primary" disabled={state.busy.proxy} onClick={onClose}>{T.done}</IfButton> : (
         <IfButton
-          variant="primary" disabled={proxyBusy || !canNext(state)}
+          variant="primary" disabled={!canNext(state)}
           onClick={() => {
             if (!dispatch({ type: "submitStart" })) return;
-            save.mutate(buildAccountPayload(state, step, roster, ofName), {
-              onSuccess: () => { toast(at || draft || linkAnother ? T.updateSuccess : "Creator added"); dispatch({ type: "submitOk" }); onClose(); },
+            const payload = buildAccountPayload(state, step, roster, ofName);
+            // After the link-time write (its failure was already toasted; Done's own save stands alone).
+            void (linkWrite.current ?? Promise.resolve()).then(() => save.mutate(payload, {
+              onSuccess: () => { toast(fresh ? "Creator added" : T.updateSuccess); dispatch({ type: "submitOk" }); onClose(); },
               onError: (e) => { toast((e as Error).message, "err"); dispatch({ type: "submitErr" }); },
-            });
+            }));
           }}
         >
           {step.busy ? "Saving…" : T.done}
@@ -311,14 +346,12 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
       );
       break;
     case "success":
-      body = <LinkedLine />;
-      footer = <IfButton variant="primary" onClick={onClose}>{T.done}</IfButton>;
-      break;
+      return null; // the save's onSuccess has already closed the modal
   }
 
   return (
     // `maskClosable:false` (creators-manage#54): the mask does not close it; Escape and the × do.
-    <IfModal title={title} width={600} onClose={onClose} footer={footer} footerSlot={step.kind === "login" && of}>
+    <IfModal title={title} width={600} onClose={close} closable={closable} footer={footer} footerSlot={step.kind === "login" && of}>
       {body}
     </IfModal>
   );

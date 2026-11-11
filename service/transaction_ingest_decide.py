@@ -8,7 +8,7 @@ twin of — `tip_window` — and the fans that already subscribed — `subscript
 asks `plan_page` what to do with each OF row, and opens ONE write transaction
 only if some op writes. The scan bookkeeping (`scan_started`, `scan_interrupted`,
 `scan_after_failure`, `scan_after_success` (its `Success` outcome, `stall_count`), `scan_backfill_page`, `scan_backfill_queued`,
-`scan_seeded`, `window_for`, `walk_started`, `decide_mode`, `full_phase_s`, `full_bucket`, `recent_start_date`, `backfill_step`,
+`window_for`, `walk_started`, `decide_mode`, `full_phase_s`, `full_bucket`, `recent_start_date`, `backfill_step`,
 `marker_of`, `page_span`) is the same split: these compute the next state,
 `transaction_ingest` reads and writes the row.
 
@@ -105,6 +105,11 @@ _STALLED_PREFIX = "backfill_stopped: "  # last_error's words for a stop (display
 # stop reason kept by every later tick, until trigger_backfill.
 _BACKFILL_MAX_STALLS = 3
 BACKFILL_GIVEN_UP = "backfill_given_up"  # terminal: backfill_stalls >= _BACKFILL_MAX_STALLS
+# A full walk failed or was cut short since the last one that completed (full_walk_failures > 0).
+# Recent walks never clear it; later successes keep its line (_FULL_FAILED_PREFIX) in last_error, or
+# `full_walk_failed: owed` if a failure between overwrote it. The persisted status is untouched: the
+# /health row reads the count (tx_ingest_admin_api._health_status, _tx_ingest_tier).
+_FULL_FAILED_PREFIX = "full_walk_failed: "
 
 
 def _normalize_status(raw_status: str | None) -> str:
@@ -378,6 +383,10 @@ class ScanState:
     rows_patched_total: int = 0
     # The full walk's scheduling watermark (see decide_mode); NULL = not seeded yet.
     last_full_at: datetime | None = None
+    # Full walks failed (one a proxy refused before its first page never counts) or cut short since
+    # the last completed one; only a completed full walk resets it. > 0: not green on /health
+    # (status full_walk_failed between ticks). Not the pause's streak (consecutive_failures).
+    full_walk_failures: int = 0
     # Backfill ticks in a row that stopped short (stall_count: a stop after the cursor moved restarts
     # it at 1): the walk is under way (walk_started) whatever a later failure writes to last_error;
     # _BACKFILL_MAX_STALLS gives up, and the count, kept, is what reads BACKFILL_GIVEN_UP after.
@@ -411,16 +420,22 @@ def scan_interrupted(state: ScanState, error: str) -> ScanState:
 
 
 def scan_after_failure(state: ScanState, proxy_refusal: bool, now: datetime, *,
-                       error: str, full_at: datetime | None = None, progressed: bool = False) -> ScanState:
+                       error: str, full_at: datetime | None = None, progressed: bool = False,
+                       reached: bool = False) -> ScanState:
     """A failed tick. A proxy CONNECT refusal never reached OF: the streak
     stays where it was (a real streak still pauses; a success still resets
     it). Nor does a backfill that held pages before failing (`progressed`, e.g. OF's
     second 429 forty pages in: a long walk must not pause itself; its cursor is saved),
     but it reads BACKFILL_STALLED, the error in last_error: never idle's green.
     The third real failure in a row pauses the account _FAIL_BACKOFF_S.
-    `full_at`: a failed full walk's window end, its period's slot spent."""
-    if full_at is not None:
-        state = replace(state, last_full_at=full_at)
+    `full_at`: a failed full walk's window end: its period's slot spent, one more
+    full_walk_failures, last_error its _FULL_FAILED_PREFIX line. Not after a proxy refusal
+    before its first page (nothing reached OF): neither stamped nor counted, the next tick
+    walks full again; one after a page (`reached`) is stamped and counted (else the walk re-runs
+    every tick), still not in the streak."""
+    if full_at is not None and (reached or not proxy_refusal):
+        state = replace(state, last_full_at=full_at, full_walk_failures=state.full_walk_failures + 1)
+        error = f"{_FULL_FAILED_PREFIX}{error}"
     if progressed:
         return replace(state, last_error=error, current_status=BACKFILL_STALLED)
     if proxy_refusal:
@@ -466,9 +481,9 @@ def scan_after_success(
     full_at: datetime | None = None,
     advanced: bool = False,
 ) -> Success:
-    """A completed tick (`full_at`: a full walk's window end, cut short or not): the streak resets, the seen range widens, and the
-    status says 'ok' — except a backfill not done: BACKFILL_PARTIAL (the walk is
-    working, green), or BACKFILL_STALLED after a stop other than the tick's page
+    """A completed tick (`full_at`: a full walk's window end, cut short or not): the streak resets,
+    the seen range widens, and the status says 'ok' — except a backfill not done: BACKFILL_PARTIAL
+    (the walk is working, green), or BACKFILL_STALLED after a stop other than the tick's page
     cap (`stop_reason` kept in last_error, not green; backfill_stalls counts the ones with
     the cursor not moved, `stall_count`; a refresh in between leaves all three). The
     _BACKFILL_MAX_STALLS-th in a row gives the walk up: done (back on recent / full walks),
@@ -477,6 +492,11 @@ def scan_after_success(
     range is its own: only a backfill moves it (a refresh's top above newest_seen would
     hide a gap from the next resumed read; a backfill's own pages and counters go through
     scan_backfill_page, so its `inserted` / `patched` are not added again).
+
+    full_walk_failures: reset by a full walk read to its end (`floor_reached`); one cut short
+    counts one more, `stop_reason` in its line. While > 0, last_error keeps the failed walk's line,
+    or `full_walk_failed: owed` if a failure between overwrote it (/health reads the count, not
+    this status).
 
     A finished account's walk moves newest_seen only if it read back to it: a walk whose
     oldest row is newer (an outage longer than OF's 600-row offset cap, or than the
@@ -497,6 +517,9 @@ def scan_after_success(
     stalls = stall_count(state.backfill_stalls, stalled=stalled, advanced=advanced) if backfill \
         else state.backfill_stalls
     given_up = stalls >= _BACKFILL_MAX_STALLS
+    fails = state.full_walk_failures
+    if full_at is not None:
+        fails = 0 if floor_reached else fails + 1
     unfinished = not done and not given_up and (backfill or not state.fully_backfilled)
     error = None
     if stalled:
@@ -506,6 +529,11 @@ def scan_after_success(
             else f"{_STALLED_PREFIX}given_up"
     elif unfinished and stalls:
         error = state.last_error
+    elif fails and full_at is not None:   # this full walk cut short
+        error = f"{_FULL_FAILED_PREFIX}cut_short: {stop_reason or 'incomplete'}"
+    elif fails:   # an owed walk's line stays (a failure between may have overwritten it)
+        error = state.last_error if (state.last_error or "").startswith(_FULL_FAILED_PREFIX) \
+            else f"{_FULL_FAILED_PREFIX}owed"
     status = "ok"
     if given_up:
         status = BACKFILL_GIVEN_UP
@@ -524,6 +552,7 @@ def scan_after_success(
         fully_backfilled=True if done or given_up else state.fully_backfilled,
         current_status=status,
         last_full_at=full_at if full_at is not None else state.last_full_at,
+        full_walk_failures=fails,
         backfill_stalls=stalls,
     )
     if unreached and mode == "refresh":
@@ -580,52 +609,45 @@ def full_bucket(at: datetime, *, full_every_s: float, phase_s: float) -> int:
     return int(((at - _EPOCH).total_seconds() + phase_s) // full_every_s)
 
 
-def scan_seeded(state: ScanState, now: datetime, *, full_every_s: float = _DEFAULT_FULL_EVERY_S,
-                phase_s: float = 0.0) -> ScanState:
-    """A backfilled account with no full-walk watermark (rows from before it was
-    persisted), or one a whole period or more behind (`now` two or more periods past it:
-    the relay was down), is seeded to `now`: its full walk waits for its next phase
-    boundary, so neither a deploy nor the boot after an outage is a full-walk herd (at
-    most one period late). A walk under way (walk_started) a period or more behind too
-    (its backfill ticks run meanwhile); unseeded, it keeps its first refresh (decide_mode).
-    Anything else unchanged."""
-    if not state.fully_backfilled and not walk_started(state):
-        return state
-    stale = state.last_full_at is not None and (
-        full_bucket(now, full_every_s=full_every_s, phase_s=phase_s)
-        - full_bucket(state.last_full_at, full_every_s=full_every_s, phase_s=phase_s) > 1)
-    if stale or (state.fully_backfilled and state.last_full_at is None):
-        return replace(state, last_full_at=now)
-    return state
-
-
 def walk_started(state: ScanState) -> bool:
     """A backfill under way: its cursor saved, or a tick of it stopped short (backfill_stalls,
     its own column, so a failure's last_error never hides it)."""
     return state.oldest_seen_occurred_at is not None or state.backfill_stalls > 0
 
 
+class Mode(NamedTuple):
+    """decide_mode's answer: the walk, and the state it was decided on (`state` itself, or a
+    copy with the full-walk watermark seeded: the caller persists it when it is not `state`)."""
+    mode: str
+    state: ScanState | None
+
+
 def decide_mode(state: ScanState | None, *, now: datetime,
-                full_every_s: float = _DEFAULT_FULL_EVERY_S, phase_s: float = 0.0) -> str:
-    """No scan row yet, or a backfill not started (walk_started: no cursor, no stop) -> backfill. Else the full
-    7-day `refresh` when `now` is in another period than `state.last_full_at`
+                full_every_s: float = _DEFAULT_FULL_EVERY_S, phase_s: float = 0.0) -> Mode:
+    """No scan row yet, or a backfill not started (walk_started: no cursor, no stop) -> backfill.
+    Else, first, the watermark seed: a backfilled account with no full-walk watermark (rows from
+    before it was persisted), or any one a whole period or more behind (`now` two or more periods
+    past it: the relay was down), is seeded to `now`: its full walk waits for its next phase
+    boundary, so neither a deploy nor the boot after an outage is a full-walk herd (at most one
+    period late). An unfinished walk with none keeps its first refresh.
+    Then the full 7-day `refresh` when `now` is in another period than `last_full_at`
     (`full_bucket`; the last ATTEMPTED full walk's window end, persisted, so a restart
     keeps the schedule): one full walk per period, on its first tick, so walk to walk
     is full_every_s (+/- a tick). A watermark in a later period (clock stepped back)
-    differs too: one refresh re-stamps it. Unseeded (None): an unfinished walk's
-    refresh; a backfilled account `recent` (the caller seeds it, scan_seeded).
+    differs too: one refresh re-stamps it.
     Else `recent`, or the unfinished walk's `backfill`: a walk owes the full walks'
     status flips and disputes polls as much as a finished account, above all a
     walk that stopped and may never finish (the refresh leaves its cursor)."""
     if state is None or (not state.fully_backfilled and not walk_started(state)):
-        return "backfill"
-    last_full_at = state.last_full_at
-    if last_full_at is None:
-        return "recent" if state.fully_backfilled else "refresh"
+        return Mode("backfill", state)
     b = lambda t: full_bucket(t, full_every_s=full_every_s, phase_s=phase_s)  # noqa: E731
-    if b(now) != b(last_full_at):
-        return "refresh"
-    return "recent" if state.fully_backfilled else "backfill"
+    last = state.last_full_at
+    if (last is None and state.fully_backfilled) or (last is not None and b(now) - b(last) > 1):
+        state = replace(state, last_full_at=now)
+    last = state.last_full_at
+    if last is None or b(now) != b(last):
+        return Mode("refresh", state)
+    return Mode("recent" if state.fully_backfilled else "backfill", state)
 
 
 def recent_start_date(window_start: datetime) -> str:

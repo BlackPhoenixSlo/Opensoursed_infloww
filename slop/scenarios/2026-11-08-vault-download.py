@@ -12,14 +12,25 @@ SourceIp checked, one-spec Range).
 
 Stage relay-load (also --no-ui): `--users` concurrent GET /admin/vault-ai/download for every one of B's media
 (through its proxy).                                                                            RELAY_LOAD.
+Stage relay-stale (also --no-ui): the first STALE_N of B's mirror urls expired (signed for its proxy, DateLessThan
+2 h ago, as AE's browser held them on 2026-11-10), OF's by-id read limited to one per OF_MIN_GAP_S per Creator
+(`min_gap`, a 429 when sooner), then `--users` concurrent relay downloads of them: each re-signed by id once, paced
+on the Creator (of_pacing walk), all delivered.                                                 RELAY_STALE.
 UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, files on disk under the run's tmp):
   select   Select, tick the 3 newest photos + the newest video, Download selected (`vault-download-select-trigger`,
            `-settled`).                                                                        SELECT.
+  select-folder  the rail folder that is NOT the first folder of 2 media in 2 folders: open it, tick them, Download
+           selected (`vault-download-select-folder-trigger`, `-settled`): both under that folder only.  SELECT_IN_FOLDER.
   folder   the rail's first folder: its row menu > Download folder (`vault-download-folder-trigger`, `-settled`).
                                                                                                FOLDER.
   vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the toolbar's Download whole vault
            (`vault-download-vault-trigger`, `-settled`): every media once; the stale ones 403 direct, are re-signed
            by id (one by-id OF read each) and fetched direct again.                            VAULT.
+  switch   a fresh browser on A: Download whole vault, then, while it runs (SWITCH_FREE CDN fetches through, the
+           next held), Creator B in the creator column (`vault-download-switch-trigger`: B's grid, A's card
+           running, B's Download whole vault off with "A download is running"); the CDN released, the card
+           settles (`-settled`): every one of A's media on disk once with exact bytes, data-phase done (not
+           cancelled), data-failed 0, the card titled with A's name. The old per-model remount aborted it.  SWITCH.
   proxied  a fresh browser on B: Download selected of 3 photos + 1 video (`vault-download-proxied-trigger`,
            `-settled`): 0 browser CDN fetches, all relay.                                      PROXIED.
   phone    a fresh phone browser on B (390x844, touch, no folder picker, share stubbed): Select all (> 20) is off
@@ -28,13 +39,15 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
            Then 3 photos + 2 videos padded to PHONE_VIDEO_MB each (> SHARE_BATCH_BYTES/2, so never one batch):
            Download selected (`vault-download-phone-trigger`), the first "Save 1–N" (`-ready`) dismissed once
            (AbortError: the button stays), then every Save tapped until all are saved (`-settled`).  PHONE_SHARE.
-Each check reads the files on disk: the path (creator = the Creator's nickname, folder = the downloaded folder, else
-the media's first custom OF folder, else Unfiled), a .jpg's bytes equal the CDN's seeded bytes (img_relay.asset_bytes),
+Each check reads the files on disk: the path (creator = the Creator's nickname, folder = the downloaded folder or the
+rail folder a selection was made in, else a copy in each of the media's custom OF folders, else Unfiled), a .jpg's bytes equal the CDN's seeded bytes (img_relay.asset_bytes),
 an .mp4's SHA-256 equals the CDN source clip and its size equals what the fake served; no stray file; the panel's
 data-done/-failed/-direct/-relay; the relay's own `vault_download account=… status=ok` log lines (0 for direct items);
 the browser's CDN fetches (the harness route). p95 of the relay download vs the last green run.
 
 Bypasses (declared):
+- OF's per-account rate limit is lib/of_wire.py's `min_gap` on the by-id route only (OF_MIN_GAP_S, a guess; AE
+  measured 76 unpaced reads in 19 s before the 429).
 - OF at its wire (lib/of_wire.py + lib/vault_wire.py); the mirror seeded by SQL; OF's earlier-proxy listing (stale IP)
   written as mirror url rewrites (seed/vault_week.set_urls).
 - OF's CDN is lib/img_relay.py's fake in the relay process. The BROWSER's CDN requests (https://cdn2.onlyfans.com/…)
@@ -43,6 +56,11 @@ Bypasses (declared):
   is), with S3's CORS: `Access-Control-Allow-Origin: *` on 200/206, none on 403/404 (measured on the real CDN
   2026-11-08: a denied fetch rejects with TypeError). Playwright buffers each body (route.fulfill), so the
   browser side is not streamed byte by byte as from the real CDN.
+- Switch stage only: that route is a slow CDN on demand (`_Hold`): after A's first SWITCH_FREE download fetches
+  (resource type fetch, A's files) it holds the next ones until B's grid is up and shot, then answers them as
+  above. Deterministic "still running at the switch" instead of a timing race; bytes and checks unchanged. None
+  held within 60 s: SWITCH red with that error (never a hang). A held fetch the page dropped meanwhile can't be
+  answered: counted (`held_dropped`), not raised.
 - The native folder picker (`showDirectoryPicker`) is stubbed by an init script in this test only: a directory
   handle whose `createWritable()` is a real WritableStream; each chunk crosses a Playwright binding (base64) and is
   written under the run's tmp as `<file>.crswap`, renamed on close, deleted on abort (Chromium's own swap-file rule).
@@ -64,10 +82,13 @@ Links file (app/components/vault/vaultLinksFile.ts), every desktop phase: links-
 url; the html opened in Chromium (`vault-download-links-html`, `-proxied`), a CDN link clicked (A), an app link
 fetched with the session (B).                                                                  LINKS.
 Phone: "Save links" tapped first: its own share, txt + html, inside the tap, app urls.          PHONE_LINKS.
-Break-it-once: vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
+Break-it-once: vault-download-resign-unpaced (service: the download's re-sign reads unpaced) turns only RELAY_STALE
+red; vault-download-selection-ignores-folder (client: Download selected drops the rail folder) turns only
+SELECT_IN_FOLDER red; vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
 PHONE_LINKS red; vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED and
 PHONE_SHARE red; vault-download-share-batch-drops-item (client: `addToBatches` loses the file that opens a batch)
-turns only PHONE_SHARE red.
+turns only PHONE_SHARE red; vault-download-switch-aborts-run (client: VaultProPage's per-model keyed subtree mounts a
+download of its own around VaultManagePanel, the pre-fix layout) turns only SWITCH red.
 """
 import asyncio
 from dataclasses import dataclass
@@ -85,7 +106,8 @@ from collections import Counter
 from slop.lib.img_relay import EGRESS, ORIG_HOST, arm_run, asset_bytes, video_bytes
 from slop.lib.vault_ui import TOURS_SEEN, open_vault_pro
 from slop.lib.vault_download_faults import (
-    FOLDER, LINKS, PHONE_CAP, PICK_HINT, PHONE_LINKS, PHONE_SHARE, PROXIED, RELAY_LOAD, SELECT, VAULT,
+    FOLDER, LINKS, PHONE_CAP, PICK_HINT, PHONE_LINKS, PHONE_SHARE, PROXIED, RELAY_LOAD, RELAY_STALE, SELECT,
+    SELECT_IN_FOLDER, SWITCH, VAULT,
 )
 from slop.lib.vault_ui import cdn_count, cdn_calls, proxy_bind, captured
 from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
@@ -121,6 +143,11 @@ PHONE_MODE_OFF = "Phone: only a selection downloads here; folders and the whole 
 WAIT_MS = 120_000
 SETTLE_S = 180
 STALE = 3
+SWITCH_FREE = 3                    # switch stage: A's download fetches let through before the hold (declared)
+BUSY_OFF = "A download is running"  # vaultDownloadReducer.BUSY_OFF
+STALE_N = 15                       # relay-stale: paced at ~1/s, so ~15 s
+OF_MIN_GAP_S = 0.5
+BY_ID = "GET /api2/v2/vault/media/{id}"
 OLD_EGRESS = "127.0.0.1:1"
 DOWNLOAD = "/admin/vault-ai/download"
 LISTS_PATH = "/api/of/v2/vault/lists"
@@ -134,7 +161,10 @@ PICKER_JS = r"""(() => {
   const b64 = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000)
     s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const check = (n) => { if (!n || n === "." || n === ".." || /[\/\\]/.test(n)) throw new TypeError("Name is not allowed."); };
-  const file = (p, name) => ({ kind: "file", name, async createWritable() {
+  const unb64 = (s) => { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+  const file = (p, name) => ({ kind: "file", name,
+    async getFile() { return new File([unb64(await call("read", p))], name); },
+    async createWritable() {
     const id = await call("open", p);
     return new WritableStream({
       async write(c) { await call("write", id, b64(c instanceof Uint8Array ? c : new Uint8Array(c))); },
@@ -195,6 +225,8 @@ class Disk:
         if op == "mkdir":
             self._p(a[0]).mkdir(parents=True, exist_ok=True)
             return None
+        if op == "read":
+            return base64.b64encode(self._p(a[0]).read_bytes()).decode()
         if op == "open":
             p = self._p(a[0])
             self.opened.append(str(p.relative_to(self.base)))
@@ -215,7 +247,48 @@ class Disk:
         return None
 
 
-async def _open_vault(ctx, page, aid: str, port: int, browser_cdn: list[dict]) -> None:
+class _Hold:
+    """The switch stage's slow CDN (declared): once armed, `aid`'s download fetches past the first `free` wait for
+    `go`, so the run is still in flight when another Creator is picked. `first_held`: the first one is waiting."""
+
+    def __init__(self, aid: str, free: int):
+        self.aid, self.free = aid, free
+        self.armed = False
+        self.passed = self.held = self.dropped = 0
+        self.first_held = asyncio.Event()
+        self.go = asyncio.Event()
+
+    def wrap(self, handler):
+        """The CDN route `handler` behind the hold. A held request is answered after `go`; if the page dropped it
+        meanwhile (an aborted fetch) its fulfill fails: counted in `dropped`, only for a request held here."""
+        async def route(r) -> None:
+            req = r.request
+            if not (self.armed and req.resource_type == "fetch" and f"/files/v/{self.aid}/" in req.url):
+                return await handler(r)
+            if self.passed < self.free:
+                self.passed += 1
+                return await handler(r)
+            self.held += 1
+            self.first_held.set()
+            await self.go.wait()
+            await handler(_HeldRoute(r, self))
+        return route
+
+
+class _HeldRoute:
+    """A route `_Hold` held, as the CDN handler sees it: a failed fulfill (the page gave up on it) is counted."""
+
+    def __init__(self, route, hold: _Hold):
+        self.request, self._route, self._hold = route.request, route, hold
+
+    async def fulfill(self, **kw) -> None:
+        try:
+            await self._route.fulfill(**kw)
+        except Exception:  # noqa: BLE001 — the page aborted this held fetch meanwhile (counted, the check reads disk)
+            self._hold.dropped += 1
+
+
+async def _open_vault(ctx, page, aid: str, port: int, browser_cdn: list[dict], hold: _Hold | None = None) -> None:
     """Vault Pro on `aid`, tours seen, the browser's CDN requests answered by the relay's fake (declared)."""
     bctx = page.context
     await bctx.add_init_script(TOURS_SEEN + f"localStorage.setItem('vault.accountId', '{aid}');")
@@ -235,7 +308,7 @@ async def _open_vault(ctx, page, aid: str, port: int, browser_cdn: list[dict]) -
                             "bytes": len(body), "t": time.time()})
         await route.fulfill(status=r.status, headers=out, body=body)
 
-    await bctx.route(f"https://{HOST}/**", cdn)
+    await bctx.route(f"https://{HOST}/**", hold.wrap(cdn) if hold else cdn)
     await open_vault_pro(page, ctx, timeout=WAIT_MS)
     await page.locator("section [title^='#']").first.wait_for(timeout=WAIT_MS)
     await page.wait_for_timeout(1000)
@@ -246,15 +319,27 @@ def _key(aid: str, m: dict) -> str:
 
 
 def _expected(vw, aid: str, creator: str, ms: list[dict], folder: str | None) -> dict[str, dict]:
-    """{"creator/folder/id.ext": {mid, key, size (jpg) or None (mp4)}}."""
+    """{"creator/folder/id.ext": {mid, key, size (jpg) or None (mp4)}}: the forced folder, else one copy per custom
+    folder of the media (vaultDownloadReducer.toItems), else Unfiled."""
     names = {f["id"]: f["name"] for f in vw.vault(aid)["folders"]}
     out = {}
     for m in ms:
-        f = folder if folder is not None else (names[m["folders"][0]] if m["folders"] else "Unfiled")
+        fs = [folder] if folder is not None else ([names[i] for i in m["folders"]] or ["Unfiled"])
         ext = "mp4" if m["type"] == "video" else "jpg"
-        out[f"{creator}/{_safe(f)}/{m['id']}.{ext}"] = {"mid": m["id"], "key": _key(aid, m),
-                                                       "size": None if ext == "mp4" else m["sizes"][1]}
+        for f in dict.fromkeys(_safe(x) for x in fs):
+            out[f"{creator}/{f}/{m['id']}.{ext}"] = {"mid": m["id"], "key": _key(aid, m),
+                                                    "size": None if ext == "mp4" else m["sizes"][1]}
     return out
+
+
+async def _card(panel) -> dict | None:
+    """The download card's data-* counts and title; None once it is gone."""
+    if not await panel.count():
+        return None
+    o = {k: await panel.get_attribute(f"data-{k}", timeout=5_000)
+         for k in ("phase", "total", "done", "failed", "direct", "relay")}
+    o["title"] = await panel.locator("div.font-medium").first.get_attribute("title", timeout=5_000)
+    return o
 
 
 def _is_links(name: str) -> bool:
@@ -374,12 +459,13 @@ async def run(ctx):
 
         # ── relay-load: B's whole vault through the relay, --users at once ──
         await _relay_load(ctx, vw, b, peg, proxy.bound)
+        await _relay_stale(ctx, w, vw, b, peg)
 
         if ctx.app:
             await _ui(ctx, _UiWorld(w, vw, a, b, nick, peg, armed["port"]))
             await _phone(ctx, vw, b, peg, armed["port"], assets)
         else:
-            for name in (SELECT, FOLDER, VAULT, PROXIED, PHONE_CAP, PHONE_SHARE, LINKS, PHONE_LINKS):
+            for name in (SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, SWITCH, PROXIED, PHONE_CAP, PHONE_SHARE, LINKS, PHONE_LINKS):
                 ctx.skip(name, "needs UI (--no-ui)")
     s = ctx.rec.summary("relay-load").get(f"GET {DOWNLOAD}")
     if s:
@@ -424,6 +510,40 @@ async def _relay_load(ctx, vw, b: str, peg: str, bound: bool) -> None:
               cdn_egress=egress, bound=bound, users=ctx.users)
 
 
+async def _relay_stale(ctx, w, vw, b: str, peg: str) -> None:
+    fake = ctx.of_wire
+    ms = vw.vault(b)["media"][:STALE_N]
+    vault_week.set_urls(w, vw, b, [m["id"] for m in ms], exp=vault_week.expired_exp(), egress=peg)
+    pool = ctx.owner.share(limits=max(10, ctx.users))
+    sem = asyncio.Semaphore(max(1, ctx.users))
+    n0 = len(fake.calls)
+    res = []
+
+    async def one(m):
+        async with sem:
+            r = await pool.get(f"{DOWNLOAD}?account_id={b}&media_id={m['id']}", timeout=120)
+            res.append((m, r.status_code, r.content))
+
+    fake.min_gap[(b, BY_ID)] = OF_MIN_GAP_S
+    ctx.rec.stage = "relay-stale"
+    try:
+        await asyncio.gather(*(one(m) for m in ms))
+    finally:
+        ctx.rec.stage = None
+        fake.min_gap.pop((b, BY_ID), None)
+        await pool.aclose()
+    by_id = [c for c in fake.calls[n0:] if c["account"] == b and c["route"] == BY_ID]
+    st = Counter(c["status"] for c in by_id)
+    ok_ids = Counter(c["path"].rsplit("/", 1)[1] for c in by_id if c["status"] == 200)
+    non200 = [[m["id"], s] for m, s, _ in res if s != 200]
+    bad = [m["id"] for m, s, body in res if s == 200 and m["type"] != "video"
+           and body != asset_bytes(_key(b, m), m["sizes"][1])]
+    ctx.check(RELAY_STALE, len(res) == len(ms) and not non200 and not bad and st.get(429, 0) == 0
+              and sorted(ok_ids) == sorted(str(m["id"]) for m in ms) and max(ok_ids.values(), default=0) == 1,
+              media=len(ms), answered=len(res), non200=non200[:10], bad_bytes=bad[:10], by_id_status=dict(st),
+              reads_per_file_max=max(ok_ids.values(), default=0), users=ctx.users, of_min_gap_s=OF_MIN_GAP_S)
+
+
 async def _ui(ctx, world: _UiWorld) -> None:
     from slop.actors import ui
 
@@ -443,42 +563,45 @@ async def _ui(ctx, world: _UiWorld) -> None:
             txt = fh.read().decode("utf-8", "replace")
         return [(int(m.group(2)), m.group(3), int(m.group(4))) for m in _LOG.finditer(txt) if m.group(1) == aid]
 
-    async def setup(page, aid: str) -> None:
+    async def setup(page, aid: str, hold: _Hold | None = None) -> None:
         await page.context.add_init_script(PICKER_JS)
         await page.context.expose_binding("__slopFs", disk.binding)
-        await _open_vault(ctx, page, aid, port, browser_cdn)
+        await _open_vault(ctx, page, aid, port, browser_cdn, hold)
 
-    async def download(page, phase: str, click) -> dict:
-        """Point the stub at root `phase`, shoot the trigger, click, wait for the panel to settle, shoot it."""
+    async def download(page, phase: str, click, during=None) -> dict:
+        """Point the stub at root `phase`, shoot the trigger, click, wait for the panel to settle, shoot it.
+        `during(page, panel)`: runs once the card is up, before the settle wait, and shoots the trigger itself."""
         d: dict = {}
         await page.evaluate(f"window.__slopPickRoot = {json.dumps(phase)}")
-        d["trigger_shot"] = await ui.shot(ctx, page, f"vault-download-{phase}-trigger")
+        if during is None:
+            d["trigger_shot"] = await ui.shot(ctx, page, f"vault-download-{phase}-trigger")
         await click()
         panel = page.locator(PANEL)
         await panel.wait_for(timeout=30_000)
+        if during is not None:
+            d.update(await during(page, panel))
         t0 = time.time()
-        while time.time() - t0 < SETTLE_S:
-            if await panel.get_attribute("data-phase") in ("done", "cancelled"):
+        while time.time() - t0 < SETTLE_S:   # a card gone (unmounted) settles too: the check reads that
+            if not await panel.count() or await panel.get_attribute("data-phase", timeout=5_000) in ("done", "cancelled"):
                 break
             await asyncio.sleep(0.25)
         d["seconds"] = round(time.time() - t0, 1)
         await page.wait_for_timeout(300)
-        d["panel"] = {k: await panel.get_attribute(f"data-{k}")
-                      for k in ("phase", "total", "done", "failed", "direct", "relay")}
+        d["panel"] = await _card(panel)
         d["settled_shot"] = await ui.shot(ctx, page, f"vault-download-{phase}-settled")
         return d
 
     def browser_since(i: int, aid: str) -> list[dict]:
         return [c for c in browser_cdn[i:] if f"/files/v/{aid}/" in c["key"]]
 
-    async def phase_run(name, page, aid, ms, folder, click, extra=None) -> dict:
+    async def phase_run(name, page, aid, ms, folder, click, extra=None, during=None) -> dict:
         creator = _safe(nick[aid])
         want = _expected(vw, aid, creator, ms, folder)
         n0, i0, l0, v0 = await cdn_count(ctx), len(browser_cdn), log_mark(), len(ctx.of_wire.vault_calls)
         o0 = len(disk.opened)
         d = {}
         async with captured(ctx, page, d, f"failed-vault-download-{name}"):
-            d.update(await download(page, name, click))
+            d.update(await download(page, name, click, during))
         await asyncio.sleep(0.5)
         calls = await cdn_calls(ctx, n0)
         served = {c["key"]: c["bytes"] for c in calls if c["status"] == 200}
@@ -578,7 +701,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         try:
             await setup(page, a)
         except Exception as e:  # noqa: BLE001
-            for name in (PICK_HINT, SELECT, FOLDER, VAULT, LINKS):
+            for name in (PICK_HINT, SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, LINKS, SWITCH):
                 ctx.check(name, False, error=f"setup: {type(e).__name__}: {e}"[:600])
             await ui.shot(ctx, page, "failed-vault-download-setup")
             return
@@ -612,6 +735,30 @@ async def _ui(ctx, world: _UiWorld) -> None:
         await page.get_by_role("button", name="Close download").click(timeout=10_000)
         await page.get_by_role("button", name="Clear").click(timeout=10_000)
         await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)
+
+        # select inside a rail folder: media whose FIRST folder is another one must still land in this one
+        two = [m for m in vw.vault(a)["media"] if len(m["folders"]) == 2]
+        fid = Counter(m["folders"][1] for m in two).most_common(1)[0][0] if two else None
+        fname = next((f["name"] for f in vw.vault(a)["folders"] if f["id"] == fid), "")
+        sf = [m for m in vw.listing(a, list_id=fid) if m["folders"][0] != fid][:2] if fid else []
+        d: dict = {}
+        try:
+            await page.locator("aside [role='button']").filter(has_text=fname).first.click(timeout=10_000)
+            await page.wait_for_timeout(1000)
+            await tick(page, sf)
+            d = await phase_run("select-folder", page, a, sf, fname,
+                                lambda: page.get_by_role("button", name="Download selected").click(timeout=10_000))
+            d.pop("browser_by_key", None)
+            await page.get_by_role("button", name="Close download").click(timeout=10_000)
+            await page.get_by_role("button", name="Clear").click(timeout=10_000)
+            await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)
+            await page.locator("aside button").filter(has_text="All media").first.click(timeout=10_000)
+            await page.wait_for_timeout(1000)
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            d["error"] = f"{type(e).__name__}: {e}"[:600]
+            await ui.shot(ctx, page, "failed-vault-download-select-folder")
+        ctx.check(SELECT_IN_FOLDER, len(sf) == 2 and "disk" in d and settled(d, 2) and disk_ok(d),
+                  folder=fname, first_folders=[m["folders"] for m in sf], **d)
 
         # folder
         f = vw.vault(a)["folders"][0]
@@ -666,6 +813,9 @@ async def _ui(ctx, world: _UiWorld) -> None:
             finally:
                 await hp.close()
 
+    # ── switch: A's whole vault running, Creator B picked; A's run must finish whole ──
+    await _switch(ctx, world, setup, phase_run, settled, disk_ok)
+
     # ── B: on a proxy, relay only ──
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
         try:
@@ -696,6 +846,71 @@ async def _ui(ctx, world: _UiWorld) -> None:
     ctx.check(LINKS, ok and names_ok and lk_all["vault"]["open"]["ok"] and lk_all["vault"].get("stale_backup", {}).get("ok")
               and lk_all["proxied"]["open"]["ok"],
               **{ph: {k: v for k, v in x.items() if k != "html_path"} for ph, x in lk_all.items()})
+
+
+async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok) -> None:
+    """A fresh browser on A: Download whole vault (`phase_run`), B picked in the creator column mid-run (A's CDN
+    held after SWITCH_FREE fetches, declared), released once B is on screen; A's run must still finish every file."""
+    from slop.actors import ui
+
+    vw, a, b, nick = world.vw, world.a, world.b, world.nick
+    every = vw.vault(a)["media"]
+    creator = _safe(nick[a])
+    hold = _Hold(a, SWITCH_FREE)
+
+    def row(page, aid: str):
+        """aid's row in the creator column (as ui.pick_creator finds it)."""
+        rows = page.get_by_test_id("of-creator-column").get_by_test_id("of-creator-row")
+        return rows.filter(has=page.get_by_text(nick[aid], exact=True)).first
+
+    async def during(page, panel) -> dict:
+        o: dict = {}
+        try:   # mid-flight: SWITCH_FREE through, the next held
+            await asyncio.wait_for(hold.first_held.wait(), 60)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"switch: none of A's CDN fetches was held within 60 s ({hold.passed} let through)") from None
+        o["held_before_switch"] = hold.held
+        o["before"] = await _card(panel)
+        await ui.pick_creator(page, nick[b], timeout_ms=WAIT_MS)   # waits for B's row to be aria-current
+        newest_b = vw.listing(b)[0]["id"]
+        await page.locator(f"section [title^='#{newest_b} ']").first.wait_for(timeout=WAIT_MS)
+        o["b_grid"] = {"b_current": await row(page, b).get_attribute("aria-current"),
+                       "a_current": await row(page, a).get_attribute("aria-current"), "b_newest_tile": newest_b}
+        btn = page.get_by_role("button", name="Download whole vault")
+        o["b_download"] = {"disabled": await btn.is_disabled(timeout=10_000),
+                           "title": await btn.get_attribute("title", timeout=10_000)}
+        o["at_switch"] = await _card(panel)
+        o["trigger_shot"] = await ui.shot(ctx, page, "vault-download-switch-trigger")
+        hold.go.set()
+        return o
+
+    d: dict = {"free": SWITCH_FREE}
+    try:
+        async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
+            try:
+                await setup(page, a, hold)
+                hold.armed = True
+                d.update(await phase_run(
+                    "switch", page, a, every, None,
+                    lambda: page.get_by_role("button", name="Download whole vault").click(timeout=10_000),
+                    during=during))
+            finally:
+                hold.go.set()
+            d.update(held=hold.held, held_dropped=hold.dropped)
+    except Exception as e:  # noqa: BLE001 — the check reports it
+        d.setdefault("error", f"{type(e).__name__}: {e}"[:600])
+    d.pop("browser_by_key", None)
+    p, sw = d.get("panel") or {}, d.get("at_switch") or {}
+    parts = {
+        "browser": "error" not in d,
+        "running_at_switch": bool(d.get("held_before_switch")) and (d.get("before") or {}).get("phase") == "running"
+                             and sw.get("phase") == "running" and sw.get("title") == f"Downloading {creator}: whole vault",
+        "b_shown": d.get("b_grid", {}).get("b_current") == "true" and d.get("b_grid", {}).get("a_current") is None,
+        "b_download_off": d.get("b_download") == {"disabled": True, "title": BUSY_OFF},
+        "panel_done": settled(d, len(every)) and p.get("title") == f"Downloaded {creator}: whole vault",
+        "disk": "disk" in d and disk_ok(d),
+    }
+    ctx.check(SWITCH, all(parts.values()), failed=[k for k, ok in parts.items() if not ok], parts=parts, **d)
 
 
 async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:

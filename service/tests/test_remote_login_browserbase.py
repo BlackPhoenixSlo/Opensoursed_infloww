@@ -56,11 +56,20 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
       registry calls (Inflowwww proxy: assign_pool; custom: assign_account;
       No proxy: nothing), then from_request persists, then the bootstrap hooks
       run; a failed bind persists nothing.
+  case_defaulted_pool_keeps_existing_binding:
+      the relay's default Inflowwww proxy (no choice sent) never replaces a
+      custom binding: an account on a custom proxy keeps it (no assign_pool,
+      the job reports that proxy); one on the pool and an unbound one get
+      assign_pool (sticky on the pool unless its failover is due); an explicit
+      "infloww" choice still calls assign_pool on a custom-bound account. With
+      no pool (the default is No proxy) a custom-bound account is reported on
+      its proxy too, never "No proxy"; an explicit "none" still reports none.
   case_api_proxy_choice:
       no proxy given: the Inflowwww proxy when the relay has a pool, else none;
       "infloww" without a pool 409s; a custom label is checked for visibility
       (another user's or a pool label 404s); unknown choice / custom without a
-      label 400.
+      label 400. Only a request with neither proxy nor proxy_label is
+      `proxy_defaulted`.
   case_api_gates:
       400 missing password (never a 422 echoing it), 400 unknown backend, 501 local, 404 unknown proxy, 503 env missing,
       404 unknown job, 403 another principal's job; /admin/login is audit-
@@ -532,6 +541,69 @@ def case_capture_binds_before_persist():
         restore()
 
 
+def case_defaulted_pool_keeps_existing_binding():
+    proxy_registry.upsert({"label": "keep-1", "host": "203.0.113.21", "port": 12323})
+    proxy_registry.assign_account("keep-1", "777")
+    order = []
+    restore = _persist_fakes(order)
+    try:
+        # Header Add creator re-signs an account on a custom proxy: no choice sent → it stays on keep-1.
+        job = _job(proxy_defaulted=True)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("persist", "777", None), ("hooks", "777")], order
+        assert job.public()["proxy"] == rl.PROXY_CUSTOM and job.public()["proxy_label"] == "keep-1", job.public()
+        assert job.message == "session captured; proxy keep-1 attached for all later traffic", job.message
+
+        # An explicit "infloww" is the caller's pick: assign_pool runs (it moves the account onto the pool).
+        order.clear()
+        job = _job(proxy=rl.PROXY_INFLOWWW, proxy_defaulted=False)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("pool", "777"), ("persist", "777", None), ("hooks", "777")], order
+
+        # No pool on the relay: the default is No proxy; the account is still on keep-1 and says so.
+        order.clear()
+        job = _job(proxy=rl.PROXY_NONE, proxy_defaulted=True)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("persist", "777", None), ("hooks", "777")], order
+        assert job.public()["proxy"] == rl.PROXY_CUSTOM and job.public()["proxy_label"] == "keep-1", job.public()
+
+        # An explicit "none" (a row's re-link) binds nothing and reports none.
+        order.clear()
+        job = _job(proxy=rl.PROXY_NONE, proxy_defaulted=False)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("persist", "777", None), ("hooks", "777")], order
+        assert job.public()["proxy"] == rl.PROXY_NONE, job.public()
+    finally:
+        restore()
+        proxy_registry.unbind_account("keep-1", "777")
+
+    # On the pool already: assign_pool still runs (sticky, but a due failover moves it), reported as the Inflowwww
+    # proxy (its label never shown).
+    orig_get = proxy_registry.get_for_account
+    proxy_registry.get_for_account = lambda aid: {"label": "infloww-0000aaaa", "pool": True}
+    order = []
+    restore = _persist_fakes(order)
+    try:
+        job = _job(proxy_defaulted=True)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("pool", "777"), ("persist", "777", None), ("hooks", "777")], order
+        assert job.public()["proxy"] == rl.PROXY_INFLOWWW and job.public()["proxy_label"] == ""
+    finally:
+        restore()
+        proxy_registry.get_for_account = orig_get
+
+    # Unbound: the default binds the pool, as before.
+    assert proxy_registry.get_for_account("777") is None
+    order = []
+    restore = _persist_fakes(order)
+    try:
+        job = _job(proxy_defaulted=True)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("pool", "777"), ("persist", "777", None), ("hooks", "777")], order
+    finally:
+        restore()
+
+
 # ── Typing into OnlyFans' login form ─────────────────────────────────────────
 
 class _Field:
@@ -706,11 +778,14 @@ def case_api_proxy_choice():
         r = start()
         assert r.status_code == 200, r.text
         assert seen[-1]["proxy"] == rl.PROXY_INFLOWWW and seen[-1]["proxy_label"] == "", seen[-1]
+        assert seen[-1]["proxy_defaulted"] is True, "no choice sent: the relay's default"
         assert r.json()["proxy"] == rl.PROXY_INFLOWWW and r.json()["proxy_label"] == ""
+        assert start(proxy="infloww").status_code == 200 and seen[-1]["proxy_defaulted"] is False
         assert start(proxy="none").status_code == 200 and seen[-1]["proxy"] == rl.PROXY_NONE
+        assert seen[-1]["proxy_defaulted"] is False
         r = start(proxy_label="mine-1")  # a label alone means custom
         assert r.status_code == 200 and seen[-1]["proxy"] == rl.PROXY_CUSTOM, r.text
-        assert seen[-1]["proxy_label"] == "mine-1"
+        assert seen[-1]["proxy_label"] == "mine-1" and seen[-1]["proxy_defaulted"] is False
 
         proxy_registry.pool_entries = lambda: []
         assert start().status_code == 200 and seen[-1]["proxy"] == rl.PROXY_NONE, "no pool: the flow's default is none"

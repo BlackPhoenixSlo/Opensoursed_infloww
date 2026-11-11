@@ -835,8 +835,7 @@ describe("Fan insights Profile, Lists and Notes", () => {
     expect(birthday.placeholder).toBe("MM-DD");
     // The Nickname input keeps its name, and its sync hint is the ⓘ's tooltip.
     expect(within(profile).getByRole("textbox", { name: "Nickname" })).toBe(nick());
-    expect(within(profile).getByRole("img", { name: "info" })).toBeTruthy();
-    expect(within(profile).getByTitle(/^Synced with OnlyFans/)).toBeTruthy();
+    expect(within(profile).getByRole("img", { name: /^Synced with OnlyFans/ })).toBeTruthy();
     // Fan notes moved into its own block; the uppercase form labels are gone.
     expect(within(within(pane).getByRole("region", { name: "Notes" })).getByRole("textbox", { name: "Fan notes" }))
       .toBe(notes());

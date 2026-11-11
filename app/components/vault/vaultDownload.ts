@@ -20,7 +20,7 @@ import { resolveShareToken } from "@/lib/shareToken";
 import { buildLinksFile, type LinksFile } from "@/components/vault/vaultLinksFile";
 
 import {
-  CANCELLED, CONCURRENCY, canFetchMore, mimeFor, safeName, sourceFor, toItems,
+  CONCURRENCY, canFetchMore, isBusy, mimeFor, safeName, sourceFor, toItems,
   type Action, type DlItem, type DlMode, type DlSink, type DlSource, type DlState,
 } from "@/components/vault/vaultDownloadReducer";
 
@@ -128,30 +128,37 @@ async function resign(accountId: string, it: DlItem): Promise<string | null> {
   }
 }
 
-/** Where one item's bytes go: `body` is counted and errors on a short read (the sink must not keep it then). */
+/** Where one item's bytes go: `body` is counted and errors on a short read; neither then nor once `signal` has
+ *  aborted may the sink keep it. */
 export type Sink = (it: DlItem, body: ReadableStream<Uint8Array>, signal: AbortSignal) => Promise<void>;
 
-/** Each item as `<creator>/<folder>/<id>.<ext>` under `root`. */
-export function folderSink(root: FileSystemDirectoryHandle, creator: () => string): Sink {
+/** Each item as `<creator>/<folder>/<id>.<ext>` under `root`, then a copy in each of `it.copies` (read back from disk). */
+export function folderSink(root: FileSystemDirectoryHandle, creator: string): Sink {
   return async (it, body, signal) => {
-    const c = await root.getDirectoryHandle(creator(), { create: true });
+    const c = await root.getDirectoryHandle(creator, { create: true });
     const f = await c.getDirectoryHandle(it.folder, { create: true });
     const fh = await f.getFileHandle(it.name, { create: true });
     await body.pipeTo(await fh.createWritable(), { signal });
+    for (const name of it.copies ?? []) {
+      const d = await c.getDirectoryHandle(name, { create: true });
+      const ch = await d.getFileHandle(it.name, { create: true });
+      await (await fh.getFile()).stream().pipeTo(await ch.createWritable(), { signal });
+    }
   };
 }
 
 /** Each item as a `File` named `<id>.<ext>` with its MIME type, handed to `keep` (the share batches' store). */
 export function shareSink(keep: (id: number, f: File) => void): Sink {
-  return async (it, body) => {
+  return async (it, body, signal) => {
     const blob = await new Response(body).blob();
+    signal.throwIfAborted();   // a cancelled / replaced run keeps nothing (the store outlives a model switch)
     keep(it.id, new File([blob], it.name, { type: mimeFor(it.name) }));
   };
 }
 
 /** The links file for the run's items now (vaultLinksFile.ts), links absolute to this page's origin. */
-export function linksFor(accountId: string, s: DlState, now = Date.now()): LinksFile {
-  return buildLinksFile(s.items, { origin: window.location.origin, accountId, creator: s.creator, label: s.label,
+export function linksFor(s: DlState, now = Date.now()): LinksFile {
+  return buildLinksFile(s.items, { origin: window.location.origin, accountId: s.accountId, creator: s.creator, label: s.label,
                                    direct: s.directAllowed, now, token: resolveShareToken() });
 }
 
@@ -215,8 +222,8 @@ async function directFetch(url: string, signal: AbortSignal): Promise<Response |
   }
 }
 
+/** The run's account is the state's (`start` set it): retry after a switch of model still reads the run's own. */
 export interface RunDeps {
-  accountId: string;
   sink: Sink;
   send: Send;
   /** The reducer's state now (the panel keeps it in a ref alongside its dispatch). */
@@ -225,7 +232,8 @@ export interface RunDeps {
 }
 
 async function one(d: RunDeps, it: DlItem): Promise<void> {
-  const { accountId, send, signal } = d;
+  const { send, signal } = d;
+  const { accountId } = d.get();
   send({ type: "itemStart", id: it.id });
   const progress = (n: number) => send({ type: "itemProgress", id: it.id, bytes: n });
   try {
@@ -252,8 +260,14 @@ async function one(d: RunDeps, it: DlItem): Promise<void> {
     const n = await save(r, it, d.sink, signal, progress);
     send({ type: "itemDone", id: it.id, source: src, bytes: n });
   } catch (e) {
-    send({ type: "itemFailed", id: it.id, error: signal.aborted ? CANCELLED : (e as Error)?.message || String(e) });
+    send({ type: "itemFailed", id: it.id, error: (e as Error)?.message || String(e) });   // aborted: dropped (live)
   }
+}
+
+/** `d` whose `send` drops everything once its signal aborted: the run was cancelled (the reducer's `cancel` already
+ *  failed its open items) or replaced, and a late worker must not write into the run that state now holds. */
+function live<T extends { send: Send; signal: AbortSignal }>(d: T): T {
+  return { ...d, send: (a: Action) => { if (!d.signal.aborted) d.send(a); } };
 }
 
 /** How often a held worker (share sink, unsaved batches at SHARE_HELD_BYTES) looks again. */
@@ -261,7 +275,8 @@ const HOLD_POLL_MS = 250;
 
 /** Download every queued item, CONCURRENCY at a time, until done or `signal` aborts. A worker waits before its next
  *  item while `canFetchMore` says no (share sink: ~2 batches unsaved). */
-export async function runQueue(d: RunDeps): Promise<void> {
+export async function runQueue(run: RunDeps): Promise<void> {
+  const d = live(run);
   const queue = d.get().items.filter((i) => i.status === "queued");
   const room = async () => {
     while (!canFetchMore(d.get()) && !d.signal.aborted) await new Promise((r) => setTimeout(r, HOLD_POLL_MS));
@@ -289,10 +304,13 @@ export interface StartArgs {
 }
 
 /** One whole run: the sink (folder: the picker), direct check, listing, queue. `share` is the share sink's file
- *  store; null = the folder sink. Returns false when the user closed the picker. */
+ *  store; null = the folder sink. `setSink` runs the moment the `start` is accepted (the run holds the state from
+ *  there). Returns false when the user closed the picker, the run was aborted first, or another run is busy: then
+ *  nothing runs and the sink is left as it was. */
 export async function startDownload(
-  a: StartArgs, d: Omit<RunDeps, "sink">, setSink: (s: Sink) => void, share: ((id: number, f: File) => void) | null,
+  a: StartArgs, run: Omit<RunDeps, "sink">, setSink: (s: Sink) => void, share: ((id: number, f: File) => void) | null,
 ): Promise<boolean> {
+  const d = live(run);
   let sink: Sink;
   let root: FileSystemDirectoryHandle | null = null;
   if (share) sink = shareSink(share);
@@ -300,24 +318,27 @@ export async function startDownload(
     root = await pickRoot();
     if (!root) return false;
     const r = root;
-    sink = folderSink(r, () => d.get().creator);
+    sink = folderSink(r, a.creator);   // this run's Creator, never shared state
   }
+  const direct = await directAllowed(a.accountId);
+  if (d.signal.aborted || isBusy(d.get())) return false;   // the reducer would refuse the `start` too
+  d.send({ type: "start", mode: a.mode, label: a.label, accountId: a.accountId, creator: a.creator,
+           sink: share ? "share" : "folder", directAllowed: direct });
   setSink(sink);
-  d.send({ type: "start", mode: a.mode, label: a.label, creator: a.creator, sink: share ? "share" : "folder",
-           directAllowed: await directAllowed(a.accountId) });
   let media = a.media;
   if (!media) {
     try {
       media = await listAll(a.accountId, a.folder?.id ?? null, a.source, d.signal);
     } catch (e) {
-      d.send({ type: "listFailed", error: d.signal.aborted ? CANCELLED : (e as Error)?.message || String(e) });
+      d.send({ type: "listFailed", error: (e as Error)?.message || String(e) });   // aborted: dropped (live)
       return true;
     }
   }
+  if (d.signal.aborted) return true;   // d.get() may be another run's state now
   d.send({ type: "listed", items: toItems(media, a.folder?.name ?? null) });
   if (root && d.get().items.length) {
     const s = d.get();
-    await writeLinks(root, a.folder ? [s.creator, safeName(a.folder.name)] : [s.creator], linksFor(a.accountId, s));
+    await writeLinks(root, a.folder ? [s.creator, safeName(a.folder.name)] : [s.creator], linksFor(s));
   }
   await runQueue({ ...d, sink });
   return true;

@@ -2,7 +2,7 @@
 (per-account `transaction_scan_history` watermark + Unattributed-sales views)
 and the on-demand subscriber-roster crawl.
 
-  GET  /admin/ingest/transactions/health  → per-account scan tier (+ last_full_attempt_at), scoped to the caller's accounts
+  GET  /admin/ingest/transactions/health  → per-account scan tier (+ last_full_attempt_at, full_walk_failures), scoped to the caller's accounts
   POST /admin/ingest/transactions/{account_id}/run  (202) → one refresh/backfill scan now (a backfill on a done walk restarts it and ends any pause)
   POST /admin/roster/{account_id}/crawl  → one subscriber-roster crawl now, past its TTL
   POST /admin/ingest/transactions/{account_id}/pause  (202) → pause the supervisor for N hours
@@ -45,13 +45,32 @@ router = APIRouter()
 # /admin/* routes; share-token gate fires via middleware so no
 # per-route auth dep is needed.
 
-def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> str:
-    """Health tier per synthesis §7.
+# Reported, never persisted: full_walk_failures > 0 (full walks failed or cut short since the
+# last completed one, whatever the recent walks do) turns a between-ticks green status into this
+# (_health_status). An in-flight one keeps its word (a scan is running); the tier is not green either way.
+FULL_WALK_FAILED = "full_walk_failed"
+_BETWEEN_TICKS_GREEN = ("idle", "ok", BACKFILL_PARTIAL)
+_GREEN_STATUSES = (*_BETWEEN_TICKS_GREEN, *IN_FLIGHT)
+
+
+def _health_status(current_status: str, full_walk_failures: int) -> str:
+    """The status a /health row reports: the persisted one, but FULL_WALK_FAILED for a between-ticks
+    green one (idle, ok, backfill_partial) while a full walk is owed. refreshing/backfilling (in
+    flight), paused, error, backfill_stalled/_given_up keep their word. The persisted status stays
+    (the in-flight skip and /run's 409 read it); last_error keeps the failed walk's line."""
+    return FULL_WALK_FAILED if full_walk_failures and current_status in _BETWEEN_TICKS_GREEN else current_status
+
+
+def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str, full_walk_failures: int) -> str:
+    """Health tier per synthesis §7, on the reported status (_health_status) and the count.
     green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling, backfill_partial}
+            AND full_walk_failures == 0
     yellow: 30 < minutes_since_scan <= 360
     red:    minutes_since_scan > 360 OR status in {paused, error, never_scanned}
     (backfill_stalled, a walk stopped short of done, and backfill_given_up, one given up after
-    repeated stops, persisted until a new backfill: never green, the reason in last_error)
+    repeated stops, persisted until a new backfill: not green, the reason in last_error;
+    full_walk_failures > 0, reported full_walk_failed between ticks: not green, in flight too,
+    until a full walk completes)
 
     Note: 'refreshing'/'backfilling' here are the in-flight steady states
     (tick START stamps them, _mark_success then stamps 'ok'). A row
@@ -62,7 +81,7 @@ def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> st
         return "red"
     if minutes_since_scan is None:
         return "red"
-    if minutes_since_scan <= 30 and current_status in ("idle", "ok", *IN_FLIGHT, BACKFILL_PARTIAL):
+    if minutes_since_scan <= 30 and current_status in _GREEN_STATUSES and not full_walk_failures:
         return "green"
     if minutes_since_scan <= 360:
         return "yellow"
@@ -114,6 +133,7 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
                 "rows_inserted_total": 0,
                 "rows_patched_total": 0,
                 "fully_backfilled": False,
+                "full_walk_failures": 0,
                 "minutes_since_scan": None,
                 "tier": "red",
             }
@@ -122,23 +142,27 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
                 (now - h.last_scan_at).total_seconds() / 60.0
                 if h.last_scan_at is not None else None
             )
-            tier = _tx_ingest_tier(mins, h.current_status or "idle")
+            fails = int(h.full_walk_failures or 0)
+            status = _health_status(h.current_status or "idle", fails)
             entry = {
                 "account_id": aid,
                 "display_name": nick,
                 "last_scan_at": h.last_scan_at.isoformat() if h.last_scan_at else None,
-                "current_status": h.current_status,
+                "current_status": status,
                 "last_error": h.last_error,
                 "consecutive_failures": int(h.consecutive_failures or 0),
                 "paused_until": h.paused_until.isoformat() if h.paused_until else None,
                 "rows_inserted_total": int(h.rows_inserted_total or 0),
                 "rows_patched_total": int(h.rows_patched_total or 0),
                 "fully_backfilled": bool(h.fully_backfilled),
+                "full_walk_failures": fails,
                 "minutes_since_scan": round(mins, 2) if mins is not None else None,
-                "tier": tier,
+                "tier": _tx_ingest_tier(mins, status, fails),
             }
         # Scheduling state, not proof of success: the last ATTEMPTED full walk's window
-        # end (completed, failed or cut short), or its seed (scan_seeded: first sight, an outage).
+        # end (completed, failed or cut short; refused by the proxy after page 1 too, never one
+        # refused before it), or its seed (decide_mode: first sight, an outage). Whether those walks
+        # completed is full_walk_failures (> 0: not green; status full_walk_failed between ticks).
         full = h.last_full_at if h is not None else None
         entry["last_full_attempt_at"] = full.isoformat() if full else None
         accounts_out.append(entry)

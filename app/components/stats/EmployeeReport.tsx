@@ -2,7 +2,7 @@
 
 /** Compact Employee reports frame. URL tabs and report-zone ranges remain shared with Sales records. */
 
-import { Filter, Info } from "lucide-react";
+import { Filter } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
@@ -34,6 +34,7 @@ import { fmtTimeOnly } from "@/lib/format";
 import { deniedPage } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 export type EmployeeTab = "overview" | "sales" | "performance";
 
@@ -94,9 +95,7 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
               <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} timeZone={reportTz} hours />
               <span className="flex items-center gap-2">
                 <ShownBySelect days={days} value={bucket} onChange={setPicked} />
-                <span role="img" aria-label={GRAN_TIP} title={GRAN_TIP} className="cursor-help text-fg-dim">
-                  <Info className="h-3.5 w-3.5" aria-hidden />
-                </span>
+                <InfoTip text={GRAN_TIP} className="text-fg-dim" />
               </span>
               <ReportFilters checked={chatterOnly} onChange={setChatterOnly} />
               <StatsRefreshButton />
@@ -140,7 +139,7 @@ function SalesSettingsNotice({ fallback }: { fallback: string | null }) {
     <div role="note" className={styles.notice} title={fallback ?? undefined}>
       The sales data is based on the sales settings. View your settings at {" "}
       <Link href="/settings/sales" aria-label="View sales settings">Settings &gt; Sales Settings.</Link>
-      {fallback && <span role="img" aria-label={fallback} title={fallback}><Info size={12} /></span>}
+      {fallback && <InfoTip text={fallback} iconClassName="h-3 w-3" />}
     </div>
   );
 }

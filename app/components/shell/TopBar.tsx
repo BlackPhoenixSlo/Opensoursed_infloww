@@ -47,6 +47,7 @@ import { zoneOffsetNow } from "@/lib/creatorClock";
 import { utcOffsetFromMinutes } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 const noSubscribe = () => () => {};
 
@@ -198,9 +199,8 @@ export function TimeZoneLabel() {
     <Link href="/settings/preferences" className={cn(HEADER_TILE, "hidden lg:inline-flex tabular-nums")} title="Your time zone">
       <Globe04Line aria-hidden className={HEADER_TILE_ICON} />
       {tz}
-      <span title="The regular time zone you selected in Settings" className="-ml-1 inline-flex">
-        <InfoCircleLine aria-hidden className={HEADER_TILE_ICON} />
-      </span>
+      <InfoTip text="The regular time zone you selected in Settings" className="-ml-1"
+        icon={<InfoCircleLine aria-hidden className={HEADER_TILE_ICON} />} />
     </Link>
   );
 }

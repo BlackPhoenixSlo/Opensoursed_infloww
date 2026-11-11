@@ -42,8 +42,8 @@ def live_server():
     return server
 
 
-def proxy(call):
-    return live_server()._proxy(call)
+def proxy(call, *, client=None):
+    return live_server()._proxy(call, client=client)
 
 
 def get_client():

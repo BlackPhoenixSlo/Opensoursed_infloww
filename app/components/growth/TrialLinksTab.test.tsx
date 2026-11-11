@@ -215,9 +215,9 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
   it("shows Infloww's free trial figures in its order, — for a link not read yet or with no cost", async () => {
     mount();
     await screen.findByText("Reddit 7-day");
-    const spendHead = screen.getByRole("columnheader", { name: "Spend/Claim" });
-    expect(spendHead.querySelector("[title]")!.getAttribute("title")).toBe(
-      "Percentage of fans who claimed a free trial that purchased subscriptions, spent on content, or gave tips");
+    const spendHead = screen.getByRole("columnheader", { name: /^Spend\/Claim/ });
+    expect(within(spendHead).getByRole("img", {
+      name: "Percentage of fans who claimed a free trial that purchased subscriptions, spent on content, or gave tips" })).toBeTruthy();
     expect(FIGS.map((t) => metric("Reddit 7-day", t))).toEqual(["50.00%", "$50", "$120", "2", "$70", "$30", "140.00%"]);
     expect(FIGS.map((t) => metric("Fresh link", t))).toEqual(Array(7).fill("—"));
     // Infloww's free trial table has no CPC or CPS; Source and Tag draw once a link has them.

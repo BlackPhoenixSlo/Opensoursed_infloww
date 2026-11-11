@@ -16,13 +16,14 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { Square } from "lucide-react";
+import { Loader2, Square } from "lucide-react";
 
 import { EmptyState, IfModal } from "@/components/ui/infloww";
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
 import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
-import VaultDownloadPanel, { useVaultDownload } from "@/components/vault/VaultDownloadPanel";
-import { downloadOff, isBusy, safeName, unsaved } from "@/components/vault/vaultDownloadReducer";
+import { useVaultDownloadContext } from "@/components/vault/VaultDownloadPanel";
+import type { StartArgs } from "@/components/vault/vaultDownload";
+import { downloadOff, safeName } from "@/components/vault/vaultDownloadReducer";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
@@ -50,7 +51,7 @@ import VaultTile from "@/components/vault/VaultTile";
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import {
   useOfFoldersMirror,
-  searchOf,
+  useOfSearch,
   useDescribePlan,
   useMirrorItems,
   useVaultCacheSummary,
@@ -85,15 +86,17 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const { account } = useVaultAccount();
   const qc = useQueryClient();
   // Ours: download (selection / folder / whole vault) into a folder the user picks, or (phones) a selection of up to
-  // 20 to the share sheet; see `vaultDownloadReducer`.
-  const dl = useVaultDownload(accountId, safeName(account?.nickname || account?.name || accountId));
-  const dlBusy = isBusy(dl.state) || unsaved(dl.state) > 0;   // phone: batches still to save
+  // 20 to the share sheet; see `vaultDownloadReducer`. The page's one download (`VaultDownloadProvider`, above the
+  // per-model remount); a run started here is for this model.
+  const dl = useVaultDownloadContext();
+  const creator = safeName(account?.nickname || account?.name || accountId);
+  const startDl = (a: Omit<StartArgs, "accountId" | "creator">) => dl.start({ ...a, accountId, creator });
   // A folder-limited chatter: the relay soft-denies "All" on both sources (vault/media without list_id, mirror items
   // without of_folder_id, empty `{list: []}`), so a whole-vault download would read "Nothing to download". Its
   // folders download one by one (the rail). Off while a chatter's folder-access read is in flight or failed, so
   // never false-empty; an owner's query is disabled (not loading, no data), so on.
   const folderAccess = useChatterFolderAccess(accountId);
-  const wholeVaultOff = downloadOff(dl.sink, "vault", 0, dlBusy)
+  const wholeVaultOff = downloadOff(dl.sink, "vault", 0, dl.state)
     || (folderAccess.isLoading || folderAccess.isError || folderAccess.data?.restricted === true
       ? "Your access is by folder: download a folder" : "");
   // Folder / type / search and the ticked files — see `vaultBrowseReducer`.
@@ -160,19 +163,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     return () => document.removeEventListener("pointerdown", onDown);
   }, [preview, selectMode, playMedia]);
 
-  // On a search, harvest OF's own results in the BACKGROUND and merge them in.
-  useEffect(() => {
-    if (!query) return;
-    let cancelled = false;
-    searchOf(accountId, query)
-      .then(() => {
-        if (!cancelled) qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [query, accountId, qc]);
 
   const summary = useVaultCacheSummary(accountId);
   const plan = useDescribePlan(accountId, promptVersion);
@@ -208,6 +198,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const source = vaultBrowseSource(summary.data);
   const wholeSource = vaultWholeSource(summary.data);
   const useLocal = source === "mirror";
+  // On a search over the mirror, harvest OF's own results in the BACKGROUND and merge them in; while that runs the
+  // grid says "Searching OnlyFans…" rather than "No data". Not on the live path: that listing IS OF's search, and the
+  // harvest only tags media the mirror already holds.
+  const searchingOf = useOfSearch(accountId, query, useLocal);
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
   // The plan's counts come from the DB, so they stand in when the relay's
@@ -441,11 +435,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           selectedId={ofFolderId}
           onSelect={(id) => dispatchBrowse({ type: "folder", id })}
           onChanged={refreshAll}
-          onDownloadFolder={dl.sink ? (f) => dl.start({
+          onDownloadFolder={dl.sink ? (f) => startDl({
             mode: "folder", label: `folder ${f.name}`, folder: { id: f.id, name: f.name },
             source: wholeSource,
           }) : undefined}
-          downloadFolderOff={downloadOff(dl.sink, "folder", 0, dlBusy)}
+          downloadFolderOff={downloadOff(dl.sink, "folder", 0, dl.state)}
         />
 
         {/* RIGHT grid */}
@@ -468,7 +462,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             onSelectAll={() => dispatchBrowse({ type: "selectAll", ids: items.map((m) => m.id) })}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
-            onDownloadAll={() => dl.start({ mode: "vault", label: "whole vault", source: wholeSource })}
+            onDownloadAll={() => startDl({ mode: "vault", label: "whole vault", source: wholeSource })}
             downloadOff={wholeVaultOff}
           />
 
@@ -482,6 +476,12 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               // The bundle spins (`Spin`) while the grid loads; ours draws the grid's tiles as placeholders.
               <div role="status" aria-label="Loading" className="grid grid-cols-3 md:grid-cols-6 gap-2 py-4">
                 {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="aspect-square w-full rounded-md" />)}
+              </div>
+            ) : items.length === 0 && searchingOf ? (
+              // Ours: OF's own search is still answering; its hits fill in when it does.
+              <div role="status" className="flex flex-col items-center justify-center gap-2 py-16 text-[14px] text-muted">
+                <Loader2 className="h-6 w-6 animate-spin text-[#2d74ff]" />
+                Searching OnlyFans…
               </div>
             ) : items.length === 0 && pageError ? (
               // #72: the grid's error, which Refresh above answers.
@@ -500,6 +500,14 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               <EmptyState className="py-10" />
             ) : (
               <>
+                {searchingOf && (
+                  // Ours: these are the saved vault's hits; OF's own search may add more.
+                  <div role="status" title={EXTRA_LABEL}
+                    className="flex items-center justify-center gap-1.5 pb-2 text-xs text-fg-dim">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#2d74ff]" />
+                    Searching OnlyFans for more…
+                  </div>
+                )}
                 {/* #70: four per row, 5px around each (10px apart); fewer on a narrow screen. */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
                   {items.map((m) => (
@@ -553,11 +561,16 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               onNewFolder={() => newFolderWithSelection(deps)}
               onDescribe={() => describeSelected(deps)}
               onClear={() => dispatchBrowse({ type: "clearSelection" })}
-              onDownload={() => dl.start({
-                mode: "selection", label: `${selected.size} selected`,
-                media: items.filter((m) => selected.has(m.id)), source,
-              })}
-              downloadOff={downloadOff(dl.sink, "selection", selected.size, dlBusy)}
+              onDownload={() => {
+                // Picked inside a folder: they all save into that folder, not each one's first OF folder.
+                const here = folders.find((x) => x.id === ofFolderId);
+                startDl({
+                  mode: "selection", label: `${selected.size} selected`,
+                  media: items.filter((m) => selected.has(m.id)), source,
+                  folder: here ? { id: here.id, name: here.name } : null,
+                });
+              }}
+              downloadOff={downloadOff(dl.sink, "selection", selected.size, dl.state)}
             />
           )}
         </section>
@@ -696,7 +709,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
       {open === "aiFolders" && (
         <VaultAiFoldersModal accountId={accountId} onClose={() => setOpen(null)} />
       )}
-      <VaultDownloadPanel dl={dl} />
     </div>
   );
 }

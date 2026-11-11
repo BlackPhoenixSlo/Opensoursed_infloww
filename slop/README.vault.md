@@ -37,6 +37,11 @@ oracles, bypasses).
 | `scenarios/2026-11-10-nudge-day-images.py`, `lib/nudge_day_faults.py` | Nudge online's day picker and slot images (drop / Upload through the vault import, `lib/vault_relay.py`), its check names and client fault (below). |
 | `lib/vault_download_faults.py` | Vault Pro download's check names and its fault (below). |
 | `scenarios/2026-11-08-vault-download.py` | Download selected / folder / whole vault, direct vs relay; its `Disk` (the picker stub's far side). |
+| `lib/vault_manual_collect_faults.py` | Manual Collect's check names and faults (below). |
+| `scenarios/2026-11-10-vault-manual-collect.py` | Manual Collect (POST /admin/vault-ai/collect) under picker load. |
+| `seed/vault_flags_partial.py` | A described vault the flags pass reached only part of (planted $10 / $50 / unflagged classes). |
+| `lib/vault_ai_folders_faults.py` | Build AI folders' check names and faults (below). |
+| `scenarios/2026-11-10-vault-ai-folders-partial-flags.py` | Build AI folders on a partly flagged vault. |
 
 ## Scenarios
 
@@ -75,9 +80,14 @@ oracles, bypasses).
   `-opened`), B's app link fetched with the session: 200 attachment, exact bytes) and `PHONE_LINKS` ("Save links"
   first, its own share inside the tap, txt + html, app urls). Copies `links-<phase>.txt/.html` in the run folder.
   Fault `vault-download-links-cdn-for-proxied` (client: `linkRows` drops the direct rule) turns only `LINKS` and
-  `PHONE_LINKS` red. Bypasses: the browser's CDN
+  `PHONE_LINKS` red. `SWITCH` (fresh browser on A: Download whole vault, Creator B picked in the creator column
+  mid-run; A's files all on disk with exact bytes, card done / 0 failed / titled with A, B's grid shown with its
+  Download off "A download is running"; `vault-download-switch-trigger` / `-settled`); fault
+  `vault-download-switch-aborts-run` (client: VaultProPage's per-model keyed subtree mounts a download of its own
+  around VaultManagePanel, the pre-fix layout) turns only `SWITCH` red. Bypasses: the browser's CDN
   requests answered at its network boundary (Playwright route) by img_relay's fake with S3's CORS (ACAO `*` on
-  200/206, none on 403); the native folder picker stubbed (init script; each chunk over a binding to
+  200/206, none on 403; switch stage: A's download fetches after the first 3 held until B is on screen, a
+  deterministic slow CDN; none held within 60 s is a red `SWITCH`, never a hang); the native folder picker stubbed (init script; each chunk over a binding to
   `<tmp>/downloads/<phase>/`, `.crswap` then rename, as Chromium); phone: `showDirectoryPicker` deleted and
   `navigator.canShare` / `share` stubbed by an init script that records the shared Files (no WebKit, no real sheet).
   Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).
@@ -166,3 +176,17 @@ oracles, bypasses).
   checks), `preview-no-resign` (both stale-IP checks), `gif-range-cache-off` (`ui_gif_clip_crosses_cdn_once`). Bypasses: as above plus OF's re-sign / expiry / old-proxy
   listing as mirror url rewrites (SQL) + the fake's gen, dead-link tiles fetched by id (persisted tiles), the CDN's
   egress = the proxy curl was handed (a header), one ffmpeg testsrc clip for every mp4.
+- `2026-11-10-vault-manual-collect` (volume): `flat_agency` (`vault_manual_creators` 3 / 6 / 10,
+  `vault_manual_items` 450 / 1,500 / 5,000), `OF_WIRE` + `VaultWire(mp4=True)`, CDN armed, collector off. Owner
+  presses Collect on every Creator at once and polls status; `--users` pickers (typed media, items, status).
+  Checks: `collect_newest_first` (desc page, folder list + page 0s, asc walk; clips after the walk newest first),
+  `collect_first_batch_early`, `collect_complete`, `collect_once`, `collect_status_p95` (+ p95 vs last green).
+  Faults: `manual-collect-asc-first` (default; newest_first + first_batch_early), `manual-collect-warm-at-end`
+  (first_batch_early). Bypasses: fake OF + CDN at the wire, stills dirs by env, storyboards pre-warmed on disk for
+  all but the newest 4 videos per Creator.
+- `2026-11-10-vault-ai-folders-partial-flags` (UI): `agency_inbox` + `seed/vault_flags_partial` (`vault_ai_items`
+  60 / 400 / 2,000), thumbs written into the still store. Checks: `ai_folders_plan_partial_flags`,
+  `create_enabled_partial_flags`, `ai_folders_desk_only_phone` (Build AI folders is a desk-only tool),
+  `ai_folders_created_from_ui`, `ai_folders_paid_flagged_only` (DB). Faults: `ai-folders-create-blocked-on-flags`
+  (default, client; create_enabled), `ai-folders-guess-unflagged` (server; plan + paid_only). Bypasses: vault by
+  SQL (no OF / LLM), "Also create on OnlyFans" switched off, collector off.

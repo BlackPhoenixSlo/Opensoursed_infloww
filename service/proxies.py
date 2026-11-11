@@ -755,6 +755,16 @@ def _egress_key(entries: list[dict[str, Any]]) -> Callable[[dict[str, Any]], str
     return lambda p: str(p.get("verified_ip") or ip_of.get(_endpoint(p)) or _endpoint(p))
 
 
+def egress_identity(proxy_url: str | None, reg: Registry) -> str:
+    """The exit a client's proxy URL (as `proxy_url` renders an entry) leaves from, by `_egress_key`'s rule
+    against `reg`: a verified IP, else host:port; no proxy "direct". Never a credential: of_pacing's key."""
+    if not proxy_url:
+        return "direct"
+    # host:port as proxy_url writes it (after the last "@"), not parse_proxy_line's guessing.
+    host, _, port = proxy_url.rsplit("@", 1)[-1].split("://", 1)[-1].rpartition(":")
+    return _egress_key((_known(reg) or {}).get("proxies") or [])({"host": host, "port": port})
+
+
 # What the caller (proxy_health) knows and this module does not: a proxy's last
 # seen country, and whether it answers right now (one probe). Injected, so this
 # module never imports proxy_health.

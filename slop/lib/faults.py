@@ -474,6 +474,24 @@ def _session_dead_claim_not_atomic() -> None:
     account_health.mark_session_dead = mark_session_dead
 
 
+def _retired_read_not_rerun() -> None:
+    """server._proxy as it was after 0b87e9621 (evict retires a client's signed handles),
+    before fix/retired-read-retry: a call whose client was evicted under it answers 502
+    with upstream 500 "signed session retired" (no re-run on the current client), and a
+    dead-session answer evicts whichever client the pool holds, so a read still on a
+    replaced client retires the fresh one (bug class: a shared handle closed under
+    concurrent users)."""
+    import client_pool
+    import server
+
+    class _NeverRaised(Exception):
+        pass
+
+    server.OFSessionRetired = _NeverRaised  # _proxy's except clauses read the name per raise
+    real = client_pool.evict
+    client_pool.evict = lambda account_id=None, *, only=None: real(account_id)
+
+
 # The Dashboard's Total earnings chained behind OnlyFans' live reads (bug class: a figure the
 # ledger answers in ~70 ms made to wait on per-Creator OF reads through the proxies): the
 # revenue read's answer is held until no /api/of/ fetch is in flight, after at least one began.
@@ -791,6 +809,10 @@ FAULTS: dict[str, Fault] = {
         "no other owner notified",
         "each affected owner's /events carried the notification and the pause; no other owner's did",
     )),
+    # slop/run session-health-otp --break --fault=retired-read-not-rerun
+    "retired-read-not-rerun": Fault(_retired_read_not_rerun, (
+        "every concurrent inbox read of a 2FA Creator answered 502 with OF's 400 (upstream_status)",
+    )),
     # slop/run browserbase-otp --break (the scenario's FAULT)
     "otp-code-never-consumed": Fault(_otp_code_never_consumed, (
         "API: a wrong 2FA code comes back as rejected and the job stays on the 2FA prompt",
@@ -805,6 +827,8 @@ FAULTS: dict[str, Fault] = {
         "card: a wrong code shows the rejection and the field takes another code",
         "card: the right code links the account (job done, user_accounts row)",
         "card: Done on the linked screen (account + account details) saves and closes the modal",
+        "phone: Browser login with the right 2FA code links the account (linked screen fits 390px with Done in "
+        "view, job done, user_accounts row)",
     )),
     # slop/run browserbase-otp --break --fault=challenge-counts-hidden-frames
     "challenge-counts-hidden-frames": Fault(_challenge_counts_hidden_frames, (
@@ -830,12 +854,6 @@ FAULTS: dict[str, Fault] = {
         # next dev bundles appliedSettings.ts into each chunk the run loads: app/layout, app/page,
         # settings/layout, settings/[tab]/page (one match per pattern per load of each).
         browser_files=4, ts_files=1),
-    # slop/run 2026-11-08-auto-mass-one-message --break (client side): Online now renders, but no longer updates
-    # online_only when selected. Only the scenario's audience payload/UI check should catch this.
-    "auto-mass-online-chip-noop": Fault(None, (
-        "auto mass audience chips: All fans, Following and Online now share one row; changing All fans and "
-        "Online now saves the matching user_lists and online_only fields",
-    ), browser=((r"onlineOnly: !r\.onlineOnly", "onlineOnly: r.onlineOnly"),)),
     # slop/run 2026-11-07-ai-chatter-nav --break (the scenario's FAULT, client side): app/lib/nav.ts's
     # Full AI Chatter link without `chatterHidden`, so a chatter's sidebar draws the owner-only page.
     "full-ai-chatter-shown-to-chatter": Fault(None, (
@@ -850,6 +868,12 @@ FAULTS: dict[str, Fault] = {
         "phone: opening My Automations (6 pages), then My AI Chatter (Auto-reply, "
         "Get to know fans, Full AI Chatter) leaves only My AI Chatter open",
     ), browser=((r"openGroup\s*===\s*n\.label", "openGroup !== null"),), browser_files=1),
+    # slop/run 2026-11-10-help-bot-links --break (client side): answerLinks.ts before 2026-11-10, a page
+    # named in prose ("open Manage creators", "Settings has an Audit log page") left plain or on /settings.
+    "help-links-prose-pages-unlinked": Fault(None, (
+        "/help-center: every link in the answer has the expected text and exact href (prose page names "
+        "link their page; a list sentence or one plain word does not borrow one)",
+    ), browser=((r"\.\.\.NAMED,", ""), (r"head\.children \? namedBelow\(", "false ? namedBelow(")), browser_files=1),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

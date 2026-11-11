@@ -22,7 +22,7 @@
 
 import { useMemo, type ReactNode } from "react";
 import Link from "next/link";
-import { Check, Info, MessageSquare, X } from "lucide-react";
+import { Check, MessageSquare, X } from "lucide-react";
 
 import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import UnsendMessageButton, { canOfferUnsend } from "@/components/messages/UnsendMessageButton";
@@ -37,6 +37,7 @@ import { fmtPrice } from "@/lib/messageFormat";
 import { ofPreviewText } from "@/lib/ofRichText";
 import { onPopoutClick } from "@/lib/nav";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 const DASH = "--";
 
@@ -141,8 +142,8 @@ export default function MessageDashboardTable({
           <td className={IF_TABLE.td}>{r.automation_kind ? "AI chatbot" : "Employee"}</td>
           <td className={IF_TABLE.td}>
             {r.is_unsent ? (
-              <span className="inline-flex items-center gap-1.5 text-err" title={r.unsent_reason ? `Unsent: ${r.unsent_reason}` : undefined}>
-                Unsent{r.unsent_reason && <Info className="h-3 w-3" aria-hidden />}
+              <span className="inline-flex items-center gap-1.5 text-err">
+                Unsent{r.unsent_reason && <InfoTip text={`Unsent: ${r.unsent_reason}`} iconClassName="h-3 w-3" />}
               </span>
             ) : "Sent"}
           </td>
@@ -183,9 +184,7 @@ export default function MessageDashboardTable({
                   <span className="inline-flex items-center gap-1">
                     {c.title}
                     {c.tip && (
-                      <span role="img" aria-label={c.tip} title={c.tip} className="cursor-help">
-                        <Info className="h-3.5 w-3.5" aria-hidden />
-                      </span>
+                      <InfoTip text={c.tip} />
                     )}
                   </span>
                 </th>

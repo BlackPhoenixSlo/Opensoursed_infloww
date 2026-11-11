@@ -16,7 +16,6 @@ import type { ReactNode } from "react";
 
 import { CreatorColumn } from "@/components/of-manager/CreatorColumn";
 import { IfCreatorSelect } from "@/components/ui/infloww";
-import { usePageCreator } from "@/contexts/PageCreatorContext";
 import type { AccountMeta, WatcherAccount } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -42,9 +41,6 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   children: ReactNode;
 }) {
   const { accounts, value, onChange, onAll, allLabel, noAll, watchers } = creators;
-  // The app's model while this page is open (PageCreatorContext: the help bot follows it); null with no "All" row
-  // is no pick yet.
-  usePageCreator(value ?? (onAll ? null : undefined));
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>

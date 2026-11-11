@@ -6,7 +6,7 @@
  * (docs/spec/infloww-parity-round-2/phase-04-creators-pages.md):
  *   • the page title and, beside it, "Add creator" (creators-manage#3, #4, #7,
  *     #9), which opens AddCreatorModal: Infloww's Add creator steps (Creator
- *     details, platform, proxy, sign-in, linked, account details), its
+ *     details, platform, sign-in, linked with account details and an optional proxy), its
  *     sign-in step our Inflowwww extras, PasteCurlCard (the extension path)
  *     and FanslyPasteSessionCard. Desk-only sign-in.
  *   • the extension probe, once on mount (useExtensionProbe); the modal reads
@@ -17,7 +17,7 @@
  *                      the client. A row's recovery actions open the same modal
  *                      at the section that performs them, titled "Link creator
  *                      account"; a Creator with no account and "Link another
- *                      account" open it at its platform step (`onAdd`). Edit and
+ *                      account" open it at its sign-in (`onAdd`). Edit and
  *                      Delete are the table's own modals. The extras below sit between its table and
  *                      its footer.
  *   • MirrorFreshnessBanner — founder only: OF Manager's mirror is behind OF's
@@ -49,7 +49,8 @@ export default function SetupPage() {
   const { user: me } = useUser();
   // Once, on mount, so the Route walk still sees the probe on /creators; the modal reads this answer.
   const extInstalled = useExtensionProbe();
-  // null: closed; `at` set: opened from a row, at that section; `draft` / `linkAnother`: at the platform step.
+  // null: closed; `at` set: opened from a row (or the 2FA link), at that section; `draft` / `linkAnother`: at the
+  // sign-in; {} (the header): Creator details first.
   const [adding, setAdding] = useState<Pick<ComponentProps<typeof AddCreatorModal>, "at" | "draft" | "linkAnother"> | null>(null);
   const openAt = useCallback((at: SectionKey) => setAdding({ at }), []);
   return (
@@ -67,6 +68,8 @@ export default function SetupPage() {
       </Suspense>
       {adding && (
         <AddCreatorModal
+          // A new entry point (the 2FA link while the modal is open) is a fresh modal, not the old one's state.
+          key={adding.at ?? adding.draft?.id ?? (adding.linkAnother ? "another" : "add")}
           extInstalled={extInstalled}
           onClose={() => setAdding(null)}
           at={adding.at}

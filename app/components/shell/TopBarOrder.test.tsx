@@ -50,7 +50,7 @@ describe("TopBar order", () => {
     expect(tz).toHaveTextContent("UTC+00:00");
     expect(tz).toHaveClass("bg-nav-surface", "rounded-lg", "h-9");
     expect(tz.querySelectorAll("svg")).toHaveLength(2);
-    expect(screen.getByTitle("The regular time zone you selected in Settings")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "The regular time zone you selected in Settings" })).toBeInTheDocument();
     const sfw = screen.getByRole("button", { name: "SFW" });
     expect(sfw).toHaveClass("flex-col");
     expect(sfw).toHaveTextContent("SFW");

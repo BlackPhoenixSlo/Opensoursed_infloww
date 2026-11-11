@@ -29,6 +29,8 @@ export interface DlItem {
   /** The full-quality CDN url the listing carried; null for a DRM-only video (only the relay can say why). */
   url: string | null;
   folder: string;
+  /** More folders the item is in (no forced folder): the folder sink writes a copy into each. */
+  copies?: string[];
   name: string;
   status: DlStatus;
   source: DlSource | null;
@@ -39,8 +41,11 @@ export interface DlItem {
 export interface DlState {
   phase: DlPhase;
   mode: DlMode | null;
-  /** What is being downloaded, for the panel's title ("3 selected", "Folder Beach", "Whole vault"). */
+  /** What is being downloaded ("3 selected", "folder Beach", "whole vault"); the title adds the creator. */
   label: string;
+  /** The run's model (its id / its folder name): retry, re-sign and the links file use these, never the model on
+   *  screen, which may have changed since the run started. */
+  accountId: string;
   creator: string;
   items: DlItem[];
   /** The account has no proxy, so its urls are signed for this machine's IP and the browser may fetch them. */
@@ -57,7 +62,7 @@ export interface DlState {
 }
 
 export type Action =
-  | { type: "start"; mode: DlMode; label: string; creator: string; directAllowed: boolean; sink?: DlSink }
+  | { type: "start"; mode: DlMode; label: string; accountId: string; creator: string; directAllowed: boolean; sink?: DlSink }
   | { type: "listed"; items: DlItem[] }
   | { type: "listFailed"; error: string }
   | { type: "itemStart"; id: number }
@@ -85,11 +90,12 @@ export const SHARE_HELD_BYTES = 2 * SHARE_BATCH_BYTES;
 
 export const DOWNLOAD_OFF = "Download needs Chrome or Edge (it saves into a folder you pick)";
 export const BUSY_OFF = "A download is running";
+export const UNSAVED_OFF = "Save the downloaded files first";
 export const SHARE_MODE_OFF = "Phone: only a selection downloads here; folders and the whole vault need desktop Chrome or Edge";
 export const SHARE_COUNT_OFF = `Phone: up to ${SHARE_MAX_ITEMS} at a time`;
 
 export const initialDownloadState: DlState = {
-  phase: "idle", mode: null, label: "", creator: "", items: [], directAllowed: false, directStrikes: 0, error: null,
+  phase: "idle", mode: null, label: "", accountId: "", creator: "", items: [], directAllowed: false, directStrikes: 0, error: null,
   sink: "folder", batches: [], linksSaved: false,
 };
 
@@ -127,9 +133,9 @@ function patch(s: DlState, id: number, f: (i: DlItem) => DlItem): DlState {
 export function vaultDownloadReducer(s: DlState, a: Action): DlState {
   switch (a.type) {
     case "start":
-      if (s.phase === "listing" || s.phase === "running") return s;   // one run at a time
-      return { ...initialDownloadState, phase: "listing", mode: a.mode, label: a.label, creator: a.creator,
-               directAllowed: a.directAllowed, sink: a.sink ?? "folder" };
+      if (isBusy(s)) return s;   // one run at a time
+      return { ...initialDownloadState, phase: "listing", mode: a.mode, label: a.label, accountId: a.accountId,
+               creator: a.creator, directAllowed: a.directAllowed, sink: a.sink ?? "folder" };
     case "listed": {
       if (s.phase !== "listing") return s;
       const seen = new Set<number>();
@@ -174,10 +180,12 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
   }
 }
 
-/** Why a download of `mode` (`count` files for a selection) can't start now; "" when it can. */
-export function downloadOff(sink: DlSink | null, mode: DlMode, count: number, busy: boolean): string {
+/** Why a download of `mode` (`count` files for a selection) can't start now, given the run `s`; "" when it can. A
+ *  finished run with files not handed to the share sheet yet (phone) also holds the next one: a new run drops them. */
+export function downloadOff(sink: DlSink | null, mode: DlMode, count: number, s: Pick<DlState, "phase" | "batches">): string {
   if (!sink) return DOWNLOAD_OFF;
-  if (busy) return BUSY_OFF;
+  if (isBusy(s)) return BUSY_OFF;
+  if (unsaved(s) > 0) return UNSAVED_OFF;
   if (sink === "share" && mode !== "selection") return SHARE_MODE_OFF;
   if (sink === "share" && count > SHARE_MAX_ITEMS) return SHARE_COUNT_OFF;
   return "";
@@ -210,14 +218,16 @@ export function unsaved(s: Pick<DlState, "batches">): number {
   return s.batches.reduce((n, b) => n + (b.saved ? 0 : b.ids.length), 0);
 }
 
-/** The panel's title. Share sink: "Ready" while fetched files wait for their Save tap, "Saved" once all are. */
+/** The panel's title, "<creator>: <label>" (the run's model: another may be on screen). Share sink: "Ready" while
+ *  fetched files wait for their Save tap, "Saved" once all are. */
 export function panelTitle(s: DlState): string {
-  if (s.phase === "listing") return `Listing ${s.label}…`;
-  if (s.phase === "running") return `Downloading ${s.label}`;
-  if (s.phase === "cancelled") return `Cancelled: ${s.label}`;
   if (!s.label) return "Download";
-  if (s.sink !== "share") return `Downloaded ${s.label}`;
-  return unsaved(s) > 0 ? `Ready to save: ${s.label}` : `Saved ${s.label}`;
+  const what = s.creator ? `${s.creator}: ${s.label}` : s.label;
+  if (s.phase === "listing") return `Listing ${what}…`;
+  if (s.phase === "running") return `Downloading ${what}`;
+  if (s.phase === "cancelled") return `Cancelled: ${what}`;
+  if (s.sink !== "share") return `Downloaded ${what}`;
+  return unsaved(s) > 0 ? `Ready to save: ${what}` : `Saved ${what}`;
 }
 
 /** The count line: "3 of 4 saved" (folder), share: "5 of 5 ready" until tapped, then "… · 2 saved". */
@@ -237,7 +247,7 @@ export function canRetry(s: DlState): boolean {
   return (s.phase === "done" || s.phase === "cancelled") && s.items.some((i) => i.status === "failed");
 }
 
-export function isBusy(s: DlState): boolean {
+export function isBusy(s: Pick<DlState, "phase">): boolean {
   return s.phase === "listing" || s.phase === "running";
 }
 
@@ -300,19 +310,25 @@ export function safeName(s: string): string {
 
 type ListState = { id?: number | string; type?: string; name?: string; hasMedia?: boolean };
 
-/** The item's folder in the path: `folder` when a folder is being downloaded, else its first custom OF folder
- *  (`listStates`, the rule the mirror's `of_folder_ids` uses), else UNFILED. */
+/** The item's custom OF folders (`listStates`, the rule the mirror's `of_folder_ids` uses), as path segments. */
+function customFolders(m: VaultMedia): string[] {
+  const ls = (m as VaultMedia & { listStates?: ListState[] }).listStates ?? [];
+  const names = ls.filter((l) => l.type === "custom" && l.hasMedia !== false && l.name).map((l) => safeName(l.name!));
+  return [...new Set(names)];
+}
+
+/** The item's folder in the path: `folder` when one is being downloaded (or the selection was made in it), else its
+ *  first custom OF folder, else UNFILED. */
 export function folderOf(m: VaultMedia, folder: string | null): string {
   if (folder) return safeName(folder);
-  const ls = (m as VaultMedia & { listStates?: ListState[] }).listStates ?? [];
-  const first = ls.find((l) => l.type === "custom" && l.hasMedia !== false && l.name);
-  return safeName(first?.name ?? UNFILED);
+  return customFolders(m)[0] ?? UNFILED;
 }
 
 export function toItems(media: VaultMedia[], folder: string | null): DlItem[] {
   return media.map((m) => {
     const url = fullUrl(m);
-    return { id: m.id, kind: m.type, url, folder: folderOf(m, folder), name: fileName(m.id, url, m.type),
-             status: "queued", source: null, bytes: 0, error: null };
+    const copies = folder ? [] : customFolders(m).slice(1);
+    return { id: m.id, kind: m.type, url, folder: folderOf(m, folder), ...(copies.length ? { copies } : {}),
+             name: fileName(m.id, url, m.type), status: "queued", source: null, bytes: 0, error: null };
   });
 }

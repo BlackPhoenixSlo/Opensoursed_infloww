@@ -14,9 +14,9 @@
  * stored as `automation_rules` rows (reusing that table — no new schema). Each
  * saved rule shows what's queued next (`next_due_at` / `has_pending_job`) and a
  * compact strip of previous runs (from the executor's run log). "New / Edit"
- * builds the payload with the existing PremadeForm in COMPOSE mode and persists
- * it via the automation-rules create/update hooks; "Run now" enqueues an
- * immediate job off the saved rule.
+ * opens ReadyMadeRuleEditor (the rule and its one post / message in one popup)
+ * and persists it via the automation-rules create/update hooks; "Run now"
+ * enqueues an immediate job off the saved rule.
  *
  * The panel is the page (`only`, My Automations > Auto Post / Auto Mass):
  * Infloww's legacy list page (page-parity ticket 16, copied from Smart Messages
@@ -42,7 +42,7 @@ import { useAutomationRuns } from "@/hooks/useStats";
 import { RuleTable } from "@/components/automations/RuleTable";
 import { ReadyMadeRuleEditor } from "@/components/automations/ReadyMadeRuleEditor";
 import { KIND_COPY } from "@/components/automations/readyMadeContent";
-import type { Kind } from "@/components/compose/premadeRows";
+import type { Kind } from "@/components/compose/payloadRules";
 
 /** The panel pinned to one rule kind: how My Automations > Auto Post
  *  (/growth/auto-post) shows the Auto Posts list, and > Auto Mass
@@ -59,8 +59,9 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
   const deleteM = useDeleteRule(accountId);
   const runM = useRunRuleNow(accountId);
 
-  const [editing, setEditing] = useState<AutomationRule | null>(null);
-  const [adding, setAdding] = useState(false);
+  // The open popup: a saved rule, a new one, or none.
+  const [editor, setEditor] = useState<AutomationRule | "new" | null>(null);
+  const editing = editor === "new" ? null : editor;
   const [deleting, setDeleting] = useState<AutomationRule | null>(null);
   const [rowErr, setRowErr] = useState<{ id: number; msg: string } | null>(null);
 
@@ -69,10 +70,7 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
     [rulesQ.data, only],
   );
 
-  function closeEditor() {
-    setEditing(null);
-    setAdding(false);
-  }
+  const closeEditor = () => setEditor(null);
 
   // Switching creators closes a half-open editor (its account would mismatch).
   useEffect(() => {
@@ -109,7 +107,7 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
   }
 
   const runs = runsQ.data?.runs ?? [];
-  const startNew = () => { setEditing(null); setAdding(true); };
+  const startNew = () => setEditor("new");
   const copy = KIND_COPY[only];
 
   return (
@@ -127,6 +125,7 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
     >
       {accountId ? (
         <RuleTable
+          kind={only}
           rules={rules}
           runs={runs}
           loading={rulesQ.isLoading}
@@ -136,11 +135,11 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
           rowErr={rowErr}
           onToggle={toggle}
           onRun={runNow}
-          onEdit={(r) => { setAdding(false); setEditing(r); }}
+          onEdit={setEditor}
           onDelete={setDeleting}
         />
       ) : <NoCreator loading={creator.loading} />}
-      {(adding || editing) && accountId && (
+      {editor && accountId && (
         <ReadyMadeRuleEditor
           key={editing?.id ?? "new"}
           kind={only}

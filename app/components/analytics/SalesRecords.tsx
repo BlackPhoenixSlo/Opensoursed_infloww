@@ -73,7 +73,7 @@
 
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Info, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
 import DateRangePicker, { type RangePreset } from "@/components/stats/DateRangePicker";
@@ -90,6 +90,7 @@ import { fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { TableSkeleton } from "@/components/ui/Skeleton";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 const ROUTE = "/admin/stats/sales-records";
 
@@ -335,9 +336,7 @@ export default function SalesRecords() {
                   {c === "Earnings" ? (
                     <span className="inline-flex items-center gap-1">
                       Earnings
-                      <span role="img" aria-label={EARNINGS_TIP} title={EARNINGS_TIP} className="cursor-help">
-                        <Info className="h-3.5 w-3.5" aria-hidden />
-                      </span>
+                      <InfoTip text={EARNINGS_TIP} />
                     </span>
                   ) : c}
                 </th>

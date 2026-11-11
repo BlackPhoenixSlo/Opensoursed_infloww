@@ -47,7 +47,7 @@
 import Link from "next/link";
 import { useId, useMemo, useState } from "react";
 import { keepPreviousData, useIsFetching, useQueries, useQueryClient } from "@tanstack/react-query";
-import { Info as InfoCircle, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { type Gran, granShown } from "@/components/stats/chart";
@@ -77,6 +77,7 @@ import {
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
   chargebacksCents, isTab, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalOf, viewOf, wholeHistory,
 } from "./reportsMath";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 // The kind bucketing's home moved to reportsMath.ts; CompetitorReports.bucket.test.ts still reads it here.
 export { bucketOf } from "./reportsMath";
@@ -454,9 +455,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           <span className="mx-2 flex items-center text-sm" style={{ color: "var(--color-fg-dim)" }}>
             {/* The zone's offset, as the bundle prints a `reportTimezoneId`; its name on hover. */}
             <span className="mr-2" title={zone} suppressHydrationWarning>{utcOffsetLabel(zone)}</span>
-            <span title="Set by your organization" className="inline-flex">
-              <InfoCircle size={16} aria-hidden />
-            </span>
+            <InfoTip text="Set by your organization" iconClassName="h-4 w-4" />
           </span>
         </div>
         <div className="flex items-center gap-2">

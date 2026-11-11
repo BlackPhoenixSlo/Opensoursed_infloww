@@ -235,7 +235,9 @@ re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on bud
 The machine gate owns admission: the nightly parent never holds it (`slop/run` starts it as `venv/bin/python
 -m slop.lib.nightly`, untouched by the venv hook; an inherited `SLOP_GATE*` is dropped with `slop: nightly:
 ignoring inherited SLOP_GATED`); each child `slop/run` takes its own gate slot (queues when none is free), env without `SLOP_GATE*`, with
-`SLOP_LOCK_WAIT_S=7200`; a child's gate exit 75 = INFRA with the gate's `INFRA: <reason>`. plan.txt
+`SLOP_LOCK_WAIT_S=7200` and `SLOP_NIGHTLY=1`: the gate's reserved nightly slot (index SLOP_MAX_RUNS, so 7 with the default 6; only nightly
+children take it; a nightly small run passes beside another session's exclusive run and vice versa, a nightly volume run stays exclusive;
+owner 2026-11-11 after that night lost 5h27m to the gate); a child's gate exit 75 = INFRA with the gate's `INFRA: <reason>`. plan.txt
 records `python3 ~/.slop/gate.py status` at the start, summary.md the children's total gate wait and one `run phases
 (T of N attempts timed):` line: the four Run phases summed over every timed attempt (a FAIL's re-run included),
 seeding's share of their measured run seconds (the seed-cache trigger is 15 %), then the untimed attempts (no run
@@ -794,7 +796,7 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   `reports-ignore-of-earnings` (the ledger-only reports) and `chargebacks-lose-sign` (browser:
   the tiles drop the minus) turn only their checks red.
 - `2026-10-25-browserbase-otp-login`: Add creator > Browserbase login when OnlyFans asks
-  for a 2FA code. One owner, four logins against `lib/browserbase.py`, every OnlyFans page
+  for a 2FA code. One owner, five logins against `lib/browserbase.py`, every OnlyFans page
   carrying a hidden reCAPTCHA frame and the 2FA page a decoy first form. API: the job stops
   in state `otp` with a live view, a wrong code via `POST /admin/login/remote/{id}/otp` is
   "being checked" (a second code meanwhile is 409), then comes back as rejected as soon as
@@ -807,7 +809,10 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   never reaches OnlyFans. With UI, the card (screenshots `card-otp-prompt`,
   `card-otp-pasted`, `card-otp-rejected`, `card-otp-linked`): "1234-5678" pasted from the
   clipboard is the 8-digit code (wrong: rejected on the card), then the right code links
-  the account (job status, `user_accounts` row). Also: no status ever says `challenge`
+  the account (job status, `user_accounts` row). A phone pass (390x844 touch, one more
+  login, `phone-*` screenshots) walks Add creator again: every step up to the 2FA prompt fits 390px (no
+  element past either edge) with its primary button in view; Fansly shows its desktop-only line and
+  no Done; the right code links the account, its linked screen fitting with Done in view. Also: no status ever says `challenge`
   (and the hidden frame did load); OnlyFans' 2FA field got exactly the submitted codes in
   order, each sent with the 2FA form's own VERIFY button (or by the field itself), the
   decoy never; every Browserbase session released; no code (wrong or right, any login) or
@@ -819,7 +824,7 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   and verifies its rules with the real `of_signer`) and whose page-side signing module is a
   stand-in the login extension's interceptor captures; `CHUNK_URL_TPL` redirected to it;
   the LATE job's window is compressed. Fault `otp-code-never-consumed` (the job never reads
-  the code) turns only the code checks (API, AUTO and card) red;
+  the code) turns only the code checks (API, AUTO, card and phone) red;
   `--fault=challenge-counts-hidden-frames` (the pre-fix challenge check: any captcha frame
   counts, on screen or not) turns only the "no status says challenge" check red.
 - `2026-10-25-session-health-otp`: OnlyFans asks a connected login for a 2FA code (HTTP 400,
@@ -868,7 +873,9 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   turns red the health, notification, `/events`, reader, WS pump, pause and `/admin/accounts`
   checks and the three UI checks. Fault `session-dead-claim-not-atomic` (the read-then-write
   flip, under which a Creator's simultaneous callers each notify) turns red the
-  notification and `/events` checks.
+  notification and `/events` checks. Fault `retired-read-not-rerun` (`_proxy` blind to a client
+  evicted under a call: no GET re-run on the current one, and every 101 evicts whichever client
+  is pooled) turns red the concurrent-reads check (502 with upstream 500 "signed session retired").
   Phase D (the pump supervisor, `service/pump_reconcile.py`): OnlyFans asks one healthy
   Creator for a code and ends its socket; once it is flagged and its pump exited, OnlyFans lets
   it back in with no re-capture, one tick's recovery probe clears the flag, and the supervisor
@@ -1274,7 +1281,7 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   `tx-backfill-lifetime-on-reread`, `tx-backfill-flips-uncapped`, `tx-backfill-uncapped`,
   `tx-backfill-poll-only-complete`, `tx-backfill-poll-every-tick`, `tx-backfill-gap-unread`,
   `tx-backfill-blank-first-page`, `tx-backfill-failure-counted`, `tx-backfill-short-gap-unwalked`, `tx-backfill-crowded`, `tx-backfill-dispute-repolled`,
-  `tx-full-watermark-forgotten`, `tx-failed-full-not-stamped`, `tx-proxy-pacing-bypassed` (`lib/sweep_pacing_faults.py`).
+  `tx-full-watermark-forgotten`, `tx-failed-full-not-stamped`, `tx-full-failure-hidden`, `tx-proxy-pacing-bypassed` (`lib/sweep_pacing_faults.py`).
   Details: the scenario's docstring.
 - `2026-11-07-chat-sweep-cadence` (`OF_WIRE`): full chat sweeps (`scrape_chats` `{}`) on
   `service/sweep_cadence.py`'s cadence, not one per relay start. Seeded backlog of duplicate sweeps, 4 relay
@@ -1307,15 +1314,19 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   stamps, nothing cut off), `no-boot-recovery` (`lib/audience_crawl_faults.py`). Details: the scenario's docstring.
 - `2026-11-08-auto-mass-one-message` (UI, 390x844 phone): Auto Mass = one message per rule, one popup. New auto mass:
   the message's fields inline (no Compose / Use in rule / second dialog; no list / resend / delay; skip-chatted-with
-  chips 1h on; More settings closed) → Create: POST body, GET route and row hold the one message; the list row reads
-  it. An older 2-message rule (real POST) opens with the Raw JSON notice. Fault
-  `auto-mass-skip-chatted-off` (`lib/auto_mass_faults.py`, client: the 1h default reverted).
+  chips 1h on; More settings closed) → audience chips + lists → Create: POST body, GET route and row hold the one
+  message and its audience; the list row reads it. A seeded audience rule the form holds saves untouched byte for
+  byte (AM_ROUNDTRIP); a one-message rule with keys the form can't hold (`excluded_users`, `filters`) opens with the
+  Raw JSON notice and saves untouched byte for byte (AM_EDIT_KEEPS); an older 2-message rule opens with the notice.
+  FAULT `auto-mass-form-takes-unknown-keys` (`formHoldReason` back to "more than one item": AM_EDIT_KEEPS alone);
+  `--fault=auto-mass-online-chip-noop` (AM_AUDIENCE alone), `--fault=auto-mass-skip-chatted-off` (the 1h default
+  reverted); all in `lib/auto_mass_faults.py`, client side.
 - `2026-11-09-auto-post-one-post` (UI, 390x844 phone): Auto Post = one post per rule, one popup. New auto post: the
   post's fields inline (no Compose / Use in rule / second dialog; no list / delay / repost cycle / More settings;
-  preview pool once priced) → caption, $12, auto-delete 6h → Create: POST body, GET route and row hold the one post,
-  no resend / delay key; the list row reads '$12 · caption · deletes after 6h'. An older 2-post + repost rule
-  (real POST) opens with the Raw JSON notice. Fault `auto-post-legacy-composer` (`lib/auto_post_faults.py`, client:
-  `isLegacy` always false; AP_LEGACY alone).
+  preview pool once priced; $12 with no image: Create waits, PPV help) → caption, auto-delete 6h, free → Create: POST
+  body, GET route and row hold the one post, no resend / delay key; the list row reads 'Free · caption · deletes
+  after 6h'. An older 2-post + repost rule (real POST) opens with the Raw JSON notice. Fault
+  `auto-post-legacy-composer` (`lib/auto_post_faults.py`, client: `formHoldReason` always null; AP_LEGACY alone).
 - `2026-11-10-ws-pump-evict` (`OF_WIRE`): a proxy edit (`POST /admin/proxies`) evicts every pooled client, OF
   drops every socket: each Creator's real WS pump reconnects on a fresh client (`client_source`) within
   RECONNECT_S, no `signed session retired` in relay.log, a fan DM pushed on the new socket (`push_ws`) lands as

@@ -6,7 +6,7 @@ vi.mock("@/lib/shareToken", () => ({ resolveShareToken: () => "tok" }));
 
 import { relay, type VaultMedia } from "@/lib/relay";
 
-import { folderSink, listAll, LIVE_PAGE_GAP_MS, runQueue, shareFiles, shareSink } from "./vaultDownload";
+import { folderSink, listAll, LIVE_PAGE_GAP_MS, runQueue, shareFiles, shareSink, startDownload } from "./vaultDownload";
 import {
   SHARE_BATCH_BYTES, initialDownloadState, readyBatch, toItems, vaultDownloadReducer, type Action, type DlSink,
   type DlState,
@@ -20,6 +20,7 @@ function dir(files: Files, path: string): FileSystemDirectoryHandle {
   return {
     getDirectoryHandle: async (n: string) => dir(files, `${path}${n}/`),
     getFileHandle: async (n: string) => ({
+      getFile: async () => new File([new Uint8Array(files[`${path}${n}`] ?? 0)], n),
       createWritable: async () => {
         let n2 = 0;
         return new WritableStream<Uint8Array>({
@@ -42,7 +43,7 @@ async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: strin
   let s: DlState = initialDownloadState;
   const seen: Action[] = [];
   const send = (a: Action) => { seen.push(a); s = vaultDownloadReducer(s, a); };
-  send({ type: "start", mode: "selection", label: "x", creator: "amy", directAllowed, sink });
+  send({ type: "start", mode: "selection", label: "x", accountId: "acc", creator: "amy", directAllowed, sink });
   send({ type: "listed", items: toItems(ms, null) });
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (u: string, init?: RequestInit) => {
@@ -53,9 +54,9 @@ async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: strin
   const files: Files = {};
   const kept = new Map<number, File>();
   const ac = abort ?? new AbortController();
-  await runQueue({ accountId: "acc", send, get: () => s, signal: ac.signal,
+  await runQueue({ send, get: () => s, signal: ac.signal,
                    sink: sink === "share" ? shareSink((id, f) => kept.set(id, f))
-                     : folderSink(dir(files, ""), () => s.creator) });
+                     : folderSink(dir(files, ""), "amy") });
   return { s, files, calls, seen, kept };
 }
 
@@ -145,7 +146,7 @@ describe("integrity", () => {
     fail = false;
     let s = vaultDownloadReducer(r.s, { type: "retryFailed" });
     const files: Files = {};
-    await runQueue({ accountId: "acc", sink: folderSink(dir(files, ""), () => s.creator),
+    await runQueue({ sink: folderSink(dir(files, ""), "amy"),
                      send: (a) => { s = vaultDownloadReducer(s, a); }, get: () => s, signal: new AbortController().signal });
     expect(s.items.map((i) => i.status)).toEqual(["done", "done"]);
     expect(Object.keys(files)).toEqual(["amy/Unfiled/2.jpg"]);
@@ -155,15 +156,40 @@ describe("integrity", () => {
     const ac = new AbortController();
     let n = 0;
     const ms = Array.from({ length: 20 }, (_, i) => media(i + 1));
-    const { s, calls, files } = await go(ms, false, async () => {
+    const { s, calls, files, seen } = await go(ms, false, async () => {
       n += 1;
       if (n === 4) ac.abort();
       return body(1);
     }, ac);
     expect(calls.length).toBe(4);
-    expect(s.items.find((i) => i.id === 4)).toMatchObject({ status: "failed", error: "cancelled" });
+    // after the abort the runner sends nothing (it may be another run's state by then): the `cancel` action that
+    // goes with the abort fails what is open
+    expect(seen.filter((a) => "id" in a && a.id === 4).map((a) => a.type)).toEqual(["itemStart"]);
+    expect(vaultDownloadReducer(s, { type: "cancel" }).items.find((i) => i.id === 4))
+      .toMatchObject({ status: "failed", error: "cancelled" });
     expect(s.items.filter((i) => i.status === "queued").length).toBeGreaterThanOrEqual(14);
     expect(Object.keys(files).length).toBeLessThanOrEqual(3);
+  });
+});
+
+describe("startDownload", () => {
+  it("a start the reducer refuses (another run holds the state) runs nothing and keeps that run's sink", async () => {
+    get.mockResolvedValue({ direct: true });
+    let s = vaultDownloadReducer(initialDownloadState,
+      { type: "start", mode: "vault", label: "whole vault", accountId: "acc-a", creator: "amy", directAllowed: true });
+    s = vaultDownloadReducer(s, { type: "listed", items: toItems([media(1), media(2)], null) });
+    const held = s;
+    const fetchSpy = vi.fn(async () => body(1));
+    vi.stubGlobal("fetch", fetchSpy);
+    const setSink = vi.fn();
+    const ok = await startDownload(
+      { accountId: "acc-b", mode: "selection", label: "1 selected", creator: "bea", media: [media(9)], source: "mirror" },
+      { send: (a) => { s = vaultDownloadReducer(s, a); }, get: () => s, signal: new AbortController().signal },
+      setSink, () => {});
+    expect(ok).toBe(false);
+    expect(s).toBe(held);                 // A's run untouched, still A's
+    expect(fetchSpy).not.toHaveBeenCalled();   // no second queue over A's items
+    expect(setSink).not.toHaveBeenCalled();
   });
 });
 
@@ -198,6 +224,16 @@ describe("share sink (phones)", () => {
     `https://cdn2.onlyfans.com/files/a/${id}.${ext}?Signature=old`);
   const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  it("keeps nothing when the run is aborted by the time the body is read", async () => {
+    const kept: number[] = [];
+    const ac = new AbortController();
+    ac.abort();
+    const it1 = { id: 7, kind: "photo", url: null, folder: "f", name: "7.jpg", status: "active" as const,
+                  source: null, bytes: 0, error: null };
+    await expect(shareSink((id) => kept.push(id))(it1, body(5).body!, ac.signal)).rejects.toThrow();
+    expect(kept).toEqual([]);
+  });
+
   it("same source chain, each file kept as <id>.<ext> with its MIME, one batch at the end", async () => {
     const { s, kept, files } = await go([typed(1, "jpg"), typed(2, "png"), typed(3, "mp4"), typed(4, "gif")], true,
       async () => body(5), undefined, "share");
@@ -224,11 +260,11 @@ describe("share sink (phones)", () => {
     const send = (a: Action) => {
       s = vaultDownloadReducer(s, a.type === "itemDone" ? { ...a, bytes: SHARE_BATCH_BYTES } : a);
     };
-    send({ type: "start", mode: "selection", label: "x", creator: "amy", directAllowed: false, sink: "share" });
+    send({ type: "start", mode: "selection", label: "x", accountId: "acc", creator: "amy", directAllowed: false, sink: "share" });
     send({ type: "listed", items: toItems([1, 2, 3, 4, 5, 6].map((i) => media(i)), null) });
     const fetched: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (u: string) => { fetched.push(u); return body(4); }));
-    const run = runQueue({ accountId: "acc", send, get: () => s, signal: new AbortController().signal,
+    const run = runQueue({ send, get: () => s, signal: new AbortController().signal,
                            sink: shareSink(() => {}) });
     await tick(50);
     const held = fetched.length;
@@ -255,3 +291,13 @@ describe("share sink (phones)", () => {
     await expect(shareFiles(f)).rejects.toThrow();
   });
 });
+
+describe("folder sink copies", () => {
+  it("whole vault: an item in 2 custom folders is written once per folder, fetched once", async () => {
+    const m = { ...media(1), listStates: [{ type: "custom", name: "A" }, { type: "custom", name: "B" }] } as unknown as VaultMedia;
+    const { files, calls } = await go([m], true, async () => body(10));
+    expect(calls).toHaveLength(1);
+    expect(files).toEqual({ "amy/A/1.jpg": 10, "amy/B/1.jpg": 10 });
+  });
+});
+

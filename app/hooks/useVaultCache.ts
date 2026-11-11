@@ -13,7 +13,7 @@
  * consume it unchanged — search is a local LIKE-scan, no OF round-trip.
  */
 
-import { infiniteQueryOptions, useInfiniteQuery, useQuery, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { folderSortAfter, loadFolderSort, saveFolderSort, type FolderSortState } from "@/components/vault/vaultFolderSort";
 import { useSweepStatus } from "@/hooks/useVaultSweep";
@@ -612,6 +612,27 @@ export async function searchOf(
   query: string,
 ): Promise<{ ids: number[]; count: number; source: string }> {
   return relay.post(`/admin/vault-ai/search-of`, { account_id: accountId, query }, { accountId });
+}
+
+/** OF's own vault search for `query`, harvested into the mirror (`searchOf`), then the mirror grid refetched with
+ *  it. True while either is in flight: the grid shows "Searching OnlyFans…", never "No data", until OF answered.
+ *  `enabled`: the grid reads the mirror (the harvest only tags media it holds). Per account+query; 10 min in memory, never persisted (not on the allowlist), the relay TTL-caches OF's side. */
+export function useOfSearch(accountId: string | null, query: string, enabled: boolean): boolean {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["vault-search-of", accountId, query] as const,
+    queryFn: async () => {
+      const r = await searchOf(accountId as string, query);
+      await qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
+      return r;
+    },
+    enabled: enabled && !!accountId && !!query,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  return q.isFetching;
 }
 
 export async function reorderItems(

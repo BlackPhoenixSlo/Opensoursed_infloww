@@ -139,8 +139,10 @@ def headline(stamp: str, verdicts: list[str], infra: bool = False) -> str:
 
 
 def child_env(env: dict) -> dict:
-    """A child's env: outside any gate (its slop/run queues for the machine itself), long lock wait."""
-    return {**{k: v for k, v in env.items() if k not in GATE_ENV}, "SLOP_LOCK_WAIT_S": CHILD_LOCK_WAIT_S}
+    """A child's env: outside any gate (its slop/run queues for the machine itself), long lock wait,
+    SLOP_NIGHTLY=1: ~/.slop/gate.py gives it the reserved nightly slot (owner 11-11: the nightly gets through)."""
+    return {**{k: v for k, v in env.items() if k not in GATE_ENV}, "SLOP_LOCK_WAIT_S": CHILD_LOCK_WAIT_S,
+            "SLOP_NIGHTLY": "1"}
 
 
 def scrub_gate_env(env) -> bool:

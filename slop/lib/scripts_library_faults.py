@@ -17,6 +17,8 @@ UI_SIDEBAR = ("scripts page: the Sequence tab's sidebar accounts for every seque
               "order, each count == its stored scripts, and its search finds the last one")
 UI_STEPS = ("scripts page: a deep sequence opened from the sidebar shows its steps as numbered cards in dump order "
             "(labels N / N.M), notes shown, header Created by / Created on as the dump")
+UI_EXPAND = ("scripts page: a sequence card's expand arrow shows only when its two-line clamp cuts the text (no "
+             "dead arrow on a short step), and clicking it lifts the clamp and turns it \"Collapse script\"")
 UI_SEND = ("chat: picking a sequence's step 1 from the template picker and sending it offers step 2 next, and the "
            "row's sent_count is 1 (DB via API)")
 SHARE_ALL = ("scripts share-to-all: POST /copy all_creators resolves the owner's full Creator roster server-side and "
@@ -60,4 +62,7 @@ def register(Fault) -> dict:
         "scripts-bulk-drops-last-step": Fault(_drop_last_step, (IMPORT_COUNTS, READ_BACK, UI_STEPS, UI_TAGS)),
         # slop/run scripts-library --break --fault=scripts-share-drops-a-creator --baseline=<green folder>
         "scripts-share-drops-a-creator": Fault(_share_drops_a_creator, (SHARE_ALL, ALL_MODELS_VIEW, UI_ALL_MODELS)),
+        # slop/run scripts-library --break --fault=scripts-expand-arrow-always --baseline=<green folder>
+        # ScriptRow's arrow loses its overflow guard (ScriptsParts.tsx `{overflows && <button`): one on every card.
+        "scripts-expand-arrow-always": Fault(None, (UI_EXPAND,), browser=((r"\boverflows &&", "true &&"),)),
     }

@@ -65,6 +65,8 @@ vi.mock("@/contexts/ScopeContext", async (importOriginal) => ({
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => ({}) }));
 vi.mock("@/components/growth/MassMessagesSection", () => ({
   default: () => <div data-testid="mass-section">mass section</div>,
+  MassAutoUnsendSection: () => <div data-testid="unsend-section">unsend section</div>,
+  ScheduledSection: () => <div data-testid="scheduled-section">scheduled section</div>,
 }));
 // The mass composer's own contexts (employee, vault) are its tests'; here, only the Creator it opens on.
 vi.mock("@/components/compose/LazyMassMessageComposer", () => ({
@@ -380,16 +382,16 @@ describe("the Automated Messages catalogue matches the Layout capture on disk", 
 });
 
 describe("Automated Messages tab (ticket 41)", () => {
-  it("renders before Mass Messages and is the default; ?tab=mass and ?tab=scheduled still open Mass Messages", async () => {
+  it("renders before Mass Messages and is the default; ?tab=mass opens Mass Messages", async () => {
     for (const url of ["", "?tab=bogus", "?tab=automated"]) {
       await mount(`/growth/smart-messages${url}`);
-      expect(tabNames()).toEqual([TAB_AUTOMATED, TAB_MASS]);
+      expect(tabNames()).toEqual([TAB_AUTOMATED, TAB_MASS, "Mass Auto Unsend Messages", "Scheduled"]);
       expect(selected()).toEqual([TAB_AUTOMATED]);
       expect(panel()).toBeTruthy();
       expect(screen.queryByTestId("mass-section")).toBeNull();
       cleanup();
     }
-    for (const url of ["?tab=mass", "?tab=scheduled"]) {
+    for (const url of ["?tab=mass"]) {
       await mount(`/growth/smart-messages${url}`);
       expect(selected()).toEqual([TAB_MASS]);
       const mass = screen.getByRole("tabpanel", { name: TAB_MASS });

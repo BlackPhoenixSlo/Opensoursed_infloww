@@ -3,20 +3,32 @@ message's fields inline, no Compose dialog / "Use in rule"), the list showing ea
 compose/PremadeFields.tsx, premadeRows.ts, automations/ruleEditorForm.ts, readyMadeContent.ts, ReadyMadeRuleEditor.tsx,
 RuleTable.tsx).
 
-World: `agency_inbox`. Creator 0 gets an older Auto Mass rule through the real POST /admin/automation-rules (two
-messages, a resend on the first, a delay on the second; disabled, so nothing fires).
+World: `agency_inbox`. Creator 0 gets three disabled Auto Mass rules (nothing fires) through the real POST
+/admin/automation-rules: an older one (two messages, a resend on the first, a delay on the second), a one-message
+audience rule the form holds (lists, an exclude list, chat guards) and a one-message rule with keys the form can't hold
+(`excluded_users`, `filters`).
 Flow, on a 390x844 phone: the owner opens /growth/auto-mass, New auto mass: the popup holds the message box at once
-(screenshots `popup-top`, `popup-audience`), types a message, Create (`saved`: the new row reads its message); then
-Edit on the older rule (`legacy-notice`), Edit in Raw JSON (`legacy-raw`), Cancel.
+(screenshots `popup-top`, `audience-block`, `more-settings-collapsed`), sets the audience chips and lists
+(`online-only-selected`, `-dark`), types a message, Create (`saved`: the new row reads its message and audience); then
+Edit + Save changes on the audience rule (`more-settings-opened-from-exclude-list`), Edit + Save changes on the
+keys rule (`edit-keeps-notice`), Edit on the older rule (`legacy-notice`), Edit in Raw JSON (`legacy-raw`), Cancel.
 
 Checks (names in lib/auto_mass_faults.py):
-  AM_FORM    one popup (no Compose button, no second dialog) with one message and no list / resend / delay field; the
-             skip-chatted-with chips with 1h on; More settings closed (its fields hidden); popup and page fit the phone.
-  AM_STORED  the POST body's payload, the GET route's and the automation_rules row's: exactly the one message; the
-             rule's list row reads it.
-  AM_LEGACY  the older rule's notice, no message fields, Raw JSON holds its payload, the row unchanged after Cancel.
+  AM_FORM       one popup (no Compose button, no second dialog) with one message and no list / resend / delay field;
+                the skip-chatted-with chips with 1h on; More settings closed (its fields hidden); popup and page fit
+                the phone.
+  AM_STORED     the POST body's payload, the GET route's and the automation_rules row's: exactly the one message.
+  AM_AUDIENCE   All fans / Following / Send to online only in one row; the chips and lists saved as user_lists /
+                excluded_user_lists / online_only; the list row reads the audience.
+  AM_ROUNDTRIP  the audience rule opens in the form with More settings open; Save changes untouched keeps steps_json
+                byte for byte.
+  AM_EDIT_KEEPS the keys rule opens with the Raw JSON notice, no message fields; Save changes untouched keeps steps_json
+                byte for byte (the form would drop excluded_users / filters: other fans get the mass).
+  AM_LEGACY     the older rule's notice, no message fields, Raw JSON holds its payload, the row unchanged after Cancel.
 
-FAULT `auto-mass-skip-chatted-off` (client: blankRow's 1h default reverted to Off): AM_FORM and AM_STORED go red.
+FAULT `auto-mass-form-takes-unknown-keys` (client: `formHoldReason` back to "more than one item", the F1 blocker):
+AM_EDIT_KEEPS alone. Others (`--fault=`): `auto-mass-online-chip-noop` (the Send to online only chip no longer flips
+online_only: AM_AUDIENCE alone), `auto-mass-skip-chatted-off` (AM_FORM, AM_STORED).
 UI only (`--no-ui` skips): not a volume path, proven once on the real page.
 """
 from __future__ import annotations
@@ -25,11 +37,11 @@ import json
 from urllib.parse import urlsplit
 
 from slop.actors import ui
-from slop.lib.auto_mass_faults import AM_AUDIENCE, AM_FORM, AM_LEGACY, AM_ROUNDTRIP, AM_STORED
+from slop.lib.auto_mass_faults import AM_AUDIENCE, AM_EDIT_KEEPS, AM_FORM, AM_LEGACY, AM_ROUNDTRIP, AM_STORED
 
 PROFILE = "agency_inbox"
 UI = True
-FAULT = "auto-mass-online-chip-noop"
+FAULT = "auto-mass-form-takes-unknown-keys"
 PHONE = (390, 844)
 WAIT_MS = 120_000  # first visit of a page compiles it in next dev
 TEXT = "slop auto mass one"
@@ -38,12 +50,21 @@ LEGACY = {"messages": [{"text": "slop legacy one", "resend_count": 1, "resend_af
                        {"text": "slop legacy two", "delay_minutes": 60}]}
 WANT = [{"text": TEXT, "user_lists": ["following", "77"], "excluded_user_lists": ["88"],
          "exclude_last_chat_hours": 1}]
+# The list row's read-out of WANT (readyMadeContent `summarize`).
+SUMMARY = f"Free · {TEXT} · Following + 1 list · excl. 1 list · skips chatted 1h"
 GONE = ("Resend this many times", "Wait between resends", "Delay before posting", "Delay after previous")
 NOTICE = "Older multi-message rule — edit in Raw JSON."
 OLD_NAME = "slop old audience"
+# Every key one the form holds, so it opens in the form (More settings open for its guards).
 OLD_PAYLOAD = {"messages": [{"text": "old audience", "online_only": True, "user_lists": ["fans", "following"],
                               "excluded_user_lists": ["77"], "exclude_last_chat_hours": 1,
-                              "exclude_replied_hours": 2, "recent_chat_limit": 12, "future_knob": {"keep": True}}]}
+                              "exclude_replied_hours": 2, "recent_chat_limit": 12}]}
+KEEPS_NAME = "slop keeps audience"
+# One message, but backend audience keys the form doesn't hold: rebuilt from the form, the mass would reach the
+# excluded fans and every fan instead of the online ones.
+KEEPS_PAYLOAD = {"messages": [{"text": "keeps audience", "user_lists": ["fans"], "excluded_users": [910001, 910002],
+                               "filters": {"online": 1}}]}
+KEEPS_NOTICE = "Uses settings the Composer can't edit — edit in Raw JSON."
 RULES = "/admin/automation-rules"
 # The page and each open dialog within the phone's width.
 _FITS = """() => ({page: document.documentElement.scrollWidth, vw: innerWidth,
@@ -67,23 +88,22 @@ def _fits(f: dict) -> bool:
 
 
 def _row(w, rule_id) -> dict | None:
+    """The automation_rules row: its kind, and steps_json as stored (`raw`, for byte checks) and parsed (`payload`)."""
     con = w.sql()
     row = con.execute("SELECT kind, steps_json FROM automation_rules WHERE id=?", (rule_id,)).fetchone()
     con.close()
-    return {"kind": row[0], "payload": json.loads(row[1] or "{}")} if row else None
+    return {"kind": row[0], "payload": json.loads(row[1] or "{}"), "raw": row[1]} if row else None
 
 
-def _raw_payload(w, rule_id) -> str | None:
-    con = w.sql()
-    row = con.execute("SELECT steps_json FROM automation_rules WHERE id=?", (rule_id,)).fetchone()
-    con.close()
-    return row[0] if row else None
+def _raw(w, rule_id) -> str | None:
+    row = _row(w, rule_id)
+    return row["raw"] if row else None
 
 
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     if not ctx.app:
-        for n in (AM_FORM, AM_AUDIENCE, AM_STORED, AM_LEGACY, AM_ROUNDTRIP):
+        for n in (AM_FORM, AM_AUDIENCE, AM_STORED, AM_LEGACY, AM_ROUNDTRIP, AM_EDIT_KEEPS):
             ctx.skip(n, "--no-ui")
         return
     aid = w.data["creators"][0]["id"]
@@ -95,7 +115,12 @@ async def run(ctx) -> None:
                                             "every_seconds": 86400, "payload": OLD_PAYLOAD, "is_enabled": False})
     old.raise_for_status()
     old_id = old.json()["id"]
-    old_before = _raw_payload(w, old_id)
+    old_before = _raw(w, old_id)
+    keeps = await ctx.owner.post(RULES, json={"account_id": aid, "kind": "mass_premade", "name": KEEPS_NAME,
+                                              "every_seconds": 86400, "payload": KEEPS_PAYLOAD, "is_enabled": False})
+    keeps.raise_for_status()
+    keeps_id = keeps.json()["id"]
+    keeps_before = _raw(w, keeps_id)
 
     async with ui.owner_browser(ctx, viewport=PHONE, touch=True) as page:
         # The app's shared fan-list picker reads OF directly; feed the same boundary as its production response so
@@ -111,9 +136,8 @@ async def run(ctx) -> None:
         await page.goto(f"{ctx.app}/growth/auto-mass?creator={aid}", wait_until="domcontentloaded")
         await page.get_by_text(LEGACY_NAME, exact=True).first.wait_for(timeout=WAIT_MS)
         await page.get_by_role("button", name="New auto mass").first.click(timeout=WAIT_MS)
-        editor = page.get_by_role("dialog", name="New auto mass message")
-        compose = editor  # the message's fields are in the popup itself
-        box = compose.get_by_placeholder("Broadcast text…")
+        editor = page.get_by_role("dialog", name="New auto mass message")  # the message's fields are in the popup
+        box = editor.get_by_placeholder("Broadcast text…")
         await box.wait_for(timeout=WAIT_MS)
         shots = [await _shot(ctx, page, "popup-top")]
         one_popup = {
@@ -122,24 +146,24 @@ async def run(ctx) -> None:
             "dialogs": await page.get_by_role("dialog").count(),
         }
 
-        chips = compose.get_by_role("radiogroup", name="Skip fans chatted with in last")
+        chips = editor.get_by_role("radiogroup", name="Skip fans chatted with in last")
         await chips.scroll_into_view_if_needed(timeout=10_000)
         # Keep the real picker in the evidence; don't capture its transient skeleton on the first visit.
-        await compose.get_by_role("checkbox", name="Audience list (3)", exact=True).wait_for(timeout=30_000)
-        more = compose.get_by_role("button", name="More settings")
+        await editor.get_by_role("checkbox", name="Audience list (3)", exact=True).wait_for(timeout=30_000)
+        more = editor.get_by_role("button", name="More settings")
         await more.scroll_into_view_if_needed(timeout=10_000)
         shots.append(await _shot(ctx, page, "audience-block"))
         more_collapsed = await _shot(ctx, page, "more-settings-collapsed")
         radios = chips.get_by_role("radio")
         form = {
             "one_popup": one_popup,
-            "message_heading": await compose.get_by_role("heading", name="Message 1").count(),
-            "add_another": await compose.get_by_role("button", name="Add another message").count(),
-            "gone_fields": {g: await compose.get_by_label(g, exact=True).count() for g in GONE},
+            "message_heading": await editor.get_by_role("heading", name="Message 1").count(),
+            "add_another": await editor.get_by_role("button", name="Add another message").count(),
+            "gone_fields": {g: await editor.get_by_label(g, exact=True).count() for g in GONE},
             "chips": [await x.inner_text() for x in await radios.all()],
             "checked": [await x.inner_text() for x in await radios.all() if await x.get_attribute("aria-checked") == "true"],
             "more_expanded": await more.get_attribute("aria-expanded"),
-            "more_fields": await compose.get_by_label("Exclude I replied to", exact=True).count(),
+            "more_fields": await editor.get_by_label("Exclude I replied to", exact=True).count(),
             "fits": await page.evaluate(_FITS),
         }
         ctx.check(AM_FORM, one_popup == {"compose_button": 0, "use_in_rule": 0, "dialogs": 1}
@@ -148,7 +172,7 @@ async def run(ctx) -> None:
                   and form["checked"] == ["1h"] and form["more_expanded"] == "false" and form["more_fields"] == 0
                   and _fits(form["fits"]), **form, screenshots=shots)
 
-        send_to = compose.get_by_role("group", name="Send to")
+        send_to = editor.get_by_role("group", name="Send to")
         chip_names = ["All fans", "Following", "Send to online only"]
         audience_buttons = [send_to.get_by_role("button", name=name) for name in chip_names]
         visible_chips = [await button.count() for button in audience_buttons]
@@ -163,13 +187,13 @@ async def run(ctx) -> None:
         shots.append(await _shot(ctx, page, "online-only-selected-dark"))
         dark_color = await online.evaluate("el => getComputedStyle(el).color")
         await page.evaluate("() => document.documentElement.setAttribute('data-theme', 'light')")
-        list_tabs = compose.get_by_role("tablist", name="Custom lists")
+        list_tabs = editor.get_by_role("tablist", name="Custom lists")
         visible_list_tabs = [await list_tabs.get_by_role("tab", name=name).count() for name in ("Include", "Exclude")]
         await list_tabs.get_by_role("tab", name="Exclude").click(timeout=10_000)
-        exclude_tab_visible = await compose.get_by_role("tabpanel", name="Exclude custom lists").count()
-        await compose.get_by_role("checkbox", name="Skip list (2)", exact=True).check(timeout=10_000)
+        exclude_tab_visible = await editor.get_by_role("tabpanel", name="Exclude custom lists").count()
+        await editor.get_by_role("checkbox", name="Skip list (2)", exact=True).check(timeout=10_000)
         await list_tabs.get_by_role("tab", name="Include").click(timeout=10_000)
-        await compose.get_by_role("checkbox", name="Audience list (3)", exact=True).check(timeout=10_000)
+        await editor.get_by_role("checkbox", name="Audience list (3)", exact=True).check(timeout=10_000)
         await send_to.get_by_role("button", name="All fans").click(timeout=10_000)
         await send_to.get_by_role("button", name="Send to online only").click(timeout=10_000)
         await chips.get_by_role("radio", name="1h").wait_for(timeout=10_000)
@@ -197,7 +221,7 @@ async def run(ctx) -> None:
         new_row = page.locator("tr").filter(has=page.get_by_text(rule.get("name") or "Auto mass", exact=True))
         summary_shown = True
         try:
-            await new_row.get_by_text(f"Free · {TEXT} · Following + Lists · skips chatted 1h", exact=True).wait_for(timeout=30_000)
+            await new_row.get_by_text(SUMMARY, exact=True).wait_for(timeout=30_000)
         except Exception:  # noqa: BLE001 — the check below says what was missing
             summary_shown = False
         saved = await _shot(ctx, page, "saved")
@@ -221,7 +245,7 @@ async def run(ctx) -> None:
                   and db is not None and without_audience(db.get("payload")) == expected_plain,
                   rule_name=body.get("name"), http_status=status, body=body.get("payload"),
                   route=route, db=db, want=expected_plain, screenshots=[saved])
-        saved_summary_ok = summary_shown and f"Free · {TEXT} · Following + Lists · skips chatted 1h" in await new_row.inner_text()
+        saved_summary_ok = summary_shown and SUMMARY in await new_row.inner_text()
         actual_message = ((body.get("payload") or {}).get("messages") or [{}])[0]
         ctx.check(AM_AUDIENCE, chip_state_ok and actual_message == WANT[0] and saved_summary_ok,
                   **audience_state, chip_tops=chip_tops, list_tabs=visible_list_tabs, exclude_tab_visible=exclude_tab_visible,
@@ -243,10 +267,33 @@ async def run(ctx) -> None:
             await old_editor.get_by_role("button", name="Save changes", exact=True).click(timeout=10_000)
         old_resp = await saved_old.value
         await old_editor.wait_for(state="hidden", timeout=30_000)
-        after_bytes = _raw_payload(w, old_id)
+        after_bytes = _raw(w, old_id)
         ctx.check(AM_ROUNDTRIP, more_opened == "true" and before_bytes == after_bytes and before_bytes is not None,
                   more_expanded=more_opened, before_bytes=before_bytes, after_bytes=after_bytes,
                   http_status=old_resp.status, screenshots=[opened_shot])
+
+        keeps_row = page.locator("tr").filter(has=page.get_by_text(KEEPS_NAME, exact=True))
+        await keeps_row.get_by_role("button", name="Edit", exact=True).click(timeout=30_000)
+        keeps_editor = page.get_by_role("dialog", name=f"Edit · {KEEPS_NAME}")
+        await keeps_editor.wait_for(timeout=30_000)
+        keeps_notice = True
+        try:
+            await keeps_editor.get_by_text(KEEPS_NOTICE, exact=True).wait_for(timeout=10_000)
+        except Exception:  # noqa: BLE001 — the check below says what was missing
+            keeps_notice = False
+        keeps_fields = await keeps_editor.get_by_placeholder("Broadcast text…").count()
+        keeps_shot = await _shot(ctx, page, "edit-keeps-notice")
+        async with page.expect_response(lambda x: x.request.method == "PATCH"
+                                        and urlsplit(x.url).path == f"{RULES}/{keeps_id}", timeout=30_000) as saved_keeps:
+            await keeps_editor.get_by_role("button", name="Save changes", exact=True).click(timeout=10_000)
+        keeps_resp = await saved_keeps.value
+        await keeps_editor.wait_for(state="hidden", timeout=30_000)
+        keeps_after = _raw(w, keeps_id)
+        ctx.check(AM_EDIT_KEEPS, keeps_notice and keeps_fields == 0 and keeps_resp.status == 200
+                  and keeps_before is not None and keeps_before == keeps_after,
+                  notice=keeps_notice, message_fields=keeps_fields, http_status=keeps_resp.status,
+                  patched=keeps_resp.request.post_data_json, before_bytes=keeps_before, after_bytes=keeps_after,
+                  screenshots=[keeps_shot])
 
         row = page.locator("tr").filter(has=page.get_by_text(LEGACY_NAME, exact=True))
         await row.get_by_role("button", name="Edit", exact=True).click(timeout=30_000)
@@ -271,5 +318,5 @@ async def run(ctx) -> None:
         await old.wait_for(state="hidden", timeout=30_000)
         legacy_db = _row(w, legacy_id)
         ctx.check(AM_LEGACY, shown and fields == 0 and raw == LEGACY
-                  and legacy_db == {"kind": "mass_premade", "payload": LEGACY},
+                  and legacy_db is not None and legacy_db["kind"] == "mass_premade" and legacy_db["payload"] == LEGACY,
                   notice=shown, message_fields=fields, raw=raw, db=legacy_db, screenshots=legacy_shots)

@@ -10,21 +10,20 @@
  *   runs with their progress, Cancel and Resume (`PriorityMassRuns`).
  * - Under "OF mass messages": the capture's OF filter bar, every control Not
  *   wired (our list keeps its own filters), then today's sent history with its
- *   bulk unsend and the hourly Auto-unsend card (`MassMessagesTab`, mounted
- *   unchanged), because our sends are OF's `messages/queue`, the general inbox.
- * - The scheduled queue (`ScheduledTab`, unchanged) as its own list after the
- *   child, never under a send type: it holds direct and mass sends together.
- *   An Inflowwww extra.
+ *   bulk unsend (`MassMessagesTab`), because our sends are OF's
+ *   `messages/queue`, the general inbox. The hourly Auto-unsend card and the
+ *   scheduled queue are their own Smart Messages tabs, bodies below
+ *   (`MassAutoUnsendSection`, `ScheduledSection`); Inflowwww extras.
  *
  * Takes no Creator: each panel picks its Creators (`useActiveAccounts`).
  */
 
 import { useState } from "react";
 
+import { AutoUnsendCard } from "@/components/settings/AutoUnsendPanel";
 import MassMessagesTab from "@/components/settings/MassMessagesTab";
 import ScheduledTab from "@/components/settings/ScheduledTab";
 import { IfBody, IfButton, IfInput, IfRangePicker } from "@/components/ui/infloww";
-import { ExtraTag } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 import { PriorityMassRuns } from "./PriorityMass";
@@ -38,19 +37,6 @@ const PRIORITY_PANEL_ID = "sm-child-priority-panel";
 /** A child pill (#59 to #65): 28px high, 0 16px padding, 50px radius, 16px
  *  to the next, 14px; the active pill is filled and borderless. */
 const PILL = "h-7 px-4 rounded-[50px] mr-4 border text-[14px]";
-
-/** Our extra lists' headings: a legacy section title, 16 / 600 T1, 24px above. */
-function ExtraSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="mt-6 space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-[16px] font-semibold text-fg">{title}</h2>
-        <ExtraTag />
-      </div>
-      {children}
-    </section>
-  );
-}
 
 export default function MassMessagesSection() {
   const [child, setChild] = useState<"priority" | "of">("of");
@@ -118,10 +104,16 @@ export default function MassMessagesSection() {
         </div>
         <MassMessagesTab />
       </div>
-
-      <ExtraSection title="Every scheduled send, direct and mass">
-        <ScheduledTab />
-      </ExtraSection>
     </IfBody>
   );
+}
+
+/** The "Mass Auto Unsend Messages" tab: the hourly per-model Auto-unsend card. */
+export function MassAutoUnsendSection() {
+  return <IfBody className="pb-6"><AutoUnsendCard /></IfBody>;
+}
+
+/** The "Scheduled" tab: every queued send, direct and mass. */
+export function ScheduledSection() {
+  return <IfBody className="pb-6"><ScheduledTab /></IfBody>;
 }

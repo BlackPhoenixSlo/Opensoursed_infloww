@@ -62,7 +62,7 @@ def case_default_is_900_and_green_with_margin():
     assert tick == tx._DEFAULT_TICK_INTERVAL_S == 900.0, tick
     assert stale == 720.0, stale
     worst = (tick + _fleet_cycle_s()) / 60
-    assert _tx_ingest_tier(worst + 10, "ok") == "green", (
+    assert _tx_ingest_tier(worst + 10, "ok", 0) == "green", (
         f"{worst:.1f} min worst-case staleness leaves < 10 min to the 30 min green ceiling")
 
 
@@ -83,7 +83,7 @@ def case_clamp_floor_60_and_cap_1500():
                     ("1500", 1500.0), ("1500.1", 1500.0), ("86400", 1500.0)):
         assert _reloaded(v)[0] == want, (v, want)
     # The ceiling itself stays green with a fleet cycle on top (no 10 min margin promised there).
-    assert _tx_ingest_tier((tx._MAX_TICK_INTERVAL_S + _fleet_cycle_s()) / 60, "ok") == "green"
+    assert _tx_ingest_tier((tx._MAX_TICK_INTERVAL_S + _fleet_cycle_s()) / 60, "ok", 0) == "green"
 
 
 def _knob(env: str, attr: str, value):

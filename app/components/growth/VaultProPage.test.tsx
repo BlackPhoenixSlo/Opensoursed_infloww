@@ -48,6 +48,25 @@ vi.mock("@/contexts/UserContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/UserContext")>()),
   useUser: () => ({ user: { user_id: "owner-1" } }),
 }));
+// The download runner, held open: a switch of Creator must not abort it (the panel used to own it, and remount).
+const dlRun = vi.hoisted(() => ({
+  sink: null as "folder" | null,   // jsdom has no folder picker: no download, as before, unless a test turns it on
+  calls: [] as Array<{ a: { accountId: string; creator: string; label: string }; signal: AbortSignal }>,
+}));
+vi.mock("@/components/vault/vaultDownload", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/vault/vaultDownload")>();
+  return {
+    ...mod,
+    downloadSink: () => dlRun.sink,
+    startDownload: (a: { accountId: string; creator: string; label: string; mode: "vault" },
+      d: { send: (x: unknown) => void; signal: AbortSignal }) => {
+      dlRun.calls.push({ a, signal: d.signal });
+      d.send({ type: "start", mode: a.mode, label: a.label, accountId: a.accountId, creator: a.creator, sink: "folder",
+               directAllowed: false });
+      return new Promise(() => {});
+    },
+  };
+});
 vi.mock("@/contexts/ChatterContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/ChatterContext")>()),
   useChatter: () => ({ chatter: null }),
@@ -100,6 +119,7 @@ let listsAll: typeof ALL | undefined = ALL;
 let roster: Array<typeof A> = [A, B];
 
 beforeEach(() => {
+  dlRun.sink = null;
   roster = [A, B];
   listsAll = ALL;
   window.localStorage.clear();
@@ -469,6 +489,26 @@ describe("the Creator selector", () => {
       expect(calls.find((c) => c.p.startsWith("/api/of/v2/vault/upload/status"))?.acc).toBe(B.id);
       expect(calls.some((c) => c.acc === A.id || c.p.includes(`account_id=${A.id}`))).toBe(false);
     });
+  });
+
+  it("keeps a running download going, and its card up, when another Creator is picked", async () => {
+    dlRun.calls.length = 0;
+    dlRun.sink = "folder";
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "Download whole vault" }));
+    await waitFor(() => expect(dlRun.calls).toHaveLength(1));
+    expect(dlRun.calls[0].a.accountId).toBe(A.id);
+    expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
+
+    fireEvent.click(creatorRow("Creator B"));
+    await waitFor(() => expect(creatorRow("Creator B")).toHaveAttribute("aria-current", "true"));
+    await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
+
+    expect(dlRun.calls[0].signal.aborted).toBe(false);
+    expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
+    // One run at a time: B's download waits for A's.
+    expect(screen.getByRole("button", { name: "Download whole vault" })).toBeDisabled();
+    expect(dlRun.calls).toHaveLength(1);
   });
 
   it("says a dropped session and writes nothing", async () => {

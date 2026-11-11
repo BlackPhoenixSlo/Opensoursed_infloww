@@ -9,12 +9,9 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { IfButton, IfHelp, IfInput, IfLabel, IfSegmented, IfSelect } from "@/components/ui/infloww";
 import { useVaultLists } from "@/hooks/useVaultMedia";
 
-import {
-  hasMoreAudience, lastChatChips,
-  type Kind, type Row, type RowsAction,
-} from "./premadeRows";
+import { customIncludes, hasMoreAudience, lastChatChips, priceLabel, type Row, type RowAction } from "./premadeRows";
+import { GUARD_DEFAULT_H, ppvPrice, type Kind } from "./payloadRules";
 import { VariantsField } from "./VariantsField";
-import { fmtPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** A ready-made rule's ONE post (Auto Post) or message (Auto Mass), inline in the rule popup (ReadyMadeRuleEditor;
@@ -30,10 +27,9 @@ export function PremadeFields({
   /** The rule's account (vault folders, images, custom lists). */
   accountId: string;
   row: Row;
-  dispatch: (a: RowsAction) => void;
+  dispatch: (a: RowAction) => void;
 }) {
   const posts = kind === "auto_posts";
-  const i = 0; // the one row
   const [listMode, setListMode] = useState<"include" | "exclude">("include");
   // The one vault picker: which pool it fills.
   const [picker, setPicker] = useState<"media" | "previewMedia" | null>(null);
@@ -54,7 +50,7 @@ export function PremadeFields({
 
   // Shorthand for the ~20 per-field inputs below.
   function patchRow(patch: Partial<Row>) {
-    dispatch({ type: "patch", i, patch });
+    dispatch({ type: "patch", patch });
   }
 
   /** A folder-pool select: "None" always clears it, even with no folders fetched; a saved folder that is gone
@@ -117,9 +113,9 @@ export function PremadeFields({
         {/* PPV price — a priced post/broadcast is paywalled; OF needs at
          *  least one image attached. Blank/0 = free. Both kinds support it
          *  (auto_posts→create_post, mass_premade→send_mass_message). */}
-        <Field label="Price (USD)" help={Number(r.price) > 0 && (
+        <Field label="Price (USD)" help={ppvPrice(r.price) > 0 && (
           <span className="flex items-center gap-1 text-warn">
-            <Lock className="h-3 w-3" aria-hidden />PPV {fmtPrice(Math.round(Number(r.price) * 100))} · needs an image
+            <Lock className="h-3 w-3" aria-hidden />PPV {priceLabel(r.price)} · needs an image
           </span>
         )}>
           {(id) => (
@@ -170,20 +166,22 @@ export function PremadeFields({
           <h4 className="text-[14px] font-medium text-fg">Audience</h4>
           <div>
             <IfLabel>Send to</IfLabel>
-            {/* System audiences are include-only; Send to online only toggles the same online_only payload flag. */}
+            {/* System audiences are include-only; Send to online only toggles the online_only payload flag (OF
+             *  `filters.online`). The backend would send it with no list too, but that OF shape is unverified, so
+             *  Save waits for a list (payloadRules `onlineWithoutList`, D5). */}
             <div className="flex flex-wrap gap-2" role="group" aria-label="Send to">
               {SYSTEM_AUDIENCES.map((b) => (
                 <AudienceChip
                   key={b.id}
                   active={r.includes.includes(b.id)}
-                  onClick={() => dispatch({ type: "toggleListInclude", i, id: b.id })}
+                  onClick={() => dispatch({ type: "toggleListInclude", id: b.id })}
                   label={b.label}
                 />
               ))}
               <AudienceChip active={r.onlineOnly} label="Send to online only"
                 onClick={() => patchRow({ onlineOnly: !r.onlineOnly })} />
             </div>
-            <IfHelp>When selected, only users online at send time receive the message.</IfHelp>
+            <IfHelp>Online only filters the fans picked here and below: only those online at send time get it.</IfHelp>
           </div>
 
           {/* One multi-select picker, with Include / Exclude tabs both visible. */}
@@ -191,7 +189,7 @@ export function PremadeFields({
             <div role="tablist" aria-label="Custom lists" className="mb-2 flex gap-2">
               {(["include", "exclude"] as const).map((mode) => {
                 const count = mode === "include"
-                  ? r.includes.filter((id) => !["fans", "following"].includes(id)).length
+                  ? customIncludes(r).length
                   : r.excludes.length;
                 return (
                   <button key={mode} type="button" role="tab" aria-selected={listMode === mode}
@@ -208,10 +206,8 @@ export function PremadeFields({
               <ListColumn
                 lists={customLists}
                 loading={listsLoading}
-                selected={new Set(listMode === "include"
-                  ? r.includes.filter((id) => !["fans", "following"].includes(id))
-                  : r.excludes)}
-                onToggle={(id) => dispatch({ type: listMode === "include" ? "toggleListInclude" : "toggleListExclude", i, id })}
+                selected={new Set(listMode === "include" ? customIncludes(r) : r.excludes)}
+                onToggle={(id) => dispatch({ type: listMode === "include" ? "toggleListInclude" : "toggleListExclude", id })}
                 emptyLabel="No custom lists."
               />
             </div>
@@ -231,9 +227,14 @@ export function PremadeFields({
             </button>
             {moreOpen && (
               <div id={`pm-${kind}-more`} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <NumField label="Exclude I replied to" help="last N hours" placeholder="e.g. 2"
+                {/* Default-on server-side (absent = GUARD_DEFAULT_H); 0 turns the guard off. */}
+                <NumField label="Exclude I replied to"
+                  help={`last N hours · blank = default ${GUARD_DEFAULT_H.replied}h · 0 = off`}
+                  placeholder={String(GUARD_DEFAULT_H.replied)}
                   value={r.excludeRepliedHours} onChange={(v) => patchRow({ excludeRepliedHours: v })} />
-                <NumField label="Exclude who messaged me" help="last N hours" placeholder="e.g. 2"
+                <NumField label="Exclude who messaged me"
+                  help={`last N hours · blank = default ${GUARD_DEFAULT_H.inbound}h · 0 = off`}
+                  placeholder={String(GUARD_DEFAULT_H.inbound)}
                   value={r.excludeInboundHours} onChange={(v) => patchRow({ excludeInboundHours: v })} />
                 <NumField label="Include chatted-with" help="last N hours"
                   value={r.recentChatHours} onChange={(v) => patchRow({ recentChatHours: v })} />
@@ -310,7 +311,8 @@ function LastChatChips({ hours, onChange }: { hours: string; onChange: (v: strin
       <IfLabel>Skip fans chatted with in last</IfLabel>
       <IfSegmented aria-label="Skip fans chatted with in last" value={value} onChange={onChange} options={options}
         className="max-w-full flex-wrap" />
-      <IfHelp>Don&apos;t interrupt live chats.</IfHelp>
+      <IfHelp>Don&apos;t interrupt live chats. Fans you replied to in the last {GUARD_DEFAULT_H.replied}h or who messaged
+        you in the last {GUARD_DEFAULT_H.inbound}h are skipped too unless More settings changes it.</IfHelp>
     </div>
   );
 }
@@ -348,7 +350,7 @@ function Field({ label, help, children }: {
   );
 }
 
-/** A labelled numeric input — blank = the knob isn't applied. */
+/** A labelled numeric input; its `help` says what blank means. */
 function NumField({
   label, help, value, onChange, placeholder,
 }: {

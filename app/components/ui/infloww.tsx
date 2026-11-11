@@ -22,9 +22,10 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowRight, BookOpen, Calendar, ChevronLeft, Info, Loader2, Search } from "lucide-react";
+import { ArrowRight, BookOpen, Calendar, ChevronLeft, Loader2, Search } from "lucide-react";
 
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyArt, type EmptyKind } from "@/components/ui/emptyArt";
 import { HB_FILL_3, HB_TEXT, IF_FIELD, Listbox, type IconProp, type IfOption } from "@/components/ui/ifSelect";
@@ -45,9 +46,7 @@ function UtcLabel({ zone }: { zone: string | null }) {
   return (
     <span className="flex shrink-0 items-center gap-1 text-[14px] text-fg-dim tabular-nums">
       <span suppressHydrationWarning>{utcOffsetLabel(zone)}</span>
-      <span role="img" aria-label="Set by your organization" title="Set by your organization" className="cursor-help">
-        <Info className="h-3.5 w-3.5" aria-hidden />
-      </span>
+      <InfoTip text="Set by your organization" />
     </span>
   );
 }
@@ -152,9 +151,7 @@ export function IfCard({
           <h2 className={cn("flex items-center text-[16px] font-medium", HB_TEXT)}>
             {title}
             {info && (
-              <span role="img" aria-label={info} title={info} className="ml-[9px] cursor-help text-fg-dim">
-                <Info className="h-3.5 w-3.5" aria-hidden />
-              </span>
+              <InfoTip text={info} className="ml-[9px] text-fg-dim" />
             )}
           </h2>
           {extra}

@@ -27,6 +27,7 @@ import llm_client
 import vault_ai_brief
 import vault_ai_fix
 import vault_ai_vision_decide  # module attr `with_flags_cost`, looked up per call
+import vault_dupes  # module attr `reuse_groups`, looked up per call
 import vault_frames
 import vault_scripts
 import vault_sweep
@@ -38,8 +39,9 @@ from jsonsafe import load_json
 from llm_client import LLMCapExceeded, LLMError
 from vault_ai_vision_decide import (
     _DESCRIBABLE_KINDS, DescribeMode, _frames_for_duration, _ground_in_named_garment, _parse_describe,
-    build_describe_update, build_flags_fields, describe_answer, describe_selection,
-    live_describable, next_attempt, prompt_variant,
+    COPY_MARK, FLAGS_COPY_MARK, ReusePlan, build_copy_update, build_describe_update,
+    build_flags_copy, build_flags_fields, describe_answer, describe_selection, flags_current,
+    live_describable, next_attempt, priority_order, prompt_variant, reuse_plan, reuse_state,
 )
 
 # Same logger name as before the split, so log routing/filters are unchanged.
@@ -568,6 +570,165 @@ async def _flags_one(account_id: str, media_id: int,
             "frames": len(per_frame), "cost_millicents": cost}
 
 
+# ── Answer reuse across duplicates (both sweeps) ────────────────────
+# A re-upload is the same picture: one vision call answers the whole set
+# (`vault_dupes.reuse_groups` — thumb clusters re-checked on the full frame).
+# Copies are free, are made the moment their source is written (a cap mid-sweep
+# keeps them), carry the source's flags version (so the flags sweep leaves them
+# alone) and are stamped `_copied_from` / `_flags_copied_from`, which is how a
+# later re-describe / re-flag of the SWEEP re-copies them.
+# Not covered (follow-ups):
+#   * an operator fix (`vault_ai_fix`) on a source does not propagate;
+#   * the single-item describe route and flags-all with `media_ids` write the
+#     item only — its marked copies refresh on the next sweep that answers it;
+#   * a copy whose set has two sources answered in one sweep may take either
+#     one's answer (last write wins). Same picture, so accepted.
+_COPY_SRC_COLS = ("ai_fields_json", "describe_model", "describe_call_id", "frames_sampled",
+                  "tip_vault_flag", "tags", "explicitness_tier", "description",
+                  "video_description", "search_text")
+
+
+async def _reuse(account_id: str, order: list[int], *,
+                 flags: bool) -> tuple[ReusePlan, dict[int, list[tuple[int, str]]]]:
+    """This sweep's `ReusePlan` over `order`, and the index of rows earlier
+    sweeps marked as copies ({source: [(copy, marker)]}). Never raises: no
+    duplicates is the fallback for every failure."""
+    plan, index = ReusePlan({}, {}), {}
+    try:
+        groups = await vault_dupes.reuse_groups(account_id, frozenset(order))
+        members = sorted({int(m) for g in groups for m in g})
+        rows = []
+        async with get_session() as s:
+            for i in range(0, len(members), 500):
+                rows += [(mid, st, load_json(fj, {}) or {}) for mid, st, fj in (await s.execute(
+                    select(VaultItem.media_id, VaultItem.describe_status,
+                           VaultItem.ai_fields_json)
+                    .where(live_describable(account_id),
+                           VaultItem.media_id.in_(members[i:i + 500])))).all()]
+            done, bad = reuse_state(rows, flags=flags, flags_version=_FLAGS_VERSION)
+            plan = reuse_plan(groups, order, done, bad)
+            for mid, fj in (await s.execute(
+                    select(VaultItem.media_id, VaultItem.ai_fields_json)
+                    .where(live_describable(account_id),
+                           VaultItem.ai_fields_json.like('%copied_from"%')))).all():
+                f = load_json(fj, {}) or {}
+                for marker in (COPY_MARK, FLAGS_COPY_MARK):
+                    if f.get(marker):
+                        index.setdefault(int(f[marker]), []).append((int(mid), marker))
+    except Exception:  # noqa: BLE001
+        log.exception("reuse plan failed account=%s — sweeping without reuse", account_id)
+    if plan.copy_now or plan.followers:
+        log.info("reuse account=%s flags=%s copy_now=%s followers=%s",
+                 account_id, flags, len(plan.copy_now), len(plan.riders()))
+    return plan, index
+
+
+async def _copy_up_front(account_id: str, plan: ReusePlan, copy) -> list[dict[str, Any]]:
+    """Make every `copy_now` copy BEFORE the walk: free, so outside the vision
+    gate and safe from a cap trip. The results ride into `vault_sweep.run` as
+    `settled`."""
+    return [await _copy_safe(copy, account_id, src, dst)
+            for dst, src in plan.copy_now.items()]
+
+
+def _propagation(index: dict[int, list[tuple[int, str]]], src: int,
+                 walked: set[int], *, flags_only: bool) -> list[tuple[int, str]]:
+    """Earlier copies of `src` to refresh once it is re-answered: (copy, what to
+    copy). Rows this sweep walks itself are left to it."""
+    out = []
+    for mid, marker in index.get(src, ()):
+        if mid in walked:
+            continue
+        out.append((mid, "flags" if flags_only or marker == "_flags_copied_from"
+                    else "describe"))
+    return out
+
+
+async def _copy_describe(account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
+    """Give `dst_id` the describe + flags answer `src_id` carries. No call."""
+    async with get_session() as s:
+        src = await s.get(VaultItem, (account_id, src_id))
+        dst = await s.get(VaultItem, (account_id, dst_id))
+        if src is None or dst is None:
+            return {"media_id": dst_id, "ok": False, "status": "not_in_mirror"}
+        if src.describe_status != "described":
+            return {"media_id": dst_id, "ok": False, "status": "source_undescribed",
+                    "detail": f"duplicate of {src_id}, which is not described"}
+        vals = build_copy_update(
+            {c: getattr(src, c) for c in _COPY_SRC_COLS},
+            prev_ai=load_json(dst.ai_fields_json, {}) or {},
+            locked=set(load_json(dst.locked_fields_json, []) or []),
+            overrides=load_json(dst.operator_overrides_json, {}) or {},
+            fixable=vault_ai_fix.FIXABLE, src_id=src_id, now=datetime.utcnow())
+        for k, v in vals.items():
+            setattr(dst, k, v)
+        await s.commit()
+    return {"media_id": dst_id, "ok": True, "status": "copied",
+            "copied_from": src_id, "cost_millicents": 0}
+
+
+async def _copy_flags(account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
+    """Merge `src_id`'s current flags into `dst_id`. No call."""
+    async with get_session() as s:
+        src = await s.get(VaultItem, (account_id, src_id))
+        dst = await s.get(VaultItem, (account_id, dst_id))
+        if src is None or dst is None:
+            return {"media_id": dst_id, "ok": False, "status": "not_in_mirror"}
+        src_ai = load_json(src.ai_fields_json, {}) or {}
+        if not flags_current(src_ai, _FLAGS_VERSION):
+            return {"media_id": dst_id, "ok": False, "status": "source_unflagged",
+                    "detail": f"duplicate of {src_id}, which has no current flags"}
+        dst.ai_fields_json = json.dumps(build_flags_copy(
+            load_json(dst.ai_fields_json, {}) or {}, src_ai,
+            locked=set(load_json(dst.locked_fields_json, []) or []), src_id=src_id),
+            ensure_ascii=False, default=str)
+        await s.commit()
+    return {"media_id": dst_id, "ok": True, "status": "flags_copied",
+            "copied_from": src_id, "cost_millicents": 0}
+
+
+async def _copy_safe(copy, account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
+    """A copy that raised is that copy's failure, not its source's."""
+    try:
+        return await copy(account_id, src_id, dst_id)
+    except Exception as e:  # noqa: BLE001
+        log.exception("copy %s -> %s failed account=%s", src_id, dst_id, account_id)
+        return {"media_id": dst_id, "ok": False, "status": "error",
+                "detail": f"{type(e).__name__}: {e}"[:200]}
+
+
+async def _lead(account_id: str, mid: int, call, followers: list[int], copy,
+                refresh: list[tuple[int, str]]) -> dict[str, Any]:
+    """Run `mid`'s own (paid) visit; on success copy it to `followers` — counted
+    as `extra` items of this visit — and refresh earlier copies (`refresh`,
+    uncounted: they are outside this sweep's set). A failed leader's followers
+    are counted failed and stay undescribed; the next sweep picks a different
+    leader (`reuse_plan`'s `bad`). A capped one's are left uncounted, like
+    every item a cap cuts off."""
+    try:
+        res = await call
+    except llm_client.LLMKeyError:
+        raise  # stops the sweep; its riders go uncounted like a cap's
+    except Exception as e:  # noqa: BLE001 — counted here so the riders are too
+        log.exception("visit raised media=%s account=%s", mid, account_id)
+        res = {"media_id": mid, "ok": False, "status": "error",
+               "detail": f"{type(e).__name__}: {e}"[:200]}
+    if not res.get("ok"):
+        if res.get("status") == "capped" or not followers:
+            return res
+        return {**res, "extra": [
+            {"media_id": f, "ok": False, "status": "source_failed",
+             "detail": f"duplicate of {mid}, which failed ({res.get('status')})"}
+            for f in followers]}
+    extra = [await _copy_safe(copy, account_id, mid, f) for f in followers]
+    for dst, what in refresh:
+        r = await _copy_safe(_copy_describe if what == "describe" else _copy_flags,
+                             account_id, mid, dst)
+        if not r.get("ok"):
+            log.warning("re-copy %s -> %s failed: %s", mid, dst, r.get("status"))
+    return {**res, "extra": extra} if extra else res
+
+
 # ── Flags sweep (background, same shape as describe-all) ────────────
 # A whole-vault sweep CANNOT run inside its own request. 327 items × ~3.4s is
 # ~18 minutes; the app's proxy drops the socket long before that and the browser
@@ -584,32 +745,28 @@ _FLAGS_CONCURRENCY = 4
 
 async def _flags_todo(account_id: str, *, force: bool = False,
                       only: set[int] | None = None, limit: int = 0) -> list[int]:
-    """Which items still need flags, NEWEST first — `created_at` is OF's own
-    `createdAt`, so this is upload order, not mirror order.
-
-    Matches the describe sweep's order. Flags are what the gated
-    lanes actually read, so a describe that ran newest-first and a flags pass
-    that ran oldest-first would leave the freshly-described items describable
-    but still unusable — the two have to walk the vault the same way."""
+    """Which items still need flags, in `priority_order` — the describe sweep's
+    order. Flags are what the gated lanes actually read, so a describe and a
+    flags pass that walked the vault differently would leave freshly-described
+    items describable but still unusable."""
     async with get_session() as s:
-        q = (select(VaultItem.media_id, VaultItem.ai_fields_json)
+        q = (select(VaultItem.media_id, VaultItem.created_at,
+                    VaultItem.of_folder_ids, VaultItem.ai_fields_json)
              .where(live_describable(account_id)))
         if only:
             q = q.where(VaultItem.media_id.in_(only))
-        rows = (await s.execute(
-            q.order_by(VaultItem.created_at.desc(), VaultItem.media_id.desc())
-        )).all()
+        rows = (await s.execute(q)).all()
+    blobs = {int(r[0]): r[3] for r in rows}
 
     todo = []
-    for mid, fj in rows:
-        f = load_json(fj, {}) or {}
+    for mid in priority_order((r[0], r[1], r[2]) for r in rows):
+        f = load_json(blobs[mid], {}) or {}
         # `flags_known`, not a key-presence test: a row carrying the superseded
         # boolean shape, or a region the model answered with something outside
         # the enum, has not really been flagged and must re-run. A row produced
         # by an OLDER prompt is stale for the same reason — its answers were
         # given to a different question.
-        stale = int(f.get("_flags_v") or 0) < _FLAGS_VERSION
-        if only or force or stale or not vault_ai_brief.flags_known(f):
+        if only or force or not flags_current(f, _FLAGS_VERSION):
             todo.append(int(mid))
     return todo[:limit] if limit else todo
 
@@ -617,13 +774,26 @@ async def _flags_todo(account_id: str, *, force: bool = False,
 async def _run_flags_all(account_id: str, todo: list[int]) -> None:
     """Background flags sweep. Resumable by construction: it only ever visits
     rows that are missing or stale, so a relay restart mid-sweep costs the items
-    in flight and nothing else — pressing the button again picks up the rest."""
+    in flight and nothing else — pressing the button again picks up the rest.
+
+    Duplicates (`_reuse`) cost one call per set: the rest copy its flags."""
     try:
+        plan, index = await _reuse(account_id, todo, flags=True)
+        walked = set(todo)
+        settled = await _copy_up_front(account_id, plan, _copy_flags)
+
+        async def visit(mid: int) -> dict[str, Any]:
+            return await _lead(account_id, mid, _flags_one(account_id, mid),
+                               plan.followers.get(mid, []), _copy_flags,
+                               _propagation(index, mid, walked, flags_only=True))
+
+        skip = plan.riders() | set(plan.copy_now)
         c = await vault_sweep.run(
-            todo, lambda mid: _flags_one(account_id, mid),
+            [m for m in todo if m not in skip], visit,
             concurrency=_FLAGS_CONCURRENCY, gate=_vision_gate,
             into=_flags_progress, key=account_id,
-            label=f"flags_all account={account_id}")
+            label=f"flags_all account={account_id}",
+            extra_total=len(plan.riders()), settled=settled)
         if c.failed:
             log.warning("flags_all account=%s visited=%s/%s FAILED=%s capped=%s first_error=%s",
                         account_id, c.done, c.total, c.failed, c.capped, c.error)
@@ -935,26 +1105,33 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
         async with get_session() as s:
             # The SAME clause the plan counts with, so the number on the button
             # is the set walked here.
-            stmt = select(VaultItem.media_id).where(
-                describe_selection(account_id, mode, prompt_version))
-            # NEWEST first, on OF's own `createdAt`. This sweep has no limit, so
-            # in principle order only decides what finishes early — except it
-            # can end early for two reasons that make it decide what happens at
-            # all: the account's cap trips (`capped` breaks the chunk loop) or
-            # the relay restarts mid-sweep. Both truncate the tail, and the tail
-            # should be the 2018 uploads, not this week's shoot. Same order as
-            # the 6h drip and `_flags_todo` so a vault is covered the same way
-            # whichever one gets to it.
-            stmt = stmt.order_by(VaultItem.created_at.desc(),
-                                 VaultItem.media_id.desc())
-            ids = [r[0] for r in (await s.execute(stmt)).all()]
+            walked = {int(r[0]) for r in (await s.execute(select(VaultItem.media_id).where(
+                describe_selection(account_id, mode, prompt_version)))).all()}
+            rows = (await s.execute(
+                select(VaultItem.media_id, VaultItem.created_at, VaultItem.of_folder_ids)
+                .where(live_describable(account_id)))).all()
+        # `priority_order`, the same walk as `_flags_todo`. This sweep has no
+        # limit, so order only decides what finishes early — but it CAN end
+        # early: the cap trips or the relay restarts, and both cut the tail.
+        ids = [m for m in priority_order(rows) if m in walked]
+        plan, index = await _reuse(account_id, ids, flags=False)
+        settled = await _copy_up_front(account_id, plan, _copy_describe)
 
+        async def visit(mid: int) -> dict[str, Any]:
+            return await _lead(
+                account_id, mid,
+                _describe_and_flag(account_id, mid, model=model,
+                                   prompt_version=prompt_version),
+                plan.followers.get(mid, []), _copy_describe,
+                _propagation(index, mid, walked, flags_only=False))
+
+        skip = plan.riders() | set(plan.copy_now)
         c = await vault_sweep.run(
-            ids, lambda mid: _describe_and_flag(account_id, mid, model=model,
-                                                prompt_version=prompt_version),
+            [m for m in ids if m not in skip], visit,
             concurrency=_DESCRIBE_CONCURRENCY,
             gate=_vision_gate, into=_describe_progress, key=account_id,
-            label=f"describe_all account={account_id}")
+            label=f"describe_all account={account_id}",
+            extra_total=len(plan.riders()), settled=settled)
         try:
             q = await vault_ai_fix.review_queue(account_id, limit=1,
                                                 version=_FLAGS_VERSION,

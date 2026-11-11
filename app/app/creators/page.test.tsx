@@ -491,7 +491,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     await open();
     enterLogin();
     const bb = within(dialog()).getByRole("region", { name: "Browserbase login" });
-    expect(within(bb).getByText(/^Proxy assigned automatically\./)).toBeInTheDocument();
+    expect(within(bb).getByText(/^Proxy assigned automatically/)).toBeInTheDocument();
     fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
     fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
     fireEvent.click(btn("Start browser login"));
@@ -505,7 +505,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     const confirm = vi.spyOn(window, "confirm");
     renderWithProviders(<Page />);
     const paste = await toExtension();
-    await waitFor(() => expect(within(paste).getByText(/A proxy is assigned automatically after linking/)).toBeInTheDocument());
+    await waitFor(() => expect(within(paste).getByText(/If this account has no proxy yet, Inflowwww's default proxy is assigned after linking/)).toBeInTheDocument());
     bootstrap(paste);
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
     expect(confirm).not.toHaveBeenCalled();
@@ -523,7 +523,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     poolRelay(new Error("no Inflowwww proxies are set up on this relay"));
     renderWithProviders(<Page />);
     const paste = await toExtension();
-    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
+    await waitFor(() => expect(within(paste).getByText(/default proxy is assigned after linking/)).toBeInTheDocument());
     bootstrap(paste);
     expect(await within(paste).findByText(/but proxy attach failed:\s+no Inflowwww proxies are set up on this relay/)).toBeInTheDocument();
     expect(within(dialog()).queryByText("Creator account is linked to Inflowwww")).toBeNull();
@@ -538,7 +538,7 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     poolRelay(undefined, 1);
     renderWithProviders(<Page />);
     const paste = await toExtension();
-    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
+    await waitFor(() => expect(within(paste).getByText(/default proxy is assigned after linking/)).toBeInTheDocument());
     bootstrap(paste);
     expect(await within(paste).findByText(/the proxy is attached, but reloading the session failed:\s+relay 500\s+Press Retry/)).toBeInTheDocument();
     fireEvent.click(within(paste).getByRole("button", { name: "Retry" }));
@@ -551,8 +551,11 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     poolRelay();
     renderWithProviders(<Page />);
     const paste = await toExtension();
-    await waitFor(() => expect(within(paste).getByText(/assigned automatically after linking/)).toBeInTheDocument());
-    proxies = () => Promise.reject(new RelayError(500, null, "relay 500"));
+    await waitFor(() => expect(within(paste).getByText(/default proxy is assigned after linking/)).toBeInTheDocument());
+    // The attach step's own read works; the linked step's, after the bind, fails.
+    const before = proxies;
+    proxies = () => relayPost.mock.calls.some(([p]) => p === "/admin/proxy-pool/assign")
+      ? Promise.reject(new RelayError(500, null, "relay 500")) : before();
     bootstrap(paste);
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
     expect(await within(dialog()).findByText("Couldn't read this account's proxy.")).toBeInTheDocument();
@@ -1186,7 +1189,7 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(within(bb).getByText(/^Keeps its current proxy\./)).toBeInTheDocument();
     fireEvent.click(within(d).getByRole("radio", { name: /^Extension/ }));
     const paste = within(d).getByRole("region", { name: "Extension" });
-    expect(within(paste).queryByText(/assigned automatically/)).toBeNull();
+    expect(within(paste).queryByText(/assigned after linking/)).toBeNull();
     fireEvent.change(within(paste).getByLabelText("Copied cURL"), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
     fireEvent.click(within(d).getByRole("button", { name: "Link account" }));
     await within(d).findByText("Creator account is linked to Inflowwww");

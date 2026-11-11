@@ -19,7 +19,10 @@ import { act, cleanup, render, screen, waitFor, fireEvent, within } from "@testi
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() } }));
+vi.mock("@/lib/relay", async (original) => ({
+  ...await original<typeof import("@/lib/relay")>(),
+  relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() },
+}));
 
 import AccountsTable, { connectivity } from "@/components/setup/AccountsTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
@@ -43,6 +46,7 @@ beforeEach(() => {
   relayDelete.mockReset();
   relayPost.mockReset();
   relayPut.mockReset();
+  relayPatch.mockReset();
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -729,5 +733,209 @@ describe("Creators avatar recovery across actual session relinking", () => {
       await waitFor(() => expect(recoveries).toHaveLength(link + 2));
       if (state === "exhausted") await act(async () => recoveries[link + 1].resolve(same));
     }
+  });
+});
+
+/** W28 creator-setup fixes: a running Browser login is never stranded by Back; a draft's account takes the draft at
+ *  link time; the Extension's attach keeps an existing binding; Done refuses a save it can't finish. */
+describe("AddCreatorModal — sign-in and link guards", () => {
+  const CURL = "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'";
+  const d = () => screen.getByRole("dialog");
+  const btn = (n: string) => within(d()).getByRole("button", { name: n });
+  const route = (over: Record<string, () => Promise<unknown>> = {}) => relayGet.mockImplementation((p: string) =>
+    over[p]?.() ?? (p === "/admin/proxies" ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] } })
+      : p === "/admin/settings/account" ? Promise.resolve({ tab: "account", config: { language: "en" } })
+        : Promise.resolve({})));
+  const throughDetails = () => {
+    fireEvent.change(within(d()).getByLabelText("Creator name"), { target: { value: "Bella" } });
+    fireEvent.change(within(d()).getByLabelText("Gender"), { target: { value: "Female" } });
+    fireEvent.click(btn("Next"));
+    fireEvent.click(btn("Next"));
+  };
+  const paste = async () => {
+    fireEvent.click(within(d()).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d()).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    fireEvent.click(btn("Link account"));
+    await within(d()).findByText("Account details");
+  };
+
+  it("Back is hidden while a Browser login runs, and closing stops the job", async () => {
+    route({ "/admin/login/remote/job1": () => Promise.resolve({ id: "job1", state: "challenge", message: "", live_view_url: null }) });
+    relayPost.mockResolvedValue({ id: "job1", state: "starting", message: "" });
+    const { unmount } = render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    throughDetails();
+    expect(btn("Back")).toBeInTheDocument();
+    fireEvent.change(within(d()).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(within(d()).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(btn("Start browser login"));
+    await within(d()).findByRole("button", { name: "Stop login" });
+    expect(within(d()).queryByRole("button", { name: "Back" })).toBeNull();
+    unmount();
+    expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/cancel");
+  });
+
+  it("Back is hidden while the Extension's capture waits on Retry / Continue, and back once it links", async () => {
+    route({ "/admin/proxies": () => Promise.resolve({ proxies: [], pool: { size: 2, account_ids: [] } }) });
+    relayPost.mockImplementation((p: string) => p === "/admin/proxy-pool/assign" ? Promise.reject(new Error("pool 500"))
+      : Promise.resolve(p === "/admin/session/bootstrap" ? { account_id: "acct-e", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    throughDetails();
+    fireEvent.click(within(d()).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d()).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    fireEvent.click(btn("Link account"));
+    await within(d()).findByText(/proxy attach failed/);
+    expect(within(d()).queryByRole("button", { name: "Back" })).toBeNull();
+    fireEvent.click(btn("Continue"));
+    await within(d()).findByText("Account details");
+  });
+
+  it("Link account stays off through the attach step: a second press sends no second capture", async () => {
+    route({ "/admin/proxies": () => Promise.resolve({ proxies: [], pool: { size: 2, account_ids: [] } }) });
+    relayPost.mockImplementation((p: string) => p === "/admin/proxy-pool/assign" ? new Promise(() => {})
+      : Promise.resolve(p === "/admin/session/bootstrap" ? { account_id: "acct-e", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    throughDetails();
+    fireEvent.click(within(d()).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d()).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    fireEvent.click(btn("Link account"));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/proxy-pool/assign", { account_id: "acct-e" }));
+    const link = btn("Linking…");
+    expect(link).toBeDisabled();
+    fireEvent.submit(link.closest("form") ?? document.getElementById("extension-login-form")!);
+    expect(relayPost.mock.calls.filter(([p]) => p === "/admin/session/bootstrap")).toHaveLength(1);
+  });
+
+  it("a draft's account takes the draft's details as soon as it links (closing leaves one row)", async () => {
+    route();
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-d", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    relayPut.mockImplementation((_p: string, body: unknown) => Promise.resolve({ tab: "account", config: body }));
+    const draft = { id: "d1", name: "Nova", gender: "Female" as const, created_at: "2026-11-01T00:00:00Z" };
+    relayGet.mockImplementation((p: string) => p === "/admin/settings/account"
+      ? Promise.resolve({ tab: "account", config: { creators: { drafts: [draft] } } })
+      : p === "/admin/proxies" ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] } }) : Promise.resolve({}));
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} draft={draft} />, { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/settings/account"));
+    await paste();
+    await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/settings/account", {
+      creators: { profiles: { "acct-d": { name: "Nova", gender: "Female", avatar: undefined } }, drafts: [] },
+    }));
+  });
+
+  it("Done waits for the link-time draft write: replies released newest first, the cache ends on Done's details, no draft", async () => {
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-d", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    relayPatch.mockResolvedValue({});
+    // Every settings PUT is held until released; the server keeps what it got last.
+    const held: (() => void)[] = [];
+    relayPut.mockImplementation((_p: string, body: unknown) =>
+      new Promise((r) => held.push(() => r({ tab: "account", config: body }))));
+    const releaseNewestFirst = async () => {
+      while (held.length) await act(async () => { held.pop()!(); });
+    };
+    const draft = { id: "d1", name: "Nova", gender: "Female" as const, created_at: "2026-11-01T00:00:00Z" };
+    route({ "/admin/settings/account": () => Promise.resolve({ tab: "account", config: { creators: { drafts: [draft] } } }) });
+    const onClose = vi.fn();
+    render(<AddCreatorModal extInstalled={null} onClose={onClose} draft={draft} />, { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/settings/account"));
+    await paste();
+    await waitFor(() => expect(held).toHaveLength(1)); // the link-time write, in flight
+    fireEvent.change(within(d()).getByLabelText("Internal notes (Optional)"), { target: { value: "from Done" } });
+    fireEvent.click(btn("Done"));
+    await act(async () => {});
+    expect(relayPut).toHaveBeenCalledTimes(1); // Done waits for it
+    await releaseNewestFirst();
+    await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(2));
+    await releaseNewestFirst();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const blob = client.getQueryData<{ config: { creators: { profiles: Record<string, { notes?: string; name?: string }>; drafts: unknown[] } } }>(
+      ["settings-blob", "account"]);
+    expect(blob?.config.creators.profiles["acct-d"]).toMatchObject({ name: "Nova", notes: "from Done" });
+    expect(blob?.config.creators.drafts).toEqual([]);
+  });
+
+  it("a draft linking an account that already has Creator details retires only the draft at link time (details kept)", async () => {
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-d", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    relayPut.mockImplementation((_p: string, body: unknown) => Promise.resolve({ tab: "account", config: body }));
+    const draft = { id: "d1", name: "Nova", gender: "Female" as const, created_at: "2026-11-01T00:00:00Z" };
+    const old = { name: "Old", gender: "Female", tag: "VIP" };
+    route({ "/admin/settings/account": () => Promise.resolve({ tab: "account", config: { creators: {
+      drafts: [draft], profiles: { "acct-d": old } } } }) });
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} draft={draft} />, { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/settings/account"));
+    await paste();
+    await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
+    expect(relayPut).toHaveBeenCalledWith("/admin/settings/account", { creators: { drafts: [], profiles: { "acct-d": old } } });
+  });
+
+  it("the modal can't close while the Extension's attach runs (no ×, no Escape, Cancel off), and can once it settles", async () => {
+    route({ "/admin/proxies": () => Promise.resolve({ proxies: [], pool: { size: 2, account_ids: [] } }) });
+    let bind: (v: unknown) => void = () => {};
+    relayPost.mockImplementation((p: string) => p === "/admin/proxy-pool/assign" ? new Promise((r) => { bind = r; })
+      : Promise.resolve(p === "/admin/session/bootstrap" ? { account_id: "acct-e", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    const onClose = vi.fn();
+    render(<AddCreatorModal extInstalled={null} onClose={onClose} />, { wrapper });
+    throughDetails();
+    fireEvent.click(within(d()).getByRole("radio", { name: /^Extension/ }));
+    fireEvent.change(within(d()).getByLabelText("Copied cURL"), { target: { value: CURL } });
+    fireEvent.click(btn("Link account"));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/proxy-pool/assign", { account_id: "acct-e" }));
+    expect(within(d()).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(btn("Cancel")).toBeDisabled();
+    fireEvent.click(btn("Cancel"));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { bind({}); });
+    await within(d()).findByText("Account details");
+    expect(btn("Close")).toBeEnabled();
+  });
+
+  it("the modal can't close while the linked step's proxy Connect runs", async () => {
+    route();
+    relayPost.mockImplementation((p: string) => p === "/admin/proxies" ? new Promise(() => {})
+      : Promise.resolve(p === "/admin/session/bootstrap" ? { account_id: "acct-p", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    const onClose = vi.fn();
+    render(<AddCreatorModal extInstalled={null} onClose={onClose} />, { wrapper });
+    throughDetails();
+    await paste();
+    expect(btn("Close")).toBeEnabled();
+    fireEvent.click(btn("Click here to add your proxy"));
+    fireEvent.change(within(d()).getByLabelText("IP address or hostname"), { target: { value: "proxy.example" } });
+    fireEvent.change(within(d()).getByLabelText("Port"), { target: { value: "8080" } });
+    await waitFor(() => expect(btn("Connect proxy")).toBeEnabled());
+    fireEvent.click(btn("Connect proxy"));
+    await within(d()).findByRole("button", { name: "Checking proxy…" });
+    expect(within(d()).queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("the Extension's attach leaves a custom proxy the account is already on (fresh read): no pool bind, no reload", async () => {
+    route({ "/admin/proxies": () => Promise.resolve({ proxies: [{ label: "mine", assigned_account_ids: ["acct-b"] }], pool: { size: 3, account_ids: [] } }) });
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-b", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    throughDetails();
+    await paste();
+    const posts = relayPost.mock.calls.map(([p]) => p);
+    expect(posts).not.toContain("/admin/proxy-pool/assign");
+    expect(posts.filter((p) => String(p).startsWith("/admin/reload-session"))).toHaveLength(0);
+  });
+
+  it("Done refuses to save while the settings are not loaded: the modal stays open", async () => {
+    route({ "/admin/settings/account": () => new Promise(() => {}) }); // never lands: not wired
+    relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
+      ? { account_id: "acct-n", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
+    const onClose = vi.fn();
+    render(<AddCreatorModal extInstalled={null} onClose={onClose} />, { wrapper });
+    throughDetails();
+    await paste();
+    fireEvent.click(btn("Done"));
+    await waitFor(() => expect(btn("Done")).toBeEnabled());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(relayPatch).not.toHaveBeenCalled();
+    expect(relayPut).not.toHaveBeenCalled();
   });
 });

@@ -54,7 +54,8 @@ class _StartBody(BaseModel):
     password: str = ""
     proxy: str = Field("", description=(
         '"infloww" (Inflowwww proxy), "none" (server IP) or "custom" (proxy_label); bound to the account after the '
-        'login. Default: "custom" when proxy_label is given, else the Inflowwww proxy when the relay has one, else none'))
+        'login. Default: "custom" when proxy_label is given, else the Inflowwww proxy when the relay has one, else none; '
+        'either default leaves a custom proxy the account is on bound, and the job reports that proxy'))
     proxy_label: str = Field("", description="Registry label of a custom proxy")
     nickname: str | None = None
     make_active: bool = True
@@ -114,6 +115,8 @@ def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
         job = remote_login.start_login(
             email=body.email.strip(), password=body.password,
             proxy=proxy, proxy_label=label,
+            # No choice sent: the relay's default, which keeps a custom proxy the account is already on.
+            proxy_defaulted=not body.proxy and not body.proxy_label,
             principal=_principal(), nickname=(body.nickname or "").strip() or None,
             make_active=body.make_active, backend=body.backend,
         )

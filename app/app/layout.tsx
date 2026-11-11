@@ -12,6 +12,7 @@ import { IdleOverlay } from "@/components/IdleOverlay";
 import { ApiKeyToaster } from "@/components/ApiKeyToaster";
 import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
+import { DeepLinkTarget } from "@/components/DeepLinkTarget";
 import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
 
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
@@ -229,6 +230,8 @@ export default async function RootLayout({
                 <ApiKeyToaster />
                 <MoneyRail />
                 <AssistantWidget />
+                {/* A link's `#go=` steps: opens the inner tab or section it names (lib/deepLink.ts). */}
+                <DeepLinkTarget />
               </AssistantProvider>
             </PageCreatorProvider>
           </AuthGate>

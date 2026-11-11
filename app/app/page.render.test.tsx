@@ -229,7 +229,7 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
         expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(c.labels);
         fireEvent.keyDown(within(el).getByRole("combobox"), { key: "Escape" });
       } else if (c.key.endsWith("Tip")) {
-        expect(el).toHaveAttribute("title", c.labels[0]);
+        expect(el).toHaveAccessibleName(c.labels[0]);
       } else {
         expect(el.textContent).toContain(c.labels[0]);
       }
@@ -253,6 +253,18 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
       .find((u) => u.pathname === "/admin/stats/referrals")!;
     // This week in Honolulu, Sunday 11 through Saturday 17, with no account_id: the header is Agency-wide.
     expect(Object.fromEntries(read.searchParams)).toEqual({ from: "2026-10-11", to: "2026-10-17" });
+  });
+
+  it("Total, every channel tile and the earnings select carry an ⓘ that explains them on hover", async () => {
+    await mountHome();
+    await shows("$14");
+    for (const k of ["total", "subscriptions", "tips", "posts", "referrals", "messages", "chargebacks", "basis"]) {
+      const icon = tile(k).querySelector<HTMLElement>("[data-info-tip]");
+      expect(icon, k).not.toBeNull();
+      fireEvent.pointerEnter(icon!, { pointerType: "mouse" });
+      expect(screen.getByRole("tooltip").textContent!.length, k).toBeGreaterThan(20);
+      fireEvent.pointerLeave(icon!, { pointerType: "mouse" });
+    }
   });
 
   it("every channel tile draws its icon in the mapped colour on a 10% circle, and Total its OnlyFans mark", async () => {
@@ -730,7 +742,7 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     await mountHome();
     const card = within(cell("scheduled-hours")).getByRole("region", { name: "Worked hours" });
     expect(cell("scheduled-hours")).toHaveClass("md:col-start-2");
-    expect(within(card).getByTitle("Recorded hours worked during this period")).toBeInTheDocument();
+    expect(within(card).getByRole("img", { name: "Recorded hours worked during this period" })).toBeInTheDocument();
     expect(within(card).getByRole("group", { name: "Worked hours list" })).toHaveClass("max-h-[280px]", "overflow-y-auto");
     expect(await within(card).findByText("No data")).toBeInTheDocument();
     expect(follows(screen.getByRole("region", { name: "Employee sales" }), card)).toBe(true);

@@ -16,19 +16,18 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Captions, Library, RefreshCw, Star, X, Zap } from "lucide-react";
+import { Captions, Library, Loader2, RefreshCw, Star, X, Zap } from "lucide-react";
 
 import { IfButton, IfSegmented, IfSwitch } from "@/components/ui/infloww";
 import { useModalFocus } from "@/components/ui/ifModal";
 import { IF_FIELD, IfNativeSelect } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
-import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { useOfRefresh, vaultPickerSource } from "@/hooks/vaultRefresh";
-import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
+import { useMirrorItems, useOfSearch, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
 import { useWallMedia } from "@/hooks/useWallMedia";
@@ -154,7 +153,6 @@ export function VaultPicker(props: VaultPickerProps) {
   // Both hooks always mount; only the enabled one fetches, and neither before the summary's first answer
   // (`vaultPickerSource` "pending": the grid shows loading, never a false "No media in this filter"). A live
   // listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race (U4).
-  const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
   const pickerSource = open ? vaultPickerSource(cacheSummary) : "live";
   const source = pickerSource === "pending" ? "live" : pickerSource;
@@ -183,18 +181,8 @@ export function VaultPicker(props: VaultPickerProps) {
 
   // Harvest OF's own vault search for the current query and fold it into the
   // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
-  useEffect(() => {
-    if (!useLocalVault || !accountId || !query) return;
-    let cancelled = false;
-    searchOf(accountId, query)
-      .then(() => {
-        if (!cancelled) qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [useLocalVault, query, accountId, qc]);
+  // While it runs, an empty grid says "Searching OnlyFans…", not "No media".
+  const searchingOf = useOfSearch(accountId, query, useLocalVault);
 
   const allowedFolders = useMemo(
     () => folderAccessQ.data?.folders ?? [],
@@ -743,7 +731,13 @@ export function VaultPicker(props: VaultPickerProps) {
               Failed: {(vault.error as Error).message || "unknown"}
             </div>
           )}
-          {!vault.isLoading && !vault.isFetching && visibleItems.length === 0 && !vault.error && (
+          {!vault.isLoading && searchingOf && visibleItems.length === 0 && (
+            <div role="status" className="flex items-center justify-center gap-2 text-sm text-fg-dim py-12">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              Searching OnlyFans…
+            </div>
+          )}
+          {!vault.isLoading && !vault.isFetching && !searchingOf && visibleItems.length === 0 && !vault.error && (
             <div className="text-sm text-fg-dim text-center py-12">
               No media in this filter.
             </div>

@@ -45,11 +45,11 @@ describe("findPaths", () => {
 
   it("walks through a step it cannot name when another arrow follows", () => {
     expect(only("Growth → Smart Messages → Mass Messages → OF mass messages → the Auto-unsend card")).toEqual({
-      href: "/growth/smart-messages?tab=mass",
+      href: "/growth/smart-messages?tab=mass#go=OF+mass+messages&go=the+Auto-unsend+card",
       text: "Growth → Smart Messages → Mass Messages → OF mass messages",
     });
     expect(only("Messages Pro → + → Mass message")).toEqual({
-      href: "/messages-pro",
+      href: "/messages-pro#go=Mass+message",
       text: "Messages Pro → +",
     });
   });
@@ -73,7 +73,29 @@ describe("findPaths", () => {
     // Next sentence, or another path in between, is not this Settings' page.
     expect(only("Open Settings for it. Billing is elsewhere.")?.href).toBe("/settings");
     expect(findPaths("Settings, then Growth → Auto-follow, then AI keys").map((h) => h.href))
-      .toEqual(["/settings", "/growth/auto-follow"]);
+      .toEqual(["/settings", "/growth/auto-follow", "/settings/ai-keys"]);
+  });
+
+  it("links a page or tab of any section named in prose", () => {
+    const hrefs = (t: string) => findPaths(t).map((h) => [t.slice(h.start, h.end), h.href]);
+    expect(hrefs("Open Manage creators and press Add creator.")).toEqual([["Manage creators", "/creators"]]);
+    expect(hrefs("In Message dashboard, open Tips.")).toEqual([
+      ["Message dashboard", "/analytics/message-dashboard?tab=tips"],
+      ["Tips", "/analytics/message-dashboard?tab=tips"],
+    ]);
+    expect(hrefs("Message dashboard → Customs owed lists them.")).toEqual([
+      ["Message dashboard → Customs owed", "/analytics/message-dashboard?tab=customs"],
+    ]);
+    expect(hrefs("Turn on Auto-follow, then Auto Post.")).toEqual([
+      ["Auto-follow", "/growth/auto-follow"],
+      ["Auto Post", "/growth/auto-post"],
+    ]);
+    expect(hrefs("Growth — Smart Messages, Smart lists.").map(([, h]) => h))
+      .toEqual(["/growth/smart-messages", "/growth/smart-lists"]);
+    expect(hrefs("Smart Messages has a Mass Messages tab.")).toEqual([
+      ["Smart Messages", "/growth/smart-messages?tab=mass"],
+      ["Mass Messages", "/growth/smart-messages?tab=mass"],
+    ]);
   });
 
   it("matches a label that carries brackets", () => {
@@ -91,14 +113,17 @@ describe("findPaths", () => {
     // "Settings" is a head of its own (Your Account and the rest); as the
     // segment of a path the walk could not finish, it must not relink there.
     expect(only("Growth → Smart lists → Settings")).toEqual({
-      href: "/growth/smart-lists",
+      href: "/growth/smart-lists#go=Settings",
       text: "Growth → Smart lists",
     });
   });
 
   it("never links the head word inside a longer page name", () => {
     // "Settings" stands alone as a link, but "Role Settings" is its own page.
-    expect(findPaths("the owner's, Role Settings and Sales Settings included")).toEqual([]);
+    expect(findPaths("the owner's, Role Settings and Sales Settings included").map((h) => h.href))
+      .toEqual(["/settings/roles", "/settings/sales"]);
+    // One ordinary word is prose, not a page; a lowercase label is prose too.
+    expect(findPaths("Scripts and Billing are words; manage creators and auto post too")).toEqual([]);
     expect(only("open Settings for it")?.href).toBe("/settings");
   });
 
@@ -128,7 +153,7 @@ describe("findPaths", () => {
 
   it("falls back to the deepest page it named when the last segment is unknown", () => {
     expect(only("Analytics → Message dashboard → Something We Never Shipped")).toEqual({
-      href: "/analytics/message-dashboard",
+      href: "/analytics/message-dashboard#go=Something+We+Never+Shipped",
       text: "Analytics → Message dashboard",
     });
   });
@@ -158,8 +183,8 @@ describe("findPaths", () => {
     expect(only("Creators → Manage creators shows the badge.")?.href).toBe("/creators");
     // The connect-an-account path the help bot gives a user with no account
     // (assistant_api's no-account rule): the button's name stays prose.
-    expect(only("Creators → Manage creators → Add creator.")?.href).toBe("/creators");
-    expect(only("Employees → Manage employees → + Add employee")?.href).toBe("/employees");
+    expect(only("Creators → Manage creators → Add creator.")?.href).toBe("/creators#go=Add+creator");
+    expect(only("Employees → Manage employees → + Add employee")?.href).toBe("/employees#go=%2B+Add+employee");
   });
 
   it("leaves ordinary prose alone", () => {
@@ -221,7 +246,8 @@ describe("every path the help manual writes names a real page", () => {
   // A button a path walks through, not a page or a tab.
   const STEPS = new Set(["New Message"]);
 
-  const hrefOf = (parts: string[]) => findPaths(parts.join(" → "))[0]?.href;
+  // The route only: a `#go=` hash is a part inside the page, not a page.
+  const hrefOf = (parts: string[]) => findPaths(parts.join(" → "))[0]?.href.split("#")[0];
 
   it("finds paths to check", () => {
     expect(paths.length).toBeGreaterThan(40);

@@ -10,10 +10,12 @@ import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSegmented, IfSelect, IfS
 import { IF_FIELD } from "@/components/ui/ifSelect";
 import { useCreateRule, useUpdateRule, type AutomationRule } from "@/hooks/useAutomations";
 import { type Unit } from "@/components/automations/ruleInterval";
-import { LIST_KEY, type Kind } from "@/components/compose/premadeRows";
-import { KIND_COPY, hasContent, summarize } from "@/components/automations/readyMadeContent";
+import { LIST_KEY, type Kind } from "@/components/compose/payloadRules";
 import {
-  buildBody, canSave, currentPayload, editorView, initRuleEditor, ruleEditorReducer, type Fields,
+  formHoldNotice, KIND_COPY, MASS_PPV_ADVICE, summarize, waitHelp,
+} from "@/components/automations/readyMadeContent";
+import {
+  buildBody, canSave, derive, initRuleEditor, ruleEditorReducer, type Fields,
 } from "@/components/automations/ruleEditorForm";
 import { PremadeFields } from "@/components/compose/PremadeFields";
 import { useTouched } from "@/components/compose/useTouched";
@@ -38,26 +40,24 @@ export function ReadyMadeRuleEditor({
   const { touched, dispatch } = useTouched(s, rawDispatch, noSeed);
   const field = (patch: Partial<Fields>) => dispatch({ type: "field", patch });
   const raw = s.raw;
-  const view = editorView(s);
+  const d = derive(s);
+  const { view } = d;
 
   const busy = createM.isPending || updateM.isPending;
   const copy = KIND_COPY[kind];
-  const ready = canSave(s);
+  const ready = canSave(s, d);
   const submitLabel = isEdit ? "Save changes" : "Create";
-  const payload = currentPayload(s);
-  /** Why Create / Save changes waits: no text or media yet (the form), an empty list (Raw JSON). */
-  const emptyHelp = payload && hasContent(payload, kind) ? null
-    : view === "form" ? `Add text or media to enable ${submitLabel}.`
-    : `Add at least one ${copy.item} to enable ${submitLabel}.`;
+  /** Why Create / Save changes waits, in the words of the view the user is in. */
+  const emptyHelp = waitHelp(d.wait, view, kind, submitLabel);
 
   const fail = (error: string) => dispatch({ type: "raw", a: { type: "fail", error } });
 
   async function save() {
-    const body = buildBody(s);
+    const body = buildBody(s, d);
     if (!body) return; // Create is disabled; the parse error or the help line says why
-    if (body.every_seconds < 30) return fail("Interval must be at least 30 seconds.");
     try {
       if (isEdit && editing) {
+        // Untouched name / interval: the stored ones stay (buildBody leaves them out).
         await updateM.mutateAsync({ id: editing.id, ...body, name: body.name ?? editing.name });
       } else {
         // A blank name reads as the placeholder it showed, never the server's bare kind ("auto_posts").
@@ -73,14 +73,22 @@ export function ReadyMadeRuleEditor({
     name: `rm-${kind}-name`, every: `rm-${kind}-every`, items: `rm-${kind}-items`, emptyHelp: `rm-${kind}-empty-help`,
     error: `rm-${kind}-error`,
   };
-  const help = emptyHelp ? <IfHelp id={ids.emptyHelp}>{emptyHelp}</IfHelp> : null;
+  const help = (
+    <>
+      {emptyHelp && <IfHelp id={ids.emptyHelp}>{emptyHelp}</IfHelp>}
+      {/* D6: a warning only, Save stays on. */}
+      {d.advice === "ppv" && <IfHelp className="text-warn">{MASS_PPV_ADVICE}</IfHelp>}
+    </>
+  );
   const items = copy.items;
   return (
     <IfModal
       width={722}
       title={editing ? `Edit · ${editing.name}` : `New ${copy.noun}`}
       onClose={onClose}
-      keyboard={!touched}
+      // While saving, neither × nor Escape: a failed save must land on an open editor, not vanish with it.
+      closable={!busy}
+      keyboard={!touched && !busy}
       size="editor"
       footer={(
         <>
@@ -128,7 +136,8 @@ export function ReadyMadeRuleEditor({
         </div>
 
         {/* The one post / message: its fields inline (Composer), or hand-edited as JSON (paste a big media_files
-         *  pool, tweak a field the form doesn't expose). The Dry run switch owns `dry_run`. */}
+         *  pool, set a field the form doesn't expose — such a payload then stays in Raw JSON, `formHoldReason`). The Dry
+         *  run switch owns `dry_run`. */}
         <div role="group" aria-labelledby={ids.items}>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
             <IfLabel id={ids.items} className="mb-0 text-[16px] font-medium">{items}</IfLabel>
@@ -156,12 +165,13 @@ export function ReadyMadeRuleEditor({
               {help}
             </>
           ) : view === "legacy" ? (
-            // An older multi-item / timed rule keeps running; the one-item fields would drop its timers.
+            // A payload the one-item fields can't hold losslessly keeps running; the fields would drop its other keys.
             // Phone: stacked, 2-line summary, 44px full-width button.
             <div className="flex flex-col gap-3 rounded-md border border-border-light bg-bg-elev-1 px-4 py-4 sm:flex-row sm:items-center sm:gap-4">
               <div className="min-w-0 flex-1">
                 <span className="line-clamp-2 break-words text-fg sm:block sm:truncate">{summarize(raw.value, kind)}</span>
-                <IfHelp className="text-warn">Older multi-{copy.item} rule — edit in Raw JSON.</IfHelp>
+                {d.hold && <IfHelp className="text-warn">{formHoldNotice(d.hold, kind)}</IfHelp>}
+                {help}
               </div>
               <IfButton size="lg" icon={Code} className="border-border-light max-sm:h-11 max-sm:w-full"
                 onClick={() => dispatch({ type: "toRaw" })}>
@@ -170,8 +180,8 @@ export function ReadyMadeRuleEditor({
             </div>
           ) : (
             <>
-              <PremadeFields kind={kind} accountId={accountId} row={s.rows[0]}
-                dispatch={(a) => dispatch({ type: "rows", a })} />
+              <PremadeFields kind={kind} accountId={accountId} row={s.row}
+                dispatch={(a) => dispatch({ type: "row", a })} />
               {help}
             </>
           )}

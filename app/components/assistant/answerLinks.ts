@@ -11,6 +11,11 @@
  * pages draw their strips from, so a renamed or moved page or tab moves here
  * with it.
  *
+ * The bot also names pages in prose, with no arrow: "open Manage creators",
+ * "Settings has an Audit log page". A page or tab whose label is several words
+ * or hyphenated links on its own, and a head whose sentence names exactly one
+ * of its pages links that page too (see NAMED, namedBelow).
+ *
  * Resolution is BEST-EFFORT and lands on the deepest PAGE the path names: a
  * path whose last segment we cannot read still links to the page before it. A
  * sidebar group is a heading, not a page, so a group with no recognised page
@@ -20,6 +25,7 @@
  */
 
 import { isDivider, isGroup, SETTINGS_TABS, SIDEBAR, SIDEBAR_FOOTER, type NavLink } from "@/lib/nav";
+import { withSteps } from "@/lib/deepLink";
 import { MESSAGE_DASHBOARD_TABS, SMART_MESSAGES_TABS } from "@/lib/pageTabs";
 
 /** Lowercase, drop emoji/punctuation, collapse runs — "🗓️ Auto Posts" → "auto posts". */
@@ -39,11 +45,13 @@ interface Place {
   children?: Record<string, Place>;
   /** Linkable on its own, with no "→ …" after it (see BARE). */
   bare?: boolean;
+  /** The label exactly as the UI writes it (case kept), for prose matches. */
+  label?: string;
 }
 
 /** A page's tab strip as its children, each opening `?param=key`. */
 const tabs = (href: string, strip: Array<{ key: string; label: string }>, param = "tab"): Record<string, Place> =>
-  Object.fromEntries(strip.map(({ key, label }) => [norm(label), { href: `${href}?${param}=${key}` }]));
+  Object.fromEntries(strip.map(({ key, label }) => [norm(label), { href: `${href}?${param}=${key}`, label }]));
 
 const DASHBOARD = "/analytics/message-dashboard";
 
@@ -52,10 +60,11 @@ const BELOW: Record<string, Record<string, Place>> = {
   // The Customs tab's own heading, and the manual, say "Customs owed".
   [DASHBOARD]: tabs(DASHBOARD, [...MESSAGE_DASHBOARD_TABS, { key: "customs", label: "Customs owed" }]),
   "/growth/smart-messages": tabs("/growth/smart-messages", SMART_MESSAGES_TABS),
-  "/settings": Object.fromEntries(SETTINGS_TABS.map((l) => [norm(l.label), { href: l.href }])),
+  "/settings": Object.fromEntries(SETTINGS_TABS.map((l) => [norm(l.label), { href: l.href, label: l.label }])),
 };
 
-const place = (l: NavLink): Place => (BELOW[l.href] ? { href: l.href, children: BELOW[l.href] } : { href: l.href });
+const place = (l: NavLink): Place =>
+  BELOW[l.href] ? { href: l.href, children: BELOW[l.href], label: l.label } : { href: l.href, label: l.label };
 
 const childrenOf = (links: NavLink[]): Record<string, Place> =>
   Object.fromEntries(links.map((l) => [norm(l.label), place(l)]));
@@ -65,14 +74,43 @@ const childrenOf = (links: NavLink[]): Record<string, Place> =>
  *  path. */
 export const BARE: ReadonlySet<string> = new Set(["Messages Pro", "Settings", "Help center"]);
 
-/** Keyed by the nav label EXACTLY as the sidebar capitalises it — the match is
+/** The sidebar's own heads: its top-level entries, groups included. */
+const TOP: Array<[string, Place]> = [...SIDEBAR, ...SIDEBAR_FOOTER].flatMap((n): Array<[string, Place]> => {
+  if (isDivider(n)) return [];
+  const p = isGroup(n) ? { children: childrenOf(n.children) } : place(n);
+  return [[n.label, BARE.has(n.label) ? { ...p, bare: true } : p]];
+});
+
+/** A label no sentence writes by accident: several words, or a hyphenated
+ *  name ("Manage creators", "Audit log", "Auto-follow"). One plain word
+ *  ("Scripts", "Billing", "All") is ordinary prose, so it links only as part of
+ *  a path. */
+const DISTINCT_RE = /\s|-/;
+
+/** Every page and tab below the heads with a distinct label, each linkable on
+ *  its own: the bot names a page bare ("open Manage creators") as often as by
+ *  path. A label two places share links neither. */
+const NAMED: Array<[string, Place]> = (() => {
+  const seen = new Map<string, Place | null>();
+  const walk = (children: Record<string, Place> | undefined) => {
+    for (const p of Object.values(children ?? {})) {
+      if (p.label && p.href && DISTINCT_RE.test(p.label)) {
+        const had = seen.get(p.label);
+        seen.set(p.label, had === undefined || had?.href === p.href ? p : null);
+      }
+      walk(p.children);
+    }
+  };
+  TOP.forEach(([, p]) => walk(p.children));
+  const heads = new Set(TOP.map(([l]) => l));
+  return [...seen].flatMap(([l, p]): Array<[string, Place]> => (p && !heads.has(l) ? [[l, { ...p, bare: true }]] : []));
+})();
+
+/** Keyed by the label EXACTLY as the UI capitalises it — the match is
  *  case-sensitive, which is what keeps "the growth of an account" plain text. */
 const SECTIONS: Record<string, Place> = Object.fromEntries([
-  ...[...SIDEBAR, ...SIDEBAR_FOOTER].flatMap((n): Array<[string, Place]> => {
-    if (isDivider(n)) return [];
-    const p = isGroup(n) ? { children: childrenOf(n.children) } : place(n);
-    return [[n.label, BARE.has(n.label) ? { ...p, bare: true } : p]];
-  }),
+  ...NAMED,
+  ...TOP,
   // Not a nav entry but the manual's name for a queue: straight to its tab.
   ["Customs", { ...BELOW[DASHBOARD].customs, bare: true }],
 ]);
@@ -100,31 +138,35 @@ const RUN_END_RE = new RegExp(`\\n|${ARROW}`);
  *  the link text. */
 const SEG_END = new RegExp(`[\\n,;:()[\\]"“”*\`]|\\s—\\s|\\.(?=\\s|$)|${ARROW}`);
 
-/** Settings' pages by their label as the nav writes it, longest first. The bot
- *  sometimes names one in prose instead of a path ("Settings has an Audit log
- *  page"); matched case-sensitively, like the heads, so "billing" in a sentence
- *  stays plain. */
-const SETTINGS_NAMED: Array<[string, string]> = SETTINGS_TABS
-  .map((l): [string, string] => [l.label, l.href])
-  .sort((a, b) => b[0].length - a[0].length);
-/** Where a sentence ends: the look-ahead for a Settings page stops here. */
+/** Where a sentence ends: the look-ahead for a page below a head stops here. */
 const SENTENCE_END_RE = /[\n!?]|\.(?=\s|$)/;
 
-/** A Settings page named later in the same sentence as a bare "Settings", with
- *  no arrow and no other head in between: its label's span and href. */
-function settingsPageAfter(text: string, from: number): { start: number; end: number; href: string } | null {
+/** A page or tab of `children` named later in the same sentence as a head that
+ *  took no arrow ("Settings has an Audit log page", "In Message dashboard,
+ *  open Tips"), with no arrow and no other head in between: its label's span and
+ *  href. A sentence naming two or more ("Growth — Smart Messages, Smart lists")
+ *  is a list, not a pointer: null, and each named page links itself. At one
+ *  spot, the longest label wins ("Customs owed" over "Customs"). */
+function namedBelow(text: string, from: number, children: Record<string, Place>): PathHit | null {
   const tail = text.slice(from);
   const sentence = tail.slice(0, SENTENCE_END_RE.exec(tail)?.index ?? tail.length);
-  let best: { start: number; end: number; href: string } | null = null;
-  for (const [label, href] of SETTINGS_NAMED) {
+  const found: PathHit[] = [];
+  for (const { label, href } of Object.values(children)) {
+    if (!label || !href) continue;
     const at = new RegExp(`(?<![\\p{L}\\p{N}])${esc(label)}(?![\\p{L}\\p{N}])`, "u").exec(sentence)?.index;
-    if (at !== undefined && (!best || at < best.start - from)) best = { start: from + at, end: from + at + label.length, href };
+    if (at !== undefined) found.push({ start: from + at, end: from + at + label.length, href });
   }
-  if (!best) return null;
+  // A label inside a longer one found at the same spot is that one, not a second page.
+  const pages = found.filter((h) => !found.some((o) => o !== h && o.start <= h.start && o.end >= h.end));
+  if (pages.length !== 1) return null;
+  const best = pages[0];
   const between = text.slice(from, best.start);
   if (new RegExp(ARROW).test(between) || new RegExp(HEAD_RE.source).test(between)) return null;
   return best;
 }
+
+/** A path's last, unlinked segment longer than this is a sentence, not a part's name. */
+const MAX_TAIL_WORDS = 5;
 
 export interface PathHit {
   /** Index of the first character of the linked run. */
@@ -177,12 +219,17 @@ export function findPaths(text: string): PathHit[] {
     // Settings" must not link "Settings" to Your Account.
     if (AFTER_ARROW_RE.test(text.slice(0, m.index))) continue;
     const prev = PREV_WORD_RE.exec(text.slice(0, m.index))?.[1];
-    if (prev && NAMES.has(norm(`${prev} ${m[1]}`))) continue;
+    // (A "word" that is all punctuation, like an em dash, is no part of a name.)
+    if (prev && norm(prev) && NAMES.has(norm(`${prev} ${m[1]}`))) continue;
     const head = SECTIONS[m[1]];
     const headEnd = m.index + m[1].length;
     let cursor = headEnd;
     let end = headEnd;
     let at = head;
+    // The segments below the deepest page the walk named: a tab, card or
+    // section with no route ("OF mass messages", "the Auto-unsend card"). They
+    // ride the href's hash and DeepLinkTarget opens them on the page.
+    let steps: string[] = [];
 
     // Walk "→ segment" pairs for as long as they keep arriving.
     for (;;) {
@@ -194,6 +241,7 @@ export function findPaths(text: string): PathHit[] {
       const hit = at.children && leadingLabel(run, at.children);
       if (hit) {
         at = hit.place;
+        steps = [];
         end = segStart + hit.length;
         // The label may be followed by prose ("Auto Post and press …"); only
         // keep walking when the run WAS the label and an arrow follows.
@@ -206,25 +254,32 @@ export function findPaths(text: string): PathHit[] {
       // stops before it.
       const stop = SEG_END.exec(tail);
       const seg = stop ? tail.slice(0, stop.index) : tail;
-      if (!seg.trim() || !ARROW_RE.test(text.slice(segStart + seg.length))) break;
+      if (!seg.trim()) break;
+      if (!ARROW_RE.test(text.slice(segStart + seg.length))) {
+        // The last segment: prose may run on in it, so it stays out of the
+        // link's text, but a short one still names the part to open.
+        if (seg.trim().split(/\s+/).length <= MAX_TAIL_WORDS) steps.push(seg.trim());
+        break;
+      }
+      steps.push(seg.trim());
       end = segStart + seg.trimEnd().length;
       cursor = segStart + seg.length;
     }
 
-    // A group with no page recognised under it names no page. With nothing
-    // consumed past the head, only some pages stand alone.
-    if (!at.href || (end === headEnd && !head.bare)) continue;
-
-    // A bare "Settings" whose sentence goes on to name one of its pages links
-    // that page, and the page's own label with it.
-    const named = end === headEnd && m[1] === "Settings" ? settingsPageAfter(text, headEnd) : null;
+    // A head that took no arrow but whose sentence goes on to name one of its
+    // pages links that page, and the page's own label with it.
+    const named = end === headEnd && head.children ? namedBelow(text, headEnd, head.children) : null;
     if (named) {
       hits.push({ start: m.index, end, href: named.href }, named);
       HEAD_RE.lastIndex = named.end;
       continue;
     }
 
-    hits.push({ start: m.index, end, href: at.href });
+    // A group with no page recognised under it names no page. With nothing
+    // consumed past the head, only some pages stand alone.
+    if (!at.href || (end === headEnd && !head.bare)) continue;
+
+    hits.push({ start: m.index, end, href: withSteps(at.href, steps) });
     HEAD_RE.lastIndex = end; // never emit overlapping hits
   }
 

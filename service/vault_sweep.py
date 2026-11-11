@@ -17,13 +17,21 @@ left the next fault class to be fixed in one and not the other, which is how the
 two drifted in the first place (they disagreed about what `done` counts).
 
 WHAT A `visit` MUST RETURN. A dict — the shape `_describe_one` / `_flags_one`
-already return, so nothing had to change to adopt this:
+return, plus the optional `extra` a visit that settles riders adds:
 
     ok               truthy ⇒ the item was processed. Anything else is a failure.
     status           "capped" ⇒ the day's budget is gone; the sweep STOPS. Every
                      other value is informational.
     detail           why it failed, for the operator. The FIRST one is kept.
     cost_millicents  optional; summed across the run.
+    extra            optional list of results for OTHER items this visit also
+                     settled (a duplicate copied from the item just described).
+                     Each counts as one visited item; `extra_total` (a `run`
+                     kwarg) is how many such riders `total` includes up front.
+
+`settled` (a `run` kwarg) is results of items finished BEFORE the walk (free
+copies made up front): counted into `total` and `done` from the first publish,
+so a status poll reads one pass however its items were settled.
 
 A `visit` that raises is a failure like any other — it does not end the sweep.
 The ONE exception is `llm_client.LLMKeyError`: the key is missing or the
@@ -47,7 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NamedTuple
 
 from llm_client import LLMKeyError, key_error_payload
@@ -82,6 +90,8 @@ async def run(
     into: dict[str, dict[str, Any]],
     key: str,
     label: str,
+    extra_total: int = 0,
+    settled: Sequence[dict[str, Any]] = (),
 ) -> SweepResult:
     """Visit every id, `concurrency` at a time, publishing progress as it goes.
 
@@ -90,11 +100,23 @@ async def run(
     what the status endpoint serves, and it deliberately outlives the sweep so a
     UI arriving late still learns how the last pass ended.
     """
-    total = len(ids)
+    total = len(ids) + extra_total + len(settled)
     done = failed = cost = 0
     capped = False
     first_error = ""
     key_error: dict | None = None
+
+    def _count(r: dict[str, Any]) -> None:
+        nonlocal done, failed, cost, first_error
+        if not r.get("ok"):
+            failed += 1
+            if not first_error and r.get("detail"):
+                first_error = str(r["detail"])[:200]
+        cost += int(r.get("cost_millicents") or 0)
+        done += 1
+
+    for r in settled:
+        _count(r)
 
     def _publish() -> None:
         into[key] = {"total": total, "done": done, "failed": failed,
@@ -126,15 +148,11 @@ async def run(
                        "detail": f"{type(e).__name__}: {e}"[:200]}
             if res.get("status") == "capped":
                 capped = True
-            if not res.get("ok"):
-                failed += 1
-                if not first_error and res.get("detail"):
-                    first_error = str(res["detail"])[:200]
-            cost += int(res.get("cost_millicents") or 0)
-            done += 1
+            for r in (res, *(res.get("extra") or ())):
+                _count(r)
             _publish()
 
-    for i in range(0, total, CHUNK):
+    for i in range(0, len(ids), CHUNK):
         if capped or key_error:
             break
         # `return_exceptions` is the backstop behind `_one`'s own guard: a bare

@@ -57,8 +57,7 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import {
-  BookmarkPlus, FileText, Info as InfoIcon, Lightbulb, Loader2, MessageCircleMore, Undo2, UserStar,
-  type LucideIcon,
+  BookmarkPlus, FileText, Lightbulb, Loader2, MessageCircleMore, Undo2, UserStar, type LucideIcon,
 } from "lucide-react";
 
 import { dayIn, referralsTotal, useReferrals, type ReferralsResp } from "@/hooks/useReferrals";
@@ -82,6 +81,7 @@ import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
 import { CHARGEBACKS_UNAVAILABLE, netMissingNote } from "@/components/home/netMissingNote";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
 export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";
@@ -97,6 +97,19 @@ interface RevenueRow {
 interface RevenueResp { rows: RevenueRow[] }
 
 type Channel = "subscriptions" | "tips" | "posts" | "referrals" | "messages" | "chargebacks";
+
+/** Ours: what each earnings tile counts, on its ⓘ (the bundle's tiles have none). */
+const TILE_TIP: Record<Channel | "total", string> = {
+  total: "Everything your managed Creators earned in this period: all sales plus referrals, gross or net as picked on "
+    + "the right. Counts sales OnlyFans hasn't cleared yet; charged-back sales are left out.",
+  subscriptions: "New subscriptions and renewals in this period.",
+  tips: "Tips fans sent in chat and on posts in this period.",
+  posts: "Paid post unlocks in this period.",
+  referrals: "Earnings from OnlyFans creator referrals in this period.",
+  messages: "Paid message unlocks and paid customs sold in chat in this period.",
+  chargebacks: "Sales in this period that fans later charged back, shown below zero. Already left out of Total earnings.",
+};
+const BASIS_TIP = "Gross: what fans paid. Net: what the Creators keep after OnlyFans' fee.";
 
 /**
  * The capture's channels and the Relay's sales kinds (`transaction_ingest.KIND_CATALOG`)
@@ -137,9 +150,7 @@ const label = (key: DashboardControlKey) => control(key).labels[0];
 /** The ⓘ beside a title: its tooltip is the catalogue label. */
 function Info({ k }: { k: DashboardControlKey }) {
   return (
-    <span data-control={k} role="img" title={label(k)} aria-label={label(k)} className="text-fg-dim cursor-help">
-      <InfoIcon className="h-3.5 w-3.5" aria-hidden />
-    </span>
+    <InfoTip data-control={k} text={label(k)} className="text-fg-dim" />
   );
 }
 
@@ -224,7 +235,9 @@ function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
             {fmtCents(sum)}
           </span>
         )}
-        <span className="text-[12px] leading-[17px] text-[#808080]">{label(k)}</span>
+        <span className="flex items-center gap-1 text-[12px] leading-[17px] text-[#808080]">
+          {label(k)}<InfoTip text={TILE_TIP[k]} iconClassName="h-3 w-3" />
+        </span>
       </div>
       <TileIcon k={k} />
     </div>
@@ -428,9 +441,10 @@ export default function DashboardHeader() {
           </span>
           <span className="ml-1"><Info k="timeZoneTip" /></span>
         </div>
-        <span data-control="basis">
+        <span data-control="basis" className="flex items-center gap-2">
           <IfSelect size="lg" aria-label="Earnings" value={basis} options={BASIS_OPTIONS} onChange={setBasis}
             className="w-[140px]" />
+          <InfoTip text={BASIS_TIP} className="text-fg-dim" />
         </span>
       </div>
 
@@ -453,7 +467,9 @@ export default function DashboardHeader() {
             <span aria-hidden data-icon="total" className="w-[45px] h-[45px] rounded-full bg-accent flex items-center justify-center">
               <OnlyfansLine size={26} className="text-white" />
             </span>
-            <span className="text-[12px] leading-[15px] font-medium mt-[18px] mb-3 text-[#1890ff]">{label("total")}</span>
+            <span className="flex items-center gap-1 text-[12px] leading-[15px] font-medium mt-[18px] mb-3 text-[#1890ff]">
+              {label("total")}<InfoTip text={TILE_TIP.total} iconClassName="h-3 w-3" />
+            </span>
             {!ready || revenue.isPending ? (
               <span className="h-[45px] flex items-center"><Shimmer what={label("total")} className="h-[34px] w-32" /></span>
             ) : (

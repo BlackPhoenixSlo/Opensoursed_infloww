@@ -88,8 +88,11 @@ Automations are set up in these places:
   **Expired**, **Resubscribe** and **Birthday**. A trigger that is not set up
   yet is added from **New Message** (its card there).
 - **Growth → Smart Messages → Mass Messages** — the mass sends: **Priority mass
-  messages**, **OF mass messages** (with the Auto-unsend card) and the list of
-  every scheduled send.
+  messages** and **OF mass messages**.
+- **Growth → Smart Messages → Mass Auto Unsend Messages** — the hourly
+  **Auto-unsend (automation)** card.
+- **Growth → Smart Messages → Scheduled** — every scheduled send, direct and
+  mass.
 - **Growth → Auto-follow** and **Growth → Profile promotion** (Keep promos
   running).
 - **Share for Share** — the S4S posts a creator swaps with a partner.
@@ -142,7 +145,7 @@ Story, Auto Mass, Auto-reply, Get to know fans, Gen-Info), the Auto Funnel **Rep
 switch, the Smart Messages triggers (Nudge, Delayed welcome, Purchased and the
 lifecycle ones), Growth → Auto-follow, the **Auto-activate campaign** switch on
 Growth → Profile promotion and the **Auto-unsend (automation)** card on Smart
-Messages → Mass Messages.
+Messages → Mass Auto Unsend Messages.
 
 **2. No switch in the app at all:** the operator-only automations in "Removed
 or operator-only" — Follow-ups, the Audience fence, ⚡ Reply Instant, and the
@@ -270,10 +273,14 @@ phone locked.
 
 ## Connecting an OnlyFans account
 
-**Where:** **Creators → Manage creators → Add creator.** Owners only. The
-window opens on two choices: **Browser login** (recommended, works on a phone
-too) and **Extension** (the fallback, desktop Chrome only). There is no proxy to
-pick: a new account gets one automatically.
+**Where:** **Creators → Manage creators → Add creator.** Owners only. Three
+steps: the creator's details (**Creator name** and **Gender**, both required,
+an image optional), the platform (**OnlyFans** or **Fansly**), then the sign-in
+with two choices: **Browser login** (recommended, works on a phone too) and
+**Extension** (the fallback, desktop Chrome only). A draft's or a row's **Link
+creator account** opens straight on the sign-in. There is no proxy to pick: an
+account with no proxy yet goes on the default proxy automatically (when one is
+available); an account already on a proxy keeps it.
 
 **Browser login (try this first):**
 1. Type the creator's **OnlyFans email** and **OnlyFans password**, then press
@@ -283,9 +290,20 @@ pick: a new account gets one automatically.
    **Open live view full screen**). If it asks for a 2FA code, type it in the
    **2FA code** box and press **Submit code**.
 3. When it links, the window shows "Creator account is linked", the account and
-   its proxy, and the account details (Nickname, Tag, Assigned employees,
-   Internal notes). Press **Done** to save them. A blank nickname takes the
-   account's own name.
+   its proxy, and the account details (Nickname, filled with the Creator name;
+   Tag, Assigned employees, Internal notes). Press **Done** to save them. A
+   blank nickname takes the account's own name. If the settings didn't load,
+   Done says so and keeps the window open; press it again.
+4. Optional: **Click here to add your proxy** on that screen. Your proxy is
+   tested first; the creator's current proxy stays until yours passes and is
+   assigned. The checkbox (on by default) decides what a failed test does: on,
+   the creator stays where it is (an account on no proxy goes on the default
+   proxy) and the window says so; off, the form stays open with the error so
+   you can fix it. If the proxy is assigned but the session refresh fails,
+   press **Retry session refresh**.
+
+Leaving the sign-in while a Browser login runs (Cancel, ×) stops that login;
+**Back** is hidden until it finishes.
 
 **Extension (if browser login doesn't work):**
 1. Choose **Extension**. Install the **Chatterly Login Capture** Chrome
@@ -296,8 +314,9 @@ pick: a new account gets one automatically.
 3. Paste it into **Copied cURL** (it must start with `curl`) and press **Link
    account**. Then the same linked screen and **Done**.
 
-**Fansly:** the small **Link a Fansly account instead** link under the two
-choices switches to the Fansly paste session.
+**Fansly:** pick **Fansly** on the platform step, or the small **Link a
+Fansly account instead** link under the two choices. It is a paste session,
+desktop only; on a phone the window says so.
 
 **Re-capturing.** The session is a copy of that browser login. It keeps working
 across OnlyFans front-end updates (new builds), so a new OnlyFans build is never
@@ -311,10 +330,11 @@ immediately clears a paused account.
 **Caveats:**
 - With the Extension, the cookies were minted on your own computer's IP while
   later calls leave from the assigned proxy, so OnlyFans may see a sign-in from
-  a new place; the window says so. If the session captures but the proxy attach
-  fails, the result says so, with **Retry** and **Continue**.
-- Want a specific proxy? Change it afterwards: the row's **Edit → Change
-  proxy**, or **Creators → Custom proxy**.
+  a new place; the window says so. An account already on a proxy keeps it. If
+  the session captures but the proxy attach fails, the result says so, with
+  **Retry** and **Continue**.
+- Want a specific proxy? Add it on the linked screen, or change it afterwards:
+  the row's **Edit → Change proxy**, or **Creators → Custom proxy**.
 
 ## The Brain (persona, clock, daily cap, models)
 
@@ -1238,10 +1258,10 @@ photos.
 from every recipient, individual chat bubbles, a feed post or a story, or a sweep
 that cleans up anything older than the hours you set.
 
-**Where:** **Growth → Smart Messages → Mass Messages → OF mass messages → the
+**Where:** **Growth → Smart Messages → Mass Auto Unsend Messages → the
 "Auto-unsend (automation)" card.** Tick the model, set the hours per class,
 Save. To pull back one broadcast by hand, use the unsend button in the sent list
-on the same tab.
+on Growth → Smart Messages → Mass Messages → OF mass messages.
 
 **How to enable:** Saving that card creates or updates one hourly rule per
 account named "Auto-unsend mass". Ticking alone does nothing until you Save.
@@ -1277,8 +1297,7 @@ delivered message is credited to the chatter who scheduled it.
 **Where:** The **schedule picker in the chat composer**. It then shows as a
 pending bubble in that fan's chat thread — every chatter on the model sees it
 there, and any of them can cancel it from that bubble before it fires.
-(Growth → Smart Messages → Mass Messages → "Every scheduled send, direct and
-mass" is a *different* list: it shows OnlyFans' own queue, i.e. the sends
+(Growth → Smart Messages → Scheduled is a *different* list: it shows OnlyFans' own queue, i.e. the sends
 further than 15 minutes out.)
 
 **How to enable:** Nothing to enable — it is created automatically whenever a
@@ -1286,8 +1305,8 @@ chatter schedules a message.
 
 **Caveats:**
 - Only sends **15 minutes or less** in the future use this. Anything further out
-  is handed to OnlyFans' own queue — that is what the "Every scheduled send"
-  list on Smart Messages → Mass Messages shows and cancels. The near-term ones
+  is handed to OnlyFans' own queue — that is what the Growth → Smart Messages →
+  Scheduled tab shows and cancels. The near-term ones
   are cancelled from the pending bubble in the chat thread instead, not from
   that list.
 - Cancelling only works while it is still waiting; once the worker picks it up it

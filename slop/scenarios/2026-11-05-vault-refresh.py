@@ -42,6 +42,13 @@ UI (small run, Chromium):
      (grid == that folder's newest), then "All media" (grid == the vault's newest, first tile in the viewport), then
      "All media" again (unchanged). Screenshots vault-allmedia-<dev>-trigger (folder picked, All media's counts),
      -settled (All media's grid), -again.
+  D. Search, after C (desktop and phone, same pages): K_SEARCH old media get a PPV caption on OnlyFans holding
+     SEARCH_TERM (VaultWire.caption), a term the mirror's text lacks; the term is typed in the Caption search with
+     POST /admin/vault-ai/search-of held in the page (Playwright route, continued unchanged). SEARCH_PENDING: while
+     held the empty grid spins "Searching OnlyFans…", and from typing to the filled grid "No data" never shows in
+     the grid (a MutationObserver: the grid's EmptyState). Screenshot vault-search-<dev>-trigger; let through; SEARCH_FILLS: search-of
+     200 with exactly those ids, the grid then exactly them newest first, the spinner gone, of_terms holds the term
+     on each (DB). Screenshot vault-search-<dev>-settled.
 
 Load (stage `sync`, also --no-ui): K_LOAD new media in a new folder made on OnlyFans for each load Creator, then
 `--users` owner sessions press Refresh at once (POST /admin/vault-ai/sync, round-robin over the load Creators, a
@@ -59,7 +66,8 @@ invalidate and its first Refresh POST are held in the page (Playwright route, th
 trigger screenshots and the click burst (milliseconds otherwise). The load's sessions share one
 owner login (`ctx.owner.share`).
 Break-it-once: vault-refresh-cache-only (FAULT, client: the pre-fix Refresh; REFRESH_FOLDER, REFRESH_MEDIA,
-REFRESH_WIRE, REFRESH_FAIL_SHOWN, PICKER_FAILURE), vault-refresh-fail-silent (client: a failed sync reads as ok; REFRESH_FAIL_SHOWN),
+REFRESH_WIRE, REFRESH_FAIL_SHOWN, PICKER_FAILURE), vault-search-no-spinner (client: "No data" while OF's search
+runs; SEARCH_PENDING), vault-refresh-fail-silent (client: a failed sync reads as ok; REFRESH_FAIL_SHOWN),
 vault-thumbs-no-auto-refresh (client; THUMBS_RELOAD), vault-all-media-no-counts (client: the list's `all`
 dropped; ALL_COUNTS), vault-sync-no-coalesce (relay; SYNC_COALESCED; run with
 --no-ui).
@@ -78,7 +86,7 @@ from slop.lib.img_relay import arm_run, policy_exp
 from slop.lib.vault_ui import TOURS_SEEN, open_vault_picker, open_vault_pro, cdn_calls as _cdn_calls, captured
 from slop.lib.vault_wire import HOST, SIGN_TTL_S, VaultWire, path as cdn_path
 from slop.lib.vault_refresh_faults import (ALL_COUNTS, ALL_TAP, PICKER_FAILURE, REFRESH_FAIL_SHOWN, REFRESH_FOLDER,
-                                           REFRESH_MEDIA, REFRESH_WIRE,
+                                           REFRESH_MEDIA, REFRESH_WIRE, SEARCH_FILLS, SEARCH_PENDING,
                                            SYNC_COALESCED, SYNC_LOAD, THUMBS_RELOAD)
 from slop.seed import of_sessions, vault_cache, vault_week
 
@@ -110,6 +118,10 @@ MEDIA_PATH = "/api/of/v2/vault/media"
 INVALIDATE_PATH = "/admin/vault/cache/invalidate"
 OF_MEDIA_ROUTE = "GET /api2/v2/vault/media"
 FAIL_NOTE = "Couldn't reach OnlyFans, showing saved vault"   # VaultManagePanel's refreshNote
+SEARCH_PATH = "/admin/vault-ai/search-of"
+SEARCH_TERM = "zebra leggings"   # only OF's search knows it (a PPV caption); no mirror text holds it
+SEARCHING = "Searching OnlyFans…"   # VaultManagePanel's empty grid while OF's own search runs
+K_SEARCH = 3
 DESKTOP, PHONE = (1440, 900), (390, 844)
 WAIT_MS = 120_000
 SETTLE_MS = 25_000
@@ -182,13 +194,14 @@ async def run(ctx) -> None:
     ctx.rec.stage = "ui"
     if ctx.app is None:
         for c in (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE, REFRESH_FAIL_SHOWN, ALL_COUNTS, ALL_TAP, THUMBS_RELOAD,
-                  PICKER_FAILURE):
+                  PICKER_FAILURE, SEARCH_PENDING, SEARCH_FILLS):
             ctx.skip(c, "--no-ui")
     else:
         a = [await _refresh_ui(ctx, w, vw, aid, dev, made_on_of)
              for aid, dev in zip(mirror_ui, ("desktop", "phone"))]
         _check_refresh(ctx, w, a)
         _check_all_media(ctx, a)
+        _check_search(ctx, a)
         b = [await _picker_ui(ctx, w, vw, aid, dev)
              for aid, dev in zip(live_ui, ("desktop", "phone"))]
         _check_picker(ctx, w, b)
@@ -254,6 +267,14 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
             got["fail"] = await _refresh_fails(ctx, page, aid, dev, tiles)
         except Exception as e:  # noqa: BLE001 — the check reports it
             got["fail"] = {"error": f"{type(e).__name__}: {e}"[:600]}
+        try:  # its own step, on the grid as the owner left it
+            got["search"] = await _search(ctx, page, vw, aid, dev, tiles)
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            got["search"] = {**got.get("search", {}), "error": f"{type(e).__name__}: {e}"[:600]}
+            try:
+                got["search"]["failed_shot"] = await ui.shot(ctx, page, f"failed-vault-search-{dev}")
+            except Exception:  # noqa: BLE001
+                pass
         got["held_of_reads"] = len(page.slop["held_of_reads"])
     con = w.sql()
     try:
@@ -265,6 +286,11 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
                           (aid, vault_cache.LISTS_KEY)).fetchone()
         got["lists_cached_after_click"] = bool(row and "clicked_at" in got and datetime.strptime(
             row[0][:19], "%Y-%m-%d %H:%M:%S").timestamp() >= _utc_epoch_floor(got["clicked_at"]))
+        hits = (got.get("search") or {}).get("hits") or []
+        if hits:
+            got["search"]["db_terms"] = {m: json.loads(t or "[]") for m, t in con.execute(
+                f"SELECT media_id, of_terms FROM vault_items WHERE account_id=? AND media_id IN "
+                f"({','.join('?' * len(hits))})", (aid, *hits))}
     finally:
         con.close()
     (ctx.out / f"vault-refresh-{dev}.json").write_text(json.dumps(got, indent=2, default=str))
@@ -383,6 +409,91 @@ async def _refresh_fails(ctx, page, aid: str, dev: str, tiles) -> dict:
         with ctx.of_wire.lock:
             ctx.of_wire.fail.discard((aid, OF_MEDIA_ROUTE))
     return out
+
+
+# ── D: a caption search only OnlyFans answers ──────────────────────
+
+_WATCH_NO_DATA = """() => {
+  window.__slopNoData = 0;
+  const seen = () => {
+    if ([...document.querySelectorAll("section [data-empty-state]")].some(e => /No data/.test(e.textContent)))
+      window.__slopNoData += 1;
+  };
+  window.__slopNoDataObs = new MutationObserver(seen);
+  window.__slopNoDataObs.observe(document.body, {subtree: true, childList: true, characterData: true});
+}"""
+_STOP_NO_DATA = "() => { window.__slopNoDataObs && window.__slopNoDataObs.disconnect(); return window.__slopNoData; }"
+
+
+async def _search(ctx, page, vw, aid: str, dev: str, tiles) -> dict:
+    """SEARCH_TERM typed in the Caption search; OF's own search (POST search-of) held in the page, then let through."""
+    hits = [m["id"] for m in vw.vault(aid)["media"][-K_SEARCH:]]   # old media, newest first; in the mirror
+    out: dict = {"hits": hits}
+    vw.caption(aid, hits, f"New {SEARCH_TERM} set, unlock it 💕")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(route):
+        entered.set()
+        await release.wait()
+        await route.continue_()
+
+    match = lambda u: urlsplit(u).path == SEARCH_PATH  # noqa: E731
+    box = page.get_by_placeholder("Search media by PPV caption")
+    searching = page.get_by_role("status").filter(has_text=SEARCHING)
+    await page.route(match, hold)
+    try:
+        await page.evaluate(_WATCH_NO_DATA)
+        await box.fill(SEARCH_TERM, timeout=10_000)
+        await asyncio.wait_for(entered.wait(), SETTLE_MS / 1000)
+        try:
+            await searching.first.wait_for(timeout=SETTLE_MS)
+        except Exception as e:  # noqa: BLE001 — recorded below; the check reports it
+            out["pending_error"] = type(e).__name__
+        await page.wait_for_timeout(1500)   # held: the state stands
+        out["pending_spinner"] = await searching.count()
+        out["pending_tiles"] = await tiles.count()
+        out["trigger_shot"] = await ui.shot(ctx, page, f"vault-search-{dev}-trigger")
+        async with page.expect_response(lambda r: match(r.url) and r.request.method == "POST",
+                                        timeout=SETTLE_MS) as resp:
+            release.set()
+        r = await resp.value
+        out["search_of"] = {"status": r.status, "body": await r.json() if r.ok else (await r.text())[:300]}
+        await page.locator(f"section [title^='#{hits[0]} ']").first.wait_for(timeout=SETTLE_MS)
+        st = await _grid_until(page, hits)
+        await page.wait_for_timeout(500)
+        out["grid"] = st["ids"]
+        out["tiles"] = await tiles.count()
+        out["settled_spinner"] = await page.get_by_text("Searching OnlyFans", exact=False).count()
+        out["no_data_seen"] = await page.evaluate(_STOP_NO_DATA)
+        out["settled_shot"] = await ui.shot(ctx, page, f"vault-search-{dev}-settled")
+    finally:
+        release.set()
+        await page.unroute(match, hold)
+    return out
+
+
+def _check_search(ctx, runs: list[dict]) -> None:
+    ss = [g.get("search") or {"error": g.get("error", "not run")} for g in runs]
+    pending_ok = ["error" not in s and s.get("pending_spinner", 0) >= 1 and s.get("pending_tiles") == 0
+                  and s.get("no_data_seen") == 0 for s in ss]
+    fills_ok = []
+    for s in ss:
+        body = (s.get("search_of") or {}).get("body")
+        body = body if isinstance(body, dict) else {}
+        hits = s.get("hits") or []
+        fills_ok.append("error" not in s and (s.get("search_of") or {}).get("status") == 200
+                        and sorted(body.get("ids") or []) == sorted(hits) and len(hits) == K_SEARCH
+                        and s.get("grid") == hits and s.get("tiles") == K_SEARCH and s.get("settled_spinner") == 0
+                        and all(SEARCH_TERM in (s.get("db_terms") or {}).get(m, []) for m in hits))
+    devs = [g["dev"] for g in runs]
+    shots = [[s.get("trigger_shot"), s.get("settled_shot") or s.get("failed_shot")] for s in ss]
+    ctx.check(SEARCH_PENDING, all(pending_ok), per_dev=dict(zip(devs, pending_ok)),
+              pending=[{k: s.get(k) for k in ("pending_spinner", "pending_tiles", "no_data_seen", "pending_error",
+                                              "error")} for s in ss], shots=shots)
+    ctx.check(SEARCH_FILLS, all(fills_ok), per_dev=dict(zip(devs, fills_ok)),
+              want=[s.get("hits") for s in ss], grid=[s.get("grid") for s in ss], tiles=[s.get("tiles") for s in ss],
+              search_of=[s.get("search_of") for s in ss], db_terms=[s.get("db_terms") for s in ss],
+              errors=[s.get("error") for s in ss], shots=shots)
 
 
 def _check_refresh(ctx, w, runs: list[dict]) -> None:

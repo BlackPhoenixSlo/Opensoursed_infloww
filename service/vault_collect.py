@@ -45,8 +45,9 @@ server._on_proxy_switched: the walk's client is bound to the old IP). Its row
 stays `running` at its cursor, so it is resumed first once the account is free,
 with a fresh client. Dead-session / OTP / deactivated accounts are not
 candidates. Every OF call runs inside an of_pacing walk (the Creator's shared
-pacer, one retry on OF's 429). Not reused: vault_ai_api's Collect (it also warms
-full images, posters and storyboards, and sleeps 0.15 s between pages).
+pacer, one retry on OF's 429). vault_ai_api's Collect reuses only (a)-(b)
+(`hot_folders`, with its own call pacing); the rest is its own (it also warms full
+images, posters and storyboards, and sleeps 0.15 s between OF calls).
 
 Env knobs (read at import):
   VAULT_COLLECT_ENABLED=1             0 = never registered
@@ -62,11 +63,12 @@ Env knobs (read at import):
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
 
@@ -124,6 +126,11 @@ _auto_running: set[str] = set()        # the account being walked (≤1)
 _abort: dict[str, asyncio.Event] = {}  # aid → set by `preempt`
 _skipped_since: dict[str, float] = {}  # aid → monotonic() of its first skip / yield; cleared when a walk ends any other way or on `preempt`
 _last_call_end = 0.0                   # monotonic() when the last OF call returned
+
+
+# One OF call: `await call(client.method, **kw)`. The collector's is `_of_call`
+# bound to the account; the manual Collect (vault_ai_api) brings its own.
+OfCall = Callable[..., Awaitable[Any]]
 
 
 # ── seams (tests patch these) ─────────────────────────────────────────
@@ -288,28 +295,37 @@ async def tick() -> None:
 
 # ── the walk ──────────────────────────────────────────────────────────
 
-async def _media_page(aid: str, client: Any, *, list_id: int | None, offset: int) -> int:
+async def _media_page(aid: str, client: Any, call: OfCall, *, list_id: int | None, offset: int,
+                      run_id: int | None = None) -> list[tuple[dict, dict[str, Any]]]:
     """One picker page fetched exactly as /api/of/v2/vault/media would, cached
-    under that route's key and folded into the mirror. Returns rows upserted."""
+    under that route's key and folded into the mirror. Returns the (media, row
+    values) upserted (`vault_runs.upsert_page`)."""
     t0 = datetime.utcnow()
-    resp = await _of_call(aid, client.vault_media, limit=PICKER_PAGE, offset=offset,
-                          type="all", list_id=list_id, sort="desc", field="recent",
-                          query=None, before_publish_date=None)
+    resp = await call(client.vault_media, limit=PICKER_PAGE, offset=offset,
+                      type="all", list_id=list_id, sort="desc", field="recent",
+                      query=None, before_publish_date=None)
     key = vault_cache.vault_media_cache_key(type="all", list_id=list_id, offset=offset,
                                             limit=PICKER_PAGE, sort="desc", field="recent",
                                             q_norm="")
     await vault_cache.put(aid, key, resp, started_at=t0)
-    written, _ = await vault_runs.upsert_page(aid, (resp or {}).get("list") or [], folder_id=list_id)
-    return len(written)
+    written, _ = await vault_runs.upsert_page(aid, (resp or {}).get("list") or [], run_id,
+                                              folder_id=list_id)
+    return written
 
 
-async def _hot(aid: str, client: Any) -> int:
+async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None = None,
+                      on_page: Callable[[list], Awaitable[None]] | None = None) -> int:
+    """Hot pass steps (a)-(b): the folder list, then page 0 of every dropdown folder,
+    each cached under the picker route's key and upserted. Shared with the manual
+    Collect (vault_ai_api), which passes its own `call` (no GAP_S, no preempt check:
+    it IS the preempter), its `run_id` and an `on_page` that warms each page's
+    stills. Returns rows upserted."""
     folders: list[dict] = []
     offset = 0
     for _ in range(LISTS_MAX_PAGES):
         t0 = datetime.utcnow()
-        resp = await _of_call(aid, client.vault_lists, view="main", limit=LISTS_PAGE,
-                              offset=offset, query=None)
+        resp = await call(client.vault_lists, view="main", limit=LISTS_PAGE,
+                          offset=offset, query=None)
         await vault_cache.put(aid, vault_cache.vault_lists_cache_key(
             view="main", limit=LISTS_PAGE, offset=offset), resp, started_at=t0)
         rows = (resp or {}).get("list") or []
@@ -321,13 +337,24 @@ async def _hot(aid: str, client: Any) -> int:
     for f in folders:  # the picker's dropdown: custom folders that have media
         if f.get("type") == "custom" and f.get("hasMedia") and f.get("id") is not None:
             try:
-                n += await _media_page(aid, client, list_id=f["id"], offset=0)
+                written = await _media_page(aid, client, call, list_id=f["id"], offset=0,
+                                            run_id=run_id)
             except Preempted:
                 raise
             except Exception as e:  # noqa: BLE001 — one bad folder must not cost the full walk
                 log.warning("vault collect: folder %s page failed account=%s: %s", f["id"], aid, e)
+                continue
+            n += len(written)
+            if on_page is not None:   # the caller's work on the page: its errors are its own
+                await on_page(written)
+    return n
+
+
+async def _hot(aid: str, client: Any) -> int:
+    call = functools.partial(_of_call, aid)
+    n = await hot_folders(aid, client, call)
     for off in (0, PICKER_PAGE):  # All: first page + the prefetched second
-        n += await _media_page(aid, client, list_id=None, offset=off)
+        n += len(await _media_page(aid, client, call, list_id=None, offset=off))
     return n
 
 

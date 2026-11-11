@@ -28,6 +28,9 @@ Checks (names in lib/scripts_library_faults.py):
                  its stored rows; the sidebar search finds the last one.
   UI_STEPS       the deep sequence (`--dump`: each) opened from the sidebar: its cards' label / name / text / notes
                  == the dump in step order, header "Created by：<by>" and "Created on：<day>".
+  UI_EXPAND      the last opened sequence: a card's arrow shows iff its two-line clamp cuts text (synthetic: every LONG
+                 step has one and some short card has none; an 8-word text may wrap past two lines in the narrow
+                 column); clicking one lifts the clamp and turns it "Collapse script".
   UI_TAGS        Tag tab: All scripts / the tag / Uncategorized counts == the dump's; the script search finds the
                  last sequence's step 1.
   UI_SEND        /messages-pro chat: picker search for a sequence's step 1, pick, Enter -> the send goes out,
@@ -51,6 +54,8 @@ IMPORT_COUNTS, READ_BACK, UI_STEPS and UI_TAGS go red; the re-import, sidebar, l
 overview) checks stay green.
 A second fault `scripts-share-drops-a-creator` (`--fault=`): `owned_account_ids` loses its last Creator, so
 SHARE_ALL, ALL_MODELS_VIEW and UI_ALL_MODELS go red while SHARE_ALL_NOOP stays green.
+A client fault `scripts-expand-arrow-always` (`--fault=`): the row's arrow drops its overflow guard, so UI_EXPAND
+goes red (an arrow on short steps that does nothing) and every other check stays green.
 Bypass, declared: OF's own /me is held by the slop browser, so the chat's creator id is preset in localStorage
 (`of-owner:<account>`), as fm-auto-reply-walk does.
 """
@@ -69,8 +74,8 @@ from urllib.parse import urlsplit
 from slop.actors import ui
 from slop.lib.procmon import pct
 from slop.lib.scripts_library_faults import (ALL_MODELS_VIEW, IMPORT_COUNTS, LIST_LOAD, LIST_P95, READ_BACK,
-                                             REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_ALL_MODELS, UI_SEND,
-                                             UI_SIDEBAR, UI_STEPS, UI_TAGS)
+                                             REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_ALL_MODELS, UI_EXPAND,
+                                             UI_SEND, UI_SIDEBAR, UI_STEPS, UI_TAGS)
 from slop.seed.agency import PASSWORD
 
 PROFILE = "agency_inbox"
@@ -93,6 +98,9 @@ LOOSE = 5  # tag scripts in no sequence: standalone rows
 WORDS = ("hey", "babe", "miss", "you", "so", "much", "today", "special", "just", "for", "you", "unlock", "now",
          "tell", "me", "what", "you", "like", "naughty", "surprise", "weekend", "pics", "video", "custom")
 EMOJI = ("😭", "💖", "⭐", "❤️", "👆", "")
+# The deep sequence's steps whose text runs past the row's two-line clamp (UI_EXPAND); never its last (the
+# drops-last-step fault must leave UI_EXPAND green), nor step 1 / 2 (the chat's picker).
+LONG = (7, 13, 19)
 DAYS = ("Sep 16, 2026", "Sep 22, 2026", "Oct 1, 2026", "Oct 13, 2026")
 
 
@@ -110,7 +118,7 @@ def _dump(w, n: int) -> tuple[list[dict], list[dict], dict, dict]:
             opts = rng.choice((2, 3)) if deep and k >= 3 and k % 4 == 0 else 1
             for m in range(1, opts + 1):
                 label = f"{k}.{m}" if opts > 1 else str(k)
-                st = {"step": label, "text": f"slopkey{i:04d}s{label} " + " ".join(rng.choices(WORDS, k=8))
+                st = {"step": label, "text": f"slopkey{i:04d}s{label} " + " ".join(rng.choices(WORDS, k=70 if deep and k in LONG else 8))
                       + " " + rng.choice(EMOJI),
                       "notes": f"{1 + k % 2}/2, {rng.choice(('bridge', 'ppv'))}" if rng.random() < 0.85 else "",
                       "sent": 0, "script_name": f"s{i:04d}{label}{rng.choice(WORDS)}"}
@@ -336,12 +344,12 @@ async def run(ctx) -> None:
     ov = await _share_and_overview(ctx, aid, accounts, by_seq, metas, len(rows))
 
     if not ctx.app:
-        for c in (UI_SIDEBAR, UI_STEPS, UI_TAGS, UI_ALL_MODELS, UI_SEND):
+        for c in (UI_SIDEBAR, UI_STEPS, UI_EXPAND, UI_TAGS, UI_ALL_MODELS, UI_SEND):
             ctx.skip(c, "--no-ui")
         return
     # Synthetic: the deep sequence's cards; a real dump: every sequence's.
     await _ui_page(ctx, seqs, seqs if real else [seqs[n // 2]], truth, {k: len(v) for k, v in by_seq.items()}, views,
-                   accounts, ov)
+                   accounts, ov, bool(real))
     fans = [t["fan_id"] for t in w.data["threads"] if str(t["account_id"]) == aid]
     await _ui_send(ctx, aid, fans[0] if fans else None, seqs[0], by_seq)
 
@@ -467,8 +475,44 @@ async def _open_sequence(page, q: dict, want: list[dict]) -> tuple[list[dict], l
     return await page.evaluate(_CARDS), header
 
 
+_ARROWS = r"""() => [...document.querySelectorAll('[aria-label^="Step "]')].map((e) => { const li = e.closest('li');
+  const p = li.querySelector('p');
+  return { label: e.textContent.trim(), cut: p.scrollHeight > p.clientHeight + 1, clamped: p.classList.contains('line-clamp-2'),
+    h: p.clientHeight, arrow: li.querySelector('button[aria-label="Expand script"], button[aria-label="Collapse script"]')
+      ?.getAttribute('aria-label') ?? null }; })"""
+
+
+async def _ui_expand(ctx, page, long: set[str] | None) -> None:
+    """The open sequence's arrows (#42): one iff the clamp cuts text; `long` (synthetic) are steps that must have one,
+    and some card must have none (so a dead arrow on every card is red).
+    The first arrow clicked lifts its clamp and reads "Collapse script"."""
+    got: list[dict] = []
+    after: dict = {}
+    try:
+        got = await page.evaluate(_ARROWS)
+        first = next((c for c in got if c["arrow"]), None)
+        if first:
+            card = page.locator("li").filter(has=page.get_by_label(f"Step {first['label']}", exact=True))
+            await card.scroll_into_view_if_needed()
+            await ui.shot(ctx, page, "scripts-expand-trigger")
+            await card.get_by_role("button", name="Expand script").click()
+            await card.get_by_role("button", name="Collapse script").wait_for(timeout=10_000)
+            after = next(c for c in await page.evaluate(_ARROWS) if c["label"] == first["label"])
+            await ui.shot(ctx, page, "scripts-expand-settled")
+            await card.get_by_role("button", name="Collapse script").click()
+    except Exception as e:  # noqa: BLE001 — the check reports it
+        ctx.note(f"expand: {type(e).__name__}: {str(e)[:160]}")
+    wrong = [c["label"] for c in got if bool(c["arrow"]) != c["cut"] or c["arrow"] == "Collapse script"]
+    arrows = {c["label"] for c in got if c["arrow"]}
+    first_h = next((c["h"] for c in got if c["arrow"]), 0)
+    opened_ok = bool(after) and not after["clamped"] and after["h"] > first_h
+    ctx.check(UI_EXPAND, bool(got) and not wrong and (long is None or (long <= arrows and len(arrows) < len(got))) and (not arrows or opened_ok),
+              cards=len(got), arrows=sorted(arrows), want=sorted(long) if long is not None else "cut ones",
+              wrong=wrong[:6], opened=after or None)
+
+
 async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, stored: dict[str, int],
-                   views: dict[str, int], accounts: list[dict], ov: dict) -> None:
+                   views: dict[str, int], accounts: list[dict], ov: dict, real: bool = False) -> None:
     n = len(seqs)
     async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
         await page.goto(f"{ctx.app}/growth/scripts", wait_until="domcontentloaded")
@@ -519,6 +563,7 @@ async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, store
                 bad.append({"sequence": q["name"], "header": header, **diff})
         ctx.check(UI_STEPS, not bad, sequences=len(opened), cards=sum(len(q["steps"]) for q in opened),
                   bad=len(bad), first_bad=bad[:2])
+        await _ui_expand(ctx, page, None if real else {str(k) for k in LONG})
 
         tag_counts: dict = {}
         hit = 0

@@ -78,7 +78,8 @@ running (lib/pump_relay.py);
 the reads' 502s go to their own recorder (they are this scenario's expected
 answer, checked below, not the stock no-5xx check's).
 Break-it-once: otp-state-not-session-dead (the classifier's 101 branch reverted);
-session-dead-claim-not-atomic (the read-then-write flip it replaced).
+session-dead-claim-not-atomic (the read-then-write flip it replaced);
+retired-read-not-rerun (_proxy blind to an evicted client: no GET re-run, any 101 evicts the fresh one).
 reconcile-never-restarts, reconcile-ignores-parked (lib/pump_faults.py: the supervisor
 pass without its Restart, or blind to the dead-session flag); reconcile-never-stops (the
 pass without its Stop); supervisor-ignores-backoff (every Restart at once);

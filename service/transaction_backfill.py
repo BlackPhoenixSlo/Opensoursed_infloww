@@ -51,7 +51,8 @@ class WalkResult:
     (pages / inserted / patched count every page, the backfill's recent read too; a
     backfill's are saved page by page). `advanced`: a held page moved the cursor below where
     the tick started it (scan_after_success's `advanced`: a stop then restarts the stall count at 1).
-    `complete`: the window read to its end. `stop`: why a backfill's walk ended.
+    `complete`: the window read to its end. `stop`: why a backfill's walk ended (the offset
+    walk's: why it stopped short, repeated page or page ceiling).
     rows_min / rows_max: the offset walk's createdAt range."""
     pages: int = 0
     inserted: int = 0

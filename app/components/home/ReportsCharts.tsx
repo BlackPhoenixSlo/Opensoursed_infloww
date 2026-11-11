@@ -3,7 +3,7 @@
 /** Creator reports' primitives and charts: the Not wired marker, cards and titles, the summary tile and stat card,
  *  the sparkline, the trend bars and the donut. */
 
-import { ArrowDownLeft, ArrowUpRight, Info as InfoCircle, type LucideIcon } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, type LucideIcon } from "lucide-react";
 
 import { BlankChart, ChartAxes, ChartMessage, fmtUsd, niceMax, plotFrame, useChartWidth } from "@/components/stats/chart";
 import { growthOf, type Growth } from "@/lib/format";
@@ -11,6 +11,7 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
 import type { Point } from "./reportsMath";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /* ───────── primitives ───────── */
 
@@ -37,9 +38,7 @@ export function SectionTitle({ id, label, tip }: { id: string; label: string; ti
   return (
     <div className="flex items-center mb-4">
       <h2 id={id} className="text-xl font-medium leading-[1.2]" style={{ color: "var(--color-fg)" }}>{label}</h2>
-      <span title={tip} className="ml-2 inline-flex" style={{ color: "var(--color-fg-dim)" }}>
-        <InfoCircle size={24} aria-hidden />
-      </span>
+      <InfoTip text={tip} iconClassName="h-6 w-6" className="ml-2" style={{ color: "var(--color-fg-dim)" }} />
     </div>
   );
 }
@@ -50,9 +49,7 @@ export function CardTitle({ id, label, tip, className }: { id: string; label: st
     <div className={cn("flex items-center", className)}>
       <h3 id={id} className="text-base font-medium leading-5" style={{ color: "var(--color-fg)" }}>{label}</h3>
       {tip && (
-        <span title={tip} className="ml-2 inline-flex" style={{ color: "var(--color-fg-dim)" }}>
-          <InfoCircle size={16} aria-hidden />
-        </span>
+        <InfoTip text={tip} iconClassName="h-4 w-4" className="ml-2" style={{ color: "var(--color-fg-dim)" }} />
       )}
     </div>
   );
@@ -112,9 +109,7 @@ export function StatCard({ label, tip, value }: { label: string; tip: string; va
         {/* #53, #103: body1's 0.032px tracking on the label, heading1's 0.128px on the value. */}
         <span className="flex items-center gap-1 text-base leading-5 tracking-[0.032px] font-medium">
           {label}
-          <span title={tip} className="inline-flex" style={{ color: "var(--color-fg-dim)" }}>
-            <InfoCircle size={16} aria-hidden />
-          </span>
+          <InfoTip text={tip} iconClassName="h-4 w-4" style={{ color: "var(--color-fg-dim)" }} />
         </span>
         <span className="text-[32px] leading-9 tracking-[0.128px] font-medium tabular-nums truncate">
           {value === null ? <NotWired label={label} /> : value}
@@ -129,9 +124,7 @@ export function PerfTitle({ id, label, tip }: { id: string; label: string; tip: 
   return (
     <div className="flex items-center">
       <h3 id={id} className="text-base font-medium leading-4 mr-[9px]" style={{ color: "var(--color-fg)" }}>{label}</h3>
-      <span title={tip} className="inline-flex translate-y-px" style={{ color: "var(--color-fg-dim)" }}>
-        <InfoCircle size={16} aria-hidden />
-      </span>
+      <InfoTip text={tip} iconClassName="h-4 w-4" className="translate-y-px" style={{ color: "var(--color-fg-dim)" }} />
     </div>
   );
 }

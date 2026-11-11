@@ -4,7 +4,7 @@ import { type VaultMedia } from "@/lib/relay";
 
 import {
   BUSY_OFF, CANCELLED, DOWNLOAD_OFF, MAX_DIRECT_STRIKES, SHARE_BATCH_BYTES, SHARE_COUNT_OFF, SHARE_HELD_BYTES,
-  SHARE_MODE_OFF, UNFILED, addToBatches, batchLabel, canFetchMore, canRetry, downloadOff, fileName, folderOf,
+  SHARE_MODE_OFF, UNFILED, UNSAVED_OFF, addToBatches, batchLabel, canFetchMore, canRetry, downloadOff, fileName, folderOf,
   countText, heldBytes, initialDownloadState, isBusy, mimeFor, panelTitle, readyBatch, safeName, sourceFor, summarize, toItems, unsaved,
   vaultDownloadReducer, type Action, type DlBatch, type DlMode, type DlSink, type DlState,
 } from "./vaultDownloadReducer";
@@ -15,7 +15,8 @@ const media = (id: number, type = "photo", url: string | null = `https://cdn2.on
   listStates: unknown[] = []) =>
   ({ id, type, files: url ? { full: { url } } : { full: { url: null } }, listStates }) as unknown as VaultMedia;
 
-const start: Action = { type: "start", mode: "selection", label: "3 selected", creator: "amy", directAllowed: true };
+const start: Action = { type: "start", mode: "selection", label: "3 selected", accountId: "acc-amy", creator: "amy",
+                        directAllowed: true };
 const listed = (ids: number[]): Action => ({ type: "listed", items: toItems(ids.map((i) => media(i)), null) });
 const running = run([start, listed([1, 2, 3])]);
 const statuses = (s: DlState) => s.items.map((i) => `${i.id}:${i.status}`);
@@ -38,6 +39,17 @@ describe("phases", () => {
 
   it("one run at a time: start while busy is ignored", () => {
     expect(vaultDownloadReducer(running, { ...start, label: "other" })).toBe(running);
+  });
+  it("the run keeps its own model: a start for another refused while busy, retry still the first's", () => {
+    const failed = run([{ type: "itemStart", id: 1 }, { type: "itemFailed", id: 1, error: "relay 502" },
+      ...[2, 3].flatMap((id): Action[] => [{ type: "itemStart", id }, { type: "itemDone", id, source: "direct", bytes: 1 }])],
+    running);
+    expect(failed).toMatchObject({ phase: "done", accountId: "acc-amy", creator: "amy" });
+    const other: Action = { ...start, accountId: "acc-bea", creator: "bea" };
+    expect(vaultDownloadReducer(running, other)).toBe(running);
+    const retried = vaultDownloadReducer(failed, { type: "retryFailed" });
+    expect(retried).toMatchObject({ phase: "running", accountId: "acc-amy", creator: "amy" });
+    expect(run([other])).toMatchObject({ phase: "listing", accountId: "acc-bea", creator: "bea" });
   });
   it("close only when idle-able; resets", () => {
     expect(vaultDownloadReducer(running, { type: "close" })).toBe(running);
@@ -147,6 +159,13 @@ describe("paths", () => {
   ])("folderOf: %s", (_n, ls, forced, want) => {
     expect(folderOf(media(1, "photo", null, ls), forced)).toBe(want);
   });
+  it("toItems: no forced folder copies into every other custom folder; a forced folder makes none", () => {
+    const ls = [{ type: "custom", name: "A" }, { type: "messages", name: "M" }, { type: "custom", name: "B/x" },
+                { type: "custom", name: "A" }];
+    expect(toItems([media(1, "photo", null, ls)], null)[0]).toMatchObject({ folder: "A", copies: ["B_x"] });
+    expect(toItems([media(1, "photo", null, ls)], "feet")[0].copies).toBeUndefined();
+    expect(toItems([media(1, "photo", null, ls.slice(0, 1))], null)[0].copies).toBeUndefined();
+  });
   it("toItems: DRM-only video has no url, mp4 name", () => {
     const [it0] = toItems([media(9, "video", null)], null);
     expect(it0).toMatchObject({ id: 9, url: null, name: "9.mp4", status: "queued", folder: UNFILED });
@@ -175,22 +194,29 @@ describe("share sink (phones)", () => {
     expect(fold(sizes).flatMap((b) => b.ids)).toEqual(sizes.map((_, i) => i + 1));
   });
 
-  it.each<[string, DlSink | null, DlMode, number, boolean, string]>([
-    ["no sink", null, "selection", 1, false, DOWNLOAD_OFF],
-    ["busy", "folder", "selection", 1, true, BUSY_OFF],
-    ["desktop folder", "folder", "folder", 0, false, ""],
-    ["desktop vault", "folder", "vault", 0, false, ""],
-    ["desktop 500 selected", "folder", "selection", 500, false, ""],
-    ["phone 20 selected", "share", "selection", 20, false, ""],
-    ["phone 21 selected", "share", "selection", 21, false, SHARE_COUNT_OFF],
-    ["phone folder", "share", "folder", 0, false, SHARE_MODE_OFF],
-    ["phone vault", "share", "vault", 0, false, SHARE_MODE_OFF],
-  ])("downloadOff: %s", (_n, sink, mode, count, busy, want) => {
-    expect(downloadOff(sink, mode, count, busy)).toBe(want);
-  });
-
   const shareStart: Action = { ...start, directAllowed: false, sink: "share" };
   const doneA = (id: number, bytes: number): Action[] => [{ type: "itemStart", id }, { type: "itemDone", id, source: "relay", bytes }];
+  const idle = initialDownloadState;
+  const unsavedDone = run([shareStart, listed([1]), ...doneA(1, MB)]);
+  const savedDone = run([{ type: "batchSaved", index: 0 }], unsavedDone);
+
+  it.each<[string, DlSink | null, DlMode, number, DlState, string]>([
+    ["no sink", null, "selection", 1, idle, DOWNLOAD_OFF],
+    ["a run listing", "folder", "selection", 1, run([start]), BUSY_OFF],
+    ["a run running", "folder", "selection", 1, running, BUSY_OFF],
+    ["phone: run done, files not saved yet (not 'running')", "share", "selection", 1, unsavedDone, UNSAVED_OFF],
+    ["phone: run done, all saved", "share", "selection", 1, savedDone, ""],
+    ["a finished folder run", "folder", "vault", 0, run([{ type: "cancel" }], running), ""],
+    ["desktop folder", "folder", "folder", 0, idle, ""],
+    ["desktop vault", "folder", "vault", 0, idle, ""],
+    ["desktop 500 selected", "folder", "selection", 500, idle, ""],
+    ["phone 20 selected", "share", "selection", 20, idle, ""],
+    ["phone 21 selected", "share", "selection", 21, idle, SHARE_COUNT_OFF],
+    ["phone folder", "share", "folder", 0, idle, SHARE_MODE_OFF],
+    ["phone vault", "share", "vault", 0, idle, SHARE_MODE_OFF],
+  ])("downloadOff: %s", (_n, sink, mode, count, s, want) => {
+    expect(downloadOff(sink, mode, count, s)).toBe(want);
+  });
 
   it("done files fill batches; the run's end seals the open one; save marks it", () => {
     const s0 = run([shareStart, listed([1, 2, 3])]);
@@ -236,16 +262,20 @@ describe("share sink (phones)", () => {
   it("title + count read 'ready' until the share resolves, 'saved' after (not 'Downloaded' before a tap)", () => {
     const fetched = run([shareStart, listed([1, 2]), ...doneA(1, 150 * MB), ...doneA(2, 150 * MB)]);
     expect(fetched.phase).toBe("done");
-    expect(panelTitle(fetched)).toBe("Ready to save: 3 selected");
+    expect(panelTitle(fetched)).toBe("Ready to save: amy: 3 selected");
     expect(countText(fetched)).toBe("2 of 2 ready");
     const one = run([{ type: "batchSaved", index: 0 }], fetched);
-    expect(panelTitle(one)).toBe("Ready to save: 3 selected");
+    expect(panelTitle(one)).toBe("Ready to save: amy: 3 selected");
     expect(countText(one)).toBe("2 of 2 ready · 1 saved");
     const all = run([{ type: "batchSaved", index: 1 }], one);
-    expect(panelTitle(all)).toBe("Saved 3 selected");
+    expect(panelTitle(all)).toBe("Saved amy: 3 selected");
     expect(countText(all)).toBe("2 of 2 ready · 2 saved");
     const folder = run([start, listed([1]), ...doneA(1, MB)]);
-    expect(panelTitle(folder)).toBe("Downloaded 3 selected");
+    expect(panelTitle(folder)).toBe("Downloaded amy: 3 selected");
+    // the run's creator once, from the state (the label stays raw: the links file adds the creator itself)
+    expect([run([start]), running, run([{ type: "cancel" }], running)].map(panelTitle))
+      .toEqual(["Listing amy: 3 selected…", "Downloading amy: 3 selected", "Cancelled: amy: 3 selected"]);
+    expect(running.label).toBe("3 selected");
     expect(countText(folder)).toBe("1 of 1 saved");
   });
   it.each<[string, Action[], boolean]>([

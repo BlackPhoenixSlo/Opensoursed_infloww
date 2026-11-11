@@ -28,6 +28,8 @@ const h = vi.hoisted(() => {
     describeMedia: vi.fn(),
     addToOfFolder: vi.fn(),
     patch: vi.fn(),
+    searchingOf: false,
+    mirrorItems: [] as Tile[],
     summary: { data: { count: 0 } as { count: number; complete?: boolean }, isLoading: false },
     access: { isLoading: false, isError: false } as { isLoading: boolean; isError: boolean; data?: { restricted: boolean } },
   };
@@ -65,11 +67,11 @@ vi.mock("@/hooks/useVaultCache", async (orig) => {
     useDescribePlan: () => plan,
     useOfFoldersMirror: () => ({ data: undefined }),
     useMirrorItems: () => ({
-      items: [], hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
+      items: h.mirrorItems, hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
     }),
     describeMedia: h.describeMedia,
     addToOfFolder: h.addToOfFolder,
-    searchOf: () => Promise.resolve(),
+    useOfSearch: (_a: string, q: string, on: boolean) => on && !!q && h.searchingOf,
   };
 });
 vi.mock("@/hooks/useVaultSweep", async (orig) => {
@@ -100,7 +102,11 @@ vi.mock("@/components/vault/VaultTile", () => ({
 vi.mock("@/components/vault/VaultPreviewMedia", () => ({ default: () => null }));
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultVideoPreview: () => null }));
 
+import { VaultDownloadProvider } from "./VaultDownloadPanel";
 import VaultManagePanel from "./VaultManagePanel";
+
+/** The panel as VaultProPage mounts it: under the page's one download. */
+const renderPanel = () => renderWithProviders(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
 
 beforeAll(() => {
   globalThis.IntersectionObserver = class {
@@ -112,6 +118,8 @@ beforeAll(() => {
 });
 beforeEach(() => {
   h.summary.data = { count: 0 };
+  h.searchingOf = false;
+  h.mirrorItems = [];
   h.access = { isLoading: false, isError: false };
   h.describeMedia.mockReset();
   h.addToOfFolder.mockReset().mockResolvedValue({});
@@ -125,7 +133,7 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
 
 describe("selection across a change of view", () => {
   it("switching folder clears the ticks, and Add to category sends only what is ticked now", async () => {
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     click("Select");
     click("tile 1");
     click("tile 2");
@@ -144,7 +152,7 @@ describe("selection across a change of view", () => {
   });
 
   it("switching media type clears the ticks", () => {
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     click("Select");
     click("tile 1");
     expect(selectionBar()).toBeInTheDocument();
@@ -163,7 +171,7 @@ describe("the item editor under a Re-describe", () => {
 
   it("shows the new description, and nothing reads as edited", async () => {
     redescribe();
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     click("tile 1");
     expect(descBox().value).toBe("old desc");
     click("Re-describe");
@@ -176,7 +184,7 @@ describe("the item editor under a Re-describe", () => {
 
   it("keeps the operator's edit, and Save & lock sends only that field", async () => {
     redescribe();
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     click("tile 1");
     fireEvent.change(descBox(), { target: { value: "mine" } });
     click("Re-describe");
@@ -194,7 +202,7 @@ describe("the item editor under a Re-describe", () => {
 
 describe("the item editor's price", () => {
   it("letters in the price box are not a $0 price", async () => {
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     click("tile 1");
     fireEvent.change(screen.getByTitle(/Your price for this media/), { target: { value: "abc" } });
     // Bug: "abc" → "" → Number("") === 0, so Save sent suggested_price_cents: 0 and locked it.
@@ -225,7 +233,7 @@ describe("the whole-vault download", () => {
   ])("$who: off=$off", ({ access, off }) => {
     h.summary.data = { count: 12, complete: false };
     h.access = access;
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     if (off) {
       expect(button()).toBeDisabled();
       expect(button()).toHaveAttribute("title", "Your access is by folder: download a folder");
@@ -239,11 +247,47 @@ describe("the whole-vault download", () => {
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => new Promise((r) => { close = r; });
     h.summary.data = { count: 12, complete: false };
     h.access = { isLoading: false, isError: false };
-    renderWithProviders(<VaultManagePanel />);
+    renderPanel();
     fireEvent.click(button());
     expect(await screen.findByTestId("dl-pick-hint")).toHaveTextContent(/New Folder/);
     close(null);
     await flush();
     expect(screen.queryByTestId("dl-pick-hint")).toBeNull();
+  });
+});
+
+describe("search while OF's own search runs", () => {
+  it("an empty grid spins 'Searching OnlyFans…', not 'No data', until OF answered", async () => {
+    h.summary.data = { count: 12, complete: true };   // the mirror path; its search found nothing
+    h.searchingOf = true;
+    const { rerender } = renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
+    expect(await screen.findByText("Searching OnlyFans…")).toBeInTheDocument();
+    expect(screen.queryByText("No data")).toBeNull();
+    h.searchingOf = false;
+    rerender(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
+    expect(await screen.findByText("No data")).toBeInTheDocument();
+    expect(screen.queryByText("Searching OnlyFans…")).toBeNull();
+  });
+
+  it("with mirror hits already shown, a small line says more may come", async () => {
+    h.summary.data = { count: 12, complete: true };
+    h.mirrorItems = h.ALL;
+    h.searchingOf = true;
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
+    expect(await screen.findByText("Searching OnlyFans for more…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "tile 1" })).toBeInTheDocument();
+  });
+
+  it("the live path (no mirror) never says it is searching OnlyFans: its listing is OF's search", async () => {
+    h.searchingOf = true;   // what the hook would say if it were not gated
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
+    await flush();
+    await new Promise((r) => setTimeout(r, 300));   // past the search box's 250 ms debounce
+    await flush();
+    expect(screen.queryByText(/Searching OnlyFans/)).toBeNull();
+    expect(screen.getByRole("button", { name: "tile 1" })).toBeInTheDocument();
   });
 });

@@ -534,7 +534,8 @@ describe("VaultImportCard steps", () => {
     expect(screen.getByText("OnlyFans account")).toBeInTheDocument();
     const account = screen.getByPlaceholderText("Enter OnlyFans username");
     expect(account).toBeEnabled();
-    const tip = screen.getByLabelText("About linking a fan account").getAttribute("title")!;
+    fireEvent.click(screen.getByRole("img", { name: "About linking a fan account" }));
+    const tip = screen.getByRole("tooltip").textContent!;
     expect(tip).toContain("Infloww will automatically send media to this account");
     expect(tip).toContain("scheduled post that is deleted");
     expect(screen.getByText(/Empty: each new file rides a scheduled post/)).toBeInTheDocument();

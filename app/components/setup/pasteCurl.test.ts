@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError, validateCurl,
+  buildBootstrapBody, canSubmit, continueText, curlHint, extensionBusy, initialPasteCurl, pasteCurlReducer, validateCurl,
   type PasteCurlAction, type PasteCurlForm, type PasteCurlState,
 } from "@/components/setup/pasteCurl";
 
 const GOOD = "curl 'https://onlyfans.com/api2/v2/users/me' -H 'user-agent: Mozilla/5.0' -H 'x-bc: abc' -b 'auth_id=1; sess=s'";
-const BLANK = { nickname: "" };
-const form = (over: Partial<PasteCurlForm> = {}): PasteCurlForm => ({ ...initialPasteCurl(BLANK), curl: GOOD, ...over });
+const form = (over: Partial<PasteCurlForm> = {}): PasteCurlForm => ({ ...initialPasteCurl(), curl: GOOD, ...over });
 
 describe("validateCurl", () => {
   // Prefix, bash copy, cookies and user-agent are checked here; the signed headers stay the relay's (its 422 says which).
@@ -44,13 +43,6 @@ describe("validateCurl", () => {
   ])("%s", (_, text, err) => expect(validateCurl(text)).toBe(err));
 });
 
-describe("submitError", () => {
-  it.each([
-    ["good", form(), null],
-    ["a bad curl", form({ curl: "x" }), "Must start with `curl ...`"],
-  ])("%s", (_, f, err) => expect(submitError(f)).toBe(err));
-});
-
 describe("curlHint", () => {
   it.each([["", null], ["   \n ", null], [GOOD, null], ["wget x", "Must start with `curl ...`"]])(
     "%j → %s", (curl, hint) => expect(curlHint(curl)).toBe(hint));
@@ -58,42 +50,51 @@ describe("curlHint", () => {
 });
 
 describe("canSubmit", () => {
-  it.each([["", false], ["  ", false], ["x", false], ["curl 'https://onlyfans.com/api2/v2/users/me'", false], [GOOD, true]])("%j → %s", (curl, ok) => expect(canSubmit(form({ curl }))).toBe(ok));
+  it.each([["", false], ["  ", false], ["x", false], ["curl 'https://onlyfans.com/api2/v2/users/me'", false], [GOOD, true]])("%j → %s", (curl, ok) => expect(canSubmit({ curl, busy: false })).toBe(ok));
+  it("off while a capture, its attach or a Retry runs (one submit at a time)", () => expect(canSubmit({ curl: GOOD, busy: true })).toBe(false));
+});
+
+describe("continueText", () => {
+  it.each([
+    [false, "Linked account of-1 without a proxy"],
+    [true, "Linked account of-1; its proxy is attached, but the session was not reloaded"],
+  ])("bound %s", (bound, text) => expect(continueText({ accountId: "of-1", bound })).toBe(text));
 });
 
 describe("buildBootstrapBody", () => {
   // JSON.stringify pins the key order the relay receives.
-  it.each([
-    ["defaults", form(), `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
-    ["the curl as pasted, untrimmed", form({ curl: `  ${GOOD}\n` }), `{"mode":"paste-curl","curl":${JSON.stringify(`  ${GOOD}\n`)},"make_active":true}`],
-    ["make_active off", form({ makeActive: false }), `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":false}`],
-    ["nickname and override trimmed", form({ nickname: "  Mia ", staticOverride: " sp " }),
+  it.each<[string, PasteCurlForm, string, string]>([
+    ["defaults", form(), "", `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
+    ["the curl as pasted, untrimmed", form({ curl: `  ${GOOD}\n` }), "", `{"mode":"paste-curl","curl":${JSON.stringify(`  ${GOOD}\n`)},"make_active":true}`],
+    ["the flow's nickname and the override trimmed", form({ staticOverride: " sp " }), "  Mia ",
       `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true,"nickname":"Mia","static_param_override":"sp"}`],
-    ["blank nickname / override left out", form({ nickname: "  ", staticOverride: "\t" }), `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
-  ])("%s", (_, f, json) => expect(JSON.stringify(buildBootstrapBody(f))).toBe(json));
+    ["blank nickname / override left out", form({ staticOverride: "\t" }), "  ", `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
+  ])("%s", (_, f, nickname, json) => expect(JSON.stringify(buildBootstrapBody(f, nickname))).toBe(json));
 });
 
 describe("pasteCurlReducer", () => {
-  const S = (over: Partial<PasteCurlState> = {}): PasteCurlState => ({ ...initialPasteCurl(BLANK), curl: GOOD, ...over });
-  const PENDING = { accountId: "of-1" };
+  const S = (over: Partial<PasteCurlState> = {}): PasteCurlState => ({ ...initialPasteCurl(), curl: GOOD, ...over });
+  const PENDING = { accountId: "of-1", bound: false };
   const ERR = { ok: false, text: "e" };
   const cases: [string, PasteCurlState, PasteCurlAction, Partial<PasteCurlState>][] = [
-    ["setField", S(), { type: "setField", field: "nickname", value: "Mia" }, { nickname: "Mia" }],
-    ["setField makeActive", S(), { type: "setField", field: "makeActive", value: false }, { makeActive: false }],
-    ["submitStart clears result and pending", S({ result: ERR, pending: PENDING }), { type: "submitStart" }, { result: null, pending: null, curl: GOOD }],
-    ["retryStart drops pending, keeps the error", S({ result: ERR, pending: PENDING }), { type: "retryStart" }, { result: ERR, pending: null }],
-    ["submitErr", S(), { type: "submitErr", text: "bad" }, { result: { ok: false, text: "bad" }, pending: null, curl: GOOD }],
-    ["attachErr keeps the curl, sets pending", S(), { type: "attachErr", text: "t", ...PENDING }, { result: { ok: true, text: "t" }, pending: PENDING, curl: GOOD }],
-    ["submitOk clears the curl and pending", S({ pending: PENDING }), { type: "submitOk", text: "✓" }, { result: { ok: true, text: "✓" }, pending: null, curl: "" }],
+    ["setField", S(), { type: "setField", field: "staticOverride", value: "sp" }, { staticOverride: "sp" }],
+    ["submitStart clears result and pending, busy", S({ result: ERR, pending: PENDING }), { type: "submitStart" }, { busy: true, result: null, pending: null, curl: GOOD }],
+    ["retryStart drops pending, keeps the error, busy", S({ result: ERR, pending: PENDING }), { type: "retryStart" }, { busy: true, result: ERR, pending: null }],
+    ["submitErr", S({ busy: true }), { type: "submitErr", text: "bad" }, { busy: false, result: { ok: false, text: "bad" }, pending: null, curl: GOOD }],
+    ["attachErr keeps the curl, sets pending", S({ busy: true }), { type: "attachErr", text: "t", ...PENDING }, { busy: false, result: { ok: true, text: "t" }, pending: PENDING, curl: GOOD }],
+    ["submitOk clears the curl and pending", S({ busy: true, pending: PENDING }), { type: "submitOk", text: "✓" }, { busy: false, result: { ok: true, text: "✓" }, pending: null, curl: "" }],
   ];
   it.each(cases)("%s", (_, s, a, want) => expect(pasteCurlReducer(s, a)).toEqual({ ...s, ...want }));
   it("retryStart with nothing pending is a no-op", () => {
     const s = S();
     expect(pasteCurlReducer(s, { type: "retryStart" })).toBe(s);
   });
-  it("initialPasteCurl takes the flow's nickname", () => {
-    expect(initialPasteCurl({ nickname: "Bella" })).toEqual({
-      curl: "", nickname: "Bella", makeActive: true, staticOverride: "", result: null, pending: null,
-    });
+  it("initialPasteCurl is blank", () => {
+    expect(initialPasteCurl()).toEqual({ curl: "", staticOverride: "", busy: false, result: null, pending: null });
   });
+  it.each<[string, Partial<PasteCurlState>, boolean]>([
+    ["idle", {}, false],
+    ["capturing / attaching / retrying", { busy: true }, true],
+    ["waiting on Retry / Continue", { pending: PENDING }, true],
+  ])("extensionBusy: %s", (_, over, want) => expect(extensionBusy(S(over))).toBe(want));
 });

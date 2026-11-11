@@ -22,6 +22,12 @@ rule). The url streamed is the mirror row's when the row has one for the same fi
 a file of that media (the row's payload) or, for an unrestricted caller, an OF CDN host (what `/img` already
 accepts). Downloads hold a `VAULT_DOWNLOAD` slot each for the whole stream (queued, never rejected).
 
+Every OF by-id read these routes make (the re-sign of a stale / expired url, one per file) runs as a paced background
+walk on the Creator (`of_pacing.walk`, kind `vault_download`): >= PAGE_GAP_S apart, shared with the Creator's other
+walks, OF's 429 waited out and retried once. Measured on AE 2026-11-10: a 118-file download whose urls had expired 3
+days earlier re-signed 76 files in 19 s unpaced, OF answered 429 for the account, the last 26 files failed (`relay
+403`) and the Creator's chat scrape and vault collect failed with them.
+
 Logs `vault_download account=… media=… status=… bytes=… resigned=…` once per stream: the live script
 (`scripts/vault-download-live.py`) counts these to tell direct items (none) from relayed ones.
 """
@@ -40,6 +46,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 import admission
 import automation_executor as ax  # _make_client seam (tests inject a fake client here)
 import cdn_resign
+import of_pacing
 import proxies as proxy_registry
 import vault_stills
 from auth import assert_account_owned
@@ -111,13 +118,18 @@ async def download_resign(
     await _gate(account_id, media_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
     if u and _cdn_host(u):
-        fresh = await cdn_resign.resign(account_id, media_id, u, client)
+        fresh = await _paced(account_id, lambda: cdn_resign.resign(account_id, media_id, u, client))
     else:
-        got = await vault_stills.resolve_fresh(account_id, media_id, client)
+        got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
         fresh = full_url(got.media)
     if not fresh:
         raise HTTPException(status_code=404, detail="no_fresh_url")
     return {"url": fresh}
+
+
+def _paced(account_id: str, run):
+    """`run()` with its OF reads paced on the Creator (module doc)."""
+    return of_pacing.walk(account_id, "vault_download", run)
 
 
 def _close(r: Any) -> None:
@@ -141,7 +153,7 @@ async def download(
     if u and (cdn_resign.same_file(u, row) or (unrestricted and row is None and _cdn_host(u))):
         url = u
     if url is None:
-        got = await vault_stills.resolve_fresh(account_id, media_id, client)
+        got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
         url = full_url(got.media)
         kind = (got.media or {}).get("type")
         if url is None:
@@ -160,7 +172,7 @@ async def download(
             async def get(x: str):
                 return await run_in_threadpool(client.http.get, x, timeout=client.timeout_s, stream=True)
 
-            r, fetched_url = await cdn_resign.fetch(account_id, media_id, url, client, get)
+            r, fetched_url = await _paced(account_id, lambda: cdn_resign.fetch(account_id, media_id, url, client, get))
             resigned = fetched_url != fetch_u
         except HTTPException:
             raise

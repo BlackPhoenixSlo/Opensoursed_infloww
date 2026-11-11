@@ -51,6 +51,7 @@ import ShiftsWindow, { type ShiftPreset } from "@/components/shifts/ShiftsWindow
 import { useShiftDelete } from "@/components/shifts/ShiftScopeDialog";
 import ShiftSettingsDialog from "@/components/shifts/ShiftSettingsDialog";
 import { errText } from "@/lib/errText";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 type Tab = "scheduling" | "history";
 const isHistory = (v: string): v is "history" => v === "history";
@@ -61,9 +62,7 @@ function TzLabel({ zone }: { zone: string }) {
   return (
     <span className="flex shrink-0 items-center gap-1 text-[14px] text-fg-dim tabular-nums">
       <span suppressHydrationWarning>{utcOffsetLabel(zone)}</span>
-      <span role="img" aria-label={TZ_TIP} title={TZ_TIP} className="cursor-help">
-        <Info className="h-3.5 w-3.5" aria-hidden />
-      </span>
+      <InfoTip text={TZ_TIP} />
     </span>
   );
 }

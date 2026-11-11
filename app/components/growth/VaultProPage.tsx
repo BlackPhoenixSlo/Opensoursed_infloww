@@ -24,6 +24,7 @@ import { EmptyState, IfButton, IfLearn, InflowwPageHeader } from "@/components/u
 import { VaultAccountProvider, useVaultAccount } from "@/components/vault/VaultAccount";
 import { RAIL_CLASS, RAIL_HEAD_CLASS, RAIL_ICON_BOX, RAIL_ROW_INNER, railRowClass } from "@/components/vault/VaultFolderRail";
 import VaultImportCard from "@/components/vault/VaultImportCard";
+import { VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
 import VaultManagePanel, { VAULT_GRID_CLASS, VAULT_PANES_CLASS } from "@/components/vault/VaultManagePanel";
 import VaultMediaToolbar from "@/components/vault/VaultMediaToolbar";
 import { VaultTour, useVaultTour, type VaultTourStep } from "@/components/vault/VaultTour";
@@ -272,7 +273,10 @@ function VaultProBody() {
 export default function VaultProPage() {
   return (
     <VaultAccountProvider>
-      <VaultProBody />
+      {/* Above VaultProBody's per-model `key`: a download keeps running when another model is picked. */}
+      <VaultDownloadProvider>
+        <VaultProBody />
+      </VaultDownloadProvider>
     </VaultAccountProvider>
   );
 }

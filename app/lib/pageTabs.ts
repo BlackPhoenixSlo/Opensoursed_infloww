@@ -25,10 +25,12 @@ export const MESSAGE_DASHBOARD_TABS: Array<{ key: MessageDashboardTab; label: st
   { key: "top",     label: "Top Posts" },
 ];
 
-export type SmartMessagesTab = "automated" | "mass";
+export type SmartMessagesTab = "automated" | "mass" | "unsend" | "scheduled";
 
-/** components/growth/SmartMessagesPage.tsx: its two tabs (`?tab=`), labelled by the captured controls. */
+/** components/growth/SmartMessagesPage.tsx: its tabs (`?tab=`): the captured two, then our extras. */
 export const SMART_MESSAGES_TABS: Array<{ key: SmartMessagesTab; label: string }> = [
   { key: "automated", label: SM.tabAutomated.label },
   { key: "mass", label: SM.tabMass.label },
+  { key: "unsend", label: "Mass Auto Unsend Messages" },
+  { key: "scheduled", label: "Scheduled" },
 ];
