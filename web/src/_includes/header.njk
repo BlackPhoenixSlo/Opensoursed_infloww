@@ -1,4 +1,4 @@
-{#- Their nav, our pages: Pricing · Download · Resources (dropdown) · Help, then Book a demo + the primary CTA.
+{#- Their nav, our pages: Pricing · Download · Resources (dropdown) · Help, then Live demo (their "Book a demo", but it is a running app) + the primary CTA.
     No JS: the Resources dropdown and the mobile menu are native <details>; the mobile menu lists Resources inline.
     main.js only adds closing on Escape, an outside click, or focus leaving the menu. -#}
 {%- set resourcesNav = [
@@ -10,9 +10,10 @@
 {#- Exact match is the page itself; a section link (/blog/) also marks its subpages (posts, /blog/page/N/). -#}
 {%- macro current(href, pageUrl) -%}{% if href == pageUrl %} aria-current="page"{% elif pageUrl and pageUrl.startsWith(href) %} aria-current="true"{% endif %}{%- endmacro -%}
 {%- set demo -%}
-<button type="button" class="btn-secondary line-through" title="There is no demo call" disabled>
-  Book a demo<span class="sr-only"> (there is no demo call)</span>
-</button>
+<a class="btn-secondary" href="{{ site.demoUrl }}" title="Log in as {{ site.demoLogin }} / {{ site.demoLogin }}">
+  <span class="size-1.5 rounded-full bg-forest motion-safe:animate-pulse" aria-hidden="true"></span>
+  Live demo
+</a>
 {%- endset %}
 
 <header class="sticky top-0 z-40 border-b border-line bg-white/90 backdrop-blur">
@@ -74,8 +75,7 @@
           </li>
           <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/help/' | url }}"{{ current('/help/', page.url) }}>Help</a></li>
           <li class="mt-3 flex flex-col gap-3 pb-2">
-            {#- Phones get no tooltip, so the struck-through button becomes a plain link. -#}
-            <a class="flex min-h-11 items-center justify-center text-sm text-muted underline underline-offset-4" href="{{ '/#deploy' | url }}">No demo call. Deploy instead</a>
+            {{ demo | safe }}
             <a class="btn-secondary" href="{{ '/login/' | url }}">Log in</a>
             <a class="btn-secondary" href="{{ '/signup/' | url }}">Register</a>
             <a class="btn-primary" href="{{ '/#deploy' | url }}">Deploy it yourself</a>

@@ -6,5 +6,7 @@
   "captureDate": "2026-10-11",
   "setupContact": "https://github.com/BlackPhoenixSlo/Opensoursed_infloww/issues/new?title=Setup%20help%3A%20agency%20over%20%2450k%20a%20month",
   "inflowwUrl": "https://infloww.com",
-  "appUrl": "http://localhost:3001"
+  "appUrl": "http://localhost:3001",
+  "demoUrl": "https://demo.inflowwww.com",
+  "demoLogin": "demodemo"
 }
