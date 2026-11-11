@@ -147,7 +147,6 @@ export interface BulkApplyResult {
   applied: { account_id: string; rule: "created" | "updated" | "parked" | "unchanged" }[];
   count: number;
   enabled: boolean;
-  config: NudgeConfig;
 }
 
 export interface NudgePreviewMessage {
@@ -174,14 +173,14 @@ export function useNudgePreview() {
   });
 }
 
-/** Apply one shared config to many models at once and (optionally) enable each
- *  model's 60s nudge rule. Text-only — the backend forces with_image off. */
+/** Share one config to many models: settings + lines copied, each model keeps its own slot images (vault ids are
+ *  per account), each model's 60s rule follows `config.enabled`. */
 export function useBulkApplyNudgeConfig() {
   const qc = useQueryClient();
   return useMutation<
     BulkApplyResult,
     Error,
-    { account_ids: string[]; config: NudgeConfig; enable?: boolean }
+    { account_ids: string[]; config: NudgeConfig }
   >({
     mutationFn: (vars) => relay.put(`/admin/nudge-config/bulk`, vars),
     onSuccess: () => {

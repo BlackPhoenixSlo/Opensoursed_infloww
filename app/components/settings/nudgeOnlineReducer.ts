@@ -44,7 +44,7 @@
  *     never dropped silently: `discardDraft` takes the server's config back.
  *     What is kept is `buildConfig` (`keptDraft`): the JSON box's unapplied
  *     text is not (not an edit until applied) and is lost with the tab.
- *   • `selected` null = every model (the default and "All").
+ *   • `selected`: the models Share writes to; none by default, null = "All".
  */
 
 import type { NudgeConfig, NudgeSlotEntry, NudgeSlots } from "@/hooks/useNudgeConfig";
@@ -104,9 +104,6 @@ export type NudgeOnlineAction =
   | { type: "slots"; slots: NudgeSlots }
   /** One day bucket's time slot edited in the friendly editor. */
   | { type: "slot"; bucket: DayBucket; key: string; entry: NudgeSlotEntry }
-  /** Images an upload landed in the vault, for `accountId`'s slot: added to the
-   *  slot as it is NOW (the upload took a while; the operator kept editing). */
-  | { type: "addImages"; accountId: string; bucket: DayBucket; key: string; ids: number[] }
   | { type: "jsonDraft"; text: string }
   | { type: "applyJson" }
   /** `accountId` = the account being saved. */
@@ -123,7 +120,7 @@ export type NudgeOnlineAction =
 
 export const initialNudgeOnlineState: NudgeOnlineState = {
   form: {}, slots: {}, jsonDraft: "", jsonErr: null, save: null, runMsg: null, previewErr: null,
-  base: null, accountId: null, saving: null, selected: null, bulkMsg: null, savedAt: {}, restored: null,
+  base: null, accountId: null, saving: null, selected: new Set(), bulkMsg: null, savedAt: {}, restored: null,
 };
 
 export const RESTORED_NOTE = "Unsaved changes restored — Save to keep";
@@ -194,13 +191,10 @@ export function pickedIds(selected: ReadonlySet<string> | null, all: readonly st
   return selected === null ? [...all] : all.filter((id) => selected.has(id));
 }
 
-/** Why "Apply and enable" refuses, or null to go. */
-export function rolloutBlock(
-  s: Pick<NudgeOnlineState, "form" | "slots" | "base">, picked: readonly string[],
-): string | null {
-  // Before the load the draft is `{slots:{}}`, not dirty — rolled out, it would wipe every pick.
+/** Why "Share" refuses, or null to go. Unsaved edits don't block: Share saves them here first. */
+export function shareBlock(s: Pick<NudgeOnlineState, "base">, picked: readonly string[]): string | null {
+  // Before the load the draft is `{slots:{}}` — shared, it would wipe every pick's lines.
   if (s.base === null) return "Wait for this account's settings to load.";
-  if (isDirty(s)) return "Save your changes first, then roll out.";
   if (picked.length === 0) return "Pick at least one model.";
   return null;
 }
@@ -337,13 +331,6 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
       return withSlots(state, action.slots);
     case "slot":
       return withSlots(state, setSlot(state.slots, action.bucket, action.key, action.entry));
-    case "addImages": {
-      // Landed after a switch to another account (or before any draft): not this form's.
-      if (action.accountId !== state.accountId || state.base === null || action.ids.length === 0) return state;
-      const cur = state.slots[action.bucket]?.[action.key] ?? { text: [] };
-      const image = [...new Set([...(cur.image ?? []), ...action.ids])];
-      return withSlots(state, setSlot(state.slots, action.bucket, action.key, { ...cur, image }));
-    }
     case "jsonDraft":
       return { ...state, jsonDraft: action.text };
     case "applyJson": {

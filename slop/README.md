@@ -664,8 +664,8 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   claimers single-flight): `README.tracking-links.md`.
 - Vault Pro > Add media's pick list (`2026-10-30-vault-import-reducer`, plus a restricted chatter's picker):
   `README.vault.md`.
-- Nudge online's day picker and slot images (`2026-11-10-nudge-day-images`, drop / Upload through the vault
-  import, Save held, preview by day): `README.vault.md`.
+- Nudge online's day picker, vault-only slot images and Share to models (`2026-11-10-nudge-day-images`, chip
+  colours, Vault picker pick, share keeps each model's images, preview by day): `README.vault.md`.
 - Vault Pro at 20k (`2026-11-01-vault-pro-20k`, paging, filters, duplicates, hide): `README.vault.md`.
 - Vault Refresh (`2026-11-05-vault-refresh`, Refresh shows what was made on OF, the picker reloads broken thumbs,
   concurrent syncs): `README.vault.md`.

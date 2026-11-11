@@ -12,8 +12,8 @@
  *
  * UX: every field has inline help; the tease pools have a friendly per-line
  * editor AND a raw-JSON advanced view (copy in/out); a live Preview composes a
- * sample message for a chosen fan + time; and a "Roll out to models" checklist
- * applies one shared text-only config across many models at once.
+ * sample message for a chosen fan + time; and "Share to models" copies this
+ * config (settings + lines; each model keeps its own images) to picked models.
  */
 
 import { useEffect, useMemo, useReducer, useState, type ReactNode } from "react";
@@ -26,7 +26,6 @@ import { Field, NumInput } from "@/components/ui/fields";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { MediaThumb, NudgeSlotPools } from "@/components/settings/NudgeSlotPools";
-import { useNudgeImageUploads } from "@/components/settings/useNudgeImageUploads";
 import { type VaultMedia } from "@/lib/relay";
 import { clearDraft, readDraft, usePendingDraft } from "@/lib/pendingDraft";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -48,13 +47,14 @@ import {
   buildConfig,
   canSave,
   gateNote,
+  isDirty,
   initialNudgeOnlineState,
   keptDraft,
   nudgeOnlineReducer,
   pickedIds,
   previewPayload,
   restoredNote,
-  rolloutBlock,
+  shareBlock,
   RESTORED_MOVED_NOTE,
   RESTORED_NOTE,
   type FormKey,
@@ -124,14 +124,7 @@ export default function NudgeOnlineTab({
     list.forEach((m) => { next[m.id] = m; });
     return next;
   });
-  // Images dropped on a slot import into the vault; a landed one joins its slot.
-  const uploads = useNudgeImageUploads((l) => {
-    addMedia(l.ids.map((id, i) => ({ id, type: "photo", files: null, _localPreview: l.previews[i] ?? undefined })));
-    dispatch({ type: "addImages", accountId: l.accountId, bucket: l.bucket, key: l.slotKey, ids: l.ids });
-  });
-  // Save waits for this account's imports: saved before they land, the images would be missing.
-  const uploading = uploads.chips.some((c) => c.accountId === accountId && !c.error);
-  const saveDisabled = busy || !saveAllowed || uploading;
+  const saveDisabled = busy || !saveAllowed;
   /** …and THE label: which branch save() will take (create the rule or save
    *  the config). */
   const saveLabel = rule ? "Save changes" : "Create automation";
@@ -139,9 +132,10 @@ export default function NudgeOnlineTab({
 
   const [advOpen, setAdvOpen] = useState(false);
 
-  // Roll-out checklist (every model checked by default, founder included).
-  const allIds = accounts.map((a) => a.id);
-  const picked = pickedIds(state.selected, allIds);
+  // Share checklist: the OTHER models, none checked by default.
+  const others = accounts.filter((a) => a.id !== accountId);
+  const otherIds = others.map((a) => a.id);
+  const picked = pickedIds(state.selected, otherIds);
 
   // Load the effective config into the draft when it arrives — a refetch
   // while the draft has unsaved edits keeps them, and a config from before
@@ -174,18 +168,17 @@ export default function NudgeOnlineTab({
     return typeof v === "number" ? v : fallback;
   };
 
-  // Bulk "Roll out to models" applies the in-memory config to OTHER accounts, so
-  // require the active account's edits to be saved (and valid) first — otherwise
-  // we'd push unsaved/partial changes the operator hasn't committed here.
-  const block = rolloutBlock(state, picked);
+  // Share writes the config shown here to the picked models; unsaved edits are saved here first.
+  const block = shareBlock(state, picked);
 
-  async function save() {
+  /** Saves the shown account; true when the PUT landed. */
+  async function save(): Promise<boolean> {
     // Belt to the buttons' braces: a save here is a whole-blob REPLACE, so
     // never write from a form that was never seeded. The same guard
     // `useSellerConfig` keeps inside saveCfg for the seller tabs. One PUT per
     // account at a time: `busy`, plus `state.saving` for a second click before
     // the mutation cache reports the first one pending.
-    if (!accountId || !saveAllowed || busy || state.saving) return;
+    if (!accountId || !saveAllowed || busy || state.saving) return false;
     const cfg = buildConfig(state);
     dispatch({ type: "saveStart", cfg, accountId });
     try {
@@ -193,8 +186,10 @@ export default function NudgeOnlineTab({
       // woken / parked from `enabled`) in the same write as the config.
       await saveCfgM.mutateAsync({ account_id: accountId, config: cfg });
       dispatch({ type: "saveOk", accountId, at: Date.now() });
+      return true;
     } catch (e) {
       dispatch({ type: "saveErr", msg: (e as Error)?.message || "Save failed", accountId, at: Date.now() });
+      return false;
     }
   }
 
@@ -213,12 +208,17 @@ export default function NudgeOnlineTab({
     }
   }
 
-  async function applyToModels() {
+  async function share() {
     dispatch({ type: "bulkMsg", msg: block });
     if (block) return;
+    const config = buildConfig(state);
+    if (isDirty(state) && !(await save())) {
+      dispatch({ type: "bulkMsg", msg: "Not shared: saving this model failed." });
+      return;
+    }
     try {
-      const r = await bulkM.mutateAsync({ account_ids: picked, config: buildConfig(state), enable: true });
-      dispatch({ type: "bulkMsg", msg: `Enabled nudge online (text-only) on ${r.count} model${r.count === 1 ? "" : "s"}.` });
+      const r = await bulkM.mutateAsync({ account_ids: picked, config });
+      dispatch({ type: "bulkMsg", msg: `Shared to ${r.count} model${r.count === 1 ? "" : "s"} (${r.enabled ? "on" : "off"}); each kept its own images.` });
     } catch (e) {
       dispatch({ type: "bulkMsg", msg: `Failed: ${(e as Error)?.message || "unknown error"}` });
     }
@@ -246,7 +246,7 @@ export default function NudgeOnlineTab({
           gap) gets a nudge delay + jitter minutes later, if he is still online recently, has no live conversation,
           was not nudged within the min hours and it is outside quiet hours. It sends one time-of-day greeting; of a
           slot&apos;s images one is sent, rotated. It only messages fans you have welcomed who are not mid-thread,
-          and never pauses AI chat. Roll out to models is text-only.
+          and never pauses AI chat. Share copies settings and lines; each model keeps its own images.
         </>} />
         <div className="ml-auto shrink-0">
           <EditRawJsonButton surface="nudge-config" accountId={accountId} />
@@ -256,9 +256,7 @@ export default function NudgeOnlineTab({
 
       {accounts.length > 1 && (
         <Field label="Account">
-          {/* Held while this account's images import: they land in its slots. */}
-          <IfNativeSelect className="w-full" value={accountId ?? ""} disabled={uploading}
-            title={uploading ? "Wait for the image uploads to finish" : undefined}
+          <IfNativeSelect className="w-full" value={accountId ?? ""}
             onChange={(e) => dispatch({ type: "account", accountId: e.target.value })}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>{a.nickname || a.id}</option>
@@ -432,15 +430,11 @@ export default function NudgeOnlineTab({
           {/* ── Tease pools: friendly editor, per day ───────────────── */}
           <Section title="Message lines & images">
             <IfHelp className="mt-0">
-              {"{name} {city} {age} {job} {hobby} {pet}"} fill from the fan&apos;s profile. One image per nudge; several rotate.
-              Drop images on a time to upload them.
+              {"{name} {city} {age} {job} {hobby} {pet} fill from the fan's profile. One image per nudge; several rotate."}
             </IfHelp>
             <NudgeSlotPools accountId={accountId} slots={slots} mediaCache={mediaCache}
               onMediaPicked={addMedia}
-              onSlot={(bucket, key, entry) => dispatch({ type: "slot", bucket, key, entry })}
-              uploads={uploads.chips}
-              onUpload={(bucket, key, files) => accountId && uploads.upload(accountId, bucket, key, files)}
-              onDismissUpload={uploads.dismiss} />
+              onSlot={(bucket, key, entry) => dispatch({ type: "slot", bucket, key, entry })} />
           </Section>
 
           {/* Advanced JSON (copy in/out, weekend/friday, full control) */}
@@ -482,26 +476,29 @@ export default function NudgeOnlineTab({
         </div>
       )}
 
-      {/* Roll out to all models at once (text-only — no vault images needed) */}
-      {accounts.length > 1 && (
-        <Section title="Roll out to models" extra={(
+      {/* Share this config to other models (settings + lines; images stay each model's) */}
+      {others.length > 0 && (
+        <Section title="Share to models" extra={(
           <span className="flex gap-4">
             <IfButton variant="link" onClick={() => dispatch({ type: "setModels", ids: null })}>All</IfButton>
             <IfButton variant="link" onClick={() => dispatch({ type: "setModels", ids: [] })}>None</IfButton>
           </span>
         )}>
-          <IfHelp className="mt-0">Applies the config above to every checked model and turns it on; text only.</IfHelp>
+          <IfHelp className="mt-0">
+            Copies every setting and line above to the models you pick and saves it there; on or off follows Enabled.
+            Images stay each model&apos;s own: vault images can&apos;t move between models.
+          </IfHelp>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 max-h-56 overflow-auto rounded-md border border-border p-3">
-            {accounts.map((a) => (
+            {others.map((a) => (
               <IfSwitch key={a.id} className="min-w-0" label={<span className="block truncate">{a.nickname || a.id}</span>}
-                checked={picked.includes(a.id)} onChange={() => dispatch({ type: "toggleModel", id: a.id, all: allIds })} />
+                checked={picked.includes(a.id)} onChange={() => dispatch({ type: "toggleModel", id: a.id, all: otherIds })} />
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <IfButton onClick={applyToModels} disabled={bulkM.isPending || !!block} title={block ?? undefined}>
-              {bulkM.isPending ? "Applying…" : `Apply and enable on ${picked.length} model${picked.length === 1 ? "" : "s"}`}
+            <IfButton onClick={share} disabled={bulkM.isPending || busy || !!block} title={block ?? undefined}>
+              {bulkM.isPending ? "Sharing…" : `Share to ${picked.length} model${picked.length === 1 ? "" : "s"}`}
             </IfButton>
-            <span className="text-[12px] text-muted">{block ?? "enables the 60s rule live on each"}</span>
+            {block && <span className="text-[12px] text-muted">{block}</span>}
           </div>
           {bulkMsg && <div className="text-accent">{bulkMsg}</div>}
         </Section>
@@ -525,7 +522,7 @@ export default function NudgeOnlineTab({
           </IfButton>
         )}
         <IfButton variant="primary" onClick={save} disabled={saveDisabled}>
-          {busy ? "Saving…" : uploading ? "Uploading images…" : saveLabel}
+          {busy ? "Saving…" : saveLabel}
         </IfButton>
       </EditorFooter>
     </div>

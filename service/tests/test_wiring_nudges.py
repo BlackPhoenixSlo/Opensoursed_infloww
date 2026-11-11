@@ -25,6 +25,10 @@ Runtime gates:
       [fixed] the Automations/Ready-made toggle (PATCH is_enabled=false) stops the
       detector but a fire job already queued still sends — the fire gate reads
       only the config.
+  case_nudge_online_share_keeps_each_models_images:
+      Share (PUT /admin/nudge-config/bulk) copies settings + lines to each
+      model, keeps each model's own slot images (vault ids never cross
+      accounts) and syncs each model's rule to the shared `enabled`.
 
 Run: ./venv/bin/python service/tests/test_wiring_nudges.py   (exit 0 = pass)
 """
@@ -52,7 +56,8 @@ from automation_rules_api import RuleCreate, RulePatch, create_rule, update_rule
 from automations import nudge_online, nudge_online_fire  # noqa: E402,F401
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AutomationRule, NudgeState, ScheduledJob, WelcomeSent  # noqa: E402
-from nudge_config_api import _ConfigBody, put_nudge_config  # noqa: E402
+from db.models import AccountAiConfig  # noqa: E402
+from nudge_config_api import _BulkBody, _ConfigBody, put_nudge_config, put_nudge_config_bulk  # noqa: E402
 
 
 # ── Fake OF (no network): every surface the nudge senders touch ───────
@@ -196,6 +201,50 @@ async def case_nudge_online_rule_off_stops_queued_fire():
 
     await run_once(aid, "nudge_online_fire")
     assert fake.dms == [], f"nudge sent after the rule was switched off: {fake.dms}"
+
+
+
+async def _saved(aid: str) -> dict:
+    async with get_session() as s:
+        return json.loads((await s.get(AccountAiConfig, aid)).nudge_config_json)
+
+
+async def case_nudge_online_share_keeps_each_models_images():
+    src, tgt, fresh = "w_share_src", "w_share_tgt", "w_share_new"
+    for a in (src, tgt, fresh):
+        await _seed_account(a)
+    await put_nudge_config(_ConfigBody(account_id=tgt, config={**_NUDGE_CFG, "enabled": False, "slots": {
+        "default": {"evening": {"text": ["old"], "image": [901]}},
+        "friday": {"night": {"text": [], "image": [902]}},
+    }}))
+    shared = {**_NUDGE_CFG, "enabled": True, "nudge_line_image": True, "delay_minutes": 9, "slots": {
+        "default": {"evening": {"text": ["eve {name}"], "image": [11]}, "night": {"text": ["n"], "image": [12]}},
+    }}
+    r = await put_nudge_config_bulk(_BulkBody(account_ids=[tgt, fresh], config=shared))
+    assert r["count"] == 2 and r["enabled"] is True, r
+
+    t = await _saved(tgt)
+    assert t["delay_minutes"] == 9 and t["nudge_line_image"] is True, t
+    assert t["slots"] == {
+        "default": {"evening": {"text": ["eve {name}"], "image": [901]}, "night": {"text": ["n"], "image": []}},
+        "friday": {"night": {"text": [], "image": [902]}},
+    }, t["slots"]
+    # A model with nothing saved gets the lines, none of the source's vault ids.
+    assert (await _saved(fresh))["slots"] == {
+        "default": {"evening": {"text": ["eve {name}"], "image": []}, "night": {"text": ["n"], "image": []}},
+    }
+    for a in (tgt, fresh):
+        async with get_session() as s:
+            on = (await s.execute(select(AutomationRule.is_enabled).where(
+                AutomationRule.account_id == a, AutomationRule.kind == "nudge_online"))).scalars().all()
+        assert on == [True], (a, on)
+
+    # Shared OFF parks the target's rule.
+    await put_nudge_config_bulk(_BulkBody(account_ids=[tgt], config={**shared, "enabled": False}))
+    async with get_session() as s:
+        on = (await s.execute(select(AutomationRule.is_enabled).where(
+            AutomationRule.account_id == tgt, AutomationRule.kind == "nudge_online"))).scalars().all()
+    assert on == [False], on
 
 
 _harness.run()

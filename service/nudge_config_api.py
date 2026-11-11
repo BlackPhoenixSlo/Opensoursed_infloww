@@ -24,6 +24,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
@@ -143,7 +144,7 @@ async def put_nudge_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     return {"account_id": body.account_id, "config": clean}
 
 
-# ── Bulk roll-out across models (text-only — no vault) ────────────────
+# ── Share to models (settings + lines; images stay per model) ─────────
 
 _DETECT_EVERY_S = 60
 
@@ -203,33 +204,61 @@ async def preview_nudge(body: _PreviewBody = Body(...)) -> dict[str, Any]:
 class _BulkBody(BaseModel):
     account_ids: list[str]
     config: dict
-    enable: bool = True
+
+
+def _with_own_images(shared: dict, own: dict) -> dict:
+    """`shared` slots carrying `own`'s images instead of its own: lines come from
+    the shared config, images stay each model's (vault ids are per account,
+    ADR-0008). A bucket/slot only `own` has keeps just its images."""
+    d = lambda x: x if isinstance(x, dict) else {}  # noqa: E731 — free-form JSON
+    out: dict = {}
+    for b in set(shared) | set(own):
+        sb, ob = d(shared.get(b)), d(own.get(b))
+        for k in set(sb) | set(ob):
+            text = list(d(sb.get(k)).get("text") or [])
+            image = list(d(ob.get(k)).get("image") or [])
+            if text or image:
+                out.setdefault(b, {})[k] = {"text": text, "image": image}
+    return out
+
+
+async def _saved_slots(s, account_id: str) -> dict:
+    raw = (await s.execute(
+        select(AccountAiConfig.nudge_config_json)
+        .where(AccountAiConfig.account_id == account_id))).scalar()
+    try:
+        slots = (json.loads(raw) if raw else {}).get("slots")
+    except (ValueError, AttributeError):
+        return {}
+    return slots if isinstance(slots, dict) else {}
 
 
 @router.put("/admin/nudge-config/bulk")
 async def put_nudge_config_bulk(body: _BulkBody = Body(...)) -> dict[str, Any]:
-    """Apply ONE shared config to many models at once and (optionally) enable each
-    model's 60s nudge rule live. Text-only by design — with_image is forced off so
-    no per-account vault media is needed (that's what makes 'all models' safe)."""
+    """Share ONE config to many models: every setting and line is copied, each
+    model keeps its own slot images (vault ids never cross accounts), and each
+    model's 60s rule follows the shared `enabled` — the same switch a single
+    save syncs."""
     if not body.account_ids:
         raise HTTPException(422, "account_ids cannot be empty")
     for aid in body.account_ids:
         assert_account_owned(aid)  # 403 on any non-owned id BEFORE any write
     clean = _validate_config(body.config)
-    # bulk = text-only (no per-account vault): no image.
-    clean["nudge_line_image"] = False
-    payload = json.dumps(clean)
+    enabled = bool(clean.get("enabled", True))
+    shared_slots = clean.get("slots") if isinstance(clean.get("slots"), dict) else None
     now = datetime.utcnow()
     applied: list[dict[str, str]] = []
     async with get_session() as s:
         for aid in body.account_ids:
-            await _upsert_config(s, aid, payload, now)
+            own = await _saved_slots(s, aid)
+            cfg = dict(clean)
+            # No slots sent: the model keeps its own (a whole-blob write must not wipe them).
+            cfg["slots"] = own if shared_slots is None else _with_own_images(shared_slots, own)
+            await _upsert_config(s, aid, json.dumps(cfg), now)
             action = await ensure_kind_rule(
-                s, aid, "nudge_online", enable=body.enable, name="Nudge online",
-                every_seconds=_DETECT_EVERY_S, steps={"with_image": False},
-                persist_off=True)
+                s, aid, "nudge_online", enable=enabled, name="Nudge online",
+                every_seconds=_DETECT_EVERY_S, persist_off=True)
             applied.append({"account_id": aid, "rule": action})
-    log.info("nudge_config_bulk applied=%d enable=%s", len(applied), body.enable)
-    return {"applied": applied, "count": len(applied), "enabled": body.enable,
-            "config": clean}
+    log.info("nudge_config_bulk shared=%d enabled=%s", len(applied), enabled)
+    return {"applied": applied, "count": len(applied), "enabled": enabled}
 

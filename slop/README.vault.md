@@ -34,7 +34,7 @@ oracles, bypasses).
 | `scenarios/2026-11-05-vault-thumbs.py` | Durable picker thumbs. |
 | `lib/vault_refresh_faults.py` | Vault Refresh's check names and faults (below). |
 | `scenarios/2026-11-05-vault-refresh.py` | Vault Pro's Refresh and the picker's broken-thumb reload. |
-| `scenarios/2026-11-10-nudge-day-images.py`, `lib/nudge_day_faults.py` | Nudge online's day picker and slot images (drop / Upload through the vault import, `lib/vault_relay.py`), its check names and client fault (below). |
+| `scenarios/2026-11-10-nudge-day-images.py`, `lib/nudge_day_faults.py` | Nudge online's day picker, vault-only slot images and Share to models, its check names and faults (below). |
 | `lib/vault_download_faults.py` | Vault Pro download's check names and its fault (below). |
 | `scenarios/2026-11-08-vault-download.py` | Download selected / folder / whole vault, direct vs relay; its `Disk` (the picker stub's far side). |
 | `lib/vault_manual_collect_faults.py` | Manual Collect's check names and faults (below). |
@@ -45,17 +45,20 @@ oracles, bypasses).
 
 ## Scenarios
 
-- `2026-11-10-nudge-day-images`: Nudge online's per-day editor (`NudgeSlotPools`, `nudgeDayBuckets`,
-  `useNudgeImageUploads` → `lib/vaultImport.ts` `importAndWait`) on the real UI and relay (one owner, 1440x900,
-  `agency_inbox`; Creator 0's `account_ai_config.nudge_config_json` and one `vault_items` row by SQL). Day chip Sat,
-  one image dropped (synthetic DragEvent) and one chosen (Upload button, file chooser) on Night, Evening's "Edit for
-  Saturdays" + first line retyped while they import, Save (screenshots `nudge-day-trigger`, `nudge-day-settled`).
-  Checks (`lib/nudge_day_faults.py`): each file one `/vault/upload/batch` run, done, bytes at OnlyFans
-  (`lib/vault_relay.py`); the stored row's `slots.saturday` (night = the two vault ids in order, evening = the edited
-  copy) and `default` unchanged; Save "Uploading images…" and disabled across both imports (in-page recorder);
-  `POST /admin/nudge-config/preview` at 23:00 Saturday = every-day night line + Saturday's first id, Monday = the
-  every-day image; no 5xx. Layout flow, no budget. Fault `nudge-upload-lands-every-day` (client: `addImages` to the
-  every-day bucket) turns the stored-config and preview checks red.
+- `2026-11-10-nudge-day-images`: Nudge online's per-day editor and Share to models (`NudgeSlotPools`,
+  `nudgeDayBuckets`, `NudgeOnlineTab` `share`; PUT `/admin/nudge-config/bulk` `_with_own_images`) on the real UI and
+  relay (one owner, 1440x900, `agency_inbox`). By SQL: Creator 0's `nudge_config_json` and a complete vault mirror
+  (3 `vault_items` + one finished manual walk, so the picker lists `/admin/vault-ai/items`, no OF read); Creator 1
+  its own config (other lines and delay, image 9101); Creator 2 nothing. Day chip Sat clicked in the page and the
+  chips' border colours read at once (`nudge-day-trigger`); Night "Add from vault", tile 9002, Attach
+  (`nudge-day-night-picked`); Evening "Edit for Saturdays" + first line retyped; Creators 1 and 2 switched on,
+  "Share to 2 models" (`nudge-day-settled`). Checks (`lib/nudge_day_faults.py`): `DAY_CHIP` (Every day == Mon !=
+  Sat), `VAULT_ONLY` (no Upload / image file input on Night, no `/vault/upload/*` POST), `DAY_SAVED` (Creator 0's
+  `slots.saturday`, `default` unchanged), `SHARE_SAVED` (PUT config answered before the one bulk PUT; targets'
+  settings and lines = Creator 0's, images their own, no Creator 0 id, nudge_online rules on), `DAY_PREVIEW`
+  (23:00 Saturday = every-day line + 9002, Monday = 9001), `DAY_NO_5XX`. Layout flow, no budget. Faults
+  `nudge-share-copies-source-images` (default, relay: bulk writes the source's slots as sent) turns only
+  `SHARE_SAVED` red; `nudge-day-chip-fades` (client: the chips' `transition-colors` back) only `DAY_CHIP`.
 
 - `2026-11-08-vault-download`: `flat_agency` (2 Creators), `OF_WIRE` + `lib/vault_wire.py` (`ip_bound`, `full_mp4`:
   a video's `files.full` is its source mp4), mirror by SQL (`seed/vault_week`), CDN armed (exact seeded bytes).

@@ -13,7 +13,7 @@ PICK_HINT = ("vault download: while the folder picker is open the card says Chro
 FOLDER = ("vault download: the rail's Download folder saves exactly that folder's media under <creator>/<folder>/, "
           "exact bytes, all direct, 0 relay downloads")
 VAULT = ("vault download: Download whole vault fetches every mirror media once (count = mirror, nothing dropped) and "
-         "writes it into each of its custom folders (a copy per folder, else Unfiled), exact bytes; each stale-IP url re-signed by id exactly once and still delivered direct")
+         "writes it into each of its custom folders (a copy per folder, else Unfiled), exact bytes; the stale-IP urls re-signed by their listing window (one OF read per window, 0 by-id) and still delivered direct")
 SWITCH = ("vault download: picking another Creator while a whole-vault download runs leaves it running: every "
           "media of the first Creator lands once with exact bytes, the card (titled with that Creator) ends done, 0 "
           "failed, never cancelled; the other Creator's grid shows with its Download off (\"A download is running\")")
@@ -35,22 +35,24 @@ PHONE_LINKS = ("vault download links file, phone: Save links hands links-*.txt (
 RELAY_LOAD = ("vault download: --users concurrent relay downloads (GET /admin/vault-ai/download): every one 200, "
               "attachment named <id>.<ext>, the exact bytes, none dropped")
 
-RELAY_STALE = ("vault download: --users concurrent relay downloads of a proxied Creator's EXPIRED urls (each needs a "
-               "by-id re-sign) under OF's per-account rate limit: every one 200 with the exact bytes, one by-id read "
-               "per file, 0 OF 429s (the re-signs paced on the Creator)")
+RELAY_STALE = ("vault download: --users concurrent relay downloads of a proxied Creator's EXPIRED urls spread over "
+               "its vault, under OF's per-account rate limit: every one 200 with the exact bytes, one OF listing read "
+               "per 100-item window touched, 0 by-id reads, 0 OF 429s")
 
 
-def _resign_unpaced() -> None:
-    """The download's re-sign reads unpaced again (vault_download_api._paced runs them bare): a stale burst outruns
-    OF's limit, 429, files fail."""
-    import vault_download_api
-    vault_download_api._paced = lambda _aid, run: run()
+def _resign_by_id() -> None:
+    """cdn_resign's listing-window path off: every stale file is one by-id read again (AE 2026-11-10: 118 reads)."""
+    import cdn_resign
+
+    async def miss(*_a, **_k) -> str:
+        return "miss"
+    cdn_resign._via_page = miss
 
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-resign-unpaced (service side)
-        "vault-download-resign-unpaced": Fault(_resign_unpaced, (RELAY_STALE,)),
+        # slop/run 2026-11-08-vault-download --break --fault=vault-download-resign-by-id (service side)
+        "vault-download-resign-by-id": Fault(_resign_by_id, (RELAY_STALE, VAULT)),
         # slop/run 2026-11-08-vault-download --break --fault=vault-download-selection-ignores-folder
         # app/components/vault/VaultManagePanel.tsx Download selected: the rail folder not passed, so each ticked media
         # lands in its own first OF folder (the 2026-11-11 owner report: one folder's picks spread over others).

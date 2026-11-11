@@ -12,10 +12,11 @@ SourceIp checked, one-spec Range).
 
 Stage relay-load (also --no-ui): `--users` concurrent GET /admin/vault-ai/download for every one of B's media
 (through its proxy).                                                                            RELAY_LOAD.
-Stage relay-stale (also --no-ui): the first STALE_N of B's mirror urls expired (signed for its proxy, DateLessThan
-2 h ago, as AE's browser held them on 2026-11-10), OF's by-id read limited to one per OF_MIN_GAP_S per Creator
-(`min_gap`, a 429 when sooner), then `--users` concurrent relay downloads of them: each re-signed by id once, paced
-on the Creator (of_pacing walk), all delivered.                                                 RELAY_STALE.
+Stage relay-stale (also --no-ui): STALE_N of B's mirror urls spread over the whole vault expired (signed for its
+proxy, DateLessThan 2 h ago, as AE's browser held them on 2026-11-10), OF's listing and by-id reads limited to one
+per OF_MIN_GAP_S per Creator (`min_gap`, a 429 when sooner), then `--users` concurrent relay downloads of them: each
+re-signed by its 100-item listing window (cdn_resign), one OF read per window touched, 0 by-id reads, all
+delivered.                                                                                     RELAY_STALE.
 UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, files on disk under the run's tmp):
   select   Select, tick the 3 newest photos + the newest video, Download selected (`vault-download-select-trigger`,
            `-settled`).                                                                        SELECT.
@@ -25,7 +26,7 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
                                                                                                FOLDER.
   vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the toolbar's Download whole vault
            (`vault-download-vault-trigger`, `-settled`): every media once; the stale ones 403 direct, are re-signed
-           by id (one by-id OF read each) and fetched direct again.                            VAULT.
+           by listing window (one OF read per window, 0 by-id) and fetched direct again.       VAULT.
   switch   a fresh browser on A: Download whole vault, then, while it runs (SWITCH_FREE CDN fetches through, the
            next held), Creator B in the creator column (`vault-download-switch-trigger`: B's grid, A's card
            running, B's Download whole vault off with "A download is running"); the CDN released, the card
@@ -82,8 +83,8 @@ Links file (app/components/vault/vaultLinksFile.ts), every desktop phase: links-
 url; the html opened in Chromium (`vault-download-links-html`, `-proxied`), a CDN link clicked (A), an app link
 fetched with the session (B).                                                                  LINKS.
 Phone: "Save links" tapped first: its own share, txt + html, inside the tap, app urls.          PHONE_LINKS.
-Break-it-once: vault-download-resign-unpaced (service: the download's re-sign reads unpaced) turns only RELAY_STALE
-red; vault-download-selection-ignores-folder (client: Download selected drops the rail folder) turns only
+Break-it-once: vault-download-resign-by-id (service: cdn_resign's listing-window path off, one by-id read per file
+again) turns only RELAY_STALE and VAULT red; vault-download-selection-ignores-folder (client: Download selected drops the rail folder) turns only
 SELECT_IN_FOLDER red; vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
 PHONE_LINKS red; vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED and
 PHONE_SHARE red; vault-download-share-batch-drops-item (client: `addToBatches` loses the file that opens a batch)
@@ -145,9 +146,11 @@ SETTLE_S = 180
 STALE = 3
 SWITCH_FREE = 3                    # switch stage: A's download fetches let through before the hold (declared)
 BUSY_OFF = "A download is running"  # vaultDownloadReducer.BUSY_OFF
-STALE_N = 15                       # relay-stale: paced at ~1/s, so ~15 s
+STALE_N = 15                       # relay-stale: spread over the vault
 OF_MIN_GAP_S = 0.5
 BY_ID = "GET /api2/v2/vault/media/{id}"
+LISTING = "GET /api2/v2/vault/media"
+PAGE = 100                         # cdn_resign.PAGE: OF's vault/media limit cap
 OLD_EGRESS = "127.0.0.1:1"
 DOWNLOAD = "/admin/vault-ai/download"
 LISTS_PATH = "/api/of/v2/vault/lists"
@@ -510,13 +513,27 @@ async def _relay_load(ctx, vw, b: str, peg: str, bound: bool) -> None:
               cdn_egress=egress, bound=bound, users=ctx.users)
 
 
+def _windows(vw, aid: str, ms: list[dict]) -> list[int]:
+    """The listing offsets (OF's asc order, PAGE per read) holding `ms`: one read each is the budget."""
+    order = sorted(vw.vault(aid)["media"], key=lambda m: (m["created"], m["id"]))
+    pos = {m["id"]: i for i, m in enumerate(order)}
+    return sorted({pos[m["id"]] // PAGE * PAGE for m in ms})
+
+
+def _window_reads(vault_calls: list[dict], aid: str) -> list[int]:
+    """The offsets of `aid`'s re-sign window reads (sort=asc, limit=PAGE: the grid reads desc/24, the walk is off)."""
+    return sorted(int(c["query"].get("offset") or 0) for c in vault_calls if c["route"] == "media"
+                  and c["account"] == aid and c["query"].get("sort") == "asc" and c["query"].get("limit") == str(PAGE))
+
+
 async def _relay_stale(ctx, w, vw, b: str, peg: str) -> None:
     fake = ctx.of_wire
-    ms = vw.vault(b)["media"][:STALE_N]
+    every = sorted(vw.vault(b)["media"], key=lambda m: (m["created"], m["id"]))
+    ms = every[::max(1, len(every) // STALE_N)][:STALE_N]   # a selection spread apart
     vault_week.set_urls(w, vw, b, [m["id"] for m in ms], exp=vault_week.expired_exp(), egress=peg)
     pool = ctx.owner.share(limits=max(10, ctx.users))
     sem = asyncio.Semaphore(max(1, ctx.users))
-    n0 = len(fake.calls)
+    n0, v0 = len(fake.calls), len(fake.vault_calls)
     res = []
 
     async def one(m):
@@ -524,24 +541,28 @@ async def _relay_stale(ctx, w, vw, b: str, peg: str) -> None:
             r = await pool.get(f"{DOWNLOAD}?account_id={b}&media_id={m['id']}", timeout=120)
             res.append((m, r.status_code, r.content))
 
-    fake.min_gap[(b, BY_ID)] = OF_MIN_GAP_S
+    for route in (BY_ID, LISTING):
+        fake.min_gap[(b, route)] = OF_MIN_GAP_S
     ctx.rec.stage = "relay-stale"
     try:
         await asyncio.gather(*(one(m) for m in ms))
     finally:
         ctx.rec.stage = None
-        fake.min_gap.pop((b, BY_ID), None)
+        for route in (BY_ID, LISTING):
+            fake.min_gap.pop((b, route), None)
         await pool.aclose()
-    by_id = [c for c in fake.calls[n0:] if c["account"] == b and c["route"] == BY_ID]
-    st = Counter(c["status"] for c in by_id)
-    ok_ids = Counter(c["path"].rsplit("/", 1)[1] for c in by_id if c["status"] == 200)
+    of = [c for c in fake.calls[n0:] if c["account"] == b and c["route"] in (BY_ID, LISTING)]
+    st = Counter(c["status"] for c in of)
+    by_id = [c for c in of if c["route"] == BY_ID]
+    windows, want = _window_reads(fake.vault_calls[v0:], b), _windows(vw, b, ms)
     non200 = [[m["id"], s] for m, s, _ in res if s != 200]
     bad = [m["id"] for m, s, body in res if s == 200 and m["type"] != "video"
            and body != asset_bytes(_key(b, m), m["sizes"][1])]
     ctx.check(RELAY_STALE, len(res) == len(ms) and not non200 and not bad and st.get(429, 0) == 0
-              and sorted(ok_ids) == sorted(str(m["id"]) for m in ms) and max(ok_ids.values(), default=0) == 1,
-              media=len(ms), answered=len(res), non200=non200[:10], bad_bytes=bad[:10], by_id_status=dict(st),
-              reads_per_file_max=max(ok_ids.values(), default=0), users=ctx.users, of_min_gap_s=OF_MIN_GAP_S)
+              and not by_id and windows == want,
+              media=len(ms), answered=len(res), non200=non200[:10], bad_bytes=bad[:10], of_status=dict(st),
+              by_id_reads=len(by_id), window_reads=windows, windows_want=want, users=ctx.users,
+              of_min_gap_s=OF_MIN_GAP_S)
 
 
 async def _ui(ctx, world: _UiWorld) -> None:
@@ -618,6 +639,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
                                         and c.get("ua") != "slop-browser"})
         d["by_id"] = [c["query"]["id"] for c in ctx.of_wire.vault_calls[v0:] if c["route"] == "by_id"
                       and c["account"] == aid]
+        d["windows"] = _window_reads(ctx.of_wire.vault_calls[v0:], aid)
         d["want"] = len(want)
         # The links file: in <creator>/ (a folder download: <creator>/<folder>/), opened before any media.
         ldir = disk.base / name / creator / (_safe(folder) if folder is not None else "")
@@ -783,7 +805,8 @@ async def _ui(ctx, world: _UiWorld) -> None:
                             lambda: page.get_by_role("button", name="Download whole vault").click(timeout=10_000),
                             extra={"stale": [m["id"] for m in stale]})
         stale_keys = {_key(a, m) for m in stale}
-        stale_ok = (sorted(d["by_id"]) == sorted(m["id"] for m in stale)
+        d["windows_want"] = _windows(vw, a, stale)
+        stale_ok = (d["by_id"] == [] and d["windows"] == d["windows_want"]
                     and all(d["browser_by_key"].get(k) == [403, 200] for k in stale_keys))
         d["stale_browser"] = {k: d["browser_by_key"].get(k) for k in stale_keys}
         ctx.check(VAULT, settled(d, len(every)) and disk_ok(d) and d["panel"]["direct"] == str(len(every))

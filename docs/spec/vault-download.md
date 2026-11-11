@@ -29,7 +29,7 @@ GETs only). Each Policy names `AWS:SourceIp` = this machine's public IP /32 (the
   memory. Chromium/Edge only. Elsewhere the button says why it's off.
 - **Source per item** (the reducer's `sourceFor`): **direct by default** when `GET /admin/vault-ai/download/info`
   says `direct` (the account's egress is Direct, no proxy). Measured above: CDN CORS allows it, and the bytes skip the
-  relay. On a direct failure (TypeError / non-2xx) it calls `GET /admin/vault-ai/download/resign` (one by-id OF read,
+  relay. On a direct failure (TypeError / non-2xx) it calls `GET /admin/vault-ai/download/resign` (one OF listing read per 100-item window, else by id,
   `cdn_resign`, no bytes) and retries direct once. Then it uses `GET /admin/vault-ai/download` (relay stream through
   the account's client/proxy, `Content-Disposition: attachment`, a 403 re-signs once, never read whole, one
   `VAULT_DOWNLOAD` slot per stream). After 2 items fail direct even after a re-sign, direct turns off for the rest of

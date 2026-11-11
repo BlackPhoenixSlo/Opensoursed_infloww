@@ -10,17 +10,18 @@ Mirror rows: 201 photo in folder 12, 202 video in folder 99, 203 a DRM-only vide
                                           one VAULT_DOWNLOAD slot taken and given back.
   case_stream_is_lazy                   — the body is relayed chunk by chunk: after the first chunk out, the CDN
                                           has handed over one chunk, not the file (never read whole).
-  case_403_resigns_once                 — 403 → one by-id read → the fresh url of the same file → 200.
+  case_403_resigns_once                 — 403 → one listing-window read → the fresh url of the same file → 200.
   case_403_after_resign_is_403          — the fresh url 403s too (a dead signature): 403, lane free.
   case_drm_only_is_422_and_unknown_404  — no full url in OF's fresh payload: 422; OF has no such media: 404.
   case_chatter_folder_gate              — the chatter: 404 outside its folders on download AND resign, 200 inside;
                                           a `u` naming another media's file is ignored (the row's url is fetched).
   case_anonymous_refused                — no login: neither route answers bytes or urls.
   case_resign_returns_fresh_url         — GET /download/resign: {url} for the same file, one by-id read, no bytes.
-  case_resigns_paced_and_429_retried    — concurrent stale downloads: their by-id reads leave >= PAGE_GAP_S apart on
+  case_resigns_paced_and_429_retried    — two stale downloads: one shared window read, then a by-id read for the
+                                          media the window lacks, >= PAGE_GAP_S apart on
                                           the Creator (of_pacing walk), OF's 429 waited out and retried, all 200
                                           (AE 2026-11-10: unpaced, 76 re-signs in 19 s, then 429 and 26 failed).
-  case_transient_resign_failure_retries_soon — a by-id read that failed in transit (not 404) is remembered
+  case_transient_resign_failure_retries_soon — a window read that failed in transit is remembered (no by-id read)
                                           FAIL_TRANSIENT_S, not FAIL_TTL_S: the panel's Retry re-asks OF.
 
 OF and its CDN are faked at `automation_executor._make_client`: no request leaves the process.
@@ -93,7 +94,7 @@ class _Client:
         self.account_id, self.timeout_s = AID, 5
         self.accept_old, self.fresh = accept_old, fresh
         self.gets: list[str] = []
-        self.byid: list[int] = []
+        self.reads: list = []   # OF reads: a media id (by-id) or "p<offset>" (a listing window)
         self.chunks_out = 0
         self.lock = threading.Lock()
 
@@ -105,9 +106,15 @@ class _Client:
             return _Resp(200 if ok else 403, BODY.get(mid, b"x") if ok else b"<Error/>", self)
         self.http = SimpleNamespace(get=get)
 
+    def vault_media(self, *, offset: int = 0, **_kw):
+        """OF's asc listing: the one media this OF still has (`fresh`), else nothing."""
+        with self.lock:
+            self.reads.append(f"p{offset}")
+        return {"list": [self.fresh] if self.fresh else [], "hasMore": False}
+
     def vault_media_by_id(self, media_id: int):
         with self.lock:
-            self.byid.append(int(media_id))
+            self.reads.append(int(media_id))
         if self.fresh is None:
             e = RuntimeError("OF 404")
             e.response = SimpleNamespace(status_code=404)
@@ -120,6 +127,7 @@ def _use(c: _Client) -> _Client:
     writes the fresh payload over its row)."""
     cdn_resign._fresh.clear()
     cdn_resign._failed.clear()
+    cdn_resign._pages.clear()
     ax._make_client = lambda _aid: c
 
     async def _rows():
@@ -190,7 +198,7 @@ def case_stream_attachment_and_bytes():
         assert r.headers["content-disposition"] == f'attachment; filename="{mid}.{ext}"', r.headers
         assert r.headers["content-length"] == str(len(BODY[mid])), r.headers
     assert c.gets == [_full(201, "photo") + SIG_OLD, _full(202, "video") + SIG_OLD], c.gets
-    assert c.byid == [], "a good stored url needs no OF read"
+    assert c.reads == [], "a good stored url needs no OF read"
     assert admission.VAULT_DOWNLOAD.busy == 0, "every slot given back"
     assert admission.VAULT_DOWNLOAD.peak >= 1
 
@@ -225,10 +233,10 @@ def case_403_resigns_once():
     r = _dl(owner, 201)
     assert r.status_code == 200 and r.content == BODY[201], (r.status_code, r.text[:200])
     assert c.gets == [_full(201, "photo") + SIG_OLD, _full(201, "photo") + SIG_NEW], c.gets
-    assert c.byid == [201], c.byid
+    assert c.reads == ["p0"], c.reads   # its listing window, no by-id read
     c.gets.clear()
     assert _dl(owner, 201).status_code == 200
-    assert c.gets == [_full(201, "photo") + SIG_NEW] and c.byid == [201], "the fresh url is reused, no 2nd read"
+    assert c.gets == [_full(201, "photo") + SIG_NEW] and c.reads == ["p0"], "the fresh url is reused, no 2nd read"
 
 
 def case_403_after_resign_is_403():
@@ -237,10 +245,10 @@ def case_403_after_resign_is_403():
     c = _use(_Client(accept_old=False, fresh=dead))
     r = _dl(owner, 201)
     assert r.status_code == 403, (r.status_code, r.text[:200])
-    assert len(c.gets) == 2 and c.byid == [201], (c.gets, c.byid)
+    assert len(c.gets) == 2 and c.reads == ["p0"], (c.gets, c.reads)
     assert admission.VAULT_DOWNLOAD.busy == 0
     again = _dl(owner, 201)
-    assert again.status_code == 403 and c.byid == [201], (again.status_code, c.byid)
+    assert again.status_code == 403 and c.reads == ["p0"], (again.status_code, c.reads)
     assert len(c.gets) == 3, c.gets  # failure memory prevents another OF by-id read
 
 
@@ -249,7 +257,7 @@ def case_drm_only_is_422_and_unknown_404():
     c = _use(_Client(fresh=_payload(203, "video", [12], drm=True)))
     r = _dl(owner, 203)
     assert r.status_code == 422, (r.status_code, r.text[:200])
-    assert c.byid == [203] and c.gets == [], (c.byid, c.gets)
+    assert c.reads == [203] and c.gets == [], (c.reads, c.gets)
     c = _use(_Client(fresh=None))
     r = _dl(owner, 777)   # no mirror row, OF has none either
     assert r.status_code in (404,), (r.status_code, r.text[:200])
@@ -264,7 +272,7 @@ def case_chatter_folder_gate():
     assert r.status_code == 404, ("resign outside its folders", r.status_code)
     r = _dl(chatter, 777)
     assert r.status_code == 404, ("no mirror row", r.status_code)
-    assert c.gets == [] and c.byid == [], (c.gets, c.byid)
+    assert c.gets == [] and c.reads == [], (c.gets, c.reads)
     # Inside: 201. A `u` naming 202's file rides along: ignored, 201's own url is fetched.
     r = _dl(chatter, 201, u=_full(202, "video") + SIG_NEW)
     assert r.status_code == 200 and r.content == BODY[201], (r.status_code, len(r.content))
@@ -279,7 +287,7 @@ def case_anonymous_refused():
                  f"/admin/vault-ai/download/info?account_id={AID}"):
         r = anon.get(path)
         assert r.status_code in (401, 403), (path, r.status_code, r.text[:120])
-    assert c.gets == [] and c.byid == []
+    assert c.gets == [] and c.reads == []
 
 
 def case_resign_returns_fresh_url():
@@ -288,7 +296,7 @@ def case_resign_returns_fresh_url():
     stale = _full(201, "photo") + SIG_OLD
     r = owner.get("/admin/vault-ai/download/resign", params={"account_id": AID, "media_id": 201, "u": stale})
     assert r.status_code == 200 and r.json() == {"url": _full(201, "photo") + SIG_NEW}, (r.status_code, r.text)
-    assert c.byid == [201] and c.gets == [], (c.byid, c.gets)
+    assert c.reads == ["p0"] and c.gets == [], (c.reads, c.gets)
     # Without `u`: the full file of the fresh payload.
     _use(c)
     r = owner.get(f"/admin/vault-ai/download/resign?account_id={AID}&media_id=201")
@@ -297,26 +305,34 @@ def case_resign_returns_fresh_url():
 
 
 class _PacedClient(_Client):
-    """By-id reads through `of_pacing.paced` as OFClient.get_json sends them; the first answered OF's 429."""
+    """OF reads through `of_pacing.paced` as OFClient.get_json sends them; the first answered OF's 429. Its listing
+    holds 201 only, so 202 falls back to a by-id read."""
 
     def __init__(self):
         super().__init__(accept_old=False)
         self.at: list[float] = []
         self.too_many = 1
 
-    def vault_media_by_id(self, media_id: int):
+    def _paced(self, what, answer):
         def call():
             with self.lock:
                 self.at.append(time.monotonic())
-                self.byid.append(int(media_id))
+                self.reads.append(what)
                 if self.too_many:
                     self.too_many -= 1
                     e = RuntimeError("OF 429")
                     e.response = SimpleNamespace(status_code=429, text="Too many requests. Please allow 0 seconds")
                     raise e
-            kind = ROWS[int(media_id)][0]
-            return _payload(int(media_id), kind, ROWS[int(media_id)][1], sig=SIG_NEW)
+            return answer()
         return of_pacing.paced(self.account_id, call)
+
+    def vault_media(self, *, offset: int = 0, **_kw):
+        return self._paced(f"p{offset}", lambda: {"list": [_payload(201, "photo", [12], sig=SIG_NEW)],
+                                                  "hasMore": False})
+
+    def vault_media_by_id(self, media_id: int):
+        kind = ROWS[int(media_id)][0]
+        return self._paced(int(media_id), lambda: _payload(int(media_id), kind, ROWS[int(media_id)][1], sig=SIG_NEW))
 
 
 def case_resigns_paced_and_429_retried():
@@ -325,17 +341,12 @@ def case_resigns_paced_and_429_retried():
     gap, jit = of_pacing.PAGE_GAP_S, of_pacing.JITTER_S
     of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.3, 0.0
     of_pacing._next_at.pop(AID, None)
-    try:
-        out: dict[int, int] = {}
-        ts = [threading.Thread(target=lambda m=m: out.__setitem__(m, _dl(owner, m).status_code)) for m in (201, 202)]
-        for t in ts:
-            t.start()
-        for t in ts:
-            t.join(30)
+    try:   # one after the other: TestClient runs each thread's request on its own loop; the relay has one
+        out = {m: _dl(owner, m).status_code for m in (201, 202)}
     finally:
         of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
     assert out == {201: 200, 202: 200}, out
-    assert sorted(c.byid) == [201, 201, 202] or sorted(c.byid) == [201, 202, 202], c.byid  # one 429, retried
+    assert c.reads == ["p0", "p0", 202], c.reads   # one shared window read (429, retried), then 202 by id
     gaps = [b - a for a, b in zip(c.at, c.at[1:])]
     assert all(g >= 0.29 for g in gaps), gaps
     assert admission.VAULT_DOWNLOAD.busy == 0
@@ -345,18 +356,20 @@ def case_transient_resign_failure_retries_soon():
     owner = _login("/auth/login", "ownerd")
     c = _use(_Client(accept_old=False, fresh=_payload(201, "photo", [12], sig=SIG_NEW)))
 
-    def blip(media_id: int):
+    def blip(**_kw):
         with c.lock:
-            c.byid.append(int(media_id))
+            c.reads.append("p0")
         raise RuntimeError("proxy reset")
-    c.vault_media_by_id = blip
+    c.vault_media = blip
     assert _dl(owner, 201).status_code == 403
-    assert _dl(owner, 201).status_code == 403 and c.byid == [201], "a hover's frames: one OF call"
+    assert _dl(owner, 201).status_code == 403 and c.reads == ["p0"], "a hover's frames: one OF call, no by-id"
     until = cdn_resign._failed[(AID, 201)]
     assert until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S, until
+    assert cdn_resign._pages[(AID, 0)][0] - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S
     cdn_resign._failed[(AID, 201)] = time.monotonic() - 1   # FAIL_TRANSIENT_S later
-    del c.vault_media_by_id                                  # OF answers again
-    assert _dl(owner, 201).status_code == 200 and c.byid == [201, 201], c.byid
+    cdn_resign._pages[(AID, 0)] = (time.monotonic() - 1, None)
+    del c.vault_media                                        # OF answers again
+    assert _dl(owner, 201).status_code == 200 and c.reads == ["p0", "p0"], c.reads
 
 
 _harness.run()

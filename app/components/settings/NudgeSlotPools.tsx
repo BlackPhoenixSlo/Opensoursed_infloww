@@ -2,15 +2,14 @@
 
 /**
  * NudgeSlotPools — Nudge online's "Message lines & images": a day picker (Every day, Weekdays, Weekend, Mon–Sun) and,
- * for the picked day, one editor per time-of-day slot (its lines and its vault images). Images come from the vault
- * picker, a file chooser or a drop on the slot (imported into the vault, `useNudgeImageUploads`). A day's empty
- * lines or images use the next bucket's (nudgeDayBuckets `inherited`, the relay's `_pick_pool`), shown dimmed with
- * a button to make them the day's own. The tab owns the slots (its reducer), the uploads and the cache of picked
+ * for the picked day, one editor per time-of-day slot (its lines and its vault images, picked from the vault). A
+ * day's empty lines or images use the next bucket's (nudgeDayBuckets `inherited`, the relay's `_pick_pool`), shown
+ * dimmed with a button to make them the day's own. The tab owns the slots (its reducer) and the cache of picked
  * media; this only edits them through its callbacks.
  */
 
-import { useRef, useState, type DragEvent } from "react";
-import { Image as ImageIcon, Loader2, Upload, X } from "lucide-react";
+import { useState } from "react";
+import { Image as ImageIcon, X } from "lucide-react";
 
 import { IfButton, IfHelp, IfInput } from "@/components/ui/infloww";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -24,7 +23,6 @@ import {
   DAY_BUCKETS, bucketHasContent, bucketLabel, fallbackChain, inherited, shownImageIds,
   type DayBucket, type Inherited,
 } from "@/components/settings/nudgeDayBuckets";
-import { type NudgeUploadChip } from "@/components/settings/useNudgeImageUploads";
 
 // The 6 time-of-day slots (same buckets send_welcome uses), with friendly labels.
 const SLOT_DEFS: [string, string][] = [
@@ -38,7 +36,7 @@ const SLOT_DEFS: [string, string][] = [
 const SLOT_KEYS = SLOT_DEFS.map(([k]) => k);
 
 export function NudgeSlotPools({
-  accountId, slots, mediaCache, onMediaPicked, onSlot, uploads, onUpload, onDismissUpload,
+  accountId, slots, mediaCache, onMediaPicked, onSlot,
 }: {
   accountId: string | null;
   /** Every day bucket: bucket → slot key → its entry. */
@@ -46,15 +44,12 @@ export function NudgeSlotPools({
   mediaCache: Record<number, VaultMedia>;
   onMediaPicked: (picked: VaultMedia[]) => void;
   onSlot: (bucket: DayBucket, key: string, entry: NudgeSlotEntry) => void;
-  uploads: NudgeUploadChip[];
-  onUpload: (bucket: DayBucket, key: string, files: File[]) => void;
-  onDismissUpload: (key: string) => void;
 }) {
   const [bucket, setBucket] = useState<DayBucket>("default");
   // Which slot's vault picker is open (of the picked day).
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const byIds = useVaultMediaByIds(accountId, shownImageIds(slots, bucket, SLOT_KEYS));
-  // A pick or upload this session first (a dropped file's local preview until the vault read lands).
+  // A pick this session first, else the vault read.
   const media = (id: number): VaultMedia | undefined =>
     mediaCache[id]?.files ? mediaCache[id] : byIds[id] ?? mediaCache[id];
   const day = slots[bucket] ?? {};
@@ -62,14 +57,14 @@ export function NudgeSlotPools({
 
   return (
     <>
-      <div role="radiogroup" aria-label="Day" className="flex flex-wrap gap-2">
+      <div role="radiogroup" aria-label="Day" className="flex flex-wrap gap-1.5">
         {DAY_BUCKETS.map((b) => {
           const on = b.key === bucket;
           const own = b.key !== "default" && bucketHasContent(slots, b.key);
           return (
             <button key={b.key} type="button" role="radio" aria-checked={on} onClick={() => setBucket(b.key)}
               title={own ? `${bucketLabel(b.key)} has its own lines or images` : undefined}
-              className={`relative h-8 rounded-md border px-3 text-[13px] transition-colors ${on
+              className={`relative h-8 rounded-md border px-2.5 text-[13px] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${on
                 ? "border-accent text-accent bg-bg-elev-2" : "border-border text-fg-dim hover:text-fg"}`}>
               {b.label}
               {own && <span aria-hidden className="absolute -top-1 -right-1 size-2 rounded-full bg-accent" />}
@@ -92,9 +87,6 @@ export function NudgeSlotPools({
           onChange={(entry) => onSlot(bucket, key, entry)}
           accountId={accountId}
           media={media}
-          uploads={uploads.filter((u) => u.accountId === accountId && u.bucket === bucket && u.slotKey === key)}
-          onFiles={(files) => onUpload(bucket, key, files)}
-          onDismissUpload={onDismissUpload}
           onPickImages={() => setPickerSlot(key)}
         />
       ))}
@@ -121,7 +113,7 @@ export function NudgeSlotPools({
 function thumbSrc(media: VaultMedia | undefined, accountId: string | null): string {
   const raw = media?.files?.thumb?.url || media?.files?.squarePreview?.url
     || media?.files?.preview?.url || "";
-  return raw ? proxyImage(raw, accountId) : media?._localPreview ?? "";
+  return raw ? proxyImage(raw, accountId) : "";
 }
 
 export function MediaThumb({
@@ -141,11 +133,9 @@ export function MediaThumb({
   );
 }
 
-const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
-
-/** One time-slot of the picked day: its lines and images, a drop target for image files. */
+/** One time-slot of the picked day: its lines and images. */
 function SlotEditor({
-  label, bucket, entry, from, onChange, accountId, media, uploads, onFiles, onDismissUpload, onPickImages,
+  label, bucket, entry, from, onChange, accountId, media, onPickImages,
 }: {
   label: string;
   bucket: DayBucket;
@@ -155,13 +145,8 @@ function SlotEditor({
   onChange: (e: NudgeSlotEntry) => void;
   accountId: string | null;
   media: (id: number) => VaultMedia | undefined;
-  uploads: NudgeUploadChip[];
-  onFiles: (files: File[]) => void;
-  onDismissUpload: (key: string) => void;
   onPickImages: () => void;
 }) {
-  const [over, setOver] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
   const texts = entry.text ?? [];
   const images = entry.image ?? [];
   const setLine = (i: number, v: string) => {
@@ -175,21 +160,7 @@ function SlotEditor({
   const inheritedImages = images.length === 0 ? from.image : null;
 
   return (
-    <div
-      className={`relative rounded-md border p-3 space-y-2 transition-colors ${over ? "border-accent bg-accent/5" : "border-border"}`}
-      onDragOver={(e) => { if (!hasFiles(e)) return; e.preventDefault(); setOver(true); }}
-      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false); }}
-      onDrop={(e) => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        setOver(false);
-        onFiles(Array.from(e.dataTransfer.files));
-      }}>
-      {over && (
-        <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-md bg-bg/80 text-accent font-medium">
-          Drop to add to {label}
-        </div>
-      )}
+    <div className="rounded-md border border-border p-3 space-y-2">
       <div className="font-medium">{label}</div>
 
       {inheritedLines ? (
@@ -217,8 +188,8 @@ function SlotEditor({
           onImport={(items) => onChange({ ...entry, text: mergeCaptions(texts, items).pool })} />
       </div>
 
-      {/* Images: own thumbnails (else the inherited ones, dimmed), uploads in flight, then Vault / Upload tiles.
-       *  One image per nudge; several rotate. */}
+      {/* Images: own thumbnails (else the inherited ones, dimmed), then the Vault tile. One image per nudge; several
+       *  rotate. */}
       <div className="flex flex-wrap items-center gap-4 md:gap-2">
         {images.map((id) => (
           <MediaThumb key={id} id={id} media={media(id)} accountId={accountId} onRemove={() => removeImage(id)} />
@@ -226,35 +197,17 @@ function SlotEditor({
         {inheritedImages?.ids.map((id) => (
           <MediaThumb key={`in-${id}`} id={id} media={media(id)} accountId={accountId} dim />
         ))}
-        {uploads.map((u) => (
-          <div key={u.key} title={u.error ?? `Uploading ${u.name} to the vault…`}
-            className={`relative w-12 h-12 rounded border bg-bg shrink-0 ${u.error ? "border-err" : "border-border"}`}>
-            {u.previewUrl && <img src={u.previewUrl} alt="" className="w-full h-full object-cover rounded opacity-50" />}
-            {!u.error && <Loader2 aria-label="Uploading" className="absolute inset-0 m-auto size-4 animate-spin text-accent" />}
-            <button type="button" onClick={() => onDismissUpload(u.key)}
-              aria-label={u.error ? "Dismiss failed upload" : "Stop waiting for this upload"}
-              className="absolute -top-2 -right-2 md:-top-1 md:-right-1 bg-panel border border-border rounded-full w-7 h-7 md:w-4 md:h-4 grid place-items-center hover:text-err"><X className="size-3 md:size-2.5" aria-hidden /></button>
-          </div>
-        ))}
-        <button type="button" onClick={onPickImages} title="Add image from vault" aria-label="Add image from vault"
-          className="w-14 h-12 rounded-md border border-dashed border-border grid place-items-center content-center gap-0.5 text-[11px] text-fg-dim hover:border-accent hover:text-accent">
-          <ImageIcon className="size-4" aria-hidden />Vault
+        <button type="button" onClick={onPickImages} disabled={!accountId}
+          title="Pick images from the vault" aria-label="Add image from vault"
+          className="h-12 px-3 rounded-md border border-dashed border-border flex items-center gap-1.5 text-[12px] text-fg-dim hover:border-accent hover:text-accent disabled:opacity-50">
+          <ImageIcon className="size-4" aria-hidden />{images.length ? "Change images" : "Add from vault"}
         </button>
-        <button type="button" onClick={() => fileRef.current?.click()} disabled={!accountId}
-          title="Upload images from this device" aria-label="Upload images"
-          className="w-14 h-12 rounded-md border border-dashed border-border grid place-items-center content-center gap-0.5 text-[11px] text-fg-dim hover:border-accent hover:text-accent disabled:opacity-50">
-          <Upload className="size-4" aria-hidden />Upload
-        </button>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden data-testid="nudge-slot-upload"
-          onChange={(e) => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
-        <span className="hidden md:inline text-[12px] text-muted">
-          {inheritedImages ? `Uses ${bucketLabel(inheritedImages.from)}'s image${inheritedImages.ids.length === 1 ? "" : "s"}; ` : ""}
-          or drop images here
-        </span>
+        {inheritedImages && (
+          <span className="text-[12px] text-muted">
+            Uses {bucketLabel(inheritedImages.from)}&apos;s image{inheritedImages.ids.length === 1 ? "" : "s"}
+          </span>
+        )}
       </div>
-      {uploads.filter((u) => u.error).map((u) => (
-        <div key={u.key} className="text-[12px] text-err">{u.name}: {u.error}</div>
-      ))}
     </div>
   );
 }

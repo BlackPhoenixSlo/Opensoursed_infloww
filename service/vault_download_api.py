@@ -10,7 +10,7 @@ through `GET /admin/vault-ai/download` instead.
                                                           itself (the account's egress is Direct, not a proxy).
   GET /admin/vault-ai/download/resign?account_id=&media_id=&u=
                                                           {url}: a freshly signed url for the same file as `u`
-                                                          (one by-id OF read, `cdn_resign`), no bytes. The direct
+                                                          (`cdn_resign`: its listing window, else by id), no bytes. The direct
                                                           path's retry after a 403 / expired url.
   GET /admin/vault-ai/download?account_id=&media_id=[&u=] the full-quality file through the account's client (its
                                                           proxy), streamed (never read whole), Content-Disposition
@@ -22,7 +22,8 @@ rule). The url streamed is the mirror row's when the row has one for the same fi
 a file of that media (the row's payload) or, for an unrestricted caller, an OF CDN host (what `/img` already
 accepts). Downloads hold a `VAULT_DOWNLOAD` slot each for the whole stream (queued, never rejected).
 
-Every OF by-id read these routes make (the re-sign of a stale / expired url, one per file) runs as a paced background
+Every OF read these routes make (the re-sign of a stale / expired url: one listing read per 100-item window, `cdn_resign`,
+else one by-id read per file) runs as a paced background
 walk on the Creator (`of_pacing.walk`, kind `vault_download`): >= PAGE_GAP_S apart, shared with the Creator's other
 walks, OF's 429 waited out and retried once. Measured on AE 2026-11-10: a 118-file download whose urls had expired 3
 days earlier re-signed 76 files in 19 s unpaced, OF answered 429 for the account, the last 26 files failed (`relay

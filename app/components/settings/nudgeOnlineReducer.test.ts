@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { effectiveConfig, type NudgeConfig } from "@/hooks/useNudgeConfig";
 import {
   buildConfig, canSave, gateNote, hasUnsavedEdits, initialNudgeOnlineState, isDirty, keptDraft,
-  nudgeOnlineReducer, parseSlotsJson, pickedIds, preSaveConfig, previewPayload, restoredNote, rolloutBlock, sameConfig,
+  nudgeOnlineReducer, parseSlotsJson, pickedIds, preSaveConfig, previewPayload, restoredNote, shareBlock, sameConfig,
   type KeptDraft, type NudgeOnlineAction, type NudgeOnlineState, type SaveGateInput,
 } from "./nudgeOnlineReducer";
 
@@ -188,7 +188,7 @@ describe("account", () => {
     expect([s.form, s.accountId]).toEqual([{}, B]);
   });
 
-  it("keeps the roll-out checklist and its line", () => {
+  it("keeps the share checklist and its line", () => {
     const from = run([{ type: "setModels", ids: [A] }, { type: "bulkMsg", msg: "done" }], loaded());
     const s = nudgeOnlineReducer(from, to(B));
     expect([s.selected, s.bulkMsg]).toEqual([new Set([A]), "done"]);
@@ -212,7 +212,7 @@ describe("edits and the save verdict", () => {
     ["slots clears it", { type: "slots", slots: {} }, true],
     ["good applyJson clears it", { type: "applyJson" }, true],
     ["JSON typing keeps it", { type: "jsonDraft", text: "{" }, false],
-    ["a roll-out pick keeps it", { type: "setModels", ids: [A] }, false],
+    ["a share pick keeps it", { type: "setModels", ids: [A] }, false],
     ["Run now's line keeps it", { type: "runMsg", msg: "Run failed: x" }, false],
     ["Preview's line keeps it", { type: "previewErr", msg: "Preview failed" }, false],
   ])("%s", (_name, a, clears) => {
@@ -437,14 +437,15 @@ describe("buildConfig / sameConfig / isDirty / effectiveConfig", () => {
   });
 });
 
-describe("roll-out checklist", () => {
+describe("share checklist", () => {
   const ALL = [A, B];
   const toggle = (id: string): NudgeOnlineAction => ({ type: "toggleModel", id, all: ALL });
 
   it.each<[string, NudgeOnlineAction[], string[]]>([
-    ["every model by default", [], [A, B]],
-    ["toggle off one from all", [toggle(A)], [B]],
-    ["toggle back on", [toggle(A), toggle(A)], [A, B]],
+    ["none by default", [], []],
+    ["toggle one on", [toggle(A)], [A]],
+    ["toggle back off", [toggle(A), toggle(A)], []],
+    ["All, then toggle one off", [{ type: "setModels", ids: null }, toggle(A)], [B]],
     ["None", [{ type: "setModels", ids: [] }], []],
     ["None then one", [{ type: "setModels", ids: [] }, toggle(B)], [B]],
     ["All after toggles", [toggle(A), toggle(B), { type: "setModels", ids: null }], [A, B]],
@@ -458,15 +459,12 @@ describe("roll-out checklist", () => {
 
   it.each<[string, NudgeOnlineAction[], string[], string | null]>([
     ["clean + picked → go", [], [A], null],
-    ["dirty → save first", [{ type: "field", k: "enabled", v: false }], [A],
-      "Save your changes first, then roll out."],
+    ["dirty + picked → go (Share saves first)", [{ type: "field", k: "enabled", v: false }], [A], null],
     ["none picked", [], [], "Pick at least one model."],
-    ["dirty wins over none picked", [{ type: "field", k: "enabled", v: false }], [],
-      "Save your changes first, then roll out."],
     ["picked account not loaded yet → wait (its draft is `{slots:{}}`, not dirty)", [to(B)], [A, B],
       "Wait for this account's settings to load."],
-  ])("rolloutBlock: %s", (_name, actions, picked, want) => {
-    expect(rolloutBlock(run(actions, loaded()), picked)).toBe(want);
+  ])("shareBlock: %s", (_name, actions, picked, want) => {
+    expect(shareBlock(run(actions, loaded()), picked)).toBe(want);
   });
 });
 
@@ -510,7 +508,7 @@ describe("canSave / gateNote", () => {
   });
 });
 
-describe("day-bucket slot edits and landed uploads", () => {
+describe("day-bucket slot edits", () => {
   it("a day's slot edit lands in its bucket and the JSON view; clearing it drops the bucket", () => {
     const s = run([{ type: "slot", bucket: "friday", key: "night", entry: { text: ["fri {name}"], image: [] } }], loaded());
     expect(s.slots.friday).toEqual({ night: { text: ["fri {name}"], image: [] } });
@@ -518,20 +516,5 @@ describe("day-bucket slot edits and landed uploads", () => {
     expect(s.slots.default).toEqual(SLOTS.default);
     const cleared = run([{ type: "slot", bucket: "friday", key: "night", entry: { text: [], image: [] } }], s);
     expect(cleared.slots.friday).toBeUndefined();
-  });
-
-  it.each<[string, string, boolean, number[]]>([
-    ["adds to the slot as it is now, deduped", A, true, [5, 9]],
-    ["another account's landing is ignored", B, true, [5]],
-    ["before the draft is seeded it is ignored", A, false, [5]],
-  ])("addImages: %s", (_n, accountId, seeded, want) => {
-    const from = seeded ? loaded() : run([to(A)]);
-    const s = run([{ type: "addImages", accountId, bucket: "default", key: "morning_1", ids: [5, 9] }], from);
-    expect(s.slots.default?.morning_1?.image ?? [5]).toEqual(want);
-  });
-
-  it("addImages on an empty day slot creates it (image only, lines inherited)", () => {
-    const s = run([{ type: "addImages", accountId: A, bucket: "saturday", key: "evening", ids: [42] }], loaded());
-    expect(s.slots.saturday).toEqual({ evening: { text: [], image: [42] } });
   });
 });
