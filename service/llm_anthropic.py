@@ -69,9 +69,8 @@ def to_native_body(body: dict[str, Any], max_tokens: int = MAX_TOKENS) -> dict[s
     System messages become `system` blocks; the LAST carries the cache
     breakpoint, so everything up to it (tools none, system all) is one cached
     prefix. Other body keys that both shapes share (`temperature`, `thinking`)
-    pass through as-is; `stream` and OpenAI-only keys are dropped."""
-    if body.get("response_format") is not None:
-        raise NativeShapeError("response_format has no native equivalent here")
+    pass through as-is; `stream` and OpenAI-only keys are dropped
+    (`response_format`: llm_client.chat refuses it for this wire first)."""
     system: list[dict[str, Any]] = []
     messages: list[dict[str, Any]] = []
     for m in body.get("messages") or []:
@@ -100,9 +99,16 @@ def to_openai_response(data: dict[str, Any]) -> dict[str, Any]:
     `prompt_tokens` is the WHOLE prompt (remainder + cache write + cache read),
     matching what OpenAI-shape providers report, with the read slice in
     `prompt_tokens_details.cached_tokens` and the write slice in
-    `cache_creation_input_tokens` (priced at the write rate)."""
+    `cache_creation_input_tokens` (priced at the write rate).
+
+    `stop_reason: max_tokens` (adaptive thinking shares MAX_TOKENS with the
+    answer) leaves a fragment, not an answer: content comes back "" so the
+    caller takes its empty-answer path; finish_reason still says "length" and
+    the usage (billed) is kept."""
     blocks = data.get("content") or []
-    text = "".join(b.get("text") or "" for b in blocks if b.get("type") == "text")
+    stop = data.get("stop_reason")
+    text = "" if stop == "max_tokens" else "".join(
+        b.get("text") or "" for b in blocks if b.get("type") == "text")
     thinking = "".join(b.get("thinking") or "" for b in blocks
                        if b.get("type") == "thinking")
     u = data.get("usage") or {}
@@ -120,7 +126,6 @@ def to_openai_response(data: dict[str, Any]) -> dict[str, Any]:
     }
     if isinstance(details, dict) and details.get("thinking_tokens") is not None:
         usage["completion_tokens_details"] = {"reasoning_tokens": details["thinking_tokens"]}
-    stop = data.get("stop_reason")
     return {
         "id": data.get("id"),
         "model": data.get("model"),

@@ -310,140 +310,25 @@ async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
 
 # ── Answer reuse (the vision sweeps) ────────────────────────────────
 #
-# A thumb cluster above is good enough for an operator to confirm a hide; it is
-# NOT good enough to hand one item's describe + flags answer to another. Thumbs
-# are 300px centre crops and flags are judged on the FULL frame, so a cropped
-# tease and a full nude can share a thumb — and even full-frame dHash+aHash
-# equality missed two 60px censor stickers on a 960x1280 frame in 15/40 trials
-# (review of 580c71166). So reuse is PHOTOS ONLY (a clip's describe reads many
-# frames; one poster proves nothing about the rest) and needs the cached
-# full-frame preview (`vault_stills.image_path`, warmed by every collect) to be
-# byte-identical, or pixel-identical within `FRAME_MAX_DIFF`.
-#
-# The pixel test: same size, then the mean |RGB difference| over every 4x4
-# block (`ImageChops.difference(...).reduce(4)`), max over blocks and channels.
-# Measured 2026-11-10 on 15 real 960x1280 photo crops + 16 synthetic textured
-# frames (sensor-like noise σ 8 and σ 24), saved q85; edits re-saved at q70/85/95:
-#
-#                                     max block diff
-#     re-encode q85 / q90 / q95        <= 12 (real), <= 9 / 11 (synthetic)
-#     re-encode q80                    <= 16  → over the limit: NOT reused
-#     re-encode q70                    <= 26  → NOT reused
-#     20-60px solid sticker (40/40)    >= 45
-#     20-60px blur patch r4-8 (40/40)  >= 14 (patch placed on detail)
-#     2-10% crop, rescaled (40/40)     >= 116
-#
-# A q70-80 re-encode overlaps a blur patch on this measure, and the brief is
-# "unsure → no reuse", so those pay for their own call. The limit is 12.
-FRAME_BLOCK = 4
-FRAME_MAX_DIFF = 12
-
-
-def load_frame(path: Path) -> dict | None:
-    """One cached frame, read ONCE: {"md5", "size", "path"}. The RGB pixels are
-    decoded lazily, at most once (`_rgb`), and only when a same-size, different-
-    bytes partner needs them — so a cluster costs one read per member and one
-    decode per member that is actually compared. None when missing/unreadable."""
-    try:
-        from PIL import Image
-        raw = path.read_bytes()
-        with Image.open(path) as im:
-            size = im.size
-        return {"md5": hashlib.md5(raw).hexdigest(), "size": size, "path": path}
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _rgb(frame: dict):
-    if "rgb" not in frame:
-        from PIL import Image
-        with Image.open(frame["path"]) as im:
-            frame["rgb"] = im.convert("RGB")
-    return frame["rgb"]
-
-
-def frames_match(a: dict | None, b: dict | None) -> bool:
-    """May two loaded frames share one vision answer? Identical bytes, or same
-    size and a max 4x4-block mean |RGB difference| within `FRAME_MAX_DIFF`.
-    The diff is taken at FULL resolution and then block-averaged — averaging
-    first would hide a blur patch, which keeps its block means. Unreadable → no."""
-    if a is None or b is None:
-        return False
-    if a["md5"] == b["md5"]:
-        return True
-    if a["size"] != b["size"]:
-        return False
-    try:
-        from PIL import ImageChops
-        d = ImageChops.difference(_rgb(a), _rgb(b))
-        return max(hi for _lo, hi in d.reduce(FRAME_BLOCK).getextrema()) <= FRAME_MAX_DIFF
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def same_frame(a: Path, b: Path) -> bool:
-    """`frames_match` for two paths (one-off comparisons and the tests)."""
-    return frames_match(load_frame(a), load_frame(b))
-
-
-def frame_groups(members: list[dict], same) -> list[list[int]]:
-    """Split one thumb cluster (oldest first; each {"media_id", "width",
-    "height"}) into groups whose members ALL pairwise share a full frame by
-    `same(a, b)` — a member joins a group only if it matches every member
-    already in it, so any two members of a group were compared directly and a
-    copy's source is always an item it was checked against (never two hops,
-    up to 2 x FRAME_MAX_DIFF apart). OF dims must agree whenever both rows carry
-    them. Only groups of >= 2 are returned."""
-    def dims_agree(a: dict, b: dict) -> bool:
-        da, db = (a.get("width"), a.get("height")), (b.get("width"), b.get("height"))
-        return not (all(da) and all(db)) or da == db
-
-    groups: list[list[dict]] = []
-    for m in members:
-        for g in groups:
-            if all(dims_agree(x, m) and same(x, m) for x in g):
-                g.append(m)
-                break
-        else:
-            groups.append([m])
-    return [[m["media_id"] for m in g] for g in groups if len(g) > 1]
+# One describe + flags answer is shared across every set the Duplicates screen
+# shows at "2 · recommended": exactly `find_duplicates` at DEFAULT_THRESHOLD,
+# photos and clips alike (clips already need a duration match). Never looser
+# than 2, no extra full-frame check (owner decision 2026-11-11). Sets are
+# seed-based, so two members may be up to 2 x threshold apart from each other.
+# Accepted risk: a set can hold different frames of one shoot burst (e.g. a
+# d1/d2 set of three poses) — they share one answer.
 
 
 async def reuse_groups(account_id: str, want: frozenset[int] | set[int]) -> list[list[int]]:
-    """The account's sets of PHOTOS that may share one vision answer, each as
-    media ids oldest first: thumb clusters (`find_duplicates`, default
-    threshold) that touch `want` (the sweep's set), re-checked on the full
-    frame. Any failure — no Pillow, a broken store, a DB hiccup — logs and
-    returns [] (= every item is unique): a sweep must never fail because
-    duplicate detection did."""
+    """The account's duplicate sets that touch `want` (the sweep's set), each
+    as media ids oldest first (original, then dupes). Any failure — no Pillow,
+    a broken store, a DB hiccup — logs and returns [] (= every item is unique):
+    a sweep must never fail because duplicate detection did."""
     try:
-        from vault_stills import image_path
         res = await find_duplicates(account_id)
-        clusters = [[c["original"], *c["dupes"]] for c in res["clusters"]
-                    if c["original"]["kind"] == "photo"]
-        clusters = [cl for cl in clusters if any(int(m["media_id"]) in want for m in cl)]
-        if not clusters:
-            return []
-        async with get_session() as s:
-            dims = {int(mid): (w, h) for mid, w, h in (await s.execute(
-                select(VaultItem.media_id, VaultItem.width, VaultItem.height)
-                .where(VaultItem.account_id == account_id))).all()}
-
-        def _same(a: dict, b: dict) -> bool:
-            return frames_match(a["frame"], b["frame"])
-
-        def _work() -> list[list[int]]:
-            out: list[list[int]] = []
-            for cl in clusters:  # each member's frame loaded once per cluster
-                members = [{"media_id": int(m["media_id"]),
-                            "width": dims.get(int(m["media_id"]), (None, None))[0],
-                            "height": dims.get(int(m["media_id"]), (None, None))[1],
-                            "frame": load_frame(image_path(account_id, int(m["media_id"])))}
-                           for m in cl]
-                out += frame_groups(members, _same)
-            return out
-
-        return await asyncio.to_thread(_work)
+        groups = [[int(m["media_id"]) for m in (c["original"], *c["dupes"])]
+                  for c in res["clusters"]]
+        return [g for g in groups if any(m in want for m in g)]
     except Exception:  # noqa: BLE001
         log.exception("reuse_groups failed account=%s — sweeping without reuse", account_id)
         return []

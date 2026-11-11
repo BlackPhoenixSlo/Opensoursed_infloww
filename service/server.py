@@ -58,7 +58,7 @@ import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
-from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired  # noqa: E402
+from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy  # noqa: E402
 from of_rich_text import MARKUP_MAX  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
@@ -119,10 +119,11 @@ import lane_config_api  # noqa: E402  # Concurrency panel — UNAUTHENTICATED, s
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from customs_api import router as _customs_router  # noqa: E402
 from vault_ai_api import router as _vault_ai_router  # noqa: E402
-from vault_download_api import router as _vault_download_router  # noqa: E402
+from vault_download_api import CUT_SHORT as _vault_cut_short, router as _vault_download_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
+from assistant_draft import router as _assistant_draft_router  # noqa: E402
 from copilot_api import router as _copilot_router  # noqa: E402
 # Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
@@ -372,6 +373,7 @@ app.include_router(_account_config_router)
 # may ask (deliberately not in _CHATTER_BLOCKED_ADMIN_PREFIXES) and the
 # handler derives their role server-side.
 app.include_router(_assistant_router)
+app.include_router(_assistant_draft_router)
 # Messages Pro's AI Copilot (POST /admin/copilot/{a}/{f}/suggest): reply
 # suggestions only, never a send. Chatters reach it through Messages Pro.
 app.include_router(_copilot_router)
@@ -856,11 +858,47 @@ class _RedactShareSecret(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_RedactShareSecret())
 
-# Outermost layer (added after the hook chain; Starlette: last added = outermost):
+# Outer layer, just inside _CutShortStreams (added after the hook chain; Starlette: last added = outermost):
 # one `req id=… ms=…` line per request and X-Request-Id echoed. Pure ASGI, not a
 # BaseHTTPMiddleware (see http_hooks). An unmatched path is logged redacted.
 from request_log import RequestLog as _RequestLog  # noqa: E402
 app.add_middleware(_RequestLog, redact=redact_share_secret)
+
+
+class _CutShortStreams:
+    """Outermost, pure ASGI: a body that ends short of the Content-Length it announced (vault_download_api's relay
+    after its upstream died mid-body, /img's 60 s stream cap) is cut, not completed. Its final empty message is
+    dropped, so uvicorn closes the connection (one "returned without completing response" line) and the client
+    sees a short read, instead of uvicorn raising "Response content shorter than Content-Length" (a Traceback).
+    A body with no Content-Length (chunked) is cut the same way when its handler marked it (vault_download_api
+    CUT_SHORT): no terminating chunk, so the client's read fails instead of taking the part as the whole."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") == "HEAD":
+            return await self.app(scope, receive, send)
+        want, sent = None, 0
+        mark: dict = {}
+        _vault_cut_short.set(mark)   # this request's task; the handler's and the body's tasks inherit the same dict
+
+        async def guard(msg):
+            nonlocal want, sent
+            if msg["type"] == "http.response.start":
+                if msg.get("status") not in (204, 304):
+                    want = next((int(v) for k, v in msg.get("headers", ()) if k.lower() == b"content-length"), None)
+            elif msg["type"] == "http.response.body":
+                sent += len(msg.get("body", b""))
+                if not msg.get("more_body", False) and (
+                        sent < want if want is not None else mark.get("cut")):
+                    return
+            await send(msg)
+
+        await self.app(scope, receive, guard)
+
+
+app.add_middleware(_CutShortStreams)
 
 
 @_http_hooks.add
@@ -1136,7 +1174,8 @@ async def _ws_pump_for_account(account_id: str) -> bool:
                 ws = FanslyWebSocket(_load_client(account_id))
             else:
                 ws = OFWebSocket(lambda: _load_client(account_id),
-                                 session_dead=account_health.is_session_dead_error)
+                                 session_dead=account_health.is_session_dead_error,
+                                 account_id=account_id)
             # Publish this live pump so the automation layer can push outbound
             # frames (e.g. the typing indicator) on the same socket. Both
             # platforms share this registry, so `of_ws.emit_typing` finds a
@@ -2505,8 +2544,9 @@ def _proxy(call, *, client: OFClient | None = None):
     a dead proxy fails them after 2 tries, not 5; writes keep the 5.
 
     A call whose client was evicted under it (OFSessionRetired) runs once more
-    on the account's current client when it is a GET; anything else answers
-    503 + Retry-After (a write retried from the top could repeat what it sent).
+    on the account's current client when it is a GET; anything else, and a
+    busy signed pool (OFSignedPoolBusy: nothing evicted), answers 503 +
+    Retry-After (a write retried from the top could repeat what it sent).
     `client`: the one `call` runs on when it was loaded before `_proxy` (a bound
     method), so a dead-session answer evicts only that client."""
     aid: str | None = None
@@ -2526,24 +2566,27 @@ def _proxy(call, *, client: OFClient | None = None):
         with _priority_lane(aid):
             try:
                 return call()
-            except OFSessionRetired:
-                if req is None or req.method != "GET":
+            except OFSessionRetired as e:
+                # A busy pool was not evicted: a re-run would wait on the same handles again.
+                if isinstance(e, OFSignedPoolBusy) or req is None or req.method != "GET":
                     raise
                 log.info("client evicted mid-read account=%s: re-run on the current client", aid)
                 return call()
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
+    except OFSessionRetired as e:  # before OFDeniedError (its base)
+        # This request never left (a multi-request write's earlier ones may have); the
+        # account's current client takes the caller's next try.
+        log.warning("signed call refused before sending account=%s method=%s: %s: 503", aid,
+                    req.method if req is not None else None, e)
+        busy = isinstance(e, OFSignedPoolBusy)   # nothing evicted: its handles stay leased a while
+        raise HTTPException(status_code=503, headers={"Retry-After": "5" if busy else "1"},
+                            detail={"upstream_status": "signed_pool_busy" if busy else "session_retired",
+                                    "upstream_body": str(e)}) from e
     except OFDeniedError as e:
         # The Relay's own deny-list (of_client._denied), never sent: not an upstream failure.
         raise HTTPException(status_code=403,
                             detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)}) from e
-    except OFSessionRetired as e:
-        # This request never left (a multi-request write's earlier ones may have); the
-        # account's current client takes the caller's next try.
-        log.warning("client evicted mid-call account=%s method=%s: 503", aid,
-                    req.method if req is not None else None)
-        raise HTTPException(status_code=503, headers={"Retry-After": "1"},
-                            detail={"upstream_status": "session_retired", "upstream_body": str(e)}) from e
     except OFAPIError as e:
         r = e.response
         status = r.status_code if r is not None else 500

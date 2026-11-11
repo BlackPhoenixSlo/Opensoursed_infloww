@@ -20,7 +20,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 0 ]; then
-  echo "ui-shots: takes no arguments (UI_SHOTS_SELFTEST=1 and UI_SHOTS_SWEEP=1 are its switches; see docs/ui-shots.md)" >&2
+  echo "ui-shots: takes no arguments (UI_SHOTS_SELFTEST=1, UI_SHOTS_SWEEP=1 and UI_SHOTS_KEYBOARD=1 are its switches; see docs/ui-shots.md)" >&2
   exit 2
 fi
 
@@ -297,8 +297,9 @@ RELAY = os.environ["UI_SHOTS_RELAY"]
 STARTED_AT = int(os.environ["UI_SHOTS_STARTED_AT"])
 SELFTEST = os.environ.get("UI_SHOTS_SELFTEST") == "1"
 SWEEP = os.environ.get("UI_SHOTS_SWEEP") == "1"
+KEYBOARD = os.environ.get("UI_SHOTS_KEYBOARD") == "1"
 OUT = "docs/screenshots"
-REPORT = ROOT / OUT / ("messages-pro-keyboard-report.json" if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else "messages-pro-report.json")
+REPORT = ROOT / OUT / ("messages-pro-keyboard-report.json" if KEYBOARD else "messages-pro-report.json")
 
 # ── Fixtures (shapes follow app/lib/relay.ts and the hooks that read them) ────
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1347,8 +1348,6 @@ def check_phone_keyboard(page):
               composerBottom: composer.bottom};
     }""")
     checks = [
-        {"name": "no obsolete lock-text migration notice", "ok":
-         page.get_by_text("Text is no longer locked by default", exact=False).count() == 0},
         {"name": "keyboard pan keeps chat inside visual viewport", "ok":
          abs(geometry["top"] - 80) < 1 and abs(geometry["bottom"] - 500) < 1},
         {"name": "keyboard keeps composer visible", "ok":
@@ -2008,12 +2007,15 @@ def sweep():
 
 def main():
     shots, flows = [], []
+    # The keyboard regression: the phone thread shot alone, no flows.
+    pick_shots = [s for s in SHOTS if s["name"] == "messages-pro-phone-thread"] if KEYBOARD else SHOTS
+    pick_flows = [] if KEYBOARD else FLOWS
     with sync_playwright() as p:
         browser = p.chromium.launch(args=LAUNCH_ARGS)
-        for n, spec in enumerate([s for s in SHOTS if s["name"] == "messages-pro-phone-thread"] if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else SHOTS):
+        for n, spec in enumerate(pick_shots):
             print(f"ui-shots: {spec['name']} …")
             shots.append(run_shot(browser, n, spec))
-        for n, spec in enumerate([] if os.environ.get("UI_SHOTS_KEYBOARD") == "1" else FLOWS, start=len(SHOTS)):
+        for n, spec in enumerate(pick_flows, start=len(SHOTS)):
             print(f"ui-shots: flow {spec['name']} …")
             flows.append(run_flow(browser, n, spec))
         browser.close()

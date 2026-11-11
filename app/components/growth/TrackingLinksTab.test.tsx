@@ -76,7 +76,7 @@ vi.mock("@/lib/chatterAccounts", async (importOriginal) => {
 
 import { TrackingLinksPage } from "@/components/growth/TrackingLinksTab";
 import { SmartListsPage } from "@/components/growth/SmartListsTab";
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { renderWithProviders } from "@/test-utils";
 
@@ -721,6 +721,43 @@ describe("our notes and extras", () => {
     expectBefore(within(panel).getByRole("combobox", { name: "Creator" }), section);
     // The redirect read's link is listed without opening a second control.
     await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
+  });
+
+  async function redirectSection(): Promise<HTMLElement> {
+    await mount();
+    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
+    const section = within(screen.getByRole("tabpanel")).getByRole("region", { name: /Custom redirect links/ });
+    await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
+    return section;
+  }
+
+  it("sends the target as typed and shows the relay's 422 detail when it refuses it", async () => {
+    const detail = "Target must be a web address, e.g. ofl.ink/name.";
+    relayPost.mockRejectedValueOnce(new RelayError(422, { detail }, detail));
+    const section = await redirectSection();
+    const [name, target] = within(section).getAllByRole("textbox");
+    fireEvent.change(name, { target: { value: "Bad" } });
+    fireEvent.change(target, { target: { value: "javascript:alert(1)" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Create link" }));
+    await waitFor(() => expect(within(section).getByText(detail)).toBeTruthy());
+    expect(relayPost).toHaveBeenCalledWith("/admin/tracking-links",
+      expect.objectContaining({ name: "Bad", target_url: "javascript:alert(1)" }));
+  });
+
+  it("shows a failed Bot check toggle's error by its row", async () => {
+    const relayPatch = relay.patch as unknown as Mock;
+    relayPatch.mockReset();
+    relayPatch.mockRejectedValueOnce(new RelayError(500, {}, "relay 500"));
+    const base = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation((path: string) => (String(path).startsWith("/admin/tracking-links")
+      ? Promise.resolve({ bot_check_available: true, links: [
+        { id: 7, name: "Redirect one", slug: "r1", path: "/t/r1", target_url: "https://example.test/", click_count: 3, bot_check: false },
+      ] })
+      : base(path)));
+    const section = await redirectSection();
+    fireEvent.click(within(section).getByRole("checkbox", { name: "Bot check for Redirect one" }));
+    await waitFor(() => expect(within(section).getByRole("alert").textContent).toBe("relay 500"));
+    expect(relayPatch).toHaveBeenCalledWith("/admin/tracking-links/7", { bot_check: true });
   });
 
   it("draws no \"Confirm the link once\" note: the URL is built as OnlyFans' own Copy-link builds it", async () => {

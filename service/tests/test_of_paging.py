@@ -10,8 +10,12 @@ fake `fetch(offset)` -> (rows, truncated, fetch offsets).
   case_repeat_short_end:       a repeated page (bare / envelope / non-dict only) is
                                incomplete, never complete; a short page then empty
                                is complete; normal end (hasMore false / empty) complete.
-  case_list_members_repeat:      a repeated members page returns all seen IDs
+  case_list_members_repeat:      a repeated members page returns all seen IDs; complete iff
+                               they number OF's usersCount (one get_list, only then)
                                and marks the result truncated.
+  case_find_list_id:           a list found by name on a complete or an incomplete
+                               read; absent on a complete read -> None; absent on an
+                               incomplete read raises ListLookupIncomplete.
   case_backstop:               200 pages of fresh ids -> truncated=True + warning.
   case_ids_from_pages:         ids as ints; id-less / non-int ids dropped; flag kept.
   case_same_objects:           audiences' old private names ARE of_paging's objects.
@@ -118,6 +122,57 @@ def case_list_members_repeat():
             return list(full)                      # offset ignored: page 1 forever
     ids, truncated = of_paging.list_member_ids(C(), 7)
     assert ids == set(range(1, 101)) and truncated is True, (len(ids), truncated)
+
+    class Counted(C):                              # OF's usersCount decides (one GET, only on a repeat)
+        def __init__(self, n):
+            self.n, self.counts = n, 0
+
+        def get_list(self, lid):
+            self.counts += 1
+            return {"id": lid, "usersCount": self.n}
+    for n, want in ((100, False), (250, True), (None, True)):
+        c = Counted(n)
+        ids, truncated = of_paging.list_member_ids(c, 7)
+        assert (len(ids), truncated, c.counts) == (100, want, 1), (n, truncated, c.counts)
+
+    class Boom(C):
+        def get_list(self, lid):
+            raise RuntimeError("502")
+    assert of_paging.list_member_ids(Boom(), 7)[1] is True
+    c = Counted(3)
+    c.list_users_in = lambda lid, limit, offset: [{"id": i} for i in (1, 2, 3)][offset:]
+    assert of_paging.list_member_ids(c, 7) == ({1, 2, 3}, False) and c.counts == 0   # complete: no GET
+
+
+def case_find_list_id():
+    page1 = [{"id": i, "name": f"n{i}"} for i in range(1, 101)]
+
+    class C:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def get_lists(self, *, limit, offset):
+            return self.pages.get(offset, {"list": [], "hasMore": False})
+    repeat = {0: {"list": page1, "hasMore": True}, 100: {"list": page1, "hasMore": True}}
+    whole = {0: {"list": page1, "hasMore": True},
+             100: {"list": [{"name": "id-less"}, {"id": "500", "name": "late"}], "hasMore": False}}
+    rows = [
+        # (name, pages, list name, want id | exception type)
+        ("complete read, found", whole, "late", 500),
+        ("complete read, absent -> None", whole, "nope", None),
+        ("incomplete read, found on page 1", repeat, "n7", 7),
+        ("incomplete read, absent -> raises", repeat, "late", of_paging.ListLookupIncomplete),
+        ("exact name only", whole, "n", None),
+    ]
+    bad = []
+    for name, pages, lname, want in rows:
+        try:
+            got = of_paging.find_list_id(C(pages), lname)
+        except of_paging.ListLookupIncomplete as e:
+            got = type(e)
+        if got != want:
+            bad.append(f"{name}: {got!r} != {want!r}")
+    assert not bad, "\n".join(bad)
 
 
 def case_backstop():

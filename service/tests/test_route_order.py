@@ -22,6 +22,15 @@ Golden refresh (2026-11-10): main 8ab4d6fb4 intentionally adds POST
 Removing exactly those paths reproduces the prior OpenAPI hash; remaining
 routes retain their order. Refresh after integrating main into Phase 2.
 
+Golden refresh (2026-11-11): inspected ac38007b9 -> rwl W28-shell-notif OpenAPI diff:
+- POST /admin/agency-notifications/dismiss-all takes an optional JSON body
+  {up_to_id} (+ its 422); a missing body keeps the old behaviour.
+- nudge preview (#416) adds optional `weekday` query + doc wording.
+After rebase on main a9ae82cc8: main's own drift since its 094966d87 golden =
+help bot routes POST /admin/assistant/draft + GET /admin/assistant/do-caps; inspected, intentional.
+Golden refresh (2026-11-11): rwl W28-relay-infra on main 6c68e13ed: only the tracking-link
+verify doc adds "429 + Retry-After" (verify throttle); inspected, intentional.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

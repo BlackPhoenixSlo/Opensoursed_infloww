@@ -238,9 +238,9 @@ read-only — nothing here disputes or refunds anything.
 
 Purchase, tip and message alerts can reach the phone's lock screen or the
 computer's notification tray. Open the **notification bell** in the top bar →
-**Toast settings** → tick **OS notification** and tap **Test** (that tap asks
+its settings tab (the gear) → tick **OS notification** and tap **Test** (that tap asks
 the browser for permission). Alerts follow the types whose **Toast** is ticked
-in the same panel. **Send push in 8 s** is a test you can watch arrive with the
+in the same tab. **Send push in 8 s** is a test you can watch arrive with the
 phone locked.
 
 - iPhone / iPad: alerts only work from the app on the Home Screen — Share →

@@ -21,6 +21,9 @@ GATE_PAGE = ("tracking links: every GET of a bot-checked link answers 200 with t
 GATE_VERIFY = ("tracking links: every bot-check verify with a passing token answers 200 {url: that link's own "
                "target}, every failing one 403 with no url, and Cloudflare's siteverify got exactly one call per "
                "verify, with the relay's secret and the fan's address")
+GATE_THROTTLE = ("tracking links: one fresh address posting VERIFY_CAPACITY + 3 failing bot-check verifies to a "
+                 "gated link gets 403 for the first VERIFY_CAPACITY and 429 with Retry-After for exactly the last 3; "
+                 "siteverify got VERIFY_CAPACITY calls (none for a 429) and the link counted no click")
 GATE_COUNT = ("tracking links: a bot-checked link's clicks (tracking_clicks rows, click_count, the list) == the "
               "verifies that passed, exactly; its GETs and failed verifies count none")
 GATE_CREATE = ("tracking links: every Create with a scheme-less target stores it as https://<it>, and bot_check "
@@ -95,13 +98,23 @@ def _cdn_header_ignored() -> None:
 def _bot_check_fails_open() -> None:
     """Every bot-check token passes without asking Cloudflare (bug class: the siteverify verdict ignored, the
     gate fails open). `verify_tracking_link` looks `_turnstile_passes` up at call time: a failing token gets the
-    target and counts a click, and siteverify sees no calls. GATE_VERIFY and GATE_COUNT go red."""
+    target and counts a click, and siteverify sees no calls. GATE_VERIFY and GATE_COUNT go red, and GATE_THROTTLE
+    (its probe's failing tokens pass, count clicks and reach no siteverify)."""
     import tracking_links_api as tla
 
     async def always(_secret, _token, _ip):
         return True
 
     tla._turnstile_passes = always
+
+
+def _verify_unthrottled() -> None:
+    """The verify budget never runs out (bug class: the per-client throttle dropped): every POST /t/<slug>/verify
+    reaches the link lookup and Cloudflare's siteverify. `verify_tracking_link` looks `_verify_wait` up at call
+    time. Only GATE_THROTTLE targets it (the storm's verifies come from one address each and never meet it)."""
+    import tracking_links_api as tla
+
+    tla._verify_wait = lambda _request: None
 
 
 def register(Fault) -> dict:
@@ -112,5 +125,6 @@ def register(Fault) -> dict:
         "of-tracking-claimers-no-memo": Fault(_claimers_no_memo, (CLAIMERS,)),
         "of-tracking-spend-first-link": Fault(_spend_first_link, (EARNINGS,)),
         "client-addr-cdn-header-ignored": Fault(_cdn_header_ignored, (CLIENT_IP,)),
-        "tracking-bot-check-fails-open": Fault(_bot_check_fails_open, (GATE_VERIFY, GATE_COUNT)),
+        "tracking-bot-check-fails-open": Fault(_bot_check_fails_open, (GATE_VERIFY, GATE_COUNT, GATE_THROTTLE)),
+        "tracking-verify-unthrottled": Fault(_verify_unthrottled, (GATE_THROTTLE,)),
     }

@@ -25,7 +25,7 @@ import asyncio  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
 import client_pool  # noqa: E402
-from of_client import OFAPIError  # noqa: E402
+from of_client import OFSessionRetired  # noqa: E402
 
 _harness.make_client()  # neutralises the startup spawns before `server` serves
 import server  # noqa: E402
@@ -70,7 +70,7 @@ async def case_reconnect_after_evict_uses_the_pooled_client() -> None:
         def me(self) -> dict:
             self.me_calls += 1
             if self.retired:
-                raise OFAPIError("signed session retired; retry with current account session")
+                raise OFSessionRetired("signed session retired; retry with current account session")
             return {"wsUrl": f"ws://127.0.0.1:{port}/ws3/1", "wsAuthToken": "t"}
 
         def close_signed_sessions(self) -> None:

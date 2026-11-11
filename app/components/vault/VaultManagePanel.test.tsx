@@ -30,6 +30,7 @@ const h = vi.hoisted(() => {
     patch: vi.fn(),
     searchingOf: false,
     mirrorItems: [] as Tile[],
+    get: vi.fn(),
     summary: { data: { count: 0 } as { count: number; complete?: boolean }, isLoading: false },
     access: { isLoading: false, isError: false } as { isLoading: boolean; isError: boolean; data?: { restricted: boolean } },
   };
@@ -43,7 +44,7 @@ vi.mock("@/components/vault/VaultAccount", () => ({
 }));
 vi.mock("@/lib/relay", async (orig) => {
   const mod = await orig<typeof import("@/lib/relay")>();
-  return { ...mod, relay: { ...mod.relay, patch: h.patch, post: vi.fn(), get: vi.fn() } };
+  return { ...mod, relay: { ...mod.relay, patch: h.patch, post: vi.fn(), get: h.get } };
 });
 vi.mock("@/hooks/useVaultMedia", async (orig) => {
   const mod = await orig<typeof import("@/hooks/useVaultMedia")>();
@@ -52,8 +53,8 @@ vi.mock("@/hooks/useVaultMedia", async (orig) => {
     ...mod,
     useVaultLists: () => lists,
     useChatterFolderAccess: () => h.access,
-    useVaultMedia: (o: { listId: unknown }) => ({
-      items: o.listId == null ? h.ALL : h.IN_BEACH,
+    useVaultMedia: (o: { listId: unknown; type: string }) => ({
+      items: (o.listId == null ? h.ALL : h.IN_BEACH).filter((m) => o.type === "all" || m.type === o.type),
       hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
     }),
   };
@@ -82,6 +83,8 @@ vi.mock("@/components/vault/VaultFolderRail", () => ({
   default: ({ folders, onSelect }: { folders: VaultList[]; onSelect: (id: unknown) => void }) => (
     <nav>
       <button type="button" onClick={() => onSelect(null)}>rail:All media</button>
+      {/* A folder the rail shows before the panel's folder list has it (the list still loading). */}
+      <button type="button" onClick={() => onSelect(4242)}>rail:not loaded</button>
       {folders.map((f) => (
         <button key={String(f.id)} type="button" onClick={() => onSelect(f.id)}>rail:{f.name}</button>
       ))}
@@ -103,10 +106,11 @@ vi.mock("@/components/vault/VaultPreviewMedia", () => ({ default: () => null }))
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultVideoPreview: () => null }));
 
 import { VaultDownloadProvider } from "./VaultDownloadPanel";
-import VaultManagePanel from "./VaultManagePanel";
+import VaultManagePanel, { FOLDER_LOADING } from "./VaultManagePanel";
 
-/** The panel as VaultProPage mounts it: under the page's one download. */
-const renderPanel = () => renderWithProviders(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
+/** The panel as VaultProPage mounts it: under the page's one download (`headerSlot`: its header button's place). */
+const renderPanel = (headerSlot?: HTMLElement) =>
+  renderWithProviders(<VaultDownloadProvider><VaultManagePanel headerSlot={headerSlot} /></VaultDownloadProvider>);
 
 beforeAll(() => {
   globalThis.IntersectionObserver = class {
@@ -124,6 +128,7 @@ beforeEach(() => {
   h.describeMedia.mockReset();
   h.addToOfFolder.mockReset().mockResolvedValue({});
   h.patch.mockReset().mockResolvedValue({ item: {}, locked: [] });
+  h.get.mockReset();
 });
 afterEach(cleanup);
 
@@ -151,13 +156,41 @@ describe("selection across a change of view", () => {
     expect(h.addToOfFolder).toHaveBeenCalledWith(AID, BEACH.id, [10]);
   });
 
-  it("switching media type clears the ticks", () => {
-    renderPanel();
-    click("Select");
-    click("tile 1");
-    expect(selectionBar()).toBeInTheDocument();
-    click("Photo");
-    expect(selectionBar()).toBeNull();
+  it("the Photo / Video filter keeps the ticks; Download selected takes every one (hidden too), then clears them", async () => {
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      fetched.push(u);
+      return new Response(new Uint8Array(2), { status: 200, headers: { "content-length": "2" } });
+    }));
+    const root = {
+      getDirectoryHandle: async () => root,
+      getFileHandle: async () => ({ createWritable: async () => new WritableStream<Uint8Array>() }),
+    };
+    (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = vi.fn(async () => root);
+    vi.spyOn(console, "warn").mockImplementation(() => {});   // writeLinks: jsdom's Blob has no stream()
+    try {
+      renderPanel();
+      click("Photo");
+      click("Select");
+      click("tile 1");
+      click("Video");
+      expect(screen.queryByRole("button", { name: "tile 1" })).toBeNull();   // hidden by the filter
+      click("tile 3");
+      // every bar action takes both: the bar says one is off screen
+      const count = () => screen.queryByTestId("selection-count");
+      expect(count()).toHaveTextContent(/^2 selected · 1 hidden by filter$/);
+      click("All");
+      expect(count()).toHaveTextContent(/^Selected\s*2$/);
+      click("Video");
+      click("Download selected");
+      await waitFor(() => expect(count()).toBeNull());   // cleared once the run started
+      await waitFor(() => expect(fetched.length).toBe(2));
+      expect(fetched.map((u) => new URL(u, "http://x").searchParams.get("media_id")).sort()).toEqual(["1", "3"]);
+    } finally {
+      delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
   });
 });
 
@@ -212,14 +245,19 @@ describe("the item editor's price", () => {
   });
 });
 
-describe("the whole-vault download", () => {
+describe("the header download button", () => {
   // The relay soft-denies "All" to a folder-limited chatter on both sources (here a partial mirror of its folders,
   // count 12, complete:false: the live path), so a whole-vault download would read "Nothing to download".
-  const button = () => screen.getByRole("button", { name: "Download whole vault" });
+  // The button is portalled into VaultProPage's header slot; here a bare div stands in for it.
+  const button = () => screen.getByTestId("vault-header-download");
+  let slot: HTMLElement;
+  const render = () => renderPanel(slot);
   beforeEach(() => {
+    slot = document.body.appendChild(document.createElement("div"));
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve(null);
   });
   afterEach(() => {
+    slot.remove();
     delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
   });
 
@@ -233,7 +271,9 @@ describe("the whole-vault download", () => {
   ])("$who: off=$off", ({ access, off }) => {
     h.summary.data = { count: 12, complete: false };
     h.access = access;
-    renderPanel();
+    render();
+    expect(slot).toContainElement(button());
+    expect(button()).toHaveTextContent("Download full vault");
     if (off) {
       expect(button()).toBeDisabled();
       expect(button()).toHaveAttribute("title", "Your access is by folder: download a folder");
@@ -242,17 +282,78 @@ describe("the whole-vault download", () => {
     }
   });
 
+  it("follows the selected folder: a restricted chatter can download the folder it sees", () => {
+    h.access = { isLoading: false, isError: false, data: { restricted: true } };
+    render();
+    expect(button()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "rail:Beach" }));
+    expect(button()).toHaveTextContent("Download full folder");
+    expect(button()).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "rail:All media" }));
+    expect(button()).toHaveTextContent("Download full vault");
+  });
+
+  // #29: a selected folder the folder list does not have yet is never downloaded under a guessed name: off.
+  it("a selected folder not in the loaded list: off, says why, a click starts nothing", () => {
+    h.access = { isLoading: false, isError: false };
+    render();
+    fireEvent.click(screen.getByRole("button", { name: "rail:not loaded" }));
+    expect(button()).toHaveTextContent("Download full folder");
+    expect(button()).toBeDisabled();
+    expect(button()).toHaveAttribute("title", FOLDER_LOADING);
+    fireEvent.click(button());
+    expect(screen.queryByLabelText("Vault download")).toBeNull();
+  });
+
+  // #430 + #29: a selection made in a folder saves into it; one made in a folder not resolved yet is off, not guessed.
+  it.each<[string, string, string | null]>([
+    ["a resolved folder: on", "rail:Beach", null],
+    ["a folder not in the loaded list: off", "rail:not loaded", FOLDER_LOADING],
+  ])("Download selected in %s", (_n, railClick, off) => {
+    h.access = { isLoading: false, isError: false };
+    render();
+    fireEvent.click(screen.getByRole("button", { name: railClick }));
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(screen.getByRole("button", { name: "tile 10" }));
+    const dlSel = screen.getByRole("button", { name: "Download selected" });
+    if (off) {
+      expect(dlSel).toBeDisabled();
+      expect(dlSel).toHaveAttribute("title", off);
+    } else {
+      expect(dlSel).toBeEnabled();
+    }
+  });
+
+  // #24: the header click downloads the scope it names: the listing carries the selected folder's id, or none.
+  it.each<[string, string | null, string | null]>([
+    ["All media: the whole vault", null, null],
+    ["a selected folder: that folder", "rail:Beach", String(BEACH.id)],
+  ])("%s", async (_n, railClick, listId) => {
+    (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve({});
+    h.summary.data = { count: 12, complete: false };   // a partial mirror: the live listing
+    h.access = { isLoading: false, isError: false };
+    h.get.mockResolvedValue({ list: [], hasMore: false });
+    render();
+    if (railClick) fireEvent.click(screen.getByRole("button", { name: railClick }));
+    fireEvent.click(button());
+    await waitFor(() => expect(h.get.mock.calls.some(([p]) => String(p).startsWith("/api/of/v2/vault/media?"))).toBe(true));
+    const listing = h.get.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith("/api/of/v2/vault/media?"));
+    expect(listing.map((p) => new URLSearchParams(p.split("?")[1]).get("list_id"))).toEqual([listId]);
+  });
+
   it("while Chrome's picker is open, says Desktop/Documents/Downloads themselves are refused; gone once closed", async () => {
     let close!: (v: null) => void;
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => new Promise((r) => { close = r; });
     h.summary.data = { count: 12, complete: false };
     h.access = { isLoading: false, isError: false };
-    renderPanel();
+    render();
     fireEvent.click(button());
     expect(await screen.findByTestId("dl-pick-hint")).toHaveTextContent(/New Folder/);
+    expect(button()).toBeDisabled();
     close(null);
     await flush();
     expect(screen.queryByTestId("dl-pick-hint")).toBeNull();
+    expect(button()).toBeEnabled();
   });
 });
 

@@ -1654,6 +1654,11 @@ class MassRun(Base):
     # spliced 15% of repliers a blast they never received. NULL = we could not know
     # → never spliced (see audiences.resolve_recipients_blocking, which fails closed).
     recipients_json: Mapped[str | None] = mapped_column(Text)
+    # The Audience crawl's outcome for this run (audience_crawl_decide.OUTCOMES, its
+    # audience_crawl_end line's), stamped when the crawl ends. NULL = no crawl ended
+    # (legacy mode, a crawl cut off by a restart, a pre-P2b row). Read by the crawl
+    # itself: the skip after an `incomplete` / `deadline` verdict and the boot re-crawl.
+    crawl_outcome: Mapped[str | None] = mapped_column(String)
 
     __table_args__ = (
         # Mass Messages tab joins the cache to a run by (account_id, queue_id).

@@ -1563,7 +1563,9 @@ def case_role_and_agency_reads_share_one_fresh_checkout():
             assert r.status_code == 200, (r.status_code, r.text)
         _with_fake_of(check)
         assert counts == {"roles": 1, "agency": 0, "mirror": 0}, counts
-        assert len(agency_queries) == 1, agency_queries
+        # Holders, allowlist, Mirror: the canonical rule (_chatter_agency_for_creator),
+        # all three on the role hook's own checkout.
+        assert len(agency_queries) == 3, agency_queries
     finally:
         server._resolve_account_id = resolve
         permissions.get_session, agency_ctx.get_session, employees.get_session = originals

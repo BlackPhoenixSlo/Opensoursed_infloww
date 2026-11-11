@@ -76,7 +76,7 @@ profile: `slop/run slow-conn --net=jp-lossy --break --fault=net-lossy-si-budget-
 targets its flows measured >= 2x si's). Serve-stale: `--net=jp --break --fault=screen-bundle-stale-unmarked`
 (lib/screens_faults.py: a last value served without `refreshing`, so no follow-up; targets C_AGAIN only). Inline
 boot (C_INLINE: a document load of the Dashboard or Messages Pro fetches none of the reads its HTML carries,
-app/lib/inlineBoot.server.ts): `--net=jp --break --fault=inline-boot-relay-refuses-server` (the Next server's reads
+app/lib/inlineBoot.server.ts; the Dashboard reads no screen bundle at all): `--net=jp --break --fault=inline-boot-relay-refuses-server` (the Next server's reads
 answered 503: the page falls back to its own fetches; targets C_INLINE only).
 
 Wire profiles (`--net=jp-lossy` / `--net=jp-lossy-bad`, never in the default set; the run stops at once, naming
@@ -105,8 +105,7 @@ each under jp-bad), so /img rides the page's throttled line as a cold worker cac
 arrive unthrottled (measured ~120 ms on every profile); a real phone adds about half an RTT. The idle window's tab
 return is a `visibilitychange` on a page that stays visible (a headless tab cannot be hidden); its re-sign is the
 fake's (`fake.messages`), once. The phone's zone is `ZONE` (Tokyo for the far profiles, the Next server in the
-laptop's), and its context gets the `chatterly_tz` cookie the sign-in page's boot script would have left (the session
-cookies are injected, not typed there). A document load's HTML: `html_ttfb_ms` its first byte, `html_end_ms` its
+laptop's; the session cookies are injected, not typed on the sign-in page). A document load's HTML: `html_ttfb_ms` its first byte, `html_end_ms` its
 stream's end (net-<profile>.json, the table)."""
 from __future__ import annotations
 
@@ -165,11 +164,9 @@ FIRST_PAGE = tuple(re.compile(x) for x in (r"^/api/of/v2/chats(\?|$)", r"^/admin
                                            r"^/admin/chats/recent", r"^/admin/fans/\d+/by-ids",
                                            r"^/admin/fans/\d+/spend-batch"))
 # The phone's zone per profile (the far ones are the AE client's Tokyo phone, si the owner's; the Next server runs in
-# the laptop's), and the cookie the sign-in page's boot script leaves with it (app/app/layout.tsx: the browser's zone
-# for the server's inline Dashboard bundle): the session cookies are injected, not typed on that page.
+# the laptop's): the browser context's timezone_id.
 ZONE: dict[str, str] = {"si": "Europe/Ljubljana"}
 ZONE_FAR = "Asia/Tokyo"
-TZ_COOKIE = "chatterly_tz"
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
              "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
 # Ready ms per profile x flow: the small run 20261105T184058Z-...-345a (cold relay per profile; its measured ready
@@ -297,14 +294,15 @@ C_HTML_PRIVATE = ("a signed-in document load's HTML (it carries that user's inli
 UI_CHECKS = (C_HTML_PRIVATE, C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE, C_AGAIN,
              C_INLINE, THREAD_ONCE, THREAD_BUNDLE)
 # C_INLINE: per document-load flow, the reads its HTML carries (app/lib/inlineBoot.server.ts inlinePaths; a bundle's
-# follow-up, `accounts=`, is the browser's own). Every profile has the zone cookie (ZONE), so the Dashboard's too.
+# follow-up, `accounts=`, is the browser's own). The Dashboard's HTML carries no bundle: none of its cards reads one,
+# so its document loads read none at all (DASH_BUNDLE).
 _ME = (r"^/auth/me$", r"^/chatter/me$")
 INLINE_READS: dict[str, tuple[re.Pattern, ...]] = {
-    "dashboard": tuple(re.compile(x) for x in (*_ME, r"^/admin/settings/applied$",
-                                                 r"^/admin/screens/dashboard\?(?!.*accounts=)")),
+    "dashboard": tuple(re.compile(x) for x in (*_ME, r"^/admin/settings/applied$")),
     "fan-list": tuple(re.compile(x) for x in (*_ME, r"^/admin/screens/inbox\?cursor=0$")),
 }
 INLINE_READS["dashboard-again"] = INLINE_READS["dashboard"]
+DASH_BUNDLE = re.compile(r"^/admin/screens/dashboard")
 
 ROWS_JS = "() => [...document.querySelectorAll('table tbody tr')].filter(r => r.cells.length > 1).length"
 FANS_JS = ("() => [...document.querySelectorAll('dt')].filter(d => d.textContent.trim() === 'Fans')"
@@ -564,9 +562,7 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
                                      has_touch=True, user_agent=IPHONE_UA, service_workers="block", timezone_id=zone)
     track(ctx, bctx)  # the pages for slop/map.json (--changed), as dashboard-load's own contexts
     await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url, "expires": time.time() + 86400}
-                            for c in ctx.owner.c.cookies.jar]
-                           + [{"name": TZ_COOKIE, "value": zone.replace("/", "%2F"), "url": edge.url,
-                               "expires": time.time() + 86400}])
+                            for c in ctx.owner.c.cookies.jar])
     out: dict = {"flows": {}, "found": {}, "relay": plan["relay"]}
     try:
         page = await bctx.new_page()
@@ -958,7 +954,11 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     fetched = {f"{p} {f}": paths for p in profiles for f, rxs in INLINE_READS.items()
                if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
                              if q["method"] == "GET" and any(rx.match(q["path"]) for rx in rxs)])}
-    ctx.check(C_INLINE, not fetched, fetched=fetched,
+    # The Dashboard's document loads: no screen bundle at all (0 GETs of it by the page).
+    dash_bundle = {f"{p} {f}": paths for p in profiles for f in ("dashboard", "dashboard-again")
+                   if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
+                                 if q["method"] == "GET" and DASH_BUNDLE.match(q["path"])])}
+    ctx.check(C_INLINE, not fetched and not dash_bundle, fetched=fetched, dash_bundle=dash_bundle,
               html={p: {f: [res[p]["flows"].get(f, {}).get(k) for k in ("html_ttfb_ms", "html_end_ms")]
                         for f in INLINE_READS} for p in profiles})
 

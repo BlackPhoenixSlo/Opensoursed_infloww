@@ -143,10 +143,32 @@ describe("EmployeeReport frame", () => {
   it("asks for the Chatter role's Employees from the checkbox in Chatting statistics' title row", async () => {
     renderWithProviders(<EmployeeReport />);
     const card = await screen.findByRole("region", { name: "Chatting statistics" });
+    // #11: one control for it, Infloww's; no toolbar Filters copy.
+    expect(screen.getAllByRole("checkbox", { name: /chatter role only/i })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /^Filters/ })).toBeNull();
     fireEvent.click(within(card).getByRole("checkbox", { name: "Show employees with chatter role only" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => {
       const q = new URL(String(u), "http://relay.test");
       return q.pathname === "/admin/stats/per-employee" && q.searchParams.get("chatter_only") === "true";
     })).toBe(true));
+  });
+
+  it("Employee performance shows the same one checkbox, sharing the Overview's state", async () => {
+    window.history.replaceState(null, "", `${EMPLOYEE_PAGE}?tab=performance`);
+    const { rerender } = renderWithProviders(<EmployeeReport />);
+    const box = await screen.findByRole("checkbox", { name: "Show employees with chatter role only" });
+    expect(screen.getAllByRole("checkbox", { name: /chatter role only/i })).toHaveLength(1);
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => {
+      const q = new URL(String(u), "http://relay.test");
+      return q.pathname === "/admin/stats/chatting-stats" && q.searchParams.get("chatter_only") === "true";
+    })).toBe(true));
+    // Back to Overview: its one checkbox carries the same state.
+    window.history.replaceState(null, "", EMPLOYEE_PAGE);
+    rerender(<EmployeeReport />);
+    const card = await screen.findByRole("region", { name: "Chatting statistics" });
+    expect(screen.getAllByRole("checkbox", { name: /chatter role only/i })).toHaveLength(1);
+    expect(within(card).getByRole("checkbox", { name: "Show employees with chatter role only" })).toBeChecked();
   });
 });

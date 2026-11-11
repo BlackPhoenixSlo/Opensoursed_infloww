@@ -4,7 +4,7 @@ Leaf module (stdlib only). Moved out of audiences.py, which still re-exports
 the old private names (`_page_all_checked`, `_page_all`, `_ids_from_pages`,
 `_LIST_PAGE`, `_ROSTER_PAGE`) as the SAME objects for existing importers.
 
-`page_all` / `ids_from_pages` / `list_member_ids` look `page_all_checked` up as a module global at
+`page_all` / `ids_from_pages` / `list_member_ids` / `find_list_id` look `page_all_checked` up as a module global at
 call time, so patching `of_paging.page_all_checked` reaches every caller that
 goes through this module's attributes.
 """
@@ -111,9 +111,57 @@ def ids_from_pages(fetch, **paging) -> tuple[set[int], bool]:
     return int_ids(rows), truncated
 
 
+def users_count(meta) -> int | None:
+    """`usersCount` of a `/lists/{id}` answer as an int, else None."""
+    try:
+        return int(meta.get("usersCount"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def list_size(client, list_id) -> int | None:
+    """OF's member count of a custom list: `usersCount` of `/lists/{id}` (one GET), or None
+    (no `get_list` on the client, the GET failed, or no int count: logged). Blocking."""
+    try:
+        return users_count(client.get_list(list_id))
+    except Exception as e:  # noqa: BLE001 — no count: the read stays as it was
+        log.warning("list_size list=%s: no usersCount (%s)", list_id, e)
+        return None
+
+
 def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
     """(member ids, incomplete) of an OF custom list (`/lists/{id}/users`). Blocking.
     `paging`: `page_all_checked`'s keywords; Auto_Exclude's background refresh
-    crawls past 20k with `max_pages` (audiences `_refresh_auto_exclude`)."""
-    return ids_from_pages(
+    crawls past 20k with `max_pages` (audiences `_refresh_auto_exclude`).
+    An incomplete read (a repeated page or the backstop) holding exactly OF's `usersCount`
+    (list_size: one more GET, only then) is complete: OF answers an offset past a list's end
+    with its page again (measured on AE 2026-11-11: lists of 10 and 16 members, every read),
+    not an empty one. A lagging count can only mis-flag a read that missed rows; removals
+    stay `members - ids`, so nothing unread is removed on the strength of it."""
+    ids, incomplete = ids_from_pages(
         lambda off: client.list_users_in(list_id, limit=LIST_PAGE, offset=off), **paging)
+    if incomplete and list_size(client, list_id) == len(ids):
+        log.info("list_member_ids list=%s: all %d members read (usersCount) — complete", list_id, len(ids))
+        incomplete = False
+    return ids, incomplete
+
+
+class ListLookupIncomplete(RuntimeError):
+    """`find_list_id`: OF's `/lists` read came back incomplete and the name is
+    not among the rows read, so "absent" cannot be told from "not read"."""
+
+
+def find_list_id(client, name: str) -> int | None:
+    """The id of the account's OF list named exactly `name` (`/lists`, paged),
+    or None when a COMPLETE read has no such list. Blocking. A name missing
+    from an INCOMPLETE read raises `ListLookupIncomplete`: a find-or-create
+    caller that took it as absent would create a duplicate list."""
+    rows, incomplete = page_all_checked(
+        lambda off: client.get_lists(limit=LIST_PAGE, offset=off))
+    lid = next((it.get("id") for it in rows if (it.get("name") or "") == name), None)
+    if lid is not None:
+        return int(lid)
+    if incomplete:
+        raise ListLookupIncomplete(
+            f"OF lists read incomplete ({len(rows)} read), no {name!r} among them")
+    return None

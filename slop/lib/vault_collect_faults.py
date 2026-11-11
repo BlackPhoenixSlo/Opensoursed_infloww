@@ -88,7 +88,7 @@ def _thumb_no_resign() -> None:
 
 
 def _preview_no_resign() -> None:
-    """`/img` and `/img/scrub` never re-sign a 403'd url by its media id (service/cdn_resign): a url signed for the
+    """`/img` and `/img/scrub` never re-sign a 403'd url (service/cdn_resign: neither its listing window nor by id): a url signed for the
     account's old proxy IP stays dead until a full re-list, the 2026-11-06 AE bug."""
     import cdn_resign
 

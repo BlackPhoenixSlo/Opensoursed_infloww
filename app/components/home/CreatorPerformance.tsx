@@ -8,10 +8,12 @@ import { ArrowDownLeft, ArrowUpRight, Upload } from "lucide-react";
 import { ChargebacksChart, EarningsHeatmap } from "@/components/home/CreatorPerfCharts";
 import { fmtDollars } from "@/components/stats/chart";
 import { EmptyState } from "@/components/ui/infloww";
+import type { ReferralsGap } from "@/hooks/useReferrals";
 import type { PerModelRow } from "@/hooks/useStats";
 import { growthOf, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
+import { REFERRALS_FAILED } from "./netMissingNote";
 import { Donut, PerfTitle, Sparkline, TrendBars } from "./ReportsCharts";
 import {
   type Bucket, type Chan, type Point, type View, CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf,
@@ -44,7 +46,7 @@ const PERF_TIPS = {
 export default function CreatorPerformance({
   ids, perModel, hideZero, setHideZero, perfAll, perfList, picked, setPickedId, exportAllowed, exportPerf,
   perfChan, setPerfChan, perfView, perfRetry, perfPoints, perfBuckets, perfPrior, perfDaily, perfHeat, perfChargebacks,
-  perfChargebacksCents,
+  perfChargebacksCents, perfRefsShown, perfRefsGap,
 }: {
   ids: { perfEarnings: string; perfBreakdown: string; perfHeatmap: string; perfChargebacks: string };
   perModel: { isPending: boolean; isError: boolean };
@@ -53,10 +55,13 @@ export default function CreatorPerformance({
   exportAllowed: boolean; exportPerf: () => void;
   perfChan: Chan | "all"; setPerfChan: (c: Chan | "all") => void;
   perfView: View; perfRetry: () => void;
-  perfPoints: Point[]; perfBuckets: Record<Bucket, number>; perfPrior: Record<Bucket, number> | null;
+  perfPoints: Point[]; perfBuckets: Record<Bucket, number>; perfPrior: Partial<Record<Bucket, number>> | null;
   perfDaily: ReturnType<typeof dailyOf>; perfHeat: { weekday: number; hour: number; value: number }[]; perfChargebacks: Point[];
   /** The picked Creator's reversals, below zero: a row after the channels in the legend and growth column. */
   perfChargebacksCents: number;
+  /** Whether the picked Creator's Referrals has a figure (`referralsShown`, #45): not, its figures are "-", never
+   *  $0.00; `perfRefsGap` "all" (failed outright) says so on its chart, else the chart is loading. */
+  perfRefsShown: boolean; perfRefsGap: ReferralsGap;
 }) {
   const perfReady = perfView === "ready";
   /* #172 to #174: a failed block's `AbnormalRequestError` in the block's place, centred in its height: the error art,
@@ -68,10 +73,12 @@ export default function CreatorPerformance({
   );
   const perfChanSum = CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
   /* The legend's and growth column's rows: the channels (share, growth, sparkline), then Chargebacks (none of them). */
-  const rows: { key: Chan | "chargebacks"; label: string; cents: number; chan: Chan | null }[] = [
-    ...CHANNELS.map((c) => ({ key: c.key, label: c.label, cents: perfBuckets[c.key], chan: c.key })),
-    { key: "chargebacks", label: "Chargebacks", cents: perfChargebacksCents, chan: null },
+  const rows: { key: Chan | "chargebacks"; label: string; cents: number; chan: Chan | null; shown: boolean }[] = [
+    ...CHANNELS.map((c) => ({ key: c.key, label: c.label, cents: perfBuckets[c.key], chan: c.key,
+      shown: perfReady && (c.key !== "referrals" || perfRefsShown) })),
+    { key: "chargebacks", label: "Chargebacks", cents: perfChargebacksCents, chan: null, shown: perfReady },
   ];
+  const refsChartHidden = perfChan === "referrals" && !perfRefsShown;
   const figureColor = (cents: number) => (perfReady && isLoss(cents) ? "var(--color-err)" : "var(--color-fg)");
   return (
     <div className="flex flex-col md:flex-row text-[13px]">
@@ -160,8 +167,9 @@ export default function CreatorPerformance({
             <TrendBars
               height={336}
               perf
-              points={perfReady ? perfPoints : null}
-              message={perfView === "loading" ? SUMMARY_TEXT.loading : ""}
+              points={perfReady && !refsChartHidden ? perfPoints : null}
+              message={perfView === "loading" ? SUMMARY_TEXT.loading
+                : !refsChartHidden ? "" : perfRefsGap === "all" ? REFERRALS_FAILED : SUMMARY_TEXT.loading}
             />
           )}
         </section>
@@ -183,10 +191,10 @@ export default function CreatorPerformance({
                         {c.label}
                       </span>
                       <span className="text-lg font-bold leading-[22px] px-2" style={{ color: figureColor(c.cents) }}>
-                        {perfReady ? fmtDollars(c.cents) : "-"}
+                        {c.shown ? fmtDollars(c.cents) : "-"}
                       </span>
                       <span className="text-sm font-semibold leading-5 px-2" style={{ color: "var(--color-fg-dim)" }}>
-                        {perfReady && c.chan
+                        {c.shown && c.chan
                           ? `${(perfChanSum > 0 ? (100 * c.cents) / perfChanSum : 0).toFixed(2)}%` : "-"}
                       </span>
                     </li>
@@ -195,7 +203,7 @@ export default function CreatorPerformance({
               </div>
               <ul aria-label="Earnings growth" className="md:w-[314px] border-t md:border-t-0 md:border-l" style={{ borderColor: "var(--color-border)" }}>
                 {rows.map((c) => {
-                  const g = perfReady && c.chan ? growthOf(c.cents, perfPrior?.[c.chan]) : { text: "-", dir: null };
+                  const g = c.shown && c.chan ? growthOf(c.cents, perfPrior?.[c.chan]) : { text: "-", dir: null };
                   return (
                     <li
                       key={c.key}
@@ -206,7 +214,7 @@ export default function CreatorPerformance({
                         {/* #166: the count, 4px from the 12px arrow, then the change. */}
                         <span className="inline-flex items-center">
                           <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: figureColor(c.cents) }}>
-                            {perfReady ? fmtDollars(c.cents) : "-"}
+                            {c.shown ? fmtDollars(c.cents) : "-"}
                           </span>
                           <span
                             className="inline-flex items-center text-xs font-bold leading-4"
@@ -222,7 +230,7 @@ export default function CreatorPerformance({
                           {c.label}
                         </span>
                       </span>
-                      {perfReady && c.chan && (
+                      {c.shown && c.chan && (
                         <Sparkline values={perfDaily.byChan(c.chan)} color={g.dir === "down" ? PERF_SPARK.down : PERF_SPARK.up} />
                       )}
                     </li>

@@ -124,7 +124,7 @@ def case_it_spends_no_sign_in_throttle_token_and_no_log_line_or_url_has_the_user
             assert _whois("agency_b_owner" if i % 2 else "ghost_user_xyz").status_code == 200
     finally:
         root.removeHandler(grab)
-    assert login_throttle._buckets == {}, login_throttle._buckets
+    assert len(login_throttle._buckets) == 0, len(login_throttle._buckets)
     assert not [m for m in seen if "agency_b_owner" in m or "ghost_user_xyz" in m], seen
 
 

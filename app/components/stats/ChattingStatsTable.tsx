@@ -216,13 +216,7 @@ export default function ChattingStatsTable({
     <section aria-label="Chatting statistics" className="space-y-4">
       <header className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <h2 className="text-[16px] font-medium text-fg">Chatting statistics</h2>
-        {onChatterOnly && (
-          <label className="flex items-center gap-2 text-[14px] text-fg whitespace-nowrap cursor-pointer">
-            <input type="checkbox" checked={chatterOnly} onChange={(e) => onChatterOnly(e.target.checked)}
-              className="h-4 w-4 accent-accent" />
-            Show employees with chatter role only
-          </label>
-        )}
+        {onChatterOnly && <ChatterOnlyCheckbox checked={chatterOnly} onChange={onChatterOnly} />}
         {/* W5 5.9: Infloww's Employee export, total, daily per Employee and by Creator. */}
         {rows.length > 0 && (
           <div className="ml-auto">
@@ -294,5 +288,18 @@ export default function ChattingStatsTable({
         </>
       )}
     </section>
+  );
+}
+
+/** "Show employees with chatter role only": one per visible Employee reports tab, the page's one state. */
+export function ChatterOnlyCheckbox({ checked, onChange, className }: {
+  checked: boolean; onChange: (on: boolean) => void; className?: string;
+}) {
+  return (
+    <label className={cn("flex items-center gap-2 text-[14px] text-fg whitespace-nowrap cursor-pointer", className)}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 accent-accent" />
+      Show employees with chatter role only
+    </label>
   );
 }

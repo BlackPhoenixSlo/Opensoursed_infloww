@@ -118,11 +118,16 @@ export interface EmployeeSalesPoint {
 }
 
 export interface PerEmployeeResp {
-  series?: EmployeeSalesPoint[];
   employees: PerEmployeeRow[];
   /** "Shift schedule needs Time tracking on; credited by Converters." while
    *  an Agency in scope has Shift schedule falling back, else null. */
   attribution_fallback: string | null;
+}
+
+/** `GET /admin/stats/per-employee?include_series=true`: the rows plus one point per local day of the window, whose
+ *  revenue sums to the rows' (Unattributed included). */
+export interface EmployeeSalesResp extends PerEmployeeResp {
+  series: EmployeeSalesPoint[];
 }
 
 const ZERO_KIND: PerEmployeeRevenueByKind = { ppv: 0, tip: 0 };

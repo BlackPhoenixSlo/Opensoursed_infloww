@@ -126,21 +126,50 @@ describe("EmployeeReportCharts", () => {
   it("renders both tabs from props alone: a by_employee-less answer charts zeros, a failed read offers Retry", () => {
     const data = { bucket: "day", series: [{ start: "2026-09-15T00:00", ...fig(700, 2) }],
       attribution_fallback: null } as unknown as ChattingSeriesResp;
-    renderWithProviders(<EmployeePerformance data={data} error={false} bucket="day" rows={ROWS} />);
+    renderWithProviders(<EmployeePerformance data={data} error={false} bucket="day" rows={ROWS} rowsPending={false} />);
     // The top seller is picked: Beta Two, shown as the tag and in the select; it has no points of its own.
     expect(screen.getAllByText("Beta Two").length).toBeGreaterThan(0);
     const sales = screen.getByRole("region", { name: "Sales" });
     expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $0");
     cleanup();
     const onRetry = vi.fn();
-    renderWithProviders(<EmployeeOverviewCharts data={null} error bucket="day" rows={[]} onRetry={onRetry} />);
+    renderWithProviders(<EmployeeOverviewCharts data={null} error bucket="day" rows={[]} rowsPending={false} onRetry={onRetry} />);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
     expect(screen.queryByRole("region", { name: "Employee sales" })).toBeNull();
   });
 
   it("says so on Employee performance when no Employee chatted in the window", () => {
-    renderWithProviders(<EmployeePerformance data={null} error={false} bucket="day" rows={[]} />);
+    renderWithProviders(<EmployeePerformance data={null} error={false} bucket="day" rows={[]} rowsPending={false} />);
     expect(screen.getByText("No chatting in this window.")).toBeInTheDocument();
+  });
+
+  it("shows loading, not No chatting or an empty ranking, while the Employees' read is in flight (#21)", () => {
+    renderWithProviders(<EmployeePerformance data={null} error={false} bucket="day" rows={[]} rowsPending />);
+    expect(screen.getByRole("status", { name: "Loading employees" })).toBeInTheDocument();
+    expect(screen.queryByText("No chatting in this window.")).toBeNull();
+    cleanup();
+    renderWithProviders(<EmployeeOverviewCharts data={null} error={false} bucket="day" rows={[]} rowsPending />);
+    const ranking = screen.getByRole("region", { name: "Sales ranking" });
+    expect(within(ranking).getByRole("status", { name: "Loading employees" })).toBeInTheDocument();
+    expect(within(ranking).queryByText("No data")).toBeNull();
+  });
+
+  it("offers Retry, not No chatting, when the Employees' read fails, and Retry reads it again (#21)", async () => {
+    let failRows = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = new URL(String(url), "http://relay.test");
+      if (!u.searchParams.has("bucket")) {
+        return failRows ? jsonRes({ detail: "relay down" }, 500) : jsonRes({ employees: ROWS, attribution_fallback: null });
+      }
+      return jsonRes({ bucket: "day", series: [{ start: "2026-09-15T00:00", ...fig(1200, 4) }],
+        by_employee: { 2: [fig(1000, 3)] }, attribution_fallback: null });
+    });
+    renderWithProviders(<Tab tab="performance" />);
+    const retry = await screen.findByRole("button", { name: "Retry" }, { timeout: 5000 });
+    expect(screen.queryByText("No chatting in this window.")).toBeNull();
+    failRows = false;
+    fireEvent.click(retry);
+    expect((await screen.findAllByText("Beta Two")).length).toBeGreaterThan(0);
   });
 });

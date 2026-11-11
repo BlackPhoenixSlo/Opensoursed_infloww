@@ -12,10 +12,10 @@ is linked to A and restricted to OF folder 12 on accV. Mirror rows:
   /admin/vault-ai/cache/summary  chatter count = allowed folders only
   /admin/vault-ai/thumb|image|poster  chatter 404 outside its folders (even on a
                               disk hit) and for media with no mirror row
-  /admin/vault-ai/pack-candidates|disputes|flags-review|flags-accuracy,
+  /admin/vault-ai/pack-candidates|flags-review|flags-accuracy,
   /admin/vault/media-stats    the review routes + the picker's stats: chatter lists
                               and counts folder 12's items only; owner unchanged
-  /admin/vault-ai/disputes/resolve|flags-review/grade|pack-triage
+  /admin/vault-ai/flags-review/grade|pack-triage
                               chatter 404 outside its folders / no mirror row;
                               owner unchanged (200, 400 not_in_mirror for 999)
   pack-candidates shelf       chatter's rung counts are of folder 12's media only
@@ -64,7 +64,7 @@ _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 
 def _review_fields(graded: bool) -> dict:
     """The review routes' seed: both passes answered (flags_known), contradicting
-    each other (fully_nude + a garment: a dispute, listed by flags-review too),
+    each other (fully_nude + a garment: listed by flags-review as passes_disagree),
     tagged "feet" (a pack candidate), graded at the current prompt when asked
     (flags-accuracy counts it)."""
     fields = {"description": "lying on her back", "explicitness": "explicit",
@@ -345,29 +345,32 @@ def _mids(r, key: str) -> list[int]:
 
 
 def case_review_lists_scoped_to_folders():
-    """pack-candidates, disputes, flags-review, flags-accuracy, media-stats: the
-    owner sees every item, the chatter only folder 12's (101), counts included."""
+    """pack-candidates, flags-review, flags-accuracy, media-stats: the owner
+    sees every item, the chatter only folder 12's (101), counts included. The
+    retired disputes routes are gone for both."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
     a = f"account_id={AID}"
     for path, key in ((f"/admin/vault-ai/pack-candidates?{a}&category=feet", "candidates"),
-                      (f"/admin/vault-ai/disputes?{a}", "disputes"),
                       (f"/admin/vault-ai/flags-review?{a}", "items")):
         assert _mids(owner.get(path), key) == [101, 102, 103], path
         assert _mids(chatter.get(path), key) == [101], path
     for path, keys, want in (
-        (f"/admin/vault-ai/disputes?{a}", ("checked", "count"), ((3, 3), (1, 1))),
         (f"/admin/vault-ai/flags-review?{a}", ("total", "graded", "iffy"), ((3, 2, 3), (1, 1, 1))),
         (f"/admin/vault-ai/flags-accuracy?{a}", ("graded_items", "answers"), ((2, 6), (1, 3))),
     ):
         o, c = owner.get(path).json(), chatter.get(path).json()
         assert (tuple(o[k] for k in keys), tuple(c[k] for k in keys)) == want, (path, o, c)
+    for gone in (owner.get(f"/admin/vault-ai/disputes?{a}"),
+                 owner.post("/admin/vault-ai/disputes/resolve",
+                            json={"account_id": AID, "media_id": 101, "values": {}})):
+        assert gone.status_code in (404, 405), (gone.status_code, gone.text[:120])
     o, c = owner.get(f"/admin/vault/media-stats?{a}").json(), chatter.get(f"/admin/vault/media-stats?{a}").json()
     assert sorted(o["by_media"]) == ["101", "102", "103", "999"], o
     assert sorted(c["by_media"]) == ["101"] and c["by_media"]["101"]["unlocks"] == 1, c
 
 
 def case_review_writes_404_outside_folders():
-    """disputes/resolve, flags-review/grade, pack-triage: the chatter may write
+    """flags-review/grade, pack-triage: the chatter may write
     only folder 12's media; outside (102), unfiled (103), unknown (999) and a
     verdict list naming one of them 404 as a still does. The owner is unchanged:
     200, and 400 not_in_mirror for 999 (triage never looks the media up)."""
@@ -378,8 +381,6 @@ def case_review_writes_404_outside_folders():
                 "verdicts": [{"media_id": m, "rung": "tease"} for m in mids]}
 
     posts = (
-        ("/admin/vault-ai/disputes/resolve",
-         lambda m: {"account_id": AID, "media_id": m, "values": {"vulva_vis": "bare"}}, 400),
         ("/admin/vault-ai/flags-review/grade",
          lambda m: {"account_id": AID, "media_id": m, "corrections": {}}, 400),
         ("/admin/vault-ai/pack-triage", triage, 200),

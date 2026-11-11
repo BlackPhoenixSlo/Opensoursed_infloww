@@ -6,7 +6,7 @@
  *
  * It opens on the Layout capture's frame (docs/infloww-layouts/analytics-creator-reports.md, ticket 20): the page
  * header (title, report time zone, Refresh), the "Overview" / "Creator performance" tabs, then the filter bar
- * (date range, Creator tag, Creator, Show net earnings, Reset). Item IDs are cited as `#<n>`.
+ * (date range, Shown by, Earnings basis, Filters with Creator and Reset). Item IDs are cited as `#<n>`.
  *   • the window is the page's own range (`useCreatorRange`, ticket 60), the last 30 days through today to start with,
  *     with the bundle's presets and bounds (#21 to #24), in the Agency's report time zone; each "Last N days" is the
  *     other reports' `presetRange` window (N calendar days through today, so today's pending sales show); nothing is read until
@@ -45,15 +45,15 @@
  */
 
 import Link from "next/link";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useReducer, useState } from "react";
 import { keepPreviousData, useIsFetching, useQueries, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
-import { type Gran, granShown } from "@/components/stats/chart";
+import { granShown } from "@/components/stats/chart";
 import { type ExportChoice } from "@/components/stats/ExportMenu";
 import { Skeleton, TableSkeleton } from "@/components/ui/Skeleton";
-import { useReferralRevenue } from "@/hooks/useReferrals";
+import { referralsGap, referralsShown, useReferralRevenue } from "@/hooks/useReferrals";
 import IngestHealthBanner from "@/components/stats/IngestHealthBanner";
 import PerModelKpiGrid from "@/components/stats/PerModelKpiGrid";
 import { usePerModel } from "@/hooks/useStats";
@@ -70,12 +70,14 @@ import styles from "./CreatorReports.module.css";
 
 import CreatorOverview from "./CreatorOverview";
 import CreatorPerformance from "./CreatorPerformance";
+import { INITIAL_FILTERS, creatorReportsFiltersReducer } from "./creatorReportsFilters";
 import { netMissingNote } from "./netMissingNote";
 import { DateRangePill, ReportFilters, ShownBySelect } from "./ReportsControls";
 import {
-  type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, CHANNELS, DEFAULT_COLS, DEFAULT_RANGE,
+  type Chan, type ColCtx, type Money, type RevResp, type Tab, CHANNELS, DEFAULT_COLS,
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
-  chargebacksCents, isTab, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalOf, viewOf, wholeHistory,
+  chargebacksCents, forGrowth, isTab, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalGrowthOf, totalOf,
+  viewOf, wholeHistory,
 } from "./reportsMath";
 import { InfoTip } from "@/components/ui/InfoTip";
 
@@ -127,24 +129,20 @@ function writeTabParam(tab: Tab) {
  *  so the other reports' shared `useReportRange` keeps its 30-day default. A preset's days are derived each render,
  *  so they follow the report time zone; `ready` is false until the Applied settings answer. */
 function useCreatorRange() {
-  // The preset and the custom days change together, in one set; the custom days stay while a preset is picked.
-  const [{ preset, custom }, setRange] = useState<{ preset: RangeKey; custom: { from: string | null; to: string | null } }>(
-    { preset: DEFAULT_RANGE, custom: { from: null, to: null } },
-  );
+  // The range, the Creators picked and the "Shown by" bucket change together (Reset puts all back): one reducer.
+  const [filters, dispatch] = useReducer(creatorReportsFiltersReducer, INITIAL_FILTERS);
+  const { preset, custom } = filters;
   const applied = useAppliedSettings();
   const reportTz = applied.data?.preferences?.report_tz ?? null;
   const [from, to]: [string | null, string | null] =
     preset === "custom" ? [custom.from, custom.to]
     : datePresets(reportTz).find((p) => p.key === preset)?.days ?? [null, null];
-  const handleRange = (f: string | null, t: string | null, p: RangeKey) =>
-    setRange((r) => ({ preset: p, custom: p === "custom" ? { from: f, to: t } : r.custom }));
   return {
-    preset, from, to,
+    preset, from, to, selectedIds: filters.selectedIds, gran: filters.gran, dispatch,
     fromIso: toLocalIso(from, false, reportTz),
     toIso: toLocalIso(to, true, reportTz),
     reportTz,
     ready: !applied.isPending,
-    handleRange,
   };
 }
 
@@ -176,28 +174,22 @@ export default function CompetitorReports({ frame = "card" }: { frame?: Frame } 
 type CreatorRange = ReturnType<typeof useCreatorRange>;
 
 function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Frame }) {
-  const { preset, from, to, fromIso, toIso, reportTz, handleRange } = range;
+  const { preset, from, to, fromIso, toIso, reportTz, selectedIds, gran, dispatch } = range;
   /* state */
-  // #65, #73: each chart's own granularity tabs, Day by default.
-  const [trendGran, setTrendGran] = useState<Gran>("day");
-  const [chanGran, setChanGran] = useState<Gran>("day");
   // #71: the channels picked; none picked draws every one.
   const [chanPick, setChanPick] = useState<Set<Chan>>(() => new Set());
-  // null  ≡ "all models". Set ≡ explicit subset.
-  const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   // Seeded once from `?tab=`; a bogus value leaves Overview (#14).
   useTabParam("tab", isTab, setTab);
   const [extrasOpen, setExtrasOpen] = useState(false);
   // #105: the Creator statistics columns shown, the capture's defaults first.
   const [visibleCols, setVisibleCols] = useState<Set<string>>(DEFAULT_COLS);
-  // Creator performance: the "Shown by" bucket (#27), the Earnings channel (#161), the picked Creator (#156), and
-  // ours, "Hide $0 creators" (on, as the Clone has it).
-  const [perfGran, setPerfGran] = useState<Gran>("day");
+  // Creator performance: the Earnings channel (#161), the picked Creator (#156), and ours, "Hide $0 creators" (on, as
+  // the Clone has it). The "Shown by" bucket (#27) is the toolbar's one `gran`.
   const [perfChan, setPerfChan] = useState<Chan | "all">("all");
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [hideZero, setHideZero] = useState(true);
-  // #33: "Show net earnings", on at load as the bundle's is; Reset leaves it alone, as the bundle's does (#37).
+  // #33: the Earnings basis, Net at load as the bundle's is; Reset leaves it alone, as the bundle's does (#37).
   const [net, setNet] = useState(true);
   const money = net ? netOf : grossOf;
   const sectionId = useId();
@@ -213,13 +205,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     writeTabParam(t);
   };
   /* #37: the default range, no Creator tag, every Creator, Day. */
-  const reset = () => {
-    handleRange(null, null, DEFAULT_RANGE);
-    setSelectedIds(null);
-    setTrendGran("day");
-    setChanGran("day");
-    setPerfGran("day");
-  };
+  const reset = () => dispatch({ type: "reset" });
 
   const qc = useQueryClient();
   const fetchingStats = useIsFetching({ queryKey: ["stats"] });
@@ -263,8 +249,12 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   });
   // Referrals: OnlyFans' own read per Creator (no transaction carries them), as one more kind on the rows above,
   // folded in when they land: the ledger's figures never wait on them.
-  const { now: refs, rev: refRev, priorRev: refPriorRev } =
+  const { now: refs, before: refsPrior, rev: refRev, priorRev: refPriorRev } =
     useReferralRevenue([from, to], priorDays ?? [null, null], effectiveIds[0], effectiveIds.length > 0);
+  // Failed for every Creator (or outright): Referrals shows "-"; failed for any: Total is marked partial.
+  const refGap = referralsGap(refs);
+  // #45: one rule for whether Referrals has a figure (tile, legend, channel line).
+  const refsShown = referralsShown(refs);
 
   /* aggregate day rows → each day's money (gross, or net with the switch on), and each channel's */
   const daily = useMemo(
@@ -272,20 +262,17 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [revByDayQueries, refRev, dayDates, money],
   );
 
-  /* #65, #73: each chart's buckets, under the range's limits. Hour (2 days at most, #29) reads the hour buckets, only
-     while a chart shows it. */
-  const trendPeriod = granShown(trendGran, dayDates.length);
-  const chanPeriod = granShown(chanGran, dayDates.length);
+  /* #4: the toolbar's one "Shown by" bucket for every chart, under the range's limits. Hour (2 days at most, #29)
+     reads the hour buckets, only while it is shown. */
+  const period = granShown(gran, dayDates.length);
   const hourSlots = useMemo(() => hoursOf(dayDates), [dayDates]);
   const revByHourQueries = useQueries({
-    queries: trendPeriod === "hour" || chanPeriod === "hour"
+    queries: period === "hour"
       ? effectiveIds.map((id) => revenueQuery("hour", id, fromIso, toIso, net)) : [],
   });
   const hourly = useMemo(() => dailyOf(revByHourQueries, hourSlots, money), [revByHourQueries, hourSlots, money]);
-  const trendSrc = useMemo(() => (trendPeriod === "hour" ? { slots: hourSlots, d: hourly } : { slots: dayDates, d: daily }),
-    [trendPeriod, hourSlots, hourly, dayDates, daily]);
-  const chanSrc = useMemo(() => (chanPeriod === "hour" ? { slots: hourSlots, d: hourly } : { slots: dayDates, d: daily }),
-    [chanPeriod, hourSlots, hourly, dayDates, daily]);
+  const trendSrc = useMemo(() => (period === "hour" ? { slots: hourSlots, d: hourly } : { slots: dayDates, d: daily }),
+    [period, hourSlots, hourly, dayDates, daily]);
 
   /* aggregate kind rows → buckets, for the window and the one before */
   const buckets = useMemo(
@@ -304,11 +291,14 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     const sum = (money: Money) => totalOf(sumKinds(revByKindQueries, money));
     return { "Platform fee": sum((r) => r.fee_cents ?? 0), "VAT collected": sum((r) => r.vat_cents ?? 0), "Net earnings": totalCents };
   }, [revByKindQueries, totalCents]);
+  // #22, #35: both windows' sums under one rule (`totalGrowthOf`, `forGrowth`).
+  const totalGrowth = totalGrowthOf(refs, refsPrior);
+  const growthNow = useMemo(() => forGrowth({ ...buckets, total: totalCents }, totalGrowth), [buckets, totalCents, totalGrowth]);
   const prior = useMemo(() => {
     if (!wholeHistory(revPriorQueries)) return null;
     const b = sumKinds([...revPriorQueries, { data: refPriorRev.kind }], money);
-    return { ...b, total: totalOf(b) };
-  }, [revPriorQueries, refPriorRev, money]);
+    return forGrowth({ ...b, total: totalOf(b) }, totalGrowth);
+  }, [revPriorQueries, refPriorRev, money, totalGrowth]);
 
   /* creator table — filtered to selection */
   const visibleCreators = useMemo(() => {
@@ -317,19 +307,20 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   }, [isAll, allModels, selectedIds]);
 
   /* The Overview's state: an error first, then a read still pending, then no Creator in the selection. */
-  // The referrals and reversed reads never hold the Overview: failed, referrals count $0.00 under a note and
-  // Chargebacks shows "-" under a title (its own `chargebacksView`), never an error.
+  // The referrals and reversed reads never hold the Overview: failed, Referrals shows "-" (left out of Total
+  // earnings, under a note) and Chargebacks shows "-" under a title (its own `chargebacksView`), never an error.
   const view = viewOf([perModel, ...revByDayQueries, ...revByKindQueries, ...revByHourQueries],
     visibleCreators.length > 0);
   const chargebacksView = viewOf(revReversedQueries, visibleCreators.length > 0);
 
-  const trendPoints = useMemo(() => rollUp(trendSrc.slots, trendSrc.d.total, trendPeriod), [trendSrc, trendPeriod]);
-  // #74: a line per picked channel, every one when none is picked.
+  const trendPoints = useMemo(() => rollUp(trendSrc.slots, trendSrc.d.total, period), [trendSrc, period]);
+  // #74: a line per picked channel, every one when none is picked; no Referrals line while it has no figure
+  // (#43, #45: loading or failed outright). Hour mode still draws referrals flat: their read is keyed by day.
   const channelLines = useMemo(
     () => CHANNELS
-      .filter((c) => chanPick.size === 0 || chanPick.has(c.key))
-      .map((c) => ({ ...c, points: rollUp(chanSrc.slots, chanSrc.d.byChan(c.key), chanPeriod) })),
-    [chanSrc, chanPeriod, chanPick],
+      .filter((c) => (chanPick.size === 0 || chanPick.has(c.key)) && (c.key !== "referrals" || refsShown))
+      .map((c) => ({ ...c, points: rollUp(trendSrc.slots, trendSrc.d.byChan(c.key), period) })),
+    [trendSrc, period, chanPick, refsShown],
   );
 
   // #121, #123: the window's hours, and the Agency's total over every Creator it has, not only the ones picked.
@@ -354,8 +345,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   const perfList = hideZero ? perfAll.filter((m) => m.total_revenue_cents > 0) : perfAll;
   const picked = perfList.find((m) => m.account_id === pickedId) ?? perfList[0] ?? null;
   const perfIds = tab === "performance" && picked ? [picked.account_id] : [];
-  const perfPeriod = granShown(perfGran, dayDates.length);
-  const perfHour = perfPeriod === "hour";
+  const perfHour = period === "hour";
   const perfTimeQueries = useQueries({
     queries: perfIds.map((id) => revenueQuery(perfHour ? "hour" : "day", id, fromIso, toIso, net)),
   });
@@ -383,8 +373,8 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [perfTimeQueries, perfRefRev, perfSlots, money],
   );
   const perfPoints = useMemo(
-    () => rollUp(perfSlots, perfChan === "all" ? perfDaily.total : perfDaily.byChan(perfChan), perfPeriod),
-    [perfSlots, perfDaily, perfChan, perfPeriod],
+    () => rollUp(perfSlots, perfChan === "all" ? perfDaily.total : perfDaily.byChan(perfChan), period),
+    [perfSlots, perfDaily, perfChan, period],
   );
   const perfHeat = useMemo(
     () => perfHeatQueries.flatMap((q) => q.data?.rows ?? [])
@@ -392,18 +382,19 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [perfHeatQueries, money],
   );
   const perfChargebacks = useMemo(
-    () => rollUp(perfSlots, dailyOf(perfReversedQueries, perfSlots, money).total, perfPeriod),
-    [perfReversedQueries, perfSlots, money, perfPeriod],
+    () => rollUp(perfSlots, dailyOf(perfReversedQueries, perfSlots, money).total, period),
+    [perfReversedQueries, perfSlots, money, period],
   );
   const perfBuckets = useMemo(
     () => sumKinds([...perfKindQueries, { data: perfRefRev.kind }], money),
     [perfKindQueries, perfRefRev, money],
   );
   const perfChargebacksCents = useMemo(() => chargebacksCents(perfReversedQueries, money), [perfReversedQueries, money]);
+  const perfGrowth = totalGrowthOf(perfRefs, perfRefsPrior);
   const perfPrior = useMemo(
     () => (wholeHistory(perfPriorQueries)
-      ? sumKinds([...perfPriorQueries, { data: perfRefPriorRev.kind }], money) : null),
-    [perfPriorQueries, perfRefPriorRev, money],
+      ? forGrowth(sumKinds([...perfPriorQueries, { data: perfRefPriorRev.kind }], money), perfGrowth) : null),
+    [perfPriorQueries, perfRefPriorRev, money, perfGrowth],
   );
   // Ours: the creator list's rows, with the columns Creator statistics shows.
   // The same rows and cells as the export pop-up's total (a cell with no net read is left empty).
@@ -540,13 +531,14 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           to={to}
           preset={preset}
           reportTz={reportTz}
-          onChange={(f, t) => handleRange(f, t, "custom")}
-          onPreset={(key, [f, t]) => handleRange(f, t, key)}
+          onChange={(f, t) => dispatch({ type: "custom", from: f, to: t })}
+          // #14: Custom keeps the range shown; a preset brings its own days.
+          onPreset={(key) => dispatch(key === "custom" ? { type: "custom", from, to } : { type: "preset", preset: key })}
         />
         <ShownBySelect
-          value={tab === "overview" ? trendPeriod : perfPeriod}
+          value={period}
           days={dayDates.length}
-          onPick={(g) => { setTrendGran(g); setChanGran(g); setPerfGran(g); }}
+          onPick={(g) => dispatch({ type: "gran", gran: g })}
         />
         <select aria-label="Earnings basis" value={net ? "net" : "gross"}
           onChange={(e) => setNet(e.target.value === "net")}>
@@ -555,7 +547,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
         </select>
         <ReportFilters
           models={allModels.map((m) => ({ id: m.account_id, name: creatorName(m) }))}
-          selected={selectedIds} onChange={setSelectedIds} onReset={reset}
+          selected={selectedIds} onChange={(ids) => dispatch({ type: "select", ids })} onReset={reset}
         />
       </div>
       </div>
@@ -565,8 +557,8 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           {netMissingNote(netMissing, "net earnings")}
         </p>
       )}
-      {/* Ours: the Creators OnlyFans' referrals read failed for (all of them when the read did), counted $0.00. */}
-      {(refs.isError || !!refs.data?.unavailable?.length) && (
+      {/* Ours: the Creators OnlyFans' referrals read failed for (all of them when the read did), left out of Total. */}
+      {refGap !== "none" && (
         <p title={EXTRA_LABEL} className="px-4 pb-2 text-[12px] leading-[17px]" style={{ color: "var(--color-fg-dim)" }}>
           {referralsUnavailableNote(refs.data?.unavailable?.length ?? null)}
         </p>
@@ -580,19 +572,21 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           perfChan={perfChan} setPerfChan={setPerfChan} perfView={perfView} perfRetry={perfRetry} perfPoints={perfPoints}
           perfBuckets={perfBuckets} perfPrior={perfPrior} perfDaily={perfDaily} perfHeat={perfHeat}
           perfChargebacks={perfChargebacks} perfChargebacksCents={perfChargebacksCents}
+          perfRefsShown={referralsShown(perfRefs)} perfRefsGap={referralsGap(perfRefs)}
         />
       )}
 
       {/* #42, #43: the Overview, 16px sides: Earnings summary, Earnings trends, the channel row, Creator statistics. */}
       {tab === "overview" && (
         <CreatorOverview
-          ids={ids} view={view} totalCents={totalCents} buckets={buckets} prior={prior} trendGran={trendGran}
-          setTrendGran={setTrendGran} dayDates={dayDates} trendPoints={trendPoints} chanPick={chanPick}
-          setChanPick={setChanPick} chanGran={chanGran} setChanGran={setChanGran} channelLines={channelLines}
+          ids={ids} view={view} totalCents={totalCents} buckets={buckets} prior={prior} growthNow={growthNow}
+          totalGrowth={totalGrowth}
+          trendPoints={trendPoints} chanPick={chanPick} setChanPick={setChanPick} channelLines={channelLines}
           from={from} to={to} net={net} buildExport={buildExport} perModel={perModel} visibleCreators={visibleCreators}
           visibleCols={visibleCols} setVisibleCols={setVisibleCols} orderedCols={orderedCols} colCtx={colCtx}
           grossCents={grossCents} netLedger={netLedger} chargebacksCents={cbCents}
-          chargebacksView={chargebacksView}
+          chargebacksView={chargebacksView} referralsGap={refGap}
+          referralsShown={refsShown}
         />
       )}
     </div>

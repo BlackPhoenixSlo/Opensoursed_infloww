@@ -44,7 +44,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import write_telemetry
-from db.engine import engine
+from db.engine import UNCAPPED, engine
 
 log = logging.getLogger("of-relay.of_writer")
 
@@ -206,6 +206,9 @@ async def _flush(batch: list[_Entry]) -> None:
 
 
 async def _loop() -> None:
+    # This task's checkouts spill past the pool cap instead of timing out
+    # (db/engine.py): a failed batch would drop inbound OF frames.
+    UNCAPPED.set(True)
     with write_telemetry.writer("of_writer"):
         while True:
             while not _pending:

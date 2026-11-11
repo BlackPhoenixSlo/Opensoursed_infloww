@@ -653,8 +653,8 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
     if "_flags_v" in src_ai:
         carry_flags(out, src_ai, locked=locked, exact=True)
         # The flags came from `src_id` itself, which COPY_MARK names. The
-        # source's own flags marker names an item THIS copy was never
-        # compared with, so it must not ride along (reuse is never transitive).
+        # source's own flags marker names some other item, so it must not
+        # ride along (reuse is never transitive).
         out.pop(FLAGS_COPY_MARK, None)
     out[COPY_MARK] = int(src_id)
     _apply_locked_fixes(out, overrides, locked, fixable)

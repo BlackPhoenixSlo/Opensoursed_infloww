@@ -9,6 +9,8 @@ with upstream 500 "signed session retired" instead of OF's 400.
       mid-call runs once more on the pool's fresh client; OF's real answer (400,
       101) is what the caller gets.
   case_retired_read_twice_answers_503: once only; then 503 + Retry-After.
+  case_pool_busy_read_answers_503_without_a_rerun: every handle of a live
+      client busy is not an evict: no re-run, 503 signed_pool_busy, Retry-After 5.
   case_retired_write_is_not_rerun: a non-GET is never re-run (a multi-request
       write could repeat what it sent): 503 + Retry-After, one call.
   case_dead_session_on_a_replaced_client_keeps_the_fresh_one: a 101 met on a
@@ -35,7 +37,7 @@ from fastapi import HTTPException  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import client_pool  # noqa: E402
 import relay_host  # noqa: E402
-from of_client import OFAPIError, OFSessionRetired  # noqa: E402
+from of_client import OFAPIError, OFSessionRetired, OFSignedPoolBusy  # noqa: E402
 
 _harness.make_client()  # neutralises the startup spawns
 import server  # noqa: E402
@@ -119,6 +121,18 @@ def case_retired_read_reruns_on_the_current_client():
     assert e.status_code == 502 and e.detail["upstream_status"] == 400, (e.status_code, e.detail)
     assert [c.calls for c in built] == [1, 1], [c.calls for c in built]
     assert built[0].retired and built[1].retired, "the fresh client met the 101 itself: it is evicted"
+
+
+def _pool_busy(c):
+    raise OFSignedPoolBusy()
+
+
+def case_pool_busy_read_answers_503_without_a_rerun():
+    built = _with_pool([_pool_busy])
+    e = _status("GET")
+    assert e.status_code == 503 and e.detail["upstream_status"] == "signed_pool_busy", (e.status_code, e.detail)
+    assert (e.headers or {}).get("Retry-After") == "5", e.headers
+    assert [c.calls for c in built] == [1], [c.calls for c in built]
 
 
 def case_retired_read_twice_answers_503():

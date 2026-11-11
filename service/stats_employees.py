@@ -51,6 +51,32 @@ async def _only_chatters(own: set[int] | None, chatter_only: bool) -> set[int] |
     return chatters if own is None else own & chatters
 
 
+# The Employee sales series' "From Messages" and "From Tips": the kinds the
+# Dashboard header's Messages and Tips tiles sum (DashboardHeader.tsx
+# `CHANNEL_KINDS`), so the two cards on one page agree. Keep in sync with
+# app/components/home/DashboardHeader.tsx CHANNEL_KINDS (messages, tips).
+SERIES_MESSAGE_KINDS: tuple[str, ...] = ("ppv_message", "custom")
+SERIES_TIP_KINDS: tuple[str, ...] = ("tip", "tip_post")
+
+
+def _query_zone(name: str | None) -> ZoneInfo | None:
+    """The `tz` query parameter as a zone, None when absent or not a known
+    IANA name (never a 500 over a bad zone)."""
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+        return None
+
+
+def bucket_of(edges: list[datetime], at: datetime) -> int:
+    """The index of the bucket of `edges` (naive UTC starts, ascending) a
+    moment falls in: the last starting at or before `at`, the first for one
+    before every edge."""
+    return max(0, bisect.bisect_right(edges, at) - 1)
+
+
 def _empty_employee_row(eid: int | None, display_name: str | None) -> dict[str, Any]:
     return {
         "employee_id": eid,
@@ -69,6 +95,7 @@ async def per_employee(
     by_account: bool = Query(False),
     include_series: bool = Query(False),
     chatter_only: bool = Query(False),
+    tz: str | None = Query(None),
 ) -> dict[str, Any]:
     """Per-employee revenue rollup. Each sale is credited by its Creator's
     Agency's Sales Settings rules (`sales_attribution.credited_sales`), whose
@@ -95,17 +122,30 @@ async def per_employee(
     (`permissions.role_holders`), no Unattributed bucket.
 
     Under Role enforcement a chatter whose Data scope is not "all" gets only
-    its own row (`permissions.scoped_employee_ids`), no Unattributed bucket."""
+    its own row (`permissions.scoped_employee_ids`), no Unattributed bucket.
+
+    ``include_series=true`` (the Dashboard's Employee sales card) adds
+    `series`: one point per local day of [from, to] (both required, else 422),
+    `start` its date ("YYYY-MM-DD"). Each point sums the same credited sales
+    as the `employees` rows, Unattributed included and the Data scope applied,
+    so the points add up to the rows' revenue. `messages_cents` and
+    `tips_cents` sum the kinds the Dashboard header's Messages and Tips tiles
+    count (`SERIES_MESSAGE_KINDS`, `SERIES_TIP_KINDS`).
+
+    ``tz`` (an IANA zone, the browser's) cuts the days, and reads date-only
+    bounds, only when no report time zone resolves (`stats._report_zone` is
+    None: none saved, or a chatter of several Agencies); a resolved report
+    zone always wins. An unknown or malformed ``tz`` is ignored (UTC days)."""
     import stats
     from permissions import scoped_employee_ids
     own = await _only_chatters(await scoped_employee_ids(), chatter_only)
-    zone = await stats._report_zone(None)
+    zone = await stats._report_zone(None) or _query_zone(tz)
     start = _parse_date(from_, field="from", zone=zone)
     end = _parse_date(to, field="to", zone=zone)
     series_bucket = None
     if include_series:
-        end = end or datetime.utcnow()
-        start = start or end - timedelta(days=30)
+        if start is None or end is None:
+            raise HTTPException(status_code=422, detail="include_series needs both from and to")
         series_bucket = "hour" if tx_rollup.whole_hours(zone, start, end) else "minute"
     # Clamp to the signed-in friend's accounts so per-employee rollups
     # don't mix in other friends' chatter activity.
@@ -256,11 +296,11 @@ async def per_employee(
         for sale in credited:
             if sale.occurred_at is None or (own is not None and sale.employee_id not in own):
                 continue
-            point = points[max(0, bisect.bisect_right(edges, sale.occurred_at) - 1)]
+            point = points[bucket_of(edges, sale.occurred_at)]
             point["revenue_cents"] += sale.amount_cents
-            if sale.kind in PPV_KINDS:
+            if sale.kind in SERIES_MESSAGE_KINDS:
                 point["messages_cents"] += sale.amount_cents
-            if sale.kind in TIP_KINDS:
+            if sale.kind in SERIES_TIP_KINDS:
                 point["tips_cents"] += sale.amount_cents
         result["series"] = points
     return result
@@ -468,8 +508,7 @@ def fold_series(edges: list[datetime], sends: list[Any], credited: list[Any], au
     (naive UTC, ascending), each's `start` its wall time in `tz`, and each
     Employee's points keyed by its id as a string, in id order. A send names
     its bucket (`r.bucket`); a credited sale lands in the last bucket starting
-    at or before `occurred_at` (`bisect`; the first for one before every
-    edge), none without it. Only the Employees `_shown` counts: no
+    at or before `occurred_at` (`bucket_of`), none without it. Only the Employees `_shown` counts: no
     Unattributed (None), no Automation sentinel `auto`, only `own` when the
     Data scope narrows."""
     points = [{"start": e.replace(tzinfo=timezone.utc).astimezone(tz).strftime("%Y-%m-%dT%H:%M"),
@@ -487,6 +526,5 @@ def fold_series(edges: list[datetime], sends: list[Any], credited: list[Any], au
                  ppvs_unlocked=int(r.unlocked or 0), fans_chatted=int(r.fans))
     for cs in credited:
         if _shown(cs.employee_id, auto, own) and cs.occurred_at is not None:
-            _add(int(cs.employee_id), max(0, bisect.bisect_right(edges, cs.occurred_at) - 1),
-                 sales_cents=cs.amount_cents)
+            _add(int(cs.employee_id), bucket_of(edges, cs.occurred_at), sales_cents=cs.amount_cents)
     return points, {str(k): v for k, v in sorted(by_emp.items())}

@@ -46,6 +46,15 @@ concurrently and are recorded in arrival order.
   DELETE /api2/v2/messages/queue/{id}      a mass message unsent: `{"success": true}`, each
                                            (`t`, `id`) kept per Creator in order (`unsends`;
                                            bypass, declared: OF's answer body is a guess)
+  GET  /api2/v2/users/me/stats/messages/group
+                                           the mass feed: the Creator's `queue`, newest first,
+                                           `limit` of them (default 10), `hasMore`; each `{id,
+                                           date, text, template, sentCount}`, sentCount the send's
+                                           recipients at the wire when queued (`sent_counts`): its
+                                           `userIds` and numeric `userLists` members minus its
+                                           `excludedLists` members (bypass, declared: the rosters
+                                           are empty here, so fans / following add none; final at
+                                           once; OF's other item fields not modelled)
   POST /api2/v2/posts                      a feed post created: `{id, text, postedAt}`, the
                                            wire body kept per Creator in order (`posts`);
                                            the answer's shape is a guess (`id` is read)
@@ -86,6 +95,10 @@ concurrently and are recorded in arrival order.
                                            made), `{list, hasMore}`, `offset`/`limit`: a mass send's
                                            Auto_Exclude sync (service/audiences.py) reads it
   POST /api2/v2/lists                      a custom list made: `{id, type, name, usersCount}`
+  GET  /api2/v2/lists/{id}                 one list's metadata `{id, type, name, usersCount}`,
+                                           usersCount its members now (`list_users[id]`); another
+                                           Creator's or unknown list: 404 (the crawl's count check
+                                           after a repeated members page)
   GET  /api2/v2/lists/{id}/users           its members, a BARE page (`[{id}]`, no hasMore) as
                                            audiences._page_all documents OF's; another
                                            Creator's or unknown list: 404; a list in
@@ -211,6 +224,7 @@ _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
 _QUEUE_ONE = re.compile(r"/api2/v2/messages/queue/(\d+)")
 _LIST_USERS = re.compile(r"/api2/v2/lists/(\d+)/users(?:/(\d+))?")
+_LIST = re.compile(r"/api2/v2/lists/(\d+)")
 _NUM = re.compile(r"/\d+(?=/|$)")
 _CHUNK = re.compile(r"/static/prod/f/[^/]+/2313\.js")
 
@@ -244,6 +258,7 @@ class FakeOF:
         self.queue: dict[str, list[dict]] = {}  # per Creator, the mass-message wire bodies, in order (`t`, `id` added)
         self.posts: dict[str, list[dict]] = {}  # per Creator, the post-create wire bodies, in order (`t`, `id` added)
         self.unsends: dict[str, list[dict]] = {}  # per Creator, the mass unsends, in order ({t, id})
+        self.sent_counts: dict[int, int] = {}  # queue id -> the mass feed's sentCount, fixed when queued
         self.vault: dict[str, dict[int, dict]] = {}  # per Creator, media id -> the by-id read's media dict
         self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
         self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
@@ -320,6 +335,14 @@ class FakeOF:
             loop.run_forever()
         finally:
             loop.close()
+
+    def _reach(self, body: dict) -> int:
+        """A queued mass message's recipients at the wire, under self.lock: its userIds and numeric userLists'
+        members (`list_users`; fans / following are empty rosters here) minus its excludedLists' members."""
+        def ids(xs):
+            return [int(x) for x in xs or () if str(x).strip().isdigit()]
+        got = set(ids(body.get("userIds"))).union(*(self.list_users.get(i, ()) for i in ids(body.get("userLists"))))
+        return len(got.difference(*(self.list_users.get(i, ()) for i in ids(body.get("excludedLists")))))
 
     def head_chat(self, uid: str, fan: int, msg: dict) -> None:
         """`msg` is the chat's last message now: OF lists that chat first (call under `lock`)."""
@@ -557,6 +580,14 @@ class FakeOF:
                             ans = {"list": [{**x, "usersCount": len(fake.list_users[x["id"]])}
                                             for x in mine[off:off + lim]], "hasMore": off + lim < len(mine)}
                     return self._record(uid, route, 200, ans)
+                if method == "GET" and (lg := _LIST.fullmatch(u.path)):
+                    lid = int(lg.group(1))
+                    with fake.lock:  # _record takes it too: answer after it is released
+                        meta = next(({**x, "usersCount": len(fake.list_users.get(lid, ()))}
+                                     for x in fake.lists.get(uid, ()) if x["id"] == lid), None)
+                    if meta is None:
+                        return self._record(uid, route, 404, {"error": {"code": 0, "message": "List not found"}})
+                    return self._record(uid, route, 200, meta)
                 lm = _LIST_USERS.fullmatch(u.path)
                 if lm:
                     lid = int(lm.group(1))
@@ -589,8 +620,18 @@ class FakeOF:
                         mid = next(fake._ids)
                         (fake.queue if queue else fake.posts).setdefault(uid, []).append(
                             {"t": time.time(), "id": mid, **body})
+                        if queue:
+                            fake.sent_counts[mid] = fake._reach(body)
                     return self._record(uid, route, 200, {"id": mid, "text": body.get("text") or "",
                                                           ("createdAt" if queue else "postedAt"): now})
+                if method == "GET" and u.path == "/api2/v2/users/me/stats/messages/group":
+                    lim = int((parse_qs(u.query).get("limit") or ["10"])[0])
+                    with fake.lock:
+                        items = [{"id": e["id"], "text": e.get("text") or "", "template": "group",
+                                  "sentCount": fake.sent_counts.get(e["id"], 0),
+                                  "date": datetime.fromtimestamp(e["t"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")}
+                                 for e in reversed(fake.queue.get(uid, ()))]
+                    return self._record(uid, route, 200, {"items": items[:lim], "hasMore": len(items) > lim})
                 qm = _QUEUE_ONE.fullmatch(u.path)
                 if method == "DELETE" and qm:
                     with fake.lock:

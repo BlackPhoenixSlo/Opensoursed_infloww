@@ -35,7 +35,7 @@ import { useChatter } from "@/contexts/ChatterContext";
 import { useTheme } from "@/hooks/useTheme";
 import { useSfw } from "@/hooks/useBlurMode";
 import { NotificationBell } from "@/components/NotificationBell";
-import { AgencyFeed, useAgencyUnread } from "@/components/AgencyNotifications";
+import { AgencyFeed, AgencyKindSwitches, useAgencyUnread } from "@/components/AgencyNotifications";
 import { ErrorBadge } from "@/components/ErrorBadge";
 import ClockButton from "@/components/shifts/ClockButton";
 import { ConsentBanner } from "@/components/shell/ConsentBanner";
@@ -141,11 +141,13 @@ function SfwSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
 }
 
 /** The header's one bell: OnlyFans notifications, and for the owner the
- *  agency notification centre folded in as the panel's "Agency" tab. */
+ *  agency notification centre folded in as the panel's "Agency" tab (its
+ *  kind switches in the Settings tab). */
 export function HeaderBell() {
   const agencyUnread = useAgencyUnread();
   return (
-    <NotificationBell agency={agencyUnread == null ? undefined : { unread: agencyUnread, panel: <AgencyFeed /> }} />
+    <NotificationBell agency={agencyUnread == null ? undefined
+      : { unread: agencyUnread, panel: <AgencyFeed />, settings: <AgencyKindSwitches /> }} />
   );
 }
 

@@ -29,11 +29,12 @@ profile (a genuinely cold first card visit); Dashboard / Messages Pro share the 
                 the relay restarted (its OF caches cold), so every Creator's chat list and badge loads again; as soon
                 as the saved rows show, the owner taps the Nth row: tap -> OnlyFans' message of that Fan painted
                 (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
-dash-first, reports-first extras and mp-first read through the screen bundles (app/lib/screenBundle.ts, service/screens_api.py): 0
-per-Creator OnlyFans reads of what the bundle carries (BUNDLE_OF; the money rail's feeds keep their own routes), one
-bundle each (C_BUNDLE). The card bundle starts at extras activation; Dashboard / Messages Pro entry bundles
-leave with the auth probe on a document load, the Dashboard's Applied settings read with the
-HTML; Dashboard reload has no card bundle after useRememberEntry(false) (#374) (C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). reports-snapshot, reports-leave and mp-click-N run the per-Creator path on purpose
+dash-first, reports-first extras and mp-first send 0 per-Creator OnlyFans reads of what the screen bundles carry
+(BUNDLE_OF; the money rail's feeds keep their own routes; app/lib/screenBundle.ts, service/screens_api.py): reports-first
+extras and mp-first one bundle each, dash-first none (the Dashboard draws no card that reads one) (C_BUNDLE). The card
+bundle starts at extras activation; Messages Pro's entry bundle leaves with the auth probe on a document load, the
+Dashboard's Applied settings read with the HTML; no Dashboard visit reads a card bundle, inline or its own
+(C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). reports-snapshot, reports-leave and mp-click-N run the per-Creator path on purpose
 (the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
 Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
 (but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
@@ -60,8 +61,7 @@ the app judges the link by its own round trips, as on the owner's iPhone); OF an
 message per Thread, badges 0; reports-leave's calls take LEAVE_OF_MS); the 30 s wait before each tap visit stands in
 for the owner coming back later; under `relay-scheduler-bypassed` the app's JS chunks come patched from the app on
 loopback (actors/ui.py `_patched` origin), not over the WAN; shifted visits replace the page's Date only (native Performance retained); reports-snapshot / reports-leave / mp-click-N's bundle 404 is the relay's harness hook (`no_bundle`, `/__slop/screens-404`,
-browser and Next server alike); the zone cookie (ZONE) is set on the first visit's context, as the sign-in page would
-leave it. Reads the HTML brought (inline boot) are the relay's log of the Next server's reads (`/__slop/server-reads`).
+browser and Next server alike). Reads the HTML brought (inline boot) are the relay's log of the Next server's reads (`/__slop/server-reads`).
 """
 from __future__ import annotations
 
@@ -107,9 +107,8 @@ LEAVE_TO = "/share-for-share/settings"  # Dashboard -> a page with no OF reads, 
 STALE_S = 32  # the chat list's and the badges' staleTime is 30 s
 SLOW_ROUTES = ("GET /api2/v2/users/me", "GET /api2/v2/subscriptions/count/all",
                "GET /api2/v2/subscriptions/subscribers/chart")   # reports-slow: the bundle's 3 reads
-# The phone's zone, and the cookie the sign-in page's boot script leaves with it (app/app/layout.tsx TZ_BOOT_SCRIPT):
-# the HTML's inline boot guesses the Dashboard's bundle key from it (bypass: set on the first visit's context).
-ZONE, TZ_COOKIE = "Europe/Ljubljana", "chatterly_tz"
+# The phone's zone (the browser context's timezone_id).
+ZONE = "Europe/Ljubljana"
 # The reads the HTML's inline boot sends from the Next server (app/lib/inlineBoot.server.ts).
 INLINE_READS = ("/auth/me", "/chatter/me", "/admin/settings/applied", "/admin/screens/")
 SLOW_SHIFT_S = 31 * 60  # reports-slow: past the Dashboard keys' 30 min staleTime (useStats.ts)
@@ -273,9 +272,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
     try:
         if first:
             await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url,
-                                     "expires": time.time() + 30 * 86400} for c in ctx.owner.c.cookies.jar]
-                                   + [{"name": TZ_COOKIE, "value": ZONE.replace("/", "%2F"), "url": edge.url,
-                                       "expires": time.time() + 30 * 86400}])
+                                     "expires": time.time() + 30 * 86400} for c in ctx.owner.c.cookies.jar])
         for js in (PROBE_JS, *((fault.browser_js,) if fault and fault.browser_js else ())):
             await bctx.add_init_script(js)
         if patches := _client_fault(ctx):
@@ -565,13 +562,17 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     per["reports-first"]["bundle_from_extras_ms"] = summ["reports-first"]["bundle_from_extras_ms"]
     per["reports-first"]["bundle_after_activation"] = (activation is not None and bool(card_bundles)
         and all(r["t0"] >= cards["origin"] + activation for r in card_bundles))
-    ctx.check(C_BUNDLE, per["reports-first"]["bundle_after_activation"] and all(not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
+    # The Dashboard reads no bundle (none of its cards reads one); the extras cards and Messages Pro one each.
+    want_bundles = {"dash-first": 0, "reports-first": 1, "mp-first": 1}
+    ctx.check(C_BUNDLE, per["reports-first"]["bundle_after_activation"] and all(
+                  not x["of_paths"] and x["bundles"] == want_bundles[k] and x["follow_ups"] <= want_bundles[k]
+                  for k, x in per.items()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
     # A document load: the bundle leaves with the auth probe, or comes with the HTML (inline boot: the server sent it
-    # at once); the Dashboard's Applied settings read comes with the HTML (no client read of it leaves before /auth/me). A read of the page's own after an inline probe:
-    # not ok (nothing to compare it with; the zone cookie is set, so the server's guess should have it).
-    def entry(d: dict, dash: bool, reload: bool = False) -> dict:
+    # at once); the Dashboard's Applied settings read comes with the HTML (no client read of it leaves before /auth/me).
+    # A Dashboard visit reads no card bundle at all, inline or its own.
+    def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
         me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
         plain, _follow = _bundles(d)
@@ -581,18 +582,16 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              "bundle_t0": min((r["t0"] for r in page_bundles), default=None),
              "bundle_inline": bool(plain) and not page_bundles,
              "settings_t0": first(settings), "settings_inline": _took_inline(d, settings)}
-        # #374 writes grid=false: Dashboard reload has no card bundle reader.
-        # Keep its settings/auth timing; a first visit's legacy guessed bundle,
-        # when present, still must leave with auth. Messages Pro always needs its bundle.
-        want = (("settings", "bundle") if plain else ("settings",)) if dash else ("bundle",)
+        # The Dashboard: its Applied settings timing, no card bundle. Messages Pro: its bundle's timing.
+        want = ("settings",) if dash else ("bundle",)
         o["no_card_bundle"] = not plain and not any(
             r["path"].startswith(DASH_SCREEN_PATH) for r in [*d["net"], *d.get("inline", [])])
-        o["ok"] = (not reload or o["no_card_bundle"]) and (bool(me) or o["auth_me_inline"]) and all(
+        o["ok"] = (not dash or o["no_card_bundle"]) and (bool(me) or o["auth_me_inline"]) and all(
             o[f"{k}_inline"] or (bool(me) and o[f"{k}_t0"] is not None and o[f"{k}_t0"] < min(me)) for k in want)
         for k in ("bundle", "settings"):
             o[f"{k}_t0"] = None if o[f"{k}_t0"] is None else round(o[f"{k}_t0"] - d["origin"])
         return o
-    ent = {k: entry(v[k], k.startswith("dash"), k == "dash-reload") for k in ("dash-first", "dash-reload", "mp-first")}
+    ent = {k: entry(v[k], k.startswith("dash")) for k in ("dash-first", "dash-reload", "mp-first")}
     ctx.check(C_ENTRY, all(e["ok"] for e in ent.values()), **ent)
     # A slow Creator: the snapshot stays, one follow-up, no fan-out, the mirror updated.
     d = v["reports-slow"]

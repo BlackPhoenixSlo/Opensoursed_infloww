@@ -5,9 +5,9 @@
  *
  * Labels are VERBATIM from docs/infloww-screens.md §1.1 (sidebar) and §3.10
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
- * are ours (VISION.md): the "My Automations" group (Auto Post, Auto Story,
- * Auto Mass, Gen-Info), the "My AI Chatter" group (Auto-reply,
- * Auto Funnel, Get to know fans, the "Full AI Chatter" coming-soon page).
+ * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
+ * Auto Story, Auto Funnel, Gen-Info), the "My AI Chatter" group
+ * (Auto-reply, Get to know fans, the "Full AI Chatter" coming-soon page).
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).
@@ -159,7 +159,7 @@ export const ONLYFANS_NAV: NavNode[] = [
     ],
   },
   { label: "Messages Pro", href: "/messages-pro", icon: MessagesProLine, popout: true },
-  // Out of Growth, below Messages Pro (owner 11-08); its /growth/ route and Permission page stay.
+  // Out of Growth, under Messages Pro (owner 11-08); its /growth/ route and Permission page stay.
   { label: "Vault Pro", href: "/growth/vault-pro", icon: Images, chatterHidden: true },
   {
     label: "Growth",

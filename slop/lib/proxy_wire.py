@@ -80,6 +80,10 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tup
             await dst.drain()
             if mark is not None:
                 mark.set()
+        # Every buffered byte to the kernel before the shutdown below: drain() stops at the transport's high-water
+        # mark, and the shutdown dropped what was left (a slow reader's big body lost its last <= 64 KiB, measured).
+        dst.transport.set_write_buffer_limits(0)
+        await dst.drain()
     except OSError:
         pass
     finally:

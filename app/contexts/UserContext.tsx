@@ -63,7 +63,6 @@ const IDENTITY_PRESERVE_KEYS = new Set<string>([
   "chatterly:share_token",                      // share-link gate
   "chatterly:chunk-reload-attempted",           // chunk-load retry guard
   "chatterly:chunk-reload-count",
-  "chatterly:lockedText-default-changed-seen",  // one-time notice
   "chatterly:emoji_recents",                    // UI preference
   "chatterly:chat-sort-mode",                   // UI preference
   "chatterly:fan-drawer-default-open",          // UI preference

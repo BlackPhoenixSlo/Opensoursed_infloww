@@ -572,7 +572,7 @@ async def _flags_one(account_id: str, media_id: int,
 
 # ── Answer reuse across duplicates (both sweeps) ────────────────────
 # A re-upload is the same picture: one vision call answers the whole set
-# (`vault_dupes.reuse_groups` — thumb clusters re-checked on the full frame).
+# (`vault_dupes.reuse_groups` — the Duplicates screen's sets at threshold 2).
 # Copies are free, are made the moment their source is written (a cap mid-sweep
 # keeps them), carry the source's flags version (so the flags sweep leaves them
 # alone) and are stamped `_copied_from` / `_flags_copied_from`, which is how a

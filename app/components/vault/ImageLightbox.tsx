@@ -14,7 +14,7 @@
  * media, and this rendered the same `mirrorFullSrc` with nothing behind it — so
  * a tile that had recovered on its own gave a broken-image icon the moment you
  * clicked it. Callers that hold the media dict (the vault drawer) pass its
- * OnlyFans urls; callers that hold only an id (the flags and disputes queues)
+ * OnlyFans urls; callers that hold only an id (the flags review queue)
  * pass none and get the honest message below instead of a broken image.
  */
 

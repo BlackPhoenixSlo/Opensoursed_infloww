@@ -78,8 +78,8 @@ log = logging.getLogger("of-relay.llm_client")
 from llm_models import LLMModel, MODELS  # noqa: E402,F401
 
 
-# Cost-estimate knobs for the pre-flight cap reservation. The reserve assumes a
-# full output so a single runaway loop can't slip many calls under the cap
+# Cost-estimate knobs for the pre-flight cap reservation (_reserve_millicents).
+# The reserve assumes a full output so a single runaway loop can't slip many calls under the cap
 # before the rollup catches up. Costs are counted in MILLICENTS (cents x100) so
 # the seed prices in `llm_models` don't floor to 0 per call.
 _CHARS_PER_TOKEN = 4
@@ -223,6 +223,7 @@ _FEATURE_LABELS = {
     "describe_inbound_image": "Photo describe",
     "customs_brief": "Customs brief",
     "help_assistant": "The help assistant",
+    "help_assistant_do": "The help assistant",
     "autoreply": "Auto-reply", "reply_mass_funnel": "Auto Funnel",
     "welcome_chatter_for_info": "Info chatter", "followup": "Follow-ups",
     "gen_info": "Fan info",
@@ -566,9 +567,8 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
 
     `cache_hit_tokens` (DeepSeek `prompt_cache_hit_tokens`) is the slice of
     `tokens_in` billed at the cheap cache-hit rate; the remainder is cache-miss.
-    Clamped to tokens_in so a malformed usage block can't go negative. Pass 0
-    (the default) for the pre-flight reservation — no cache info exists yet, and
-    assuming all-miss keeps the reserve conservative for the cap.
+    Clamped to tokens_in so a malformed usage block can't go negative. The
+    pre-flight reservation prices through `_reserve_millicents`, not here.
 
     `cache_write_tokens` (Anthropic `cache_creation_input_tokens`) is the slice
     written to the cache, billed at the write rate (1.25x input), else at miss.
@@ -586,6 +586,30 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
         + tokens_out / 1000.0 * mdl.output_per_1k_cents
     )
     return int(round(cents * _MILLICENTS_PER_CENT))
+
+
+def _reserve_out_tokens(model: str) -> int:
+    """The output a reservation counts: the real cap where the body states one
+    (native Anthropic: `llm_anthropic.MAX_TOKENS`, which adaptive thinking may
+    spend in full), else `_ASSUMED_OUTPUT_TOKENS` (the OpenAI-wire lanes send no
+    max_tokens, so there is no real max to reserve)."""
+    mdl = MODELS.get(model)
+    prov = PROVIDERS.get(mdl.provider) if mdl else None
+    if prov is not None and prov.wire == "anthropic":
+        return llm_anthropic.MAX_TOKENS
+    return _ASSUMED_OUTPUT_TOKENS
+
+
+def _reserve_millicents(model: str, tokens_in: int) -> int:
+    """The pre-flight cap reservation, the most this call can bill: no cache
+    info exists yet, so every input token is priced at the dearer of miss and
+    cache-write (Anthropic bills a write at 1.25x input, so all-miss would
+    under-reserve), and the output at `_reserve_out_tokens`."""
+    mdl = MODELS.get(model)
+    if mdl is None:
+        return 0
+    write = tokens_in if mdl.input_cache_write_per_1k_cents > mdl.input_per_1k_cents else 0
+    return _cost_millicents(model, tokens_in, _reserve_out_tokens(model), 0, write)
 
 
 def _cache_hit_tokens(usage: dict) -> int | None:
@@ -666,7 +690,7 @@ async def cap_state(account_id: str | None, provider: str,
     nearly never True, because a reservation counts a full output, the last one
     that fit settles to its real, smaller cost, and the spend stays just under
     the cap while every call is refused. So it is also capped with less left
-    than the smallest reservation (no input, `_ASSUMED_OUTPUT_TOKENS` out), or
+    than the smallest reservation (no input, a full output), or
     with a reservation already refused today (`flagged`) and less than twice
     that left, which covers the prompt's input. A cap raised since leaves
     plenty left, so it is not judged spent.
@@ -687,7 +711,7 @@ async def cap_state(account_id: str | None, provider: str,
     spent_mc = int(row[0] or 0) if row else 0
     flagged = bool(row[1]) if row else False
     left = max(0, cap_mc - spent_mc)
-    floor = _cost_millicents(model, 0, _ASSUMED_OUTPUT_TOKENS) if model else 0
+    floor = _reserve_millicents(model, 0) if model else 0
     return {
         "day": day,
         "provider": provider,
@@ -1044,10 +1068,6 @@ async def chat(
 
     now = datetime.utcnow()
 
-    # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
-    hold = await _reserve_call(model, messages, account_id=account_id,
-                               user_id=user_id, provider=prov.name, now=now)  # raises LLMCapExceeded
-
     # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
         "model": mdl.wire_model(),  # provider's real name (≠ our id for DeepInfra)
@@ -1076,13 +1096,16 @@ async def chat(
         body["reasoning_effort"] = effort
     if native:
         # Same body, native shape: system → cached block, max_tokens, thinking.
-        # Before the audit row, so a body it can't translate costs no row; the
-        # hold is released (the refusal is ours, made pre-fire).
+        # Pure, and before the cap reservation and the audit row: a body it
+        # can't translate costs neither.
         try:
             body = llm_anthropic.to_native_body(body)
         except llm_anthropic.NativeShapeError as e:
-            await hold.refund()
             raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
+
+    # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
+    hold = await _reserve_call(model, messages, account_id=account_id,
+                               user_id=user_id, provider=prov.name, now=now)  # raises LLMCapExceeded
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
@@ -1137,8 +1160,7 @@ class _Hold:
 async def _reserve_call(model: str, messages: list[dict], *, account_id: str | None,
                         user_id: str | None, provider: str, now: datetime) -> _Hold:
     est_in = _estimate_input_tokens(messages)
-    hold = _Hold(now, account_id, user_id, provider,
-                 _cost_millicents(model, est_in, _ASSUMED_OUTPUT_TOKENS))
+    hold = _Hold(now, account_id, user_id, provider, _reserve_millicents(model, est_in))
     cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
     await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
                    user_id)  # raises LLMCapExceeded

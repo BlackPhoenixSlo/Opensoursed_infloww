@@ -2,17 +2,14 @@
 
 /** Compact Employee reports frame. URL tabs and report-zone ranges remain shared with Sales records. */
 
-import { Filter } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
-
 import styles from "./EmployeeReport.module.css";
-import { useOutsideClose } from "@/components/ui/Menu";
 import SalesRecords from "@/components/analytics/SalesRecords";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
-import ChattingStatsTable from "@/components/stats/ChattingStatsTable";
+import ChattingStatsTable, { ChatterOnlyCheckbox } from "@/components/stats/ChattingStatsTable";
 import ClockedHoursCard from "@/components/stats/ClockedHoursCard";
 import CoverageHeader from "@/components/stats/CoverageHeader";
 import DateRangePicker from "@/components/stats/DateRangePicker";
@@ -97,7 +94,6 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
                 <ShownBySelect days={days} value={bucket} onChange={setPicked} />
                 <InfoTip text={GRAN_TIP} className="text-fg-dim" />
               </span>
-              <ReportFilters checked={chatterOnly} onChange={setChatterOnly} />
               <StatsRefreshButton />
             </>
           )} />
@@ -109,7 +105,10 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
         ) : (
           <div className={styles.content}>
             {tab === "performance" ? (
-              <Charts tab="performance" from={fromIso} to={toIso} bucket={bucket} chatterOnly={chatterOnly} />
+              <>
+                <ChatterOnlyCheckbox checked={chatterOnly} onChange={setChatterOnly} className="self-start" />
+                <Charts tab="performance" from={fromIso} to={toIso} bucket={bucket} chatterOnly={chatterOnly} />
+              </>
             ) : (
               <>
                 <Charts tab="overview" from={fromIso} to={toIso} bucket={bucket} chatterOnly={chatterOnly} />
@@ -142,20 +141,6 @@ function SalesSettingsNotice({ fallback }: { fallback: string | null }) {
       {fallback && <InfoTip text={fallback} iconClassName="h-3 w-3" />}
     </div>
   );
-}
-
-function ReportFilters({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
-  const { open, setOpen, ref } = useOutsideClose();
-  return <div ref={ref} className="relative" onKeyDown={(event) => {
-    if (event.key === "Escape") { setOpen(false); ref.current?.querySelector("button")?.focus(); }
-  }}>
-    <button type="button" className={styles.filter} aria-expanded={open} aria-controls="employee-report-filters"
-      onClick={() => setOpen(!open)}><Filter size={12} />Filters{checked ? " (1)" : ""}</button>
-    {open && <div id="employee-report-filters" className={styles.filters}>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={checked}
-        onChange={(event) => onChange(event.target.checked)} />Chatter role only</label>
-    </div>}
-  </div>;
 }
 
 /** Ours, not Infloww's, under one heading: the ingest note and "All messages…" on its line, then the per-Creator

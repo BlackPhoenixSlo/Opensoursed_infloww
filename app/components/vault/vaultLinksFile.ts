@@ -67,11 +67,18 @@ export function urlExpiry(url: string): number | null {
   }
 }
 
+/** The relay stream's path for one media (`GET /admin/vault-ai/download`): the one builder for the runner's relay
+ *  fetch (with `u`, the url the listing carried) and the links file's app link (without: it must outlive the url). */
+export function downloadPath(accountId: string, id: number, o: { u?: string | null; token?: string | null } = {}): string {
+  const p = new URLSearchParams({ account_id: accountId, media_id: String(id) });
+  if (o.u) p.set("u", o.u);
+  if (o.token) p.set("t", o.token);
+  return `/admin/vault-ai/download?${p}`;
+}
+
 /** The relay stream link for one media, absolute (opened from a file, not the app). */
 export function appLink(o: Pick<LinksOpts, "origin" | "accountId" | "token">, id: number): string {
-  const p = new URLSearchParams({ account_id: o.accountId, media_id: String(id) });
-  if (o.token) p.set("t", o.token);
-  return `${o.origin.replace(/\/+$/, "")}/admin/vault-ai/download?${p}`;
+  return `${o.origin.replace(/\/+$/, "")}${downloadPath(o.accountId, id, { token: o.token })}`;
 }
 
 /** "2026-11-09 16:00 UTC". */

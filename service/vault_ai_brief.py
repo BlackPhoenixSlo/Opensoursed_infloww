@@ -6,9 +6,10 @@ The V2 describe pass stores ~21 structured fields per item (`ai_fields_json`):
 `explicitness`, `primary_folder`, `sellable`, `confidence`, …
 
 This module owns the readers of those fields: the visibility flags (`vis`,
-`is_bare`, `garment_over`, `flags_known`), the `contradictions` the Vault fix
-queue lists, and `sellability()`, which the folder pipeline in `vault_scripts`
-reads instead of re-deriving the selling taxonomy.
+`is_bare`, `garment_over`, `flags_known`), the `contradictions` between the two
+passes and the `settled_reading` every consumer reads instead, and
+`sellability()`, which the folder pipeline in `vault_scripts` reads instead of
+re-deriving the selling taxonomy.
 
 Everything here is derived from fields the describe pass actually writes — no
 invented schema. `sellability()` is deliberately conservative: it reports what
@@ -50,8 +51,8 @@ _PAYOFF_ACTS = {
 # ── The flags pass contract ─────────────────────────────────────────
 #
 # Canonical HERE because three modules depend on it and must not drift:
-# `vault_ai_api` writes it, `vault_scripts` gates lanes on it, and
-# `vault_catalog_seed` picks media by it.
+# `vault_ai_vision` writes it, `vault_scripts` gates lanes on it, and
+# `vault_ai_fix` grades it.
 #
 # WHY AN ENUM AND NOT BOOLEANS. The v1 shape asked `pussy_covered` /
 # `breasts_covered`, and measurement killed it:
@@ -272,9 +273,9 @@ CONTRADICTIONS: dict[str, str] = {
 }
 
 # The `acts` values that assert something is inside her, and the `penetration`
-# values that assert nothing is. Module-level because the dispute RESOLVER has to
-# clear exactly what the detector fires on — while the set lived inline, settling
-# a dispute cleared the field, left the act, and the item came straight back.
+# values that assert nothing is. `penetration_claimed` reads them; the copy
+# hedge (`claimed_acts`, for penetration_offscreen) drops the wider
+# GENITAL_ACTS below, the set the detector disputes.
 PENETRATING_ACTS: frozenset[str] = frozenset({
     "fingering", "toy_insertion", "riding_toy", "sex_missionary",
     "sex_doggy", "sex_riding",
@@ -350,6 +351,157 @@ def contradictions(fields: dict[str, Any] | None) -> list[str]:
     return out
 
 
+# ── Settling a dispute without a human ──────────────────────────────
+#
+# A "Fix disagreements" queue asked the operator to pick a side on every
+# contradiction. Nobody worked it, so disputed items sat in the free lanes with
+# copy that claimed whatever the describe pass said. The owner's rule replaces
+# it: when the two passes disagree, read the item the LEAST HARMFUL way.
+#
+# Harm runs two ways and they are not equal. Giving away a reveal in a story or
+# a mass send cannot be taken back; claiming in copy something the picture does
+# not show is a refund. So, per contradiction:
+#
+#   nude_but_clothed / lingerie_but_nothing_on — the flags pass LOOKED at each
+#       region and named what covers it; it wins for price and for copy. The
+#       copy brief never says "fully nude" off a disputed item.
+#   dressed_but_bare / sfw_but_bare — something reads bare, so price it as the
+#       paid material it may be (the more explicit side), but the copy claims no
+#       nudity: only the describe pass vouches for what is covered.
+#   penetration_offscreen — the acts stay (they are what keeps the item out of
+#       the mass-safe lane), but the copy claims no genital act.
+#
+# And for every code: a disputed item is never in a free lane.
+#
+# Read-time only. Nothing here writes a field, so a later re-run of either pass
+# can still settle the item for real, and `locked_fields_json` keeps meaning "a
+# human decided".
+
+# Marks a settled dict, holding the codes it was settled from. Read-time only,
+# never written back; leading underscore like `_graded`.
+SETTLED_KEY = "_settled"
+
+_PAID_TIERS = ("explicit", "hardcore")
+
+# The clothing state that matches what is on show: (breasts bare?, vulva bare?).
+# Never `fully_nude`, so a disputed item's copy never claims full nudity.
+_CLOTHING_FOR = {
+    (False, False): "lingerie_on",
+    (True, False): "pulled_down",     # topless, still covered below
+    (False, True): "pulled_aside",    # covered above, exposed below
+    (True, True): "partially_off",    # both out, something still on
+}
+
+# The same keyed on whether a real GARMENT is worn over each region. A hand or
+# her hair over her chest is not a garment, so a hand-bra with a thong on is
+# `pulled_down`, not `lingerie_on`. `underwear_visible` is true wherever this is
+# used, so nothing worn maps to `partially_off` (an accessory on), never nude.
+_CLOTHING_WORN = {
+    (True, True): "lingerie_on",
+    (False, True): "pulled_down",     # chest bare, bottom on: topless
+    (True, False): "pulled_aside",    # top on, bottom exposed
+    (False, False): "partially_off",
+}
+
+# The codes whose copy must not claim nudity (the describe pass says covered).
+_HEDGE_NUDITY = frozenset({"dressed_but_bare", "sfw_but_bare"})
+
+
+def _worn(fields: dict[str, Any], region: str) -> bool:
+    """A real garment is named over this region (a hand or her hair is not)."""
+    return is_clothing(garment_over(fields, region))
+
+
+def settled_reading(fields: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`fields` read the least harmful way wherever the two passes disagree.
+
+    Returns `fields` itself when nothing contradicts (or it is already settled),
+    else a copy carrying `SETTLED_KEY` with:
+      * `clothing_state` taken from the flags for nude_but_clothed and
+        lingerie_but_nothing_on (never `fully_nude`);
+      * `explicitness` raised to `explicit` for dressed_but_bare / sfw_but_bare
+        below the paid tiers, so the lanes price what the flags see bare.
+    Acts and penetration are left alone; `sellability` hedges the copy off the
+    marker instead. Idempotent.
+    """
+    if not isinstance(fields, dict) or SETTLED_KEY in fields:
+        return fields
+    codes = contradictions(fields)
+    if not codes:
+        return fields
+    out = dict(fields)
+    out[SETTLED_KEY] = codes
+    bare_b = is_bare(fields, "breasts_vis")
+    bare_v = is_bare(fields, "vulva_vis")
+    if "nude_but_clothed" in codes:
+        out["clothing_state"] = _CLOTHING_WORN[
+            (_worn(fields, "breasts_vis"), _worn(fields, "vulva_vis"))]
+    if "lingerie_but_nothing_on" in codes:
+        out["clothing_state"] = (_CLOTHING_FOR[(bare_b, bare_v)]
+                                 if bare_b or bare_v else "dressed")
+    if _HEDGE_NUDITY & set(codes) \
+            and _scalar(fields, "explicitness").lower() not in _PAID_TIERS:
+        out["explicitness"] = "explicit"
+    return out
+
+
+def settled_codes(fields: dict[str, Any] | None) -> list[str]:
+    """The contradiction codes behind this item: from the marker on a settled
+    dict, else detected. Settling clears some codes (a fixed clothing state no
+    longer contradicts), so the marker is what remembers it was disputed."""
+    if not isinstance(fields, dict):
+        return []
+    marked = fields.get(SETTLED_KEY)
+    return list(marked) if isinstance(marked, list) else contradictions(fields)
+
+
+def is_disputed(fields: dict[str, Any] | None) -> bool:
+    """The two passes disagree about this item, settled or not. Such an item is
+    never put in a free lane."""
+    return bool(settled_codes(fields))
+
+
+def claimed_acts(fields: dict[str, Any] | None) -> list[str]:
+    """The acts the copy may claim: all of them, unless the genitals are out of
+    frame on both passes' combined reading (penetration_offscreen), when no
+    genital act is claimed."""
+    if not isinstance(fields, dict):
+        return []
+    acts = _clean(fields.get("acts"))
+    if "penetration_offscreen" in settled_codes(fields):
+        acts = [a for a in acts if a.lower() not in GENITAL_ACTS]
+    return acts
+
+
+def _copy_clothing(fields: dict[str, Any]) -> str:
+    """The clothing state the copy may claim. `dressed` where the describe pass
+    says covered and the flags say bare: claim no nudity."""
+    if _HEDGE_NUDITY & set(settled_codes(fields)):
+        return "dressed"
+    return _scalar(fields, "clothing_state").lower()
+
+
+def settled_notes(fields: dict[str, Any] | None) -> list[str]:
+    """One line per code — what disagreed (`CONTRADICTIONS`) and how it was
+    auto-settled — then the lane rule. For the grading queue, so a sampled
+    check can see the reading the lanes and copy used."""
+    if not isinstance(fields, dict):
+        return []
+    codes = settled_codes(fields)
+    s = settled_reading(fields) or {}
+    how = {
+        "nude_but_clothed": f"read as {s.get('clothing_state')}",
+        "lingerie_but_nothing_on": f"read as {s.get('clothing_state')}",
+        "dressed_but_bare": f"priced as {s.get('explicitness')}, copy claims no nudity",
+        "sfw_but_bare": f"priced as {s.get('explicitness')}, copy claims no nudity",
+        "penetration_offscreen": "copy claims no genital act",
+    }
+    out = [f"{CONTRADICTIONS[c]} → {how[c]}" for c in codes]
+    if codes:
+        out.append("never in a free lane")
+    return out
+
+
 def load_fields(raw: str | dict | None) -> dict[str, Any]:
     """`ai_fields_json` → dict. Tolerates the column being empty or malformed."""
     if isinstance(raw, dict):
@@ -391,8 +543,15 @@ def sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
     `solo` — one person, no partner visible. A solo piece can be sold as
     "just me, thinking about you"; partner content CANNOT, and mis-framing it
     is a refund.
+
+    Reads the `settled_reading`: a disputed item's tier is the price side, its
+    reveal and acts only what both passes agree on (`claimed_acts`,
+    `_copy_clothing`), so `stands_alone`/`payoff_acts`/`penetration` never
+    claim a genital act the frame does not show.
     """
-    acts = {a.lower() for a in _clean(fields.get("acts"))}
+    fields = settled_reading(fields) or {}
+    acts = {a.lower() for a in claimed_acts(fields)}
+    offscreen = "penetration_offscreen" in settled_codes(fields)
     tier = _scalar(fields, "explicitness").lower()
     people = fields.get("people_count")
     partner = fields.get("partner_visible")
@@ -410,8 +569,9 @@ def sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
         "rung": EXPLICITNESS_LADDER.index(tier) if tier in EXPLICITNESS_LADDER else None,
         "tier": tier or "unknown",
         "solo": solo,
-        "penetration": _scalar(fields, "penetration"),
-        "reveal": _REVEAL_TENSION.get(_scalar(fields, "clothing_state").lower(), ""),
+        "penetration": "" if offscreen else _scalar(fields, "penetration"),
+        "clothing": _copy_clothing(fields),
+        "reveal": _REVEAL_TENSION.get(_copy_clothing(fields), ""),
         "seconds": int(duration_seconds) if duration_seconds else None,
         "sellable_flag": fields.get("sellable"),
     }

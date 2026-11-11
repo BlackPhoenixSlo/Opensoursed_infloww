@@ -83,6 +83,12 @@ export interface TimesheetRow {
 export const RECORDED_EARNINGS_TIP =
   "Infloww calls this Total Earnings. Earnings already credited during worked time; not payroll.";
 
+/** The Timesheet's re-read: every minute while [from, to) holds now, so an open Shift's worked minutes keep
+ *  moving (the Relay counts them; nothing is added on the client); a window wholly past or ahead never re-reads. */
+export function timesheetRefetchMs(from: Date, to: Date, now: number): number | false {
+  return from.getTime() <= now && now < to.getTime() ? SHIFTS_POLL_MS : false;
+}
+
 /** The Agency's Timesheet over [from, to), per Employee or per Creator. Owner
  *  sessions only. Shares the `["shifts"]` key prefix, so a Shift write
  *  refreshes it with the week. */
@@ -93,6 +99,8 @@ export function useTimesheet(from: Date, to: Date, group: TimesheetGroup, enable
     queryFn: () => relay.get<{ rows: TimesheetRow[] }>(path),
     enabled,
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- open-shift worked minutes grow with time, not on an event
+    refetchInterval: () => timesheetRefetchMs(from, to, Date.now()),
     refetchOnWindowFocus: false,
   });
 }

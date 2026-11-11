@@ -45,6 +45,16 @@ The script finds the box's Traefik, auto-detects its network + cert-resolver, an
 gets a Let's Encrypt cert for your subdomain. Permanent, encrypted, fast.
 *(Needs Traefik on the box — i.e. the n8n template.)*
 
+> **Large vault uploads:** Traefik v3 cuts any request body still arriving after
+> 60 s (entrypoint `readTimeout` default), so a big video on a normal uplink
+> fails with **Bad Gateway**. Add this line to the box's Traefik `command:`
+> (the n8n template keeps it in `/docker/traefik/docker-compose.yml`), then
+> `docker compose up -d` there:
+>
+> ```yaml
+> - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=4h
+> ```
+
 ---
 
 ## Option 3 — Your own domain

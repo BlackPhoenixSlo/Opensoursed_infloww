@@ -18,7 +18,7 @@ vi.mock("@/lib/relay", () => ({
     get: async () => ({ count: 0, since_hours: 24, list: [] }),
   },
 }));
-vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname, useRouter: () => ({ push: () => {} }) }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: "1001" }) }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
 const OWNED = { data: { accounts: [{ id: "1001", nickname: "Blake1", has_session: true, is_active: true }] }, isSuccess: true, dataUpdatedAt: 1 };

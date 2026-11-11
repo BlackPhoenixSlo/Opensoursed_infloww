@@ -11,7 +11,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { renderWithProviders } from "@/test-utils";
 import PermissionEditor, { optInNote, PAGE_HREFS, permissionTabs, type PermissionRole } from "@/components/settings/PermissionEditor";
 import { SIDEBAR, type NavGroup, type NavNode } from "@/lib/nav";
-import { CARD_PERMISSIONS } from "@/lib/dashboardCards";
+import { CARD_PERMISSIONS, pageCards } from "@/lib/dashboardCards";
 import { PAGE_ACTIONS } from "@/lib/permissionActions";
 
 /** Every non-divider SIDEBAR href: top-level links and group children. A link that answers to
@@ -146,23 +146,25 @@ describe("PermissionEditor", () => {
 
   it("lists the Dashboard's cards under it, a stored false unticked, usable only while the Dashboard is ticked (5.12)", () => {
     const onSave = vi.fn();
-    const role = { ...ROLE, permissions: { "/": true, "/#card-earnings": false } };
+    // A role saved while the Per-model KPIs card was listed keeps its stored false: the card left the Dashboard (#374)
+    // and the editor no longer lists it, but never rewrites it.
+    const role = { ...ROLE, permissions: { "/": true, "/#card-earnings": false, "/#card-per-model": false } };
     renderWithProviders(<PermissionEditor role={role} onSave={onSave} onBack={vi.fn()} canSave />);
     const rows = screen.getAllByRole("checkbox", { name: /^Dashboard: / });
     expect(rows.map((c) => c.getAttribute("aria-label")))
-      .toEqual(Object.values(CARD_PERMISSIONS).map((c) => `Dashboard: ${c.label} card`));
+      .toEqual(pageCards("/").map(([, label]) => `Dashboard: ${label} card`));
+    expect(screen.queryByRole("checkbox", { name: "Dashboard: Per-model KPIs card" })).toBeNull();
     const earnings = screen.getByRole("checkbox", { name: "Dashboard: Creator earnings overview card" });
-    const perModel = screen.getByRole("checkbox", { name: "Dashboard: Per-model KPIs card" });
+    const sales = screen.getByRole("checkbox", { name: "Dashboard: Employee sales card" });
     expect(earnings).not.toBeChecked();
-    expect(perModel).toBeChecked();
-    fireEvent.click(perModel);
+    expect(sales).toBeChecked();
+    fireEvent.click(sales);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const saved = (onSave.mock.calls[0][0] as PermissionRole).permissions;
     expect(Object.fromEntries(Object.keys(CARD_PERMISSIONS).map((k) => [k, saved[k]]))).toEqual({
-      ...Object.fromEntries(Object.keys(CARD_PERMISSIONS).map((k) => [k, true])),
-      "/#card-earnings": false, "/#card-per-model": false });
+      "/#card-earnings": false, "/#card-employee-sales": false, "/#card-per-model": false });
     fireEvent.click(screen.getByRole("checkbox", { name: "Dashboard" }));
-    expect(perModel).toBeDisabled();
+    expect(sales).toBeDisabled();
   });
 
   it("Back after a toggle calls onBack and sends nothing", () => {

@@ -316,6 +316,25 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     fireEvent.click(group("My AI Chatter"));
     expect(screen.getAllByRole("button", { expanded: true }).map((b) => b.textContent)).not.toContain("My AI Chatter");
   });
+
+  it("a toggled group does not hide the new page's group after navigation", () => {
+    desktop();
+    pathname = "/analytics/creator-reports";
+    const { rerender } = render(<AppShell>page</AppShell>);
+    const group = (name: string) => screen.getByRole("button", { name });
+    fireEvent.click(group("Analytics"));
+    expect(group("Analytics")).toHaveAttribute("aria-expanded", "false");
+
+    pathname = "/analytics/fan-reports";
+    act(() => rerender(<AppShell>page</AppShell>));
+    expect(group("Analytics")).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(group("Growth"));
+    pathname = "/full-ai-chatter";
+    act(() => rerender(<AppShell>page</AppShell>));
+    expect(group("My AI Chatter")).toHaveAttribute("aria-expanded", "true");
+    expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
+  });
 });
 
 describe("AppShell on OF Manager from lg up: Infloww's icon rail", () => {

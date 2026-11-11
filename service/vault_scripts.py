@@ -190,7 +190,10 @@ async def _load_rows(account_id: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     for mid, kind, created, dur, fields_json, status in recs:
-        fields = vault_ai_brief.load_fields(fields_json)
+        # Every lane, price and copy reader below sees the least-harmful
+        # reading of an item whose two passes disagree (`settled_reading`).
+        fields = vault_ai_brief.settled_reading(
+            vault_ai_brief.load_fields(fields_json))
         out.append({
             "media_id": int(mid), "kind": kind, "created_at": created,
             "duration_seconds": dur, "fields": fields, "describe_status": status,
@@ -258,10 +261,13 @@ def send_order_reason(fields: dict[str, Any]) -> dict[str, Any]:
         "closes": sell["stands_alone"],
         "payoff_acts": sell["payoff_acts"],
         "reveal": sell["reveal"],
-        "clothing_state": _norm(fields.get("clothing_state")) or "unclear",
+        "clothing_state": sell["clothing"] or "unclear",
         "solo": sell["solo"],
-        "beats": [b for b in (fields.get("beats") or []) if str(b).strip()],
-        "acts": [str(a) for a in (fields.get("acts") or []) if str(a).strip()],
+        # The clip's raw progression in the describe pass's words; a disputed
+        # item's prose is the half that may be wrong, so none of it is shown.
+        "beats": [] if vault_ai_brief.is_disputed(fields)
+        else [b for b in (fields.get("beats") or []) if str(b).strip()],
+        "acts": vault_ai_brief.claimed_acts(fields),
     }
 
 
@@ -443,9 +449,11 @@ async def collect_outfit_scripts(
         segments.append(current)
 
         for seg in segments:
-            if len(seg) < min_items:
+            # A script opens on its free rungs; a disputed item is never sent
+            # free, so it does not join a shoot unless it is priced (paid).
+            enriched = [r for r in map(_with_why, seg) if not _unpriced_dispute(r)]
+            if len(enriched) < min_items:
                 continue
-            enriched = [_with_why(r) for r in seg]
             rungs = {r["why"]["rung"] for r in enriched if r["why"]["rung"] is not None}
             if require_escalation and len(rungs) < 2:
                 continue
@@ -652,13 +660,17 @@ def _has_payoff_act(fields: dict) -> bool:
 
 
 def _lane_stories(why: dict, fields: dict, kind: str) -> bool:
-    return why["tier"] in ("sfw", "suggestive")
+    """sfw/suggestive, and never an item the two passes disagree about: a free
+    lane is where a wrong reading costs most (`vault_ai_brief.settled_reading`)."""
+    return (why["tier"] in ("sfw", "suggestive")
+            and not vault_ai_brief.is_disputed(fields))
 
 
 def _lane_mass(why: dict, fields: dict, kind: str) -> bool:
     """Suggestive ONLY. The old suggestive→explicit band swallowed 92 of 103
-    items and made every paid item free as well."""
-    return why["tier"] == "suggestive"
+    items and made every paid item free as well. Never a disputed item."""
+    return (why["tier"] == "suggestive"
+            and not vault_ai_brief.is_disputed(fields))
 
 
 def _lane_covered_explicit(why: dict, fields: dict, kind: str) -> bool:
@@ -692,6 +704,8 @@ def _lane_covered_explicit(why: dict, fields: dict, kind: str) -> bool:
     """
     if not vault_ai_brief.flags_known(fields):
         return False
+    if vault_ai_brief.is_disputed(fields):
+        return False          # a free lane never takes a disputed item
     if _has_payoff_act(fields):
         return False
     if why["tier"] not in _PAID_TIERS:
@@ -821,6 +835,22 @@ def _lane_clips(why: dict, fields: dict, kind: str) -> bool:
     return kind == "video" and why["tier"] in _PAID_TIERS
 
 
+def _unpriced_dispute(row: dict[str, Any]) -> bool:
+    """A disputed item whose settled tier is free (sfw/suggestive): it may be
+    neither sent free nor sold as explicit, so no folder takes it."""
+    return (row["why"]["tier"] not in _PAID_TIERS
+            and vault_ai_brief.is_disputed(row.get("fields") or {}))
+
+
+def shelf_price(fields: dict, kind: str) -> int:
+    """The tease price this item's (settled) reading puts on it: 50, 10 or 0."""
+    fields = vault_ai_brief.settled_reading(fields) or {}
+    why = send_order_reason(fields)
+    if _lane_tease_50(why, fields, kind):
+        return 50
+    return 10 if _lane_tease_10(why, fields, kind) else 0
+
+
 # (slug, display name, what it is for, predicate(why, fields, kind)). Lanes
 # deliberately OVERLAP — a single item can serve several and holds an
 # independent position in each.
@@ -865,7 +895,7 @@ _RESIDUAL_LANE = ("explicit_rest", "explicit 1:1",
 
 async def collect_purpose_folders(
     account_id: str, *, media_ids: Iterable[int] | None = None,
-    solo: bool = False,
+    solo: bool = False, unlaned: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Re-cut a pool of media into the send lanes, by heat rather than outfit.
 
@@ -878,6 +908,9 @@ async def collect_purpose_folders(
     because the two answer different questions — "what may I send here" and
     "what may I send here to a fan who only wants her" — and an operator who
     wants both should not have to rebuild the folders to switch.
+
+    `unlaned`, when given, receives the disputed free-tier items no lane took
+    (see the residual lane below).
 
     Read-only; an item may legitimately appear in more than one lane.
     """
@@ -931,12 +964,18 @@ async def collect_purpose_folders(
         claimed.update(r["media_id"] for r in picked)
         out.append(_folder(slug, name, purpose, picked))
 
-    # Nothing paid falls through. `stories` already takes every sfw/suggestive
-    # item, so an orphan is always paid-tier — see `_RESIDUAL_LANE`.
+    # Nothing paid falls through. `stories` takes every undisputed sfw/suggestive
+    # item, so an orphan is paid-tier (sold 1:1, `_RESIDUAL_LANE`) or a disputed
+    # free-tier item: not free, and selling it as explicit 1:1 could pass off a
+    # dressed photo, so it is foldered nowhere (still in the vault). The caller
+    # gets those ids in `unlaned` so the plan can count them.
     rest = [r for r in enriched
             if r["media_id"] not in claimed and r["why"]["tier"] in _PAID_TIERS]
     if rest:
         out.append(_folder(*_RESIDUAL_LANE, rest))
+    if unlaned is not None:
+        unlaned.extend(sorted(r["media_id"] for r in enriched
+                              if r["media_id"] not in claimed and _unpriced_dispute(r)))
 
     if solo:
         # Built whole before extending `out` — never appended to the list being
@@ -1029,7 +1068,8 @@ async def plan_ai_folders(
     """
     shoots = await collect_outfit_scripts(
         account_id, window_hours=window_hours, min_items=min_items)
-    lanes = await collect_purpose_folders(account_id, solo=solo)
+    settled_unlaned: list[int] = []
+    lanes = await collect_purpose_folders(account_id, solo=solo, unlaned=settled_unlaned)
 
     def _folder(group: dict[str, Any], source: str, purpose: str,
                 **extra: Any) -> dict[str, Any]:
@@ -1093,6 +1133,9 @@ async def plan_ai_folders(
         "flags": coverage,
         "solo_coverage": solo_cov,
         "folders": folders,
+        # Disputed free-tier items: never free, never sold as explicit, so in
+        # no folder. Counted so "nothing dropped" stays checkable.
+        "settled_unlaned": settled_unlaned,
         "summary": {
             "folders": len(folders),
             "scripts": sum(1 for f in folders if f["source"] == "script"),
@@ -1104,6 +1147,7 @@ async def plan_ai_folders(
             "solo_cuts": sum(1 for f in folders if f["solo"]),
             "unique_media": len(unique),
             "memberships": sum(f["size"] for f in folders),
+            "settled_unlaned": len(settled_unlaned),
         },
     }
 

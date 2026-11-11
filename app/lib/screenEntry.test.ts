@@ -1,70 +1,45 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_PERIOD } from "@/components/home/dashboardControls";
-import { periodWindow, type Period } from "./dateRange";
-import { bootScreen, cookieValue, rememberDashboardEntry, rememberScope, type DashboardEntry } from "./screenEntry";
+import { bootScreen, cookieValue, rememberScope } from "./screenEntry";
 import type { Screen } from "./screenKey";
 
-const TOKYO: DashboardEntry = { tz: "Asia/Tokyo", weekStart: "sunday", grid: true };
-const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-/** The cookies' decoded values (the Next jar's, `cookieValue`'s): the saved entry, the browser's zone, the scope bit. */
-const jar = (c: { entry?: DashboardEntry | string; tz?: string; scope?: string } = {}) => (n: string) => ({
-  chatterly_entry: typeof c.entry === "string" ? c.entry : c.entry && JSON.stringify(c.entry),
-  chatterly_tz: c.tz,
+/** The cookies' decoded values (the Next jar's, `cookieValue`'s): an old saved Dashboard entry, the scope bit. */
+const jar = (c: { entry?: string; scope?: string } = {}) => (n: string) => ({
+  chatterly_entry: c.entry,
   chatterly_scope: c.scope,
 })[n];
-/** The Dashboard bundle's screen for `period` in `tz` / `weekStart`. */
-const dashAt = (period: Period, tz: string | null, weekStart: DashboardEntry["weekStart"]): Screen => {
-  const [from, to] = periodWindow(period, tz, weekStart);
-  return { kind: "dashboard", from, to };
-};
+/** A Dashboard entry cookie as the Dashboard saved it before #374 (Per-model cards drawn). */
+const STALE_ENTRY = JSON.stringify({ tz: "Asia/Tokyo", weekStart: "sunday", grid: true });
 
 describe("bootScreen: which screen a route opens", () => {
-  afterEach(() => vi.useRealTimers());
-
-  it.each<[string, string, DashboardEntry, Screen | null]>([
-    ["Messages Pro: the inbox bundle's first page", "/messages-pro", TOKYO, { kind: "inbox", cursor: 0 }],
-    ["another page: none", "/creators", TOKYO, null],
-    ["a Messages Pro sub-route: none", "/messages-pro/x", TOKYO, null],
-    ["Dashboard, cards hidden: none", "/", { ...TOKYO, grid: false }, null],
-  ])("%s", (_n, path, hint, want) => {
-    expect(bootScreen(path, jar({ entry: hint, tz: ZONE }))).toEqual(want);
+  it.each<[string, string, Screen | null]>([
+    ["Messages Pro: the inbox bundle's first page", "/messages-pro", { kind: "inbox", cursor: 0 }],
+    ["another page: none", "/creators", null],
+    ["a Messages Pro sub-route: none", "/messages-pro/x", null],
+  ])("%s", (_n, path, want) => {
+    expect(bootScreen(path, jar({ entry: STALE_ENTRY }))).toEqual(want);
   });
 
-  it("Dashboard: the saved zone and week start, the URL's window (an unknown one: the default)", () => {
-    vi.useFakeTimers({ now: new Date("2026-11-06T12:00:00Z") });
-    expect(bootScreen("/?window=month", jar({ entry: TOKYO }))).toEqual(dashAt("month", "Asia/Tokyo", "sunday"));
-    const week = dashAt(DEFAULT_PERIOD, "Asia/Tokyo", "sunday");
-    expect(bootScreen("/?window=decade", jar({ entry: TOKYO }))).toEqual(week);
-    expect(week).not.toEqual(dashAt(DEFAULT_PERIOD, null, "monday"));
+  // The Dashboard draws no card that reads its bundle: a guess would prefetch per-Creator OnlyFans reads for nothing.
+  it.each<[string, Parameters<typeof jar>[0]]>([
+    ["no cookie", {}],
+    ["a stale grid:true entry", { entry: STALE_ENTRY }],
+    ["a junk entry", { entry: "{oops" }],
+  ])("Dashboard, %s: no bundle", (_n, c) => {
+    expect(bootScreen("/", jar(c))).toBeNull();
+    expect(bootScreen("/?window=month", jar(c))).toBeNull();
   });
 });
 
 describe("bootScreen: the one guess, from the cookies", () => {
-  afterEach(() => vi.useRealTimers());
-
   it("Messages Pro needs no cookie; another page: none", () => {
     expect(bootScreen("/messages-pro", jar())).toEqual({ kind: "inbox", cursor: 0 });
     expect(bootScreen("/messages-pro", jar({ scope: "all" }))).toEqual({ kind: "inbox", cursor: 0 });
-    expect(bootScreen("/creators", jar({ entry: TOKYO, tz: ZONE }))).toBeNull();
-  });
-
-  it("Dashboard: the saved entry's zone wins, else the browser's (Monday); neither: no guess", () => {
-    vi.useFakeTimers({ now: new Date("2026-11-06T12:00:00Z") });
-    expect(bootScreen("/?window=month", jar({ entry: TOKYO, tz: "Europe/Ljubljana" }))).toEqual(dashAt("month", "Asia/Tokyo", "sunday"));
-    expect(bootScreen("/", jar({ tz: ZONE }))).toEqual(dashAt(DEFAULT_PERIOD, ZONE, "monday"));
-    expect(bootScreen("/", jar({ entry: "{oops", tz: "Asia/Tokyo" }))).toEqual(dashAt(DEFAULT_PERIOD, "Asia/Tokyo", "monday"));
-    expect(bootScreen("/", jar())).toBeNull();
+    expect(bootScreen("/creators", jar({ entry: STALE_ENTRY }))).toBeNull();
   });
 
   it("Messages Pro with one Creator saved in scope: no inbox bundle (the page opens none)", () => {
-    expect(bootScreen("/messages-pro", jar({ tz: ZONE, scope: "model" }))).toBeNull();
-  });
-
-  it("a zone Intl does not know (a junk cookie): null, never a throw", () => {
-    expect(() => bootScreen("/", jar({ tz: "Not/AZone" }))).not.toThrow();
-    expect(bootScreen("/", jar({ tz: "Not/AZone" }))).toBeNull();
-    expect(bootScreen("/", jar({ entry: { ...TOKYO, tz: "Not/AZone" }, tz: ZONE }))).toBeNull();
+    expect(bootScreen("/messages-pro", jar({ scope: "model" }))).toBeNull();
   });
 });
 
@@ -74,11 +49,9 @@ describe("the cookies as the browser writes and AuthGate reads them (cookieValue
   });
   const read = (n: string) => cookieValue(document.cookie, n);
 
-  it("the dashboard entry round-trips (the same JSON)", () => {
-    expect(read("chatterly_entry")).toBeUndefined();
-    rememberDashboardEntry(TOKYO);
-    expect(bootScreen("/", read)).toEqual(dashAt(DEFAULT_PERIOD, "Asia/Tokyo", "sunday"));
-    rememberDashboardEntry({ ...TOKYO, grid: false });
+  it("an old saved Dashboard entry is read harmlessly: no Dashboard bundle", () => {
+    document.cookie = `chatterly_entry=${encodeURIComponent(STALE_ENTRY)}; path=/`;
+    expect(read("chatterly_entry")).toBe(STALE_ENTRY);
     expect(bootScreen("/", read)).toBeNull();
   });
 

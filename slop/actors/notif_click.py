@@ -11,8 +11,9 @@ app opens it (the `messages-pro` popup). `desktop`: the real Electron app
 (desktop/main.js) on this run's app, driven over CDP; SKIP when the binary is missing.
 
 Declared bypasses:
-- message toasts and the OS ping are switched on in localStorage
-  `chatterly:notif-settings:v1` (both default off), as the bell's Toast settings would;
+- message toasts and the OS ping are pinned on in localStorage
+  `chatterly:notif-settings:v1` (both default on since 2026-11-10; pinned so a later
+  default change cannot break this flow), as the bell's Settings tab would;
 - browser: OF's notifications feed is answered with one fixture row at the wire
   boundary (the /notifications page's row; every other /api/of read stays held, as in
   actors/ui). Headless Chromium has no notification centre, so the web Notification is

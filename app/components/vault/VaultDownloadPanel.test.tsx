@@ -21,7 +21,7 @@ vi.mock("@/components/vault/vaultDownloadReducer", async (orig) => {
 import { relay, type VaultMedia } from "@/lib/relay";
 
 import { useVaultDownload } from "./VaultDownloadPanel";
-import { linksFor, type StartArgs } from "./vaultDownload";
+import { linksFor, STALL_MS, type StartArgs } from "./vaultDownload";
 import { canRetry, summarize, unsaved } from "./vaultDownloadReducer";
 
 const get = relay.get as unknown as ReturnType<typeof vi.fn>;
@@ -29,10 +29,11 @@ const picker = vi.fn();
 const fetched: string[] = [];
 let failId: number | null = null;
 
-// A picked folder: every handle accepts writes (nothing kept).
-function dir(): FileSystemDirectoryHandle {
+// A picked folder: every handle accepts writes (nothing kept); `path` names it ("root/Amy/Beach").
+function dir(path = "root"): FileSystemDirectoryHandle {
   return {
-    getDirectoryHandle: async () => dir(),
+    name: path.split("/").pop(), path,
+    getDirectoryHandle: async (n: string) => dir(`${path}/${n}`),
     getFileHandle: async () => ({ createWritable: async () => new WritableStream<Uint8Array>() }),
   } as unknown as FileSystemDirectoryHandle;
 }
@@ -72,7 +73,7 @@ afterEach(() => {
 async function aDoneWithAFailure() {
   picker.mockResolvedValueOnce(dir());
   const h = renderHook(() => useVaultDownload());
-  act(() => h.result.current.start(runA));
+  act(() => { void h.result.current.start(runA); });
   await waitFor(() => expect(h.result.current.state.phase).toBe("done"));
   expect(summarize(h.result.current.state)).toMatchObject({ done: 1, failed: 1 });
   fetched.length = 0;
@@ -84,8 +85,8 @@ describe("useVaultDownload: one run, its own model", () => {
   it("a picker closed for B leaves A's run: Retry failed still downloads as A", async () => {
     const { result } = await aDoneWithAFailure();
     picker.mockRejectedValueOnce(closed());
-    act(() => result.current.start(runB));
-    await waitFor(() => expect(result.current.picking).toBe(false));
+    act(() => { void result.current.start(runB); });
+    await waitFor(() => expect(result.current.state.picking).toBe(false));
     expect(result.current.state).toMatchObject({ phase: "done", creator: "Amy" });
     expect(canRetry(result.current.state)).toBe(true);
 
@@ -113,8 +114,8 @@ describe("useVaultDownload: one run, its own model", () => {
     picker.mockReturnValueOnce(pick.promise);
     failId = null;
     const { result } = renderHook(() => useVaultDownload());
-    act(() => result.current.start(runA));
-    act(() => result.current.start(runB));
+    act(() => { void result.current.start(runA); });
+    act(() => { void result.current.start(runB); });
     expect(picker).toHaveBeenCalledTimes(1);
     await act(async () => pick.resolve(dir()));
     await waitFor(() => expect(result.current.state.phase).toBe("done"));
@@ -127,13 +128,13 @@ describe("useVaultDownload: one run, its own model", () => {
     const { result } = await aDoneWithAFailure();
     const pick = deferred<FileSystemDirectoryHandle>();
     picker.mockReturnValueOnce(pick.promise);
-    act(() => result.current.start(runB));
+    act(() => { void result.current.start(runB); });
     act(() => result.current.retryFailed());
     await new Promise((r) => setTimeout(r, 20));
     expect(fetched).toEqual([]);
     expect(result.current.state.phase).toBe("done");
     await act(async () => pick.reject(closed()));
-    await waitFor(() => expect(result.current.picking).toBe(false));
+    await waitFor(() => expect(result.current.state.picking).toBe(false));
     expect(result.current.state).toMatchObject({ phase: "done", accountId: "acc-a" });
   });
 
@@ -148,13 +149,13 @@ describe("useVaultDownload: one run, its own model", () => {
     }));
     picker.mockResolvedValueOnce(dir());
     const { result, unmount } = renderHook(() => useVaultDownload());
-    act(() => result.current.start(runA));
+    act(() => { void result.current.start(runA); });
     await waitFor(() => expect(n1).toBe(1));
     act(() => result.current.cancel());
     expect(canRetry(result.current.state)).toBe(true);
 
     act(() => result.current.retryFailed());
-    expect(result.current.state.phase).toBe("running");
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));   // after the folder's permission check
     await waitFor(() => expect(n1).toBe(2));
     // the cancelled run's fetch answers now: its worker's failure must not land on the retry's active media 1
     await act(async () => late[0].resolve(new Response(new Uint8Array(3), { status: 200, headers: { "content-length": "3" } })));
@@ -177,12 +178,12 @@ describe("useVaultDownload: one run, its own model", () => {
     }));
     picker.mockResolvedValueOnce(dir()).mockResolvedValueOnce(dir());
     const { result } = renderHook(() => useVaultDownload());
-    act(() => result.current.start(runA));
+    act(() => { void result.current.start(runA); });
     await waitFor(() => expect(n1).toBe(1));
     act(() => result.current.cancel());
     expect(result.current.state.phase).toBe("cancelled");
 
-    act(() => result.current.start(runA));
+    act(() => { void result.current.start(runA); });
     await waitFor(() => expect(result.current.state.phase).toBe("done"));
     expect(summarize(result.current.state)).toMatchObject({ done: 2, failed: 0 });
     expect(picker).toHaveBeenCalledTimes(2);
@@ -195,9 +196,10 @@ describe("useVaultDownload: one run, its own model", () => {
     delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
     vi.stubGlobal("navigator", { ...navigator, canShare: () => true });
     hold.on = true;
+    failId = 1;   // the share sink fetches one at a time: the failure first, then the file the hold keeps unsaved
     const { result, unmount } = renderHook(() => useVaultDownload());
     expect(result.current.sink).toBe("share");
-    act(() => result.current.start(runA));
+    act(() => { void result.current.start(runA); });
     await waitFor(() => expect(result.current.state.phase).toBe("done"));
     expect(summarize(result.current.state)).toMatchObject({ done: 1, failed: 1 });
     expect(unsaved(result.current.state)).toBe(1);
@@ -205,5 +207,264 @@ describe("useVaultDownload: one run, its own model", () => {
     act(() => result.current.retryFailed());
     expect(result.current.state.phase).toBe("running");
     unmount();
+  });
+});
+
+describe("useVaultDownload: the queue (folder sink)", () => {
+  const ok3 = () => new Response(new Uint8Array(3), { status: 200, headers: { "content-length": "3" } });
+  const selB: StartArgs = { accountId: "acc-b", creator: "Bea", mode: "selection", label: "1 selected",
+                            media: [media(9)], source: "mirror" };
+  /** A picked folder that records each file closed cleanly (Chrome's rules: missing without create throws). */
+  function rec(written: string[], path: string): FileSystemDirectoryHandle {
+    const have = new Set<string>();
+    return {
+      getDirectoryHandle: async (n: string) => rec(written, `${path}${n}/`),
+      getFileHandle: async (n: string, o?: { create?: boolean }) => {
+        if (!have.has(n) && !o?.create) throw new DOMException("missing", "NotFoundError");
+        have.add(n);
+        return { createWritable: async () => new WritableStream<Uint8Array>({ close: () => { written.push(`${path}${n}`); } }) };
+      },
+    } as unknown as FileSystemDirectoryHandle;
+  }
+  /** Media 1 answers when the test says; its fetch signal kept. */
+  function slowA() {
+    const slow = deferred<Response>();
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string, init?: RequestInit) => {
+      fetched.push(u);
+      if (init?.signal && u.includes("media_id=1")) signals.push(init.signal);   // the open fetch
+      return u.includes("media_id=1") ? slow.promise : ok3();
+    }));
+    return { slow, signals };
+  }
+
+  it("a download asked for while A runs is queued; it starts when A settles, into A's folder, as its own creator", async () => {
+    const { slow } = slowA();
+    const written: string[] = [];
+    picker.mockResolvedValueOnce(rec(written, ""));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    expect(result.current.queueing).toBe(true);
+    let queued: boolean | undefined;
+    await act(async () => { queued = await result.current.start(selB); });
+    expect(queued).toBe(true);
+    expect(result.current.state.jobs.map((j) => j.creator)).toEqual(["Bea"]);
+    await act(async () => slow.resolve(ok3()));
+    await waitFor(() => expect(result.current.state).toMatchObject({ phase: "done", creator: "Bea", jobs: [] }));
+    expect(picker).toHaveBeenCalledTimes(1);
+    expect(result.current.state.finished).toMatchObject([{ creator: "Amy", total: 2, done: 2 }]);
+    expect(written.filter((p) => p.endsWith(".jpg")).sort())
+      .toEqual(["Amy/Unfiled/1.jpg", "Amy/Unfiled/2.jpg", "Bea/Unfiled/9.jpg"]);
+  });
+
+  it("the folder's permission lapsed: the queue pauses; Resume asks (inside the tap) and the job starts", async () => {
+    const { slow } = slowA();
+    const written: string[] = [];
+    const perm = { q: "granted" as PermissionState };
+    const requestPermission = vi.fn(async () => { perm.q = "granted"; return "granted" as PermissionState; });
+    picker.mockResolvedValueOnce(Object.assign(rec(written, ""), { queryPermission: async () => perm.q, requestPermission }));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    await act(async () => { await result.current.start(selB); });
+    perm.q = "prompt";
+    await act(async () => slow.resolve(ok3()));
+    await waitFor(() => expect(result.current.state.paused).toBe(true));
+    expect(result.current.state).toMatchObject({ phase: "done", creator: "Amy" });
+    act(() => result.current.resume());
+    expect(requestPermission).toHaveBeenCalledTimes(1);   // called synchronously in the tap
+    await waitFor(() => expect(result.current.state).toMatchObject({ phase: "done", creator: "Bea", paused: false }));
+    expect(written).toContain("Bea/Unfiled/9.jpg");
+    expect(picker).toHaveBeenCalledTimes(1);
+  });
+
+  it("A ends with a failure while B waits: B starts, A's failed item runs last as a retry job into the same folder", async () => {
+    const slow = deferred<Response>();
+    let n2 = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      fetched.push(u);
+      if (u.includes("media_id=1")) return slow.promise;
+      if (u.includes("media_id=2") && n2++ === 0) return new Response("", { status: 502 });
+      return ok3();
+    }));
+    const written: string[] = [];
+    picker.mockResolvedValueOnce(rec(written, ""));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    await act(async () => { await result.current.start(selB); });
+    await act(async () => slow.resolve(ok3()));
+    await waitFor(() => expect(result.current.state).toMatchObject({ phase: "done", jobs: [] }));
+    expect(result.current.state).toMatchObject({ creator: "Amy", label: "2 selected · retry 1" });
+    expect(result.current.state.finished.map((f) => [f.creator, f.failed])).toEqual([["Amy", 1], ["Bea", 0]]);
+    expect(written.filter((p) => p.endsWith(".jpg")).sort())
+      .toEqual(["Amy/Unfiled/1.jpg", "Amy/Unfiled/2.jpg", "Bea/Unfiled/9.jpg"]);
+    expect(picker).toHaveBeenCalledTimes(1);
+  });
+
+  it("A stalls while B waits: B starts on its own and finishes, then A's stalled item runs last as a retry job", async () => {
+    failId = null;
+    let n1 = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      fetched.push(u);
+      if (u.includes("media_id=1") && n1++ === 0) {   // 1 byte, then silence (the CDN throttled to zero)
+        return new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(1)); } }),
+                            { status: 200, headers: { "content-length": "3" } });
+      }
+      return ok3();
+    }));
+    const written: string[] = [];
+    picker.mockResolvedValueOnce(rec(written, ""));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { result } = renderHook(() => useVaultDownload());
+      act(() => { void result.current.start(runA); });
+      await waitFor(() => expect(result.current.state.phase).toBe("running"));
+      await act(async () => { await result.current.start(selB); });
+      expect(result.current.state.jobs.map((j) => j.creator)).toEqual(["Bea"]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(STALL_MS + 100); });
+      await waitFor(() => expect(result.current.state).toMatchObject({ phase: "done", jobs: [],
+                                                                       label: "2 selected · retry 1" }));
+      expect(result.current.state.finished.map((f) => [f.creator, f.done, f.stalled]))
+        .toEqual([["Amy", 1, 1], ["Bea", 1, 0]]);
+      expect(summarize(result.current.state)).toMatchObject({ total: 1, done: 1 });
+      expect(written.filter((p) => p.endsWith(".jpg"))).toEqual(["Amy/Unfiled/2.jpg", "Bea/Unfiled/9.jpg", "Amy/Unfiled/1.jpg"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Retry asks for the folder's permission in the tap; refused: a retry job waits behind Resume", async () => {
+    failId = 2;
+    const perm = { r: "denied" as PermissionState };
+    const requestPermission = vi.fn(async () => perm.r);
+    const written: string[] = [];
+    picker.mockResolvedValueOnce(Object.assign(rec(written, ""), { requestPermission }));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("done"));
+    failId = null;
+    act(() => result.current.retryFailed());
+    expect(requestPermission).toHaveBeenCalledTimes(1);   // synchronously, inside the tap
+    await waitFor(() => expect(result.current.state.paused).toBe(true));
+    expect(result.current.state.jobs.map((j) => j.label)).toEqual(["2 selected · retry 1"]);
+    expect(canRetry(result.current.state)).toBe(false);
+    perm.r = "granted";
+    act(() => result.current.resume());
+    await waitFor(() => expect(result.current.state).toMatchObject({ phase: "done", jobs: [], paused: false,
+                                                                     label: "2 selected · retry 1" }));
+    expect(summarize(result.current.state)).toMatchObject({ total: 1, done: 1 });
+    expect(written).toContain("Amy/Unfiled/2.jpg");
+  });
+
+  it("Clear queue drops the waiting jobs; Cancel current ends only the run", async () => {
+    const { slow } = slowA();
+    picker.mockResolvedValueOnce(rec([], ""));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    await act(async () => { await result.current.start(selB); });
+    act(() => result.current.clearQueue());
+    expect(result.current.state.jobs).toEqual([]);
+    act(() => result.current.cancel());
+    expect(result.current.state.phase).toBe("cancelled");
+    await act(async () => slow.resolve(ok3()));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(result.current.state).toMatchObject({ phase: "cancelled", creator: "Amy" });
+    expect(fetched.some((u) => u.includes("media_id=9"))).toBe(false);
+  });
+
+  it("the provider unmounting (sign-out) aborts the run and drops the queue", async () => {
+    const { slow, signals } = slowA();
+    picker.mockResolvedValueOnce(rec([], ""));
+    const { result, unmount } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    await act(async () => { await result.current.start(selB); });
+    unmount();
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s.aborted)).toBe(true);
+    slow.resolve(ok3());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetched.some((u) => u.includes("media_id=9"))).toBe(false);
+  });
+
+  it("keepAccounts without the run's model (removed mid-run) cancels it and aborts its fetches", async () => {
+    const { signals } = slowA();
+    picker.mockResolvedValueOnce(rec([], ""));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    act(() => result.current.keepAccounts(["acc-a", "acc-b"]));
+    expect(result.current.state.phase).toBe("running");
+    act(() => result.current.keepAccounts(["acc-b"]));
+    expect(result.current.state.phase).toBe("cancelled");
+    expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+});
+
+describe("Open folder: the computer's file window in the run's folder", () => {
+  const openPicker = vi.fn();
+  beforeEach(() => {
+    openPicker.mockReset();
+    (window as unknown as { showOpenFilePicker: unknown }).showOpenFilePicker = openPicker;
+  });
+  const startIn = () => (openPicker.mock.calls[0][0] as { startIn: { path: string } }).startIn.path;
+
+  it.each([
+    ["a selection: the creator's folder", runA, ["Amy"], "root/Amy"],
+    ["a folder download: that folder", { ...runA, mode: "folder" as const, label: "folder Beach / x", folder: { id: 7, name: "Beach / x" } },
+     ["Amy", "Beach _ x"], "root/Amy/Beach _ x"],
+  ])("%s", async (_, run, dirs, path) => {
+    picker.mockResolvedValueOnce(dir());
+    failId = null;
+    const { result } = renderHook(() => useVaultDownload());
+    expect(result.current.state.savedAt).toBeNull();
+    act(() => { void result.current.start(run); });
+    await waitFor(() => expect(result.current.state.phase).toBe("done"));
+    expect(result.current.state.savedAt?.dirs).toEqual(dirs);
+    expect(result.current.state.savedAt?.root.name).toBe("root");
+    openPicker.mockRejectedValueOnce(closed());   // the user closes the window: not an error
+    act(() => result.current.openFolder());
+    await waitFor(() => expect(openPicker).toHaveBeenCalledTimes(1));
+    expect(startIn()).toBe(path);
+    expect(openPicker.mock.calls[0][0]).toMatchObject({ multiple: true });
+    await act(async () => {});
+    expect(result.current.state.note).toBe("");
+  });
+
+  it("mid-run, before any file (still listing): opens the creator's folder, made for it", async () => {
+    picker.mockResolvedValueOnce(dir());
+    get.mockImplementation((u: string) => (u.startsWith("/admin/vault-ai/download/info")
+      ? Promise.resolve({ direct: false }) : new Promise(() => {})));   // the listing never answers
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runB); });
+    await waitFor(() => expect(result.current.state.phase).toBe("listing"));
+    expect(result.current.state.savedAt?.dirs).toEqual(["Bea"]);
+    act(() => result.current.openFolder());
+    await waitFor(() => expect(openPicker).toHaveBeenCalledTimes(1));
+    expect(startIn()).toBe("root/Bea");
+  });
+
+  it("a browser without the open dialog says so", async () => {
+    delete (window as unknown as { showOpenFilePicker?: unknown }).showOpenFilePicker;
+    picker.mockResolvedValueOnce(dir());
+    failId = null;
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("done"));
+    act(() => result.current.openFolder());
+    await waitFor(() => expect(result.current.state.note).toBe("This browser can't open a folder"));
+  });
+
+  it("the share sink has no folder", async () => {
+    delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    vi.stubGlobal("navigator", { ...navigator, canShare: () => true, share: vi.fn() });
+    const { result } = renderHook(() => useVaultDownload());
+    expect(result.current.sink).toBe("share");
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).not.toBe("idle"));
+    expect(result.current.state.savedAt).toBeNull();
   });
 });

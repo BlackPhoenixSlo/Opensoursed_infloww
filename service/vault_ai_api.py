@@ -118,7 +118,7 @@ async def visible_ids(account_id: str, media_ids) -> set[int]:
 
 async def assert_media_visible(account_id: str, *media_ids: int) -> None:
     """404 a restricted chatter's request naming media outside its folders — a
-    still (even on a disk hit), a dispute fix, a grade, a pack verdict, an edit,
+    still (even on a disk hit), a grade, a pack verdict, an edit,
     a hide, a reorder, a by-id read — or one the mirror has no row for."""
     ids = {int(m) for m in media_ids}
     if ids - await visible_ids(account_id, ids):
@@ -910,7 +910,7 @@ import vault_cache  # noqa: E402
 
 
 import vault_ai_brief  # noqa: E402  (canonical FLAG_KEYS + flags_known)
-import vault_ai_fix  # noqa: E402  (operator resolution of describe/flags disputes)
+import vault_ai_fix  # noqa: E402  (the flags grading loop)
 
 # ── Duplicates list + AI folder plan (preview / apply / publish) ────
 # Lives in `vault_of_folders`; routes included HERE so registration order is
@@ -924,9 +924,9 @@ router.include_router(vault_of_folders.plan_router)
 router.include_router(vault_ai_vision.flags_router)
 
 
-# Chatter folder limits on the review routes below (disputes, flags review, the
-# pack picker above): the listing's gate. A restricted chatter is shown and
-# counted only media in its folders, and may fix, grade or file only those —
+# Chatter folder limits on the review routes below (flags review, the pack
+# picker above): the listing's gate. A restricted chatter is shown and
+# counted only media in its folders, and may grade or file only those —
 # an outside media 404s as a still does (`assert_media_visible`).
 def _media_id(payload: dict) -> int:
     """`payload["media_id"]` as an int, else 400 media_id_required."""
@@ -934,39 +934,6 @@ def _media_id(payload: dict) -> int:
         return int(payload.get("media_id"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail={"error": "media_id_required"})
-
-
-@router.get("/admin/vault-ai/disputes")
-async def list_disputes(account_id: str = "") -> dict[str, Any]:
-    """Items where the describe pass and the flags pass contradict each other.
-
-    Read-only. Each row carries BOTH readings and the two field-writes that
-    would settle it, because which pass is wrong differs item by item and
-    picking automatically is the mistake this whole review exists to avoid.
-    """
-    assert_account_owned(account_id)
-    return await vault_ai_fix.list_disputes(
-        account_id, allowed=await allowed_folder_ids_for_chatter(account_id))
-
-
-@router.post("/admin/vault-ai/disputes/resolve")
-async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
-    """Apply ONE operator correction, locked against future re-runs.
-
-    Body: `{account_id, media_id, values:{field: value}}` — normally one of the
-    two branches `list_disputes` proposed, optionally hand-edited. Writes to
-    `ai_fields_json` (so every existing reader sees it), to
-    `operator_overrides_json`, and adds the field to `locked_fields_json`.
-    """
-    account_id = str(payload.get("account_id") or "")
-    assert_account_owned(account_id)
-    media_id = _media_id(payload)
-    await assert_media_visible(account_id, media_id)
-    res = await vault_ai_fix.apply_fix(account_id, media_id,
-                                       payload.get("values") or {})
-    if not res.get("ok"):
-        raise HTTPException(status_code=400, detail=res)
-    return res
 
 
 @router.get("/admin/vault-ai/flags-review")

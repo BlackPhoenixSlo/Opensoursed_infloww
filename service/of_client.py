@@ -23,7 +23,7 @@ import random
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from contextvars import ContextVar
 from typing import Any, Callable, Literal, NamedTuple
@@ -296,12 +296,22 @@ class OFDeactivatedError(OFDeniedError):
     Transient for every caller: the Creator may be activated again."""
 
 
-class OFSessionRetired(OFAPIError):
-    """A signed request on an OFClient client_pool evicted (close_signed_sessions),
-    refused before THAT request is sent. A call that already sent others (a
-    multi-request write) may have landed some of them."""
+class OFSessionRetired(OFDeniedError):
+    """A signed request on an evicted client (client_pool.evict retired its curl
+    handles): refused before THAT request leaves the box. Transient: the next
+    call gets the account's current client. Not the account's fault (no pause,
+    no session_dead). A call that already sent other requests (a multi-request
+    write) may have landed those."""
+    def __init__(self, msg: str = "signed session retired; retry with current account session"):
+        super().__init__(msg)
+
+
+class OFSignedPoolBusy(OFSessionRetired):
+    """Every signed handle of a live client stayed leased for WAIT_S: refused
+    before leaving the box, like a retire, but nothing was evicted, so an
+    immediate re-run on the same client would only wait again."""
     def __init__(self):
-        super().__init__("signed session retired; retry with current account session")
+        super().__init__("signed session pool busy")
 
 
 # Calls that end or report on the Creator's own OF account: logout, account
@@ -444,7 +454,7 @@ class _SignedSessionPool:
                         break
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise OFAPIError("signed session pool busy")
+                        raise OFSignedPoolBusy()
                     self._ready.wait(remaining)
             finally:
                 if ticket in self._waiters:
@@ -540,10 +550,8 @@ class _Transport:
         self._x_hash: str | None = None
 
     def _signed_session(self):
-        # Tests may inject a fake HTTP object on a bare OFClient. Production
-        # sessions share the captured cookie jar and proxy configuration.
-        if not isinstance(self.http, requests.Session):
-            return nullcontext(self.http)
+        """A leased curl handle sharing the captured cookie jar and proxy
+        configuration; OFSessionRetired once close_signed_sessions ran."""
         with self._signed_pool_lock:
             if self._signed_retired:
                 raise OFSessionRetired()

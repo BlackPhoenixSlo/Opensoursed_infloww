@@ -8,8 +8,8 @@
  * white wash, the platform card and dividers on a 9% one.
  *
  * Groups expand on click, one at a time: opening one closes the rest. The group
- * holding the current page starts open; once the user toggles one, their choice
- * sticks for the session.
+ * holding the current page starts open; the user's toggle holds until the page
+ * (or platform) changes, then the new page's group opens again.
  *
  * `collapsed` is Infloww's locked icon rail (`navCollapsed`, 60px): icons
  * only, the label as a tooltip. A group's icon opens its pages in a flyout
@@ -97,8 +97,11 @@ export default function Sidebar({
   const footer = visibleLinks(SIDEBAR_FOOTER, filter);
   // A page shown as another's tab (Sales records) lights that page's entry.
   const active = activeHref(sidebarHref(pathname, filter.grantedPages), [...flatten(nodes), ...footer]);
-  // The one open group's label; undefined until the user toggles one (the active page's group opens), null = all closed.
-  const [openGroup, setOpenGroup] = useState<string | null>();
+  // The user's open group (label, null = all closed), kept only for the page and platform it was picked on;
+  // elsewhere the active page's group opens.
+  const where = `${platform} ${active}`;
+  const [choice, setChoice] = useState<{ label: string | null; where: string } | null>(null);
+  const openGroup = choice?.where === where ? choice.label : undefined;
 
   const link = (l: NavLink, sub = false, footer = false) => {
     const Icon = l.icon;
@@ -197,7 +200,7 @@ export default function Sidebar({
             <div key={n.label}>
               <button
                 type="button"
-                onClick={() => setOpenGroup(open ? null : n.label)}
+                onClick={() => setChoice({ label: open ? null : n.label, where })}
                 aria-expanded={open}
                 className={cn(ROW, "w-full px-3", holdsActive ? ROW_ACTIVE : ROW_IDLE)}
               >

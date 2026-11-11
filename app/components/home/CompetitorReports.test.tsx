@@ -12,7 +12,7 @@
  * time zone UTC. jsdom does no layout, so the geometry is read off the SVG and the styles.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -23,6 +23,9 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
 import CompetitorReports from "@/components/home/CompetitorReports";
+import { REFERRALS_FAILED, TOTAL_GROWTH_EXCL } from "@/components/home/netMissingNote";
+import { SUMMARY_TEXT } from "@/components/home/reportsMath";
+import { TILE_ICON } from "@/components/home/tileIcons";
 import { relay } from "@/lib/relay";
 
 const get = relay.get as unknown as Mock;
@@ -55,7 +58,7 @@ function relayWith(creators: unknown[], kindRows = KIND_ROWS, applied: unknown =
 }
 function renderCard(ui = <CompetitorReports />) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>), client };
 }
 /** The revenue reads sent so far, as their query parameters. */
 const revenueReads = () => get.mock.calls
@@ -178,6 +181,11 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
     expect(pill).toHaveTextContent("Sep 1, 2026");
     expect(pill).toHaveTextContent("Sep 30, 2026");
     expect(within(presets).getByRole("button", { name: "September" })).toHaveAttribute("aria-pressed", "true");
+    // #14: Custom keeps the range shown, not a 7-day one.
+    pick("Custom");
+    expect(pill).toHaveTextContent("Sep 1, 2026");
+    expect(pill).toHaveTextContent("Sep 30, 2026");
+    expect(within(presets).getByRole("button", { name: "Custom" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "Filters" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
@@ -187,6 +195,19 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
 });
 
 describe("CompetitorReports states (#58)", () => {
+  it("colours each channel tile's icon from the Dashboard's one map (#5)", async () => {
+    relayWith([CREATOR]);
+    renderCard();
+    const tile = async (name: string) => (await screen.findAllByRole("group", { name }))[0];
+    for (const [name, key] of [["Subscriptions", "subscriptions"], ["Posts", "posts"], ["Messages", "messages"],
+      ["Tips", "tips"], ["Referrals", "referrals"], ["Chargebacks", "chargebacks"]] as const) {
+      const icon = (await tile(name)).querySelector("dt svg")!;
+      expect((icon as SVGElement).style.color).toBe(`rgb(${TILE_ICON[key].rgb})`);
+    }
+    // Total stays on the page's accent.
+    expect(((await tile("Total earnings")).querySelector("dt svg") as SVGElement).style.color).toBe("");
+  });
+
   it("prints $0 tiles with no Creator, and no Clone wording", async () => {
     get.mockImplementation(async (path: string) =>
       path.startsWith("/admin/settings/applied") ? APPLIED : { rows: [], per_model: [] });
@@ -343,6 +364,178 @@ describe("CompetitorReports referrals (#50, #75)", () => {
     expect(screen.getByText(/Referrals from OnlyFans are unavailable for 1 creator/)).toHaveAttribute("title", "Inflowwww extra");
     const read = get.mock.calls.map(([p]) => String(p)).find((p) => p.startsWith("/admin/stats/referrals"))!;
     expect(Object.fromEntries(new URLSearchParams(read.split("?")[1]))).toEqual({ from: "2026-09-17", to: "2026-10-16" });
+  });
+});
+
+describe("CompetitorReports referrals that could not be read (#6, #19)", () => {
+  const summaryCard = async () => (await screen.findByRole("heading", { name: "Earnings summary" })).closest("section")!;
+  const growthOf = (tile: HTMLElement) => tile.children[2] as HTMLElement;
+
+  it.each([
+    ["the read fails", () => { throw new Error("OnlyFans down"); }],
+    ["every Creator fails", () => ({ rows: [], unavailable: ["acc-1"] })],
+  ])("when %s, Referrals shows -, not $0, and Total is marked partial with its growth excl. referrals", async (_n, answer) => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => (path.startsWith("/admin/stats/referrals") ? answer() : base(path)));
+    renderCard();
+    const card = await summaryCard();
+    const total = within(card).getByRole("group", { name: "Total earnings" });
+    await waitFor(() => expect(total).toHaveTextContent("$200"));
+    const referrals = within(card).getByRole("group", { name: "Referrals" });
+    await waitFor(() => expect(referrals.children[1]).toHaveTextContent(/^-$/));
+    expect(referrals).toHaveAttribute("title", "OnlyFans referrals are unavailable for this period");
+    expect(total.querySelector("[data-partial]")).toHaveTextContent("*");
+    // #22: Total keeps a growth, both windows without referrals (the same sales either side here), and says so.
+    await waitFor(() => expect(growthOf(total)).toHaveTextContent(/^0\.00%$/));
+    expect(growthOf(total)).toHaveAttribute("title", TOTAL_GROWTH_EXCL);
+    expect(growthOf(referrals)).toHaveTextContent(/^-$/);
+  });
+
+  it("when only the window before's referrals fail, Total grows like for like without referrals and Referrals shows -", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => {
+      if (!path.startsWith("/admin/stats/referrals")) return base(path);
+      if (path.includes("from=2026-08-18")) throw new Error("OnlyFans down");
+      return { rows: [{ account_id: "acc-1", total_cents: 1000, by_day: [] }], unavailable: [] };
+    });
+    renderCard();
+    const card = await summaryCard();
+    const total = within(card).getByRole("group", { name: "Total earnings" });
+    await waitFor(() => expect(total).toHaveTextContent("$210"));
+    const referrals = within(card).getByRole("group", { name: "Referrals" });
+    // The window before's sales answered (Subscriptions has its growth), and its referrals read failed.
+    await waitFor(() => expect(growthOf(within(card).getByRole("group", { name: "Subscriptions" }))).toHaveTextContent("0.00%"));
+    // $200 of sales against $200 before: 0.00%, not +5% from this window's $10 referrals, never -100%.
+    await waitFor(() => expect(growthOf(total)).toHaveAttribute("title", TOTAL_GROWTH_EXCL));
+    expect(growthOf(total)).toHaveTextContent(/^0\.00%$/);
+    expect(growthOf(referrals)).toHaveTextContent(/^-$/);
+    expect(total.querySelector("[data-partial]")).toBeNull();
+    // The sales channels keep theirs.
+    expect(growthOf(within(card).getByRole("group", { name: "Subscriptions" }))).toHaveTextContent("0.00%");
+  });
+
+  it("while the window before's referrals are still in flight, Total's growth is - and claims no failure (#35)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => {
+      if (!path.startsWith("/admin/stats/referrals")) return base(path);
+      if (path.includes("from=2026-08-18")) return new Promise(() => {});
+      return { rows: [{ account_id: "acc-1", total_cents: 1000, by_day: [] }], unavailable: [] };
+    });
+    renderCard();
+    const card = await summaryCard();
+    const total = within(card).getByRole("group", { name: "Total earnings" });
+    await waitFor(() => expect(total).toHaveTextContent("$210"));
+    await waitFor(() => expect(growthOf(within(card).getByRole("group", { name: "Subscriptions" }))).toHaveTextContent("0.00%"));
+    expect(growthOf(total)).toHaveTextContent(/^-$/);
+    expect(growthOf(total)).not.toHaveAttribute("title");
+    expect(growthOf(within(card).getByRole("group", { name: "Referrals" }))).toHaveTextContent(/^-$/);
+    expect(total.querySelector("[data-partial]")).toBeNull();
+  });
+
+  it("while the referrals read is in flight, Referrals waits (-, no failure title) and Total shows the sales (#41)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => (path.startsWith("/admin/stats/referrals") ? new Promise(() => {}) : base(path)));
+    renderCard();
+    const card = await summaryCard();
+    const total = within(card).getByRole("group", { name: "Total earnings" });
+    await waitFor(() => expect(total).toHaveTextContent("$200"));
+    const referrals = within(card).getByRole("group", { name: "Referrals" });
+    expect(referrals.children[1]).toHaveTextContent(/^-$/);
+    expect(referrals).not.toHaveAttribute("title");
+    expect(total.querySelector("[data-partial]")).toBeNull();
+  });
+
+  it("referrals that answered, then failed on a refetch, count nowhere: Referrals -, Total the sales alone (#43)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    let failing = false;
+    get.mockImplementation(async (path: string) => {
+      if (!path.startsWith("/admin/stats/referrals")) return base(path);
+      if (failing) throw new Error("OnlyFans down");
+      return { rows: [{ account_id: "acc-1", total_cents: 1000, by_day: [] }], unavailable: [] };
+    });
+    const { client } = renderCard();
+    const card = await summaryCard();
+    const total = within(card).getByRole("group", { name: "Total earnings" });
+    await waitFor(() => expect(total).toHaveTextContent("$210"));
+    failing = true;
+    await act(() => client.refetchQueries({ queryKey: ["stats", "referrals"] }));
+    await waitFor(() => expect(total).toHaveTextContent("$200"));
+    const referrals = within(card).getByRole("group", { name: "Referrals" });
+    expect(referrals.children[1]).toHaveTextContent(/^-$/);
+    expect(referrals).toHaveAttribute("title", REFERRALS_FAILED);
+    expect(total.querySelector("[data-partial]")).toHaveTextContent("*");
+  });
+
+  it("Creator performance: a failed referrals read shows Referrals -, not $0 or 0.00% (#43)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => {
+      if (path.startsWith("/admin/stats/referrals")) throw new Error("OnlyFans down");
+      return base(path);
+    });
+    renderCard();
+    fireEvent.click(await screen.findByRole("tab", { name: "Creator performance" }));
+    const growth = await screen.findByRole("list", { name: "Earnings growth" });
+    const subs = await within(growth).findByText("Subscription");
+    await waitFor(() => expect(subs.closest("li")).toHaveTextContent(/^\$120(?!\.)/));
+    const refs = within(growth).getByText("Referrals").closest("li")!;
+    expect(refs).toHaveTextContent(/^--Referrals$/);
+    const legend = screen.getByRole("list", { name: "Earnings breakdown legend" });
+    expect(within(legend).getByText("Referrals").closest("li")).toHaveTextContent(/^Referrals--$/);
+  });
+
+  it("Creator performance: referrals in flight show Referrals -, no failure claimed on its chart (#45)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => (path.startsWith("/admin/stats/referrals") ? new Promise(() => {}) : base(path)));
+    renderCard();
+    fireEvent.click(await screen.findByRole("tab", { name: "Creator performance" }));
+    const growth = await screen.findByRole("list", { name: "Earnings growth" });
+    const subs = await within(growth).findByText("Subscription");
+    await waitFor(() => expect(subs.closest("li")).toHaveTextContent(/^\$120(?!\.)/));
+    expect(within(growth).getByText("Referrals").closest("li")).toHaveTextContent(/^--Referrals$/);
+    const legend = screen.getByRole("list", { name: "Earnings breakdown legend" });
+    expect(within(legend).getByText("Referrals").closest("li")).toHaveTextContent(/^Referrals--$/);
+    expect(screen.queryByText(REFERRALS_FAILED)).toBeNull();
+  });
+
+  const channelCard = async () => (await screen.findByRole("heading", { name: "Earnings by channel" })).closest("section")!;
+  const pickOnlyReferrals = async (card: HTMLElement) => {
+    fireEvent.click(within(card).getByRole("button", { name: "Channels" }));
+    fireEvent.click(within(card).getByRole("checkbox", { name: "Referrals" }));
+  };
+
+  it("Overview: referrals in flight draw no Referrals line; picked alone, the chart says Loading, not empty axes (#45)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => (path.startsWith("/admin/stats/referrals") ? new Promise(() => {}) : base(path)));
+    renderCard();
+    const card = await channelCard();
+    await waitFor(() => expect(within(card).getByRole("img", { name: "Subscription" })).toBeInTheDocument());
+    expect(within(card).queryByRole("img", { name: "Referrals" })).toBeNull();
+    await pickOnlyReferrals(card);
+    expect(within(card).queryByTestId("chart-hover")).toBeNull();
+    expect(within(card).getByText(SUMMARY_TEXT.loading)).toBeInTheDocument();
+  });
+
+  it("Overview: referrals failed, picked alone, the chart names the failure (#45)", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => {
+      if (path.startsWith("/admin/stats/referrals")) throw new Error("OnlyFans down");
+      return base(path);
+    });
+    renderCard();
+    const card = await channelCard();
+    await waitFor(() => expect(within(card).getByRole("img", { name: "Subscription" })).toBeInTheDocument());
+    await pickOnlyReferrals(card);
+    expect(within(card).queryByTestId("chart-hover")).toBeNull();
+    expect(within(card).getByText(REFERRALS_FAILED)).toBeInTheDocument();
   });
 });
 

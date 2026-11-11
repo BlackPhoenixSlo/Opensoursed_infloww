@@ -189,11 +189,11 @@ def case_response_is_normalized_to_the_openai_shape():
          "output_tokens_details": {"thinking_tokens": 25}},
         content=[{"type": "thinking", "thinking": "hmm", "signature": "s"},
                  {"type": "text", "text": "Hel"}, {"type": "text", "text": "lo"}],
-        stop="max_tokens"))
+        stop="end_turn"))
     ch = data["choices"][0]
     assert ch["message"]["content"] == "Hello", ch
     assert ch["message"]["reasoning_content"] == "hmm", ch
-    assert ch["finish_reason"] == "length", ch
+    assert ch["finish_reason"] == "stop", ch
     u = data["usage"]
     assert u["prompt_tokens"] == 1007 and u["completion_tokens"] == 40, u
     assert u["prompt_tokens_details"] == {"cached_tokens": 900}, u
@@ -411,6 +411,65 @@ async def case_json_object_on_claude_is_refused_before_it_fires():
         llm_client.httpx.AsyncClient = orig
 
 
+async def case_reservation_counts_the_full_native_output_and_the_write_rate():
+    """The pre-flight reserve is the most the call can bill: Claude may write
+    the whole prompt to cache (1.25x input) and spend MAX_TOKENS (4096, adaptive
+    thinking included), not the 1024 assumed for the OpenAI lanes. A cap the old
+    all-miss/1024 reserve fit under (~2.2c on Opus) but the real worst case
+    (~8.3c) doesn't is refused before the request goes out."""
+    tokens_in = 270
+    assert llm_client._reserve_millicents("claude-opus-5-5", tokens_in) == \
+        llm_client._cost_millicents("claude-opus-5-5", tokens_in,
+                                    llm_anthropic.MAX_TOKENS, 0, tokens_in)
+    # No write rate, no stated max: unchanged all-miss + 1024.
+    assert llm_client._reserve_millicents("deepseek-v4-flash", tokens_in) == \
+        llm_client._cost_millicents("deepseek-v4-flash", tokens_in,
+                                    llm_client._ASSUMED_OUTPUT_TOKENS)
+    aid = "acct_claude_reserve"
+    await _seed_account(aid)
+    async with get_session() as s:
+        (await s.get(AccountAiConfig, aid)).daily_cost_cap_cents = 5
+    _Client.reset()
+    try:
+        await _fire("claude-opus-5-5", aid)
+        raise AssertionError("a call whose worst case exceeds the cap went out")
+    except llm_client.LLMCapExceeded:
+        pass
+    assert _Client.calls == [], "the request fired past the cap"
+
+
+async def case_output_cut_at_max_tokens_returns_empty_not_a_fragment():
+    """Claude's stop_reason max_tokens (adaptive thinking ate MAX_TOKENS) is a
+    fragment: the caller gets content="" (its empty-answer path), the row stays
+    done with the billed cost. Narrow to the native wire: an OpenAI-lane
+    "length" reply keeps its text (pre-#302 behaviour)."""
+    data = llm_anthropic.to_openai_response(_native(
+        _COLD, content=[{"type": "text", "text": "Hel"}], stop="max_tokens"))
+    assert data["choices"][0]["message"]["content"] == "", data
+    assert data["choices"][0]["finish_reason"] == "length", data
+    aid = "acct_claude_cut"
+    await _seed_account(aid)
+    _Client.reset((200, _native(_COLD, content=[{"type": "text", "text": "Hel"}],
+                                stop="max_tokens")))
+    res = await _fire("claude-opus-5-5", aid)
+    assert res.content == "", res.content
+    row = await _row(res.call_id)
+    assert row.status == "done" and row.cost_cents == res.cost_cents > 0, row
+    _Client.reset((200, _native(_COLD)))
+    assert (await _fire("claude-opus-5-5", aid)).content == "ok"
+    await _seed_account("acct_ds_cut")
+    orig = llm_client.httpx.AsyncClient
+    llm_client.httpx.AsyncClient = _Client
+    _Client.reset((200, {"choices": [{"message": {"content": "Hel"}, "finish_reason": "length"}],
+                         "usage": {"prompt_tokens": 10, "completion_tokens": 1}}))
+    try:
+        ds = await chat(model="deepseek-v4-flash", messages=[{"role": "user", "content": "hi"}],
+                        purpose="gen_info", account_id="acct_ds_cut")
+    finally:
+        llm_client.httpx.AsyncClient = orig
+    assert ds.content == "Hel", ds.content
+
+
 async def case_json_purposes_never_resolve_to_claude():
     """Override, pin and brain set to Claude: a JSON purpose falls through each
     to the house model (with a warning); a text purpose keeps Claude."""
@@ -445,4 +504,6 @@ _harness.run(
     case_error_statuses_map_to_the_shared_kinds,
     case_untranslatable_body_is_refused_before_it_fires,
     case_other_models_still_speak_openai_with_temperature,
+    case_reservation_counts_the_full_native_output_and_the_write_rate,
+    case_output_cut_at_max_tokens_returns_empty_not_a_fragment,
 )

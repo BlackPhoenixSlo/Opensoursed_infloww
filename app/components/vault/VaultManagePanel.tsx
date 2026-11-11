@@ -13,7 +13,8 @@
  * page header's overflow button opens (`extrasOpen`).
  */
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Square } from "lucide-react";
@@ -21,11 +22,9 @@ import { Loader2, Square } from "lucide-react";
 import { EmptyState, IfModal } from "@/components/ui/infloww";
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
 import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
-import { useVaultDownloadContext } from "@/components/vault/VaultDownloadPanel";
-import type { StartArgs } from "@/components/vault/vaultDownload";
-import { downloadOff, safeName } from "@/components/vault/vaultDownloadReducer";
+import { HeaderDownloadButton, useVaultDownloadContext } from "@/components/vault/VaultDownloadPanel";
+import { dlAccess, downloadGate, safeName, type DlMode } from "@/components/vault/vaultDownloadReducer";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
-import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
 import VaultPreviewMedia from "@/components/vault/VaultPreviewMedia";
@@ -59,24 +58,31 @@ import {
   mirrorItemsKey,
 } from "@/hooks/useVaultCache";
 import { useOfRefresh, vaultBrowseSource, vaultWholeSource } from "@/hooks/vaultRefresh";
+import { type FanId } from "@/lib/fanId";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { describeSweepText, sweepAbortedNote, useVaultSweep } from "@/hooks/useVaultSweep";
 import { type VaultList, type VaultMedia } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { initialBrowseState, vaultBrowseReducer } from "@/components/vault/vaultBrowseReducer";
+import { useVaultBrowse } from "@/components/vault/VaultBrowseMemory";
+import { hiddenByFilter } from "@/components/vault/vaultBrowseReducer";
 
 /** The rail-and-grid row (#15). Exported for the page's no-Creator frame. */
 export const VAULT_PANES_CLASS =
   "flex flex-col md:flex-row items-stretch overflow-hidden h-[70vh] md:h-auto md:flex-1 md:min-h-0";
 /** The grid's scroll box (#70). */
 export const VAULT_GRID_CLASS = "px-3 md:px-6 flex-1 min-h-0 overflow-y-auto";
+/** The header's Download while the open folder is not in the loaded folder list yet (#29): never a guessed scope. */
+export const FOLDER_LOADING = "The folder list is still loading";
 
-export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = () => {} }: {
+export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = () => {}, headerSlot = null }: {
   /** The Extras drawer is open (the page header's overflow button). */
   extrasOpen?: boolean;
   onCloseExtras?: () => void;
+  /** The page header's place for its Download button. The button is rendered from HERE (a portal), so it knows this
+   *  panel's folder and Creator; it starts the page's one download, like every other control here. */
+  headerSlot?: HTMLElement | null;
 }) {
   // Shared with the importer — see `VaultAccount`. Local
   // state here meant the panel's own chips moved the grid and nothing else.
@@ -86,26 +92,23 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const { account } = useVaultAccount();
   const qc = useQueryClient();
   // Ours: download (selection / folder / whole vault) into a folder the user picks, or (phones) a selection of up to
-  // 20 to the share sheet; see `vaultDownloadReducer`. The page's one download (`VaultDownloadProvider`, above the
-  // per-model remount); a run started here is for this model.
+  // 20 to the share sheet; see `vaultDownloadReducer`. The app's one download (`VaultDownloadProvider`, in the root
+  // layout); a run started (or queued) here is for this model (`who`). One gate (`downloadGate`) for every control:
+  // a folder-sink press while a run is busy queues (`dl.queueing`: "Add … to queue").
   const dl = useVaultDownloadContext();
-  const creator = safeName(account?.nickname || account?.name || accountId);
-  const startDl = (a: Omit<StartArgs, "accountId" | "creator">) => dl.start({ ...a, accountId, creator });
-  // A folder-limited chatter: the relay soft-denies "All" on both sources (vault/media without list_id, mirror items
-  // without of_folder_id, empty `{list: []}`), so a whole-vault download would read "Nothing to download". Its
-  // folders download one by one (the rail). Off while a chatter's folder-access read is in flight or failed, so
-  // never false-empty; an owner's query is disabled (not loading, no data), so on.
-  const folderAccess = useChatterFolderAccess(accountId);
-  const wholeVaultOff = downloadOff(dl.sink, "vault", 0, dl.state)
-    || (folderAccess.isLoading || folderAccess.isError || folderAccess.data?.restricted === true
-      ? "Your access is by folder: download a folder" : "");
+  const who = { accountId, creator: safeName(account?.nickname || account?.name || accountId) };
+  // A folder-limited chatter can't download the whole vault (`RESTRICTED_OFF`), nor while its access is unread.
+  const access = dlAccess(useChatterFolderAccess(accountId));
+  const dlGate = (mode: DlMode, count = 0) => downloadGate(dl.state, dl.sink, mode, count, access);
   // Folder / type / search and the ticked files — see `vaultBrowseReducer`.
   // FanId, not number: Fansly album ids are snowflakes above 2^53, and a
   // narrowed one selects a DIFFERENT album. Media ids below stay number[].
-  const [browse, dispatchBrowse] = useReducer(vaultBrowseReducer, initialBrowseState);
+  // Kept per model while the page lives (`VaultBrowseMemory`): switching model and back finds it as it was.
+  const [browse, dispatchBrowse] = useVaultBrowse(accountId);
   const { type, folderId: ofFolderId, query, selectMode, selected } = browse;
+  const selectedIds = useMemo(() => new Set(selected.keys()), [selected]);
   const [sort, setSort] = useState<MediaSort>("newest");
-  const [searchRaw, setSearchRaw] = useState("");
+  const [searchRaw, setSearchRaw] = useState(query);
   const [preview, setPreview] = useState<Tile | null>(null);
   // Full-screen playback target — hands off to the picker's VaultVideoPreview.
   const [playMedia, setPlayMedia] = useState<VaultMedia | null>(null);
@@ -131,7 +134,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     if (q.length > 0 && q.length < 3) return;
     const t = setTimeout(() => dispatchBrowse({ type: "query", value: q }), 250);
     return () => clearTimeout(t);
-  }, [searchRaw]);
+  }, [searchRaw, dispatchBrowse]);
 
   // Esc closes the full-screen player first, then the details drawer.
   useEffect(() => {
@@ -197,6 +200,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // The grid's source (`vaultBrowseSource`) and the whole-vault/folder downloads' (`vaultWholeSource`), see below.
   const source = vaultBrowseSource(summary.data);
   const wholeSource = vaultWholeSource(summary.data);
+  // One folder / whole-vault download, for the rail's row menu and the header: `wholeSource` (`vaultWholeSource`:
+  // a partial mirror would download part).
+  const scopeArgs = (f: { id: FanId; name: string } | null) => (f
+    ? { ...who, mode: "folder" as const, label: `folder ${f.name}`, folder: { id: f.id, name: f.name }, source: wholeSource }
+    : { ...who, mode: "vault" as const, label: "whole vault", folder: null, source: wholeSource });
   const useLocal = source === "mirror";
   // On a search over the mirror, harvest OF's own results in the BACKGROUND and merge them in; while that runs the
   // grid says "Searching OnlyFans…" rather than "No data". Not on the live path: that listing IS OF's search, and the
@@ -265,6 +273,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     }
     return merged;
   }, [lists.data, ofFoldersMirror.data]);
+  // The open rail folder, resolved from `folders` (null under All media, or while the folders still load).
+  const selectedFolder = ofFolderId == null ? null : folders.find((f) => f.id === ofFolderId) ?? null;
+  // The header's one scope: the open folder, else the whole vault; a folder not resolved yet: off (null).
+  const hdr = ofFolderId != null && !selectedFolder ? null : scopeArgs(selectedFolder);
 
   // Everything is served from the mirror once collected (instant, incl. OF
   // folders + reorder): `vaultBrowseSource`, a partial mirror too. Before the
@@ -339,7 +351,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // OF's whole-vault counts (the folder list's `all`): the "All media" row's.
   const allCounts = lists.data?.all ?? null;
   // #58: the chosen folder's (or, under All media, the whole vault's) per-type counts switch its empty types off.
-  const shownCounts = ofFolderId == null ? allCounts : folders.find((f) => f.id === ofFolderId);
+  const shownCounts = ofFolderId == null ? allCounts : selectedFolder;
   const typeCounts: TypeCounts = shownCounts
     ? {
         photo: shownCounts.photosCount,
@@ -378,7 +390,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
         setBusyLine(s);
       },
     },
-    selected,
+    selected: selectedIds,
     clearSelection: () => dispatchBrowse({ type: "clearSelection" }),
     refreshAll,
     capReason,
@@ -435,12 +447,18 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           selectedId={ofFolderId}
           onSelect={(id) => dispatchBrowse({ type: "folder", id })}
           onChanged={refreshAll}
-          onDownloadFolder={dl.sink ? (f) => startDl({
-            mode: "folder", label: `folder ${f.name}`, folder: { id: f.id, name: f.name },
-            source: wholeSource,
-          }) : undefined}
-          downloadFolderOff={downloadOff(dl.sink, "folder", 0, dl.state)}
+          onDownloadFolder={(f) => void dl.start(scopeArgs(f))}
+          downloadFolderGate={dlGate("folder")}
+          downloadQueues={dl.queueing}
         />
+        {/* The header's Download: the selected folder, else the whole vault (while a run is busy: queued). */}
+        {headerSlot && createPortal(
+          <HeaderDownloadButton
+            label={`${dl.queueing ? "Add" : "Download"} full ${hdr?.mode === "vault" ? "vault" : "folder"}${dl.queueing ? " to queue" : ""}`}
+            reason={hdr ? dlGate(hdr.mode).reason : FOLDER_LOADING}
+            onClick={() => { if (hdr) void dl.start(hdr); }} />,
+          headerSlot,
+        )}
 
         {/* RIGHT grid */}
         {/* `relative`: the selection bar floats over the grid's foot (#75). */}
@@ -459,11 +477,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             onRefresh={() => ofRefresh.mutate(ofFolderId)}
             refreshing={ofRefresh.isPending}
             refreshNote={ofRefresh.note}
-            onSelectAll={() => dispatchBrowse({ type: "selectAll", ids: items.map((m) => m.id) })}
+            onSelectAll={() => dispatchBrowse({ type: "selectAll", media: items })}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
-            onDownloadAll={() => startDl({ mode: "vault", label: "whole vault", source: wholeSource })}
-            downloadOff={wholeVaultOff}
           />
 
           <div
@@ -520,7 +536,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                       selected={preview?.id === m.id}
                       selectMode={selectMode}
                       checked={selected.has(m.id)}
-                      onCheck={() => dispatchBrowse({ type: "toggle", id: m.id })}
+                      onCheck={() => dispatchBrowse({ type: "toggle", media: m })}
                       showOrder={usingFolder}
                       onOrder={(m, value) => setOrder(m, value, { accountId, qc, ofFolderId })}
                       thumbs={thumbs}
@@ -553,6 +569,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           {selectMode && selected.size > 0 && (
             <VaultSelectionBar
               count={selected.size}
+              hidden={hiddenByFilter(browse)}
               hasFolders={folders.length > 0}
               busy={busy}
               capped={capped}
@@ -562,15 +579,17 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               onDescribe={() => describeSelected(deps)}
               onClear={() => dispatchBrowse({ type: "clearSelection" })}
               onDownload={() => {
-                // Picked inside a folder: they all save into that folder, not each one's first OF folder.
-                const here = folders.find((x) => x.id === ofFolderId);
-                startDl({
-                  mode: "selection", label: `${selected.size} selected`,
-                  media: items.filter((m) => selected.has(m.id)), source,
-                  folder: here ? { id: here.id, name: here.name } : null,
-                });
+                // Every tick, the filter's hidden ones too; once it started (or queued) the ticks go.
+                void dl.start({
+                  ...who, mode: "selection", label: `${selected.size} selected`,
+                  media: [...selected.values()], source,
+                  // Picked inside a folder: they all save into that folder, not each one's first OF folder (#430).
+                  folder: selectedFolder ? { id: selectedFolder.id, name: selectedFolder.name } : null,
+                }).then((ok) => { if (ok) dispatchBrowse({ type: "clearSelection" }); });
               }}
-              downloadOff={downloadOff(dl.sink, "selection", selected.size, dl.state)}
+              // The open folder not resolved yet: off, never a guessed scope (as the header, #29).
+              downloadOff={!hdr ? FOLDER_LOADING : dlGate("selection", selected.size).reason}
+              downloadQueues={dl.queueing}
             />
           )}
         </section>
@@ -700,10 +719,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           accountId={accountId}
           onClose={() => setOpen(null)}
         />
-      )}
-
-      {open === "disputes" && (
-        <VaultDisputesModal accountId={accountId} onClose={() => setOpen(null)} />
       )}
 
       {open === "aiFolders" && (

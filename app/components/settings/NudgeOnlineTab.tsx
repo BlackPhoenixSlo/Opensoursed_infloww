@@ -342,6 +342,12 @@ export default function NudgeOnlineTab({
             <IfHelp className="mt-0">
               One nudge per fan per min hours; max fans started per 60s scan (extras roll over); skipped if he left during the delay.
             </IfHelp>
+            <IfSwitch label="Only fans already welcomed" checked={form.require_welcomed !== false}
+              onChange={(on) => set("require_welcomed", on)} />
+            <IfHelp className="mt-0">
+              While the Welcome automation is on, a fan it hasn&apos;t welcomed yet (or welcomed in the last hour) is skipped.
+              Ignored while Welcome is off.
+            </IfHelp>
           </Section>
 
           <Section title="Spend">

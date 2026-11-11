@@ -288,6 +288,28 @@ def case_fence_build_verify_zero_diff():
         assert e.reason == "fence_verify_diff", e.reason
 
 
+def case_fence_lookup_incomplete_halts_never_creates():
+    """No stored AUTOFENCE id and OF repeating page 1 of `/lists` without it:
+    the find-or-create halts `fence_lookup_incomplete` and creates no list
+    (a duplicate AUTOFENCE). Found on that page, or absent from a complete
+    read, it is used or made as before."""
+    class RepeatListsOF(FakeOF):
+        def get_lists(self, *, limit=20, offset=0):
+            return super().get_lists(limit=limit, offset=0)
+    fake = RepeatListsOF(lists={k: set() for k in range(1, 151)})
+    try:
+        audience_include._find_or_create_fence_blocking(fake)
+        assert False, "an incomplete lookup must halt"
+    except AudienceHalt as e:
+        assert e.reason == "fence_lookup_incomplete", e.reason
+    assert len(fake.lists) == 150, "no list created"
+    fake.names[7] = audience_include.AUTOFENCE_LIST_NAME
+    assert audience_include._find_or_create_fence_blocking(fake) == 7
+    plain = FakeOF(lists={1: set()})
+    made = audience_include._find_or_create_fence_blocking(plain)
+    assert plain.names[made] == audience_include.AUTOFENCE_LIST_NAME, plain.names
+
+
 async def case_fence_reports_verified_set():
     aid = "aud_fence_verified"
     await _seed_audience(aid, mode="enforce", members=(1, 2), of_list_id=611)

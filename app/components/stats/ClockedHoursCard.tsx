@@ -9,14 +9,13 @@
  * Not wired (ADR-0008), because the Timesheet groups by Employee or by Creator only. "Export" downloads the
  * visible rows as CSV on the client (the `CompetitorReports` precedent). No new Relay endpoint.
  *
- * ASSUMPTION: the time-tracking flag is read from `GET /admin/shifts/clocked-in` (the owner's "My shifts"
- * card's source, ShiftCards.tsx), because the Applied settings read carries no time-tracking key
+ * ASSUMPTION: the time-tracking flag is read from `GET /admin/shifts/clocked-in`, because the Applied settings read carries no time-tracking key
  * (app/lib/appliedSettings.ts `AppliedSettings`). With time tracking off the card says so and requests no
  * Timesheet, even if clock time was recorded while it was on. Rung 3 for the source, rung 5 for the gate.
  * Overturned if the owner wants past clock time shown while time tracking is off.
  *
  * ASSUMPTION: the card renders only for a user session (an owner, or the Master, which is a `users` row with
- * `is_admin`; CONTEXT.md, Master), the same `user` gate as the Dashboard's ClockedInCard (ShiftCards.tsx),
+ * `is_admin`; CONTEXT.md, Master), the same `user` gate as the Dashboard's Scheduled shifts card (ShiftCards.tsx `MyShiftsCard`),
  * because the Timesheet and the clocked-in read are owner and Master only (403 for a chatter); a chatter's
  * Employee reports simply lack it. Rung 3. Overturned when the Timesheet gains a Data scope for chatters (spec,
  * Implementation Decisions).

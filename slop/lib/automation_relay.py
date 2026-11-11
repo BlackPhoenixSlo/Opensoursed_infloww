@@ -56,7 +56,10 @@ With the same file: `subscribers` / `following` answer empty pages (a send's
 recipient crawl), and OF's user lists (`get_lists`, `create_list`, `list_users_in`,
 `add_user_to_list`, `remove_user_from_list`: buyer lists, a send's Auto_Exclude) live
 in this relay process (`_of_lists` / `_of_members`, ids from _OF_LIST_BASE + 1 up),
-`list_s` (0.3 s) a call; a restarted relay finds no list and makes them again. A
+`list_s` (0.3 s) a call; a restarted relay finds no list and makes them again. A list
+in `repeat_pages` is OF ignoring the offset: `list_users_in` serves its page 1 on every
+call (`hasMore` true while members remain past it), unpaced (armed without of-mass.json),
+counted `of:repeat_list_page`. A
 Creator in `lists_fail` ({account: n}) gets its first n `get_lists` refused (a
 `lists_refused` line each, counted from the journal, then OF's 500 as OFAPIError).
 """
@@ -73,6 +76,7 @@ _OF_LIST_BASE = 6_600_000
 DEEPSEEK_LATENCY_S = 0.4
 _of_lists: dict[str, list[dict]] = {}   # account -> OF's user lists (this process)
 _of_members: dict[int, set[int]] = {}
+repeat_pages: set[int] = set()   # list ids whose `list_users_in` ignores the offset (page 1 again)
 _mass_lock = threading.Lock()  # queue ids: one accept at a time (the count of accepts so far, all processes)
 _fake_calls: Counter = Counter()  # relay.py's, from wire() on (served at /__slop/fake/calls)
 WALKER_MIXINS: list[type] = []   # other flows' methods on the lane's client, before _Walker's (insert(0))
@@ -246,7 +250,11 @@ class _Walker:
         return add_lists([(self.account_id, name, (), None)])[0]
 
     def list_users_in(self, list_id, *, limit=20, offset=0, **_kw) -> dict:
-        self._list_op()
+        if int(list_id) in repeat_pages:
+            _fake_calls["of:repeat_list_page"] += 1
+            offset = 0
+        else:
+            self._list_op()
         ids = sorted(_of_members.get(int(list_id), set()))
         return {"list": [{"id": i} for i in ids[offset:offset + limit]], "hasMore": offset + limit < len(ids)}
 

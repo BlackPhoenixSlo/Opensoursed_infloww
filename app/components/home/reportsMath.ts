@@ -5,6 +5,7 @@
  */
 
 import { type Gran, fmtDollars } from "@/components/stats/chart";
+import { referralsGap, type ReferralsResp } from "@/hooks/useReferrals";
 import type { PerModelRow } from "@/hooks/useStats";
 import { presetRange, todayISO } from "@/lib/dateRange";
 import { fmtPrice, fmtReplyTime } from "@/lib/format";
@@ -77,7 +78,29 @@ export const isTab = (v: string): v is Tab => TABS.some((t) => t.key === v);
 /** OnlyFans' referrals read failed for `n` Creators (no session, OnlyFans down), or the whole read did (`null`). */
 export function referralsUnavailableNote(n: number | null): string {
   const who = n === null ? "these creators" : n === 1 ? "1 creator" : `${n} creators`;
-  return `Referrals from OnlyFans are unavailable for ${who}, counted as $0.00.`;
+  return `Referrals from OnlyFans are unavailable for ${who}, left out of Total earnings.`;
+}
+
+/** A window's sums, by channel and `total`, as a growth reads them. */
+export type GrowthSums = Partial<Record<Bucket | "total", number>>;
+
+/** How growth reads referrals over both windows (#22, #35): `whole` when both reads answered whole; `exclReferrals`
+ *  when either missed a Creator or failed (Total compares earnings without referrals, said in its title); else
+ *  `pending`, a read still in flight (Total's growth waits, "-"). */
+export type TotalGrowth = "whole" | "pending" | "exclReferrals";
+type ReferralsRead = { isSuccess: boolean; isError: boolean; data?: ReferralsResp };
+export function totalGrowthOf(refs: ReferralsRead, refsPrior: ReferralsRead): TotalGrowth {
+  if (referralsGap(refs) !== "none" || referralsGap(refsPrior) !== "none") return "exclReferrals";
+  return refs.isSuccess && refsPrior.isSuccess ? "whole" : "pending";
+}
+
+/** A window's sums as a growth reads them, the same rule for both windows so Total compares like for like (#22):
+ *  every sum when `whole`; otherwise no Referrals (its growth is "-", never a change against or of a $0.00 OnlyFans
+ *  could not give), and Total without referrals (`exclReferrals`) or none yet (`pending`). */
+export function forGrowth(sums: GrowthSums, mode: TotalGrowth): GrowthSums {
+  if (mode === "whole") return sums;
+  const { referrals = 0, total, ...rest } = sums;
+  return total === undefined || mode === "pending" ? rest : { ...rest, total: total - referrals };
 }
 
 /** A Creator's name as the reports show it: its display name, else its account id. */
@@ -208,8 +231,8 @@ export function daysFrom(from: string | null, to: string | null): string[] {
 export type RangeKey = string;
 /** #21: the default range, the bundle's `defaultSelectDate`. */
 export const DEFAULT_RANGE: RangeKey = "last30";
-/** #23, #24: the bundle's presets in its order, their days in `tz`. "Custom" carries the default range as its value
- *  (the bundle's `defineSelectDateArr`). Where the bundle's Last ones and its year end yesterday, ours run through
+/** #23, #24: the bundle's presets in its order, their days in `tz`. "Custom" lists the last 7 days (the bundle's
+ *  `defineSelectDateArr`), read nowhere: picking it keeps the range shown (CompetitorReports). Where the bundle's Last ones and its year end yesterday, ours run through
  *  today on the shared `presetRange` (the other reports' "Last N days", so one label is one window everywhere, and
  *  today's pending sales show); this month runs from its first day to today, and the five months before are whole. */
 export function datePresets(tz: string | null): { key: RangeKey; label: string; days: [string, string] }[] {
@@ -331,6 +354,8 @@ export function bucketOf(kind: string | null): Bucket {
   if (kind === "tip") return "tips";
   if (kind === "referral") return "referrals"; // `referralsAsRevenue`'s rows
   if (kind.startsWith("ppv")) return "messages"; // ppv (WS pump) + ppv_message
+  // Paid customs are sold in chat: Messages, as the Dashboard's Messages tile counts them (DashboardHeader CHANNEL_KINDS).
+  if (kind === "custom") return "messages";
   return "other";
 }
 
@@ -352,7 +377,8 @@ export async function creatorDayRows(creators: PerModelRow[], days: string[], ne
   const chans: { key: Bucket; label: string }[] = [
     ...CHANNELS.filter((c) => c.key !== "referrals"), { key: "other", label: "Other" }];
   const reads = await mapLimit(creators, 4, (m) => read(m.account_id));
-  const rows: Cell[][] = [["Creator", "Day", "Total earnings", ...chans.map((c) => c.label), "Chargebacks"]];
+  // The header says so: the summary's Total earnings counts referrals, this column does not.
+  const rows: Cell[][] = [["Creator", "Day", "Total earnings (excl. referrals)", ...chans.map((c) => c.label), "Chargebacks"]];
   creators.forEach((m, i) => {
     const money = net ? netOf : grossOf;
     const d = dailyOf([{ data: reads[i].earned }], days, money);

@@ -26,11 +26,13 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from datetime import datetime  # noqa: E402
 from urllib.parse import urlencode  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import employees  # noqa: E402
+from sqlalchemy import delete  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Message, Transaction  # noqa: E402
 
@@ -285,6 +287,104 @@ def case_daily_employee_sales_obeys_self_scope():
         assert sum(p["revenue_cents"] for p in r.json()["series"]) == 3000
     finally:
         _roles(None)
+
+
+def _series(client, window: tuple[str, str], tz: str) -> dict:
+    r = client.get(_sales_query(window) + "&" + urlencode({"include_series": "true", "tz": tz}))
+    assert r.status_code == 200, f"{r.status_code} {r.text}"
+    return r.json()
+
+
+@contextmanager
+def _unset_report_zone():
+    _put(OWNER_A, "preferences", {"week_start": "sunday"})
+    try:
+        yield
+    finally:
+        _put(OWNER_A, "preferences", {"report_tz": "Pacific/Honolulu", "week_start": "sunday"})
+
+
+@contextmanager
+def _honolulu_late_sale():
+    # 2026-10-14 23:30 Honolulu = 2026-10-15 09:30 UTC.
+    async def _insert():
+        async with get_session() as s:
+            sale = Transaction(account_id=IDS["creator_a"], fan_id=9301, kind="tip", amount_cents=330,
+                               occurred_at=datetime.fromisoformat("2026-10-15T09:30:00"), status="cleared",
+                               currency="USD", source="ledger")
+            s.add(sale)
+            await s.flush()
+            return sale.id
+
+    sale_id = asyncio.run(_insert())
+    try:
+        yield
+    finally:
+        async def _remove():
+            async with get_session() as s:
+                await s.execute(delete(Transaction).where(Transaction.id == sale_id))
+        asyncio.run(_remove())
+
+
+def case_series_uses_honolulu_today_and_places_2330_sale_on_local_date():
+    with _unset_report_zone(), _honolulu_late_sale():
+        data = _series(OWNER_A, TODAY, "Pacific/Honolulu")
+        assert data["series"] == [
+            {"start": "2026-10-14", "revenue_cents": 1580, "messages_cents": 0, "tips_cents": 1580}]
+        assert sum(e["revenue_cents"] for e in data["employees"]) == 1580
+
+
+def case_series_uses_honolulu_last_30_local_dates():
+    window = ("2026-09-15T10:00:00.000Z", "2026-10-15T09:59:59.999Z")
+    with _unset_report_zone(), _honolulu_late_sale():
+        data = _series(OWNER_A, window, "Pacific/Honolulu")
+        labels = [p["start"] for p in data["series"]]
+        assert len(labels) == 30
+        assert labels == [f"2026-09-{day:02d}" for day in range(15, 31)] + [
+            f"2026-10-{day:02d}" for day in range(1, 15)]
+        assert data["series"][-1]["revenue_cents"] == 1580
+
+
+def case_series_has_30_new_york_days_across_dst_change():
+    # Oct 15 through Nov 13; New York falls back from EDT to EST on Nov 1.
+    window = ("2026-10-15T04:00:00.000Z", "2026-11-14T04:59:59.999Z")
+    with _unset_report_zone():
+        labels = [p["start"] for p in _series(OWNER_A, window, "America/New_York")["series"]]
+    assert len(labels) == 30
+    assert labels[0] == "2026-10-15" and labels[-1] == "2026-11-13"
+    assert labels[17:19] == ["2026-11-01", "2026-11-02"]
+
+
+def case_series_has_30_kathmandu_local_days():
+    window = ("2026-09-14T18:15:00.000Z", "2026-10-14T18:14:59.999Z")
+    with _unset_report_zone():
+        labels = [p["start"] for p in _series(OWNER_A, window, "Asia/Kathmandu")["series"]]
+    assert len(labels) == 30
+    assert labels[0] == "2026-09-15" and labels[-1] == "2026-10-14"
+
+
+def case_series_agency_report_zone_wins_over_query_tz():
+    labels = [p["start"] for p in _series(OWNER_A, WEEK, "America/New_York")["series"]]
+    assert labels == [f"2026-10-{day:02d}" for day in range(11, 18)]
+
+
+def case_series_invalid_tz_falls_back_to_utc_without_500():
+    utc_day = ("2026-10-14T00:00:00.000Z", "2026-10-14T23:59:59.999Z")
+    with _unset_report_zone():
+        data = _series(OWNER_A, utc_day, "Mars/Olympus_Mons")
+    assert [p["start"] for p in data["series"]] == ["2026-10-14"]
+
+
+def case_series_revenue_equals_all_employee_rows_including_unattributed():
+    data = _series(OWNER_A, WEEK, "America/New_York")
+    assert sum(p["revenue_cents"] for p in data["series"]) == sum(
+        e["revenue_cents"] for e in data["employees"])
+    assert any(e["employee_id"] is None and e["revenue_cents"] > 0 for e in data["employees"])
+
+
+def case_series_without_from_or_to_is_422():
+    r = OWNER_A.get("/admin/stats/per-employee?include_series=true")
+    assert r.status_code == 422, r.status_code
 
 
 _harness.run()

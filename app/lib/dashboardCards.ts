@@ -8,8 +8,9 @@
  * to the Dashboard's grant, but the built-in Chatter hides the `revenue` cards (lib/roles.ts). The cards without a
  * key are the shift cards: personal shifts for chatters, the agency schedule and worked hours for owners.
  *
- * The dashboard shows earnings, shifts, employee sales, and worked hours.
- * The per-model permission key remains readable for existing saved roles.
+ * The dashboard shows earnings, shifts, employee sales, and worked hours. The Per-model KPIs card left it (#374):
+ * its key stays here (the Relay's copy, and existing saved roles keep their stored value) but the role editor no
+ * longer lists it (`pageCards`).
  */
 
 export const CARD_PERMISSIONS = {
@@ -24,9 +25,13 @@ export type CardPermissionKey = keyof typeof CARD_PERMISSIONS;
 export const REVENUE_CARD_KEYS = (Object.keys(CARD_PERMISSIONS) as CardPermissionKey[])
   .filter((k) => CARD_PERMISSIONS[k].revenue);
 
+/** Kept for saved roles, drawn by no Dashboard card: not offered in the role editor. */
+const RETIRED_CARD_KEYS: readonly CardPermissionKey[] = ["/#card-per-model"];
+
 /** The per-card permissions under page `href` (only the Dashboard has any), `[key, label]` in list order. */
 export const pageCards = (href: string): [string, string][] =>
-  href === "/" ? Object.entries(CARD_PERMISSIONS).map(([key, { label }]) => [key, label]) : [];
+  href === "/" ? Object.entries(CARD_PERMISSIONS).filter(([key]) => !RETIRED_CARD_KEYS.includes(key as CardPermissionKey))
+    .map(([key, { label }]) => [key, label]) : [];
 
 export type DashboardCardId =
   | "earnings" | "my-shifts" | "employee-sales" | "scheduled-hours";
@@ -48,6 +53,18 @@ export const DASHBOARD_CARDS: readonly DashboardCard[] = [
   { id: "employee-sales", span: RIGHT },
   { id: "scheduled-hours", span: RIGHT },
 ];
+
+/** The right-column cards (their span is RIGHT), beside My shifts. */
+const RIGHT_COLUMN: readonly DashboardCardId[] = DASHBOARD_CARDS.filter((c) => c.span === RIGHT).map((c) => c.id);
+
+/** The grid cell of `id` among the `visible` cards: its own span, except that My shifts with no card beside it, or a
+ *  right-column card with no My shifts to sit beside, takes the full width rather than leave a column empty (#20). */
+export function cardSpan(id: DashboardCardId, visible: readonly DashboardCardId[]): string {
+  const own = DASHBOARD_CARDS.find((c) => c.id === id)!.span;
+  if (id === "my-shifts" && !visible.some((v) => RIGHT_COLUMN.includes(v))) return FULL;
+  if (RIGHT_COLUMN.includes(id) && !visible.includes("my-shifts")) return FULL;
+  return own;
+}
 
 /** A card's permission key, or null for a card no role hides. */
 export function cardKey(id: DashboardCardId): CardPermissionKey | null {

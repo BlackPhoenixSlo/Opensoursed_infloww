@@ -916,11 +916,8 @@ async def resolve_outbound_employee_id(
     if chatter is not None:
         if emp_id_raw:
             _warn_chatter_header_ignored_once()
-        hint = getattr(request.state, "chatter_role_employee", None)
-        if (hint is not None and len(chatter.owner_user_ids) == 1
-                and hint[0] == chatter.id and hint[1] == account_id):
-            employee_id = hint[2]
-        else:
+        employee_id = remembered_chatter_employee(request, chatter, account_id)
+        if employee_id is None:
             employee_id = await resolve_chatter_employee_id(
                 chatter_id=chatter.id,
                 owner_user_ids=chatter.owner_user_ids,
@@ -928,15 +925,33 @@ async def resolve_outbound_employee_id(
                 display_name=chatter.display_name or chatter.username,
                 color=chatter.color,
             )
-        if employee_id is not None:
-            # The audit hook runs later in this same request. Preserve the
-            # exact account and principal so it can stamp the same Employee
-            # without repeating two DB lookups after the send has landed.
-            request.state.chatter_outbound_employee = (chatter.id, account_id, employee_id)
+        # The audit hook runs later in this same request: it stamps the same
+        # Employee without repeating two DB lookups after the send has landed.
+        remember_chatter_employee(request, chatter, account_id, employee_id)
         return employee_id
     # Unauthed (internal curl / cron) — caller's Automation fallback wins.
     if emp_id_raw and emp_id_raw.isdigit():
         return int(emp_id_raw)
+    return None
+
+
+def remember_chatter_employee(request: Request, chatter, account_id: str | None,
+                              employee_id: int | None) -> None:
+    """Note, for later hooks of THIS request (request.state, never a module or
+    ContextVar cache, so it cannot cross requests), the Mirror Employee
+    `chatter` acts as for `account_id`. A caller whose resolver could pick a
+    different Agency than resolve_chatter_employee_id must not call it (the
+    role hook calls it for a single-Agency chatter only)."""
+    if employee_id is not None:
+        request.state.chatter_employee = (chatter.id, account_id, employee_id)
+
+
+def remembered_chatter_employee(request: Request, chatter, account_id: str | None) -> int | None:
+    """The Employee `remember_chatter_employee` noted on this request for this
+    chatter and Creator, else None."""
+    noted = getattr(request.state, "chatter_employee", None)
+    if noted is not None and noted[0] == chatter.id and noted[1] == account_id:
+        return noted[2]
     return None
 
 
@@ -1034,13 +1049,16 @@ async def find_owner_employee_id(s, user) -> int | None:
     ).order_by(Employee.id).limit(1))).scalar_one_or_none()
 
 
-async def _mirror_id(s, chatter_id: str, owner_user_id: str) -> int | None:
+async def mirror_id(s, chatter_id: str, owner_user_id: str) -> int | None:
+    """The Mirror Employee's id for (chatter, Agency) in session `s`, or None.
+    The lowest id when a box without `uq_employees_chatter_owner` raced in a
+    duplicate (see get_or_create_mirror_employee)."""
     return (await s.execute(
         select(Employee.id).where(
             Employee.chatter_id == chatter_id,
             Employee.user_id == owner_user_id,
-        )
-    )).scalar_one_or_none()
+        ).order_by(Employee.id).limit(1)
+    )).scalars().first()
 
 
 async def get_or_create_mirror_employee(
@@ -1073,7 +1091,7 @@ async def get_or_create_mirror_employee(
     try:
         async with get_session() as s:
             # Fast path: row already exists.
-            existing = await _mirror_id(s, chatter_id, owner_user_id)
+            existing = await mirror_id(s, chatter_id, owner_user_id)
             if existing is not None:
                 return existing
 
@@ -1105,7 +1123,7 @@ async def get_or_create_mirror_employee(
                 # Sibling raced us — roll back the failed insert and
                 # SELECT to capture the canonical id from the winner.
                 await s.rollback()
-                existing = await _mirror_id(s, chatter_id, owner_user_id)
+                existing = await mirror_id(s, chatter_id, owner_user_id)
                 if existing is None:
                     log.error(
                         "chatter→emp: IntegrityError on insert but no "

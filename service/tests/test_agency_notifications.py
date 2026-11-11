@@ -5,7 +5,7 @@ roadmap W6 6.7 and 6.10) and the audit log's names and date filter (6.16).
 Over HTTP with real session cookies from the shared two-Agency fixture: the
 audit middleware's hook files a row per real change (a role, a deactivation,
 a chatter's unsend) and none for a save that changed nothing; each row is its
-own Agency's; read / read-all, dismiss / dismiss-all (kept for the dedupe)
+own Agency's; read / read-all, dismiss / dismiss-all up to the shown id (kept for the dedupe)
 and the unread count; a kind switched off in
 the `preferences` blob files nothing; an assignment naming another Agency's
 Employee files nothing; a dead session files once per episode; the clock-in
@@ -210,6 +210,22 @@ def case_dismiss_takes_rows_off_the_list_reads_them_and_keeps_the_dedupe():
     assert all(r.read_at is not None and r.dismissed_at is not None for r in _rows(A))
     assert [n["text"] for n in OWNER_B.get("/admin/agency-notifications").json()["notifications"]] == ["b0"]
     assert CHATTER_A.post("/admin/agency-notifications/dismiss-all").status_code == 403
+
+
+def case_dismiss_all_up_to_id_spares_rows_filed_after_the_clients_fetch():
+    _clear()
+    asyncio.run(notifications_api.notify(A, [Notice("role_changed", "a0"), Notice("role_changed", "a1")]))
+    asyncio.run(notifications_api.notify(B, [Notice("role_changed", "b0")]))
+    shown = max(n["id"] for n in OWNER_A.get("/admin/agency-notifications").json()["notifications"])
+    # Filed after the owner's fetch: Clear all must not dismiss it unseen (its dedupe would block a refile).
+    asyncio.run(notifications_api.notify(A, [Notice("session_dead", "late", dedupe="dead:late")]))
+    b_id = _rows(B)[0].id
+    assert OWNER_A.post("/admin/agency-notifications/dismiss-all", json={"up_to_id": max(shown, b_id)}).json() \
+        == {"unread": 1}
+    body = OWNER_A.get("/admin/agency-notifications").json()
+    assert [n["text"] for n in body["notifications"]] == ["late"] and body["unread"] == 1, body
+    # Still the caller's Agency only, whatever the id range.
+    assert [n["text"] for n in OWNER_B.get("/admin/agency-notifications").json()["notifications"]] == ["b0"]
 
 
 def _stream_agencies(client) -> frozenset:

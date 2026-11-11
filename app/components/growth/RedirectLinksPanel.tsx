@@ -38,10 +38,11 @@ export function RedirectLinksPanel({ accountId, onAccountChange }: {
   const err = form.err;
 
   async function create() {
-    const body = buildPayload(form, botAvailable);
-    if (!body) { dispatch({ type: "fail", err: formError(form) ?? "Invalid link." }); return; }
+    const why = formError(form);
+    if (why) { dispatch({ type: "fail", err: why }); return; }
     try {
-      await createM.mutateAsync(body);
+      // A target the relay refuses comes back as its 422 detail, shown as the error.
+      await createM.mutateAsync(buildPayload(form, botAvailable));
       dispatch({ type: "reset" });
     } catch (e) { dispatch({ type: "fail", err: errMsg(e, "Create failed") }); }
   }
@@ -123,6 +124,9 @@ export function RedirectLinksPanel({ accountId, onAccountChange }: {
                       className="h-3.5 w-3.5 accent-accent" />
                     Bot check
                   </label>
+                  {updateM.isError && updateM.variables?.id === l.id && (
+                    <span role="alert" className="text-err text-[11px]">{errMsg(updateM.error, "Bot check not saved")}</span>
+                  )}
                   <CopyButton text={publicUrl(l.path)} label="Copy link" />
                   <Button size="sm" variant="ghost" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                     {openId === l.id ? "Hide" : "Analytics"}

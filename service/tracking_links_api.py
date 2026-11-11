@@ -40,6 +40,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -52,6 +53,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 import client_addr
+import of_origin
+import token_bucket
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import TrackingClick, TrackingLink
@@ -77,7 +80,8 @@ _BARE_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:(?!\d)", re.I)
 def _normalize_target(url: Any) -> str | None:
     """The http(s) URL to store, or None. No scheme → https:// is prepended
     (`ofl.ink/nora` → `https://ofl.ink/nora`); any other scheme is
-    refused, and so is a host with no dot. Mirror: app/components/growth/customRedirectForm.ts."""
+    refused, and so is a host with no dot. The one check: the app sends the
+    target as typed and shows this route's 422."""
     if not isinstance(url, str):
         return None
     url = url.strip()
@@ -132,19 +136,73 @@ def _verify_client() -> httpx.AsyncClient:
     return _verify_http[1]
 
 
+def _verify_url() -> str:
+    """Cloudflare's siteverify, or TURNSTILE_VERIFY_URL (env, a test double) when
+    that is an http(s) URL on loopback: the secret is posted there, so any
+    other host is ignored (of_origin.loopback_url, ADR 0024's OF_API_ORIGIN rule)."""
+    raw = os.environ.get("TURNSTILE_VERIFY_URL", "").strip()
+    if not raw:
+        return TURNSTILE_VERIFY_URL
+    if of_origin.loopback_url(raw) is None:
+        log.warning("TURNSTILE_VERIFY_URL ignored: not a loopback http(s) URL")
+        return TURNSTILE_VERIFY_URL
+    return raw
+
+
+# Outstanding siteverify calls, all clients together: past this a verify answers
+# 503 (the page shows Retry) instead of queueing behind the client's connections.
+_VERIFY_MAX_INFLIGHT = 32
+_verify_inflight = 0
+
+
 async def _turnstile_passes(secret: str, token: str, remoteip: str | None) -> bool | None:
-    """True/False = Cloudflare's verdict; None = Cloudflare unreachable / garbled.
-    TURNSTILE_VERIFY_URL (env) points the call elsewhere (a test double)."""
-    url = os.environ.get("TURNSTILE_VERIFY_URL", "").strip() or TURNSTILE_VERIFY_URL
+    """True/False = Cloudflare's verdict; None = Cloudflare unreachable, busy on
+    its side (non-200, `internal-error`), garbled, or too many calls out."""
+    global _verify_inflight
+    if _verify_inflight >= _VERIFY_MAX_INFLIGHT:
+        log.warning("turnstile siteverify: %d calls out, refusing", _verify_inflight)
+        return None
     data = {"secret": secret, "response": token}
     if remoteip:
         data["remoteip"] = remoteip
+    _verify_inflight += 1
     try:
-        r = await _verify_client().post(url, data=data)
-        return bool(r.json().get("success"))
+        r = await _verify_client().post(_verify_url(), data=data)
+        if r.status_code != 200:
+            log.warning("turnstile siteverify answered %s", r.status_code)
+            return None
+        answer = r.json()
+        if answer.get("success"):
+            return True
+        if "internal-error" in (answer.get("error-codes") or []):
+            log.warning("turnstile siteverify internal-error")
+            return None
+        return False
     except (httpx.HTTPError, ValueError, AttributeError):
         log.warning("turnstile siteverify unreachable", exc_info=True)
         return None
+    finally:
+        _verify_inflight -= 1
+
+
+# Per-client verify budget (client_addr: the trusted hop's address, an IPv6
+# client by its /64): VERIFY_CAPACITY at once, refilling one per VERIFY_REFILL_S.
+# Sized for many fans behind one carrier NAT address on a gated link in a click
+# burst (each check plus its Retries), which must not see 429; a script posting
+# garbage tokens is held to ~30 a minute per address (plus _VERIFY_MAX_INFLIGHT
+# overall) and gets 429 before the link lookup and Cloudflare's siteverify. The
+# plain GET is not throttled (a burst of real clicks from one NAT must all land).
+VERIFY_CAPACITY = 30
+VERIFY_REFILL_S = 2.0
+_verify_buckets = token_bucket.Buckets(max_keys=10_000)
+_clock = time.monotonic
+
+
+def _verify_wait(request: Request) -> int | None:
+    """Take one verify token for this client: None, or the seconds until one is
+    back when its budget is spent."""
+    key = token_bucket.bucket_key(client_addr.client_address(request))
+    return _verify_buckets.take(key, VERIFY_CAPACITY, VERIFY_REFILL_S, _clock())
 
 
 # The page a gated link answers: dark, blank, the widget alone. It must never
@@ -167,12 +225,14 @@ headers:{{"content-type":"application/json"}},body:JSON.stringify({{token:t}})}}
 function failTs(){{document.getElementById("r").style.display="block"}}
 function retryTs(){{document.getElementById("r").style.display="none";
 if(window.turnstile)turnstile.reset("#w")}}
+document.addEventListener("DOMContentLoaded",function(){{
+document.getElementById("rb").addEventListener("click",retryTs)}})
 </script>
 <script nonce="{nonce}" src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head><body><div id="m">
 <div id="w" class="cf-turnstile" data-sitekey="{site_key}" data-theme="dark" data-appearance="interaction-only"
  data-callback="okTs" data-error-callback="failTs" data-expired-callback="retryTs"></div>
-<div id="r"><button type="button" onclick="retryTs()">Retry</button></div>
+<div id="r"><button id="rb" type="button">Retry</button></div>
 </div></body></html>
 """
 
@@ -276,7 +336,12 @@ async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = 
     """The gate page's widget callback: Cloudflare's siteverify on the token, then
     the click and the target. A link that is not gated (or keys unset) passes as
     its GET would. Fail → 403 (rejected) / 503 (Cloudflare unreachable): the page
-    shows Retry."""
+    shows Retry. A client past its verify budget gets 429 + Retry-After first."""
+    wait = _verify_wait(request)
+    if wait is not None:
+        log.info("tracking verify throttled slug=%s retry_after=%ss", slug, wait)
+        return JSONResponse({"detail": "too many checks, retry shortly"}, status_code=429,
+                            headers={"Cache-Control": "no-store", "Retry-After": str(wait)})
     link_id, target, gated = await _lookup(slug)
     keys = _turnstile_keys()
     if gated and keys:
@@ -322,7 +387,8 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
         raise HTTPException(422, "name is required")
     target = _normalize_target(body.target_url)
     if target is None:
-        raise HTTPException(422, "target_url must be an http(s) URL with a dotted host")
+        # Shown as is under the Create form (RedirectLinksPanel): the only check of the target.
+        raise HTTPException(422, "Target must be a web address, e.g. ofl.ink/name.")
     base = _slugify(body.slug) if body.slug else _slugify(name)
     now = datetime.utcnow()
 

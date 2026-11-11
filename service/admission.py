@@ -204,7 +204,8 @@ class LoopLane:
       holds a thread; an `/img` waiter is a browser tile better answered with a
       retryable 503 than left hanging). A queued caller here holds nothing, so
       queueing is simply the right answer and a timeout would only invent a
-      failure mode the callers would have to handle.
+      failure mode the callers would have to handle. The exception is a slot
+      held for minutes (a download stream): `enter_within` bounds that wait.
     • The semaphore is PER RUNNING LOOP. An `asyncio.Semaphore` that has parked
       a waiter belongs to the loop it parked it on, and the test harness gives
       every case its own `asyncio.run()`. Weak keys, so a finished loop takes
@@ -249,11 +250,28 @@ class LoopLane:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
-        # Resolved by RUNNING loop, so this releases the same semaphore
-        # `__aenter__` took — there is no per-entry state to carry.
+        self.leave()
+
+    def leave(self) -> None:
+        """`__aexit__` without the coroutine, for a slot given back from a loop
+        callback (a download's, once its upstream close finished). On the loop's
+        thread only. Resolved by RUNNING loop, so this releases the same
+        semaphore `__aenter__` took — there is no per-entry state to carry."""
         self._semaphore().release()
         with self._lock:
             self.busy = max(0, self.busy - 1)
+
+    async def enter_within(self, wait_s: float) -> bool:
+        """`__aenter__` with a bounded wait, for the one caller whose slot is held for minutes (a download stream):
+        True with a slot taken (pair it with `__aexit__`), False with nothing taken when none came within `wait_s`.
+        A timeout cancels the semaphore wait, which takes no permit (asyncio's acquire hands a permit it had already
+        been given to the next waiter when cancelled), and `busy` is counted only after the acquire returned."""
+        try:
+            await asyncio.wait_for(self.__aenter__(), wait_s)
+        except TimeoutError:
+            log.warning("%s lane full: waited %ss, %s already running", self.name, wait_s, self.cap)
+            return False
+        return True
 
     def stats(self) -> dict[str, int]:
         """This lane's numbers for /admin/streams. `peak` rather than
@@ -382,8 +400,9 @@ HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 24)
 REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 16)
 
 # Vault Pro's download through the relay (`vault_download_api`): a slot per file for its WHOLE stream, which for a
-# source video can be minutes. Queued, never rejected: the browser runs 3 at a time per tab, so a waiter is another
-# tab's file. 4 keeps a whole-vault pull from holding more than a few proxy sockets and curl handles at once.
+# source video can be minutes. Queued for at most `vault_download_api.SLOT_WAIT_S` (`enter_within`), then a 503 the
+# browser lists as a failed item (Retry failed): the browser runs 3 at a time per tab, so a waiter is another tab's
+# file. 4 keeps a whole-vault pull from holding more than a few proxy sockets and curl handles at once.
 VAULT_DOWNLOAD = LoopLane("vault_download", "VAULT_DOWNLOAD_CONCURRENCY", 4)
 
 

@@ -448,4 +448,43 @@ def case_chatter_agency_context_and_outbound_resolver_name_the_same_employee():
     assert ctx.json()["employee_id"] == sent.json()["employee_id"], (ctx.json(), sent.json())
 
 
+
+def case_a_duplicate_mirror_row_resolves_to_the_lowest_id_not_a_500():
+    """A box without uq_employees_chatter_owner can race in a second Mirror row:
+    the shared-session read (role hook) and get-or-create both take the lowest id."""
+    import types
+    import agency_context as agency_ctx
+
+    from sqlalchemy import text
+
+    async def run():
+        async with get_session() as s:   # as on a box that came up without it
+            await s.execute(text("DROP INDEX IF EXISTS uq_employees_chatter_owner"))
+        ids = []
+        for _ in range(2):
+            async with get_session() as s:
+                row = Employee(display_name="Dup", is_active=True, created_at=datetime.utcnow(),
+                               user_id=IDS["agency_a_owner"], chatter_id="dup-mirror-chatter")
+                s.add(row)
+                await s.flush()
+                ids.append(row.id)
+        chatter = types.SimpleNamespace(id="dup-mirror-chatter", display_name="Dup",
+                                        username="dup", color=None)
+        try:
+            async with get_session() as s:
+                ctx = await agency_ctx._chatter_context(chatter, IDS["agency_a_owner"], db_session=s)
+            made = await employees.get_or_create_mirror_employee(
+                "dup-mirror-chatter", IDS["agency_a_owner"], display_name="Dup", color=None)
+        finally:
+            async with get_session() as s:
+                await s.execute(delete(Employee).where(Employee.id.in_(ids)))
+                await s.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_employees_chatter_owner "
+                    "ON employees (chatter_id, user_id) WHERE chatter_id IS NOT NULL"))
+        return min(ids), ctx.employee_id, made
+
+    lowest, via_session, via_create = asyncio.run(run())
+    assert via_session == lowest and via_create == lowest, (lowest, via_session, via_create)
+
+
 _harness.run()

@@ -38,17 +38,11 @@ vi.mock("@/contexts/ChatterContext", async (orig) => {
   return { ...(await orig<typeof import("@/contexts/ChatterContext")>()), useChatter: value, useOptionalChatter: value };
 });
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null, clear: vi.fn() }) }));
-// The Per-model KPIs cards' insides are their own: a stub here that shows the window it was given.
-vi.mock("@/components/stats/PerModelKpiGrid", () => ({
-  default: ({ from, to }: { from: string | null; to: string | null }) => (
-    <div data-testid="per-model-kpis-stub" data-from={from ?? ""} data-to={to ?? ""} />
-  ),
-}));
 
 import HomePage from "@/app/page";
 import { DASHBOARD_HEADER, type DashboardControl } from "@/components/home/dashboardControls";
-import { REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
-import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/netMissingNote";
+import { CHARGEBACKS_UNAVAILABLE, REFERRALS_UNAVAILABLE, TOTAL_PARTIAL } from "@/components/home/netMissingNote";
+import { TILE_ICON } from "@/components/home/tileIcons";
 import { periodWindow, type Period } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { shouldPersistKey } from "@/components/providers";
@@ -530,6 +524,8 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
       await shows(mode === "Net" ? "$61" : "$77");
       expect(tile("referrals")).toHaveAttribute("title", REFERRALS_UNAVAILABLE);
       expect(tile("referrals").textContent).toBe("$5Referrals");
+      // Total holds the sales and the referrals that did answer: marked partial.
+      expect(totalTile().querySelector("[data-partial]")).toHaveAttribute("aria-label", TOTAL_PARTIAL);
     }
   });
 
@@ -756,10 +752,12 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
         worked_minutes: 75, recorded_earnings_cents: 0, open_now: false, employee_id: 8, group_name: null },
       { key: "9", display_name: "Fixture Chatter Three", scheduled_shifts: 0, shifts_worked: 0, scheduled_minutes: 0,
         worked_minutes: 0, recorded_earnings_cents: 0, open_now: false, employee_id: 9, group_name: null },
+      { key: "10", display_name: "Fixture Chatter Four", scheduled_shifts: 1, shifts_worked: 1, scheduled_minutes: 60,
+        worked_minutes: 2, recorded_earnings_cents: 0, open_now: true, employee_id: 10, group_name: null },
     ] });
     await mountHome();
     const card = screen.getByRole("region", { name: "Worked hours" });
-    await waitFor(() => expect(card.querySelectorAll("[data-employee]")).toHaveLength(2));
+    await waitFor(() => expect(card.querySelectorAll("[data-employee]")).toHaveLength(3));
     const bars = Array.from(card.querySelectorAll<HTMLElement>("[data-employee]"), (r) => ({
       name: r.querySelector("[data-name]")?.textContent,
       hours: r.querySelector("[data-hours]")?.textContent,
@@ -768,6 +766,8 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     expect(bars).toEqual([
       { name: "Fixture Chatter One", hours: "5h", width: "100%" },
       { name: "Fixture Chatter Two", hours: "1.3h", width: "25%" },
+      // #12: two minutes beside a visible bar read "<0.1h", not "0h".
+      { name: "Fixture Chatter Four", hours: "<0.1h", width: `${(2 / 300) * 100}%` },
     ]);
     const read = fetchMock.mock.calls.map(([u]) => new URL(String(u), "http://localhost"))
       .find((u) => u.pathname === "/admin/shifts/timesheet")!;
@@ -882,12 +882,12 @@ describe("Employee sales reads the per-employee figures for the selected window 
     await ranked(WANT);
     // The exact query string service/tests/test_dashboard_reads.py calls for Yesterday.
     expect(perEmployeeReads().map(({ url }) => url.search)).toEqual([
-      "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z&include_series=true",
+      "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z&include_series=true&tz=Pacific%2FHonolulu",
     ]);
     fireEvent.click(tab("This month"));
     await waitFor(() => expect(perEmployeeReads()).toHaveLength(2));
     expect(perEmployeeReads()[1].url.search).toBe(
-      "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z&include_series=true");
+      "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z&include_series=true&tz=Pacific%2FHonolulu");
     // The switch does not drive Employee sales: the bundle's read takes no basis.
     pickBasis("Gross");
     await shows("$18");
@@ -936,19 +936,11 @@ describe("Employee sales reads the per-employee figures for the selected window 
   });
 
   it("a window with no Employee sales draws the bundle's bare axes: dashed rules at 0 … 1", async () => {
-    perEmployee = [async () => jsonRes({ employees: [], attribution_fallback: null })];
+    perEmployee = [async () => jsonRes({ series: [], employees: [], attribution_fallback: null })];
     await mountHome();
     const axes = await within(card()).findByRole("img", { name: "No employee sales in this period" });
     expect(Array.from(axes.querySelectorAll("text"), (t) => t.textContent)).toEqual(["1", "0.8", "0.6", "0.4", "0.2", "0"]);
     expect(axes.querySelectorAll("line[stroke-dasharray]")).toHaveLength(6);
-    expect(ranking()).toEqual([]);
-  });
-
-  // Ticket 28: an answer without an `employees` array (the Route walk's `[]`) reads as no sales, never a crash.
-  it.each([["[]", []], ["{}", {}]])("an answer of %s with no employees array draws the empty axes, not a crash", async (_name, body) => {
-    perEmployee = [async () => jsonRes(body)];
-    await mountHome();
-    expect(await within(card()).findByRole("img", { name: "No employee sales in this period" })).toBeInTheDocument();
     expect(ranking()).toEqual([]);
   });
 });
@@ -970,6 +962,10 @@ describe("Home: the static card set and per-card permissions", () => {
     renderWithProviders(<HomePage />);
     // The owner-only cards (Current clocked-in employees, Worked hours) take no cell for a chatter either.
     await waitFor(() => expect(shownCards()).toEqual(["my-shifts"]));
+    // #20: the sole card takes the full width, not the 240px left column.
+    const cell = document.querySelector<HTMLElement>('[data-card="my-shifts"]')!;
+    expect(cell).toHaveClass("md:col-span-2");
+    expect(cell).not.toHaveClass("md:row-span-2");
     expect(revenueReads()).toHaveLength(0);
     expect(perEmployeeReads()).toHaveLength(0);
   });

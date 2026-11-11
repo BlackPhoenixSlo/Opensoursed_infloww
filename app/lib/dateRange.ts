@@ -90,13 +90,12 @@ function dayStartMs(wall: number, timeZone?: string | null): number {
 }
 
 /** The current calendar month in `timeZone` (the browser's when null or
- *  absent), or the one `back` months before it: its first instant, up to the
- *  next month's first instant. */
-export function monthRange(timeZone?: string | null, back = 0): [Date, Date] {
+ *  absent): its first instant, up to the next month's first instant. */
+export function monthRange(timeZone?: string | null): [Date, Date] {
   const { y, m } = wallParts(new Date(), timeZone);
   return [
-    new Date(dayStartMs(Date.UTC(y, m - 1 - back, 1), timeZone)),
-    new Date(dayStartMs(Date.UTC(y, m - back, 1), timeZone)),
+    new Date(dayStartMs(Date.UTC(y, m - 1, 1), timeZone)),
+    new Date(dayStartMs(Date.UTC(y, m, 1), timeZone)),
   ];
 }
 
@@ -157,7 +156,8 @@ export type Period = "yesterday" | "today" | "week" | "month" | "last30Days";
  *  1 ms before the next period's first instant. `week` is the seven days from
  *  the last `weekStart`, `month` the whole calendar month, as the bundle cuts
  *  them (docs/spec/infloww-parity-round-2/phase-01-dashboard.md, Interfaces;
- *  stories 7, 8 and 10); `last30Days` today and the preceding 29 calendar days. */
+ *  stories 7, 8 and 10); `last30Days` the reports' "Last 30 days" (`presetRange("30d")`, today and the 29 calendar
+ *  days before), so one label is one window on the Dashboard and in Creator reports. */
 export function periodWindow(
   period: Period, timeZone: string | null, weekStart: "monday" | "sunday",
 ): [string, string] {
@@ -165,12 +165,12 @@ export function periodWindow(
     const [first, next] = monthRange(timeZone);
     return [first.toISOString(), new Date(next.getTime() - 1).toISOString()];
   }
+  if (period === "last30Days") {
+    const [from, to] = presetRange("30d", timeZone);
+    return [toLocalIso(from, false, timeZone)!, toLocalIso(to, true, timeZone)!];
+  }
   let back = period === "yesterday" ? 1 : 0;
   let days = 1;
-  if (period === "last30Days") {
-    back = 29;
-    days = 30;
-  }
   if (period === "week") {
     const weekday = new Date(`${todayISO(timeZone)}T00:00:00Z`).getUTCDay();
     back = weekStart === "sunday" ? weekday : (weekday + 6) % 7;

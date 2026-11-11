@@ -26,6 +26,9 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { findPaths, type PathHit } from "./answerLinks";
 
+/** For the panel's "Do it for me" swap chip: the link reader rides this chunk, never the shell's first load. */
+export { findPaths };
+
 /** `**bold**` · `*italic*` · `` `code` `` — first match wins, left to right. */
 const INLINE_RE = /`([^`\n]+)`|\*\*([^\n]+?)\*\*|\*([^*\n]+?)\*/g;
 

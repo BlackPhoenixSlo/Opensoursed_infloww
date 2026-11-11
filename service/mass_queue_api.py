@@ -553,7 +553,7 @@ async def of_send_or_schedule_mass(
             await ensure_funnel_walker(account_id)
         except Exception:
             log.exception("funnel walker ensure failed (account=%s) — enable "
-                          "Reply-walking in My AI Chatter > Auto Funnel", account_id)
+                          "Reply-walking in My Automations > Auto Funnel", account_id)
     # Scheduled sends don't produce per-fan rows now — OF fires the actual
     # messages later. The mass_run_id is stamped on `mass_runs` so the
     # WS-pump reconciler (TODO inside _close_mass_run) can match the

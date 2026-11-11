@@ -146,6 +146,18 @@ function Card({
         </p>
         <MediaMeta item={item} lanes={item.lanes} />
         <Reasons items={item.iffy_why} tone="warn" />
+        {item.settled.length > 0 && (
+          <ul aria-label="Auto-settled reading" className="space-y-0.5">
+            <li className="text-[12px] leading-snug text-info font-semibold">
+              Auto-settled at {item.settled_price ? `$${item.settled_price}` : "no tease price"}
+            </li>
+            {item.settled.map((line) => (
+              <li key={line} className="text-[12px] leading-snug text-info">
+                Auto-settled: {line}
+              </li>
+            ))}
+          </ul>
+        )}
 
         <IfInput
           value={note}
@@ -200,7 +212,6 @@ export default function VaultFlagsReviewModal({
     // A correction re-cuts the lanes and re-bands the prices.
     for (const key of [
       "vault-flags-accuracy",
-      "vault-disputes",
       "vault-ai-folder-plan",
       "vault-mirror-items",
     ]) {

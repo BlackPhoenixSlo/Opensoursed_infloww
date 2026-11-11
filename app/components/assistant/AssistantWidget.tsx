@@ -15,7 +15,8 @@
  * out of the way is worse than no memory at all — and because the
  * /help-center page (HelpCenterPage.tsx) shows the same conversation.
  * `AssistantWidget` is the gate: the corner launcher and the docked panel,
- * hidden on /help-center, where the page is the open panel. `AssistantPanel`
+ * hidden on /help-center, where the page is the open panel, and in the
+ * Messages Pro window (`isPopoutRoute`). `AssistantPanel`
  * is presentation plus the draft textarea, in a `dock`, `page` or `sheet` variant.
  *
  * LOOKS AND SITS LIKE INFLOWW'S OWN INTERCOM MESSENGER: a round black
@@ -63,11 +64,23 @@
  * answers from the manual alone (service/assistant_api.py). A hint names the
  * connect path — rendered through AnswerText, so it is a link to the page
  * that does it.
+ *
+ * "DO IT FOR ME" (docs/spec/assistant-do-mode.md): a second mode beside Q&A,
+ * where the bot opens the page and fills the form itself, with a visible
+ * cursor, and saves it OFF. The provider owns the run (doRunReducer.ts) and
+ * its runner (useDoRunner.ts) so a route change never stops it; pages reach it
+ * through the agent bridge (agentBridge.tsx); the flows are recipes over the
+ * forms' own reducers (doFlows.ts). The panel shows the request, the server's
+ * plan card (DoMode.tsx) and the outcome; on a phone the sheet folds to a
+ * "Doing it… · Stop" pill while it runs (then the outcome · Open). A Q&A
+ * answer linking a flow's page offers the swap ("Do it for me" chip). Offered
+ * per the server's do-caps (doOfferOf). A plan and its refinements share one
+ * thread id of their own, never the Q&A conversation's.
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
-import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, SendHorizontal, X } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, MousePointerClick, SendHorizontal, X } from "lucide-react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 
@@ -81,6 +94,7 @@ import { useDragPress } from "@/components/useDragPress";
 import { relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
+import { isPopoutRoute } from "@/lib/nav";
 import { BRAND_NAME } from "@/lib/brand";
 import {
   appFocusOf, assistantReducer, canGeneralOf, HISTORY_LIMIT, historyFromRows, initialAssistantState,
@@ -88,6 +102,12 @@ import {
   type AskResponse, type AssistantCore, type Focus, type HistoryRow, type ThreadSummary, type Turn,
 } from "./assistantReducer";
 import { useBodyScrollLock } from "./useBodyScrollLock";
+import { AgentBridgeProvider, createAgentBridge } from "./agentBridge";
+import { AgentCursor } from "./AgentCursor";
+import { CARD, DoPill, DoThread, pillFor, type DoCallbacks } from "./DoMode";
+import { flowForHref, type DoDraft } from "./doFlows";
+import { doOfferOf, doRunReducer, draftFrom, initialDoRun, previousOf, type DoOffer, type DoRun } from "./doRunReducer";
+import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
 import { ThreadList } from "./ThreadList";
 import {
@@ -148,6 +168,17 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   openThread: (t: ThreadSummary) => void;
   /** For the "Hi <name>" greeting; null falls back to "Hi there". */
   userName: string | null;
+  /** "Do it for me": shown / usable / why not (doOfferOf). */
+  doOffer: DoOffer;
+  /** The do-mode run ("off" = Q&A). */
+  doRun: DoRun;
+  enterDo: () => void;
+  exitDo: () => void;
+  /** Draft a do-mode request (a reply while planned refines the plan). */
+  sendDo: (request: string) => void;
+  /** Start do-mode on a Q&A turn's question (the swap chip). */
+  doFromQuestion: (question: string) => void;
+  doCallbacks: DoCallbacks;
 }
 
 /** A conversation id: made here, stored by the server as-is. Not
@@ -169,6 +200,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(assistantReducer, initialAssistantState);
   const { hydrated, open, history, turns, unread, active, held } = state;
   const pathname = usePathname();
+  const router = useRouter();
+  // "Do it for me": the run, the bridge pages register on, and the server's say on who may.
+  const [doRun, doDispatch] = useReducer(doRunReducer, initialDoRun);
+  const [bridge] = useState(createAgentBridge);
+  const [capsOf, setCapsOf] = useState<{ accountId: string; body: { can_do?: unknown; reason?: unknown } | null } | null>(null);
+  // The plan's own thread (never the Q&A one): kept while a plan is refined, fresh for every new request.
+  const doThread = useRef<string | null>(null);
   // A reply is "read" if the dock is open or the help page is on screen; the
   // reducer holds both and reads them when the answer lands.
   useEffect(() => { dispatch({ type: "route", onHelpPage: pathname === HELP_PATH }); }, [pathname]);
@@ -254,6 +292,59 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     }
   }, [accountId, employeeId, active]);
 
+  // ── Do it for me ──
+  // Per account (the server runs the same check creating an Auto mass does): asked once per focused model while a
+  // surface is up. Unknown (General, loading, a failed read) → doOfferOf's fallback.
+  const wantCaps = hydrated && (open || state.onHelpPage) && !!accountId;
+  useEffect(() => {
+    if (!wantCaps || !accountId) return;
+    let live = true;
+    relay.get<{ can_do?: unknown; reason?: unknown }>(`/admin/assistant/do-caps?account_id=${encodeURIComponent(accountId)}`, { accountId, employeeId })
+      .then((body) => { if (live) setCapsOf({ accountId, body: body ?? null }); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [wantCaps, accountId, employeeId]);
+  // Only the focused model's answer counts (a stale one for another model reads as none).
+  const doOffer = doOfferOf(capsOf && capsOf.accountId === accountId ? capsOf.body : null, isUser);
+  const navigate = useCallback((href: string) => router.push(href), [router]);
+  const cursor = useDoRunner({ run: doRun, dispatch: doDispatch, bridge, navigate });
+  const enterDo = useCallback(() => doDispatch({ type: "enter" }), []);
+  const exitDo = useCallback(() => doDispatch({ type: "exit" }), []);
+  const sendDo = useCallback(async (request: string) => {
+    if (!accountId) return;   // a model's page: the composer waits for one
+    const id = newThreadId();
+    const previous = previousOf(doRun);
+    const thread = previous && doThread.current ? doThread.current : (doThread.current = newThreadId());
+    doDispatch({ type: "draft", id, request });
+    try {
+      const r = await relay.post<DoDraft>(
+        "/admin/assistant/draft",
+        { request, account_id: accountId, thread_id: thread, ...(previous ? { previous } : {}) },
+        { accountId, employeeId },
+      );
+      doDispatch({ type: "drafted", id, draft: draftFrom(r, accountId) });
+    } catch (e) {
+      const detail = e instanceof Error && e.message ? ` (${e.message})` : "";
+      doDispatch({ type: "fail", id, msg: `Couldn't reach the assistant${detail} — try again in a moment.` });
+    }
+  }, [accountId, employeeId, doRun]);
+  const doFromQuestion = useCallback((question: string) => {
+    doDispatch({ type: "enter" });
+    void sendDo(question);
+  }, [sendDo]);
+  // A run keeps the bot open (its Stop), wherever it was started.
+  const startRun = useCallback((type: "start" | "skipAnimation") => {
+    doDispatch({ type });
+    if (!open) dispatch({ type: "toggle" });
+  }, [open]);
+  const doCallbacks = useMemo<DoCallbacks>(() => ({
+    start: () => startRun("start"),
+    skipAnimation: () => startRun("skipAnimation"),
+    cancel: () => doDispatch({ type: "reset" }),
+    stop: () => doDispatch({ type: "abort", reason: "Stopped" }),
+    askAsQuestion: (request: string) => { doDispatch({ type: "exit" }); void ask(request); },
+  }), [startRun, ask]);
+
   const pick = useCallback((focus: Focus) => dispatch({ type: "pick", focus }), []);
   const newChat = useCallback(() => dispatch({ type: "new_chat" }), []);
   const openThread = useCallback(
@@ -278,9 +369,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     appFocus: appFocusOf(state),
     shown, threads,
     pick, newChat, openThread, userName,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
   };
   return (
-    <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>
+    <AssistantContext.Provider value={value}>
+      <AgentBridgeProvider bridge={bridge}>{children}</AgentBridgeProvider>
+      {cursor && <AgentCursor cursor={cursor} />}
+    </AssistantContext.Provider>
   );
 }
 
@@ -295,15 +390,22 @@ export function useAssistant(): AssistantState {
 export function AssistantWidget() {
   const a = useAssistant();
   const pathname = usePathname();
-  const onMessagesPro = pathname === "/messages-pro" || pathname?.startsWith("/messages-pro/");
+  // Messages Pro's own window (lib/nav, as AppShell): no help bot there.
+  const onMessagesPro = isPopoutRoute(pathname ?? "/");
   const phone = useMediaQuery("(max-width: 767.98px)");
+  // The finished run the user tapped Open on (pillFor).
+  const [expanded, setExpanded] = useState<DoRun | null>(null);
 
   if (!a.hydrated || pathname === HELP_PATH || onMessagesPro) return null;
 
   if (phone) {
     return (
       <>
-        {a.open && <AssistantPanel variant="sheet" onClose={a.toggle} />}
+        {/* While a "Do it for me" run fills the page, the sheet folds to a pill so the form shows; once it is over
+            the pill keeps the outcome until Open brings the sheet (and the full card) back. */}
+        {a.open && (pillFor(a.doRun, expanded)
+          ? <DoPill run={a.doRun} onStop={a.doCallbacks.stop} onOpen={() => setExpanded(a.doRun)} />
+          : <AssistantPanel variant="sheet" onClose={a.toggle} />)}
         <PhoneLauncher hidden={a.open} unread={a.unread} onOpen={a.toggle} />
       </>
     );
@@ -314,6 +416,7 @@ export function AssistantWidget() {
       {a.open && <AssistantPanel variant="dock" onClose={a.toggle} />}
       <button
         type="button"
+        data-assistant-ui
         onClick={a.toggle}
         // Desktop-only (the `phone` gate above), same as the MoneyRail dock: at
         // phone widths a fixed bottom corner sits on top of the chat composer.
@@ -499,6 +602,7 @@ export function AssistantPanel({
   const {
     shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus,
     ask, pick, newChat, openThread,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
   } = useAssistant();
   const answer = useLazyModule(answerText);
   const [draft, setDraft] = useState("");
@@ -507,8 +611,11 @@ export function AssistantPanel({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // An in-flight answer does NOT lock the composer: concurrent turns are fine —
   // `settled` (assistantReducer) matches answers to turns by id, never by order.
-  const canSend = draft.trim().length > 0 && accountId !== undefined;
-  const empty = shown.length === 0;
+  const doOn = doRun.phase !== "off";
+  const doBusy = doRun.phase === "drafting" || doRun.phase === "running";
+  // Do-mode sets up one model's page: it needs a model, not General.
+  const canSend = draft.trim().length > 0 && (doOn ? !!accountId && !doBusy : accountId !== undefined);
+  const empty = shown.length === 0 && !doOn;
   const v = VARIANT[variant];
   useBodyScrollLock(v.lockPage);
   const leave = v.closeOnNavigate ? onClose : undefined;
@@ -529,9 +636,13 @@ export function AssistantPanel({
 
   const send = () => {
     if (!canSend) return;
-    ask(draft.trim().slice(0, MAX_QUESTION_CHARS));
+    const q = draft.trim().slice(0, MAX_QUESTION_CHARS);
+    if (doOn) sendDo(q);
+    else ask(q);
     setDraft("");
   };
+  /** A Q&A answer that links a "Do it for me" flow's page offers the swap (the link reader rides AnswerText's chunk). */
+  const offersDo = (body: string) => !!answer && answer.findPaths(body).some((h) => flowForHref(h.href) !== null);
 
   const renderTurn = (t: Turn) => (
     <div key={t.id} className="flex flex-col gap-2">
@@ -559,13 +670,25 @@ export function AssistantPanel({
           {text(t.answer, !!t.error)}
         </div>
       )}
+      {doOffer.enabled && t.answer !== null && !t.error && offersDo(t.answer) && (
+        <button
+          type="button"
+          onClick={() => doFromQuestion(t.question)}
+          className="self-start flex h-8 items-center gap-1.5 rounded-full border border-[#dcdcdc] bg-white px-3 text-[13px] font-medium text-[#14161a] hover:border-[#bdbdbd]"
+          title="Opens the page and fills it in for you — saved OFF"
+        >
+          <MousePointerClick className="h-4 w-4" aria-hidden />Do it for me
+        </button>
+      )}
     </div>
   );
 
   return (
     <div
       data-look="messenger"
-      className={cn("flex flex-col bg-panel text-fg overflow-hidden", v.frame)}
+      data-assistant-ui
+      // A run's editor dialog sits at z-50: the dock rises over it so Stop stays in reach.
+      className={cn("flex flex-col bg-panel text-fg overflow-hidden", v.frame, variant === "dock" && doRun.phase === "running" && "z-[60]")}
     >
       {/* Dark header fading into the light body, as Infloww's messenger. */}
       {/* Home: dark (#242424 -> #2d2d2d) down past the greeting, fading to white behind the first card,
@@ -580,13 +703,14 @@ export function AssistantPanel({
       >
         <div className={cn("px-10", column)}>
           <div className="flex h-8 items-center gap-5">
-            {active !== null && (
+            {(active !== null || doOn) && (
               <button
                 type="button"
-                onClick={newChat}
-                className="-ml-6 -mr-3 grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10"
-                title="Back — start a new chat"
-                aria-label="New chat"
+                onClick={doOn ? exitDo : newChat}
+                disabled={doRun.phase === "running"}
+                className="-ml-6 -mr-3 grid h-8 w-8 place-items-center rounded-md text-white hover:bg-white/10 disabled:opacity-40"
+                title={doOn ? "Back — leave Do it for me" : "Back — start a new chat"}
+                aria-label={doOn ? "Leave Do it for me" : "New chat"}
               >
                 <ChevronLeft className="h-5 w-5" aria-hidden />
               </button>
@@ -626,7 +750,7 @@ export function AssistantPanel({
             </h2>
           ) : (
             <p className="mt-2 text-[12px] text-white/60">
-              Ask how something works, or paste a fan to ask why
+              {doOn ? "Do it for me — opens the page and fills it in" : "Ask how something works, or paste a fan to ask why"}
             </p>
           )}
         </div>
@@ -648,6 +772,25 @@ export function AssistantPanel({
                 </span>
                 <SendHorizontal className="h-5 w-5 shrink-0 fill-black text-black" aria-hidden />
               </button>
+              {doOffer.show && (
+                <div className="flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!doOffer.enabled}
+                    onClick={() => { enterDo(); composerRef.current?.focus({ preventScroll: true }); }}
+                    className={cn(CARD, "flex items-center gap-4 text-left",
+                      doOffer.enabled ? "hover:border-[#dcdcdc]" : "cursor-not-allowed opacity-60")}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] font-semibold text-[#14161a]">Do it for me</span>
+                      <span className="block text-[15px] text-[#6d6f74]">Opens the page and fills it in</span>
+                    </span>
+                    <MousePointerClick className="h-5 w-5 shrink-0 text-black" aria-hidden />
+                  </button>
+                  {/* Outside the button: the hint's settings path is a link (AnswerText). */}
+                  {doOffer.hint && <div className="px-1 text-[13px] text-[#6d6f74]" data-testid="do-hint">{text(doOffer.hint, true)}</div>}
+                </div>
+              )}
               {threads.length > 0 && (
                 <button
                   type="button"
@@ -666,7 +809,7 @@ export function AssistantPanel({
               )}
             </>
           )}
-          {shown.map(renderTurn)}
+          {doOn ? <DoThread run={doRun} on={doCallbacks} text={text} /> : shown.map(renderTurn)}
         </div>
       </div>
 
@@ -685,6 +828,9 @@ export function AssistantPanel({
           ) : rosterLoaded && accounts.length === 0 && (
             <div className="px-1 text-[11px] leading-4 text-muted">{isUser ? text(NO_ACCOUNT_HINT) : NO_ACCOUNT_CHATTER}</div>
           )}
+          {doOn && accountId === null && accounts.length > 0 && (
+            <div className="px-1 text-[11px] leading-4 text-muted">Pick a model above — Do it for me sets up one model&apos;s page.</div>
+          )}
           <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
             <textarea
               ref={composerRef}
@@ -696,8 +842,10 @@ export function AssistantPanel({
                   send();
                 }
               }}
-              placeholder="Ask a question…"
-              title="Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"
+              placeholder={doOn ? "What should I set up?" : "Ask a question…"}
+              title={doOn
+                ? "Describe what to set up; you get a plan to check before anything is filled in. Enter to send · Shift+Enter for a new line"
+                : "Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"}
               rows={1}
               className={cn(
                 "flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]",
@@ -732,8 +880,6 @@ export function AssistantPanel({
     </div>
   );
 }
-
-const CARD = "rounded-xl border border-[#ededed] bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
 
 /** Local time on the card: "Nov 10, 22:24". */
 const WHEN = new Intl.DateTimeFormat("en-US", {

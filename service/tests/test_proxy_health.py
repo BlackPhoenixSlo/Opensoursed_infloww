@@ -38,6 +38,7 @@ import proxy_health  # noqa: E402
 import proxy_health_decide  # noqa: E402
 import proxy_probe  # noqa: E402
 from of_client import OFClient, RetryPolicy  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 from _proxy_health_fixtures import (  # noqa: E402
     _Events, _Watch, _advance, _fail, _on, _pool, _registry, _spread_refusals, _then)
 
@@ -306,7 +307,7 @@ def _bare_client(get):
     c.proxy_url = "http://u:p@198.51.100.1:8080"
     c.timeout_s = 5
     c._x_hash = "x"
-    c.http = types.SimpleNamespace(get=get)
+    fake_wire(c, types.SimpleNamespace(get=get))
     c._signed_headers = lambda url: {}
     c._proxy_retry = lambda fn, **kw: OFClient._proxy_retry(c, fn, **{**kw, "policy": RetryPolicy(1, 0.0, True)})
     c._persist_cf_cookies = lambda r: None

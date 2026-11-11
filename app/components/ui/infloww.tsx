@@ -223,7 +223,8 @@ export function SaveRow({ save, onSave, disabled, warn, label = "Save", form, ch
   );
 }
 
-const LEARN = "inline-flex items-center gap-1 text-[14px] text-accent hover:text-accent-hover";
+/** Learn's text-button look (accent text, an icon before it); also the Vault Pro header's Download. */
+export const LEARN = "inline-flex items-center gap-1 text-[14px] text-accent hover:text-accent-hover";
 
 /** The header's "Learn" link: a 16px book, then 14px M1 text, to the help article (new tab). With no `href`: `tip`
  *  makes it a button that opens the help text in a popover under it (Escape or an outside click closes it); with
@@ -474,7 +475,8 @@ export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefi
 
 /** antd's switch: a 44x22 track, an 18px white knob 2px in; on #2d74ff, off white at 25%; disabled (and `loading`)
  *  at .65 opacity, `loading` spinning a 14px loader in the knob; the label 16px after it. Space / Enter toggles. */
-export function IfSwitch({ checked, onChange, label, loading, disabled, "aria-label": ariaLabel, className }: {
+export function IfSwitch({ id, checked, onChange, label, loading, disabled, "aria-label": ariaLabel, className }: {
+  id?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   label?: ReactNode;
@@ -485,7 +487,7 @@ export function IfSwitch({ checked, onChange, label, loading, disabled, "aria-la
 }) {
   const off = disabled || loading;
   return (
-    <button type="button" role="switch" aria-checked={checked} aria-label={ariaLabel} aria-busy={loading || undefined}
+    <button id={id} type="button" role="switch" aria-checked={checked} aria-label={ariaLabel} aria-busy={loading || undefined}
       disabled={off} onClick={() => onChange(!checked)}
       className={cn("inline-flex items-center gap-4 text-left disabled:cursor-not-allowed", className)}>
       <span aria-hidden className={cn(

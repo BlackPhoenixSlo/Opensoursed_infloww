@@ -14,6 +14,7 @@ import { renderWithProviders } from "@/test-utils";
 import { observerStub, relayGet, relayPost, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { VaultPicker } from "./VaultPicker";
 import { NOT_WIRED } from "./NotWired";
+import { SUMMARY_WAIT_MS } from "@/hooks/vaultRefresh";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -210,6 +211,24 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     answer();
     await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
     expect(paths()).not.toContain("/api/of/v2/vault/media");
+  });
+
+  // #15: the summary read has no timeout; one that never answers must not hold the grid on Loading for good.
+  it("lists live once the summary has been pending SUMMARY_WAIT_MS", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // routeRelay's first match wins, so the stall goes in front of beforeEach's summary route.
+    const orig = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation((p, ...rest) =>
+      p.includes("/admin/vault-ai/cache/summary") ? new Promise(() => {}) : orig(p, ...rest));
+    onTestFinished(() => { relayGet.mockImplementation(orig); });
+    renderPicker(42);
+    await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_WAIT_MS - 100); });
+    expect(paths()).toContain("/admin/vault-ai/cache/summary");
+    expect(screen.getByText("Loading vault…")).toBeInTheDocument();
+    expect(paths()).not.toContain("/api/of/v2/vault/media");
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    await waitFor(() => expect(card(7002)).toBeInTheDocument());
+    expect(paths()).toContain("/api/of/v2/vault/media");
   });
 
   it("a complete mirror serves a restricted chatter too (the server applies the folder limits)", async () => {

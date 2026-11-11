@@ -13,8 +13,8 @@ from __future__ import annotations
 
 EXACTLY_ONCE = ("describe sweep: every undescribed photo/clip got exactly one answer that described it, and its row "
                 "holds that answer (blank ones end 'refused', nothing written)")
-PLAN = ("describe sweep: the plan's undescribed count == the items the sweep called the model for == its progress "
-        "total (pass 1: == the seeded undescribed count)")
+PLAN = ("describe sweep: the plan's undescribed count == the items the sweep called the model for plus the "
+        "re-uploads it copied == its progress total (pass 1: == the seeded undescribed count)")
 CACHE = ("describe sweep: no model call for a row already described (the seeded cache rows in pass 1, every row "
          "described by pass 1 in pass 2), their descriptions kept; pass 2 retries exactly the blank ones")
 ESCALATE = ("describe sweep: a refusal or blank answer escalates to qwen3-vl-235b exactly once, an answered item "
@@ -24,8 +24,13 @@ COST = ("describe sweep: the cost flags-all and describe-all pass 2 report == th
         "flags-all: its flags calls)")
 COST_INCL_FLAGS = ("describe sweep: the cost describe-all reports includes the flags calls it makes after each "
                    "described item (pass 1: reported == describe + auto-flags billed)")
-FLAGS = ("flags-all: every live photo/clip flagged (one call per photo, 4 per clip), no description, tags, describe "
-         "status or non-flag ai_fields_json key rewritten, the flags answer's description/tags stored nowhere")
+FLAGS = ("flags-all: every live photo/clip flagged (one call per photo, 4 per clip; a planted re-upload copied from "
+         "its set instead: none), no description, tags, describe status or non-flag ai_fields_json key rewritten, the "
+         "flags answer's description/tags stored nowhere")
+REUSE = ("duplicate reuse: the Duplicates route's sets at threshold 2 == the planted re-upload sets; pass 1 called the "
+         "model for the undescribed minus the planted copies, and each copy ends described with `_copied_from` a "
+         "member of its set and that member's description and flags; flags-all one paid member per set, the rest "
+         "`_flags_copied_from` it with its flags")
 ONE_SWEEP = "describe-all pressed by several owners at once: one sweep per Creator (one 200, the rest 409)"
 UI_SETTLED = ("UI: Vault Pro's 'Describe all (N)' shows the plan's count, the click starts the sweep and the button "
               "settles on the plan's count after it; the Creator's rows are described in the DB")
@@ -95,6 +100,17 @@ def _drops_flags_cost() -> None:
     d.with_flags_cost = lambda describe_res, flags_res: dict(describe_res)
 
 
+def _no_reuse() -> None:
+    """Duplicate reuse off: `reuse_groups` (looked up per sweep as `vault_dupes.reuse_groups`) finds no set, so
+    every re-upload pays its own calls (REUSE)."""
+    import vault_dupes
+
+    async def none(_account_id, _want):
+        return []
+
+    vault_dupes.reuse_groups = none
+
+
 def register(Fault) -> dict:
     return {
         # slop/run vault-describe-sweep --break (the scenario's FAULT)
@@ -106,4 +122,6 @@ def register(Fault) -> dict:
         "vault-describe-claim-after-budget": Fault(_claim_after_budget, (ONE_SWEEP,)),
         # slop/run vault-describe-sweep --break --fault=vault-describe-drops-flags-cost
         "vault-describe-drops-flags-cost": Fault(_drops_flags_cost, (COST_INCL_FLAGS,)),
+        # slop/run vault-describe-sweep --break --fault=vault-describe-no-reuse
+        "vault-describe-no-reuse": Fault(_no_reuse, (REUSE,)),
     }

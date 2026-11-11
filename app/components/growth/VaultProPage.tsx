@@ -4,8 +4,10 @@
  * Growth > Vault Pro, laid out from its Layout capture (`docs/infloww-layouts/growth-vault-pro.md`, ticket 36).
  *
  * The header is the bundle's: Infloww's 48px page header holding "Vault Pro", "Learn" and "Add media" (#3 to #11),
- * plus our one Extras overflow button left of Add media, which opens our own tools (collect, describe, harvest,
- * duplicates, the pack picker, AI folders, disputes and the flags review) in a right drawer. The Creator is picked on
+ * plus ours: "Download full vault" / "Download full folder" left of Learn (the manage panel renders it into the header;
+ * it starts the app's one download, `VaultDownloadProvider` in the root layout) and our one Extras overflow button left of Add media,
+ * which opens our own tools (collect, describe, harvest, duplicates, the pack picker, AI folders and the flags
+ * review) in a right drawer. The Creator is picked on
  * the creator column left of the page (`CreatorRail`, as Smart lists'), in place of the bundle's header select (#6).
  * Beside it, flush and filling the page (#15, #16), the existing Vault manage panel holds the folder rail and the
  * grid; with no Creator, a static frame of the same rail and toolbar, disabled, around an empty state. "Add media"
@@ -23,8 +25,9 @@ import { CreatorRail } from "@/components/shell/CreatorRail";
 import { EmptyState, IfButton, IfLearn, InflowwPageHeader } from "@/components/ui/infloww";
 import { VaultAccountProvider, useVaultAccount } from "@/components/vault/VaultAccount";
 import { RAIL_CLASS, RAIL_HEAD_CLASS, RAIL_ICON_BOX, RAIL_ROW_INNER, railRowClass } from "@/components/vault/VaultFolderRail";
+import { HeaderDownloadButton } from "@/components/vault/VaultDownloadPanel";
 import VaultImportCard from "@/components/vault/VaultImportCard";
-import { VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
+import { VaultBrowseMemory } from "@/components/vault/VaultBrowseMemory";
 import VaultManagePanel, { VAULT_GRID_CLASS, VAULT_PANES_CLASS } from "@/components/vault/VaultManagePanel";
 import VaultMediaToolbar from "@/components/vault/VaultMediaToolbar";
 import { VaultTour, useVaultTour, type VaultTourStep } from "@/components/vault/VaultTour";
@@ -36,6 +39,8 @@ const LEARN_HREF = "https://help.infloww.com/en/articles/9346888-vault-pro";
 
 /** Ours, in place of the capture's not-a-creator text (#13), which is about a fan account the registry cannot hold. */
 const NO_CREATOR = "No model accounts with a live session.";
+/** The header's off-title while the account list is still being read: no claim that there is no Creator. */
+const LOADING_CREATORS = "Loading model accounts…";
 
 /** The Add media tour (#12): the bundle's `batchUploadEntryJoyrideSteps`, spotlit on the button, to its left. */
 const ADD_MEDIA_TOUR: VaultTourStep[] = [
@@ -67,10 +72,16 @@ const UPLOAD_TOUR: VaultTourStep[] = [
   },
 ];
 
-/** The capture's header bar (#3 to #11): title, then Learn, our Extras overflow and Add media at the right; a rule
- *  beneath. On a phone the right-hand group wraps under the title. */
-function VaultHeader({ onAddMedia, onExtras }: { onAddMedia: () => void; onExtras?: () => void }) {
-  const { accountId, account, sessionLost } = useVaultAccount();
+/** The capture's header bar (#3 to #11): title, then our Download, Learn, our Extras overflow and Add media at the
+ *  right; a rule beneath. On a phone the right-hand group wraps under the title. `downloadSlot`: where the manage
+ *  panel puts its Download (with no Creator, a disabled one stands there). */
+function VaultHeader({ onAddMedia, onExtras, downloadSlot }: {
+  onAddMedia: () => void;
+  onExtras?: () => void;
+  downloadSlot: (el: HTMLElement | null) => void;
+}) {
+  const { accountId, account, sessionLost, ready } = useVaultAccount();
+  const noCreator = ready ? NO_CREATOR : LOADING_CREATORS;
   return (
     <div className="shrink-0">
       <InflowwPageHeader
@@ -78,6 +89,9 @@ function VaultHeader({ onAddMedia, onExtras }: { onAddMedia: () => void; onExtra
         className="max-md:h-auto max-md:min-h-12 max-md:flex-wrap max-md:gap-y-2 max-md:px-3 max-md:py-1.5"
         actions={
           <div className="flex items-center gap-6">
+            {accountId === null
+              ? <HeaderDownloadButton label="Download full vault" reason={noCreator} />
+              : <span ref={downloadSlot} className="contents" />}
             {/* #7 to #9: the book icon and 14px M1 text, to Infloww's help article. */}
             <IfLearn href={LEARN_HREF} className="font-medium" />
             <div className="flex items-center gap-2">
@@ -100,7 +114,7 @@ function VaultHeader({ onAddMedia, onExtras }: { onAddMedia: () => void; onExtra
                 data-tour="vault-add-media"
                 onClick={onAddMedia}
                 disabled={accountId === null}
-                title={accountId === null ? NO_CREATOR : undefined}
+                title={accountId === null ? noCreator : undefined}
                 className="w-[135px]"
               >
                 Add media
@@ -190,6 +204,8 @@ function VaultProBody() {
   const options = account && !accounts.some((a) => a.id === account.id) ? [account, ...accounts] : accounts;
   const [adding, setAdding] = useState(false);
   const [extrasOpen, setExtrasOpen] = useState(false);
+  // The header's Download slot (a DOM node): the keyed manage panel portals its button into it.
+  const [downloadSlot, setDownloadSlot] = useState<HTMLElement | null>(null);
   // The bundle's order: the Add media tour once the page has a Creator to add to, the upload guide the first time
   // the upload card opens. Each shows once (`useVaultTour`); opening the card ends the first, as there.
   const [addTour, closeAddTour] = useVaultTour("batchUploadEntry", accountId !== null && !adding);
@@ -204,6 +220,7 @@ function VaultProBody() {
           setAdding(true);
         }}
         onExtras={accountId === null ? undefined : () => setExtrasOpen((o) => !o)}
+        downloadSlot={setDownloadSlot}
       />
       {addTour && !adding && <VaultTour steps={ADD_MEDIA_TOUR} variant="coach" placement="left" spotlightClicks onClose={closeAddTour} />}
       {uploadTour && adding && <VaultTour steps={UPLOAD_TOUR} variant="guide" placement="right" onClose={closeUploadTour} />}
@@ -224,8 +241,9 @@ function VaultProBody() {
           "add to folder" wrote those ids into the NEW model's folder. One
           mechanism for both, because a remount cannot be forgotten the
           next time a piece of state is added — a reset effect can.
-          The cost is that `type` and `sort` go back to their defaults on a
-          switch; they are preferences, and worth it. */}
+          The grid's view (folder, type, search, select mode, ticks) is kept
+          per model above the key (`VaultBrowseMemory`): switching back finds
+          that model's own, never the other's. `sort` resets. */}
       <CreatorRail creators={{ accounts: options, value: accountId, onChange: setAccountId }} className="flex min-h-0 flex-col">
         {accountId === null ? (
           ready ? (
@@ -238,7 +256,7 @@ function VaultProBody() {
           )
         ) : (
           <div key={accountId} className="flex-1 min-h-0 flex flex-col">
-            <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} />
+            <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} headerSlot={downloadSlot} />
 
             {/* #78 to #80: the upload card over the whole page, a 20px back arrow, a 24px body that scrolls. The
                 card stays mounted while hidden, so files staged in it survive closing it; it is remounted with the
@@ -273,10 +291,11 @@ function VaultProBody() {
 export default function VaultProPage() {
   return (
     <VaultAccountProvider>
-      {/* Above VaultProBody's per-model `key`: a download keeps running when another model is picked. */}
-      <VaultDownloadProvider>
+      {/* Above VaultProBody's per-model `key`: each model's folder, select mode and ticks survive a switch. The
+          download lives higher still (root layout, VaultDownloadProvider): it outlives the page. */}
+      <VaultBrowseMemory>
         <VaultProBody />
-      </VaultDownloadProvider>
+      </VaultBrowseMemory>
     </VaultAccountProvider>
   );
 }

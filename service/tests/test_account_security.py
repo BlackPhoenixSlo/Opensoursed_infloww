@@ -25,6 +25,7 @@ import account_security as sec  # noqa: E402
 import client_addr  # noqa: E402
 import employees  # noqa: E402
 import login_throttle  # noqa: E402
+import token_bucket  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Chatter, ChatterUser, User  # noqa: E402
 from sqlalchemy import update  # noqa: E402
@@ -264,7 +265,7 @@ def case_the_forwarded_address_is_parsed_before_it_keys_a_bucket():
     from starlette.requests import Request
 
     def key(forwarded: str, peer: str = "172.18.0.5") -> str:
-        return login_throttle._bucket_key(client_addr.client_address(Request({
+        return token_bucket.bucket_key(client_addr.client_address(Request({
             "type": "http", "headers": [(b"x-forwarded-for", forwarded.encode())], "client": (peer, 1)})))
     assert key("203.0.113.9:4431") == key("::ffff:203.0.113.9") == "203.0.113.9"
     assert key("[2001:db8:1:2::9]:443") == key("2001:db8:1:2:ffff::1") == "2001:db8:1:2::/64"
@@ -289,6 +290,34 @@ def case_rotating_the_forwarded_address_still_ends_in_429_for_one_username():
     codes = [guess(login_throttle.USER_CAPACITY + i) for i in range(2)]
     assert codes == [401, 429], codes
     login_throttle.reset()
+
+
+def case_flooding_other_keys_never_forgets_a_drained_username_bucket():
+    """#23: the bucket store is size-capped, but a guesser who drains one
+    username's bucket and then writes more than the cap of other keys (random
+    usernames, take() runs before any DB read) must still meet 429 on it: only
+    refilled buckets are ever dropped."""
+    login_throttle.reset()
+    real_clock, t = login_throttle._clock, [5000.0]
+    login_throttle._clock = lambda: t[0]
+    real_max = login_throttle._buckets.max_keys
+    login_throttle._buckets.max_keys = 6
+    c = _client_from("172.18.0.5")
+    try:
+        def post(user: str, i: int) -> int:
+            return c.post("/auth/sign-in", json={"username": user, "password": "bad"},
+                          headers={"X-Forwarded-For": f"198.51.{i // 250}.{i % 250}"}).status_code
+        drained = [post("agency_a_owner", i) for i in range(login_throttle.USER_CAPACITY)]
+        assert drained == [401] * login_throttle.USER_CAPACITY, drained
+        flood = [post(f"nobody_{i}", 1000 + i) for i in range(login_throttle._buckets.max_keys)]
+        assert flood == [401] * len(flood), flood
+        code = post("agency_a_owner", 2000)
+        assert code == 429, f"drained username got {code} after a flood of other keys"
+        assert len(login_throttle._buckets) > login_throttle._buckets.max_keys
+    finally:
+        login_throttle._buckets.max_keys = real_max
+        login_throttle._clock = real_clock
+        login_throttle.reset()
 
 
 def case_a_peer_that_is_not_a_trusted_proxy_cannot_pick_its_address():

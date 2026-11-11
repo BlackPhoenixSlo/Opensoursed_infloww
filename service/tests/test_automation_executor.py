@@ -783,6 +783,9 @@ async def case_client_pool_reuses_and_evicts():
         user_id = "u1"
         x_of_rev = "rev1"
 
+        def close_signed_sessions(self) -> None:  # client_pool.evict retires it
+            pass
+
     class _Stub:
         @staticmethod
         def from_account(account_id: str):

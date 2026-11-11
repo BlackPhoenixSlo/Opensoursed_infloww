@@ -54,14 +54,14 @@ export const optInNote = (except: string[]) =>
 /** The editor's tabs from the nav: "Growth" and "OF Manager" are those groups' children; "Operations"
  *  is every other non-divider link, top-level links first under "General", then each
  *  remaining group under its own label, in nav order. `SIDEBAR_FOOTER` is not a page, nor is a link
- *  with a `permission`, top-level or a child (Focus rides Messages Pro's) — `isPermissionPage`. */
+ *  with a `permission`, top-level or a child — `isPermissionPage`. */
 export function permissionTabs(sidebar: NavNode[] = SIDEBAR): { tab: PermissionTab; groups: PageGroup[] }[] {
   const general: PageGroup = { title: "General", pages: [] };
   const groups: Record<PermissionTab, PageGroup[]> = { Operations: [general], Growth: [], "OF Manager": [] };
   for (const n of sidebar) {
     if (isDivider(n)) continue;
     if (!isGroup(n)) {
-      // A link that answers to another page's grant (Focus) is not a page of its own.
+      // A link that answers to another page's grant is not a page of its own.
       if (isPermissionPage(n)) general.pages.push({ label: n.label, href: n.href });
       continue;
     }

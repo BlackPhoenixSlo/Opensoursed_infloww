@@ -92,7 +92,7 @@ export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
   osPing: true,
   platforms: { onlyfans: true, fansly: true },
   // A reminder is something the user set, so it sounds; a message sound is
-  // opt-in, like the message toast.
+  // opt-in (the message toast already shows each one).
   sounds: {
     message: { on: false, sound: "s1" },
     reminder: { on: true, sound: "s1" },
@@ -113,13 +113,14 @@ const STORAGE_KEY = "chatterly:notif-settings:v1";
  *  before round 2 (2026-11-10: Messages, Purchases, Tips, Subscribers on by default) get those
  *  toasts and the master switch turned on once; a save after that keeps the user's choice. */
 const DEFAULTS_ROUND = 2;
-const ROUND_2_ON: NotifTypeKey[] = ["message", "purchases", "tip", "subscribed"];
+/** The toasts on by default: the ones a stale save gets turned on. */
+const DEFAULT_ON = Object.fromEntries(Object.entries(DEFAULT_NOTIF_SETTINGS.toast).filter(([, on]) => on));
 
 export function readNotifSettings(): NotifSettings {
   const parsed = readJSON<Partial<NotifSettings> & { defaultsRound?: number }>(STORAGE_KEY);
   if (!parsed) return DEFAULT_NOTIF_SETTINGS;
   const stale = (parsed.defaultsRound ?? 1) < DEFAULTS_ROUND;
-  const forced = stale ? Object.fromEntries(ROUND_2_ON.map((k) => [k, true])) : {};
+  const forced = stale ? DEFAULT_ON : {};
   return {
     enabled: stale ? true : (parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled),
     toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}), ...forced },

@@ -35,9 +35,12 @@ Pacing: every send is `of_write_paced(..., send_purpose="gated", tries=1)`, the
 per-Creator 11 s OF write gap shared with every other automation, so a run
 sends at most ~300 fans an hour (Infloww's upper 700/h is not reachable without
 a shorter gap; owner question). OF's rate-limit refusal puts the fan back to
-pending and the next leg waits `_DEFER_S`. The text gets the account's banned
-words (block stops the run, mask masks; the create route's phrase matcher
-`sensitive_hits` also stops it), `{name}`, and the OF word restriction.
+pending and the next leg waits `_DEFER_S`; so does a send refused before it
+left the box (`OFSessionRetired`): a client retired mid-leg (client_pool.evict
+on a proxy switch / re-capture) is replaced by the pool on the next leg, and a
+busy signed pool retries every `_DEFER_S` until it frees. The text gets the
+account's banned words (block stops the run, mask masks; the create route's
+phrase matcher `sensitive_hits` also stops it), `{name}`, and the OF word restriction.
 A vault id OF refuses stops the run (`error`): every later fan would fail too.
 Another 4xx marks the fan `failed`; a timeout, dropped connection or 5xx may
 have sent, so the fan turns `unknown`. A leg past `_LEG_BUDGET_S` stops early
@@ -68,6 +71,7 @@ from automations._common import (
 from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words, sensitive_hits
 from db.engine import get_session
 from db.models import Blacklist, Fan, PriorityMassRecipient, PriorityMassRun, ScheduledJob
+from of_client import OFSessionRetired
 
 log = logging.getLogger("of-relay.automation.priority_mass")
 
@@ -343,10 +347,17 @@ async def _leg(run: PriorityMassRun) -> dict:
                     await _set_recipient(rid, fid, SKIPPED, reason="unreachable")
                     stats["skipped"] += 1
                     continue
-                if ax.is_rate_limited(exc):
-                    # OF created nothing: the fan goes back, the next leg waits.
+                if ax.is_rate_limited(exc) or isinstance(exc, OFSessionRetired):
+                    # Nothing was created (OF's rate limit), or the send never
+                    # left the box (OFSessionRetired): the fan goes back and the
+                    # next leg waits _DEFER_S. A retired client is replaced by
+                    # the pool on that leg; a busy signed pool retries every
+                    # _DEFER_S until it frees, like the rate-limit wait.
                     await _set_recipient(rid, fid, PENDING)
+                    stats["deferred"] += 1
                     delay_s = _DEFER_S
+                    log.warning("priority_mass send deferred run=%s account=%s fan=%s: %s",
+                                rid, aid, fid, exc)
                     break
                 if media and is_media_rejected_error(exc):
                     await _set_recipient(rid, fid, PENDING)

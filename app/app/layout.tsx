@@ -14,11 +14,11 @@ import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
 import { DeepLinkTarget } from "@/components/DeepLinkTarget";
 import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
+import { VaultDownloadAccountGuard, VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
 
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
 import { BOOT_PATH_HEADER } from "@/lib/inlineBoot";
 import { inlinePaths, startInline } from "@/lib/inlineBoot.server";
-import { TZ_COOKIE } from "@/lib/screenEntry";
 
 import "./globals.css";
 
@@ -92,15 +92,6 @@ const SHELL_BOOT_SCRIPT = `
 try {
   var s = window.fasttShell;
   if (s && s.isDesktop === true && s.platform === 'darwin') document.documentElement.setAttribute('data-shell', 'mac');
-} catch (_e) {}
-`;
-
-// The browser's zone for the server (lib/screenEntry.ts TZ_COOKIE): the next document load's inline Dashboard
-// bundle (lib/inlineBoot.server.ts) cuts its days as this browser would.
-const TZ_BOOT_SCRIPT = `
-try {
-  var z = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (z) document.cookie = '${TZ_COOKIE}=' + encodeURIComponent(z) + '; path=/; max-age=31536000; samesite=lax';
 } catch (_e) {}
 `;
 
@@ -212,7 +203,6 @@ export default async function RootLayout({
          *  end up unreachable in dev mode. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: SHELL_BOOT_SCRIPT }} />
-        <script dangerouslySetInnerHTML={{ __html: TZ_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: VVH_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: PINCH_BLOCK_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CHUNK_ERROR_BOOT_SCRIPT }} />
@@ -223,15 +213,19 @@ export default async function RootLayout({
             <PageCreatorProvider>
               {/* One help conversation for the corner dock and /help-center. */}
               <AssistantProvider>
-                <ImpersonationBanner />
-                <AppShell>{children}</AppShell>
-                <NotificationToaster />
-                <IdleOverlay />
-                <ApiKeyToaster />
-                <MoneyRail />
-                <AssistantWidget />
-                {/* A link's `#go=` steps: opens the inner tab or section it names (lib/deepLink.ts). */}
-                <DeepLinkTarget />
+                {/* Vault Pro's download, above the routes: leaving the page keeps the run; sign-out ends it. */}
+                <VaultDownloadProvider>
+                  <VaultDownloadAccountGuard />
+                  <ImpersonationBanner />
+                  <AppShell>{children}</AppShell>
+                  <NotificationToaster />
+                  <IdleOverlay />
+                  <ApiKeyToaster />
+                  <MoneyRail />
+                  <AssistantWidget />
+                  {/* A link's `#go=` steps: opens the inner tab or section it names (lib/deepLink.ts). */}
+                  <DeepLinkTarget />
+                </VaultDownloadProvider>
               </AssistantProvider>
             </PageCreatorProvider>
           </AuthGate>

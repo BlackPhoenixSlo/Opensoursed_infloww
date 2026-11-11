@@ -9,11 +9,13 @@ import { Download, FolderInput, Trash2 } from "lucide-react";
 
 import { relay, type VaultMedia } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { selectionText } from "@/components/vault/vaultBrowseReducer";
 
 /** #74, #75: the selection bar, 38px tall, 16px above the grid's foot, 20px left and 24px right: "Selected"
  *  and the count, then move (#77, "Add to category") and delete (#76). Ours follow, each titled as one. */
 export default function VaultSelectionBar({
   count,
+  hidden = 0,
   hasFolders,
   busy,
   capped,
@@ -24,8 +26,11 @@ export default function VaultSelectionBar({
   onClear,
   onDownload,
   downloadOff = "",
+  downloadQueues = false,
 }: {
   count: number;
+  /** Of `count`, the ticks the Photo / Video filter hides (`hiddenByFilter`): every action still takes them. */
+  hidden?: number;
   hasFolders: boolean;
   busy: string;
   capped: boolean;
@@ -38,13 +43,20 @@ export default function VaultSelectionBar({
   onDownload?: () => void;
   /** Why Download is off (no sink here, a download is running, over the phone's cap); shown next to it; "" when on. */
   downloadOff?: string;
+  /** A download runs: the press joins the queue ("Add selected to queue"). */
+  downloadQueues?: boolean;
 }) {
+  const dlLabel = downloadQueues ? "Add selected to queue" : "Download selected";
   return (
     <div className="absolute bottom-4 left-3 right-3 md:left-5 md:right-6 z-10 min-h-[38px] px-3 md:px-6 py-1 rounded-lg border border-accent/40 bg-panel/95 backdrop-blur-sm flex flex-wrap items-center gap-x-6 gap-y-1">
-      <div className="flex items-center gap-1.5 text-sm font-medium">
-        <span>Selected</span>
-        <span>{count}</span>
-      </div>
+      {hidden > 0 ? (
+        <div data-testid="selection-count" className="text-sm font-medium">{selectionText(count, hidden)}</div>
+      ) : (
+        <div data-testid="selection-count" className="flex items-center gap-1.5 text-sm font-medium">
+          <span>Selected</span>
+          <span>{count}</span>
+        </div>
+      )}
       {hasFolders && (
         // #74, #77: the move icon opens the "Add to category" modal.
         <button
@@ -61,8 +73,8 @@ export default function VaultSelectionBar({
       {onDownload && (
         <button
           type="button"
-          aria-label="Download selected"
-          title={downloadOff || `${EXTRA_LABEL}\nDownload selected (full quality)`}
+          aria-label={dlLabel}
+          title={downloadOff || `${EXTRA_LABEL}\n${dlLabel} (full quality)`}
           onClick={onDownload}
           disabled={!!downloadOff}
           className="text-fg-dim hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed"

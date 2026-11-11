@@ -56,7 +56,6 @@ PASSWORD = "demo-shots-throwaway"
 # Light theme; hide the cursor, the caret and Next's dev indicator.
 INIT_JS = """
 try { localStorage.setItem('chatterly:theme', 'light');
-  localStorage.setItem('chatterly:lockedText-default-changed-seen', '1');
   localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', uploadPageStep: '1'})); } catch (e) {}
 (() => {
   const css = `nextjs-portal, [data-nextjs-toast], [data-next-badge-root],

@@ -74,7 +74,7 @@ from auth import get_request_user, split_account_ids
 from chatters import get_request_chatter
 from db.engine import get_session
 from employee_groups_api import subtree_employee_ids
-from employees import AgencyContext, agency_contexts
+from employees import AgencyContext, agency_contexts, remember_chatter_employee
 from settings_schema import (  # noqa: F401 (REVENUE_CARD_KEYS: this module's API too)
     BUILT_IN_ROLE_DEFAULTS, BUILT_IN_ROLE_IDS, CARD_KEYS, DASHBOARD_CARDS, REVENUE_CARD_KEYS,
 )
@@ -771,8 +771,9 @@ async def scoped_employee_ids() -> set[int] | None:
     `subtree_employee_ids` (phase-05: the Employees in the groups below its own).
 
     The Agency contexts are every linked Agency, the named Creator unread:
-    `stats.per_employee` takes no Creator filter (its only parameters are
-    from, to and by_account; it reads `clamp_account_filter(None)` and
+    `stats_employees.per_employee` takes no Creator filter (its parameters
+    are from, to, by_account, include_series, chatter_only and tz, none naming
+    a Creator; it reads `clamp_account_filter(None)` and
     `_report_zone(None)`), so its report spans every Creator of every linked
     Agency, and one narrowing Agency narrows it (`narrowest_scope`).
 
@@ -887,5 +888,5 @@ async def role_enforcement_middleware(request, call_next):
             and contexts[0].employee_id is not None):
         # The route's attribution resolver would re-read this same Mirror
         # Employee. Only the single-Agency case has the same owner tie-break.
-        request.state.chatter_role_employee = (chatter.id, ids[0], contexts[0].employee_id)
+        remember_chatter_employee(request, chatter, ids[0], contexts[0].employee_id)
     return await call_next(request)

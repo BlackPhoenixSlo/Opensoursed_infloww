@@ -34,7 +34,7 @@ vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: nu
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
 import { AvatarMenu } from "@/components/shell/TopBar";
-import { ClockedInCard, MyShiftsCard } from "@/components/home/ShiftCards";
+import { MyShiftsCard } from "@/components/home/ShiftCards";
 import ClockDialog from "@/components/shifts/ClockDialog";
 
 const MENU_ITEM = "Clock in and out";
@@ -353,93 +353,6 @@ describe("My shifts, for a chatter", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(NO_DATA)).toBeInTheDocument();
     expect(reads().filter((p) => p === "/admin/shifts/me")).toHaveLength(2);
-  });
-});
-
-describe("Current clocked-in employees", () => {
-  const NONE = "No employees have clocked in.";
-  /** The list box under the title, whose max height the capture sets (#78). */
-  const listBox = (card: HTMLElement) => card.querySelector<HTMLElement>("[data-clocked-in-list]")!;
-
-  it("is Not wired for a chatter whose Creator has time tracking on, and its read is never sent (#76)", async () => {
-    renderWithProviders(<ClockedInCard />);
-    const card = await screen.findByRole("group", { name: "Current clocked-in employees" });
-    expect(card).toBeDisabled();
-    expect(card).toHaveAttribute("title", "not wired");
-    expect(card.querySelector("[data-count]")).toBeNull();
-    expect(reads()).not.toContain("/admin/shifts/clocked-in");
-  });
-
-  it("is not rendered for a chatter whose every Creator has time tracking off (#76)", async () => {
-    accounts = ACCOUNTS.map((a) => ({ ...a, time_tracking_enabled: false }));
-    const { container } = renderWithProviders(<ClockedInCard />);
-    await waitFor(() => expect(reads()).toContain("/admin/shifts/me"));
-    await waitFor(() => expect(container).toBeEmptyDOMElement());
-    expect(reads()).not.toContain("/admin/shifts/clocked-in");
-  });
-
-  it("lists each open event's Employee, with our Creator, start time and Shift detail labelled, for an owner", async () => {
-    signInOwner();
-    renderWithProviders(<ClockedInCard />);
-    const card = await screen.findByRole("region", { name: "Current clocked-in employees" });
-    await screen.findByText("chatter_one");
-    const rows = Array.from(card.querySelectorAll("li")).map((li) => li.textContent);
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatch(/^chatter_one on creator_one · since \w{3} \d{1,2} \w{3} \d\d:\d\d · Shift \d\d:\d\d–\d\d:\d\d$/);
-    expect(rows[1]).toMatch(/^chatter_two on creator_two · since .+ · No shift$/);
-    for (const li of card.querySelectorAll("li")) {
-      expect(li.querySelector("[data-detail]")).toHaveAttribute("title", EXTRA_LABEL);
-    }
-    // The capture's people icon and count after the title (#75), and its 100px list with rows (#78).
-    expect(card.querySelector("[data-count]")).toHaveTextContent(/^2$/);
-    expect(card.querySelector("[data-count] svg")).not.toBeNull();
-    expect(listBox(card)).toHaveStyle({ maxHeight: "100px" });
-    expect(reads()).toEqual(["/admin/shifts/clocked-in"]);
-  });
-
-  it("names an agency-wide event by its linked Shift's Creators, or a dash with neither", async () => {
-    signInOwner();
-    const [inShift, noShift] = CLOCKED_IN.clocked_in;
-    clockedIn = { time_tracking_enabled: true, clocked_in: [
-      { ...inShift, account: null }, { ...noShift, account: null },
-    ] } as unknown as typeof CLOCKED_IN;
-    renderWithProviders(<ClockedInCard />);
-    const card = await screen.findByRole("region", { name: "Current clocked-in employees" });
-    await screen.findByText("chatter_one");
-    const rows = Array.from(card.querySelectorAll("li")).map((li) => li.textContent);
-    expect(rows[0]).toMatch(/^chatter_one on creator_one · since .+ · Shift \d\d:\d\d–\d\d:\d\d$/);
-    expect(rows[1]).toMatch(/^chatter_two · — · since .+ · No shift$/);
-  });
-
-  it("shows a compact empty line with a 0 count when nobody is clocked in", async () => {
-    signInOwner();
-    clockedIn = { time_tracking_enabled: true, clocked_in: [] };
-    renderWithProviders(<ClockedInCard />);
-    expect(await screen.findByText(NONE)).toBeInTheDocument();
-    const card = screen.getByRole("region", { name: "Current clocked-in employees" });
-    expect(listBox(card).querySelector("[data-empty-art]")).toBeNull();
-    expect(card.querySelector("[data-count]")).toHaveTextContent(/^0$/);
-    expect(listBox(card)).toHaveStyle({ maxHeight: "100px" });
-  });
-
-  it("says time tracking is off, labelled ours, links to Settings › Time tracking, and keeps the empty line", async () => {
-    signInOwner();
-    clockedIn = { time_tracking_enabled: false, clocked_in: [] };
-    renderWithProviders(<ClockedInCard />);
-    const off = await screen.findByText("Time tracking is off");
-    expect(off.closest(`[title="${EXTRA_LABEL}"]`)).not.toBeNull();
-    expect(screen.getByRole("link", { name: "Settings › Time tracking" })).toHaveAttribute("href", "/settings/time-tracking");
-    expect(screen.getByText(NONE)).toBeInTheDocument();
-  });
-
-  it("shows a loading line, then an error line whose Retry refetches", async () => {
-    signInOwner();
-    failOnce.add("/admin/shifts/clocked-in");
-    renderWithProviders(<ClockedInCard />);
-    expect(screen.getByText("Loading clocked-in employees…")).toBeInTheDocument();
-    expect(await screen.findByText(/^Couldn't load clocked-in employees: /)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("chatter_one")).toBeInTheDocument();
   });
 });
 

@@ -26,11 +26,16 @@ list, a Details).
 
 Bot check before redirect (Cloudflare Turnstile, `RELAY_ENV` keys): per Creator `gated` links made through the
 real Create (`POST /admin/tracking-links`, a scheme-less `ofl.ink/...` target; even ones with `bot_check` set
-there, odd ones by `PATCH`), and `gated_clicks` fans (own clients, open loop at rate / 10) each GET a gated
-link's /t/ (the Turnstile page), then POST its /verify with a token: 3 in 4 pass (`pass-k`), the rest fail.
+there, odd ones by `PATCH`), and `gated_clicks` fans (open loop at rate / 10, on max(4, users // 10)
+connections, visit k from its own address 100.96.x.y: one fan, one phone) each GET a gated link's /t/ (the
+Turnstile page), then POST its /verify with a token: 3 in 4 pass (`pass-k`), the rest fail. After the storm
+the verify throttle: one fresh address (`PROBE_IP`) posts VERIFY_CAPACITY failing tokens to one gated link at
+once, then 3 more.
 
-Checks (lib/tracking_faults.py): GATE_CREATE, GATE_PAGE, GATE_VERIFY, GATE_COUNT (the gated links' clicks ==
-the passed verifies; their seeded clicks are 0), CLICKS (rows, click_count, list == seeded + the 302s answered), CLIENT_IP (every
+Checks (lib/tracking_faults.py): GATE_CREATE, GATE_PAGE, GATE_VERIFY (siteverify as the storm left it,
+before the throttle probe), GATE_COUNT (the gated links' clicks == the passed verifies; their seeded clicks are
+0), GATE_THROTTLE (the probe: 403 x VERIFY_CAPACITY then 429 + Retry-After x 3, siteverify + VERIFY_CAPACITY,
+no click), CLICKS (rows, click_count, list == seeded + the 302s answered), CLIENT_IP (every
 stored storm click's ip is one of the clients' own addresses, none a Cloudflare or proxy address), REDIRECT,
 BY_DAY (per UTC day: seeded + the 302s answered that day; a 302 sent before UTC midnight and answered after
 may count on either day), CREATED, EARNINGS (every link of each Creator
@@ -62,7 +67,8 @@ medium, a guess at a bio-link burst); the Cloudflare hop is its headers alone: t
 straight from loopback (a trusted proxy, as the Next app is), no Traefik or Next in between. Break-it-once: tracking-click-lost-1-in-20 (CLICKS, BY_DAY);
 --fault=client-addr-cdn-header-ignored (CLIENT_IP);
 --fault=of-tracking-claimers-no-memo (CLAIMERS); --fault=of-tracking-spend-first-link (EARNINGS);
---fault=tracking-bot-check-fails-open (GATE_VERIFY, GATE_COUNT).
+--fault=tracking-bot-check-fails-open (GATE_VERIFY, GATE_COUNT, GATE_THROTTLE);
+--fault=tracking-verify-unthrottled (GATE_THROTTLE).
 """
 from __future__ import annotations
 
@@ -78,7 +84,7 @@ import httpx
 from slop.actors import ui
 from slop.lib.client import Http
 from slop.lib.tracking_faults import (BY_DAY, CLAIMERS, CLICKS, CLIENT_IP, CREATED, EARNINGS, GATE_COUNT,
-                                     GATE_CREATE, GATE_PAGE, GATE_VERIFY, REDIRECT)
+                                     GATE_CREATE, GATE_PAGE, GATE_THROTTLE, GATE_VERIFY, REDIRECT)
 from slop.seed import tracking_campaigns
 
 PROFILE = "agency_inbox"
@@ -89,6 +95,8 @@ RELAY_ENV = {"EDGE_PROXIES": "cloudflare",   # the fans come through Cloudflare 
              "TURNSTILE_SITE_KEY": "1x00000000000000000000AA", "TURNSTILE_SECRET_KEY": "slop-turnstile-secret"}
 GATED_SLUG_BASE = 79_000_000   # the gated links' custom numeric slugs (seed/tracking_campaigns.SLUG_BASE + 9e6)
 PASS_SHARE = 0.75              # gated clicks whose token passes
+VERIFY_CAPACITY = 30           # tracking_links_api.VERIFY_CAPACITY: one address's verify burst before 429
+PROBE_IP = "100.127.255.254"   # GATE_THROTTLE's address: no fan's (CGNAT, outside both fan ranges)
 CF_HOPS = tuple(f"162.158.88.{i}" for i in range(1, 9))   # Cloudflare servers (inside its published ranges)
 T_P95_MS = 150
 EARNINGS_P95_MS = 2000
@@ -220,10 +228,14 @@ async def run(ctx) -> None:
     def today() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    ip_of = {id(h): f"100.64.{i // 250}.{i % 250 + 1}" for i, h in enumerate(fans + gfans)}   # a phone's CGNAT address each
+    ip_of = {id(h): f"100.64.{i // 250}.{i % 250 + 1}" for i, h in enumerate(fans)}   # a phone's CGNAT address each
 
     def fan_ip(h: Http) -> str:
         return ip_of[id(h)]
+
+    def gfan_ip(k: int) -> str:
+        """Gated visit k is its own fan, so its own address (the clients are only connections)."""
+        return f"100.96.{k // 250}.{k % 250 + 1}"
 
     async def click(h: Http, slug: str, ref: str | None, ua: str) -> None:
         sent = today()
@@ -239,7 +251,7 @@ async def run(ctx) -> None:
 
     async def gated_click(h: Http, k: int, g: dict, passes: bool) -> None:
         """The gate page, then the widget's verify (the token it would post)."""
-        edge = {"x-forwarded-for": CF_HOPS[k % len(CF_HOPS)], "cf-connecting-ip": fan_ip(h),
+        edge = {"x-forwarded-for": CF_HOPS[k % len(CF_HOPS)], "cf-connecting-ip": gfan_ip(k),
                 "user-agent": tracking_campaigns.UAS[k % len(tracking_campaigns.UAS)]}
         a = {"slug": g["slug"], "pass": passes}
         try:
@@ -331,12 +343,56 @@ async def run(ctx) -> None:
     for h in fans + gfans + owners:
         await h.aclose()
 
+    # ── verify throttle: one fresh address, VERIFY_CAPACITY + 3 failing tokens to one gated link ──
+    # Siteverify as the storm left it, before the probe adds to it (GATE_VERIFY reads this one).
+    ts_calls = (await ctx.owner.get("/__slop/turnstile-calls")).json()
+    probe: dict = {}
+    if gated:
+        g0 = gated[0]
+
+        def link_clicks() -> int:
+            con = w.sql()
+            try:
+                return con.execute("SELECT click_count FROM tracking_links WHERE id = ?", (g0["id"],)).fetchone()[0]
+            finally:
+                con.close()
+
+        edge = {"x-forwarded-for": CF_HOPS[0], "cf-connecting-ip": PROBE_IP}
+        ph = Http(ctx.relay, ctx.rec, limits=VERIFY_CAPACITY)
+        clicks_before = link_clicks()
+        tp = time.perf_counter()
+        try:
+            # The budget drained at once (each take is before the route's first await), then 3 more: the bucket
+            # refills one per 2 s, so the whole probe must take well under that.
+            burst = await asyncio.gather(*(ph.post(f"/t/{g0['slug']}/verify", json={"token": f"fail-probe-{i}"},
+                                                   headers=edge) for i in range(VERIFY_CAPACITY)))
+            over = [await ph.post(f"/t/{g0['slug']}/verify", json={"token": f"fail-probe-{VERIFY_CAPACITY + i}"},
+                                  headers=edge) for i in range(3)]
+        finally:
+            await ph.aclose()
+        probe_s = time.perf_counter() - tp
+        ts_after = (await ctx.owner.get("/__slop/turnstile-calls")).json()
+        codes = [r.status_code for r in burst + over]
+        retry_after = [r.headers.get("retry-after") for r in over]
+        throttled_tokens = [t for t in (f"fail-probe-{VERIFY_CAPACITY + i}" for i in range(3))
+                            if ts_after["tokens"].get(t)]
+        probe = {"codes": codes, "retry_after": retry_after, "siteverify_calls": ts_after["n"] - ts_calls["n"],
+                 "throttled_reached_siteverify": throttled_tokens, "clicks": link_clicks() - clicks_before,
+                 "probe_s": round(probe_s, 3)}
+    ctx.check(GATE_THROTTLE, bool(probe) and probe["codes"] == [403] * VERIFY_CAPACITY + [429] * 3
+              and all(ra and ra.isdigit() and int(ra) >= 1 for ra in probe["retry_after"])
+              and probe["siteverify_calls"] == VERIFY_CAPACITY and not probe["throttled_reached_siteverify"]
+              and probe["clicks"] == 0, capacity=VERIFY_CAPACITY, ip=PROBE_IP,
+              link=gated[0]["slug"] if gated else None,
+              codes=dict(Counter(probe.get("codes", []))), **{k: v for k, v in probe.items() if k != "codes"})
+
     # ── clicks: stored once per link, every answer a 302 to its own target ──
     con = w.sql()
     try:
         stored = dict(con.execute("SELECT tracking_link_id, COUNT(*) FROM tracking_clicks GROUP BY 1").fetchall())
         storm_ips = Counter(ip for (ip,) in con.execute(   # the seed's clicks are 203.0.113.x
-            "SELECT ip FROM tracking_clicks WHERE ip IS NULL OR ip NOT LIKE '203.0.113.%'"))
+            "SELECT ip FROM tracking_clicks WHERE (ip IS NULL OR ip NOT LIKE '203.0.113.%') AND ip IS NOT ?",
+            (PROBE_IP,)))   # the throttle probe's clicks are GATE_THROTTLE's (0), not CLIENT_IP's
         counter = dict(con.execute("SELECT id, click_count FROM tracking_links").fetchall())
     finally:
         con.close()
@@ -366,7 +422,7 @@ async def run(ctx) -> None:
             off[l["slug"]] = {"want": want, "rows": got[0], "click_count": got[1], "listed": got[2]}
     ctx.check(CLICKS, not off, links=len(links), sent=n_clicks, redirected=sum(st == 302 for _, st, *_ in answers),
               lost=lost, off=len(off), sample=dict(list(off.items())[:5]))
-    fan_ips = {fan_ip(h) for h in fans + gfans}
+    fan_ips = {fan_ip(h) for h in fans} | {gfan_ip(k) for k in range(n_gclicks)}
     foreign = {ip: n for ip, n in storm_ips.items() if ip not in fan_ips}
     ctx.check(CLIENT_IP, bool(storm_ips) and not foreign, stored=storm_ips.total(), fans=len(fan_ips),
               foreign=dict(list(foreign.items())[:5]))
@@ -384,7 +440,6 @@ async def run(ctx) -> None:
     bad_verify = [a for a in gated_answers if "verify" in a and (
         (a["pass"] and (a["verify"] != 200 or a["url"] != by_gslug[a["slug"]]["target"]))
         or (not a["pass"] and (a["verify"] != 403 or a["url"] is not None)))]
-    ts_calls = (await ctx.owner.get("/__slop/turnstile-calls")).json()
     verifies = sum("verify" in a for a in gated_answers)
     twice = {t: n for t, n in ts_calls["tokens"].items() if n != 1}
     ctx.check(GATE_VERIFY, verifies > 0 and not bad_verify and ts_calls["n"] == verifies and not twice

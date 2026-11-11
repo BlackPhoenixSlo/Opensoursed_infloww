@@ -17,6 +17,7 @@ import of_client  # noqa: E402
 import server  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from of_client import API_BASE, OFClient, OFDeniedError  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 
 
 class _Resp:
@@ -47,7 +48,7 @@ def _client():
     c._x_hash = "HASH"
     c.proxy_label = None
     c.proxy_url = None
-    c.http = types.SimpleNamespace(get=_get, request=_request)
+    fake_wire(c, types.SimpleNamespace(get=_get, request=_request))
     c._signed_headers = lambda _url: {}
     return c, sent
 

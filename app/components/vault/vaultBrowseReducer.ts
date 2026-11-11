@@ -2,20 +2,29 @@
  * vaultBrowseReducer — what VaultManagePanel's grid is showing (folder, media
  * type, search) and the files ticked in it.
  *
- *   • Changing the folder, the type or the search CLEARS the selection. The
- *     selection is a set of media ids off the grid the operator was looking at;
- *     the old panel kept it across a folder switch, so the bar said "Selected 3"
- *     over a grid showing none of them and "Add to category" / "New OF folder
- *     with these" / "Describe selected" acted on files no longer on screen.
- *     Select mode itself stays on — only what was ticked goes.
+ *   • Changing the folder or the search CLEARS the selection. The selection is
+ *     media off the grid the operator was looking at; the old panel kept it
+ *     across a folder switch, so the bar said "Selected 3" over a grid showing
+ *     none of them and "Add to category" / "New OF folder with these" /
+ *     "Describe selected" acted on files no longer on screen. Select mode
+ *     itself stays on — only what was ticked goes.
+ *   • The Photo / Video filter KEEPS the ticks: it narrows the same folder, and
+ *     ticking photos then videos for one download is the point (owner, 11-11).
+ *     The ticks hold the media themselves, so a download still has the ones the
+ *     filter hides.
  *   • Re-picking the same folder / type / search changes nothing.
  *   • Paging is not here: the grid's pages live in the query hooks, keyed by
  *     folder / type / search, so a change already starts from page one.
  *   • Sort is not here either: it reorders the same files, so the ticks stand.
+ *
+ * `browseMapReducer`: one BrowseState per model (memory only, the page's
+ * lifetime), so switching model and back finds its folder, select mode and
+ * ticks as they were; another model's ticks never apply to this one.
  */
 
 import type { MediaType } from "@/components/vault/VaultMediaToolbar";
 import type { FanId } from "@/lib/fanId";
+import type { VaultMedia } from "@/lib/relay";
 
 export interface BrowseState {
   type: MediaType;
@@ -24,7 +33,8 @@ export interface BrowseState {
   /** The settled search (the debounced box). */
   query: string;
   selectMode: boolean;
-  selected: ReadonlySet<number>;
+  /** The ticked media by id, in tick order. */
+  selected: ReadonlyMap<number, VaultMedia>;
 }
 
 export type BrowseAction =
@@ -33,11 +43,11 @@ export type BrowseAction =
   | { type: "query"; value: string }
   | { type: "toggleSelectMode" }
   /** The toolbar's Select all: select mode on, every loaded file ticked. */
-  | { type: "selectAll"; ids: readonly number[] }
-  | { type: "toggle"; id: number }
+  | { type: "selectAll"; media: readonly VaultMedia[] }
+  | { type: "toggle"; media: VaultMedia }
   | { type: "clearSelection" };
 
-const NONE: ReadonlySet<number> = new Set();
+const NONE: ReadonlyMap<number, VaultMedia> = new Map();
 
 export const initialBrowseState: BrowseState = {
   type: "all",
@@ -57,20 +67,48 @@ export function vaultBrowseReducer(state: BrowseState, action: BrowseAction): Br
     case "folder":
       return action.id === state.folderId ? state : view(state, { folderId: action.id });
     case "mediaType":
-      return action.value === state.type ? state : view(state, { type: action.value });
+      return action.value === state.type ? state : { ...state, type: action.value };
     case "query":
       return action.value === state.query ? state : view(state, { query: action.value });
     case "toggleSelectMode":
       return { ...state, selectMode: !state.selectMode, selected: NONE };
     case "selectAll":
-      return { ...state, selectMode: true, selected: new Set(action.ids) };
+      return { ...state, selectMode: true, selected: new Map(action.media.map((m) => [m.id, m])) };
     case "toggle": {
-      const selected = new Set(state.selected);
-      if (selected.has(action.id)) selected.delete(action.id);
-      else selected.add(action.id);
+      const selected = new Map(state.selected);
+      if (selected.has(action.media.id)) selected.delete(action.media.id);
+      else selected.set(action.media.id, action.media);
       return { ...state, selected };
     }
     case "clearSelection":
       return state.selected.size === 0 ? state : { ...state, selected: NONE };
   }
+}
+
+/** Ticked media the Photo / Video filter hides. Every bar action (download, Add to category, new OF folder, describe)
+ *  still takes all ticks, so the bar names how many of them are off screen. */
+export function hiddenByFilter(s: Pick<BrowseState, "type" | "selected">): number {
+  if (s.type === "all") return 0;
+  let n = 0;
+  for (const m of s.selected.values()) if (m.type !== s.type) n += 1;
+  return n;
+}
+
+/** The selection bar's count: "Selected" + N, or "N selected · M hidden by filter" when the filter hides some. */
+export function selectionText(count: number, hidden: number): string {
+  return hidden > 0 ? `${count} selected · ${hidden} hidden by filter` : `Selected ${count}`;
+}
+
+/** Each model's browse state by account id (absent: initialBrowseState). */
+export type BrowseMap = Readonly<Record<string, BrowseState>>;
+export type BrowseMapAction = { accountId: string; action: BrowseAction };
+
+export function browseFor(m: BrowseMap, accountId: string): BrowseState {
+  return m[accountId] ?? initialBrowseState;
+}
+
+export function browseMapReducer(m: BrowseMap, a: BrowseMapAction): BrowseMap {
+  const prev = browseFor(m, a.accountId);
+  const next = vaultBrowseReducer(prev, a.action);
+  return next === prev ? m : { ...m, [a.accountId]: next };
 }

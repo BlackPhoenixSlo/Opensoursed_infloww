@@ -26,6 +26,10 @@ describe("bucketOf", () => {
     expect(bucketOf("ppv_message")).toBe("messages");  // ledger kind
   });
 
+  it("counts paid customs in messages, as the Dashboard's Messages tile does (#44)", () => {
+    expect(bucketOf("custom")).toBe("messages");
+  });
+
   it("maps subscriptions, rebills and plain tips", () => {
     expect(bucketOf("subscription")).toBe("subscriptions");
     expect(bucketOf("rebill")).toBe("subscriptions");

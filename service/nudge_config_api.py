@@ -69,7 +69,7 @@ def _validate_config(cfg: dict) -> dict:
         out["repeat_mode"] = rm
     # The nudge line's text/image toggles. The retired info-line keys
     # (send_info_line / info_line_* / send_nudge_line) are unknown now → dropped.
-    for bk in ("nudge_line_text", "nudge_line_image"):
+    for bk in ("nudge_line_text", "nudge_line_image", "require_welcomed"):
         if bk in cfg:
             out[bk] = bool(cfg[bk])
     for k in _NUM_KEYS:

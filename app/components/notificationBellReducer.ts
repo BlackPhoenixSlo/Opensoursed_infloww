@@ -21,8 +21,8 @@
  *     an open panel to it; the OnlyFans arrivals stay unseen.
  *   • `tabsFull` (Messages Pro: the last row opened hit the Fan tab cap)
  *     shows the note until the next row opened, or the next open.
- *   • `cleared` (`chatterly:notif-cleared` — another bell opened, a toast
- *     clicked — or "Mark all read") zeroes the count.
+ *   • `cleared` (`chatterly:notif-cleared` — another bell opened, a row or a
+ *     toast clicked) zeroes the count.
  */
 
 export const BADGE_MAX = 999;

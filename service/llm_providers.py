@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -33,7 +34,7 @@ class LLMProvider:
     api_key_env: str   # env var holding the key
     # Request/response shape: "openai" = POST {base}/chat/completions with a
     # Bearer key; "anthropic" = native POST {base}/messages (llm_anthropic).
-    wire: str = "openai"
+    wire: Literal["openai", "anthropic"] = "openai"
 
 
 # Both keys are CONFIRMED present in service/.env (verified 2026-06-04, 19 §4).

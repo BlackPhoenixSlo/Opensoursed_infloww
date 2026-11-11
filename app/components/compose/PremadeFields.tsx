@@ -127,7 +127,7 @@ export function PremadeFields({
           <NumField label="Auto-delete after" help="hours · blank = keep" placeholder="e.g. 6"
             value={r.hoursToLive} onChange={(v) => patchRow({ hoursToLive: v })} />
         ) : (
-          <NumField label="Auto-unsend after" help="hours · blank = keep" placeholder="e.g. 8"
+          <NumField id={`pm-${kind}-unsend`} label="Auto-unsend after" help="hours · blank = keep" placeholder="e.g. 8"
             value={r.unsendAfterHours} onChange={(v) => patchRow({ unsendAfterHours: v })} />
         )}
       </div>
@@ -178,7 +178,7 @@ export function PremadeFields({
                   label={b.label}
                 />
               ))}
-              <AudienceChip active={r.onlineOnly} label="Send to online only"
+              <AudienceChip id={`pm-${kind}-online-only`} active={r.onlineOnly} label="Send to online only"
                 onClick={() => patchRow({ onlineOnly: !r.onlineOnly })} />
             </div>
             <IfHelp>Online only filters the fans picked here and below: only those online at send time get it.</IfHelp>
@@ -214,7 +214,7 @@ export function PremadeFields({
           </div>
 
           {/* exclude_last_chat_hours: a fan we OR they messaged in the window is skipped (resolved server-side). */}
-          <LastChatChips hours={r.excludeLastChatHours}
+          <LastChatChips id={`pm-${kind}-last-chat`} hours={r.excludeLastChatHours}
             onChange={(v) => patchRow({ excludeLastChatHours: v })} />
 
           {/* The other DB-sourced add/exclude knobs (resolved server-side), rarely used: behind a disclosure. */}
@@ -293,9 +293,9 @@ function MediaPool({ idPrefix, folderSelect, picked, pickLabel, pickedLabel, onP
   );
 }
 
-function AudienceChip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+function AudienceChip({ id, active, label, onClick }: { id?: string; active: boolean; label: string; onClick: () => void }) {
   return (
-    <button type="button" aria-pressed={active} onClick={onClick}
+    <button id={id} type="button" aria-pressed={active} onClick={onClick}
       className={cn("h-8 rounded-full border px-3 text-[13px] transition-colors",
         active ? "border-[#3563ff]/30 bg-[#3563ff]/10 text-[#3563ff]" : "border-border text-fg-dim hover:border-accent hover:text-fg")}>
       {label}
@@ -304,10 +304,10 @@ function AudienceChip({ active, label, onClick }: { active: boolean; label: stri
 }
 
 /** "Skip fans chatted with in last [Off|1h|3h|8h|24h]" — the one recent-chat guard shown up front. */
-function LastChatChips({ hours, onChange }: { hours: string; onChange: (v: string) => void }) {
+function LastChatChips({ id, hours, onChange }: { id?: string; hours: string; onChange: (v: string) => void }) {
   const { value, options } = lastChatChips(hours);
   return (
-    <div>
+    <div id={id}>
       <IfLabel>Skip fans chatted with in last</IfLabel>
       <IfSegmented aria-label="Skip fans chatted with in last" value={value} onChange={onChange} options={options}
         className="max-w-full flex-wrap" />
@@ -335,12 +335,15 @@ function CountLine({ lead, value, onChange, tail }: {
 }
 
 /** A labelled field with one help line; `children` gets the input's id. */
-function Field({ label, help, children }: {
+function Field({ id: fixedId, label, help, children }: {
+  /** A stable id for the input (default: a generated one). */
+  id?: string;
   label: string;
   help?: ReactNode;
   children: (id: string) => ReactNode;
 }) {
-  const id = useId();
+  const genId = useId();
+  const id = fixedId ?? genId;
   return (
     <div className="min-w-0">
       <IfLabel htmlFor={id}>{label}</IfLabel>
@@ -352,8 +355,9 @@ function Field({ label, help, children }: {
 
 /** A labelled numeric input; its `help` says what blank means. */
 function NumField({
-  label, help, value, onChange, placeholder,
+  id, label, help, value, onChange, placeholder,
 }: {
+  id?: string;
   label: string;
   help: string;
   value: string;
@@ -361,7 +365,7 @@ function NumField({
   placeholder?: string;
 }) {
   return (
-    <Field label={label} help={help}>
+    <Field id={id} label={label} help={help}>
       {(id) => (
         <IfInput id={id} inputMode="numeric" value={value} placeholder={placeholder} className="w-full"
           onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))} />

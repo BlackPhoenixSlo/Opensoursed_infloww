@@ -33,10 +33,11 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 # 🚨 An entry is ONLY ever the string its lane passes to `resolve_model`. Never
 # the automation kind, never the grok_calls purpose tag, when those differ.
 # (`help_assistant` is the in-product help bot, not a lane, but it asks the same
-# question through the same call.)
+# question through the same call; `help_assistant_do` is its "Do it for me"
+# form-fill draft, assistant_draft.py.)
 MODEL_PURPOSES: tuple[str, ...] = (
     "gen_info", "welcome_chatter_for_info", "welcome", "followup",
-    "help_assistant",
+    "help_assistant", "help_assistant_do",
 )
 
 # Purposes whose lane asks for `response_format: json_object` and resolves its
@@ -44,7 +45,7 @@ MODEL_PURPOSES: tuple[str, ...] = (
 # extraction, copilot_api.py). A model with `json_object_ok=False` is skipped
 # at every resolve step for these and refused as a pin (account_config_rules).
 JSON_OBJECT_PURPOSES: frozenset[str] = frozenset(
-    {"gen_info", "welcome_chatter_for_info", "copilot"})
+    {"gen_info", "welcome_chatter_for_info", "copilot", "help_assistant_do"})
 
 
 def model_fits(model: str | None, purpose: str) -> bool:
@@ -92,8 +93,14 @@ def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -
 # Retiring the id costs the CHOICE and never the exemption: being a key here is
 # what lifts a purpose off the account brain, so a stale value falls to the
 # house model, never back to `cfg.model`. See `resolve_model`.
+#
+# `help_assistant_do` (the help bot's form-fill draft, assistant_draft.py)
+# rides with `help_assistant`: its small byte-stable prefix is a cache bet too.
+# Unlike it, NO keyed Opus default: the draft is a json_object call and Claude
+# has `json_object_ok=False` (docs/spec/assistant-do-mode.md D3).
 PURPOSE_DEFAULT_MODELS: dict[str, str] = {
     "help_assistant": "deepseek-v4-flash",
+    "help_assistant_do": "deepseek-v4-flash",
 }
 
 

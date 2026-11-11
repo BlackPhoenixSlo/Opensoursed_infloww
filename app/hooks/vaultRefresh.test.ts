@@ -61,6 +61,13 @@ describe("vaultPickerSource", () => {
     ["cached answer while refetching", { data: done, isLoading: false }, "mirror"],
     ["null answer", { data: null, isLoading: false }, "live"],
   ])("%s", (_n, summary, want) => expect(vaultPickerSource(summary)).toBe(want));
+
+  // #15: a summary read that never answers must not hold the grid on Loading for good.
+  it.each<[string, Parameters<typeof vaultPickerSource>[0], VaultSource | "pending"]>([
+    ["still in flight after the wait", { data: undefined, isLoading: true }, "live"],
+    ["late answer: collected vault", { data: done, isLoading: false }, "mirror"],
+    ["late answer: partial mirror", { data: { count: 300, complete: false }, isLoading: false }, "live"],
+  ])("waited out, %s", (_n, summary, want) => expect(vaultPickerSource(summary, true)).toBe(want));
 });
 
 // F15: the browse rule (manager grid, its thumb reload + selection download): a partial mirror is the mirror.

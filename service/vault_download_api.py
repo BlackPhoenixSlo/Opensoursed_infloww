@@ -20,7 +20,12 @@ Every route: the account is the caller's (`assert_account_owned`), and a folder-
 media outside its folders or one the mirror has no row for (`vault_ai_api.assert_media_visible`, the stills'
 rule). The url streamed is the mirror row's when the row has one for the same file; `u` is used only when it names
 a file of that media (the row's payload) or, for an unrestricted caller, an OF CDN host (what `/img` already
-accepts). Downloads hold a `VAULT_DOWNLOAD` slot each for the whole stream (queued, never rejected).
+accepts); `/download/resign` follows the same rule (a foreign `u` would hand a restricted chatter a fresh url of
+a hidden media). Downloads hold a `VAULT_DOWNLOAD` slot each for the whole stream: queued at most SLOT_WAIT_S, then
+503 (the browser lists the item failed, Retry failed). However the response ends (`_SlotStream`), including a client
+gone before the body ever started, the upstream response is closed and only then the slot freed; a consumer that
+takes no chunk for SEND_IDLE_S, or a stream past MAX_STREAM_S, is cut (the browser's Content-Length check fails the
+item).
 
 Every OF read these routes make (the re-sign of a stale / expired url: one listing read per 100-item window, `cdn_resign`,
 else one by-id read per file) runs as a paced background
@@ -37,6 +42,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -63,6 +71,18 @@ log = logging.getLogger("of-relay.vault_download")
 router = APIRouter()
 
 CHUNK = 256 * 1024
+# server._CutShortStreams puts a fresh dict here per request (inherited by the handler's and the body's tasks: the
+# same dict); a chunked body cut mid-file sets "cut", so its final message is dropped too (no terminating chunk).
+CUT_SHORT: ContextVar[dict | None] = ContextVar("vault_download_cut_short", default=None)
+# A queued download waits this long for a slot, then 503 (retryable: the browser lists it failed). A slot is a whole
+# file's stream, so this is "another tab's file finished", not a fixed latency. Under the 60 s read timeout common
+# in front of the app (nginx's default proxy_read_timeout): the browser gets our clean 503, never the proxy's 504.
+SLOT_WAIT_S = 45.0
+# A browser that takes no chunk for this long (a stalled tab, a dead socket the OS has not noticed) gives its slot
+# back. Upstream stalls are curl's: a streamed GET with a float timeout aborts below 1 B/s for `timeout_s`.
+SEND_IDLE_S = 120.0
+# The longest one file may stream (a 4 GB source video at ~5 Mbit/s); past it the stream is cut.
+MAX_STREAM_S = 2 * 3600.0
 _EXT = re.compile(r"\.([A-Za-z0-9]{2,5})$")
 _KIND_EXT = {"photo": "jpg", "video": "mp4", "gif": "mp4", "audio": "mp3"}
 
@@ -102,8 +122,15 @@ async def _gate(account_id: str, media_id: int) -> bool:
     return await allowed_folder_ids_for_chatter(account_id) is None
 
 
+def _u_ok(u: str, row: dict | None, unrestricted: bool) -> bool:
+    """May `u` stand in for the media's own url? Only when it names a file of that media (the mirror row), or, for an
+    unrestricted caller with no row, any OF CDN url (what `/img` accepts). Else a restricted chatter could pass a
+    hidden media's url with a visible media's id."""
+    return cdn_resign.same_file(u, row) or (unrestricted and row is None and _cdn_host(u))
+
+
 @router.get("/admin/vault-ai/download/info")
-async def download_info(account_id: str = Query(...)) -> dict[str, Any]:
+async def download_info(account_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Whether the browser may fetch this account's CDN urls itself: only when the account has no proxy."""
     assert_account_owned(account_id)
     eg = proxy_registry.egress(proxy_registry.registry(), account_id)
@@ -112,13 +139,14 @@ async def download_info(account_id: str = Query(...)) -> dict[str, Any]:
 
 @router.get("/admin/vault-ai/download/resign")
 async def download_resign(
-    account_id: str = Query(...), media_id: int = Query(...),
+    account_id: str = Query(..., min_length=1), media_id: int = Query(...),
     u: str | None = Query(None, description="The url that failed; the fresh one is for the same host+path"),
 ) -> dict[str, Any]:
-    """A fresh signature for the same file, by one by-id OF read. 404 when OF has no such media / file."""
-    await _gate(account_id, media_id)
+    """A fresh signature for the same file (`cdn_resign`: its listing window, else by id). 404 when OF has no such
+    media / file."""
+    unrestricted = await _gate(account_id, media_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
-    if u and _cdn_host(u):
+    if u and _cdn_host(u) and _u_ok(u, await _row_media(account_id, media_id), unrestricted):
         fresh = await _paced(account_id, lambda: cdn_resign.resign(account_id, media_id, u, client))
     else:
         got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
@@ -143,7 +171,7 @@ def _close(r: Any) -> None:
 
 @router.get("/admin/vault-ai/download")
 async def download(
-    account_id: str = Query(...), media_id: int = Query(...),
+    account_id: str = Query(..., min_length=1), media_id: int = Query(...),
     u: str | None = Query(None, description="The full url the browser holds (live listing); else the mirror's"),
 ):
     """The media's full-quality file through the account's client, streamed, as an attachment."""
@@ -151,7 +179,7 @@ async def download(
     row = await _row_media(account_id, media_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
     url = full_url(row)
-    if u and (cdn_resign.same_file(u, row) or (unrestricted and row is None and _cdn_host(u))):
+    if u and _u_ok(u, row, unrestricted):
         url = u
     if url is None:
         got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
@@ -165,9 +193,37 @@ async def download(
     fetch_u = cdn_resign.current(account_id, url)
 
     lane = admission.VAULT_DOWNLOAD
-    await lane.__aenter__()
+    if not await lane.enter_within(SLOT_WAIT_S):
+        log.info("vault_download account=%s media=%s status=busy bytes=0 resigned=False", account_id, media_id)
+        raise HTTPException(status_code=503, detail="download_busy", headers={"Retry-After": "30"})
     r = None
     resigned = False
+    out = {"sent": 0, "status": "aborted"}
+    released = False
+
+    def free(_done: Any = None) -> None:
+        lane.leave()
+        log.info("vault_download account=%s media=%s status=%s bytes=%s resigned=%s",
+                 account_id, media_id, out["status"], out["sent"], resigned)
+
+    async def release() -> None:
+        """Upstream closed, then the slot back and one log line: once, from whichever end comes first (the handler's
+        error path, the body's `finally`, `_SlotStream.__call__`'s `finally`). The close runs off the loop (closing a
+        streamed curl response joins its transfer thread, img_api's note) and the slot is freed only when it has
+        finished (the executor future's done callback, run on the loop), so a burst of disconnects never admits new
+        streams while the old transfers are still open. No await, so it completes under cancellation too."""
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            closing = asyncio.get_running_loop().run_in_executor(None, _close, r)
+        except RuntimeError:   # the executor is shut down (process exit): nothing to wait on
+            _close(r)
+            free()
+            return
+        closing.add_done_callback(free)
+
     try:
         try:
             async def get(x: str):
@@ -183,10 +239,8 @@ async def download(
             code = r.status_code
             raise HTTPException(status_code=code if code in (403, 404) else 502, detail=f"upstream {code}")
     except BaseException:
-        asyncio.get_running_loop().run_in_executor(None, _close, r)
-        await lane.__aexit__()
-        log.info("vault_download account=%s media=%s status=failed bytes=0 resigned=%s",
-                 account_id, media_id, resigned)
+        out["status"] = "failed"
+        await release()
         raise
 
     headers = {
@@ -196,20 +250,53 @@ async def download(
     if r.headers.get("Content-Length"):
         headers["Content-Length"] = r.headers["Content-Length"]
     resp_ct = r.headers.get("Content-Type", "application/octet-stream")
+    deadline = time.monotonic() + MAX_STREAM_S
 
     async def body():
-        sent, status = 0, "aborted"
         try:
             async for chunk in iterate_in_threadpool(r.iter_content(chunk_size=CHUNK)):
+                if time.monotonic() > deadline:
+                    out["status"] = "too_long"
+                    raise TimeoutError(f"vault download over {MAX_STREAM_S:.0f}s")
                 if chunk:
-                    sent += len(chunk)
+                    out["sent"] += len(chunk)
                     yield chunk
-            status = "ok"
+            out["status"] = "ok"
+        except Exception as e:  # noqa: BLE001 — the upstream died mid-body (curl 28 too slow, 18 cut short, a reset)
+            # Stop short: server._CutShortStreams drops the final message, uvicorn closes the connection, the browser's
+            # read fails the item (vaultDownload.ts `short body`). No Traceback. A known length does it by itself (sent
+            # < Content-Length); chunked (no length) a clean end would read as the whole file, so the request is
+            # marked in CUT_SHORT for the middleware (raising would not do: BaseHTTPMiddleware completes the body).
+            if out["status"] != "too_long":
+                out["status"] = "upstream_cut"
+            log.warning("vault_download upstream cut account=%s media=%s after=%s: %s",
+                        account_id, media_id, out["sent"], str(e)[:160])
+            if "Content-Length" not in headers:
+                mark = CUT_SHORT.get()
+                if mark is not None:
+                    mark["cut"] = True
         finally:
-            # Off the loop: closing a streamed curl response joins its transfer thread (img_api's note).
-            asyncio.get_running_loop().run_in_executor(None, _close, r)
-            await lane.__aexit__()
-            log.info("vault_download account=%s media=%s status=%s bytes=%s resigned=%s",
-                     account_id, media_id, status, sent, resigned)
+            await release()
 
-    return StreamingResponse(body(), media_type=resp_ct, headers=headers)
+    return _SlotStream(body(), release, media_type=resp_ct, headers=headers)
+
+
+class _SlotStream(StreamingResponse):
+    """A StreamingResponse that gives the download's slot back however it ends. The body's own `finally` is not
+    enough: a client gone before Starlette starts the generator (the disconnect wins the race in its task group)
+    leaves the generator never started, so its `finally` never runs and the slot and the curl response leak; four of
+    those and every relay download queued forever. Each send waits at most SEND_IDLE_S for the browser."""
+
+    def __init__(self, content: Any, release: Callable[[], Awaitable[None]], **kw: Any) -> None:
+        super().__init__(content, **kw)
+        self._release = release
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        async def bounded_send(message: Any) -> None:
+            async with asyncio.timeout(SEND_IDLE_S):
+                await send(message)
+        try:
+            await super().__call__(scope, receive, bounded_send)
+        finally:
+            await self._release()
+            await self.body_iterator.aclose()   # a generator paused at `yield` runs its `finally` now, not at GC

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -50,8 +51,8 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 # below) and closes it, ~3-6x the cost of a pooled session.
 #
 # The pool is BOUNDED (_SpillQueuePool): POOL_SIZE connections serve
-# sessions; a session that finds none free waits for one, first come first
-# served. Unbounded overflow (what this was until 2026-10-24) turned any pile-up
+# sessions; a session that finds none free waits for one (in no guaranteed
+# order: any waiter may get a returned connection). Unbounded overflow (what this was until 2026-10-24) turned any pile-up
 # of requests — a 1-2 s stall of the process, then every request in flight at
 # once — into one new connection per session: a new aiosqlite thread, the whole
 # schema (270 objects) parsed again under SQLite's global malloc mutex, 200+
@@ -68,8 +69,13 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 # whose every checkout waited 2 s spilled each one — 2,856 spill connections,
 # one aiosqlite thread each, 466 -> 3,477 relay threads in 16 s, no plateau
 # (slop relay-admission medium/200, 20261109T084847Z-...-b634). At the cap a
-# checkout waits on, FIFO, up to WAIT_MAX_S more, then raises SQLAlchemy's
-# TimeoutError, which server.py answers 503 + Retry-After. 24 from medium/200
+# checkout waits again, up to WAIT_MAX_S more, then raises SQLAlchemy's
+# TimeoutError, which server.py answers 503 + Retry-After. That second wait is
+# a new one: a checkout keeps no place in line from its first, and a waiter
+# arriving later may be served first. The one exception is a checkout made
+# with UNCAPPED set (the OF-cache writer task, db/of_writer): it spills past the
+# cap instead, since a timeout there drops inbound OF frames whose SSE already
+# went out. It is one serial task, so the cap is exceeded by one at most. 24 from medium/200
 # runs at 24 / 56 / 120: relay threads max 417 / 449 / 512, ramp CPU 1.4 / 2.0 /
 # 3.9 cores, background reads failed 77 / 85 / 85 % (the overload there is the
 # per-request role reads, not the cap); small never spills. Memory bound: each kept
@@ -84,11 +90,18 @@ MAX_SPILL = int(os.environ.get("CHATTERLY_DB_MAX_SPILL", "24"))
 WAIT_MAX_S = float(os.environ.get("CHATTERLY_DB_WAIT_MAX_S", "30"))
 
 
+# Set inside the OF-cache writer task only (db/of_writer._loop). SQLAlchemy's
+# greenlet_spawn runs the pool's checkout in the awaiting task's context, so it
+# is read in _do_get (tests/test_pool_cap_writer.py proves it).
+UNCAPPED: ContextVar[bool] = ContextVar("db_checkout_uncapped", default=False)
+
+
 class _SpillQueuePool(AsyncAdaptedQueuePool):
-    """`pool_size` connections, handed out first come first served; a checkout
+    """`pool_size` connections, handed out in no guaranteed order; a checkout
     still waiting after `timeout` seconds opens a spill connection (overflow,
     closed on return) while fewer than `max_overflow` are open, else waits on
-    up to WAIT_MAX_S more and raises TimeoutError."""
+    up to WAIT_MAX_S more and raises TimeoutError. With UNCAPPED set it spills
+    past `max_overflow` instead of waiting."""
 
     def _do_get(self):
         if self._overflow >= 0:  # all pool_size connections exist: wait for a free one
@@ -96,7 +109,15 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
                 return self._pool.get(True, self._timeout)
             except sqla_queue.Empty:
                 pass
-            if not self._inc_overflow():  # spills at the cap: wait for any connection back
+            if self._inc_overflow():
+                self.spills += 1
+            elif UNCAPPED.get():
+                # The writer never fails on the cap: one spill past it, returned
+                # through _dec_overflow like any other.
+                with self._overflow_lock:
+                    self._overflow += 1
+                self.uncapped += 1
+            else:  # spills at the cap: wait for any connection back
                 self.capped += 1
                 try:
                     return self._pool.get(True, WAIT_MAX_S)
@@ -105,7 +126,6 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
                 raise sqla_exc.TimeoutError(
                     f"DB pool busy: {self.size()} + {self._max_overflow} spill connections out, "
                     f"waited {self._timeout + WAIT_MAX_S:.0f} s", code="3o7r")
-            self.spills += 1
         else:  # still opening the first pool_size: an idle one, else a new one
             try:
                 return self._pool.get(False)
@@ -120,6 +140,7 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
 
     spills = 0  # checkouts that waited SPILL_AFTER_S and opened an extra connection
     capped = 0  # checkouts that waited SPILL_AFTER_S with MAX_SPILL spills already open
+    uncapped = 0  # writer checkouts that spilled past MAX_SPILL (UNCAPPED)
 
 
 _POOL_ARGS = {"poolclass": _SpillQueuePool, "pool_size": POOL_SIZE, "max_overflow": MAX_SPILL,

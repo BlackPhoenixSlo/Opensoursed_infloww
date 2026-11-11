@@ -1,12 +1,12 @@
 "use client";
 
-/** Creator reports' filter bar controls: the date range and its presets, the granularity tabs and the "Shown by"
+/** Creator reports' filter bar controls: the date range and its presets, the "Shown by"
  *  select, the Channels, Creator and Custom metrics pickers, and the UTC chip. */
 
 import { useEffect, useId, useRef, useState } from "react";
 import { Filter as FilterFunnel, SlidersHorizontal, Tag, X } from "lucide-react";
 
-import { type Gran, granAllowed, granShown } from "@/components/stats/chart";
+import { type Gran, granAllowed } from "@/components/stats/chart";
 import { dateBounds } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
@@ -91,7 +91,7 @@ function PopoverBox({ children, anchor }: { children: React.ReactNode; anchor: "
 export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }: {
   from: string | null; to: string | null; preset: RangeKey; reportTz: string | null;
   onChange: (f: string | null, t: string | null) => void;
-  onPreset: (key: RangeKey, days: [string, string]) => void;
+  onPreset: (key: RangeKey) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
@@ -114,7 +114,7 @@ export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }
                 key={p.key}
                 type="button"
                 aria-pressed={preset === p.key}
-                onClick={() => onPreset(p.key, p.days)}
+                onClick={() => onPreset(p.key)}
                 className="text-left whitespace-nowrap px-2 py-1 rounded text-[12px]"
                 style={{
                   color: preset === p.key ? "var(--color-accent)" : "var(--color-fg)",
@@ -158,42 +158,8 @@ export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }
   );
 }
 
-/** #65, #66, #73: the Hour / Day / Week / Month toggle buttons, 28px, 6px by 8px, no gap and no strip. A choice the
- *  range rules out is disabled with the capture's tooltip (#28, #29). */
-export function GranularityTabs({ name, pick, days, onPick }: {
-  name: string; pick: Gran; days: number; onPick: (g: Gran) => void;
-}) {
-  const shown = granShown(pick, days);
-  return (
-    <div role="group" aria-label={name} className="flex">
-      {GRANS.map(({ key, label }) => {
-        const ok = granAllowed(key, days);
-        const on = key === shown;
-        return (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={on}
-            disabled={!ok}
-            title={ok ? undefined : GRAN_LIMIT[key]}
-            onClick={() => onPick(key)}
-            className="px-2 py-1.5 rounded-md min-h-7 text-sm font-medium leading-[1.1429] disabled:cursor-not-allowed"
-            style={{
-              // #16: toggle colours; a disabled one at the capture's 23.5% alpha on our token.
-              color: !ok ? "color-mix(in srgb, var(--color-fg) 23.5%, transparent)" : on ? "var(--color-fg)" : "var(--color-fg-dim)",
-              background: on ? "color-mix(in srgb, var(--color-fg) 5.5%, transparent)" : "transparent",
-            }}
-          >
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/** #27 to #29: Creator performance's "Shown by" select; a bucket the range rules out is disabled with the capture's
- *  tooltip. */
+/** #27 to #29: the toolbar's "Shown by" select, the one bucket every chart draws in (#4); a bucket the range rules out
+ *  is disabled with the capture's tooltip. */
 export function ShownBySelect({ value, days, onPick }: { value: Gran; days: number; onPick: (g: Gran) => void }) {
   return (
     <select

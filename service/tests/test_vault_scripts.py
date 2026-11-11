@@ -172,6 +172,16 @@ Cases:
   case_mirror_keeps_two_same_named_shoots_apart:
       each OF list gets only its own shoot's media; none is pushed empty.
 
+  case_disputed_items_read_the_least_harmful_way:
+      per contradiction code, through the real lane cut: never a free lane
+      (stories / mass / safe explicit), priced as the flags see it, copy
+      (`why`) claims only what both passes agree on, no raw beats; a
+      disputed paid item is sold 1:1, a disputed free-tier one is foldered
+      nowhere and counted in the plan's `settled_unlaned`.
+  case_disputed_item_never_opens_a_script:
+      a disputed free-tier still does not join an outfit script (its free
+      opener rungs); a disputed paid one keeps its place.
+
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_scripts.py
 Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
@@ -1691,7 +1701,99 @@ def case_solo_folders_are_created_and_retired_like_any_other() -> None:
         "retiring the solo cut must not take the lanes with it"
 
 
+def case_disputed_items_read_the_least_harmful_way() -> None:
+    """The owner retired the "Fix disagreements" queue: a disagreement is read
+    the least harmful way instead (`vault_ai_brief.settled_reading`)."""
+    aid = _next_account()
+    agreed_mass = _shot(["face"], "suggestive", "lingerie_on")
+    rows = {
+        # sfw_but_bare: describe says sfw, flags see her breasts bare. Used to
+        # sit in stories AND mass; now a $10 (explicit, topless, bottom on).
+        2001: {**_shot(["breasts"], "sfw", "pulled_down"),
+               **_flags(breasts="bare", vulva="covered", over_vulva="denim shorts")},
+        # dressed_but_bare, suggestive, vulva bare: flags win -> $50; copy dressed.
+        2002: {**_shot(["pussy"], "suggestive", "dressed"),
+               **_flags(vulva="bare", breasts="covered", over_breasts="white tank top")},
+        # nude_but_clothed: topless with a thong -> $10, never "nothing left".
+        2003: {**_shot(["breasts"], "explicit", "fully_nude"),
+               **_flags(breasts="bare", vulva="covered", over_vulva="black lace thong")},
+        # nude_but_clothed, covered under named clothing, no act: was safe explicit.
+        2004: {**_shot(["breasts"], "explicit", "fully_nude"), **_dressed()},
+        # lingerie_but_nothing_on, nothing bare, suggestive: was stories + mass.
+        2005: {**_shot(["face"], "suggestive", "lingerie_on"),
+               **_flags(breasts="covered", over_breasts="black top", underwear=False)},
+        # penetration_offscreen: genital act, nothing genital in frame, top on.
+        2006: {**_fields("pulled_down", ["rubbing_clit"], "fingers", "explicit"),
+               "clothing_items": ["white bra"], "beats": ["fingers inside her"],
+               **_flags(breasts="covered", over_breasts="white bra")},
+        # Control: agreed suggestive item stays in the free lanes.
+        2007: {**agreed_mass, **_dressed(), "beats": ["turns to camera"]},
+    }
+    asyncio.run(_seed(aid, [(m, i * 0.1, f, "photo") for i, (m, f) in enumerate(rows.items())]))
+    lanes = {f["lane"]: {r["media_id"] for r in f["items"]} for f in asyncio.run(
+        vault_scripts.collect_purpose_folders(aid))}
+    free = lanes.get("stories", set()) | lanes.get("mass", set()) \
+        | lanes.get("covered_explicit", set())
+    assert free & set(rows) == {2007}, f"a disputed item is in a free lane: {free}"
+    assert lanes.get("tease_10", set()) & set(rows) == {2001, 2003}, lanes.get("tease_10")
+    assert lanes.get("tease_50", set()) & set(rows) == {2002}, lanes.get("tease_50")
+    # Disputed paid items with no tease price are sold 1:1; the disputed
+    # free-tier one (2005: flags see her dressed) may be neither free nor sold
+    # as explicit, so it is in no folder — and the plan counts it.
+    assert {2004, 2006} <= lanes["explicit_rest"], lanes["explicit_rest"]
+    every = set().union(*lanes.values())
+    assert set(rows) - every == {2005}, f"lane misses: {set(rows) - every}"
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid))
+    assert plan["settled_unlaned"] == [2005], plan["settled_unlaned"]
+    assert plan["summary"]["settled_unlaned"] == 1, plan["summary"]
+    planned = {r["media_id"] for f in plan["folders"] for r in f["items"]}
+    assert set(rows) == planned | set(plan["settled_unlaned"]), "an item was dropped"
+
+    prices = {m: vault_scripts.shelf_price(f, "photo") for m, f in rows.items()}
+    assert prices == {2001: 10, 2002: 50, 2003: 10, 2004: 0, 2005: 0, 2006: 0, 2007: 0}, prices
+
+    # Copy: the reasons a review UI and the outfit scripts show.
+    why = {m: vault_scripts.send_order_reason(f) for m, f in rows.items()}
+    assert why[2002]["clothing_state"] == "dressed" and why[2002]["tier"] == "explicit"
+    assert why[2003]["clothing_state"] == "pulled_down"
+    assert "nothing left" not in why[2003]["reveal"]
+    assert why[2005]["clothing_state"] == "dressed"
+    assert why[2006]["acts"] == [] and why[2006]["payoff_acts"] == [] \
+        and why[2006]["closes"] is False, why[2006]
+    assert why[2006]["beats"] == [] and why[2007]["beats"] == ["turns to camera"]
+    # ...and the stored row is untouched: read-time only.
+    assert rows[2003]["clothing_state"] == "fully_nude"
+
+
+def case_disputed_item_never_opens_a_script() -> None:
+    """A script is sent from its free rungs up; a disputed free-tier still is
+    never sent free, so it stays out of the shoot. A disputed PAID item
+    (priced, never free) keeps its place."""
+    aid = _next_account()
+    bra = ["pink lace bra"]
+    asyncio.run(_seed(aid, [
+        (2101, 0.0, _outfit(bra, ["posing"], "sfw", "dressed"), "photo"),
+        (2102, 0.1, _outfit(bra, ["tease"], "suggestive"), "photo"),
+        # lingerie_but_nothing_on, suggestive: a would-be free opener.
+        (2103, 0.2, {**_outfit(bra, ["tease"], "suggestive"),
+                     **_flags(breasts="covered", over_breasts="pink top",
+                              underwear=False)}, "photo"),
+        # nude_but_clothed, explicit, topless with a thong: a paid $10.
+        (2104, 0.3, {**_outfit(bra, ["posing"], "explicit", "fully_nude"),
+                     **_flags(breasts="bare", vulva="covered",
+                              over_vulva="pink lace thong")}, "photo"),
+        (2105, 0.4, _outfit(bra, ["fingering"], "explicit", "fully_nude"), "photo"),
+    ]))
+    scripts = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
+    assert len(scripts) == 1, scripts
+    ids = [r["media_id"] for r in scripts[0]["items"]]
+    assert 2103 not in ids, f"a disputed free-tier still is in a script: {ids}"
+    assert set(ids) == {2101, 2102, 2104, 2105} and ids[0] == 2101, ids
+
+
 _harness.run(
+    case_disputed_items_read_the_least_harmful_way,
+    case_disputed_item_never_opens_a_script,
     case_ladder_orders_the_arc,
     case_highest_act_wins,
     case_penetration_scores_without_acts,

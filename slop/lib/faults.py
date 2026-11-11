@@ -863,17 +863,35 @@ FAULTS: dict[str, Fault] = {
         # next dev's eval strings escape the quotes; nav.ts sits in each chunk the run loads.
         browser_files=4),
     # slop/run 2026-11-07-ai-chatter-nav --break --fault=sidebar-groups-not-accordion (client side):
-    # app/components/shell/Sidebar.tsx before 2026-11-08, every toggled group staying open.
+    # app/components/shell/Sidebar.tsx before 2026-11-08: each group toggles on its own (a per-label
+    # map, the page's group open until toggled), so every toggled group stays open. The click still
+    # sets a fresh choice so the sidebar re-renders.
     "sidebar-groups-not-accordion": Fault(None, (
         "phone: opening My Automations (6 pages), then My AI Chatter (Auto-reply, "
         "Get to know fans, Full AI Chatter) leaves only My AI Chatter open",
-    ), browser=((r"openGroup\s*===\s*n\.label", "openGroup !== null"),), browser_files=1),
+    ), browser=(
+        (r"openGroup\s*===\s*(?:undefined|void 0)\s*\?\s*holdsActive\s*:\s*openGroup\s*===\s*n\.label",
+         "(globalThis.__slopToggled ??= {})[n.label] ?? holdsActive"),
+        (r"label:\s*open\s*\?\s*null\s*:\s*n\.label",
+         "label: (globalThis.__slopToggled[n.label] = !open, String(Math.random()))"),
+    ), browser_files=1),
     # slop/run 2026-11-10-help-bot-links --break (client side): answerLinks.ts before 2026-11-10, a page
     # named in prose ("open Manage creators", "Settings has an Audit log page") left plain or on /settings.
     "help-links-prose-pages-unlinked": Fault(None, (
         "/help-center: every link in the answer has the expected text and exact href (prose page names "
         "link their page; a list sentence or one plain word does not borrow one)",
     ), browser=((r"\.\.\.NAMED,", ""), (r"head\.children \? namedBelow\(", "false ? namedBelow(")), browser_files=1),
+    # slop/run 2026-11-11-assistant-do-auto-mass --break (client side): the agent's save posts what the form holds.
+    # Two layers keep a Do it rule OFF, so the fault drops BOTH (either alone would mask it): ReadyMadeRuleEditor's
+    # forced-OFF guard in its agent save (`if (agent) body.is_enabled = false;`, in the auto-mass and auto-post page
+    # chunks) and doFlows.ts' "Leaving it OFF" step patch (layout chunk) -> the blank editor's `enabled: true` stands.
+    # Each pattern must match (else INFRA): a reworded guard fails loudly, never a silent green.
+    "assistant-do-skips-disabled": Fault(None, ("rule_saved_disabled",), browser=(
+        (r"if(?:\s|\\n)*\((?:\s|\\n)*agent(?:\s|\\n)*\)(?:\s|\\n)*body\.is_enabled(?:\s|\\n)*=(?:\s|\\n)*(?:false|!1);?",
+         ";"),
+        (r"patch:(?:\s|\\n)*\{(?:\s|\\n)*enabled:(?:\s|\\n)*(?:false|!1),(?:\s|\\n)*dryRun:(?:\s|\\n)*(?:false|!1)"
+         r"(?:\s|\\n)*\}", "patch: {}"),
+    ), browser_files=3),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

@@ -1,7 +1,7 @@
 """service/login_throttle.py — the sign-in throttle (roadmap S14, 07 M6).
 
-Three token buckets per attempt, process-local (the relay runs one uvicorn
-worker): one per username from one client IP, NAME_CAPACITY tries refilling one
+Three token buckets per attempt, process-local (token_bucket.Buckets; the relay
+runs one uvicorn worker): one per username from one client IP, NAME_CAPACITY tries refilling one
 per NAME_REFILL_S; one per username from anywhere, USER_CAPACITY refilling one
 per USER_REFILL_S; and one per client IP, IP_CAPACITY refilling one per
 IP_REFILL_S (an IPv6 client counts by its /64). The tight bucket is per IP, so
@@ -25,7 +25,6 @@ One username key for both principals, and the 2FA code step uses it too.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import math
 import time
@@ -34,6 +33,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 import client_addr
+from token_bucket import Buckets, bucket_key, wait_s
 
 NAME_CAPACITY = 5
 NAME_REFILL_S = 60.0
@@ -41,13 +41,14 @@ USER_CAPACITY = 30
 USER_REFILL_S = 20.0  # 30 per 10 minutes
 IP_CAPACITY = 20
 IP_REFILL_S = 30.0
-# Above this many tracked keys, full buckets (nothing to remember) are dropped.
-_PRUNE_AT = 10_000
+# Soft cap on tracked keys (token_bucket): past it only refilled buckets are
+# dropped, so a drained username or IP bucket is never forgotten however many
+# other keys a guesser writes; the store grows instead.
+_MAX_KEYS = 100_000
 
 log = logging.getLogger("of-relay.login_throttle")
 _clock = time.monotonic
-# key -> (tokens, last refill time)
-_buckets: dict[tuple[str, ...], tuple[float, float]] = {}
+_buckets = Buckets(_MAX_KEYS)
 
 
 def _limits(key: tuple[str, ...]) -> tuple[int, float]:
@@ -56,17 +57,7 @@ def _limits(key: tuple[str, ...]) -> tuple[int, float]:
 
 
 def _level(key: tuple[str, ...], now: float) -> float:
-    cap, refill = _limits(key)
-    tokens, at = _buckets.get(key, (float(cap), now))
-    return min(float(cap), tokens + (now - at) / refill)
-
-
-def _bucket_key(ip: client_addr.Addr | str) -> str:
-    """An IPv4 client by its address, an IPv6 one by its /64 (one host's usual share); a peer that is no address
-    by its string."""
-    if isinstance(ip, str):
-        return ip
-    return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
+    return _buckets.level(key, *_limits(key), now)
 
 
 @dataclass
@@ -81,8 +72,8 @@ class Attempt:
         self._settled = True
         now = _clock()
         for key in self.keys:
-            cap, _ = _limits(key)
-            _buckets[key] = (min(float(cap), _level(key, now) + 1), now)
+            cap, refill = _limits(key)
+            _buckets.put(key, min(float(cap), _level(key, now) + 1), now, cap, refill)
 
     def succeeded(self) -> None:
         """Signed in: refund, and the username starts over with a full bucket
@@ -91,7 +82,7 @@ class Attempt:
         self.refund()
         for key in self.keys:
             if key[0] == "name":
-                _buckets.pop(key, None)
+                _buckets.pop(key)
 
 
 def take(request: Request, username: str) -> Attempt:
@@ -100,12 +91,12 @@ def take(request: Request, username: str) -> Attempt:
     # The socket peer, the address our proxy wrote in X-Forwarded-For, or the
     # CDN's CF-Connecting-IP (EDGE_PROXIES); see client_addr.
     addr = client_addr.client_address(request)
-    ip = _bucket_key(addr)
+    ip = bucket_key(addr)
     keys = (("name", username, ip), ("user", username), ("ip", ip))
     levels = [_level(k, now) for k in keys]
     short = [(k, lv) for k, lv in zip(keys, levels) if lv < 1]
     if short:
-        wait = max(math.ceil((1 - lv) * _limits(k)[1]) for k, lv in short)
+        wait = max(wait_s(lv, _limits(k)[1]) for k, lv in short)
         log.warning("sign-in throttled addr=%s key=%s buckets=%s retry_after=%ss", addr, ip,
                     ",".join(k[0] for k, _ in short), wait)
         raise HTTPException(
@@ -118,10 +109,7 @@ def take(request: Request, username: str) -> Attempt:
             headers={"Retry-After": str(wait)},
         )
     for key, level in zip(keys, levels):
-        _buckets[key] = (level - 1, now)
-    if len(_buckets) > _PRUNE_AT:
-        for key in [k for k in _buckets if _level(k, now) >= _limits(k)[0]]:
-            del _buckets[key]
+        _buckets.put(key, level - 1, now, *_limits(key))
     return Attempt(keys)
 
 
@@ -134,4 +122,4 @@ def _wait_words(seconds: int) -> str:
 
 def reset() -> None:
     """Forget every bucket (tests)."""
-    _buckets.clear()
+    _buckets.reset()

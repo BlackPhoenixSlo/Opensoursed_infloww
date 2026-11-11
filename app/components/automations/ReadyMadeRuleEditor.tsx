@@ -19,6 +19,7 @@ import {
 } from "@/components/automations/ruleEditorForm";
 import { PremadeFields } from "@/components/compose/PremadeFields";
 import { useTouched } from "@/components/compose/useTouched";
+import { useAgentEditor, type SaveResult } from "@/components/assistant/agentBridge";
 import { cn } from "@/lib/utils";
 
 export function ReadyMadeRuleEditor({
@@ -52,9 +53,16 @@ export function ReadyMadeRuleEditor({
 
   const fail = (error: string) => dispatch({ type: "raw", a: { type: "fail", error } });
 
-  async function save() {
+  /** Create / Save changes: the button's click, and the help bot's agent (agentBridge, `agent`) — the same gate and
+   *  request, except the agent's rule is always saved OFF (docs/spec/assistant-do-mode.md D2): the user's toggle is
+   *  the go-live, whatever the agent dispatched. */
+  async function save(agent = false): Promise<SaveResult> {
+    if (busy) return { ok: false, reason: "Already saving" };
     const body = buildBody(s, d);
-    if (!body) return; // Create is disabled; the parse error or the help line says why
+    // Create is disabled; the parse error or the help line says why
+    if (!body) return { ok: false, reason: emptyHelp || raw.error || `${submitLabel} is not ready yet` };
+    // The one forced-OFF guard (slop fault assistant-do-skips-disabled drops this line).
+    if (agent) body.is_enabled = false;
     try {
       if (isEdit && editing) {
         // Untouched name / interval: the stored ones stay (buildBody leaves them out).
@@ -64,14 +72,19 @@ export function ReadyMadeRuleEditor({
         await createM.mutateAsync({ account_id: accountId, kind, ...body, name: body.name ?? copy.namePlaceholder });
       }
       onClose();
+      return { ok: true };
     } catch (e) {
-      fail((e as Error)?.message || "Save failed");
+      const reason = (e as Error)?.message || "Save failed";
+      fail(reason);
+      return { ok: false, reason };
     }
   }
+  useAgentEditor(kind, { accountId, isNew: !isEdit, dispatch, agentSave: () => save(true) });
 
   const ids = {
     name: `rm-${kind}-name`, every: `rm-${kind}-every`, items: `rm-${kind}-items`, emptyHelp: `rm-${kind}-empty-help`,
-    error: `rm-${kind}-error`,
+    error: `rm-${kind}-error`, unit: `rm-${kind}-unit`, enabled: `rm-${kind}-enabled`, dryRun: `rm-${kind}-dry-run`,
+    save: `rm-${kind}-save`,
   };
   const help = (
     <>
@@ -93,7 +106,7 @@ export function ReadyMadeRuleEditor({
       footer={(
         <>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={save} disabled={busy || !ready}
+          <IfButton id={ids.save} variant="primary" onClick={() => void save()} disabled={busy || !ready}
             aria-describedby={emptyHelp ? ids.emptyHelp : undefined}>
             {busy ? "Saving…" : submitLabel}
           </IfButton>
@@ -125,6 +138,7 @@ export function ReadyMadeRuleEditor({
                 className="w-24"
               />
               <IfSelect<Unit>
+                id={ids.unit}
                 aria-label="Interval unit"
                 value={s.intervalUnit}
                 onChange={(intervalUnit) => field({ intervalUnit })}
@@ -190,10 +204,10 @@ export function ReadyMadeRuleEditor({
         {/* wrapped so the grid cell doesn't stretch the switch off its row */}
         <div className="grid gap-6 border-t border-border pt-4 sm:grid-cols-2">
           <div>
-            <IfSwitch label="Enabled" checked={s.enabled} onChange={(enabled) => field({ enabled })} />
+            <IfSwitch id={ids.enabled} label="Enabled" checked={s.enabled} onChange={(enabled) => field({ enabled })} />
           </div>
           <div>
-            <IfSwitch label="Dry run" checked={s.dryRun} onChange={(dryRun) => field({ dryRun })} />
+            <IfSwitch id={ids.dryRun} label="Dry run" checked={s.dryRun} onChange={(dryRun) => field({ dryRun })} />
             <IfHelp>Plans each run; nothing is {copy.pastVerb}.</IfHelp>
           </div>
         </div>

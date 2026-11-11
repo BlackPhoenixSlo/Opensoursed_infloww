@@ -13,7 +13,7 @@ read is a mutation and refused like any other while impersonating.
   POST /admin/agency-notifications/{id}/read    → {unread}
   POST /admin/agency-notifications/read-all     → {unread}
   POST /admin/agency-notifications/{id}/dismiss → {unread}   (read + off the list)
-  POST /admin/agency-notifications/dismiss-all  → {unread}
+  POST /admin/agency-notifications/dismiss-all  {up_to_id?} → {unread}   (rows id <= up_to_id)
 
 A dismissed row (`dismissed_at`) is read and gone from the list, but kept
 until the retention prune: its `dedupe_key` still stops a sweep (a missed
@@ -62,8 +62,8 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import delete, func, or_, select, update
+from fastapi import APIRouter, Body, HTTPException, Query
+from sqlalchemy import ColumnElement, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import events
@@ -507,13 +507,13 @@ async def list_notifications(
                 "pinned": [_row(n) for n in pinned]}
 
 
-async def _mark_read(user_id: str, notification_id: int | None, *, dismiss: bool = False) -> dict[str, int]:
-    """Read one row (or all), and with `dismiss` take it off the list too."""
-    now = datetime.utcnow()
+async def _set(user_id: str, notification_id: int | None, pending: ColumnElement[bool], values: dict[str, Any],
+               up_to_id: int | None = None) -> dict[str, int]:
+    """Apply `values` to the owner's row `notification_id` (or every row with
+    an id up to `up_to_id`, None: all) still `pending`; pinned rows never."""
     async with get_session() as s:
         q = update(AgencyNotification).where(
-            AgencyNotification.agency_user_id == user_id, (AgencyNotification.kind != PINNED_KIND),
-            AgencyNotification.dismissed_at.is_(None) if dismiss else AgencyNotification.read_at.is_(None))
+            AgencyNotification.agency_user_id == user_id, (AgencyNotification.kind != PINNED_KIND), pending)
         if notification_id is not None:
             n = await s.get(AgencyNotification, notification_id)
             if n is None or n.agency_user_id != user_id:
@@ -521,13 +521,24 @@ async def _mark_read(user_id: str, notification_id: int | None, *, dismiss: bool
             if n.kind == PINNED_KIND:
                 raise HTTPException(status_code=409, detail=_PINNED_REFUSED)
             q = q.where(AgencyNotification.id == notification_id)
-        # A dismissed row is read too (an earlier read time stays).
-        values: dict[str, Any] = ({"dismissed_at": now, "read_at": func.coalesce(AgencyNotification.read_at, now)}
-                                  if dismiss else {"read_at": now})
+        if up_to_id is not None:
+            q = q.where(AgencyNotification.id <= up_to_id)
         await s.execute(q.values(**values).execution_options(synchronize_session=False))
         unread = await _unread(s, user_id)
     _push(user_id, unread)
     return {"unread": unread}
+
+
+async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int]:
+    """Read one row (or all)."""
+    return await _set(user_id, notification_id, AgencyNotification.read_at.is_(None), {"read_at": datetime.utcnow()})
+
+
+async def _dismiss(user_id: str, notification_id: int | None, up_to_id: int | None = None) -> dict[str, int]:
+    """Take one row (or all up to `up_to_id`) off the list; a dismissed row is read too (an earlier read time stays)."""
+    now = datetime.utcnow()
+    return await _set(user_id, notification_id, AgencyNotification.dismissed_at.is_(None),
+                      {"dismissed_at": now, "read_at": func.coalesce(AgencyNotification.read_at, now)}, up_to_id)
 
 
 @router.post("/read-all")
@@ -541,10 +552,12 @@ async def read_one(notification_id: int) -> dict[str, int]:
 
 
 @router.post("/dismiss-all")
-async def dismiss_all() -> dict[str, int]:
-    return await _mark_read(require_user(detail=_SIGN_IN).id, None, dismiss=True)
+async def dismiss_all(up_to_id: int | None = Body(None, embed=True)) -> dict[str, int]:
+    # `up_to_id` = the newest id the client shows: rows filed after its fetch stay (the dedupe would keep
+    # them from ever being filed again). Absent (a tab from before this field) = every row.
+    return await _dismiss(require_user(detail=_SIGN_IN).id, None, up_to_id)
 
 
 @router.post("/{notification_id}/dismiss")
 async def dismiss_one(notification_id: int) -> dict[str, int]:
-    return await _mark_read(require_user(detail=_SIGN_IN).id, notification_id, dismiss=True)
+    return await _dismiss(require_user(detail=_SIGN_IN).id, notification_id)

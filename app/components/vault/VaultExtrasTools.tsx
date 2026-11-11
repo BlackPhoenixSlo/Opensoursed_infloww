@@ -16,7 +16,7 @@ import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
 /** The modals the drawer's tools open. */
-export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "disputes" | "flagsReview";
+export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "flagsReview";
 
 /** The Extras drawer: the page's own tools, which the bundle does not have, one click from the header (ADR-0003).
  *  A right sheet over the page; Esc or × closes it, unless a modal above it took the Escape first. It slides in
@@ -209,15 +209,6 @@ export default function VaultExtrasTools({
             title="Group the vault into shoots and send lanes — preview first, nothing is created until you confirm"
           >
             Build AI folders
-          </button>
-          <button
-            type="button"
-            onClick={() => onOpen("disputes")}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-warn/50 bg-warn/10 text-warn hover:bg-warn/20 disabled:opacity-50"
-            title="Items where the two vision passes disagree — pick the reading that matches the picture. Your choice is locked against re-runs."
-          >
-            Fix disagreements
           </button>
         </div>
       </div>

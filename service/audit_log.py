@@ -41,6 +41,7 @@ _AUDIT_SKIP_PREFIXES = (
     # the OnlyFans PASSWORD, which must never be written to the actions table.
     "/admin/login",
     "/push",             # a browser's push subscription sync, on every page load
+    "/t/",               # public tracking-link verify: an anonymous fan's click, counted on its own row
 )
 # Note: do NOT include "/" here — every absolute path starts with "/", so
 # `startswith("/")` would silently skip every endpoint. The root path is
@@ -150,11 +151,8 @@ async def audit_middleware(request: Request, call_next):
                     if emp_id is not None:
                         employees._warn_chatter_header_ignored_once()
                         emp_id = None
-                    resolved = getattr(request.state, "chatter_outbound_employee", None)
-                    if (resolved is not None and resolved[0] == chatter.id
-                            and resolved[1] == account_id):
-                        emp_id = resolved[2]
-                    else:
+                    emp_id = employees.remembered_chatter_employee(request, chatter, account_id)
+                    if emp_id is None:
                         emp_id = await employees.resolve_chatter_employee_id(
                             chatter_id=chatter.id,
                             owner_user_ids=chatter.owner_user_ids,

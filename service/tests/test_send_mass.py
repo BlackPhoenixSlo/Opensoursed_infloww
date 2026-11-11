@@ -647,6 +647,7 @@ class FakeRosterClient(FakeListClient):
         self._following = list(following)
         self._envelope_following = envelope_following
         self.calls: list[str] = []
+        self.feed: dict[int, int] | None = None   # queue id -> sentCount, for sends not made through this fake
 
     def subscribers(self, *, type="active", limit=10, offset=0, **kw):
         self.calls.append(f"subscribers:{type}:{offset}")
@@ -662,6 +663,21 @@ class FakeRosterClient(FakeListClient):
         if self._envelope_following:
             return {"list": rows, "hasMore": offset + limit < len(self._following)}
         return rows        # bare list — page until an empty page
+
+    def mass_message_history(self, *, start_date, end_date, limit=50, offset=0):
+        """OF's mass feed (the Audience crawl's count, P2b): the last send, its sentCount the audience OF
+        sent to (its rosters and ids, minus its excluded lists' members); `feed` instead when set."""
+        if self.feed is not None:
+            return {"items": [{"id": q, "sentCount": n} for q, n in self.feed.items()], "hasMore": False}
+        if not self.sent:
+            return {"items": [], "hasMore": False}
+        kw = self.sent[-1]
+        aud = {int(u) for u in kw.get("included_users") or ()}
+        for name in kw.get("user_lists") or ():
+            aud |= set({"fans": self._fans, "following": self._following}.get(str(name), ()))
+        for lid in kw.get("excluded_user_lists") or ():
+            aud -= self.members.get(int(lid), set())
+        return {"items": [{"id": self._response.get("id"), "sentCount": len(aud)}], "hasMore": False}
 
 
 def case_resolve_recipients_reads_both_rosters():
@@ -906,6 +922,7 @@ async def case_close_mass_run_skips_a_scheduled_send():
     aid = "acc_mass_close"
     await _seed_account(aid)
     fake = FakeRosterClient(fans=[8201, 8202])
+    fake.feed = {990001: 1}   # OF's count of the immediate send (the result below, not this fake's send)
     server._load_client = lambda account_id: fake  # type: ignore[attr-defined]
     audience = {"user_lists": ["fans"], "excluded_users": [8202]}
 
@@ -1039,7 +1056,7 @@ def case_init_db_heals_the_four_columns_and_the_index():
     idx = {r[1] for r in con.execute("PRAGMA index_list(mass_runs)")}
     con.close()
     old.unlink()
-    for c in ("body", "sent_at", "unsent_at", "recipients_json"):
+    for c in ("body", "sent_at", "unsent_at", "recipients_json", "crawl_outcome"):
         assert c in cols, (c, sorted(cols))
     assert "ix_mass_runs_account_sent" in idx, sorted(idx)
 

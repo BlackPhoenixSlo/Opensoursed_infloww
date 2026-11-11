@@ -562,24 +562,30 @@ class Reply:
 async def _complete(model: str, user_content: str, *, account_id: str | None,
                     user_id: str | None = None,
                     capped: str = "This account's AI budget is used up for today.",
-                    fallback: str | None = None) -> Reply:
+                    fallback: str | None = None,
+                    purpose: str = PURPOSE, system: str | None = None,
+                    response_format: dict | None = None) -> Reply:
     """One help-bot completion, every provider failure turned into an answer.
 
     `fallback` is set only when `model` is a KEYED purpose default
     (`resolve_model_and_fallback`): a cap, key or provider failure then gets
-    exactly ONE retry on it, and the Reply names the model that answered."""
+    exactly ONE retry on it, and the Reply names the model that answered.
+    `purpose`/`system`/`response_format`: the "Do it for me" draft
+    (assistant_draft.py) reuses this with its own prompt and JSON mode."""
     sent = Reply("", model=model, provider=MODELS[model].provider)
+    extra = {"response_format": response_format} if response_format is not None else {}
     try:
         result = await llm_client.chat(
             model=model,
-            purpose=PURPOSE,
+            purpose=purpose,
             account_id=account_id,
             user_id=user_id,
             messages=[
-                {"role": "system", "content": system_prompt()},
+                {"role": "system", "content": system if system is not None else system_prompt()},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.3,
+            **extra,
         )
     except LLMKeyError as e:            # before LLMConfigError: it is one too
         log.warning("assistant: llm key %s provider=%s", e.kind, e.provider)
@@ -612,7 +618,8 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
     log.warning("assistant: keyed default %s failed (%s) — one retry on %s",
                 model, failed.error, fallback)
     return await _complete(fallback, user_content, account_id=account_id,
-                           user_id=user_id, capped=capped)
+                           user_id=user_id, capped=capped, purpose=purpose,
+                           system=system, response_format=response_format)
 
 
 # ── Turns: one server-owned read for the history GET and the prompt ───

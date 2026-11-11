@@ -64,15 +64,20 @@ oracles, bypasses).
   a video's `files.full` is its source mp4), mirror by SQL (`seed/vault_week`), CDN armed (exact seeded bytes).
   Creator A no proxy (urls signed for "direct"), B on a `ProxyWire` proxy (urls signed for it). Stage relay-load
   (also --no-ui): `--users` concurrent `GET /admin/vault-ai/download` of B's whole vault. UI (1440x900): on A,
-  Download selected (3 photos + 1 video), the rail's Download folder, Download whole vault with `STALE` urls signed
-  for a proxy A left; on B, Download selected. Screenshots `vault-download-<select|folder|vault|proxied>-trigger` /
-  `-settled`. Checks (`lib/vault_download_faults.py`): `SELECT`, `FOLDER`, `VAULT` (stale ones: 403, one by-id
-  re-sign each, then direct 200), `PROXIED` (0 browser CDN fetches), `RELAY_LOAD`; files read off disk (path, a
+  Download selected (3 photos + 1 video), the rail's Download folder, the header's Download full vault with `STALE` urls signed
+  for a proxy A left, then rail folder 2 selected and the header's Download full folder; on B, Download selected.
+  Screenshots `vault-download-<select|folder|vault|header-folder|proxied>-trigger` / `-settled`. Checks
+  (`lib/vault_download_faults.py`): `SELECT`, `FOLDER`, `VAULT` (stale ones: 403, re-signed by
+  listing window, one OF read per window, 0 by-id, then direct 200), `HEADER_SCOPE` (the header's label per scope; the browser's download listing
+  requests, told apart from the grid's by page size, carry no folder id for the vault and that folder's id for the
+  folder; fault `vault-download-header-ignores-folder`, client: the header starts the whole vault under a selected
+  folder, turns only it red), `PROXIED` (0 browser CDN fetches), `RELAY_LOAD`; files read off disk (path, a
   .jpg's exact bytes, an .mp4's size = served + ftyp), the panel's data-* counts, the relay's `vault_download` log
   lines; p95 of the relay download vs last green. Fault `vault-download-direct-ignores-proxy` (default, client:
   `sourceFor` drops the proxy rule) turns only `PROXIED` and `PHONE_SHARE` red. Phone stage (B, 390x844 Chromium
   mobile emulation, `touch`): `PHONE_CAP` (Select all > 20 off with "Phone: up to 20 at a time", 20 on, 21 off,
-  folder / whole vault off with their reason) and `PHONE_SHARE` (3 photos + 2 videos padded to 110 MB,
+  folder / whole vault off with their reason), `PHONE_HEADER` (the header's Download an icon, label sr-only, off with
+  the desktop-only reason; `vault-download-phone-header`) and `PHONE_SHARE` (3 photos + 2 videos padded to 110 MB,
   `img_relay.padded_mp4` via `arm_run(mp4_sizes=)`, so >= 2 share batches; one sheet dismissed keeps the button;
   every file shared once with name / MIME / exact size; each share inside a user activation; no 5xx); screenshots
   `vault-download-phone-<cap|links|trigger|ready|settled>`. Fault `vault-download-share-batch-drops-item` (client:
@@ -83,14 +88,25 @@ oracles, bypasses).
   `-opened`), B's app link fetched with the session: 200 attachment, exact bytes) and `PHONE_LINKS` ("Save links"
   first, its own share inside the tap, txt + html, app urls). Copies `links-<phase>.txt/.html` in the run folder.
   Fault `vault-download-links-cdn-for-proxied` (client: `linkRows` drops the direct rule) turns only `LINKS` and
-  `PHONE_LINKS` red. `SWITCH` (fresh browser on A: Download whole vault, Creator B picked in the creator column
+  `PHONE_LINKS` red. `SWITCH` (fresh browser on A: the header's Download full vault, Creator B picked in the creator column
   mid-run; A's files all on disk with exact bytes, card done / 0 failed / titled with A, B's grid shown with its
-  Download off "A download is running"; `vault-download-switch-trigger` / `-settled`); fault
-  `vault-download-switch-aborts-run` (client: VaultProPage's per-model keyed subtree mounts a download of its own
-  around VaultManagePanel, the pre-fix layout) turns only `SWITCH` red. Bypasses: the browser's CDN
+  header button "Add full vault to queue" on; `vault-download-switch-trigger` / `-settled`). Queue stage (fresh browser
+  on B, root `queue`): 3 photos selected, the middle one's CDN response stalled (img_relay `stall`), A picked and its
+  biggest non-first folder "Add folder to queue"d: `QUEUE_STALL` (B ends total 3 / done 2 / stalled 1 / failed 0,
+  no file or .crswap for it, A's job starts by itself), `QUEUE_NAV` (A held mid-run; sidebar Dashboard and back by
+  the card's Open Vault Pro: same job, no reload, then done), `QUEUE_CREATORS` (each job's files under its own
+  Creator, exact bytes, nothing dropped or stray); `vault-download-queue-<trigger|stalled|away|settled>`. Faults:
+  `vault-download-switch-aborts-run` (client: the run's unmount cleanup re-runs on a Creator pick) turns only
+  `SWITCH` + `QUEUE_*` red; `vault-download-no-stall-watchdog` (STALL_MS 10 min) only `QUEUE_STALL`;
+  `vault-download-nav-kills-run` (the run stopped once the path leaves its page) only `QUEUE_NAV` +
+  `QUEUE_CREATORS` (main's keyed-subtree fault patched VaultProPage's page-level provider, gone now: one
+  app-level provider). The download modules ship in 2 dev chunks (layout + Vault Pro page): their faults set
+  `browser_files=DL_FILES`. Bypasses: the browser's CDN
   requests answered at its network boundary (Playwright route) by img_relay's fake with S3's CORS (ACAO `*` on
-  200/206, none on 403; switch stage: A's download fetches after the first 3 held until B is on screen, a
-  deterministic slow CDN; none held within 60 s is a red `SWITCH`, never a hang); the native folder picker stubbed (init script; each chunk over a binding to
+  200/206, none on 403; switch / queue stage: A's download fetches after the first 3 / 2 held until the stage
+  releases them, a deterministic slow CDN; none held within 60 s is red, never a hang); queue stage: one of B's CDN
+  responses sends headers + 1 KB then nothing for 45 s (img_relay `stall`, a sleep in the fake, relay side), re-armed
+  without it after; the native folder picker stubbed (init script; each chunk over a binding to
   `<tmp>/downloads/<phase>/`, `.crswap` then rename, as Chromium); phone: `showDirectoryPicker` deleted and
   `navigator.canShare` / `share` stubbed by an init script that records the shared Files (no WebKit, no real sheet).
   Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).

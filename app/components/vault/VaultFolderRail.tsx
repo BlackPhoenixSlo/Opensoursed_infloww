@@ -19,7 +19,7 @@ import {
 import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState, IfButton, IfModal } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
-import { SHARE_MODE_OFF } from "@/components/vault/vaultDownloadReducer";
+import { type DlGate } from "@/components/vault/vaultDownloadReducer";
 import { applyCustomOrder, customizeReducer } from "@/components/vault/vaultFolderOrder";
 import {
   FOLDER_ORDERS, FOLDER_SORTS, loadFolderSort, type FolderSortState,
@@ -207,7 +207,8 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
 
 export default function VaultFolderRail({
   folders, allCounts = null, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder,
-  downloadFolderOff = "",
+  downloadFolderGate,
+  downloadQueues = false,
 }: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
@@ -222,10 +223,12 @@ export default function VaultFolderRail({
   onSelect: (id: FanId | null) => void;
   /** Called after every folder write, taken by OF or not: the folders may have changed. */
   onChanged: () => void;
-  /** Ours: the row menu's "Download folder" (absent: no such item). */
-  onDownloadFolder?: (f: VaultList) => void;
-  /** Why "Download folder" is off (shown disabled, the reason as its title); "" when on. */
-  downloadFolderOff?: string;
+  /** Ours: the row menu's "Download folder". */
+  onDownloadFolder: (f: VaultList) => void;
+  /** `downloadGate` for a folder: off = disabled with the reason as its title; desktop only = "(desktop only)". */
+  downloadFolderGate: DlGate;
+  /** A download runs: the item joins the queue ("Add folder to queue"). */
+  downloadQueues?: boolean;
 }) {
   const accountId = useVaultAccountId();
   const qc = useQueryClient();
@@ -515,8 +518,10 @@ export default function VaultFolderRail({
                           items={[
                             { label: "Rename", onClick: () => setNameModal({ folder: f }) },
                             { label: "Delete", onClick: () => setDeleteModal(f) },
-                            ...(onDownloadFolder ? [{ label: downloadFolderOff === SHARE_MODE_OFF ? "Download folder (desktop only)" : "Download folder", onClick: () => onDownloadFolder(f),
-                                                      disabled: !!downloadFolderOff, title: downloadFolderOff || undefined }] : []),
+                            { label: downloadFolderGate.desktopOnly ? "Download folder (desktop only)"
+                                : downloadQueues ? "Add folder to queue" : "Download folder",
+                              onClick: () => onDownloadFolder(f), disabled: !!downloadFolderGate.reason,
+                              title: downloadFolderGate.reason || undefined },
                           ]}
                         />
                       </span>

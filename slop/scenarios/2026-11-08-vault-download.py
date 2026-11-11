@@ -24,19 +24,40 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
            selected (`vault-download-select-folder-trigger`, `-settled`): both under that folder only.  SELECT_IN_FOLDER.
   folder   the rail's first folder: its row menu > Download folder (`vault-download-folder-trigger`, `-settled`).
                                                                                                FOLDER.
-  vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the toolbar's Download whole vault
-           (`vault-download-vault-trigger`, `-settled`): every media once; the stale ones 403 direct, are re-signed
-           by listing window (one OF read per window, 0 by-id) and fetched direct again.       VAULT.
-  switch   a fresh browser on A: Download whole vault, then, while it runs (SWITCH_FREE CDN fetches through, the
-           next held), Creator B in the creator column (`vault-download-switch-trigger`: B's grid, A's card
-           running, B's Download whole vault off with "A download is running"); the CDN released, the card
-           settles (`-settled`): every one of A's media on disk once with exact bytes, data-phase done (not
+  vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the header's Download full vault
+           (testid `vault-header-download`; shots `vault-download-vault-trigger`, `-settled`): every media fetched once,
+           a copy in each of its custom folders (#430); the stale ones 403 direct, are re-signed by listing window
+           (one OF read per window, 0 by-id) and fetched direct again.                         VAULT.
+  header   the header button's scope: the vault phase's run listed with no folder id (label "Download full vault");
+           then rail folder 2 selected, the label "Download full folder", the header clicked
+           (`vault-download-header-folder-trigger`, `-settled`): its listing requests (the download's page sizes,
+           the browser's own requests) carry that folder's id; exactly its media saved, all direct.   HEADER_SCOPE.
+  switch   a fresh browser on A: the header's Download full vault, then, while it runs (SWITCH_FREE CDN fetches
+           through, the next held), Creator B in the creator column (`vault-download-switch-trigger`: B's grid, A's card
+           running, B's header button "Add full vault to queue", on: a run never blocks the next); the CDN released, the
+           card settles (`-settled`): every one of A's media on disk once with exact bytes, data-phase done (not
            cancelled), data-failed 0, the card titled with A's name. The old per-model remount aborted it.  SWITCH.
+  open-folder  the card's "Open folder" (`dl-open-folder`) after select (`vault-download-select-open-folder`), after
+           folder (`-folder-open-folder`) and mid-run in switch (A's card while held, B's grid up): the computer's file
+           window opened in that run's folder (`startIn`: select/switch <creator>, folder <creator>/<folder>), which
+           holds its links files (folder: + every media file); the done card says "Saved in <that path>/".  OPEN_FOLDER.
   proxied  a fresh browser on B: Download selected of 3 photos + 1 video (`vault-download-proxied-trigger`,
            `-settled`): 0 browser CDN fetches, all relay.                                      PROXIED.
+  queue    a fresh browser on B: Download selected of 3 photos into root "queue", the middle one's CDN response
+           stalled (relay side, declared); A picked, its biggest non-first folder's menu > Add folder to queue
+           (`vault-download-queue-trigger`: data-queued 1). B's job ends in the card's Finished list with total 3,
+           done 2, stalled 1, failed 0, no file / .crswap for the stalled id, and A's job starts by itself
+           (`-stalled`).                                                                       QUEUE_STALL.
+           A's CDN held after QUEUE_FREE fetches (declared); the sidebar's Dashboard (client-side): the global card
+           still shows A's job (`-away`), its Open Vault Pro link back (no reload): same data-job; released, it ends
+           done N of N (`-settled`).                                                           QUEUE_NAV.
+           The queue folder: B's 2 under B's creator folder, A's folder under A's, exact bytes, no stray.
+                                                                                               QUEUE_CREATORS.
   phone    a fresh phone browser on B (390x844, touch, no folder picker, share stubbed): Select all (> 20) is off
            with "Phone: up to 20 at a time", 20 ticked is on, 21 off, Download folder / whole vault off with their
            reason (`vault-download-phone-cap`).                                                PHONE_CAP.
+           The header's Download on that phone: its icon shown, its label screen-reader-only, disabled, titled with
+           the desktop-only reason (`vault-download-phone-header`).                            PHONE_HEADER.
            Then 3 photos + 2 videos padded to PHONE_VIDEO_MB each (> SHARE_BATCH_BYTES/2, so never one batch):
            Download selected (`vault-download-phone-trigger`), the first "Save 1–N" (`-ready`) dismissed once
            (AbortError: the button stays), then every Save tapped until all are saved (`-settled`).  PHONE_SHARE.
@@ -61,12 +82,20 @@ Bypasses (declared):
   (resource type fetch, A's files) it holds the next ones until B's grid is up and shot, then answers them as
   above. Deterministic "still running at the switch" instead of a timing race; bytes and checks unchanged. None
   held within 60 s: SWITCH red with that error (never a hang). A held fetch the page dropped meanwhile can't be
-  answered: counted (`held_dropped`), not raised.
+  answered: counted (`held_dropped`), not raised. The queue stage holds A's job the same way (QUEUE_FREE through),
+  so it is still running while the page is away.
+- Queue stage only: one of B's CDN responses is stalled at the CDN's wire (lib/img_relay.py `stall`, outside service
+  code): headers + STALL_AFTER bytes, then nothing for STALL_HOLD_S (a sleep in the fake's thread, not a throttled
+  TCP path); the relay streams what it got, the browser's STALL_MS watchdog cuts it. Re-armed without it after.
 - The native folder picker (`showDirectoryPicker`) is stubbed by an init script in this test only: a directory
   handle whose `createWritable()` is a real WritableStream; each chunk crosses a Playwright binding (base64) and is
   written under the run's tmp as `<file>.crswap`, renamed on close, deleted on abort (Chromium's own swap-file rule).
+  As Chrome: `getFileHandle(n, {create: true})` creates the empty file at once, without `create` a missing file is
+  NotFoundError, `removeEntry` deletes a file (so a failed item's leftover is visible to the checks).
   The stub refuses separators and "."/".." in names, as the real API does. `__slopPickHold` keeps it open until
   `__slopPickClose()` (the user's Cancel: AbortError), for the hint shown while Chrome's picker is up.  PICK_HINT.
+- The open dialog (`showOpenFilePicker`, "Open folder") is stubbed the same way: it records the path of the `startIn`
+  handle it got and rejects with AbortError (the user closing it). The OS window itself is not shown or shot.
 - The links .html is opened with page.set_content (its exact bytes), not file:// (the harness context aborts every
   non-loopback load); an app link is fetched with the context's session (APIRequestContext, its cookies), not by a
   click (a click would save it via the browser's download manager).
@@ -88,8 +117,14 @@ again) turns only RELAY_STALE and VAULT red; vault-download-selection-ignores-fo
 SELECT_IN_FOLDER red; vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
 PHONE_LINKS red; vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED and
 PHONE_SHARE red; vault-download-share-batch-drops-item (client: `addToBatches` loses the file that opens a batch)
-turns only PHONE_SHARE red; vault-download-switch-aborts-run (client: VaultProPage's per-model keyed subtree mounts a
-download of its own around VaultManagePanel, the pre-fix layout) turns only SWITCH red.
+turns only PHONE_SHARE red; vault-download-header-ignores-folder (client: the header's click starts the whole vault
+under a selected folder, its label still "Download full folder") turns only HEADER_SCOPE red;
+vault-download-switch-aborts-run (client: the run's unmount cleanup re-runs when the remembered Creator changes,
+the pre-fix per-Creator lifetime; the app-level provider has no per-Creator subtree to key) turns only SWITCH +
+QUEUE_* red; vault-download-no-stall-watchdog (client: STALL_MS 10 min) turns only QUEUE_STALL red;
+vault-download-nav-kills-run (client: the run stopped once the path leaves the page it started on) turns only
+QUEUE_NAV + QUEUE_CREATORS red; vault-download-open-folder-at-root (client: `showSavedFolder` walks only the first
+of the run's dirs) turns only OPEN_FOLDER red.
 """
 import asyncio
 from dataclasses import dataclass
@@ -107,8 +142,9 @@ from collections import Counter
 from slop.lib.img_relay import EGRESS, ORIG_HOST, arm_run, asset_bytes, video_bytes
 from slop.lib.vault_ui import TOURS_SEEN, open_vault_pro
 from slop.lib.vault_download_faults import (
-    FOLDER, LINKS, PHONE_CAP, PICK_HINT, PHONE_LINKS, PHONE_SHARE, PROXIED, RELAY_LOAD, RELAY_STALE, SELECT,
-    SELECT_IN_FOLDER, SWITCH, VAULT,
+    FOLDER, HEADER_SCOPE, LINKS, OPEN_FOLDER, PHONE_CAP, PHONE_HEADER, PICK_HINT, PHONE_LINKS, PHONE_SHARE, PROXIED,
+    QUEUE_CREATORS, QUEUE_NAV, QUEUE_STALL,
+    RELAY_LOAD, RELAY_STALE, SELECT, SELECT_IN_FOLDER, SWITCH, VAULT,
 )
 from slop.lib.vault_ui import cdn_count, cdn_calls, proxy_bind, captured
 from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
@@ -126,6 +162,7 @@ class _UiWorld:
     nick: dict
     peg: str
     port: int
+    assets: dict
 
 PROFILE = "flat_agency"
 UI = True
@@ -145,7 +182,10 @@ WAIT_MS = 120_000
 SETTLE_S = 180
 STALE = 3
 SWITCH_FREE = 3                    # switch stage: A's download fetches let through before the hold (declared)
-BUSY_OFF = "A download is running"  # vaultDownloadReducer.BUSY_OFF
+QUEUE_VAULT = "Add full vault to queue"    # the header's Download while a download runs (folder sink)
+QUEUE_FREE = 2                     # queue stage: A's fetches let through before the hold (declared)
+STALL_AFTER = 1024                 # queue stage: bytes of B's stalled photo sent before the CDN goes silent
+STALL_HOLD_S = 45                  # > the browser's STALL_MS (20 s); the relay's curl drops it at 30 s
 STALE_N = 15                       # relay-stale: spread over the vault
 OF_MIN_GAP_S = 0.5
 BY_ID = "GET /api2/v2/vault/media/{id}"
@@ -156,6 +196,10 @@ DOWNLOAD = "/admin/vault-ai/download"
 LISTS_PATH = "/api/of/v2/vault/lists"
 MEDIA_PATH = "/api/of/v2/vault/media"
 PANEL = "[aria-label='Vault download']"
+HEADER_DL = "vault-header-download"
+# vaultDownload.ts listAll's page sizes (MIRROR_PAGE, LIVE_PAGE): the grid pages by 40 / 24, so these are the
+# download's own listing requests.
+LIST_PAGES = {"/admin/vault-ai/items": "500", MEDIA_PATH: "100"}
 _LOG = re.compile(r"vault_download account=(\S+) media=(\d+) status=(\S+) bytes=(\d+)")
 
 # The native folder picker, in this test only (declared above).
@@ -175,13 +219,21 @@ PICKER_JS = r"""(() => {
       async abort() { await call("abort", id); },
     });
   } });
-  const dir = (p, name) => ({ kind: "directory", name,
+  const missing = () => new DOMException("A requested file or directory could not be found.", "NotFoundError");
+  const dir = (p, name) => ({ kind: "directory", name, __p: p,
     async getDirectoryHandle(n) { check(n); await call("mkdir", p + "/" + n); return dir(p + "/" + n, n); },
-    async getFileHandle(n) { check(n); return file(p + "/" + n, n); } });
+    async getFileHandle(n, o) { check(n);   // Chrome: create makes the (empty) file now; else a missing one throws
+      if (!(await call(o && o.create ? "touch" : "exists", p + "/" + n))) throw missing();
+      return file(p + "/" + n, n); },
+    async removeEntry(n) { check(n); if (!(await call("rm", p + "/" + n))) throw missing(); } });
   window.showDirectoryPicker = async () => {
     if (window.__slopPickHold) return new Promise((_, no) => {
       window.__slopPickClose = () => no(new DOMException("The user aborted a request.", "AbortError")); });
     const r = window.__slopPickRoot || "root"; await call("mkdir", r); return dir(r, r); };
+  window.showOpenFilePicker = async (o) => {
+    (window.__slopOpenPicker ||= []).push({ startIn: o && o.startIn ? (o.startIn.__p ?? "?") : null,
+                                           multiple: !!(o && o.multiple) });
+    throw new DOMException("The user aborted a request.", "AbortError"); };
 })();"""
 
 
@@ -228,6 +280,17 @@ class Disk:
         if op == "mkdir":
             self._p(a[0]).mkdir(parents=True, exist_ok=True)
             return None
+        if op == "touch":   # getFileHandle({create: true}): the file exists, empty, from now on
+            self._p(a[0]).touch(exist_ok=True)
+            return True
+        if op == "exists":
+            return self._p(a[0]).is_file()
+        if op == "rm":      # removeEntry (a file)
+            p = self._p(a[0])
+            if not p.is_file():
+                return False
+            p.unlink()
+            return True
         if op == "read":
             return base64.b64encode(self._p(a[0]).read_bytes()).decode()
         if op == "open":
@@ -465,10 +528,12 @@ async def run(ctx):
         await _relay_stale(ctx, w, vw, b, peg)
 
         if ctx.app:
-            await _ui(ctx, _UiWorld(w, vw, a, b, nick, peg, armed["port"]))
+            await _ui(ctx, _UiWorld(w, vw, a, b, nick, peg, armed["port"], assets))
             await _phone(ctx, vw, b, peg, armed["port"], assets)
         else:
-            for name in (SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, SWITCH, PROXIED, PHONE_CAP, PHONE_SHARE, LINKS, PHONE_LINKS):
+            for name in (PICK_HINT, SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, HEADER_SCOPE, SWITCH, OPEN_FOLDER, PROXIED,
+                         QUEUE_STALL, QUEUE_NAV, QUEUE_CREATORS, PHONE_CAP, PHONE_HEADER,
+                         PHONE_SHARE, LINKS, PHONE_LINKS):
                 ctx.skip(name, "needs UI (--no-ui)")
     s = ctx.rec.summary("relay-load").get(f"GET {DOWNLOAD}")
     if s:
@@ -573,6 +638,14 @@ async def _ui(ctx, world: _UiWorld) -> None:
     disk = Disk(Path(ctx.stack.tmp) / "downloads")
     disk.base.mkdir(parents=True, exist_ok=True)
     browser_cdn: list[dict] = []
+    listings: list[dict] = []   # the browser's download listing requests (LIST_PAGES), in order
+
+    def on_request(req) -> None:
+        u = urlsplit(req.url)
+        q = parse_qs(u.query)
+        if any(u.path.endswith(p) and q.get("limit") == [n] for p, n in LIST_PAGES.items()):
+            listings.append({"path": u.path.rsplit("/", 1)[-1], "offset": (q.get("offset") or [""])[0],
+                             "folder": (q.get("of_folder_id") or q.get("list_id") or [None])[0]})
     relay_log = ctx.out / "relay.log"
 
     def log_mark() -> int:
@@ -585,6 +658,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         return [(int(m.group(2)), m.group(3), int(m.group(4))) for m in _LOG.finditer(txt) if m.group(1) == aid]
 
     async def setup(page, aid: str, hold: _Hold | None = None) -> None:
+        page.on("request", on_request)
         await page.context.add_init_script(PICKER_JS)
         await page.context.expose_binding("__slopFs", disk.binding)
         await _open_vault(ctx, page, aid, port, browser_cdn, hold)
@@ -619,7 +693,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         creator = _safe(nick[aid])
         want = _expected(vw, aid, creator, ms, folder)
         n0, i0, l0, v0 = await cdn_count(ctx), len(browser_cdn), log_mark(), len(ctx.of_wire.vault_calls)
-        o0 = len(disk.opened)
+        o0, q0 = len(disk.opened), len(listings)
         d = {}
         async with captured(ctx, page, d, f"failed-vault-download-{name}"):
             d.update(await download(page, name, click, during))
@@ -641,6 +715,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
                       and c["account"] == aid]
         d["windows"] = _window_reads(ctx.of_wire.vault_calls[v0:], aid)
         d["want"] = len(want)
+        d["listings"] = listings[q0:]
         # The links file: in <creator>/ (a folder download: <creator>/<folder>/), opened before any media.
         ldir = disk.base / name / creator / (_safe(folder) if folder is not None else "")
         files = sorted(p for p in ldir.glob("links-valid-*") if p.is_file()) if ldir.is_dir() else []
@@ -716,6 +791,35 @@ async def _ui(ctx, world: _UiWorld) -> None:
             await hp.close()
         return o
 
+    async def open_folder(page, want: str, shot: str | None) -> dict:
+        """Click the card's Open folder: the open dialog's `startIn` (the stub's record), what is in that folder on
+        disk, the card's "Saved in" line; shot after the click (`shot`, None: the caller shoots)."""
+        o: dict = {"want": want}
+        try:
+            n0 = await page.evaluate("(window.__slopOpenPicker || []).length")
+            await page.get_by_test_id("dl-open-folder").click(timeout=10_000)
+            await page.wait_for_function(f"(window.__slopOpenPicker || []).length > {n0}", timeout=10_000)
+            o["calls"] = await page.evaluate("window.__slopOpenPicker.length") - n0
+            o["call"] = await page.evaluate("window.__slopOpenPicker.at(-1)")
+            got = disk.base / (o["call"].get("startIn") or "?")
+            o["files"] = sorted(x.name for x in got.iterdir() if x.is_file()) if got.is_dir() else None
+            o["dirs"] = sorted(x.name for x in got.iterdir() if x.is_dir()) if got.is_dir() else None
+            sa = page.get_by_test_id("dl-saved-at")
+            o["saved_at"] = await sa.inner_text() if await sa.count() else None
+            await page.wait_for_timeout(300)
+            o["card"] = await _card(page.locator(PANEL))
+            if shot:
+                o["shot"] = await ui.shot(ctx, page, shot)
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            o["error"] = f"{type(e).__name__}: {e}"[:600]
+        o["ok"] = ("error" not in o and o.get("calls") == 1 and o["call"]["startIn"] == want
+                   and any(_is_links(x) for x in o.get("files") or []))
+        return o
+
+    def saved_ok(o: dict, text: str) -> bool:
+        return (o.get("saved_at") or "").startswith(f"Saved in {text}; links-valid-")
+
+    of_all: dict = {}
     lk_all: dict = {}
 
     # ── A: no proxy, direct ──
@@ -723,7 +827,8 @@ async def _ui(ctx, world: _UiWorld) -> None:
         try:
             await setup(page, a)
         except Exception as e:  # noqa: BLE001
-            for name in (PICK_HINT, SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, LINKS, SWITCH):
+            for name in (PICK_HINT, SELECT, SELECT_IN_FOLDER, FOLDER, VAULT, HEADER_SCOPE, LINKS, SWITCH, OPEN_FOLDER,
+                         QUEUE_STALL, QUEUE_NAV, QUEUE_CREATORS):
                 ctx.check(name, False, error=f"setup: {type(e).__name__}: {e}"[:600])
             await ui.shot(ctx, page, "failed-vault-download-setup")
             return
@@ -732,7 +837,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         h: dict = {}
         try:
             await page.evaluate("window.__slopPickHold = true")
-            await page.get_by_role("button", name="Download whole vault").click(timeout=10_000)
+            await page.get_by_test_id("vault-header-download").click(timeout=10_000)
             hint = page.get_by_test_id("dl-pick-hint")
             await hint.wait_for(timeout=10_000)
             h["text"] = await hint.inner_text()
@@ -754,9 +859,12 @@ async def _ui(ctx, world: _UiWorld) -> None:
         lk_all["select"] = d["links"]
         ctx.check(SELECT, len(sel) == 4 and settled(d, 4) and disk_ok(d) and d["panel"]["direct"] == "4"
                   and d["relay_downloads"]["n"] == 0 and d["browser_cdn"]["n"] == 4, **d)
+        cr = _safe(nick[a])
+        o = await open_folder(page, f"select/{cr}", "vault-download-select-open-folder")
+        o["ok"] = o["ok"] and saved_ok(o, f"select/{cr}/<folder>/") and bool(o.get("dirs"))
+        of_all["select"] = o
         await page.get_by_role("button", name="Close download").click(timeout=10_000)
-        await page.get_by_role("button", name="Clear").click(timeout=10_000)
-        await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)
+        await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)   # the ticks went at the start
 
         # select inside a rail folder: media whose FIRST folder is another one must still land in this one
         two = [m for m in vw.vault(a)["media"] if len(m["folders"]) == 2]
@@ -772,13 +880,16 @@ async def _ui(ctx, world: _UiWorld) -> None:
                                 lambda: page.get_by_role("button", name="Download selected").click(timeout=10_000))
             d.pop("browser_by_key", None)
             await page.get_by_role("button", name="Close download").click(timeout=10_000)
-            await page.get_by_role("button", name="Clear").click(timeout=10_000)
             await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)
-            await page.locator("aside button").filter(has_text="All media").first.click(timeout=10_000)
-            await page.wait_for_timeout(1000)
         except Exception as e:  # noqa: BLE001 — the check reports it
             d["error"] = f"{type(e).__name__}: {e}"[:600]
             await ui.shot(ctx, page, "failed-vault-download-select-folder")
+        finally:  # back to All media even on failure, so the vault phase's header still scopes the whole vault
+            try:
+                await page.locator("aside button").filter(has_text="All media").first.click(timeout=10_000)
+                await page.wait_for_timeout(1000)
+            except Exception as e:  # noqa: BLE001 — the check reports it
+                d.setdefault("error", f"All media: {type(e).__name__}: {e}"[:600])
         ctx.check(SELECT_IN_FOLDER, len(sf) == 2 and "disk" in d and settled(d, 2) and disk_ok(d),
                   folder=fname, first_folders=[m["folders"] for m in sf], **d)
 
@@ -795,15 +906,24 @@ async def _ui(ctx, world: _UiWorld) -> None:
         lk_all["folder"] = d["links"]
         ctx.check(FOLDER, bool(fms) and settled(d, len(fms)) and disk_ok(d) and d["panel"]["direct"] == str(len(fms))
                   and d["relay_downloads"]["n"] == 0, folder=f["name"], **d)
+        fp = f"folder/{cr}/{_safe(f['name'])}"
+        o = await open_folder(page, fp, "vault-download-folder-open-folder")
+        media = sorted(x for x in o.get("files") or [] if not _is_links(x))
+        o["media_files"] = len(media)
+        o["ok"] = o["ok"] and saved_ok(o, f"{fp}/") and len(media) == len(fms)
+        of_all["folder"] = o
         await page.get_by_role("button", name="Close download").click(timeout=10_000)
 
         # whole vault, STALE urls signed for a proxy A left
         every = vw.vault(a)["media"]
         stale = [m for m in every if m["type"] == "photo"][-STALE:]
         vault_week.set_urls(w, vw, a, [m["id"] for m in stale], egress=OLD_EGRESS)
-        d = await phase_run("vault", page, a, every, None,
-                            lambda: page.get_by_role("button", name="Download whole vault").click(timeout=10_000),
+        hdr = page.get_by_test_id(HEADER_DL)
+        hs: dict = {"vault_label": (await hdr.inner_text()).strip()}
+        d = await phase_run("vault", page, a, every, None, lambda: hdr.click(timeout=10_000),
                             extra={"stale": [m["id"] for m in stale]})
+        hs["vault"] = {"listings": d["listings"], "trigger_shot": d.get("trigger_shot"),
+                       "settled_shot": d.get("settled_shot"), "settled": settled(d, len(every))}
         stale_keys = {_key(a, m) for m in stale}
         d["windows_want"] = _windows(vw, a, stale)
         stale_ok = (d["by_id"] == [] and d["windows"] == d["windows_want"]
@@ -836,8 +956,33 @@ async def _ui(ctx, world: _UiWorld) -> None:
             finally:
                 await hp.close()
 
+        # the header button on a selected folder: "Download full folder", that folder only
+        f2 = vw.vault(a)["folders"][1]
+        f2ms = [m for m in vw.vault(a)["media"] if f2["id"] in m["folders"]]
+        try:
+            await page.get_by_role("button", name="Close download").click(timeout=10_000)
+            await page.locator("aside [role='button']").filter(has_text=f2["name"]).first.click(timeout=10_000)
+            await page.get_by_test_id(HEADER_DL).filter(has_text="Download full folder").wait_for(timeout=10_000)
+            hs["folder_label"] = (await hdr.inner_text()).strip()
+            d = await phase_run("header-folder", page, a, f2ms, f2["name"], lambda: hdr.click(timeout=10_000))
+        except Exception as e:  # noqa: BLE001 — the check reports it
+            d = {"error": f"{type(e).__name__}: {e}"[:600], "listings": [], "disk": {}}
+        hs["folder"] = {k: v for k, v in d.items() if k not in ("browser_by_key", "links")}
+        hs["folder"].update(name=f2["name"], id=f2["id"])
+        vl, fl = hs["vault"]["listings"], d.get("listings") or []
+        ctx.check(HEADER_SCOPE, hs["vault_label"] == "Download full vault" and hs["vault"]["settled"]
+                  and bool(vl) and all(x["folder"] is None for x in vl)
+                  and hs.get("folder_label") == "Download full folder" and "error" not in d
+                  and bool(fl) and all(x["folder"] == str(f2["id"]) for x in fl)
+                  and bool(f2ms) and settled(d, len(f2ms)) and disk_ok(d) and d["panel"]["direct"] == str(len(f2ms))
+                  and d["relay_downloads"]["n"] == 0, **hs)
+
     # ── switch: A's whole vault running, Creator B picked; A's run must finish whole ──
-    await _switch(ctx, world, setup, phase_run, settled, disk_ok)
+    sw = await _switch(ctx, world, setup, phase_run, settled, disk_ok, open_folder)
+    sw["ok"] = bool(sw.get("ok")) and (sw.get("card") or {}).get("phase") == "running"
+    of_all["switch-mid-run"] = sw
+    ctx.check(OPEN_FOLDER, len(of_all) == 3 and all(o.get("ok") for o in of_all.values()),
+              failed=[k for k, o in of_all.items() if not o.get("ok")], **of_all)
 
     # ── B: on a proxy, relay only ──
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
@@ -849,6 +994,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
             ctx.check(PROXIED, False, error=f"setup: {type(e).__name__}: {e}"[:600])
             ctx.check(LINKS, False, error=f"proxied setup: {type(e).__name__}: {e}"[:600], **lk_all)
             await ui.shot(ctx, page, "failed-vault-download-proxied-setup")
+            await _queue(ctx, world, setup, disk)
             return
         d = await phase_run("proxied", page, b, sel, None,
                             lambda: page.get_by_role("button", name="Download selected").click(timeout=10_000))
@@ -870,10 +1016,14 @@ async def _ui(ctx, world: _UiWorld) -> None:
               and lk_all["proxied"]["open"]["ok"],
               **{ph: {k: v for k, v in x.items() if k != "html_path"} for ph, x in lk_all.items()})
 
+    # ── queue: B's selection (one item stalled at the CDN) then A's folder queued behind it; away and back ──
+    await _queue(ctx, world, setup, disk)
 
-async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok) -> None:
-    """A fresh browser on A: Download whole vault (`phase_run`), B picked in the creator column mid-run (A's CDN
-    held after SWITCH_FREE fetches, declared), released once B is on screen; A's run must still finish every file."""
+
+async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok, open_folder) -> dict:
+    """A fresh browser on A: the header's Download full vault (`phase_run`), B picked in the creator column mid-run
+    (A's CDN held after SWITCH_FREE fetches, declared), released once B is on screen; A's run must still finish every
+    file. Mid-run (held, B's grid up) A's card's Open folder is clicked: returned for OPEN_FOLDER."""
     from slop.actors import ui
 
     vw, a, b, nick = world.vw, world.a, world.b, world.nick
@@ -899,10 +1049,11 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok) -> N
         await page.locator(f"section [title^='#{newest_b} ']").first.wait_for(timeout=WAIT_MS)
         o["b_grid"] = {"b_current": await row(page, b).get_attribute("aria-current"),
                        "a_current": await row(page, a).get_attribute("aria-current"), "b_newest_tile": newest_b}
-        btn = page.get_by_role("button", name="Download whole vault")
+        btn = page.get_by_test_id(HEADER_DL)
         o["b_download"] = {"disabled": await btn.is_disabled(timeout=10_000),
-                           "title": await btn.get_attribute("title", timeout=10_000)}
+                           "text": (await btn.inner_text(timeout=10_000)).strip()}
         o["at_switch"] = await _card(panel)
+        o["open_folder"] = await open_folder(page, f"switch/{creator}", None)
         o["trigger_shot"] = await ui.shot(ctx, page, "vault-download-switch-trigger")
         hold.go.set()
         return o
@@ -915,7 +1066,7 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok) -> N
                 hold.armed = True
                 d.update(await phase_run(
                     "switch", page, a, every, None,
-                    lambda: page.get_by_role("button", name="Download whole vault").click(timeout=10_000),
+                    lambda: page.get_by_test_id(HEADER_DL).click(timeout=10_000),
                     during=during))
             finally:
                 hold.go.set()
@@ -929,11 +1080,190 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok) -> N
         "running_at_switch": bool(d.get("held_before_switch")) and (d.get("before") or {}).get("phase") == "running"
                              and sw.get("phase") == "running" and sw.get("title") == f"Downloading {creator}: whole vault",
         "b_shown": d.get("b_grid", {}).get("b_current") == "true" and d.get("b_grid", {}).get("a_current") is None,
-        "b_download_off": d.get("b_download") == {"disabled": True, "title": BUSY_OFF},
+        "b_download_queues": d.get("b_download") == {"disabled": False, "text": QUEUE_VAULT},
         "panel_done": settled(d, len(every)) and p.get("title") == f"Downloaded {creator}: whole vault",
         "disk": "disk" in d and disk_ok(d),
     }
     ctx.check(SWITCH, all(parts.values()), failed=[k for k, ok in parts.items() if not ok], parts=parts, **d)
+    return d.get("open_folder") or {"ok": False, "error": d.get("error", "switch: never reached mid-run")}
+
+
+async def _phone_header(ctx, page) -> dict:
+    """The header's Download on a portrait phone: shown as its icon, the label sr-only, off with the desktop-only
+    reason; shot. Never raises: the check reports what it saw."""
+    from slop.actors import ui
+
+    ph: dict = {}
+    try:
+        btn = page.get_by_test_id(HEADER_DL)
+        await btn.wait_for(timeout=WAIT_MS)
+        ph.update(await btn.evaluate("""(el) => {
+            const r = el.getBoundingClientRect(), svg = el.querySelector("svg"), span = el.querySelector("span");
+            const sb = span && span.getBoundingClientRect(), ib = svg && svg.getBoundingClientRect();
+            return { visible: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight,
+                     icon_px: ib ? Math.round(ib.width * ib.height) : 0,
+                     label: span ? span.textContent : null,
+                     label_sr_only: !!sb && sb.width <= 1 && sb.height <= 1 && getComputedStyle(span).position === "absolute",
+                     enabled: !el.disabled, title: el.getAttribute("title") };
+        }"""))
+        ph["shot"] = await ui.shot(ctx, page, "vault-download-phone-header")
+    except Exception as e:  # noqa: BLE001 — the check reports it
+        ph["error"] = f"{type(e).__name__}: {e}"[:600]
+    return ph
+
+
+async def _queue(ctx, world: _UiWorld, setup, disk: Disk) -> None:
+    """A fresh browser on B (proxied: relay): Download selected of 3 photos, one stalled at the CDN (declared), into
+    root "queue"; A picked, its biggest non-first folder "Add folder to queue"d; B ends with 1 stalled and A's job
+    starts on its own (QUEUE_STALL); A held after QUEUE_FREE fetches (declared) while the page goes to Dashboard and
+    back through the card's link (QUEUE_NAV); then every file of both jobs under its own Creator (QUEUE_CREATORS)."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+    from slop.actors import ui
+
+    vw, a, b, nick = world.vw, world.a, world.b, world.nick
+    photos = [m for m in vw.listing(b) if m["type"] == "photo"][6:9]   # not PROXIED's / PHONE_SHARE's
+    stalled = photos[1] if len(photos) == 3 else None
+    folders = vw.vault(a)["folders"][1:]
+    count = {f["id"]: sum(1 for m in vw.vault(a)["media"] if f["id"] in m["folders"]) for f in folders}
+    fa = max(folders, key=lambda f: count[f["id"]]) if folders else None
+    fms = [m for m in vw.vault(a)["media"] if fa and fa["id"] in m["folders"]]
+    hold = _Hold(a, QUEUE_FREE)
+    root = disk.base / "queue"
+    d: dict = {"stalled_id": stalled and stalled["id"], "a_folder": fa and fa["name"], "a_folder_media": len(fms)}
+    n0 = await cdn_count(ctx)
+    try:
+        if stalled is None or len(fms) <= QUEUE_FREE:
+            raise RuntimeError(f"world too small: {len(photos)} photos of B, {len(fms)} media in A's folder")
+        await arm_run(ctx.owner, ctx.stack.tmp, world.assets, CDN_LATENCY_S,
+                      stall={_key(b, stalled): {"after": STALL_AFTER, "hold_s": STALL_HOLD_S}})
+        async with ui.owner_browser(ctx, viewport=VIEWPORT, through=(LISTS_PATH, MEDIA_PATH)) as page:
+            panel = page.locator(PANEL)
+            b_done = panel.locator(f"ul[aria-label='Finished downloads'] li[data-account='{b}']")
+            async with captured(ctx, page, d, "failed-vault-download-queue"):
+                await setup(page, b, hold)
+                hold.armed = True
+                # the mark survives client-side navigation only (a reload would drop it)
+                await page.evaluate("window.__slopPickRoot = 'queue'; window.__slopNoReload = 1")
+                await page.get_by_role("button", name="Select", exact=True).click(timeout=10_000)
+                for m in photos:
+                    t = page.locator(f"section [title^='#{m['id']} ']").first
+                    await t.scroll_into_view_if_needed(timeout=10_000)
+                    await t.click(timeout=10_000)
+                await page.get_by_role("button", name="Download selected").click(timeout=10_000)
+                await panel.wait_for(timeout=30_000)
+                # A's grid, then its folder queued behind B's run (B's stalled item holds it for STALL_MS)
+                await ui.pick_creator(page, nick[a], timeout_ms=WAIT_MS)
+                await page.locator(f"section [title^='#{vw.listing(a)[0]['id']} ']").first.wait_for(timeout=WAIT_MS)
+                row = page.locator("aside [role='button']").filter(has_text=fa["name"]).first
+                await row.get_by_role("button", name="More").click(timeout=10_000)
+                await page.get_by_role("menuitem", name="Add folder to queue").click(timeout=10_000)
+                await page.locator(f"{PANEL}[data-queued='1']").wait_for(timeout=10_000)
+                d["queued"] = {"account": await panel.get_attribute("data-account"),
+                               "queue": await page.get_by_test_id("dl-queue").inner_text()}
+                d["trigger_shot"] = await ui.shot(ctx, page, "vault-download-queue-trigger")
+                # B ends (1 stalled), A's job starts by itself and is held mid-run
+                await b_done.wait_for(timeout=WAIT_MS)
+                d["b_finished"] = {k: await b_done.get_attribute(f"data-{k}")
+                                   for k in ("total", "done", "failed", "stalled", "cancelled", "drm")}
+                await asyncio.wait_for(hold.first_held.wait(), 60)
+                d["a_running"] = (await _card(panel) or {}) | {
+                    "account": await panel.get_attribute("data-account"), "job": await panel.get_attribute("data-job"),
+                    "queued": await panel.get_attribute("data-queued"),
+                    "next": await page.get_by_test_id("dl-queue").inner_text()}
+                d["stalled_files"] = sorted(str(p.relative_to(root)) for p in root.rglob(f"{stalled['id']}.*"))
+                d["stalled_shot"] = await ui.shot(ctx, page, "vault-download-queue-stalled")
+                # away (client-side: the sidebar's Dashboard) and back through the card's own link
+                await page.locator("a[href='/']").first.click(timeout=10_000)
+                await page.wait_for_url(f"{ctx.app.rstrip('/')}/", timeout=WAIT_MS)
+                await page.wait_for_timeout(1500)   # the nav fault's path check runs every 200 ms
+                d["away"] = {"url": page.url, "panels": await panel.count()}
+                if d["away"]["panels"]:
+                    d["away"] |= {"account": await panel.get_attribute("data-account"),
+                                  "job": await panel.get_attribute("data-job"),
+                                  "phase": await panel.get_attribute("data-phase")}
+                d["away_shot"] = await ui.shot(ctx, page, "vault-download-queue-away")
+                await panel.get_by_role("link", name="Open Vault Pro").click(timeout=10_000)
+                await page.wait_for_url("**/growth/vault-pro", timeout=WAIT_MS)
+                await page.locator("section [title^='#']").first.wait_for(timeout=WAIT_MS)
+                d["back"] = {"no_reload": await page.evaluate("window.__slopNoReload === 1"),
+                             "panels": await panel.count()}
+                if d["back"]["panels"]:
+                    d["back"] |= {"account": await panel.get_attribute("data-account"),
+                                  "job": await panel.get_attribute("data-job")}
+                hold.go.set()
+                # A's job ends on its Finished line; B's retry job (its stalled item, appended at settle) runs last
+                a_line = panel.locator(f"ul[aria-label='Finished downloads'] li[data-job='{d['a_running']['job']}']")
+                try:   # never raise here: a killed run (nav fault) must turn QUEUE_NAV red, not every check's `browser`
+                    await a_line.wait_for(timeout=SETTLE_S * 1000)
+                    d["a_done"] = {k: await a_line.get_attribute(f"data-{k}")
+                                   for k in ("account", "total", "done", "failed", "stalled", "cancelled")}
+                except PlaywrightTimeout:
+                    d["a_done"] = {"timeout_s": SETTLE_S}
+                t0 = time.time()
+                while time.time() - t0 < SETTLE_S:
+                    if not await panel.count() or await panel.get_attribute("data-phase") in ("done", "cancelled"):
+                        break
+                    await asyncio.sleep(0.25)
+                await page.wait_for_timeout(300)
+                if await panel.count():
+                    d["last"] = (await _card(panel) or {}) | {"account": await panel.get_attribute("data-account"),
+                                                              "queued": await panel.get_attribute("data-queued")}
+                d["settled_shot"] = await ui.shot(ctx, page, "vault-download-queue-settled")
+            hold.go.set()
+            d.update(held=hold.held, held_dropped=hold.dropped)
+    except Exception as e:  # noqa: BLE001 — the checks report it
+        d.setdefault("error", f"{type(e).__name__}: {e}"[:600])
+    finally:
+        hold.go.set()
+        try:   # the CDN without the stall again
+            await arm_run(ctx.owner, ctx.stack.tmp, world.assets, CDN_LATENCY_S)
+        except Exception as e:  # noqa: BLE001
+            d.setdefault("rearm_error", repr(e)[:300])
+    await asyncio.sleep(0.5)
+    calls = await cdn_calls(ctx, n0)
+    served = {c["key"]: c["bytes"] for c in calls if c["status"] == 200}
+    d["stall_calls"] = [[c["status"], c.get("stalled"), c["bytes"]] for c in calls
+                        if stalled and c["key"] == _key(b, stalled)]
+    want = ((_expected(vw, b, _safe(nick[b]), [m for m in photos if m is not stalled], None) if photos else {})
+            | (_expected(vw, a, _safe(nick[a]), fms, fa["name"]) if fa else {}))
+    d["disk"] = _verify(root, want, served) if root.is_dir() else {"error": "no queue folder"}
+    k, bf, ar = d["disk"], d.get("b_finished") or {}, d.get("a_running") or {}
+    stall_parts = {
+        "browser": "error" not in d,
+        "b_one_stalled": bf == {"total": "3", "done": "2", "failed": "0", "stalled": "1", "cancelled": "0", "drm": "0"},
+        "cdn_stalled": any(c[1] for c in d["stall_calls"]),
+        "no_partial": "stalled_files" in d and not d["stalled_files"],
+        # behind A only B's retry job (its stalled item, appended when B settled), never ahead of A
+        "a_started": (ar.get("account") == a and ar.get("phase") == "running" and ar.get("queued") == "1"
+                      and ar.get("next") == f"Next: {_safe(nick[b])}: 3 selected · retry 1"
+                      and (d.get("queued") or {}).get("account") == b),
+    }
+    ctx.check(QUEUE_STALL, all(stall_parts.values()), failed=[x for x, v in stall_parts.items() if not v],
+              parts=stall_parts, **{x: d.get(x) for x in ("stalled_id", "queued", "b_finished", "a_running",
+                                                          "stalled_files", "stall_calls", "error", "rearm_error",
+                                                          "trigger_shot", "stalled_shot")})
+    aw, bk, ad, la = d.get("away") or {}, d.get("back") or {}, d.get("a_done") or {}, d.get("last") or {}
+    nav_parts = {
+        "browser": "error" not in d,
+        "away_kept": (aw.get("panels") == 1 and aw.get("account") == a and aw.get("job") == ar.get("job")
+                      and aw.get("phase") == "running"),
+        "back_same": bk.get("no_reload") is True and bk.get("account") == a and bk.get("job") == ar.get("job"),
+        "finished": (ad.get("account") == a and ad.get("total") == ad.get("done") == str(len(fms))
+                     and ad.get("failed") == ad.get("stalled") == ad.get("cancelled") == "0"),
+        "retry_last": (la.get("account") == b and la.get("phase") == "done" and la.get("total") == "1"
+                       and la.get("queued") == "0" and " · retry 1" in (la.get("title") or "")),
+    }
+    ctx.check(QUEUE_NAV, all(nav_parts.values()), failed=[x for x, v in nav_parts.items() if not v],
+              parts=nav_parts, **{x: d.get(x) for x in ("away", "back", "a_done", "last", "held", "held_dropped", "error",
+                                                        "away_shot", "settled_shot")})
+    # The stalled photo's file is QUEUE_STALL's (no_partial); here it only must not count, so that check stays alone.
+    late = [x for x in k.get("stray", []) if Path(x).name.split(".")[0] == str(d.get("stalled_id"))]
+    stray = [x for x in k.get("stray", []) if x not in late]
+    ctx.check(QUEUE_CREATORS, ("error" not in d and "want" in k and k["got"] - len(late) == k["want"] == len(want) > 0
+                               and not k["missing"] and not stray and not k["bad_bytes"]),
+              b_creator=_safe(nick[b]), a_creator=_safe(nick[a]), a_folder=d.get("a_folder"), disk=k,
+              error=d.get("error"))
 
 
 async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
@@ -948,6 +1278,7 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
     await arm_run(ctx.owner, ctx.stack.tmp, assets, CDN_LATENCY_S, mp4_sizes=big)
     browser_cdn: list[dict] = []
     cap: dict = {}
+    ph: dict = {"error": "not reached (phone setup failed)"}
     d: dict = {"selected": [m["id"] for m in sel], "videos": [m["id"] for m in vids]}
 
     async def tick(page, mids) -> None:
@@ -969,11 +1300,12 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
             await page.context.add_init_script(SHARE_JS)
             await _open_vault(ctx, page, b, port, browser_cdn)
             cap["picker"] = await page.evaluate("typeof window.showDirectoryPicker")
+            ph = await _phone_header(ctx, page)
             await page.get_by_role("button", name="Select", exact=True).tap(timeout=10_000)
             await page.get_by_role("button", name="Select all").tap(timeout=10_000)
             await page.get_by_role("button", name="Download selected").wait_for(timeout=10_000)
             cap["all"] = await dl_state(page)
-            vault_btn = page.get_by_role("button", name="Download whole vault")
+            vault_btn = page.get_by_test_id("vault-header-download")
             cap["vault"] = {"enabled": await vault_btn.is_enabled(), "title": await vault_btn.get_attribute("title")}
             cap["shot"] = await ui.shot(ctx, page, "vault-download-phone-cap")
             await page.get_by_role("button", name="Clear").tap(timeout=10_000)
@@ -992,6 +1324,8 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
         except Exception:  # noqa: BLE001 — the check reports it
             async with captured(ctx, page, cap, "failed-vault-download-phone-cap"):
                 raise
+        ctx.check(PHONE_HEADER, "error" not in ph and ph["visible"] and ph["icon_px"] > 0 and ph["label_sr_only"]
+                  and ph["enabled"] is False and ph["title"] == PHONE_MODE_OFF, **ph)
         ok = "error" not in cap
         ctx.check(PHONE_CAP, ok and cap["picker"] == "undefined"
                   and int(cap["all"]["count"] or 0) > PHONE_MAX and not cap["all"]["enabled"]
@@ -1013,7 +1347,7 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
             # Save links before any media share (tapped once the big fetches are in, outside their streams)
             d["links_shot"] = await ui.shot(ctx, page, "vault-download-phone-links")
             await links.tap(timeout=10_000)
-            await links.wait_for(state="detached", timeout=10_000)   # linksSaved: the button goes
+            await links.wait_for(state="detached", timeout=10_000)   # links "saved": the button goes
             d["first_label"] = await save.inner_text()
             d["ready_title"] = await panel.locator("div.font-medium").first.inner_text()
             d["ready_shot"] = await ui.shot(ctx, page, "vault-download-phone-ready")
@@ -1036,7 +1370,8 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
                     await asyncio.sleep(0.25)
             d["labels"] = labels
             d["panel"] = {k: await panel.get_attribute(f"data-{k}") for k in
-                          ("phase", "total", "done", "failed", "relay", "direct", "batches", "saved", "unsaved")}
+                          ("phase", "total", "done", "failed", "stalled", "cancelled", "drm", "relay", "direct",
+                           "batches", "saved", "unsaved")}
             d["settled_shot"] = await ui.shot(ctx, page, "vault-download-phone-settled")
         except Exception:  # noqa: BLE001
             async with captured(ctx, page, d, "failed-vault-download-phone"):
@@ -1084,7 +1419,8 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
         "selection": len(vids) == 2 and len(photos) == 3,
         "video_size": len(d["video_bytes"]) == 2 and all(v == PHONE_VIDEO_MB << 20 for v in d["video_bytes"].values()),
         "panel_done": p.get("phase") == "done" and p.get("total") == str(n) and p.get("done") == str(n),
-        "panel_counts": p.get("failed") == "0" and p.get("relay") == str(n) and p.get("unsaved") == "0",
+        "panel_counts": all(p.get(k) == "0" for k in ("failed", "stalled", "cancelled", "drm", "unsaved"))
+                        and p.get("relay") == str(n),
         "batches": batches >= 2 and p.get("batches") == p.get("saved") and len(sh["calls"]) == batches,
         "activation": all(a is True for a in sh["active"]),
         "files": not sh["twice"] and not sh["missing"] and not sh["stray"] and not sh["bad"],

@@ -478,54 +478,6 @@ export async function applyAiFolders(
   );
 }
 
-/** One item where the describe pass and the flags pass contradict each other.
- *  Both readings are carried, plus the two literal field-writes that would
- *  settle it — which pass is wrong differs item by item, so the operator picks
- *  and nothing is decided for them. */
-export interface VaultDispute {
-  media_id: number;
-  kind: string;
-  /** Poster-frame count for a video (0 for a photo). Drives the hover-scrub. */
-  frame_count: number;
-  codes: string[];
-  reasons: string[];
-  description: string;
-  clothing_state: string;
-  explicitness: string;
-  underwear_visible: boolean | null;
-  regions: Record<string, string>;
-  over: Record<string, string>;
-  /** Fields already corrected by hand and locked against re-runs. */
-  resolved: string[];
-  propose: { flags: Record<string, unknown>; describe: Record<string, unknown> };
-}
-
-export function useVaultDisputes(accountId: string | null, enabled = false) {
-  return useQuery<{ checked: number; count: number; disputes: VaultDispute[] }>({
-    queryKey: ["vault-disputes", accountId],
-    enabled: !!accountId && enabled,
-    queryFn: () =>
-      relay.get(`/admin/vault-ai/disputes?account_id=${encodeURIComponent(accountId!)}`),
-    staleTime: 15_000,
-  });
-}
-
-/** Apply ONE operator correction. Written into the AI fields (so every reader
- *  sees it), recorded as an override, and LOCKED — a forced re-flag refreshes
- *  everything except this, because a correction a re-run reverts is worse than
- *  no correction at all. */
-export async function resolveDispute(
-  accountId: string,
-  mediaId: number,
-  values: Record<string, unknown>,
-): Promise<{ ok: boolean; applied: Record<string, unknown>; still_disagrees: string[] }> {
-  return relay.post(
-    `/admin/vault-ai/disputes/resolve`,
-    { account_id: accountId, media_id: mediaId, values },
-    { accountId },
-  );
-}
-
 /** One item awaiting the operator's eye. Pre-set to what the model believes;
  *  the operator taps only what is wrong. */
 export interface FlagsReviewItem {
@@ -541,6 +493,11 @@ export interface FlagsReviewItem {
   clothing_state: string;
   explicitness: string;
   codes: string[];
+  /** How the lanes and copy read it while the two passes disagree (auto-settled,
+   *  never written); empty when they agree. */
+  settled: string[];
+  /** The tease price that reading put on it ($50 / $10 / 0); the queue sorts disputed items by it. */
+  settled_price: number;
   /** Regions already corrected by hand and frozen against re-runs. */
   locked: string[];
   graded: { v?: number; corrected?: string[]; note?: string };

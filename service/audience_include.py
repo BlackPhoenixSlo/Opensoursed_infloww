@@ -349,11 +349,13 @@ def _find_or_create_fence_blocking(client) -> int:
     """The OF-side AUTOFENCE list id — find by name, create if absent. Only ever
     called when no local autofence row pins an id yet; after that the STORED id
     is authoritative for the account's lifetime (already-scheduled OF sends keep
-    a valid excludedLists reference across rebuilds)."""
-    lists = of_paging.page_all(
-        lambda off: client.get_lists(limit=of_paging.LIST_PAGE, offset=off))
-    lid = next((it.get("id") for it in lists
-                if (it.get("name") or "") == AUTOFENCE_LIST_NAME), None)
+    a valid excludedLists reference across rebuilds). A lists read OF cut
+    short without the name halts (`fence_lookup_incomplete`), never creating
+    a second AUTOFENCE."""
+    try:
+        lid = of_paging.find_list_id(client, AUTOFENCE_LIST_NAME)
+    except of_paging.ListLookupIncomplete as e:
+        raise AudienceHalt("fence_lookup_incomplete", str(e)) from e
     if lid is None:
         lid = client.create_list(AUTOFENCE_LIST_NAME).get("id")
     if lid is None:

@@ -62,11 +62,14 @@ class OFWebSocket:
     """Long-lived WS connection that yields parsed events."""
 
     def __init__(self, client_source: Callable[[], OFClient],
-                 session_dead: Callable[[BaseException], str | None] | None = None):
-        self.client: OFClient | None = None
+                 session_dead: Callable[[BaseException], str | None] | None = None,
+                 *, account_id: str | None = None):
         # Each (re)connect takes /users/me, proxy and UA from the account's
-        # current client. Eviction retires the prior client's signed sessions.
+        # current client. Eviction retires the prior client's signed sessions,
+        # so no client is kept between connects.
         self._client_source = client_source
+        # For the logs, known even when the client source raises.
+        self.account_id = account_id
         # Classifies a (re)connect failure: a reason is retried
         # of_ws_decide.DEAD_RETRIES times, then ends events() with SessionDead
         # instead of reconnecting forever (server.py's pump passes
@@ -105,14 +108,11 @@ class OFWebSocket:
     def from_latest_session(cls) -> "OFWebSocket":
         return cls(OFClient.from_latest_session)
 
-    def _refresh_auth(self) -> OFClient:
-        """Fetch a fresh wsUrl + wsAuthToken from /users/me on the current client."""
-        client = self._client_source()
-        self.client = client
+    def _refresh_auth(self, client: OFClient) -> None:
+        """Fetch a fresh wsUrl + wsAuthToken from /users/me on `client`."""
         me = client.me()
         self._ws_url = me["wsUrl"]
         self._token = me["wsAuthToken"]
-        return client
 
     async def events(self) -> AsyncIterator[dict]:
         """Async generator: yields each event dict as it arrives. Reconnects
@@ -131,19 +131,21 @@ class OFWebSocket:
         state = of_ws_decide.Pump()
         while not self._stop.is_set():
             connected_at: float | None = None
+            client: OFClient | None = None
             try:
                 # _refresh_auth() does a blocking GET /users/me; run it off the
                 # event loop so a (re)connect doesn't freeze every account's pump
                 # and every HTTP handler (observed loop-stall during reconnects).
-                client = await asyncio.to_thread(self._refresh_auth)
+                client = await asyncio.to_thread(self._client_source)  # the account's current client
+                await asyncio.to_thread(self._refresh_auth, client)
                 assert self._ws_url and self._token
                 proxy_url = getattr(client, "proxy_url", None) or None
                 if proxy_url:
                     log.info("connecting account=%s %s via proxy %s",
-                             self._account_id(), self._ws_url, self._proxy_desc())
+                             self._account_id(client), self._ws_url, self._proxy_desc(client))
                 else:
                     log.info("connecting account=%s %s (direct — no proxy assigned)",
-                             self._account_id(), self._ws_url)
+                             self._account_id(client), self._ws_url)
                 async with websockets.connect(
                     self._ws_url,
                     origin="https://onlyfans.com",
@@ -161,7 +163,7 @@ class OFWebSocket:
                 ) as ws:
                     await ws.send(json.dumps({"act": "connect", "token": self._token}))
                     connected_at = time.monotonic()
-                    log.info("connected account=%s proxy=%s", self._account_id(), self._proxy_desc())
+                    log.info("connected account=%s proxy=%s", self._account_id(client), self._proxy_desc(client))
                     # Expose the open socket so send_typing()/other tasks can
                     # push outbound frames on it. Cleared in finally below.
                     self._live_ws = ws
@@ -213,37 +215,39 @@ class OFWebSocket:
                 state, eff = of_ws_decide.decide(state, ev)
                 if isinstance(eff, of_ws_decide.GiveUp):
                     log.warning("ws session dead account=%s reason=%s — not reconnecting",
-                                self._account_id(), eff.reason)
+                                self._account_id(client), eff.reason)
                     raise SessionDead(eff.reason) from e
                 if eff.retry:  # decide retries a dead answer: one of its DEAD_RETRIES
                     log.warning("ws session dead account=%s reason=%s — retry %d/%d in %ds",
-                                self._account_id(), ev.dead_reason, eff.retry, of_ws_decide.DEAD_RETRIES, eff.s)
+                                self._account_id(client), ev.dead_reason, eff.retry, of_ws_decide.DEAD_RETRIES, eff.s)
                 else:
                     # up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
                     log.warning("ws error account=%s proxy=%s type=%s up=%s err=%s — reconnecting in %ds",
-                                self._account_id(), self._proxy_desc(), type(e).__name__,
+                                self._account_id(client), self._proxy_desc(client), type(e).__name__,
                                 f"{time.monotonic() - connected_at:.0f}s" if connected_at else "-",
-                                self._scrub(str(e))[:200], eff.s)
+                                self._scrub(str(e), client)[:200], eff.s)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=eff.s)
                     return
                 except asyncio.TimeoutError:
                     pass
 
-    def _account_id(self) -> str:
-        return str(getattr(self.client, "account_id", "?"))
+    def _account_id(self, client: OFClient | None) -> str:
+        return str(self.account_id or getattr(client, "account_id", None) or "?")
 
-    def _proxy_desc(self) -> str:
-        """`label(host:port)` of the account's proxy, or `direct`; no credentials."""
-        if not getattr(self.client, "proxy_url", None):
+    @staticmethod
+    def _proxy_desc(client: OFClient | None) -> str:
+        """`label(host:port)` of `client`'s proxy, or `direct`; no credentials."""
+        if not getattr(client, "proxy_url", None):
             return "direct"
-        return f"{getattr(self.client, 'proxy_label', None) or '—'}({self.client._proxy_ip()})"
+        return f"{getattr(client, 'proxy_label', None) or '—'}({client._proxy_ip()})"
 
-    def _scrub(self, text: str) -> str:
+    @classmethod
+    def _scrub(cls, text: str, client: OFClient | None) -> str:
         """`text` with the proxy URL (credentials) swapped for `_proxy_desc`:
         websockets' InvalidProxy message quotes the whole URL."""
-        url = getattr(self.client, "proxy_url", None)
-        return text.replace(url, self._proxy_desc()) if url else text
+        url = getattr(client, "proxy_url", None)
+        return text.replace(url, cls._proxy_desc(client)) if url else text
 
     def stop(self) -> None:
         self._stop.set()

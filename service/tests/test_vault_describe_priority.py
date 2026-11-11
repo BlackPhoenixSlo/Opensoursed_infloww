@@ -6,19 +6,16 @@ Vision sweeps: walk order + one call per duplicate set.
                                   overlaps keep their best rank, no repeats.
   case_reuse_plan_table:          copy from a done member, else the best-ranked
                                   walked member (good before failed) leads.
-  case_frame_groups_table:        a member joins only if it matches EVERY
-                                  member (no two-hop reuse); OF dims must agree
-                                  when both rows carry them.
-  case_same_frame_measured:       the pixel test on 960x1280 textured frames:
-                                  q85-95 re-encodes reuse; q70 does not; 20-60px
-                                  sticker / blur patch / crop fail 40/40 each.
+  case_reuse_groups_are_the_dupe_sets:
+                                  reuse sets == `find_duplicates` at threshold
+                                  2: distance 2 shares, 3 from the seed does not.
   case_copy_builders_table:       copy columns, locks, `_copied_from` stamps,
                                   `_graded` stays the row's own, one flags blob.
   case_own_rerun_clears_copy_markers:
                                   an item's own describe / flags clears its mark.
   case_describe_all_one_call_per_duplicate:
                                   A/B re-upload pair + C (same thumb, other full
-                                  frame): 2 describe calls, A copied from B,
+                                  frame): 1 describe call, A + C copied from B,
                                   progress 3/3, copy carries current flags.
   case_already_described_member_is_the_source:
                                   a new re-upload of a described item: 0 calls.
@@ -30,7 +27,7 @@ Vision sweeps: walk order + one call per duplicate set.
                                   done == total when the paid visit raises.
   case_up_front_copies_survive_a_cap:
                                   copies of done items are made before the walk.
-  case_clips_never_reuse:         same thumb + same preview clips: both called.
+  case_clips_in_one_set_share:    same thumb + duration clips: 1 call.
   case_dupe_scan_raising_still_sweeps:
                                   `find_duplicates` raising ⇒ every item called.
   case_flags_sweep_one_call_per_duplicate:
@@ -122,115 +119,6 @@ def case_reuse_plan_table() -> None:
     assert p.riders() == {1, 4, 3}
 
 
-def case_frame_groups_table() -> None:
-    def m(mid, w=None, h=None):
-        return {"media_id": mid, "width": w, "height": h}
-
-    same = {frozenset((1, 3)), frozenset((2, 5)), frozenset((1, 4)), frozenset((3, 4))}
-
-    def S(a, b):
-        return frozenset((a["media_id"], b["media_id"])) in same
-
-    G = vault_dupes.frame_groups
-    assert G([m(1), m(2), m(3), m(4), m(5)], S) == [[1, 3, 4], [2, 5]]
-    # 3 matches 1's frame but OF says it is another shape → its own.
-    assert G([m(1, 1080, 1920), m(3, 1920, 1080)], S) == []
-    assert G([m(1, 1080, 1920), m(3)], S) == [[1, 3]], "one row without dims: the frame decides"
-    assert G([], S) == []
-    # 4 matches 1 but not 3: in a greedy-vs-first rule 3 and 4 would share an
-    # answer without ever being compared → 4 must stay out.
-    same.discard(frozenset((3, 4)))
-    assert G([m(1), m(3), m(4)], S) == [[1, 3]]
-
-
-def _textured(seed: int):
-    """A 960x1280 photo-like frame: sharp shapes + sensor-like noise (σ 8)."""
-    from PIL import Image, ImageChops, ImageDraw, ImageFilter
-    rng = random.Random(seed)
-    im = Image.new("RGB", (960, 1280), (rng.randrange(256), 120, rng.randrange(256)))
-    dr = ImageDraw.Draw(im)
-    for _ in range(30):
-        x0, y0 = rng.randrange(960), rng.randrange(1280)
-        dr.ellipse([x0, y0, x0 + rng.randrange(40, 400), y0 + rng.randrange(40, 400)],
-                   fill=tuple(rng.randrange(256) for _ in range(3)))
-    im = im.filter(ImageFilter.GaussianBlur(1))
-    noise = Image.effect_noise((960, 1280), 8).convert("RGB")
-    return ImageChops.add(ImageChops.subtract(im, Image.new("RGB", im.size, (12, 12, 12))),
-                          noise, 2.0, -52)
-
-
-def case_same_frame_measured() -> None:
-    """The numbers in `vault_dupes`' FRAME_MAX_DIFF comment, re-run on synthetic
-    frames (the real-photo half of that measurement is not shipped)."""
-    from PIL import Image, ImageDraw, ImageFilter, ImageStat
-    rng = random.Random(7)
-    root = _TMP / "frames"
-    root.mkdir(parents=True, exist_ok=True)
-    n = 0
-
-    def save(im, q) -> Path:
-        nonlocal n
-        n += 1
-        p = root / f"{n}.jpg"
-        im.save(p, format="JPEG", quality=q)
-        return p
-
-    origs = []
-    for i in range(4):
-        p = save(_textured(i), 85)
-        origs.append((p, Image.open(p).convert("RGB")))
-    # One cluster: each member's file read once, pixels decoded at most once,
-    # however many pairs are compared (reuse_groups' path).
-    opened: list = []
-    real_open = Image.open
-
-    def counting_open(fp, *a, **k):
-        opened.append(fp)
-        return real_open(fp, *a, **k)
-
-    Image.open = counting_open
-    try:
-        frames = [vault_dupes.load_frame(p) for p, _ in origs]
-        for fa in frames:
-            for fb in frames:
-                vault_dupes.frames_match(fa, fb)
-    finally:
-        Image.open = real_open
-    assert len(opened) == 2 * len(origs), ("header + one decode per member", opened)
-
-    for p, im in origs:
-        assert vault_dupes.same_frame(p, p)
-        for q in (85, 90, 95):
-            assert vault_dupes.same_frame(p, save(im, q)), f"q{q} re-encode refused"
-        assert not vault_dupes.same_frame(p, save(im, 70)), "q70 re-encode is 'unsure' → no reuse"
-    fails = {"sticker": 0, "blur": 0, "crop": 0}
-    for t in range(40):
-        p, o = origs[t % len(origs)]
-        s = rng.randrange(20, 61)
-        x, y = rng.randrange(0, 960 - s), rng.randrange(0, 1280 - s)
-        e = o.copy()
-        ImageDraw.Draw(e).rectangle([x, y, x + s, y + s], fill=tuple(rng.randrange(256) for _ in range(3)))
-        fails["sticker"] += not vault_dupes.same_frame(p, save(e, rng.choice((70, 85, 95))))
-        # a censor goes over detail: the busiest of 20 candidate spots
-        x, y = max(((rng.randrange(0, 960 - s), rng.randrange(0, 1280 - s)) for _ in range(20)),
-                   key=lambda c: sum(ImageStat.Stat(o.crop((c[0], c[1], c[0] + s, c[1] + s))).stddev))
-        e = o.copy()
-        box = (x, y, x + s, y + s)
-        e.paste(o.crop(box).filter(ImageFilter.GaussianBlur(rng.choice((4, 6, 8)))), box)
-        fails["blur"] += not vault_dupes.same_frame(p, save(e, rng.choice((70, 85, 95))))
-        c = rng.uniform(0.02, 0.10)
-        e = o.crop((int(960 * c), int(1280 * c), 960, 1280)).resize((960, 1280), Image.LANCZOS)
-        fails["crop"] += not vault_dupes.same_frame(p, save(e, rng.choice((70, 85, 95))))
-    assert fails == {"sticker": 40, "blur": 40, "crop": 40}, fails
-    # other size / unreadable / missing → no
-    small = save(origs[0][1].resize((480, 640)), 85)
-    assert not vault_dupes.same_frame(origs[0][0], small)
-    bad = root / "bad.jpg"
-    bad.write_bytes(b"not an image")
-    assert not vault_dupes.same_frame(origs[0][0], bad)
-    assert not vault_dupes.same_frame(origs[0][0], root / "missing.jpg")
-
-
 def case_copy_builders_table() -> None:
     src_ai = {"description": "d", "_prompt_version": "v2", "underwear_visible": True,
               "vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame",
@@ -273,7 +161,7 @@ def case_copy_builders_table() -> None:
     assert "_flags_status" not in f and f["_flags_copied_from"] == 11, f
 
     # Never transitive: a source that itself holds flags copied from 99 gives a
-    # copy marked only with the item it was compared with (11), not 99.
+    # copy marked only with its own source (11), not 99.
     src_t = {**src, "ai_fields_json": json.dumps({**src_ai, "_flags_copied_from": 99})}
     ai = json.loads(d.build_copy_update(src_t, prev_ai={"_flags_copied_from": 5}, locked=(),
                                         overrides={}, fixable=(), src_id=11,
@@ -420,22 +308,24 @@ def _ai(row: VaultItem) -> dict:
 
 
 async def case_describe_all_one_call_per_duplicate() -> None:
-    # A (oldest) and B (newest) are one re-upload; C shares the thumb only.
+    # A (oldest) and B (newest) are one re-upload; C shares the thumb but not
+    # the full frame — the Duplicates screen shows all three as one set, so
+    # they share one answer (owner decision 2026-11-11).
     aid = await _world([(1, 1, 100, 200), (2, 3, 100, 200), (3, 2, 100, 300)])
     with _Model() as m:
         await vault_ai_vision._run_describe_all(aid, "undescribed")
-    assert m.n() == 2, f"a duplicate cost a describe call: {m.calls}"
+    assert m.n() == 1, f"a duplicate cost a describe call: {m.calls}"
     a, b, c = [await _row(aid, i) for i in (1, 2, 3)]
     assert all(r.describe_status == "described" for r in (a, b, c))
     # B is the newest → it led (priority, not the oldest seed).
-    assert _ai(a).get("_copied_from") == 2, _ai(a)
-    assert "_copied_from" not in _ai(b) and "_copied_from" not in _ai(c)
-    assert a.description == b.description == "a photo"
+    assert _ai(a).get("_copied_from") == 2 and _ai(c).get("_copied_from") == 2, (_ai(a), _ai(c))
+    assert "_copied_from" not in _ai(b)
+    assert a.description == b.description == c.description == "a photo"
     assert _ai(a).get("_flags_v") == vault_ai_vision._FLAGS_VERSION, "copy has stale flags"
-    assert 1 not in await vault_ai_vision._flags_todo(aid), "copy would be re-flagged"
+    assert not {1, 3} & set(await vault_ai_vision._flags_todo(aid)), "copy would be re-flagged"
     prog = vault_ai_vision._describe_progress[aid]
     assert prog["total"] == prog["done"] == 3 and prog["failed"] == 0, prog
-    assert prog["cost_millicents"] == 2 * 5 + 2 * 5, prog  # 2 describes + 2 flags
+    assert prog["cost_millicents"] == 5 + 5, prog  # 1 describe + 1 flags
 
 
 async def case_already_described_member_is_the_source() -> None:
@@ -579,13 +469,41 @@ async def case_up_front_copies_survive_a_cap() -> None:
     assert prog["capped"] and prog["total"] == prog["done"] == 2 and prog["failed"] == 1, prog
 
 
-async def case_clips_never_reuse() -> None:
+async def case_clips_in_one_set_share() -> None:
     clip = {"kind": "video", "duration_seconds": 20}
     aid = await _world([(1, 1, 180, 280), (2, 3, 180, 280)], {1: clip, 2: clip})
     with _Model() as m:
         await vault_ai_vision._run_describe_all(aid, "undescribed")
-    assert m.n() == 2, f"a clip shared an answer off one poster: {m.calls}"
-    assert "_copied_from" not in _ai(await _row(aid, 1))
+    assert m.n() == 1, f"a clip set paid twice: {m.calls}"
+    assert _ai(await _row(aid, 1)).get("_copied_from") == 2
+
+
+async def case_reuse_groups_are_the_dupe_sets() -> None:
+    # Hashes set directly (current kind → not re-hashed). Seed 1 at 0; 2 is 2
+    # bits off (shares); 4 is 2 bits off the seed but 4 off 2 (still shares —
+    # sets are seed-based); 3 is 3 bits off the seed (its own item).
+    global _N
+    _N += 1
+    aid = f"reuse{_N}"
+    dh = {1: 0b0, 2: 0b11, 3: 0b111, 4: 0b1100, 5: 0xFF00, 6: 0xFF03}
+    async with get_session() as s:
+        s.add(Account(id=aid))
+        for mid, h in dh.items():
+            s.add(VaultItem(account_id=aid, media_id=mid, kind="photo", tags="[]",
+                            created_at=T0 + timedelta(days=mid),
+                            content_hash=vault_dupes.pack_hash(f"{mid:032x}", h, h),
+                            content_hash_kind=vault_dupes.HASH_KIND))
+        await s.commit()
+    res = await vault_dupes.find_duplicates(aid)
+    assert res["threshold"] == vault_dupes.DEFAULT_THRESHOLD == 2
+    sets = sorted([c["original"]["media_id"], *(x["media_id"] for x in c["dupes"])]
+                  for c in res["clusters"])
+    assert sets == [[1, 2, 4], [5, 6]], sets
+    got = await vault_dupes.reuse_groups(aid, frozenset(dh))
+    assert sorted(got) == sets, got
+    # Only sets touching the sweep's `want`.
+    assert await vault_dupes.reuse_groups(aid, frozenset({4})) == [[1, 2, 4]]
+    assert await vault_dupes.reuse_groups(aid, frozenset({3})) == []
 
 
 async def case_sweep_walks_priority_order() -> None:

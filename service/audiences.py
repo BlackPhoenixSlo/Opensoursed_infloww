@@ -983,6 +983,9 @@ class _ResumableLists:
             self.pages += 1
             return page
 
+    def get_list(self, list_id):
+        return self._c.get_list(list_id)   # of_paging.list_size: the count check, not a page
+
 
 def _ae_apply_batch_blocking(client, m: aed.Mirror, kind: str, uids: list[int],
                              skip: set[int], stats: aed.RefreshStats) -> None:

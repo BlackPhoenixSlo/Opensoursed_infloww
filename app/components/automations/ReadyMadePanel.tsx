@@ -43,6 +43,7 @@ import { RuleTable } from "@/components/automations/RuleTable";
 import { ReadyMadeRuleEditor } from "@/components/automations/ReadyMadeRuleEditor";
 import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import type { Kind } from "@/components/compose/payloadRules";
+import { useAgentPanel } from "@/components/assistant/agentBridge";
 
 /** The panel pinned to one rule kind: how My Automations > Auto Post
  *  (/growth/auto-post) shows the Auto Posts list, and > Auto Mass
@@ -108,6 +109,8 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
 
   const runs = runsQ.data?.runs ?? [];
   const startNew = () => setEditor("new");
+  // The help bot's "Do it for me" opens a new rule here, as the New button does.
+  useAgentPanel(only, accountId, startNew);
   const copy = KIND_COPY[only];
 
   return (
@@ -117,7 +120,7 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
       actions={(
         <>
           <IfLearn tip={copy.blurb}><span className="max-sm:sr-only">Learn</span></IfLearn>
-          <IfButton variant="primary" icon={Plus} onClick={startNew} disabled={!accountId} className="max-sm:px-2.5">
+          <IfButton id={`rm-${only}-new`} variant="primary" icon={Plus} onClick={startNew} disabled={!accountId} className="max-sm:px-2.5">
             <span className="max-sm:sr-only">{copy.button}</span>
           </IfButton>
         </>

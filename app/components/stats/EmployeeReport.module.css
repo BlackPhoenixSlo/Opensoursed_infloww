@@ -12,8 +12,6 @@
 .toolbar button:not([role="tab"]) { height: 26px; font-size: 11px; }
 .toolbar [aria-label="Refresh"] { width: 26px; background: transparent; color: var(--color-accent); }
 .toolbar [aria-haspopup="dialog"] { background: transparent; border: 1px solid var(--color-border); }
-.filter { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--color-accent); border-radius: 3px; color: var(--color-accent); }
-.filters { position: absolute; z-index: 20; right: 0; top: 32px; width: 200px; padding: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; box-shadow: 0 4px 16px #0002; font-size: 12px; }
 .content { padding-top: 14px; display: flex; flex-direction: column; gap: 28px; }
 .content section { min-width: 0; }
 .content h3 { font-size: 13px; margin-bottom: 10px; }

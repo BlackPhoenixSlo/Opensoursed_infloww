@@ -1,5 +1,5 @@
 /**
- * The vision-flags bits the Flags review and Disputes cards both draw: a region's name, a region state's colours,
+ * The vision-flags bits the Flags review cards draw: a region's name, a region state's colours,
  * the "over" lines (what covers a region), the item's meta line, and its reasons list.
  */
 
@@ -11,17 +11,12 @@ export const REGION_LABEL: Record<string, string> = {
   anus_vis: "anus",
 };
 
-/** A region state's colours: `strong` for the Flags review's picked button, `soft` for a Disputes chip. */
-export const STATE_TONE: Record<"strong" | "soft", Record<string, string>> = {
+/** A region state's colours for the Flags review's picked button. */
+export const STATE_TONE: Record<"strong", Record<string, string>> = {
   strong: {
     bare: "border-err/70 bg-err/20 text-err",
     covered: "border-info/70 bg-info/20 text-info",
     not_in_frame: "border-muted/70 bg-muted/20 text-fg-dim",
-  },
-  soft: {
-    bare: "border-err/50 bg-err/10 text-err",
-    covered: "border-info/50 bg-info/10 text-info",
-    not_in_frame: "border-muted/50 bg-muted/10 text-muted",
   },
 };
 

@@ -6,7 +6,27 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PRESET_DAYS, addDayStr, dateBounds, presetRange, priorRange, shiftYears, toLocalIso } from "@/lib/dateRange";
+import { datePresets } from "@/components/home/reportsMath";
+import {
+  PRESET_DAYS, addDayStr, dateBounds, periodWindow, presetRange, priorRange, shiftYears, toLocalIso,
+} from "@/lib/dateRange";
+
+describe("the Dashboard's Last 30 days is Creator reports' Last 30 days (#13)", () => {
+  afterEach(() => vi.useRealTimers());
+  it.each([
+    ["New York, across the November DST change", "2026-11-10T15:00:00Z", "America/New_York"],
+    ["Ljubljana, across the March DST change", "2026-04-10T08:00:00Z", "Europe/Ljubljana"],
+    ["Honolulu late evening (already tomorrow in UTC)", "2026-10-16T08:30:00Z", "Pacific/Honolulu"],
+    ["UTC", "2026-10-16T12:00:00Z", "UTC"],
+  ])("%s", (_name, now, tz) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    const [from, to] = datePresets(tz).find((p) => p.key === "last30")!.days;
+    const creatorReports = [toLocalIso(from, false, tz), toLocalIso(to, true, tz)];
+    expect(periodWindow("last30Days", tz, "monday")).toEqual(creatorReports);
+    expect(periodWindow("last30Days", tz, "sunday")).toEqual(creatorReports);
+  });
+});
 
 describe("presetRange", () => {
   afterEach(() => vi.useRealTimers());

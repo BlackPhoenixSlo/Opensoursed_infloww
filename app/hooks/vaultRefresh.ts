@@ -62,12 +62,18 @@ export function vaultWholeSource(summary: SourceSummary): VaultSource {
   return summary?.complete === true && summary.count > 0 ? "mirror" : "live";
 }
 
+/** How long the picker waits for its summary's first answer before listing live anyway (`vaultPickerSource`). */
+export const SUMMARY_WAIT_MS = 8000;
+
 /** The picker's grid source while its summary may be in flight: "pending" until the summary's first answer (no
  *  grid query runs; the grid shows loading), then `vaultWholeSource`; a failed summary (a chatter's 403) is "live".
  *  A live listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race
- *  (U4: a slow phone network), and spent an OF listing call the mirror answers. */
-export function vaultPickerSource(summary: { data?: SourceSummary; isLoading: boolean }): VaultSource | "pending" {
-  return summary.data === undefined && summary.isLoading ? "pending" : vaultWholeSource(summary.data);
+ *  (U4: a slow phone network), and spent an OF listing call the mirror answers. `waitedOut`: the summary has been
+ *  pending `SUMMARY_WAIT_MS`; the relay read has no timeout, so a stalled one would hold the grid on Loading for
+ *  good. Then "live"; a late answer still switches to the mirror. */
+export function vaultPickerSource(summary: { data?: SourceSummary; isLoading: boolean },
+                                  waitedOut = false): VaultSource | "pending" {
+  return summary.data === undefined && summary.isLoading && !waitedOut ? "pending" : vaultWholeSource(summary.data);
 }
 
 /** Browse rule: the mirror once it holds anything. For the manager's grid (and its thumb reload, selection

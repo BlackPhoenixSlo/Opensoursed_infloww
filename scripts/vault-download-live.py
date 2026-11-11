@@ -6,7 +6,7 @@
     ./venv/bin/python scripts/vault-download-live.py --modes select,folder,vault --folder 29254086 --headed
 
 Per mode it drives Vault Pro like a user (select: Select, tick 3 photos + 1 video, Download selected; folder: the
-rail row's ... > Download folder; vault: the toolbar's Download whole vault), waits for the progress card to settle,
+rail row's ... > Download folder; vault: the header's Download full vault, `vault-header-download`), waits for the progress card to settle,
 then checks every file on disk against the vault: count, size == bytes served (Content-Length / Content-Range total
 of the response that delivered it), `file` + ffprobe valid. Direct vs relay per file: the browser's network log
 (Playwright: a 200 from *.onlyfans.com = direct, a 200 from /admin/vault-ai/download = relay) cross-checked with the
@@ -318,7 +318,7 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
             await page.get_by_role("menuitem", name="Download folder").click(timeout=10_000)
         else:
             await page.screenshot(path=str(ev / f"{mode}-trigger.png"))
-            await page.get_by_role("button", name="Download whole vault").click(timeout=10_000)
+            await page.get_by_test_id("vault-header-download").click(timeout=10_000)
         panel = page.locator(PANEL)
         await panel.wait_for(timeout=30_000)
         t0 = time.time()

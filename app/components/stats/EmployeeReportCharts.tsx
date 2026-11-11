@@ -70,10 +70,13 @@ export function ShownBySelect({ days, value, onChange }: { days: number; value: 
   );
 }
 
-/** What both tabs draw from: the Chatting statistics rows (the Employees offered) and the series read. */
+/** What both tabs draw from: the Chatting statistics rows (the Employees offered) and the series read. `error` is
+ *  either read failing; `rowsPending` the rows still in flight, so no "No chatting" or empty ranking shows while they
+ *  load (#21). */
 export type ChartProps = {
   data: ChattingSeriesResp | null; error: boolean; bucket: Gran; rows: ChattingStatsRow[];
-  /** Reads the series again (the error state's Retry). */
+  rowsPending: boolean;
+  /** Reads the failed reads again (the error state's Retry). */
   onRetry?: () => void;
 };
 
@@ -82,21 +85,26 @@ export function useEmployeeCharts(from: string | null, to: string | null, bucket
   const stats = useChattingStats(from, to, chatterOnly);
   const rows = useMemo(() => stats.data?.employees ?? [], [stats.data]);
   const series = useChattingSeries(from, to, bucket, chatterOnly);
-  const { refetch } = series;
-  return { data: series.data ?? null, error: series.isError, bucket, rows, onRetry: () => { void refetch(); } };
+  const onRetry = () => {
+    if (series.isError) void series.refetch();
+    if (stats.isError) void stats.refetch();
+  };
+  return {
+    data: series.data ?? null, error: series.isError || stats.isError, bucket, rows, rowsPending: stats.isPending, onRetry,
+  };
 }
 
 const LOADING = "Loading…";
 const labelsOf = (data: ChattingSeriesResp | null, bucket: Gran) =>
   (data?.series ?? []).map((p) => bucketLabel(p.start, bucket));
 
-/** Infloww's `Empty$1` with Retry in place of a tab's charts when the series read fails. */
+/** Infloww's `Empty$1` with Retry in place of a tab's charts when a read fails. */
 function ChartsError({ onRetry }: { onRetry?: () => void }) {
   return <EmptyState kind="error" text="Failed to load" onRetry={onRetry} className="py-16" />;
 }
 
 /** The Overview tab's charts: Employee sales, then Employee comparison beside Sales ranking. */
-export function EmployeeOverviewCharts({ data, error, bucket, rows, onRetry }: ChartProps) {
+export function EmployeeOverviewCharts({ data, error, bucket, rows, rowsPending, onRetry }: ChartProps) {
   const [slots, setSlots] = useState<(number | null)[]>([null, null, null]);
   if (error) return <ChartsError onRetry={onRetry} />;
   const names = new Map(rows.map((r) => [r.employee_id, name(r)]));
@@ -133,7 +141,7 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, onRetry }: C
               </p>
             )} />
         </Section>
-        <SalesRanking rows={rows} />
+        <SalesRanking rows={rows} pending={rowsPending} />
       </div>
     </>
   );
@@ -171,7 +179,12 @@ function EmployeeSalesBars({ labels, values }: { labels: string[]; values: numbe
 
 const axisCount = (n: number) => String(Math.round(n));
 
-function SalesRanking({ rows }: { rows: ChattingStatsRow[] }) {
+/** The Employees' read in flight: a loading line where the ranking or the picked Employee goes. */
+function RowsLoading({ className }: { className?: string }) {
+  return <p role="status" aria-label="Loading employees" className={cn("text-sm text-fg-dim", className)}>{LOADING}</p>;
+}
+
+function SalesRanking({ rows, pending }: { rows: ChattingStatsRow[]; pending: boolean }) {
   const [desc, setDesc] = useState(true);
   const [more, setMore] = useState(false);
   const sorted = [...rows].sort((a, b) => (desc ? b.sales_cents - a.sales_cents : a.sales_cents - b.sales_cents));
@@ -183,7 +196,7 @@ function SalesRanking({ rows }: { rows: ChattingStatsRow[] }) {
           {desc ? "Descending ↓" : "Ascending ↑"}
         </button>
       </header>
-      {sorted.length === 0 ? <EmptyState size="sm" /> : (
+      {pending ? <RowsLoading /> : sorted.length === 0 ? <EmptyState size="sm" /> : (
         <ol className="space-y-2">
           {sorted.slice(0, more ? undefined : 10).map((r, i) => (
             <li key={r.employee_id} className="flex items-center gap-3 text-sm">
@@ -204,9 +217,10 @@ function SalesRanking({ rows }: { rows: ChattingStatsRow[] }) {
 
 /** The Employee performance tab: the picked Employee (the top seller until one is picked), its Sales and Message
  *  statistics. The Employee select sits at the body's right, as Infloww's does, with the name as a tag at the left. */
-export function EmployeePerformance({ data, error, bucket, rows, onRetry }: ChartProps) {
+export function EmployeePerformance({ data, error, bucket, rows, rowsPending, onRetry }: ChartProps) {
   const [picked, setPicked] = useState<number | null>(null);
   if (error) return <ChartsError onRetry={onRetry} />;
+  if (rowsPending) return <RowsLoading className="py-16" />;
   const top = rows.reduce<ChattingStatsRow | null>((t, r) => (!t || r.sales_cents > t.sales_cents ? r : t), null);
   const id = picked != null && rows.some((r) => r.employee_id === picked) ? picked : top?.employee_id ?? null;
   if (id == null) return <EmptyState text="No chatting in this window." className="py-16" />;

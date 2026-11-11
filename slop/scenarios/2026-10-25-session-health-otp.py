@@ -27,7 +27,11 @@ and ends OTP_IDX's sockets, so their pumps reconnect through /users/me while
 READS concurrent inbox reads per Creator (the real `GET /api/of/v2/chats`: half in
 one burst at the flip, which the old read-then-write flip lets each notify, half
 spread over the pump's 1 s reconnect) meet the same 101: many callers of two kinds
-at once. READER's socket stays up: only its one inbox read can flag it. Once all are
+at once. One of them (RACE_IDX) sends all its READS at the flip and OnlyFans holds the first
+8 (its client's signed slots), so the rest wait for a slot when the first 400 evicts that
+client: most (3-4 of the 4; one may take a freed slot first) are refused as retired and each
+re-runs once on the current client, all before its
+pump's reconnect. READER's socket stays up: only its one inbox read can flag it. Once all are
 flagged, phase B schedules more for every Creator while the executor ticks and the
 pump supervisor passes; the window from the flip is at least WS_WINDOW_S, which
 holds the pump's 3 retries (2, 4, 8 s after the drop's 1 s), its exit and supervisor
@@ -51,7 +55,8 @@ Invariants: account_health flags exactly the 2FA Creators (otp_required); one
 session_dead notification per (owner, 2FA Creator) though many callers met the 101
 at once, data.href the Browserbase relink, none for any other owner, and each
 affected owner's /events carried it; every concurrent read answered 502 (upstream
-400); READER's read flagged and notified it; per OTP_IDX Creator at most five
+400), and at least one of RACE_IDX's was first refused as retired (the race happened);
+READER's read flagged and notified it; per OTP_IDX Creator at most five
 /users/me over the window (the pump's 1 + 3 retries, the probe's), the retries each
 at least its backoff (2, 4, 8 s, less 0.5) after the last, and its pump exited within
 2 s of its last /users/me and stayed parked through the supervisor passes; after
@@ -76,10 +81,13 @@ phase E's lost session is the harness moving the Creator's latest.json aside, an
 crash-looping pump body is the harness's, and its crash switch stops a pump still
 running (lib/pump_relay.py);
 the reads' 502s go to their own recorder (they are this scenario's expected
-answer, checked below, not the stock no-5xx check's).
+answer, checked below, not the stock no-5xx check's); RELAY_ENV's ACCOUNT_LANE_TOTAL=12 (default 5:
+the per-account lane above the client's 8 signed slots, so RACE_IDX's burst queues on the slots, not
+in the lane) and lib/of_wire.py's hold on RACE_IDX's first 8 inbox reads (0.4 s, then 1.4 s).
 Break-it-once: otp-state-not-session-dead (the classifier's 101 branch reverted);
 session-dead-claim-not-atomic (the read-then-write flip it replaced);
-retired-read-not-rerun (_proxy blind to an evicted client: no GET re-run, any 101 evicts the fresh one).
+retired-read-not-rerun (_proxy blind to an evicted client: no GET re-run, any 101 evicts the fresh one;
+the 2FA Creators' retired reads, RACE_IDX's at least, answer 502 with upstream 500).
 reconcile-never-restarts, reconcile-ignores-parked (lib/pump_faults.py: the supervisor
 pass without its Restart, or blind to the dead-session flag); reconcile-never-stops (the
 pass without its Stop); supervisor-ignores-backoff (every Restart at once);
@@ -111,6 +119,17 @@ FAULT = "otp-state-not-session-dead"
 OTP_IDX = (3, 5, 9)  # Agency 0 (UI owner): Creator 3; Agency 1: Creators 5 and 9 (profile's owner layout)
 RELINK = "/creators?relink=browserbase"
 READS = 12  # concurrent inbox reads per OTP_IDX Creator at the flip, alongside its pump's reconnect
+# The slot-wait race (retired-read-not-rerun): otp[RACE_IDX]'s READS all at the flip, OF holds the first
+# SIGNED_SLOTS, so the rest wait for a signed slot on its client; the first answer (400) evicts that client
+# and the waiters are refused as retired (a GET re-runs once on the current client). All before its pump's
+# reconnect (1 s): a pump waiting on that slot would be refused too and retry off its schedule.
+RACE_IDX = 1  # Agency 1's Creator 5 (not the UI owner's)
+SIGNED_SLOTS = 8  # service/of_client.py: signed calls in flight per OFClient (_SignedSessionPool.SIZE)
+# The first held answers and evicts; the rest keep their slots past a polling waiter's 0.25 s re-check.
+RACE_HOLD_S = (0.4,) + (1.4,) * (SIGNED_SLOTS - 1)
+# Declared bypass: the per-account lane (default 5) at READS, above SIGNED_SLOTS, so the burst queues on the
+# client's signed slots (an evict refuses a waiter there), not in the lane (it then loads the current client).
+RELAY_ENV = {"ACCOUNT_LANE_TOTAL": str(READS)}
 WS_GAP_IDX = 2    # healthy[2]: healthy[0] is phase D's, healthy[1] phase E's
 GAP_DROPS = 3     # socket ends before the long uptime: the pump's backoff 1, 2, 4 s, the next 8
 UP_MARGIN_S = 5.0  # the long uptime past RESET_AFTER_S
@@ -139,6 +158,8 @@ C_PAUSE = ("after detection a 2FA Creator runs nothing: no run row, no OF call b
 C_API = "/admin/accounts shows each owner its 2FA Creators paused (session_dead_reason otp_required)"
 C_WS_UP = "phase A: every Creator's WS pump connected through /users/me with the token OF issued"
 C_READS = "every concurrent inbox read of a 2FA Creator answered 502 with OF's 400 (upstream_status)"
+C_RACE = (f"the reads met an evicted client: a 2FA Creator's reads waited on its {SIGNED_SLOTS} signed slots "
+          "and at least one was refused as retired (relay log type=OFSessionRetired)")
 C_READER = ("a Creator with no automations is flagged by its owner's inbox read alone (via=proxy): "
             "otp_required, one notification")
 C_WS = WS_PARKED
@@ -301,14 +322,19 @@ async def run(ctx) -> None:
     a_snap = fake.snapshot()
 
     # ── OnlyFans asks for 2FA: OTP_IDX's sockets end, inbox reads meet the 101 at once ──
+    race = otp[RACE_IDX]
+    race_key = (race, "GET /api2/v2/chats")
+    with fake.lock:
+        fake.hold[race_key] = list(RACE_HOLD_S)
     flip_t = fake.set_otp(flagged_want)
     flip_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     ctx.rec.stage = "otp"
     reads: list[dict] = []
 
     async def inbox_read(aid: str, k: int) -> None:
-        # Half at the same instant (simultaneous claims), half spread over the pump's 1 s reconnect.
-        burst = READS // 2
+        # Half at the same instant (simultaneous claims), half spread over the pump's 1 s reconnect;
+        # the race Creator's all at once (RACE_IDX).
+        burst = READS if aid == race else READS // 2
         await asyncio.sleep(0 if k < burst else 1.5 * (k - burst + 1) / (READS - burst))
         r = await readers_http[owner_of[aid]].get(f"/api/of/v2/chats?limit=10&offset={10 * k}&refresh=1",
                                                    headers={"X-Account-Id": aid})
@@ -318,6 +344,8 @@ async def run(ctx) -> None:
 
     dropped = asyncio.create_task(asyncio.to_thread(fake.drop_ws, otp))
     await asyncio.gather(*(inbox_read(a, k) for a in otp for k in range(READS)), inbox_read(reader, 0))
+    with fake.lock:
+        unheld = fake.hold.pop(race_key, [])  # holds no read reached OF for: none expected
     dropped = await dropped
     detected = await wait_for(lambda: flagged_now() >= set(flagged_want), 20)
     detected_t = time.time()
@@ -390,10 +418,17 @@ async def run(ctx) -> None:
               streams_ended={ag: li.ended for ag, li in lis.items() if li.ended})
 
     # ── the reads, READER ─────────────────────────────────────────────────────
+    log_text = "\n".join(p.read_text(errors="replace") for p in sorted(ctx.out.glob("relay*.log")))
+    # of_client._http_call logs each refused call; server._proxy logs each GET it re-runs.
+    retired = sum(1 for ln in log_text.splitlines() if f"http_error account={race} " in ln
+                  and "url=/api2/v2/chats type=OFSessionRetired" in ln)
+    reruns = log_text.count(f"client evicted mid-read account={race}:")
     bad_reads = [r for r in reads if r["status"] != 502 or r["upstream"] != 400]
     ctx.check(C_READS, len(reads) == READS * len(otp) + 1 and not bad_reads,
-              reads=len(reads), statuses=dict(Counter(r["status"] for r in reads)), bad=bad_reads[:5])
-    log_text = "\n".join(p.read_text(errors="replace") for p in sorted(ctx.out.glob("relay*.log")))
+              reads=len(reads), statuses=dict(Counter(r["status"] for r in reads)), bad=bad_reads[:5],
+              race_retired=retired, race_reruns=reruns)
+    ctx.check(C_RACE, retired >= 1, creator=race, held_s=RACE_HOLD_S, unheld=unheld, retired=retired,
+              reruns=reruns)
     via_proxy = f"account_session_dead account={reader} via=proxy" in log_text
     ctx.check(C_READER, flagged.get(reader) == "otp_required" and got[(owner_of[reader], reader)] == 1
               and via_proxy and reader_rows == {"scheduled_jobs": 0, "automation_runs": 0},

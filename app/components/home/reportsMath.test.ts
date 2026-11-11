@@ -4,8 +4,9 @@ import type { PerModelRow } from "@/hooks/useStats";
 
 import {
   type ColCtx, type RevResp, DEFAULT_RANGE, STAT_COLS, cellCsv, chargebacksCents, creatorDayRows, creatorRows, datePresets,
-  dailyOf, daysFrom, grossOf, netOf, rollUp, sumKinds, totalOf, viewOf,
+  dailyOf, daysFrom, forGrowth, grossOf, netOf, rollUp, sumKinds, totalGrowthOf, totalOf, viewOf,
 } from "./reportsMath";
+import { referralsGap } from "@/hooks/useReferrals";
 import { netMissingNote } from "./netMissingNote";
 
 const col = (key: string) => STAT_COLS.find((c) => c.key === key)!;
@@ -142,7 +143,9 @@ describe("creatorDayRows", () => {
     a1: { rows: [{ day: "2026-01-02", kind: null, total_cents: 2888, count: 1, net_cents: 2310 }] }, b2: { rows: [] },
   };
   const read = (id: string) => Promise.resolve({ earned: earned[id], reversed: reversed[id] });
-  const header = ["Creator", "Day", "Total earnings", "Subscription", "Tips", "Posts", "Messages", "Other", "Chargebacks"];
+  // The total column says it leaves referrals out (DeepSeek F3).
+  const header = ["Creator", "Day", "Total earnings (excl. referrals)", "Subscription", "Tips", "Posts", "Messages", "Other",
+    "Chargebacks"];
   it.each([
     ["gross", false, [
       header,
@@ -208,5 +211,50 @@ describe("viewOf", () => {
     ["an error beats empty", [failed], false, "error"],
   ] as const)("%s", (_name, reads, hasRows, want) => {
     expect(viewOf(reads, hasRows)).toBe(want);
+  });
+});
+
+describe("referrals gaps and the growth they allow (#6, #19)", () => {
+  const ok = { isSuccess: true, isError: false };
+  const whole = { ...ok, data: { rows: [{ account_id: "a", total_cents: 0, by_day: [] }], unavailable: [] } };
+  const some = { ...ok, data: { rows: [{ account_id: "a", total_cents: 5, by_day: [] }], unavailable: ["b"] } };
+  const all = { ...ok, data: { rows: [], unavailable: ["a", "b"] } };
+  const failed = { isSuccess: false, isError: true, data: undefined };
+  const pending = { isSuccess: false, isError: false, data: undefined };
+  it.each([
+    ["a whole answer", whole, "none"],
+    ["an answer missing some Creators", some, "some"],
+    ["an answer missing every Creator", all, "all"],
+    ["a failed read", failed, "all"],
+    ["a pending read", pending, "none"],
+  ])("%s: gap %s", (_n, q, gap) => {
+    expect(referralsGap(q)).toBe(gap);
+  });
+
+  it.each([
+    ["both whole", whole, whole, "whole"],
+    ["this window pending", pending, whole, "pending"],
+    ["the window before pending", whole, pending, "pending"],
+    ["both pending", pending, pending, "pending"],
+    ["this window failed", failed, whole, "exclReferrals"],
+    ["the window before failed", whole, failed, "exclReferrals"],
+    ["some Creators missing", some, whole, "exclReferrals"],
+    ["every Creator missing", whole, all, "exclReferrals"],
+    ["one pending, the other failed: the failure is said", pending, failed, "exclReferrals"],
+  ])("totalGrowthOf, %s: %s", (_n, now, before, want) => {
+    expect(totalGrowthOf(now, before)).toBe(want);
+  });
+
+  const sums = { subscriptions: 100, tips: 0, posts: 0, messages: 0, referrals: 30, other: 0, total: 130 };
+  const perf = { subscriptions: 100, tips: 0, posts: 0, messages: 0, referrals: 30, other: 0 };
+  const noRefs = { subscriptions: 100, tips: 0, posts: 0, messages: 0, other: 0 };
+  it.each([
+    ["whole: every sum", sums, "whole", sums],
+    ["exclReferrals: no Referrals, Total without referrals (#22)", sums, "exclReferrals", { ...noRefs, total: 100 }],
+    ["pending: no Referrals and no Total yet (#35)", sums, "pending", noRefs],
+    ["exclReferrals, no Total (Creator performance): no Referrals", perf, "exclReferrals", noRefs],
+    ["pending, no Total (Creator performance): no Referrals", perf, "pending", noRefs],
+  ] as const)("forGrowth, %s", (_n, input, mode, want) => {
+    expect(forGrowth(input, mode)).toEqual(want);
   });
 });

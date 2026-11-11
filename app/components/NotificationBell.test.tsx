@@ -176,7 +176,7 @@ describe("NotificationBell (Agency pane)", () => {
   it("closes when an Agency row's in-app link is followed", async () => {
     relayGet.mockResolvedValue({ list: [] });
     renderWithProviders(
-      <NotificationBell agency={{ unread: 1, panel: <a href="/creators?relink=browserbase" onClick={(e) => e.preventDefault()}>Zoe needs a 2FA code</a> }} />,
+      <NotificationBell agency={{ unread: 1, settings: null, panel: <a href="/creators?relink=browserbase" onClick={(e) => e.preventDefault()}>Zoe needs a 2FA code</a> }} />,
     );
 
     await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
@@ -188,7 +188,7 @@ describe("NotificationBell (Agency pane)", () => {
   it("OnlyFans arrivals while the panel shows the Agency tab badge the bell once it closes; on the OnlyFans tab they don't", async () => {
     relayGet.mockResolvedValue({ list: [] });
     const user = userEvent.setup();
-    renderWithProviders(<NotificationBell agency={{ unread: 2, panel: <p>Agency feed</p> }} />);
+    renderWithProviders(<NotificationBell agency={{ unread: 2, settings: null, panel: <p>Agency feed</p> }} />);
     expect(await screen.findByTestId("bell-count")).toHaveTextContent("2");
 
     // Only Agency has news: the panel opens on it, and OnlyFans arrivals land meanwhile.
@@ -210,7 +210,7 @@ describe("NotificationBell (Agency pane)", () => {
   it("the Agency tab going away while it is shown puts the OnlyFans list on screen", async () => {
     relayGet.mockResolvedValue({ list: [] });
     const user = userEvent.setup();
-    const { rerender } = renderWithProviders(<NotificationBell agency={{ unread: 2, panel: <p>Agency feed</p> }} />);
+    const { rerender } = renderWithProviders(<NotificationBell agency={{ unread: 2, settings: null, panel: <p>Agency feed</p> }} />);
     await user.click(screen.getByRole("button", { name: "Notifications" }));
     expect(await screen.findByText("Agency feed")).toBeInTheDocument();
 

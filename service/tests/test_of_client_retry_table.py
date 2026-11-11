@@ -19,6 +19,7 @@ from curl_cffi import requests  # noqa: E402
 from curl_cffi.const import CurlECode  # noqa: E402
 
 import of_client  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 from of_client import (  # noqa: E402
     API_BASE, FULL_RETRY, INTERACTIVE_READ, INTERACTIVE_RETRY, OFClient, Raise, Retry,
     retry_step,
@@ -212,7 +213,7 @@ def case_interactive_retry_global_read_at_call_time():
     c = _bare()
     c.user_agent, c.timeout_s, c._x_hash = "ua", 5, "HASH"
     c._signed_headers = lambda url: {}
-    c.http = types.SimpleNamespace(get=_get)
+    fake_wire(c, types.SimpleNamespace(get=_get))
     saved = of_client.INTERACTIVE_RETRY
     of_client.INTERACTIVE_RETRY = saved._replace(tries=3)
     token = INTERACTIVE_READ.set(True)

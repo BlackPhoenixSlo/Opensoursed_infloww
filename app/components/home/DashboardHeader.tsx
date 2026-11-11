@@ -43,25 +43,30 @@
  * earnings adds it, as the bundle's Total counts referrals and Creator reports'
  * does. OnlyFans buckets referral days in its own time zone, so the window's
  * edges can sit a few hours off. A Creator whose referrals read failed counts
- * $0.00, and the tile is titled so.
+ * $0.00, and the tile is titled so; when the read failed for every Creator (or
+ * outright) the tile shows "-", not a made-up $0.00. Either way Total earnings
+ * carries a partial marker (`TOTAL_PARTIAL`): it holds the sales without those
+ * referrals.
  *
  * Employee sales (ticket 26) reads `GET /admin/stats/per-employee?from&to`,
  * the read Employee reports makes, so each sale is credited by Sales Settings
  * and the "Unattributed" bucket is a row of its own. It sends no `account_id`
  * either, and the Relay's account clamp and Data scope bound what it shows.
- * The optional daily series uses the same sales attribution and scope as the
- * employee totals, including Unattributed, with message and tip breakdowns.
- * The earnings basis select does not drive this card.
+ * With `include_series=true` it adds one point per day of the period, cut in
+ * the report time zone, or the browser's (`tz`) when none is saved, so the
+ * chart's days are the period tabs' days. The points sum the same credited
+ * sales as the rows, Unattributed included, and their "From Messages" / "From
+ * Tips" count the kinds the Messages and Tips tiles count. An answer without
+ * a series is an error, never an empty chart. The earnings basis select does
+ * not drive this card.
  */
 
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import {
-  BookmarkPlus, FileText, Lightbulb, Loader2, MessageCircleMore, Undo2, UserStar, type LucideIcon,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 
-import { dayIn, referralsTotal, useReferrals, type ReferralsResp } from "@/hooks/useReferrals";
-import type { PerEmployeeResp } from "@/hooks/useStats";
+import { dayIn, referralsGap, referralsTotal, useReferrals, type ReferralsQuery } from "@/hooks/useReferrals";
+import type { EmployeeSalesResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { periodWindow, type Period } from "@/lib/dateRange";
@@ -70,6 +75,8 @@ import { periodWindow, type Period } from "@/lib/dateRange";
 import { fmtCents, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { EmployeeSalesChart } from "./EmployeeSalesChart";
+import { PartialMark } from "./ReportsCharts";
+import { type Channel, TILE_ICON } from "./tileIcons";
 import { relay } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
@@ -80,11 +87,11 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
-import { CHARGEBACKS_UNAVAILABLE, netMissingNote } from "@/components/home/netMissingNote";
+import {
+  CHARGEBACKS_UNAVAILABLE, netMissingNote, REFERRALS_FAILED, REFERRALS_UNAVAILABLE, TOTAL_PARTIAL,
+} from "@/components/home/netMissingNote";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
-export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";
 
 /** White on the dark card (16-dashboard.png), the theme's text in light. */
 export const WHITE = "text-white [html[data-theme=light]_&]:text-fg";
@@ -96,8 +103,6 @@ interface RevenueRow {
 }
 interface RevenueResp { rows: RevenueRow[] }
 
-type Channel = "subscriptions" | "tips" | "posts" | "referrals" | "messages" | "chargebacks";
-
 /** Ours: what each earnings tile counts, on its ⓘ (the bundle's tiles have none). */
 const TILE_TIP: Record<Channel | "total", string> = {
   total: "Everything your managed Creators earned in this period: all sales plus referrals, gross or net as picked on "
@@ -107,7 +112,7 @@ const TILE_TIP: Record<Channel | "total", string> = {
   posts: "Paid post unlocks in this period.",
   referrals: "Earnings from OnlyFans creator referrals in this period.",
   messages: "Paid message unlocks and paid customs sold in chat in this period.",
-  chargebacks: "Sales in this period that fans later charged back, shown below zero. Already left out of Total earnings.",
+  chargebacks: "Sales in this period that fans later charged back or refunded, shown below zero. Already left out of Total earnings.",
 };
 const BASIS_TIP = "Gross: what fans paid. Net: what the Creators keep after OnlyFans' fee.";
 
@@ -116,26 +121,13 @@ const BASIS_TIP = "Gross: what fans paid. Net: what the Creators keep after Only
  * each sums, as the spec's Channel mapping writes them. A channel absent here
  * (Referrals, Chargebacks) has no sales kind and reads its own (`useReferrals`, the reversed read); a kind
  * absent here (`unknown`, `ppv_stream` and `tip_stream` among them) counts in Total earnings only.
+ * Keep in sync with service/stats_employees.py SERIES_MESSAGE_KINDS / SERIES_TIP_KINDS (messages, tips).
  */
 const CHANNEL_KINDS: Partial<Record<Channel, readonly string[]>> = {
   subscriptions: ["subscription", "rebill"],
   messages: ["ppv_message", "custom"],
   posts: ["ppv_post"],
   tips: ["tip", "tip_post"],
-};
-
-/**
- * Each channel's icon (capture #58-#63): the glyph 22px in the channel colour on a 45px circle of that colour at 10%
- * over the card (16-dashboard.png samples: Subscriptions #2d3734, Tips #292d3b, Referrals #3a302e, Messages #362d3b,
- * Streams #262a36; Chargebacks, ours, is the err token). `rgb` is "r, g, b".
- */
-export const TILE_ICON: Record<Channel, { Icon: LucideIcon; rgb: string }> = {
-  subscriptions: { Icon: BookmarkPlus, rgb: "42, 212, 172" },
-  tips: { Icon: Lightbulb, rgb: "52, 103, 255" },
-  posts: { Icon: FileText, rgb: "42, 212, 172" },
-  referrals: { Icon: UserStar, rgb: "255, 124, 113" },
-  messages: { Icon: MessageCircleMore, rgb: "206, 99, 255" },
-  chargebacks: { Icon: Undo2, rgb: "255, 124, 113" },
 };
 
 /** The answer's rows; an answer without a `rows` array (a mock's `[]` or `{}`) reads as a window with no sales,
@@ -180,14 +172,18 @@ function TileIcon({ k }: { k: Channel }) {
 
 /** The Total earnings figure: the currency sign at 25px beside a 34px number (capture #42). `refreshing`: a figure
  *  already shown (the saved one on a return visit) whose read is out again; ours, dimmed in place (no layout shift)
- *  until the fresh answer lands. */
-function Figure({ text, refreshing = false }: { text: string; refreshing?: boolean }) {
+ *  until the fresh answer lands. `partial`: why the figure holds less than it says (`TOTAL_PARTIAL`), marked with an
+ *  asterisk beside it, the reason on hover and to a screen reader. */
+function Figure({ text, refreshing = false, partial }: { text: string; refreshing?: boolean; partial?: string }) {
   const sign = text.startsWith("$") ? "$" : "";
   return (
-    <span data-figure aria-busy={refreshing || undefined} title={refreshing ? "Refreshing…" : undefined}
-      className={cn("font-bold text-accent tabular-nums transition-opacity", refreshing && "opacity-60")}>
-      <span className="text-[25px] leading-[15px]">{sign}</span>
-      <span className="text-[34px] leading-[45px]">{text.slice(sign.length)}</span>
+    <span className="flex items-start gap-1">
+      <span data-figure aria-busy={refreshing || undefined} title={refreshing ? "Refreshing…" : partial}
+        className={cn("font-bold text-accent tabular-nums transition-opacity", refreshing && "opacity-60")}>
+        <span className="text-[25px] leading-[15px]">{sign}</span>
+        <span className="text-[34px] leading-[45px]">{text.slice(sign.length)}</span>
+      </span>
+      {partial && <PartialMark reason={partial} className="text-[20px] leading-[28px] font-bold" />}
     </span>
   );
 }
@@ -195,7 +191,7 @@ function Figure({ text, refreshing = false }: { text: string; refreshing?: boole
 /** What a channel tile needs from the header: the by-kind read, whether the
  *  Applied settings have answered, and the basis. */
 interface Tiles {
-  revenue: UseQueryResult<RevenueResp>; referrals: UseQueryResult<ReferralsResp>; reversed: UseQueryResult<RevenueResp>;
+  revenue: UseQueryResult<RevenueResp>; referrals: ReferralsQuery; reversed: UseQueryResult<RevenueResp>;
   ready: boolean; basis: Basis;
 }
 
@@ -205,8 +201,8 @@ interface Tiles {
  * prints "$0.00", capture #50); a window with no sales of the channel's kinds
  * shows $0.00, as the bundle does. A failed read shows on the whole tiles row
  * (`DashboardHeader`). Referrals, with no sales kind, reads its own
- * (`useReferrals`): a failed read, or a Creator it failed for, counts $0.00
- * under a title saying so.
+ * (`useReferrals`): a Creator it failed for counts $0.00 under a title saying
+ * so; failed for every Creator, or outright, the figure is "-".
  */
 function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
   const kinds = CHANNEL_KINDS[k];
@@ -217,18 +213,21 @@ function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
     : kinds ? rowsOf(revenue.data)
       .filter((r) => r.kind !== null && kinds.includes(r.kind))
       .reduce((s, r) => s + cents(r, basis), 0) : referralsTotal(referrals.data);
-  const partial = k === "referrals" && (referrals.isError || !!referrals.data?.unavailable?.length);
+  const gap = k === "referrals" ? referralsGap(referrals) : "none";
   const read = chargebacks ? reversed : kinds ? revenue : referrals;
+  // No figure at all: Chargebacks' read failed, or the referrals' for every Creator.
+  const dash = (chargebacks && reversed.isError) || gap === "all";
   return (
     <div
       data-control={k}
-      title={partial ? REFERRALS_UNAVAILABLE : chargebacks && reversed.isError ? CHARGEBACKS_UNAVAILABLE : undefined}
+      title={gap === "all" ? REFERRALS_FAILED : gap === "some" ? REFERRALS_UNAVAILABLE
+        : chargebacks && reversed.isError ? CHARGEBACKS_UNAVAILABLE : undefined}
       className="flex items-center justify-between gap-2 ml-[35.5px] mr-[38.5px]"
     >
       <div className="flex flex-col shrink-0">
         {!ready || read.isPending ? (
           <span className="h-[28px] flex items-center"><Shimmer what={label(k)} className="h-[21px] w-16" /></span>
-        ) : chargebacks && reversed.isError ? (
+        ) : dash ? (
           <span data-figure className={cn("text-[21px] leading-[28px] font-bold", WHITE)}>-</span>
         ) : (
           <span data-figure className={cn("text-[21px] leading-[28px] font-bold tabular-nums", isLoss(sum) ? "text-err" : WHITE)}>
@@ -282,7 +281,7 @@ function EmptyAxes() {
 }
 
 /** Daily sales with loading and retry states. */
-function EmployeeSales({ sales, ready }: { sales: UseQueryResult<PerEmployeeResp>; ready: boolean }) {
+function EmployeeSales({ sales, ready }: { sales: UseQueryResult<EmployeeSalesResp>; ready: boolean }) {
   if (!ready || sales.isPending) {
     return (
       <div role="status" aria-label={`Loading ${label("employeeSales")}`} className="h-[350px] flex items-center justify-center">
@@ -301,7 +300,7 @@ function EmployeeSales({ sales, ready }: { sales: UseQueryResult<PerEmployeeResp
       </div>
     );
   }
-  const points = sales.data?.series ?? [];
+  const points = sales.data.series;
   if (points.length === 0) return <EmptyAxes />;
   return <EmployeeSalesChart points={points} />;
 }
@@ -367,10 +366,17 @@ export function DashboardPeriodTabs() {
 
 /** "Employee sales" (capture #79-#85), for the bottom box's right column. */
 export function EmployeeSalesCard() {
-  const { from, to, ready } = useDashboardPeriod();
-  const sales = useQuery<PerEmployeeResp>({
-    queryKey: ["dashboard", "per-employee", "daily", from, to],
-    queryFn: () => relay.get<PerEmployeeResp>(`/admin/stats/per-employee?${new URLSearchParams({ from, to, include_series: "true" }).toString()}`),
+  const { from, to, ready, reportTz } = useDashboardPeriod();
+  // The zone the period's days were cut in: the Relay cuts the series' days in it when it has no report zone.
+  const tz = reportTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const sales = useQuery<EmployeeSalesResp>({
+    queryKey: ["dashboard", "per-employee", "daily", from, to, tz],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ from, to, include_series: "true", tz });
+      const res = await relay.get<EmployeeSalesResp>(`/admin/stats/per-employee?${qs.toString()}`);
+      if (!Array.isArray(res?.series)) throw new Error("the answer has no daily series");
+      return res;
+    },
     enabled: ready,
     staleTime: 30_000,
   });
@@ -473,7 +479,8 @@ export default function DashboardHeader() {
             {!ready || revenue.isPending ? (
               <span className="h-[45px] flex items-center"><Shimmer what={label("total")} className="h-[34px] w-32" /></span>
             ) : (
-              <Figure text={fmtCents(totalCents)} refreshing={revenue.isFetching} />
+              <Figure text={fmtCents(totalCents)} refreshing={revenue.isFetching}
+                partial={referralsGap(referrals) === "none" ? undefined : TOTAL_PARTIAL} />
             )}
           </div>
           <div className="flex flex-col md:flex-row xl:flex-[3] min-w-0">

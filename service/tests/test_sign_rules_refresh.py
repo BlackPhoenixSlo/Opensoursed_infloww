@@ -27,6 +27,7 @@ import json  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
+import types  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
@@ -96,7 +97,7 @@ def case_spreads_live_build_rules_to_older_accounts():
     _fresh_dirs()
     donor = _account("1", NEW, _rules(1), "20261019T100000Z")
     stale = _account("2", OLD, _rules(2), "20261001T100000Z")
-    client_pool._POOL["2"] = object()
+    client_pool._POOL["2"] = types.SimpleNamespace(close_signed_sessions=lambda: None)
     _live(NEW)
     out = sign_rules.refresh("test")
     assert out["donor"] == "1" and out["updated"] == ["2"], out

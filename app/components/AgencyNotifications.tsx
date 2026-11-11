@@ -13,10 +13,11 @@
  * `agency_notifications` SSE event (useAccountStateEvents refetches this
  * query on it) with a slow safety poll; the bell adds it to its badge. A row
  * click marks it read; "Mark all read" reads the rest; a row's ✕ dismisses it
- * and "Clear all" dismisses every row (gone from the list; the server keeps
- * them for the dedupe, so a sweep does not file them again). The gear's switches
- * save the `notifications` key of the preferences blob — a kind switched off
- * is no longer filed. A row whose `data.href` names a page (a 2FA relink:
+ * and "Clear all" dismisses every row up to the newest one shown (gone from the
+ * list; the server keeps them for the dedupe, so a sweep does not file them
+ * again; one filed after the list was read stays). The kind switches
+ * (AgencyKindSwitches, in the bell's Settings tab) save the `notifications` key
+ * of the preferences blob — a kind switched off is no longer filed. A row whose `data.href` names a page (a 2FA relink:
  * /creators?relink=browserbase) is a link to it; the click reads it too.
  *
  * `pinned` rows (a Creator OnlyFans wants a signed consent form from) sit on
@@ -28,9 +29,8 @@
  */
 
 import Link from "next/link";
-import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Settings2, TriangleAlert, X } from "lucide-react";
+import { TriangleAlert, X } from "lucide-react";
 
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
@@ -107,25 +107,26 @@ export function pinnedName(n: AgencyNotification): string {
   return typeof name === "string" && name ? name : (n.account_id ?? "a creator");
 }
 
-/** The Agency tab of the top bar's bell: "Mark all read", the kinds' gear and
+/** The Agency tab of the top bar's bell: "Mark all read", "Clear all" and
  *  the rows. Mounted only for the owner (`useAgencyUnread` not null). */
 export function AgencyFeed() {
   const qc = useQueryClient();
-  const [settings, setSettings] = useState(false);
   const q = useAgencyList(true);
+  const rows = q.data?.notifications ?? [];
   const read = useMutation({
     mutationFn: (id: number | null) =>
       relay.post(id == null ? "/admin/agency-notifications/read-all" : `/admin/agency-notifications/${id}/read`),
     onSettled: () => void qc.invalidateQueries({ queryKey: AGENCY_NOTIFICATIONS_KEY }),
   });
   const dismiss = useMutation({
-    mutationFn: (id: number | null) =>
-      relay.post(id == null ? "/admin/agency-notifications/dismiss-all" : `/admin/agency-notifications/${id}/dismiss`),
+    // Clear all sends the newest id shown: a row filed since this list was read stays.
+    mutationFn: (id: number | null) => id == null
+      ? relay.post("/admin/agency-notifications/dismiss-all", { up_to_id: Math.max(...rows.map((n) => n.id)) })
+      : relay.post(`/admin/agency-notifications/${id}/dismiss`),
     onSettled: () => void qc.invalidateQueries({ queryKey: AGENCY_NOTIFICATIONS_KEY }),
   });
 
   const unread = q.data?.unread ?? 0;
-  const rows = q.data?.notifications ?? [];
   const pinned = q.data?.pinned ?? [];
   // The server's `unread` counts the pinned rows (they stay unread, read-all skips them):
   // nothing for "Mark all read" when they are all that is.
@@ -150,17 +151,7 @@ export function AgencyFeed() {
         >
           Clear all
         </button>
-        <button
-          type="button"
-          onClick={() => setSettings((v) => !v)}
-          aria-label="Agency notification settings"
-          aria-pressed={settings}
-          className="text-fg-dim hover:text-fg"
-        >
-          <Settings2 aria-hidden className="w-4 h-4" />
-        </button>
       </div>
-      {settings && <KindSwitches />}
       {q.isLoading && <div className="px-3 py-4 text-fg-dim">Loading…</div>}
       {pinned.length > 0 && (
         <ul aria-label="Needs action">
@@ -233,8 +224,8 @@ function hrefOf(n: AgencyNotification): string | null {
   return typeof href === "string" && href.startsWith("/") && !href.startsWith("//") ? href : null;
 }
 
-/** Per-kind switches over `preferences.notifications` (absent = on). */
-function KindSwitches() {
+/** Per-kind switches over `preferences.notifications` (absent = on): the bell's Settings tab, for the owner. */
+export function AgencyKindSwitches() {
   const blob = useSettingsBlob<{ notifications?: Partial<Record<Kind, boolean>> }>("preferences", {});
   const current = blob.value.notifications ?? {};
   return (

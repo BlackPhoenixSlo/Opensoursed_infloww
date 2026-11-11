@@ -9,9 +9,26 @@ import refuses, so the env can never send a signed request to a third party.
 from __future__ import annotations
 
 import os
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def loopback_url(raw: str) -> SplitResult | None:
+    """`raw` split, when it is an http(s) URL on a loopback host with no
+    userinfo and a well-formed port; else None. The one rule for every test
+    seam that may receive a signed request or a secret (OF_API_ORIGIN here,
+    TURNSTILE_VERIFY_URL in tracking_links_api)."""
+    try:
+        parts = urlsplit(raw.strip())
+        parts.port  # noqa: B018 — raises on a malformed port
+    except ValueError:
+        return None
+    if (parts.scheme not in ("http", "https")
+            or parts.username is not None or parts.password is not None or "@" in parts.netloc
+            or parts.hostname not in _LOOPBACK):
+        return None
+    return parts
 
 
 def parse(raw: str) -> str:
@@ -20,15 +37,9 @@ def parse(raw: str) -> str:
     raw = raw.strip()
     if not raw:
         return ""
-    try:
-        parts = urlsplit(raw)
-        port = parts.port
-    except ValueError:
-        parts, port = None, None
-    if (parts is None or parts.scheme not in ("http", "https")
-            or parts.username is not None or parts.password is not None or "@" in parts.netloc
-            or parts.hostname not in _LOOPBACK
-            or parts.path not in ("", "/") or parts.query or parts.fragment):
+    parts = loopback_url(raw)
+    port = parts.port if parts is not None else None
+    if parts is None or parts.path not in ("", "/") or parts.query or parts.fragment:
         raise RuntimeError(
             f"OF_API_ORIGIN={raw!r} refused: only a bare loopback origin "
             "(http://127.0.0.1:PORT, http://localhost:PORT, http://[::1]:PORT) "

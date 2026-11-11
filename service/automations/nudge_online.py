@@ -37,10 +37,10 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # enqueue_job / _make_client / lease seams
-from automation_registry import register
+from automation_registry import kind_family, register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Blacklist, Fan, FanLease, Message, NudgeState,
+    AccountAiConfig, AutomationRule, Blacklist, Fan, FanLease, Message, NudgeState,
     SkipList, Transaction, WelcomeSent,
 )
 from . import welcome_compose  # reuse _slot_key / _resolve_welcome_name / _model_hour
@@ -72,7 +72,7 @@ _DEFAULT_NUDGE_CONFIG: dict = {
     "online_recent_minutes": 5,   # fire-time recency re-validate window
     "quiet_hours": [0, 7],        # creator-local [start, end) — no nudges in this band
     # Gate knobs (own defaults; tune via config):
-    "require_welcomed": True,     # only nudge fans we've already welcomed
+    "require_welcomed": True,     # only nudge fans we've already welcomed (while Welcome is on)
     "welcome_grace_hours": 1,     # …and not within this many hours (welcome+nudge collision)
     "active_convo_hours": 6,      # recent outbound / unanswered inbound ⇒ mid-thread, skip
     "max_no_reply": 3,            # stop after this many nudges with no reply since
@@ -247,6 +247,14 @@ async def _spend_gate_reason(
     return None
 
 
+async def _welcome_on(s, account_id: str) -> bool:
+    """Whether the account's Welcome automation (send_welcome rule) is switched on."""
+    return (await s.execute(select(AutomationRule.id).where(
+        AutomationRule.account_id == str(account_id),
+        AutomationRule.kind.in_(kind_family("send_welcome")),
+        AutomationRule.is_enabled.is_(True)).limit(1))).first() is not None
+
+
 async def _gate_skip_reason(
     account_id: str, fan_id: int, cfg: dict, now: datetime,
     *, fan_obj: dict | None = None, at_fire: bool = False,
@@ -271,7 +279,9 @@ async def _gate_skip_reason(
         if spend_reason:
             return spend_reason
 
-        if cfg.get("require_welcomed", True):
+        # Only while the Welcome automation runs: it alone writes WelcomeSent, so
+        # with it off the gate would skip every fan, with no welcome to collide with.
+        if cfg.get("require_welcomed", True) and await _welcome_on(s, account_id):
             ws = await s.get(WelcomeSent, (str(account_id), int(fan_id)))
             if ws is None:
                 return "not_welcomed"

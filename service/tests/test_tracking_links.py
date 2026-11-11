@@ -194,6 +194,8 @@ def case_target_normalization():
     for bad in ("javascript:alert(1)", "data:text/html,x", "ftp://ofl.ink/x", "nora"):
         b = _client.post("/admin/tracking-links", json={"account_id": aid, "name": "Bad", "target_url": bad})
         assert b.status_code == 422, (bad, b.status_code, b.text)
+        # The app shows this detail as is (it no longer checks the target itself).
+        assert b.json()["detail"] == "Target must be a web address, e.g. ofl.ink/name.", b.json()
 
 
 # ── Bot check before redirect (Turnstile) ─────────────────────────────
@@ -202,13 +204,19 @@ SITE, SECRET = "1x00000000000000000000AA", "test-turnstile-secret"
 
 
 @contextlib.contextmanager
-def _turnstile(verdict=True, *, keys=True):
+def _turnstile(verdict=True, *, keys=True, answer=None):
     """Keys in the env, and Cloudflare's siteverify answered at the HTTP transport:
-    `verdict` True/False = its `success`; None = unreachable. Yields the form posts it got."""
+    `verdict` True/False = its `success`; None = unreachable; `answer` = a raw
+    httpx.Response instead. Yields the form posts it got. Every client starts
+    with a full verify budget."""
+    import tracking_links_api
+    tracking_links_api._verify_buckets.reset()
     calls: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append({k: v[0] for k, v in parse_qs(req.content.decode()).items()} | {"_url": str(req.url)})
+        if answer is not None:
+            return answer
         if verdict is None:
             raise httpx.ConnectError("cloudflare down", request=req)
         return httpx.Response(200, json={"success": verdict, "error-codes": [] if verdict else ["invalid-input-response"]})
@@ -286,6 +294,71 @@ def case_verify_fail_counts_zero():
     assert _client.post("/t/nope-nope/verify", json={"token": "t"}).status_code == 404
 
 
+def case_gate_page_retry_has_no_inline_handler():
+    """The nonce CSP blocks inline handlers: Retry is wired from the nonce'd script."""
+    asyncio.run(_seed_link("tl_retry", "gate-retry", GATED_TARGET, bot_check=True))
+    with _turnstile():
+        body = _client.get("/t/gate-retry", follow_redirects=False).text
+    assert "onclick" not in body.lower(), "inline handler: blocked by the page's CSP"
+    assert 'id="rb"' in body and 'addEventListener("click",retryTs)' in body, body
+
+
+def case_verify_cloudflare_busy_is_503_not_403():
+    asyncio.run(_seed_link("tl_busy", "gate-busy", GATED_TARGET, bot_check=True))
+    for answer in (httpx.Response(500, text="oops"),
+                   httpx.Response(200, json={"success": False, "error-codes": ["internal-error"]})):
+        with _turnstile(answer=answer) as calls:
+            r = _client.post("/t/gate-busy/verify", json={"token": "t"})
+        assert r.status_code == 503, (answer.status_code, r.status_code)
+        assert len(calls) == 1, calls
+    assert asyncio.run(_link_state("gate-busy")) == (0, 0)
+
+
+def case_verify_is_throttled_per_client_before_lookup_and_siteverify():
+    import tracking_links_api as tla
+    asyncio.run(_seed_link("tl_thr", "gate-thr", GATED_TARGET, bot_check=True))
+    real_clock, tla._clock = tla._clock, lambda: 1000.0   # no refill mid-test, however slow the box
+    try:
+        with _turnstile(False) as calls:
+            codes = [_client.post("/t/gate-thr/verify", json={"token": "junk"}).status_code
+                     for _ in range(tla.VERIFY_CAPACITY)]
+            over = _client.post("/t/gate-thr/verify", json={"token": "junk"})
+            unknown = _client.post("/t/nope-thr/verify", json={"token": "junk"})
+    finally:
+        tla._clock = real_clock
+    assert codes == [403] * tla.VERIFY_CAPACITY, codes
+    assert over.status_code == 429 and int(over.headers["retry-after"]) >= 1, (over.status_code, over.headers)
+    assert unknown.status_code == 429, "throttle runs before the link lookup"
+    assert len(calls) == tla.VERIFY_CAPACITY, f"a throttled verify must not reach Cloudflare: {len(calls)}"
+    with _turnstile(True):
+        r = _client.get("/t/gate-thr", follow_redirects=False)
+    assert r.status_code == 200, "the plain GET is never throttled"
+
+
+def case_verify_url_seam_is_loopback_only():
+    import tracking_links_api as tla
+    real = tla.TURNSTILE_VERIFY_URL
+    saved = os.environ.get("TURNSTILE_VERIFY_URL")
+    try:
+        for raw, want in [
+            ("", real),
+            ("http://127.0.0.1:9/__slop/fake/turnstile-siteverify", "http://127.0.0.1:9/__slop/fake/turnstile-siteverify"),
+            ("http://localhost:9/x", "http://localhost:9/x"),
+            ("https://evil.example.com/siteverify", real),
+            ("http://user:pw@127.0.0.1:9/x", real),
+            ("http://127.0.0.1.evil.example/x", real),
+            ("ftp://127.0.0.1/x", real),
+            ("http://127.0.0.1:99999/x", real),
+        ]:
+            os.environ["TURNSTILE_VERIFY_URL"] = raw
+            assert tla._verify_url() == want, (raw, tla._verify_url())
+    finally:
+        if saved is None:
+            os.environ.pop("TURNSTILE_VERIFY_URL", None)
+        else:
+            os.environ["TURNSTILE_VERIFY_URL"] = saved
+
+
 def case_gated_keys_unset_falls_back_to_302():
     asyncio.run(_seed_link("tl_nokeys", "gate-nokeys", GATED_TARGET, bot_check=True))
     with _turnstile(keys=False) as calls:
@@ -330,6 +403,10 @@ _harness.run(
     case_gated_get_serves_check_page_without_target,
     case_verify_pass_counts_once,
     case_verify_fail_counts_zero,
+    case_gate_page_retry_has_no_inline_handler,
+    case_verify_cloudflare_busy_is_503_not_403,
+    case_verify_is_throttled_per_client_before_lookup_and_siteverify,
+    case_verify_url_seam_is_loopback_only,
     case_gated_keys_unset_falls_back_to_302,
     case_create_and_patch_bot_check,
 )

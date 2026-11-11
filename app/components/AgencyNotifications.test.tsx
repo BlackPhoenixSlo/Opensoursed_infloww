@@ -1,9 +1,9 @@
 /**
  * The owner's agency notification centre (AgencyNotifications), folded into the top bar's one bell
  * (TopBar's `HeaderBell`) as the panel's "Agency" tab: the server's unread count joins the bell's badge and
- * opens the panel on Agency, a row click reads it, "Mark all read" reads the rest, the gear's switches save
- * `preferences.notifications`, the OnlyFans tab is still the bell's feed, and a chatter's bell has no Agency
- * tab and reads nothing of it.
+ * opens the panel on Agency, a row click reads it, "Mark all read" reads the rest, "Clear all" dismisses up
+ * to the newest row shown, the kind switches (in the Settings tab) save `preferences.notifications`, the
+ * OnlyFans tab is still the bell's feed, and a chatter's bell has no Agency tab and reads nothing of it.
  */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
@@ -113,7 +113,7 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     expect(post).toHaveBeenCalledTimes(2);
   });
 
-  it("dismisses one row with its ✕ and every row with Clear all", async () => {
+  it("dismisses one row with its ✕ and every row up to the newest shown with Clear all", async () => {
     get.mockImplementation(route);
     post.mockResolvedValue({ unread: 0 });
     renderWithProviders(<HeaderBell />);
@@ -123,7 +123,7 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/7/dismiss"));
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/dismiss-all"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/dismiss-all", { up_to_id: 7 }));
     expect(post).toHaveBeenCalledTimes(2);
   });
 
@@ -158,13 +158,15 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     expect(screen.queryByText("Ana was deactivated")).toBeNull();
   });
 
-  it("saves a kind's switch into the preferences blob, keeping the others", async () => {
+  it("saves a kind's switch, in the Settings tab, into the preferences blob, keeping the others", async () => {
     get.mockImplementation(route);
     put.mockResolvedValue({ ok: true });
     renderWithProviders(<HeaderBell />);
     await screen.findByTestId("bell-count");
     await openBell();
-    fireEvent.click(screen.getByRole("button", { name: "Agency notification settings" }));
+    // The Agency tab has no settings of its own: one settings surface.
+    expect(screen.queryByTestId("agency-kind-switches")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
     const missed = await screen.findByRole("checkbox", { name: "Missed clock-ins" });
     await waitFor(() => expect(missed).not.toBeDisabled());
     expect(missed).not.toBeChecked();

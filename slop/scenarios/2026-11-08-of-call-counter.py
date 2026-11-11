@@ -206,17 +206,17 @@ async def run(ctx) -> None:
                           "run": r.json().get("_mass_run_id") if r.status_code == 200 else None})
     ids = [m["run"] for m in mass_runs if m["run"] is not None]
     t0 = time.monotonic()
-    while ids and time.monotonic() - t0 < MASS_TIMEOUT_S:
-        con = w.sql()
+    while ids and time.monotonic() - t0 < MASS_TIMEOUT_S:   # until each crawl ended (of_wire's rosters are empty:
+        con = w.sql()                                         # OF's count 0, `no_count`, never stamped)
         try:
             left = con.execute(f"SELECT COUNT(*) FROM mass_runs WHERE id IN ({','.join('?' * len(ids))}) "
-                               "AND recipients_json IS NULL", ids).fetchone()[0]
+                               "AND crawl_outcome IS NULL", ids).fetchone()[0]
         finally:
             con.close()
         if not left:
             break
         await asyncio.sleep(0.25)
-    ctx.metric("mass_recipients", {"sends": mass_runs, "recorded_s": round(time.monotonic() - t0, 2)})
+    ctx.metric("mass_recipients", {"sends": mass_runs, "crawled_s": round(time.monotonic() - t0, 2)})
 
     # ── phase 1: users + walks, a 429 and 500s at the wire ──
     with fake.lock:

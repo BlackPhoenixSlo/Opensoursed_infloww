@@ -3,8 +3,23 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  calcMinutes, employeeColours, fmtShiftTime, gmtOffset, weekRangeLabel, zonedWeek, type ShiftOccurrence,
+  calcMinutes, employeeColours, fmtShiftTime, gmtOffset, SHIFTS_POLL_MS, timesheetRefetchMs, weekRangeLabel, zonedWeek,
+  type ShiftOccurrence,
 } from "@/lib/shifts";
+
+describe("timesheetRefetchMs (#9)", () => {
+  const from = new Date("2026-10-01T00:00:00Z");
+  const to = new Date("2026-10-31T00:00:00Z");
+  it.each([
+    ["now inside the window", "2026-10-15T12:00:00Z", SHIFTS_POLL_MS],
+    ["now at the window's first instant", "2026-10-01T00:00:00Z", SHIFTS_POLL_MS],
+    ["now at the window's end (exclusive)", "2026-10-31T00:00:00Z", false],
+    ["a window wholly past", "2026-11-05T00:00:00Z", false],
+    ["a window wholly ahead", "2026-09-20T00:00:00Z", false],
+  ] as const)("%s", (_name, now, want) => {
+    expect(timesheetRefetchMs(from, to, Date.parse(now))).toBe(want);
+  });
+});
 
 describe("calcMinutes", () => {
   it.each([

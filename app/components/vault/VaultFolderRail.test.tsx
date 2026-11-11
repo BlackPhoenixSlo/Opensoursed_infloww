@@ -44,7 +44,8 @@ function setup(qc?: QueryClient) {
   const onChanged = vi.fn();
   const utils = renderWithProviders(
     <VaultFolderRail folders={FOLDERS} loading={false} error={false} onRetry={() => {}} selectedId={null}
-      onSelect={() => {}} onChanged={onChanged} />,
+      onSelect={() => {}} onChanged={onChanged} onDownloadFolder={() => {}}
+      downloadFolderGate={{ reason: "", desktopOnly: false }} />,
     // The rail only writes the folder list (the panel reads it), so nothing observes it here: kept, not collected.
     qc ?? newClient(),
   );

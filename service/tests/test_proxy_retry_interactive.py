@@ -25,6 +25,7 @@ from fastapi import HTTPException  # noqa: E402
 import of_client  # noqa: E402
 import server  # noqa: E402
 from of_client import API_BASE, INTERACTIVE_READ, OFClient  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 
 _PROXY_403 = "Failed to perform, curl: (56) CONNECT tunnel failed, response 403"
 _FULL = [0.4, 0.8, 1.6, 3.2]
@@ -53,7 +54,7 @@ def _dead_client(x_hash="HASH"):
     c.proxy_label = None
     c.proxy_url = "http://u:p@host:1234"
     c._signed_headers = lambda url: {}
-    c.http = types.SimpleNamespace(get=_fail("GET"), request=_fail("REQUEST"))
+    fake_wire(c, types.SimpleNamespace(get=_fail("GET"), request=_fail("REQUEST")))
     return c, sent
 
 
@@ -160,7 +161,7 @@ def _refused_port_client(x_hash):
             "Failed to perform, curl: (7) Failed to connect to 127.0.0.1 port 9", CurlECode.COULDNT_CONNECT)
     c, _ = _dead_client(x_hash=x_hash)
     c.proxy_label = "px"
-    c.http = types.SimpleNamespace(get=_refused, request=lambda m, url, **kw: _refused(url))
+    fake_wire(c, types.SimpleNamespace(get=_refused, request=lambda m, url, **kw: _refused(url)))
     return c, sent
 
 

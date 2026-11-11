@@ -1,14 +1,12 @@
 "use client";
 
-/** Dashboard schedule, personal shifts, and current clock-ins.
+/** Dashboard schedule and personal shifts.
  * Owners see assigned employees across the selected dashboard period; chatters
- * keep their personal shifts and clock actions. Empty clock-in lists stay compact.
+ * keep their personal shifts and clock actions.
  */
 
-import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { Users } from "lucide-react";
 
 import { useChatter } from "@/contexts/ChatterContext";
 import { useUser } from "@/contexts/UserContext";
@@ -18,18 +16,16 @@ import { EmptyState, IfButton, IfCard } from "@/components/ui/infloww";
 import { useWeekStart } from "@/lib/appliedSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import {
-  addDays, hhmm, occurrenceLabel, SHIFTS_POLL_MS, useClock, useClockedIn, useMyShifts, weekStartOf,
-  useShiftWeek, type ClockedInRow, type MyShiftOccurrence, type ShiftOccurrence,
+  addDays, SHIFTS_POLL_MS, useClock, useMyShifts, weekStartOf,
+  useShiftWeek, type MyShiftOccurrence,
 } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 
+import { groupOccurrences } from "./scheduleSlots";
+
 const BUTTON =
   "text-xs px-3 py-1.5 rounded-lg bg-bg-elev-1 hover:bg-bg-elev-2 border border-border disabled:opacity-50";
-const LINK = "text-accent hover:underline underline-offset-2";
 const OFF = "Time tracking is off";
-const CLOCKED_IN = "Current clocked-in employees";
-/** `IfCard`'s frame, for the Not wired card, which is a `<fieldset>` (#8, #9). */
-const CARD = "rounded-[12px] bg-bg-elev-1 pt-5 px-6 pb-4 min-w-0";
 
 /** The capture's card (#8, #9) and title (#12, #15): `IfCard`, named by its title; `after` sits right after it. */
 function Card({ title, tip, after, className, scrollable = false, children }: {
@@ -59,16 +55,10 @@ function loadGate(q: UseQueryResult<unknown>, what: string): ReactNode {
 }
 
 /** "Time tracking is off", ours: the bundle's cards have no such line. */
-function TimeTrackingOff({ owner }: { owner: boolean }) {
+function TimeTrackingOff() {
   return (
     <p title={EXTRA_LABEL} className="text-[12px] text-muted">
       <span>{OFF}</span>
-      {owner && (
-        <>
-          {" · "}
-          <Link href="/settings/time-tracking" className={LINK}>Settings › Time tracking</Link>
-        </>
-      )}
     </p>
   );
 }
@@ -142,26 +132,18 @@ function MyShiftsFrame({ children, owner = false }: { children: ReactNode; owner
 export function MyShiftsCard({ from, to, ready = true }: { from?: string; to?: string; ready?: boolean }) {
   const { user } = useUser();
   const { chatter } = useChatter();
-  if (user) return <OwnerMyShifts from={from} to={to} ready={ready} />;
+  if (user) return <OwnerScheduledShifts from={from} to={to} ready={ready} />;
   if (chatter) return <ChatterMyShifts />;
   return null;
 }
 
-function OwnerMyShifts({ from, to, ready }: { from?: string; to?: string; ready: boolean }) {
+function OwnerScheduledShifts({ from, to, ready }: { from?: string; to?: string; ready: boolean }) {
   const weekStart = weekStartOf(new Date(), useWeekStart());
   const q = useShiftWeek({ weekStart: from ? new Date(from) : weekStart,
     weekEnd: to ? new Date(Date.parse(to) + 1) : addDays(weekStart, 7) }, ready);
   const now = useNow();
-  const slots = new Map<string, ShiftOccurrence>();
-  for (const occurrence of q.data?.occurrences ?? []) {
-    const key = `${occurrence.occurrence_start}:${occurrence.occurrence_end}:${occurrence.tz}`;
-    const slot = slots.get(key);
-    if (!slot) slots.set(key, { ...occurrence, employees: [...occurrence.employees] });
-    else for (const employee of occurrence.employees) {
-      if (!slot.employees.some((e) => e.id === employee.id)) slot.employees.push(employee);
-    }
-  }
-  const rows = [...slots.values()].sort((a, b) => a.occurrence_start.localeCompare(b.occurrence_start));
+  // One row per time slot, every Shift's employees kept (#8).
+  const rows = groupOccurrences(q.data?.occurrences ?? []);
   return (
     <MyShiftsFrame owner>
       {loadGate(q, "scheduled shifts") ?? (rows.length === 0 ? <NoData /> : (
@@ -169,7 +151,7 @@ function OwnerMyShifts({ from, to, ready }: { from?: string; to?: string; ready:
           {rows.map((o) => {
             const state: PillState = now > Date.parse(o.occurrence_end) ? "before"
               : now >= Date.parse(o.occurrence_start) ? "now" : "after";
-            return <li key={`${o.shift_id}:${o.occurrence_start}`} className="py-4 first:pt-0">
+            return <li key={o.key} className="py-4 first:pt-0">
               <span data-date className="block text-[12px] mb-2">{scheduleDate(o.occurrence_start, o.tz)}</span>
               <span data-time data-state={state} className={cn("inline-block rounded px-1.5 py-1 text-[12px] leading-4", PILL[state])}>
                 {`${scheduleTime(o.occurrence_start, o.tz)}-${scheduleTime(o.occurrence_end, o.tz)}`}
@@ -282,7 +264,7 @@ function ChatterMyShifts() {
           </>
         )}
         <div title={EXTRA_LABEL} className="pt-6 space-y-3">
-          {!on ? <TimeTrackingOff owner={false} /> : (
+          {!on ? <TimeTrackingOff /> : (
             <>
               {open && (
                 <p className="text-sm font-medium">
@@ -305,72 +287,5 @@ function ChatterMyShifts() {
       {body}
       {clock.picking && <ClockDialog onClose={clock.closePicker} />}
     </MyShiftsFrame>
-  );
-}
-
-export function ClockedInCard() {
-  const { user } = useUser();
-  const { chatter } = useChatter();
-  const q = useClockedIn(!!user);
-  const mine = useMyShifts(!user && !!chatter);
-  if (user) return <OwnerClockedIn q={q} />;
-  if (chatter && mine.data?.accounts.some((a) => a.time_tracking_enabled)) {
-    // #76: the bundle shows the card to this chatter, but no read the chatter is granted lists who is clocked in.
-    return (
-      <fieldset disabled title="not wired" aria-label={CLOCKED_IN} className={CARD}>
-        <div className="flex items-center">
-          <span className="text-[16px] font-medium mr-[9px] text-fg-dim">{CLOCKED_IN}</span>
-          <Users size={14} aria-hidden className="text-fg-dim" />
-        </div>
-      </fieldset>
-    );
-  }
-  return null;
-}
-
-/** " on <Creator>", or for an agency-wide event the Creators its Employee
- *  holds in the linked Shift; " · —" with neither. */
-function creatorPart(r: ClockedInRow): string {
-  const names = r.account ? [r.account.display_name] : (r.shift?.accounts ?? []).map((a) => a.display_name);
-  return names.length > 0 ? ` on ${names.join(", ")}` : " · —";
-}
-
-function OwnerClockedIn({ q }: { q: ReturnType<typeof useClockedIn> }) {
-  const rows = q.data?.clocked_in ?? [];
-  // #75: the people icon and the count after the title, once the read has answered.
-  const count = q.isSuccess ? (
-    <span data-count aria-label={`${rows.length} clocked in`} className="ml-[9px] flex items-center gap-1 text-[14px] font-normal text-fg-dim">
-      <Users size={14} aria-hidden className="text-border-light" />
-      {rows.length}
-    </span>
-  ) : null;
-  return (
-    <Card title={CLOCKED_IN} after={count} tip="Employees clocked in right now, and since when. Refreshes every minute.">
-      {loadGate(q, "clocked-in employees") ?? (
-        <>
-          {!q.data?.time_tracking_enabled && <TimeTrackingOff owner />}
-          {/* Keep empty cards compact; scroll longer employee lists. */}
-          <div data-clocked-in-list className="overflow-y-auto" style={{ maxHeight: 100 }}>
-            {rows.length === 0 ? (
-              <p className="text-[12px] text-muted">No employees have clocked in.</p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {rows.map((r) => (
-                  <li key={r.clock_event_id}>
-                    <span className="font-medium">{r.employee?.display_name ?? "A deleted employee"}</span>
-                    {/* The bundle's row is the Employee's name only; the rest is ours. */}
-                    <span data-detail title={EXTRA_LABEL} className="text-fg-dim">
-                      {`${creatorPart(r)} · since ${occurrenceLabel(r.in_utc)} · ${r.shift
-                        ? `Shift ${hhmm(new Date(r.shift.occurrence_start))}–${hhmm(new Date(r.shift.occurrence_end))}`
-                        : "No shift"}`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </>
-      )}
-    </Card>
   );
 }

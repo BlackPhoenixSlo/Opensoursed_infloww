@@ -47,9 +47,9 @@ def _read_all_marks_later() -> None:
     real = na._mark_read
     pending: set = set()
 
-    async def mark(user_id, notification_id, **kw):
-        out = await real(user_id, notification_id, **kw)
-        if notification_id is None and not kw.get("dismiss"):
+    async def mark(user_id, notification_id):
+        out = await real(user_id, notification_id)
+        if notification_id is None:
             async def later():
                 await asyncio.sleep(READ_ALL_LAG_S)
                 await real(user_id, None)
@@ -109,19 +109,22 @@ def _dismiss_deletes() -> None:
     import notifications_api as na
     from sqlalchemy import delete
 
-    real = na._mark_read
+    real = na._dismiss
 
-    async def mark(user_id, notification_id, *, dismiss=False):
-        if not dismiss or notification_id is not None:
-            return await real(user_id, notification_id, dismiss=dismiss)
+    async def dismiss(user_id, notification_id, up_to_id=None):
+        if notification_id is not None:
+            return await real(user_id, notification_id, up_to_id)
         async with na.get_session() as s:
-            await s.execute(delete(na.AgencyNotification).where(
-                na.AgencyNotification.agency_user_id == user_id, na.AgencyNotification.kind != na.PINNED_KIND))
+            q = delete(na.AgencyNotification).where(
+                na.AgencyNotification.agency_user_id == user_id, na.AgencyNotification.kind != na.PINNED_KIND)
+            if up_to_id is not None:
+                q = q.where(na.AgencyNotification.id <= up_to_id)
+            await s.execute(q)
             unread = await na._unread(s, user_id)
         na._push(user_id, unread)
         return {"unread": unread}
 
-    na._mark_read = mark
+    na._dismiss = dismiss
 
 
 def register(Fault) -> dict:

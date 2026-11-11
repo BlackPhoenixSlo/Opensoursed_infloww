@@ -37,9 +37,11 @@ owner-made logins (`POST /admin/employees/login`, role Chatter, one Creator each
    notifications-page), the bell's badge = the API unread, re-read until they agree or BADGE_WAIT_S
    (shot bell-trigger), its Agency tab with the newest row (shot bell-agency-open), Mark all read
    -> badge gone (shot bell-agency-settled); side effect: SQL and API unread 0. Its Settings tab
-   (shot bell-settings): the default toasts on in a fresh browser. Back on Agency, Clear all (shot
-   bell-agency-cleared): API list empty, SQL has no undismissed/unread row, and one sweep after it
-   files none of the cleared missed clock-ins again (DISMISSED).
+   (shot bell-settings): the default toasts and Enabled on in a browser that saved them off before the
+   2026-11-10 defaults (the one-time migration). Back on Agency, Clear all (shot bell-agency-cleared;
+   it sends the newest shown id as up_to_id, nothing is filed meanwhile): API list empty, SQL has no
+   undismissed/unread row, and one sweep after it files none of the cleared missed clock-ins again
+   (DISMISSED).
 
 Load (a guess at humans): PAGE_THINK_S 1-3 s between one session's pages, THINK_S 0.2-1 s between
 its clicks in phase 3; each phase's requests, offered req/s and peak in-flight (from the recorder's

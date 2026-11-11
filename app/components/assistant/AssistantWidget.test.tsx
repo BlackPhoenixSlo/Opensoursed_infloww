@@ -46,7 +46,11 @@ vi.mock("@/lib/relay", () => {
   };
 });
 
-vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
+vi.mock("next/navigation", () => {
+  // The Do-it-for-me runner navigates with router.push: recorded like a link click.
+  const router = { push: (href: string) => { nav.pushed.push(href); } };
+  return { usePathname: () => nav.pathname, useRouter: () => router };
+});
 // The router is the boundary: a link click records where it went and runs the
 // caller's onClick, as next/link's does before its client-side push.
 vi.mock("next/link", () => ({
@@ -564,6 +568,138 @@ describe("AssistantWidget", () => {
       await userEvent.click(bubble);
       await waitFor(() => expect(historyCalls()).toHaveLength(2));
     });
+  });
+});
+
+/** "Do it for me" (docs/spec/assistant-do-mode.md): the home card, the do-mode composer and plan card, the flow:null
+ *  swap back to Q&A, and the Q&A answer's chip for a flow's page. The runner itself is doFlows / doRunReducer's. */
+describe("AssistantWidget: Do it for me", () => {
+  const SLOTS = {
+    name: "Hourly tease", interval: { value: 1, unit: "hours" }, captions: ["a", "b", "c"], captions_ai: 2,
+    folder: { id: 4, name: "SFW", photos: 60, tiers: { sfw: 30, suggestive: 11, explicit: 0, hardcore: 0, unknown: 19 } },
+    online_only: false, includes: ["fans", "following"], excludes: [], unsend_after_hours: 8, exclude_last_chat_hours: null,
+  };
+  const draft = (over: object = {}) => ({
+    id: "d1", flow: "mass_premade", account_id: "1001", summary: "", slots: SLOTS,
+    assumptions: ["Named it for you"], unresolved: ["No list called “VIP”"], answer: "", error: null, ...over,
+  });
+  const posts = (path: string) => relayPost.mock.calls.filter(([p]) => p === path);
+  const doCard = () => screen.queryByRole("button", { name: /Do it for me\s*Opens the page and fills it in/ });
+
+  it("the home card shows for a signed-in user, not for a chatter or where the server says no", async () => {
+    // No do-caps answer (the default mock): doOfferOf's fallback.
+    await openPanel();
+    expect(doCard()).toBeTruthy();
+    cleanup();
+    window.localStorage.clear();
+
+    signedIn.user = null;
+    await openPanel();
+    expect(doCard()).toBeNull();
+    cleanup();
+    window.localStorage.clear();
+
+    signedIn.user = { username: "vaerunner" };
+    relayGet.mockImplementation((path: string) => Promise.resolve(
+      path.startsWith("/admin/assistant/do-caps") ? { account_id: "1001", can_do: false } : { turns: [] }));
+    await openPanel();
+    await waitFor(() => expect(doCard()).toBeNull());
+    // Asked per focused model, with its headers.
+    expect(relayGet).toHaveBeenCalledWith("/admin/assistant/do-caps?account_id=1001", { accountId: "1001", employeeId: 7 });
+  });
+
+  it("no_key: the card shows disabled with the linked key hint; not_allowed: hidden", async () => {
+    relayGet.mockImplementation((path: string) => Promise.resolve(
+      path.startsWith("/admin/assistant/do-caps") ? { account_id: "1001", can_do: false, reason: "no_key" } : { turns: [] }));
+    await openPanel();
+    await waitFor(() => expect((doCard() as HTMLButtonElement | null)?.disabled).toBe(true));
+    const hint = screen.getByTestId("do-hint");
+    expect(hint.textContent).toContain("Add a DeepSeek key in Settings → AI keys");
+    expect(within(hint).getByRole("link", { name: "Settings → AI keys" }).getAttribute("href")).toBe("/settings/ai-keys");
+    cleanup();
+    window.localStorage.clear();
+
+    relayGet.mockImplementation((path: string) => Promise.resolve(
+      path.startsWith("/admin/assistant/do-caps") ? { account_id: "1001", can_do: false, reason: "not_allowed" } : { turns: [] }));
+    await openPanel();
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/assistant/do-caps?account_id=1001", expect.anything()));
+    await waitFor(() => expect(doCard()).toBeNull());
+    expect(screen.queryByTestId("do-hint")).toBeNull();
+  });
+
+  it("drafts the request for the focused model and shows the plan card", async () => {
+    relayPost.mockResolvedValue(draft());
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "auto mass every hour");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+    expect(posts("/admin/assistant/draft")).toEqual([
+      ["/admin/assistant/draft", { request: "auto mass every hour", account_id: "1001", thread_id: expect.any(String) },
+        { accountId: "1001", employeeId: 7 }],
+    ]);
+    const thread = posts("/admin/assistant/draft")[0][1].thread_id;
+    const plan = await screen.findByTestId("do-plan");
+    expect(within(plan).getByText("Every hour")).toBeTruthy();
+    expect(within(plan).getByText("Captions: 3 (2 AI-written — edit later)")).toBeTruthy();
+    expect(within(plan).getByText("Folder: SFW — 41/60 flagged · 0 explicit · 19 unknown — likely SFW")).toBeTruthy();
+    expect(within(plan).getByText("Audience: online and offline fans")).toBeTruthy();
+    expect(within(plan).getByText("Saved OFF — you turn it on")).toBeTruthy();
+    expect(within(plan).getByText("Named it for you")).toBeTruthy();
+    expect(within(plan).getByText("No list called “VIP”")).toBeTruthy();
+    expect(within(plan).getByText("Photos added to this folder later are included too.")).toBeTruthy();
+    for (const name of ["Do it", "Skip animation", "Cancel"]) expect(within(plan).getByRole("button", { name })).toBeTruthy();
+
+    // A reply while planned re-drafts with the plan as context.
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "make it 2 hours");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(posts("/admin/assistant/draft")[1][1]).toEqual({ request: "make it 2 hours", account_id: "1001", thread_id: thread, previous: SLOTS });
+
+    // Start over: a new request, its own thread.
+    await within(await screen.findByTestId("do-plan")).findByRole("button", { name: "Cancel" }).then((b) => userEvent.click(b));
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "another one");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    const third = posts("/admin/assistant/draft")[2][1];
+    expect(third).toEqual({ request: "another one", account_id: "1001", thread_id: expect.any(String) });
+    expect(third.thread_id).not.toBe(thread);
+  });
+
+  it("a request it can't do reads as an answer, and Ask as a question sends it to Q&A", async () => {
+    relayPost.mockImplementation((path: string) => Promise.resolve(path === "/admin/assistant/draft"
+      ? draft({ flow: null, slots: null, answer: "I can't set that up yet — ask it as a question." })
+      : { answer: "Here is how.", error: null, id: 1 }));
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "make me a bio page");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(await screen.findByText("I can't set that up yet — ask it as a question.")).toBeTruthy();
+    expect(screen.queryByTestId("do-plan")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Ask as a question" }));
+    expect(posts("/admin/assistant/ask")[0][1]).toMatchObject({ question: "make me a bio page", account_id: "1001" });
+    expect(await screen.findByText("Here is how.")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
+  });
+
+  it("a Q&A answer linking Auto Mass offers the chip; it starts do-mode with that question", async () => {
+    relayPost.mockImplementation((path: string, body: { question?: string }) => Promise.resolve(path === "/admin/assistant/draft"
+      ? draft()
+      : { answer: body.question === "auto mass?" ? "Open **My Automations → Auto Mass** and press New." : "Open **Creators → Manage creators**.", error: null }));
+    await openPanel();
+    await ask("auto mass?");
+    await screen.findByRole("link", { name: "My Automations → Auto Mass" });
+    const chip = screen.getByRole("button", { name: "Do it for me" });
+
+    await ask("add a creator?");
+    await screen.findByRole("link", { name: "Creators → Manage creators" });
+    expect(screen.getAllByRole("button", { name: "Do it for me" })).toHaveLength(1);
+
+    await userEvent.click(chip);
+    expect(posts("/admin/assistant/draft")[0][1]).toEqual({ request: "auto mass?", account_id: "1001", thread_id: expect.any(String) });
+    // Its own thread, never the Q&A conversation's.
+    expect(posts("/admin/assistant/draft")[0][1].thread_id).not.toBe(posts("/admin/assistant/ask")[0][1].thread_id);
+    expect(await screen.findByTestId("do-plan")).toBeTruthy();
+    expect(screen.getByPlaceholderText("What should I set up?")).toBeTruthy();
   });
 });
 

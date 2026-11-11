@@ -26,8 +26,15 @@ export function useOutsideClose<T extends HTMLElement = HTMLDivElement>() {
     const close = (ev: MouseEvent) => {
       if (!ref.current?.contains(ev.target as Node)) setOpen(false);
     };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setOpen(false);
+    };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
   }, [open]);
   return { open, setOpen, ref };
 }

@@ -14,6 +14,10 @@ and an injected clock and sleep (audience_crawl._now / _sleep). Asserts the stam
   case_retry_after_header:          `Retry-After: 120` (generic body) waits 120 s and no
                                     GET leaves in between (no in-place retry in of_pacing).
   case_overlap_does_not_reset_ladder: 429, overlap re-read ok, 429 again: 30 s then 60 s.
+  case_overlap_end_before_failed_page_truncated: 429 at k, OF ends the roster on the resumed
+                                    overlap page (k - 1): the page at k never read, NULL `truncated`
+                                    (the gate alone would record it: inside its slack); a list there
+                                    is complete iff its usersCount matches the ids read.
   case_deadline_inside_wait:        a wait that would end past the deadline is not waited
                                     and no further GET leaves: NULL, `deadline`.
   case_deadline_reached:            pages that take long reach the deadline: NULL,
@@ -35,14 +39,14 @@ and an injected clock and sleep (audience_crawl._now / _sleep). Asserts the stam
   case_mirror_path_crawled_from_of: an Auto_Exclude past the backstop (the mirror path) whose
                                     mirror differs from OF: ensure_exclude_list verifies nothing,
                                     the crawl reads the list from OF and subtracts OF's members.
-  case_mixed_round:                 A needs a truncated `fans`, B only a healthy list: A NULL
-                                    `truncated`, B recorded with its list read; C's own list,
-                                    needed only by the failed C, is never read.
+  case_mixed_round:                 A needs a truncated list, B only a healthy list: A NULL
+                                    `truncated`, B recorded with its list read; C's roster (read
+                                    after the lists), needed only by the failed C, is never read.
   case_dead_session_ends_round:     a 401 ends the round: no further GET, every request still
-                                    needing a read NULL `dead_session`; one whose reads had all
-                                    completed is recorded.
-  case_request_done_before_round_ends: A needs only `fans`, B also a list that 429s: A is
-                                    stamped and logged once `fans` is read, inside B's waits.
+                                    needing a read NULL `dead_session`; one whose reads (a list,
+                                    read before the rosters) had all completed is recorded.
+  case_request_done_before_round_ends: A needs only a list, B also `fans` that 429s: A is
+                                    stamped and logged once the list is read, inside B's waits.
   case_round_deadline_per_request: in one round, a wait past the older send's deadline fails
                                     only that send (`deadline`); the newer one waits and records.
   case_deadline_line_at_its_deadline: a request that reaches its deadline mid-read is logged
@@ -57,6 +61,12 @@ and an injected clock and sleep (audience_crawl._now / _sleep). Asserts the stam
                                     a named exclude list (the Composer allows names) is
                                     `unknown_list`, never read; a non-numeric excluded id is
                                     `error`; the two good ones share one roster read and record.
+  case_list_echo_complete_by_count: a list OF echoes past its end is complete iff its ids number
+                                    its usersCount (one get_list after the repeat), else NULL
+                                    `truncated`; the count GET is in `pages`.
+  case_roster_repeat_retried_once:  a repeated fans page is re-read once at its offset (then
+                                    recorded exactly); repeated twice in a row: NULL `truncated`,
+                                    mid-roster and past the end alike, no feed read.
   case_page_bound_counts_calls:     a 3-page list with two 429s on page 2: 8 calls = the spec's
                                     bound exactly (pages + 1 + resumes + failed); the line's
                                     pages + failed == the calls; the 3-page roster: 7 calls <= 8.
@@ -83,6 +93,8 @@ and an injected clock and sleep (audience_crawl._now / _sleep). Asserts the stam
   case_recover_legacy_mode_nothing: AUDIENCE_CRAWL_MODE=legacy: no reads, no crawler, NULL.
   case_recover_unreadable_db_no_raise: the DB read raising: recover_at_boot returns, nothing raised.
 
+  P2b (fetch diet): test_audience_crawl_p2b.py.
+
 Run: ./venv/bin/python service/tests/test_audience_crawl.py   (exit 0 = pass)
 """
 from __future__ import annotations
@@ -97,10 +109,6 @@ import logging  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
-import time  # noqa: E402
-from types import SimpleNamespace  # noqa: E402
-
-import contextvars  # noqa: E402
 
 import audience_crawl  # noqa: E402
 import of_call_counter  # noqa: E402
@@ -114,148 +122,10 @@ for _k in _KNOB_ENV:
     os.environ.pop(_k)
 
 
-class OFErr(Exception):
-    def __init__(self, status: int, text: str = '{"error":{"message":"Too many requests"}}', headers=None):
-        super().__init__(f"{status}")
-        self.response = SimpleNamespace(status_code=status, text=text, headers=headers or {})
-
-
-TOO_MANY = OFErr  # readability at the call sites
-PROBE: contextvars.ContextVar = contextvars.ContextVar("test_audience_crawl_probe", default=None)
-
-
-class Clock:
-    """The crawl's clock and sleep: a sleep only moves the clock."""
-
-    def __init__(self):
-        self.t = 1_000.0
-        self.waits: list[float] = []
-
-    def now(self) -> float:
-        return self.t
-
-    async def sleep(self, s: float) -> None:
-        self.waits.append(s)
-        self.t += s
-        await asyncio.sleep(0)
-
-
-class FakeOF:
-    """fans / following / custom lists, OF's page shapes; every GET goes through
-    of_pacing.paced like OFClient.get_json. `script[(src, offset)]`: what the next calls at
-    that offset raise, in order (None = answer). `cost_s`: clock seconds a page takes."""
-
-    def __init__(self, clock: Clock, *, fans=(), following=(), lists=None, account_id="ac1", cost_s=0.0):
-        self.clock, self.account_id, self.cost_s = clock, account_id, cost_s
-        self.rows = {"fans": list(fans), "following": list(following),
-                     **{("list", int(k)): list(v) for k, v in (lists or {}).items()}}
-        self.script: dict = {}
-        self.calls: list[tuple] = []   # (clock t, monotonic t, src, offset, outcome, walk)
-        self.ctx: list[tuple] = []     # (PROBE, caller label) per call
-
-    def _get(self, src, offset, limit, bare=False):
-        def call():
-            w = of_pacing._WALK.get()
-            self.ctx.append((PROBE.get(), of_call_counter.caller_kind()))
-            todo = self.script.get((src, offset)) or []
-            err = todo.pop(0) if todo else None
-            status = getattr(getattr(err, "response", None), "status_code", "error") if err else 200
-            self.calls.append((self.clock.t, time.monotonic(), src, offset, status,
-                               (w.kind, w.retry_429) if w else None))
-            self.clock.t += self.cost_s
-            if err is not None:
-                raise err
-            rows = self.rows[src]
-            page = [{"id": i} for i in rows[offset:offset + limit]]
-            return page if bare else {"list": page, "hasMore": offset + limit < len(rows)}
-        return of_pacing.paced(self.account_id, call)
-
-    def subscribers(self, *, type="active", limit=10, offset=0, **kw):
-        return self._get("fans", offset, limit)
-
-    def following(self, *, type="active", limit=10, offset=0, **kw):
-        return self._get("following", offset, limit)
-
-    def list_users_in(self, list_id, *, limit=20, offset=0, **kw):
-        return self._get(("list", int(list_id)), offset, limit, bare=True)
-
-    def offsets(self, src="fans"):
-        return [c[3] for c in self.calls if c[2] == src]
-
-
-class Lines(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.lines: list[str] = []
-        self.cancelled: list[str] = []
-
-    def emit(self, rec):
-        m = rec.getMessage()
-        if m.startswith("audience_crawl_end"):
-            self.lines.append(m)
-        elif m.startswith("audience_crawl_cancelled"):
-            self.cancelled.append(m)
-
-    def parsed(self) -> list[dict]:
-        return [dict(re.findall(r"(\w+)=(\S+)", x)) for x in self.lines]
-
-
-def _setup(**env) -> tuple[Clock, Lines]:
-    for k in [k for k in os.environ if k.startswith("AUDIENCE_CRAWL_")]:
-        os.environ.pop(k)
-    os.environ.update({k: str(v) for k, v in env.items()})
-    of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.0, 0.0
-    of_pacing._next_at.clear()
-    audience_crawl._crawlers.clear()   # each case runs on its own loop (_harness.run)
-    audience_crawl._queues.clear()
-    clock = Clock()
-    audience_crawl._now, audience_crawl._sleep = clock.now, clock.sleep
-    lines = Lines()
-    lg = logging.getLogger("of-relay.audience_crawl")
-    for h in list(lg.handlers):
-        if isinstance(h, Lines):
-            lg.removeHandler(h)
-    lg.addHandler(lines)
-    lg.setLevel(logging.INFO)
-    return clock, lines
-
-
-async def _run_row(aid: str) -> int:
-    async with get_session() as s:
-        if await s.get(Account, aid) is None:
-            s.add(Account(id=aid))
-        mr = MassRun(account_id=aid, audience_filter="{}", recipient_count=0, status="ok")
-        s.add(mr)
-        await s.flush()
-        return int(mr.id)
-
-
-async def _recorded(run_id: int):
-    async with get_session() as s:
-        raw = (await s.get(MassRun, run_id)).recipients_json
-    return None if raw is None else json.loads(raw)
-
-
-async def _send(of: FakeOF, clock: Clock, *, aid="ac1", **kw) -> int:
-    run = await _run_row(aid)
-    kw.setdefault("user_lists", ["fans"])
-    await audience_crawl.record_after_send(aid, of, run, sent_at=clock.now(), **kw)
-    return run
-
-
-async def _send_many(of: FakeOF, clock: Clock, *kws: dict, aid="ac1") -> list[int]:
-    """Several sends queued back to back, before the crawler's first step: one round."""
-    runs = [await _run_row(aid) for _ in kws]
-    for run, kw in zip(runs, kws):
-        kw = {"user_lists": ["fans"], **kw}
-        await audience_crawl.record_after_send(aid, of, run, sent_at=clock.now(), **kw)
-    return runs
-
-
-def _line(lines: Lines, run: int) -> dict:
-    got = [p for p in lines.parsed() if p.get("run") == str(run)]
-    assert len(got) == 1, f"one audience_crawl_end line per request: {lines.lines}"
-    return got[0]
+from _audience_crawl_fixtures import (  # noqa: E402 — the shared fakes and seeding
+    AUD, PROBE, TOO_MANY, FakeOF, OFErr, _boot_row, _line, _loader, _outcome, _recorded, _run_row, _send,
+    _send_many, _setup,
+)
 
 
 async def case_429_resumes_one_page_back():
@@ -269,8 +139,11 @@ async def case_429_resumes_one_page_back():
     assert clock.waits == [30.0], clock.waits
     ln = _line(lines, run)
     # pages: 5 roster pages (4 + the overlap) + the exclude list's 2 (a bare page, then OF's empty one)
-    assert ln == {"account": "ac1", "run": str(run), "outcome": "recorded", "pages": "7", "failed": "1",
-                  "resumes": "1", "waited_s": "30.0", "reused": "0", "coalesced": "0", "recipients": "197"}, ln
+    # + the mass feed's 1; OF counts the same 197, read 30 s (the 429's wait) after the accept
+    assert ln == {"account": "ac1", "run": str(run), "outcome": "recorded", "pages": "8", "failed": "1",
+                  "resumes": "1", "waited_s": "30.0", "reused": "0", "coalesced": "0", "recipients": "197",
+                  "sent_count": "197", "ratio": "1.000", "count_delay_s": "30.0"}, ln
+    assert await _outcome(run) == "recorded"
 
 
 async def case_two_429s_ask_then_ladder():
@@ -342,6 +215,7 @@ async def case_deadline_reached():
     assert len(of.calls) == 3, of.offsets()
     assert await _recorded(run) is None
     assert _line(lines, run)["outcome"] == "deadline"
+    assert await _outcome(run) == "deadline", "a live send's deadline is a verdict: stamped"
 
 
 async def case_401_one_call():
@@ -440,9 +314,9 @@ async def case_queued_sends_share_one_read():
                    "x": list(range(1000, 1101))}, got
     ln = {k: _line(lines, r) for k, r in runs.items()}
     assert [ln[k]["coalesced"] for k in ("r0", "r1", "r2", "r3")] == ["0", "1", "1", "0"], ln
-    # the shared read is charged once, to the first request of the round
+    # the shared read (+ the mass feed's GET) is charged once, to the first request of the round
     assert [(ln[k]["pages"], ln[k]["failed"], ln[k]["resumes"]) for k in ("r1", "r2")] == \
-        [("4", "1", "1"), ("0", "0", "0")], ln
+        [("5", "1", "1"), ("0", "0", "0")], ln
     assert other.offsets() == [0, 50, 100], other.offsets()
     assert not audience_crawl._crawlers, audience_crawl._crawlers
 
@@ -510,12 +384,13 @@ async def case_mirror_path_crawled_from_of():
 
 async def case_mixed_round():
     clock, lines = _setup(AUDIENCE_CRAWL_MAX_PAGES=2)
-    of = FakeOF(clock, fans=range(1, 151), lists={77: [500, 501], 88: [600]})   # fans: 3 pages > 2
-    a, b, c = await _send_many(of, clock, {}, {"user_lists": ["77"]}, {"excluded_user_lists": [88]})
+    of = FakeOF(clock, fans=range(1, 51), lists={66: list(range(1000, 1250)), 77: [500, 501]})   # 66: 3 pages > 2
+    a, b, c = await _send_many(of, clock, {"user_lists": ["66"]}, {"user_lists": ["77"]},
+                               {"excluded_user_lists": [66]})
     await audience_crawl.drain()
-    assert of.offsets() == [0, 50], of.offsets()
+    assert of.offsets(("list", 66)) == [0, 100], of.offsets(("list", 66))
     assert of.offsets(("list", 77)) == [0, 2], of.calls
-    assert of.offsets(("list", 88)) == [], "needed only by the failed C: skipped"
+    assert of.offsets() == [], "needed only by the failed C: skipped"
     assert [await _recorded(r) for r in (a, b, c)] == [None, [500, 501], None]
     assert [_line(lines, r)["outcome"] for r in (a, b, c)] == ["truncated", "recorded", "truncated"]
 
@@ -523,19 +398,19 @@ async def case_mixed_round():
 async def case_dead_session_ends_round():
     clock, lines = _setup()
     of = FakeOF(clock, fans=range(1, 101), following=range(500, 510), lists={77: [700]})
-    of.script[("following", 0)] = [OFErr(401, "Unauthorized")]
-    b, a = await _send_many(of, clock, {"user_lists": ["fans"]},      # b: read before the 401, complete
-                            {"user_lists": ["fans", "following"], "excluded_user_lists": [77]})
+    of.script[("fans", 0)] = [OFErr(401, "Unauthorized")]
+    b, a = await _send_many(of, clock, {"user_lists": ["77"]},        # b: read before the 401, complete
+                            {"user_lists": ["fans", "following", "77"]})
     await audience_crawl.drain()
-    assert [c[2] for c in of.calls] == ["fans", "fans", "following"], of.calls   # nothing after the 401
+    assert [c[2] for c in of.calls] == [("list", 77), ("list", 77), "fans"], of.calls   # nothing after the 401
     assert await _recorded(a) is None and _line(lines, a)["outcome"] == "dead_session"
-    assert await _recorded(b) == list(range(1, 101)) and _line(lines, b)["outcome"] == "recorded"
+    assert await _recorded(b) == [700] and _line(lines, b)["outcome"] == "recorded"
 
 
 async def case_request_done_before_round_ends():
     clock, lines = _setup()
-    of = FakeOF(clock, fans=range(1, 101), lists={77: [5, 6]})
-    of.script[(("list", 77), 0)] = [TOO_MANY(429), TOO_MANY(429)]   # B's list waits out the ladder
+    of = FakeOF(clock, fans=range(1, 101), lists={77: [5, 6, 500]})
+    of.script[("fans", 0)] = [TOO_MANY(429), TOO_MANY(429)]          # B's roster waits out the ladder
     seen: list = []
     real_sleep = clock.sleep
 
@@ -543,11 +418,11 @@ async def case_request_done_before_round_ends():
         seen.append((await _recorded(a), [p["run"] for p in lines.parsed()]))
         await real_sleep(s)
     audience_crawl._sleep = sleep
-    a, b = await _send_many(of, clock, {}, {"excluded_user_lists": [77]})
+    a, b = await _send_many(of, clock, {"user_lists": ["77"]}, {"user_lists": ["fans", "77"]})
     await audience_crawl.drain()
-    full = list(range(1, 101))
-    assert seen == [(full, [str(a)]), (full, [str(a)])], seen        # A stamped + logged once fans was read
-    assert await _recorded(b) == [x for x in full if x not in (5, 6)]
+    full = [5, 6, 500]
+    assert seen == [(full, [str(a)]), (full, [str(a)])], seen        # A stamped + logged once 77 was read
+    assert await _recorded(b) == [*range(1, 101), 500]
     assert [_line(lines, r)["outcome"] for r in (a, b)] == ["recorded", "recorded"]
 
 
@@ -589,7 +464,7 @@ async def case_deadline_line_at_its_deadline():
     assert (await _recorded(old), _line(lines, old)["outcome"]) == (None, "deadline")
     assert await _recorded(new) == list(range(1, 501))
     lo, ln = _line(lines, old), _line(lines, new)
-    assert (lo["pages"], ln["pages"]) == ("5", "5"), (lo, ln)     # the lines sum to the round's 10 calls
+    assert (lo["pages"], ln["pages"]) == ("5", "6"), (lo, ln)     # the round's 10 roster calls + the mass feed
 
 
 async def case_deadline_of_request_not_reading():
@@ -682,6 +557,154 @@ async def case_repeated_pages_fail_closed():
         assert len(of.offsets(("list", 77))) == 2, of.calls
 
 
+async def case_list_echo_complete_by_count():
+    # OF echoes a list's page past its end (AE 2026-11-11): complete iff the ids number its usersCount.
+    for count, want in ((2, "recorded"), (3, "truncated"), (None, "truncated")):
+        clock, lines = _setup()
+
+        class Echo(FakeOF):
+            def _get(self, src, offset, limit, bare=False):
+                return super()._get(src, 0 if src == ("list", 77) else offset, limit, bare=bare)
+
+        of = Echo(clock, fans=[1, 2, 3], lists={77: [1, 2]})
+        if count is not None:
+            of.list_counts[77] = count
+        run = await _send(of, clock, excluded_user_lists=[77])
+        await audience_crawl.drain()
+        ln = _line(lines, run)
+        assert ln["outcome"] == want, (count, ln)
+        assert lines.repeats == ["ok" if want == "recorded" else "truncated"], lines.repeats
+        assert await _recorded(run) == ([3] if want == "recorded" else None), count
+        # the journal holds the offset OF answered (0, echoed), not the asked one (2)
+        assert of.offsets(("list", 77)) == [0, 0] and of.offsets(("count", 77)) == [0], of.calls
+        assert int(ln["pages"]) + int(ln["failed"]) == len(of.calls) + len(of.feeds), (ln, of.calls)   # sum to calls
+
+
+async def case_list_count_at_deadline():
+    # The count GET's pacer turn comes past the only needer's deadline: `deadline`, no crash, no
+    # `error` for another request of the round; a count GET that departs in time but answers past
+    # the deadline: `deadline` too (never recorded late); a count GET that fails: `truncated`, in `failed`.
+    for mode in ("turn", "late", "fail"):
+        fail = mode == "fail"
+        clock, lines = _setup(AUDIENCE_CRAWL_DEADLINE_S=10)
+
+        class Echo(FakeOF):
+            def _get(self, src, offset, limit, bare=False):
+                return super()._get(src, 0 if src == ("list", 77) else offset, limit, bare=bare)
+
+            def get_list(self, list_id):
+                if fail:
+                    raise RuntimeError("502")
+                if mode == "turn":
+                    clock.t += 20                    # its pacer turn: past the deadline
+                    return super().get_list(list_id)
+                r = super().get_list(list_id)
+                clock.t += 20                        # departed in time, answered past the deadline
+                return r
+
+        of = Echo(clock, fans=[1, 2, 3], lists={77: [1, 2]})
+        of.list_counts[77] = 2
+        a, b = await _send_many(of, clock, {"user_lists": ["77"]}, {"user_lists": ["fans"]})
+        await audience_crawl.drain()
+        la, lb = _line(lines, a), _line(lines, b)
+        if mode == "late":
+            assert of.offsets(("count", 77)) == [0], of.calls   # the count did depart
+        if fail:
+            assert (la["outcome"], la["failed"]) == ("truncated", "1"), la
+            assert lb["outcome"] == "recorded", lb
+        else:
+            assert (la["outcome"], lb["outcome"]) == ("deadline", "deadline"), (la, lb)
+
+
+async def case_roster_repeat_retried_once():
+    # A fans page that repeats (every id seen) is re-read once at the same offset (then recorded exactly);
+    # repeated twice in a row: NULL `truncated`, mid-roster and past the end alike (never recorded off a repeat).
+    for repeats, want in ((1, "recorded"), (2, "truncated")):
+        clock, lines = _setup()
+
+        class Flaky(FakeOF):
+            left = repeats
+
+            def _get(self, src, offset, limit, bare=False):
+                if src == "fans" and offset == 50 and self.left:
+                    self.left -= 1
+                    return super()._get(src, 0, limit, bare=bare)
+                return super()._get(src, offset, limit, bare=bare)
+
+        of = Flaky(clock, fans=range(1, 151))
+        run = await _send(of, clock)
+        await audience_crawl.drain()
+        ln = _line(lines, run)
+        assert ln["outcome"] == want, ln
+        assert lines.repeats == ["retry", "truncated"][:repeats], lines.repeats   # the repeat line's verdict
+        if want == "recorded":
+            assert await _recorded(run) == list(range(1, 151)) and ln["ratio"] == "1.000"
+            assert of.offsets() == [0, 0, 50, 100], of.offsets()   # journal: offset 50 answered as 0, then re-read
+        else:
+            assert await _recorded(run) is None and of.offsets() == [0, 0, 0], of.offsets()
+            assert (ln["sent_count"], ln["ratio"], of.feeds) == ("-", "-", []), ln   # no gate, no feed read
+
+    clock, lines = _setup()
+
+    class EchoEnd(FakeOF):   # past the end OF serves the last page again, hasMore true
+        def _get(self, src, offset, limit, bare=False):
+            r = super()._get(src, min(offset, 50) if src == "fans" else offset, limit, bare=bare)
+            return {**r, "hasMore": True} if src == "fans" else r
+
+    of = EchoEnd(clock, fans=range(1, 101))
+    run = await _send(of, clock)
+    await audience_crawl.drain()
+    ln = _line(lines, run)
+    assert (ln["outcome"], await _recorded(run)) == ("truncated", None), ln
+    assert of.offsets() == [0, 50, 50, 50] and lines.repeats == ["retry", "truncated"], (of.offsets(), lines.repeats)
+
+
+async def case_overlap_end_before_failed_page_truncated():
+    # A 429 at 150 resumes at 100; OF then ends the roster there (hasMore false, no new id): the page at
+    # 150 it had promised was never read. OF's count (140) would pass the gate at 150/140 = 1.07, so
+    # only this rule keeps the cut set off: NULL `truncated`, no feed read.
+    clock, lines = _setup()
+
+    class EndsAfter429(FakeOF):
+        def _get(self, src, offset, limit, bare=False):
+            r = super()._get(src, offset, limit, bare=bare)
+            return {**r, "hasMore": False} if src == "fans" and offset == 100 and 150 in self.offsets() else r
+
+        def _feed(self, limit):
+            return [{**x, "sentCount": 140} for x in super()._feed(limit)]
+
+    of = EndsAfter429(clock, fans=range(1, 201))
+    of.script[("fans", 150)] = [TOO_MANY(429)]
+    run = await _send(of, clock)
+    await audience_crawl.drain()
+    ln = _line(lines, run)
+    assert of.offsets() == [0, 50, 100, 150, 100], of.offsets()
+    assert (ln["outcome"], await _recorded(run), ln["sent_count"], of.feeds) == ("truncated", None, "-", []), ln
+    assert await _outcome(run) == "truncated"
+
+    # A list proves itself by its count: 150 ids read, a 429 at the end offset 150, OF answers the
+    # overlap page (50) empty: complete iff usersCount is 150 (one count GET), else `truncated`.
+    for count, want in ((150, "recorded"), (149, "truncated"), (None, "truncated")):
+        clock, lines = _setup()
+
+        class EmptyOverlap(FakeOF):
+            def _get(self, src, offset, limit, bare=False):
+                r = super()._get(src, offset, limit, bare=bare)
+                return [] if src == ("list", 77) and offset == 50 and 150 in self.offsets(src) else r
+
+        of = EmptyOverlap(clock, fans=range(1, 201), lists={77: range(1, 151)})
+        of.script[(("list", 77), 150)] = [TOO_MANY(429)]
+        if count is not None:
+            of.list_counts[77] = count
+        run = await _send(of, clock, excluded_user_lists=[77])
+        await audience_crawl.drain()
+        ln = _line(lines, run)
+        assert of.offsets(("list", 77)) == [0, 100, 150, 50] and of.offsets(("count", 77)) == [0], of.calls
+        assert ln["outcome"] == want, (count, ln)
+        assert await _recorded(run) == (list(range(151, 201)) if want == "recorded" else None), count
+        assert of.offsets() == ([0, 50, 100, 150] if want == "recorded" else []), (count, of.offsets())   # rosters after lists
+
+
 async def case_terminal_response_after_deadline():
     for later in (False, True):
         clock, lines = _setup(AUDIENCE_CRAWL_DEADLINE_S=10)
@@ -695,7 +718,7 @@ async def case_terminal_response_after_deadline():
         assert _line(lines, old)["pages"] == "1", lines.lines
         if later:
             assert (await _recorded(new), _line(lines, new)["outcome"]) == ([1, 2], "recorded")
-            assert _line(lines, new)["pages"] == "0", lines.lines
+            assert _line(lines, new)["pages"] == "1", lines.lines          # the mass feed's
         assert len(of.calls) == 1, of.calls
 
 
@@ -735,7 +758,7 @@ async def case_pacer_wait_crosses_deadline():
         assert (_line(lines, old)["pages"], _line(lines, old)["failed"]) == ("0", "0"), lines.lines
         if later:
             assert (await _recorded(new), _line(lines, new)["outcome"]) == ([1, 2], "recorded")
-            assert (_line(lines, new)["pages"], _line(lines, new)["failed"]) == ("1", str(int(error))), lines.lines
+            assert (_line(lines, new)["pages"], _line(lines, new)["failed"]) == ("2", str(int(error))), lines.lines
         assert len(of.calls) == (1 + int(error) if later else 0), of.calls
 
 
@@ -787,7 +810,7 @@ async def case_legacy_mode_identical():
     async with get_session() as s:
         from sqlalchemy import select
         mr = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
-    assert mr.recipients_json is None
+    assert (mr.recipients_json, mr.crawl_outcome) == (None, None)
     # …and a readable roster records inline, before run_once returns.
     ok = Legacy(clock, fans=range(1, 121))
     ax._make_client = lambda account_id: ok  # type: ignore[attr-defined]
@@ -800,6 +823,7 @@ async def case_legacy_mode_identical():
     async with get_session() as s:
         mr = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
     assert json.loads(mr.recipients_json) == list(range(1, 121))
+    assert mr.crawl_outcome is None, "legacy: no crawl verdict, no gate"
 
 
 async def case_drain_timeout_names_dropped_runs():
@@ -829,11 +853,11 @@ async def case_drain_timeout_names_dropped_runs():
     # …and a run finished earlier in the cancelled round (stamped) is not named.
     clock, lines = _setup()
     of = FakeOF(clock, fans=range(1, 51), lists={77: [5]})
-    of.script[(("list", 77), 0)] = [TOO_MANY(429)]
+    of.script[("fans", 0)] = [TOO_MANY(429)]
     audience_crawl._sleep = stuck
-    r4, r5 = await _send_many(of, clock, {}, {"excluded_user_lists": [77]})
+    r4, r5 = await _send_many(of, clock, {"user_lists": ["77"]}, {"user_lists": ["fans", "77"]})
     await audience_crawl.drain(timeout_s=0.05)
-    assert [await _recorded(r) for r in (r4, r5)] == [list(range(1, 51)), None]
+    assert [await _recorded(r) for r in (r4, r5)] == [[5], None]
     assert lines.cancelled == [f"audience_crawl_cancelled account=ac1 runs={r5} — those sends stay unrecorded"], \
         lines.cancelled
 
@@ -852,52 +876,24 @@ async def case_crawler_in_fresh_context():
 
 
 # ── recover_at_boot: the sends a Relay restart cut off ──────────────────────────────────
-_AUD = {"user_lists": ["fans"], "included_users": [], "excluded_users": [2], "excluded_user_lists": [],
-        "online": False, "filters": False}
-
-
-async def _boot_row(aid: str, *, age_s: float, audience=None, raw: str | None = None, queue_id=555,
-                    status="ok", recipients=None) -> int:
-    """A mass_runs row as a send that closed `age_s` ago left it (started_at UTC-naive, as MassRun's default)."""
-    from datetime import datetime, timedelta
-    async with get_session() as s:
-        if await s.get(Account, aid) is None:
-            s.add(Account(id=aid))
-        mr = MassRun(account_id=aid, recipient_count=0, status=status, queue_id=queue_id,
-                     audience_filter=raw if raw is not None else json.dumps(audience if audience is not None else _AUD),
-                     started_at=datetime.utcnow() - timedelta(seconds=age_s),
-                     recipients_json=None if recipients is None else json.dumps(recipients))
-        s.add(mr)
-        await s.flush()
-        return int(mr.id)
-
-
-def _loader(clients: dict):
-    def load(aid):
-        if aid not in clients:
-            raise KeyError(aid)   # another case's Creator, or one with no session: skipped
-        return clients[aid]
-    return load
-
-
 async def case_recover_at_boot_picks_cut_off_sends():
     clock, lines = _setup()
     fans = range(1, 121)                      # 3 pages of 50
     cases = {
         "rb_cut": dict(age_s=60),
         "rb_past": dict(age_s=901),
-        "rb_online": dict(age_s=60, audience={**_AUD, "online": True}),
-        "rb_filters": dict(age_s=60, audience={**_AUD, "filters": True}),
-        "rb_old_shape": dict(age_s=60, audience={k: v for k, v in _AUD.items() if k not in ("online", "filters")}),
+        "rb_online": dict(age_s=60, audience={**AUD, "online": True}),
+        "rb_filters": dict(age_s=60, audience={**AUD, "filters": True}),
+        "rb_old_shape": dict(age_s=60, audience={k: v for k, v in AUD.items() if k not in ("online", "filters")}),
         "rb_stamped": dict(age_s=60, recipients=[7]),
         "rb_scheduled": dict(age_s=60, queue_id=None),
         "rb_running": dict(age_s=60, status="running"),
         "rb_bad_json": dict(age_s=60, raw="{nope"),
-        "rb_no_lists": dict(age_s=60, audience={**_AUD, "user_lists": []}),
+        "rb_no_lists": dict(age_s=60, audience={**AUD, "user_lists": []}),
     }
     of = {aid: FakeOF(clock, fans=fans, account_id=aid) for aid in cases}
     runs = {aid: await _boot_row(aid, **kw) for aid, kw in cases.items()}
-    cut2 = await _boot_row("rb_cut", age_s=30, audience={**_AUD, "excluded_users": [], "user_lists": ["fans"]})
+    cut2 = await _boot_row("rb_cut", age_s=30, audience={**AUD, "excluded_users": [], "user_lists": ["fans"]})
     gone = await _boot_row("rb_no_client", age_s=60)
     await audience_crawl.recover_at_boot(_loader(of))
     await audience_crawl.drain()
@@ -922,6 +918,7 @@ async def case_recover_stops_at_run_deadline():
     await audience_crawl.drain()
     assert await _recorded(run) is None
     assert _line(lines, run)["outcome"] == "deadline"
+    assert await _outcome(run) is None, "a recovered deadline is the restart's, no verdict: not stamped"
     assert of.calls and len(of.calls) <= 5, of.calls
     assert max(c[0] for c in of.calls) < t0 + 21, "no page sent past the run's own deadline"
 

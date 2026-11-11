@@ -86,9 +86,7 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> Non
             retired = [old] if old is not None else []
     relay_coalesce.forget(account_id)   # no caller joins a flight on the evicted client
     for client in retired:
-        close = getattr(client, "close_signed_sessions", None)
-        if close is not None:
-            close()
+        client.close_signed_sessions()
     # Fansly accounts are pooled in fansly_backend, not here (their client is
     # the shim, not an OFClient). Invalidation still has ONE home — this
     # function — so a re-capture or proxy edit can't leave a stale shim behind

@@ -37,6 +37,7 @@ import of_call_counter  # noqa: E402
 import of_client  # noqa: E402
 import of_pacing  # noqa: E402
 from of_client import API_BASE, OFClient, OFDeactivatedError, OFDeniedError  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,8 +76,8 @@ def _client(answers=None, account_id=None):
     c._x_hash = "HASH"
     c.proxy_label = None
     c.proxy_url = None
-    c.http = types.SimpleNamespace(get=lambda url, **_k: _answer("GET", url),
-                                   request=lambda method, url, **_k: _answer(method, url))
+    fake_wire(c, types.SimpleNamespace(get=lambda url, **_k: _answer("GET", url),
+                                       request=lambda method, url, **_k: _answer(method, url)))
     c._signed_headers = lambda _url: {}
     return c, sent
 
@@ -312,19 +313,22 @@ def case_a_walk_labels_its_calls_walk_kind_and_wins_inside_an_automation():
 
 def case_an_audience_crawl_page_inside_an_automation_run_counts_as_walk_audience_crawl():
     """phase-02: a mass send hands its audience to audience_crawl inside its automation run's scope; the crawl's
-    roster page counts as walk:audience_crawl (innermost wins), the run's own call as auto:send_mass_message."""
+    roster page and its mass feed read (P2b: OF's count of the send) count as walk:audience_crawl (innermost wins),
+    the run's own call as auto:send_mass_message."""
     import audience_crawl
     from db.engine import get_session
     from db.models import Account, MassRun
     gap, jit = of_pacing.PAGE_GAP_S, of_pacing.JITTER_S
     of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.0, 0.0
     page = json.dumps({"list": [{"id": 11}, {"id": 12}], "hasMore": False})
-    c, sent = _client([200, (200, page)])
+    feed = json.dumps({"items": [{"id": 8_300_000_001, "sentCount": 2}], "hasMore": False})
+    c, sent = _client([200, (200, page), (200, feed)])
 
     async def go():
         async with get_session() as s:
             s.add(Account(id=c.account_id))
-            mr = MassRun(account_id=c.account_id, audience_filter="{}", recipient_count=0, status="ok")
+            mr = MassRun(account_id=c.account_id, audience_filter="{}", recipient_count=0, status="ok",
+                         queue_id=8_300_000_001)
             s.add(mr)
             await s.flush()
             run = int(mr.id)
@@ -341,7 +345,8 @@ def case_an_audience_crawl_page_inside_an_automation_run_counts_as_walk_audience
         of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
     got = _rows(c.account_id)
     assert got == {("auto:send_mass_message", "GET /api2/v2/messages/queue", "2xx"): 1,
-                   ("walk:audience_crawl", "GET /api2/v2/subscriptions/subscribers", "2xx"): 1}, (got, sent)
+                   ("walk:audience_crawl", "GET /api2/v2/subscriptions/subscribers", "2xx"): 1,
+                   ("walk:audience_crawl", "GET /api2/v2/users/me/stats/messages/group", "2xx"): 1}, (got, sent)
     assert stamped is not None and sorted(json.loads(stamped)) == [11, 12], stamped
 
 
@@ -573,7 +578,8 @@ def case_of_client_alone_counts_in_memory_only():
         "c = of_client.OFClient.__new__(of_client.OFClient)\n"
         "c.account_id = 'acct-n'; c.user_id = '1'; c.timeout_s = 5; c._x_hash = 'H'\n"
         "c.proxy_label = None; c.proxy_url = None; c._signed_headers = lambda u: {}\n"
-        "c.http = types.SimpleNamespace(get=lambda url, **k: R(), request=lambda m, url, **k: R())\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); from _of_wire import fake_wire\n"
+        "fake_wire(c, types.SimpleNamespace(get=lambda url, **k: R(), request=lambda m, url, **k: R()))\n"
         "c.request('GET', '/api2/v2/users/me')\n"
         "of_call_counter.flush()\n"
         "import threading\n"

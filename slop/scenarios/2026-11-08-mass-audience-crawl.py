@@ -3,20 +3,31 @@ immediate list-audience send, from an automation or the Composer, the run answer
 Audience crawl reads OF's rosters in the background, through the Creator's shared background pacer, waiting out
 OF's 429s on the Backoff ladder and resuming one page back; the record is complete or NULL.
 
-World: `flat_agency` (CREATORS: small 6 / medium 16), each with a captured session: the relay's REAL OFClient
+World: `flat_agency` (CREATORS: small 10 / medium 20), each with a captured session: the relay's REAL OFClient
 against lib/of_wire.py (`OF_WIRE`). OF's rosters are lib/audience_crawl_wire.py's: every Creator ROSTER fans and
 following (FOLLOW_OVERLAP of them also fans), its Creator 0 BIG_FANS fans (past of_paging's 200-page x 50
 backstop), Creator 1 a Dead session (its rosters 401 after the send), Creator 2 churning (each 429 subscribes
 one fan and expires one), and a seeded 429 window (P429 per roster call outside one, RETRY_AFTER_S long, the
-`Retry-After` header and the body's "Please allow N seconds") on every live Creator.
+`Retry-After` header and the body's "Please allow N seconds") on every live Creator. OF's mass feed (the wire's
+`/users/me/stats/messages/group`) counts each send its true audience at accept: the completeness gate's
+denominator, one GET per crawl round. Fetch diet P2b's four (outside RECORDED_95 / EXACT_OR_NULL, two automation
+sends each, SPACING_S apart, comparable to each other): Creator 3 `partial`, both rosters served short (the first
+1 / PARTIAL_X, then hasMore false) while OF sends to and counts the whole roster, and an earlier comparable send's
+`incomplete` verdict older than AUDIENCE_CRAWL_REPROBE_S (seed/audience_crawl_priors.py, mass_runs by SQL: its
+Auto_Exclude list made on the wire up front so the seeded send excludes the same id the sends' sync finds by
+name), so its first send re-probes; Creator 4 `broken`, its sends also excluding a custom list OF ignores the
+offset of (of_wire `repeat_pages`); Creator 5 `twice`, its fans roster repeating its tail with hasMore true
+past the end (the wire's `tail_repeat`: a page repeated twice in a row, synthetic); Creator 6 `bare`, rosters
+that end normally, its sends missing from OF's feed (`unlisted`: as a send past the feed's newest page).
 RELAY_ENV compresses the crawl's deadline (DEADLINE_S, prod 900) and ladder (1 s doubling to 4 s; prod 30 / 300);
 lib/audience_crawl_relay.py sets of_pacing's PAGE_GAP_S / JITTER_S (prod 1.0 / 0.3).
 
 Drive: `--users` mass sends (`user_lists ["fans", "following"]`, the Creator's GUARD_N guard ids in
-`excluded_users`, which the send's Auto_Exclude sync puts on OF's list), round-robin over the Creators but the big
-and dead ones (BIG_SENDS and DEAD_SENDS of their own), every Creator's sends SPACING_S apart (past of_write's 11 s
-per-Creator gap, so it never binds) from a seeded offset, but its second send CLOSE_S after its first (close
-together: the other kind, so no write gap binds; it queues behind the first's crawl), alternately through the
+`excluded_users`, which the send's Auto_Exclude sync puts on OF's list), round-robin over the Creators but the big,
+dead and P2b ones (BIG_SENDS, DEAD_SENDS and P2B_SENDS of their own), every Creator's sends SPACING_S apart (past
+of_write's 11 s per-Creator gap, so it never binds) from a seeded offset, but its second send CLOSE_S after its first
+(close together: the other kind, so no write gap binds; it queues behind the first's crawl; not P2b's), alternately
+(P2b's: the automation only) through the
 real automation enqueue
 (`POST /admin/automation/enqueue` send_mass_message, then `/__slop/run-automation {claim: true}`: the product's
 claim, run slot and run_once) and the composer's real `POST /api/of/v2/messages/queue`. Then the crawls drain:
@@ -34,7 +45,7 @@ Checks (names in lib/audience_crawl_faults.py):
   BIG_ROSTER     every recordable send of the big Creator stamped with > 10k ids.
   PAGE_BOUND     per Creator, its roster calls (the wire journal) <= the spec's per-round call bound: rounds x
                  sum over fans, following of (ceil(rows / 50) + 1), plus the resumes and failed attempts of its
-                 audience_crawl_end lines (a round's shared reads are charged to one line; a round of k sends
+                 audience_crawl_end lines, plus a round's one re-read of a repeated roster page (tail-repeat Creators) (a round's shared reads are charged to one line; a round of k sends
                  logs coalesced=k-1 on each, so rounds = sum of 1 / (coalesced + 1)); no crawl read of a verified
                  Auto_Exclude (its offset-0 list reads == its sends' syncs: one read each under broadcast_lock);
                  and the big Creator's sends queued behind its first crawl (> 30 s) served by fewer rounds than
@@ -46,6 +57,21 @@ Checks (names in lib/audience_crawl_faults.py):
                  by the boot's re-crawl (audience_crawl.recover_at_boot) within its own deadline; both restart sends
                  (auto and composer: each audience_filter writer) among them, their rows carrying `online` and
                  `filters` false.
+  INCOMPLETE_NULL  the partial Creator's first send (re-probed past the old verdict): NULL, line `incomplete`
+                 with `sent_count=` its OF count and ratio < 1.0 (not complete by OF's count), crawl_outcome
+                 `incomplete`.
+  SKIP_NEXT      its second send: NULL, line `skipped_incomplete` pages=0, crawl_outcome stamped; its roster
+                 calls (the wire journal) <= the first line's pages + failed less its feed reads (the skip read
+                 nothing).
+  EXCLUDE_FIRST  every broken-list send: NULL, line + crawl_outcome `truncated`, the list read, zero roster calls;
+                 every repeat of the list proven short by a `GET /lists/{id}` answered 200 (its repeat line
+                 `users_count=BROKEN_LIST_N -> truncated`, every such GET 200; a 404 count GET, no count, fails it).
+  REPEAT_TWICE_NULL  every twice send NULL, line + crawl_outcome `truncated`, `sent_count=-` (no gate, nothing
+                 recorded off a repeat); its repeat lines only `-> retry` / `-> truncated`, at least one retry per cut
+                 (a 429 on the re-read resumes one page back, so a cut may log two retries), the tail repeat read
+                 at least twice per cut.
+  NO_COUNT_NULL  every bare send NULL, line + crawl_outcome `no_count`, `sent_count=- ratio=-` (the walk ended on
+                 OF's own end with no repeat, OF's feed read, no count of the send in it).
   drift          (reported, not gated) the churn Creator's stamps vs OF at accept: extra and missing shares.
   no 5xx (stock), P95_VS_LAST over the send p95 and both routes.
 
@@ -57,8 +83,11 @@ as 0 / none, so the Auto_Exclude list holds exactly the guard).
 Break-it-once: audience-crawl-legacy (AUDIENCE_CRAWL_MODE=legacy: inline, unpaced, a 429 fails it, the 200-page
 backstop, every exclude list read again, no shared round): RECORDED_95, PAGE_BOUND, PACED, DETACHED, BIG_ROSTER,
 RESTART_RECOVERED (legacy stamps inline, so no crawl is in flight at the stop and nothing is cut off; legacy also
-recovers nothing); SEND_UNSLOWED and EXACT_OR_NULL stay green (noise line clean). no-boot-recovery (`--fault=`;
-recover_at_boot does nothing): RESTART_RECOVERED only.
+recovers nothing); SEND_UNSLOWED and EXACT_OR_NULL stay green (noise line clean); the five P2b checks go red too
+(noise: legacy records no crawl line). no-boot-recovery (`--fault=`; recover_at_boot does nothing):
+RESTART_RECOVERED only. crawl-p2b-off (`--fault=`; P2b reverted in audience_crawl_decide: no gate, no skip,
+sources as first seen (rosters before lists)): INCOMPLETE_NULL, SKIP_NEXT, EXCLUDE_FIRST, NO_COUNT_NULL (no gate:
+recorded) only; REPEAT_TWICE_NULL stays green (the repeat rule is #440's, not P2b's).
 """
 from __future__ import annotations
 
@@ -68,24 +97,33 @@ import math
 import re
 import time
 from collections import Counter
+from datetime import timedelta
 from urllib.parse import parse_qs
 
 import httpx
 
-from slop.lib.audience_crawl_faults import (BIG_ROSTER, DETACHED, EXACT_OR_NULL, PACED, PAGE_BOUND, RECORDED_95,
-                                            RESTART_RECOVERED, SEND_UNSLOWED)
+from slop.lib.audience_crawl_faults import (BIG_ROSTER, DETACHED, EXACT_OR_NULL, EXCLUDE_FIRST, INCOMPLETE_NULL,
+                                            NO_COUNT_NULL, PACED, PAGE_BOUND, RECORDED_95,
+                                            REPEAT_TWICE_NULL, RESTART_RECOVERED, SEND_UNSLOWED, SKIP_NEXT)
 from slop.lib.audience_crawl_wire import AudienceWire
+from slop.seed import audience_crawl_priors
 
 PROFILE = "flat_agency"
 UI = False
 OF_WIRE = True
 FAULT = "audience-crawl-legacy"
-CREATORS = {"small": 6, "medium": 16, "huge": 16}
+CREATORS = {"small": 10, "medium": 20, "huge": 20}
 ROSTER = 300                  # fans per Creator (6 pages of 50)
 FOLLOWING, FOLLOW_OVERLAP = 80, 10
 BIG_FANS = 10_500             # > of_paging.MAX_PAGES (200) x ROSTER_PAGE (50)
 GUARD_N = 5
 BIG_SENDS, DEAD_SENDS = 3, 1   # the big Creator's 2nd and 3rd queue behind its first crawl (210+ pages)
+P2B_SENDS = 2                 # each P2b Creator's automation sends, SPACING_S apart (the 2nd after the 1st's crawl)
+PARTIAL_X = 10                # the partial Creator's rosters: OF serves 1 / PARTIAL_X of each (AE: ~10x short)
+PRIOR_AGE_H = 25              # its seeded `incomplete` verdict's age: past AUDIENCE_CRAWL_REPROBE_S (24 h)
+BROKEN_LIST_N = 150           # members of the broken Creator's custom exclude list: over one LIST_PAGE (100), so
+#                               OF's page-1 echo is a real cut (100 read != usersCount 150); an echoed list holding
+#                               its usersCount is complete (#440)
 SPACING_S = 12.0              # > of_write._OF_WRITE_GAP_S (11)
 CLOSE_S = 0.5                 # every Creator's 2nd send after its 1st (the other kind: no write gap between them)
 ROSTER_PAGE = 50              # the crawl's page (AUDIENCE_CRAWL_ROSTER_PAGE default)
@@ -107,8 +145,11 @@ ENQUEUE = "/admin/automation/enqueue"
 EXPECTED_TRACEBACKS = (("resolve_recipients failed", "429 for http"), ("resolve_recipients failed", "401 for http"),
                        ("recipient record failed", "429 for http"), ("recipient record failed", "401 for http"))
 _END = re.compile(r"audience_crawl_end account=(\S+) run=(\S+) outcome=(\S+) pages=(\d+) failed=(\d+) "
-                  r"resumes=(\d+) waited_s=([\d.]+) reused=(\d+) coalesced=(\d+)")
+                  r"resumes=(\d+) waited_s=([\d.]+) reused=(\d+) coalesced=(\d+)"
+                  r"(?: recipients=\S+)?(?: sent_count=(\S+) ratio=(\S+))?")
 _LIST_USERS = re.compile(r"^/api2/v2/lists/(\d+)/users$")
+_LIST = re.compile(r"^/api2/v2/lists/(\d+)$")
+_REPEAT = re.compile(r"audience_crawl repeated page account=(\S+) src=(.+?) offset=\d+ .*?users_count=(\S+) -> (\S+)")
 
 
 def _p95(xs: list[float]) -> float | None:
@@ -129,8 +170,9 @@ async def run(ctx) -> None:
     w.data["flat_creators"] = CREATORS.get(ctx.scale, CREATORS["small"])
     await ctx.build(PROFILE)
     cs = [c["id"] for c in w.data["creators"]]
-    big, dead, churn = cs[0], cs[1], cs[2]
-    normal = [a for a in cs if a not in (big, dead)]
+    big, dead, churn, partial, broken, twice, bare = cs[:7]
+    special = (partial, broken, twice, bare)  # P2b's: outside RECORDED_95 / EXACT_OR_NULL
+    normal = [a for a in cs if a not in (big, dead, *special)]
     rng = w.rng("scenario:mass-audience-crawl")
 
     # ── OF's rosters (fan ids in each Creator's seeded block: seed/fans.py's FAN_ID_BASE + i x 1e6) ──
@@ -142,7 +184,29 @@ async def run(ctx) -> None:
                                                                          base + 900_000 + FOLLOWING - FOLLOW_OVERLAP)))
         guard[aid] = sorted(rng.sample(fans[aid], GUARD_N))
     aw = AudienceWire(fake, seed=ctx.seed, fans=fans, following=following, p429=P429,
-                      retry_after_s=RETRY_AFTER_S, dead={dead}, churn={churn})
+                      retry_after_s=RETRY_AFTER_S, dead={dead}, churn={churn}, tail_repeat={twice},
+                      short={partial: PARTIAL_X}, unlisted={bare})
+    # P2b: OF's audience of a send = both rosters minus the guard (its Auto_Exclude list holds exactly the guard)
+    audience_n = {a: len(set(fans[a]) | set(following[a])) - GUARD_N for a in (partial,)}
+    with fake.lock:                    # the partial Creator's Auto_Exclude, made up front: the seeded send excludes it
+        ae_lid = {partial: next(fake._ids)}
+        fake.lists.setdefault(partial, []).append({"id": ae_lid[partial], "type": "custom", "name": "Auto_Exclude",
+                                                   "usersCount": 0})
+        fake.list_users[ae_lid[partial]] = []
+    priors = audience_crawl_priors.seed(w, {partial: ("incomplete", timedelta(hours=PRIOR_AGE_H))},
+                                        ["fans", "following"], {partial: [ae_lid[partial]]},
+                                        {partial: guard[partial]})
+    with fake.lock:                    # the broken Creator's custom exclude list: OF ignores its offset
+        broken_lid = next(fake._ids)
+        fake.lists.setdefault(broken, []).append({"id": broken_lid, "type": "custom", "name": "slop broken exclude",
+                                                  "usersCount": BROKEN_LIST_N})
+        fake.list_users[broken_lid] = sorted(w.rng("scenario:mass-audience-crawl:p2b").sample(fans[broken],
+                                                                                           BROKEN_LIST_N))
+        fake.repeat_pages.add(broken_lid)
+    ctx.metric("p2b", {"partial": partial[-4:], "broken": broken[-4:], "twice": twice[-4:], "bare": bare[-4:],
+                       "prior_runs": {a[-4:]: v for a, v in priors.items()}, "audience_n": {a[-4:]: v for a, v in
+                                                                                          audience_n.items()},
+                       "broken_list": broken_lid, "auto_exclude": {a[-4:]: v for a, v in ae_lid.items()}})
     r = await ctx.owner.post("/__slop/audience-crawl/pacing", json={"PAGE_GAP_S": PAGE_GAP_S, "JITTER_S": JITTER_S})
     r.raise_for_status()
     ctx.metric("pacing", r.json())
@@ -154,12 +218,17 @@ async def run(ctx) -> None:
         per[normal[k % len(normal)]].append({})
     per[big] = [{} for _ in range(BIG_SENDS)]
     per[dead] = [{} for _ in range(DEAD_SENDS)]
+    per[partial] = [{} for _ in range(P2B_SENDS)]
+    per[twice] = [{} for _ in range(P2B_SENDS)]
+    per[bare] = [{} for _ in range(P2B_SENDS)]
+    per[broken] = [{"xlists": [str(broken_lid)]} for _ in range(P2B_SENDS)]
     plan: list[dict] = []
     for ci, aid in enumerate(cs):
         off = rng.uniform(0, SPACING_S)
         for k, p in enumerate(per[aid]):
-            at = off + (CLOSE_S if k == 1 and aid != big else k * SPACING_S)
-            p.update(aid=aid, kind="auto" if (k + ci) % 2 == 0 else "composer", at=at, text=TEXT.format(len(plan)))
+            at = off + (CLOSE_S if k == 1 and aid not in (big, *special) else k * SPACING_S)
+            kind = "auto" if aid in special or (k + ci) % 2 == 0 else "composer"   # P2b's: the seeded prior's kind
+            p.update(aid=aid, kind=kind, at=at, text=TEXT.format(len(plan)))
             plan.append(p)
     load_s = max(p["at"] for p in plan)
     ctx.metric("plan", {"sends": len(plan), "creators": len(cs), "load_s": round(load_s, 1),
@@ -186,6 +255,7 @@ async def run(ctx) -> None:
         p["t_enq"] = time.time()
         r = await send_http.post(ENQUEUE, json={"account_id": p["aid"], "kind": "send_mass_message", "payload": {
             "text": p["text"], "user_lists": ["fans", "following"], "excluded_users": guard[p["aid"]],
+            **({"excluded_user_lists": p["xlists"]} if p.get("xlists") else {}),
             "exclude_replied_hours": 0, "exclude_inbound_hours": 0}})
         p["http"] = r.status_code
         if r.status_code != 200:
@@ -208,7 +278,8 @@ async def run(ctx) -> None:
     async def composer_send(p: dict) -> None:
         p["t_enq"] = time.time()
         r = await send_http.post(QUEUE, headers={"X-Account-Id": p["aid"]}, json={
-            "text": p["text"], "user_lists": ["fans", "following"], "excluded_users": guard[p["aid"]]})
+            "text": p["text"], "user_lists": ["fans", "following"], "excluded_users": guard[p["aid"]],
+            **({"excluded_user_lists": p["xlists"]} if p.get("xlists") else {})})
         p["t_ret"] = time.time()
         p["http"] = r.status_code
         if r.status_code == 200 and r.json().get("_mass_run_id"):
@@ -233,10 +304,14 @@ async def run(ctx) -> None:
     def mass_run(p):
         return p.get("mass_run_id")
 
-    recordable = [p for p in plan if mass_run(p) and p["aid"] != dead]
+    recordable = [p for p in plan if mass_run(p) and p["aid"] not in (dead, *special)]
+    p2b_sends = [p for p in plan if mass_run(p) and p["aid"] in special]
     while True:
         await asyncio.sleep(1.0)
-        if all(mass_run(p) in seen for p in recordable):
+        ids = ",".join(str(mass_run(p)) for p in p2b_sends) or "0"
+        judged = {int(i) for (i,) in await asyncio.to_thread(
+            _q, w, f"SELECT id FROM mass_runs WHERE crawl_outcome IS NOT NULL AND id IN ({ids})")}
+        if all(mass_run(p) in seen for p in recordable) and all(mass_run(p) in judged for p in p2b_sends):
             break
         snap = aw.snapshot()
         last_page = max((x["t"] for x in snap["pages"]), default=t_sent)
@@ -253,19 +328,23 @@ async def run(ctx) -> None:
     by_text = {a["text"]: a for a in snap["accepts"]}
     with fake.lock:
         qid_text = {int(e["id"]): (a, e.get("text") or "") for a, es in fake.queue.items() for e in es}
-    rows = {int(i): {"aid": a, "queue_id": q, "rec": None if rj is None else json.loads(rj), "kind": k}
-            for i, a, q, rj, k in _q(w, "SELECT id, account_id, queue_id, recipients_json, automation_kind FROM mass_runs")}
+    rows = {int(i): {"aid": a, "queue_id": q, "rec": None if rj is None else json.loads(rj), "kind": k, "crawl": co,
+                     "af": af}
+            for i, a, q, rj, k, co, af in _q(w, "SELECT id, account_id, queue_id, recipients_json, automation_kind, "
+                                                "crawl_outcome, audience_filter FROM mass_runs")}
     for p in plan:
         row = rows.get(mass_run(p)) if mass_run(p) else None
         p["row"] = row
         wire_text = qid_text.get(int(row["queue_id"]))[1] if row and row["queue_id"] and int(row["queue_id"]) in qid_text else None
         p["accept"] = by_text.get(wire_text) if wire_text is not None else None
-    lines = []
+    lines, repeats = [], []
     for log in sorted(ctx.out.glob("relay*.log")):
-        for m in _END.finditer(log.read_text(errors="replace")):
+        text = log.read_text(errors="replace")
+        repeats += [{"account": m[1], "src": m[2], "users_count": m[3], "verdict": m[4]} for m in _REPEAT.finditer(text)]
+        for m in _END.finditer(text):
             lines.append({"account": m[1], "run": m[2], "outcome": m[3], "pages": int(m[4]), "failed": int(m[5]),
                           "resumes": int(m[6]), "waited_s": float(m[7]), "reused": int(m[8]),
-                          "coalesced": int(m[9])})
+                          "coalesced": int(m[9]), "sent_count": m[10], "ratio": m[11]})
     ctx.metric("audience_crawl_end", {"lines": len(lines), "outcomes": dict(Counter(x["outcome"] for x in lines)),
                                       "pages": sum(x["pages"] for x in lines), "failed": sum(x["failed"] for x in lines),
                                       "resumes": sum(x["resumes"] for x in lines),
@@ -292,7 +371,7 @@ async def run(ctx) -> None:
     wrong, compared = [], 0
     for p in plan:
         row = p["row"]
-        if not row or row["rec"] is None or p["aid"] in (churn, dead):
+        if not row or row["rec"] is None or p["aid"] in (churn, dead, *special):
             continue
         compared += 1
         truth = set((p["accept"] or {}).get("truth") or ())
@@ -319,7 +398,7 @@ async def run(ctx) -> None:
         k = sum(1 for g in d if g < PAGE_GAP_S - PACED_TOL_S)
         if k:
             short[aid[-4:]] = k
-    live = [a for a in cs if a != dead]
+    live = [a for a in cs if a not in (dead, broken)]   # the broken-list Creator reads no roster (EXCLUDE_FIRST)
     ctx.check(PACED, all(len(by_c.get(a, ())) >= 2 for a in live) and not short,
               floor_s=round(PAGE_GAP_S - PACED_TOL_S, 3), min_gap_s=gaps, short_gaps=short,
               pages=sum(len(v) for v in by_c.values()),
@@ -357,12 +436,14 @@ async def run(ctx) -> None:
     for x in lines:
         rounds[x["account"]] += 1 / (x["coalesced"] + 1)
         extra[x["account"]] += x["resumes"] + x["failed"]
-    bound = {a: round(rounds[a]) * per_read[a] + extra[a] for a in cs}
+    # a tail-repeat roster re-reads its repeated page once before the repeat ends it (_page): one more call a round
+    reread = {a: round(rounds[a]) if a == twice else 0 for a in cs}
+    bound = {a: round(rounds[a]) * per_read[a] + extra[a] + reread[a] for a in cs}
     over = {a[-4:]: {"calls": roster_calls[a], "bound": bound[a]} for a in cs if roster_calls[a] > bound[a]}
     ae_lists = {a: set() for a in cs}
     for acc in snap["accepts"]:
         if acc["account"] in ae_lists:
-            ae_lists[acc["account"]].update(acc.get("excluded_lists") or ())
+            ae_lists[acc["account"]].update(x for x in acc.get("excluded_lists") or () if x != broken_lid)
     with fake.lock:
         calls = list(fake.calls)
     list_reads = Counter()
@@ -382,6 +463,86 @@ async def run(ctx) -> None:
               calls={a[-4:]: f"{roster_calls[a]}/{bound[a]}" for a in cs},
               reused=sum(x["reused"] for x in lines), coalesced_lines=sum(1 for x in lines if x["coalesced"]),
               roster_calls_per_send=round(sum(roster_calls.values()) / max(1, len([p for p in plan if mass_run(p)])), 1))
+
+    # ── fetch diet P2b ──
+    line_of = {}
+    for x in lines:
+        line_of[x["run"]] = x                  # the last line of a run wins (as the watch reads it)
+
+    def p2b(aid):
+        out = []
+        for p in sorted((p for p in plan if p["aid"] == aid), key=lambda p: p["at"]):
+            mid = mass_run(p)
+            row, ln = p["row"] or {}, line_of.get(str(mid)) or {}
+            try:                                   # what makes it comparable (or not) to the seeded send
+                xl = (json.loads(row.get("af") or "{}") or {}).get("excluded_user_lists")
+            except ValueError:
+                xl = None
+            out.append({"text": p["text"], "kind": p["kind"], "mass_run_id": mid, "rec": row.get("rec"),
+                        "automation_kind": row.get("kind"), "excluded_user_lists": xl,
+                        "n": None if row.get("rec") is None else len(row["rec"]), "crawl_outcome": row.get("crawl"),
+                        "outcome": ln.get("outcome"), "pages": ln.get("pages"), "failed": ln.get("failed"),
+                        "sent_count": ln.get("sent_count"), "ratio": ln.get("ratio"), "accept": p["accept"]})
+        return out
+
+    def ratio_of(s):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+
+    def feed_reads(aid):
+        return sum(1 for x in snap["feeds"] if x["account"] == aid and x["status"] == 200)
+
+    show = lambda xs: [{k: v for k, v in x.items() if k not in ("rec", "accept")} for x in xs]
+    ps = p2b(partial)
+    first, second = (ps + [{}, {}])[:2]
+    r1 = ratio_of(first.get("ratio"))
+    ctx.check(INCOMPLETE_NULL, bool(first.get("mass_run_id")) and first.get("rec") is None
+              and first.get("outcome") == "incomplete" and first.get("crawl_outcome") == "incomplete"
+              and first.get("sent_count") == str(audience_n[partial]) and r1 is not None and r1 < 1.0, sends=show(ps),
+              audience_n=audience_n[partial], prior_run=priors.get(partial))
+    first_calls = (first.get("pages") or 0) + (first.get("failed") or 0) - feed_reads(partial)
+    ctx.check(SKIP_NEXT, bool(second.get("mass_run_id")) and second.get("rec") is None
+              and second.get("outcome") == "skipped_incomplete" and second.get("pages") == 0
+              and second.get("crawl_outcome") == "skipped_incomplete" and roster_calls[partial] <= first_calls,
+              roster_calls=roster_calls[partial], first_line_roster_calls=first_calls,
+              feed_reads=feed_reads(partial), sends=show(ps))
+    bs = p2b(broken)
+    broken_reads = sum(1 for c in calls if c["account"] == broken and c["route"].startswith("GET ")
+                       and (m := _LIST_USERS.match(c["path"])) and int(m[1]) == broken_lid)
+    count_gets = Counter(c["status"] for c in calls if c["account"] == broken and c["route"].startswith("GET ")
+                         and (m := _LIST.match(c["path"])) and int(m[1]) == broken_lid)
+    list_repeats = [x for x in repeats if x["account"] == broken and x["src"] == f"('list', {broken_lid})"]
+    ctx.check(EXCLUDE_FIRST, len(bs) == P2B_SENDS and all(
+        x["mass_run_id"] and x["rec"] is None and x["outcome"] == "truncated" and x["crawl_outcome"] == "truncated"
+        for x in bs) and roster_calls[broken] == 0 and broken_reads >= len(bs)
+        and list_repeats and all(x["users_count"] == str(BROKEN_LIST_N) and x["verdict"] == "truncated"
+                                 for x in list_repeats)
+        and set(count_gets) == {200} and count_gets[200] >= len(list_repeats),   # a 404 reads users_count=-
+              roster_calls=roster_calls[broken], list_reads=broken_reads, list_id=broken_lid,
+              count_gets=dict(count_gets), repeat_lines=list_repeats, sends=show(bs))
+    def tail_reads(aid):
+        return sum(1 for x in snap["pages"] if x["account"] == aid and x["route"].endswith("/subscribers")
+                   and x["status"] == 200 and x["offset"] >= len(fans[aid]))
+
+    rs = p2b(twice)
+    verdicts = Counter(x["verdict"] for x in repeats if x["account"] == twice)
+    cuts = verdicts["truncated"]
+    ctx.check(REPEAT_TWICE_NULL, len(rs) == P2B_SENDS and all(
+        x["mass_run_id"] and x["rec"] is None and x["outcome"] == "truncated" and x["crawl_outcome"] == "truncated"
+        and x["sent_count"] == "-" for x in rs)
+        and cuts >= 1 and set(verdicts) == {"retry", "truncated"} and verdicts["retry"] >= cuts
+        and tail_reads(twice) >= 2 * cuts,
+              repeat_verdicts=dict(verdicts), tail_repeats_read=tail_reads(twice), roster=len(fans[twice]),
+              sends=show(rs))
+    bs2 = p2b(bare)
+    bare_repeats = sum(1 for x in repeats if x["account"] == bare)
+    ctx.check(NO_COUNT_NULL, len(bs2) == P2B_SENDS and all(
+        x["mass_run_id"] and x["rec"] is None and x["outcome"] == "no_count" and x["crawl_outcome"] == "no_count"
+        and x["sent_count"] == "-" and x["ratio"] == "-" for x in bs2)
+              and feed_reads(bare) >= 1 and bare_repeats == 0,
+              feed_reads=feed_reads(bare), repeat_lines=bare_repeats, sends=show(bs2))
 
     # drift (reported, not gated): the churn Creator's stamps vs OF at accept
     extra = missing = n_stamp = n_truth = 0

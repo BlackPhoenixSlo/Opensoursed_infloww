@@ -110,6 +110,9 @@ function ranges(path = "/admin/stats/per-employee"): Record<string, string>[] {
     .map((u) => ({ from: u.searchParams.get("from") ?? "", to: u.searchParams.get("to") ?? "" }));
 }
 const lastRange = (path?: string) => ranges(path).at(-1);
+/** A chart's bars and lines, by their labels; the cards' info tips are role="img" too and are left out. */
+const chartLabels = (el: HTMLElement) => within(el).getAllByRole("img").filter((b) => !b.hasAttribute("data-info-tip"))
+  .map((b) => b.getAttribute("aria-label"));
 /** Creator reports open with "Show net earnings" on (analytics-creator-reports#33, ticket 60); a test written against
  *  the gross figures turns it off first. */
 async function showGross() {
@@ -276,7 +279,8 @@ describe("StatsReport Employee reports notice", () => {
     fallback = FALLBACK;
     renderWithProviders(<StatsReport view="employee" />);
     const fallbackIcon = await screen.findByRole("img", { name: FALLBACK });
-    expect(fallbackIcon).toHaveAttribute("title", FALLBACK);
+    // The info tip carries the line as its name and hover tooltip (no native title since the info-tip change).
+    expect(fallbackIcon).toHaveAttribute("data-info-tip");
     expect(screen.getByRole("note")).toHaveAttribute("title", FALLBACK);
     expect(screen.getByRole("note")).toHaveTextContent(NOTICE);
   });
@@ -474,9 +478,9 @@ describe("StatsReport Creator reports frame", () => {
     fireEvent.click(within(bar).getByRole("button", { name: "Date range" }));
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-01" } });
     fireEvent.keyDown(document, { key: "Escape" });
-    const trendTabs = screen.getByRole("group", { name: "Earnings trends granularity" });
-    fireEvent.click(within(trendTabs).getByRole("button", { name: "Week" }));
-    expect(within(trendTabs).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
+    const shownBy = within(bar).getByRole("combobox", { name: "Shown by" });
+    fireEvent.change(shownBy, { target: { value: "week" } });
+    expect(shownBy).toHaveValue("week");
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).not.toBe(rangeLabel);
 
     // Reset puts the default 30-day range, every Creator and Day back.
@@ -484,7 +488,7 @@ describe("StatsReport Creator reports frame", () => {
     fireEvent.click(within(bar).getByRole("button", { name: "Reset" }));
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).toBe(rangeLabel);
     expect(within(bar).getByRole("button", { name: "Creator" })).toBeInTheDocument();
-    expect(within(trendTabs).getByRole("button", { name: "Day" })).toHaveAttribute("aria-pressed", "true");
+    expect(shownBy).toHaveValue("day");
     expect(await screen.findByText("Creator B")).toBeInTheDocument();
   });
 
@@ -600,7 +604,7 @@ describe("StatsReport Creator reports Overview", () => {
   /** A summary tile's figures: its value, then its growth. */
   const figures = (tile: HTMLElement) => within(tile).getAllByRole("definition").map((d) => d.textContent);
   /** The bars of a chart, each as `<label>: <amount>`. */
-  const bars = (name: string) => within(section(name)).getAllByRole("img").map((b) => b.getAttribute("aria-label"));
+  const bars = (name: string) => chartLabels(section(name));
   const pickRange = (from: string, to: string) => {
     fireEvent.click(screen.getByRole("button", { name: "Date range" }));
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: from } });
@@ -668,23 +672,24 @@ describe("StatsReport Creator reports Overview", () => {
     [dayRow("2026-10-13T09:00", 1500), dayRow("2026-10-14T15:00", 2500)]);
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
-    const tabs = await screen.findByRole("group", { name: "Earnings trends granularity" });
-    const tab = (name: string) => within(tabs).getByRole("button", { name });
+    // #4: the toolbar's one "Shown by" select buckets every chart; no per-chart tabs.
+    const shownBy = await screen.findByRole("combobox", { name: "Shown by" });
+    expect(screen.queryByRole("group", { name: /granularity/ })).toBeNull();
+    const tab = (name: string) => within(shownBy).getByRole("option", { name: `Shown by ${name.toLowerCase()}` });
+    const pickGran = (name: string) => fireEvent.change(shownBy, { target: { value: name.toLowerCase() } });
     // analytics-creator-reports#65: Hour / Day / Week / Month, Day the default.
-    expect(within(tabs).getAllByRole("button").map((b) => b.textContent)).toEqual(["Hour", "Day", "Week", "Month"]);
-    expect(tab("Day")).toHaveAttribute("aria-pressed", "true");
+    expect(within(shownBy).getAllByRole("option").map((b) => b.textContent))
+      .toEqual(["Shown by hour", "Shown by day", "Shown by week", "Shown by month"]);
+    expect(shownBy).toHaveValue("day");
     // The selected 7-day window rules Hour out (#28, #29).
-    for (const g of [tab("Hour"), within(screen.getByRole("group", { name: "Earnings by channel granularity" }))
-      .getByRole("button", { name: "Hour" })]) {
-      expect(g).toBeDisabled();
-      expect(g).toHaveAttribute("title", "Date range must be 2 days or less for this option");
-    }
+    expect(tab("Hour")).toBeDisabled();
+    expect(tab("Hour")).toHaveAttribute("title", "Date range must be 2 days or less for this option");
 
     // Tue 13 Oct to Wed 14 Oct, 2 days: Hour or Day; Hour reads the local hours, a bar per hour.
     pickRange("2026-10-13", "2026-10-14");
     await waitFor(() => expect(tab("Hour")).toBeEnabled());
     expect(tab("Week")).toBeDisabled();
-    fireEvent.click(tab("Hour"));
+    pickGran("Hour");
     await waitFor(() => expect(revenue().some((r) => r.group_by === "hour" && r.by_kind === "true"
       && r.from === "2026-10-13T00:00:00.000Z" && r.to === "2026-10-14T23:59:59.999Z")).toBe(true));
     await waitFor(() => expect(bars("Earnings trends")).toHaveLength(48));
@@ -699,7 +704,7 @@ describe("StatsReport Creator reports Overview", () => {
     expect(bars("Earnings trends")[13]).toBe("Oct 14: $5");
     expect(tab("Month")).toBeDisabled();
     expect(tab("Month")).toHaveAttribute("title", "Date range must be more than 62 days for this option"); // #28
-    fireEvent.click(tab("Week"));
+    pickGran("Week");
     // Weeks run seven days from the range's first day.
     expect(bars("Earnings trends")).toEqual(["Oct 1: $30", "Oct 8: $45"]);
 
@@ -707,12 +712,12 @@ describe("StatsReport Creator reports Overview", () => {
     pickRange("2026-08-01", "2026-10-14");
     await waitFor(() => expect(tab("Day")).toBeDisabled());
     expect(tab("Day")).toHaveAttribute("title", "Date range must be 31 days or less for this option"); // #28
-    fireEvent.click(tab("Month"));
+    pickGran("Month");
     expect(bars("Earnings trends")).toEqual(["Aug 26: $70", "Sep 26: $0", "Oct 26: $75"]);
 
     // Sun 4 Oct to Wed 14 Oct, 11 days: Day only, and the chosen Month moves to Day.
     pickRange("2026-10-04", "2026-10-14");
-    await waitFor(() => expect(tab("Day")).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(shownBy).toHaveValue("day"));
     expect(tab("Week")).toBeDisabled();
     expect(tab("Week")).toHaveAttribute("title", "Date range must be between 14 to 365 days for this option"); // #28
   });
@@ -729,13 +734,13 @@ describe("StatsReport Creator reports Overview", () => {
     })).toBe(true));
     const chan = section("Earnings by channel");
     // analytics-creator-reports#74, #75: a line per channel, every channel when none is picked.
-    await waitFor(() => expect(within(chan).getAllByRole("img").map((l) => l.getAttribute("aria-label")))
+    await waitFor(() => expect(chartLabels(chan))
       .toEqual(["Subscription", "Tips", "Posts", "Messages", "Referrals"]));
     // analytics-creator-reports#71: the Channels pick, Referrals among them.
     fireEvent.click(within(chan).getByRole("button", { name: "Channels" }));
     expect(screen.getByRole("checkbox", { name: "Referrals" })).toBeEnabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Tips" }));
-    expect(within(chan).getAllByRole("img").map((l) => l.getAttribute("aria-label"))).toEqual(["Tips"]);
+    expect(chartLabels(chan)).toEqual(["Tips"]);
 
     // analytics-creator-reports#75, #85: the donut's legend, share and amount of the kind read's channels.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
@@ -886,7 +891,7 @@ describe("StatsReport Creator reports Creator statistics", () => {
     for (const [name, tip] of [
       ["Creators", "Total number of creators managed by your team"],
       ["Message earnings", "Earnings from creators’ messages during the selected time frame"],
-      ["Total earnings", "Earnings from all creators’ subscriptions, tips, posts, messages, streams and referrals during the selected time frame"],
+      ["Total earnings", "Earnings from all creators’ subscriptions, tips, posts, messages and streams during the selected time frame, OnlyFans referrals not included"],
       ["Refunded", "Amount of refunds during the selected time frame"],
     ]) expect(within(card(name)).getByRole("img", { name: tip })).toBeInTheDocument();
     await waitFor(() => expect(card("Creators")).toHaveTextContent("2"));
@@ -1017,7 +1022,7 @@ describe("StatsReport Creator reports Creator performance", () => {
     .filter((u) => u.pathname === "/admin/stats/revenue")
     .map((u) => Object.fromEntries(u.searchParams));
   const section = (name: string) => screen.getByRole("region", { name });
-  const bars = () => within(section("Earnings")).getAllByRole("img").map((b) => b.getAttribute("aria-label"));
+  const bars = () => chartLabels(section("Earnings"));
   const openPerformance = async () => {
     window.history.replaceState(null, "", "/analytics/creator-reports?tab=performance");
     renderWithProviders(<StatsReport view="creator" />);
@@ -1380,7 +1385,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(head).not.toContain("Tips");
     expect(head).not.toContain("OF ranking");
     expect(lines.slice(3, 5)).toEqual(["", "By day"]);
-    expect(lines[5]).toBe("Creator,Day,Total earnings,Subscription,Tips,Posts,Messages,Other,Chargebacks");
+    expect(lines[5]).toBe("Creator,Day,Total earnings (excl. referrals),Subscription,Tips,Posts,Messages,Other,Chargebacks");
     // The selected window's seven days; OF's net by channel on the one with sales.
     expect(lines.slice(6)).toHaveLength(7);
     expect(lines).toContain("Creator A,2026-10-09,0,0,0,0,0,0,0");

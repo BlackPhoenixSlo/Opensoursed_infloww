@@ -1,25 +1,26 @@
-"""service/vault_ai_fix.py — let the operator settle a describe/flags dispute.
+"""service/vault_ai_fix.py — the operator's grading loop over the flags pass.
 
 Two vision passes look at the same picture. `describe` writes prose plus
 `clothing_state`; the cheap `flags` pass writes, per region, whether she is
 bare / covered / not in frame, and NAMES what is covering her. Where they
-contradict each other, one of them is provably wrong — and which one differs
-item by item. On the graded vault, all ten current disputes are `clothing_state:
-fully_nude` on a still where the flags name a thong or a bodysuit, and the
-flags are right; the reverse also happens.
+contradict, one of them is wrong.
 
-Nothing here guesses. `list_disputes` renders BOTH readings and the two
-resolutions that would settle it; `apply_fix` writes whichever the operator
-picked. Automating the choice was the temptation and is exactly wrong — the
-whole reason this file exists is that a confident wrong call about what is in a
-picture is what sells a fan something that is not there.
+Nobody settles those by hand any more. A "Fix disagreements" queue asked the
+operator to pick a side on every one; nobody worked it, so disputed items kept
+their free lanes and their describe copy. Now `vault_ai_brief.settled_reading`
+reads every disputed item the least harmful way at read time (flags win for
+price, copy claims only what both passes agree on, never a free lane) and
+writes nothing — a re-run of either pass can still settle it for real.
 
-DURABILITY. A fix is written three ways, because a correction that a re-run
-silently reverts is worse than no correction — the operator would have no
-reason to look again:
+What stays here is the grading loop: the operator checks items pre-set to what
+the model believes and taps what is wrong. `passes_disagree` stays one of the
+reasons an item is nominated, as a sampled audit of the auto-settled reading.
 
-  * into `ai_fields_json`, so every existing reader (`vault_scripts` lanes,
-    `vault_catalog_seed` pricing, the copy brief) sees it with no changes;
+DURABILITY. A correction (`apply_fix`, via `record_grade`) is written three
+ways, because a correction a re-run silently reverts is worse than none:
+
+  * into `ai_fields_json`, so every reader (`vault_scripts` lanes and prices,
+    the copy brief) sees it with no changes;
   * into `operator_overrides_json`, the documented override tier;
   * into `locked_fields_json`, which `_flags_one` / `_describe_one` check
     before writing, so a forced re-run refreshes everything EXCEPT this.
@@ -44,22 +45,6 @@ from vault_mirror import visible_to
 log = logging.getLogger("of-relay.vault_ai_fix")
 
 
-def _poster_frame_count(raw_json: str | None) -> int:
-    """How many hover-scrub frames a video has — the count of OF's own
-    pre-extracted poster frames (`files.preview.options[]`, media-id keyed and
-    permanent). 0 for a photo or a video that exposes none, so the review UI
-    knows not to offer a scrub. Kept here rather than importing vault_ai_api to
-    avoid a cycle; it is a shallow dict walk, no OF call."""
-    try:
-        raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
-    except (TypeError, ValueError):
-        return 0
-    if not isinstance(raw, dict):
-        return 0
-    prev = (raw.get("files") or {}).get("preview") or {}
-    opts = prev.get("options") if isinstance(prev, dict) else None
-    return sum(1 for o in (opts or []) if isinstance(o, dict) and o.get("url"))
-
 # The exposure fields an operator may correct. Deliberately narrow: these are
 # the ones the lanes and the price tiers read, and the ones the two passes can
 # contradict each other about. Everything else stays with the existing editor.
@@ -68,53 +53,15 @@ FIXABLE: tuple[str, ...] = (
     *vault_ai_brief.VIS_REGIONS,
     *vault_ai_brief.OVER_KEYS.values(),
     "underwear_visible",
-    # `penetration` and `acts` are what the offscreen-penetration dispute is
-    # ABOUT, and both were missing here: `propose()` offered "penetration →
-    # none", `apply_fix` silently dropped it as unknown, and the operator got
-    # `no_fixable_fields` from the only button that side of the dispute has.
-    # `acts` comes with it — the contradiction fires on EITHER the field or a
-    # penetrating act, so settling one and not the other leaves the item
-    # disputed forever and the button looks like it did nothing.
+    # `penetration` and `acts` are what the offscreen-penetration contradiction
+    # is about. Both go together: it fires on EITHER the field or a genital
+    # act, so correcting one alone leaves the item disputed.
     "penetration", "acts",
 )
 
 # The V2 describe enum (service/vault_ai_api.py `_V2_SCHEMA`). Bounded here so a
 # hand-edited payload cannot write a value the readers do not understand.
 _PENETRATION_STATES = frozenset({"none", "fingers", "toy", "penis", "unclear"})
-
-# `clothing_state` values, low → high reveal. Used to PROPOSE a value when the
-# operator says the flags were right; never applied without them choosing it.
-_CLOTHING_FOR = {
-    # (breasts bare?, vulva bare?) → the state that matches what is on show
-    (False, False): "lingerie_on",
-    (True, False): "pulled_down",     # topless, still covered below
-    (False, True): "pulled_aside",    # covered above, exposed below
-    (True, True): "partially_off",    # both out, something still on
-}
-
-# Same table keyed on whether a real GARMENT is WORN over each region, not on
-# whether the region reads "bare". The two differ exactly when a hand or her
-# hair is the only thing over her — "she is still nude behind her own hand"
-# (vault_ai_brief), so a bare chest with a thong on is `pulled_down`, and keying
-# the state on `is_bare` (which reads a hand-covered breast as not-bare) put it
-# in `lingerie_on`. `underwear_visible` is still true here, so both-exposed maps
-# to `partially_off` (an accessory on) rather than `fully_nude`, which would
-# re-trigger the very contradiction being resolved.
-_CLOTHING_WORN = {
-    # (garment worn on breasts?, garment worn on vulva?)
-    (True, True): "lingerie_on",
-    (False, True): "pulled_down",     # chest bare, bottom on — topless
-    (True, False): "pulled_aside",    # top on, bottom exposed
-    (False, False): "partially_off",
-}
-
-
-def _worn(fields: dict[str, Any], region: str) -> bool:
-    """A real garment is over this region. A hand, an arm or her hair is not
-    one — that region is exposed for every downstream reader even when the flags
-    called it `covered`."""
-    return vault_ai_brief.is_clothing(vault_ai_brief.garment_over(fields, region))
-
 
 def _s(v: Any) -> str:
     return str(v or "").strip().lower()
@@ -133,146 +80,13 @@ def _locked(raw: str | None) -> set[str]:
     return set(got) if isinstance(got, (list, tuple, set)) else set()
 
 
-def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any]]:
-    """The two ways this dispute could be settled, as literal field writes.
-
-    Returned as `{"flags": {...}, "describe": {...}}` — "flags" meaning "the
-    flags pass saw it right, correct the describe fields to match", and
-    "describe" the reverse. Either may come back empty when that side has
-    nothing to change, which is itself informative: it means only one reading
-    is actually available and the operator is confirming rather than choosing.
-    """
-    bare_b = vault_ai_brief.is_bare(fields, "breasts_vis")
-    bare_v = vault_ai_brief.is_bare(fields, "vulva_vis")
-    trust_flags: dict[str, Any] = {}
-    trust_describe: dict[str, Any] = {}
-
-    if "nude_but_clothed" in codes:
-        # Flags right → she is not fully nude. WHICH partial state is decided by
-        # what she is WEARING, not by what reads bare: top off with a thong on is
-        # `pulled_down`. Keying this on `is_bare` made a hand-over-breast/thong
-        # still — the operator's "top exposed, bottom lingerie on" case — come
-        # back `lingerie_on`, because a hand-covered breast is not "bare".
-        trust_flags["clothing_state"] = _CLOTHING_WORN[
-            (_worn(fields, "breasts_vis"), _worn(fields, "vulva_vis"))]
-        # A region the flags called `covered` but named only a hand/hair over is
-        # exposed to every downstream reader (the $10/$50 tiers, the mass-safe
-        # lane), so correct it — the item should be right, not merely un-disputed.
-        for region in ("breasts_vis", "vulva_vis"):
-            if vault_ai_brief.vis(fields, region) == "covered" and not _worn(fields, region):
-                trust_flags[region] = "bare"
-        # Describe right → she IS nude, so there is no garment on her. Drop the
-        # named garments and open whatever they were covering.
-        for region, key in vault_ai_brief.OVER_KEYS.items():
-            if vault_ai_brief.garment_over(fields, region):
-                trust_describe[key] = None
-                if vault_ai_brief.vis(fields, region) == "covered":
-                    trust_describe[region] = "bare"
-        trust_describe["underwear_visible"] = False
-
-    if "lingerie_but_nothing_on" in codes:
-        # Flags right → no UNDERWEAR is visible, so `lingerie_on` is wrong. Which
-        # way that falls is decided by what the flags actually saw, and this rule
-        # used to be inverted: nothing on show proposed `fully_nude`, so a woman
-        # photographed in a black top was offered "she is nude" as the
-        # correction. `underwear_visible` is False for a tank top and jeans too —
-        # not-in-lingerie is far more often DRESSED than naked.
-        if not (bare_b or bare_v):
-            trust_flags["clothing_state"] = "dressed"
-        elif vault_ai_brief.wearing_something(fields):
-            trust_flags["clothing_state"] = _CLOTHING_FOR[(bare_b, bare_v)]
-        else:
-            trust_flags["clothing_state"] = "fully_nude"
-        trust_describe["underwear_visible"] = True
-
-    if "dressed_but_bare" in codes or "sfw_but_bare" in codes:
-        # Flags right → she is not dressed / not sfw.
-        trust_flags["clothing_state"] = _CLOTHING_FOR[(bare_b, bare_v)]
-        if "sfw_but_bare" in codes:
-            trust_flags["explicitness"] = "suggestive"
-        # Describe right → nothing is actually bare; it is covered.
-        for region in vault_ai_brief.VIS_REGIONS:
-            if vault_ai_brief.is_bare(fields, region):
-                trust_describe[region] = "covered"
-
-    if "penetration_offscreen" in codes:
-        # Flags right → nothing genital is in shot, so ANY recorded genital act is
-        # off-frame and cannot be seen. Clear the penetration field AND every act
-        # that needs the genitals visible (`GENITAL_ACTS`) in the same write: the
-        # contradiction fires on either source, so dropping one alone left the
-        # item disputed after the operator had settled it. Stripping only the
-        # INSERTION acts used to leave `rubbing_clit` on a still where the vulva
-        # is not_in_frame, so "Flags were right" still claimed she was rubbing a
-        # clit that is not in the picture — the exact both-wrong case an operator
-        # cannot fix with either button.
-        trust_flags["penetration"] = "none"
-        acts = [a for a in (fields.get("acts") or [])
-                if isinstance(a, str)
-                and a.strip().lower() not in vault_ai_brief.GENITAL_ACTS]
-        if len(acts) != len(fields.get("acts") or []):
-            trust_flags["acts"] = acts
-        trust_describe["vulva_vis"] = "bare"
-
-    return {"flags": trust_flags, "describe": trust_describe}
-
-
-async def list_disputes(account_id: str, *,
-                        allowed: frozenset[int] | None = None) -> dict[str, Any]:
-    """Every item whose two passes contradict each other, with both readings.
-
-    Read-only. Ordered oldest-first so the operator works a stable list rather
-    than a set that reshuffles as they fix it. `allowed`: see `vault_mirror.visible_to`.
-    """
-    stmt = (select(VaultItem.media_id, VaultItem.kind, VaultItem.ai_fields_json,
-                   VaultItem.locked_fields_json, VaultItem.raw_json,
-                   VaultItem.created_at)
-            .where(VaultItem.account_id == account_id,
-                   VaultItem.removed_at.is_(None),
-                   VaultItem.kind.in_(("photo", "video")))
-            .order_by(VaultItem.created_at.asc(), VaultItem.media_id.asc()))
-    async with get_session() as s:
-        rows = (await s.execute(stmt.where(visible_to(allowed)))).all()
-
-    out: list[dict[str, Any]] = []
-    checked = 0
-    for mid, kind, fj, lj, raw_json, _ in rows:
-        fields = vault_ai_brief.load_fields(fj)
-        if not vault_ai_brief.flags_known(fields):
-            continue
-        checked += 1
-        codes = vault_ai_brief.contradictions(fields)
-        if not codes:
-            continue
-        locked = _locked(lj)
-        out.append({
-            "media_id": int(mid),
-            "kind": kind,
-            "frame_count": _poster_frame_count(raw_json) if kind == "video" else 0,
-            "codes": codes,
-            "reasons": [vault_ai_brief.CONTRADICTIONS.get(c, c) for c in codes],
-            "description": str(fields.get("description") or "")[:400],
-            "clothing_state": _s(fields.get("clothing_state")),
-            "explicitness": _s(fields.get("explicitness")),
-            "underwear_visible": fields.get("underwear_visible"),
-            "regions": {r: vault_ai_brief.vis(fields, r)
-                        for r in vault_ai_brief.VIS_REGIONS},
-            "over": {r: vault_ai_brief.garment_over(fields, r)
-                     for r in vault_ai_brief.OVER_KEYS},
-            "resolved": sorted(locked & set(FIXABLE)),
-            "propose": propose(fields, codes),
-        })
-    return {"account_id": account_id, "checked": checked,
-            "disputes": out, "count": len(out)}
-
-
 async def apply_fix(account_id: str, media_id: int,
                     values: dict[str, Any]) -> dict[str, Any]:
     """Write one operator correction, locked against future re-runs.
 
-    `values` is the literal field→value map to apply — normally one of the two
-    `propose()` branches, optionally hand-edited. Unknown keys are dropped
-    rather than rejected, so a client sending a whole item back cannot
-    accidentally rewrite a field this endpoint was never meant to own.
+    `values` is the literal field→value map to apply (a grading correction).
+    Unknown keys are dropped rather than rejected, so a client sending a whole
+    item back cannot accidentally rewrite a field this was never meant to own.
     """
     edits = {k: v for k, v in (values or {}).items() if k in FIXABLE}
     if not edits:
@@ -362,19 +176,24 @@ def grade_of(fields: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _priority(fields: dict[str, Any], lanes: list[str], version: int,
-              reasons: list[str]) -> tuple:
+              reasons: list[str], price: int = 0) -> tuple:
     """Grading order. Never-graded first, then whatever costs most to get wrong.
 
     Two rounds of tuning were scored entirely on items that had already been
     graded, and a regression sat in the ungraded remainder through both without
     moving any total. Fresh items are where a real number comes from, so they
     lead — and within them, the ones that gate money or a mass send.
+
+    `price` is the tease price the auto-settled reading put on a disputed item
+    (`vault_scripts.shelf_price`): the audit of the settling looks first where
+    the most money rides on it.
     """
     g = grade_of(fields)
     graded_this_version = int(g.get("v") or 0) >= version
     paid = any(ln in ("tease 10", "tease 50", "safe explicit") for ln in lanes)
-    return (graded_this_version, -len(reasons),
-            not vault_ai_brief.contradictions(fields),
+    disputed = vault_ai_brief.is_disputed(fields)
+    return (graded_this_version, -len(reasons), not disputed,
+            -price if disputed else 0,
             not paid, not vault_ai_brief.any_bare(fields))
 
 
@@ -420,6 +239,8 @@ async def review_queue(account_id: str, *, limit: int = 60,
         why = iffy_reasons(fields, locked & set(vault_ai_brief.VIS_REGIONS))
         if only_iffy and not why:
             continue
+        disputed = vault_ai_brief.is_disputed(fields)
+        price = vault_scripts.shelf_price(fields, kind) if disputed else 0
         out.append({
             "media_id": int(mid), "kind": kind,
             "iffy": why,
@@ -433,9 +254,13 @@ async def review_queue(account_id: str, *, limit: int = 60,
             "clothing_state": _s(fields.get("clothing_state")),
             "explicitness": _s(fields.get("explicitness")),
             "codes": vault_ai_brief.contradictions(fields),
+            # How the lanes and copy read it while the passes disagree.
+            "settled": vault_ai_brief.settled_notes(fields),
+            "settled_price": price,
             "locked": sorted(locked & set(vault_ai_brief.VIS_REGIONS)),
             "graded": g,
-            "_sort": _priority(fields, lanes.get(int(mid), []), version, why),
+            "_sort": _priority(fields, lanes.get(int(mid), []), version, why,
+                               price),
         })
 
     out.sort(key=lambda r: r["_sort"])
@@ -553,7 +378,9 @@ async def flags_accuracy(account_id: str, version: int = 0, *,
 #                      Fingers do not go through a thong; four of these were
 #                      priced at nothing.
 #   passes_disagree    describe and flags contradict each other, so one is
-#                      provably wrong.
+#                      provably wrong. Auto-settled to the least-harmful
+#                      reading (`vault_ai_brief.settled_reading`); listed so a
+#                      sampled check can catch a settling rule that is wrong.
 #   blind              every region `not_in_frame` on explicit material. Might
 #                      be true; is also what a punt looks like.
 #   prose_vs_flags     the DESCRIPTION says one thing and the flags another.
@@ -572,7 +399,7 @@ async def flags_accuracy(account_id: str, version: int = 0, *,
 IFFY_REASONS: dict[str, str] = {
     "unexplained_cover": "says covered but cannot say what is covering her",
     "act_vs_covered": "something is inside her, yet the region reads covered",
-    "passes_disagree": "the describe pass and the flags pass contradict",
+    "passes_disagree": "the two passes disagree — auto-settled to the least-harmful reading below",
     "prose_vs_flags": "the written description does not match the flags",
     "blind": "explicit, but nothing at all is in frame",
 }

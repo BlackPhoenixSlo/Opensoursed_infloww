@@ -6,8 +6,11 @@ it: without the file `POST /__slop/img/arm` is a 409 that changes nothing, and n
 other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the client build error, as
 `_OfflineOF.__getattr__` did before this part existed: unarmed, nothing here can reach curl).
 
-  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None)  (harness side) writes `of-cdn.json`
-       {latency_s, pictures, assets: {"host/path": size}, mp4_sizes}, POSTs the arm hook and answers its body.
+  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None, stall=None)  (harness side) writes
+       `of-cdn.json` {latency_s, pictures, assets: {"host/path": size}, mp4_sizes, stall}, POSTs the arm hook and
+       answers its body. `stall` {"host/path": {"after": K, "hold_s": S}}: that key's 200 sends its headers and first
+       K bytes, then nothing for S s (a CDN response throttled to zero bytes mid-body), then the rest if the peer
+       is still there (the relay's curl drops it first: LOW_SPEED_TIME = its 30 s timeout).
        `pictures`: every asset's bytes are a real picture (`picture_bytes`, a small PNG; size ignored) so a browser
        draws it and vault_stills keeps it. `mp4_sizes` {"host/path.mp4": size}: that video is the clip padded to
        exactly `size` (`padded_mp4`: one trailing `free` box), a big file without encoding one. Arming again
@@ -38,9 +41,9 @@ other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the cli
 
 Record per call: i, t (arrival, epoch s), key ("host/path"), host, path, range, egress, cookie (a Cookie header came),
 auth_id (its auth_id cookie), of_headers (user-id / x-bc / app-token / sign sent), ua, status, inflight (requests
-in the fake at arrival, this one included: its max over calls is the fake's peak concurrency), bytes. A call
-leaves `inflight` just before its last byte is written (a non-200: before its status line), so a relay slot can
-never be released while the fake still counts its call.
+in the fake at arrival, this one included: its max over calls is the fake's peak concurrency), bytes, stalled (a
+`stall` key; status 499 unless the whole body got out). A call leaves `inflight` just before its last byte is
+written (a non-200: before its status line), so a relay slot can never be released while the fake still counts it.
 
 `OF` (joins `_OfflineOF`): a Creator with no session in a slop run gets, once armed, `http` = one curl_cffi Session
 per Creator (impersonate as of_client, the cookies an OFClient replays: synthetic `auth_id` = the Creator's id and
@@ -53,8 +56,9 @@ noise in a 1x1 JPEG's comment segments (`asset_bytes`: the browser decodes one g
 `latency_s` per request is a guess at OF's CDN through a proxy;
 the Signature is never verified, only the Policy's expiry and SourceIp; the egress is the proxy curl was told to
 use (a header the wrap adds), not the peer address the fake sees; `pictures` serves a PNG as image/jpeg (browsers
-sniff); one-spec Range answered as CloudFront does (206 + Content-Range, 416 past the end), no CDN 5xx; the session cookies and headers are synthetic (session-level here, where
-of_client sets them per request).
+sniff); one-spec Range answered as CloudFront does (206 + Content-Range, 416 past the end), no CDN 5xx; `stall`
+is a sleep in the fake's thread, not a real throttled TCP path; the session cookies and headers are synthetic
+(session-level here, where of_client sets them per request).
 """
 
 import base64
@@ -76,7 +80,7 @@ ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `cr
 OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
 _lock = threading.Lock()
 _calls: list[dict] = []
-_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}}
+_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}, "stall": {}}
 _state = {"port": None, "armed": False, "inflight": 0}
 _bytes: dict[str, bytes] = {}
 _sessions: dict[str, object] = {}
@@ -150,11 +154,11 @@ def creator_headers(account_id: str) -> dict[str, str]:
 
 
 async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False,
-                  mp4_sizes: dict | None = None) -> dict:
+                  mp4_sizes: dict | None = None, stall: dict | None = None) -> dict:
     """Harness side: `assets` {"host/path": {size, ...}} into the config file, then the arm hook."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
         "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()},
-        "mp4_sizes": mp4_sizes or {}}))
+        "mp4_sizes": mp4_sizes or {}, "stall": stall or {}}))
     r = await http.post("/__slop/img/arm")
     if r.status_code != 200:
         raise RuntimeError(f"slop: img arm hook answered {r.status_code}: {r.text[:200]}")
@@ -337,9 +341,19 @@ def _serve() -> int:
                 self.end_headers()
                 if not body:
                     return
+                st = _cfg["stall"].get(key) if status == 200 else None
+                if st:  # throttled to zero bytes mid-body (docstring: arm_run `stall`)
+                    k = max(0, min(int(st.get("after", 0)), len(body) - 1))
+                    rec.update(stalled=True, status=499)  # 200 again only if the whole body got out
+                    self.wfile.write(body[:k])
+                    self.wfile.flush()
+                    time.sleep(float(st.get("hold_s", 45)))
+                    body = body[k:]
                 self.wfile.write(body[:-1])
                 leave()  # before the last byte: the relay cannot finish (and free its slot) before this
                 self.wfile.write(body[-1:])
+                if st:
+                    rec["status"] = 200
             except (BrokenPipeError, ConnectionResetError):
                 rec["status"] = rec["status"] or 499
             finally:
@@ -395,7 +409,8 @@ def _arm() -> dict:
         for k in set(big) | set(_cfg["mp4_sizes"]):
             _bytes.pop(k, None)
         _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets}, mp4_sizes=big,
-                    latency_s=float(d.get("latency_s") or 0), pictures=bool(d.get("pictures")))
+                    latency_s=float(d.get("latency_s") or 0), pictures=bool(d.get("pictures")),
+                    stall=d.get("stall") or {})
     cache = Path(os.environ["DEMO_SHOTS_TMP"]) / "img-cache"
     cache.mkdir(parents=True, exist_ok=True)
     img_api._IMG_CACHE_DIR = cache

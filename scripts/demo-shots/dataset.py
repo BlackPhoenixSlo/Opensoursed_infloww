@@ -167,21 +167,22 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _targets(rng: random.Random) -> list[int]:
-    """20 month-to-date targets, top TOP_CENTS, bottom BOTTOM_CENTS, summing to MONTH_TARGET_CENTS."""
+def _targets(rng: random.Random, month: int = MONTH_TARGET_CENTS, top: int = TOP_CENTS,
+             bottom: int = BOTTOM_CENTS) -> list[int]:
+    """20 month-to-date targets, top `top`, bottom `bottom`, summing to `month`."""
     n = len(CREATOR_NAMES)
     lo, hi = 0.5, 12.0
     for _ in range(60):  # bisect the curve exponent so the sum lands on the target
         p = (lo + hi) / 2
-        vals = [BOTTOM_CENTS + (TOP_CENTS - BOTTOM_CENTS) * ((n - 1 - i) / (n - 1)) ** p for i in range(n)]
-        if sum(vals) > MONTH_TARGET_CENTS:
+        vals = [bottom + (top - bottom) * ((n - 1 - i) / (n - 1)) ** p for i in range(n)]
+        if sum(vals) > month:
             lo = p
         else:
             hi = p
     jit = [1.0] + [rng.uniform(0.94, 1.06) for _ in range(n - 2)] + [1.0]
     vals = [v * j for v, j in zip(vals, jit)]
     mid = sum(vals[1:-1])
-    scale = (MONTH_TARGET_CENTS - vals[0] - vals[-1]) / mid
+    scale = (month - vals[0] - vals[-1]) / mid
     vals = [vals[0]] + [v * scale for v in vals[1:-1]] + [vals[-1]]
     return sorted((int(v) for v in vals), reverse=True)
 
@@ -195,22 +196,38 @@ def default_now() -> datetime:
     return anchor if anchor <= real else anchor - timedelta(days=1)
 
 
-def build(now: datetime | None = None) -> Dataset:
+def _scaled(cents: int, scale: float, floor: int, sub: bool) -> int:
+    """A price times `scale`: whole dollars (subs end in .99), at least `floor` cents. scale 1.0: unchanged."""
+    if scale == 1.0:
+        return cents
+    if sub:
+        return max(floor, round(cents * scale / 100) * 100 - 1)
+    return max(floor, round(cents * scale / 100) * 100)
+
+
+def build(now: datetime | None = None, *, month_target_cents: int | None = None,
+          price_scale: float = 1.0) -> Dataset:
+    """`month_target_cents` (default MONTH_TARGET_CENTS): the month-to-date total; the top and
+    bottom Creator scale with it. `price_scale` (default 1.0): every sale price times this, so the
+    same total takes more (smaller) sales. The defaults are the site shots' dataset, unchanged."""
+    month = MONTH_TARGET_CENTS if month_target_cents is None else int(month_target_cents)
+    top = round(TOP_CENTS * month / MONTH_TARGET_CENTS)
+    bottom = round(BOTTOM_CENTS * month / MONTH_TARGET_CENTS)
     rng = random.Random(SEED)
     now = (now or default_now()).astimezone(timezone.utc).replace(microsecond=0)
     month_start = now.replace(day=1, hour=0, minute=0, second=0)
     d = Dataset(now=now, month_start=month_start)
 
     # ── Creators ─────────────────────────────────────────────────────────────
-    targets = _targets(rng)
+    targets = _targets(rng, month, top, bottom)
     ids = sorted(rng.sample(range(180_000_000, 420_000_000), len(CREATOR_NAMES)))
     rng.shuffle(ids)
     for i, ((name, username), target) in enumerate(zip(CREATOR_NAMES, targets)):
         d.creators.append({
             "id": str(ids[i]), "name": name, "username": username, "nickname": name.split()[0],
             "color": CREATOR_COLORS[i], "avatar": asset(f"avatars/creator-{i + 1:02d}.jpg"),
-            "target_cents": target, "sub_price_cents": rng.choice(SUB_PRICES),
-            "fan_count": int(140 + 2400 * (target / TOP_CENTS) ** 0.8),
+            "target_cents": target, "sub_price_cents": _scaled(rng.choice(SUB_PRICES), price_scale, 499, True),
+            "fan_count": int(140 + 2400 * (target / top) ** 0.8),
             "created_at": now - timedelta(days=rng.randint(120, 600)),
             "online": i % 4 != 3, "posts": rng.randint(180, 1400), "media": rng.randint(400, 3200),
             "likes": rng.randint(40_000, 900_000),
@@ -298,7 +315,7 @@ def build(now: datetime | None = None) -> Dataset:
                     cents = c["sub_price_cents"]
                 else:
                     vals, w = PRICES[kind]
-                    cents = rng.choices(vals, w)[0] * 100
+                    cents = _scaled(rng.choices(vals, w)[0] * 100, price_scale, 300, False)
                 t = when(start, end)
                 fan = rng.choices(fans, fw)[0]
                 tx_id += 1
@@ -318,7 +335,7 @@ def build(now: datetime | None = None) -> Dataset:
     # ── Chat traffic (hand-written sends, fan replies, unpaid PPVs) ──────────
     for c in d.creators:
         fans = d.creator_fans[c["id"]][:400]
-        per_day = int(30 + 220 * (c["target_cents"] / TOP_CENTS))
+        per_day = int(30 + 220 * (c["target_cents"] / top))
         day = hist_start
         while day < now:
             for _ in range(per_day):
@@ -379,7 +396,7 @@ def build(now: datetime | None = None) -> Dataset:
     for k, c in enumerate(d.creators[:12]):
         for j in range(8 if k < 3 else 2 + k % 2):
             name = TRACKING_LINK_NAMES[(k + j * 3) % len(TRACKING_LINK_NAMES)]
-            clicks = int(rng.uniform(800, 26_000) * (c["target_cents"] / TOP_CENTS) ** 0.5)
+            clicks = int(rng.uniform(800, 26_000) * (c["target_cents"] / top) ** 0.5)
             subs = int(clicks * rng.uniform(0.03, 0.11))
             d.tracking_links.append({"account_id": c["id"], "name": name, "slug": f"{c['username']}-{j + 1}",
                                      "clicks": clicks, "subs": subs,

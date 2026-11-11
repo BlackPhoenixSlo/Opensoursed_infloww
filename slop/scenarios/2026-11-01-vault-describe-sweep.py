@@ -4,10 +4,12 @@ then `flags-all`), at volume, on the real relay routes.
 World: `agency_inbox` (an Agency and its Creators) plus seed/vault_items_describe.py: `--set items=` (200 small,
 2000 medium, 20000 huge) vault rows over the Creators, as a collect leaves them: photos, clips (6/9/12 frames by
 duration) and a few audio files, ~15% already described by an earlier sweep (the cache rows), a deterministic set
-the 30b model refuses (235b answers) and a set both models answer blank (each at least one per Creator). The
-seeder plans the items, the scenario arms lib/vault_describe_relay.py with their outcomes (`arm_run`), then the
-seeder writes rows and stills into the stores the arm answered. The Agency's DeepInfra key is a dummy set through
-the real Setup > Keys route (`PUT /admin/my-llm-keys`).
+the 30b model refuses (235b answers) and a set both models answer blank (each at least one per Creator), and per
+Creator a few planted re-upload sets (`vault_items_describe.DUPE_SETS`: photo pair, near-copy triple, a cached
+photo's re-upload, a near-copy clip pair of one duration) whose thumbs match at threshold 2 while every other
+item's thumb is its own. The seeder plans the items, the scenario arms lib/vault_describe_relay.py with their
+outcomes (`arm_run`), then the seeder writes rows and stills into the stores the arm answered. The Agency's
+DeepInfra key is a dummy set through the real Setup > Keys route (`PUT /admin/my-llm-keys`).
 
 Each phase (`_phase`) runs its presses while `--users` owner tabs poll its status route at the app's 2.5 s
 (useVaultSweep POLL_MS), round-robin over the Creators, and ends once every Creator's sweep settled and the fake
@@ -22,9 +24,15 @@ stopped answering; it keeps its own calls, statuses, timeouts and rows, and each
   pass 3   the plan again, describe-all pressed by PRESSES owner tabs at once per Creator (a double click / two
            managers): one sweep each (one 200, the rest 409), each still-blank item called once over.
 
+After the phases the Duplicates route (`GET /admin/vault-ai/duplicates`, threshold 2) is read per Creator: duplicate
+reuse must share answers across exactly its sets (owner decision 2026-11-11), so REUSE holds them to the planted ones.
+A planted copy (no call of its own, `_copied_from` / `_flags_copied_from` a member of its set, that member's text,
+model and flags) passes EXACTLY_ONCE, PLAN, ESCALATE and FLAGS as well as a paid item would, so turning reuse off
+reds REUSE alone.
+
 Checks (names in lib/vault_describe_faults.py): EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS,
-ONE_SWEEP, UI_SETTLED (with UI), budgets on the status routes' p95 (`STATUS_P95_MS`) and p95 vs the last green run,
-plus the stock no 5xx / no unexpected Traceback.
+REUSE, ONE_SWEEP, UI_SETTLED (with UI), budgets on the status routes' p95 (`STATUS_P95_MS`) and p95 vs the last green
+run, plus the stock no 5xx / no unexpected Traceback.
 
 Bypasses (declared):
   - DeepInfra is lib/vault_describe_relay.py's loopback fake at its OpenAI-compatible wire
@@ -36,7 +44,7 @@ Bypasses (declared):
   - The frames: `vault_frames.collect` reads the local still stores a collect warms (photo IMAGE_DIR files, a
     clip's storyboard frames), seeded by the seeder into the run's temp dir, which the relay part's arm hook
     points `vault_stills` / `storyboard` at. OnlyFans is never reached. The grid tiles (`/admin/vault-ai/thumb`)
-    read seeded grey 300px stand-ins from the same temp THUMB_DIR.
+    and `vault_dupes`' hashes read seeded 300px grey-grid stand-ins from the same temp THUMB_DIR.
   - The UI run's browser aborts `/img` / `/img/scrub` (the grid's OF CDN tiles through the account's OF client:
     OF is unreachable, and the relay's 500 on a session-less client is not what this flow is about).
   - Items are told apart by their pictures' pixel sizes (unique per item), the fake's only handle on "which item".
@@ -49,7 +57,8 @@ Break-it-once: `vault-describe-ignores-cache` (the scenario's FAULT: the 'undesc
 undescribed count); `--fault=vault-describe-cost-last-attempt` (`_describe_one` reports only the last attempt's
 cost, the pre-W9 under-report) only COST and COST_INCL_FLAGS; `--fault=vault-describe-claim-after-budget` (the
 start claims the Creator only after awaiting the budget, so concurrent presses all start a sweep) only ONE_SWEEP;
-`--fault=vault-describe-drops-flags-cost` (describe-and-flag drops the flags call's cost) only COST_INCL_FLAGS.
+`--fault=vault-describe-drops-flags-cost` (describe-and-flag drops the flags call's cost) only COST_INCL_FLAGS;
+`--fault=vault-describe-no-reuse` (`vault_dupes.reuse_groups` finds no set) only REUSE.
 """
 # No `from __future__ import annotations`: lib/cli.py loads a scenario outside sys.modules, and @dataclass resolves
 # string annotations through it.
@@ -68,7 +77,7 @@ from urllib.parse import urlsplit
 from slop.actors import ui
 from slop.lib.procmon import pct
 from slop.lib.vault_describe_faults import (
-    CACHE, COST, COST_INCL_FLAGS, ESCALATE, EXACTLY_ONCE, FLAGS, ONE_SWEEP, PLAN, UI_SETTLED,
+    CACHE, COST, COST_INCL_FLAGS, ESCALATE, EXACTLY_ONCE, FLAGS, ONE_SWEEP, PLAN, REUSE, UI_SETTLED,
 )
 from slop.lib.vault_describe_relay import FAKE_KEY, HOSTILE_DESC, HOSTILE_TAG, M30, M235, arm_run, describe_text
 from slop.seed import vault_items_describe
@@ -88,6 +97,8 @@ FLAGS_STATUS = f"{FLAGS_ALL}/status"
 # The keys a flags run may write into ai_fields_json (service/vault_ai_brief.py FLAG_KEYS + OVER_KEYS values;
 # vault_ai_vision_decide.build_flags_fields), besides its own `_flags_*` stamps. Any other key it changes is a bug.
 FLAG_FIELDS = ("underwear_visible", "vulva_vis", "breasts_vis", "anus_vis", "over_breasts", "over_vulva", "over_anus")
+COPY_MARK, FLAGS_COPY_MARK = "_copied_from", "_flags_copied_from"  # vault_ai_vision_decide's copy stamps
+DUPES = "/admin/vault-ai/duplicates"
 WANT_SEQ = {"ok": [M30], "refuse": [M30, M235], "blank": [M30, M235]}
 # Budgets on the status routes over the sweep phases (pass 1, flags, pass 2; not pass 3: one sweep of the blank
 # retries behind ONE_SWEEP's press race, few samples, kept out so the numbers stay comparable). Guess. Measured
@@ -193,6 +204,17 @@ async def _plans(ctx, aids) -> dict:
         if r.status_code != 200:  # a 0 'undescribed' would make every count check agree with nothing
             raise RuntimeError(f"slop: {DESCRIBE}/plan for {aid} answered {r.status_code}: {r.text[:200]}")
         out[aid] = r.json()
+    return out
+
+
+async def _dupe_sets(ctx, aids) -> dict:
+    """aid -> the Duplicates screen's sets at "2 · recommended" (sorted media ids), or its error."""
+    out = {}
+    for aid in aids:
+        r = await ctx.owner.get(f"{DUPES}?account_id={aid}&threshold=2&limit=100000")
+        out[aid] = (sorted(sorted([c["original"]["media_id"], *(d["media_id"] for d in c["dupes"])])
+                           for c in r.json()["clusters"]) if r.status_code == 200
+                    else f"{r.status_code}: {r.text[:200]}")
     return out
 
 
@@ -331,19 +353,42 @@ class Run:
     p2: Phase
     p3: Phase
     ui_creator: dict | None
+    sets: dict      # planted set id -> its items
+    dupes: dict     # aid -> the Duplicates route's sets (sorted media ids), or its error
 
     def of(self, outcome: str) -> list:
         return [i for i in self.targets if i["outcome"] == outcome]
 
+    def copied(self, rows: dict, it: dict, marker: str = COPY_MARK) -> bool:
+        """`it` is a planted copy in `rows`: `marker` names another member of its set, whose flags it carries (and,
+        for a describe copy, its status, model and text)."""
+        if not it["dupe_set"]:
+            return False
+        members = {m["media_id"]: m for m in self.sets[it["dupe_set"]]}
+        row = rows[it["key"]]
+        src = (row["ai"] or {}).get(marker)
+        if src not in members or src == it["media_id"]:
+            return False
+        s = rows[members[src]["key"]]
+        same = marker != COPY_MARK or (row["status"] == s["status"] == "described" and row["text"] == s["text"]
+                                       and row["model"] == s["model"])
+        return same and _flags_of(row) == _flags_of(s)
+
+
+def _flags_of(row: dict) -> dict:
+    return {k: (row["ai"] or {}).get(k) for k in FLAG_FIELDS}
+
 
 def _check_exactly_once(ctx, r: Run) -> None:
-    """Pass 1: one answer that described each undescribed item, and its row holds it."""
+    """Pass 1: one answer that described each undescribed item, and its row holds it (a planted copy: its set's)."""
     d1, bad = r.p1.by_item("describe"), {}
     for it in r.targets:
         k, row = it["key"], r.p1.rows[it["key"]]
         oks = [m for m, a in d1.get(k, []) if a == "ok"]
         if it["outcome"] == "blank":
             good = not oks and row["status"] == "refused" and row["text"] is None
+        elif k not in d1 and r.copied(r.p1.rows, it):
+            good = True
         else:
             good = (len(oks) == 1 and row["status"] == "described" and row["model"] == oks[0]
                     and row["text"] == describe_text(it["account_id"], it["media_id"], oks[0]))
@@ -355,16 +400,20 @@ def _check_exactly_once(ctx, r: Run) -> None:
 
 
 def _check_plan(ctx, r: Run) -> None:
-    """Plan count == items the sweep called == its progress total (both passes); pass 1's == the seeded count."""
+    """Plan count == items the sweep called + planted copies it made == its progress total (both passes); pass 1's ==
+    the seeded count."""
     seeded = _per_creator(r.targets)
+    d1 = r.p1.by_item("describe")
     called1, called2 = (_per_creator(r.by_key[k] for k in p.by_item("describe")) for p in (r.p1, r.p2))
+    copied1 = _per_creator(it for it in r.targets if it["key"] not in d1 and r.copied(r.p1.rows, it))
     per = {aid: {"seeded_undescribed": seeded[aid], "plan1": r.p1.want[aid], "called1": called1[aid],
-                 "total1": _prog(r.p1.status[aid]).get("total"), "plan2": r.p2.want[aid], "called2": called2[aid],
-                 "total2": _prog(r.p2.status[aid]).get("total")} for aid in r.aids}
+                 "copied1": copied1[aid], "total1": _prog(r.p1.status[aid]).get("total"), "plan2": r.p2.want[aid],
+                 "called2": called2[aid], "total2": _prog(r.p2.status[aid]).get("total")} for aid in r.aids}
     presses_bad = {f"{p.stage}:{a}": c for p in (r.p1, r.p2) for a, c in p.presses.items() if c != 200}
     timed_out = r.p1.timed_out + r.p2.timed_out
     ctx.check(PLAN, not presses_bad and not timed_out and all(
-        p["seeded_undescribed"] == p["plan1"] == p["called1"] == p["total1"] and p["plan2"] == p["called2"] == p["total2"]
+        p["seeded_undescribed"] == p["plan1"] == p["called1"] + p["copied1"] == p["total1"]
+        and p["plan2"] == p["called2"] == p["total2"]
         for p in per.values()), per_creator=per, presses_not_200=presses_bad, timed_out=timed_out)
 
 
@@ -391,7 +440,8 @@ def _check_escalate(ctx, r: Run) -> None:
     """Pass 1: the model sequence per item by its outcome."""
     d1 = r.p1.by_item("describe")
     bad = {i["key"]: d1.get(i["key"]) for i in r.targets
-           if [m for m, _ in d1.get(i["key"], [])] != WANT_SEQ[i["outcome"]]}
+           if [m for m, _ in d1.get(i["key"], [])] != WANT_SEQ[i["outcome"]]
+           and not (i["key"] not in d1 and r.copied(r.p1.rows, i))}
     n_ref, n_blank = len(r.of("refuse")), len(r.of("blank"))
     calls_235b = sum(1 for c in r.p1.calls if c["purpose"] == "describe" and c["model"] == M235)
     ctx.check(ESCALATE, n_ref > 0 and n_blank > 0 and not bad and calls_235b == n_ref + n_blank,
@@ -420,10 +470,13 @@ def _non_flag(ai: dict | None) -> dict:
 
 
 def _check_flags(ctx, r: Run) -> None:
-    """flags-all: one call per photo, 4 per clip, every live row flagged, nothing of describe's rewritten."""
+    """flags-all: one call per photo, 4 per clip (a planted copy: none), every live row flagged, nothing of describe's
+    rewritten."""
     ff, before, after = r.pf.by_item("flags"), r.p1.rows, r.pf.rows
     want_calls = {i["key"]: (1 if i["kind"] == "photo" else 4) for i in r.live}
-    count_bad = {k: len(ff.get(k, [])) for k, n in want_calls.items() if len(ff.get(k, [])) != n}
+    flag_copies = {i["key"] for i in r.live if i["key"] not in ff and r.copied(after, i, FLAGS_COPY_MARK)}
+    count_bad = {k: len(ff.get(k, [])) for k, n in want_calls.items()
+                 if len(ff.get(k, [])) != n and k not in flag_copies}
     extra = [k for k in ff if k not in want_calls]
     keep = ("status", "model", "description", "video_description", "tags", "tier")
     rewritten = [k for k in before if any(before[k][c] != after[k][c] for c in keep)]
@@ -442,6 +495,38 @@ def _check_flags(ctx, r: Run) -> None:
               ai_sample={k: [_non_flag(before[k]["ai"]), _non_flag(after[k]["ai"])] for k in ai_rewritten[:2]},
               unflagged=len(unflagged), hostile=hostile[:5], candidates=cands, stray=r.pf.stray[:5],
               timed_out=r.pf.timed_out)
+
+
+def _check_reuse(ctx, r: Run) -> None:
+    """The Duplicates route's sets == the planted ones; pass 1 pays one member per planted set (none when it holds a
+    cached member), the rest copy it; flags-all pays one member per set, the rest copy its flags."""
+    planted = defaultdict(list)
+    for ms in r.sets.values():
+        planted[ms[0]["account_id"]].append(sorted(m["media_id"] for m in ms))
+    route_bad = {aid: {"route": r.dupes.get(aid), "planted": sorted(planted[aid])} for aid in r.aids
+                 if r.dupes.get(aid) != sorted(planted[aid])}
+    d1, ff = r.p1.by_item("describe"), r.pf.by_item("flags")
+    n_copies, set_bad = Counter(), {}
+    for sid, ms in r.sets.items():
+        todo = [m for m in ms if not m["cached"]]
+        want_paid = 0 if any(m["cached"] for m in ms) else 1
+        n_copies[ms[0]["account_id"]] += len(todo) - want_paid
+        paid = [m["media_id"] for m in todo if m["key"] in d1]
+        not_copied = [m["media_id"] for m in todo if m["key"] not in d1 and not r.copied(r.p1.rows, m)]
+        fpaid = [m["media_id"] for m in ms if m["key"] in ff]
+        fnot_copied = [m["media_id"] for m in ms if m["key"] not in ff and not r.copied(r.pf.rows, m, FLAGS_COPY_MARK)]
+        if len(paid) != want_paid or not_copied or len(fpaid) != 1 or fnot_copied:
+            set_bad[sid] = {"members": [m["media_id"] for m in ms], "describe_paid": paid, "want_paid": want_paid,
+                            "not_copied": not_copied, "flags_paid": fpaid, "flags_not_copied": fnot_copied,
+                            "marks": {m["media_id"]: [(r.pf.rows[m["key"]]["ai"] or {}).get(x)
+                                                      for x in (COPY_MARK, FLAGS_COPY_MARK)] for m in ms}}
+    seeded, called1 = _per_creator(r.targets), _per_creator(r.by_key[k] for k in d1)
+    calls = {aid: {"called1": called1[aid], "want": seeded[aid] - n_copies[aid], "planted_copies": n_copies[aid]}
+             for aid in r.aids}
+    ctx.check(REUSE, all(planted[aid] for aid in r.aids) and not route_bad and not set_bad
+              and all(c["called1"] == c["want"] for c in calls.values()),
+              planted_sets=len(r.sets), per_creator_calls=calls, route_bad=route_bad,
+              set_bad=dict(list(set_bad.items())[:5]))
 
 
 def _check_one_sweep(ctx, r: Run) -> None:
@@ -490,7 +575,7 @@ def _check_budgets(ctx) -> None:
 
 async def run(ctx) -> None:
     if os.environ.get("SLOP_LIVE") == "1":
-        for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, ONE_SWEEP, UI_SETTLED):
+        for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, REUSE, ONE_SWEEP, UI_SETTLED):
             ctx.skip(c, "SLOP_LIVE=1: this scenario runs on the DeepInfra fake only, never the paid API")
         return
     w = await ctx.build(PROFILE)
@@ -550,9 +635,16 @@ async def run(ctx) -> None:
         {"ui": p1.ui, **{p.stage: {"plan": p.plan, "want": p.want, "presses": p.presses, "status": p.status}
                          for p in phases}}, indent=2, default=str))
 
-    run_ = Run(aids, by_key, live, [i for i in live if not i["cached"]], p1, pf, p2, p3, ui_creator)
+    sets = defaultdict(list)
+    for i in items:
+        if i["dupe_set"]:
+            sets[i["dupe_set"]].append(i)
+    dupes = await _dupe_sets(ctx, aids)
+    (ctx.out / "duplicates.json").write_text(json.dumps(
+        {"planted": {sid: [m["media_id"] for m in ms] for sid, ms in sets.items()}, "route": dupes}, indent=2))
+    run_ = Run(aids, by_key, live, [i for i in live if not i["cached"]], p1, pf, p2, p3, ui_creator, dict(sets), dupes)
     for check in (_check_exactly_once, _check_plan, _check_cache, _check_escalate, _check_cost, _check_flags,
-                  _check_one_sweep, _check_ui):
+                  _check_reuse, _check_one_sweep, _check_ui):
         check(ctx, run_)
     _check_budgets(ctx)
 

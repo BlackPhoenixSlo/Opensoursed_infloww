@@ -11,6 +11,16 @@ through of_wire's own `_record` (its `headers=` carries Retry-After). For the Cr
          body. A caller that waits what OF asks gets the page; one that retries sooner gets 429 again.
        * churn (`churn` Creators): each 429 answered subscribes one new fan (an id past the roster's top)
          and expires one seeded member, so a crawl that backs off reads a roster that moved (`drift`).
+       * tail repeat (`tail_repeat` Creators, fans only): hasMore is always true and a page at or past the
+         end serves the roster's last `limit` rows again: a page repeated twice in a row, for the crawl's
+         repeat rule (re-read once, then NULL `truncated`). Synthetic, not a measured AE shape (Creator
+         41182778's one repeat, ~offset 2450, was mid-roster, #440).
+       * short rosters (`short[uid] = x`): both rosters end (hasMore false) after their first ceil(n / x)
+         rows; OF still sends to (and counts) the whole roster (AE 11-11: partial Creators read <= 0.88).
+  GET  /api2/v2/users/me/stats/messages/group   the mass feed: the Creator's queued sends (of_wire's
+       `queue`), newest first, `limit` of them, each `{id, date, text, sentCount, template}`, sentCount
+       its `accepts` truth (matched by text); an `unlisted` Creator's feed leaves its sends out (as a send
+       past OF's newest page). Dead: 401. Never 429'd. `feeds` journals each {t, account, status, items}.
   POST /api2/v2/messages/queue   journalled, then left to of_wire (which keeps and answers it): `accepts`
        gets {t, account, text, truth, excluded_lists}: OF's recipients at that moment, (the userLists' rosters
        | userIds) minus the members of every `excludedLists` list (of_wire's `list_users`: the Auto_Exclude
@@ -21,7 +31,10 @@ Auto_Exclude list a send excludes) stay of_wire's own bare pages, never 429'd (a
 send's own exclude sync, not the crawl).
 Bypass, declared: OF's rate limit is a seeded schedule, not OF's policy (a guess); the Retry-After header and
 the body's wording are guesses at OF's form (of_pacing reads the body's "allow N seconds"); OF's roster pages
-are `{list, hasMore}` as of_wire's empty ones.
+are `{list, hasMore}` as of_wire's empty ones; the tail repeat is synthetic (where OF repeats is unmeasured); the
+short roster's cut is a guess at where OF stops; the feed's sentCount is final the moment OF accepts (AE 11-11:
+final-looking counts at 64 s and 369 s, n=3; an undercount mid-delivery is not modelled) and the feed is not
+rate limited (a guess).
 """
 from __future__ import annotations
 
@@ -30,9 +43,11 @@ import math
 import random
 import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 ROSTERS = {"/api2/v2/subscriptions/subscribers": "fans", "/api2/v2/subscriptions/subscribes": "following"}
+FEED = "/api2/v2/users/me/stats/messages/group"
 DEAD_BODY = {"error": {"code": 401, "message": "Unauthorized"}}
 
 
@@ -42,17 +57,19 @@ def _too_many(s: int) -> dict:
 
 class AudienceWire:
     def __init__(self, fake, *, seed, fans: dict[str, list[int]], following: dict[str, list[int]],
-                 p429: float, retry_after_s: int, dead=(), churn=()):
+                 p429: float, retry_after_s: int, dead=(), churn=(), tail_repeat=(), short=None, unlisted=()):
         self.fake = fake
         self.fans = {a: sorted(v) for a, v in fans.items()}
         self.following = {a: sorted(v) for a, v in following.items()}
         self.p429, self.retry_after_s = float(p429), int(retry_after_s)
-        self.dead, self.churn = set(dead), set(churn)
+        self.dead, self.churn, self.tail_repeat = set(dead), set(churn), set(tail_repeat)
+        self.short, self.unlisted = dict(short or {}), set(unlisted)
         self._rng = {a: random.Random(f"{seed}:audience-wire:{a}") for a in self.fans}
         self._until: dict[str, float] = {}     # Creator -> its open 429 window's end (monotonic)
         self.lock = threading.Lock()
         self.pages: list[dict] = []
         self.accepts: list[dict] = []
+        self.feeds: list[dict] = []
         self.churned: dict[str, int] = {}
         fake.extra_routes.insert(0, self.route)
 
@@ -61,6 +78,8 @@ class AudienceWire:
         if method == "POST" and u.path == "/api2/v2/messages/queue" and uid in self.fans:
             self._accept(uid, json.loads(raw or b"{}"))
             return False                       # of_wire keeps and answers it
+        if method == "GET" and u.path == FEED and uid in self.fans:
+            return self._feed(h, uid, route, parse_qs(u.query))
         src = ROSTERS.get(u.path)
         if method != "GET" or src is None or uid not in self.fans:
             return False
@@ -83,11 +102,38 @@ class AudienceWire:
                         self._churn(uid)
                 else:
                     ids = (self.fans if src == "fans" else self.following)[uid]
+                    if uid in self.short:
+                        ids = ids[:math.ceil(len(ids) / self.short[uid])]
                     status = 200
-                    body = {"list": [{"id": i} for i in ids[off:off + lim]], "hasMore": off + lim < len(ids)}
+                    if src == "fans" and uid in self.tail_repeat:
+                        at = off if off < len(ids) else max(0, len(ids) - lim)
+                        body = {"list": [{"id": i} for i in ids[at:at + lim]], "hasMore": True}
+                    else:
+                        body = {"list": [{"id": i} for i in ids[off:off + lim]], "hasMore": off + lim < len(ids)}
             self.pages.append({"t0": getattr(h, "_t0", None), "t": time.time(), "account": uid, "route": route,
                                "offset": off, "limit": lim, "status": status})
         h._record(uid, route, status, body, headers=headers)
+        return True
+
+    def _feed(self, h, uid: str, route: str, q: dict) -> bool:
+        lim = int((q.get("limit") or ["10"])[0])
+        if uid in self.dead:
+            status, body = 401, DEAD_BODY
+        else:
+            with self.fake.lock:
+                sent = list(self.fake.queue.get(uid, ()))
+            with self.lock:
+                truth = {a["text"]: len(a["truth"]) for a in self.accepts if a["account"] == uid}
+            items = [] if uid in self.unlisted else [
+                {"id": e["id"], "text": e.get("text") or "", "template": "group",
+                 "sentCount": truth.get(e.get("text") or "", 0),
+                 "date": datetime.fromtimestamp(e["t"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")}
+                for e in reversed(sent)]
+            status, body = 200, {"items": items[:lim], "hasMore": len(items) > lim}
+        with self.lock:
+            self.feeds.append({"t": time.time(), "account": uid, "status": status,
+                               "items": [{"id": i["id"], "sentCount": i["sentCount"]} for i in body.get("items", ())]})
+        h._record(uid, route, status, body)
         return True
 
     def _churn(self, uid: str) -> None:
@@ -117,4 +163,5 @@ class AudienceWire:
 
     def snapshot(self) -> dict:
         with self.lock:
-            return {"pages": list(self.pages), "accepts": list(self.accepts), "churned": dict(self.churned)}
+            return {"pages": list(self.pages), "accepts": list(self.accepts), "feeds": list(self.feeds),
+                    "churned": dict(self.churned)}

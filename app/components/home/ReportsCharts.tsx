@@ -55,11 +55,22 @@ export function CardTitle({ id, label, tip, className }: { id: string; label: st
   );
 }
 
+/** A figure's partial marker, Dashboard and Creator reports: an asterisk in the warn colour, `reason` on hover and to
+ *  a screen reader. */
+export function PartialMark({ reason, className }: { reason: string; className?: string }) {
+  return <span data-partial role="note" aria-label={reason} title={reason} className={cn("text-warn", className)}>*</span>;
+}
+
 /** #55 to #60: a summary tile, its title (with a 20px icon 4px away), value and growth. The total tile is larger.
- *  A `null` value is Not wired. */
-/** `negative`: a figure below zero (Chargebacks), on our err token; `title`: why a figure is "-". */
-export function SummaryTile({ label, Icon, total, value, growth, negative = false, title }: {
+ *  A `null` value is Not wired. `negative`: a figure below zero (Chargebacks), on our err token; `title`: why a
+ *  figure is "-"; `partial`: why a figure holds less than it says, marked with an asterisk beside it. */
+export function SummaryTile({ label, Icon, rgb, total, value, growth, growthTitle, negative = false, title, partial }: {
   label: string; Icon: LucideIcon; total: boolean; value: string | null; growth: Growth; negative?: boolean; title?: string;
+  partial?: string;
+  /** What the growth compares, when not the figure itself (Total without referrals, #22). */
+  growthTitle?: string;
+  /** The icon's channel colour ("r, g, b", `TILE_ICON`), on a 10% circle of it; unset leaves the page's accent. */
+  rgb?: string;
 }) {
   // #59: rising and falling on our ok and pink tokens (ADR-0001 colours).
   const color = growth.dir === "up" ? "var(--color-ok)" : growth.dir === "down" ? "var(--color-pink)" : "var(--color-fg)";
@@ -73,7 +84,8 @@ export function SummaryTile({ label, Icon, total, value, growth, negative = fals
         className={cn("flex items-center gap-1 font-medium", total ? "text-xl leading-6 tracking-[0.034px]" : "text-base leading-5 tracking-[0.032px] mb-2")}
         style={{ color: "var(--color-fg-dim)" }}
       >
-        <Icon size={22} strokeWidth={1.75} aria-hidden />
+        <Icon size={22} strokeWidth={1.75} aria-hidden
+          style={rgb ? { color: `rgb(${rgb})`, background: `rgba(${rgb}, 0.1)` } : undefined} />
         {label}
       </dt>
       <dd
@@ -81,10 +93,12 @@ export function SummaryTile({ label, Icon, total, value, growth, negative = fals
         style={{ color: negative ? "var(--color-err)" : "var(--color-fg)" }}
       >
         {value === null ? <NotWired label={label} /> : value}
+        {partial && <PartialMark reason={partial} className="ml-1 align-top text-[0.6em]" />}
       </dd>
       <dd
         className={cn("inline-flex items-center font-medium", total ? "text-xl leading-6 tracking-[0.034px] -translate-y-1" : "text-base leading-5 tracking-[0.032px]")}
         style={{ color }}
+        title={growthTitle}
       >
         {growth.dir && (
           <Arrow size={total ? 24 : 20} role="img" aria-label={growth.dir === "up" ? "rising" : "falling"} />

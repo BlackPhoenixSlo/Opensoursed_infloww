@@ -25,7 +25,9 @@ against a fake OFClient (no network):
   case_fire_skips_when_convo_started:
       fire re-validate cancels when a real convo started (recent outbound).
   case_gate_not_welcomed:
-      require_welcomed gate skips a fan we've never welcomed.
+      require_welcomed gate skips a fan we've never welcomed (Welcome on).
+  case_gate_welcomed_ignored_while_welcome_off:
+      with the Welcome rule parked or absent the gate is ignored.
   case_no_cooldown_set:
       a confirmed nudge does NOT set fans.automation_paused_until (fully async).
   case_with_image_layers_the_payload_over_the_account_cfg:
@@ -297,9 +299,17 @@ async def case_fire_skips_when_convo_started():
 
 # ── require_welcomed gate ─────────────────────────────────────────────
 
+async def _welcome_rule(aid: str, on: bool) -> None:
+    async with get_session() as s:
+        s.add(AutomationRule(account_id=aid, name="Welcome", kind="send_welcome",
+                             trigger_json=json.dumps({"every_seconds": 60}),
+                             steps_json="{}", is_enabled=on))
+
+
 async def case_gate_not_welcomed():
     aid = "n_welc"
     await _seed_cfg(aid, require_welcomed=True)
+    await _welcome_rule(aid, True)
     await _warm(aid)
     # 8001 never welcomed → gated; 8002 welcomed 5h ago (past the grace) → qualifies.
     async with get_session() as s:
@@ -312,6 +322,19 @@ async def case_gate_not_welcomed():
     assert res["skip_reasons"].get("not_welcomed") == 1, res
     jobs = await _jobs(aid, "nudge_online_fire")
     assert {json.loads(j.payload_json)["fan_id"] for j in jobs} == {8002}, jobs
+
+
+async def case_gate_welcomed_ignored_while_welcome_off():
+    # Welcome parked (or never set up): nothing writes WelcomeSent, so the gate
+    # would skip every fan — it is ignored instead.
+    for aid, rule in (("n_welc_off", False), ("n_welc_none", None)):
+        await _seed_cfg(aid, require_welcomed=True)
+        if rule is not None:
+            await _welcome_rule(aid, rule)
+        await _warm(aid)
+        _use_fake([_online(8101, "Ivy")])
+        res = await run_once(aid, "nudge_online", payload={})
+        assert res["enqueued"] == 1 and "not_welcomed" not in res["skip_reasons"], (aid, res)
 
 
 # ── Spend gates: lifetime + rolling window ────────────────────────────
@@ -506,6 +529,7 @@ _harness.run(
     case_fire_skips_when_offline,
     case_fire_skips_when_convo_started,
     case_gate_not_welcomed,
+    case_gate_welcomed_ignored_while_welcome_off,
     case_spend_gate_lifetime,
     case_spend_gate_recent_window,
     case_no_cooldown_set,

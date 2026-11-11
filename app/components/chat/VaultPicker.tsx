@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
-import { useOfRefresh, vaultPickerSource } from "@/hooks/vaultRefresh";
+import { SUMMARY_WAIT_MS, useOfRefresh, vaultPickerSource } from "@/hooks/vaultRefresh";
 import { useMirrorItems, useOfSearch, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
@@ -154,7 +154,15 @@ export function VaultPicker(props: VaultPickerProps) {
   // (`vaultPickerSource` "pending": the grid shows loading, never a false "No media in this filter"). A live
   // listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race (U4).
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
-  const pickerSource = open ? vaultPickerSource(cacheSummary) : "live";
+  // A summary still pending after SUMMARY_WAIT_MS lists live rather than hold the grid on Loading (#15).
+  const summaryPending = open && vaultPickerSource(cacheSummary) === "pending";
+  const [stalledFor, setStalledFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!summaryPending) return;
+    const t = setTimeout(() => setStalledFor(accountId), SUMMARY_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [summaryPending, accountId]);
+  const pickerSource = open ? vaultPickerSource(cacheSummary, accountId !== null && stalledFor === accountId) : "live";
   const source = pickerSource === "pending" ? "live" : pickerSource;
   const useLocalVault = pickerSource === "mirror";
   const vaultLive = useVaultMedia({

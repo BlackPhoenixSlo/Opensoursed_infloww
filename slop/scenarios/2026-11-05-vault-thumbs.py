@@ -25,9 +25,9 @@ Per Creator, `--users` tile fetches in flight:
   scoped    the same chatter, given the built-in Admin by the owner's Role Settings save (PUT /admin/settings/roles:
             role enforcement is on by default and the built-in Chatter role has no Vault Pro page, so its review
             routes 403 — measured 20261105T183026Z-...-59d4; every pre-enforcement login holds Admin), on Vault
-            Pro's review routes and the picker's stats (pack-candidates, disputes, flags-review, flags-accuracy,
+            Pro's review routes and the picker's stats (pack-candidates, flags-review, flags-accuracy,
             media-stats; 3 in-folder + 3 outside items seeded as reviewed and sent, by SQL): the owner lists every
-            seeded id, the chatter only in-folder ids and counts; disputes/resolve, flags-review/grade and
+            seeded id, the chatter only in-folder ids and counts; flags-review/grade and
             pack-triage on an outside item 404 for the chatter, 200 in-folder, 200 for the owner.
                                                                      vault_pro_restricted_chatter_scoped.
   proxy     Creator 1 on proxy A (POST /admin/proxies + /assign, lib/proxy_wire.py); the folder list reopened
@@ -36,8 +36,9 @@ Per Creator, `--users` tile fetches in flight:
   stale IP  still on B, STALE_VIDS of its videos' mirror urls signed for A (what A's listing left: the AE bug of
             2026-11-06). Control: /img of an A-signed url without media_id is denied through B. Then each video's
             12 /img/scrub frames + its poster (/img), all with the A-signed url + media_id, at once: all 200
-            (frames image/jpeg, poster the CDN's bytes), exactly 1 /vault/media/{id} per video and through B,
-            every CDN call through B with at most one 403 per file, the mirror row re-signed for B.
+            (frames image/jpeg, poster the CDN's bytes), re-signed through B by OF's asc listing window
+            (`/vault/media?sort=asc&limit=100`, #444: 1 to len(videos) window reads, 0 by-id) or, with no window
+            read, exactly 1 /vault/media/{id} per video (its fallback); every CDN call through B with at most one 403 per file, the mirror row re-signed for B.
                                                                      proxy_change_previews_resign.
 UI (small, not --no-ui): one more Creator no HTTP phase touched. The owner's Messages Pro Vault picker on it:
 open 1 cold (`vault-thumbs-trigger` as the dialog opens, `vault-thumbs-cold-settled`), open 2 in a fresh browser
@@ -45,8 +46,8 @@ open 1 cold (`vault-thumbs-trigger` as the dialog opens, `vault-thumbs-cold-sett
 (`phone-vault-thumbs-settled`, 0 CDN). Side effects: thumbs on disk, /cache/summary `complete`.
 Then the Creator's video urls in the mirror are signed for a proxy it left (OLD_EGRESS); a fresh browser opens the
 picker and hovers a video tile (`vault-hover-trigger`, then `vault-hover-frames-a` / `-b` a second apart: frames
-cycling): every /img/scrub 200, >= 2 frame indices shown, the stale url re-signed by id (>= 1 by-id read, the
-exact count is the HTTP phase's: a thumb re-fetch may add one; the CDN's 403 then 200).                                                ui_hover_scrub_after_proxy_change.
+cycling): every /img/scrub 200, >= 2 frame indices shown, the stale url re-signed (>= 1 window or by-id read,
+the exact count is the HTTP phase's: a thumb re-fetch may add one; the CDN's 403 then 200).                                                ui_hover_scrub_after_proxy_change.
 Gifs (42 UI Creator items are gifs: OF's .mp4 in `files.full`): a fresh browser opens the picker; up to four
 on-screen gif tiles loop their clips (src on, playing, time moving a second apart, painted), those below the fold have
 no src and cost 0 CDN calls; scrolling moves the attached clips and first-row gifs that left the view lose src;
@@ -92,6 +93,8 @@ from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
 from slop.seed.vault_cache import grant_folder_access
 from slop.seed import chatters, ts, vault_week
 
+RESIGN_PAGE = 100                  # cdn_resign.PAGE: its asc listing-window size (#444)
+
 PROFILE = "flat_agency"
 UI = True
 OF_WIRE = True
@@ -118,7 +121,6 @@ OLD_EGRESS = "127.0.0.1:1"  # the UI Creator's earlier proxy, long gone
 # Vault Pro's review routes (GET, the key of their media rows) and the picker's stats, every one a chatter session
 # reaches (service/permissions.py: the Vault Pro page's prefixes; media-stats is every composer's).
 REVIEW_GETS = {"/admin/vault-ai/pack-candidates": ("candidates", "&category=feet"),
-               "/admin/vault-ai/disputes": ("disputes", ""),
                "/admin/vault-ai/flags-review": ("items", "&limit=1000")}
 ACCURACY = "/admin/vault-ai/flags-accuracy"
 STATS = "/admin/vault/media-stats"
@@ -126,8 +128,8 @@ FLAGS_VERSION = 3  # service/vault_ai_vision._FLAGS_VERSION: a grade at the curr
 
 
 def _review_fields() -> dict:
-    """An item both passes answered, contradicting each other (fully_nude + a garment: a dispute, so flags-review
-    lists it), tagged "feet" (a pack candidate), graded at the current prompt (flags-accuracy counts it)."""
+    """An item both passes answered, contradicting each other (fully_nude + a garment: passes_disagree, so
+    flags-review lists it), tagged "feet" (a pack candidate), graded at the current prompt (flags-accuracy counts it)."""
     return {"description": "lying on her back", "explicitness": "explicit", "clothing_state": "fully_nude",
             "underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame",
             "over_vulva": "black lace thong", "tags": ["feet"],
@@ -189,9 +191,7 @@ async def _scoped(owner, ch, aid: str, seeded_in: list[int], seeded_out: list[in
               ac.json().get("graded_items") if ac.status_code == 200 else None)
     ok &= graded == (len(seeded_in) + len(seeded_out), len(seeded_in))
     detail["accuracy_graded"] = graded
-    posts = (("resolve", "/admin/vault-ai/disputes/resolve",
-              lambda m: {"account_id": aid, "media_id": m, "values": {"vulva_vis": "bare"}}),
-             ("grade", "/admin/vault-ai/flags-review/grade",
+    posts = (("grade", "/admin/vault-ai/flags-review/grade",
               lambda m: {"account_id": aid, "media_id": m, "corrections": {}}),
              ("triage", "/admin/vault-ai/pack-triage",
               lambda m: {"account_id": aid, "category": "feet", "verdicts": [{"media_id": m, "rung": "tease"}]}))
@@ -409,6 +409,12 @@ def _ip(u: str) -> str | None:
     return policy_ip(q["Policy"]) if q.get("Policy") else None
 
 
+def _window_reads(calls: list[dict], aid: str) -> list[dict]:
+    """`aid`'s re-sign listing-window reads (cdn_resign, #444: sort=asc, limit=PAGE; the grid reads desc/24)."""
+    return [c for c in calls if c["route"] == "media" and c["account"] == aid
+            and c["query"].get("sort") == "asc" and c["query"].get("limit") == str(RESIGN_PAGE)]
+
+
 async def _stale_ip(ctx, w, vw, fake, http, aid: str, vids: list[int], old: str, new: str):
     """The account on `new`, its videos' mirror urls signed for `old`: (ok, detail). Docstring: `stale IP`."""
     vault_week.set_urls(w, vw, aid, vids, egress=old)
@@ -434,6 +440,7 @@ async def _stale_ip(ctx, w, vw, fake, http, aid: str, vids: list[int], old: str,
     posters = [g for g in got if len(g) == 3]
     calls = await cdn_calls(ctx, n1)
     by_id = [c for c in fake.vault_calls[v0:] if c["route"] == "by_id" and c["account"] == aid]
+    win = _window_reads(fake.vault_calls[v0:], aid)
     files = {f"{HOST}{cdn_path(aid, m, v)}" for m in vids for v in ("thumb", "240p")}
     per_file: dict[str, list] = {}
     for c in calls:
@@ -444,14 +451,17 @@ async def _stale_ip(ctx, w, vw, fake, http, aid: str, vids: list[int], old: str,
     bad_posters = [(m, s) for m, s, b in posters
                    if s != 200 or b != picture_bytes(f"{HOST}{cdn_path(aid, m, 'thumb')}")]
     by_id_n = {m: sum(1 for c in by_id if c["query"]["id"] == m) for m in vids}
-    wrong_egress = sorted({c["egress"] for c in calls if c["egress"] != new} | {c["egress"] for c in by_id} - {new})
+    wrong_egress = sorted({c["egress"] for c in calls if c["egress"] != new}
+                          | {c["egress"] for c in by_id + win} - {new})
+    resigned = (0 < len(win) <= len(vids) and not by_id) or (not win and set(by_id_n.values()) == {1})
     bad_files = {k: v for k, v in per_file.items() if not v or v[-1] != 200 or v.count(403) > 1}
     unsigned = [m for m in vids if _ip(now[m]["files"]["thumb"]["url"]) != new]
     ok = (len(vids) == STALE_VIDS and ctrl != 200 and await cdn_count(ctx) > n0 and not bad_frames and not bad_posters
-          and set(by_id_n.values()) == {1} and not wrong_egress and set(per_file) == files and not bad_files
+          and resigned and not wrong_egress and set(per_file) == files and not bad_files
           and any(403 in v for v in per_file.values()) and not unsigned)
     return ok, {"videos": vids, "control_no_media_id": ctrl, "frames": len(frames), "bad_frames": bad_frames[:5],
                 "posters": len(posters), "bad_posters": bad_posters[:5], "by_id_per_video": by_id_n,
+                "window_reads": len(win),
                 "wrong_egress": wrong_egress, "cdn_per_file": per_file, "mirror_not_resigned": unsigned}
 
 
@@ -552,8 +562,9 @@ async def _ui_hover(ctx, w, vw, aid: str, fan: int):
     calls = [c for c in await cdn_calls(ctx, n0) if c["key"] == f"{HOST}{cdn_path(aid, mid, '240p')}"]
     d["cdn_240p"] = [c["status"] for c in calls]
     d["by_id"] = sum(1 for c in ctx.of_wire.vault_calls[v0:] if c["route"] == "by_id" and c["query"]["id"] == mid)
+    d["window_reads"] = len(_window_reads(ctx.of_wire.vault_calls[v0:], aid))
     ok = ("error" not in d and d["scrub_statuses"] == [200] and d["scrub_n"] >= 12 and d["frames_shown"] >= 2
-          and d["scrub_media_ids"] == [str(mid)] and d["by_id"] >= 1 and d["cdn_240p"][:1] == [403]
+          and d["scrub_media_ids"] == [str(mid)] and d["by_id"] + d["window_reads"] >= 1 and d["cdn_240p"][:1] == [403]
           and d["cdn_240p"][-1:] == [200])
     return ok, d
 

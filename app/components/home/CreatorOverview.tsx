@@ -3,11 +3,12 @@
 /** Creator reports › Overview (#42 to #153): Earnings summary, Earnings trends, Earnings by channel and Earnings
  *  breakdown, Creator statistics, and our Earnings ledger. Its state lives in CompetitorReports. */
 
-import { BookmarkPlus, FileText, Lightbulb, MessageCircleMore, Undo2, UserStar, type LucideIcon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
-import { type Gran, LineChart, fmtDollars, fmtUsd } from "@/components/stats/chart";
+import { LineChart, fmtDollars, fmtUsd } from "@/components/stats/chart";
 import ExportMenu, { type ExportChoice } from "@/components/stats/ExportMenu";
+import type { ReferralsGap } from "@/hooks/useReferrals";
 import type { PerModelRow } from "@/hooks/useStats";
 import { growthOf, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -17,42 +18,47 @@ import styles from "./CreatorReports.module.css";
 
 import { CreatorTable } from "./CreatorTable";
 import { CardTitle, NotWired, ReportCard, SectionTitle, StatCard, SummaryTile, TrendBars } from "./ReportsCharts";
-import { CHARGEBACKS_UNAVAILABLE } from "./netMissingNote";
-import { ChannelsPill, CustomMetricsPill, GranularityTabs, UtcChip } from "./ReportsControls";
+import { CHARGEBACKS_UNAVAILABLE, REFERRALS_FAILED, TOTAL_GROWTH_EXCL, TOTAL_PARTIAL } from "./netMissingNote";
+import { TILE_ICON } from "./tileIcons";
+import { ChannelsPill, CustomMetricsPill, UtcChip } from "./ReportsControls";
 import {
-  type Bucket, type Chan, type ColCtx, type Point, type StatCol, type View, CHANNEL_TEXT, CHANNELS, CHARGEBACKS_COLOR,
+  type Bucket, type Chan, type ColCtx, type GrowthSums, type Point, type StatCol, type TotalGrowth, type View, CHANNEL_TEXT, CHANNELS, CHARGEBACKS_COLOR,
   LEDGER_ROWS,
   SUMMARY_TEXT,
   TREND_TEXT, isWait, viewOf,
 } from "./reportsMath";
 
-/** Match DashboardHeader's earnings glyphs. Chargebacks keeps its own truthful label and icon. */
-const TILES: readonly { key: Chan | "total" | "chargebacks"; label: string; Icon: LucideIcon }[] = [
-  { key: "total",         label: "Total earnings", Icon: OnlyfansLine },
-  { key: "subscriptions", label: "Subscriptions",  Icon: BookmarkPlus },
-  { key: "posts",         label: "Posts",          Icon: FileText },
-  { key: "messages",      label: "Messages",       Icon: MessageCircleMore },
-  { key: "tips",          label: "Tips",           Icon: Lightbulb },
-  { key: "referrals",     label: "Referrals",      Icon: UserStar },
-  { key: "chargebacks",   label: "Chargebacks",    Icon: Undo2 },
+/** The summary's sum tiles in grid order, each channel's icon and colour from the Dashboard's one map (#5), Total on
+ *  the accent; Chargebacks (its own read, no growth) follows them. */
+const TILES: readonly { key: Chan | "total"; label: string; Icon: LucideIcon; rgb?: string }[] = [
+  { key: "total", label: "Total earnings", Icon: OnlyfansLine },
+  ...([
+    ["subscriptions", "Subscriptions"], ["posts", "Posts"], ["messages", "Messages"], ["tips", "Tips"],
+    ["referrals", "Referrals"],
+  ] as const).map(([key, label]) => ({ key, label, ...TILE_ICON[key] })),
 ];
-/** #101: the Creator statistics cards' tooltips, verbatim. */
+/** #101: the Creator statistics cards' tooltips, verbatim but for Total earnings: the per-model read it sums carries
+ *  no OnlyFans referrals, so its tip says so. */
 const STAT_TIPS = {
   creators: "Total number of creators managed by your team",
   message: "Earnings from creators’ messages during the selected time frame",
-  total: "Earnings from all creators’ subscriptions, tips, posts, messages, streams and referrals during the selected time frame",
+  total: "Earnings from all creators’ subscriptions, tips, posts, messages and streams during the selected time frame, OnlyFans referrals not included",
   refunded: "Amount of refunds during the selected time frame",
 } as const;
 
 export default function CreatorOverview({
-  ids, view, totalCents, buckets, prior, trendGran, setTrendGran, dayDates, trendPoints, chanPick, setChanPick,
-  chanGran, setChanGran, channelLines, from, to, net, buildExport, perModel, visibleCreators, visibleCols,
-  setVisibleCols, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView,
+  ids, view, totalCents, buckets, prior, growthNow, totalGrowth, trendPoints, chanPick, setChanPick,
+  channelLines, from, to, net, buildExport, perModel, visibleCreators, visibleCols,
+  setVisibleCols, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView, referralsGap,
+  referralsShown,
 }: {
   ids: { summary: string; trends: string; channel: string; breakdown: string; stats: string; ledger: string };
-  view: View; totalCents: number; buckets: Record<Bucket, number>; prior: (Record<Bucket, number> & { total: number }) | null;
-  trendGran: Gran; setTrendGran: (g: Gran) => void; dayDates: string[]; trendPoints: Point[];
-  chanPick: Set<Chan>; setChanPick: (next: Set<Chan>) => void; chanGran: Gran; setChanGran: (g: Gran) => void;
+  view: View; totalCents: number; buckets: Record<Bucket, number>;
+  /** Both windows' sums as growth reads them (`forGrowth`, per `totalGrowth`): unless whole, no Referrals, and
+   *  Total without referrals (`exclReferrals`) or none yet (`pending`). */
+  prior: GrowthSums | null; growthNow: GrowthSums; totalGrowth: TotalGrowth;
+  trendPoints: Point[];
+  chanPick: Set<Chan>; setChanPick: (next: Set<Chan>) => void;
   channelLines: ((typeof CHANNELS)[number] & { points: Point[] })[];
   from: string | null; to: string | null; net: boolean; buildExport: (c: ExportChoice) => Promise<Section[]>;
   perModel: { isPending: boolean; isError: boolean }; visibleCreators: PerModelRow[];
@@ -62,6 +68,11 @@ export default function CreatorOverview({
   /** Chargebacks' figure, below zero, and its reversed read's state, outside `view`: pending or failed, only
    *  Chargebacks' figures show "-". */
   chargebacksCents: number; chargebacksView: View;
+  /** How much of OnlyFans' referrals read is missing: all, Referrals shows "-"; any, Total is marked partial. */
+  referralsGap: ReferralsGap;
+  /** Whether Referrals has a figure (`referralsShown`): not, its tile, legend row and line wait ("-"), Total shows the
+   *  sales without it; `referralsGap` says why (the failure title, Total's partial mark). */
+  referralsShown: boolean;
 }) {
   const ready = view === "ready";
   const cbShown = ready && !isWait(chargebacksView);
@@ -77,14 +88,38 @@ export default function CreatorOverview({
   /* Each channel’s share of total channel earnings. */
   const chanSum = CHANNELS.reduce((a, c) => a + buckets[c.key], 0);
   /* The summary tiles' rows: Chargebacks has its own read (its own wait and error) and no growth. */
-  const tiles = TILES.map((t) => t.key === "chargebacks"
-    ? { ...t, cents: chargebacksCents, blank: isWait(view) || isWait(chargebacksView), prev: null,
-        title: !isWait(view) && chargebacksView === "error" ? CHARGEBACKS_UNAVAILABLE : undefined }
-    : { ...t, cents: t.key === "total" ? totalCents : buckets[t.key], blank: isWait(view), prev: prior?.[t.key],
-        title: undefined });
+  const refsFailed = referralsGap === "all";
+  const NO_GROWTH = { text: "-", dir: null };
+  const tiles = [
+    ...TILES.map((t) => {
+      const total = t.key === "total";
+      const failed = t.key === "referrals" && refsFailed;
+      const blank = isWait(view) || (t.key === "referrals" && !referralsShown);
+      const now = growthNow[t.key];
+      const growth = !ready || blank || now === undefined ? NO_GROWTH : growthOf(now, prior?.[t.key]);
+      return {
+        ...t,
+        cents: t.key === "total" ? totalCents : buckets[t.key],
+        blank,
+        growth,
+        title: !isWait(view) && failed ? REFERRALS_FAILED : undefined,
+        partial: total && !isWait(view) && referralsGap !== "none" ? TOTAL_PARTIAL : undefined,
+        growthTitle: total && totalGrowth === "exclReferrals" && growth.text !== "-" ? TOTAL_GROWTH_EXCL : undefined,
+      };
+    }),
+    {
+      key: "chargebacks", label: "Chargebacks", ...TILE_ICON.chargebacks,
+      cents: chargebacksCents,
+      blank: isWait(view) || isWait(chargebacksView),
+      growth: NO_GROWTH,
+      title: !isWait(view) && chargebacksView === "error" ? CHARGEBACKS_UNAVAILABLE : undefined,
+      partial: undefined,
+      growthTitle: undefined,
+    },
+  ];
   /* The legend's rows: the channels with their share, then Chargebacks (no share, its own read). */
   const legend = [
-    ...CHANNELS.map((c) => ({ ...c, cents: buckets[c.key], share: true, shown: ready })),
+    ...CHANNELS.map((c) => ({ ...c, cents: buckets[c.key], share: true, shown: ready && (c.key !== "referrals" || referralsShown) })),
     { key: "chargebacks", label: "Chargebacks", color: CHARGEBACKS_COLOR, cents: chargebacksCents, share: false, shown: cbShown },
   ];
   return (
@@ -98,23 +133,23 @@ export default function CreatorOverview({
       />
       <ReportCard className={styles.summary}>
         <dl className={styles.summaryGrid}>
-          {tiles.map((t) => {
-            const tile = (
-              <SummaryTile
-                key={t.key}
-                label={t.label}
-                Icon={t.Icon}
-                total={t.key === "total"}
-                negative={!t.blank && isLoss(t.cents)}
-                title={t.title}
-                // With no Creator the reads' zeros, "$0".
-                value={t.blank ? "-" : fmtDollars(t.cents)}
-                growth={ready ? growthOf(t.cents, t.prev) : { text: "-", dir: null }}
-              />
-            );
-            // The summary grid positions Tips beneath Subscriptions.
-            return tile;
-          })}
+          {/* The summary grid positions Tips beneath Subscriptions. */}
+          {tiles.map((t) => (
+            <SummaryTile
+              key={t.key}
+              label={t.label}
+              Icon={t.Icon}
+              rgb={t.rgb}
+              total={t.key === "total"}
+              negative={!t.blank && isLoss(t.cents)}
+              title={t.title}
+              partial={t.partial}
+              // With no Creator the reads' zeros, "$0".
+              value={t.blank ? "-" : fmtDollars(t.cents)}
+              growth={t.growth}
+              growthTitle={t.growthTitle}
+            />
+          ))}
         </dl>
         {isWait(view) && (
           <p title={EXTRA_LABEL} className="mt-4 text-sm" style={{ color: "var(--color-fg-dim)" }}>{SUMMARY_TEXT[view]}</p>
@@ -122,7 +157,7 @@ export default function CreatorOverview({
       </ReportCard>
     </section>
 
-    {/* #61 to #67: Earnings trends, the granularity tabs right-aligned over a 220px bar chart. */}
+    {/* #61 to #67: Earnings trends, a 220px bar chart in the toolbar's "Shown by" bucket (#4). */}
     <section aria-labelledby={ids.trends}>
       <ReportCard className={styles.trends}>
         <CardTitle
@@ -130,9 +165,6 @@ export default function CreatorOverview({
           label="Earnings trends"
           tip="Sales growth and trends of all earnings from your managed creators"
         />
-        <div className={styles.trendControls}>
-          <GranularityTabs name="Earnings trends granularity" pick={trendGran} days={dayDates.length} onPick={setTrendGran} />
-        </div>
         <div className="mt-2">
           <TrendBars points={ready ? trendPoints : null} message={isWait(view) ? TREND_TEXT[view] : ""} />
         </div>
@@ -153,15 +185,17 @@ export default function CreatorOverview({
             />
             <div className="flex flex-wrap items-center justify-between gap-2">
               <ChannelsPill picked={chanPick} onChange={setChanPick} />
-              <GranularityTabs name="Earnings by channel granularity" pick={chanGran} days={dayDates.length} onPick={setChanGran} />
             </div>
             <div className="mt-2">
               {/* #74, #81, #83: a 250px chart of 2px lines, one per channel given; the breakdown's legend names them. */}
               <LineChart
                 height={190}
-                labels={channelLines[0]?.points.map((p) => p.label) ?? []}
-                lines={ready ? channelLines.map((c) => ({ name: c.label, color: c.color, values: c.points.map((p) => p.value) })) : null}
-                message={isWait(view) ? CHANNEL_TEXT[view] : ""}
+                labels={trendPoints.map((p) => p.label)}
+                lines={ready && channelLines.length > 0
+                  ? channelLines.map((c) => ({ name: c.label, color: c.color, values: c.points.map((p) => p.value) })) : null}
+                // Only Referrals picked and it has no figure: why, not empty axes (as Creator performance's chart).
+                message={isWait(view) ? CHANNEL_TEXT[view]
+                  : channelLines.length > 0 ? "" : refsFailed ? REFERRALS_FAILED : SUMMARY_TEXT.loading}
                 messageTitle={EXTRA_LABEL}
                 valueFmt={fmtUsd}
                 legend={false}

@@ -95,6 +95,7 @@ import of_stats_daily  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 import vault_upload  # noqa: E402
 from of_client import OFClient, OFDeactivatedError  # noqa: E402
+from _of_wire import fake_wire  # noqa: E402
 from automation_registry import register  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -313,8 +314,8 @@ class _Wired:
     def client(self, aid: str) -> OFClient:
         c = object.__new__(OFClient)  # no session, no curl handle
         c.account_id, c.proxy_label = aid, None
-        # Select the injected-transport seam; _proxy_retry below intercepts all I/O.
-        c.http = object()
+        # No curl handle: _proxy_retry below intercepts all I/O.
+        fake_wire(c, object())
         c._ensure_x_hash = lambda **_k: "h"
         c._persist_cf_cookies = lambda r: None
         c._note_signed_ok = lambda url, r: None

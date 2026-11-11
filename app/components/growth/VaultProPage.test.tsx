@@ -50,19 +50,20 @@ vi.mock("@/contexts/UserContext", async (importOriginal) => ({
 }));
 // The download runner, held open: a switch of Creator must not abort it (the panel used to own it, and remount).
 const dlRun = vi.hoisted(() => ({
-  sink: null as "folder" | null,   // jsdom has no folder picker: no download, as before, unless a test turns it on
+  sink: undefined as "folder" | undefined,   // undefined: the browser's real answer (jsdom: none unless a test stubs it)
   calls: [] as Array<{ a: { accountId: string; creator: string; label: string }; signal: AbortSignal }>,
 }));
 vi.mock("@/components/vault/vaultDownload", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/components/vault/vaultDownload")>();
   return {
     ...mod,
-    downloadSink: () => dlRun.sink,
+    downloadSink: () => dlRun.sink ?? mod.downloadSink(),
     startDownload: (a: { accountId: string; creator: string; label: string; mode: "vault" },
-      d: { send: (x: unknown) => void; signal: AbortSignal }) => {
+      d: { send: (x: unknown) => void; signal: AbortSignal }, kind: "folder",
+      started: (s: unknown, attempt: number, root: unknown) => void) => {
       dlRun.calls.push({ a, signal: d.signal });
-      d.send({ type: "start", mode: a.mode, label: a.label, accountId: a.accountId, creator: a.creator, sink: "folder",
-               directAllowed: false });
+      d.send({ type: "start", mode: a.mode, label: a.label, accountId: a.accountId, creator: a.creator, sink: kind });
+      started(async () => null, 1, {});
       return new Promise(() => {});
     },
   };
@@ -73,9 +74,14 @@ vi.mock("@/contexts/ChatterContext", async (importOriginal) => ({
 }));
 
 import VaultProPage from "@/components/growth/VaultProPage";
+import { VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
 import { relay } from "@/lib/relay";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { renderWithProviders } from "@/test-utils";
+import { DOWNLOAD_OFF, SHARE_MODE_OFF } from "@/components/vault/vaultDownloadReducer";
+
+/** The page under the app's download provider (the root layout mounts it above every route). */
+const Page = () => <VaultDownloadProvider><VaultProPage /></VaultDownloadProvider>;
 
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
@@ -119,7 +125,7 @@ let listsAll: typeof ALL | undefined = ALL;
 let roster: Array<typeof A> = [A, B];
 
 beforeEach(() => {
-  dlRun.sink = null;
+  dlRun.sink = undefined;
   roster = [A, B];
   listsAll = ALL;
   window.localStorage.clear();
@@ -146,7 +152,7 @@ afterEach(() => {
 
 /** Mount the page and wait for the rail's folders, which only render once a Creator is adopted. */
 async function mount() {
-  renderWithProviders(<VaultProPage />);
+  renderWithProviders(<Page />);
   await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
 }
 
@@ -303,7 +309,11 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     fireEvent.click(more);
     const items =within(screen.getByRole("menu")).getAllByRole("menuitem").map((el) => el.textContent);
     expectInCapture("growth-vault-pro#34", "Rename / Delete");
-    expect(items).toEqual(["Rename", "Delete"]);
+    // Plus ours, last: Download folder, always listed; off (titled why) where this browser can't save (#20).
+    expect(items).toEqual(["Rename", "Delete", "Download folder"]);
+    const dl = within(screen.getByRole("menu")).getByRole("menuitem", { name: "Download folder" });
+    expect(dl).toBeDisabled();
+    expect(dl).toHaveAttribute("title", DOWNLOAD_OFF);
   });
 
   it("filters the rail by folder name from its search, with no relay call", async () => {
@@ -317,6 +327,61 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     expect(within(rail()).queryByText("Folder one")).toBeNull();
     expect(within(rail()).getByText("Folder two")).toBeTruthy();
     expect(relayGet.mock.calls.length).toBe(calls);
+  });
+});
+
+describe("the header download button", () => {
+  // Ours, left of Learn: the manage panel portals it into the header, so it follows the rail's selection.
+  const dl = () => screen.getByTestId("vault-header-download");
+  afterEach(() => {
+    delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    delete (navigator as { canShare?: unknown }).canShare;
+  });
+
+  it("sits left of Learn, styled like it, and names the vault or the selected folder", async () => {
+    (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve(null);
+    await mount();
+    const learn = screen.getByRole("link", { name: "Learn" });
+    expectBefore(dl(), learn);
+    expect(dl().closest("header")).toBe(learn.closest("header"));
+    expect(dl()).toHaveTextContent("Download full vault");
+    expect(dl()).toBeEnabled();
+    fireEvent.click(within(rail()).getByText("Folder one").closest("[role=button]") as HTMLElement);
+    await waitFor(() => expect(dl()).toHaveTextContent("Download full folder"));
+    expect(dl()).toBeEnabled();
+    fireEvent.click(within(rail()).getByText("All media"));
+    await waitFor(() => expect(dl()).toHaveTextContent("Download full vault"));
+  });
+
+  it("is off with the desktop-only reason on a phone (share sheet only)", async () => {
+    (navigator as { canShare?: unknown }).canShare = () => true;
+    await mount();
+    expect(dl()).toBeDisabled();
+    expect(dl()).toHaveAttribute("title", SHARE_MODE_OFF);
+    // The label hides on a phone, the icon stays: still named for screen readers.
+    expect(within(dl()).getByText("Download full vault")).toHaveClass("max-sm:sr-only");
+  });
+
+  it("is off with the browser reason where nothing can save", async () => {
+    await mount();
+    expect(dl()).toBeDisabled();
+    expect(dl()).toHaveAttribute("title", DOWNLOAD_OFF);
+  });
+
+  it("while the model accounts are still read, is off without claiming there is no Creator (#25)", async () => {
+    relayGet.mockImplementation(() => new Promise(() => {}));
+    renderWithProviders(<VaultProPage />);
+    const b = await screen.findByTestId("vault-header-download");
+    expect(b).toBeDisabled();
+    expect(b).toHaveAttribute("title", "Loading model accounts…");
+  });
+
+  it("is off, titled why, with no Creator", async () => {
+    roster = [];
+    renderWithProviders(<VaultProPage />);
+    await screen.findAllByText("No model accounts with a live session.");
+    expect(dl()).toBeDisabled();
+    expect(dl()).toHaveAttribute("title", "No model accounts with a live session.");
   });
 });
 
@@ -359,7 +424,7 @@ describe("the guided tours (#12, #118, #119)", () => {
   it("shows no tour and marks nothing seen while there is no Creator, as Add media is then off", async () => {
     window.localStorage.clear();
     roster = [];
-    renderWithProviders(<VaultProPage />);
+    renderWithProviders(<Page />);
     await screen.findByText("No model accounts with a live session.");
     expect(tour()).toBeNull();
     expect(seen()).toEqual({});
@@ -420,7 +485,7 @@ describe("the Extras overflow", () => {
     expect(extrasButton()).toHaveAttribute("title", EXTRAS_OVERFLOW_LABEL);
     const box = overflow();
     expect(within(box).getByRole("heading", { name: EXTRAS_OVERFLOW_LABEL })).toHaveAttribute("title", EXTRA_LABEL);
-    // Collect, AI describe and its prompt picker, harvest, duplicates, the pack picker, AI folders and disputes.
+    // Collect, AI describe and its prompt picker, harvest, duplicates, the pack picker and AI folders.
     const tools = [
       screen.getByRole("button", { name: "Collect all" }),
       screen.getByRole("button", { name: /^Describe all/ }),
@@ -429,7 +494,6 @@ describe("the Extras overflow", () => {
       screen.getByRole("button", { name: "Duplicates" }),
       screen.getByRole("button", { name: "Feet pack" }),
       screen.getByRole("button", { name: "Build AI folders" }),
-      screen.getByRole("button", { name: "Fix disagreements" }),
     ];
     for (const t of tools) expect(box.contains(t)).toBe(true);
     // The drawer's × closes it; so does Escape, and the button again.
@@ -495,7 +559,7 @@ describe("the Creator selector", () => {
     dlRun.calls.length = 0;
     dlRun.sink = "folder";
     await mount();
-    fireEvent.click(screen.getByRole("button", { name: "Download whole vault" }));
+    fireEvent.click(screen.getByTestId("vault-header-download"));
     await waitFor(() => expect(dlRun.calls).toHaveLength(1));
     expect(dlRun.calls[0].a.accountId).toBe(A.id);
     expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
@@ -506,14 +570,24 @@ describe("the Creator selector", () => {
 
     expect(dlRun.calls[0].signal.aborted).toBe(false);
     expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
-    // One run at a time: B's download waits for A's.
-    expect(screen.getByRole("button", { name: "Download whole vault" })).toBeDisabled();
+    // One run at a time: B's download joins the queue behind A's (named for B, started later by the provider); the
+    // header (the one gate) says so.
+    const add = screen.getByTestId("vault-header-download");
+    expect(add).toHaveTextContent("Add full vault to queue");
+    expect(add).toBeEnabled();
+    fireEvent.click(add);
+    const card = screen.getByRole("region", { name: "Vault download" });
+    await waitFor(() => expect(card).toHaveAttribute("data-queued", "1"));
+    expect(card).toHaveTextContent("Creator B: whole vault");
     expect(dlRun.calls).toHaveLength(1);
+    // asked twice: still one queued
+    fireEvent.click(screen.getByTestId("vault-header-download"));
+    expect(card).toHaveAttribute("data-queued", "1");
   });
 
   it("says a dropped session and writes nothing", async () => {
     // A is selected and live; then its session drops and the account list is read again.
-    const { queryClient } = renderWithProviders(<VaultProPage />);
+    const { queryClient } = renderWithProviders(<Page />);
     await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
     roster = [{ ...A, has_session: false }, B];
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["accounts"] }); });
@@ -528,7 +602,7 @@ describe("the Creator selector", () => {
 
   it("with no session at all draws the empty frame, offers no Add media and writes nothing", async () => {
     roster = [];
-    renderWithProviders(<VaultProPage />);
+    renderWithProviders(<Page />);
     const line = await screen.findByText("No model accounts with a live session.");
     // Ours, in place of the capture's not-a-creator text (#13), in the grid's empty state.
     expect(line).toHaveAttribute("title", EXTRA_LABEL);
@@ -558,7 +632,7 @@ describe("the Creator selector", () => {
 describe("the page's loading state", () => {
   it("is the capture's spinner (#13), not a line of text", async () => {
     relayGet.mockImplementation(() => new Promise(() => {}));
-    renderWithProviders(<VaultProPage />);
+    renderWithProviders(<Page />);
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByText("Loading models…")).toBeNull();
   });
@@ -698,7 +772,7 @@ describe("the flags review banner", () => {
       if (String(path) === "/admin/vault-ai/describe-all") sweep = { running: true, progress: { done: 0, total: 5 } };
       return Promise.resolve({});
     });
-    const { queryClient } = renderWithProviders(<VaultProPage />);
+    const { queryClient } = renderWithProviders(<Page />);
     await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
 
     const describe = await within(overflow()).findByRole("button", { name: /^Describe all/ });
