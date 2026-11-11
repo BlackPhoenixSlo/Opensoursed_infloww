@@ -1,8 +1,8 @@
 ---
 layout: base.njk
-title: "Inflowwww | The $0, self-hosted CRM for OnlyFans agencies"
-description: "A free, MIT-licensed, self-hosted alternative to Infloww for OnlyFans agencies, with no per-creator fee. Unofficial parody site."
-ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your server, apart from two optional integrations listed under Privacy. Not affiliated with Infloww."
+title: "Inflowwww | The $0 CRM for OnlyFans agencies: hosted free or self-hosted"
+description: "Free Infloww alternative: hosted free for agencies under $50k a month, or self-host it free at any size (MIT)."
+ogDescription: "Two ways, both $0: our hosted app is free for agencies under $50k a month, or self-host it free at any size (MIT, no per-creator fee). Over $50k? Contact us and we'll help you set it up. Not affiliated with Infloww."
 ---
 {#- Section order follows infloww.com (docs/infloww-landing-snapshot.md §2): hero, why choose, three feature
     blocks, testimonials, feature grid, poll, FAQ, closing band. We add the comparison table (after the grid)
@@ -26,21 +26,35 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
   </a>
   <h1 class="h-display mx-auto mt-6 max-w-4xl">The $0 CRM for OnlyFans agencies</h1>
   <p class="mx-auto mt-6 max-w-2xl text-lg text-pretty text-muted">
-    Run your agency's OnlyFans accounts on software you host and can read. Free, MIT licensed, with no
-    per-creator fee and no earnings tiers.
+    Free two ways: use our hosted app if your agency makes under $50k a month, or host it yourself at any size.
+    No per-creator fee, no earnings tiers.
   </p>
-  <div class="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-    <a class="btn-primary w-full sm:w-auto" href="#deploy">Deploy it yourself</a>
-    <a class="btn-secondary w-full sm:w-auto" href="{{ '/login/' | url }}">Log in</a>
-    <a class="btn-secondary w-full sm:w-auto" href="{{ '/signup/' | url }}">Register</a>
-    <a class="btn-secondary w-full sm:w-auto" href="{{ site.repo }}">Read the source on GitHub</a>
+  {#- The two ways to run it, side by side from sm up; hosted first. The $50k line is the owner's offer (2026-11-11). -#}
+  <div class="mx-auto mt-8 grid max-w-4xl gap-4 text-left sm:grid-cols-2">
+    <div id="hosted" class="card flex flex-col">
+      <p class="text-sm font-medium text-muted">Hosted by us</p>
+      <h2 class="mt-1 text-2xl font-semibold tracking-tight text-ink">Free under $50k a month</h2>
+      <p class="mt-2 text-ink">Agency making under $50k a month? Sign up and add your creators. No server, no setup, no bill.</p>
+      <div class="mt-auto flex flex-col gap-3 pt-5 sm:flex-row">
+        <a class="btn-primary w-full sm:w-auto" href="{{ '/signup/' | url }}">Register free</a>
+        <a class="btn-secondary w-full sm:w-auto" href="{{ '/login/' | url }}">Log in</a>
+      </div>
+    </div>
+    <div class="card flex flex-col">
+      <p class="text-sm font-medium text-muted">Self-hosted</p>
+      <h2 class="mt-1 text-2xl font-semibold tracking-tight text-ink">Free at any size</h2>
+      <p class="mt-2 text-ink">MIT licensed. Run it on your own server and your data stays with you. A few commands once, then everyone works in a browser.</p>
+      <div class="mt-auto flex flex-col gap-3 pt-5 sm:flex-row">
+        <a class="btn-primary w-full sm:w-auto" href="#deploy">Deploy it yourself</a>
+        <a class="btn-secondary w-full sm:w-auto" href="{{ site.repo }}">Source on GitHub</a>
+      </div>
+    </div>
   </div>
-  {#- One note, three muted lines at 1280 (one line, then two); one paragraph ran to four lines. -#}
-  <p class="mx-auto mt-5 max-w-4xl text-sm text-pretty text-muted">
-    No credit card, no demo call. Setup means a few commands on a server; after that everyone works in a browser.
+  <p class="mx-auto mt-5 max-w-4xl text-pretty text-ink">
+    Making more than $50k a month? <a class="text-link" href="{{ '/contact/#over-50k' | url }}">Contact us</a> and we'll help you set it up on your own server.
   </p>
-  <p class="mx-auto mt-1 max-w-4xl text-sm text-pretty text-muted">
-    Today it belongs on a private network or a VPN. Fansly is <a class="underline hover:text-ink" href="#built">partly built</a>. {% include "tos.njk" %}
+  <p class="mx-auto mt-2 max-w-4xl text-sm text-pretty text-muted">
+    No credit card, no demo call. Self-hosted, it belongs on a private network or a VPN today. Fansly is <a class="underline hover:text-ink" href="#built">partly built</a>. {% include "tos.njk" %}
   </p>
   {#- One composed shot (desktop with the phone over its bottom-right) at every width; the hero is the LCP image. -#}
   <figure class="mt-12">
@@ -65,7 +79,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     <p class="eyebrow">Why Inflowwww</p>
     <h2 id="why-title" class="section-title mt-3">Why choose Inflowwww?</h2>
     {%- set why = [
-      { icon: "lock", title: "Data security", quote: "Unlike other platforms, we don't run an OnlyFans agency—your data is safe with us.", body: "We don't run an agency either, and your data isn't with us at all. Your data stays on your server, apart from two integrations that call out by default and can be switched off: image descriptions and Giphy lookups. <a class=\"text-link\" href=\"" ~ ('/legal/privacy/' | url) ~ "\">See Privacy.</a>" },
+      { icon: "lock", title: "Data security", quote: "Unlike other platforms, we don't run an OnlyFans agency—your data is safe with us.", body: "We don't run an agency either. Self-host it and your data isn't with us at all: it stays on your server, apart from two integrations that call out by default and can be switched off: image descriptions and Giphy lookups. <a class=\"text-link\" href=\"" ~ ('/legal/privacy/' | url) ~ "\">See Privacy.</a>" },
       { icon: "gauge", title: "Better performance", quote: "up to 40% faster than other tools in the market", body: "Exactly as fast as your server. We publish no percentage." },
       { icon: "globe", title: "Your proxies, your call", quote: "Each creator is assigned a unique IP…", body: "You rent your own proxies, one internet address per creator, and assign them in Creators > Custom proxy." },
       { icon: "pulse", title: "Uptime guarantee", quote: "With 99.99% uptime in the last 90 days…", body: "No guarantee. An autoheal container restarts unhealthy services; the rest is your hosting." },
@@ -288,7 +302,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
   <div class="wrap py-20 sm:py-28">
     <p class="eyebrow">Pricing</p>
     <h2 id="pricing-title" class="section-title mt-2">Manage all your creators with one CRM, for $0 per creator</h2>
-    <p class="lede">Theirs is priced per creator profile, per month, and climbs with the creator's monthly earnings. Ours is the code, on your server.</p>
+    <p class="lede">Theirs is priced per creator profile, per month, and climbs with the creator's monthly earnings. Ours is $0: hosted by us for agencies under $50k a month, or the code on your own server at any size.</p>
     {#- grid-cols-1 below lg: an implicit auto track grows to the ladder table's min-content width and pushes the page sideways at 320px. -#}
     <div class="mt-10 grid grid-cols-1 items-start gap-6 lg:grid-cols-5" data-earnings-slider>
       <div class="lg:col-span-2">

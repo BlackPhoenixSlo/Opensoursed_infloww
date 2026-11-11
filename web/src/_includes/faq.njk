@@ -15,21 +15,23 @@
   <div class="mt-10 divide-y divide-line border-y border-line">
     {% call faqItem("Why do I need Inflowwww?") %}
       <p>
-        You might not. It's built for teams with someone who can rent a server and paste commands into a
-        terminal. If that's you and you'd rather not pay per creator, it gives you Messages Pro, Smart Messages,
+        You might not. If your agency makes under $50k a month, you can <a class="text-link" href="{{ '/signup/' | url }}">use our hosted app</a>
+        for free and skip the server. Above that, it's built for teams with someone who can rent a server and paste
+        commands into a terminal, or <a class="text-link" href="{{ '/contact/#over-50k' | url }}">we'll help you set it up</a>.
+        Either way, if you'd rather not pay per creator, it gives you Messages Pro, Smart Messages,
         Vault Pro, Scripts, creator, employee and fan reports, Share for Share, shifts, the AI Copilot and seven
-        automations, on your own server. OF Manager and Fansly are only partly built; the
+        automations. OF Manager and Fansly are only partly built; the
         <a class="text-link" href="{{ '/roadmap/' | url }}">roadmap</a> lists what is missing.
       </p>
       <p>
-        If you'd rather not run a server,
+        If you make more than $50k a month and would rather not run a server,
         <a class="text-link" href="{{ '/openinflowwww-vs-infloww/' | url }}#stay">here is who should stay on Infloww</a>.
       </p>
     {% endcall %}
     {% call faqItem("What makes Inflowwww different from other platforms?") %}
       <p>
-        It isn't a platform. It is MIT-licensed code you run yourself, so no vendor sits between you and your
-        creators' accounts, and nobody else holds your data.
+        It is MIT-licensed code. Self-host it and no vendor sits between you and your creators' accounts, and
+        nobody else holds your data. Or use our hosted copy free while your agency makes under $50k a month.
       </p>
     {% endcall %}
     {% call faqItem("Is Inflowwww safe?") %}
@@ -38,7 +40,7 @@
         API, and running it against a live account may violate OnlyFans' Terms of Service. Use it at your own risk.
       </p>
       <p>
-        What we can say: sessions and the database stay on your server, and you can read every line of code that
+        What we can say: self-hosted, sessions and the database stay on your server, and you can read every line of code that
         touches them. Access is a share token for the dashboard plus per-user logins for the owner (at
         <code>/login</code>) and each chatter (at <code>/chatter-login</code>); chatters don't need the share token.
       </p>
@@ -56,8 +58,10 @@
     {% endcall %}
     {% call faqItem("How much does Inflowwww cost?") %}
       <p>
-        $0, for any number of creators at any earnings. You pay for your server, your proxies (you supply them;
-        none are built in) and, if you add LLM keys, the provider's usage.
+        $0 either way. Our hosted app is free for agencies making under $50k a month. Self-hosted, it is $0 for any
+        number of creators at any earnings: you pay for your server, your proxies (you supply them; none are built
+        in) and, if you add LLM keys, the provider's usage. Over $50k a month,
+        <a class="text-link" href="{{ '/contact/#over-50k' | url }}">contact us</a> and we'll help you set it up.
       </p>
       <p class="text-sm">
         Theirs: <q>Starting at as little as $40 a month…</q> (infloww.com FAQ, captured <span class="whitespace-nowrap">{{ site.captureDate }}</span>).

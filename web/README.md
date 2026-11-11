@@ -21,7 +21,8 @@ web/
   public/              copied to the site root as-is (favicon, touch icon, og.png, img/)
   src/
     _data/site.json    name, url, repo (the one GitHub URL), captureDate (the one capture date), the Infloww URL,
-                       appUrl (your running Inflowwww app; the header and hero Log in / Register links point at it)
+                       appUrl (your running Inflowwww app; the header and hero Log in / Register links point at it),
+                       setupContact (where agencies over $50k a month ask for setup help; /contact/#over-50k links it)
     _data/buckets.json the nine blog buckets: tag, label, blurb, startHere (three slugs shown first on /blog/ and the tag page)
     _includes/         base.njk (head, header, footer), page, post, case-study, partials
     main.css           Tailwind entry and the theme (light, black on white, cream panels)
