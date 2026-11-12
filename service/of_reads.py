@@ -314,9 +314,8 @@ class ReadsMixin:
 
         The other half of a `userLists: ["fans","following"]` broadcast: `fans` is
         `subscribers` above (my active subs), `following` is this (the creators I
-        follow). `audiences.resolve_recipients_blocking` pages both to record who
-        OF evaluated for a blast, so the engine can splice the blast into a
-        replier's history without guessing at the audience.
+        follow). `audiences.roster_audience_blocking` pages both when a send must
+        carry a list audience as ids (a thresholded send, Priority mass's freeze).
 
         A 200 is captured in `library/of_api_reference/
         GET_api2_v2_subscriptions_subscribes.md` with the `{list: [...]}` envelope;
@@ -324,8 +323,8 @@ class ReadsMixin:
         `format=infinite` for the `hasMore` flag `_page_all_checked` trusts), which
         is why this is shaped like `subscribers` rather than measured. Callers must
         tolerate a bare list as well as the envelope — `_page_all_checked` does —
-        and a crawl that comes back wrong fails CLOSED at the caller (no recipient
-        record → no splice), never into the send path."""
+        and a crawl that comes back wrong fails CLOSED at the caller (the send is
+        refused)."""
         params: dict[str, Any] = {"type": type, "limit": limit, "offset": offset}
         if format:
             params["format"] = format

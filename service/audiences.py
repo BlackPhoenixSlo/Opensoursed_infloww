@@ -358,9 +358,9 @@ class AudienceUnknown(ValueError):
 
 
 async def _read_list_members(client, names: list[str], what: str) -> set[int]:
-    """Members of OF lists, read the way `resolve_recipients_blocking` records
-    a list blast; AudienceUnknown when OF won't page one of them."""
-    got = await asyncio.to_thread(lambda: resolve_recipients_blocking(client, user_lists=names))
+    """Members of OF lists (`roster_audience_blocking`); AudienceUnknown when OF
+    won't page one of them."""
+    got = await asyncio.to_thread(lambda: roster_audience_blocking(client, user_lists=names))
     if got is None:
         raise AudienceUnknown(f"Couldn't read who is on {what} {', '.join(names)}, so a "
                               "thresholded send can't be resolved. Nothing was sent.")
@@ -651,7 +651,7 @@ class Audience:
     @property
     def excluded(self) -> list:
         """Every exclude source, first-seen order, deduped. Built on read: only
-        `resolve_mass_audience` needs it, `resolve_recipients_blocking` never does."""
+        `resolve_mass_audience` needs it, `roster_audience_blocking` never does."""
         return list(dict.fromkeys(x for src in self.sources for x in src))
 
 
@@ -662,7 +662,7 @@ def final_audience(
     responders: Iterable[int] = (),
     truncated: Iterable[str] = (),
 ) -> Audience | Fail:
-    """THE set algebra `resolve_mass_audience` and `resolve_recipients_blocking`
+    """THE set algebra `resolve_mass_audience` and `roster_audience_blocking`
     share. Pure.
 
       • `truncated` — labels of crawls that hit the paging backstop. ANY → Fail:
@@ -720,54 +720,31 @@ def _crawl_until_cut(crawls) -> tuple[list[set[int]], list[str]]:
     return got, []
 
 
-def resolve_recipients_blocking(
+def roster_audience_blocking(
     client,
     *,
     user_lists: Iterable | None = None,
-    included_users: Iterable[int] | None = None,
-    excluded_users: Iterable[int] | None = None,
     excluded_user_lists: Iterable | None = None,
-    filters: dict | None = None,
-    online_only: bool = False,
 ) -> list[int] | None:
-    """WHO OF WILL ACTUALLY SEND THIS BLAST TO — read off OF's own rosters at send
-    time — or `None` when that cannot be known. Blocking; call via
-    `asyncio.to_thread`. Recorded on `mass_runs.recipients_json` so the chat engine
-    can splice the blast into a replier's history within a second of the send.
-
-    WHY IT IS READ AND NOT INFERRED. A `userLists` send writes no per-fan rows, so
-    the obvious cheap answer is "everyone in our `fans` table minus
-    `excluded_users`". Measured on prod (plans/blast-splice §0.3) that answer is
-    wrong for 4 of the 27 chat fans on the incident account — expired subscribers
-    OF silently skips, with nothing local that says so: `fans.subscription_status`
-    is NULL on all 866 fans of the two blast accounts and `fans.source` is
-    upgrade-only. Splicing a man a blast he never received puts words in his mouth
-    in HER prompt, which is worse than splicing nothing at all.
+    """The ids a list audience stands for, read off OF's own rosters BEFORE a send
+    that must carry them as ids — or `None` when that cannot be known. Blocking;
+    call via `asyncio.to_thread`. Callers: a thresholded composer send
+    (`_read_list_members`, its picked / excluded lists) and Priority mass's
+    freeze (`automations/priority_mass._freeze`). Never run after a send to
+    record who received it: that crawl is gone (docs/spec/phase-02-audience-crawl.md);
+    readers assume the audience from `mass_runs.audience_filter`.
 
     FAILS CLOSED, always, and every branch below is a refusal rather than a
     best-effort answer:
-      • `filters` / `online_only` — "online right now" is a moment, not a roster;
-        by the time we could page it the set has moved,
       • a `user_lists` entry that is neither `fans`/`following` nor a numeric OF
-        list id — we do not know what OF resolved it to,
+        list id — we do not know what OF resolves it to,
       • ANY crawl that reports truncation (`of_paging.page_all_checked`'s flag) or raises —
-        a short read would silently drop everyone past the ceiling and mark them
-        non-recipients.
-    A refusal returns None, the caller leaves `recipients_json` NULL, and the run is
-    simply never spliced.
-    NEVER a partial set: a half-recorded audience is indistinguishable from a
-    complete one at read time.
+        a short read would silently drop everyone past the ceiling.
+    NEVER a partial set: the caller refuses the send instead.
 
-    The remaining over-approximation is a fan on the roster whom OF still skipped
+    Over-approximation left: a fan on the roster whom OF would still skip
     (blocked, restricted, un-DMable) — the same permanent stragglers
-    `_sync_exclude_list_blocking` above already tolerates, and the reason §7's live
-    check compares `len(recipients)` against the `chat_queue_finish.total` frame
-    rather than demanding equality."""
-    if filters or online_only:
-        # Not a failure — a deliberate refusal, and the common one (Mass Online).
-        log.info("resolve_recipients: online/filtered audience is not a roster "
-                 "— leaving the run unrecorded")
-        return None
+    `_sync_exclude_list_blocking` below already tolerates."""
     try:
         def roster(page):          # fans / following: OF's active rosters
             return lambda: of_paging.ids_from_pages(
@@ -787,30 +764,21 @@ def resolve_recipients_blocking(
                 # A custom OF list id passed straight through to `userLists`.
                 crawls.append((repr(raw), custom(int(name))))
             else:
-                log.warning("resolve_recipients: unknown user_list %r — audience "
-                            "not recorded", raw)
+                log.warning("roster_audience: unknown user_list %r", raw)
                 return None
         n_inc = len(crawls)
-        # Every exclusion WE sent, crawled rather than assumed — `excluded_user_lists`
-        # holds the AUTOFENCE list and Auto_Exclude (which is where the per-fan
-        # `excluded_users` of a list audience actually land: OF's queue body has no
-        # per-user exclusion field, see `ensure_exclude_list`).
+        # Every exclude list the caller passes, crawled rather than assumed.
         crawls += [(f"exclude list {lid!r}", custom(lid)) for lid in (excluded_user_lists or [])]
         sets, cut = _crawl_until_cut(crawls)
 
-        ids = {int(x) for x in (included_users or []) if x is not None}.union(*sets[:n_inc])
-        excl = {int(x) for x in (excluded_users or []) if x is not None}
-        out = final_audience(sorted(ids), [excl, *sets[n_inc:]], truncated=cut)
+        ids = set().union(*sets[:n_inc])
+        out = final_audience(sorted(ids), sets[n_inc:], truncated=cut)
         if isinstance(out, Fail):
-            log.warning("resolve_recipients: crawl hit the paging backstop (%s) "
-                        "— audience not recorded", out.reason)
+            log.warning("roster_audience: crawl hit the paging backstop (%s)", out.reason)
             return None
         return out.included
     except Exception:
-        # The send already succeeded by the time we are called. A roster we could
-        # not read costs a splice and nothing else, so it is a WARNING and a None.
-        log.warning("resolve_recipients failed — audience not recorded",
-                    exc_info=True)
+        log.warning("roster_audience failed — audience unknown", exc_info=True)
         return None
 
 
@@ -930,12 +898,11 @@ _ae_refreshes: dict[str, asyncio.Task] = {}    # account -> its refresh task (si
 AE_PAGE_TRIES = 3             # a refresh page retried in place: the crawl resumes, never restarts
 
 
-def _ensure_exclude_blocking(account_id: str, client, ids: set[int],
-                             verified: dict | None = None) -> tuple[int, bool]:
+def _ensure_exclude_blocking(account_id: str, client, ids: set[int]) -> tuple[int, bool]:
     """(Auto_Exclude list id, schedule a background refresh). Blocking; the
     caller holds `broadcast_lock`. Same list id as a warm mirror: adds only.
-    Else one checked crawl as today; not truncated -> today's reconcile
-    (`verified[list id]` = the membership after it); truncated -> a new mirror
+    Else one checked crawl as today; not truncated -> today's reconcile;
+    truncated -> a new mirror
     (its crawl cost logged), adds only, refresh. A mirror never verifies."""
     list_id = int(_auto_exclude_list_id_blocking(client))
     m = _ae_mirrors.get(account_id)
@@ -951,8 +918,6 @@ def _ensure_exclude_blocking(account_id: str, client, ids: set[int],
     members, truncated = of_paging.list_member_ids(client, list_id)
     if not truncated:
         _reconcile_exclude_list_blocking(client, list_id, members, ids)
-        if verified is not None:
-            verified[list_id] = frozenset(members)
         return list_id, False
     log.warning("auto_exclude: Auto_Exclude list=%s past the paging backstop (%d read in "
                 "%.1fs) — incremental: adds only, stale members go in the background refresh",
@@ -1090,7 +1055,6 @@ async def ensure_exclude_list(
     ids: Iterable[int],
     *,
     client=None,
-    verified: dict | None = None,
 ) -> int | None:
     """Mirror `ids` into the per-account Auto_Exclude OF custom list and return
     its id — the ONLY way to exclude individual fans from a `userLists`/online
@@ -1106,12 +1070,6 @@ async def ensure_exclude_list(
     A list past the 20k paging backstop is kept incrementally (the block above
     `_ensure_exclude_blocking`): every `ids` is on it at return, bar ids OF
     refused to list; its stale members go in a background refresh.
-
-    `verified` (out-param, like `audience_fence_for_broadcast`'s `stats`): on the
-    exact path (the list crawled whole) it gains `{list id: frozenset(members)}`,
-    the membership after the reconcile (crawled + confirmed adds − confirmed
-    removes; a failed remove stays), which the send's Audience crawl subtracts
-    without reading the list again. The mirror path sets nothing.
     """
     idset = {int(x) for x in (ids or set())}
     if not idset:
@@ -1121,7 +1079,7 @@ async def ensure_exclude_list(
         import automation_executor as ax
         c = await asyncio.to_thread(ax._make_client, account_id)
     aid = str(account_id)
-    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset, verified)
+    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset)
     if refresh:
         _schedule_auto_exclude_refresh(aid, c)
     log.info("auto_exclude synced account=%s list=%s ids=%d",

@@ -102,9 +102,8 @@ export default function ScheduledTab() {
               ) : rows.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length} className="p-0">
-                    <div className="sticky left-0 w-[100cqw]">
-                      <EmptyState kind="data" size="md" text="Nothing queued." className="py-16" />
-                    </div>
+                    {/* EmptyState sticks itself; the cap keeps it centred in the scroller, not the wider table. */}
+                    <EmptyState kind="data" size="md" text="Nothing queued." className="max-w-[100cqw] py-16" />
                   </td>
                 </tr>
               ) : rows.map((m) => (

@@ -1551,12 +1551,12 @@ describe("the header row and the Automated filter bar and table read like the bu
     expect(column().nextElementSibling!.contains(rows()[0])).toBe(true);
   });
 
-  it("Learn carries the book icon and stays disabled; New Message carries the plus; the picked tab is M1", async () => {
+  it("Learn carries the book icon and opens its tip; New Message carries the plus; the picked tab is M1", async () => {
     await mount();
     const learn = screen.getByRole("button", { name: labelOf(11) });
     expect(learn.querySelector("svg.lucide-book-open")).toBeTruthy();
-    expect(learn).toBeDisabled();
-    expect(learn).toHaveAttribute("title", "not wired");
+    expect(learn).toBeEnabled();
+    expect(learn).not.toHaveAttribute("title", "not wired");
     expect(learn).toHaveClass("text-accent");
     const create = screen.getByRole("button", { name: labelOf(15) });
     expect(create.querySelector("svg.lucide-plus")).toBeTruthy();

@@ -24,12 +24,7 @@ Include-only automation audience — resolver, fence, at-fire, API.
       manual stamp sends (the creation route stamps every human schedule).
   case_fence_build_verify_zero_diff:
       AUTOFENCE reconcile = adds before removals + verify; an un-addable id is
-      skipped-and-counted; a verify mismatch raises AudienceHalt. The verified
-      set returned beside size / unaddable equals the verify read (`after`).
-  case_fence_reports_verified_set:
-      audience_fence_for_broadcast / ensure_autofence put {fence id: after} in
-      `verified` once the verify read matched; shadow / off put nothing; the
-      returned ids are as without `verified`.
+      skipped-and-counted; a verify mismatch raises AudienceHalt.
   case_mass_send_attaches_fence:
       enforce-mode list broadcast carries the stable fence id in
       excluded_user_lists; original user_lists audience is UNCHANGED.
@@ -265,7 +260,7 @@ def case_fence_build_verify_zero_diff():
     fake = FakeOF(lists={700: {2, 9}})
     built = _build_autofence_blocking(fake, 700, {1, 2, 3})
     assert fake.lists[700] == {1, 2, 3}, fake.lists       # adds 1,3 · removes 9
-    assert built == {"size": 3, "unaddable": 0, "verified": frozenset({1, 2, 3})}, built
+    assert built == {"size": 3, "unaddable": 0}, built
     add_order = [u for (l, u) in fake.added if l == 700]
     rem_order = [u for (l, u) in fake.removed if l == 700]
     assert add_order and rem_order and fake.added and fake.removed, "both legs ran"
@@ -274,7 +269,7 @@ def case_fence_build_verify_zero_diff():
     # not a permanent wedge.
     fake2 = FakeOF(lists={701: set()}, fail_add=(5,))
     built2 = _build_autofence_blocking(fake2, 701, {4, 5})
-    assert built2 == {"size": 1, "unaddable": 1, "verified": frozenset({4})}, built2
+    assert built2 == {"size": 1, "unaddable": 1}, built2
 
     # Verify mismatch → AudienceHalt (here: a removal that silently fails).
     class StickyOF(FakeOF):
@@ -308,40 +303,6 @@ def case_fence_lookup_incomplete_halts_never_creates():
     plain = FakeOF(lists={1: set()})
     made = audience_include._find_or_create_fence_blocking(plain)
     assert plain.names[made] == audience_include.AUTOFENCE_LIST_NAME, plain.names
-
-
-async def case_fence_reports_verified_set():
-    aid = "aud_fence_verified"
-    await _seed_audience(aid, mode="enforce", members=(1, 2), of_list_id=611)
-    async with get_session() as s:                         # local universe
-        for fid in (1, 2, 3, 4):
-            s.add(Fan(account_id=aid, fan_id=fid))
-    fake = FakeOF(lists={611: {1, 2}})
-    verified: dict = {}
-    got = await audience_include.audience_fence_for_broadcast(aid, client=fake, verified=verified)
-    assert len(got) == 1 and got[0] != 611, got            # the AUTOFENCE list, made on first build
-    fence = got[0]
-    fake.lists[fence] |= {9}                               # an id that must go on the next build
-    verified = {}
-    assert await audience_include.audience_fence_for_broadcast(aid, client=fake, verified=verified) == [fence]
-    assert fake.lists[fence] == {3, 4} and verified == {fence: frozenset({3, 4})}, (fake.lists, verified)
-    assert await audience_include.audience_fence_for_broadcast(aid, client=fake) == [fence]
-    # a verify that does not match halts and verifies nothing
-    class StickyOF(FakeOF):
-        def remove_user_from_list(self, list_id, user_id):
-            return {}
-    v2: dict = {}
-    try:
-        await audience_include.ensure_autofence(aid, client=StickyOF(lists={fence: {8}}), verified=v2)
-        assert False, "verify must catch the sticky member"
-    except AudienceHalt:
-        pass
-    assert v2 == {}, v2
-    # shadow: no fence, nothing verified
-    sid = "aud_fence_verified_shadow"
-    await _seed_audience(sid, mode="shadow", members=(1,))
-    v3: dict = {}
-    assert await audience_include.audience_fence_for_broadcast(sid, client=fake, verified=v3) == [] and v3 == {}
 
 
 async def case_mass_send_attaches_fence():

@@ -5,10 +5,10 @@
  *  - `startedAgo`: "40 min ago" for the Last started column.
  */
 
+import type { PillStatus } from "@/components/automations/StatusPill";
 import type { FunnelStats } from "@/hooks/useFunnels";
 
-export type FunnelTone = "idle" | "active" | "done" | "warn";
-export interface FunnelStatus { label: string; tone: FunnelTone; hint: string }
+export type FunnelStatus = PillStatus & { hint: string };
 
 /** Running: fans being walked, or a run still taking new repliers, with follow-ups on. Paused: the same with them
  *  off (nothing moves). Completed: started before, nobody left to walk. Not started: never sent on this model. */
@@ -24,7 +24,7 @@ export function funnelStatus(stats: FunnelStats | undefined, followUpsOn: boolea
       ? "Fans who replied are being walked through the steps."
       : "Waiting for fans to reply to the opener." };
   }
-  return { label: "Completed", tone: "done", hint: "Every fan who replied has been through the steps." };
+  return { label: "Completed", tone: "ok", hint: "Every fan who replied has been through the steps." };
 }
 
 /** "just now" / "12 min ago" / "3 h ago" / "4 d ago"; null for never. */

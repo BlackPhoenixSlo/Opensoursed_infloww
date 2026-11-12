@@ -1690,18 +1690,6 @@ async def _start_push() -> None:
         log.exception("push_send start failed; push off")
 
 
-@app.on_event("startup")
-async def _start_audience_crawl_recovery() -> None:
-    """The mass sends whose Audience crawl a restart cut off (shutdown's bounded drain) are
-    crawled again, once, in the background (audience_crawl.recover_at_boot: `paced` mode
-    only, reads only, never raises). After _start_event_pumps' db_init. Not behind the
-    test-mode guard: slop drives it."""
-    # ASSUMPTION: its own startup hook (as _start_push), not inside _start_event_pumps below the
-    # test-mode guard, so slop's restart drives the product's own boot line. Rung 3.
-    import audience_crawl
-    _spawn_bg(audience_crawl.recover_at_boot(_load_client), "audience-crawl-recover")
-
-
 @app.on_event("shutdown")
 async def _stop_push() -> None:
     import push_send
@@ -1721,11 +1709,6 @@ async def _stop_event_pumps() -> None:
     from automation_executor import drain as _drain_automations
     with contextlib.suppress(Exception):
         await _drain_automations()
-    # Then the Audience crawls those sends handed off (audience_crawl), bounded: a crawl
-    # in a 429 backoff is cut off, its send left unrecorded (NULL), never partial.
-    import audience_crawl
-    with contextlib.suppress(Exception):
-        await audience_crawl.drain(timeout_s=audience_crawl.SHUTDOWN_DRAIN_S)
     # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
     # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
     # at every clean shutdown.

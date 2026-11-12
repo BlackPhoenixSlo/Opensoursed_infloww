@@ -1027,3 +1027,28 @@ def _of_counter_drops_errors() -> None:
 if "of-counter-drops-errors" in FAULTS:
     raise SystemExit("slop: faults.py redefines of-counter-drops-errors")
 FAULTS["of-counter-drops-errors"] = Fault(_of_counter_drops_errors, ("counts_match_wire",))
+
+
+# --- mass send reads no roster (the Audience crawl deleted, 2026-11-12) ---
+# slop/run mass-send-no-roster-reads --break: every OF mass send (both paths call OFClient.send_mass_message) is
+# followed by one fans and one following roster page, the deleted crawl's bug class.
+def _mass_send_reads_roster() -> None:
+    import of_sends
+    real = of_sends.SendsMixin.send_mass_message
+
+    def then_roster(self, *a, **kw):
+        out = real(self, *a, **kw)
+        for read in (self.subscribers, self.following):
+            try:
+                read(limit=50, offset=0)
+            except Exception:  # noqa: BLE001 — the read is the fault, its answer is not
+                pass
+        return out
+
+    of_sends.SendsMixin.send_mass_message = then_roster
+
+
+for _name in ("mass-send-reads-roster",):
+    if _name in FAULTS:
+        raise SystemExit(f"slop: faults.py redefines {_name}")
+FAULTS["mass-send-reads-roster"] = Fault(_mass_send_reads_roster, ("no_roster_reads",))

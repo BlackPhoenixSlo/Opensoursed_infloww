@@ -42,13 +42,13 @@ roster = `--set dry_fresh=` fans no message touched in 12 h, `--set dry_guard=` 
 reached (inside the 6 h contact guard), and both fences. max(`--users`, 2 per Creator) concurrent
 `POST /admin/automation/enqueue` `send_mass_message` dry runs, alternating per Creator explicit (the
 roster as `included_users`, `--set dry_excluded=` fresh fans as `excluded_users`, one payload per
-Creator) and list (`user_lists: [that list]`, its own excluded fresh fans), drained by
+Creator) and list (`user_lists: [that list]`), drained by
 `/__slop/automation-tick`; then ONE real enqueue per Creator of the explicit payload. DRY_NO_SEND
 (lib/mass_dry_run_faults.py), the dry phase only: of_wire `queue` frames per Creator unchanged, no OF
 list POST / DELETE, no new mass_runs / out messages row, every job done and every run's stats
-(`GET /admin/stats/automation-runs`) dry_run, sent 0. DRY_LIST: the list runs' would_send are, as a
-multiset, roster - guard - fences - their excluded_users (each non-empty); every explicit run's
-would_send is that, in roster order, and the real send's wire `userIds`.
+(`GET /admin/stats/automation-runs`) dry_run, sent 0. DRY_LIST: every list run's would_send is None
+with reason `list_audience` (no roster read); every explicit run's would_send is roster - guard -
+fences - its excluded_users (non-empty), in roster order, and the real send's wire `userIds`.
 
 Bypasses (declared): lib/of_wire.py is OnlyFans (its own declared bypasses; the queue answer
 `{id, text, createdAt}` is a guess, which is what makes every recipient a placeholder; no 10 s
@@ -60,8 +60,8 @@ side: no route makes a custom list with members in one step), its runs are drain
 not the supervisor's cadence.
 Break-it-once: placeholder-pair-ignores-window (the 6 h bound dropped: only PH_ONCE);
 `--fault=mass-queue-excluded-kept` (only EXCL); `--fault=mass-dry-run-ignored` (a dry run sends:
-DRY_NO_SEND + DRY_LIST); `--fault=mass-dry-run-skips-guard` (the list dry run's in-memory excludes
-dropped: only DRY_LIST).
+DRY_NO_SEND + DRY_LIST); `--fault=mass-dry-run-list-claims-reach` (a list dry run answers its known
+fans, no reason: only DRY_LIST).
 """
 from __future__ import annotations
 
@@ -409,7 +409,7 @@ async def dry_tail(ctx, w, aids: list[str], plan: dict, rng) -> None:
     real send per Creator, DRY_NO_SEND and DRY_LIST."""
     sizes = {k: ctx.param(f"dry_{k}", w.size[f"mass_dry_run_{k}"]) for k in ("fresh", "guard", "fence", "excluded")}
     lists = _dry_world(ctx, w, aids, plan, rng, sizes)
-    jobs = _dry_jobs(ctx, aids, lists, rng)
+    jobs = _dry_jobs(ctx, aids, lists)
     http = ctx.owner.share(limits=len(jobs))
     tick_http = ctx.owner.share(rec=Recorder(), limits=2)
     before = _dry_counts(ctx, w, aids)
@@ -498,7 +498,7 @@ def _want(lists: dict, aid: str, ex) -> list[int]:
     return [f for f in v["roster"] if f in set(v["fresh"]) and f not in ex]
 
 
-def _dry_jobs(ctx, aids: list[str], lists: dict, rng) -> list[dict]:
+def _dry_jobs(ctx, aids: list[str], lists: dict) -> list[dict]:
     """max(--users, 2 per Creator) dry payloads, alternating per Creator explicit / list.
     -> [{aid, kind, payload}] (`job_id` set by _enqueue)."""
     jobs: list[dict] = []
@@ -509,7 +509,6 @@ def _dry_jobs(ctx, aids: list[str], lists: dict, rng) -> list[dict]:
         else:
             jobs.append({"aid": aid, "kind": "list", "payload": {
                 "text": f"slop dry run for {aid}", "user_lists": [lists[aid]["id"]],
-                "excluded_users": rng.sample(lists[aid]["fresh"], len(lists[aid]["ex_exp"])),
                 "dry_run": True}})
     return jobs
 
@@ -584,18 +583,19 @@ def _check_no_send(ctx, aids, jobs, stats, status, before, after, *, enq_bad, li
 
 def _check_list(ctx, aids, lists, jobs, stats, wire) -> None:
     """`wire`: {aid: (the real send's userIds, its queue frames)}."""
-    bad: dict[str, list] = {"list": [], "list_empty": [], "explicit": [], "explicit_runs": [],
-                            "explicit_vs_wire": [], "wire": []}
+    bad: dict[str, list] = {"list": [], "list_runs": [], "explicit": [], "explicit_empty": [],
+                            "explicit_runs": [], "explicit_vs_wire": [], "wire": []}
     for aid in aids:
         runs, (wire_ids, wire_n) = stats[aid], wire[aid]
-        got = sorted(tuple(x.get("would_send") or ()) for x in runs if x.get("audience") == "list")
-        exp = sorted(tuple(sorted(_want(lists, aid, j["payload"]["excluded_users"]))) for j in jobs
-                     if j["aid"] == aid and j["kind"] == "list")
-        if got != exp:
-            bad["list"].append((aid, [list(g)[:6] for g in got[:2]], [list(e)[:6] for e in exp[:2]]))
-        if any(not e for e in exp):
-            bad["list_empty"].append(aid)
+        l_runs = [x for x in runs if x.get("audience") == "list"]
+        for x in l_runs:
+            if x.get("would_send") is not None or x.get("reason") != "list_audience":
+                bad["list"].append((aid, {k: x.get(k) for k in ("would_send", "would_send_count", "reason")}))
+        if len(l_runs) != sum(1 for j in jobs if j["aid"] == aid and j["kind"] == "list"):
+            bad["list_runs"].append((aid, len(l_runs)))
         w_exp = _want(lists, aid, lists[aid]["ex_exp"])
+        if not w_exp:
+            bad["explicit_empty"].append(aid)
         n_exp = sum(1 for j in jobs if j["aid"] == aid and j["kind"] == "explicit")
         if sum(1 for x in runs if x.get("audience") == "explicit") != n_exp:
             bad["explicit_runs"].append((aid, n_exp))

@@ -139,10 +139,9 @@ services:
       # Anthropic (Claude) — the help assistant's Opus, and any account an
       # operator points at a Claude model. Blank = nothing routes there.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # The mass-send Audience crawl's deadline (service/audience_crawl_decide.py; the
-      # proxy-health watch reads it too). Blank = 900 s. AE sets 2700 (2026-11-11: its biggest
-      # Creators' rosters take ~2000 s at the pacer's ~2.7 s a page).
-      AUDIENCE_CRAWL_DEADLINE_S: "${AUDIENCE_CRAWL_DEADLINE_S:-}"
+      # TypeSafe (Jev): the FM auto-reply's off-script check only. Blank = the
+      # check is skipped and the script is sent as before.
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
       # Founder second factor (auth._read_admin_password), and the ONE key where
       # the environment outranks the Setup → Keys store — which is what makes
       # rotating it possible at all. It only works if it is NAMED here: the relay

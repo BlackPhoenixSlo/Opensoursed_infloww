@@ -35,6 +35,7 @@ import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
 import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
 import { StepCard } from "@/components/automations/StepCard";
 import { funnelStatus, startedAgo, type FunnelStatus } from "@/components/automations/funnelList";
+import { StatusPill } from "@/components/automations/StatusPill";
 import {
   useCreateFunnel,
   useDeleteFunnel,
@@ -250,20 +251,9 @@ const FUNNEL_COLUMNS = ["Funnel", "Status", "Steps", "Fans in funnel", "Last sta
 const WIDE_ONLY = new Set<string>(["Status", "Steps", "Fans in funnel", "Last started"]);
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-/** Smart Messages' status pills (#98-#102) in the theme palette. */
-const TONE: Record<FunnelStatus["tone"], string> = {
-  idle: "bg-fg-dim/15 text-fg-dim",
-  active: "bg-accent/15 text-accent",
-  done: "bg-ok/15 text-ok",
-  warn: "bg-warn/15 text-warn",
-};
-function StatusPill({ status }: { status: FunnelStatus | null }) {
-  if (!status) return <span className="text-muted">—</span>;
-  return (
-    <span title={status.hint} className={cn("inline-block whitespace-nowrap rounded-2xl px-2 py-0.5 text-[12px]", TONE[status.tone])}>
-      {status.label}
-    </span>
-  );
+/** The shared pill, or a dash while this creator's stats load. */
+function FunnelPill({ status }: { status: FunnelStatus | null }) {
+  return status ? <StatusPill status={status} className="leading-[inherit]" /> : <span className="text-muted">—</span>;
 }
 
 type RowAction = "Start" | "Edit" | "Media" | "Delete";
@@ -410,13 +400,13 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                         <span className="block truncate text-[12px] text-muted max-sm:hidden">{f.description || f.opening_message}</span>
                         {/* Phone: the hidden columns, under the name. */}
                         <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted sm:hidden">
-                          <StatusPill status={status} />
+                          <FunnelPill status={status} />
                           {f.stats && f.stats.last_started_at && <span>{fans}{ago && ` · ${ago}`}</span>}
                           {!status && <span>{f.step_count} steps</span>}
                         </span>
                         {rowErr?.id === f.id && <span className="mt-1 block text-[12px] text-err">{rowErr.msg}</span>}
                       </td>
-                      <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}><StatusPill status={status} /></td>
+                      <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}><FunnelPill status={status} /></td>
                       <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}>{f.step_count}</td>
                       <td className={cn(IF_TABLE.td, "whitespace-nowrap tabular-nums max-sm:hidden")}>{f.stats ? f.stats.active_fans : "—"}</td>
                       <td className={cn(IF_TABLE.td, "whitespace-nowrap text-fg-dim max-sm:hidden")}

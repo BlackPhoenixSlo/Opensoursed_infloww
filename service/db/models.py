@@ -1641,28 +1641,22 @@ class MassRun(Base):
     # the line a fan is answering existed NOWHERE we could read it until his own
     # copy arrived on the inbox poll, p50 81 min after the send. The engine read a
     # two-word reply ("please") with nothing above it and called him out for not
-    # answering her. These four columns are what the reply path reads instead.
+    # answering her. `body` + `sent_at` let readers know the mass without a
+    # per-fan row.
     #
-    # All four are NULLABLE and all four are load-bearing as a set: a run is
-    # spliceable only with `body` AND `sent_at` AND `recipients_json`, so a legacy
-    # row, a scheduled send that has not gone out, or an audience we could not
-    # resolve is simply never spliced. init_db self-heals them via ALTER TABLE.
+    # All NULLABLE: a legacy row or a scheduled send that has not gone out has no
+    # `body` / `sent_at`. init_db self-heals them via ALTER TABLE.
     body: Mapped[str | None] = mapped_column(Text)               # the text as sent
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)   # OF createdAt, else close time
     # Set when the queue is canceled (the 4h mass unsend, or "unsend from
-    # everyone") — the run stops being spliceable the moment OF stops serving it.
+    # everyone") — OF stops serving the mass from then on.
     unsent_at: Mapped[datetime | None] = mapped_column(DateTime)
-    # JSON list[int]: who OF actually sent it to, RECORDED from OF's own rosters at
-    # send time, never inferred from `audience_filter`. Measured on prod: 4 of the
-    # 27 chat fans on one blast account are consistent non-recipients (expired
-    # subscribers) with no local tell at all, so "everyone not excluded" would have
-    # spliced 15% of repliers a blast they never received. NULL = we could not know
-    # → never spliced (see audiences.resolve_recipients_blocking, which fails closed).
+    # Both retired (`recipients_json`, `crawl_outcome`), never written since the
+    # Audience crawl was deleted (2026-11-12,
+    # docs/spec/phase-02-audience-crawl.md): old rows keep their values, nothing
+    # reads them. Who received a mass is assumed from `audience_filter`.
+    # Columns kept: no migration.
     recipients_json: Mapped[str | None] = mapped_column(Text)
-    # The Audience crawl's outcome for this run (audience_crawl_decide.OUTCOMES, its
-    # audience_crawl_end line's), stamped when the crawl ends. NULL = no crawl ended
-    # (legacy mode, a crawl cut off by a restart, a pre-P2b row). Read by the crawl
-    # itself: the skip after an `incomplete` / `deadline` verdict and the boot re-crawl.
     crawl_outcome: Mapped[str | None] = mapped_column(String)
 
     __table_args__ = (

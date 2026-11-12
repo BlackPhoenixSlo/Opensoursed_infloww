@@ -53,7 +53,7 @@ hands it over (`_observed`: the consent_required notice flags, then clears). A k
 between `send_accepted` and `send_returned` is OF accepting a mass the relay never
 heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
 With the same file: `subscribers` / `following` answer empty pages (a send's
-recipient crawl), and OF's user lists (`get_lists`, `create_list`, `list_users_in`,
+a pre-send roster read), and OF's user lists (`get_lists`, `create_list`, `list_users_in`,
 `add_user_to_list`, `remove_user_from_list`: buyer lists, a send's Auto_Exclude) live
 in this relay process (`_of_lists` / `_of_members`, ids from _OF_LIST_BASE + 1 up),
 `list_s` (0.3 s) a call; a restarted relay finds no list and makes them again. A list
@@ -218,7 +218,7 @@ class _Walker:
         return r
 
     def subscribers(self, *, type="active", limit=10, offset=0, **_kw) -> dict:
-        """The send's recipient crawl (audiences.resolve_recipients_blocking):
+        """A roster read (audiences.roster_audience_blocking: thresholded / Priority sends):
         an empty page. Fake, declared: the scenario counts sends, not fans."""
         self._mass_cfg()
         return {"list": [], "hasMore": False}

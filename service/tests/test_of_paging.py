@@ -20,7 +20,7 @@ fake `fetch(offset)` -> (rows, truncated, fetch offsets).
   case_ids_from_pages:         ids as ints; id-less / non-int ids dropped; flag kept.
   case_same_objects:           audiences' old private names ARE of_paging's objects.
   case_patch_reaches_callers:  patching of_paging.page_all_checked reaches page_all,
-                               ids_from_pages and audiences.resolve_recipients_blocking.
+                               ids_from_pages and audiences.roster_audience_blocking.
 
 Run: ./venv/bin/python service/tests/test_of_paging.py   (exit 0 = pass)
 """
@@ -224,14 +224,14 @@ def case_patch_reaches_callers():
         class C:
             def subscribers(self, **kw):
                 return []
-        assert audiences.resolve_recipients_blocking(C(), user_lists=["fans"]) is None
+        assert audiences.roster_audience_blocking(C(), user_lists=["fans"]) is None
     finally:
         of_paging.page_all_checked = real
 
     class C2:
         def subscribers(self, **kw):
             return [{"id": 3}] if kw.get("offset") == 0 else []
-    assert audiences.resolve_recipients_blocking(C2(), user_lists=["fans"]) == [3]
+    assert audiences.roster_audience_blocking(C2(), user_lists=["fans"]) == [3]
 
 
 _harness.run()

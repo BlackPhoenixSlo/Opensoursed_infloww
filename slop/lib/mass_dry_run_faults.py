@@ -6,14 +6,15 @@ scenarios/2026-10-31-mass-placeholder-echo.py imports them, so a target can neve
 does not exist.
 
   mass-dry-run-ignored      slop/run 2026-10-31-mass-placeholder-echo --break --fault=mass-dry-run-ignored
-  mass-dry-run-skips-guard  slop/run 2026-10-31-mass-placeholder-echo --break --fault=mass-dry-run-skips-guard
+  mass-dry-run-list-claims-reach  slop/run 2026-10-31-mass-placeholder-echo --break --fault=mass-dry-run-list-claims-reach
 """
 from __future__ import annotations
 
 DRY_NO_SEND = ("a dry run sends nothing: no OF queue frame, no OF list write, no mass_runs or out "
                "messages row; every dry run's stats say dry_run, sent 0")
-DRY_LIST = ("a dry run's would_send is who the real run reaches: a list run's = roster - contact guard - "
-            "fence - excluded_users (non-empty), an explicit run's = the real send's userIds")
+DRY_LIST = ("a dry run's would_send is who the real run reaches or None: a list run's = None + reason "
+            "list_audience (its roster is never read), an explicit run's = roster - contact guard - fences - "
+            "excluded_users = the real send's userIds")
 
 
 def _ignored() -> None:
@@ -23,17 +24,26 @@ def _ignored() -> None:
     smd.is_dry_run = lambda payload: False
 
 
-def _skips_guard() -> None:
-    """The dry branch answers the raw roster: the excludes a real list run puts on Auto_Exclude and
-    AUTOFENCE (contact guard, MASSdmEXCLUDE, excluded_users, fans outside the include list) are not
-    subtracted. An explicit audience is unaffected (plan already dropped them)."""
+def _list_claims_reach() -> None:
+    """The dry branch answers a list run as if it knew its reach: `p.recipients` (the known
+    explicit fans, empty for a pure list) and no reason, instead of None + `list_audience`. An
+    explicit audience is unaffected."""
     from automations import send_mass_decide as smd
 
-    smd.dry_excludes = lambda p, fence: []
+    real = smd.dry_run_result
+
+    def patched(p):
+        out = real(p)
+        if out.get("reason") != "list_audience":
+            return out
+        out = {k: v for k, v in out.items() if k != "reason"}
+        return {**out, "would_send": list(p.recipients), "would_send_count": len(p.recipients)}
+
+    smd.dry_run_result = patched
 
 
 def register(Fault) -> dict:
     return {
         "mass-dry-run-ignored": Fault(_ignored, (DRY_NO_SEND, DRY_LIST)),
-        "mass-dry-run-skips-guard": Fault(_skips_guard, (DRY_LIST,)),
+        "mass-dry-run-list-claims-reach": Fault(_list_claims_reach, (DRY_LIST,)),
     }

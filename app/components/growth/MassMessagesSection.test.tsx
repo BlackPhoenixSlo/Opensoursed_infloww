@@ -367,12 +367,13 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     expect(tabNames(parentTabs())).toEqual(["Automated Messages", "Mass Messages", "Mass Auto Unsend Messages", "Scheduled"]);
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
 
-    // The right box: Learn (Not wired), then New Message, in the header row
+    // The right box: Learn (its tip), then New Message, in the header row
     // above the tab strip, where the bundle's `-40px` lifts it (ticket 54).
     const learn = screen.getByRole("button", { name: "Learn" });
     const create = screen.getByRole("button", { name: "New Message" });
-    expect(learn).toBeDisabled();
-    expect(learn).toHaveAttribute("title", "not wired");
+    expect(learn).toBeEnabled();
+    fireEvent.click(learn);
+    expect(screen.getByRole("note").textContent).toMatch(/Automated messages go out on a trigger/);
     expect(before(learn, create)).toBe(true);
     expect(before(create, parentTabs())).toBe(true);
   });

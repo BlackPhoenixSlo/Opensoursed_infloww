@@ -360,8 +360,8 @@ _Avoid_: setting (a Settings blob field), flag, config, constant
 A Knob exposed as a per-Agency Settings blob field after Phase 4, defaulting to the fetch diet's behaviour; chosen only from Proxy-health sweep data.
 _Avoid_: feature flag, toggle, knob (until exposed)
 
-**Audience crawl**:
-The paged read of a mass send's recipients (`resolve_recipients`) run right after the send.
+**Audience crawl** (retired 2026-11-12):
+The paged OF roster read of a mass send's recipients run right after the send; deleted (docs/spec/phase-02-audience-crawl.md). Who received a send is now assumed from its `audience_filter`; members of its `excluded_user_lists` (AUTOFENCE / Auto_Exclude) are not seen and count as received.
 _Avoid_: recipient resolve, mass crawl, audience fetch
 
 **Silent mass-only chat**:

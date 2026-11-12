@@ -8,8 +8,8 @@ and then only for the Creators that file names.
 `auto-exclude.json` {"page_ms", "add_ms", "accept_ms", "gap_s", "refresh_every_s",
   "accounts": {account: {"roster": [fan ids], "members": [the pre-made Auto_Exclude],
                          "refuse": [ids], "watch": [ids], "exact": bool}}}. Armed:
-  subscribers(...)              OF's fans roster (`roster`, sorted, 50 a page): the send's recipient
-                                crawl (`audiences.resolve_recipients_blocking`).
+  subscribers(...)              OF's fans roster (`roster`, sorted, 50 a page): a pre-send roster
+                                read (`audiences.roster_audience_blocking`).
   list_users_in(...)            the walker's in-process list, after `page_ms` (a guess at OF's page).
   add_user_to_list(...)         after `add_ms` (a guess at OF's per-user add): an id in `refuse` is
                                 OF's 403 "Unable to add user to user list" (a deleted / blocked

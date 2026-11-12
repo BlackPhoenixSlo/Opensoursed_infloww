@@ -17,7 +17,6 @@ Design notes:
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta
 from typing import Iterable
@@ -543,12 +542,10 @@ async def write_mass_optimistic_rows(
     Only EXPLICIT recipients (`userIds`) are knowable here, and a list audience
     (`userLists`) is deliberately NOT expanded into rows: 833 recipients × 7
     blasts a day is a quarter of a million synthetic rows a month for a thread
-    the fan may never open. What a list audience gets instead is the SAME row,
-    materialized at READ time — `mass_runs` now carries the body, the send stamp
-    and the recorded recipient set, and the chat engines' history read builds exactly this
-    tuple in memory for each recipient thread that lacks the copy
-    (plans/blast-splice A.3). Change the shape here and change it there.
-    The durable row still arrives from OF, via the scrape.
+    the fan may never open. What a list audience gets instead is nothing at send
+    time: `mass_runs` carries the body and the send stamp, readers assume the
+    audience from its audience_filter, and the durable row arrives from OF, via
+    the scrape.
 
     Best-effort: never raises (the OF send already succeeded). Idempotent via
     `on_conflict_do_nothing` on the composite PK.
@@ -628,37 +625,6 @@ async def write_mass_optimistic_rows(
             account_id, mass_run_id,
         )
     return len(rows)
-
-
-async def stamp_mass_recipients(mass_run_id: int | None, ids) -> int | None:
-    """Record WHO OF sent a broadcast to on its `mass_runs` row. Returns how many
-    ids were written, or None when nothing was.
-
-    `ids` is whatever `audiences.resolve_recipients_blocking` returned:
-    `None` (the audience could not be known) leaves `recipients_json` NULL, which
-    is the one value the read side treats as "never splice this run". An empty
-    LIST is different and is written as `[]` — "we know, and it reached nobody".
-
-    Best-effort like every other writer in this module: the OF send already
-    happened, so a failure here costs the splice and nothing else."""
-    if mass_run_id is None or ids is None:
-        return None
-    try:
-        clean = sorted({int(x) for x in ids if x is not None})
-    except (TypeError, ValueError):
-        log.warning("stamp_mass_recipients: unusable id list for run=%s", mass_run_id)
-        return None
-    try:
-        from db.models import MassRun  # local import: avoids a models import cycle
-        async with get_session() as s:
-            mr = await s.get(MassRun, int(mass_run_id))
-            if mr is None:
-                return None
-            mr.recipients_json = json.dumps(clean)
-        return len(clean)
-    except Exception:
-        log.warning("stamp_mass_recipients failed (run=%s)", mass_run_id, exc_info=True)
-        return None
 
 
 async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:

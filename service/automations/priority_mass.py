@@ -8,7 +8,7 @@ priority_mass_api) whose job legs walk its frozen recipient rows
 (`priority_mass_recipients`) through the per-fan chat send.
 
   1. The first leg FREEZES the audience (claim-first). The posted OF lists are
-     read off OF's own rosters (`audiences.resolve_recipients_blocking`, which
+     read off OF's own rosters (`audiences.roster_audience_blocking`, which
      fails closed: a truncated or unknown list stops the run, nothing is sent),
      the exclusions below drop fans, the first `MAX_RECIPIENTS` by fan id are
      inserted `pending` and the run turns `running`, in one transaction. A run
@@ -211,11 +211,11 @@ async def exclusions(account_id: str, fan_ids: list[int], *, priced: bool,
 # ── Leg 0: freeze the audience ────────────────────────────────────────
 
 async def _freeze(run: PriorityMassRun) -> dict:
-    from audiences import resolve_recipients_blocking
+    from audiences import roster_audience_blocking
     aud = json.loads(run.audience_json or "{}")
     client = await asyncio.to_thread(ax._make_client, run.account_id)
     ids = await asyncio.to_thread(
-        resolve_recipients_blocking, client,
+        roster_audience_blocking, client,
         user_lists=list(aud.get("user_lists") or []),
         excluded_user_lists=list(aud.get("excluded_user_lists") or []))
     if ids is None:

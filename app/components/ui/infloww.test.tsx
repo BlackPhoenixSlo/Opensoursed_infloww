@@ -16,8 +16,8 @@ vi.mock("next/navigation", () => ({
 
 import {
   EmptyState, HB_TABLE, HbButton, HbFilter, HbModal, HbPager, HbSelect, IF_TABLE, IfBody, IfButton, IfCard, IfHelp,
-  IfCreatorSelect, IfInput, IfLearn, IfModal, IfPager, IfRangePicker, IfSegmented, IfSelect, IfSwitch, IfTabs,
-  InflowwPageHeader, saveVerdict, useCreatorParam,
+  IfCreatorSelect, IfFilterFold, IfInput, IfLearn, IfModal, IfPager, IfRangePicker, IfSegmented, IfSelect, IfSwitch,
+  IfTabs, InflowwPageHeader, countActiveFilters, saveVerdict, useCreatorParam,
 } from "./infloww";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { EditorFooter, useModalFocus } from "@/components/ui/ifModal";
@@ -915,5 +915,44 @@ describe("saveVerdict: a save mutation's SaveRow verdict", () => {
     ["failed, no message", M({ error: new Error("") }), true, { pending: false, saved: false, error: "Save failed" }],
   ])("%s", (_n, m, clean, want) => {
     expect(saveVerdict(m, clean)).toEqual(want);
+  });
+});
+
+describe("countActiveFilters", () => {
+  const none = { q: "", status: "", from: "", to: "" };
+  const counted = ["status", ["from", "to"]] as const;
+  it.each([
+    ["nothing picked", none, 0],
+    ["the search alone is not counted", { ...none, q: "hi" }, 0],
+    ["a status", { ...none, status: "Active" }, 1],
+    ["a range's two ends count once", { ...none, from: "2026-11-01", to: "2026-11-10" }, 1],
+    ["one end of a range", { ...none, to: "2026-11-10" }, 1],
+    ["status and a range", { ...none, status: "Active", from: "2026-11-01" }, 2],
+  ])("%s", (_, values, want) => {
+    expect(countActiveFilters(values, none, counted)).toBe(want);
+  });
+  it("compares against non-empty defaults", () => {
+    const d = { creator: "all", on: "all" };
+    expect(countActiveFilters(d, d, ["creator", "on"])).toBe(0);
+    expect(countActiveFilters({ creator: "c1", on: "off" }, d, ["creator", "on"])).toBe(2);
+  });
+});
+
+describe("IfFilterFold", () => {
+  it("toggles the folded fields from one Filters button that reads the active count", () => {
+    render(<IfFilterFold active={2}><label>Status<input /></label></IfFilterFold>);
+    const btn = screen.getByRole("button", { name: "Filters (2 active)" });
+    const fold = document.getElementById(btn.getAttribute("aria-controls")!)!;
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    expect(fold).toHaveClass("hidden", "md:contents");
+    expect(within(fold).getByLabelText("Status")).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(btn).toHaveAttribute("aria-expanded", "true");
+    expect(fold).toHaveClass("contents");
+    expect(fold).not.toHaveClass("hidden");
+  });
+  it("reads plain Filters with nothing active", () => {
+    render(<IfFilterFold active={0}><span /></IfFilterFold>);
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
   });
 });

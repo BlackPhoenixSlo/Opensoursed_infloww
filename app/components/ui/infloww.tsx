@@ -5,8 +5,9 @@
  * for one of these. Two sets, because Infloww ships two design systems side by side:
  *
  * - The legacy antd set (`--tc-*` tokens): `InflowwPageHeader`, `IfCard`, `IfTabs`, `IfBody`, `IfInput`, `IfTextArea`,
- *   `IfSelect`, `IfSegmented`, `IfRangePicker`, `IfButton`, `IfLearn`, `IfCreatorSelect` (+ `useCreatorParam`),
- *   `IfModal`, `IfPager`, `IfSwitch`, `IfLabel`, `IfHelp`, `IF_TABLE`. Most Growth pages, the Dashboard, Employees, Custom proxy.
+ *   `IfSelect`, `IfSegmented`, `IfRangePicker`, `IfButton`, `IfLearn`, `IfFilterFold` (+ `countActiveFilters`),
+ *   `IfCreatorSelect` (+ `useCreatorParam`), `IfModal`, `IfPager`, `IfSwitch`, `IfLabel`, `IfHelp`, `IF_TABLE`. Most
+ *   Growth pages, the Dashboard, Employees, Custom proxy.
  * - The HB set (the new design system): `HbButton`, `HbFilter`/`HbSelect`, `HB_TABLE`, `HbPager`, `HbModal`, on the
  *   `bg-hb-bg` page body. Manage creators, Tracking links.
  *
@@ -22,7 +23,7 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowRight, BookOpen, Calendar, ChevronLeft, Loader2, Search } from "lucide-react";
+import { ArrowRight, BookOpen, Calendar, ChevronLeft, Loader2, Search, SlidersHorizontal } from "lucide-react";
 
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { InfoTip } from "@/components/ui/InfoTip";
@@ -517,6 +518,38 @@ export function IfSwitch({ id, checked, onChange, label, loading, disabled, "ari
       </span>
       {label && <span className="text-[14px] text-fg">{label}</span>}
     </button>
+  );
+}
+
+// ── Phone filter fold ───────────────────────────────────────────────────────────────────────────────────────────
+
+/** How many of `filters` differ from `defaults`: each entry a field of `values`, or a group of fields counted once
+ *  (a date range's two ends). `IfFilterFold`'s count. */
+export function countActiveFilters<F extends object, K extends keyof F>(
+  values: F, defaults: Pick<F, K>, filters: ReadonlyArray<K | readonly K[]>,
+): number {
+  return filters.filter((f) => (Array.isArray(f) ? f : [f]).some((k: K) => values[k] !== defaults[k])).length;
+}
+
+/** Below `md`, a filter bar's fields behind one "Filters (n active)" button (`active`: `countActiveFilters`), opened
+ *  in place; `md`+ draws them inline as if unwrapped (`display: contents`). Keep the search and the actions outside.
+ *  `className` styles the button (its bar's spacing). */
+export function IfFilterFold({ active, className, children }: { active: number; className?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <IfButton
+        icon={SlidersHorizontal}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        className={cn("md:hidden", active > 0 && "border-accent text-accent", className)}
+      >
+        Filters{active > 0 && ` (${active} active)`}
+      </IfButton>
+      <div id={id} data-filter-fold className={cn(open ? "contents" : "hidden", "md:contents")}>{children}</div>
+    </>
   );
 }
 

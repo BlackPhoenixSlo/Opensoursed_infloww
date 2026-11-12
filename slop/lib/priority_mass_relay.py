@@ -5,7 +5,7 @@ ticks, a scenario's SLOP_SUPERVISOR=1).
 
 Inert unless a scenario writes its files under `$DEMO_SHOTS_TMP`:
   `of-rosters.json` {account: [{"id": OF list id, "name": str, "members": [fan ids]}]}
-       OF's custom lists. The leg's freeze reads them through `audiences.resolve_recipients_blocking`
+       OF's custom lists. The leg's freeze reads them through `audiences.roster_audience_blocking`
        -> `of_paging.list_member_ids` -> `client.list_users_in`. The automation client is
        lib/automation_relay.py's offline walker (`ax._make_client`, no `OF_API_ORIGIN`), whose
        `list_users_in` serves its in-process lists (`_of_lists` / `_of_members`, its call

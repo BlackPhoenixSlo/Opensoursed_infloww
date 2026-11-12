@@ -6,7 +6,7 @@
  * (`docs/infloww-layouts/growth-scripts.md`).
  */
 
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   ArrowDown, ArrowRight, ArrowUp, AtSign, ChevronDown, LayoutTemplate, List, MinusCircle, MoreHorizontal, Pencil, Plus, PlusSquare,
   Share2, StickyNote, Tags, Trash2, Workflow, type LucideIcon,
@@ -14,7 +14,7 @@ import {
 
 import { MediaStrip } from "@/components/settings/TemplateDraftEditor";
 import { OfRichText } from "@/components/chat/OfRichText";
-import { useOutsideClose } from "@/components/ui/Menu";
+import { Menu, menuKeys, useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState, IfNativeSelect } from "@/components/ui/infloww";
 import type { SeqSort, SeqSortBy } from "@/components/growth/scriptsPageState";
 import { useRenderCap } from "@/hooks/useRenderCap";
@@ -35,27 +35,6 @@ const MENU_ITEM =
   "flex h-8 w-full items-center rounded px-3 text-left text-sm text-fg outline-none";
 const MENU_HOVER =
   "hover:bg-[#2b2b2b] focus-visible:bg-[#2b2b2b] [html[data-theme=light]_&]:hover:bg-black/5 [html[data-theme=light]_&]:focus-visible:bg-black/5";
-
-/**
- * A menu's keyboard, on its wrapper: ArrowDown / ArrowUp move between the enabled `menuitem`s (wrapping), Escape
- * calls `close` (which closes and puts focus back on the trigger, as a pick does).
- */
-function onMenuKey(e: ReactKeyboardEvent<HTMLElement>, close: () => void) {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    e.stopPropagation();
-    close();
-    return;
-  }
-  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-  const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])"));
-  if (!items.length) return;
-  e.preventDefault();
-  const at = items.indexOf(document.activeElement as HTMLElement);
-  const by = e.key === "ArrowDown" ? 1 : -1;
-  const next = at < 0 ? (by > 0 ? 0 : items.length - 1) : (at + by + items.length) % items.length;
-  items[next].focus();
-}
 
 /** The More menu (#12 to #17). Add sequence and Import open submenus in the bundle; they are shown open, as labelled
  *  groups. The trigger is a labelled "+ Add" button (the bundle's bare accent plus read as nothing); its accessible
@@ -103,7 +82,7 @@ export function MoreMenu({
   );
   const divider = <div role="separator" className="my-1 border-t border-border" />;
   return (
-    <div ref={ref} className="relative" onKeyDown={(e) => onMenuKey(e, close)}>
+    <div ref={ref} className="relative" onKeyDown={(e) => menuKeys(e, close)}>
       <button
         ref={triggerRef}
         type="button"
@@ -130,8 +109,8 @@ export function MoreMenu({
   );
 }
 
-/** A sidebar row's Share / Rename / Delete menu (#58). Share copies this entry's scripts to other Creators
- *  (or all of them) — the header Share's per-row twin. */
+/** A sidebar row's Share / Rename / Delete menu (#58), in this page's antd dropdown look. Share copies this entry's
+ *  scripts to other Creators (or all of them) — the header Share's per-row twin. */
 function RowMenu({
   label, onShare, onRename, onDelete, name = `${label} menu`,
 }: {
@@ -139,43 +118,22 @@ function RowMenu({
   /** The trigger's and menu's accessible name (the phone bar's twin is "<entry> actions"). */
   name?: string;
 }) {
-  const { open, setOpen, ref } = useOutsideClose();
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const close = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
   return (
-    // The row itself answers Enter and Space, so the menu's keys stop here.
-    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => { e.stopPropagation(); onMenuKey(e, close); }}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={name}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className="text-fg-dim hover:text-fg"
-      >
-        <MoreHorizontal size={16} aria-hidden />
-      </button>
-      {open && (
-        <div role="menu" aria-label={name} className={cn(MENU_PANEL, "right-0 w-32")}>
-          <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
-            onClick={() => { close(); onShare(); }}>
-            Share
+    // The row itself answers clicks, Enter and Space: the menu's clicks and keys stop here.
+    <div className="contents" onClick={stop} onKeyDown={stop}>
+      <Menu align="right" menuLabel={name} panelClassName={cn(MENU_PANEL, "border-0 w-32")}
+        itemClassName={cn(MENU_ITEM, "py-0", MENU_HOVER)}
+        trigger={(p) => (
+          <button type="button" aria-label={name} {...p} className="text-fg-dim hover:text-fg">
+            <MoreHorizontal size={16} aria-hidden />
           </button>
-          <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
-            onClick={() => { close(); onRename(); }}>
-            Rename
-          </button>
-          <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER, "text-err")}
-            onClick={() => { close(); onDelete(); }}>
-            Delete
-          </button>
-        </div>
-      )}
+        )}
+        items={[
+          { label: "Share", onClick: onShare },
+          { label: "Rename", onClick: onRename },
+          { label: "Delete", onClick: onDelete, danger: true },
+        ]} />
     </div>
   );
 }

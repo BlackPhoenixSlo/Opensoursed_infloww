@@ -20,10 +20,10 @@ import {
 
 import { ExtraTag } from "@/components/ui/primitives";
 import {
-  EmptyState, HB_TABLE, HbButton, HbFilterLg, HbModal, HbPager, HbSelect, type IfOption,
+  EmptyState, HB_TABLE, HbButton, HbFilterLg, HbModal, HbPager, HbSelect, IfFilterFold, countActiveFilters, type IfOption,
 } from "@/components/ui/infloww";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
-import { MENU_ITEM, MENU_PANEL, useOutsideClose } from "@/components/ui/Menu";
+import { Menu } from "@/components/ui/Menu";
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import type { AccountMeta } from "@/lib/relay";
@@ -167,8 +167,13 @@ export const TH = cn(HB_TABLE.th, "text-start whitespace-normal");
 export const TD = cn(HB_TABLE.td, HB_TABLE.row, "overflow-hidden text-ellipsis whitespace-nowrap");
 /** The fixed cells: the head's on the panel colour, the body's on the page colour they sit over. */
 export const STICKY_TD = "bg-hb-bg";
-/** The fixed Actions column's 1px divider at its left. */
-export const ACTIONS_RULE = "border-l border-[#2c2c2c] [html[data-theme=light]_&]:border-black/[.09]";
+/** The fixed Actions column's left edge: a 1px rule, then a 24px fade in the cell's own fill over what scrolls under it,
+ *  so a head cut there (Fans who spent at 1280) reads as scrolled under, not as running into "Actions". Pseudo-elements
+ *  on the sticky cell: under border-collapse Chrome draws neither its border-l nor a box-shadow. */
+const EDGE = "after:absolute after:inset-y-0 after:left-0 after:w-px after:bg-border after:content-[''] "
+  + "before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-linear-to-l before:to-transparent before:content-['']";
+const ACTIONS_EDGE_HEAD = cn(EDGE, "before:from-panel");
+const ACTIONS_EDGE = cn(EDGE, "before:from-hb-bg");
 /** The list's fit: 12px sides on the metric cells, a 200px name, a 160px Actions. */
 export const FIT_PAD = "px-3";
 const FIT_NAME = 200;
@@ -472,46 +477,25 @@ export function RowActions({ name, onDetails, detailsOpen, onEdit, action }: {
   );
 }
 
-/** The dots button, its one-item menu and the item's confirm (`RowActions`' last control; Redirect links' rows). */
+/** The dots button, its one-item menu and the item's confirm (`RowActions`' last control; Redirect links' rows). #94:
+ *  the menu overlays the viewport under the dots, right-aligned to them, above the table's sticky cells. */
 export function RowMenu({ name, action }: { name: string; action: RowMenuAction }) {
-  const { open, setOpen, ref } = useOutsideClose();
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const [confirming, setConfirming] = useState(false);
-
-  function toggle(e: React.MouseEvent<HTMLButtonElement>) {
-    const r = e.currentTarget.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
-    setOpen((o) => !o);
-  }
-
   return (
-    <div ref={ref} className="inline-flex">
-      <button
-        type="button"
-        aria-label={`More actions for ${name}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={toggle}
-        className={ACT}
-      >
-        <EllipsisVertical size={14} aria-hidden />
-      </button>
-      {/* #94: an overlay under the dots, right-aligned to them, above the table's sticky cells. */}
-      {open && pos && (
-        <div role="menu" className={cn(MENU_PANEL, "fixed z-50 mt-0 w-48")} style={{ top: pos.top, right: pos.right }}>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!action.run}
-            title={action.extra ? EXTRA_LABEL : undefined}
-            onClick={() => { setOpen(false); setConfirming(true); }}
-            className={cn(MENU_ITEM, "flex items-center gap-2 hover:bg-bg-elev-1 disabled:text-fg-dim disabled:cursor-not-allowed disabled:hover:bg-transparent")}
-          >
-            {action.label}
-            {action.extra && <ExtraTag />}
+    <>
+      <Menu align="right" position="fixed" panelClassName="w-48" itemClassName="flex items-center gap-2"
+        trigger={(p) => (
+          <button type="button" aria-label={`More actions for ${name}`} {...p} className={ACT}>
+            <EllipsisVertical size={14} aria-hidden />
           </button>
-        </div>
-      )}
+        )}
+        items={[{
+          key: action.label,
+          label: <>{action.label}{action.extra && <ExtraTag />}</>,
+          disabled: !action.run,
+          title: action.extra ? EXTRA_LABEL : undefined,
+          onClick: () => setConfirming(true),
+        }]} />
       {confirming && action.run && (
         <ConfirmModal
           title={action.confirmTitle}
@@ -523,7 +507,7 @@ export function RowMenu({ name, action }: { name: string; action: RowMenuAction 
           {action.confirmBody}
         </ConfirmModal>
       )}
-    </div>
+    </>
   );
 }
 
@@ -609,6 +593,9 @@ export function useFrameFilters<X extends object>(extra: X) {
   };
 }
 type FrameFields = { search: string; source: string; tag: string; from: string; to: string; pageSize: PageSize };
+/** The folded filters' defaults, and the fields the phone fold counts (a tab's switches are not counted). */
+const NO_FRAME_FILTERS = { source: "", tag: "", from: "", to: "" };
+const FOLDED = ["source", "tag", ["from", "to"]] as const;
 export type FrameFilters = ReturnType<typeof useFrameFilters>;
 
 /**
@@ -697,11 +684,14 @@ export default function LinksListFrame<T>({
               onChange={(e) => f.set({ search: e.target.value })}
             />
           </span>
-          {/* #19, #20: the Edit dialog's Source and Tag. */}
-          <FilterSelect label="Source" icon={GitMerge} options={sources} value={f.source} onChange={(source) => f.set({ source })} />
-          <FilterSelect label="Tag" icon={Tag} options={tags} value={f.tag} onChange={(tag) => f.set({ tag })} />
-          <DateCreated from={f.from} to={f.to} onRange={(from, to) => f.set({ from, to })} tz={f.reportTz} />
-          {switches}
+          {/* Below md, Source to the switches fold behind "Filters"; the Creator, search and actions stay out. */}
+          <IfFilterFold active={countActiveFilters(f, NO_FRAME_FILTERS, FOLDED)} className="mb-4 h-9">
+            {/* #19, #20: the Edit dialog's Source and Tag. */}
+            <FilterSelect label="Source" icon={GitMerge} options={sources} value={f.source} onChange={(source) => f.set({ source })} />
+            <FilterSelect label="Tag" icon={Tag} options={tags} value={f.tag} onChange={(tag) => f.set({ tag })} />
+            <DateCreated from={f.from} to={f.to} onRange={(from, to) => f.set({ from, to })} tz={f.reportTz} />
+            {switches}
+          </IfFilterFold>
           {/* #27 to #29: right-aligned, 16px apart, 36px tall. Create opens the editor pop-up (#69). */}
           <div className="mb-4 ml-auto flex flex-wrap items-center gap-4">
             <HbButton size="lg" icon={Plus} onClick={onCreate} disabled={!accountId}>
@@ -761,7 +751,7 @@ export default function LinksListFrame<T>({
                   </th>
                 ))}
                 {/* #56: fixed right. */}
-                <th className={cn(TH, ACTIONS_RULE, "md:sticky right-0 px-2")} style={{ width: FIT_ACTIONS }}>Actions</th>
+                <th className={cn(TH, ACTIONS_EDGE_HEAD, "md:sticky right-0 px-2")} style={{ width: FIT_ACTIONS }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -782,7 +772,7 @@ export default function LinksListFrame<T>({
                       {c.cell(r)}
                     </td>
                   ))}
-                  <td className={cn(TD, STICKY_TD, ACTIONS_RULE, "md:sticky right-0 overflow-visible px-2")}>
+                  <td className={cn(TD, STICKY_TD, ACTIONS_EDGE, "md:sticky right-0 overflow-visible px-2")}>
                     {actions(r)}
                   </td>
                 </FrameRows>

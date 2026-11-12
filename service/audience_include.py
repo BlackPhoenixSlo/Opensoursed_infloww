@@ -308,8 +308,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     tolerated: an un-addable id is almost always also undeliverable. They are
     REMOVED from the verification target and counted loudly, so the zero-diff
     invariant stays exact against the achievable fence instead of wedging
-    forever on one deleted account. Returns size, unaddable and `verified`: the
-    verify read's members (== the achievable target)."""
+    forever on one deleted account. Returns size and unaddable."""
     current, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
@@ -342,7 +341,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     if unaddable:
         log.warning("autofence built with %d un-addable id(s) skipped list=%s "
                     "(size=%d)", len(unaddable), of_list_id, len(effective))
-    return {"size": len(effective), "unaddable": len(unaddable), "verified": frozenset(after)}
+    return {"size": len(effective), "unaddable": len(unaddable)}
 
 
 def _find_or_create_fence_blocking(client) -> int:
@@ -395,14 +394,11 @@ async def ensure_autofence(
     *,
     client=None,
     policy: AudiencePolicy | None = None,
-    verified: dict | None = None,
 ) -> int | None:
     """Build/verify the stable AUTOFENCE list and return its OF id, or None when
     the mode doesn't fence (off/shadow). Raises AudienceHalt when an enforce-mode
     fence cannot be verified healthy — the caller's broadcast must then HALT
-    loudly, never send unfenced. ⚠️ Caller holds broadcast_lock (this doesn't).
-    `verified` (out-param): gains `{fence id: frozenset(members)}` once the verify
-    read matched its target, so the send's Audience crawl never reads the fence."""
+    loudly, never send unfenced. ⚠️ Caller holds broadcast_lock (this doesn't)."""
     pol = policy if policy is not None else await automation_audience(account_id)
     if pol.mode != "enforce":
         return None
@@ -448,8 +444,6 @@ async def ensure_autofence(
                                size=built["size"], unaddable=built["unaddable"])
     log.info("autofence ok account=%s list=%s size=%d unaddable=%d",
              account_id, of_lid, built["size"], built["unaddable"])
-    if verified is not None:
-        verified[int(of_lid)] = built["verified"]
     return of_lid
 
 
@@ -459,13 +453,11 @@ async def audience_fence_for_broadcast(
     client=None,
     policy: AudiencePolicy | None = None,
     stats: dict | None = None,
-    verified: dict | None = None,
 ) -> list[int]:
     """The fence-health gate every mass sender calls before an audience-governed
     submission, INSIDE its broadcast_lock. Returns the OF list id(s) to append to
     excluded_user_lists. off → []; shadow → [] (would-be fence size logged with
-    its denominator); enforce → the verified stable fence id, or AudienceHalt.
-    `verified`: see `ensure_autofence` (off / shadow put nothing in it)."""
+    its denominator); enforce → the verified stable fence id, or AudienceHalt."""
     pol = policy if policy is not None else await automation_audience(account_id)
     if stats is not None and pol.mode != "off":
         stats["audience_mode"] = pol.mode
@@ -480,7 +472,7 @@ async def audience_fence_for_broadcast(
         log.info("audience_shadow account=%s mass fence would exclude %d of %d "
                  "known fans", account_id, would, len(universe))
         return []
-    fence_id = await ensure_autofence(account_id, client=client, policy=pol, verified=verified)
+    fence_id = await ensure_autofence(account_id, client=client, policy=pol)
     if stats is not None and fence_id is not None:
         stats["audience_fence_list_id"] = int(fence_id)
     return [int(fence_id)] if fence_id is not None else []

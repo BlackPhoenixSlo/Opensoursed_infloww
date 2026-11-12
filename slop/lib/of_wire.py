@@ -85,8 +85,8 @@ concurrently and are recorded in arrival order.
                                            (bypass, declared: OF's answer body is a guess)
   GET  /api2/v2/subscriptions/subscribers, /subscriptions/subscribes
                                            empty rosters (`{"list": [], "hasMore": false}`):
-                                           the fans / following a mass send's recipient
-                                           record pages (bypass, declared: no roster)
+                                           the fans / following rosters (roster_audience_blocking;
+                                           a mass send reads none) (bypass, declared: no roster)
   GET  /api2/v2/vault/media/{id}           one vault media by id: `vault[uid][id]` as a
                                            scenario set it, else OF's 404 "Media Not Found"
                                            (which the stills path reads as deleted)

@@ -24,7 +24,8 @@ import { StickyNote } from "lucide-react";
 
 import { ExtraTag } from "@/components/ui/primitives";
 import {
-  EmptyState, IF_TABLE, IfButton, IfPager, IfRangePicker, IfSelect, IfSwitch, InflowwPageHeader, type IfOption,
+  EmptyState, IF_TABLE, IfButton, IfFilterFold, IfPager, IfRangePicker, IfSelect, IfSwitch, InflowwPageHeader,
+  countActiveFilters, type IfOption,
 } from "@/components/ui/infloww";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { errMsg } from "@/components/growth/_bits";
@@ -75,6 +76,7 @@ const ON_FILTERS: IfOption<OnFilter>[] = [
   { value: "on", label: "On" },
   { value: "off", label: "Off" },
 ];
+const NO_FILTERS: { creator: string; onFilter: OnFilter } = { creator: "all", onFilter: "all" };
 /** Reset: antd's default button with M1 text and an M1 outline. */
 const RESET = "border-accent text-accent";
 /** Infloww's column widths (Total follows 120, Last followed 200, Action 80). */
@@ -131,16 +133,19 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-6">
-          <label className="flex items-center gap-1 text-[14px] text-fg">
-            <span>Creator:</span>
-            <IfSelect aria-label="Creator" searchable value={creator} options={creators} onChange={setCreator}
-              className="w-[212px]" />
-          </label>
-          <label className="flex items-center gap-1 text-[14px] text-fg">
-            <span>Auto-follow:</span>
-            <IfSelect aria-label="Auto-follow" value={onFilter} options={ON_FILTERS} onChange={setOnFilter}
-              className="w-[212px]" />
-          </label>
+          {/* Below md both filters fold behind "Filters"; Reset stays out. */}
+          <IfFilterFold active={countActiveFilters({ creator, onFilter }, NO_FILTERS, ["creator", "onFilter"])}>
+            <label className="flex items-center gap-1 text-[14px] text-fg">
+              <span>Creator:</span>
+              <IfSelect aria-label="Creator" searchable value={creator} options={creators} onChange={setCreator}
+                className="w-[212px]" />
+            </label>
+            <label className="flex items-center gap-1 text-[14px] text-fg">
+              <span>Auto-follow:</span>
+              <IfSelect aria-label="Auto-follow" value={onFilter} options={ON_FILTERS} onChange={setOnFilter}
+                className="w-[212px]" />
+            </label>
+          </IfFilterFold>
         </div>
         <IfButton className={RESET} onClick={() => { setCreator("all"); setOnFilter("all"); }}>Reset</IfButton>
       </div>

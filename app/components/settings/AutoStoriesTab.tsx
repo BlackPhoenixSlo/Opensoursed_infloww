@@ -32,7 +32,7 @@ import { HeaderSwitch } from "@/components/automations/HeaderSwitch";
 import {
   ConfirmDelete, FormBlock, NoCreator, SwitchRow, useAutomationCreator,
 } from "@/components/automations/automationPage";
-import { MENU_ITEM, MENU_PANEL, useOutsideClose } from "@/components/ui/Menu";
+import { Menu } from "@/components/ui/Menu";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultLists } from "@/hooks/useVaultMedia";
@@ -225,22 +225,27 @@ export default function AutoStoriesTab() {
     }
   }
 
+  // 12px apart on phones (the header's 16px left "Auto Story" too little room).
   const actions = (
-    <>
+    <span className="flex items-center gap-3 sm:gap-4">
       {LEARN}
       <HeaderSwitch label={TITLE} checked={form.enabled} loading={switchM.isPending}
         disabled={busy || rulesQ.isLoading} status={rule ? undefined : "Not saved"} onChange={flip} />
-      <ActionsMenu items={[
-        { label: runM.isPending ? "Posting…" : "Run now", onClick: runNow, disabled: !rule || runM.isPending,
-          title: rule ? "Post one batch now (bypasses the schedule)" : "Save this automation first" },
-        { label: "Edit raw JSON", onClick: () => setEditingJson(true), disabled: !rule,
-          title: rule ? "Edit the raw JSON payload for this rule" : "Save this automation once, then edit its raw JSON" },
-        { label: "Delete", onClick: () => setDeleting(true), disabled: !rule || deleteM.isPending, danger: true },
-      ]} />
+      {/* The rule's less-used actions, right-aligned under the ⋯ so the menu never runs off a phone's edge. */}
+      <Menu align="right" menuLabel="More actions" panelClassName="z-50 w-44" itemClassName="text-[14px] text-fg disabled:opacity-60"
+        trigger={(p) => <IfButton icon={MoreHorizontal} aria-label="More actions" title="More actions" {...p}
+          className="w-8 px-0 [&>svg]:h-4 [&>svg]:w-4" />}
+        items={[
+          { label: runM.isPending ? "Posting…" : "Run now", onClick: runNow, disabled: !rule || runM.isPending,
+            title: rule ? "Post one batch now (bypasses the schedule)" : "Save this automation first" },
+          { label: "Edit raw JSON", onClick: () => setEditingJson(true), disabled: !rule,
+            title: rule ? "Edit the raw JSON payload for this rule" : "Save this automation once, then edit its raw JSON" },
+          { label: "Delete", onClick: () => setDeleting(true), disabled: !rule || deleteM.isPending, danger: true },
+        ]} />
       <IfButton variant="primary" onClick={save} disabled={busy || switchM.isPending} className="min-w-[64px]">
         {createM.isPending || updateM.isPending ? "Saving…" : "Save"}
       </IfButton>
-    </>
+    </span>
   );
 
   if (!accountId) {
@@ -410,32 +415,6 @@ export default function AutoStoriesTab() {
 }
 
 // ── small bits ────────────────────────────────────────────────────────
-
-/** The header's "More actions" (⋯) menu: the rule's less-used actions, right-aligned under the trigger so it never
- *  runs off a phone's edge. Closes on a pick, an outside click or Escape. */
-function ActionsMenu({ items }: {
-  items: { label: string; onClick: () => void; disabled?: boolean; title?: string; danger?: boolean }[];
-}) {
-  const { open, setOpen, ref } = useOutsideClose();
-  return (
-    <div ref={ref} className="relative" onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
-      <IfButton icon={MoreHorizontal} aria-label="More actions" title="More actions" aria-haspopup="menu"
-        aria-expanded={open} onClick={() => setOpen(!open)} className="w-8 px-0 [&>svg]:h-4 [&>svg]:w-4" />
-      {open && (
-        <div role="menu" aria-label="More actions" className={cn(MENU_PANEL, "right-0 z-50 w-44 origin-top-right")}>
-          {items.map((it) => (
-            <button key={it.label} type="button" role="menuitem" disabled={it.disabled} title={it.title}
-              onClick={() => { setOpen(false); it.onClick(); }}
-              className={cn(MENU_ITEM, "text-[14px]", it.disabled ? "cursor-not-allowed text-fg-dim opacity-60"
-                : cn("hover:bg-bg-elev-1", it.danger ? "text-err" : "text-fg"))}>
-              {it.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** One selectable schedule mode, a radio card: 1px L1 radius 8; selected, 1px M1 on the selected-row tint (40%), its own
  *  controls (time pickers / interval input) below. Clicking anywhere on the card selects it. */

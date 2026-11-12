@@ -9,7 +9,7 @@ import { ChevronRight, MoreHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/primitives";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState, IF_TABLE, IfHelp, IfSwitch } from "@/components/ui/infloww";
-import { MENU_ITEM, MENU_PANEL, useOutsideClose } from "@/components/ui/Menu";
+import { Menu } from "@/components/ui/Menu";
 import { StatusPill, ruleStatus, runStatus } from "@/components/automations/StatusPill";
 import { TABLE_EMPTY } from "@/components/automations/automationPage";
 import { cn } from "@/lib/utils";
@@ -51,50 +51,30 @@ function scheduleText(secs: number | null): string {
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 type RowAction = "run" | "edit" | "toggle" | "delete";
-/** The "⋯" menu's height: four 36px items and its padding. */
-const MENU_H = 160;
 
-/** The phone row's "⋯": Run now, Edit, Pause / Resume (the wide row's switch), Delete. */
+/** The phone row's "⋯": Run now, Edit, Pause / Resume (the wide row's switch), Delete. The page body clips (main's
+ *  overflow-clip): on the last rows it opens upward (`flip`). */
 function RowMenu({ rule, busy, onPick }: {
   rule: AutomationRule;
   busy: { toggle: boolean; run: boolean; remove: boolean };
   onPick: (a: RowAction) => void;
 }) {
-  const { open, setOpen, ref } = useOutsideClose();
-  // The page body clips (main's overflow-clip): a menu that would hang past its bottom (the last rows) opens upward.
-  const [up, setUp] = useState(false);
-  const toggle = () => {
-    const r = ref.current?.getBoundingClientRect();
-    const floor = Math.min(window.innerHeight, ref.current?.closest("main")?.getBoundingClientRect().bottom ?? Infinity);
-    setUp(!!r && r.bottom + MENU_H > floor);
-    setOpen(!open);
-  };
-  const items: { a: RowAction; label: string; disabled: boolean }[] = [
-    { a: "run", label: "Run now", disabled: busy.run },
-    { a: "edit", label: "Edit", disabled: false },
-    { a: "toggle", label: rule.is_enabled ? "Pause" : "Resume", disabled: busy.toggle },
-    { a: "delete", label: "Delete", disabled: busy.remove },
-  ];
+  const item = (a: RowAction, label: string, disabled: boolean) =>
+    ({ key: a, label, disabled, danger: a === "delete", onClick: () => onPick(a) });
   return (
-    <div ref={ref} className="relative inline-block">
-      <button type="button" aria-label={`More actions for ${rule.name}`} aria-haspopup="menu" aria-expanded={open}
-        onClick={toggle} className="grid h-8 w-8 place-items-center rounded-md text-fg-dim hover:text-fg">
-        <MoreHorizontal className="h-4 w-4" aria-hidden />
-      </button>
-      {open && (
-        <div role="menu" className={cn(MENU_PANEL, "right-0 z-20 w-36",
-          up ? "bottom-full mb-1 mt-0 origin-bottom-right" : "origin-top-right")}>
-          {items.map((it) => (
-            <button key={it.a} type="button" role="menuitem" disabled={it.disabled}
-              onClick={() => { setOpen(false); onPick(it.a); }}
-              className={cn(MENU_ITEM, "text-[14px] hover:bg-bg-elev-1 disabled:opacity-50",
-                it.a === "delete" ? "text-err" : "text-fg")}>
-              {it.label}
-            </button>
-          ))}
-        </div>
+    <Menu align="right" position="flip" panelClassName="z-20 w-36" itemClassName="text-[14px] text-fg disabled:opacity-50"
+      trigger={(p) => (
+        <button type="button" aria-label={`More actions for ${rule.name}`} {...p}
+          className="grid h-8 w-8 place-items-center rounded-md text-fg-dim hover:text-fg">
+          <MoreHorizontal className="h-4 w-4" aria-hidden />
+        </button>
       )}
-    </div>
+      items={[
+        item("run", "Run now", busy.run),
+        item("edit", "Edit", false),
+        item("toggle", rule.is_enabled ? "Pause" : "Resume", busy.toggle),
+        item("delete", "Delete", busy.remove),
+      ]} />
   );
 }
 

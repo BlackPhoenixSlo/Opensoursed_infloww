@@ -45,6 +45,10 @@ import { SM } from "./smartMessagesControls";
 // `?tab=` values: each tab's key.
 const LOOKUP: Record<string, TabKey> = Object.fromEntries(SMART_MESSAGES_TABS.map((t): [string, TabKey] => [t.key, t.key]));
 
+const LEARN_TIP = <>Automated messages go out on a trigger: a fan coming online, subscribing, buying, a sub nearing
+  its end, expiring or renewing, a birthday. Mass messages go to the fans you pick, now or at a set time; Mass auto unsend
+  takes them back after a while. Scheduled lists everything queued.</>;
+
 export default function SmartMessagesPage({
   automatedMessageCards,
 }: {
@@ -80,8 +84,8 @@ export default function SmartMessagesPage({
         title={SM.title.label}
         actions={(
           <>
-            {/* Learn (#11, #12-#14): the book and 14px M1 text, Not wired. */}
-            <IfLearn><span className="max-sm:sr-only">{SM.learn.label}</span></IfLearn>
+            {/* Learn (#11, #12-#14): the book and 14px M1 text; its tip says what each tab holds. */}
+            <IfLearn tip={LEARN_TIP}><span className="max-sm:sr-only">{SM.learn.label}</span></IfLearn>
             {/* New Message (#15), 16px from Learn (#16); its icon alone below `sm`. */}
             <IfButton variant="primary" icon={Plus} onClick={() => setCreating(true)} className="max-sm:px-2.5">
               <span className="max-sm:sr-only">{SM.newMessage.label}</span>

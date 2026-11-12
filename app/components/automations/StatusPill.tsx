@@ -9,7 +9,7 @@ export interface PillStatus { label: string; tone: PillTone; hint?: string }
 
 const TONE: Record<PillTone, string> = {
   idle: "bg-fg-dim/15 text-fg-dim",
-  active: "bg-accent/15 text-accent",
+  active: "bg-accent/15 text-accent-fg",
   ok: "bg-ok/15 text-ok",
   warn: "bg-warn/15 text-warn",
   err: "bg-err/15 text-err",

@@ -12,8 +12,8 @@ the OF broadcast, per-recipient rows), in that order:
     plan(payload, funnel, resolved,  -> Plan | Skip   (dedupe, exclusions win, text, media)
          list_ids, opener_media)
     audience_filter / echoed_of      -> the mass_runs forensics JSON / OF's per-fan echo
-    is_dry_run / dry_excludes /      -> a `dry_run` payload's answer (O3: never sends,
-      dry_run_result                    returns who a real run would reach)
+    is_dry_run / dry_run_result      -> a `dry_run` payload's answer (O3: never sends,
+                                        returns who a real run would reach)
 """
 from __future__ import annotations
 
@@ -130,8 +130,8 @@ def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
 
 
 def audience_filter(p: Plan, *, ref, fence: bool) -> str:
-    """The mass_runs.audience_filter forensics JSON (key order is the stored
-    shape). Takes the post-fence plan: recipients after the include-only
+    """The mass_runs.audience_filter JSON (key order is the stored shape): who
+    received the send is assumed from it. Takes the post-fence plan: recipients after the include-only
     intersection, excluded_user_lists with the AUTOFENCE / Auto_Exclude ids."""
     return json.dumps({
         "user_lists": list(p.user_lists),
@@ -140,12 +140,11 @@ def audience_filter(p: Plan, *, ref, fence: bool) -> str:
         "list_ids": p.list_ids,
         "ref": str(ref) if ref else None,
         # OF has no per-user exclusion field for a list audience, so every
-        # excluded id rides in an OF list; the recipient set itself is read from
-        # OF's rosters at close (plans/blast-splice A.2).
+        # excluded id rides in an OF list. Readers assume who received the send
+        # from these keys.
         "excluded_user_lists": list(p.excluded_user_lists),
         "fence": fence,
-        # OF resolves an online / filtered audience itself: no roster read can record it,
-        # so the boot re-crawl (audience_crawl.recover_at_boot) skips such runs.
+        # OF resolves an online / filtered audience itself.
         "online": bool(p.online_only),
         "filters": bool(p.filters),
     })
@@ -176,22 +175,23 @@ def is_dry_run(payload: dict) -> bool:
     return bool(payload.get("dry_run"))
 
 
-def dry_excludes(p: Plan, fence) -> list[int]:
-    """The ids a real list/online run keeps out through its OF exclude lists
-    (Auto_Exclude = the contact guard + excludes, AUTOFENCE = `fence`), which a
-    dry run subtracts in memory instead of syncing."""
-    return sorted(p.excl_set | set(fence))
-
-
-def dry_run_result(p: Plan, would_send: list[int] | None) -> dict:
-    """A dry run's stats. `would_send` None = OF's audience cannot be read off a
-    roster (online / filters / unknown list / cut or failed crawl): `reason`
-    says why, never a partial list."""
+def dry_run_result(p: Plan) -> dict:
+    """A dry run's stats. An explicit audience answers `p.recipients` (plan
+    already dropped the guard / excludes, the include fence intersected it).
+    `would_send` None = an audience nothing here resolves, `reason` says which,
+    never a partial list: a list / online / filtered one (OF resolves it, its
+    rosters are never read) or an explicit one with OF `excluded_user_lists`
+    (OF verifies those on list audiences only; never read here)."""
+    reason = None
+    if p.is_list_audience:
+        reason = "online_or_filtered" if p.online_only or p.filters else "list_audience"
+    elif p.excluded_user_lists:
+        reason = "excluded_lists_unresolved"
+    would_send = None if reason else list(p.recipients)
     out = {"status": "ok", "dry_run": True, "sent": 0,
            "would_send": would_send,
            "would_send_count": len(would_send) if would_send is not None else None,
            "audience": "list" if p.is_list_audience else "explicit"}
-    if would_send is None:
-        out["reason"] = ("online_or_filtered" if p.online_only or p.filters
-                         else "audience_unreadable")
+    if reason:
+        out["reason"] = reason
     return out

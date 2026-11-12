@@ -51,14 +51,13 @@ Payload shape (all optional; an empty payload is a no-op run)::
 Returns (stats dict) include `queue_id` (OF's broadcast id from the send
 response) so a caller can schedule a forever-window unsend of THIS broadcast.
 A dry run returns `smd.dry_run_result` instead: `would_send` (fan ids, or None +
-`reason` when OF's audience is not a readable roster), `sent: 0`.
+`reason` for a list / online audience, which is never read off OF), `sent: 0`.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import time
 from dataclasses import replace
 from datetime import datetime
 
@@ -66,7 +65,6 @@ from sqlalchemy import select
 
 from attribution import (
     reconcile_mass_placeholder,
-    stamp_mass_recipients,
     write_mass_optimistic_rows,
     write_outbound_attribution,
 )
@@ -157,19 +155,20 @@ async def _pending_send_ids_but_dry(account_id: str) -> set[int]:
     return out
 
 
-async def _dry_fence(account_id: str, client, pol, stats: dict) -> set[int]:
-    """The AUTOFENCE ids a real list run keeps out, read only. off / shadow go
-    through the real gate (`audience_fence_for_broadcast` writes nothing there;
-    shadow stats included); enforce repeats `ensure_autofence`'s halts (kill
-    switch, unhealthy mirror, fence_scale) as AudienceHalt and returns the fence
-    instead of building the OF list or persisting fence state. Fold into
-    audience_include as the read-only half of `ensure_autofence` when it is
-    free (parity: test_send_mass.case_dry_run_enforce_halts_like_the_real_run)."""
+async def _dry_fence(account_id: str, client, pol, stats: dict) -> None:
+    """The fence-health gate a real list run takes, read only: raises the
+    AudienceHalt it would. off / shadow go through the real gate
+    (`audience_fence_for_broadcast` writes nothing there; shadow stats
+    included); enforce repeats `ensure_autofence`'s halts (kill switch,
+    unhealthy mirror, fence_scale) without building the OF list or persisting
+    fence state. Fold into audience_include as the read-only half of
+    `ensure_autofence` when it is free (parity:
+    test_send_mass.case_dry_run_enforce_halts_like_the_real_run)."""
     import audience_include as _audiences
     if pol.mode != "enforce":
         await _audiences.audience_fence_for_broadcast(
             account_id, client=client, policy=pol, stats=stats)
-        return set()
+        return
     stats["audience_mode"] = pol.mode
     if pol.paused:
         raise _audiences.AudienceHalt("kill_switch")
@@ -178,38 +177,24 @@ async def _dry_fence(account_id: str, client, pol, stats: dict) -> set[int]:
     fence = await _audiences._audience_universe_ids(account_id) - pol.member_ids
     if len(fence) > _audiences.AUDIENCE_MAX_LIST_ROWS:
         raise _audiences.AudienceHalt("fence_scale")
-    return fence
 
 
 async def _dry_run(account_id: str, run_id: int, p: smd.Plan, client, pol,
                    stats: dict) -> dict:
     """O3: who `p` would reach, nothing written: no broadcast_lock, no
-    Auto_Exclude / AUTOFENCE sync, no mint, no OF write, no rows. A list /
-    online audience (or an explicit one with exclude lists) is read off OF's
-    rosters (read-only crawls, as step 6), the excludes Auto_Exclude and
-    AUTOFENCE would carry subtracted in memory."""
+    Auto_Exclude / AUTOFENCE sync, no mint, no OF write, no rows, and no OF
+    roster read (the Audience crawl is gone). `smd.dry_run_result` answers;
+    a list / online one only after the same fence-health gate a real run takes."""
     import audience_include as _audiences
-    would_send: list[int] | None = list(p.recipients)
-    if p.is_list_audience or p.excluded_user_lists:
-        fence: set[int] = set()
-        if p.is_list_audience:
-            try:
-                fence = await _dry_fence(account_id, client, pol, stats)
-            except _audiences.AudienceHalt as e:
-                return {"status": "error", "reason": f"audience_halt:{e.reason}", **stats}
-        from audiences import resolve_recipients_blocking
-        would_send = await asyncio.to_thread(
-            resolve_recipients_blocking, client,
-            user_lists=list(p.user_lists),
-            included_users=p.recipients,
-            excluded_users=smd.dry_excludes(p, fence),
-            excluded_user_lists=list(p.excluded_user_lists),
-            filters=p.filters,
-            online_only=p.online_only,
-        )
+    if p.is_list_audience:
+        try:
+            await _dry_fence(account_id, client, pol, stats)
+        except _audiences.AudienceHalt as e:
+            return {"status": "error", "reason": f"audience_halt:{e.reason}", **stats}
+    out = smd.dry_run_result(p)
     log.info("send_mass_message DRY RUN account=%s run=%s would_send=%s",
-             account_id, run_id, None if would_send is None else len(would_send))
-    return {**smd.dry_run_result(p, would_send), **stats}
+             account_id, run_id, out["would_send_count"])
+    return {**out, **stats}
 
 
 async def close_run_if_unsent(mass_run_id: int | None, e: BaseException) -> None:
@@ -379,21 +364,16 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return await _dry_run(account_id, run_id, p, client, audience_pol, audience_stats)
 
     # Did the AUTOFENCE list get attached to this send? Recorded on the run's
-    # audience_filter for forensics — nothing reads it at gather time (the
-    # recipient set is recorded outright, see step 6) but "was this blast fenced"
-    # is the first question asked of any audience surprise, and the fence list id
-    # alone does not answer it.
+    # audience_filter for forensics — "was this blast fenced" is the first
+    # question asked of any audience surprise, and the fence list id alone does
+    # not answer it.
     fence_attached = False
-    # The exclude lists verified under the lock below (AUTOFENCE read back equal to its
-    # target; Auto_Exclude reconciled on its exact path): {OF list id: members}, handed
-    # to the Audience crawl in step 6 so it never reads them again.
-    verified: dict = {}
     async with broadcast_lock(account_id):
         if audience_pol.mode != "off" and is_list_audience:
             try:
                 fence_ids = await _audiences.audience_fence_for_broadcast(
                     account_id, client=client, policy=audience_pol,
-                    stats=audience_stats, verified=verified)
+                    stats=audience_stats)
             except _audiences.AudienceHalt as e:
                 # HALT loudly — an enforce-mode blast never sends unfenced.
                 log.error("send_mass_message: AUTOFENCE unhealthy account=%s "
@@ -407,7 +387,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if p.excl_set and is_list_audience:
             try:
                 auto_lid = await ensure_exclude_list(
-                    account_id, set(p.excl_set), client=client, verified=verified)
+                    account_id, set(p.excl_set), client=client)
             except Exception as e:
                 # The proxy refused the sync (OF never saw it): raised, so a stream's
                 # send / a job waits out the proxy as for a refused POST.
@@ -469,7 +449,6 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 send_purpose="fenced",
                 before_write=_mint,
             )
-            sent_at = time.monotonic()   # OF accepted: the Audience crawl's deadline runs from here
         except Exception as e:
             # Surely not sent (the proxy refused it, OF answered 4xx, it never
             # connected): the minted run ends refused / failed, not 'running' for the
@@ -539,45 +518,6 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             mr.body = text
             mr.sent_at = created_at
 
-    # ── 6) …and WHO OF sent it to, read off OF's rosters (A.2) ───────────
-    # This is the one thing `audience_filter` cannot tell us: 4 of 27 chat fans on
-    # the incident account are consistent non-recipients (expired subs) with no
-    # local tell, so an inferred audience would splice 15% of repliers a blast
-    # they never got. It FAILS CLOSED — None leaves `recipients_json` NULL and the
-    # run is simply never spliced. Its own try/except on top of that: the broadcast
-    # has already gone out and nothing about recording it may fail the run.
-    # `paced` (the default): handed to the Creator's Audience crawl (audience_crawl,
-    # paced and resumable, in the background), so this run returns now and never
-    # holds its run slot through a 429 backoff. `legacy`: today's inline crawl.
-    import audience_crawl_decide
-    aud = dict(
-        user_lists=list(p.user_lists),
-        included_users=p.recipients,
-        excluded_users=sorted(p.excl_set),
-        excluded_user_lists=list(p.excluded_user_lists),
-        filters=p.filters,
-        online_only=p.online_only,
-    )
-    if audience_crawl_decide.knobs().mode == "legacy":
-        try:
-            from audiences import resolve_recipients_blocking
-            recorded = await asyncio.to_thread(resolve_recipients_blocking, client, **aud)
-            await stamp_mass_recipients(mass_run_id, recorded)
-        except Exception:
-            log.warning("send_mass_message: recipient record failed account=%s run=%s "
-                        "— the blast is sent, it just will not be spliced",
-                        account_id, mass_run_id, exc_info=True)
-    else:
-        try:
-            import audience_crawl
-            await audience_crawl.record_after_send(
-                account_id, client, mass_run_id, **aud, verified_lists=verified, sent_at=sent_at,
-            )
-        except Exception:
-            log.warning("send_mass_message: recipient record hand-off failed account=%s run=%s "
-                        "— the blast is sent, it just will not be spliced",
-                        account_id, mass_run_id, exc_info=True)
-
     # NOTE: a pure list/online broadcast leaves NO per-fan rows here (OF echoes
     # no ids), so its silent (non-replying) recipients aren't individually
     # recorded — the next blast re-touches them at its CADENCE (the intended
@@ -586,9 +526,9 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the Auto_Exclude guard reads. The local `fans` table is interaction-
     # derived (not an OF-list mirror) so it can't resolve a list audience to
     # stamp. Off-platform exact recipients arrive via the scrape reconciler.
-    # What the RECIPIENT SET is, though, is now recorded on the run above — read
-    # from OF, not inferred — so a reader can materialize the row this send
-    # could not write (plans/blast-splice A.3).
+    # Who received it is never read off OF (the Audience crawl is gone,
+    # docs/spec/phase-02-audience-crawl.md): readers assume it from
+    # `audience_filter`.
     log.info(
         "send_mass_message account=%s run=%s mass_run=%s recipients=%d echoed=%d optimistic=%d",
         account_id, run_id, mass_run_id, len(p.recipients), len(echoed_fans), optimistic,

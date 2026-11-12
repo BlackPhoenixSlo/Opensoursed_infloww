@@ -15,8 +15,8 @@ No DB, no OF: every row is (payload, rows already read) -> value.
   case_opener_media_of:     FunnelAccountMedia JSON -> media ids; unreadable -> no media.
   case_audience_filter_shape:  the stored mass_runs JSON (key order + sorted excludes; online / filters).
   case_echoed_of_table:     OF's per-fan echo -> (fan, msg) pairs; malformed dropped.
-  case_dry_run_table:       dry_run flag; the in-memory excludes (guard ∪ fence, sorted);
-                            the stats: sent 0, the list or None + why, never a partial list.
+  case_dry_run_table:       dry_run flag; the stats: sent 0, the explicit recipients or None + why
+                            (online/filters, list, explicit + OF exclude lists), never partial.
 
 Run: ./venv/bin/python service/tests/test_send_mass_decide.py   (exit 0 = pass)
 """
@@ -171,29 +171,25 @@ def case_dry_run_table():
     ], smd.is_dry_run)
     lst = plan({"text": "hi", "user_lists": ["7"]}, resolved=R([], [9, 3]))
     exp = plan({"text": "hi"}, resolved=R([1, 2, 3], [3]))
+    exl = plan({"text": "hi", "excluded_user_lists": [5]}, resolved=R([1, 2]))
     onl = plan({"text": "hi", "online_only": True}, resolved=R([]))
     flt = plan({"text": "hi", "filters": {"online": 1}}, resolved=R([]))
-    _table([
-        ("guard ∪ fence, sorted", (lst, {5, 9}), [3, 5, 9]),
-        ("no fence", (lst, set()), [3, 9]),
-    ], smd.dry_excludes)
     ok = {"status": "ok", "dry_run": True, "sent": 0}
     _table([
-        ("explicit", (exp, [1, 2]),
+        ("explicit = recipients", (exp,),
          {**ok, "would_send": [1, 2], "would_send_count": 2, "audience": "explicit"}),
-        ("list roster", (lst, [4]),
-         {**ok, "would_send": [4], "would_send_count": 1, "audience": "list"}),
-        ("list resolved empty is a list, not None", (lst, []),
-         {**ok, "would_send": [], "would_send_count": 0, "audience": "list"}),
-        ("online refuses", (onl, None),
+        ("explicit + OF exclude lists refuses", (exl,),
+         {**ok, "would_send": None, "would_send_count": None, "audience": "explicit",
+          "reason": "excluded_lists_unresolved"}),
+        ("online refuses", (onl,),
          {**ok, "would_send": None, "would_send_count": None, "audience": "list",
           "reason": "online_or_filtered"}),
-        ("filters refuse", (flt, None),
+        ("filters refuse", (flt,),
          {**ok, "would_send": None, "would_send_count": None, "audience": "list",
           "reason": "online_or_filtered"}),
-        ("unreadable list", (lst, None),
+        ("list never read", (lst,),
          {**ok, "would_send": None, "would_send_count": None, "audience": "list",
-          "reason": "audience_unreadable"}),
+          "reason": "list_audience"}),
     ], smd.dry_run_result)
 
 

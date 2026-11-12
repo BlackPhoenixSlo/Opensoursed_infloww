@@ -299,7 +299,7 @@ def case_a_walk_labels_its_calls_walk_kind_and_wins_inside_an_automation():
 
     async def go():
         with of_call_counter.caller("auto:mass_send"):
-            await of_pacing.walk(c.account_id, "audience_crawl",
+            await of_pacing.walk(c.account_id, "roster",
                                  lambda: asyncio.to_thread(c.get_json, "/api2/v2/subscriptions/subscribers"))
             await asyncio.to_thread(c.get_json, "/api2/v2/messages/queue")
     try:
@@ -307,47 +307,8 @@ def case_a_walk_labels_its_calls_walk_kind_and_wins_inside_an_automation():
     finally:
         of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
     got = _rows(c.account_id)
-    assert got == {("walk:audience_crawl", "GET /api2/v2/subscriptions/subscribers", "2xx"): 1,
+    assert got == {("walk:roster", "GET /api2/v2/subscriptions/subscribers", "2xx"): 1,
                    ("auto:mass_send", "GET /api2/v2/messages/queue", "2xx"): 1}, got
-
-
-def case_an_audience_crawl_page_inside_an_automation_run_counts_as_walk_audience_crawl():
-    """phase-02: a mass send hands its audience to audience_crawl inside its automation run's scope; the crawl's
-    roster page and its mass feed read (P2b: OF's count of the send) count as walk:audience_crawl (innermost wins),
-    the run's own call as auto:send_mass_message."""
-    import audience_crawl
-    from db.engine import get_session
-    from db.models import Account, MassRun
-    gap, jit = of_pacing.PAGE_GAP_S, of_pacing.JITTER_S
-    of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.0, 0.0
-    page = json.dumps({"list": [{"id": 11}, {"id": 12}], "hasMore": False})
-    feed = json.dumps({"items": [{"id": 8_300_000_001, "sentCount": 2}], "hasMore": False})
-    c, sent = _client([200, (200, page), (200, feed)])
-
-    async def go():
-        async with get_session() as s:
-            s.add(Account(id=c.account_id))
-            mr = MassRun(account_id=c.account_id, audience_filter="{}", recipient_count=0, status="ok",
-                         queue_id=8_300_000_001)
-            s.add(mr)
-            await s.flush()
-            run = int(mr.id)
-        with of_call_counter.caller("auto:send_mass_message"):
-            await asyncio.to_thread(c.get_json, f"{API_BASE}/messages/queue")
-            await audience_crawl.record_after_send(c.account_id, c, run, user_lists=["fans"],
-                                                   sent_at=time.monotonic())
-        await audience_crawl.drain(c.account_id, timeout_s=30)
-        async with get_session() as s:
-            return (await s.get(MassRun, run)).recipients_json
-    try:
-        stamped = asyncio.run(go())
-    finally:
-        of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
-    got = _rows(c.account_id)
-    assert got == {("auto:send_mass_message", "GET /api2/v2/messages/queue", "2xx"): 1,
-                   ("walk:audience_crawl", "GET /api2/v2/subscriptions/subscribers", "2xx"): 1,
-                   ("walk:audience_crawl", "GET /api2/v2/users/me/stats/messages/group", "2xx"): 1}, (got, sent)
-    assert stamped is not None and sorted(json.loads(stamped)) == [11, 12], stamped
 
 
 def case_caller_kinds_fold_ids_so_one_code_site_is_one_kind():

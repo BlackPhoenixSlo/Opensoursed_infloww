@@ -10,9 +10,8 @@ Phase 1, load (LOAD_S): `--users` owners read Relay routes that reach OF for a r
 Dashboard's per-Creator subscriber counts and subscribers chart, the bell's counts with `refresh=1`, the chat
 list and the notifications feed), 1-3 s think. Before it every Creator's WS pump comes up on FakeOF's socket
 (`/__slop/pump-supervise`: the real `_reconcile_pumps`), each connect reading `/users/me`, and the owner sends two
-mass messages to `fans` + `following` on the last Creator through the composer's real `POST /api/of/v2/messages/queue`:
-each hands its Audience crawl to the Creator's crawler (service/audience_crawl.py), which pages both OF rosters
-inside `of_pacing.walk("audience_crawl")`. Meanwhile WALKS ledger walks: one real
+mass messages to `fans` + `following` on the last Creator through the composer's real `POST /api/of/v2/messages/queue`
+(no roster read follows: the Audience crawl is gone, so neither roster may be called). Meanwhile WALKS ledger walks: one real
 `transaction_ingest.supervisor_cycle()` (lib/sweep_pacing_relay.py), every Creator walked inside
 `of_pacing.walk`, with FakeOF answering Creator 0's first ledger page 429 (`throttle`: the pacer's one retry
 sends it again) and every ledger page of Creator 1 500 (`fail`). Then, once the wire is quiet, the file is
@@ -29,9 +28,8 @@ Checks:
   callers_labelled   every driven call in the end file is under its expected Caller kind: the users' reads
                      `route:GET <Relay path>`, the ledger walk `walk:transactions` (its disputes read
                      `walk:chargebacks`), the held send its leg's KIND, the WS pumps' `/users/me` `loop:ws-pump`
-                     (no Creator id), the composer's sends `route:POST /api/of/v2/messages/queue` and both
-                     Audience crawls' roster pages `walk:audience_crawl` (service/audience_crawl.py); each driven one
-                     seen; zero `unlabelled`.
+                     (no Creator id), the composer's sends `route:POST /api/of/v2/messages/queue`; a roster page
+                     only under the held send's KIND; each driven one seen; zero `unlabelled`.
   survives_restart   the held send (if a leg) was answered after the SIGTERM and is in the file the stopped relay left;
                      the file's counts since phase 1 equal the wire's at the stop and again after the restart
                      (quiet); the restarted relay's `boots` is the stopped one's + 1 and kept every count.
@@ -73,9 +71,7 @@ LEDGER = "GET /api2/v2/payouts/transactions"
 QUEUE = "POST /api2/v2/messages/queue"
 ME = "GET /api2/v2/users/me"
 SUBS, FOLLOWING = "GET /api2/v2/subscriptions/subscribers", "GET /api2/v2/subscriptions/subscribes"
-AUDIENCE_CRAWL = "walk:audience_crawl"   # audience_crawl's pages, inside of_pacing.walk (innermost label wins)
 MASS_SENDS = 2
-MASS_TIMEOUT_S = 30.0
 PUMP_UP_S = 30.0
 # The walk logs the 500s armed on Creator 1's ledger, and FakeOF does not model the chargebacks read (404).
 EXPECTED_TRACEBACKS = (("ingest_tx_scan_failed", "500 for http"),
@@ -103,11 +99,11 @@ CALLERS = {**{"GET /api2/v2/" + p.split("?")[0].removeprefix("/api/of/v2/"): {"r
               for p in USER_READS},
            LEDGER: {"walk:transactions"}, "GET /api2/v2/payouts/chargebacks": {"walk:chargebacks"},
            QUEUE: {"route:POST /api/of/v2/messages/queue", *SENDER},
-           SUBS: {AUDIENCE_CRAWL, *SENDER}, FOLLOWING: {AUDIENCE_CRAWL, *SENDER},
+           SUBS: set(SENDER), FOLLOWING: set(SENDER),
            ME: {"loop:ws-pump"}}
 REQUIRED = ({(k, c) for k, v in CALLERS.items() for c in v if c.startswith("route:GET ")}
             | {(LEDGER, "walk:transactions"), (ME, "loop:ws-pump"), *((QUEUE, k) for k in SENDER),
-               (QUEUE, "route:POST /api/of/v2/messages/queue"), (SUBS, AUDIENCE_CRAWL), (FOLLOWING, AUDIENCE_CRAWL)})
+               (QUEUE, "route:POST /api/of/v2/messages/queue")})
 
 _ID_SEG = re.compile(r"/(?:\d+|[0-9a-fA-F-]{16,})(?=/|$)")
 _STATIC_USERS = {"me", "list", "notifications", "performers", "settings"}
@@ -196,7 +192,7 @@ async def run(ctx) -> None:
             break
         await asyncio.sleep(0.25)
 
-    # ── two composer mass sends: each hands its Audience crawl to the Creator's crawler ──
+    # ── two composer mass sends (list audience: no roster read after) ──
     mass_aid = cs[-1]
     mass_runs = []
     for i in range(MASS_SENDS):
@@ -205,18 +201,7 @@ async def run(ctx) -> None:
         mass_runs.append({"status": r.status_code,
                           "run": r.json().get("_mass_run_id") if r.status_code == 200 else None})
     ids = [m["run"] for m in mass_runs if m["run"] is not None]
-    t0 = time.monotonic()
-    while ids and time.monotonic() - t0 < MASS_TIMEOUT_S:   # until each crawl ended (of_wire's rosters are empty:
-        con = w.sql()                                         # OF's count 0, `no_count`, never stamped)
-        try:
-            left = con.execute(f"SELECT COUNT(*) FROM mass_runs WHERE id IN ({','.join('?' * len(ids))}) "
-                               "AND crawl_outcome IS NULL", ids).fetchone()[0]
-        finally:
-            con.close()
-        if not left:
-            break
-        await asyncio.sleep(0.25)
-    ctx.metric("mass_recipients", {"sends": mass_runs, "crawled_s": round(time.monotonic() - t0, 2)})
+    ctx.metric("mass_recipients", {"sends": mass_runs})
 
     # ── phase 1: users + walks, a 429 and 500s at the wire ──
     with fake.lock:

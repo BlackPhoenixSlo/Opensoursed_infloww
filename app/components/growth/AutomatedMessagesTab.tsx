@@ -57,7 +57,8 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
 import {
-  EmptyState, IF_TABLE, IfBody, IfButton, IfInput, IfModal, IfRangePicker, IfSelect, type IfOption,
+  EmptyState, IF_TABLE, IfBody, IfButton, IfFilterFold, IfInput, IfModal, IfRangePicker, IfSelect, countActiveFilters,
+  type IfOption,
 } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { useAutomationRules, useSwitchKind, type AutomationRule } from "@/hooks/useAutomations";
@@ -74,6 +75,7 @@ import { DelayedWelcomeEditor } from "./DelayedWelcomeEditor";
 import LifecycleMessageEditor, { PAID_ONLY_KINDS } from "./LifecycleMessageEditor";
 import PurchaseFollowupEditor from "./PurchaseFollowupEditor";
 import { SM, SM_AUTOMATED_COLUMNS, SM_TRIGGERS } from "./smartMessagesControls";
+import { StatusPill } from "@/components/automations/StatusPill";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useAccounts } from "@/hooks/useAccounts";
 
@@ -115,6 +117,8 @@ type Row = {
 };
 type Filters = { q: string; status: string; trigger: string; createdFrom: string; createdTo: string };
 const NO_FILTERS: Filters = { q: "", status: "", trigger: "", createdFrom: "", createdTo: "" };
+/** The fields the phone fold counts (the search stays out of it). */
+const FOLDED = ["status", "trigger", ["createdFrom", "createdTo"]] as const;
 
 /** The Sent cell: the rules list's count of what the rule really sent. */
 const sentOf = (r: AutomationRule) => (typeof r.sent === "number" ? r.sent.toLocaleString("en-US") : undefined);
@@ -136,15 +140,16 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
     // The Messages cell; below md, where the other columns sit off screen, the text takes two lines and a
-    // second line names the Trigger and Status.
+    // second line names the Trigger and Status, both kept left of the pinned 100px Actions (the scroller's
+    // visible width less Actions, the cell's 16px padding and a 16px gap), so the clamp's ellipsis shows.
     const messages = (trigger: WiredTrigger, text: string, status: string) => (
-      <>
+      <div className="max-md:max-w-[calc(100cqw-132px)]">
         <button type="button" className="max-w-full break-words text-left hover:text-accent md:truncate max-md:line-clamp-2"
           onClick={() => setEditing(trigger)}>
           {text}
         </button>
-        <span className="block text-[12px] text-fg-dim md:hidden">{trigger} · {status}</span>
-      </>
+        <span className="block truncate text-[12px] text-fg-dim md:hidden">{trigger} · {status}</span>
+      </div>
     );
     // The rules read keeps the previous Creator's list while the next one
     // loads, so a rule counts only for the Creator it belongs to.
@@ -162,7 +167,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         status,
         cells: {
           Messages: messages(NUDGE.label, lines[0] ?? rule.name, status),
-          Status: <StatusPill status={status} />,
+          Status: <SmPill status={status} />,
           Trigger: NUDGE.label,
           "Date created": shortDate(rule.created_at, reportTz) ?? undefined,
         },
@@ -184,7 +189,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         status,
         cells: {
           Messages: messages(WELCOME.label, text, status),
-          Status: <StatusPill status={status} />,
+          Status: <SmPill status={status} />,
           Trigger: WELCOME.label,
           Sent: sentOf(welcome),
           // Media and price ride on the written message only.
@@ -211,7 +216,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         status,
         cells: {
           Messages: messages(trigger, text, status),
-          Status: <StatusPill status={status} />,
+          Status: <SmPill status={status} />,
           Trigger: trigger,
           Sent: sentOf(r),
           ...extrasCells(r.payload, reportTz),
@@ -253,32 +258,35 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
           onChange={(e) => set({ q: e.target.value })}
           className="mb-4 mr-4 w-full sm:w-[320px]"
         />
-        <Field id="sm-auto-status" label={SM.autoStatus.label}>
-          <FilterSelect id="sm-auto-status" value={draft.status} onChange={(status) => set({ status })}
-            options={STATUS_VALUES.map((s) => option(s.label, WIRED_STATUS.has(s.label)))} />
-        </Field>
-        <Field id="sm-auto-trigger" label={SM.autoTrigger.label}>
-          <FilterSelect id="sm-auto-trigger" value={draft.trigger} onChange={(trigger) => set({ trigger })}
-            options={SM_TRIGGERS.map((t) => option(t.label, WIRED_TRIGGERS.has(t.label)))} />
-        </Field>
-        <Field id="sm-auto-sent-to" label={SM.autoSentTo.label}>
-          <FilterSelect id="sm-auto-sent-to" disabled />
-        </Field>
-        <Field id="sm-auto-start-date" label={SM.autoStartDate.label}>
-          <IfRangePicker id="sm-auto-start-date" disabled title="not wired" className="max-w-full" />
-        </Field>
-        <Field id="sm-auto-date-created" label={SM.autoDateCreated.label} labelWidth={90}>
-          <IfRangePicker
-            id="sm-auto-date-created"
-            from={draft.createdFrom}
-            to={draft.createdTo}
-            onChange={({ from, to }) => set({ createdFrom: from, createdTo: to })}
-            className="max-w-full"
-          />
-        </Field>
-        <Field id="sm-auto-created-by" label={SM.autoCreatedBy.label} labelWidth={80}>
-          <FilterSelect id="sm-auto-created-by" disabled />
-        </Field>
+        {/* Below md the fields fold behind "Filters"; the search and Reset / Search stay out. */}
+        <IfFilterFold active={countActiveFilters(applied, NO_FILTERS, FOLDED)} className="mb-4 mr-2">
+          <Field id="sm-auto-status" label={SM.autoStatus.label}>
+            <FilterSelect id="sm-auto-status" value={draft.status} onChange={(status) => set({ status })}
+              options={STATUS_VALUES.map((s) => option(s.label, WIRED_STATUS.has(s.label)))} />
+          </Field>
+          <Field id="sm-auto-trigger" label={SM.autoTrigger.label}>
+            <FilterSelect id="sm-auto-trigger" value={draft.trigger} onChange={(trigger) => set({ trigger })}
+              options={SM_TRIGGERS.map((t) => option(t.label, WIRED_TRIGGERS.has(t.label)))} />
+          </Field>
+          <Field id="sm-auto-sent-to" label={SM.autoSentTo.label}>
+            <FilterSelect id="sm-auto-sent-to" disabled />
+          </Field>
+          <Field id="sm-auto-start-date" label={SM.autoStartDate.label}>
+            <IfRangePicker id="sm-auto-start-date" disabled title="not wired" className="max-w-full" />
+          </Field>
+          <Field id="sm-auto-date-created" label={SM.autoDateCreated.label} labelWidth={90}>
+            <IfRangePicker
+              id="sm-auto-date-created"
+              from={draft.createdFrom}
+              to={draft.createdTo}
+              onChange={({ from, to }) => set({ createdFrom: from, createdTo: to })}
+              className="max-w-full"
+            />
+          </Field>
+          <Field id="sm-auto-created-by" label={SM.autoCreatedBy.label} labelWidth={80}>
+            <FilterSelect id="sm-auto-created-by" disabled />
+          </Field>
+        </IfFilterFold>
         {/* Reset, then Search, 8px apart (#38). */}
         <div className="mb-4 flex gap-2">
           <IfButton onClick={() => { setDraft(NO_FILTERS); setApplied(NO_FILTERS); }}>{SM.autoReset.label}</IfButton>
@@ -381,20 +389,11 @@ function RowActions({ row, pending, onCancel }: { row: Row; pending: boolean; on
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  // Status pill (#98): 16px radius, 2px 8px padding; Active (#100) and
-  // Canceled (#102) in the app's palette, Scheduled and Completed neutral.
-  return (
-    <span
-      className={cn(
-        "inline-block rounded-2xl px-2 py-0.5 text-xs",
-        status === SM.statusActive.label ? "bg-accent/15 text-accent"
-          : status === SM.statusCanceled.label ? "bg-warn/15 text-warn" : "bg-fg-dim/15 text-fg-dim",
-      )}
-    >
-      {status}
-    </span>
-  );
+/** The shared pill (#98) in this table's 12/16 type: Active (#100) blue, Canceled (#102) orange, Scheduled and
+ *  Completed neutral. */
+function SmPill({ status }: { status: string }) {
+  const tone = status === SM.statusActive.label ? "active" : status === SM.statusCanceled.label ? "warn" : "idle";
+  return <StatusPill status={{ label: status, tone }} className="leading-4" />;
 }
 
 /** A wired Trigger's editor, in a dialog headed with its Trigger label, on

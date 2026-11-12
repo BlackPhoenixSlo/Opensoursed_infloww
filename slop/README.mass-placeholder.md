@@ -43,11 +43,11 @@ in `README.md`; this file is only what this flow adds. The scenario's docstring 
   concurrent `POST /admin/automation/enqueue` `send_mass_message` dry runs, explicit (`--dry_excluded=` fresh fans
   as `excluded_users`) and list, drained by `/__slop/automation-tick`, then one real enqueue per Creator of the
   explicit payload. Checks (`lib/mass_dry_run_faults.py`): `DRY_NO_SEND` (no OF queue frame or list write, no new
-  `mass_runs` / out row, every run `dry_run` with sent 0), `DRY_LIST` (would_send == roster - guard - fences -
-  excluded; the explicit runs' in roster order and == the real send's wire `userIds`); budget: `POST
+  `mass_runs` / out row, every run `dry_run` with sent 0), `DRY_LIST` (list runs: would_send None, reason
+  `list_audience`; explicit runs: roster - guard - fences - excluded, in roster order, == the real send's wire `userIds`); budget: `POST
   /admin/automation/enqueue` p95 (in the scenario). Faults:
   `placeholder-pair-ignores-window` (default; targets `PH_ONCE`), `mass-queue-excluded-kept` (`EXCL`),
-  `mass-dry-run-ignored` (a dry run sends; `DRY_NO_SEND`, `DRY_LIST`), `mass-dry-run-skips-guard` (`DRY_LIST`).
+  `mass-dry-run-ignored` (a dry run sends; `DRY_NO_SEND`, `DRY_LIST`), `mass-dry-run-list-claims-reach` (`DRY_LIST`).
   Knobs, per Creator: `--per_run=` fresh recipients per run, `--stale=` STALE fans, `--both=` BOTH fans,
   `--excluded=` (each defaults to SCALES `mass_placeholder_<knob>`), `--dry_fresh=`, `--dry_guard=`, `--dry_fence=`,
   `--dry_excluded=` (SCALES `mass_dry_run_<knob>`).
