@@ -405,12 +405,18 @@ REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 16)
 # file. 4 keeps a whole-vault pull from holding more than a few proxy sockets and curl handles at once.
 VAULT_DOWNLOAD = LoopLane("vault_download", "VAULT_DOWNLOAD_CONCURRENCY", 4)
 
+# Redirect-link stats (`tracking_stats`: /summary, /{id}/analytics): a read counts a link's raw clicks, ~105k rows
+# in 30 days on a hot link, ~25 ms of SQLite CPU on a pooled connection. Uncapped, 5-11 owner reads at once in a
+# 250 clicks/s storm took the 8-connection pool and the cores and pushed /t/ p95 to 379 ms server-side (slop
+# tracking-links-clicks medium/200, 20261111T095148Z-...-b902). Queued, never rejected: 2 leave the rest to clicks.
+TRACKING_STATS_READ = LoopLane("tracking_stats_read", "TRACKING_STATS_CONCURRENCY", 2)
+
 
 # Every lane, so diagnostics can be DERIVED rather than restated. `admin_streams`
 # merges `all_stats()`; adding a lane above and forgetting it here is the only
 # way it can go unreported, which is one place to look instead of two files.
 LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD)
-LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, VAULT_DOWNLOAD)
+LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, VAULT_DOWNLOAD, TRACKING_STATS_READ)
 
 
 def describe() -> list[dict[str, Any]]:

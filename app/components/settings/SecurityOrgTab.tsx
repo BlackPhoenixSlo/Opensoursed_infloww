@@ -6,8 +6,9 @@
  * every employee sets up and uses 2FA at sign-in; turning it on signs out those without it), above the
  * Agency's Employees from the shared roster (`useRoster()` defaults: disabled rows kept and greyed, the
  * Employees with a login only), with each login's 2FA status and last login (`two_factor`,
- * `last_login_at` on the roster rows). "Reset" turns an Employee's 2FA off and signs them out
- * (`POST /admin/employees/{id}/2fa/reset`). Each switch flip and Reset asks first, in Infloww's words.
+ * `last_login_at` on the roster rows; below sm Last login hides). "Reset", shown only on an active login
+ * with 2FA on, turns it off and signs them out (`POST /admin/employees/{id}/2fa/reset`). Each switch flip
+ * and Reset asks first, in Infloww's words.
  */
 
 import { useState } from "react";
@@ -18,12 +19,15 @@ import { useRoster } from "@/hooks/useRoster";
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import {
   IF_BTN, IF_BTN_PRIMARY, LoadError, Section, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW, ToggleRow,
+  type TableColumn,
 } from "@/components/settings/SettingsPanel";
 import { IfModal } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
+import { fmtDateTime } from "@/lib/format";
 
-const COLUMNS = ["Name", "2FA status", "Last login", "Operations"];
+const HIDE_ON_PHONE = "hidden sm:table-cell";
+const COLUMNS: TableColumn[] = ["Name", "2FA status", { label: "Last login", className: HIDE_ON_PHONE }, "Operations"];
 const OPERATION = "text-[var(--if-accent)] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
 
 const SWITCH_COPY = {
@@ -38,8 +42,7 @@ const SWITCH_COPY = {
   },
 };
 
-const twoFactorLabel = (e: Employee) => (e.two_factor == null ? "—" : e.two_factor ? "Enabled" : "Disabled");
-const lastLogin = (e: Employee) => (e.last_login_at ? new Date(e.last_login_at).toLocaleString() : "—");
+const twoFactorLabel = (e: Employee) => (e.two_factor == null ? "—" : e.two_factor ? "Active" : "Inactive");
 
 export default function SecurityOrgTab() {
   const { query, rows, pending } = useRoster();
@@ -84,17 +87,13 @@ export default function SecurityOrgTab() {
                 </span>
               </td>
               <td className={TABLE_CELL}>{twoFactorLabel(e)}</td>
-              <td className={TABLE_CELL}>{lastLogin(e)}</td>
+              <td className={cn(TABLE_CELL, HIDE_ON_PHONE)}>{fmtDateTime(e.last_login_at ?? null)}</td>
               <td className={TABLE_CELL}>
-                <button
-                  type="button"
-                  className={OPERATION}
-                  disabled={!e.two_factor || !e.is_active}
-                  title={!e.two_factor ? "2FA is not set up" : undefined}
-                  onClick={() => { resetM.reset(); setResetting(e); }}
-                >
-                  Reset
-                </button>
+                {e.two_factor && e.is_active && (
+                  <button type="button" className={OPERATION} onClick={() => { resetM.reset(); setResetting(e); }}>
+                    Reset
+                  </button>
+                )}
               </td>
             </tr>
           ))}

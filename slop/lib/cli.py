@@ -551,6 +551,12 @@ def _map_update(name: str, report: Report, cov, out: Path, args, ui: bool, pages
           f"{covmap.MAP.relative_to(SLOP.parent)}")
 
 
+def _with_ports(value: str, ports: dict[str, int]) -> str:
+    for name, port in ports.items():
+        value = value.replace("{" + name + "}", str(port))
+    return value
+
+
 async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, ph, live) -> None:
     ph.enter("startup")
     try:
@@ -558,10 +564,13 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                       apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
                       boxes=getattr(mod, "BOXES", None),
                       shards_per_box=getattr(mod, "SHARDS_PER_BOX", None),
-                      app_mode=getattr(mod, "APP_MODE", "dev"))
+                      app_mode=getattr(mod, "APP_MODE", "dev"),
+                      sidecars=getattr(mod, "SIDECARS", {}))
         ph.stack = stack  # its waits; a failed start's own cleanup is teardown
-        for i in range(stack.shards):  # a scenario's RELAY_ENV: extra env for every relay it starts
-            stack.relay_env[i].update(getattr(mod, "RELAY_ENV", {}))
+        # a scenario's RELAY_ENV: extra env for every relay it starts; "{PORT_ENV}" in a value -> that sidecar's port
+        renv = {k: _with_ports(v, stack.extra_ports) for k, v in getattr(mod, "RELAY_ENV", {}).items()}
+        for i in range(stack.shards):
+            stack.relay_env[i].update(renv)
         fleet = None
         if shards > 1:
             from slop.lib.edge import Fleet  # fleet runs only: the Caddy edge from deploy/fleet/fleet.py
@@ -592,6 +601,9 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
             ctx.mon = mon
             for m in mons.values():
                 m.start()
+            sidecar_mons = {name: ProcMon(p.pid, rec, None) for name, p in stack.sidecar_procs.items()}
+            for m in sidecar_mons.values():
+                m.start()
             try:
                 ph.enter("execution")
                 await mod.run(ctx)
@@ -607,6 +619,11 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                         await m.save_coverage()
                 for m in mons.values():
                     await m.stop()
+                for name, m in sidecar_mons.items():
+                    await m.stop()
+                    await m.write(out)
+                    (out / "resources.json").rename(out / f"resources-{name}.json")
+                    report.metric(f"{name}_resources", m.summary())
                 if ctx.shards:
                     await _fleet_resources(report, mons, mod, out)
                 else:

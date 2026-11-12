@@ -16,6 +16,11 @@ const DRAFT: DoDraft = {
 };
 const NULL_FLOW: DoDraft = { ...DRAFT, flow: null, slots: null, answer: "Ask it as a question." };
 
+const EDIT: DoDraft = {
+  ...DRAFT, flow: "mass_edit",
+  slots: { scope: "all", match: null, changes: { unsend_after_hours: 0 }, rules: [], already: 0, skipped: [] },
+};
+const RESULTS = [{ id: 1, ok: true }, { id: 2, ok: false, reason: "changed since you saw it" }];
 const play = (actions: DoAction[], from: DoRun = initialDoRun) => actions.reduce(doRunReducer, from);
 const planned: DoRun = { phase: "planned", request: "r", draft: DRAFT };
 const running: DoRun = { phase: "running", request: "r", draft: DRAFT, step: 0, instant: false, saving: false };
@@ -62,6 +67,14 @@ describe("doRunReducer", () => {
       [{ type: "abort", reason: "Stopped" }, { type: "fail", msg: "Network" }],
       { phase: "failed", request: "r", draft: DRAFT, msg: "Network" }],
     ["saving outside a run is a no-op", planned, [{ type: "saving" }], planned],
+    ["an edit plan starts straight into saving (no steps, no Stop)", { phase: "planned", request: "r", draft: EDIT },
+      [{ type: "start" }, { type: "abort", reason: "Stopped" }],
+      { phase: "running", request: "r", draft: EDIT, step: 0, instant: true, saving: true }],
+    ["applied → done with the results", { phase: "planned", request: "r", draft: EDIT },
+      [{ type: "start" }, { type: "applied", results: RESULTS }],
+      { phase: "done", request: "r", draft: EDIT, ruleSaved: true, results: RESULTS }],
+    ["a stray saved never ends an edit run; applied never ends a create run", running,
+      [{ type: "applied", results: RESULTS }], running],
   ])("%s", (_, from, actions, to) => {
     expect(play(actions, from)).toEqual(to);
   });
@@ -70,6 +83,7 @@ describe("doRunReducer", () => {
     expect(previousOf(planned)).toBe(SLOTS);
     expect(previousOf(running)).toBeNull();
     expect(previousOf({ phase: "idle" })).toBeNull();
+    expect(previousOf({ phase: "planned", request: "r", draft: EDIT })).toBeNull();   // an edit plan is never refined
   });
 });
 
@@ -83,6 +97,11 @@ describe("draftFrom", () => {
   });
   it("keeps a good draft as is", () => {
     expect(draftFrom(DRAFT, "x")).toEqual(DRAFT);
+  });
+  it("keeps a mass_edit draft, its slots read defensively", () => {
+    expect(draftFrom(EDIT, "x")).toEqual(EDIT);
+    expect(draftFrom({ ...EDIT, slots: { rules: "junk" } } as never, "x").slots).toEqual(
+      { scope: "this", match: null, changes: {}, rules: [], already: 0, skipped: [] });
   });
 });
 

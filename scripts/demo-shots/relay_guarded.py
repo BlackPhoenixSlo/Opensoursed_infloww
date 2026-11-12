@@ -1,98 +1,12 @@
-"""Guarded throwaway relay for scripts/demo-shots (copied from scripts/ui-shots.sh).
-
-Order matters: network guards and the dotenv no-ops first, then the secret store
-redirected into the temp dir, then service/_run_ui_safe.py patches, then serve on
-loopback under the stdlib asyncio loop (uvloop connects through libuv, past the guards).
-"""
-import ipaddress, json, os, socket, sys
+"""Guarded throwaway relay; network/dotenv guard precedes service imports."""
+import os
+import runpy
+import sys
 from pathlib import Path
 
+runpy.run_path(str(Path(__file__).with_name("net_guard.py")))
 TMP = Path(os.environ["DEMO_SHOTS_TMP"])
-LOG = TMP / "server-offhost.jsonl"
-
-
-def _record(path, rec):
-    with open(path, "a") as f:
-        f.write(json.dumps(rec) + "\n")
-
-
-def _loopback(host) -> bool:
-    if isinstance(host, bytes):
-        host = host.decode("ascii", "replace")
-    if host is None or host == "localhost":  # None: a local bind lookup, getaddrinfo(None, port)
-        return True
-    try:
-        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
-    except ValueError:
-        return False
-
-
-def _refused(where, target):
-    _record(LOG, {"process": "relay", "via": where, "target": str(target), "refused": True})
-    return f"demo-shots: off-host {where} refused: {target!r}"
-
-
-_real = {"connect": socket.socket.connect, "connect_ex": socket.socket.connect_ex,
-         "create_connection": socket.create_connection, "getaddrinfo": socket.getaddrinfo,
-         "gethostbyname": socket.gethostbyname, "gethostbyname_ex": socket.gethostbyname_ex}
-
-
-def connect(self, address):
-    if self.family in (socket.AF_INET, socket.AF_INET6) and not _loopback(address[0]):
-        raise ConnectionRefusedError(_refused("socket.connect", address))
-    return _real["connect"](self, address)
-
-
-def connect_ex(self, address):
-    if self.family in (socket.AF_INET, socket.AF_INET6) and not _loopback(address[0]):
-        raise ConnectionRefusedError(_refused("socket.connect_ex", address))
-    return _real["connect_ex"](self, address)
-
-
-def create_connection(address, *a, **k):
-    if not _loopback(address[0]):
-        raise ConnectionRefusedError(_refused("socket.create_connection", address))
-    return _real["create_connection"](address, *a, **k)
-
-
-# Name lookups are refused before resolution, so no DNS query leaves the machine either.
-def getaddrinfo(host, *a, **k):
-    if not _loopback(host):
-        raise socket.gaierror(socket.EAI_NONAME, _refused("socket.getaddrinfo", host))
-    return _real["getaddrinfo"](host, *a, **k)
-
-
-def gethostbyname(host):
-    if not _loopback(host):
-        raise socket.gaierror(socket.EAI_NONAME, _refused("socket.gethostbyname", host))
-    return _real["gethostbyname"](host)
-
-
-def gethostbyname_ex(host):
-    if not _loopback(host):
-        raise socket.gaierror(socket.EAI_NONAME, _refused("socket.gethostbyname_ex", host))
-    return _real["gethostbyname_ex"](host)
-
-
-socket.socket.connect, socket.socket.connect_ex, socket.create_connection = connect, connect_ex, create_connection
-socket.getaddrinfo, socket.gethostbyname, socket.gethostbyname_ex = getaddrinfo, gethostbyname, gethostbyname_ex
-
-# service/.env holds real keys; db/engine.py, llm_providers.py and auth.py
-# read it through `from dotenv import ...`. No-op both before any import.
-import dotenv  # noqa: E402
-import dotenv.main  # noqa: E402
-
-
-def _no_load_dotenv(*a, **k):
-    return False
-
-
-def _no_dotenv_values(*a, **k):
-    return {}
-
-
-for _m in (dotenv, dotenv.main):
-    _m.load_dotenv, _m.dotenv_values = _no_load_dotenv, _no_dotenv_values
+os.environ["BIO_FILES_DIR"] = str(TMP / "bio_files")  # bio admin uploads (service/bio_pages/files.py), as slop/lib/bio.py
 
 SERVICE = Path(os.environ["DEMO_SHOTS_ROOT"]) / "service"
 sys.path.insert(0, str(SERVICE))

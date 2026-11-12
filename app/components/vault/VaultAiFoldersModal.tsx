@@ -24,10 +24,14 @@
  * Every folder is prefixed `AI-`, re-running refreshes those folders instead of
  * duplicating them, and a folder the operator made by hand is never touched.
  *
+ * Before Confirm the plan's `changes` says what it does to the AI- folders already there (create / keep / retire);
+ * retiring one bound to an OnlyFans list unlinks that list, so the button says so. Options live in
+ * `vaultAiFoldersForm.ts` (pure reducer); keep runs 0 (lanes only) to 20.
+ *
  * No OF writes: these are internal folders. Nothing here sends anything.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Send, Shirt, User } from "lucide-react";
 
@@ -43,6 +47,16 @@ import { mirrorThumbSrc } from "@/lib/mediaUrl";
 import { IfButton, IfHelp, IfLabel, IfLearn, IfModal, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
 import { Notice } from "@/components/vault/Notice";
 import { errText } from "@/lib/errText";
+import {
+  aiFoldersFormReducer,
+  buildPayload,
+  canSubmit,
+  changesLine,
+  confirmLabel,
+  INITIAL_FORM,
+  KEEP_CHOICES,
+  keepLabel,
+} from "@/components/vault/vaultAiFoldersForm";
 
 const TIER_STYLE: Record<string, string> = {
   sfw: "border-muted/50 bg-muted/10 text-fg-dim",
@@ -50,9 +64,6 @@ const TIER_STYLE: Record<string, string> = {
   explicit: "border-warn/50 bg-warn/10 text-warn",
   hardcore: "border-err/50 bg-err/10 text-err",
 };
-
-/** How many shoots stay their own folder. The rest still feed the lanes. */
-const KEEP_CHOICES = [1, 2, 3, 4, 5];
 
 function FolderCard({
   accountId,
@@ -74,6 +85,11 @@ function FolderCard({
           <h3 className="text-[14px] font-semibold flex items-center gap-2">
             {(() => { const Icon = folder.solo ? User : isScript ? Shirt : Send; return <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />; })()}
             <span className="truncate">{folder.name}</span>
+            {folder.change && (
+              <span className="shrink-0 rounded border border-border px-1 text-[11px] font-normal text-muted">
+                {folder.change === "new" ? "new" : "refresh"}
+              </span>
+            )}
           </h3>
           <p className="text-[12px] text-muted mt-0.5">
             {folder.purpose} · {folder.size} items ·{" "}
@@ -150,9 +166,8 @@ export default function VaultAiFoldersModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [keep, setKeep] = useState(2);
-  const [mirrorToOf, setMirrorToOf] = useState(true);
-  const [solo, setSolo] = useState(false);
+  const [form, dispatch] = useReducer(aiFoldersFormReducer, INITIAL_FORM);
+  const { keep, solo, mirrorToOf } = form;
 
   const plan = useAiFolderPlan(accountId, { keep, solo }, true);
 
@@ -173,6 +188,8 @@ export default function VaultAiFoldersModal({
       qc.invalidateQueries({ queryKey: ["vault-of-folders-mirror", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
+      // The preview's create / keep / retire counts were against the folders before this build.
+      qc.invalidateQueries({ queryKey: ["vault-ai-folder-plan", accountId] });
     },
     onError: (e) => console.error("apply AI folders failed", e),
   });
@@ -184,12 +201,13 @@ export default function VaultAiFoldersModal({
     // plan and retires generated folders it no longer makes, so applying
     // without `solo` would create the lanes and delete every `-solo` folder
     // in the same call.
-    applyM.mutate({ keep, solo, mirrorToOf });
+    applyM.mutate(buildPayload(form));
   }
   /** An option change makes the last build's result stale (its error stays). */
   const optionChanged = () => { if (applyM.isSuccess) applyM.reset(); };
 
   const s = plan.data?.summary;
+  const changes = plan.data?.changes;
   const flags = plan.data?.flags;
   // Only when the box is ticked AND some described item was never asked who
   // else is in it — the one case where an empty solo cut is correct but reads
@@ -199,6 +217,7 @@ export default function VaultAiFoldersModal({
   // Unchecked stills are left out of the flag lanes (safe explicit, $10, $50) server-side (never
   // guessed), so this informs and offers the catch-up; it does not block.
   const flagsMissing = !!flags && flags.missing > 0;
+  const submittable = canSubmit(busy, plan.data?.folders.length ?? 0);
 
   // A whole-vault sweep runs for minutes in the background, so this watches it
   // rather than holding a request open. Polling starts on the click AND on open
@@ -244,13 +263,9 @@ export default function VaultAiFoldersModal({
           <IfButton
             variant="primary"
             onClick={onCreate}
-            disabled={busy || !plan.data?.folders.length}
+            disabled={!submittable}
           >
-            {busy
-              ? "Creating…"
-              : result
-                ? "Rebuild"
-                : `Create ${s?.folders ?? 0} folders`}
+            {confirmLabel({ busy, built: !!result, folders: s?.folders ?? 0, changes })}
           </IfButton>
         </>
       }
@@ -307,14 +322,14 @@ export default function VaultAiFoldersModal({
             id="ai-folders-keep"
             value={keep}
             onChange={(e) => {
-              setKeep(Number(e.target.value));
+              dispatch({ type: "keep", keep: Number(e.target.value) });
               optionChanged();
             }}
             disabled={busy}
           >
             {KEEP_CHOICES.map((n) => (
               <option key={n} value={n}>
-                top {n} {n === 1 ? "shoot" : "shoots"}
+                {keepLabel(n)}
               </option>
             ))}
           </IfNativeSelect>
@@ -323,7 +338,7 @@ export default function VaultAiFoldersModal({
           <IfSwitch
             checked={mirrorToOf}
             onChange={(on) => {
-              setMirrorToOf(on);
+              dispatch({ type: "mirror", on });
               optionChanged();
             }}
             disabled={busy}
@@ -334,7 +349,7 @@ export default function VaultAiFoldersModal({
           <IfSwitch
             checked={solo}
             onChange={(on) => {
-              setSolo(on);
+              dispatch({ type: "solo", on });
               optionChanged();
             }}
             disabled={busy}
@@ -351,9 +366,28 @@ export default function VaultAiFoldersModal({
               {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}) · {s.unique_media} media ·{" "}
               {s.memberships} placements
               {multi.size > 0 && ` · ${multi.size} in more than one`}
+              {s.dupes_collapsed > 0 && ` · ${s.dupes_collapsed} duplicate copies left out`}
             </>
           )}
         </IfHelp>
+      )}
+      {/* What Confirm does to the AI- folders already there — the same match the apply makes. */}
+      {changes && (
+        <div className="mt-2 text-[13px]">
+          <p className="tabular-nums">Confirm {changesLine(changes)}</p>
+          {changes.retire > 0 && (
+            <p className="mt-0.5 text-[12px] text-muted">
+              Retiring {changes.retired.slice(0, 6).map((r) => r.name).join(", ")}
+              {changes.retire > 6 && ` and ${changes.retire - 6} more`}
+            </p>
+          )}
+          {changes.retire_on_of > 0 && (
+            <p className="mt-0.5 text-[12px] text-warn">
+              {changes.retire_on_of} of them {changes.retire_on_of === 1 ? "is" : "are"} linked to an OnlyFans list. The list stays on
+              OnlyFans; it is just no longer linked here.
+            </p>
+          )}
+        </div>
       )}
       {/* An empty solo cut on a V1-described vault is CORRECT — `is_solo`
           refuses to call an item solo without the evidence — and reads as

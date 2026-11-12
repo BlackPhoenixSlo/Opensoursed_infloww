@@ -42,6 +42,7 @@ import vault_ingest  # has_live_mirror: the grid's own "is the mirror on" questi
 import vault_pack_picker
 import vault_runs
 import vault_stills
+import vault_tags  # the grid's tag chips: tag_match / facets SQL
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
 # module reaches them through it.
@@ -49,7 +50,7 @@ from auth import assert_account_owned
 from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
 from db.models import (
-    VaultCacheRun, VaultFolderItem, VaultItem, VaultOfQueryLog,
+    VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultOfQueryLog,
 )
 from jsonsafe import load_json
 from vault_mirror import in_of_folders
@@ -606,6 +607,31 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
     return base
 
 
+def _listing_where(type: str | None, query: str | None, tags: list[str]) -> list:
+    """The grid's narrowing filters as SQL conditions (AND): media type, the search box, the tag chips.
+    One definition for the listing, `/tag-facets` and `/folders/from-tags`, so a saved folder holds
+    exactly what the grid showed."""
+    out: list = []
+    if type and type != "all":
+        out.append(VaultItem.kind == type)
+    q = (query or "").strip().lower()
+    if q:
+        like = f"%{q}%"
+        out.append(
+            func.lower(func.coalesce(VaultItem.search_text, "")).like(like)
+            | func.lower(func.coalesce(VaultItem.description, "")).like(like)
+            | func.lower(func.coalesce(VaultItem.tags, "")).like(like)
+            | func.lower(func.coalesce(VaultItem.video_description, "")).like(like)
+            # of_terms = OF's own vault-search matches (harvested by /search-of),
+            # folded per item as a JSON array e.g. ["ass","boobs"]. OF indexes
+            # hidden caption/content text the media dict never exposes, so this
+            # is the ONLY way our local search becomes a superset of OF's.
+            | func.lower(func.coalesce(VaultItem.of_terms, "")).like(like)
+        )
+    out.extend(vault_tags.tags_where(tags))
+    return out
+
+
 @router.get("/admin/vault-ai/items")
 async def local_items(
     account_id: str = Query(...),
@@ -614,6 +640,7 @@ async def local_items(
     sort: str = Query("newest"),
     internal_folder_id: int | None = Query(None),
     of_folder_id: int | None = Query(None),
+    tags: list[str] | None = Query(None),
     limit: int = Query(500, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
@@ -621,7 +648,8 @@ async def local_items(
     so the frontend swaps data source transparently. Search is a local LIKE-scan
     (instant). `internal_folder_id` filters to an internal folder and orders by
     its per-folder manual_order: 0 first, 1,2,3… from front, then unpinned by
-    date, then …-3,-2,-1 (so -1 is dead last)."""
+    date, then …-3,-2,-1 (so -1 is dead last). `tags` (repeatable): only items
+    carrying every one of them (`vault_tags.tag_match`, the grid's tag chips)."""
     assert_account_owned(account_id)
     # Chatter folder limits, same rule as /api/of/v2/vault/media: a restricted
     # chatter gets only an allowed OF folder; All, internal folders and other
@@ -630,25 +658,10 @@ async def local_items(
     if allowed is not None and (internal_folder_id is not None or of_folder_id is None
                                 or of_folder_id not in allowed):
         return dict(_SOFT_DENY, list=[])
-    q = (query or "").strip().lower()
+    where = _listing_where(type, query, vault_tags.parse_tags(tags))
 
     def _apply_common(st):
-        if type and type != "all":
-            st = st.where(VaultItem.kind == type)
-        if q:
-            like = f"%{q}%"
-            st = st.where(
-                func.lower(func.coalesce(VaultItem.search_text, "")).like(like)
-                | func.lower(func.coalesce(VaultItem.description, "")).like(like)
-                | func.lower(func.coalesce(VaultItem.tags, "")).like(like)
-                | func.lower(func.coalesce(VaultItem.video_description, "")).like(like)
-                # of_terms = OF's own vault-search matches (harvested by /search-of),
-                # folded per item as a JSON array e.g. ["ass","boobs"]. OF indexes
-                # hidden caption/content text the media dict never exposes, so this
-                # is the ONLY way our local search becomes a superset of OF's.
-                | func.lower(func.coalesce(VaultItem.of_terms, "")).like(like)
-            )
-        return st
+        return st.where(*where) if where else st
 
     out: list[dict[str, Any]] = []
     mo = VaultFolderItem.manual_order
@@ -658,7 +671,7 @@ async def local_items(
         unpinned by date, then …-3,-2,-1) appended to `out`; returns has_more."""
         bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
         stmt = _apply_common(stmt)
-        stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc()).limit(limit + 1).offset(offset)
+        stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc(), VaultItem.media_id.desc()).limit(limit + 1).offset(offset)
         pairs = (await s.execute(stmt)).all()
         for item, m_ord in pairs[:limit]:
             out.append(_overlay(item, m_ord))
@@ -704,14 +717,103 @@ async def local_items(
                 VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)
             )
             stmt = _apply_common(stmt)
+            # media_id breaks created_at ties: a page boundary on equal timestamps must not repeat or skip items.
+            old = sort == "oldest"
             stmt = stmt.order_by(
-                VaultItem.created_at.asc() if sort == "oldest" else VaultItem.created_at.desc()
+                VaultItem.created_at.asc() if old else VaultItem.created_at.desc(),
+                VaultItem.media_id.asc() if old else VaultItem.media_id.desc(),
             ).limit(limit + 1).offset(offset)
             rows = (await s.execute(stmt)).scalars().all()
             has_more = len(rows) > limit
             for item in rows[:limit]:
                 out.append(_overlay(item))
     return {"list": out, "hasMore": has_more, "source": "mirror"}
+
+
+# ── Tag chips (SQL: vault_tags) ─────────────────────────────────────
+
+def _chip_scope(account_id: str, of_folder_id: int | None) -> list:
+    """The rows a chip read covers: this Creator's live mirror, narrowed to an OF folder when one is open."""
+    out = [VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)]
+    if of_folder_id is not None:
+        out.append(in_of_folders([of_folder_id]))
+    return out
+
+
+@router.get("/admin/vault-ai/tag-facets")
+async def tag_facets(
+    account_id: str = Query(...),
+    type: str = Query("all"),
+    query: str | None = Query(None),
+    of_folder_id: int | None = Query(None),
+    tags: list[str] | None = Query(None),
+) -> dict[str, Any]:
+    """The grid's tag chips: the top `vault_tags.FACET_LIMIT` tags with item counts over what the grid
+    shows now (type, search, open OF folder, the chips already picked), plus `total`, the items matching
+    all of it — the size of a "save as folder". One SELECT, folded in Python; no per-tag query. Same chatter gate as the
+    listing: a restricted chatter gets chips only inside an allowed OF folder."""
+    assert_account_owned(account_id)
+    allowed = await allowed_folder_ids_for_chatter(account_id)
+    picked = vault_tags.parse_tags(tags)
+    if allowed is not None and (of_folder_id is None or of_folder_id not in allowed):
+        return {"tags": [], "total": 0, "selected": picked}
+    where = _chip_scope(account_id, of_folder_id) + _listing_where(type, query, picked)
+    async with get_session() as s:
+        rows = (await s.execute(vault_tags.facet_rows_stmt(where))).all()
+    return {"tags": [{"tag": t, "count": n} for t, n in vault_tags.count_facets(rows)],
+            "total": len(rows), "selected": picked}
+
+
+@router.post("/admin/vault-ai/folders/from-tags")
+async def folder_from_tags(payload: dict = Body(...)) -> dict[str, Any]:
+    """"Save as folder": an INTERNAL folder holding exactly what the grid shows under the picked chips
+    (same filters as the listing: tags AND, plus type / search / open OF folder), resolved here from the
+    mirror, never from client ids — the grid holds one page, the result may be thousands.
+
+    `created_by="operator"`, so vault_scripts' reaper (created_by="vault_ai_script" AND `AI-`) never
+    retires it. No OF write: publishing it is the existing /folders/{id}/publish. The name defaults to
+    the tags joined and never lands on an existing live folder name (`vault_tags.unique_name`).
+    Owner scope: a folder-limited chatter is refused (403) as for the folder plan. More than
+    `vault_tags.FOLDER_MAX_ITEMS` matches: 400 `too_many_items` with the count, nothing written."""
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+    picked = vault_tags.parse_tags(payload.get("tags") or [])
+    if not picked:
+        raise HTTPException(status_code=400, detail={"error": "tags_required"})
+    raw_folder = payload.get("of_folder_id")
+    try:
+        of_folder_id = int(raw_folder) if raw_folder not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "bad_of_folder_id"}) from None
+    name = str(payload.get("name") or "").strip()[:120] or vault_tags.default_folder_name(picked)
+    where = _chip_scope(account_id, of_folder_id) + _listing_where(
+        str(payload.get("type") or "all"), payload.get("query"), picked)
+    async with get_session() as s:
+        ids = [int(m) for m in (await s.execute(
+            select(VaultItem.media_id).where(*where)
+            .order_by(VaultItem.created_at.desc(), VaultItem.media_id.desc())
+        )).scalars().all()]
+        if not ids:
+            raise HTTPException(status_code=400, detail={"error": "no_items"})
+        if len(ids) > vault_tags.FOLDER_MAX_ITEMS:
+            raise HTTPException(status_code=400, detail={
+                "error": "too_many_items", "count": len(ids), "cap": vault_tags.FOLDER_MAX_ITEMS,
+                "message": f"{len(ids):,} items match; a saved folder holds at most "
+                           f"{vault_tags.FOLDER_MAX_ITEMS:,}. Pick another chip or filter to narrow it."})
+        used = set((await s.execute(select(VaultFolder.name).where(
+            VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None)))).scalars().all())
+        folder = VaultFolder(account_id=account_id, name=vault_tags.unique_name(name, used),
+                             created_by=vault_pack_picker.CREATED_BY)
+        s.add(folder)
+        await s.flush()
+        await s.execute(sqlite_insert(VaultFolderItem), [
+            {"account_id": account_id, "folder_id": folder.id, "media_id": m} for m in ids])
+        await s.commit()
+        folder_id, saved_name = folder.id, folder.name
+    log.info("vault tag folder account=%s folder=%s tags=%s items=%d", account_id, folder_id, picked, len(ids))
+    return {"account_id": account_id, "folder_id": folder_id, "name": saved_name,
+            "tags": picked, "items": len(ids)}
 
 
 # ── OF folders, served from the MIRROR (accurate + proxy-proof) ─────

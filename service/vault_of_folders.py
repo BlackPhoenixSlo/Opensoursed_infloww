@@ -116,7 +116,9 @@ async def get_folder_plan(
     before the operator confirms.
 
     `solo` adds a `-solo` cut of each lane, keeping only the items nobody else
-    is in."""
+    is in. `changes` (+ each folder's `change`) is what Confirm does to the
+    AI- folders already there: create / keep / retire, and how many retired
+    ones are bound to an OF list."""
     assert_account_owned(account_id)
     from vault_ai_api import assert_owner_scope
     await assert_owner_scope(account_id)
@@ -450,7 +452,12 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     await assert_owner_scope(account_id)
     if not payload.get("confirm"):
         raise HTTPException(status_code=400, detail={"error": "confirm_required"})
-    keep = int(payload.get("keep") or 2)
+    # 0 = lanes only, a real choice: `or 2` used to turn it into 2. Same range
+    # as the preview's (0..20); absent → 2.
+    try:
+        keep = parse_threshold(payload.get("keep"), 2, 20)
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"error": "bad_keep"}) from None
     solo = bool(payload.get("solo"))
     plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
     result = await vault_scripts.apply_ai_folders(account_id, plan)

@@ -27,4 +27,8 @@ def test_module_imports(path, monkeypatch):
         return
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module   # as a real import does: @dataclass resolves cls.__module__ there
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)

@@ -379,7 +379,7 @@ Lifecycle C[H262059, H262035]:
 - Route (ours): `/growth/profile-promotion`.
 - Page "Profile promotion" > "Promotion campaigns" with "Create promotion", "Learn more", "Campaign insights", "Show expired". Columns: Promo / Claims / Revenue / Actions; empty "No data" [CL]. Left creator panel ("Search creators", "Creators" count) [CL].
 - Info bullets [CL]: "Campaign insights are available for up to 10,000 of the most recent promotion campaigns created within the past 365 days"; the last-click attribution line (see 3.5.7).
-- Setting rows [CL, medium]: "Auto-activate campaign", "Default offer duration" (No duration / 3 / 7 / 14 / 30 / 90 / 365 days; values [CL ?]), "Add fans to list". The "Keep promos running" automation box is ours.
+- Setting rows [CL, medium]: "Auto-activate campaign", "Default offer duration" (No duration / 3 / 7 / 14 / 30 / 90 / 365 days; values [CL ?]), "Add fans to list". Ours: the automation's engine settings (dry run, cadence, cap) in a "Settings" pop-up beside the Auto-activate switch.
 - Create pop-up:
   - target (new / expired / both)
   - type ("free trial" / "first-month discount")

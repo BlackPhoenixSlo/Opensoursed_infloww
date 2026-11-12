@@ -29,21 +29,26 @@ describe("snapDock", () => {
 });
 
 describe("launcherDockReducer", () => {
-  it("loads the default when nothing is stored: tucked into the left side above the composer", () => {
+  it("loads the default when nothing is stored: tucked into the right side above the composer", () => {
     expect(loaded.loaded).toBe(true);
-    expect(loaded.dock).toEqual({ edge: "left", along: 180, tucked: true });
+    expect(loaded.dock).toEqual({ edge: "right", along: 180, tucked: true });
     expect(DEFAULT_LAUNCHER_DOCK).toEqual(loaded.dock);
-    expect(launcherSpot(loaded)).toEqual({ left: MARGIN, top: VH - SIZE - 180 });
+    expect(launcherSpot(loaded)).toEqual({ left: VW - SIZE - MARGIN, top: VH - SIZE - 180 });
     expect(loaded.saves).toBe(0);
   });
 
   it("untucks the default via its tab at the same height, saves once, and re-tucks", () => {
     const out = run(loaded, { type: "untuck" });
-    expect(out.dock).toEqual({ edge: "left", along: 180, tucked: false });
+    expect(out.dock).toEqual({ edge: "right", along: 180, tucked: false });
     expect(out.saves).toBe(1);
-    const back = run(out, { type: "dragMove", x: -40, y: VH - SIZE - 180 }, { type: "drop" });
-    expect(back.dock).toEqual({ edge: "left", along: 180, tucked: true });
+    const back = run(out, { type: "dragMove", x: VW - 8, y: VH - SIZE - 180 }, { type: "drop" });
+    expect(back.dock).toEqual({ edge: "right", along: 180, tucked: true });
     expect(back.saves).toBe(2);
+  });
+
+  it("a saved spot wins over the right-edge default", () => {
+    const saved = run(initialLauncherState, { type: "load", dock: { edge: "left", along: 300, tucked: true }, vw: VW, vh: VH });
+    expect(saved.dock).toEqual({ edge: "left", along: 300, tucked: true });
   });
 
   it("follows the drag 1:1, then snaps on drop and asks for one save", () => {

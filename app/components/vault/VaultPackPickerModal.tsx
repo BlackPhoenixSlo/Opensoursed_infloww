@@ -23,6 +23,12 @@
  * a feet picture whatever the tag says — so every tile carries its description
  * and the keyboard works without ever waiting for a pixel.
  *
+ * RANKED AND PREFILLED (vault_pack_picker.likelihood / suggest). The grid comes
+ * most-likely-first, and a likely tile shows a dashed `rung?` from its stored
+ * flags (priced body -> nude-body). A prefill is never a verdict: Enter (or a
+ * tap on that rung) confirms it, 1/2/3 pick a rung, x rejects, arrows / j k
+ * move. State lives in packPickerState.ts. On a phone: 2 columns, 44px taps.
+ *
  * ⚠️ IMAGES ARE RATE-GATED ON PURPOSE. Tiles use /image (full frame), never
  * /thumb: the thumb is a 300x300 centre-crop of a 3:4 portrait and feet sit at
  * exactly the edge it discards — judging from the square means judging from less
@@ -46,9 +52,21 @@ import {
 import { mirrorFullSrc } from "@/lib/mediaUrl";
 import { makeSlotGate } from "@/components/vault/slotGate";
 import { initialPackStatus, packStatusReducer } from "@/components/vault/packStatus";
+import {
+  buildPayload,
+  canSubmit,
+  focusedId,
+  initialPickerState,
+  keyAction,
+  pickerReducer,
+  rungTally,
+  shownRung,
+  visibleCandidates,
+} from "@/components/vault/packPickerState";
 import { IfButton, IfModal, IfSegmented } from "@/components/ui/infloww";
 import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { errText } from "@/lib/errText";
+import { cn } from "@/lib/utils";
 
 /** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
  *  never be the thing that exhausts it, with headroom for the rest of the app. */
@@ -106,14 +124,22 @@ function Tile({
   accountId,
   item,
   rung,
+  suggested,
+  focused,
   rungs,
   onRule,
+  onFocus,
 }: {
   accountId: string;
   item: PackCandidate;
+  /** What it shows: its verdict / saved rung, or (`suggested`) the prefill still to confirm. */
   rung: string | null;
+  suggested: boolean;
+  /** The tile the keys act on: the focus ring. */
+  focused: boolean;
   rungs: string[];
   onRule: (mediaId: number, rung: string | null) => void;
+  onFocus: (mediaId: number) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
@@ -154,10 +180,18 @@ function Tile({
   return (
     <div
       ref={ref}
-      className={[
-        "flex flex-col rounded-md border overflow-hidden bg-bg-subtle",
+      data-pack-tile={item.media_id}
+      tabIndex={focused ? 0 : -1}
+      aria-current={focused || undefined}
+      aria-label={`media ${item.media_id}${rung ? `, ${suggested ? "suggested " : ""}${rung}` : ""}`}
+      onFocus={() => onFocus(item.media_id)}
+      className={cn(
+        "flex flex-col rounded-md border overflow-hidden bg-bg-subtle outline-none",
         rung ? RUNG_STYLE[rung] ?? "border-fg-dim" : "border-border",
-      ].join(" ")}
+        // A suggestion is dashed until a press makes it a verdict.
+        suggested && "border-dashed",
+        focused && "ring-2 ring-accent ring-offset-2 ring-offset-bg",
+      )}
     >
       <div className="relative aspect-[3/4] bg-black/40">
         {src && !failed ? (
@@ -178,14 +212,18 @@ function Tile({
             {failed ? "no preview — judge from the text" : visible ? "loading…" : ""}
           </div>
         )}
-        {isVideo && (
-          <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[12px] text-white">
-            {item.kind}
-          </span>
-        )}
+        <span className="absolute left-1 top-1 flex gap-1 text-[12px] text-white">
+          {isVideo && <span className="rounded bg-black/70 px-1">{item.kind}</span>}
+          {/* Her body's price tier from the flags: why a tile is prefilled on the top rung. */}
+          {!!item.tier && (
+            <span className="rounded bg-black/70 px-1" title="Her body's price tier from the stored flags">
+              ${item.tier}
+            </span>
+          )}
+        </span>
         {rung && (
           <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[12px] text-white">
-            {rung}
+            {suggested ? `${rung}?` : rung}
           </span>
         )}
       </div>
@@ -196,18 +234,22 @@ function Tile({
       </p>
 
       {/* The reject takes only its glyph's width so the three rung labels get
-          the rest — at 8 columns they truncate to nonsense otherwise. */}
-      <div className="mt-auto grid grid-cols-[1fr_1fr_1fr_auto] gap-px bg-border p-px text-[12px]">
-        {rungs.map((r) => (
+          the rest — at 8 columns they truncate to nonsense otherwise. On a
+          phone each is a 44px tap target. Tapping the suggested rung confirms
+          it; tapping a decided rung again rejects (as before). */}
+      <div className="mt-auto grid grid-cols-[1fr_1fr_1fr_auto] gap-px bg-border p-px text-[13px] sm:text-[12px]">
+        {rungs.map((r, i) => (
           <button
             key={r}
             type="button"
-            onClick={() => onRule(item.media_id, rung === r ? null : r)}
-            title={RUNG_HELP[r] ?? r}
-            className={[
-              "whitespace-nowrap px-1 py-1.5 transition-colors",
-              rung === r ? "bg-accent text-white font-medium" : "bg-bg hover:bg-bg-hover",
-            ].join(" ")}
+            onClick={() => onRule(item.media_id, rung === r && !suggested ? null : r)}
+            title={`${i + 1}: ${RUNG_HELP[r] ?? r}`}
+            className={cn(
+              "min-h-11 whitespace-nowrap px-1 py-1.5 transition-colors sm:min-h-0",
+              rung === r && !suggested && "bg-accent text-white font-medium",
+              rung === r && suggested && "bg-accent/25 text-fg font-medium",
+              rung !== r && "bg-bg hover:bg-bg-hover",
+            )}
           >
             {/* "body" not "nude-body": at this width the full name truncates to
                 nonsense, and tease / nude / body reads as the ladder it is. The
@@ -218,14 +260,14 @@ function Tile({
         <button
           type="button"
           onClick={() => onRule(item.media_id, null)}
-          title="Not this category. Nothing is stored about a rejection."
+          title="x: not this category. Nothing is stored about a rejection."
           aria-label="Reject"
-          className={[
-            "whitespace-nowrap px-1 py-1.5 transition-colors",
+          className={cn(
+            "min-h-11 min-w-11 grid place-items-center whitespace-nowrap px-1 py-1.5 transition-colors sm:min-h-0 sm:min-w-0",
             rung === null ? "bg-bg-hover text-fg-dim" : "bg-bg hover:bg-err/20",
-          ].join(" ")}
+          )}
         >
-          <X className="h-3 w-3" aria-hidden />
+          <X className="h-4 w-4 sm:h-3 sm:w-3" aria-hidden />
         </button>
       </div>
     </div>
@@ -244,45 +286,26 @@ export default function VaultPackPickerModal({
   const qc = useQueryClient();
   const { data, isLoading, error } = usePackCandidates(accountId, category);
 
-  /** Unsaved verdicts, media_id -> rung|null. Absent = untouched this session. */
-  const [draft, setDraft] = useState<Record<number, string | null>>({});
-  const [filter, setFilter] = useState("undecided");
+  /** Verdicts, view and keyboard focus (packPickerState.ts): the component only dispatches. */
+  const [pick, dispatch] = useReducer(pickerReducer, initialPickerState);
+  const { draft, filter } = pick;
   /** The status bar: `busy` non-empty while any request is in flight, else the last result (packStatus.ts). */
   const [status, dispatchStatus] = useReducer(packStatusReducer, initialPackStatus);
   const { busy } = status;
   const confirm = useIfConfirm();
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  /** A key moved focus: bring the tile into view (a tap never scrolls the page under the finger). */
+  const scrollToFocus = useRef(false);
 
-  const rungs = data?.rungs ?? [];
+  const rungs = useMemo(() => data?.rungs ?? [], [data]);
   // The shelf comes from the QUERY, not from the last save's response, so the
   // rungs and their publish buttons are there the moment the modal opens.
   const shelf = data?.folders ?? [];
 
-  /** The saved rung overlaid with anything unsaved. */
-  const effective = useCallback(
-    (item: PackCandidate): string | null =>
-      item.media_id in draft ? draft[item.media_id] : item.rung,
-    [draft],
-  );
-
-  const shown = useMemo(() => {
-    const all = data?.candidates ?? [];
-    if (filter === "all") return all;
-    if (filter === "undecided") {
-      // Undecided means "never ruled on" — an explicit reject is a decision and
-      // drops out, which is what makes the first pass converge.
-      return all.filter((c) => effective(c) === null && !(c.media_id in draft));
-    }
-    return all.filter((c) => effective(c) === filter);
-  }, [data, filter, draft, effective]);
-
-  const tally = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const c of data?.candidates ?? []) {
-      const r = effective(c);
-      if (r) out[r] = (out[r] ?? 0) + 1;
-    }
-    return out;
-  }, [data, effective]);
+  const shown = useMemo(() => visibleCandidates(data?.candidates ?? [], pick), [data, pick]);
+  const order = useMemo(() => shown.map((c) => c.media_id), [shown]);
+  const focusId = focusedId(pick, order);
+  const tally = useMemo(() => rungTally(data?.candidates ?? [], draft), [data, draft]);
 
   const dirty = Object.keys(draft).length;
   /** Rungs that exist and have something in them — the only ones publishable. */
@@ -290,20 +313,52 @@ export default function VaultPackPickerModal({
   const allPublished = stocked.length > 0 && stocked.every((f) => f.of_list_id);
 
   function rule(mediaId: number, rung: string | null) {
-    setDraft((d) => ({ ...d, [mediaId]: rung }));
+    dispatch({ type: "rule", mediaId, rung, order });
   }
 
+  // The keys: 1/2/3, x, Enter, arrows / j k (packPickerState.keyAction). Only while this dialog is the one in front
+  // (a confirm above it owns its own keys) and never from a field or a button's own Enter / Space.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const grid = gridRef.current;
+      const box = grid?.closest('[role="dialog"]');
+      const at = e.target instanceof HTMLElement ? e.target : null;
+      // The nearest dialog must be ours: the Publish confirm renders inside this one.
+      if (!grid || !box || !at || at.closest('[role="dialog"]') !== box) return;
+      if (at.closest('input,textarea,select,[contenteditable="true"],[role="radiogroup"]')) return;
+      if ((e.key === "Enter" || e.key === " ") && at.closest("button")) return;
+      const cols = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length;
+      const focused = shown.find((c) => c.media_id === focusId) ?? null;
+      const act = keyAction(e.key, { focused, rungs, order, cols });
+      if (!act) return;
+      e.preventDefault();
+      scrollToFocus.current = true;
+      dispatch(act);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [shown, order, focusId, rungs]);
+
+  // Keep the DOM focus on the focused tile once a key or a verdict moved it, so the next key lands here.
+  useEffect(() => {
+    if (pick.focus === null) return;
+    const el = gridRef.current?.querySelector<HTMLElement>(`[data-pack-tile="${pick.focus}"]`);
+    if (!el) return;
+    if (document.activeElement !== el) el.focus({ preventScroll: true });
+    if (scrollToFocus.current) el.scrollIntoView?.({ block: "nearest" });
+    scrollToFocus.current = false;
+  }, [pick.focus, shown]);
+
   async function save() {
-    if (!dirty) return;
+    if (!canSubmit(pick, !!busy)) return;
     dispatchStatus({ type: "start", busy: "saving…" });
     try {
-      const verdicts = Object.entries(draft).map(([media_id, rung]) => ({
-        media_id: Number(media_id),
-        rung,
-      }));
+      const verdicts = buildPayload(pick);
       const res = await savePackTriage(accountId, category, verdicts);
-      setDraft({});
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
+      // After the re-read, so a filed tile never flashes back into "undecided" between the two.
+      dispatch({ type: "saved", verdicts });
       await qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
       dispatchStatus({ type: "ok", note: `saved ${res.saved} (${res.rejected} rejected)` });
     } catch (e) {
@@ -415,7 +470,7 @@ export default function VaultPackPickerModal({
           <IfButton onClick={onClose} disabled={!!dirty} title={dirty ? "Save or discard first" : undefined}>
             Done
           </IfButton>
-          <IfButton variant="primary" onClick={save} disabled={!dirty || !!busy}>
+          <IfButton variant="primary" onClick={save} disabled={!canSubmit(pick, !!busy)}>
             {dirty ? `Save ${dirty}` : "Saved"}
           </IfButton>
         </>
@@ -433,10 +488,15 @@ export default function VaultPackPickerModal({
           aria-label="Show"
           className="ml-auto max-w-full overflow-x-auto"
           value={filter}
-          onChange={setFilter}
+          onChange={(value) => dispatch({ type: "filter", value })}
           options={["undecided", ...rungs, "all"].map((f) => ({ value: f, label: f }))}
         />
       </div>
+      {/* Most likely first; a dashed tile with "?" is the rung its flags suggest, not yet a verdict. */}
+      <p className="mt-2 hidden text-[12px] text-muted sm:block">
+        Keys: {rungs.map((r, i) => `${i + 1} ${r === "nude-body" ? "body" : r}`).join(" · ")} · x reject · Enter
+        confirm the suggestion · ←→ / j k move
+      </p>
 
       {/* The shelf, always — publishing must not be reachable only in the
           moment after a save. */}
@@ -478,17 +538,23 @@ export default function VaultPackPickerModal({
               : "Nothing here."}
           </p>
         )}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
-          {shown.map((c) => (
-            <Tile
-              key={c.media_id}
-              accountId={accountId}
-              item={c}
-              rung={effective(c)}
-              rungs={rungs}
-              onRule={rule}
-            />
-          ))}
+        <div ref={gridRef} className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
+          {shown.map((c) => {
+            const s = shownRung(c, draft);
+            return (
+              <Tile
+                key={c.media_id}
+                accountId={accountId}
+                item={c}
+                rung={s.rung}
+                suggested={s.suggested}
+                focused={c.media_id === focusId}
+                rungs={rungs}
+                onRule={rule}
+                onFocus={(mediaId) => dispatch({ type: "focus", mediaId })}
+              />
+            );
+          })}
         </div>
       </div>
       {confirm.modal}

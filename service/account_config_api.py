@@ -32,7 +32,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import audience_include
 import llm_client
 import media_cotag
-from auth import assert_account_owned
+from auth import assert_account_owned, get_request_user
+from chatters import get_request_chatter
 from automations._common import (  # what a NULL `model` runs, + the pinnable keys
     DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS, purpose_default)
 from automations._persona import (MODEL_NOTES_TEMPLATE, PERSONA_FACT_FIELDS,
@@ -160,6 +161,8 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         # username ≡ "No co-creator tag".
         "cotag_tag_videos": bool(getattr(row, "cotag_tag_videos", None)) if row else False,
         "cotag_username": getattr(row, "cotag_username", None) if row else None,
+        # Jev v8 vault flags opt-in (vault_jev). NULL ≡ OFF.
+        "vault_jev_enabled": bool(getattr(row, "vault_jev_enabled", None)) if row else False,
     }
 
 
@@ -301,6 +304,9 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "model_notes_template": MODEL_NOTES_TEMPLATE,
         # Include-only audience status (mirror health, ledger, outside queue).
         "audience": audience,
+        # Today's AI spend per provider, for the daily cap's "spent today" line
+        # (Settings › AI keys). Outside `config`, so a Save never echoes it.
+        "ai_spend_today": await llm_client.spend_today(account_id),
     }
 
 
@@ -391,8 +397,15 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     if err is not None:
         raise err
     aud = await _audience_put_branches(cfg, body.account_id)
+    async with get_session() as s:
+        stored_cap = await s.scalar(select(AccountAiConfig.daily_cost_cap_cents).where(
+            AccountAiConfig.account_id == body.account_id))
+    # A Chatter may save the brain (Auto-reply's model, Get to know fans' notes)
+    # but never move the owner's daily AI spend cap.
+    cap_locked = get_request_user() is None and get_request_chatter() is not None
     vals, err = rules.clean_config_put(
-        cfg, rules.PutContext(body.account_id, allowed, datetime.utcnow(), head, aud))
+        cfg, rules.PutContext(body.account_id, allowed, datetime.utcnow(), head, aud,
+                              stored_cap, cap_locked))
     if err is not None:
         raise err
     # An account is never on its own tagged-friend list, so tagging itself is

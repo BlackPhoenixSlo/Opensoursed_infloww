@@ -6,20 +6,22 @@ list of items without a file and Retry.
 
 ## Entry points and the one gate
 
-- **Header button** (`vault-header-download`, left of Learn, styled like it): "Download full vault" under All media,
-  "Download full folder" (mode folder, that folder) when a rail folder is selected; a selected folder not yet in the
-  loaded folder list: off (`FOLDER_LOADING`), never a guessed name. Phone portrait: the icon, the
-  label `max-sm:sr-only`. The manage panel portals it into the page header (`VaultManagePanel` `headerSlot`), so it
-  knows the selected folder and Creator; like every control it starts the app's one `useVaultDownload`
-  (`VaultDownloadProvider` in `app/layout.tsx`, see Lifetime). While a folder-sink run is busy it reads "Add full
-  vault / folder to queue". No Creator: disabled, titled why.
+- **Extras drawer item** (`vault-extras-download`, the first action in the drawer the header's ⋯ Extras button
+  opens; the header holds only Learn, ⋯ and Add media): "Download full vault" under All media, "Download full
+  folder" (mode folder, that folder) when a rail folder is selected; a selected folder not yet in the loaded folder
+  list: off (`FOLDER_LOADING`), never a guessed name. Outside the drawer's desk-only groups, so a phone sees it (off
+  with the desktop-only reason). `VaultManagePanel` passes it to `VaultExtrasTools` (`download: {label, reason,
+  onStart}`), so it knows the selected folder and Creator; like every control it starts the app's one
+  `useVaultDownload` (`VaultDownloadProvider` in `app/layout.tsx`, see Lifetime), and the click closes the drawer
+  so the card is in view. While a folder-sink run is busy it reads "Add full vault / folder to queue". No Creator:
+  the ⋯ is off, so there is no drawer.
 - **Creator switch** (#428): the run keeps its own account and Creator (the `start` action puts them in the state;
   Retry, re-sign, the links file and the folder sink use them), so picking another Creator neither aborts it nor
   drops unsaved phone files; the card stays up titled "<creator>: <label>". The other Creator's Download controls
   queue behind it (folder sink); on a phone they are off by the same gate while it runs ("A download is running: Ava
   · 12/40") or holds unsaved phone files ("Save the downloaded files first").
 - **Selection** (`VaultSelectionBar` Download selected) and the rail row menu's **Download folder** stay: the row menu
-  downloads any folder without selecting it first (always listed; off with the gate's reason). Row menu and header
+  downloads any folder without selecting it first (always listed; off with the gate's reason). Row menu and Extras item
   start through one `scopeArgs` in `VaultManagePanel`. The toolbar's whole-vault icon is gone.
 - **Gate**: `downloadGate(state, sink, mode, count, access)` in `vaultDownloadReducer.ts` is the one rule for all
   three: no sink → `DOWNLOAD_OFF`; a picker open → `BUSY_OFF`; a phone run listing / running → `busyOff` (a folder
@@ -100,7 +102,7 @@ said "A download is running", switching Creator lost the grid's folder / ticks.
   (`VaultDownloadAccountGuard` -> `keepAccounts`) drops its queued jobs and aborts its running one. Nothing survives a
   reload (no persistence; no beforeunload guard).
 - **Queue** (folder sink only): a start while a run is busy is `enqueue`d (the buttons read "Add selected / folder to queue",
-  the header "Add full vault / folder to queue"; the same job queued twice is ignored, a selection never counts as a duplicate). Jobs run one
+  the Extras drawer item "Add full vault / folder to queue"; the same job queued twice is ignored, a selection never counts as a duplicate). Jobs run one
   at a time in order, each into the same picked folder (the handle is kept); `queryPermission` before each queued job,
   and a lapsed one pauses the queue with Resume (`requestPermission` needs the click). The card names the next jobs
   ("Next: Ava: Beach · …"), "Cancel current" (the queue goes on) and "Clear queue (N)". The share sink has no queue:
@@ -171,12 +173,13 @@ said "A download is running", switching Creator lost the grid's folder / ticks.
   cancel, retry, paging, stall watchdog, no partial file), `VaultDownloadPanel.test.tsx` (queue into one folder,
   permission pause, unmount aborts, accounts guard), `vaultBrowseReducer.test.ts`.
 - Slop: `slop/scenarios/2026-11-08-vault-download.py` (README.vault.md): all 3 modes through the UI (whole vault and
-  the pick hint via the header button) on a fake CDN; the header-folder phase (rail folder selected, header reads
-  "Download full folder", listing requests carry that folder's id, exactly its media saved: HEADER_SCOPE, broken by
-  fault `vault-download-header-ignores-folder`); the phone header (390x844 icon, disabled, desktop-only title:
-  PHONE_HEADER); Open folder after the run and mid-run (OPEN_FOLDER, fault `vault-download-open-folder-at-root`);
-  the switch phase (A's whole vault running, Creator B picked: A's run finishes whole, B's header button "Add full
-  vault to queue": SWITCH, broken by fault `vault-download-switch-aborts-run`),
+  the pick hint via the Extras drawer item) on a fake CDN; the header-folder phase (rail folder selected, the drawer
+  item reads "Download full folder", listing requests carry that folder's id, exactly its media saved: HEADER_SCOPE,
+  broken by fault `vault-download-header-ignores-folder`); the phone drawer item (390x844, shown, disabled,
+  desktop-only title: PHONE_HEADER); Open folder after the run and mid-run (OPEN_FOLDER, fault
+  `vault-download-open-folder-at-root`); the switch phase (A's whole vault running, Creator B picked: A's run
+  finishes whole, B's Extras item "Add full vault to queue": SWITCH, broken by fault
+  `vault-download-switch-aborts-run`),
   plus a proxied Creator (relay only), `--users` concurrent relay downloads, and the phone sink (390x844 Chromium
   mobile emulation, picker deleted, `navigator.share` stubbed: the 20 cap, >= 2 batches, dismiss keeps the button),
   a Creator switch mid-run, and the queue (one CDN response stalled: 1 `stalled`, the next Creator's job starts;

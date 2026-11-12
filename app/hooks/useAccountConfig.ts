@@ -6,7 +6,7 @@
  * /admin/account-config routes (covered by the /admin/:path* rewrite).
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
 
@@ -38,6 +38,8 @@ export interface BrainConfig {
    *  is unset. Saving the Brain clears it. */
   timezone: string | null;
   utc_offset: number;
+  /** Daily AI spend cap, cents, applied to EACH provider's spend on its own (UTC day); 0 = AI refused. Server
+   *  semantics: absent key = unchanged; a Chatter's value is ignored; an edit above 10000 is a 422. */
   daily_cost_cap_cents: number;
   model: string | null;
   /** How hard the picked model may think. "" / null = use the model's own pin.
@@ -77,6 +79,9 @@ export interface BrainConfig {
   /** Get to know fans' short "Model info" note, pinned into every chat prompt. Server semantics: absent key =
    *  unchanged; null = no note (the box then prefills `model_notes_template`). */
   model_notes?: string | null;
+  /** Jev v8 vault flags opt-in (service/vault_jev.py), set from the Vault Extras drawer. Server semantics:
+   *  absent key = unchanged; default false. */
+  vault_jev_enabled?: boolean;
 }
 
 /** One creator-canon field, as served by the API — the single source of truth. */
@@ -125,6 +130,13 @@ export interface AccountConfigResp {
   persona_fact_fields: PersonaFactField[];
   /** What the Model info box prefills while `model_notes` is empty (labelled blank lines the prompt skips). */
   model_notes_template?: string;
+  /** Today's (UTC) AI spend per provider, held reservations included (llm_client.spend_today). */
+  ai_spend_today?: AiSpendToday;
+}
+
+export interface AiSpendToday {
+  day: string;
+  providers: { provider: string; spent_millicents: number; flagged: boolean }[];
 }
 
 export function useAccountConfig(accountId: string | null) {
@@ -144,6 +156,7 @@ export function useAccountConfig(accountId: string | null) {
 export function useSaveAccountConfig(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<{ account_id: string; config: BrainConfig }, Error, BrainConfig>({
+    mutationKey: ["account-config", accountId],
     mutationFn: (config) =>
       relay.put("/admin/account-config", { account_id: accountId, config }),
     onSuccess: () => {
@@ -152,4 +165,10 @@ export function useSaveAccountConfig(accountId: string | null) {
       qc.invalidateQueries({ queryKey: ["ai-key-status", accountId] });
     },
   });
+}
+
+/** A brain PUT is out or the brain is being re-read. Each PUT replaces the whole brain, so two Saves of it on one page
+ *  (Auto-reply's model + Model info) wait on this: one landing on the other's stale copy would undo it. */
+export function useAccountConfigBusy(accountId: string | null) {
+  return useIsMutating({ mutationKey: ["account-config", accountId] }) + useIsFetching({ queryKey: ["account-config", accountId] }) > 0;
 }

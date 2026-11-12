@@ -23,8 +23,8 @@ NOW = datetime(2026, 10, 31, 12, 0, 0)
 ALLOWED = set(MODELS)
 AudiencePut = rules.AudiencePut
 NO_AUD = AudiencePut(False, None, False, None, False, None)
-SPARSE = ("voice", "model_notes", "audience_mode", "audience_list_id", "audience_auto_add",
-          "cotag_tag_videos", "cotag_username", "nudge_config_json")
+SPARSE = ("voice", "model_notes", "daily_cost_cap_cents", "audience_mode", "audience_list_id", "audience_auto_add",
+          "cotag_tag_videos", "cotag_username", "vault_jev_enabled", "nudge_config_json")
 
 
 def _put(cfg, aud=NO_AUD):
@@ -64,11 +64,11 @@ def case_absent_keys_are_unchanged():
 def case_scalar_defaults():
     vals = _ok({})
     assert {k: vals[k] for k in ("persona", "location", "persona_facts_json", "language",
-                                 "timezone", "utc_offset", "daily_cost_cap_cents", "model",
+                                 "timezone", "utc_offset", "model",
                                  "reasoning_effort", "model_by_purpose", "time_activities_json",
                                  "time_images_json")} == {
         "persona": None, "location": None, "persona_facts_json": None, "language": None,
-        "timezone": None, "utc_offset": 0, "daily_cost_cap_cents": 100, "model": None,
+        "timezone": None, "utc_offset": 0, "model": None,
         "reasoning_effort": None, "model_by_purpose": None, "time_activities_json": None,
         "time_images_json": None}, vals
 
@@ -91,6 +91,8 @@ def case_explicit_null_or_empty_clears():
             ({"cotag_username": " @SomeOne.Else "}, "cotag_username", "someone.else"),
             ({"cotag_tag_videos": False}, "cotag_tag_videos", None),
             ({"cotag_tag_videos": True}, "cotag_tag_videos", True),
+            ({"vault_jev_enabled": False}, "vault_jev_enabled", None),
+            ({"vault_jev_enabled": True}, "vault_jev_enabled", True),
             ({"timezone": ""}, "timezone", None),
             ({"time_activities": {}}, "time_activities_json", None),
             ({"persona_facts": {}}, "persona_facts_json", None)]
@@ -173,6 +175,37 @@ def case_numbers_and_slots():
         -6, 250, "America/Vancouver"), vals
     assert json.loads(vals["time_activities_json"]) == {"evening": "out"}
     assert json.loads(vals["time_images_json"]) == {"evening": 7, "night": 42}
+
+
+def case_daily_cost_cap():
+    """Sent-only, bounded on an edit ($100/day), a stored cap above the bound
+    echoes back unchanged, and a Chatter's PUT never moves it."""
+    def put(cfg, stored=None, locked=False):
+        head, err = rules.clean_head(cfg, ALLOWED)
+        assert err is None
+        return rules.clean_config_put(cfg, rules.PutContext(
+            AID, ALLOWED, NOW, head, NO_AUD, stored, locked))
+    top = rules.MAX_DAILY_COST_CAP_CENTS
+    assert top == 10_000
+    rows = [({"daily_cost_cap_cents": 0}, None, False, 0),           # 0 = AI paused
+            ({"daily_cost_cap_cents": 1234}, 100, False, 1234),
+            ({"daily_cost_cap_cents": top}, None, False, top),
+            ({"daily_cost_cap_cents": 50_000}, 50_000, False, 50_000),  # legacy echo
+            ({"daily_cost_cap_cents": 1234}, 100, True, "ABSENT"),     # chatter
+            ({"daily_cost_cap_cents": -1}, 100, True, "ABSENT"),       # chatter: not even read
+            ({}, 500, False, "ABSENT")]
+    for cfg, stored, locked, want in rows:
+        vals, err = put(cfg, stored, locked)
+        assert err is None, (cfg, err.detail)
+        assert vals.get("daily_cost_cap_cents", "ABSENT") == want, (cfg, stored, locked, vals)
+    for stored in (None, 100, 50_000):
+        vals, err = put({"daily_cost_cap_cents": top + 1}, stored)
+        assert vals is None and (err.status_code, err.detail) == (
+            422, "daily_cost_cap_cents must be at most 10000 ($100/day)"), (stored, err)
+    assert _err({"daily_cost_cap_cents": None}) == (
+        422, "daily_cost_cap_cents must be a non-negative number")
+    assert _err({"daily_cost_cap_cents": "100"}) == (
+        422, "daily_cost_cap_cents must be a non-negative number")
 
 
 def case_audience_branches_join_only_when_sent():

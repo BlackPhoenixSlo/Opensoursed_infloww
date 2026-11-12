@@ -33,7 +33,8 @@ import { parseUtc } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
-import { SkeletonRows } from "@/components/ui/Skeleton";
+import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { usePagedFilters } from "@/hooks/pagedFilters";
 import { addDays, createdDay, dayKey, monthStartBefore } from "@/components/growth/frameDates";
 import { InfoTip } from "@/components/ui/InfoTip";
@@ -162,7 +163,7 @@ export function FrameTabs<T extends string>({ tabs, value, onChange, label, idPr
 
 /** #35, #91, #93, #96: the HB table (`HB_TABLE`): a 48px head on #171717 with white 14px/500 text, 48px cells
  *  padded 0 18px over a 1px #2c2c2c rule. */
-export const TH = cn(HB_TABLE.th, "text-start");
+export const TH = cn(HB_TABLE.th, "text-start whitespace-normal");
 export const TD = cn(HB_TABLE.td, HB_TABLE.row, "overflow-hidden text-ellipsis whitespace-nowrap");
 /** The fixed cells: the head's on the panel colour, the body's on the page colour they sit over. */
 export const STICKY_TD = "bg-hb-bg";
@@ -460,6 +461,19 @@ export function RowActions({ name, onDetails, detailsOpen, onEdit, action }: {
   onEdit?: () => void;
   action: RowMenuAction;
 }) {
+  return (
+    <div className="inline-flex items-center gap-2">
+      <button type="button" disabled={!onDetails} onClick={onDetails} className={ACT}>{detailsOpen ? "Hide" : "Details"}</button>
+      <button type="button" disabled={!onEdit} onClick={onEdit} aria-label={`Edit ${name}`} className={ACT}>
+        <Pencil size={14} aria-hidden />
+      </button>
+      <RowMenu name={name} action={action} />
+    </div>
+  );
+}
+
+/** The dots button, its one-item menu and the item's confirm (`RowActions`' last control; Redirect links' rows). */
+export function RowMenu({ name, action }: { name: string; action: RowMenuAction }) {
   const { open, setOpen, ref } = useOutsideClose();
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -471,11 +485,7 @@ export function RowActions({ name, onDetails, detailsOpen, onEdit, action }: {
   }
 
   return (
-    <div ref={ref} className="inline-flex items-center gap-2">
-      <button type="button" disabled={!onDetails} onClick={onDetails} className={ACT}>{detailsOpen ? "Hide" : "Details"}</button>
-      <button type="button" disabled={!onEdit} onClick={onEdit} aria-label={`Edit ${name}`} className={ACT}>
-        <Pencil size={14} aria-hidden />
-      </button>
+    <div ref={ref} className="inline-flex">
       <button
         type="button"
         aria-label={`More actions for ${name}`}
@@ -609,7 +619,7 @@ export type FrameFilters = ReturnType<typeof useFrameFilters>;
  */
 export default function LinksListFrame<T>({
   variant, accountId, onAccountChange, filters, sources, tags, switches, onCreate, onExport, exportTitle,
-  update, notice, loading, columns, rows, rowKey, rowName, nameCell, actions, expanded, selection,
+  update, notice, loading, columns, rows, rowKey, rowName, nameCell, actions, expanded, selection, phoneMetrics = [],
 }: {
   variant: LinksVariant;
   accountId: string | null;
@@ -634,6 +644,8 @@ export default function LinksListFrame<T>({
   nameCell: (row: T) => ReactNode;
   actions: (row: T) => ReactNode;
   expanded?: (row: T) => ReactNode;
+  /** Ours, below `md`: each row is a card with the first three of these columns (by title) that are drawn. */
+  phoneMetrics?: string[];
   /** The picked rows' keys, and Batch edit on them; `canSelect` false leaves a row's box off (no OnlyFans id). */
   selection?: {
     selected: string[];
@@ -657,6 +669,13 @@ export default function LinksListFrame<T>({
   const pickPage = (on: boolean) => sel?.onChange(on
     ? [...new Set([...sel.selected, ...pageKeys])] : sel.selected.filter((k) => !pageKeys.includes(k)));
   const pick = (k: string, on: boolean) => sel?.onChange(on ? [...sel.selected, k] : sel.selected.filter((x) => x !== k));
+  const phone = useMediaQuery(PHONE);
+  const rowBox = (r: T) => (sel && sel.canSelect(r) ? (
+    <input type="checkbox" aria-label={`Select ${rowName(r)}`} checked={sel.selected.includes(rowKey(r))}
+      onChange={(e) => pick(rowKey(r), e.target.checked)} />
+  ) : (
+    <input type="checkbox" disabled title={sel ? "Not on OnlyFans" : NOT_WIRED} aria-label={`Select ${rowName(r)}`} />
+  ));
 
   return (
     <div>
@@ -714,7 +733,14 @@ export default function LinksListFrame<T>({
         )}
         {notice}
 
-        {/* #34: it scrolls sideways past 1000px. */}
+        {phone ? (
+          <PhoneCards
+            rows={shown} loading={loading} sessionGone={sessionGone} rowKey={rowKey} nameCell={nameCell} actions={actions}
+            expanded={expanded} rowBox={rowBox}
+            metrics={phoneMetrics.map((t) => columns.find((c) => c.title === t)).filter((c): c is FrameCol<T> => !!c).slice(0, 3)}
+          />
+        ) : (
+        /* #34: it scrolls sideways past 1000px. */
         <div className="overflow-x-auto">
           <table aria-label="Links list" className={cn(HB_TABLE.table, "min-w-[1000px] table-fixed")}>
             <thead>
@@ -749,14 +775,7 @@ export default function LinksListFrame<T>({
                 <tr><td colSpan={span} className="h-[250px]"><EmptyState kind="search" text="No data" /></td></tr>
               ) : shown.map((r) => (
                 <FrameRows key={rowKey(r)} span={span} more={expanded?.(r)}>
-                  <td className={cn(TD, STICKY_TD, "md:sticky left-0 overflow-visible")}>
-                    {sel && sel.canSelect(r) ? (
-                      <input type="checkbox" aria-label={`Select ${rowName(r)}`} checked={sel.selected.includes(rowKey(r))}
-                        onChange={(e) => pick(rowKey(r), e.target.checked)} />
-                    ) : (
-                      <input type="checkbox" disabled title={sel ? "Not on OnlyFans" : NOT_WIRED} aria-label={`Select ${rowName(r)}`} />
-                    )}
-                  </td>
+                  <td className={cn(TD, STICKY_TD, "md:sticky left-0 overflow-visible")}>{rowBox(r)}</td>
                   <td className={cn(TD, STICKY_TD, "md:sticky left-12")}>{nameCell(r)}</td>
                   {columns.map((c) => (
                     <td key={c.title} className={cn(TD, FIT_PAD, "tabular-nums")} title={c.hint?.(r)} data-metric={c.title}>
@@ -771,11 +790,63 @@ export default function LinksListFrame<T>({
             </tbody>
           </table>
         </div>
+        )}
         {shown.length > 0 && (
           <Pager page={current} total={rows.length} size={f.pageSize} onPage={f.setPage} onSize={(pageSize) => f.set({ pageSize })} />
         )}
       </div>
     </div>
+  );
+}
+
+/** Tailwind's below-`md`: the phone layout. */
+const PHONE = "(max-width: 767px)";
+
+/** Ours below `md` (the bundle has no phone layout): each row a card, the name cell (name and Copy link), three key
+ *  figures side by side, then the row's actions and its in-place Details. */
+function PhoneCards<T>({ rows, loading, sessionGone, rowKey, nameCell, actions, expanded, rowBox, metrics }: {
+  rows: T[];
+  loading: boolean;
+  sessionGone: boolean;
+  rowKey: (row: T) => string;
+  nameCell: (row: T) => ReactNode;
+  actions: (row: T) => ReactNode;
+  expanded?: (row: T) => ReactNode;
+  rowBox: (row: T) => ReactNode;
+  metrics: Array<FrameCol<T>>;
+}) {
+  if (loading) {
+    return <div className="space-y-2" data-loading>{[0, 1, 2].map((i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>;
+  }
+  if (rows.length === 0) {
+    return <div className="py-12">{sessionGone ? <Reconnect /> : <EmptyState kind="search" text="No data" />}</div>;
+  }
+  return (
+    <ul aria-label="Links list" className="space-y-2">
+      {rows.map((r) => {
+        const more = expanded?.(r);
+        return (
+          <li key={rowKey(r)} className="flex flex-col gap-3 rounded-lg bg-panel p-3">
+            <div className="flex items-start gap-3">
+              <span className="pt-0.5">{rowBox(r)}</span>
+              <div className="min-w-0 flex-1">{nameCell(r)}</div>
+            </div>
+            {metrics.length > 0 && (
+              <dl className="grid grid-cols-3 gap-2">
+                {metrics.map((c) => (
+                  <div key={c.title} className="min-w-0">
+                    <dt className="truncate text-xs text-fg-dim">{c.title}</dt>
+                    <dd className="truncate text-sm tabular-nums text-fg" title={c.hint?.(r)} data-metric={c.title}>{c.cell(r)}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            <div className="flex justify-end">{actions(r)}</div>
+            {more != null && more !== false && <div className="whitespace-normal">{more}</div>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

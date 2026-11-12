@@ -24,6 +24,8 @@ return, plus the optional `extra` a visit that settles riders adds:
                      other value is informational.
     detail           why it failed, for the operator. The FIRST one is kept.
     cost_millicents  optional; summed across the run.
+    jev_cost_millicents  optional; the Jev pass's part of `cost_millicents`,
+                     summed and published apart (only when non-zero).
     extra            optional list of results for OTHER items this visit also
                      settled (a duplicate copied from the item just described).
                      Each counts as one visited item; `extra_total` (a `run`
@@ -101,18 +103,19 @@ async def run(
     UI arriving late still learns how the last pass ended.
     """
     total = len(ids) + extra_total + len(settled)
-    done = failed = cost = 0
+    done = failed = cost = jev_cost = 0
     capped = False
     first_error = ""
     key_error: dict | None = None
 
     def _count(r: dict[str, Any]) -> None:
-        nonlocal done, failed, cost, first_error
+        nonlocal done, failed, cost, jev_cost, first_error
         if not r.get("ok"):
             failed += 1
             if not first_error and r.get("detail"):
                 first_error = str(r["detail"])[:200]
         cost += int(r.get("cost_millicents") or 0)
+        jev_cost += int(r.get("jev_cost_millicents") or 0)  # already inside `cost`
         done += 1
 
     for r in settled:
@@ -122,6 +125,8 @@ async def run(
         into[key] = {"total": total, "done": done, "failed": failed,
                      "capped": capped, "cost_millicents": cost,
                      "error": first_error, "key_error": key_error}
+        if jev_cost:  # the Jev v8 pass's share (vault_jev), on its own cap row
+            into[key]["jev_cost_millicents"] = jev_cost
 
     _publish()
     sem = asyncio.Semaphore(concurrency)

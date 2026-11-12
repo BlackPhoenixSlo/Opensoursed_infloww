@@ -33,7 +33,14 @@ mouse clicking and typing. Q&A bot stays read-only and offers the swap. Pilot go
 ## Safety rules (agent never, on its own)
 
 - Leaves a rule live: it always saves with **Enabled off**; the user's toggle is the go-live.
-- Edits/deletes an existing rule, presses Run-now, or touches another account than the focused one.
+- Turns any rule on — not a new one, not an existing one (`mass_edit` can only switch rules off).
+- Deletes a rule, presses Run-now, or edits an existing rule's captions, folder or audience.
+- Edits an existing rule outside `mass_edit` (D11): only Auto mass rules, only unsend, how often, online only,
+  skip-recent-chats, price, photo count and switch-off; only after the user presses Do it on a plan card that
+  lists every rule and its before → after (rules that would send more marked LIVE); each rule re-checked
+  server-side (version, owner, opt-in) and skipped if it changed since the card.
+- Touches another account than the focused one, except `mass_edit` with scope "all" ("every model"): the
+  session's own accounts, each through the same Auto Mass opt-in gate; price / photo count stay one model only.
 - Loosens a default silently: `onlineOnly`, `excludeLastChatHours`, excludes change only when the request says so,
   and the card lists every change.
 - Runs paid vision flagging; claims a folder is "safe" (wording is "likely SFW").
@@ -62,6 +69,10 @@ redundant exclude, phone sheet, audit, duplicates, chatters, eval set. Opus resp
 
 Fable round 3 (eval data): (a)+(d)-lite; retry only bad_draft; no Sonnet. Adopted.
 
+| D10 | "Set up a mass …" with no timing = Auto mass (every null → 1 h, said in assumptions); flow null only when the request says one-time / now / a set time. Deterministic veto turns a mass draft back to null when another feature is named with no mass word, or an existing rule is edited (`vetoed()`, never on refine). A null on a mass request answers with what would work; Q&A turns sent from do-mode never offer "Do it for me" back | owner phone test 2026-11-12: "Settuo a mass post with nice captions and sfw photos" → refused, then Q&A ↔ do-mode ping-pong (1). Broad prompt rule (v4) cost 7 false creates + 97.3%; narrow rule + 1 few-shot (v5) 98.2% / 7 false creates; veto replay → ~98.8%, 1 false create, 0 correct drafts vetoed in 4 stored runs (5) | veto blocks a real Auto mass request |
+
+| D11 | `mass_edit`: bulk edits of EXISTING Auto mass rules, on this model or every model (scope this \| all). Changes unsend, every, online_only, exclude_last_chat_hours, price + media_count (scope this only) and can switch rules off; never switches one on. Plan card (rules per model, before → after, LIVE marks) → Do it → `POST /admin/assistant/edit/apply {account_id, rules:[{id, version}], changes}`: per rule the server reloads it, checks owner + opt-in + version (sha1 of steps\|trigger\|enabled, "changed since you saw it" when stale), re-applies the clamped change to the fresh row and answers per rule (partial success OK; old steps hash logged). Overrides the old "never edits an existing rule / never touches another account" safety rules | owner 2026-11-12: "please turn off auto mass unsend for every model" (2) | owner wants edits reviewed in the form, or a bulk edit hits a rule the card didn't show |
+
 Fable round 2 (after build): continue; gates = slop green + CAUGHT, structural OFF guard, live eval ≥90% exact-slot
 (online_only, include resolution, keep_skip_recent hardest). Opus response: D7 adopted; eval is owner-run (paid).
 
@@ -89,6 +100,14 @@ Fable round 2 (after build): continue; gates = slop green + CAUGHT, structural O
   `Check:` cross-checks, replayed over the stored raw replies (no extra spend): current prompt 0 caught /
   0 false on 646 good drafts; v1 prompt 9 of 132 errors caught, 1 false flag. A regression guard, not a fixer.
   Spend: DeepSeek $1.65 of $3, Anthropic $4.62 of $29 (ledger `results/ledger.json`).
+  2026-11-12 (D10): +8 no-timing / one-off hand cases (h29–h36), flash v5 prompt 982/1000 exact, 0 safety, 4 false
+  null, 7 false create (6 removed by the veto on replay); all 6 no-timing cases pass. Spend now DeepSeek $2.45 of $3.
+  2026-11-12 (D11): +60 edit (e01–e60) + 15 create-knob (x01–x15) hand cases, 1075 total. Flash on 411 (all 111
+  hand + 300 random generated): v6 prompt 96.1%; fixes: scope "all" only when the request names models
+  (`_ALL_MODELS`, else "this" + said), "fans" as recipients = include fans, `parse_json_object` closes a dropped
+  outer "}" (4 of 193 long DeepSeek replies parsed a nested object → silent flow null). Replay of the stored replies
+  through the final code: 405/411 = 98.5%, 0 safety, edit routing 50/51, owner's phrase (e06) passes. Spend DeepSeek
+  $2.75 of $3.
 
 ## Later (not pilot)
 

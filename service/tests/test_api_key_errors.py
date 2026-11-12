@@ -164,9 +164,9 @@ async def case_owned_agency_without_a_key_is_missing_and_sends_nothing():
     assert calls == 0, "a request went out with no key"
     p = llm_client.key_error_payload(e)
     assert p == {
-        "error": "api_key_missing", "feature": "Fan info", "provider": "deepseek",
+        "error": "api_key_missing", "feature": "Gen-Info", "provider": "deepseek",
         "fix_url": "/settings/ai-keys",
-        "message": "Fan info can't run: no DeepSeek API key is set.",
+        "message": "Gen-Info can't run: no DeepSeek API key is set.",
         "fix": "Add it in Settings › AI keys.",
     }, p
     # The developer text (which names the owner + account) stays in str(e) for
@@ -427,7 +427,7 @@ def case_the_notice_reports_a_missing_key_per_feature():
     assert len(body["notices"]) == 1, "one provider, one problem → one grouped notice"
     n = body["notices"][0]
     assert n["error"] == "api_key_missing" and n["provider"] == "deepseek", n
-    assert n["message"] == ("Auto-reply, Info chatter and Follow-ups can't run: "
+    assert n["message"] == ("Auto-reply, Get to know fans and Follow-ups can't run: "
                             "no DeepSeek API key is set."), n
     # Never another agency's name, never another account.
     for other in ("keyerr_agency_bravo", "keyerr_bravo_acct", "keyerr_alpha_keyed"):

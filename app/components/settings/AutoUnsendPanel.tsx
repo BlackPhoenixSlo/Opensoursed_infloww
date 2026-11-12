@@ -1,7 +1,7 @@
 "use client";
 
-/** Smart Messages' "Mass Auto Unsend Messages" tab: the hourly Auto-unsend card, one panel per model. A model's
- *  class rows show only while its switch is on. */
+/** Smart Messages' "Mass Auto Unsend Messages" tab: the hourly Auto-unsend card, one panel per model, the picked
+ *  model's shown (the tab's creator column picks it). A model's class rows show only while its switch is on. */
 
 import { useEffect, useMemo, useReducer } from "react";
 
@@ -22,7 +22,10 @@ import {
  *  older than the set hours, by type (free text / image / PPV); a type left off is kept forever. An Inflowwww extra:
  *  Infloww has per-message Auto-unsend only, and no per-Creator sweep by message type
  *  (docs/spec/infloww-parity-round-2/phase-02b-auto-mass-messages.md). */
-export function AutoUnsendCard() {
+export function AutoUnsendCard({ accountId }: {
+  /** The model whose panel shows. Every panel stays mounted, so an unsaved edit survives a switch. */
+  accountId: string | null;
+}) {
   const accounts = useActiveAccounts();
   return (
     <IfCard title={<span className="flex items-center gap-2"><span>Auto-unsend (automation)</span><ExtraTag /></span>}>
@@ -34,7 +37,9 @@ export function AutoUnsendCard() {
           <div className="text-[14px] text-fg-dim">No active models.</div>
         )}
         {accounts.map((a) => (
-          <AutoUnsendPanel key={a.id} accountId={a.id} label={a.nickname || a.id} />
+          <div key={a.id} hidden={a.id !== accountId}>
+            <AutoUnsendPanel accountId={a.id} label={a.nickname || a.id} />
+          </div>
         ))}
       </div>
     </IfCard>

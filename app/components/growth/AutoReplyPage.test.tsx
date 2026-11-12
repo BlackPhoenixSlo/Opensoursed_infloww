@@ -16,11 +16,15 @@
  *    layers (default ON), and Save PUTs only the touched ones to style-config;
  *    a box toggled while that PUT is in flight survives its success, and
  *    "Saved" waits until no edit made during a save is left unsaved;
- *  - the page header (page-parity ticket 16) holds the Auto-reply switch, and
- *    `?creator=` picks the Creator whose blob seeds the form;
+ *  - the page header (page-parity ticket 16) holds the On / Off pill and the
+ *    Auto-reply switch, which saves at once (the stored blob with only `enabled`
+ *    changed, no Save), refuses "on" with both sources off and flips back on a
+ *    failed PUT; `?creator=` picks the Creator whose blob seeds the form;
  *  - Model: the account config's model, "Default (<default_model>)" = null; a
  *    changed pick PUTs the stored brain back with only model/effort set, an
- *    untouched one sends no account-config PUT; no config read, no row.
+ *    untouched one sends no account-config PUT; no config read, no row. The
+ *    "AI model (all AI automations)" block sits after Human style; Model info
+ *    (shared with Get to know fans) under the Save, with its own.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -301,18 +305,60 @@ describe("AutoReplyPage", () => {
     expect(put.mock.calls[1][1].config.silence_min_minutes).toBe(9);
   });
 
-  it("toggles Auto-reply from the page header and saves it", async () => {
-    mockReads();
+  it("the header switch saves at once: the stored blob with only enabled changed, no Save", async () => {
+    mockReads({ config: { silence_min_minutes: 7 } });
     renderWithProviders(<AutoReplyPage />);
-    await screen.findByRole("switch", { name: "Fans in folders" });
+    const delay = await screen.findByRole("spinbutton", { name: "Reply delay in minutes" });
     const bar = screen.getByRole("banner");
     expect(within(bar).getByRole("heading", { level: 1, name: "Auto-reply" })).toBeInTheDocument();
     const sw = within(bar).getByRole("switch", { name: "Auto-reply" });
     expect(sw).toHaveAttribute("aria-checked", "true");
+    expect(within(bar).getByText("On")).toBeInTheDocument();
+
+    fireEvent.change(delay, { target: { value: "30" } });   // an unsaved edit the switch must not send
     fireEvent.click(sw);
     expect(sw).toHaveAttribute("aria-checked", "false");
-    const cfg = await saved();
-    expect(cfg.enabled).toBe(false);
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(put.mock.calls[0]).toEqual(["/admin/autoreply-config", {
+      account_id: "acc-a", config: { enabled: false, quiet_hours_json: [2, 7], list_ids: [], silence_min_minutes: 7 },
+    }]);
+    expect(within(bar).getByText("Off")).toBeInTheDocument();
+
+    // The page Save then sends the switched value with the edit.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1][1].config).toMatchObject({ enabled: false, silence_min_minutes: 30 });
+  });
+
+  it("the header switch flips back and says why when its PUT fails", async () => {
+    mockReads();
+    put.mockRejectedValueOnce(new Error("blob refused"));
+    renderWithProviders(<AutoReplyPage />);
+    await screen.findByRole("switch", { name: "Fans in folders" });
+    const sw = within(screen.getByRole("banner")).getByRole("switch", { name: "Auto-reply" });
+    fireEvent.click(sw);
+    expect(await screen.findByText(/Couldn.t switch Auto-reply: blob refused/)).toBeInTheDocument();
+    expect(sw).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("the header switch will not turn on with both sources off", async () => {
+    mockReads({ config: { enabled: false, folders_enabled: false, new_fans_enabled: false } });
+    renderWithProviders(<AutoReplyPage />);
+    await screen.findByRole("switch", { name: "Fans in folders" });
+    expect(within(screen.getByRole("banner")).getByRole("switch", { name: "Auto-reply" })).toBeDisabled();
+    expect(screen.getByText(/nobody gets a reply/)).toBeInTheDocument();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("the header switch judges the stored sources: an unsaved source in the draft does not let it turn on", async () => {
+    mockReads({ config: { enabled: false, folders_enabled: false, new_fans_enabled: false } });
+    renderWithProviders(<AutoReplyPage />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Fans in folders" }));   // draft only, not saved
+    const sw = within(screen.getByRole("banner")).getByRole("switch", { name: "Auto-reply" });
+    expect(sw).toBeDisabled();
+    fireEvent.click(sw);
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("seeds the form from the ?creator= Creator's blob", async () => {
@@ -429,11 +475,47 @@ describe("AutoReplyPage", () => {
       expect(put.mock.calls.every(([p]) => p !== "/admin/account-config")).toBe(true);
     });
 
+    it("sits after Human style, named account-wide; Model info under the Save, with its own", async () => {
+      mockReads({ brain: { model_notes: "Name: Mia" }, config: {} });
+      renderWithProviders(<AutoReplyPage />);
+      await screen.findByRole("combobox", { name: "Model" });
+      await screen.findByRole("switch", { name: /Human style/ });
+      const heads = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+      expect(heads.slice(-3)).toEqual(["Human style", "AI model (all AI automations)", "Model info"]);
+      expect((await screen.findByRole("textbox", { name: "Model info" }) as HTMLTextAreaElement).value).toBe("Name: Mia");
+      fireEvent.click(screen.getByRole("button", { name: "Save model info" }));
+      await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+      expect(put.mock.calls[0][0]).toBe("/admin/account-config");
+      expect(put.mock.calls[0][1].config).toMatchObject({ persona: "Ella.", model_notes: "Name: Mia" });
+    });
+
+    it("the two brain Saves never overlap: each waits while the other's PUT is out", async () => {
+      mockReads({ brain: { model_notes: "Name: Mia" }, config: {} });
+      renderWithProviders(<AutoReplyPage />);
+      await screen.findByRole("textbox", { name: "Model info" });
+      let land!: () => void;
+      put.mockImplementationOnce(() => new Promise((r) => { land = () => r({ account_id: "acc-a", config: {} }); }));
+      fireEvent.click(screen.getByRole("button", { name: "Save model info" }));
+      await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
+      fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "claude-opus-5-5" }));
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      land();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
+
+      put.mockImplementationOnce(() => new Promise((r) => { land = () => r({ account_id: "acc-a", config: {} }); }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save model info" })).toBeDisabled());
+      land();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save model info" })).not.toBeDisabled());
+    });
+
     it("no config read: no Model row, the rest still loads", async () => {
       mockReads();
       renderWithProviders(<AutoReplyPage />);
       await screen.findByRole("switch", { name: "Fans in folders" });
       expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+      expect(screen.queryByRole("textbox", { name: "Model info" })).toBeNull();
     });
   });
 });

@@ -56,7 +56,11 @@ beforeEach(() => {
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     if (url === "/admin/s4s/profiles" && method === "GET") return jsonRes(profiles);
-    if (url === "/admin/s4s/profiles/7000001" && method === "PUT") return jsonRes({ ...FRESH, profile_id: 9, ...body });
+    if (url === "/admin/s4s/profiles/7000001" && method === "PUT") {
+      // The server keeps the write: the refetch after it sees the new values.
+      profiles = { ...profiles, profiles: profiles.profiles.map((p) => (p.account_id === "7000001" ? { ...p, ...body } : p)) };
+      return jsonRes({ ...FRESH, profile_id: 9, ...body });
+    }
     if (url === "/admin/s4s/profiles/7000001/posts" && method === "POST") {
       return jsonRes({ id: 30, caption: body.caption, is_primary: true, media: [] });
     }
@@ -109,15 +113,21 @@ describe("S4SSettingPanel", () => {
     expect(within(page).queryByRole("button", { name: "Create post" })).toBeNull();
   });
 
-  it("Limit daily S4S saves daily_limit only", async () => {
+  it("Limit daily S4S saves daily_limit only, on pick, and says Saved", async () => {
     const page = await mount("7000001", "fixture_one");
-    const save = within(page).getAllByRole("button", { name: "Save" })[0];
-    expect(save).toBeDisabled();
     fireEvent.click(within(page).getByRole("combobox", { name: "Limit daily S4S" }));
     fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "3 Share for Shares" }));
-    fireEvent.click(save);
     await waitFor(() => expect(writes()).toHaveLength(1));
     expect(writes()[0]).toEqual({ method: "PUT", url: "/admin/s4s/profiles/7000001", body: { daily_limit: 3 } });
+    expect(await within(page).findByRole("status")).toHaveTextContent("Saved");
+  });
+
+  it("Take part comes first; Discover visibility is disabled while opted out", async () => {
+    const page = await mount("7000001", "fixture_one");
+    const takePart = within(page).getByRole("switch", { name: "Take part in Share for Share" });
+    const primary = within(page).getByRole("heading", { name: "Primary post" });
+    expect(takePart.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(page).getByRole("switch", { name: "Appear on Discover Creators" })).toBeDisabled();
   });
 
   it("the switches save on toggle", async () => {
@@ -145,8 +155,8 @@ describe("S4SSettingPanel", () => {
       "src", "https://thumbs.onlyfans.com/public/files/thumbs/c144/one/avatar.jpg");
     for (const label of ["Display name", "@username", "Avatar URL"]) expect(within(page).queryByLabelText(label)).toBeNull();
     expect(within(page).getByText(PARTNER_PROFILE_LINE)).toBeInTheDocument();
-    // Only Limit daily S4S has a Save left on the page.
-    expect(within(page).getAllByRole("button", { name: "Save" })).toHaveLength(1);
+    // No Save left on the page: everything saves as it changes.
+    expect(within(page).queryAllByRole("button", { name: "Save" })).toHaveLength(0);
   });
 
   it("Create post opens the pop-up", async () => {

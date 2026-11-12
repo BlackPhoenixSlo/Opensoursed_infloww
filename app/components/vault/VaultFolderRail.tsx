@@ -13,11 +13,11 @@
 import { type DragEvent as ReactDragEvent, type ReactNode, useEffect, useReducer, useState } from "react";
 import { useIsRestoring, useQueryClient } from "@tanstack/react-query";
 import {
-  AudioLines, Check, Coins, Ellipsis, Image as ImageIcon, ImagePlay, ListFilter, LockOpen, Plus, Search, Send, Video, X,
+  AudioLines, Check, Ellipsis, Image as ImageIcon, ImagePlay, ListFilter, Plus, Search, Video, X,
 } from "lucide-react";
 
 import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Menu";
-import { EmptyState, IfButton, IfModal } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
 import { type DlGate } from "@/components/vault/vaultDownloadReducer";
 import { applyCustomOrder, customizeReducer } from "@/components/vault/vaultFolderOrder";
@@ -31,10 +31,10 @@ import { type VaultList, type VaultListsResp, type VaultTypeCounts } from "@/lib
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-/** The rail column (#16): 208px with a 1px L1 right rule on the page colour (B-nav), stacked over the grid on a
- *  phone. Exported so the page's no-Creator frame draws the same column. */
+/** The rail column (#16): 208px with a 1px L1 right rule on the page colour (B-nav); on a phone a bar over the grid
+ *  (the folder select, `VaultFolderRail`). Exported so the page's no-Creator frame draws the same column. */
 export const RAIL_CLASS =
-  "w-full md:w-52 shrink-0 max-h-44 md:max-h-none border-b md:border-b-0 md:border-r border-border bg-bg flex flex-col overflow-hidden";
+  "w-full md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-border bg-bg flex flex-col md:overflow-hidden";
 /** The rail's sort row (#19): 48px tall, 0 16px, the sort left and the icons right. */
 export const RAIL_HEAD_CLASS = "h-12 shrink-0 px-4 flex items-center justify-between";
 /** A rail row's outer box (#27, #28): 10px either side; the selected row `--tc-M-B` (#353535 dark, #eff4ff light),
@@ -85,16 +85,12 @@ export function FolderCounts({ f }: { f: VaultTypeCounts }) {
   );
 }
 
-/** A folder's statistics (#33): send count, unlock rate and revenue, each behind a 12px icon. No read reports a
- *  folder's sends, unlocks or revenue, so the line is Not wired and shows no figure. */
-function FolderStats() {
-  return (
-    <div aria-label="Statistics" title="not wired" className="flex items-center gap-3 text-xs text-muted">
-      <span className="flex items-center gap-1"><Send size={12} aria-hidden />—</span>
-      <span className="flex items-center gap-1"><LockOpen size={12} aria-hidden />—</span>
-      <span className="flex items-center gap-1"><Coins size={12} aria-hidden />—</span>
-    </div>
-  );
+/** A folder's counts as one phrase, for the phone's folder select: "12 photos · 3 videos", or "empty". */
+function countsText(f: VaultTypeCounts): string {
+  const parts = ([
+    [f.photosCount, "photo"], [f.videosCount, "video"], [f.audiosCount, "audio"], [f.gifsCount, "GIF"],
+  ] as const).filter(([n]) => (n ?? 0) > 0).map(([n, w]) => `${n} ${w}${n === 1 || w === "audio" ? "" : "s"}`);
+  return parts.length ? parts.join(" · ") : "empty";
 }
 
 /** The rail's two modals (#36, #37): antd's modal at 480px, "Cancel" then the confirm. */
@@ -299,6 +295,17 @@ export default function VaultFolderRail({
     dispatchCustomize({ type: "over", id: overId });
   }
 
+  /** A folder's Rename / Delete / Download folder: its rail row's menu, and on a phone the picked folder's. */
+  const rowMenuItems = (f: VaultList) => [
+    { label: "Rename", onClick: () => setNameModal({ folder: f }) },
+    { label: "Delete", onClick: () => setDeleteModal(f) },
+    { label: downloadFolderGate.desktopOnly ? "Download folder (desktop only)"
+        : downloadQueues ? "Add folder to queue" : "Download folder",
+      onClick: () => onDownloadFolder(f), disabled: !!downloadFolderGate.reason,
+      title: downloadFolderGate.reason || undefined },
+  ];
+  const pickedFolder = selectedId == null ? null : folders.find((f) => f.id === selectedId) ?? null;
+
   const railQuery = railSearch.trim().toLowerCase();
   const displayFolders =
     customize
@@ -312,6 +319,42 @@ export default function VaultFolderRail({
       {/* LEFT rail — OF folders (Layout capture #15 to #37): 208px with a right rule, a fixed 48px header row,
           then "All media" and the folders, which scroll on their own. */}
       <aside className={RAIL_CLASS}>
+        {/* Phone: the rail is one bar, so the grid shows on the first screen: the folder select (each with its
+            counts), the picked folder's menu, and New category. Sort, search and Customize order are desk-only. */}
+        <div className="md:hidden flex items-center gap-1 px-3 py-2">
+          <IfNativeSelect
+            aria-label="Folder"
+            value={selectedId == null ? "" : String(selectedId)}
+            onChange={(e) => onSelect(e.target.value === "" ? null : folders.find((f) => String(f.id) === e.target.value)?.id ?? null)}
+            className="flex-1 min-w-0 text-base"
+          >
+            <option value="">All media{allCounts ? ` · ${countsText(allCounts)}` : ""}</option>
+            {folders.map((f) => (
+              <option key={f.id} value={String(f.id)}>{f.name} · {countsText(f)}</option>
+            ))}
+          </IfNativeSelect>
+          {pickedFolder && (
+            <span className="shrink-0 grid h-[30px] w-[30px] place-items-center">
+              <Menu link ariaLabel="Folder actions" label={<Ellipsis size={20} aria-hidden />} items={rowMenuItems(pickedFolder)} />
+            </span>
+          )}
+          <button
+            type="button"
+            aria-label="New category"
+            onClick={() => setNameModal({ folder: null })}
+            className={RAIL_ICON_BOX}
+          >
+            <Plus size={16} aria-hidden />
+          </button>
+        </div>
+        {error && (
+          <p className="md:hidden flex items-center gap-2 px-3 pb-2 text-xs text-err">
+            Couldn&apos;t load the folders.
+            <IfButton variant="link" onClick={onRetry} className="h-auto text-xs">Refresh</IfButton>
+          </p>
+        )}
+        {/* md and up: the rail proper. */}
+        <div data-rail-desk className="max-md:hidden flex flex-1 min-h-0 flex-col">
         {/* #19: 48px tall, 0 16px, the sort left and the icons right. It turns into the search box (#23) or the
             Customize order bar (#22) while either is on. */}
         <div className={RAIL_HEAD_CLASS}>
@@ -458,8 +501,8 @@ export default function VaultFolderRail({
               <div className="text-sm font-medium">All media</div>
               {/* The bundle's "All media" counts are the vault-wide type totals (#30, #58; `classifyListsAll` from the
                   list read's `all`, index.9f50f370.js @5087418). A folder-limited chatter's read has none (the relay
-                  drops it): "—". */}
-              {allCounts ? <FolderCounts f={allCounts} /> : <div className="text-xs text-muted">—</div>}
+                  drops it): no line. */}
+              {allCounts && <FolderCounts f={allCounts} />}
             </div>
           </button>
           {loading ? (
@@ -511,28 +554,17 @@ export default function VaultFolderRail({
                       // #34. The house Menu behind the bundle's 20px icon (`STpMessageMore,{size:20`,
                       // index.9f50f370.js @6802706); its clicks stay inside, so they never select the row.
                       <span className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
-                        <Menu
-                          link
-                          ariaLabel="More"
-                          label={<Ellipsis size={20} aria-hidden />}
-                          items={[
-                            { label: "Rename", onClick: () => setNameModal({ folder: f }) },
-                            { label: "Delete", onClick: () => setDeleteModal(f) },
-                            { label: downloadFolderGate.desktopOnly ? "Download folder (desktop only)"
-                                : downloadQueues ? "Add folder to queue" : "Download folder",
-                              onClick: () => onDownloadFolder(f), disabled: !!downloadFolderGate.reason,
-                              title: downloadFolderGate.reason || undefined },
-                          ]}
-                        />
+                        <Menu link ariaLabel="More" label={<Ellipsis size={20} aria-hidden />} items={rowMenuItems(f)} />
                       </span>
                     )}
                   </div>
+                  {/* #33's send / unlock / revenue line is not drawn: no read reports a folder's figures. */}
                   <FolderCounts f={f} />
-                  <FolderStats />
                 </div>
               </div>
             ))
           )}
+        </div>
         </div>
       </aside>
 

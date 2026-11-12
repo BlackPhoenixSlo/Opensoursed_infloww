@@ -83,7 +83,8 @@ describe("AutoFollowList", () => {
     }
     const row = within(screen.getByTestId("af-row-a1"));
     for (const v of ["3", "5", "11", "30"]) expect(row.getByText(v)).toBeTruthy();
-    expect(row.getByText(formatFollowedAt("2026-10-18T09:05:00"))).toBeTruthy();
+    // Last followed: relative ("N d ago"), the full Infloww stamp as its title.
+    expect(row.getByTitle(formatFollowedAt("2026-10-18T09:05:00")).textContent).toMatch(/ ago$/);
     expect(screen.getByText("Automatically follow fans whose subscriptions have expired")).toBeTruthy();
   });
 

@@ -7,11 +7,15 @@
  */
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 import type { CreatorPick } from "@/components/shell/CreatorRail";
-import { EmptyState, IfButton, IfModal, IfSwitch, useCreatorParam } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfModal, IfSwitch, ifButtonClass, useCreatorParam } from "@/components/ui/infloww";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
+import { useOptionalChatter } from "@/contexts/ChatterContext";
+import { useOptionalUser } from "@/contexts/UserContext";
+import { isChatterOnly } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 /** The page's creator and its pick for the creator column (`PageFrame`'s `creators`); `loading` while the account
@@ -44,7 +48,23 @@ export function NoCreator({ loading = false }: { loading?: boolean }) {
       </div>
     );
   }
-  return <EmptyState kind="creator" text="No creator with a live session" className="min-h-[400px]" />;
+  return (
+    <EmptyState kind="creator" text="No creator with a live session" className="min-h-[400px]"
+      help={<p className="mt-1 max-w-[360px] text-[12px] text-muted">Automations run on a connected creator&apos;s OnlyFans session.</p>}
+      action={<ConnectCreatorLink />} />
+  );
+}
+
+/** "Connect a creator" to Creators Management (32px primary); none for a chatter session (it cannot connect one). */
+export function ConnectCreatorLink() {
+  const user = useOptionalUser()?.user;
+  const chatter = useOptionalChatter()?.chatter;
+  if (isChatterOnly(user, chatter)) return null;
+  return (
+    <Link href="/creators" className={ifButtonClass("primary")}>
+      Connect a creator
+    </Link>
+  );
 }
 
 /** A settings block: a 16 / 600 T1 heading, 16px below it a bordered box; blocks sit 32px apart (`space-y-8`). */
@@ -106,5 +126,5 @@ export function ConfirmDelete({ title, children, pending, onConfirm, onClose }: 
   );
 }
 
-/** A wide table's empty state stays in view when the table scrolls sideways (antd's fixed empty row). */
-export const TABLE_EMPTY = "sticky left-0 min-h-[400px] max-w-[calc(100vw-32px)]";
+/** A rule table's empty state height (EmptyState itself stays in view when the table scrolls sideways). */
+export const TABLE_EMPTY = "min-h-[400px]";

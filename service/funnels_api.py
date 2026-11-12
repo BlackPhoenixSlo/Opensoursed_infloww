@@ -13,7 +13,8 @@ Routes (covered by the existing `/admin/:path*` Next rewrite in
 app/next.config.ts — NO next.config change, NO new app/admin/funnels page):
 
   GET    /admin/funnels            list (id, name, description, opening_message,
-                                   step_count)
+                                   step_count); `?account_id=` adds that model's
+                                   read-only `stats` (last start, fans walking)
   GET    /admin/funnels/{id}       full funnel incl. parsed steps
   POST   /admin/funnels            create {name(unique,req), description,
                                    opening_message(req), steps[]}
@@ -52,17 +53,17 @@ import json
 import logging
 from typing import Any
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, distinct, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from auth import assert_account_owned
 from db.engine import get_session
-from db.models import FunnelAccountMedia, MassMessageFunnel, MassRun
+from db.models import MASS_RUN_OK, FunnelAccountMedia, FunnelState, MassMessageFunnel, MassRun
 from permissions import require_opt_in_page
 
 # Only My Automations > Auto Funnel writes funnels (Smart Messages' composer and
@@ -357,13 +358,45 @@ class FunnelUpdate(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────────
 
+async def _account_stats(s, account_id: str) -> dict[int, dict[str, Any]]:
+    """funnel_id → one model's funnel activity, for the Auto Funnel list's Status
+    and "Fans in funnel" (read-only, one grouped query over its sent runs):
+      last_started_at — newest sent (status ok) funnel run on this account,
+      active_fans     — distinct fans still being walked (funnel_state pending),
+      listening       — a run still inside the walker's discovery window and not
+                        unsent, so new repliers can still enter."""
+    from automations.reply_mass_funnel import DISCOVERY_WINDOW_DAYS
+    cutoff = datetime.utcnow() - timedelta(days=DISCOVERY_WINDOW_DAYS)
+    open_run = case((and_(MassRun.started_at >= cutoff, MassRun.discovery_closed_at.is_(None),
+                          MassRun.unsent_at.is_(None)), 1), else_=0)
+    rows = (await s.execute(
+        select(MassRun.funnel_id, func.max(MassRun.started_at),
+               func.count(distinct(FunnelState.fan_id)), func.max(open_run))
+        .outerjoin(FunnelState, and_(FunnelState.mass_run_id == MassRun.id,
+                                     FunnelState.status == "pending"))
+        .where(MassRun.account_id == str(account_id), MassRun.funnel_id.is_not(None),
+               MassRun.status == MASS_RUN_OK)
+        .group_by(MassRun.funnel_id)
+    )).all()
+    return {int(fid): {"last_started_at": last.isoformat() if last else None,
+                       "active_fans": int(fans or 0), "listening": bool(listening)}
+            for fid, last, fans, listening in rows}
+
+
 @router.get("/admin/funnels")
-async def list_funnels() -> dict[str, Any]:
+async def list_funnels(account_id: str | None = None) -> dict[str, Any]:
+    """`?account_id=` adds that model's `stats` to every funnel (never-started → zeros)."""
+    if account_id:
+        assert_account_owned(account_id)
     async with get_session() as s:
         rows = (await s.execute(
             select(MassMessageFunnel).order_by(MassMessageFunnel.name)
         )).scalars().all()
-        return {"funnels": [_summary(fn) for fn in rows]}
+        if not account_id:
+            return {"funnels": [_summary(fn) for fn in rows]}
+        stats = await _account_stats(s, account_id)
+        none = {"last_started_at": None, "active_fans": 0, "listening": False}
+        return {"funnels": [{**_summary(fn), "stats": stats.get(fn.id, none)} for fn in rows]}
 
 
 @router.get("/admin/funnels/{funnel_id}")

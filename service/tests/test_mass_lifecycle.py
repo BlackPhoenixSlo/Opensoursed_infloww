@@ -49,7 +49,7 @@ from db.models import (  # noqa: E402
 )
 
 # A pinned broadcast date ages out of reply_mass_funnel's discovery window
-# (`_DISCOVERY_WINDOW_DAYS`, added in 945a9e0) and turns this file red on a day
+# (`DISCOVERY_WINDOW_DAYS`, added in 945a9e0) and turns this file red on a day
 # nobody touched it — the failure reads as a walker regression rather than as an
 # expired fixture. Anchoring to `utcnow()` keeps every ORDERING the cases below
 # depend on while staying inside the window forever. Same reasoning and same

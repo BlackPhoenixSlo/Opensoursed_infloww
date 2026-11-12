@@ -456,7 +456,7 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     extraTagBeside(screen.getByText("Models"));
   });
 
-  it("the OF filter bar follows the capture, every control Not wired", async () => {
+  it("the OF filter bar follows the capture, every control live", async () => {
     await mountFrame();
     const panel = screen.getByRole("tabpanel", { name: "OF mass messages" });
     const controls = [
@@ -468,8 +468,8 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
       within(panel).getByRole("button", { name: "Export" }),
     ];
     for (let i = 0; i < controls.length; i++) {
-      expect(controls[i]).toBeDisabled();
-      expect(controls[i]).toHaveAttribute("title", "not wired");
+      expect(controls[i]).toBeEnabled();
+      expect(controls[i]).not.toHaveAttribute("title", "not wired");
       if (i) expect(before(controls[i - 1], controls[i])).toBe(true);
     }
     // The bar sits above the list.
@@ -857,5 +857,106 @@ describe("the Mass Messages tab in a chatter-only session", () => {
     // The roster badge counts are the principal's own (a chatter's union of linked Creators), not the registry.
     expect(paths.filter((p) => p.startsWith("/admin/accounts") && p !== "/admin/accounts/roster-counts")).toEqual([]);
     expect(writesMade().filter((w) => w !== CACHE_WARM)).toEqual([]);
+  });
+});
+
+// ── UI flow audit C24 / C25: the OF filter bar filters the list; a failed refresh reads plainly ──
+
+describe("the OF filter bar filters the sent list (C24)", () => {
+  const ITEMS = [
+    { id: 1, date: "2026-03-10T12:00:00Z", text: "Spring PROMO inside", isFree: true, canUnsend: true },
+    { id: 2, date: "2026-03-02T12:00:00Z", text: "good morning", isFree: true, canUnsend: true },
+    { id: 3, date: "2026-02-20T12:00:00Z", text: "promo again", isFree: false, canUnsend: true },
+  ];
+  const listed = (table: HTMLElement) => bodyRows(table).map((r) => within(r).getAllByRole("cell")[0].textContent);
+  const bar = () => within(screen.getByRole("tabpanel", { name: "OF mass messages" }));
+
+  it("Search applies the typed text (any case); Reset lists every row again", async () => {
+    const table = await mountSentList(ITEMS);
+    expect(listed(table)).toHaveLength(3);
+    fireEvent.change(bar().getByRole("textbox", { name: "Search for message" }), { target: { value: "promo" } });
+    expect(listed(table)).toHaveLength(3); // typed, not yet applied
+    await act(async () => { fireEvent.click(bar().getByRole("button", { name: "Search" })); });
+    expect(listed(table)).toEqual(["Spring PROMO inside", "promo again"]);
+    // The bulk counts follow the filter: only listed rows can be bulk-unsent.
+    expect(screen.getByRole("button", { name: /^Unsend all \(2\)$/ })).toBeTruthy();
+    await act(async () => { fireEvent.click(bar().getByRole("button", { name: "Reset" })); });
+    expect(listed(table)).toHaveLength(3);
+    expect(bar().getByRole("textbox", { name: "Search for message" })).toHaveValue("");
+  });
+
+  it("Sending Date keeps the rows sent in the range, in the report time zone", async () => {
+    vi.useFakeTimers({ now: new Date("2026-03-15T00:00:00Z"), toFake: ["Date"] });
+    try {
+      const table = await mountSentList(ITEMS);
+      fireEvent.change(bar().getByLabelText("Sending Date:"), { target: { value: "2026-03-01" } });
+      fireEvent.change(bar().getByRole("textbox", { name: "End date" }), { target: { value: "2026-03-05" } });
+      await act(async () => { fireEvent.click(bar().getByRole("button", { name: "Search" })); });
+      expect(listed(table)).toEqual(["good morning"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Export is off while nothing is listed", async () => {
+    await mountSentList([]);
+    expect(bar().getByRole("button", { name: "Export" })).toBeDisabled();
+  });
+});
+
+describe("a failed refresh reads plainly, with Retry (C25)", () => {
+  it("names the problem in words, keeps the raw error in the tooltip, and Retry refreshes again", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    relayPost.mockRejectedValue(new Error("session file is missing 'headers'"));
+    massItems = [];
+    window.history.replaceState(null, "", "/growth/smart-messages?tab=mass");
+    stubReads([]);
+    render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
+    const line = await screen.findByText("Couldn't refresh from OnlyFans. Check the creator's connection.", undefined, SETTLE);
+    expect(line).toHaveAttribute("title", "session file is missing 'headers'");
+    expect(screen.queryByText(/missing 'headers'/)).toBeNull();
+    expect(warn).toHaveBeenCalledWith("[mass-messages] refresh failed:", "session file is missing 'headers'");
+    const refreshes = () => relayPost.mock.calls.filter(([p]) => String(p).startsWith("/admin/mass-messages/refresh")).length;
+    const n = refreshes();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retry" })); });
+    await waitFor(() => expect(refreshes()).toBe(n + 1));
+  });
+});
+
+describe("Mass Auto Unsend Messages: one Creator at a time, each its own rule (C26)", () => {
+  it("the creator column picks whose form shows; an unsaved edit survives a switch; Save writes the picked Creator's rule", async () => {
+    expectWrites("POST /admin/automation-rules");
+    window.history.replaceState(null, "", "/growth/smart-messages?tab=unsend");
+    stubReads([]);
+    const reads = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation((path: string) =>
+      String(path).startsWith("/admin/accounts")
+        ? Promise.resolve({
+          accounts: [
+            { id: ACC, nickname: "Model A", has_session: true },
+            { id: "acc-2", nickname: "Model B", has_session: true },
+          ],
+          active_account_id: ACC,
+        })
+        : reads(path));
+    render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Model A" })).toBeTruthy(), SETTLE);
+    await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
+    // One form: Model A's (the first Creator); Model B's is not shown.
+    expect(screen.queryByRole("switch", { name: "Model B" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(1);
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Model A" })); });
+
+    const col = screen.getByTestId("of-creator-column");
+    await act(async () => { fireEvent.click(within(col).getByRole("button", { name: /Model B/ })); });
+    expect(screen.queryByRole("switch", { name: "Model A" })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Model B" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
+    await waitFor(() => expect(rulePosts()).toHaveLength(1));
+    expect(rulePosts()[0][1]).toMatchObject({ account_id: "acc-2", name: "Auto-unsend mass" });
+
+    // Back on Model A: its unsaved switch is still on, and nothing was written for it.
+    await act(async () => { fireEvent.click(within(col).getByRole("button", { name: /Model A/ })); });
+    expect(screen.getByRole("switch", { name: "Model A" })).toHaveAttribute("aria-checked", "true");
   });
 });

@@ -112,6 +112,36 @@ describe("SensitiveWordsPage", () => {
     expect(screen.getByText("No data")).toBeInTheDocument();
   });
 
+  it("shows each letter's word count (titled), dims the empty letters, and counts only search matches", async () => {
+    await renderPage();
+    const a = screen.getByRole("tab", { name: "A" });
+    expect(a).toHaveAttribute("title", "2 words");
+    expect(a.textContent).toBe("A2");
+    expect(screen.getByRole("tab", { name: "Special symbol" })).toHaveAttribute("title", "1 word");
+    const z = screen.getByRole("tab", { name: "Z" });
+    expect(z).toHaveAttribute("title", "0 words");
+    expect(z.textContent).toBe("Z");
+    expect(z).toHaveClass("text-muted");
+    fireEvent.change(screen.getByLabelText("Search sensitive words"), { target: { value: "avo" } });
+    expect(a).toHaveAttribute("title", "1 word");
+    expect(screen.getByRole("tab", { name: "B" })).toHaveAttribute("title", "0 words");
+  });
+
+  it("opens on the first letter that has words", async () => {
+    get.mockResolvedValue({ words: ["cherry", "zebra"] });
+    renderWithProviders(<SensitiveWordsPage />);
+    await screen.findByRole("listitem", { name: "cherry" });
+    expect(screen.getByRole("tab", { name: "C" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("offers Add word on an empty list, opening the Add dialog", async () => {
+    get.mockResolvedValue({ words: [] });
+    renderWithProviders(<SensitiveWordsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add word" }));
+    expect(screen.getByText("No sensitive words yet")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Add Sensitive Word" })).toBeInTheDocument();
+  });
+
   it("opens the Add dialog and saves the typed word", async () => {
     await renderPage();
     fireEvent.click(screen.getByRole("button", { name: "Add Sensitive Word" }));

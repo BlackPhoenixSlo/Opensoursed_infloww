@@ -28,7 +28,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 
 import { withBuiltIns, type RolesBlob } from "@/lib/roles";
 import { useSettingsBlob } from "@/lib/settingsBlob";
-import { BlobNotes, Card, FieldInput, IF_BTN, SettingsPanel, Switch } from "@/components/settings/SettingsPanel";
+import { BlobNotes, Card, FieldInput, IF_BTN, IF_BTN_PRIMARY, SettingsPanel, Switch } from "@/components/settings/SettingsPanel";
 import { SaveRow } from "@/components/settings/StickySaveBar";
 import SettingsVersions from "@/components/settings/SettingsVersions";
 
@@ -111,7 +111,8 @@ export default function TimeTrackingTab() {
             <SaveRow {...blob.save} look="settings" canSave={blob.save.canSave && valid} onSave={() => save(draft)} />
           </>
         ) : (
-          <button type="button" className={IF_BTN} disabled={!editable} onClick={() => setDraft(stored)}>
+          // The read view's only action, so it is the primary button.
+          <button type="button" className={IF_BTN_PRIMARY} disabled={!editable} onClick={() => setDraft(stored)}>
             Edit
           </button>
         )
@@ -195,8 +196,8 @@ function RoleList({ roles, ids, onChange }: {
     onChange?.(on ? [...ids.filter((x) => x !== id), id] : ids.filter((x) => x !== id));
   return (
     <Card title="Enable clock in and clock out for">
-      <fieldset aria-label="Enable clock in and clock out for" className="flex flex-col gap-2 text-[length:var(--if-fs)] text-[var(--if-fg)]">
-        <label className="flex items-center gap-2">
+      <fieldset aria-label="Enable clock in and clock out for" className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[length:var(--if-fs)] text-[var(--if-fg)]">
+        <label className="col-span-full flex items-center gap-2">
           <input
             type="checkbox"
             className={CHECKBOX}

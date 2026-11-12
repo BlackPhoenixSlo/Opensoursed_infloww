@@ -201,14 +201,15 @@ export const IfNativeSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes
 IfNativeSelect.displayName = "IfNativeSelect";
 
 /** antd's select (button + listbox): 32px, `padding:0 11px`, a 12px T3 chevron; `size="lg"` is the Dashboard's 36px
- *  "Net earnings" with T2 text. The menu is the panel colour, 32px items. */
-export function IfSelect<T extends string>({ size = "md", ...p }: SelectProps<T> & { size?: "md" | "lg" }) {
+ *  "Net earnings" with T2 text; `size="field"` is a pop-up form field (36px, radius 8, T1). The menu is the panel
+ *  colour, 32px items. */
+export function IfSelect<T extends string>({ size = "md", ...p }: SelectProps<T> & { size?: "md" | "lg" | "field" }) {
   return (
     <Listbox
       {...p}
       ariaLabel={p["aria-label"]}
       ariaDescribedby={p["aria-describedby"]}
-      triggerClassName={cn(IF_FIELD, "px-[11px]", size === "lg" ? "h-9 text-fg-dim" : "h-8")}
+      triggerClassName={cn(IF_FIELD, "px-[11px]", size === "lg" ? "h-9 text-fg-dim" : size === "field" ? "h-9 rounded-lg" : "h-8")}
       menuClassName="border border-border bg-panel"
     />
   );

@@ -1,14 +1,15 @@
 "use client";
 
 /** The Extras drawer and its tools (moved out of `VaultManagePanel`): our tools, which the bundle does not have
- *  (ADR-0003) — the mirror collect, the describe sweep and its prompt, the keyword harvest, the duplicates, pack,
- *  AI-folder and disagreement reviews and the flags review. */
+ *  (ADR-0003) — the full download (whole vault / open folder), the mirror collect, the describe sweep and its
+ *  prompt, the keyword harvest, the duplicates, pack, AI-folder and disagreement reviews and the flags review. */
 
 import { type ReactNode, useEffect, useRef } from "react";
 
-import { X } from "lucide-react";
+import { Download, X } from "lucide-react";
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
+import VaultJevToggle from "@/components/vault/VaultJevToggle";
 import { useExitGhost } from "@/hooks/useExitGhost";
 import { type useDescribePlan } from "@/hooks/useVaultCache";
 import { harvestSweepLabel, type VaultSweep } from "@/hooks/useVaultSweep";
@@ -70,6 +71,7 @@ export default function VaultExtrasTools({
   setNeedsReview,
   flagsReviewOpen,
   onOpen,
+  download,
 }: {
   accountId: string;
   onClose: () => void;
@@ -94,6 +96,9 @@ export default function VaultExtrasTools({
   /** The flags review is up (its offer hides meanwhile). */
   flagsReviewOpen: boolean;
   onOpen: (m: ExtrasModal) => void;
+  /** "Download full vault" (All media) / "Download full folder" (a rail folder open); `reason` non-empty: off, said
+   *  as its title (`downloadGate`, the folder still loading). `onStart` starts the page's one download. */
+  download: { label: string; reason: string; onStart: () => void };
 }) {
   return (
     <ExtrasDrawer onClose={onClose}>
@@ -111,6 +116,18 @@ export default function VaultExtrasTools({
             "not collected"
           )}
         </span>
+        {/* Every screen: a phone sees it off with the desktop-only reason (`downloadGate`). */}
+        <button
+          type="button"
+          data-testid="vault-extras-download"
+          onClick={download.onStart}
+          disabled={!!download.reason}
+          title={download.reason || `${download.label} (full quality, into a folder you pick)`}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Download size={14} aria-hidden />
+          {download.label}
+        </button>
         {/* Desk-only batch sweeps. `md:contents` keeps every button a direct
             flex child at md, so the desktop row is untouched. */}
         <div className="hidden md:contents">
@@ -192,15 +209,18 @@ export default function VaultExtrasTools({
           >
             Duplicates
           </button>
-          <button
-            type="button"
-            onClick={() => onOpen("packPicker")}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-ok/50 bg-ok/10 text-ok hover:bg-ok/20 disabled:opacity-50"
-            title="Triage every feet candidate into rungs, then publish the rungs to the OF vault"
-          >
-            Feet pack
-          </button>
+        </div>
+        {/* The feet pack picker works on a phone (2 columns, 44px taps): offered at every width. */}
+        <button
+          type="button"
+          onClick={() => onOpen("packPicker")}
+          disabled={cachedCount === 0}
+          className="px-3 py-1.5 rounded-lg text-sm border border-ok/50 bg-ok/10 text-ok hover:bg-ok/20 disabled:opacity-50"
+          title="Triage every feet candidate into rungs, then publish the rungs to the OF vault"
+        >
+          Feet pack
+        </button>
+        <div className="hidden md:contents">
           <button
             type="button"
             onClick={() => onOpen("aiFolders")}
@@ -217,6 +237,9 @@ export default function VaultExtrasTools({
           stops — while it runs the button carries the count — and it survives a
           reload, because the snapshot lives on the server. */}
       <AiKeyNotice accountId={accountId} kinds={["describe_media"]} />
+      <div className="hidden md:block">
+        <VaultJevToggle accountId={accountId} jev={plan?.jev} />
+      </div>
       {!describeSweep.busy && describeStopped && (
         <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
           {describeStopped.text}

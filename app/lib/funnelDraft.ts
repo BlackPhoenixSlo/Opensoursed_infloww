@@ -144,6 +144,9 @@ export interface FunnelDraft {
   description: string;
   opening: string;
   steps: DraftStep[];
+  /** The one open step card (FunnelEditor): it follows its step through edits (`followOpen`); a load or a raw-JSON
+   *  edit starts closed. Never saved. */
+  open: number | null;
 }
 
 export interface FunnelBody {
@@ -153,7 +156,7 @@ export interface FunnelBody {
   steps: FunnelStep[];
 }
 
-export const EMPTY_FUNNEL: FunnelDraft = { name: "", description: "", opening: "", steps: [] };
+export const EMPTY_FUNNEL: FunnelDraft = { name: "", description: "", opening: "", steps: [], open: null };
 
 /** A stored `check_intervals_min` the save validators would refuse: present
  *  (not null) but not a non-empty list of positive whole numbers. */
@@ -188,6 +191,7 @@ export function funnelDraftOf(f: FunnelFull): FunnelDraft {
     description: f.description ?? "",
     opening: f.opening_message,
     steps,
+    open: null,
   };
 }
 
@@ -214,16 +218,47 @@ export type FunnelEdit =
   | { type: "addStep"; kind: StepKind }
   | { type: "patchStep"; i: number; patch: Partial<DraftStep> }
   | { type: "removeStep"; i: number }
-  | { type: "moveStep"; i: number; dir: -1 | 1 };
+  | { type: "moveStep"; i: number; dir: -1 | 1 }
+  /** Open step `i`'s card, or close it if open. */
+  | { type: "toggleStep"; i: number };
 
 /** The id for a new step: max(existing) + 1. */
 function nextStepNumber(steps: Pick<DraftStep, "step">[]): number {
   return steps.reduce((m, s) => Math.max(m, s.step), 0) + 1;
 }
 
-/** One typed-form edit (pure). Out-of-range moves are no-ops; a step's
- *  message pool is a `patchStep` (VariantsField keeps one or more). */
+/** The open card after `e` on `d` (before the edit): an added step opens; the open one follows its move; removing
+ *  it closes; removing one above shifts it up; a toggle opens / closes `i`. */
+export function followOpen(d: Pick<FunnelDraft, "open" | "steps">, e: FunnelEdit): number | null {
+  const { open } = d;
+  const len = d.steps.length;
+  switch (e.type) {
+    case "addStep":
+      return len;
+    case "toggleStep":
+      return open === e.i ? null : e.i;
+    case "removeStep":
+      if (open === null || open < e.i) return open;
+      return open === e.i ? null : open - 1;
+    case "moveStep": {
+      const j = e.i + e.dir;
+      if (j < 0 || j >= len || open === null) return open;
+      return open === e.i ? j : open === j ? e.i : open;
+    }
+    default:
+      return open;
+  }
+}
+
+/** One typed-form edit (pure), the open card following it. Out-of-range moves are no-ops; a step's message pool is
+ *  a `patchStep` (VariantsField keeps one or more). */
 export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
+  const next = applyEdit(d, e);
+  const open = followOpen(d, e);
+  return next === d && open === d.open ? d : { ...next, open };
+}
+
+function applyEdit(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
   const mapStep = (i: number, f: (s: DraftStep) => DraftStep) =>
     ({ ...d, steps: d.steps.map((s, idx) => (idx === i ? f(s) : s)) });
   switch (e.type) {
@@ -242,6 +277,8 @@ export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
       [steps[e.i], steps[j]] = [steps[j], steps[e.i]];
       return { ...d, steps };
     }
+    case "toggleStep":
+      return d;
   }
 }
 
@@ -312,6 +349,7 @@ export const FUNNEL_RAW: RawJsonCodec<FunnelDraft> = {
       description: o.description == null ? "" : String(o.description).trim(),
       opening: String(o.opening_message ?? "").trim(),
       steps: rawDraftSteps(steps),
+      open: null,
     };
     wireBody(draft); // reject here what a save would
     return draft;

@@ -180,9 +180,12 @@ function openOptions(combobox: HTMLElement): HTMLElement[] {
 const column = () => screen.getByTestId("of-creator-column");
 const creatorRow = (name: string) => within(column()).getByRole("button", { name: new RegExp(name) });
 
-/** The rail: the element holding the sort label and the "All media" row. */
+/** The rail: the element holding the sort label and the "All media" row (md and up; the phone's folder select is
+ *  its sibling, see "on a phone"). */
 function rail(): HTMLElement {
-  return screen.getAllByText("All media").map((el) => el.closest("aside")).find(Boolean) as HTMLElement;
+  const els = screen.getAllByText("All media");
+  return (els.map((el) => el.closest("[data-rail-desk]")).find(Boolean)
+    ?? els.map((el) => el.closest("aside")).find(Boolean)) as HTMLElement;
 }
 
 describe("Vault Pro header and rail, in the capture's order", () => {
@@ -210,7 +213,7 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     const header = screen.getByRole("heading", { level: 1, name: "Vault Pro" }).closest("header") as HTMLElement;
     expect(header.className).toContain("border-b");
     // The two-pane row is the rail's parent: no box of its own around the rail and the grid.
-    const pane = rail().parentElement as HTMLElement;
+    const pane = rail().closest("aside")!.parentElement as HTMLElement;
     expect(pane.className).not.toMatch(/\brounded|\bborder\b/);
     expectBefore(header, pane);
     // No Extras strip between them any more: the rail starts under the header rule, and the one overflow is a
@@ -265,18 +268,17 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     expect(within(one).getByText("1")).toBeTruthy();
   });
 
-  it("shows per-folder statistics (#33) as Not wired", async () => {
+  it("draws no per-folder statistics line (#33): no read reports them, so no dash placeholders", async () => {
     await mount();
     expectInCapture("growth-vault-pro#33", "send count");
     for (const name of ["Folder one", "Folder two"]) {
       const row = within(rail()).getByText(name).closest("[role=button]") as HTMLElement;
-      const stats = within(row).getByLabelText("Statistics");
-      expect(stats).toHaveAttribute("title", "not wired");
-      expect(stats.textContent).not.toMatch(/\d/);
+      expect(within(row).queryByLabelText("Statistics")).toBeNull();
+      expect(row.textContent).not.toContain("—");
     }
   });
 
-  it("shows the whole vault's per-type counts (OF's `all`) on the All media row, \"—\" when the read has none", async () => {
+  it("shows the whole vault's per-type counts (OF's `all`) on the All media row, no line when the read has none", async () => {
     listsAll = ALL_NO_VIDEO;
     await mount();
     const all = () => within(rail()).getByText("All media").closest("button") as HTMLElement;
@@ -286,7 +288,7 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     cleanup();
     listsAll = undefined; // a folder-limited chatter: the relay drops `all`
     await mount();
-    expect(all().textContent).toBe("All media—");
+    expect(all().textContent).toBe("All media");
   });
 
   it("opens the sort popover with the capture's options, in its order", async () => {
@@ -330,20 +332,21 @@ describe("Vault Pro header and rail, in the capture's order", () => {
   });
 });
 
-describe("the header download button", () => {
-  // Ours, left of Learn: the manage panel portals it into the header, so it follows the rail's selection.
-  const dl = () => screen.getByTestId("vault-header-download");
+describe("the Extras drawer's full download", () => {
+  // Ours, the drawer's first action (not in the header): the manage panel passes it in, so it follows the rail's
+  // selection.
+  const dl = () => within(overflow()).getByTestId("vault-extras-download");
   afterEach(() => {
     delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
     delete (navigator as { canShare?: unknown }).canShare;
   });
 
-  it("sits left of Learn, styled like it, and names the vault or the selected folder", async () => {
+  it("is not in the header; first in the drawer, and names the vault or the selected folder", async () => {
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve(null);
     await mount();
-    const learn = screen.getByRole("link", { name: "Learn" });
-    expectBefore(dl(), learn);
-    expect(dl().closest("header")).toBe(learn.closest("header"));
+    expect(screen.queryByTestId("vault-extras-download")).toBeNull();
+    expect(screen.queryByText("Download full vault")).toBeNull();
+    expectBefore(dl(), within(overflow()).getByRole("button", { name: "Collect all" }));
     expect(dl()).toHaveTextContent("Download full vault");
     expect(dl()).toBeEnabled();
     fireEvent.click(within(rail()).getByText("Folder one").closest("[role=button]") as HTMLElement);
@@ -353,13 +356,13 @@ describe("the header download button", () => {
     await waitFor(() => expect(dl()).toHaveTextContent("Download full vault"));
   });
 
-  it("is off with the desktop-only reason on a phone (share sheet only)", async () => {
+  it("is on a phone too, off with the desktop-only reason (share sheet only)", async () => {
     (navigator as { canShare?: unknown }).canShare = () => true;
     await mount();
     expect(dl()).toBeDisabled();
     expect(dl()).toHaveAttribute("title", SHARE_MODE_OFF);
-    // The label hides on a phone, the icon stays: still named for screen readers.
-    expect(within(dl()).getByText("Download full vault")).toHaveClass("max-sm:sr-only");
+    // Not in the drawer's desk-only (`hidden md:contents`) groups.
+    expect(dl().closest(".hidden")).toBeNull();
   });
 
   it("is off with the browser reason where nothing can save", async () => {
@@ -368,20 +371,19 @@ describe("the header download button", () => {
     expect(dl()).toHaveAttribute("title", DOWNLOAD_OFF);
   });
 
-  it("while the model accounts are still read, is off without claiming there is no Creator (#25)", async () => {
+  it("while the model accounts are still read, there is no drawer to open (#25)", async () => {
     relayGet.mockImplementation(() => new Promise(() => {}));
-    renderWithProviders(<VaultProPage />);
-    const b = await screen.findByTestId("vault-header-download");
-    expect(b).toBeDisabled();
-    expect(b).toHaveAttribute("title", "Loading model accounts…");
+    renderWithProviders(<Page />);
+    await waitFor(() => expect(extrasButton()).toBeDisabled());
+    expect(screen.queryByTestId("vault-extras-download")).toBeNull();
   });
 
-  it("is off, titled why, with no Creator", async () => {
+  it("with no Creator, there is no drawer to open", async () => {
     roster = [];
-    renderWithProviders(<VaultProPage />);
+    renderWithProviders(<Page />);
     await screen.findAllByText("No model accounts with a live session.");
-    expect(dl()).toBeDisabled();
-    expect(dl()).toHaveAttribute("title", "No model accounts with a live session.");
+    expect(extrasButton()).toBeDisabled();
+    expect(screen.queryByTestId("vault-extras-download")).toBeNull();
   });
 });
 
@@ -496,6 +498,11 @@ describe("the Extras overflow", () => {
       screen.getByRole("button", { name: "Build AI folders" }),
     ];
     for (const t of tools) expect(box.contains(t)).toBe(true);
+    // The feet pack picker is offered on a phone too; the batch sweeps stay desk-only (`hidden md:contents`).
+    expect(screen.getByRole("button", { name: "Feet pack" }).closest(".hidden")).toBeNull();
+    for (const name of ["Collect all", "Duplicates", "Build AI folders"]) {
+      expect(screen.getByRole("button", { name }).closest(".hidden")).not.toBeNull();
+    }
     // The drawer's × closes it; so does Escape, and the button again.
     fireEvent.click(within(box).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();
@@ -559,7 +566,9 @@ describe("the Creator selector", () => {
     dlRun.calls.length = 0;
     dlRun.sink = "folder";
     await mount();
-    fireEvent.click(screen.getByTestId("vault-header-download"));
+    fireEvent.click(within(overflow()).getByTestId("vault-extras-download"));
+    // The click closes the drawer, so the download card is in view.
+    expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();
     await waitFor(() => expect(dlRun.calls).toHaveLength(1));
     expect(dlRun.calls[0].a.accountId).toBe(A.id);
     expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
@@ -571,17 +580,18 @@ describe("the Creator selector", () => {
     expect(dlRun.calls[0].signal.aborted).toBe(false);
     expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
     // One run at a time: B's download joins the queue behind A's (named for B, started later by the provider); the
-    // header (the one gate) says so.
-    const add = screen.getByTestId("vault-header-download");
+    // Extras drawer's item (the one gate) says so, and its click closes the drawer.
+    const add = within(overflow()).getByTestId("vault-extras-download");
     expect(add).toHaveTextContent("Add full vault to queue");
     expect(add).toBeEnabled();
     fireEvent.click(add);
+    expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();
     const card = screen.getByRole("region", { name: "Vault download" });
     await waitFor(() => expect(card).toHaveAttribute("data-queued", "1"));
     expect(card).toHaveTextContent("Creator B: whole vault");
     expect(dlRun.calls).toHaveLength(1);
     // asked twice: still one queued
-    fireEvent.click(screen.getByTestId("vault-header-download"));
+    fireEvent.click(within(overflow()).getByTestId("vault-extras-download"));
     expect(card).toHaveAttribute("data-queued", "1");
   });
 
@@ -655,6 +665,22 @@ describe("folder writes reach the same Vault routes as before", () => {
       { account_id: A.id, name: "Fresh", media_ids: [] },
       { accountId: A.id },
     ));
+  });
+
+  it("on a phone the folders are one select with their counts; the picked folder gets its menu", async () => {
+    await mount();
+    const pick = screen.getByRole("combobox", { name: "Folder" }) as HTMLSelectElement;
+    await waitFor(() => expect([...pick.options].map((o) => o.textContent)).toEqual([
+      "All media · 7 photos · 5 videos · 1 audio · 2 GIFs", "Folder one · 3 photos · 1 video", "Folder two · empty",
+    ]));
+    // All media is no folder: nothing to rename.
+    expect(screen.queryByRole("button", { name: "Folder actions" })).toBeNull();
+    fireEvent.change(pick, { target: { value: "11" } });
+    // The rail's selected row follows the select: one selection, two views of it.
+    await waitFor(() => expect(pick.value).toBe("11"));
+    fireEvent.click(screen.getByRole("button", { name: "Folder actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(within(screen.getByRole("dialog", { name: "Rename category" })).getByLabelText("Category")).toHaveValue("Folder one");
   });
 
   it("renames a folder from its row menu, through the Rename category modal", async () => {

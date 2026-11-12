@@ -197,10 +197,11 @@ describe("Scripts follows the capture's order", () => {
     expect(more).toHaveFocus();
   });
 
-  it("draws the More trigger as the bundle shot does, a filled accent circle with a plus (#12)", async () => {
+  it("draws the More trigger as a labelled \"+ Add\" accent button (#12; the bundle's bare circle read as nothing)", async () => {
     await mount();
     const more = screen.getByRole("button", { name: "More" });
-    expect(more).toHaveClass("rounded-full", "bg-accent");
+    expect(more).toHaveClass("bg-accent");
+    expect(more).toHaveTextContent(/^Add$/);
     expect(more.querySelector("svg")).not.toBeNull();
   });
 
@@ -615,12 +616,12 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     expect(screen.getByText(/duplicate name/)).toBeInTheDocument();
   });
 
-  it("All models hides the header's write actions (they would act on the hidden Creator) until a Creator's pick", async () => {
+  it("All creators hides the header's write actions (they would act on the hidden Creator) until a Creator's pick", async () => {
     await mount();
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
-    // The creator column's picker, then its All models entry.
-    fireEvent.click(screen.getByRole("button", { name: /All models/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: /All models/ }).at(-1)!);
+    // The creator column's picker, then its All creators entry.
+    fireEvent.click(screen.getByRole("button", { name: /All creators/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /All creators/ }).at(-1)!);
     await waitFor(() => expect(screen.queryByRole("button", { name: "More" })).toBeNull());
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Creator A/ }));
@@ -808,6 +809,21 @@ describe("tags and sequences are stored on the scripts", () => {
     expect(titles()).toEqual(["Greeting", "ask location"]);
     fireEvent.click(within(side).getByText("Uncategorized"));
     expect(titles()).toEqual(["Unlock", "answer job", "ask fantasy"]);
+  });
+
+  it("on a phone the tags are one select (each with its count) and the picked tag's own menu", async () => {
+    await mountTagged();
+    const side = sidebar("Tags");
+    const pick = within(side).getByRole("combobox", { name: "Pick tag" }) as HTMLSelectElement;
+    expect([...pick.options].map((o) => o.textContent)).toEqual([
+      "All scripts · 5", "Opener · 2", "VIP · 1", "Uncategorized · 3",
+    ]);
+    // All scripts is fixed: no menu beside it.
+    expect(within(side).queryByRole("button", { name: "All scripts actions" })).toBeNull();
+    fireEvent.change(pick, { target: { value: "Opener" } });
+    expect(titles()).toEqual(["Greeting", "ask location"]);
+    fireEvent.click(within(side).getByRole("button", { name: "Opener actions" }));
+    expect(screen.getByRole("menu", { name: "Opener actions" })).toBeInTheDocument();
   });
 
   it("shows a row's tag and sequence chips, its notes, and a chip opens its tag or sequence", async () => {

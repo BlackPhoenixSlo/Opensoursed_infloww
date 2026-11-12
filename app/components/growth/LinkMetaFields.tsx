@@ -22,6 +22,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 
 import { Button, Input } from "@/components/ui/primitives";
+import { IfSelect } from "@/components/ui/infloww";
 import { useFanLists } from "@/components/audience/fanLists";
 import { PROMO_COST_MAX_LENGTH, formatPromoCost, parsePromoCost, promoCostText } from "@/components/growth/linkMetrics";
 import { cn } from "@/lib/utils";
@@ -197,18 +198,14 @@ export default function LinkMetaFields({ f, id, accountId, sources, tags: tagOpt
       </div>
       {!noList && <div className="flex flex-col gap-2">
         <FieldLabel htmlFor={`${id}-list`} text="List" optional />
-        <select
+        <IfSelect
           id={`${id}-list`}
-          className={FIELD}
+          size="field"
+          className="w-full"
           value={f.list?.id ?? ""}
-          onChange={(e) => {
-            const v = e.target.value;
-            f.setList(v ? { id: v, name: lists.find((l) => l.id === v)?.name ?? "" } : null);
-          }}
-        >
-          <option value="">{isLoading ? "Loading lists…" : "None"}</option>
-          {lists.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-        </select>
+          options={[{ value: "", label: isLoading ? "Loading lists…" : "None" }, ...lists.map((l) => ({ value: l.id, label: l.name }))]}
+          onChange={(v) => f.setList(v ? { id: v, name: lists.find((l) => l.id === v)?.name ?? "" } : null)}
+        />
         <ListNote stored={f.storedListId} picked={f.list?.id ?? null} />
       </div>}
     </>

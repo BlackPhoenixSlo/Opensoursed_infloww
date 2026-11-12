@@ -26,7 +26,7 @@ const SMALL = "text-[length:var(--if-fs-sm)] leading-5";
 /** Infloww's refusal of an effective time later than now (`settings0190`). */
 const FUTURE = "The effective time start later than the current time, please reset it.";
 
-export default function SettingsVersions({ effective, history, recomputes, also, editing = true }: {
+export default function SettingsVersions({ effective, history, recomputes, also, editing = true, show = "both" }: {
   effective: { value: string | null; set: (at: string | null) => void };
   history: SettingsVersion[];
   /** What a backdated save recomputes, as a sentence's subject: "Sales credited to employees". */
@@ -35,6 +35,8 @@ export default function SettingsVersions({ effective, history, recomputes, also,
   also?: string;
   /** The date field shows only while the tab is being edited. */
   editing?: boolean;
+  /** Which part to draw, so a tab can put the date field by its Save and the history at the bottom. */
+  show?: "date" | "history" | "both";
 }) {
   const now = new Date();
   const at = effective.value;
@@ -46,7 +48,7 @@ export default function SettingsVersions({ effective, history, recomputes, also,
 
   return (
     <>
-      {editing && (
+      {editing && show !== "history" && (
         <Section title="Set effective date">
           <label className={`flex flex-wrap items-center gap-2 text-[var(--if-fg-2)] ${SMALL}`}>
             Specify the date and time for the changes to take effect:
@@ -73,14 +75,18 @@ export default function SettingsVersions({ effective, history, recomputes, also,
           )}
         </Section>
       )}
-      {history.length > 0 && (
+      {history.length > 0 && show !== "date" && (
         <Section title="Settings history">
           <ul aria-label="Settings history" className={`flex flex-col gap-1 text-[var(--if-fg-2)] ${SMALL}`}>
             {history.slice(0, 5).map((h, i) => (
               <li key={`${h.effective_from}-${h.saved_at}-${i}`}>
                 Effective as of {h.effective_from ? when(h.effective_from) : "the start"}
                 <span className="text-[var(--if-fg-3)]"> · saved {when(h.saved_at)}</span>
-                {h.in_effect && <span className="ml-2 font-semibold text-[var(--if-accent)]">In effect</span>}
+                {h.in_effect && (
+                  <span className="ml-2 inline-flex items-center h-5 px-2 rounded-full bg-ok/15 text-ok text-[11px] font-medium">
+                    In effect
+                  </span>
+                )}
               </li>
             ))}
           </ul>

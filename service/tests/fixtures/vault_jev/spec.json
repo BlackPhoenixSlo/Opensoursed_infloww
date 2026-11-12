@@ -1,0 +1,1039 @@
+{
+ "model": "jev-1.14.0",
+ "edge": 1024,
+ "edge2": 1568,
+ "edge_l": 1568,
+ "quality": 88,
+ "headers": {
+  "TypeSafe-Danger-Zone-Images": "true"
+ },
+ "Q": [
+  [
+   "person_present",
+   {
+    "type": "noul",
+    "instructions": "Is there a real person (not a screenshot, text or interface) in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "people_count",
+   {
+    "type": "choice",
+    "instructions": "How many people are in `photo`?",
+    "criteria": [
+     [
+      "one",
+      "Exactly one person."
+     ],
+     [
+      "two_or_more",
+      "Two or more people."
+     ],
+     [
+      "none",
+      "No person (screenshot, text, object)."
+     ]
+    ]
+   }
+  ],
+  [
+   "nipple_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see a bare nipple or areola in `photo`, even a small slip at the edge of her top? A nipple under a bra, lace or fabric does not count.",
+    "criteria": null
+   }
+  ],
+  [
+   "nipple_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is any part of a nipple or areola uncovered (no fabric over it) and visible in `photo`, including in a mirror reflection?",
+    "criteria": null
+   }
+  ],
+  [
+   "nipple_through_fabric",
+   {
+    "type": "noul",
+    "instructions": "Can you see a nipple or areola through sheer, lace, mesh or wet fabric in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see bare labia or a bare vulva in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is her genital area (labia / vulva) uncovered and visible in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "butt_cheeks_bare",
+   {
+    "type": "noul",
+    "instructions": "Can you see bare butt cheeks in `photo`? A thong string between them still counts as bare.",
+    "criteria": null
+   }
+  ],
+  [
+   "penetration",
+   {
+    "type": "noul",
+    "instructions": "Is a toy, finger or other object inserted into her vagina or anus in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "penetration_b",
+   {
+    "type": "noul",
+    "instructions": "Look at her vagina and anus in `photo`: is something (a finger, dildo, toy or object) inside either of them, not just touching or resting on it?",
+    "criteria": null
+   }
+  ],
+  [
+   "breasts_state_a",
+   {
+    "type": "choice",
+    "instructions": "In `photo`, what best describes the woman's breasts?",
+    "criteria": [
+     [
+      "bare",
+      "Its skin is on show: a nipple or areola is visible."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ]
+    ]
+   }
+  ],
+  [
+   "breasts_state_b",
+   {
+    "type": "choice",
+    "instructions": "Looking at `photo`, how is the woman's breasts shown?",
+    "criteria": [
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "bare",
+      "Its skin is on show: a nipple or areola is visible."
+     ]
+    ]
+   }
+  ],
+  [
+   "crotch_state_a",
+   {
+    "type": "choice",
+    "instructions": "In `photo`, what best describes the woman's crotch?",
+    "criteria": [
+     [
+      "bare",
+      "Its skin is on show: the labia / vulva are visible."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ]
+    ]
+   }
+  ],
+  [
+   "crotch_state_b",
+   {
+    "type": "choice",
+    "instructions": "Looking at `photo`, how is the woman's crotch shown?",
+    "criteria": [
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "bare",
+      "Its skin is on show: the labia / vulva are visible."
+     ]
+    ]
+   }
+  ],
+  [
+   "butt_state_a",
+   {
+    "type": "choice",
+    "instructions": "In `photo`, what best describes the woman's butt?",
+    "criteria": [
+     [
+      "bare",
+      "Its skin is on show: the butt cheeks are bare (a thong string between them does not cover them)."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "not_visible",
+      "You cannot see her butt at all: she faces the camera, or it is cropped out."
+     ]
+    ]
+   }
+  ],
+  [
+   "added_text",
+   {
+    "type": "choice",
+    "instructions": "Besides any small website address or username watermark, what has been added on top of `photo` in editing?",
+    "criteria": [
+     [
+      "caption_text",
+      "Words or a sentence typed over the photo, a caption box, or a question/poll sticker."
+     ],
+     [
+      "emoji_or_sticker_only",
+      "Only emoji or stickers, no words."
+     ],
+     [
+      "nothing_added",
+      "Nothing added. A small 'OnlyFans.com/name' or username watermark alone counts as nothing."
+     ]
+    ]
+   }
+  ],
+  [
+   "watermark",
+   {
+    "type": "noul",
+    "instructions": "Is there a small website address or username watermark in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "clothing_print_text",
+   {
+    "type": "noul",
+    "instructions": "Is there writing printed on her clothing in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "censor_edit",
+   {
+    "type": "noul",
+    "instructions": "Has part of her body in `photo` been blurred, pixelated or covered with an emoji or sticker?",
+    "criteria": null
+   }
+  ],
+  [
+   "toy",
+   {
+    "type": "choice",
+    "instructions": "Is there a sex toy (dildo, vibrator, wand, butt plug) in `photo`? Everyday objects such as a phone, bottle, remote, hairbrush, makeup or stuffed animal are not sex toys.",
+    "criteria": [
+     [
+      "no_toy",
+      "No sex toy."
+     ],
+     [
+      "toy_visible_not_in_use",
+      "A sex toy is visible but not touching her genitals or anus."
+     ],
+     [
+      "toy_touching_or_inserted",
+      "A sex toy is touching or inserted into her genitals or anus."
+     ]
+    ]
+   }
+  ],
+  [
+   "feet_detail_a",
+   {
+    "type": "choice",
+    "instructions": "What is on the woman's feet in `photo`?",
+    "criteria": [
+     [
+      "not_in_picture",
+      "Her feet cannot be seen in the picture."
+     ],
+     [
+      "bare",
+      "Bare feet: toes or soles with nothing on them."
+     ],
+     [
+      "socks",
+      "Ankle or knee socks cover her feet."
+     ],
+     [
+      "stockings_fishnets_nylons",
+      "Stockings, fishnets, nylons, pantyhose or thigh-highs cover her feet."
+     ],
+     [
+      "heels",
+      "High heels (any kind, including clear platform stripper heels)."
+     ],
+     [
+      "other_shoes",
+      "Sneakers, boots, flats, slippers or sandals."
+     ]
+    ]
+   }
+  ],
+  [
+   "feet_detail_b",
+   {
+    "type": "choice",
+    "instructions": "Looking at her feet in `photo`, what are they wearing?",
+    "criteria": [
+     [
+      "other_shoes",
+      "Sneakers, boots, flats, slippers or sandals."
+     ],
+     [
+      "heels",
+      "High heels (any kind, including clear platform stripper heels)."
+     ],
+     [
+      "stockings_fishnets_nylons",
+      "Stockings, fishnets, nylons, pantyhose or thigh-highs cover her feet."
+     ],
+     [
+      "socks",
+      "Ankle or knee socks cover her feet."
+     ],
+     [
+      "bare",
+      "Bare feet: toes or soles with nothing on them."
+     ],
+     [
+      "not_in_picture",
+      "Her feet cannot be seen in the picture."
+     ]
+    ]
+   }
+  ],
+  [
+   "feet_focus",
+   {
+    "type": "noul",
+    "instructions": "Are her feet or soles the main subject of `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "outfit",
+   {
+    "type": "choice",
+    "instructions": "What is she wearing in `photo`?",
+    "criteria": [
+     [
+      "nude",
+      "Nothing at all / fully nude."
+     ],
+     [
+      "topless_with_bottoms",
+      "No top: only panties, a thong, shorts, pants or a skirt."
+     ],
+     [
+      "lingerie_or_bodysuit",
+      "Lingerie: bra and panties, lace set, babydoll, bodysuit or teddy."
+     ],
+     [
+      "swimwear",
+      "A bikini or swimsuit."
+     ],
+     [
+      "everyday_clothes",
+      "Everyday clothes, gym clothes or a costume: top, dress, jeans, hoodie, leggings."
+     ],
+     [
+      "sheet_or_towel",
+      "Only a sheet or towel."
+     ]
+    ]
+   }
+  ],
+  [
+   "setting",
+   {
+    "type": "choice",
+    "instructions": "Where was `photo` taken?",
+    "criteria": [
+     [
+      "bedroom",
+      null
+     ],
+     [
+      "bathroom",
+      null
+     ],
+     [
+      "living_room",
+      null
+     ],
+     [
+      "kitchen",
+      null
+     ],
+     [
+      "outdoors",
+      null
+     ],
+     [
+      "car",
+      null
+     ],
+     [
+      "gym",
+      null
+     ],
+     [
+      "other",
+      null
+     ]
+    ]
+   }
+  ],
+  [
+   "mirror_selfie",
+   {
+    "type": "noul",
+    "instructions": "Is `photo` a mirror selfie (she photographs herself in a mirror)?",
+    "criteria": null
+   }
+  ],
+  [
+   "hair",
+   {
+    "type": "choice",
+    "instructions": "How is her hair in `photo`?",
+    "criteria": [
+     [
+      "down",
+      "Worn down / loose."
+     ],
+     [
+      "ponytail_or_bun",
+      "Ponytail or bun."
+     ],
+     [
+      "braids",
+      "Braided."
+     ],
+     [
+      "covered_or_not_visible",
+      "Covered or not visible."
+     ]
+    ]
+   }
+  ],
+  [
+   "self_touch",
+   {
+    "type": "noul",
+    "instructions": "Is she touching her own breasts, crotch or butt in a sexy way in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "legs_spread",
+   {
+    "type": "noul",
+    "instructions": "Are her legs spread open toward the camera in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "mouth_tease",
+   {
+    "type": "noul",
+    "instructions": "Is she teasing with her mouth in `photo` (tongue out, biting lip, finger at mouth)?",
+    "criteria": null
+   }
+  ],
+  [
+   "topless",
+   {
+    "type": "noul",
+    "instructions": "Is the woman in `photo` wearing nothing on her upper body (no bra, no top), even if her hands or hair cover her breasts?",
+    "criteria": null
+   }
+  ],
+  [
+   "see_through",
+   {
+    "type": "noul",
+    "instructions": "Is she wearing sheer, lace, mesh, fishnet or wet fabric that clearly shows her skin underneath in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "pulling_clothes",
+   {
+    "type": "noul",
+    "instructions": "In `photo`, is she pulling, lifting or moving a garment (strap, waistband, top, panties) to reveal more skin?",
+    "criteria": null
+   }
+  ],
+  [
+   "tongue_out",
+   {
+    "type": "noul",
+    "instructions": "In `photo`, is her tongue out?",
+    "criteria": null
+   }
+  ],
+  [
+   "smiling",
+   {
+    "type": "noul",
+    "instructions": "Is the woman smiling in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "jewelry",
+   {
+    "type": "noul",
+    "instructions": "Is she wearing visible jewelry (necklace, earrings, rings, bracelet, piercing) in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "phone_visible",
+   {
+    "type": "noul",
+    "instructions": "Is a phone visible in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "pose",
+   {
+    "type": "choice",
+    "instructions": "What is her pose in `photo`?",
+    "criteria": [
+     [
+      "standing",
+      "Standing."
+     ],
+     [
+      "sitting",
+      "Sitting."
+     ],
+     [
+      "kneeling",
+      "Kneeling."
+     ],
+     [
+      "lying_on_back",
+      "Lying on her back."
+     ],
+     [
+      "lying_on_stomach",
+      "Lying on her stomach."
+     ],
+     [
+      "lying_on_side",
+      "Lying on her side."
+     ],
+     [
+      "all_fours_or_bent_over",
+      "On all fours or bent over."
+     ],
+     [
+      "close_up_no_pose",
+      "A close-up; the pose cannot be told."
+     ]
+    ]
+   }
+  ],
+  [
+   "framing",
+   {
+    "type": "choice",
+    "instructions": "How much of her body does `photo` show?",
+    "criteria": [
+     [
+      "face_close_up",
+      "Mostly her face."
+     ],
+     [
+      "face_and_chest",
+      "Face down to the chest."
+     ],
+     [
+      "upper_body",
+      "Head to waist."
+     ],
+     [
+      "most_of_body",
+      "Head to thighs or knees."
+     ],
+     [
+      "full_body",
+      "Head to feet."
+     ],
+     [
+      "body_part_close_up",
+      "A close-up of one body part, face out of shot."
+     ],
+     [
+      "body_no_face",
+      "Torso and/or legs with the face cropped out, wider than one body part."
+     ]
+    ]
+   }
+  ],
+  [
+   "face_visible",
+   {
+    "type": "choice",
+    "instructions": "How much of the woman's face can you see in `photo`?",
+    "criteria": [
+     [
+      "full_face",
+      "Her face is clearly visible: both eyes and her mouth."
+     ],
+     [
+      "partial_face",
+      "Only part of her face: cropped, side profile edge, or covered by a phone, hair or hand."
+     ],
+     [
+      "no_face",
+      "Her face is not in the picture or is completely hidden."
+     ]
+    ]
+   }
+  ],
+  [
+   "facing",
+   {
+    "type": "choice",
+    "instructions": "Which way is the front of her body turned relative to the camera in `photo`?",
+    "criteria": [
+     [
+      "toward_camera",
+      "The front of her body faces the camera."
+     ],
+     [
+      "side",
+      "Her body is side-on to the camera."
+     ],
+     [
+      "away",
+      "Her back is to the camera."
+     ]
+    ]
+   }
+  ],
+  [
+   "looking_at_camera",
+   {
+    "type": "noul",
+    "instructions": "Is she looking straight into the camera in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "breasts_focus",
+   {
+    "type": "noul",
+    "instructions": "Are her breasts a main subject of `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "butt_focus",
+   {
+    "type": "noul",
+    "instructions": "Is her butt a main subject of `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "crotch_focus",
+   {
+    "type": "noul",
+    "instructions": "Is her crotch / pussy area a main subject of `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "wears_heels",
+   {
+    "type": "noul",
+    "instructions": "Is she wearing high heels in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "wears_stockings_or_fishnets",
+   {
+    "type": "noul",
+    "instructions": "Is she wearing stockings, thigh-highs, fishnets, nylons or pantyhose on her legs in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "wears_socks",
+   {
+    "type": "noul",
+    "instructions": "Is she wearing ankle or knee socks in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "bare_toes_visible",
+   {
+    "type": "noul",
+    "instructions": "Can you see her bare toes in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "soles_visible",
+   {
+    "type": "noul",
+    "instructions": "Are the soles of her feet (bare or in socks) turned toward the camera in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "feet_in_water",
+   {
+    "type": "noul",
+    "instructions": "Are her feet in water (bath, pool, sea) in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "multi_panel",
+   {
+    "type": "noul",
+    "instructions": "Is `photo` a collage: several photos combined into one image or a split screen?",
+    "criteria": null
+   }
+  ]
+ ],
+ "Q2": [
+  [
+   "nipple_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see a bare nipple or areola in `photo`, even a small slip at the edge of her top? A nipple under a bra, lace or fabric does not count.",
+    "criteria": null
+   }
+  ],
+  [
+   "nipple_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is any part of a nipple or areola uncovered (no fabric over it) and visible in `photo`, including in a mirror reflection?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see bare labia or a bare vulva in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is her genital area (labia / vulva) uncovered and visible in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "breasts_state_a",
+   {
+    "type": "choice",
+    "instructions": "In `photo`, what best describes the woman's breasts?",
+    "criteria": [
+     [
+      "bare",
+      "Its skin is on show: a nipple or areola is visible."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ]
+    ]
+   }
+  ],
+  [
+   "breasts_state_b",
+   {
+    "type": "choice",
+    "instructions": "Looking at `photo`, how is the woman's breasts shown?",
+    "criteria": [
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "bare",
+      "Its skin is on show: a nipple or areola is visible."
+     ]
+    ]
+   }
+  ],
+  [
+   "crotch_state_a",
+   {
+    "type": "choice",
+    "instructions": "In `photo`, what best describes the woman's crotch?",
+    "criteria": [
+     [
+      "bare",
+      "Its skin is on show: the labia / vulva are visible."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ]
+    ]
+   }
+  ],
+  [
+   "crotch_state_b",
+   {
+    "type": "choice",
+    "instructions": "Looking at `photo`, how is the woman's crotch shown?",
+    "criteria": [
+     [
+      "not_visible",
+      "You cannot see that part of her body at all: it is cropped out of the picture or on the far side of her body."
+     ],
+     [
+      "hidden_not_worn",
+      "No garment is on it, but a hand, arm, hair, sheet, object, or a blur/pixelation/emoji hides it."
+     ],
+     [
+      "normal_covered",
+      "Fully hidden by everyday clothes: top, t-shirt, dress, shorts, jeans, hoodie, sportswear."
+     ],
+     [
+      "sexy_covered",
+      "Fully hidden by a bra, lingerie, thong, panties, bikini or bodysuit."
+     ],
+     [
+      "sheer_covered",
+      "Covered only by see-through lace, mesh or wet fabric; the skin or nipple shows through."
+     ],
+     [
+      "bare",
+      "Its skin is on show: the labia / vulva are visible."
+     ]
+    ]
+   }
+  ],
+  [
+   "penetration",
+   {
+    "type": "noul",
+    "instructions": "Is a toy, finger or other object inserted into her vagina or anus in `photo`?",
+    "criteria": null
+   }
+  ],
+  [
+   "penetration_b",
+   {
+    "type": "noul",
+    "instructions": "Look at her vagina and anus in `photo`: is something (a finger, dildo, toy or object) inside either of them, not just touching or resting on it?",
+    "criteria": null
+   }
+  ],
+  [
+   "topless",
+   {
+    "type": "noul",
+    "instructions": "Is the woman in `photo` wearing nothing on her upper body (no bra, no top), even if her hands or hair cover her breasts?",
+    "criteria": null
+   }
+  ],
+  [
+   "nipple_through_fabric",
+   {
+    "type": "noul",
+    "instructions": "Can you see a nipple or areola through sheer, lace, mesh or wet fabric in `photo`?",
+    "criteria": null
+   }
+  ]
+ ],
+ "L_portrait": [
+  [
+   "vulva_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see bare labia or a bare vulva in any of the images `full_photo`, `lower_part` (the crops are zoomed parts of `full_photo`)?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is her genital area (labia / vulva) uncovered and visible in any of the images `full_photo`, `lower_part` (the crops are zoomed parts of `full_photo`)?",
+    "criteria": null
+   }
+  ]
+ ],
+ "L_landscape": [
+  [
+   "vulva_visible_a",
+   {
+    "type": "noul",
+    "instructions": "Can you see bare labia or a bare vulva in any of the images `full_photo`, `left_part`, `right_part` (the crops are zoomed parts of `full_photo`)?",
+    "criteria": null
+   }
+  ],
+  [
+   "vulva_visible_b",
+   {
+    "type": "noul",
+    "instructions": "Is her genital area (labia / vulva) uncovered and visible in any of the images `full_photo`, `left_part`, `right_part` (the crops are zoomed parts of `full_photo`)?",
+    "criteria": null
+   }
+  ]
+ ]
+}

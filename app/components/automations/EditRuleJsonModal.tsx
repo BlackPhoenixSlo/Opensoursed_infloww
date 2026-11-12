@@ -1,81 +1,26 @@
 "use client";
 
 /**
- * EditRuleJsonButton + EditRuleJsonModal — a raw-JSON editor for ONE automation
- * rule's payload (`steps_json`), for the bespoke single-rule tab (Auto stories)
- * that builds its payload with a custom form. It loads the account's rule of the given `kind`, lets an
- * owner hand-edit the payload object, validates it (parse + must be an object),
+ * EditRuleJsonModal — a raw-JSON editor for ONE automation rule's payload
+ * (`steps_json`), for the bespoke single-rule tab (Auto stories, its "More
+ * actions" menu) that builds its payload with a custom form. It lets an owner
+ * hand-edit the payload object, validates it (parse + must be an object),
  * and PATCHes via the same /admin/automation-rules/{id} path the typed form uses
  * — server-side unknown keys pass through untouched, so hand edits are safe.
  *
  * Mirrors JsonConfigModal (the per-account config-blob editor) but targets a
  * rule row rather than a config surface. Single-rule assumption: these tabs keep
  * exactly one rule per (account, kind); if several exist we edit the first and
- * say so, and if none exists the button is disabled until the form saves one.
+ * say so, and with none the menu item is disabled until the form saves one.
  */
 
-import { useMemo, useState } from "react";
-import { Braces } from "lucide-react";
+import { useState } from "react";
 
 import { RawJsonModal } from "@/components/automations/RawJsonModal";
-import { IfButton } from "@/components/ui/infloww";
-import {
-  useAutomationRules,
-  useUpdateRule,
-  type AutomationRule,
-} from "@/hooks/useAutomations";
+import { useUpdateRule, type AutomationRule } from "@/hooks/useAutomations";
 import { parseJsonObjectOr } from "@/lib/rawJsonReducer";
 
-export function EditRuleJsonButton({
-  accountId,
-  kind,
-  label = "Edit raw JSON",
-  className,
-}: {
-  accountId: string | null;
-  kind: string;
-  label?: string;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const rulesQ = useAutomationRules(accountId);
-  const rules = useMemo(
-    () => (rulesQ.data ?? []).filter((r) => r.kind === kind),
-    [rulesQ.data, kind],
-  );
-  const rule = rules[0] ?? null;
-  const disabled = !accountId || !rule;
-  return (
-    <>
-      <IfButton
-        variant="link"
-        icon={Braces}
-        disabled={disabled}
-        onClick={() => setOpen(true)}
-        className={className}
-        title={
-          !accountId
-            ? "Pick an account first"
-            : !rule
-              ? "Save this automation once, then edit its raw JSON"
-              : "Edit the raw JSON payload for this rule"
-        }
-      >
-        {label}
-      </IfButton>
-      {open && rule && accountId && (
-        <EditRuleJsonModal
-          rule={rule}
-          accountId={accountId}
-          extraCount={rules.length - 1}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function EditRuleJsonModal({
+export function EditRuleJsonModal({
   rule,
   accountId,
   extraCount,

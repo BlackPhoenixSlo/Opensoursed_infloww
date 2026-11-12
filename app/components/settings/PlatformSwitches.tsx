@@ -28,6 +28,9 @@ export default function PlatformSwitches() {
   const platforms = hydrated ? settings.platforms : DEFAULT_NOTIF_SETTINGS.platforms;
   return (
     <>
+      <p className="mb-4 text-[length:var(--if-fs-sm)] text-[var(--if-fg-3)]">
+        The switches below apply at once on this browser; they need no Save.
+      </p>
       <Section title="Synchronize platform display settings">
         <ToggleRow
           title="OnlyFans"

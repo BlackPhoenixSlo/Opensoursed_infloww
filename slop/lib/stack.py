@@ -25,7 +25,7 @@ page-load measurement sees the bundle a phone downloads. One shard only.
 `spawn()` / `wait_ready()` / `kill_group()` let a scenario start a relay
 elsewhere (a restored shard on the other box) and SIGKILL a process group.
 
-`SLOP_PY` overrides the Python that runs the relay (default the repo venv), so
+`SLOP_PY` overrides the Python that runs relays and declared sidecars (default the repo venv), so
 the harness also runs inside the relay image (deploy/fleet/calibrate.sh).
 """
 from __future__ import annotations
@@ -89,8 +89,11 @@ def sid(i: int) -> str:
 class Stack:
     def __init__(self, *, ui: bool, fault: str | None, logdir: Path, profile: bool = False,
                  shards: int = 1, apps: tuple[int, ...] = (), boxes: dict[str, tuple[int, ...]] | None = None,
-                 shards_per_box: int | None = None, app_mode: str = "dev"):
+                 shards_per_box: int | None = None, app_mode: str = "dev",
+                 sidecars: dict[str, tuple[str, str, str]] | None = None):
         self.ui, self.fault, self.logdir, self.profile = ui, fault, logdir, profile
+        self.sidecars = sidecars or {}
+        self.sidecar_procs: dict[str, subprocess.Popen] = {}
         if app_mode not in ("dev", "prod") or (app_mode == "prod" and shards > 1):
             raise SystemExit(f"slop: app_mode {app_mode!r} (dev, or prod on one shard)")
         self.app_mode = app_mode
@@ -102,8 +105,10 @@ class Stack:
         self.apps = tuple(sorted({i for i in apps if 0 <= i < self.shards})) if fleet else ((0,) if ui else ())
         self.tmp = Path(tempfile.mkdtemp(prefix="slop."))
         self.procs: list[subprocess.Popen] = []
-        ports = _ports(2 * self.shards + 1)
-        self.relay_ports, self.app_ports, dead = ports[:self.shards], ports[self.shards:-1], ports[-1]
+        port_names = tuple(dict.fromkeys((p for _, p, _ in self.sidecars.values())))
+        ports = _ports(2 * self.shards + 1 + len(port_names))
+        self.relay_ports, self.app_ports, dead = ports[:self.shards], ports[self.shards:2 * self.shards], ports[2 * self.shards]
+        self.extra_ports = dict(zip(port_names, ports[2 * self.shards + 1:]))
         self.shard_ids = [sid(i) for i in range(self.shards)]
         self.shard_urls = [f"http://127.0.0.1:{p}" for p in self.relay_ports]
         self.boxes = {b: tuple(ix) for b, ix in (boxes or {}).items()} if fleet else {}
@@ -188,7 +193,7 @@ class Stack:
             self._relay_envs.append(env)
             if self.boxes:  # what deploy's shard .env carries (and restic backs up)
                 (t / ".env").write_text("".join(f"{k}={env[k]}\n" for k in ("SESSION_SECRET", "CHATTER_SESSION_SECRET")))
-            p = self._spawn(self.relay_cmd(), env, self._log("relay", i), cwd=ROOT)
+            p = self._spawn(self.py_cmd("slop/lib/relay.py"), env, self._log("relay", i), cwd=ROOT)
             self.shard_pids.append(p.pid)
             waits.append((f"relay {self.shard_ids[i]}" if self.shards > 1 else "relay",
                           f"{self.shard_urls[i]}/livez", 60 if self.shards == 1 else 180, p))
@@ -214,6 +219,8 @@ class Stack:
             # /livez, not /health: /health is 503 until an OF account is loaded, which a slop stack never has.
             for name, url, timeout, p in waits:
                 self._wait(name, url, timeout, p)
+            for name in self.sidecars:
+                self.start_sidecar(name, mode="w")
         except BaseException:
             self.__exit__(None, None, None)
             raise
@@ -234,13 +241,17 @@ class Stack:
         `grace_s` (docker-compose.yml's stop_grace_period) for it to exit; past that
         SIGKILL, as docker does. Returns (epoch time of the SIGTERM, seconds until
         it exited, or None when it had to be killed)."""
-        pid, t = self.shard_pids[i], time.time()
+        pid = self.shard_pids[i]
+        return self._stop_proc(pid, grace_s)
+
+    def _stop_proc(self, pid: int, grace_s: float) -> tuple[float, float | None]:
+        t = time.time()
         try:
             os.killpg(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
-        p = next((p for p in self.procs if p.pid == pid), None)
         took: float | None = None
+        p = next((p for p in self.procs if p.pid == pid), None)
         if p is not None:
             try:
                 p.wait(timeout=grace_s)
@@ -248,7 +259,8 @@ class Stack:
             except subprocess.TimeoutExpired:
                 self.kill_group(pid)
                 return t, None
-            self.procs.remove(p)
+            if p in self.procs:
+                self.procs.remove(p)
         return t, took
 
     def kill_group(self, pid: int) -> float:
@@ -264,16 +276,19 @@ class Stack:
             self.procs.remove(p)
         return t
 
-    def relay_cmd(self) -> list[str]:
-        """How a relay starts. Under `slop/run --map` (env SLOP_COVERAGE=<dir>) it runs under coverage.py,
+    def py_cmd(self, script: str) -> list[str]:
+        """How a guarded Python process starts. Under `slop/run --map` it runs under coverage.py,
         lines only, one data file per process in <dir> (lib/covmap.py reads them)."""
-        relay = str(Path(__file__).with_name("relay.py"))
+        relay = str(ROOT / script)
         cov = os.environ.get("SLOP_COVERAGE")
         if not cov:
             return [str(PY), relay]
         return [str(PY), "-m", "coverage", "run", "--parallel-mode", f"--data-file={cov}/.coverage",
                 f"--source={','.join(str(ROOT / r) for r in selection.PY_ROOTS)}",
                 f"--omit={ROOT / 'slop/evidence'}/*", relay]
+
+    def relay_cmd(self) -> list[str]:
+        return self.py_cmd("slop/lib/relay.py")
 
     def _prod_app(self, nenv: dict[str, str], i: int) -> None:
         """`next build` (the Dockerfile's `pnpm build`) into .next/slop-prod against this run's relay,
@@ -319,6 +334,20 @@ class Stack:
         self.shard_pids[i] = p.pid
         self._wait(f"relay {self.shard_ids[i]}", f"{self.shard_urls[i]}/livez", timeout, p)
 
+    def stop_sidecar(self, name: str, grace_s: float = 45.0) -> tuple[float, float | None]:
+        """SIGTERM sidecar `name`'s process group, as `docker stop` does; past `grace_s` SIGKILL. Returns (epoch
+        time of the SIGTERM, seconds until it exited, or None when it had to be killed)."""
+        p = self.sidecar_procs[name]
+        return self._stop_proc(p.pid, grace_s)
+
+    def start_sidecar(self, name: str, timeout: int = 60, *, mode: str = "a") -> None:
+        """Start sidecar `name` again on the same DB, port and env; its log appends."""
+        script, port_env, health = self.sidecars[name]
+        env = dict(self._relay_envs[0], **{port_env: str(self.extra_ports[port_env])})
+        p = self._spawn(self.py_cmd(script), env, self._log(name, 0), cwd=ROOT, mode=mode)
+        self.sidecar_procs[name] = p
+        self._wait(name, f"http://127.0.0.1:{self.extra_ports[port_env]}{health}", timeout, p)
+
     def _spawn(self, cmd, env, log, cwd, mode: str = "w") -> subprocess.Popen:
         fh = open(self.logdir / log, mode)
         p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
@@ -363,7 +392,7 @@ class Stack:
                 os.killpg(p.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):  # macOS: EPERM for a group of zombies
                 pass
-        deadline = time.time() + 10
+        deadline = time.time() + (45 if self.sidecars else 10)
         for p in self.procs:
             try:
                 p.wait(timeout=max(0.1, deadline - time.time()))

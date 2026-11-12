@@ -2,9 +2,10 @@
 
 /**
  * CotagSection — the co-performer tag knobs (media_cotag): which co-creator
- * automated media sends @-tag, or no one, and "Always tag videos". CotagCard
- * mounts it on Settings › Co-creator tag (CotagTab) with its own Save (the
- * account-config PUT, `account_ai_config.cotag_*`: every media send of the creator).
+ * automated media sends @-tag, or no one, and "Always tag videos". CotagForm
+ * loads it for Settings › Co-creator tag (CotagTab) and hands the tab its Save (the
+ * account-config PUT, `account_ai_config.cotag_*`: every media send of the creator),
+ * which the tab puts in its Panel header.
  *
  * "Tag a co-creator, which one, or no one" (ticket 85). The co-creator can be
  * any OnlyFans creator: typing searches OF's creators (performers-search, the
@@ -16,11 +17,12 @@
  * the default and hands the form ''. The server stores an own handle as no tag.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch, SaveRow, saveVerdict } from "@/components/ui/infloww";
-import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
+import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch } from "@/components/ui/infloww";
+import type { SaveControl } from "@/components/settings/StickySaveBar";
+import { useAccountConfig, useSaveAccountConfig } from "@/hooks/useAccountConfig";
 
 import { relay } from "@/lib/relay";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -74,14 +76,6 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
 
   return (
     <div className="space-y-4 text-[14px]">
-      <div>
-        <h3 className="text-[14px] font-medium text-fg">Co-performer tag</h3>
-        <IfHelp>
-          The co-creator automated sends @-tag when the media isn’t provably solo (OF’s release-form
-          rule). Messages and posts carry it once the creator accepts this account’s tag request;
-          stories show the @handle either way.
-        </IfHelp>
-      </div>
       <div className="max-w-sm">
         <IfLabel htmlFor="cotag-search">Co-creator to tag</IfLabel>
         <div className="mb-2 flex items-center gap-3 text-fg">
@@ -143,42 +137,44 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
   );
 }
 
-/** The section on its own card: loads the account config and saves the stored
- *  config back with only the co-tag keys changed (the PUT replaces what it
- *  holds, so the rest of the creator's settings keep theirs). */
-export function CotagCard({ accountId }: { accountId: string }) {
+/** Loads the creator's config and hands `children` the Save control and the form: Save sends the stored config
+ *  back with only the co-tag keys changed (the PUT replaces what it holds, so the rest of the creator's settings
+ *  keep theirs). Mount it keyed by the creator, so unsaved edits never carry over to another. */
+export function CotagForm({ accountId, children }: {
+  accountId: string;
+  children: (save: SaveControl, form: ReactNode) => ReactNode;
+}) {
   const cfgQ = useAccountConfig(accountId);
-  if (!cfgQ.data?.config) {
-    if (cfgQ.isError) return <p className="text-sm text-err">{(cfgQ.error as Error)?.message || "Could not load the co-creator tag."}</p>;
-    // The config read in flight: the form's places as placeholder bars, not a blank card.
-    return cfgQ.isLoading
-      ? <div role="status" aria-label="Loading" className="space-y-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-10 w-full" /></div>
-      : null;
-  }
-  return <CotagForm accountId={accountId} resp={cfgQ.data} />;
-}
-
-function CotagForm({ accountId, resp }: { accountId: string; resp: AccountConfigResp }) {
   const saveM = useSaveAccountConfig(accountId);
   const [patch, setPatch] = useState<CotagPatch>({});
-  const cfg = resp.config;
-  const dirty = Object.keys(patch).length > 0;
-  return (
-    <div data-testid="cotag-card" className="rounded-md border border-border p-4 space-y-4 text-[14px]">
-      <CotagSection
-        accountId={accountId}
-        tagVideos={patch.cotag_tag_videos ?? cfg.cotag_tag_videos ?? false}
-        username={patch.cotag_username ?? cfg.cotag_username ?? null}
-        onChange={(p) => { setPatch((cur) => ({ ...cur, ...p })); if (!saveM.isIdle) saveM.reset(); }}
-      />
-      <div className="border-t border-border pt-4">
-        <SaveRow
-          label="Save co-creator tag"
-          save={saveVerdict(saveM)}
-          disabled={!dirty}
-          onSave={() => saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) })}
+  const cfg = cfgQ.data?.config;
+  const save: SaveControl = {
+    onSave: () => { if (cfg) saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) }); },
+    saving: saveM.isPending,
+    canSave: !!cfg && Object.keys(patch).length > 0,
+    saved: saveM.isSuccess,
+    error: saveM.error ? (saveM.error as Error).message || "Save failed" : null,
+  };
+  let form: ReactNode;
+  if (!cfgQ.data?.config) {
+    form = cfgQ.isError
+      ? <p className="text-sm text-err">{(cfgQ.error as Error)?.message || "Could not load the co-creator tag."}</p>
+      // The config read in flight: the form's places as placeholder bars, not a blank card.
+      : cfgQ.isLoading
+        ? <div role="status" aria-label="Loading" className="space-y-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-10 w-full" /></div>
+        : null;
+  } else {
+    const c = cfgQ.data.config;
+    form = (
+      <div data-testid="cotag-form">
+        <CotagSection
+          accountId={accountId}
+          tagVideos={patch.cotag_tag_videos ?? c.cotag_tag_videos ?? false}
+          username={patch.cotag_username ?? c.cotag_username ?? null}
+          onChange={(p) => { setPatch((cur) => ({ ...cur, ...p })); if (!saveM.isIdle) saveM.reset(); }}
         />
       </div>
-    </div>
-  );
+    );
+  }
+  return <>{children(save, form)}</>;
 }

@@ -2,21 +2,20 @@
 
 /**
  * My AI Chatter > Get to know fans (ours). The AI info-gather automation
- * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the Automation
- * card's switch turns the kind on or off for the creator (`/admin/automation-rules/switch`, which creates its rule
- * from the catalog defaults the first time, else wakes the one there). Its settings (the message cutoff and the
- * closing PPV, the rule's payload) and the engine's Human style boxes (the style blob, as Auto-reply's page shows its
- * own) show whether it is on or off, rule or not, seeded from the rule's payload else the catalog defaults, saved
- * together by one Save; with no rule yet that Save creates it OFF (getToKnowFansForm.ts `ruleSave`). Model info is
- * the account's short note every chat prompt pins (`account_ai_config.model_notes`, through
- * `_persona.compose_persona`: this automation and Auto-reply).
+ * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the header
+ * switch (with its On / Off pill) turns the kind on or off for the creator the moment it flips
+ * (`/admin/automation-rules/switch`, which creates its rule from the catalog defaults the first time, else wakes the
+ * one there). Its settings (the message cutoff and the closing PPV, the rule's payload) and the engine's Human style
+ * boxes (the style blob, as Auto-reply's page shows its own) show whether it is on or off, rule or not, seeded from
+ * the rule's payload else the catalog defaults, saved together by one Save; with no rule yet that Save creates it OFF
+ * (getToKnowFansForm.ts `ruleSave`). Model info (ModelInfoBlock, also on Auto-reply) is the account's note every chat
+ * prompt pins, with its own Save.
  *
  * Model info is for anyone with access to the account. The switch and settings ride the rule routes, which this
  * page does not grant on its own (service/permissions.py PAGE_MAP), so a role without them sees why instead.
  *
- * Both saves send the STORED value back with only this page's fields changed: the rule PATCH and the account-config
- * PUT each replace what they hold (the rule's cadence and dev knobs, the rest of the brain keep theirs). The style
- * PUT merges, so it sends only the boxes touched here.
+ * The rule PATCH sends the STORED payload back with only this page's fields changed (the rule's cadence and dev knobs
+ * keep theirs). The style PUT merges, so it sends only the boxes touched here.
  */
 
 import { useReducer, useState } from "react";
@@ -25,32 +24,36 @@ import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import {
-  FormBlock, NoCreator, SwitchRow, useAutomationCreator,
+  FormBlock, NoCreator, useAutomationCreator,
 } from "@/components/automations/automationPage";
+import { HeaderSwitch } from "@/components/automations/HeaderSwitch";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
+import { FormSkeleton, ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import { unsaved } from "@/components/automations/sentDraft";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { IfInput, IfTextArea, SaveRow, saveVerdict } from "@/components/ui/infloww";
-import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
+import { IfInput, IfLearn, IfTextArea, SaveRow } from "@/components/ui/infloww";
 import {
   useAutomationKinds, useAutomationRules, useSaveRule, useSwitchKind, type AutomationKind, type AutomationRule,
 } from "@/hooks/useAutomations";
 import { VAULT_PICK_MAX } from "@/lib/ofMirrorChatShared";
-import { Skeleton } from "@/components/ui/Skeleton";
 
 import { gtkfReducer, initState, invalidReason, limitsOf, ruleSave } from "./getToKnowFansForm";
 
 const TITLE = "Get to know fans";
 const KIND = "welcome_chatter_for_info";
 const NUMBER = "w-20";
-/** account_config_api / _persona.MODEL_NOTES_MAX. */
-const NOTES_MAX = 1000;
+/** The catalog summary when the kinds read has none yet. */
+const BLURB = "Chats with fans to learn about them and build their profile, then can send one closing PPV.";
+
+const learn = (tip: string) => (
+  <IfLearn tip={tip}><span className="max-sm:sr-only">Learn</span></IfLearn>
+);
 
 export default function GetToKnowFansPage() {
   const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators}><NoCreator loading={loading} /></PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={learn(BLURB)}><NoCreator loading={loading} /></PageFrame>;
   }
   // Keyed, so switching creator re-seeds the settings and the Model info box.
   return <GetToKnowFans key={accountId} accountId={accountId} creators={creators} />;
@@ -67,35 +70,42 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
   const on = rules.some((r) => r.is_enabled);
   const meta = kindsQ.data?.find((k) => k.kind === KIND);
 
+  const actions = (
+    <>
+      {learn(meta?.summary || BLURB)}
+      <HeaderSwitch label={TITLE} checked={on} disabled={!rulesQ.isSuccess} loading={switchM.isPending}
+        onChange={(enable) => switchM.mutate({ kind: KIND, enable })} />
+    </>
+  );
+
   return (
-    <PageFrame title={TITLE} creators={creators}>
+    <PageFrame title={TITLE} creators={creators} actions={actions}>
       <div className="max-w-[720px] space-y-8">
         <AiKeyNotice accountId={accountId} kinds={[KIND]} />
 
-        <FormBlock title="Automation">
-          <SwitchRow label={TITLE} checked={on} disabled={!rulesQ.isSuccess} loading={switchM.isPending}
-            hint={on ? "On: it is chatting with fans now." : "Off: nothing is sent. The settings below are kept."}
-            onChange={(enable) => switchM.mutate({ kind: KIND, enable })} />
-          {switchM.isError && <p className="text-[12px] text-err">{switchM.error.message}</p>}
-          {meta?.summary && <p className="text-[14px] text-fg-dim">{meta.summary}</p>}
-          {rulesQ.isLoading || kindsQ.isLoading ? (
-            <FormSkeleton />
-          ) : rulesQ.isError ? (
-            <p className="text-[14px] text-muted">
-              {(rulesQ.error as Error)?.message || "Could not load this automation."} Model info below still applies.
-            </p>
-          ) : !meta ? (
-            <p className="text-[14px] text-err">
-              {(kindsQ.error as Error)?.message || "Could not load this automation's settings."}
-            </p>
-          ) : null}
-        </FormBlock>
+        {rulesQ.isSuccess && (
+          <p className="text-[14px] text-fg-dim">
+            {on ? "On: it is chatting with fans now." : "Off: nothing is sent. The settings below are kept."}
+          </p>
+        )}
+        {switchM.isError && <p className="text-[12px] text-err">{switchM.error.message}</p>}
+        {rulesQ.isLoading || kindsQ.isLoading ? (
+          <FormSkeleton />
+        ) : rulesQ.isError ? (
+          <p className="text-[14px] text-muted">
+            {(rulesQ.error as Error)?.message || "Could not load this automation."} Model info below still applies.
+          </p>
+        ) : !meta ? (
+          <p className="text-[14px] text-err">
+            {(kindsQ.error as Error)?.message || "Could not load this automation's settings."}
+          </p>
+        ) : null}
 
         {/* Once per creator, on or off, rule or not: the switch creating or parking the rule never re-seeds it, and a
             failed refetch (data kept) never unmounts the typed settings. */}
         {rulesQ.data !== undefined && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
 
-        <ModelInfo accountId={accountId} />
+        <ModelInfoBlock accountId={accountId} />
       </div>
     </PageFrame>
   );
@@ -184,61 +194,6 @@ function RuleSettings({ accountId, rule, meta }: {
       <HumanStyleBlock style={style} />
 
       <SaveRow save={verdict} onSave={save} disabled={!!invalid} warn={invalid} />
-    </>
-  );
-}
-
-/** A form block's fields while its read runs: a label bar over an input-sized bar, twice. */
-function FormSkeleton() {
-  return (
-    <div role="status" aria-label="Loading" className="space-y-3">
-      <Skeleton className="h-3 w-28" />
-      <Skeleton className="h-10 w-full" />
-      <Skeleton className="h-3 w-40" />
-      <Skeleton className="h-10 w-full" />
-    </div>
-  );
-}
-
-/** The load gate: the box mounts only once the stored brain is in hand, so a failed read is never saved back. */
-function ModelInfo({ accountId }: { accountId: string }) {
-  const cfgQ = useAccountConfig(accountId);
-  return (
-    <FormBlock title="Model info">
-      {cfgQ.data ? <ModelInfoForm accountId={accountId} resp={cfgQ.data} /> : cfgQ.isLoading ? <FormSkeleton /> : (
-        <p className="text-[14px] text-err">{(cfgQ.error as Error)?.message || "Could not load Model info."}</p>
-      )}
-    </FormBlock>
-  );
-}
-
-function ModelInfoForm({ accountId, resp }: { accountId: string; resp: AccountConfigResp }) {
-  const saveM = useSaveAccountConfig(accountId);
-  // Empty → the prewritten template; its lines left blank never reach a prompt.
-  const [text, setText] = useState(resp.config.model_notes || resp.model_notes_template || "");
-
-  return (
-    <>
-      <p className="text-[12px] text-muted">
-        A few short lines about this model. The AI reads them in Get to know fans and Auto-reply chats; a line left
-        blank is ignored.
-      </p>
-      <IfTextArea
-        aria-label="Model info"
-        value={text}
-        onChange={(e) => {
-          if (saveM.isSuccess || saveM.isError) saveM.reset();
-          setText(e.target.value);
-        }}
-        rows={7}
-        maxLength={NOTES_MAX}
-      />
-      <SaveRow
-        save={saveVerdict(saveM)}
-        onSave={() => saveM.mutate({ ...resp.config, model_notes: text })}
-      >
-        <span className="text-[12px] text-muted tabular-nums">{text.length}/{NOTES_MAX}</span>
-      </SaveRow>
     </>
   );
 }

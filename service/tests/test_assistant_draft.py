@@ -131,6 +131,22 @@ async def _draft(request=PILOT, **kw):
 
 # ── Pure: validation / clamps ─────────────────────────────────────────
 
+def case_a_mass_draft_for_another_feature_or_an_existing_rule_is_vetoed():
+    v = assistant_draft.vetoed
+    for req in ("set up auto posting from the beach folder", "send new fans a hello message automatically",
+                "update my auto mass interval to 30 min",
+                "remove whales from my Morning mass"):
+        assert v(req, refine=False), req
+    for req in ("Settuo a mass post with nice captions and sfw photos", "delete the previous one each time 40 captions",
+                "auto mass every hour to fans", "make a mass for whales from the beach folder",
+                "update: every 3 hours, to my VIP list"):
+        assert not v(req, refine=False), req
+    assert not v("remove whales from my Morning mass", refine=True)       # a refine edits the draft, not a rule
+    o = assistant_draft.interpret(json.dumps(_pilot_intent()), request="set up auto posting from the beach folder",
+                                  lists=[], folders=[], existing=[])
+    assert (o.flow, o.answer) == (None, assistant_draft.UNSUPPORTED_ANSWER), o
+
+
 def case_interval_is_clamped_and_expressed_in_whole_units():
     table = [({"value": 1, "unit": "minutes"}, {"value": 5, "unit": "minutes"}, True),
              ({"value": 500, "unit": "hours"}, {"value": 168, "unit": "hours"}, True),
@@ -315,10 +331,15 @@ def case_massdmexclude_is_never_stored_and_always_explained():
 
 def case_the_fewshots_parse_as_the_schema_they_teach():
     shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
-    assert len(shots) == 4, len(shots)
+    assert len(shots) == 7, len(shots)
     parsed = [Intent.model_validate(json.loads(s)) for s in shots]
     assert parsed[0].flow == "mass_premade" and len(parsed[0].captions.generated) == 10
-    assert parsed[-1].flow is None
+    assert parsed[-1].flow is None and parsed[-4].every is None   # a mass with no timing is still one
+    unsend, pause = parsed[-3], parsed[-2]                        # mass_edit: unsend off ≠ switch off
+    assert unsend.flow == pause.flow == "mass_edit"
+    assert (unsend.edit.scope, unsend.edit.changes.unsend_after_hours, unsend.edit.changes.disable_rule) == (
+        "all", 0, False)
+    assert (pause.edit.scope, pause.edit.match, pause.edit.changes.disable_rule) == ("this", "Morning mass", True)
     assert PILOT in assistant_draft._FEWSHOTS
 
 
@@ -380,6 +401,9 @@ async def case_an_unsupported_request_is_flow_null_with_a_sentence():
     out = await _draft("turn on auto reply")
     assert (out["flow"], out["slots"], out["error"]) == (None, None, None), out
     assert out["answer"] == assistant_draft.UNSUPPORTED_ANSWER and isinstance(out["id"], int), out
+    _patch(_Spy(json.dumps({"flow": None})))
+    out = await _draft("send a mass to VIP right now")     # names a mass: says what would work, not "ask Q&A"
+    assert (out["flow"], out["answer"]) == (None, assistant_draft.ONE_OFF_MASS_ANSWER), out
 
 
 async def case_llm_failures_come_back_as_200s():
@@ -661,6 +685,8 @@ def case_parse_json_object_takes_fences_and_prose():
                  f"Sure — {js} — done.", f"{{not json}} then {js}",
                  f"```json\n{js}"):                       # an unclosed fence
         assert assistant_draft.parse_json_object(text) == obj, text
+    # DeepSeek dropped the outer "}": closed, never the nested {"count": 1} (which read as flow null)
+    assert assistant_draft.parse_json_object(js[:-1]) == obj
     for bad in ("", "no json here", "{broken: ", "```json\n```"):
         try:
             assistant_draft.parse_json_object(bad)
@@ -707,7 +733,7 @@ async def case_draft_for_eval_runs_the_real_prompt_and_returns_usage():
     assert "VIP" in user_msg["content"] and "Daytime (60 photos)" in user_msg["content"]
     assert out["flow"] == "mass_premade" and out["error"] is None and out["id"] is None, out
     assert out["slots"]["folder"]["id"] == "11" and out["slots"]["name"] == "Hourly SFW mass 2", out
-    assert usage == {"model": "deepseek-v4-flash", "tokens_in": 100, "tokens_cached": 90,
+    assert usage.pop("raw") and usage == {"model": "deepseek-v4-flash", "tokens_in": 100, "tokens_cached": 90,
                      "tokens_cache_write": 0, "tokens_out": 10, "cost_cents": 0.0,
                      "cost_millicents": 0}, usage
     _patch(_Spy(raises=LLMHTTPError("502", status=502)))
@@ -744,9 +770,281 @@ async def case_draft_for_eval_prices_claude_usage_from_the_provider_reply():
     # Sonnet 5.5: 0.2 in / 0.25 write / 0.01 hit / 1.0 out (cents per 1k).
     want_mc = round((1000 * 0.2 + 2000 * 0.25 + 3000 * 0.01 + 500 * 1.0) / 1000 * 100)
     assert want_mc == 123 == llm_client._cost_millicents("claude-sonnet-5-5", 6000, 500, 3000, 2000)
-    assert usage == {"model": "claude-sonnet-5-5", "tokens_in": 6000, "tokens_cached": 3000,
+    assert usage.pop("raw") and usage == {"model": "claude-sonnet-5-5", "tokens_in": 6000, "tokens_cached": 3000,
                      "tokens_cache_write": 2000, "tokens_out": 500, "cost_cents": 1.23,
                      "cost_millicents": 123}, usage
+
+
+# ── mass_edit (spec D11): bulk edits of existing Auto mass rules ──────
+
+import assistant_edit  # noqa: E402
+from assistant_edit import Skip, apply_changes, clean_changes, plan_rules, RuleRow, rule_version  # noqa: E402
+
+OWNER_PHRASE = "please turn off auto mass unsend for every model"
+
+
+def _msg(**kw) -> dict:
+    return {"text": "hi", "user_lists": ["fans"], "media_folder_id": 11, **kw}
+
+
+def case_clean_changes_whitelists_and_clamps():
+    assert clean_changes({"unsend_after_hours": 0, "online_only": "yes", "every_seconds": 60,
+                          "price": 1000, "media_count": 99, "exclude_last_chat_hours": -3,
+                          "disable_rule": False, "is_enabled": True, "text": "x"}) == {
+        "unsend_after_hours": 0, "every_seconds": 300, "price": 200, "media_count": 40,
+        "exclude_last_chat_hours": 0}
+    assert clean_changes({"unsend_after_hours": 500, "price": 1, "every_seconds": True}) == {
+        "unsend_after_hours": 168.0, "price": 3}
+    assert clean_changes({"disable_rule": True, "online_only": False}) == {"disable_rule": True,
+                                                                          "online_only": False}
+    assert clean_changes("junk") == {} and clean_changes({"price": float("nan")}) == {}
+
+
+def case_apply_changes_table():
+    P = lambda *ms: {"messages": list(ms)}     # noqa: E731
+    table = [
+        # changes, payload, every, enabled → payload messages, every, enabled, diff fields
+        ({"unsend_after_hours": 0}, P(_msg(unsend_after_hours=8)), 3600, True,
+         [_msg()], 3600, True, ["unsend_after_hours"]),
+        ({"unsend_after_hours": 2}, P(_msg(), _msg(unsend_after_hours=8)), 3600, False,
+         [_msg(unsend_after_hours=2), _msg(unsend_after_hours=2)], 3600, False, ["unsend_after_hours"]),
+        ({"online_only": False}, P(_msg(online_only=True)), 3600, True, [_msg()], 3600, True, ["online_only"]),
+        ({"online_only": True}, P(_msg()), 3600, True, [_msg(online_only=True)], 3600, True, ["online_only"]),
+        ({"every_seconds": 7200}, P(_msg()), 3600, True, [_msg()], 7200, True, ["every_seconds"]),
+        ({"exclude_last_chat_hours": 0}, P(_msg(exclude_last_chat_hours=1)), 3600, True,
+         [_msg()], 3600, True, ["exclude_last_chat_hours"]),
+        ({"price": 15, "media_count": 3}, P(_msg()), 3600, True,
+         [_msg(price=15, media_count=3)], 3600, True, ["price", "media_count"]),
+        ({"disable_rule": True}, P(_msg()), 3600, True, [_msg()], 3600, False, ["is_enabled"]),
+        ({"disable_rule": True}, P(_msg()), 3600, False, [_msg()], 3600, False, []),      # already off
+        ({"unsend_after_hours": 0}, P(_msg()), 3600, True, [_msg()], 3600, True, []),     # already no unsend
+    ]
+    for ch, payload, every, enabled, want_msgs, want_every, want_enabled, fields in table:
+        before = json.dumps(payload)
+        out, ev, en, diffs = apply_changes("mass_premade", payload, every, enabled, ch)
+        assert out["messages"] == want_msgs, (ch, out)
+        assert (ev, en, [d["field"] for d in diffs]) == (want_every, want_enabled, fields), (ch, ev, en, diffs)
+        assert json.dumps(payload) == before, "apply_changes mutated its input"
+    d = apply_changes("mass_premade", P(_msg(unsend_after_hours=8)), 3600, True, {"unsend_after_hours": 0})[3]
+    assert d == [{"field": "unsend_after_hours", "label": "Unsend after", "before": 8, "after": None}], d
+    for ch, payload, every, why in [
+            ({"price": 10}, P({"text": "x", "user_lists": ["fans"]}), 3600, "a price needs photos"),
+            ({"media_count": 2}, P({"text": "x"}), 3600, "photo count needs"),
+            ({"online_only": True}, P({"text": "x"}), 3600, "online-only needs a fan list"),
+            ({"every_seconds": 600}, P(_msg()), None, "runs at set times"),
+            ({"unsend_after_hours": 0}, {}, 3600, "has no message")]:
+        try:
+            apply_changes("mass_premade", payload, every, True, ch)
+        except Skip as e:
+            assert why in str(e), (ch, e)
+        else:
+            raise AssertionError(f"{ch} did not skip")
+    try:
+        apply_changes("auto_posts", P(_msg()), 3600, True, {"unsend_after_hours": 0})
+    except Skip:
+        pass
+    else:
+        raise AssertionError("an unknown kind was edited")
+
+
+def case_online_only_off_also_clears_filters_online():
+    # the sender reads filters.online as online-only too (review P1): off must clear it, never a silent no-op
+    m = _msg(filters={"online": 1})
+    out, _, _, diffs = apply_changes("mass_premade", {"messages": [m]}, 3600, True, {"online_only": False})
+    assert "filters" not in out["messages"][0] and [d["field"] for d in diffs] == ["online_only"], (out, diffs)
+    m = _msg(filters={"online": "1", "min_spent": 5})
+    out, *_ = apply_changes("mass_premade", {"messages": [m]}, 3600, True, {"online_only": False})
+    assert out["messages"][0]["filters"] == {"min_spent": 5}, out
+    try:   # online fans were its only audience: clearing it would send to nobody
+        apply_changes("mass_premade", {"messages": [{"text": "hi", "filters": {"online": 1}}]}, 3600, True,
+                      {"online_only": False})
+        raise AssertionError("expected Skip")
+    except assistant_edit.Skip:
+        pass
+
+
+def case_apply_changes_never_turns_a_rule_on():
+    for ch in ({"is_enabled": True}, {"disable_rule": False}, {"enabled": True, "unsend_after_hours": 2},
+               {"disable_rule": "false"}):
+        _, _, en, diffs = apply_changes("mass_premade", {"messages": [_msg()]}, 3600, False, ch)
+        assert en is False and all(d["field"] != "is_enabled" for d in diffs), (ch, diffs)
+
+
+def case_plan_groups_rules_per_model_and_counts_already_and_skipped():
+    rows = [RuleRow(1, "b", "Night mass", "mass_premade", json.dumps({"messages": [_msg(unsend_after_hours=8)]}),
+                    '{"every_seconds": 3600}', True),
+            RuleRow(2, "a", "Morning mass", "mass_premade", json.dumps({"messages": [_msg(unsend_after_hours=4)]}),
+                    '{"every_seconds": 3600}', False),
+            RuleRow(3, "a", "Hourly", "mass_premade", json.dumps({"messages": [_msg()]}), "{}", True),
+            RuleRow(4, "a", "Empty", "mass_premade", "{}", "{}", True),
+            RuleRow(5, "a", "Post", "auto_posts", json.dumps({"posts": [_msg()]}), "{}", True)]
+    plan = plan_rules(rows, {"unsend_after_hours": 0}, None, {"a": "Alice", "b": "Bea"})
+    assert [(r["id"], r["account_name"]) for r in plan.rules] == [(2, "Alice"), (1, "Bea")], plan.rules
+    assert plan.already == 1 and [x["id"] for x in plan.skipped] == [4], plan
+    assert plan.rules[0]["version"] == rule_version(rows[1].steps_json, rows[1].trigger_json, False)
+    assert plan.rules[1]["is_enabled"] is True and plan.rules[1]["diffs"][0]["before"] == 8
+    named = plan_rules(rows, {"unsend_after_hours": 0}, "the night MASS", {})
+    assert [r["id"] for r in named.rules] == [1], named.rules
+    assert [r["id"] for r in plan_rules(rows, {"unsend_after_hours": 0}, "auto masses", {}).rules] == [2, 1]
+    assert plan_rules(rows, {"unsend_after_hours": 0}, "Gym", {}).rules == []
+
+
+def case_a_mass_edit_draft_is_not_vetoed_and_resolves_the_change_spec():
+    v = assistant_draft.vetoed
+    assert v("pause my Morning mass", refine=False) and not v("pause my Morning mass", refine=False,
+                                                               flow="mass_edit")
+    assert v("pause my auto posting", refine=False, flow="mass_edit")     # another feature, no mass word
+    intent = {"flow": "mass_edit", "edit": {"scope": "all", "match": None, "changes": {
+        "unsend_after_hours": 0, "online_only": None, "every": None, "exclude_last_chat_hours": None,
+        "price": None, "media_count": None, "disable_rule": None}}, "assumptions": [], "unresolved": []}
+    o = assistant_draft.interpret(json.dumps(intent), request=OWNER_PHRASE, lists=[], folders=[], existing=[])
+    assert o.flow == "mass_edit" and o.draft.slots == {
+        "scope": "all", "match": None, "changes": {"unsend_after_hours": 0}, "rules": [], "already": 0,
+        "skipped": []}, o
+    assert "unsend off" in o.answer and "every model" in o.answer, o.answer
+    # price on every model: dropped + said; nothing else left → the "what I can do" sentence
+    intent["edit"]["changes"] = {"price": 20}
+    o = assistant_draft.interpret(json.dumps(intent), request="set price to $20 on every model's auto mass",
+                                  lists=[], folders=[], existing=[])
+    assert (o.flow, o.answer) == (None, assistant_draft.ONE_OFF_MASS_ANSWER), o
+    intent["edit"]["changes"] = {"price": 20, "unsend_after_hours": 0}
+    o = assistant_draft.interpret(json.dumps(intent), request="no unsend, $20, every model", lists=[], folders=[],
+                                  existing=[])
+    assert o.draft.slots["changes"] == {"unsend_after_hours": 0}, o.draft.slots
+    assert assistant_edit.ONE_MODEL_NOTE in o.draft.unresolved, o.draft.unresolved
+    # scope "all" without a word naming several models → this model, said (eval: "pause all auto masses")
+    o = assistant_draft.interpret(json.dumps(intent), request="pause all auto masses", lists=[], folders=[],
+                                  existing=[])
+    assert o.draft.slots["scope"] == "this" and assistant_draft.ONLY_THIS_NOTE in o.draft.assumptions, o.draft
+    intent["edit"] = {"scope": "this", "match": "Morning", "changes": {"every": {"value": 2, "unit": "hours"}}}
+    o = assistant_draft.interpret(json.dumps(intent), request="x", lists=[], folders=[], existing=[])
+    assert o.draft.slots["changes"] == {"every_seconds": 7200} and o.draft.slots["match"] == "Morning"
+    o = assistant_draft.interpret(json.dumps({"flow": "mass_edit"}), request="edit my mass", lists=[],
+                                  folders=[], existing=[])
+    assert (o.flow, o.answer) == (None, assistant_draft.ONE_OFF_MASS_ANSWER), o
+
+
+EA, EB, EC = "acc_edit_a", "acc_edit_b", "acc_edit_c"
+
+
+async def _seed_edit() -> dict[str, int]:
+    """Three models with an hourly Auto mass, unsend 8h. A on, B off; C's
+    caller has no Auto Mass opt-in (patched per case)."""
+    ids = {}
+    async with get_session() as s:
+        for aid, on in ((EA, True), (EB, False), (EC, True)):
+            if await s.get(Account, aid) is None:
+                s.add(Account(id=aid, nickname=f"Model {aid[-1].upper()}"))
+            r = AutomationRule(account_id=aid, name=f"Hourly {aid[-1]}", kind="mass_premade",
+                               trigger_json='{"every_seconds": 3600}', is_enabled=on,
+                               steps_json=json.dumps({"messages": [_msg(unsend_after_hours=8)]}))
+            s.add(r)
+            await s.flush()
+            ids[aid] = r.id
+    return ids
+
+
+async def _rule(rid: int) -> AutomationRule:
+    async with get_session() as s:
+        return await s.get(AutomationRule, rid)
+
+
+async def case_the_owner_phrase_edits_every_opted_in_model_and_nothing_else():
+    ids = await _seed_edit()
+    intent = {"flow": "mass_edit", "edit": {"scope": "all", "match": None,
+                                            "changes": {"unsend_after_hours": 0}}}
+    _patch(_Spy(json.dumps(intent)))
+    real = assistant_draft.opt_in_refusal
+
+    async def refuse_c(pages, account_id):
+        return "no Auto Mass" if account_id == EC else None
+    assistant_draft.opt_in_refusal = refuse_c
+    token = auth._request_user.set(auth.AuthedUser("u_edit", "edit", frozenset({EA, EB, EC})))
+    try:
+        out = await draft(DraftBody(request=OWNER_PHRASE, account_id=EA))
+        assert out["flow"] == "mass_edit" and out["error"] is None, out
+        mine = [r for r in out["slots"]["rules"] if r["id"] in ids.values()]
+        assert sorted(r["account_id"] for r in mine) == [EA, EB], out["slots"]["rules"]
+        assert {r["account_name"] for r in mine} == {"Model A", "Model B"}
+        assert "2 Auto mass rules on 2 models" in out["summary"], out["summary"]
+        refs = [{"id": r["id"], "version": r["version"]} for r in mine] + [
+            {"id": ids[EC], "version": "x"}]
+        res = await assistant_draft.edit_apply(assistant_draft.EditApplyBody(
+            account_id=EA, rules=refs, changes={**out["slots"]["changes"], "is_enabled": True, "text": "hacked"}))
+    finally:
+        auth._request_user.reset(token)
+        assistant_draft.opt_in_refusal = real
+    by = {r["id"]: r for r in res["results"]}
+    assert by[ids[EA]]["ok"] and by[ids[EB]]["ok"] and res["changed"] == 2, res
+    assert by[ids[EC]] == {"id": ids[EC], "ok": False, "reason": "not allowed"}, by[ids[EC]]
+    a, b, c = (await _rule(ids[EA]), await _rule(ids[EB]), await _rule(ids[EC]))
+    for r, on in ((a, True), (b, False)):
+        msg = json.loads(r.steps_json)["messages"][0]
+        assert "unsend_after_hours" not in msg and msg["text"] == "hi", msg
+        assert r.is_enabled is on, (r.id, r.is_enabled)              # never enabled, never disabled
+    assert json.loads(c.steps_json)["messages"][0]["unsend_after_hours"] == 8, c.steps_json
+
+
+async def case_apply_skips_a_rule_changed_since_the_plan_and_reapplies_to_the_fresh_row():
+    ids = await _seed_edit()
+    a = await _rule(ids[EA])
+    seen = rule_version(a.steps_json, a.trigger_json, a.is_enabled)
+    async with get_session() as s:                    # someone edits the rule after the card showed it
+        r = await s.get(AutomationRule, ids[EA])
+        r.steps_json = json.dumps({"messages": [_msg(unsend_after_hours=8, text="edited")]})
+    res = await assistant_draft.edit_apply(assistant_draft.EditApplyBody(
+        account_id=EA, rules=[{"id": ids[EA], "version": seen}], changes={"unsend_after_hours": 0}))
+    assert res["results"] == [{"id": ids[EA], "ok": False, "reason": assistant_edit.CHANGED_SINCE}], res
+    a = await _rule(ids[EA])
+    fresh = rule_version(a.steps_json, a.trigger_json, a.is_enabled)
+    res = await assistant_draft.edit_apply(assistant_draft.EditApplyBody(
+        account_id=EA, rules=[{"id": ids[EA], "version": fresh}],
+        changes={"unsend_after_hours": 0, "disable_rule": True, "payload": {"messages": []}}))
+    assert res["changed"] == 1, res
+    a = await _rule(ids[EA])
+    assert json.loads(a.steps_json) == {"messages": [_msg(text="edited")]}, a.steps_json   # fresh row kept
+    assert a.is_enabled is False
+
+
+async def case_price_on_another_model_is_skipped_at_apply():
+    ids = await _seed_edit()
+    b = await _rule(ids[EB])
+    res = await assistant_draft.edit_apply(assistant_draft.EditApplyBody(
+        account_id=EA, rules=[{"id": ids[EB], "version": rule_version(b.steps_json, b.trigger_json, b.is_enabled)}],
+        changes={"price": 20}))
+    assert res["results"][0]["ok"] is False and "one model" in res["results"][0]["reason"], res
+
+
+async def case_an_edit_with_nothing_to_change_is_flow_null_with_why():
+    await _seed_edit()
+    _patch(_Spy(json.dumps({"flow": "mass_edit", "edit": {"scope": "this", "match": "Gym",
+                                                          "changes": {"unsend_after_hours": 0}}})))
+    out = await draft(DraftBody(request="stop unsending the gym mass", account_id=EA))
+    assert out["flow"] is None and out["error"] is None and 'called "Gym"' in out["answer"], out
+
+
+def case_the_apply_route_is_served_over_http():
+    client = _harness.make_client()
+    r = client.post("/admin/assistant/edit/apply", json={"account_id": AID, "rules": [], "changes": {}})
+    assert r.status_code == 422, r.status_code
+    r = client.post("/admin/assistant/edit/apply", json={"account_id": AID, "rules": [{"id": 1, "version": "v"}],
+                                                          "changes": {"bogus": 1}})
+    assert r.status_code == 422 and "nothing to change" in r.text, (r.status_code, r.text)
+
+
+def case_create_extras_are_clamped_and_need_a_folder():
+    d = _resolve(_pilot_intent(price=500, media_count=3, exclude_replied_hours=0, exclude_inbound_hours=4,
+                               unread_limit=50, recent_chat_hours=12, recent_chat_limit=5000),
+                 folders=[_f("Daytime", "11", sfw=5)])
+    s = d.slots
+    assert (s["price"], s["media_count"], s["exclude_replied_hours"], s["exclude_inbound_hours"]) == (200, 3, 0, 4), s
+    assert (s["unread_limit"], s["recent_chat_hours"], s["recent_chat_limit"]) == (50, 12, 1000), s
+    assert any("allowed range" in a for a in d.assumptions), d.assumptions
+    d = _resolve(_pilot_intent(folder={"want": "none", "name": None}, price=10, media_count=2))
+    assert d.slots["price"] == 10 and d.slots["media_count"] is None, d.slots
+    assert any("price needs photos" in u for u in d.unresolved) and any("needs a folder" in u for u in d.unresolved)
+    d = _resolve(_pilot_intent())
+    assert all(d.slots[k] is None for k in assistant_draft.EXTRA_KEYS), d.slots
 
 
 _harness.run()

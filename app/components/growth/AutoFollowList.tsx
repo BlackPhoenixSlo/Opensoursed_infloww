@@ -14,6 +14,8 @@
  *
  * Counts: Total and Last followed are lifetime; Today / Yesterday / 7 days /
  * 30 days count from the follow log, cut at midnight in the browser's zone.
+ * Last followed reads "3 h ago", the full date on hover. On a phone the table keeps
+ * Creator, Total, Today and the switch (no sideways scroll); the rest is md and up.
  */
 
 import { useMemo, useState } from "react";
@@ -34,7 +36,7 @@ import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { onPopoutClick } from "@/lib/nav";
-import { fmtCents } from "@/lib/format";
+import { fmtAgo, fmtCents } from "@/lib/format";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { usePagedFilters } from "@/hooks/pagedFilters";
 
@@ -76,7 +78,9 @@ const ON_FILTERS: IfOption<OnFilter>[] = [
 /** Reset: antd's default button with M1 text and an M1 outline. */
 const RESET = "border-accent text-accent";
 /** Infloww's column widths (Total follows 120, Last followed 200, Action 80). */
-const W = { total: "w-[120px]", last: "w-[200px]", action: "w-[80px]" };
+const W = { total: "max-md:whitespace-normal max-md:leading-tight md:w-[120px]", last: "w-[200px]", action: "w-[80px]" };
+/** The columns a phone drops. */
+const MD = "hidden md:table-cell";
 
 export default function AutoFollowList({ accounts, accountsLoading = false }: {
   accounts: AccountMeta[];
@@ -113,7 +117,7 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
 
   return (
     <div className="space-y-4 p-4">
-      <p className="text-[14px] text-fg-dim">Automatically follow fans whose subscriptions have expired</p>
+      <p className="hidden text-[14px] text-fg-dim md:block">Automatically follow fans whose subscriptions have expired</p>
       {/* The bundle's help strip; the sentence is ours (our counts are only Auto-follow's follows). */}
       <div className="flex flex-wrap items-center gap-1 rounded-lg bg-[#b8981a15] px-3 py-2 text-[12px] text-[#b8991a]">
         <StickyNote aria-hidden className="h-4 w-4 shrink-0" />
@@ -143,16 +147,16 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
       {stats.isError && <div className="text-sm text-err">{errMsg(stats.error, "Could not load Auto-follow stats")}</div>}
       {sw.isError && <div className="text-sm text-err">{errMsg(sw.error, "Could not switch Auto-follow")}</div>}
       <div className="overflow-x-auto">
-        <table className={cn(IF_TABLE.table, "min-w-[880px]")}>
+        <table className={cn(IF_TABLE.table, "md:min-w-[880px]")}>
           <thead>
             <tr>
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Creator name</th>
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, W.total)}>Total follows</th>
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Today</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Yesterday</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>7 days</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>30 days</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, W.last)}>Last followed</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>Yesterday</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>7 days</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>30 days</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD, W.last)}>Last followed</th>
               <th className={cn(IF_TABLE.th, "sticky right-0", W.action)}>Action</th>
             </tr>
           </thead>
@@ -179,10 +183,12 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
                   </td>
                   <td className={IF_TABLE.td}>{s?.total ?? 0}</td>
                   <td className={IF_TABLE.td}>{s?.today ?? 0}</td>
-                  <td className={IF_TABLE.td}>{s?.yesterday ?? 0}</td>
-                  <td className={IF_TABLE.td}>{s?.d7 ?? 0}</td>
-                  <td className={IF_TABLE.td}>{s?.d30 ?? 0}</td>
-                  <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>{formatFollowedAt(s?.last_followed_at ?? null)}</td>
+                  <td className={cn(IF_TABLE.td, MD)}>{s?.yesterday ?? 0}</td>
+                  <td className={cn(IF_TABLE.td, MD)}>{s?.d7 ?? 0}</td>
+                  <td className={cn(IF_TABLE.td, MD)}>{s?.d30 ?? 0}</td>
+                  <td className={cn(IF_TABLE.td, MD, "whitespace-nowrap")}>
+                    <LastFollowed iso={s?.last_followed_at ?? null} />
+                  </td>
                   <td className={cn(IF_TABLE.td, "sticky right-0 bg-bg")} onClick={(e) => e.stopPropagation()}>
                     <IfSwitch aria-label={`Auto-follow ${label}`} checked={on}
                       disabled={sw.isPending || stats.isLoading}
@@ -196,6 +202,14 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
       </div>
     </div>
   );
+}
+
+/** "3 h ago", the full "MMMM DD, YYYY hh:mm A" as its title; "-" when never. */
+function LastFollowed({ iso }: { iso: string | null }) {
+  const at = iso ? utc(iso) : null;
+  const ago = at && !Number.isNaN(at.getTime()) ? fmtAgo(at.toISOString()) : null;
+  if (!ago) return <>-</>;
+  return <span title={formatFollowedAt(iso)}>{ago}</span>;
 }
 
 const SORTS: Array<{ key: RecordSort; label: string }> = [

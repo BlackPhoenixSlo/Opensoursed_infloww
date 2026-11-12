@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable
 from sqlalchemy import select
 
 import vault_ai_brief
+import vault_dupes
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
 
@@ -200,6 +201,56 @@ async def _load_rows(account_id: str) -> list[dict[str, Any]]:
             "score": escalation_score(fields),
         })
     return out
+
+
+# ── Duplicates: one copy per folder ─────────────────────────────────
+#
+# Re-uploads are ~30% of a real vault (`vault_dupes`), and the describe sweep
+# shares one answer across each duplicate set — so every copy reads the same,
+# keys to the same outfit and passes the same lane tests. Left in, one folder
+# holds the same photo two or three times. Each set is collapsed to ONE row
+# before anything is grouped.
+#
+# The sets are the Duplicates screen's at its recommended threshold, from the
+# hashes already stored (`rehash=False`): the preview stays read-only and
+# instant, and an item not hashed yet simply is not a candidate.
+
+
+async def _dupe_groups(account_id: str) -> list[list[int]]:
+    """The account's duplicate sets, each as media ids oldest first (original,
+    then copies). Any failure logs and returns [] — a plan without the collapse
+    beats no plan."""
+    try:
+        res = await vault_dupes.find_duplicates(account_id, rehash=False)
+    except Exception:  # noqa: BLE001
+        log.exception("dupe scan failed account=%s — planning without collapse", account_id)
+        return []
+    return [[int(m["media_id"]) for m in (c["original"], *c["dupes"])]
+            for c in res["clusters"]]
+
+
+def collapse_dupes(rows: list[dict[str, Any]], groups: list[list[int]],
+                   ) -> tuple[list[dict[str, Any]], list[int]]:
+    """`rows` with each duplicate set down to its kept item, + the dropped ids.
+
+    The kept item is the set's original (earliest upload — the copy the
+    Duplicates screen never hides), unless it carries no reading and a later
+    copy does: then the earliest copy that does, so a set is never lost to the
+    one member the describe pass skipped. Rows keep their order."""
+    by_id = {r["media_id"]: r for r in rows}
+    drop: set[int] = set()
+    for group in groups:
+        present = [m for m in group if m in by_id]
+        if len(present) < 2:
+            continue
+        keeper = next((m for m in present if by_id[m].get("fields")), present[0])
+        drop.update(m for m in present if m != keeper)
+    return [r for r in rows if r["media_id"] not in drop], sorted(drop)
+
+
+async def _grouping_rows(account_id: str) -> tuple[list[dict[str, Any]], list[int]]:
+    """The rows shoots and lanes are cut from (dupes collapsed) + dropped ids."""
+    return collapse_dupes(await _load_rows(account_id), await _dupe_groups(account_id))
 
 
 # ── Send order ──────────────────────────────────────────────────────
@@ -375,19 +426,32 @@ def garment_class(fields: dict[str, Any]) -> str:
     return ""
 
 
+# `setting` values that name no place, so cannot stand in for a colour.
+_NO_SETTING = frozenset({"", "other", "unclear", "unknown", "none"})
+
+
 def outfit_key(fields: dict[str, Any]) -> str:
     """The outfit an item belongs to: `"<colour> <garment class>"`.
 
-    Empty string when the describe named no garment at all — those items cannot
-    be attributed to a shoot and are left out rather than pooled into a junk
-    group. A colour with no recognised garment class still keys on the colour
-    alone, so a set is never dropped just because its wording is unusual.
+    A colour with no recognised garment class still keys on the colour alone,
+    so a set is never dropped just because its wording is unusual.
+
+    No colour (or material) named: `"<garment class> <setting>"` — a bra shot
+    in the bedroom — so a set the model described without its colour still
+    groups instead of vanishing. Both halves are required: a garment class
+    alone, or a room alone, would pool unrelated outfits into one junk group.
+    Empty string when neither key holds; those items are left out.
     """
-    colour = outfit_colour(fields)
-    if not colour:
+    if not isinstance(fields, dict):
         return ""
+    colour = outfit_colour(fields)
     kind = garment_class(fields)
-    return f"{colour} {kind}".strip()
+    if colour:
+        return f"{colour} {kind}".strip()
+    setting = _norm(fields.get("setting"))
+    if kind and setting not in _NO_SETTING:
+        return f"{kind} {setting}"
+    return ""
 
 
 def _with_why(r: dict[str, Any]) -> dict[str, Any]:
@@ -414,8 +478,11 @@ def _tally(items: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int],
 async def collect_outfit_scripts(
     account_id: str, *, window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
     min_items: int = MIN_SCRIPT_ITEMS, require_escalation: bool = True,
+    rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Shoots, recovered by outfit. Read-only.
+
+    `rows` — the pool, as `_grouping_rows` returns it; loaded when omitted.
 
     `require_escalation` drops groups that sit on ONE explicitness rung — a run
     of eight equally-suggestive stills in the same bra is a set, not a script,
@@ -424,7 +491,8 @@ async def collect_outfit_scripts(
     Ranked best-first: a mix of stills AND clips, spanning the most rungs, is
     what an operator can actually build a night out of.
     """
-    rows = await _load_rows(account_id)
+    if rows is None:
+        rows, _ = await _grouping_rows(account_id)
     window = window_hours * 3600
 
     by_outfit: dict[str, list[dict[str, Any]]] = {}
@@ -896,6 +964,7 @@ _RESIDUAL_LANE = ("explicit_rest", "explicit 1:1",
 async def collect_purpose_folders(
     account_id: str, *, media_ids: Iterable[int] | None = None,
     solo: bool = False, unlaned: list[int] | None = None,
+    rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Re-cut a pool of media into the send lanes, by heat rather than outfit.
 
@@ -912,9 +981,12 @@ async def collect_purpose_folders(
     `unlaned`, when given, receives the disputed free-tier items no lane took
     (see the residual lane below).
 
+    `rows` — the pool, as `_grouping_rows` returns it; loaded when omitted.
+
     Read-only; an item may legitimately appear in more than one lane.
     """
-    rows = await _load_rows(account_id)
+    if rows is None:
+        rows, _ = await _grouping_rows(account_id)
     if media_ids is not None:
         wanted = {int(m) for m in media_ids}
         rows = [r for r in rows if r["media_id"] in wanted]
@@ -1066,10 +1138,13 @@ async def plan_ai_folders(
 
     `solo` adds a `-solo` cut of each lane (see `collect_purpose_folders`).
     """
+    # Loaded and dupe-collapsed ONCE, for shoots and lanes alike.
+    rows, dupes_dropped = await _grouping_rows(account_id)
     shoots = await collect_outfit_scripts(
-        account_id, window_hours=window_hours, min_items=min_items)
+        account_id, window_hours=window_hours, min_items=min_items, rows=rows)
     settled_unlaned: list[int] = []
-    lanes = await collect_purpose_folders(account_id, solo=solo, unlaned=settled_unlaned)
+    lanes = await collect_purpose_folders(account_id, solo=solo, unlaned=settled_unlaned,
+                                          rows=rows)
 
     def _folder(group: dict[str, Any], source: str, purpose: str,
                 **extra: Any) -> dict[str, Any]:
@@ -1116,6 +1191,25 @@ async def plan_ai_folders(
 
     unique = {r["media_id"] for f in folders for r in f["items"]}
 
+    # What Confirm would do to the folders already there — the same match
+    # `apply_ai_folders` makes (`_assign_folders`), so the preview's counts are
+    # the apply's. Retiring a folder bound to an OF list unlinks that list
+    # (apply never deletes it on OF), which is why those are counted apart.
+    async with get_session() as s:
+        owned = await _owned_ai_folders(s, account_id)
+        reuse, stale = _assign_folders([ai_folder_name(f["name"]) for f in folders], owned)
+        for f, existing in zip(folders, reuse):
+            f["change"] = "new" if existing is None else "keep"
+        retired = [{"folder_id": f.id, "name": f.name, "of_list_id": f.of_list_id}
+                   for f in stale]
+    changes = {
+        "create": sum(1 for f in folders if f["change"] == "new"),
+        "keep": sum(1 for f in folders if f["change"] == "keep"),
+        "retire": len(retired),
+        "retire_on_of": sum(1 for r in retired if r["of_list_id"] is not None),
+        "retired": retired,
+    }
+
     # How much of this account has been through the cheap flags pass. The flag
     # lanes (safe explicit, $10, $50) take flagged stills only, so `missing` is
     # how many stills those folders are still waiting on. The UI says so; it
@@ -1133,9 +1227,16 @@ async def plan_ai_folders(
         "flags": coverage,
         "solo_coverage": solo_cov,
         "folders": folders,
+        # Confirm's effect: `create` new / `keep` refreshed / `retire` soft-
+        # deleted (`retire_on_of` of those bound to an OF list). `keep` here is
+        # folders, not the shoot count above.
+        "changes": changes,
         # Disputed free-tier items: never free, never sold as explicit, so in
         # no folder. Counted so "nothing dropped" stays checkable.
         "settled_unlaned": settled_unlaned,
+        # Duplicate copies collapsed into their set's kept item: in no folder,
+        # their keeper stands in for them.
+        "dupes_collapsed": dupes_dropped,
         "summary": {
             "folders": len(folders),
             "scripts": sum(1 for f in folders if f["source"] == "script"),
@@ -1148,8 +1249,39 @@ async def plan_ai_folders(
             "unique_media": len(unique),
             "memberships": sum(f["size"] for f in folders),
             "settled_unlaned": len(settled_unlaned),
+            "dupes_collapsed": len(dupes_dropped),
         },
     }
+
+
+async def _owned_ai_folders(s, account_id: str) -> dict[str, list[VaultFolder]]:
+    """Every live folder this module made, by name, oldest first per name."""
+    owned: dict[str, list[VaultFolder]] = {}
+    for folder in (await s.execute(
+        select(VaultFolder).where(
+            VaultFolder.account_id == account_id,
+            VaultFolder.created_by == AI_FOLDER_CREATOR,
+            VaultFolder.deleted_at.is_(None),
+        ).order_by(VaultFolder.id)
+    )).scalars().all():
+        owned.setdefault(folder.name, []).append(folder)
+    return owned
+
+
+def _assign_folders(names: list[str], owned: dict[str, list[VaultFolder]],
+                    ) -> tuple[list[VaultFolder | None], list[VaultFolder]]:
+    """(per planned name the generated folder it reuses, or None = new; the
+    generated folders left over, by id — the ones a rebuild retires).
+
+    Each name takes at most one folder, the oldest of that name. Only AI-
+    prefixed leftovers are retired: scoped hard, so an operator's own folder is
+    never reached even if it collides on name. The preview and the apply both
+    call this, so what the modal says is what Confirm does."""
+    left = {name: list(rows) for name, rows in owned.items()}
+    reuse = [left[n].pop(0) if left.get(n) else None for n in names]
+    stale = sorted((f for rows in left.values() for f in rows
+                    if f.name.startswith(AI_FOLDER_PREFIX)), key=lambda f: f.id)
+    return reuse, stale
 
 
 async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, Any]:
@@ -1164,24 +1296,14 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
     Internal folders only. No OF writes, nothing sent.
     """
     created: list[dict[str, Any]] = []
+    specs = plan.get("folders") or []
     async with get_session() as s:
-        # Every live folder this module made, oldest first per name. Each spec
-        # takes at most one; whatever is left after the loop is stale.
-        owned: dict[str, list[VaultFolder]] = {}
-        for folder in (await s.execute(
-            select(VaultFolder).where(
-                VaultFolder.account_id == account_id,
-                VaultFolder.created_by == AI_FOLDER_CREATOR,
-                VaultFolder.deleted_at.is_(None),
-            ).order_by(VaultFolder.id)
-        )).scalars().all():
-            owned.setdefault(folder.name, []).append(folder)
+        # Each spec takes at most one live generated folder of its name;
+        # whatever is left over is stale (`_assign_folders`, as the preview).
+        names = [ai_folder_name(spec["name"]) for spec in specs]
+        reuse, stale = _assign_folders(names, await _owned_ai_folders(s, account_id))
 
-        for spec in plan.get("folders") or []:
-            name = ai_folder_name(spec["name"])
-            mine = owned.get(name)
-            existing = mine.pop(0) if mine else None
-
+        for spec, name, existing in zip(specs, names, reuse):
             if existing is not None:
                 folder_id = existing.id
                 reused = True
@@ -1219,10 +1341,7 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
         # the AI- prefix are ever retired, and only by soft-delete. An operator's
         # own folder cannot be reached by this even if it collides on name.
         retired: list[dict[str, Any]] = []
-        for folder in sorted((f for rows in owned.values() for f in rows),
-                             key=lambda f: f.id):
-            if not folder.name.startswith(AI_FOLDER_PREFIX):
-                continue
+        for folder in stale:
             folder.deleted_at = datetime.utcnow()
             retired.append({"folder_id": folder.id, "name": folder.name,
                             "of_list_id": folder.of_list_id})

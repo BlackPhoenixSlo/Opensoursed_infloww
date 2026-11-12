@@ -13,12 +13,12 @@ PICK_HINT = ("vault download: while the folder picker is open the card says Chro
              "Downloads themselves (New Folder inside them); closing the picker removes it, no download starts")
 FOLDER = ("vault download: the rail's Download folder saves exactly that folder's media under <creator>/<folder>/, "
           "exact bytes, all direct, 0 relay downloads")
-VAULT = ("vault download: the header's Download full vault fetches every mirror media once (count = mirror, nothing "
+VAULT = ("vault download: the Extras drawer's Download full vault fetches every mirror media once (count = mirror, nothing "
          "dropped) and writes it into each of its custom folders (a copy per folder, else Unfiled), exact bytes; the "
          "stale-IP urls re-signed by their listing window (one OF read per window, 0 by-id) and still delivered direct")
 SWITCH = ("vault download: picking another Creator while a whole-vault download runs leaves it running: every "
           "media of the first Creator lands once with exact bytes, the card (titled with that Creator) ends done, 0 "
-          "failed, never cancelled; the other Creator's grid shows with its header button \"Add full vault to queue\" on")
+          "failed, never cancelled; the other Creator's grid shows with its Extras drawer item \"Add full vault to queue\" on")
 QUEUE_STALL = ("vault download queue: one relay CDN response throttled to zero bytes mid-body ends that item `stalled` "
                "(no file, no .crswap) while the rest of the job lands; the job finishes with exactly 1 stalled, 0 "
                "failed, and the job queued after it (another Creator's folder) starts on its own, the stalled item's retry job "
@@ -32,7 +32,7 @@ QUEUE_CREATORS = ("vault download queue: a selection of Creator B then a folder 
 PROXIED = ("vault download: a proxied Creator's Download selected never touches the CDN from the browser (0 browser "
            "CDN fetches): every file streamed by the relay through the Creator's proxy, exact bytes")
 PHONE_CAP = ("vault download, phone (no folder picker, files shareable): Download selected on at 20 ticked, off at 21 "
-             "with the visible reason; Download folder / the header's Download full vault off with theirs")
+             "with the visible reason; Download folder / the Extras drawer's Download full vault off with theirs")
 PHONE_SHARE = ("vault download, phone: a selection of photos + 2 videos > budget/2 fetched through the same source "
                "chain (proxied: 0 browser CDN fetches) into >= 2 share batches, each saved by a tap inside its "
                "activation; every file shared exactly once as <id>.<ext> with its MIME and exact size; a dismissed "
@@ -48,12 +48,12 @@ OPEN_FOLDER = ("vault download: the card's Open folder opens the computer's file
                "(selection: <creator>/, a folder download: <creator>/<folder>/), holding its links files (folder: "
                "and every media file), after the run and mid-run (another Creator on screen); the done card names "
                "that path (\"Saved in ...\")")
-HEADER_SCOPE = ("vault download, the page header's button (`vault-header-download`): under All media it reads "
+HEADER_SCOPE = ("vault download, the Extras drawer's full download (`vault-extras-download`): under All media it reads "
                 "\"Download full vault\" and its run's listing requests carry no folder id; with a rail folder selected "
                 "it reads \"Download full folder\", its listing requests carry exactly that folder's id and it saves "
                 "exactly that folder's media (exact bytes, all direct, 0 relay downloads); trigger + settled shots each")
-PHONE_HEADER = ("vault download, phone 390x844 portrait: the header's Download is visible as its icon (the label "
-                "screen-reader-only), disabled, titled with the desktop-only reason")
+PHONE_HEADER = ("vault download, phone 390x844 portrait: the Extras drawer's Download full vault is visible (icon and "
+                "label), disabled, titled with the desktop-only reason")
 RELAY_LOAD = ("vault download: --users concurrent relay downloads (GET /admin/vault-ai/download): every one 200, "
               "attachment named <id>.<ext>, the exact bytes, none dropped")
 
@@ -153,9 +153,9 @@ def register(Fault) -> dict:
             (r"for \(const n of at\.dirs\)", "for (const n of at.dirs.slice(0, 1))"),
         ), browser_files=DL_FILES),
         # slop/run 2026-11-08-vault-download --break --fault=vault-download-header-ignores-folder
-        # app/components/vault/VaultManagePanel.tsx header onClick: the selected folder's scope dropped, so "Download
-        # full folder" lists and saves the whole vault (the label still says folder).
+        # app/components/vault/VaultManagePanel.tsx the Extras drawer's full download `onStart`: the selected folder's
+        # scope dropped, so "Download full folder" lists and saves the whole vault (the label still says folder).
         "vault-download-header-ignores-folder": Fault(None, (HEADER_SCOPE,), browser=(
-            (r"dl\.start\(hdr\)", "dl.start(scopeArgs(null))"),
+            (r"dl\.start\(fullScope\)", "dl.start(scopeArgs(null))"),
         )),
     }

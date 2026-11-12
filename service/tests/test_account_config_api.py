@@ -528,6 +528,68 @@ async def case_model_notes_roundtrip_and_sparse():
     assert out["config"]["model_notes"] is None, out["config"]
 
 
+async def case_daily_cost_cap_put_roundtrip_bound_and_owner_only():
+    """The daily AI spend cap (Settings › AI keys): a PUT lands in the column
+    and the GET serves it back with today's per-provider spend; over $100/day
+    is a 422 that writes nothing; a save that omits the key keeps a raised cap;
+    a Chatter's save never moves it."""
+    import auth
+    import chatters
+    from datetime import datetime
+    from db.models import GrokDailyCost
+
+    aid = "acc_bc_cap"
+    await _seed_account(aid)
+    out = await put_account_config(_ConfigBody(account_id=aid, config={"daily_cost_cap_cents": 1234}))
+    assert out["config"]["daily_cost_cap_cents"] == 1234, out["config"]
+    async with get_session() as s:
+        assert (await s.get(AccountAiConfig, aid)).daily_cost_cap_cents == 1234
+
+    try:
+        await put_account_config(_ConfigBody(account_id=aid, config={"daily_cost_cap_cents": 10_001}))
+        raise AssertionError("a cap over $100/day was accepted")
+    except HTTPException as e:
+        assert (e.status_code, e.detail) == (
+            422, "daily_cost_cap_cents must be at most 10000 ($100/day)"), e.detail
+    # Absent = unchanged (an older client saving a persona can't reset it to $1).
+    c = (await put_account_config(_ConfigBody(account_id=aid, config={"persona": "hi"})))["config"]
+    assert c["daily_cost_cap_cents"] == 1234, c
+
+    # A Chatter linked to the account saves the brain; the cap stays the owner's.
+    tok_u = auth._request_user.set(None)
+    tok_c = chatters._request_chatter.set(chatters.ChatterIdentity(
+        "c-cap", "cap_chatter", None, None, frozenset({"u-cap"}), frozenset({aid})))
+    try:
+        c = (await put_account_config(_ConfigBody(account_id=aid, config={
+            "persona": "by chatter", "daily_cost_cap_cents": 5})))["config"]
+    finally:
+        auth._request_user.reset(tok_u)
+        chatters._request_chatter.reset(tok_c)
+    assert c["persona"] == "by chatter" and c["daily_cost_cap_cents"] == 1234, c
+
+    # A fresh row with no cap sent takes the column default ($1/day).
+    aid2 = "acc_bc_cap_fresh"
+    await _seed_account(aid2)
+    c = (await put_account_config(_ConfigBody(account_id=aid2, config={"persona": "x"})))["config"]
+    assert c["daily_cost_cap_cents"] == 100, c
+
+    # Today's spend per provider rides the GET (millicents, held reservations included).
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    async with get_session() as s:
+        s.add(GrokDailyCost(day=day, account_id=aid, provider="deepseek", cost_cents=4200,
+                            call_count=3, is_capped=False))
+        s.add(GrokDailyCost(day=day, account_id=aid, provider="deepinfra", cost_cents=99,
+                            call_count=1, is_capped=True))
+        s.add(GrokDailyCost(day="2000-01-01", account_id=aid, provider="deepseek",
+                            cost_cents=1, call_count=1, is_capped=False))
+    resp = await get_account_config(account_id=aid)
+    assert resp["ai_spend_today"] == {"day": day, "providers": [
+        {"provider": "deepinfra", "spent_millicents": 99, "flagged": True},
+        {"provider": "deepseek", "spent_millicents": 4200, "flagged": False}]}, resp["ai_spend_today"]
+    assert "ai_spend_today" not in resp["config"]
+    assert (await get_account_config(account_id=aid2))["ai_spend_today"]["providers"] == []
+
+
 _harness.run(
     case_get_defaults_for_unset,
     case_save_then_get_roundtrip,
@@ -544,4 +606,5 @@ _harness.run(
     case_help_assistant_default_is_opus_only_where_anthropic_is_keyed,
     case_a_json_purpose_refuses_a_model_that_cannot_return_json,
     case_model_notes_roundtrip_and_sparse,
+    case_daily_cost_cap_put_roundtrip_bound_and_owner_only,
 )

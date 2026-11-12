@@ -10,7 +10,8 @@ block used to occupy — FastAPI matches routes in registration order. This modu
 never imports `vault_ai_api` (one-way dependency, no cycle).
 
 Tests patch `vault_ai_vision._describe_one` / `_flags_one` /
-`_DESCRIBE_CONCURRENCY` — the names are looked up HERE.
+`_DESCRIBE_CONCURRENCY` — the names are looked up HERE. The Jev v8 wiring
+lives in `vault_jev_pass` (patch `vault_jev_pass.enabled` / `safe` / `plan`).
 """
 from __future__ import annotations
 
@@ -27,8 +28,11 @@ import llm_client
 import vault_ai_brief
 import vault_ai_fix
 import vault_ai_vision_decide  # module attr `with_flags_cost`, looked up per call
+import vault_describe_jev
 import vault_dupes  # module attr `reuse_groups`, looked up per call
 import vault_frames
+import vault_jev_pass  # module attrs `enabled` / `safe` / `plan`, looked up per call
+import vault_jev_rules
 import vault_scripts
 import vault_sweep
 import vision  # shared frame download / shrink / refusal test
@@ -66,23 +70,6 @@ _VISION_PROVIDER = "deepinfra"
 _FLAGS_VIDEO_FRAMES = 4
 
 
-# Why a frameless item got no frames, as a `describe_status`.
-#
-# The two outcomes want OPPOSITE retry policies, and collapsing them is what made
-# the 2026-08-04 incident invisible: every failure was stamped `blocked_drm`, so
-# 1,777 items whose signatures had merely expired inherited the 7-day cool-off
-# meant for clips OF genuinely cannot render, and the next sweep skipped them.
-#   no_variant   → OF answered with a payload carrying nothing renderable.
-#                  Asking again changes nothing. Cool off.
-#   fetch_failed → we could not read bytes we have every reason to think exist.
-#                  Retry on the very next sweep, no cool-off.
-#   gone         → OF has deleted it. The still store already stamped
-#                  `removed_at`, which every candidate query filters on, so this
-#                  status is only ever read by whoever asked for THIS item.
-# Unknown reasons fall to the retryable side: over-retrying costs a fetch,
-# under-retrying costs a description nobody notices is missing.
-_NO_IMAGE_STATUS = {"no_variant": "blocked_drm", "fetch_failed": "fetch_failed",
-                    "gone": "gone"}
 
 
 # ── Flags prompt (the cheap pass) ───────────────────────────────────
@@ -453,14 +440,44 @@ def _assert_vision_model(model: str) -> None:
 
 
 async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
-    """UPDATE one vault_items row with `vals` and commit."""
+    """UPDATE one vault_items row with `vals` and commit. A new `ai_fields_json`
+    keeps the row's CURRENT `_jev` (`vault_jev_pass.keep_current`): the blob was
+    built from a read taken before a describe / flags call, and a Jev pass from
+    the other sweep may have landed meanwhile."""
     async with get_session() as s:
+        if "ai_fields_json" in vals:
+            cur = await s.scalar(select(VaultItem.ai_fields_json).where(
+                VaultItem.account_id == account_id, VaultItem.media_id == media_id).with_for_update())
+            vals["ai_fields_json"] = vault_jev_pass.keep_current(cur, vals["ai_fields_json"])
         await s.execute(
             update(VaultItem)
             .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
             .values(**vals)
         )
         await s.commit()
+
+
+# ── Jev v8 pass before the qwen flags call (`vault_jev_pass`) ────────
+
+async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
+                        jev_sweep: vault_jev_pass.Sweep | None = None) -> dict[str, Any]:
+    """The flags sweep's visit: Jev first (when on), then the qwen flags call
+    unless the row's flags are already current (a row queued only for Jev).
+    `force` re-runs the qwen call; it never forces a paid Jev re-run (Jev runs
+    when `_jev` is missing / stale). A Jev cap on a Jev-only visit is that
+    item's failure (`jev_capped`), not the sweep's stop (`capped`)."""
+    jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep)
+    flags_needed = force or jev is None
+    if not flags_needed:
+        async with get_session() as s:
+            item = await s.get(VaultItem, (account_id, media_id))
+        flags_needed = item is None or item.kind not in _DESCRIBABLE_KINDS or not flags_current(
+            load_json(item.ai_fields_json, {}) or {}, _FLAGS_VERSION)
+    if not flags_needed:
+        return vault_ai_vision_decide.with_jev(
+            {"media_id": media_id, "ok": jev["ok"], "status": jev["status"],
+             **({"detail": jev["detail"]} if jev.get("detail") else {})}, jev)
+    return vault_ai_vision_decide.with_jev(await _flags_one(account_id, media_id), jev)
 
 
 # ── Flags pass (one item) ───────────────────────────────────────────
@@ -514,7 +531,7 @@ async def _flags_one(account_id: str, media_id: int,
     want = _FLAGS_VIDEO_FRAMES if is_video else 1
     got = await vault_frames.collect(account_id, item, raw, want=want)
     if not got.images:
-        status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
+        status = vault_frames.NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
         await _stamp_flags_failure(account_id, media_id, status)
         return {"media_id": media_id, "ok": False, "status": status,
                 "detail": got.detail or f"no frames ({status})"}
@@ -592,20 +609,32 @@ async def _reuse(account_id: str, order: list[int], *,
                  flags: bool) -> tuple[ReusePlan, dict[int, list[tuple[int, str]]]]:
     """This sweep's `ReusePlan` over `order`, and the index of rows earlier
     sweeps marked as copies ({source: [(copy, marker)]}). Never raises: no
-    duplicates is the fallback for every failure."""
+    duplicates is the fallback for every failure.
+
+    Flags sweep with Jev on: a PHOTO is only a source to copy from once it
+    carries a current `_jev` — else its copies would be skipped and never get
+    one."""
     plan, index = ReusePlan({}, {}), {}
     try:
         groups = await vault_dupes.reuse_groups(account_id, frozenset(order))
         members = sorted({int(m) for g in groups for m in g})
-        rows = []
+        rows, photos = [], set()
         async with get_session() as s:
             for i in range(0, len(members), 500):
-                rows += [(mid, st, load_json(fj, {}) or {}) for mid, st, fj in (await s.execute(
-                    select(VaultItem.media_id, VaultItem.describe_status,
-                           VaultItem.ai_fields_json)
-                    .where(live_describable(account_id),
-                           VaultItem.media_id.in_(members[i:i + 500])))).all()]
+                for mid, st, fj, kind in (await s.execute(
+                        select(VaultItem.media_id, VaultItem.describe_status,
+                               VaultItem.ai_fields_json, VaultItem.kind)
+                        .where(live_describable(account_id),
+                               VaultItem.media_id.in_(members[i:i + 500])))).all():
+                    rows.append((mid, st, load_json(fj, {}) or {}))
+                    if kind == "photo":
+                        photos.add(int(mid))
             done, bad = reuse_state(rows, flags=flags, flags_version=_FLAGS_VERSION)
+            # Flags sweep only: the describe sweep's copies carry no Jev
+            # dependency, and a photo described pre-Jev is still a fine source.
+            if flags and photos and await vault_jev_pass.enabled(account_id):
+                done -= {int(m) for m, _, f in rows
+                         if int(m) in photos and not vault_jev_rules.current(f)}
             plan = reuse_plan(groups, order, done, bad)
             for mid, fj in (await s.execute(
                     select(VaultItem.media_id, VaultItem.ai_fields_json)
@@ -654,6 +683,9 @@ async def _copy_describe(account_id: str, src_id: int, dst_id: int) -> dict[str,
         if src.describe_status != "described":
             return {"media_id": dst_id, "ok": False, "status": "source_undescribed",
                     "detail": f"duplicate of {src_id}, which is not described"}
+        if not vault_describe_jev.reusable(load_json(src.ai_fields_json, {}) or {}):
+            return {"media_id": dst_id, "ok": False, "status": "source_stale",
+                    "detail": f"duplicate of {src_id}, whose describe was fed a Jev reading it no longer holds"}
         vals = build_copy_update(
             {c: getattr(src, c) for c in _COPY_SRC_COLS},
             prev_ai=load_json(dst.ai_fields_json, {}) or {},
@@ -751,12 +783,16 @@ async def _flags_todo(account_id: str, *, force: bool = False,
     items describable but still unusable."""
     async with get_session() as s:
         q = (select(VaultItem.media_id, VaultItem.created_at,
-                    VaultItem.of_folder_ids, VaultItem.ai_fields_json)
+                    VaultItem.of_folder_ids, VaultItem.ai_fields_json, VaultItem.kind)
              .where(live_describable(account_id)))
         if only:
             q = q.where(VaultItem.media_id.in_(only))
         rows = (await s.execute(q)).all()
     blobs = {int(r[0]): r[3] for r in rows}
+    # With Jev on, a photo without a current `_jev` is work too (`_jev_and_flag`
+    # then skips the qwen call when its flags are already current).
+    jev_photos = ({int(r[0]) for r in rows if r[4] == "photo"}
+                  if await vault_jev_pass.enabled(account_id) else set())
 
     todo = []
     for mid in priority_order((r[0], r[1], r[2]) for r in rows):
@@ -766,12 +802,13 @@ async def _flags_todo(account_id: str, *, force: bool = False,
         # the enum, has not really been flagged and must re-run. A row produced
         # by an OLDER prompt is stale for the same reason — its answers were
         # given to a different question.
-        if only or force or not flags_current(f, _FLAGS_VERSION):
+        if (only or force or not flags_current(f, _FLAGS_VERSION)
+                or (mid in jev_photos and not vault_jev_rules.current(f))):
             todo.append(int(mid))
     return todo[:limit] if limit else todo
 
 
-async def _run_flags_all(account_id: str, todo: list[int]) -> None:
+async def _run_flags_all(account_id: str, todo: list[int], *, force: bool = False) -> None:
     """Background flags sweep. Resumable by construction: it only ever visits
     rows that are missing or stale, so a relay restart mid-sweep costs the items
     in flight and nothing else — pressing the button again picks up the rest.
@@ -781,9 +818,11 @@ async def _run_flags_all(account_id: str, todo: list[int]) -> None:
         plan, index = await _reuse(account_id, todo, flags=True)
         walked = set(todo)
         settled = await _copy_up_front(account_id, plan, _copy_flags)
+        jev_sweep = vault_jev_pass.Sweep()
 
         async def visit(mid: int) -> dict[str, Any]:
-            return await _lead(account_id, mid, _flags_one(account_id, mid),
+            return await _lead(account_id, mid,
+                               _jev_and_flag(account_id, mid, force=force, jev_sweep=jev_sweep),
                                plan.followers.get(mid, []), _copy_flags,
                                _propagation(index, mid, walked, flags_only=True))
 
@@ -847,8 +886,11 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
 
     if only:
         done, failed, cost = 0, 0, 0
+        jev_sweep = vault_jev_pass.Sweep()
         for mid in todo:
-            res = await _flags_one(account_id, mid)
+            # Re-runs qwen (the probe's point); Jev only where `_jev` is
+            # missing / stale — never a paid Jev re-run per probe.
+            res = await _jev_and_flag(account_id, mid, force=True, jev_sweep=jev_sweep)
             if res.get("ok"):
                 done += 1
                 cost += int(res.get("cost_millicents") or 0)
@@ -872,7 +914,7 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
                 "candidates": len(todo), "already": True,
                 "prompt_version": _FLAGS_VERSION}
     _flags_running.add(account_id)
-    asyncio.create_task(_run_flags_all(account_id, todo))
+    asyncio.create_task(_run_flags_all(account_id, todo, force=force))
     return {"account_id": account_id, "status": "running",
             "candidates": len(todo), "already": False,
             "prompt_version": _FLAGS_VERSION}
@@ -919,7 +961,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     want = int(frames) if frames else _frames_for_duration(item.duration_seconds)
     got = await vault_frames.collect(account_id, item, raw, want=want)
     if not got.images:
-        status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
+        status = vault_frames.NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
         await _write_item(account_id, media_id, describe_status=status,
                           describe_generated_at=datetime.utcnow())
         # `detail` is what the sweep shows the operator as `first_error`. Without
@@ -930,9 +972,24 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         return {"media_id": media_id, "ok": False, "status": status,
                 "detail": got.detail or f"no frames ({status})"}
 
-    prompt = _DESCRIBE_PROMPT if prompt_variant(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
+    # D51: a photo on a Jev-on account with a feedable `_jev` gets the Jev-fed
+    # recipe (`vault_describe_jev`: prose @640 off the review lane, v6 JSON @960
+    # on it); anything else is today's describe, unchanged.
+    prev_ai = load_json(item.ai_fields_json, {}) or {}
+    path, jev = vault_describe_jev.V2, None
+    if item.kind == "photo":
+        path, jev = vault_describe_jev.route(
+            kind=item.kind, jev_on=await vault_jev_pass.enabled(account_id),
+            fields=prev_ai, prompt_version=prompt_version)
+    images = list(got.images)
+    if jev is not None:
+        px = vault_describe_jev.PX[path]
+        images = [await asyncio.to_thread(vision.shrink_data_url, u, px) for u in images]
+        prompt = vault_describe_jev.prompt_for(path, jev, _DESCRIBE_PROMPT_V2)
+    else:
+        prompt = _DESCRIBE_PROMPT if prompt_variant(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
     content = [{"type": "text", "text": prompt}]
-    content += [{"type": "image_url", "image_url": {"url": u}} for u in got.images]
+    content += [{"type": "image_url", "image_url": {"url": u}} for u in images]
 
     # Try 30b; on refusal/blank escalate ONCE to 235b (`next_attempt`).
     # Every attempt that answered was paid for, so the cost is their SUM — a
@@ -981,7 +1038,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         used_model = attempt_model
         if not vision.is_refusal(result.content):
             parsed = _parse_describe(result.content)
-            if parsed.get("description") or parsed.get("tags"):
+            if vault_describe_jev.answered(path, parsed):
                 data = parsed
         attempt_model = next_attempt(attempt_model, not data)
 
@@ -995,10 +1052,16 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
                 "raw": (result.content if result else "" or "")[:200],
                 "cost_millicents": cost}
 
+    if path == vault_describe_jev.PROSE:
+        data = vault_describe_jev.prose_answer(data, jev)
+    elif path == vault_describe_jev.V6:
+        data = vault_describe_jev.v6_answer(data, jev)
+    data = {**data, vault_describe_jev.DESCRIBE_KEY: vault_describe_jev.meta(path, jev, used_model)}
+
     locked = set(load_json(item.locked_fields_json, []))
     vals = build_describe_update(
         item.kind == "video", data,
-        prev_ai=load_json(item.ai_fields_json, {}) or {}, locked=locked,
+        prev_ai=prev_ai, locked=locked,
         overrides=load_json(item.operator_overrides_json, {}) or {},
         used_model=used_model, n_frames=len(got.images), pv=prompt_version,
         fixable=vault_ai_fix.FIXABLE,
@@ -1014,7 +1077,8 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     }
 
 
-async def _describe_and_flag(account_id: str, media_id: int,
+async def _describe_and_flag(account_id: str, media_id: int, *,
+                             jev_sweep: vault_jev_pass.Sweep | None = None,
                              **describe_kw: Any) -> dict[str, Any]:
     """Describe one item, then flag it in the same breath — the single-item
     route and the describe-all sweep both. "Described" used to mean prose plus
@@ -1028,17 +1092,22 @@ async def _describe_and_flag(account_id: str, media_id: int,
     `cost_millicents`), so both callers report describe + flags billed — except
     an unparsed flags answer, which carries no cost, so that call's spend is not
     reported. `_describe_one` / `_flags_one` / `vault_ai_vision_decide
-    .with_flags_cost` are looked up per call, so patches bite."""
+    .with_flags_cost` are looked up per call, so patches bite.
+
+    With Jev on, a photo gets the Jev pass FIRST (`vault_jev_pass.safe`): its
+    outcome and spend ride on the result (`with_jev`), and its failure never
+    stops describe."""
+    jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep)
     res = await _describe_one(account_id, media_id, **describe_kw)
     if res.get("ok"):
         try:
-            return vault_ai_vision_decide.with_flags_cost(
+            res = vault_ai_vision_decide.with_flags_cost(
                 res, await _flags_one(account_id, media_id))
         except Exception:  # noqa: BLE001
             # Never let the cheap pass take down the expensive one: the
             # description is already written and worth keeping.
             log.exception("flags after describe failed media=%s", media_id)
-    return res
+    return vault_ai_vision_decide.with_jev(res, jev)
 
 
 @describe_router.post("/admin/vault-ai/describe")
@@ -1116,12 +1185,13 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
         ids = [m for m in priority_order(rows) if m in walked]
         plan, index = await _reuse(account_id, ids, flags=False)
         settled = await _copy_up_front(account_id, plan, _copy_describe)
+        jev_sweep = vault_jev_pass.Sweep()
 
         async def visit(mid: int) -> dict[str, Any]:
             return await _lead(
                 account_id, mid,
                 _describe_and_flag(account_id, mid, model=model,
-                                   prompt_version=prompt_version),
+                                   prompt_version=prompt_version, jev_sweep=jev_sweep),
                 plan.followers.get(mid, []), _copy_describe,
                 _propagation(index, mid, walked, flags_only=False))
 
@@ -1245,7 +1315,8 @@ async def describe_all_plan(
             "total": int(total or 0),
             "undescribed": int(undescribed or 0),
             "restage": int(stale or 0),
-            "cap": budget}
+            "cap": budget,
+            "jev": await vault_jev_pass.plan(account_id)}
 
 
 @describe_router.get("/admin/vault-ai/describe-all/status")

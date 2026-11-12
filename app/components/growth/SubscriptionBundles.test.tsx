@@ -41,6 +41,20 @@ const mount = () => render(<QueryClientProvider client={client}><SubscriptionBun
 const rows = () => document.querySelectorAll("[data-bundle-row]");
 const addButton = () => screen.getByRole("button", { name: "Add bundle" });
 
+
+/** Click `combobox`, then its option. */
+function choose(combobox: HTMLElement, option: string) {
+  fireEvent.click(combobox);
+  fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
+}
+/** The combobox's option names (opens it, reads, closes it). */
+function optionsOf(combobox: HTMLElement) {
+  fireEvent.click(combobox);
+  const names = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent);
+  fireEvent.click(combobox);
+  return names;
+}
+
 describe("SubscriptionBundles", () => {
   it("lists users/me's bundles worded as OF's rows, read for the picked account", async () => {
     mount();
@@ -57,9 +71,8 @@ describe("SubscriptionBundles", () => {
     mount();
     await waitFor(() => expect((addButton() as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(addButton());
-    const duration = screen.getByLabelText("Discount duration") as HTMLSelectElement;
-    expect([...duration.options].map((o) => o.value)).toEqual(["12"]);
-    fireEvent.change(screen.getByLabelText("Discount percent"), { target: { value: String(fx.create.form.discount) } });
+    expect(optionsOf(screen.getByRole("combobox", { name: "Discount duration" }))).toEqual(["12 months"]);
+    choose(screen.getByRole("combobox", { name: "Discount percent" }), `${fx.create.form.discount}% discount`);
     expect(screen.getByText(`Promotional subscription $${fx.create.amount.toFixed(2)} for 12 months.`)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith(fx.create.relay.path, fx.create.relay.body, { accountId: "a1" }));
@@ -69,7 +82,7 @@ describe("SubscriptionBundles", () => {
     mount();
     await waitFor(() => expect(rows()).toHaveLength(2));
     fireEvent.click(within(rows()[0] as HTMLElement).getByRole("button", { name: "Edit" }));
-    fireEvent.change(screen.getByLabelText("Discount percent"), { target: { value: "10" } });
+    choose(screen.getByRole("combobox", { name: "Discount percent" }), "10% discount");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledWith(fx.edit.relay.path, fx.edit.relay.body, { accountId: "a1" }));
   });

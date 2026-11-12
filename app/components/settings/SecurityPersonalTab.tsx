@@ -5,13 +5,13 @@
  * Current session card names the signed-in User from `GET /auth/me` (the impersonated user under
  * impersonation) and signs out through `useUser().logout`, the avatar menu's path. Two-factor
  * authentication and Other sessions are TwoFactorCard.tsx (service/account_security.py). The Relay has
- * no password change, so that card's button is Not wired (ADR-0008).
+ * no password change, so there is no Password card (owner, 2026-11-11: no dead controls).
  */
 
 import { useState } from "react";
 
 import { useUser } from "@/contexts/UserContext";
-import { Card, IF_BTN, NotWired, SettingsPanel } from "@/components/settings/SettingsPanel";
+import { Card, IF_BTN, SettingsPanel } from "@/components/settings/SettingsPanel";
 import { OtherSessionsCard, TwoFactorCard } from "@/components/settings/TwoFactorCard";
 
 /** A card tip: the bundle's `translation-item-tips`, 12px / 20px T2. */
@@ -40,7 +40,6 @@ export default function SecurityPersonalTab() {
           <p className={TIP}>You are signed in as {user?.username || "—"}.</p>
         </Card>
         <OtherSessionsCard />
-        <Card title="Password" control={<NotWired label="Change password" />} />
         <TwoFactorCard />
       </div>
     </SettingsPanel>

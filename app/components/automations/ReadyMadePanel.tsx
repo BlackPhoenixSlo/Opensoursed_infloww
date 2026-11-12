@@ -26,6 +26,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Plus } from "lucide-react";
 
 import { IfButton, IfLearn } from "@/components/ui/infloww";
@@ -44,6 +45,17 @@ import { ReadyMadeRuleEditor } from "@/components/automations/ReadyMadeRuleEdito
 import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import type { Kind } from "@/components/compose/payloadRules";
 import { useAgentPanel } from "@/components/assistant/agentBridge";
+
+/** The empty list's line on what a rule does (and, for a mass, where a one-off send lives). */
+const EMPTY_HELP: Record<Kind, React.ReactNode> = {
+  auto_posts: "A rule publishes one post on its schedule, and can delete it after the hours you set.",
+  mass_premade: (
+    <>
+      A rule sends one mass message on its schedule. For a one-off send, use{" "}
+      <Link href="/growth/smart-messages" className="text-accent hover:text-accent-hover">Smart Messages</Link>.
+    </>
+  ),
+};
 
 /** The panel pinned to one rule kind: how My Automations > Auto Post
  *  (/growth/auto-post) shows the Auto Posts list, and > Auto Mass
@@ -134,6 +146,8 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
           loading={rulesQ.isLoading}
           error={rulesQ.isError ? (rulesQ.error as Error)?.message || "Failed to load saved definitions" : null}
           empty={`No ${copy.plural} yet`}
+          emptyHelp={EMPTY_HELP[only]}
+          emptyAction={<IfButton variant="primary" icon={Plus} onClick={startNew}>{copy.button}</IfButton>}
           busy={{ toggle: updateM.isPending, run: runM.isPending, remove: deleteM.isPending }}
           rowErr={rowErr}
           onToggle={toggle}

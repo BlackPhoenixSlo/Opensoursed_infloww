@@ -90,14 +90,13 @@ describe("Settings header", () => {
   });
 });
 
-// The 14 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, AI keys and the Audit log).
+// The 13 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, AI keys and the Audit log).
 const SETTINGS = [
   "/settings/account",
   "/settings/preferences",
   "/settings/security-org",
   "/settings/security-personal",
   "/settings/billing",
-  "/settings/balance",
   "/settings/roles",
   "/settings/sales",
   "/settings/time-tracking",
@@ -113,7 +112,7 @@ const rows = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('[dat
 const hrefs = () => rows().map((r) => r.getAttribute("href"));
 
 describe("Tab list", () => {
-  it("lists the 14 Settings tabs in nav order, each with an icon", () => {
+  it("lists the 13 Settings tabs in nav order, each with an icon", () => {
     renderLayout();
     expect(hrefs()).toEqual(SETTINGS);
     for (const r of rows()) expect(r.querySelector("svg")).not.toBeNull();
@@ -137,7 +136,16 @@ describe("Tab list", () => {
     expect(hrefs()).toEqual(
       SETTINGS.filter((h) => !BLOB.includes(h) && h !== "/settings/cotag" && h !== "/settings/ai-keys" && h !== "/settings/security-org" && h !== "/settings/audit"),
     );
-    expect(hrefs()).toHaveLength(4);
+    expect(hrefs()).toHaveLength(3);
+  });
+
+  it("below md, one select names the open tab and picking another pushes its href", () => {
+    renderLayout();
+    const select = screen.getByRole("combobox", { name: "Settings tab" });
+    expect(select).toHaveTextContent("Your Account");
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Settings tab" })).getByRole("option", { name: "Audit log" }));
+    expect(push).toHaveBeenCalledWith("/settings/audit");
   });
 
   it("refuses a Chatter-only session a hidden tab opened by URL, and shows it to the owner", () => {

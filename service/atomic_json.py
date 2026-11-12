@@ -24,13 +24,13 @@ The recipe is the boring one, and the reasons are the point:
   • `unlink` on any failure, so a write that dies leaves no debris beside the
     file it failed to replace.
 
-⚠️ TWO OTHER COPIES of this exact recipe live in the relay and are deliberately
+⚠️ OTHER COPIES of this recipe live in the relay and are deliberately
 NOT migrated here — this module exists so that adding a restart ledger did not
 add a fourth, not as a half-finished sweep:
 
-  • `secrets_store.py:328` — same shape, missing the fsync;
-  • `server.py:1583` (`_lane_stats_flush`) — uses a FIXED `.tmp` name instead of
-    `mkstemp`, so two concurrent writers collide. Migrating it would fix that.
+  • `secrets_store.py` (`_atomic_write`) — same shape, missing the fsync;
+  • `stats_file.write` (lane stats, OF call counter) — the light variant on
+    purpose: no fsync, a FIXED `.tmp` name (one writer per file).
 
 Two near-misses that look like copies and are not, listed so the next sweep
 does not "unify" them into a regression:

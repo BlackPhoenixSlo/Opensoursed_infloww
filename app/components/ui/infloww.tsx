@@ -109,7 +109,9 @@ const ART_HEIGHT = { sm: 40, md: 90, lg: 100 } as const;
  * `md` the 90px art Sensitive words uses. `kind="error"` with `onRetry` adds `AbnormalRequestError`'s primary "Retry"
  * 10px below; `action` puts any other button there. `art={false}` drops the illustration (an empty box inside a form,
  * e.g. a rule editor's "No content yet"); `help` goes under the text (pass an `IfHelp` line); other div attributes (role, aria-*) pass through. `data-empty-state` names it
- * for slop's page sweep (an empty state on screen before a page's first read answered is a false one).
+ * for slop's page sweep (an empty state on screen before a page's first read answered is a false one). Sticky left and
+ * at most the viewport less 32px, so inside a wide table's `colSpan` row it stays in view when the table scrolls
+ * sideways (antd's fixed empty row; a phone would otherwise cut the art and its button off); inert elsewhere.
  */
 export function EmptyState({
   kind = "data", text = "No data", help, onRetry, action, size = "lg", art = true, className, textClassName, ...rest
@@ -125,7 +127,8 @@ export function EmptyState({
 }) {
   return (
     <div {...rest} data-empty-state={kind}
-      className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
+      className={cn("sticky left-0 flex max-w-[calc(100vw-32px)] flex-col items-center justify-center text-center",
+        size === "sm" && "py-8", className)}>
       {art && <EmptyArt kind={kind} height={ART_HEIGHT[size]} />}
       <p className={cn("text-[14px] text-muted", art && (size === "md" ? "mt-2.5" : "mt-2"), textClassName)}>{text}</p>
       {help}
@@ -166,23 +169,30 @@ export function IfCard({
 
 /** antd's button: 32px (`lg` 36px), radius 6, 14px, `padding:0 15px`, an icon 8px before the label. `primary` M1 fill
  *  and white text; `default` a 1px L1 outline, T1 text, transparent; `link` M1 text only. */
+type IfButtonVariant = "primary" | "default" | "link";
+
+/** IfButton's classes, for a link that should look like one (e.g. a Next `<Link>` CTA). */
+export function ifButtonClass(variant: IfButtonVariant = "default", size: "md" | "lg" = "md", className?: string) {
+  return cn(
+    "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-[14px] transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+    "disabled:cursor-not-allowed disabled:opacity-50",
+    size === "lg" ? "h-9" : "h-8",
+    variant === "primary" && "bg-accent px-[15px] text-white hover:bg-accent-hover",
+    variant === "default" && "border border-border bg-transparent px-[15px] text-fg hover:border-accent hover:text-accent",
+    variant === "link" && "px-0 text-accent hover:text-accent-hover",
+    className,
+  );
+}
+
 export const IfButton = forwardRef<
   HTMLButtonElement,
-  ButtonHTMLAttributes<HTMLButtonElement> & IconProp & { variant?: "primary" | "default" | "link"; size?: "md" | "lg" }
+  ButtonHTMLAttributes<HTMLButtonElement> & IconProp & { variant?: IfButtonVariant; size?: "md" | "lg" }
 >(({ variant = "default", size = "md", icon: Icon, className, children, type = "button", ...rest }, ref) => (
   <button
     ref={ref}
     type={type}
-    className={cn(
-      "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-[14px] transition-colors",
-      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
-      "disabled:cursor-not-allowed disabled:opacity-50",
-      size === "lg" ? "h-9" : "h-8",
-      variant === "primary" && "bg-accent px-[15px] text-white hover:bg-accent-hover",
-      variant === "default" && "border border-border bg-transparent px-[15px] text-fg hover:border-accent hover:text-accent",
-      variant === "link" && "px-0 text-accent hover:text-accent-hover",
-      className,
-    )}
+    className={ifButtonClass(variant, size, className)}
     {...rest}
   >
     {Icon && <Icon className="h-3.5 w-3.5" aria-hidden />}
@@ -419,8 +429,9 @@ export function IfSegmented<T extends string>({ options, value, onChange, "aria-
 
 /** antd's line tabs: a 48px full-width bar with an L1 rule, the first tab 24px in, 32px between, 14px T1; the active
  *  tab M1 with a 2px M1 underline; a disabled tab T4, `aria-disabled`, its `title` the tooltip. The arrows move focus along the strip, Enter / Space picks (the native button
- *  click), Home / End jump. `extra` sits at the bar's right (Shifts' "Create shift(s)"). */
-export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefix, "aria-label": ariaLabel, className }: {
+ *  click), Home / End jump. `extra` sits at the bar's right (Shifts' "Create shift(s)"). `wrap`: below `sm` the tabs wrap
+ *  onto more 40px rows instead of scrolling off the right edge. */
+export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefix, "aria-label": ariaLabel, className, wrap }: {
   tabs: IfOption<T>[];
   value: T;
   onChange: (value: T) => void;
@@ -430,6 +441,7 @@ export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefi
   idPrefix?: string;
   "aria-label"?: string;
   className?: string;
+  wrap?: boolean;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   // The Tab stop: the selected tab, or the first when `value` names none.
@@ -448,8 +460,9 @@ export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefi
     btns[to].focus();
   };
   return (
-    <div className={cn("flex h-12 shrink-0 items-center gap-4 border-b border-border px-6", className)}>
-      <div ref={listRef} role="tablist" aria-label={ariaLabel} onKeyDown={onKey} className="flex h-full min-w-0 gap-8 overflow-x-auto">
+    <div className={cn("flex h-12 shrink-0 items-center gap-4 border-b border-border px-6", wrap && "max-sm:h-auto", className)}>
+      <div ref={listRef} role="tablist" aria-label={ariaLabel} onKeyDown={onKey}
+        className={cn("flex h-full min-w-0 gap-8 overflow-x-auto", wrap && "max-sm:flex-wrap max-sm:gap-x-6 max-sm:gap-y-0")}>
         {tabs.map((t) => {
           const on = t.value === value;
           return (
@@ -458,7 +471,7 @@ export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefi
               aria-disabled={t.disabled || undefined} title={t.title}
               onClick={() => onChange(t.value)}
               className={cn(
-                "relative h-full shrink-0 whitespace-nowrap text-[14px] transition-colors",
+                "relative h-full shrink-0 whitespace-nowrap text-[14px] transition-colors", wrap && "max-sm:h-10",
                 "disabled:cursor-not-allowed disabled:text-border-light",
                 "focus-visible:outline-none focus-visible:text-accent",
                 on ? "text-accent after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-accent" : "text-fg hover:text-accent",

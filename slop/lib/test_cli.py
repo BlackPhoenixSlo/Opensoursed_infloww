@@ -16,6 +16,43 @@ import pytest
 from slop.lib import cli, covmap, report
 
 
+def test_http_route_prefix_and_expected_4xx():
+    import httpx
+    from slop.lib.client import Http, Recorder
+
+    async def go():
+        rec = Recorder()
+        h = Http("http://127.0.0.1:9", rec, prefix="edge ")
+        await h.c.aclose()
+        h.c = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(404)),
+                                base_url="http://127.0.0.1:9")
+        try:
+            await h.get("/a/12")
+            await h.get("/b", route="named", expect=(404,))
+            assert list(rec.calls) == ["edge GET /a/:id", "edge named"]
+            assert len(rec.errors) == 1 and "GET /a/12 -> 404" in rec.errors[0]
+        finally:
+            await h.aclose()
+    asyncio.run(go())
+
+
+def test_stop_proc_can_repeat(monkeypatch):
+    from slop.lib.stack import Stack
+
+    class Proc:
+        pid = 12345
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(os, "killpg", lambda *_: None)
+    stack = Stack.__new__(Stack)
+    stack.procs = [Proc()]
+    stack._stop_proc(12345, 0)
+    stack._stop_proc(12345, 0)
+    assert not stack.procs
+
+
 def _three_scenarios(monkeypatch, tmp_path):
     """`slop/run all` over a, b, c with the real run_one; only the stack and machine-wide state are faked."""
     ev = tmp_path / "evidence"
@@ -476,7 +513,7 @@ def _phased(monkeypatch, tmp_path, run, *, enter=None, exit_=None, argv=("s",)):
             self.shards, self.relay, self.app, self.app_urls = 1, "http://127.0.0.1:9", None, {}
             self.relay_env, self.relay_pid, self.tmp = {0: {}}, 2 ** 22 + 7, tmp_path / "stack-tmp"
             self.db, self.sessions = self.tmp / "relay.db", self.tmp / "sessions"
-            self.waits, self.teardown_s = [], None
+            self.waits, self.teardown_s, self.sidecar_procs, self.extra_ports = [], None, {}, {}
             self.tmp.mkdir()
 
         def __enter__(self):
@@ -680,3 +717,10 @@ def test_teardown_cut_short_by_timeout_is_finished_and_charged_to_teardown(monke
     _run, m, ph = _phases_of(ev)
     assert (ph["startup_s"], ph["seeding_s"], ph["execution_s"], ph["teardown_s"]) == (5.0, 0.0, 2.0, 8.0)
     assert m["seconds"] == 15.0 and "timed out after 1s" in m["infra"]
+
+
+def test_relay_env_port_template():
+    ports = {"BIO_PORT": 4100}
+    assert cli._with_ports("http://127.0.0.1:{BIO_PORT}/x", ports) == "http://127.0.0.1:4100/x"
+    assert cli._with_ports("0.5", ports) == "0.5"
+    assert cli._with_ports("{OTHER}", ports) == "{OTHER}"

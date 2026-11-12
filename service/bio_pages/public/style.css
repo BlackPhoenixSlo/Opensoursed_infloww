@@ -1,0 +1,512 @@
+:root {
+    --bg-color: #000000;
+    --text-color: #ffffff;
+    --card-bg: #1C1C1E;
+    --card-hover: #2C2C2E;
+    --accent-gradient: linear-gradient(135deg, #833AB4, #FD1D1D, #FCB045);
+    /* Instagram-ish */
+    --overlay-bg: rgba(0, 0, 0, 0.6);
+    --blur-amount: 12px;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+}
+
+.container {
+    width: 100%;
+    max-width: 600px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Profile Header */
+.profile-header {
+    text-align: center;
+    margin-top: 40px;
+    margin-bottom: 30px;
+}
+
+.avatar-container {
+    width: 100px;
+    height: 100px;
+    margin: 0 auto 15px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 2px solid #333;
+}
+
+.avatar {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.profile-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+
+h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.verified-badge {
+    width: 20px;
+    height: 20px;
+}
+
+.bio {
+    font-size: 0.9rem;
+    color: #888;
+    margin-top: 10px;
+    /* Keep the owner's line breaks (set via textContent) */
+    white-space: pre-line;
+}
+
+/* Links List */
+.links-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.link-card {
+    background-color: var(--card-bg);
+    border-radius: 16px;
+    padding: 15px;
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    color: var(--text-color);
+    transition: transform 0.2s, background-color 0.2s;
+    cursor: pointer;
+    border: 1px solid #333;
+    position: relative;
+    overflow: hidden;
+}
+
+.link-card:hover {
+    background-color: var(--card-hover);
+    transform: scale(1.02);
+}
+
+.link-thumbnail {
+    width: 50px;
+    height: 50px;
+    border-radius: 10px;
+    object-fit: cover;
+    margin-right: 15px;
+}
+
+.link-content {
+    flex: 1;
+}
+
+.link-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 3px;
+    display: block;
+}
+
+.link-subtitle {
+    font-size: 0.8rem;
+    color: #888;
+}
+
+.lock-icon-small {
+    margin-left: 10px;
+    color: #888;
+}
+
+.link-card.has-bg-image .lock-icon-small {
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.9));
+}
+
+/* Self-hosted icons (inline SVG, Font Awesome Free paths, see images/ICONS-LICENSE.txt): 1em tall like the old
+   webfont glyphs, coloured by currentColor */
+.icon {
+    display: inline-block;
+    height: 1em;
+    width: auto;
+    vertical-align: -0.125em;
+    fill: currentColor;
+    overflow: visible;
+}
+
+.icon-lock {
+    width: 0.875em;
+}
+
+.icon-xmark {
+    width: 0.625em;
+}
+
+/* Footer */
+.footer {
+    margin-top: 50px;
+    margin-bottom: 20px;
+    font-size: 0.8rem;
+    color: #444;
+}
+
+.footer a {
+    color: #666;
+    text-decoration: none;
+}
+
+/* Overlay */
+.overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--overlay-bg);
+    backdrop-filter: blur(var(--blur-amount));
+    -webkit-backdrop-filter: blur(var(--blur-amount));
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+.overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.overlay-content {
+    background-color: #1C1C1E;
+    padding: 40px 30px;
+    border-radius: 20px;
+    text-align: center;
+    width: 80%;
+    max-width: 350px;
+    position: relative;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    border: 1px solid #333;
+    transform: scale(0.9);
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.overlay.active .overlay-content {
+    transform: scale(1);
+}
+
+.lock-icon {
+    font-size: 2rem;
+    margin-bottom: 20px;
+    color: #ffffff;
+}
+
+.overlay-content h2 {
+    font-size: 1.1rem;
+    margin-bottom: 10px;
+}
+
+.overlay-content p {
+    font-size: 0.9rem;
+    color: #888;
+    margin-bottom: 30px;
+    line-height: 1.5;
+}
+
+.continue-btn {
+    background-color: #ffffff;
+    color: #000000;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 25px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    width: 100%;
+    transition: opacity 0.2s;
+}
+
+.continue-btn:hover {
+    opacity: 0.9;
+}
+
+.continue-btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* The Age Gate's Continue button */
+#overlay .continue-btn {
+    display: block;
+    box-sizing: border-box;
+    text-decoration: none;
+}
+
+/* Escape Overlay, at every width: the avatar (--backdrop-url, set by script.js) cover-fit and blurred under a dim
+   scrim, the cue arrow at the ··· menu, and the steps on a dark card in the middle. No avatar: the plain dark
+   background. The card is an anchor: tappable only when script.js gave it an href. */
+#igOverlay {
+    z-index: 9999;
+    background-color: rgba(0, 0, 0, 0.95);
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#igOverlay::before,
+#igOverlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+#igOverlay::before {
+    background-image: var(--backdrop-url, none);
+    background-size: cover;
+    background-position: center;
+    filter: blur(8px);
+    /* Oversize so the blur's soft edges sit off-screen. */
+    transform: scale(1.1);
+}
+
+#igOverlay::after {
+    background: rgba(0, 0, 0, 0.35);
+}
+
+#igOverlay .ig-arrow {
+    position: absolute;
+    top: 20px;
+    right: 25px;
+    z-index: 1;
+}
+
+.ig-card {
+    position: relative;
+    z-index: 1;
+    display: block;
+    box-sizing: border-box;
+    width: calc(100% - 40px);
+    max-width: 380px;
+    padding: 26px 24px;
+    border-radius: 22px;
+    background-color: rgba(22, 23, 38, 0.94);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    color: #ffffff;
+    text-align: left;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.ig-card[href] {
+    cursor: pointer;
+}
+
+.ig-card h2 {
+    margin: 0 0 6px;
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.ig-card p {
+    margin: 0 0 22px;
+    font-size: 0.95rem;
+    line-height: 1.4;
+    color: #b9bccb;
+}
+
+.ig-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.ig-steps li {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 1.1rem;
+    line-height: 1.35;
+}
+
+.ig-step-n {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #7b9cff;
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+
+.close-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.2rem;
+    cursor: pointer;
+}
+
+.hidden {
+    display: none;
+    /* fallback */
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* CSS for Link Background Images (Banners) */
+.link-card.has-bg-image {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+
+    /* Fallback aspect ratio (2.5:1) until JS loads the image */
+    aspect-ratio: 2.5 / 1;
+
+    display: flex;
+    flex-direction: column;
+    /* User request: Move text to the bottom */
+    justify-content: flex-end;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    /* Remove default card padding so overlay hits the edges */
+    padding: 0;
+
+    /* Ensure relative positioning for the pseudo-element overlay */
+    position: relative;
+    overflow: hidden;
+
+    transition: all 0.3s ease;
+
+    /* Text Shadow for readability */
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+/* Pseudo-element Overlay */
+.link-card.has-bg-image::after {
+    content: '';
+    position: absolute;
+    /* Bleed significantly to ensure full coverage including borders */
+    top: -10px;
+    left: -10px;
+    width: calc(100% + 20px);
+    height: calc(100% + 20px);
+    /* Default: Light/Transparent overlay (shows image clearly) */
+    background: rgba(0, 0, 0, 0.1);
+    z-index: 1;
+    transition: background 0.3s ease;
+}
+
+/* Hover: Dark overlay (dim image) */
+.link-card.has-bg-image:hover::after {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+/* Ensure content is above the overlay and at the bottom */
+.link-card.has-bg-image .link-content {
+    z-index: 2;
+    position: relative;
+    /* User Requested change: Stop taking full height so justify-content: flex-end works */
+    flex: 0;
+    width: 100%;
+    /* Optional: Center text horizontally if not already */
+    text-align: center;
+    /* Add padding back since we removed it from the card */
+    padding: 15px;
+}
+
+.link-card.has-bg-image .link-thumbnail {
+    z-index: 2;
+    position: relative;
+}
+
+.link-card.has-bg-image:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+}
+
+/* Remove the old img styles since we reverted script.js */
+.link-bg-image {
+    display: none;
+}
+
+/* Top-Left Icon Style */
+.link-icon {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    /* User request: Make icon tiny larger (24 -> 32px) */
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    z-index: 10;
+
+
+}
+
+/* Desktop ambient backdrop (link.me style).
+   On wide screens the centered 600px column leaves a flat black void on either
+   side. body::before fills it with the profile avatar (--backdrop-url, set by
+   script.js) scaled to cover the viewport, heavily blurred and darkened; with no
+   avatar it falls back to faint brand-accent glows. body::after lays a dark
+   vignette on top so the content column stays legible. Gated to desktop only:
+   below this breakpoint the page stays plain full-bleed black, exactly as
+   before. Static (no animation), so prefers-reduced-motion is a no-op. */
+@media (min-width: 768px) {
+    body::before,
+    body::after {
+        content: '';
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+    }
+
+    body::before {
+        background-image: var(--backdrop-url,
+            radial-gradient(60% 55% at 18% 22%, rgba(131, 58, 180, 0.16), transparent 70%),
+            radial-gradient(55% 50% at 85% 28%, rgba(253, 29, 29, 0.10), transparent 70%),
+            radial-gradient(60% 55% at 78% 88%, rgba(252, 176, 69, 0.10), transparent 70%));
+        background-size: cover;
+        background-position: center;
+        filter: blur(60px) brightness(0.75) saturate(1.2);
+        /* Oversize so the blur's soft transparent edges sit off-screen. */
+        transform: scale(1.2);
+    }
+
+    body::after {
+        background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.3) 25%, rgba(0, 0, 0, 0.5) 100%);
+    }
+
+    /* Keep the content column above the backdrop and visually unchanged. */
+    .container {
+        position: relative;
+        z-index: 1;
+    }
+}

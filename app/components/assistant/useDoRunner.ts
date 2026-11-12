@@ -9,6 +9,7 @@
  * (`saving`): from there it lands either way. A rule editor already open (a person's, maybe half-filled) fails the run
  * before anything moves: it never fills over one, nor navigates away from it. It lives in AssistantProvider, so a
  * route change never stops it. After Save the cursor rests on the new rule's Enabled switch without clicking it.
+ * A `mass_edit` run is not played here: it has no form (the provider's apply POST does it, massEdit.ts).
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -68,7 +69,7 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
   // The run: one per start (its draft); leaving `running` aborts it.
   const runDraft = run.phase === "running" ? run.draft : null;
   useEffect(() => {
-    if (!runDraft || !canStart(runDraft)) return;
+    if (!runDraft || !canStart(runDraft) || runDraft.flow !== "mass_premade") return;
     const ctl = new AbortController();
     const { signal } = ctl;
 
@@ -147,6 +148,14 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
           phaseRef.current = "done";
           void restOn(flow.savedName(slots));
           return;
+        }
+        if (step.action === "reveal") {
+          if (animate) { await glide(step); click(); }
+          // A synthetic click (untrusted: never a takeover), only on a closed disclosure.
+          const el = document.getElementById(step.target);
+          if (el?.getAttribute("aria-expanded") === "false") el.click();
+          await frame();
+          continue;
         }
         if (!animate) { editor.dispatch(step.action); continue; }
         const seen = await glide(step);

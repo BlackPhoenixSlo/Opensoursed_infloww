@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 
 import { canSubmit, initialRawJson, rawJsonReducer, type RawJsonAction, type RawJsonState } from "./rawJsonReducer";
 import {
-  blankStep, editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, stepErrorText, toDraft, toWire,
+  blankStep, editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, followOpen, funnelDraftOf, saveBody, stepErrorText, toDraft, toWire,
   type FunnelDraft, type FunnelEdit,
 } from "./funnelDraft";
 import type { FunnelFull, FunnelStep } from "@/hooks/useFunnels";
@@ -10,7 +10,7 @@ import type { FunnelFull, FunnelStep } from "@/hooks/useFunnels";
 const funnel = rawJsonReducer(FUNNEL_RAW);
 const run = (from: RawJsonState<FunnelDraft>, actions: RawJsonAction<FunnelDraft>[]) => actions.reduce(funnel, from);
 const reply = (msg: string, step = 1) => ({ ...blankStep("reply", step), messages: [msg] });
-const DRAFT: FunnelDraft = { name: "strokes", description: "", opening: "hey", steps: [reply("hi")] };
+const DRAFT: FunnelDraft = { name: "strokes", description: "", opening: "hey", steps: [reply("hi")], open: null };
 const body = (steps: unknown, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ name: "n", opening_message: "o", steps, ...extra });
 const edit = (text: string) => run(initialRawJson(DRAFT), [{ type: "open" }, { type: "edit", text }]);
@@ -157,6 +157,37 @@ describe("editFunnel", () => {
     editFunnel(two, { type: "moveStep", i: 0, dir: 1 });
     editFunnel(two, { type: "patchStep", i: 0, patch: { messages: ["q"] } });
     expect(JSON.stringify(two)).toBe(snap);
+  });
+});
+
+describe("followOpen (one step card open, following its step)", () => {
+  const at = (open: number | null, len = 3) => ({ open, steps: Array.from({ length: len }, (_, i) => reply(`m${i}`, i + 1)) });
+  it.each<[string, number | null, FunnelEdit, number | null]>([
+    ["add opens the new step", 1, { type: "addStep", kind: "reply" }, 3],
+    ["add with none open", null, { type: "addStep", kind: "ppv" }, 3],
+    ["toggle opens a closed card", null, { type: "toggleStep", i: 2 }, 2],
+    ["toggle switches cards", 0, { type: "toggleStep", i: 2 }, 2],
+    ["toggle closes the open card", 2, { type: "toggleStep", i: 2 }, null],
+    ["remove the open one closes", 1, { type: "removeStep", i: 1 }, null],
+    ["remove above shifts up", 2, { type: "removeStep", i: 0 }, 1],
+    ["remove below keeps", 0, { type: "removeStep", i: 2 }, 0],
+    ["move the open one down", 0, { type: "moveStep", i: 0, dir: 1 }, 1],
+    ["swap into the open slot", 1, { type: "moveStep", i: 0, dir: 1 }, 0],
+    ["out-of-range move is a no-op", 2, { type: "moveStep", i: 2, dir: 1 }, 2],
+    ["header edit keeps", 1, { type: "header", patch: { name: "x" } }, 1],
+    ["patch keeps", 1, { type: "patchStep", i: 1, patch: {} }, 1],
+  ])("%s", (_n, open, e, want) => {
+    expect(followOpen(at(open), e)).toBe(want);
+    expect(editFunnel({ ...DRAFT, ...at(open) }, e).open).toBe(want);
+  });
+
+  it("a toggle changes nothing else", () => {
+    expect(editFunnel(DRAFT, { type: "toggleStep", i: 0 })).toEqual({ ...DRAFT, open: 0 });
+  });
+
+  it("a raw-JSON edit starts closed (no stale index past the new steps)", () => {
+    const s = run(initialRawJson({ ...DRAFT, open: 0 }), [{ type: "open" }, { type: "edit", text: body([]) }]);
+    expect(s.value).toMatchObject({ steps: [], open: null });
   });
 });
 

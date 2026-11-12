@@ -13,9 +13,12 @@
  *     no-op). Once the save request is out (`saving`), abort is ignored: the request lands either way, so the card
  *     must say what it did (`saved` → done; a retry would duplicate the rule).
  *   • `reset` (Cancel) goes back to an empty do-mode composer; `exit` leaves do-mode.
+ *   • A `mass_edit` draft (D11) has no steps: `start` goes straight to `saving` (the provider's one apply POST is out,
+ *     so Stop doesn't apply) and `applied` lands its per-rule results on `done`.
  */
 
 import type { DoDraft, MassPremadeSlots } from "./doFlows";
+import { editSlotsFrom, type EditResult } from "./massEdit";
 
 type Planned = { request: string; draft: DoDraft };
 
@@ -25,7 +28,7 @@ export type DoRun =
   | { phase: "drafting"; id: string; request: string }
   | ({ phase: "planned" } & Planned)
   | ({ phase: "running"; step: number; instant: boolean; saving: boolean } & Planned)
-  | ({ phase: "done"; ruleSaved: true } & Planned)
+  | ({ phase: "done"; ruleSaved: true; results?: EditResult[] } & Planned)
   | ({ phase: "aborted"; reason: string } & Planned)
   | { phase: "failed"; request: string; draft: DoDraft | null; msg: string };
 
@@ -41,6 +44,8 @@ export type DoAction =
   /** The save request went out: Stop no longer applies. */
   | { type: "saving" }
   | { type: "saved" }
+  /** A mass_edit run's apply answered: one result per planned rule. */
+  | { type: "applied"; results: EditResult[] }
   /** `id`: a drafting request's failure (dropped when stale); none: the running run's. */
   | { type: "fail"; msg: string; id?: string }
   | { type: "reset" };
@@ -48,11 +53,13 @@ export type DoAction =
 export const initialDoRun: DoRun = { phase: "off" };
 
 /** The draft a run would act on: a flow, its slots, no error. */
-export const canStart = (d: DoDraft | null | undefined): d is DoDraft & { flow: NonNullable<DoDraft["flow"]>; slots: MassPremadeSlots } =>
+export const canStart = (d: DoDraft | null | undefined): d is DoDraft & { slots: NonNullable<DoDraft["slots"]> } =>
   !!d && d.flow !== null && d.slots !== null && !d.error;
 
-/** The plan a new request refines: the planned draft's slots (a chat reply while planned), else none. */
-export const previousOf = (s: DoRun): MassPremadeSlots | null => (s.phase === "planned" ? s.draft.slots : null);
+/** The plan a new request refines: the planned Auto mass draft's slots (a chat reply while planned), else none. An
+ *  edit plan is never refined: a reply re-asks from scratch. */
+export const previousOf = (s: DoRun): MassPremadeSlots | null =>
+  (s.phase === "planned" && s.draft.flow === "mass_premade" ? s.draft.slots : null);
 
 export function doRunReducer(s: DoRun, a: DoAction): DoRun {
   switch (a.type) {
@@ -70,7 +77,8 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
       if (s.phase === "running") return a.type === "skipAnimation" && !s.instant ? { ...s, instant: true } : s;
       const runnable = s.phase === "planned" || s.phase === "aborted" || (s.phase === "failed" && s.draft !== null);
       if (!runnable || !canStart(s.draft)) return s;
-      return { phase: "running", request: s.request, draft: s.draft, step: 0, instant: a.type === "skipAnimation", saving: false };
+      const edit = s.draft.flow === "mass_edit";
+      return { phase: "running", request: s.request, draft: s.draft, step: 0, instant: edit || a.type === "skipAnimation", saving: edit };
     }
     case "step":
       return s.phase === "running" && s.step !== a.index ? { ...s, step: a.index } : s;
@@ -79,7 +87,10 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
     case "abort":
       return s.phase === "running" && !s.saving ? { phase: "aborted", request: s.request, draft: s.draft, reason: a.reason } : s;
     case "saved":
-      return s.phase === "running" ? { phase: "done", request: s.request, draft: s.draft, ruleSaved: true } : s;
+      return s.phase === "running" && s.draft.flow !== "mass_edit" ? { phase: "done", request: s.request, draft: s.draft, ruleSaved: true } : s;
+    case "applied":
+      return s.phase === "running" && s.draft.flow === "mass_edit"
+        ? { phase: "done", request: s.request, draft: s.draft, ruleSaved: true, results: a.results } : s;
     case "fail":
       if (a.id !== undefined) {
         return s.phase === "drafting" && s.id === a.id ? { phase: "failed", request: s.request, draft: null, msg: a.msg } : s;
@@ -93,20 +104,22 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
 /** The draft POST's 200, read defensively: a missing field never crashes the card, and a blank answer still reads. */
-export function draftFrom(r: Partial<DoDraft> | null | undefined, accountId: string): DoDraft {
-  const flow = r?.flow === "mass_premade" ? r.flow : null;
+export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string): DoDraft {
+  const flow = r?.flow === "mass_premade" || r?.flow === "mass_edit" ? r.flow : null;
+  const pair = flow === "mass_premade" ? { flow, slots: r?.slots ? r.slots as MassPremadeSlots : null }
+    : flow === "mass_edit" ? { flow, slots: editSlotsFrom(r?.slots) }
+    : { flow: null, slots: null };
   return {
     id: String(r?.id ?? ""),
-    flow,
-    account_id: r?.account_id || accountId,
-    summary: r?.summary ?? "",
-    slots: flow && r?.slots ? r.slots : null,
+    ...pair,
+    account_id: typeof r?.account_id === "string" && r.account_id ? r.account_id : accountId,
+    summary: typeof r?.summary === "string" ? r.summary : "",
     assumptions: strs(r?.assumptions),
     unresolved: strs(r?.unresolved),
-    answer: (r?.answer || "").trim()
-      || (flow ? "" : "I can only set up an Auto Mass for now — ask it as a question and I'll point you to the page."),
-    error: r?.error ?? null,
-  };
+    answer: (typeof r?.answer === "string" ? r.answer : "").trim()
+      || (flow ? "" : "I can only set up or change an Auto Mass for now — ask it as a question and I'll point you to the page."),
+    error: typeof r?.error === "string" ? r.error : null,
+  } as DoDraft;
 }
 
 /** The do-mode offer: hidden, shown, or shown disabled with a hint (`hint` is AnswerText-linked). */

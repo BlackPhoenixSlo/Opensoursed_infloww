@@ -616,4 +616,29 @@ def case_the_audit_log_filters_by_from_and_to_and_labels_rows():
     assert OWNER_B.get("/admin/audit", params={"employee_id": emp, "from": "2026-01-01"}).json()["actions"] == []
 
 
+def case_the_audit_log_hides_the_apps_background_writes_unless_asked():
+    """Perf-log flushes and error reports stay recorded but out of the default list, in SQL, so a page of 2 is
+    2 real actions; include_background=true shows them again."""
+    emp = _employee("Backgrounder")
+
+    async def _seed():
+        async with get_session() as s:
+            for minute, action in ((1, "POST /admin/perflog/ingest"), (2, "PUT /admin/settings/sales"),
+                                   (3, "POST /admin/errors"), (4, "POST /admin/perflog/ingest"),
+                                   (5, "DELETE /admin/employees/1"), (6, "POST /admin/perflog/ingest")):
+                s.add(Action(employee_id=emp, action=action, at=datetime(2026, 4, 1, 12, minute)))
+    asyncio.run(_seed())
+
+    def got(**params):
+        r = OWNER_A.get("/admin/audit", params={"employee_id": emp, **params})
+        assert r.status_code == 200, r.text
+        return [a["action"] for a in r.json()["actions"]]
+    assert got() == ["DELETE /admin/employees/1", "PUT /admin/settings/sales"]
+    assert got(limit=1, offset=1) == ["PUT /admin/settings/sales"], "paginated after the filter"
+    assert got(include_background="true") == [
+        "POST /admin/perflog/ingest", "DELETE /admin/employees/1", "POST /admin/perflog/ingest",
+        "POST /admin/errors", "PUT /admin/settings/sales", "POST /admin/perflog/ingest",
+    ]
+
+
 _harness.run()

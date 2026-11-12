@@ -4,7 +4,7 @@
  * About Inflowwww (docs/spec/settings-tabs/phase-05-billing-balance-about.md): an 88x88 tile drawn from
  * the "Inflowwww" wordmark (no image asset), "Version {version}" from the app's package.json as the
  * Sidebar shows it, then a 760px desktop-app box where Infloww has its beta box, and the licence link, centred
- * in the Panel. No beta box, no build hash; the Panel makes no request and stores nothing (ADR-0008).
+ * across the Panel and top-aligned under its header. No beta box, no build hash; the Panel makes no request and stores nothing (ADR-0008).
  */
 
 import { IF_BTN, SettingsPanel } from "@/components/settings/SettingsPanel";
@@ -20,7 +20,7 @@ export default function AboutTab() {
   const inApp = useInDesktopApp();
   return (
     <SettingsPanel title="About">
-      <div className="grid min-h-full place-items-center py-10">
+      <div className="grid justify-items-center pt-10 pb-10">
         <div className="flex w-full flex-col items-center text-center">
           {BRAND_LOGO ? (
             // eslint-disable-next-line @next/next/no-img-element -- a static PNG from public/

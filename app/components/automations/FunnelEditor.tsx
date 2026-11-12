@@ -14,29 +14,34 @@
  * between models), so each model maps its own via the FunnelMediaPane ("Media"
  * action in `MassFunnelsTab`) — NOT here.
  *
- * `MassFunnelsTab` is the list (Infloww's legacy table, page-parity ticket 16)
- * with the editor and the delete confirm as dialogs: My Automations > Auto
- * Funnel.
+ * The steps show as a timeline of cards (StepCard), one open at a time; the
+ * raw JSON sits behind the footer's "Edit as JSON".
+ *
+ * `MassFunnelsTab` is the list (Infloww's Smart Messages table: status pills,
+ * phone rows with a "⋯" menu) with the editor and the delete confirm as
+ * dialogs: My Automations > Auto Funnel.
  */
 
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Plus } from "lucide-react";
+import { MoreHorizontal, Plus } from "lucide-react";
 
 import {
-  EmptyState, IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfModal, IfSegmented, IfTextArea,
-  type IfOption,
+  EmptyState, IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfModal, IfSwitch, IfTextArea,
 } from "@/components/ui/infloww";
-import { ConfirmDelete, SwitchRow, TABLE_EMPTY } from "@/components/automations/automationPage";
+import { ConfirmDelete, TABLE_EMPTY } from "@/components/automations/automationPage";
+import { Menu } from "@/components/ui/Menu";
 import { cn } from "@/lib/utils";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
 import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
 import { StepCard } from "@/components/automations/StepCard";
+import { funnelStatus, startedAgo, type FunnelStatus } from "@/components/automations/funnelList";
 import {
   useCreateFunnel,
   useDeleteFunnel,
   useFunnel,
   useFunnels,
   useUpdateFunnel,
+  type FunnelSummary,
 } from "@/hooks/useFunnels";
 import {
   editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, stepErrorText,
@@ -58,11 +63,6 @@ const WALKER_KIND = "reply_mass_funnel";
 const WALKER_EVERY_S = 120;
 
 // ── Single-funnel editor ────────────────────────────────────────────────
-
-const EDITOR_MODES: IfOption<"typed" | "raw">[] = [
-  { value: "typed", label: "Typed fields" },
-  { value: "raw", label: "Raw JSON" },
-];
 
 export function FunnelEditor({
   funnelId,
@@ -86,8 +86,11 @@ export function FunnelEditor({
   const [draft, rawDispatch] = useRawJson(FUNNEL_RAW, () => EMPTY_FUNNEL);
   // Escape closes only an untouched draft: the load's seed, a mode switch and a failed save are not edits.
   const { touched, dispatch } = useTouched(draft, rawDispatch, isFunnelSeed);
-  const { name, description, opening, steps } = draft.value;
+  // One step card open at a time; editFunnel moves it with its step (funnelDraft.followOpen).
+  const { name, description, opening, steps, open } = draft.value;
   const edit = (e: FunnelEdit) => dispatch({ type: "update", fn: (d) => editFunnel(d, e) });
+  // Opening a card is not an edit (Escape still closes an untouched draft).
+  const toggle = (i: number) => rawDispatch({ type: "update", fn: (d) => editFunnel(d, { type: "toggleStep", i }) });
   const fail = (error: string) => dispatch({ type: "fail", error });
 
   // Seed once from the loaded funnel (edit mode). Create mode starts blank.
@@ -141,6 +144,11 @@ export function FunnelEditor({
       size="editor"
       footer={(
         <>
+          {/* The JSON escape hatch: reachable, not prominent (fast imports). */}
+          <IfButton variant="link" onClick={() => dispatch({ type: draft.raw ? "close" : "open" })}
+            className="mr-auto">
+            {draft.raw ? "Back to form" : "Edit as JSON"}
+          </IfButton>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
           <IfButton variant="primary" onClick={save} disabled={busy}>
             {busy ? "Saving…" : isEdit ? "Save changes" : "Create funnel"}
@@ -148,15 +156,7 @@ export function FunnelEditor({
         </>
       )}
     >
-    <div className="space-y-4">
-      <IfSegmented
-        aria-label="Editor mode"
-        options={EDITOR_MODES}
-        value={draft.raw ? "raw" : "typed"}
-        onChange={(m) => dispatch({ type: m === "raw" ? "open" : "close" })}
-        className="max-md:hidden"
-      />
-
+    <div className="space-y-6">
       {draft.raw ? (
         <div>
           <IfTextArea
@@ -172,65 +172,62 @@ export function FunnelEditor({
         </div>
       ) : (
       <>
-      {/* Header: name + description + opener. */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <IfLabel htmlFor="funnel-name" required>Name</IfLabel>
-          <IfInput id="funnel-name" value={name} onChange={(e) => edit({ type: "header", patch: { name: e.target.value } })} placeholder="e.g. strokes" className="w-full" />
+      <section className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <IfLabel htmlFor="funnel-name" required>Name</IfLabel>
+            <IfInput id="funnel-name" value={name} onChange={(e) => edit({ type: "header", patch: { name: e.target.value } })}
+              placeholder="e.g. strokes" className="w-full" />
+          </div>
+          <div>
+            <IfLabel htmlFor="funnel-description">Description</IfLabel>
+            <IfInput id="funnel-description" value={description}
+              onChange={(e) => edit({ type: "header", patch: { description: e.target.value } })}
+              placeholder="Optional: what it is for" className="w-full" />
+          </div>
         </div>
         <div>
-          <IfLabel htmlFor="funnel-description">Description</IfLabel>
-          <IfInput
-            id="funnel-description"
-            value={description}
-            onChange={(e) => edit({ type: "header", patch: { description: e.target.value } })}
-            placeholder="what this funnel is for"
-            className="w-full"
-          />
+          <IfLabel htmlFor="funnel-opening" required>Opening message</IfLabel>
+          <IfTextArea id="funnel-opening" value={opening}
+            onChange={(e) => edit({ type: "header", patch: { opening: e.target.value } })}
+            rows={3} placeholder="The first message, sent to the audience you pick when you start the funnel…" />
         </div>
-      </div>
-      <div>
-        <IfLabel htmlFor="funnel-opening" required>Opening message</IfLabel>
-        <IfTextArea
-          id="funnel-opening"
-          value={opening}
-          onChange={(e) => edit({ type: "header", patch: { opening: e.target.value } })}
-          rows={3}
-          placeholder="The first message sent to the audience (the funnel opener)…"
-        />
-      </div>
+      </section>
 
-      {/* Ordered step list. */}
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-[14px] font-medium text-fg">Steps ({steps.length})</h3>
-          {steps.length === 0 && (
-            <IfHelp>No follow-up steps yet: the opener sends and the funnel ends.</IfHelp>
-          )}
-        </div>
-        {steps.map((s, i) => (
-          <StepCard
-            key={i}
-            index={i}
-            total={steps.length}
-            step={s}
-            onPatch={(patch) => edit({ type: "patchStep", i, patch })}
-            onRemove={() => edit({ type: "removeStep", i })}
-            onMove={(dir) => edit({ type: "moveStep", i, dir })}
-          />
-        ))}
-
-        <div className="flex flex-wrap items-center gap-2">
+      {/* The follow-up steps as a timeline (Infloww Scripts' sequence steps). */}
+      <section>
+        <h3 className="text-[14px] font-medium text-fg">Follow-up steps ({steps.length})</h3>
+        <IfHelp className="mb-3">
+          {steps.length === 0
+            ? "No follow-up steps yet: the opener sends and the funnel ends."
+            : "Each time a fan replies, the next step goes out, top to bottom."}
+        </IfHelp>
+        {steps.length > 0 && (
+          <ol className="relative space-y-3 before:absolute before:bottom-6 before:left-[13px] before:top-6 before:w-px before:bg-border">
+            {steps.map((s, i) => (
+              <StepCard
+                key={i}
+                index={i}
+                total={steps.length}
+                step={s}
+                open={open === i}
+                onToggle={() => toggle(i)}
+                onPatch={(patch) => edit({ type: "patchStep", i, patch })}
+                onRemove={() => edit({ type: "removeStep", i })}
+                onMove={(dir) => edit({ type: "moveStep", i, dir })}
+              />
+            ))}
+          </ol>
+        )}
+        <div className={cn("mt-3 flex flex-wrap items-center gap-2", steps.length > 0 && "pl-10")}>
           <IfButton icon={Plus} onClick={() => edit({ type: "addStep", kind: "reply" })}>Reply step</IfButton>
           <IfButton icon={Plus} onClick={() => edit({ type: "addStep", kind: "ppv" })}>PPV step</IfButton>
         </div>
-      </div>
+      </section>
       </>
       )}
 
       {draft.error && <div className="text-[12px] text-err whitespace-pre-wrap">{draft.error}</div>}
-
-      <IfHelp>PPV media is set per model: save, then use the funnel&apos;s Media action.</IfHelp>
     </div>
     </IfModal>
   );
@@ -238,7 +235,7 @@ export function FunnelEditor({
 
 const isFunnelSeed = (a: { type: RawJsonAction<unknown>["type"] }) => a.type === "set" || a.type === "open" || a.type === "close" || a.type === "fail";
 
-// ── Mass-funnels tab: list + create/edit dialogs (Auto Funnel) ──
+// ── Auto Funnel list: header actions, follow-up switch, table, dialogs ──
 
 /** Without a `frame` the header's Learn and "New funnel" sit right above the body. */
 const inlineFrame = (actions: ReactNode, body: ReactNode) => (
@@ -248,17 +245,39 @@ const inlineFrame = (actions: ReactNode, body: ReactNode) => (
   </div>
 );
 
-const FUNNEL_COLUMNS = ["Name", "Steps", "Description", "Actions"] as const;
+const FUNNEL_COLUMNS = ["Funnel", "Status", "Steps", "Fans in funnel", "Last started", "Actions"] as const;
+/** Below `sm` a row is the Funnel cell (status + fans under the name) and a "⋯" menu. */
+const WIDE_ONLY = new Set<string>(["Status", "Steps", "Fans in funnel", "Last started"]);
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-/** The funnels as Infloww's legacy list: a 56px "Reply walking" switch row, then an IF_TABLE (Name, Steps,
- *  Description, Actions fixed right); Start and Media open under their row, the editor and the delete confirm are
- *  dialogs. `frame(actions, body)` places Learn and "New funnel" (Auto Funnel passes them to its page header). */
+/** Smart Messages' status pills (#98-#102) in the theme palette. */
+const TONE: Record<FunnelStatus["tone"], string> = {
+  idle: "bg-fg-dim/15 text-fg-dim",
+  active: "bg-accent/15 text-accent",
+  done: "bg-ok/15 text-ok",
+  warn: "bg-warn/15 text-warn",
+};
+function StatusPill({ status }: { status: FunnelStatus | null }) {
+  if (!status) return <span className="text-muted">—</span>;
+  return (
+    <span title={status.hint} className={cn("inline-block whitespace-nowrap rounded-2xl px-2 py-0.5 text-[12px]", TONE[status.tone])}>
+      {status.label}
+    </span>
+  );
+}
+
+type RowAction = "Start" | "Edit" | "Media" | "Delete";
+const ROW_ACTIONS: RowAction[] = ["Start", "Edit", "Media", "Delete"];
+
+/** Auto Funnel's list (Infloww's Smart Messages table): the "Follow up on replies" switch, then a row per funnel
+ *  with this creator's Status, Steps, Fans in funnel and Last started (funnels_api `?account_id=` stats); Start and
+ *  Media open under their row, the editor and the delete confirm are dialogs. `frame(actions, body)` places Learn and
+ *  "New funnel" (Auto Funnel passes them to its page header). */
 export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
   accountId: string | null;
   frame?: (actions: ReactNode, body: ReactNode) => ReactNode;
 }) {
-  const listQ = useFunnels();
+  const listQ = useFunnels(accountId);
   const deleteM = useDeleteFunnel();
   // One open at a time: the editor dialog (new or a funnel) or a row's Start / Media panel.
   const [panel, setPanel] = useState<{ k: "new" } | { k: "edit" | "start" | "media"; id: number } | null>(null);
@@ -268,7 +287,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
 
   const funnels = listQ.data ?? [];
 
-  // ── Reply-walker (per-account reply_mass_funnel rule) ──────────────────
+  // ── Follow-ups (the per-account reply_mass_funnel rule, "reply walking") ──
   const rulesQ = useAutomationRules(accountId);
   const walker = useMemo(
     () => (rulesQ.data ?? []).find((r) => r.kind === WALKER_KIND) ?? null,
@@ -280,7 +299,8 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
   const walkerBusy = createRuleM.isPending || updateRuleM.isPending;
   const [walkerErr, setWalkerErr] = useState<string | null>(null);
 
-  /** Flip the per-account reply-walker on/off (create the rule on first enable). */
+  /** Flip the per-account follow-ups on/off (create the rule on first enable). Starting a funnel turns it on
+   *  server-side too (mass_queue_api → funnels_api.ensure_funnel_walker). */
   async function setWalker(enabled: boolean) {
     if (!accountId) return;
     setWalkerErr(null);
@@ -298,7 +318,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
         });
       }
     } catch (e) {
-      setWalkerErr((e as Error)?.message || "Failed to update reply-walking");
+      setWalkerErr((e as Error)?.message || "Failed to update follow-ups");
     }
   }
 
@@ -317,6 +337,12 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
 
   /** One row's panel at a time: Start or Media, toggled. */
   const openPanel = (k: "start" | "media", id: number) => setPanel(openOn(k, id) ? null : { k, id });
+  const act = (f: FunnelSummary, a: RowAction) => {
+    if (a === "Start") openPanel("start", f.id);
+    else if (a === "Media") openPanel("media", f.id);
+    else if (a === "Edit") setPanel({ k: "edit", id: f.id });
+    else setDeleting({ id: f.id, name: f.name });
+  };
 
   const line = (children: ReactNode, cls = "text-muted") => (
     <tr><td colSpan={FUNNEL_COLUMNS.length} className={cn("py-10 text-center text-[14px]", cls)}>{children}</td></tr>
@@ -324,8 +350,9 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
 
   const actions = (
     <>
-      <IfLearn tip={<>Funnels are global (shared across all your models). Reference one from a mass send to auto-walk
-        the reply / PPV steps per replying fan.</>}>
+      <IfLearn tip={<>A funnel sends an opener to the audience you pick, then one follow-up step each time a fan replies,
+        usually ending in a paid PPV. Funnels are global (shared across all your models); each model picks its own PPV
+        media under Media.</>}>
         <span className="max-sm:sr-only">Learn</span>
       </IfLearn>
       <IfButton variant="primary" icon={Plus} onClick={() => setPanel({ k: "new" })} className="max-sm:px-2.5">
@@ -334,32 +361,31 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
     </>
   );
 
+  const everyMin = Math.round((walker?.every_seconds ?? WALKER_EVERY_S) / 60);
   const body = (
     <div className="space-y-4">
-      {/* Reply-walker status + switch. Without it on, funnels send the
-          opener but never advance — so make that visible right where they live. */}
+      {/* Follow-ups: without them a funnel sends the opener and stops. Starting a funnel turns them on. */}
       {accountId && (
-        <div>
-          <SwitchRow
-            label="Reply walking"
-            hint={walkerOn
-              ? `On · every ${Math.round((walker?.every_seconds ?? WALKER_EVERY_S) / 60)} min. Fans who reply to a funnel get walked through its reply / PPV steps.`
-              : "Off. Funnels send the opener but won't advance past it until this is on (every 2 min)."}
-            checked={walkerOn}
-            disabled={walkerBusy}
-            onChange={setWalker}
-          />
-          {walkerErr && <div className="mt-1 text-[12px] text-err">{walkerErr}</div>}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <IfSwitch label="Follow up on replies" checked={walkerOn} disabled={walkerBusy || rulesQ.isLoading}
+            loading={walkerBusy} onChange={setWalker} />
+          <span className="text-[12px] text-muted">
+            {walkerOn
+              ? `On · checks every ${everyMin} min and sends the next step to fans who replied`
+              : "Off · steps stop after the opener; starting a funnel turns this on"}
+          </span>
+          {walkerErr && <span className="text-[12px] text-err">{walkerErr}</span>}
         </div>
       )}
 
       <div className="overflow-x-auto">
-        <table className={cn(IF_TABLE.table, "min-w-[720px]")}>
+        <table className={cn(IF_TABLE.table, "sm:min-w-[820px]")}>
           <thead>
             <tr>
               {FUNNEL_COLUMNS.map((c) => (
                 <th key={c} className={cn(IF_TABLE.th, IF_TABLE.thDivider, "border-b border-border",
-                  c === "Actions" && cn(IF_TABLE.fixedRightHead, "z-[1] w-[220px]"))}>
+                  WIDE_ONLY.has(c) && "max-sm:hidden",
+                  c === "Actions" && cn(IF_TABLE.fixedRightHead, "z-[1] w-[220px] max-sm:w-12 max-sm:text-transparent"))}>
                   {c}
                 </th>
               ))}
@@ -372,44 +398,49 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                 <tr><td colSpan={FUNNEL_COLUMNS.length}><EmptyState kind="data" text="No funnels yet" className={TABLE_EMPTY} /></td></tr>
               ) : funnels.map((f) => {
                 const open = openOn("start", f.id) || openOn("media", f.id);
+                // No pill until the follow-up switch has loaded (a running funnel would flash "Paused").
+                const status = accountId && rulesQ.isSuccess ? funnelStatus(f.stats, walkerOn) : null;
+                const ago = startedAgo(f.stats?.last_started_at);
+                const fans = f.stats ? `${f.stats.active_fans} ${f.stats.active_fans === 1 ? "fan" : "fans"} in funnel` : null;
                 return (
                   <Fragment key={f.id}>
                     <tr className={cn(IF_TABLE.row, open && "border-b-0")}>
-                      <td className={IF_TABLE.td}>
-                        <span className="block truncate">{f.name}</span>
+                      <td className={cn(IF_TABLE.td, "w-full max-w-0")}>
+                        <span className="block truncate font-medium">{f.name}</span>
+                        <span className="block truncate text-[12px] text-muted max-sm:hidden">{f.description || f.opening_message}</span>
+                        {/* Phone: the hidden columns, under the name. */}
+                        <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted sm:hidden">
+                          <StatusPill status={status} />
+                          {f.stats && f.stats.last_started_at && <span>{fans}{ago && ` · ${ago}`}</span>}
+                          {!status && <span>{f.step_count} steps</span>}
+                        </span>
                         {rowErr?.id === f.id && <span className="mt-1 block text-[12px] text-err">{rowErr.msg}</span>}
                       </td>
-                      <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>{f.step_count}</td>
-                      <td className={cn(IF_TABLE.td, "w-full max-w-0 truncate text-fg-dim")}>{f.description || f.opening_message}</td>
-                      <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap")}>
-                        <span className="inline-flex gap-4">
-                          <button type="button" className={LINK} aria-expanded={openOn("media", f.id)} onClick={() => openPanel("media", f.id)}>Media</button>
-                          <button type="button" className={LINK} aria-expanded={openOn("start", f.id)} onClick={() => openPanel("start", f.id)}>Start</button>
-                          <button type="button" className={LINK}
-                            onClick={() => setPanel({ k: "edit", id: f.id })}>Edit</button>
-                          <button type="button" className={LINK} disabled={deleteM.isPending}
-                            onClick={() => setDeleting({ id: f.id, name: f.name })}>Delete</button>
+                      <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}><StatusPill status={status} /></td>
+                      <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}>{f.step_count}</td>
+                      <td className={cn(IF_TABLE.td, "whitespace-nowrap tabular-nums max-sm:hidden")}>{f.stats ? f.stats.active_fans : "—"}</td>
+                      <td className={cn(IF_TABLE.td, "whitespace-nowrap text-fg-dim max-sm:hidden")}
+                        title={f.stats?.last_started_at ? `${f.stats.last_started_at} UTC` : undefined}>{ago ?? "—"}</td>
+                      <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap max-sm:w-12 max-sm:px-2")}>
+                        <span className="inline-flex gap-4 max-sm:hidden">
+                          <button type="button" className={LINK} aria-expanded={openOn("start", f.id)} onClick={() => act(f, "Start")}>Start</button>
+                          <button type="button" className={LINK} onClick={() => act(f, "Edit")}>Edit</button>
+                          <button type="button" className={LINK} aria-expanded={openOn("media", f.id)} onClick={() => act(f, "Media")}>Media</button>
+                          <button type="button" className={LINK} disabled={deleteM.isPending} onClick={() => act(f, "Delete")}>Delete</button>
+                        </span>
+                        <span className="sm:hidden">
+                          {/* Phone: the same four actions in a "⋯" menu. */}
+                          <Menu label={<MoreHorizontal className="h-4 w-4" aria-hidden />} ariaLabel={`More actions for ${f.name}`}
+                            align="right" items={ROW_ACTIONS.map((a) => ({ label: a, onClick: () => act(f, a),
+                              disabled: a === "Delete" && deleteM.isPending }))} />
                         </span>
                       </td>
                     </tr>
                     {open && (
                       <tr className={IF_TABLE.row}>
-                        <td colSpan={FUNNEL_COLUMNS.length} className="space-y-2 px-4 pb-4">
+                        <td colSpan={FUNNEL_COLUMNS.length} className="px-4 pb-4 max-sm:px-0">
                           {openOn("start", f.id) && (
-                            <>
-                              {!walkerOn && (
-                                <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2">
-                                  <span className="min-w-[12rem] flex-1 text-[12px] text-warn">
-                                    Reply walking is off — this funnel will send the opener
-                                    but won&apos;t advance through its reply / PPV steps.
-                                  </span>
-                                  <IfButton variant="primary" onClick={() => setWalker(true)} disabled={walkerBusy}>
-                                    {walkerBusy ? "Enabling…" : "Enable reply walking"}
-                                  </IfButton>
-                                </div>
-                              )}
-                              <FunnelLaunchPanel key={accountId ?? ""} funnel={f} accountId={accountId} onClose={close} />
-                            </>
+                            <FunnelLaunchPanel key={accountId ?? ""} funnel={f} accountId={accountId} followUpsOn={walkerOn} onClose={close} />
                           )}
                           {openOn("media", f.id) && (
                             <FunnelMediaPane funnel={f} accountId={accountId} onClose={close} />

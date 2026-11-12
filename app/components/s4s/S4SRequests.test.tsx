@@ -70,11 +70,12 @@ const calls = (): Call[] =>
 const posts = () => calls().filter((c) => c.method === "POST").map((c) => c.url);
 const mount = () => renderWithProviders(<S4SRequests profile={PROFILE} accountId="7000001" />);
 const latest = () => screen.getByRole("region", { name: "Latest request" });
+const latestFound = () => screen.findByRole("region", { name: "Latest request" });
 
 describe("S4SRequests", () => {
   it("Latest request shows this creator's pending received requests one at a time, from the snapshot", async () => {
     mount();
-    const card = await within(latest()).findByRole("article", { name: "Request from Fixture Partner" });
+    const card = await within(await latestFound()).findByRole("article", { name: "Request from Fixture Partner" });
     expect(within(latest()).getByText("(1/2)")).toBeInTheDocument();
     expect(within(card).getByText("@fixture_partner")).toBeInTheDocument();
     expect(within(card).getByText("Partner promo text")).toBeInTheDocument();
@@ -85,17 +86,17 @@ describe("S4SRequests", () => {
 
   it("Skip posts the answer and moves to the next request", async () => {
     mount();
-    const card = await within(latest()).findByRole("article", { name: "Request from Fixture Partner" });
+    const card = await within(await latestFound()).findByRole("article", { name: "Request from Fixture Partner" });
     received = received.filter((r) => r.id !== 21);
     fireEvent.click(within(card).getByRole("button", { name: "Skip" }));
     await waitFor(() => expect(posts()).toEqual(["/admin/s4s/requests/21/skip"]));
-    expect(await within(latest()).findByRole("article", { name: "Request from Fixture Other" })).toBeInTheDocument();
+    expect(await within(await latestFound()).findByRole("article", { name: "Request from Fixture Other" })).toBeInTheDocument();
     expect(within(latest()).getByText("(1/1)")).toBeInTheDocument();
   });
 
   it("Accept opens Share for Share Scheduled! in UTC", async () => {
     mount();
-    const card = await within(latest()).findByRole("article", { name: "Request from Fixture Partner" });
+    const card = await within(await latestFound()).findByRole("article", { name: "Request from Fixture Partner" });
     fireEvent.click(within(card).getByRole("button", { name: "Accept" }));
     await waitFor(() => expect(posts()).toEqual(["/admin/s4s/requests/21/accept"]));
     const dialog = await screen.findByRole("dialog", { name: "Share for Share Scheduled!" });
@@ -108,8 +109,12 @@ describe("S4SRequests", () => {
     received = [];
     sent = [];
     mount();
-    expect(await within(latest()).findByText("You don’t have any new requests")).toBeInTheDocument();
     expect(await screen.findByText("You haven’t received any requests from other Creators")).toBeInTheDocument();
+    // One message, no empty Latest request box, and no "share your link" (there is none).
+    expect(screen.queryByRole("region", { name: "Latest request" })).toBeNull();
+    expect(screen.queryByText(/Share your link/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Discover Creators" })).toHaveAttribute(
+      "href", expect.stringContaining("/share-for-share/discover-creators?creator="));
     fireEvent.click(screen.getByRole("tab", { name: "Sent" }));
     expect(await screen.findByText("You haven’t sent any requests to other Creators")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Discover Creators" })).toBeInTheDocument();
@@ -149,7 +154,7 @@ describe("S4SRequests", () => {
   it("shows the relay's refusal when an answer is no longer possible", async () => {
     answer = jsonRes({ detail: "this request is no longer pending" }, 409);
     mount();
-    const card = await within(latest()).findByRole("article", { name: "Request from Fixture Partner" });
+    const card = await within(await latestFound()).findByRole("article", { name: "Request from Fixture Partner" });
     fireEvent.click(within(card).getByRole("button", { name: "Accept" }));
     expect(await within(card).findByRole("alert")).toHaveTextContent("this request is no longer pending");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -159,7 +164,7 @@ describe("S4SRequests", () => {
     received = [{ ...req(21, "received", "pending"), from_media: [{ id: 5, media_type: "photo" }, { id: 6, media_type: "video" }],
       to_media: [{ id: 7, media_type: "photo" }] }];
     mount();
-    const card = await within(latest()).findByRole("article", { name: "Request from Fixture Partner" });
+    const card = await within(await latestFound()).findByRole("article", { name: "Request from Fixture Partner" });
     const mine = within(card).getByRole("group", { name: "Your Creator posts" });
     expect(within(mine).getByRole("img", { name: "S4S photo" })).toHaveAttribute("src", "/admin/s4s/media/5");
     expect(within(mine).getByRole("img", { name: "S4S video" })).toHaveAttribute("src", "/admin/s4s/media/6");

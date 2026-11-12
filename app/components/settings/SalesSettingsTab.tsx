@@ -18,11 +18,14 @@
  *
  * Versioned (roadmap W6 6.4): a save takes effect from "Set effective date", now by default, and a sale reads the
  * version in effect when it was made, so a backdated save recredits only the sales from then (SettingsVersions).
+ * The date field is the Panel's first section, right under Save; the history stays at the bottom.
  */
+
+import Link from "next/link";
 
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import {
-  BlobNotes, Field, FieldInput, RadioGroup, Section, SettingsPanel, ToggleRow,
+  BlobNotes, Field, FieldInput, RadioGroup, Section, SettingsPanel, Switch,
 } from "@/components/settings/SettingsPanel";
 import { SaveRow } from "@/components/settings/StickySaveBar";
 import SettingsVersions from "@/components/settings/SettingsVersions";
@@ -84,6 +87,9 @@ const POSTS_TIPS = [
   { value: "converters", label: "Converters" },
 ] as const;
 
+/** "1 hour", "2 hours". */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
 /** One option row: a radio or checkbox and its text, side by side. */
 const OPTION = "inline-flex items-center gap-2 cursor-pointer";
 
@@ -108,10 +114,19 @@ export default function SalesSettingsTab() {
       actions={<SaveRow {...blob.save} gateNote={null} look="settings" onSave={() => blob.commit({ attribution })} />}
     >
       <BlobNotes className="mb-4" note={blob.save.gateNote} q={blob.query} />
+      {/* By Save, so nobody saves without seeing when the rules start. */}
+      <SettingsVersions show="date" effective={blob.effective} history={blob.history}
+        recomputes="sales credited to employees (Employee reports, the Timesheet's Recorded earnings)" />
       <Section>
-        {TOGGLES.map((t) => (
-          <ToggleRow key={t.key} title={t.title} checked={v[t.key]} onChange={(on) => blob.set({ [t.key]: on })} />
-        ))}
+        {/* The three switches in one bordered card, a rule between rows. */}
+        <div className="rounded-[var(--if-toggle-radius)] border border-[var(--if-line)] divide-y divide-[var(--if-line)]">
+          {TOGGLES.map((t) => (
+            <div key={t.key} className="h-12 px-[var(--if-row-px)] flex items-center gap-4">
+              <span className="flex-1 min-w-0 text-[length:var(--if-fs)] text-[var(--if-fg)]">{t.title}</span>
+              <Switch checked={v[t.key]} label={t.title} onChange={(on) => blob.set({ [t.key]: on })} />
+            </div>
+          ))}
+        </div>
       </Section>
       <Section title="Earnings types and attribution rules">
         <div className="text-[length:var(--if-fs)] text-[var(--if-fg)]">
@@ -162,16 +177,19 @@ export default function SalesSettingsTab() {
               minutes of the sale.
             </p>
             <p className="mt-1 text-[length:var(--if-fs-sm)] text-[var(--if-fg-3)]">
-              If no Chatter messaged the fan within {hours} hours and {minutes} minutes before they unlock the
-              message, tipped or purchase the post, the sale will not be attributed to anyone.
+              No Chatter within {plural(hours, "hour")} and {plural(minutes, "minute")}: the sale stays unassigned.
             </p>
           </Field>
           <p className="text-[length:var(--if-fs-sm)] text-[var(--if-fg-3)]">
-            Shift schedule credits sales only while Time tracking is on.
+            Shift schedule credits sales only while{" "}
+            <Link href="/settings/time-tracking" className="text-[var(--if-accent)] hover:underline underline-offset-2">
+              Time tracking
+            </Link>{" "}
+            is on.
           </p>
         </div>
       </Section>
-      <SettingsVersions effective={blob.effective} history={blob.history}
+      <SettingsVersions show="history" effective={blob.effective} history={blob.history}
         recomputes="sales credited to employees (Employee reports, the Timesheet's Recorded earnings)" />
     </SettingsPanel>
   );

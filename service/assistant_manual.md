@@ -67,7 +67,7 @@ Creators or Employees. On Growth they keep **Smart Messages** and **Scripts**.
 In My AI Chatter they see **Get to know fans**; every other My Automations and
 My AI Chatter page is off for an employee until the owner turns it on for their role in **Settings
 → Role Settings**. In Settings an employee sees only **Security (personal)**,
-**Billing**, **Your Balance** and **About Inflowwww**; Your Account, Your
+**Billing** and **About Inflowwww**; Your Account, Your
 Preferences, Security (organization), Role Settings, Sales Settings, Time
 tracking, Messaging settings, AI keys and Audit log are the owner's.
 
@@ -385,7 +385,8 @@ the new one), **Access limits** and **Deactivate** / **Activate**.
 
 **Roles.** "Manage roles & permissions →" opens **Settings → Role Settings**,
 where the Admin / Manager / Chatter / VA presets and the pages each role may
-open are edited, and where **Enforce role permissions** is switched on.
+open are edited, and where **Enforce role permissions** is switched on. A
+person's role is given here on **Employees** (tick them → **Batch edit roles**).
 
 **Caveat:** don't open an invite link in the browser you are signed in as owner
 on — registering there logs the owner out of that browser.
@@ -525,11 +526,11 @@ difference matters:
   **Target URL** (`ofl.ink/name` is fine — a missing `https://` is added).
   These are Inflowwww's own short links and they count **clicks only** — the
   visitor never lands on OnlyFans, so subscribers cannot be attributed, and the
-  per-link **Analytics** panel says so.
+  **Redirect links** view shows clicks today, over 7 and 30 days, the top link, and a 7-day sparkline per link. Open **Analytics** for a 7/30/90-day chart and Opened in, Came from, and Country breakdowns.
   **Bot check before redirect** (in the form, or the **Bot check** box on a link's
   row; gated links show a "bot check" badge) makes visitors pass a Cloudflare
   check on a blank page first; only passed checks count as clicks. It is greyed
-  out when the server has no Cloudflare Turnstile keys.
+  out when the server has no Cloudflare Turnstile keys. When enabled, analytics show **Bot check on** and clicks passed in the selected range; the summary shows passes in the last 30 days.
 
 Use the OnlyFans kind whenever you are sending people to the profile.
 
@@ -542,10 +543,11 @@ campaign on OnlyFans. Campaigns are listed under **Campaign insights** with
 their claims and revenue.
 
 To keep an offer alive, tick **Keep running** on the campaign's row in Campaign
-insights — that is the opt-in. The **Auto-activate campaign** switch higher up
-is the engine behind it, and the **Keep promos running** card under that switch
-holds the engine's settings (how often it checks, a max number of re-arms, and
-a **Dry run** box that is **on by default** — untick it or it will only report).
+insights — that is the opt-in. The **Auto-activate campaign** switch under the
+table is the engine behind it (switching it on the first time creates it), and
+the link beside that switch opens the engine's settings (how often it
+checks, a max number of re-arms, and a **Dry run** switch that is **on by
+default** — turn it off or it will only report).
 See `promo_reactivate` below.
 
 ## Growth → Scripts — the script library
@@ -557,9 +559,9 @@ Messages Pro chat through the composer's **Scripts** pill, and a chat that is
 on a sequence shows a **▶ Next in "…"** bubble with its next step. Scripts are
 not an automation — nothing sends by itself.
 
-- **Add one:** the **+** menu → **Add script**, **Add sequence → Create new**
+- **Add one:** the **+ Add** menu → **Add script**, **Add sequence → Create new**
   or **Add tag**.
-- **Import:** the **+** menu → **Import → From Excel** (download **Script
+- **Import:** the **+ Add** menu → **Import → From Excel** (download **Script
   templates.xlsx**, fill it in, upload the .xlsx; failed rows are listed) or
   **From other creators** (up to 5 at a time).
 - **Share:** **Share** in the header (the selected scripts, or all of them),
@@ -567,7 +569,7 @@ not an automation — nothing sends by itself.
   creators** for every creator you own. Sharing again adds nothing twice.
   Media stays on its own creator, so a copied script arrives without it and
   the result says how many lost it.
-- **All models** (at the top of the creator column) is a read-only table: one
+- **All creators** (at the top of the creator column) is a read-only table: one
   row per sequence or tag, one column per creator, with each creator's count
   or "—" where it is missing. Each row has **Share to all creators**, copying
   it from the first creator that already has it.

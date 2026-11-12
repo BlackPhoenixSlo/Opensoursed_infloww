@@ -6,10 +6,10 @@
  * the owner's Telegram username (Infloww's settings0189), and the Agency Name
  * and picture, saved whole to the `account` Settings blob behind the Load gate.
  * The agency picture is a 96px JPEG data URL in the blob (the 64 KB cap), as a
- * Creator's Display image is (creatorProfiles.ts). The Personal picture and the
- * Username "Edit" have no Relay endpoint, so they are Not wired; the stored
- * values are read by nothing yet (ADR-0008). Nothing here touches a Creator's
- * OnlyFans profile.
+ * Creator's Display image is (creatorProfiles.ts). The Personal picture has no
+ * Relay endpoint, so it is Not wired; the Username has no rename route, so it is
+ * read-only with no button. The Agency Name is read by nothing yet (ADR-0008).
+ * Nothing here touches a Creator's OnlyFans profile.
  */
 
 import { Camera } from "lucide-react";
@@ -19,7 +19,7 @@ import { useUser } from "@/contexts/UserContext";
 import { avatarDataUrl } from "@/lib/creatorProfiles";
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import {
-  BlobNotes, Field, FieldInput, NotAppliedYet, NotWired, Section, SettingsPanel,
+  BlobNotes, Field, FieldInput, NotAppliedYet, Section, SettingsPanel,
 } from "@/components/settings/SettingsPanel";
 import { SaveRow } from "@/components/settings/StickySaveBar";
 
@@ -101,16 +101,7 @@ export default function YourAccountTab() {
           <Picture label="Personal" text={username} />
         </Field>
         <Field label="Username" htmlFor="account-username">
-          <div className="flex items-center">
-            <FieldInput
-              id="account-username"
-              readOnly
-              value={username}
-            />
-            <div className="ml-[10px]">
-              <NotWired label="Edit" />
-            </div>
-          </div>
+          <FieldInput id="account-username" readOnly value={username} />
         </Field>
         <Field label="Telegram username (recommended)" htmlFor="account-telegram">
           <FieldInput
@@ -144,7 +135,7 @@ export default function YourAccountTab() {
         </Field>
       </Section>
       <div className="flex flex-col gap-3">
-        <NotAppliedYet />
+        <NotAppliedYet fields={["Agency Name"]} />
         <BlobNotes note={blob.save.gateNote} q={blob.query} />
       </div>
     </SettingsPanel>

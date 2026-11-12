@@ -1,0 +1,42 @@
+{
+  "profiles": [
+    {"id": "p00000000000001", "username": "alice", "displayName": "Alice <&> café $&", "bio": "Hi   there",
+     "verified": true, "mode": "direct", "avatar": true},
+    {"id": "p00000000000002", "username": "bob", "displayName": "Bob", "bio": "", "verified": false, "mode": ""},
+    {"id": "p00000000000003", "username": "carol", "displayName": "", "bio": "", "verified": false,
+     "mode": "escape_ig"}
+  ],
+  "links": [
+    {"id": "l00000000000001", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa1", "title": "Plain", "order": 1,
+     "isAdult": false, "mode": "", "destination": "https://of.example/plain", "tracking": false,
+     "defaultTrackingCode": "", "geo": null},
+    {"id": "l00000000000002", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa2", "title": "Tracked 18+",
+     "order": 2, "isAdult": true, "mode": "direct", "destination": "https://of.example/tracked/", "tracking": true,
+     "defaultTrackingCode": "55", "geo": null},
+    {"id": "l00000000000003", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa3", "title": "Geo", "order": 3,
+     "isAdult": false, "mode": "escape_ig", "destination": "https://of.example/geo//", "tracking": true,
+     "defaultTrackingCode": "geo",
+     "geo": {"US": "11", "DE": {"BY": "7", "default": "8"}, "CA": {}, "IT": "", "default": "9"}},
+    {"id": "l00000000000004", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa4", "title": "Exotic geo",
+     "order": 4.5, "isAdult": false, "mode": "", "destination": "https://of.example/exotic", "tracking": true,
+     "defaultTrackingCode": "geo",
+     "geo": {"US": 5, "GB": true, "FR": [1, 2], "BR": 1.5, "JP": 0, "MX": {"default": [1, null, 3]},
+             "length": "len", "__proto__": "13"}},
+    {"id": "l00000000000005", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa5", "title": "Empty", "order": 5,
+     "isAdult": false, "mode": "", "destination": "", "tracking": false, "defaultTrackingCode": "", "geo": null},
+    {"id": "l00000000000006", "profile": "p00000000000001", "linkId": "aaaaaaaaaaa6", "title": "Relative é",
+     "order": 6, "isAdult": false, "mode": "direct", "destination": "/local/path", "tracking": true,
+     "defaultTrackingCode": "", "geo": null},
+    {"id": "l00000000000007", "profile": "p00000000000002", "linkId": "bbbbbbbbbbb1", "title": "Tie A", "order": 0,
+     "isAdult": false, "mode": "", "destination": "https://of.example/tie-a", "tracking": false,
+     "defaultTrackingCode": "", "geo": null},
+    {"id": "l00000000000008", "profile": "p00000000000002", "linkId": "bbbbbbbbbbb2", "title": "Tie B", "order": 0,
+     "isAdult": false, "mode": "", "destination": "https://of.example/tie-b", "tracking": false,
+     "defaultTrackingCode": "", "geo": null}
+  ],
+  "spareDomains": [{"id": "s00000000000001", "domain": "spare.test"}],
+  "customDomains": [
+    {"id": "c00000000000001", "profile": "p00000000000001", "domain": "alice.test", "status": "live"},
+    {"id": "c00000000000002", "profile": "p00000000000002", "domain": "bob.test", "status": "pending"}
+  ]
+}

@@ -61,33 +61,33 @@ const pick = (label: string, name: string) => {
 };
 
 describe("PreferencesTab", () => {
-  it("renders the four labelled selects, the description and the Language Settings section", () => {
+  it("renders the three labelled selects with one help line per zone, no Language and no not-applied note", () => {
     renderWithProviders(<PreferencesTab />);
-    for (const label of ["Report time zone", "Time zone", "Week start day", "Language"]) {
+    for (const label of ["Report time zone", "Regular time zone", "Week start day"]) {
       expect(screen.getByRole("combobox", { name: label })).toBe(screen.getByLabelText(label));
     }
-    expect(screen.getByText("Your preferred time zone for Creator and fan reports")).toBeInTheDocument();
-    expect(screen.getByText("Language Settings")).toBeInTheDocument();
-    // Spec phase-04 story 23: only Language is still not applied.
-    expect(screen.getByText("Saved for your organization; Language is not applied yet.")).toBeInTheDocument();
-    expect(screen.queryByText("Saved for your organization; not applied yet.")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Report time zone" })).toHaveAccessibleDescription("Creator and fan reports");
+    expect(screen.getByRole("combobox", { name: "Regular time zone" })).toHaveAccessibleDescription("Top bar clock and Employees' monthly figures");
+    expect(screen.queryByLabelText("Language")).toBeNull();
+    expect(screen.queryByText("Language Settings")).toBeNull();
+    expect(screen.queryByText(/not applied yet/)).toBeNull();
+    expect(screen.getByText("The switches below apply at once on this browser; they need no Save.")).toBeInTheDocument();
   });
 
   it("offers every zone in Intl.supportedValuesOf(\"timeZone\") in both zone selects, and a filter narrows them", () => {
     renderWithProviders(<PreferencesTab />);
     const zones = Intl.supportedValuesOf("timeZone");
-    for (const label of ["Report time zone", "Time zone"]) {
+    for (const label of ["Report time zone", "Regular time zone"]) {
       expect(optionTexts(label)).toEqual(expect.arrayContaining(zones));
     }
-    fireEvent.keyDown(screen.getByLabelText("Time zone"), { key: "Enter" });
+    fireEvent.keyDown(screen.getByLabelText("Regular time zone"), { key: "Enter" });
     fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "tokyo" } });
     expect(within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Asia/Tokyo"]);
   });
 
-  it("offers exactly Monday and Sunday, and exactly English and Spanish", () => {
+  it("offers exactly Monday and Sunday", () => {
     renderWithProviders(<PreferencesTab />);
     expect(optionTexts("Week start day")).toEqual(["Monday", "Sunday"]);
-    expect(optionTexts("Language")).toEqual(["English", "Spanish"]);
   });
 
   it("with an empty stored blob, choosing Sunday and Save sends exactly the four keys", async () => {
@@ -113,24 +113,23 @@ describe("PreferencesTab", () => {
     });
     renderWithProviders(<PreferencesTab />);
     await waitFor(() => expect(screen.getByLabelText("Report time zone")).toHaveTextContent("Asia/Tokyo"));
-    expect(screen.getByLabelText("Time zone")).toHaveTextContent("America/New_York");
+    expect(screen.getByLabelText("Regular time zone")).toHaveTextContent("America/New_York");
     expect(screen.getByLabelText("Week start day")).toHaveTextContent("Sunday");
-    expect(screen.getByLabelText("Language")).toHaveTextContent("Spanish");
   });
 
-  it("keeps a stored key it does not show and a zone outside the Intl list when it saves", async () => {
+  it("keeps stored keys it does not show (Language included) and a zone outside the Intl list when it saves", async () => {
     const stored = {
-      report_tz: "Mars/Olympus_Mons", tz: "Asia/Tokyo", week_start: "monday", language: "en", extra: 1,
+      report_tz: "Mars/Olympus_Mons", tz: "Asia/Tokyo", week_start: "monday", language: "es", extra: 1,
     };
     getReply = () => jsonRes({ tab: "preferences", config: stored });
     renderWithProviders(<PreferencesTab />);
     await waitFor(() => expect(screen.getByLabelText("Report time zone")).toHaveTextContent("Mars/Olympus_Mons"));
     expect(optionTexts("Report time zone")).toContain("Mars/Olympus_Mons");
-    pick("Language", "Spanish");
+    pick("Week start day", "Sunday");
     fireEvent.click(save());
 
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0].body).toEqual({ ...stored, language: "es" });
+    expect(puts()[0].body).toEqual({ ...stored, week_start: "sunday" });
   });
 
   it("a failed GET keeps Save disabled and sends no PUT (Load gate)", async () => {

@@ -56,11 +56,10 @@ describe("SecurityPersonalTab", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
-  it("renders Change password disabled with \"not wired\"", () => {
+  it("has no Password card (no password-change route)", () => {
     mount();
-    const b = screen.getByRole("button", { name: "Change password" });
-    expect(b).toBeDisabled();
-    expect(b).toHaveAttribute("title", "not wired");
+    expect(screen.queryByRole("button", { name: "Change password" })).toBeNull();
+    expect(screen.queryByText("Password")).toBeNull();
   });
 
   it("offers Enable 2FA while 2FA is off, and Disable (off while required) once it is on", async () => {

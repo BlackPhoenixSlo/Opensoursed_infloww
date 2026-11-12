@@ -28,6 +28,7 @@ from sqlalchemy import and_
 from sqlalchemy.sql.elements import ColumnElement
 
 import vault_ai_brief
+import vault_describe_jev
 from db.models import VaultItem
 from vault_of_folders_decide import parse_folder_ids
 
@@ -396,6 +397,25 @@ def with_flags_cost(describe_res: Mapping[str, Any],
     return out
 
 
+def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[str, Any]:
+    """`res` (a describe / flags result) with the Jev pass that ran before it
+    folded in: its spend added to `cost_millicents` (the sweep sums it) and its
+    outcome as `jev_status` / `jev_lane5` / `jev_cost_millicents`. No Jev
+    result (setting off, not a photo): `res` unchanged."""
+    out = dict(res)
+    if not jev_res:
+        return out
+    jc = int(jev_res.get("cost_millicents") or 0)
+    out["cost_millicents"] = int(out.get("cost_millicents") or 0) + jc
+    out["jev_status"] = jev_res.get("status")
+    out["jev_cost_millicents"] = jc
+    if jev_res.get("lane5"):
+        out["jev_lane5"] = jev_res["lane5"]
+    if jev_res.get("detail") and not jev_res.get("ok"):
+        out["jev_detail"] = str(jev_res["detail"])[:200]
+    return out
+
+
 def prompt_variant(prompt_version: Any) -> str:
     """The describe prompt variant: "v1" only when asked for exactly, else "v2"."""
     return "v1" if str(prompt_version) == "v1" else "v2"
@@ -451,6 +471,7 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
     # `data` is fresh, so a `_copied_from` marker is gone with it: the
     # description is this row's own now.
     carry_flags(out, prev_ai, exact=False)
+    _put_jev(out, prev_ai.get(JEV_KEY))  # Jev read the same image too
     _apply_locked_fixes(out, overrides, locked, fixable)
     vals: dict[str, Any] = {
         "describe_status": "described",
@@ -482,6 +503,28 @@ FLAGS_BLOB_KEYS: tuple[str, ...] = (
     *vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
     "_flags_v", "_flags_model", "_flags_frames", "_flags_arc",
     "_flags_status", "_flags_failed_at", "_flags_error", FLAGS_COPY_MARK)
+
+# The Jev v8 answer (`vault_jev`): its own pass, carried by hand rather than
+# through `FLAGS_BLOB_KEYS` — an exact flags copy from a source that has no
+# `_jev` must not wipe the copy's own paid answer.
+JEV_KEY = "_jev"
+
+
+def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any]) -> Any:
+    """The `_jev` a duplicate should carry: the source's when it is a good
+    answer (`status == "ok"`), else the copy's own (or None: none at all)."""
+    src = src_ai.get(JEV_KEY)
+    if isinstance(src, dict) and src.get("status") == "ok":
+        return src
+    return own_ai.get(JEV_KEY)
+
+
+def _put_jev(out: dict[str, Any], jev: Any) -> None:
+    if jev is None:
+        out.pop(JEV_KEY, None)
+    else:
+        out[JEV_KEY] = jev
+
 
 # Keys in `ai_fields_json` that are about the ROW, not the picture — an
 # operator's grading verdict (`vault_ai_fix.GRADE_KEY`) was given on this item.
@@ -626,6 +669,7 @@ def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
     fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
         fields.pop(dead, None)  # what a flags run drops (`build_flags_fields`)
+    _put_jev(fields, jev_for_copy(src_ai, prev))
     fields[FLAGS_COPY_MARK] = int(src_id)
     return fields
 
@@ -646,10 +690,11 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
     the copy's own flags. Stamped `COPY_MARK` — how a later re-describe of the
     source finds its copies."""
     src_ai = json.loads(src.get("ai_fields_json") or "{}") or {}
-    skip = {*FLAGS_BLOB_KEYS, *ROW_OWN_KEYS, COPY_MARK}
+    skip = {*FLAGS_BLOB_KEYS, *ROW_OWN_KEYS, COPY_MARK, JEV_KEY}
     out = {k: v for k, v in src_ai.items() if k not in skip}
     out.update({k: prev_ai[k] for k in ROW_OWN_KEYS if k in prev_ai})
     carry_flags(out, prev_ai, exact=False)
+    _put_jev(out, jev_for_copy(src_ai, prev_ai))
     if "_flags_v" in src_ai:
         carry_flags(out, src_ai, locked=locked, exact=True)
         # The flags came from `src_id` itself, which COPY_MARK names. The
@@ -683,14 +728,17 @@ def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any]]], *,
                 flags: bool, flags_version: int) -> tuple[set[int], set[int]]:
     """(done, bad) over (media_id, describe_status, ai_fields) rows, for
     `reuse_plan`: done = its answer may be copied (described / current flags);
-    bad = its last attempt failed."""
+    bad = its last attempt failed. A Jev-fed describe is a source only while
+    its row still holds the `_jev` it was fed (`vault_describe_jev.reusable`):
+    the copy takes that `_jev` along (`jev_for_copy`), so the pair agrees."""
     done: set[int] = set()
     bad: set[int] = set()
     for mid, status, f in rows:
         if flags:
             ok, failed = flags_current(f, flags_version), "_flags_status" in f
         else:
-            ok, failed = status == "described", status in _DESCRIBE_FAILED
+            ok = status == "described" and vault_describe_jev.reusable(f)
+            failed = status in _DESCRIBE_FAILED
         if ok:
             done.add(int(mid))
         elif failed:

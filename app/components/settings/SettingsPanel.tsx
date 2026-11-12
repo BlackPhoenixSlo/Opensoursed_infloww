@@ -292,8 +292,11 @@ export const TABLE_CELL = "h-12 px-[var(--if-row-px)] whitespace-nowrap";
  *  head (a 46px `--if-accent-bg` #353535 row of `--if-fg-3` column heads) over `--if-line` rules. `children` are the body rows. `small` draws the
  *  bundle's 13px billing-table cells (`._billing-table_6tj53_29 .ant-table-cell`). `aria-label` names the table
  *  when a Panel has more than one. */
+export type TableColumn = string | { label: string; className?: string };
+
 export function SettingsTable({ columns, small, children, "aria-label": ariaLabel }: {
-  columns: readonly string[];
+  /** A column head, or `{ label, className }` to size or hide it (e.g. `hidden sm:table-cell`). */
+  columns: readonly TableColumn[];
   small?: true;
   children: ReactNode;
   "aria-label"?: string;
@@ -303,9 +306,10 @@ export function SettingsTable({ columns, small, children, "aria-label": ariaLabe
       <table aria-label={ariaLabel} className={cn("w-full text-left text-[var(--if-fg)]", small ? "text-[length:var(--if-fs-table)]" : "text-[length:var(--if-fs)]")}>
         <thead>
           <tr className={cn(TABLE_ROW, "bg-[var(--if-accent-bg)] text-[var(--if-fg-3)]")}>
-            {columns.map((c) => (
-              <th key={c} className={cn(TABLE_CELL, "h-[46px] font-normal")}>{c}</th>
-            ))}
+            {columns.map((c) => {
+              const col = typeof c === "string" ? { label: c } : c;
+              return <th key={col.label} className={cn(TABLE_CELL, "h-[46px] font-normal", col.className)}>{col.label}</th>;
+            })}
           </tr>
         </thead>
         <tbody>{children}</tbody>

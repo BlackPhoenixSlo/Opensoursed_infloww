@@ -6,7 +6,8 @@
  *
  * - The header (#3 to #17): "Scripts", "Learn" (Not wired: the help article is off-host) and
  *   "Share" (the selected scripts, or all of them, to other Creators), and the More menu behind the bundle shot's
- *   filled accent plus: Add script, Add sequence > Create new, Add tag, Import > From Excel / From other creators;
+ *   filled accent plus (ours a labelled "+ Add"): Add script, Add sequence > Create new, Add tag, Import > From
+ *   Excel / From other creators;
  *   Use template and Import from tag are Not wired. Import and Share are `ScriptsImportDialogs`. The Creator is
  *   picked on the creator column left of the page (`CreatorRail`, as Smart lists') in place of the bundle's header
  *   select (#6), without its per-Creator script count (`showScriptCount`): the store has no count read (YAGNI).
@@ -86,7 +87,7 @@ export default function ScriptsPage() {
   const clearSelection = () => dispatch({ type: "setChecked", ids: [] });
   // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence, error, overlay, search)
   // carries over; an answer to what was done on it is dropped while the page shows another (`account`).
-  // The "All models" coverage matrix (CreatorRail's All pick) leaves with it (`reset`).
+  // The "All creators" coverage matrix (CreatorRail's All pick) leaves with it (`reset`).
   const pickCreator = (id: string) => {
     setAccountId(id);
     setDraft(null);
@@ -400,8 +401,8 @@ export default function ScriptsPage() {
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
         actions={
-          // All models shows no Creator: the actions that write to one are hidden with it.
-          !allModels && <div className="flex items-center gap-4 h-6">
+          // All creators shows no Creator: the actions that write to one are hidden with it.
+          !allModels && <div className="flex items-center gap-4 h-8">
             <button type="button" disabled title={NOT_WIRED} className={HEADER_BOX}>
               <BookOpen size={18} className="mr-1" aria-hidden />
               Learn
@@ -429,7 +430,7 @@ export default function ScriptsPage() {
       <CreatorRail
         creators={{
           accounts, value: allModels ? null : accountId, onChange: pickCreator,
-          onAll: () => dispatch({ type: "allModels" }), allLabel: "All models",
+          onAll: () => dispatch({ type: "allModels" }),
         }}
         className="flex flex-col"
       >

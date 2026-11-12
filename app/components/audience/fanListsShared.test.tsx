@@ -4,7 +4,7 @@
  * select opened after the composer would offer only the first 50.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 
 const get = vi.fn(async (path: string) => {
@@ -35,13 +35,18 @@ function ListSelect() {
 
 afterEach(() => { cleanup(); get.mockClear(); });
 
-const options = () => (document.getElementById("shared-list") as HTMLSelectElement).options.length - 1;
+/** The List select is the house listbox: open it once, then count its options past "None". */
+const options = () => {
+  const trigger = document.getElementById("shared-list")!;
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  return document.querySelectorAll('[role="option"]').length - 1;
+};
 
 describe("the shared fan-lists cache", () => {
   it.each([
     ["the Mass premade composer", <PremadeFields key="c" kind="mass_premade" accountId="acct1" row={blankRow()} dispatch={() => {}} />],
     ["the funnel launch panel", <FunnelLaunchPanel key="f" funnel={{ id: 1, name: "F", description: null, opening_message: "hi", step_count: 1 }}
-      accountId="acct1" onClose={() => {}} />],
+      accountId="acct1" followUpsOn onClose={() => {}} />],
   ])("holds every list when %s fills it first", async (_name, first) => {
     const client = makeTestQueryClient();
     render(<QueryClientProvider client={client}>{first}</QueryClientProvider>);

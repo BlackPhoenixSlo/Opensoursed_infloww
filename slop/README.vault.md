@@ -13,9 +13,12 @@ oracles, bypasses).
 | `lib/vault_pro_relay.py` | OnlyFans' `PUT /vault/media/hidden` (`OFClient.hide_vault_media`), only when the run wrote `of-vault-pro.json`: records each call's ids in order, answers success; `GET /__slop/vault-pro/fake` (`FAKE_PATH`) answers them. |
 | `lib/vault_pro_faults.py` | Every correctness check of vault-pro-20k and its faults (below). |
 | `seed/vault_items_describe.py` | In two steps around the relay arm: `plan(w, creators, n)` (per Creator its share of `n` photos, clips of 6 / 9 / 12 frames and a few audio files; 15% described by an earlier sweep, of the rest a deterministic refuse set and blank set, each at least one per Creator), then `seed(w, items, armed)` (the `vault_items` rows, a cached row with its `grok_calls` row, and the stills `vault_frames.collect` reads, plus a 300px grid stand-in; each item's picture its own pixel size). |
-| `lib/vault_describe_relay.py` | DeepInfra's OpenAI-compatible wire on its own loopback port, inert until the run wrote `deepinfra.json` and armed it (`arm_run`, `POST /__slop/vault-describe/arm`; 409 under `SLOP_LIVE=1`): answers describe prompts by each item's outcome (ok; refuse: 30b refuses, 235b answers; blank: both ""), flags prompts with flags JSON plus a hostile description / tags, bills each answer at `llm_models.MODELS`' listed price; re-points the still stores into the run's temp dir. `GET /__slop/vault-describe/calls`, `/count`. |
+| `lib/vault_describe_relay.py` | DeepInfra's OpenAI-compatible wire on its own loopback port, inert until the run wrote `deepinfra.json` and armed it (`arm_run`, `POST /__slop/vault-describe/arm`; 409 under `SLOP_LIVE=1`): answers describe prompts by each item's outcome (ok; refuse: 30b refuses, 235b answers; blank: both ""), flags prompts with flags JSON plus a hostile description / tags, the Jev-fed describe prompts (`recipe` v6: the ok JSON; prose: the marker plus every lane-critical claim, `PROSE_CLAIMS`, and `PROSE_GARMENTS`), bills each answer at `llm_models.MODELS`' listed price; re-points the still stores into the run's temp dir. `GET /__slop/vault-describe/calls`, `/count`. |
 | `lib/vault_describe_faults.py` | The describe sweep's check names and its faults (below). |
-| `lib/vault_relay.py` | OnlyFans' side of a vault import (upload claim, carrier post, `GET /__slop/vault/fake`), for `2026-10-30-vault-import-reducer` (below). |
+| `lib/vault_jev_relay.py` | TypeSafe's System One wire for the vault Jev v8 pass (`service/vault_jev.py`), as a `lib/typesafe_relay.py` `HANDLERS` entry (claims only the SDK's multipart body, once the run wrote `typesafe-vault.json` and armed it, `arm_jev`, `POST /__slop/vault-jev/arm`; 409 under `SLOP_LIVE=1`): answers each photo by its profile (`PROFILES`) and the question set (pass 1 / 2 / L), bills `TOKENS[pass] + id % 89` input tokens. `GET /__slop/vault-jev/calls`, `/count`. |
+| `lib/vault_jev_faults.py` | The Jev scenario's check names and faults (below). |
+| `scenarios/2026-11-11-vault-jev-flags.py` | The Jev v8 pass in describe-all / flags-all, per-Creator opt-in, and the Jev-fed describe recipes it routes to. |
+| `lib/vault_relay.py` | OnlyFans' side of a vault import (upload claim, carrier post, `GET /__slop/vault/fake`), for `2026-10-30-vault-import-reducer` (below), and of a folder publish (create list, add media, list read-back; `made`) for `2026-11-11-vault-tag-chips`. |
 | `lib/vault_faults.py` | That import's check names and its client fault `import-sends-unselected`. |
 | `lib/vault_import_faults.py` | That import's relay-side fault (below; its check name from `lib/vault_faults.py`). |
 | `lib/picker_faults.py` | That scenario's restricted-chatter phase: check `RESTRICTED_MENU` and client fault `picker-ignores-folder-access` (the picker's restricted branch off). |
@@ -42,6 +45,12 @@ oracles, bypasses).
 | `seed/vault_flags_partial.py` | A described vault the flags pass reached only part of (planted $10 / $50 / unflagged classes). |
 | `lib/vault_ai_folders_faults.py` | Build AI folders' check names and faults (below). |
 | `scenarios/2026-11-10-vault-ai-folders-partial-flags.py` | Build AI folders on a partly flagged vault. |
+| `seed/vault_feet.py` | A described, flagged vault for the feet pack picker (planted keeper / bystander / mention / ambiguous / measured classes, some keepers pre-filed). |
+| `lib/vault_feet_picker_faults.py` | The feet pack picker's check names and faults (below). |
+| `scenarios/2026-11-11-vault-feet-picker.py` | Feet pack picker: ranked, prefilled, keyboard, phone. |
+| `seed/vault_tag_chips.py` | A tagged vault: feet / lace planted across the column, ai tags and primary_folder, plus decoys, removed and malformed rows; the AND match and facet oracle. |
+| `lib/vault_tag_chips_faults.py` | The tag chips' check names and fault (below). |
+| `scenarios/2026-11-11-vault-tag-chips.py` | The grid's tag chips and Save as folder. |
 
 ## Scenarios
 
@@ -64,19 +73,19 @@ oracles, bypasses).
   a video's `files.full` is its source mp4), mirror by SQL (`seed/vault_week`), CDN armed (exact seeded bytes).
   Creator A no proxy (urls signed for "direct"), B on a `ProxyWire` proxy (urls signed for it). Stage relay-load
   (also --no-ui): `--users` concurrent `GET /admin/vault-ai/download` of B's whole vault. UI (1440x900): on A,
-  Download selected (3 photos + 1 video), the rail's Download folder, the header's Download full vault with `STALE` urls signed
-  for a proxy A left, then rail folder 2 selected and the header's Download full folder; on B, Download selected.
+  Download selected (3 photos + 1 video), the rail's Download folder, the Extras drawer's (header ⋯) Download full vault with `STALE` urls
+  signed for a proxy A left, then rail folder 2 selected and the drawer's Download full folder; on B, Download selected.
   Screenshots `vault-download-<select|folder|vault|header-folder|proxied>-trigger` / `-settled`. Checks
   (`lib/vault_download_faults.py`): `SELECT`, `FOLDER`, `VAULT` (stale ones: 403, re-signed by
-  listing window, one OF read per window, 0 by-id, then direct 200), `HEADER_SCOPE` (the header's label per scope; the browser's download listing
+  listing window, one OF read per window, 0 by-id, then direct 200), `HEADER_SCOPE` (the drawer item's label per scope; the browser's download listing
   requests, told apart from the grid's by page size, carry no folder id for the vault and that folder's id for the
-  folder; fault `vault-download-header-ignores-folder`, client: the header starts the whole vault under a selected
+  folder; fault `vault-download-header-ignores-folder`, client: the drawer item starts the whole vault under a selected
   folder, turns only it red), `PROXIED` (0 browser CDN fetches), `RELAY_LOAD`; files read off disk (path, a
   .jpg's exact bytes, an .mp4's size = served + ftyp), the panel's data-* counts, the relay's `vault_download` log
   lines; p95 of the relay download vs last green. Fault `vault-download-direct-ignores-proxy` (default, client:
   `sourceFor` drops the proxy rule) turns only `PROXIED` and `PHONE_SHARE` red. Phone stage (B, 390x844 Chromium
   mobile emulation, `touch`): `PHONE_CAP` (Select all > 20 off with "Phone: up to 20 at a time", 20 on, 21 off,
-  folder / whole vault off with their reason), `PHONE_HEADER` (the header's Download an icon, label sr-only, off with
+  folder / whole vault off with their reason), `PHONE_HEADER` (the Extras drawer's Download shown, icon + label, off with
   the desktop-only reason; `vault-download-phone-header`) and `PHONE_SHARE` (3 photos + 2 videos padded to 110 MB,
   `img_relay.padded_mp4` via `arm_run(mp4_sizes=)`, so >= 2 share batches; one sheet dismissed keeps the button;
   every file shared once with name / MIME / exact size; each share inside a user activation; no 5xx); screenshots
@@ -88,9 +97,9 @@ oracles, bypasses).
   `-opened`), B's app link fetched with the session: 200 attachment, exact bytes) and `PHONE_LINKS` ("Save links"
   first, its own share inside the tap, txt + html, app urls). Copies `links-<phase>.txt/.html` in the run folder.
   Fault `vault-download-links-cdn-for-proxied` (client: `linkRows` drops the direct rule) turns only `LINKS` and
-  `PHONE_LINKS` red. `SWITCH` (fresh browser on A: the header's Download full vault, Creator B picked in the creator column
+  `PHONE_LINKS` red. `SWITCH` (fresh browser on A: the Extras drawer's Download full vault, Creator B picked in the creator column
   mid-run; A's files all on disk with exact bytes, card done / 0 failed / titled with A, B's grid shown with its
-  header button "Add full vault to queue" on; `vault-download-switch-trigger` / `-settled`). Queue stage (fresh browser
+  Extras drawer item "Add full vault to queue" on; `vault-download-switch-trigger` / `-settled`). Queue stage (fresh browser
   on B, root `queue`): 3 photos selected, the middle one's CDN response stalled (img_relay `stall`), A picked and its
   biggest non-first folder "Add folder to queue"d: `QUEUE_STALL` (B ends total 3 / done 2 / stalled 1 / failed 0,
   no file or .crswap for it, A's job starts by itself), `QUEUE_NAV` (A held mid-run; sidebar Dashboard and back by
@@ -154,6 +163,7 @@ oracles, bypasses).
   claims the Creator only after awaiting the budget, so concurrent presses all start a sweep; `ONE_SWEEP`),
   `vault-describe-drops-flags-cost` (`COST_INCL_FLAGS`). Knobs: `--items=` (SCALES `vault_describe_items`),
   `--llm_latency_s=` (0.05 per call).
+- `2026-11-11-vault-jev-flags`: `agency_inbox` plus `seed/vault_items_describe` (`--items=`, SCALES `vault_jev_items` 90 / 600 / 2,000; photos resized to unique 280-448 px edges and given a Jev profile each, a planted set one profile), both fakes armed. Jev switched on for Creator 0 and on-then-off for Creator 1 through the config route as VaultJevToggle saves it (GET, PUT back with `vault_jev_enabled`), the rest untouched; the plan's `jev` must say ready (NudeNet `NUDENET_640M_PATH`, default /tmp/nn-weights/640m.onnx) or the run stops. Phases (the describe sweep's `_phase`, loaded from its file): describe-all, then flags-all {force}, for every Creator at once. UI last (changes no check above): Vault Pro > Extras on Creator 2, the "Jev v8 flags" switch off (screenshot `vault-jev-toggle-off-trigger`), one click, settled on (`vault-jev-toggle-on-settled`), then config route, plan `jev` and account_ai_config row all on (`JEV_UI_TOGGLE`, SKIP with --no-ui). Planned lanes by profile (none free, pen $100, vulva $50, nipple $10, lower $50 via pass L, p2_clear $10 via pass 2, unsure free settled, pen_unsure $100 settled; NudeNet detects nothing on the flat stills: veto / promote never fire, declared). Checks (`lib/vault_jev_faults.py`): `JEV_ONLY_WHEN_ON`, `JEV_LANES`, `JEV_BEFORE_DESCRIBE`, `JEV_COST` (sweep `jev_cost_millicents` and total, `typesafe` grok_daily_cost row, grok_calls rows vs the fake's tokens at $0.042/M rounded up per photo), `JEV_COPY`, `JEV_DESCRIBE_PROSE` / `JEV_DESCRIBE_REVIEW` / `JEV_DESCRIBE_OFF` (the Jev-fed describe, D51: coin flips get the v6 recipe @960 with the hedge, every other on-Creator photo the prose recipe @640 whose hostile fake prose must be scrubbed to exactly the claims its answers spell, everything else V2 unchanged; `_describe` stamps), the describe sweep's status p95 budgets + p95 vs last green. Faults: `vault-jev-ignores-setting` (default; `JEV_ONLY_WHEN_ON`), `vault-jev-no-settle` (`JEV_LANES`), `vault-jev-after-describe` (`JEV_BEFORE_DESCRIBE`), `vault-jev-describe-ignores-review` (`JEV_DESCRIBE_REVIEW`). Knobs: `--items=`, `--set jev_latency_s=` (0.1), `--set llm_latency_s=` (0.05).
 - `2026-10-30-vault-import-reducer`: Vault Pro > Add media's pick list
   (`app/components/vault/importPickReducer.ts`) on the real UI and relay route (one owner,
   1440x900, `agency_inbox`, Creator 0's vault mirror one SQL `vault_items` row): 4 tiny ffmpeg
@@ -209,3 +219,25 @@ oracles, bypasses).
   `ai_folders_created_from_ui`, `ai_folders_paid_flagged_only` (DB). Faults: `ai-folders-create-blocked-on-flags`
   (default, client; create_enabled), `ai-folders-guess-unflagged` (server; plan + paid_only). Bypasses: vault by
   SQL (no OF / LLM), "Also create on OnlyFans" switched off, collector off.
+- `2026-11-11-vault-feet-picker` (UI): `agency_inbox` + `seed/vault_feet` (`vault_feet_items` 300 / 2,000 /
+  12,000), full images written into the still store. Checks: `feet_ranked_above_like_baseline` (precision@N vs
+  the old LIKE / media_id order), `feet_prefill_matches_flags` (incl. `_jev` lane5 / feet_subject rows),
+  `feet_no_free_prefill_without_tier` (unknown tier never on the free rung), `feet_keyboard_confirm_members`
+  (Enter x3, x, 1, Save; POST + DB members), `feet_phone_layout_tap_save` (390px: 2 columns, 44px taps, no
+  overflow; tap + Save; DB), `feet_candidates_p95` (budget). Faults: `feet-rank-like-only` (default, server; ranked
+  + prefill + keys), `feet-free-prefill-unknown-tier` (server; no-free + prefill),
+  `feet-keys-enter-ignores-suggestion` (client; keys). Bypasses: vault by SQL (no OF / LLM), collector off,
+  Publish not pressed.
+
+- `2026-11-11-vault-tag-chips` (UI): `agency_inbox` + `seed/vault_tag_chips` (`vault_tag_items` 80 / 2,000 /
+  12,000), thumbs written into the still store, `of-vault.json` (lib/vault_relay.py answers the publish). API stage
+  (also --no-ui): `/tag-facets` unfiltered and with both chips, the items walk with `tags=feet&tags=lace`, p95 of
+  both reads vs last green. Desktop 1440x900: tap feet then lace, Save as folder (default name), the saved row
+  "Saved locally · name · N items", Publish, confirm, "Published to OnlyFans". Phone 390x844 (touch): the same up to
+  the saved row, Publish's confirm opened and cancelled. Screenshots `vault-tag-chips[-phone]-trigger` /
+  `-settled`, `-publish-confirm`, `-published`, `-phone-confirm`. Checks: `tag_facets_counts`,
+  `tag_filter_and_three_sources`, `tag_chips_desktop`, `tag_chips_phone_fit`, `tag_folder_saved_from_ui`,
+  `tag_folder_published` (OF got one list == the match set; the folder's of_list_id), `tag_folder_members_exact`
+  (DB: each saved folder, operator-made, == the match set), `tag_chips_no_5xx`. Fault `tag-filter-ignores-ai-tags`
+  (default, server: the filter skips `ai_fields_json.tags`) turns the filter, saved, published and members checks
+  red. Bypasses: vault by SQL (no OF / LLM), OF's list calls in-process (lib/vault_relay.py), collector off.

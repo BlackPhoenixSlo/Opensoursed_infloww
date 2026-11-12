@@ -28,6 +28,10 @@ cases are TEXT-ONLY: a PPV step carries price/copy/locked_text but NO media_file
   case_delete_409_when_referenced:
       DELETE returns 409 while a mass_run references the funnel; succeeds once
       the reference is gone.
+  case_list_account_stats:
+      `?account_id=` adds that model's stats: last sent start, distinct pending
+      fans, still listening; other accounts' / failed / unsent runs don't count;
+      no account_id → no stats key.
 
 Run: ./venv/bin/python service/tests/test_funnels_api.py  (exit 0 = pass)
 """
@@ -274,6 +278,56 @@ async def case_delete_409_when_referenced():
         assert e.status_code == 404, e
 
 
+# ── list ?account_id= → per-model stats (Auto Funnel Status / Fans) ──
+
+async def case_list_account_stats():
+    import os
+    from datetime import datetime, timedelta
+    from db.models import FunnelState
+    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # the account gate is test_account_isolation_gate's job
+    live = (await create_funnel(FunnelCreate(name="stats_live", opening_message="hi", steps=[_REPLY_STEP])))["id"]
+    old = (await create_funnel(FunnelCreate(name="stats_old", opening_message="hi", steps=[_REPLY_STEP])))["id"]
+    never = (await create_funnel(FunnelCreate(name="stats_never", opening_message="hi", steps=[_REPLY_STEP])))["id"]
+    now = datetime.utcnow()
+    async with get_session() as s:
+        for aid in ("acc_stats", "acc_other"):
+            if await s.get(Account, aid) is None:
+                s.add(Account(id=aid))
+        await s.flush()
+        runs = [
+            MassRun(account_id="acc_stats", funnel_id=live, status="ok", started_at=now - timedelta(hours=2)),
+            MassRun(account_id="acc_stats", funnel_id=live, status="ok", started_at=now - timedelta(days=3),
+                    unsent_at=now - timedelta(days=2)),
+            MassRun(account_id="acc_stats", funnel_id=live, status="failed", started_at=now),
+            MassRun(account_id="acc_stats", funnel_id=old, status="ok", started_at=now - timedelta(days=30)),
+            MassRun(account_id="acc_other", funnel_id=never, status="ok", started_at=now),
+        ]
+        s.add_all(runs)
+        await s.flush()
+        r_new, r_unsent, r_failed, r_old, r_other = (r.id for r in runs)
+        s.add_all([
+            FunnelState(mass_run_id=r_new, fan_id=1, status="pending"),
+            FunnelState(mass_run_id=r_new, fan_id=2, status="pending"),
+            FunnelState(mass_run_id=r_new, fan_id=3, status="done"),
+            FunnelState(mass_run_id=r_unsent, fan_id=1, status="pending"),  # same fan, other run: counted once
+            FunnelState(mass_run_id=r_unsent, fan_id=4, status="pending"),
+            FunnelState(mass_run_id=r_failed, fan_id=5, status="pending"),
+            FunnelState(mass_run_id=r_old, fan_id=6, status="done"),
+            FunnelState(mass_run_id=r_other, fan_id=7, status="pending"),
+        ])
+    try:
+        by = {f["name"]: f for f in (await list_funnels(account_id="acc_stats"))["funnels"]}
+    finally:
+        os.environ.pop("ALLOW_ANONYMOUS_ADMIN", None)
+    st = by["stats_live"]["stats"]
+    assert st["active_fans"] == 3 and st["listening"] is True, st
+    assert st["last_started_at"].startswith((now - timedelta(hours=2)).strftime("%Y-%m-%dT%H")), st
+    so = by["stats_old"]["stats"]
+    assert so["last_started_at"] and so["active_fans"] == 0 and so["listening"] is False, so
+    assert by["stats_never"]["stats"] == {"last_started_at": None, "active_fans": 0, "listening": False}, by
+    assert all("stats" not in f for f in (await list_funnels())["funnels"])
+
+
 _harness.run(
     case_create_round_trip,
     case_reject_step_missing_messages,
@@ -285,4 +339,5 @@ _harness.run(
     case_unique_name_conflict,
     case_update_partial,
     case_delete_409_when_referenced,
+    case_list_account_stats,
 )

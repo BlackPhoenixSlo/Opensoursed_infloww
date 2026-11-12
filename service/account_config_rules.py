@@ -9,8 +9,8 @@ the route's as it always was. No DB, no OF, no request: what needs them (the
 audience mirror row, `now`) comes in `existing`, and the route asks OF for the
 account's own handle afterwards (`account_config_api._own_handle`).
 
-ABSENT key = unchanged: `voice`, `model_notes`, the audience and cotag keys
-join the values only when sent, and `nudge_config_json` never does, so an
+ABSENT key = unchanged: `voice`, `model_notes`, `daily_cost_cap_cents`, the
+audience and cotag keys join the values only when sent, and `nudge_config_json` never does, so an
 existing row keeps them.
 """
 from __future__ import annotations
@@ -29,6 +29,12 @@ from automations._model_pick import model_fits
 from automations._persona import MODEL_NOTES_MAX, PERSONA_FACT_FIELDS
 from automations._voice import VOICE_HER, VOICE_HIM, parse_voice
 from llm_client import MODELS
+
+# The per-Creator daily AI spend cap's upper bound on an EDIT (cents; $100/day,
+# per provider: llm_client reserves per (day, account, provider)). A typo of
+# 10000 for 100.00 is the mistake it catches. A stored cap already above it may
+# still be echoed back unchanged, so a whole-config Save never 422s on it.
+MAX_DAILY_COST_CAP_CENTS = 10_000
 
 # The 6 time-of-day slots, ordered — must match welcome_compose._SLOT_KEYS.
 TIME_SLOTS: tuple[str, ...] = (
@@ -139,6 +145,10 @@ class PutContext(NamedTuple):
     now: datetime
     head: Head                 # `clean_head` of the same `cfg`
     audience: AudiencePut
+    stored_cap: int | None = None  # the row's daily_cost_cap_cents now; None = no row
+    # A Chatter's PUT: the daily AI spend cap is the owner's money, so a sent
+    # value is ignored (stored one kept), whatever the client echoed.
+    cap_locked: bool = False
 
 
 def _head(cfg: Any, allowed: set[str]) -> Head:
@@ -255,10 +265,21 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
     if not (-24 <= utc_offset <= 24):
         raise HTTPException(422, "utc_offset must be between -24 and 24 hours")
 
-    cap_raw = cfg.get("daily_cost_cap_cents", 100)
-    if isinstance(cap_raw, bool) or not isinstance(cap_raw, (int, float)) or cap_raw < 0:
-        raise HTTPException(422, "daily_cost_cap_cents must be a non-negative number")
-    cap = int(cap_raw)
+    # daily_cost_cap_cents — the per-Creator daily AI spend cap (llm_client
+    # `_get_cap_cents`, read per call, so a raise applies to the next call).
+    # Sent-only like `voice`: a client that rebuilds the config without it must
+    # not reset a raised cap to the $1 default. 0 = every AI call refused.
+    cap_sent = "daily_cost_cap_cents" in cfg and not existing.cap_locked
+    cap = 0
+    if cap_sent:
+        cap_raw = cfg.get("daily_cost_cap_cents")
+        if isinstance(cap_raw, bool) or not isinstance(cap_raw, (int, float)) or cap_raw < 0:
+            raise HTTPException(422, "daily_cost_cap_cents must be a non-negative number")
+        cap = int(cap_raw)
+        if cap > MAX_DAILY_COST_CAP_CENTS and cap != existing.stored_cap:
+            raise HTTPException(
+                422, f"daily_cost_cap_cents must be at most {MAX_DAILY_COST_CAP_CENTS} "
+                     f"(${MAX_DAILY_COST_CAP_CENTS // 100}/day)")
 
     # model_by_purpose: {purpose: model}; each model validated against MODELS.
     # The KEY is deliberately not checked against MODEL_PURPOSES: a stored blob
@@ -331,7 +352,6 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
         "language": language,
         "timezone": tz,
         "utc_offset": utc_offset,
-        "daily_cost_cap_cents": cap,
         "model": head.model,
         "reasoning_effort": head.effort,
         "model_by_purpose": json.dumps(mbp) if mbp else None,
@@ -344,6 +364,8 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
     # NULL == "her" keeps the column sparse.
     if voice_sent:
         vals["voice"] = voice if voice == VOICE_HIM else None
+    if cap_sent:
+        vals["daily_cost_cap_cents"] = cap
     # Audience columns join the upsert only when their key was SENT (absent ==
     # unchanged — see the route's branches). NULL == off keeps the columns sparse.
     if aud.mode_sent:
@@ -362,5 +384,9 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
         vals["cotag_tag_videos"] = True if bool(cfg.get("cotag_tag_videos")) else None
     if cotag_user_sent:
         vals["cotag_username"] = cotag_username
+    # Jev v8 vault flags opt-in (vault_jev), same sent-only rule: only the Vault
+    # extras drawer sends it. NULL ≡ OFF.
+    if "vault_jev_enabled" in cfg:
+        vals["vault_jev_enabled"] = True if bool(cfg.get("vault_jev_enabled")) else None
     # nudge_config_json is intentionally absent → preserved on existing rows.
     return vals

@@ -191,7 +191,7 @@ _STEP_GAP_JITTER = 0.5           # ±50% → ~2-6s actual
 # sent. A fan who has not answered a broadcast within this window is not going
 # to; if they ever do write, they arrive as ordinary inbound and the chat lanes
 # answer them, so nothing is dropped by letting discovery close.
-_DISCOVERY_WINDOW_DAYS = 14
+DISCOVERY_WINDOW_DAYS = 14
 
 
 def _jittered_gap() -> float:
@@ -248,10 +248,10 @@ async def _active_mass_runs(
     enrollment only — see the discovery loop.
 
     A run stays an anchor while it can still do either half of the walker's job:
-    DISCOVER new repliers (inside `_DISCOVERY_WINDOW_DAYS` of the broadcast) or
+    DISCOVER new repliers (inside `DISCOVERY_WINDOW_DAYS` of the broadcast) or
     WALK someone already enrolled (a `pending` funnel_state row). A run that can
     do neither is finished, and re-listing it forever is what made this the most
-    expensive automation on the box — see `_DISCOVERY_WINDOW_DAYS`. The two arms
+    expensive automation on the box — see `DISCOVERY_WINDOW_DAYS`. The two arms
     are OR'd deliberately: an old run holding a mid-funnel fan keeps walking them
     for as long as they are pending, so the bound can never strand a live fan.
 
@@ -259,7 +259,7 @@ async def _active_mass_runs(
     bound — asking for one run by id means you want that run looked at, even if
     it has aged out.
     """
-    cutoff = now - timedelta(days=_DISCOVERY_WINDOW_DAYS)
+    cutoff = now - timedelta(days=DISCOVERY_WINDOW_DAYS)
     async with get_session() as s:
         q = select(
             MassRun.id, MassRun.funnel_id, MassRun.queue_id,
@@ -895,7 +895,7 @@ async def _discover(t: _Tick, a: _Anchor) -> list[FunnelState]:
     dry_enrolled: list[FunnelState] = []
     # Past the discovery window this run only walks fans already enrolled — asking
     # ~1,600 recipients "did you reply yet?" forever is the leak
-    # `_DISCOVERY_WINDOW_DAYS` closes (decided in `_active_mass_runs`; see `_Anchor`).
+    # `DISCOVERY_WINDOW_DAYS` closes (decided in `_active_mass_runs`; see `_Anchor`).
     if not a.discovery_open:
         t.tally.discovery_skipped += 1
         return dry_enrolled

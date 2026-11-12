@@ -4,7 +4,7 @@ import { unsaved } from "@/components/automations/sentDraft";
 import type { AutoreplyConfig } from "@/hooks/useAutoreplyConfig";
 import {
   answersWith, autoReplyReducer, brainPayload, brainSeed, buildPayload, canSubmit, draftFromConfig, effortChoices,
-  initState, randomiseOn, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
+  initState, randomiseOn, switchPayload, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
 } from "./autoReplyForm";
 
 /** service/automations/autoreply.py `_defaults()`. */
@@ -147,6 +147,39 @@ describe("unsaved: 'Saved' only while nothing changed since the last Save sent",
   it("saved keeps the draft", () => {
     const s = initState(DEFAULTS);
     expect(autoReplyReducer(s, { type: "saved" }).draft).toBe(s.draft);
+  });
+});
+
+describe("header switch: saves at once, never touches 'Saved'", () => {
+  const savedState = runState([{ type: "saved" }]);   // a Save landed, nothing edited since
+  it.each<[string, AutoReplyAction[], boolean, boolean]>([
+    // name, actions after a landed Save, enabled, unsaved
+    ["flip on a clean form: stays clean", [{ type: "switched", on: true }], true, false],
+    ["flip then flip back (failed PUT): clean, off", [{ type: "switched", on: true }, { type: "switched", on: false }], false, false],
+    ["flip on a dirty form: stays dirty", [{ type: "number", k: "delay", raw: "9" }, { type: "switched", on: true }], true, true],
+  ])("%s", (_n, actions, enabled, dirty) => {
+    const s = actions.reduce(autoReplyReducer, savedState);
+    expect(s.draft.enabled).toBe(enabled);
+    expect(unsaved(s)).toBe(dirty);
+    if (s.sent) expect(s.sent.enabled).toBe(enabled);   // the next Save sends the same flip
+  });
+
+  it("before any Save the sent draft stays null", () => {
+    expect(runState([{ type: "switched", on: true }]).sent).toBeNull();
+  });
+
+  const QH = { quiet_hours_json: [2, 7] } as AutoreplyConfig;
+  it.each<[string, AutoreplyConfig, AutoreplyConfig, boolean, AutoreplyConfig | null]>([
+    ["on: the stored blob, only enabled set", DEFAULTS, QH, true, { ...QH, enabled: true }],
+    ["off: always allowed, even with no source", DEFAULTS, { ...QH, folders_enabled: false }, false,
+      { ...QH, folders_enabled: false, enabled: false }],
+    ["on with both stored sources off: refused", DEFAULTS, { folders_enabled: false, new_fans_enabled: false }, true, null],
+    ["on with stored new fans only", DEFAULTS, { folders_enabled: false, new_fans_enabled: true }, true,
+      { folders_enabled: false, new_fans_enabled: true, enabled: true }],
+    ["on, folders from the defaults (not in the blob)", DEFAULTS, {}, true, { enabled: true }],
+    ["on, no source in defaults or blob: refused", { ...DEFAULTS, folders_enabled: false }, {}, true, null],
+  ])("switchPayload %s", (_n, defaults, stored, on, want) => {
+    expect(switchPayload(defaults, stored, on)).toEqual(want);
   });
 });
 

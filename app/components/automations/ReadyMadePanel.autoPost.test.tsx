@@ -66,15 +66,18 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
 
     const table = await screen.findByRole("table");
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Name", "Status", "Schedule", "Next run", "Last run", "Actions"]);
+      .toEqual(["Name", "Status", "Schedule", "Next run", "Actions"]);
     await within(table).findByText("Morning feed");
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(2);
     expect(within(rows[0]).getByRole("switch", { name: "Enabled: Morning feed" })).toHaveAttribute("aria-checked", "true");
     expect(within(rows[1]).getByRole("switch", { name: "Enabled: Night feed" })).toHaveAttribute("aria-checked", "false");
-    expect(within(rows[0]).getByText("Every 2 hours")).toBeTruthy();
+    expect(within(rows[0]).getAllByText("Every 2 hours")).toHaveLength(2); // Schedule, and the phone line (no next run)
     expect(within(rows[0]).getByText("Free · hi")).toBeTruthy(); // the rule's one post, under its name
-    expect(within(rows[1]).getByText("paused")).toBeTruthy();
+    // The Status pill, in the wide Status cell and in the phone line under the name.
+    expect(within(rows[0]).getAllByText("Active")).toHaveLength(2);
+    expect(within(rows[1]).getAllByText("Paused")).toHaveLength(2);
+    expect(within(rows[1]).getByTestId("rule-phone-line")).toHaveTextContent("PausedEvery 2 hours");
     for (const name of ["Run now", "Edit", "Delete"]) expect(within(rows[0]).getByRole("button", { name })).toBeTruthy();
   });
 
@@ -85,6 +88,36 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     fireEvent.click(chevron);
     expect(chevron).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText(/post #4242/)).toBeTruthy();
+    expect(screen.getByTestId("rule-last-run")).toHaveTextContent("Last run —");
+    expect(screen.getByText("Done")).toBeTruthy(); // the previous run's pill
+  });
+
+  it("the phone row's ⋯ menu runs, edits, pauses / resumes and deletes", async () => {
+    renderWithProviders(<ReadyMadePanel only="auto_posts" />);
+    await screen.findByText("Night feed");
+    const more = screen.getByRole("button", { name: "More actions for Night feed" });
+    fireEvent.click(more);
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Resume" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/automation-rules/2", { is_enabled: true }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Morning feed" }));
+    expect(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Pause" })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("dialog", { name: 'Delete "Morning feed"?' })).toBeTruthy();
+  });
+
+  it("an empty list says what a rule does and offers New auto post", async () => {
+    get.mockImplementation((path: string) => Promise.resolve(path.startsWith("/admin/automation-rules") ? { rules: [] } : {}));
+    renderWithProviders(<ReadyMadePanel only="auto_posts" />);
+    await screen.findByText("No auto posts yet");
+    expect(screen.getByText(/publishes one post on its schedule/)).toBeTruthy();
+    const ctas = screen.getAllByRole("button", { name: "New auto post" });
+    expect(ctas).toHaveLength(2); // the header's and the empty state's
+    fireEvent.click(ctas[1]);
+    expect(screen.getByRole("dialog", { name: /New auto post/ })).toBeTruthy();
   });
 
   it("Delete asks in a dialog, not window.confirm, and Cancel keeps the rule", async () => {
@@ -120,6 +153,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     accounts.list = [];
     renderWithProviders(<ReadyMadePanel only="auto_posts" />);
     expect(screen.getByText("No creator with a live session")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Connect a creator" })).toHaveAttribute("href", "/creators");
     expect(screen.getByRole("button", { name: "New auto post" })).toBeDisabled();
     expect(screen.queryByRole("table")).toBeNull();
   });

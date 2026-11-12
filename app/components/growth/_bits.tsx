@@ -11,6 +11,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/primitives";
+import { IfSelect } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 export { useIfConfirm } from "@/hooks/useIfConfirm";
@@ -24,7 +25,8 @@ export function fmtUsd(cents: number): string {
 /** Message off a thrown value, with a fallback — `errText` under the name the Growth catches import. */
 export const errMsg = (e: unknown, fallback: string) => errText(e, fallback);
 
-/** A native select over `{value, label}` options (OF's / Infloww's dropdown lists), numbers in and out. */
+/** The house select (`IfSelect`, pop-up field size) over `{value, label}` options (OF's / Infloww's dropdown
+ *  lists), numbers in and out. */
 export function SelectInput({
   value, options, onChange, ariaLabel, disabled,
 }: {
@@ -35,15 +37,15 @@ export function SelectInput({
   disabled?: boolean;
 }) {
   return (
-    <select
+    <IfSelect
       aria-label={ariaLabel}
       disabled={disabled}
-      className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:opacity-50"
+      size="field"
+      className="w-full"
       value={String(value)}
-      onChange={(e) => onChange(Number(e.target.value))}
-    >
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+      options={options.map((o) => ({ value: o.value, label: o.label }))}
+      onChange={(v) => onChange(Number(v))}
+    />
   );
 }
 

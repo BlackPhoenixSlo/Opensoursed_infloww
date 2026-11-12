@@ -16,8 +16,9 @@ vault there); its CDN is lib/img_relay.py armed with every thumb, serving real p
 UI (small run, Chromium):
   A. Vault Pro's Refresh, desktop on Creator 0 and phone portrait (390x844, touch) on Creator 1: /growth/vault-pro
      settles on the mirror's grid and the cached rail; then a folder and K_NEW media in it are made on OnlyFans (the
-     wire's state); screenshot vault-refresh-<dev>-trigger; Refresh; the rail shows the new folder and the grid's
-     first tiles are the new media; screenshot vault-refresh-<dev>-settled. Checks REFRESH_FOLDER, REFRESH_MEDIA,
+     wire's state); screenshot vault-refresh-<dev>-trigger; Refresh; the rail shows the new folder (phone: an option
+     of the folder select, then picked there) and the grid's first tiles are the new media; screenshot
+     vault-refresh-<dev>-settled. Checks REFRESH_FOLDER, REFRESH_MEDIA,
      REFRESH_WIRE (one POST /admin/vault-ai/sync per click, 200 with mirror and new == K_NEW; OF got a folder list
      and an offset-0 newest-first media read after the click; the relay's cached folder list (LISTS_KEY) fetched
      after the click). Then OF's vault listing fails (of_wire `fail`, 500) and Refresh again: REFRESH_FAIL_SHOWN, the
@@ -40,8 +41,9 @@ UI (small run, Chromium):
      `all` (lib/vault_wire.py: the whole vault, the new media included) == what the browser's GET
      /api/of/v2/vault/lists got, and under All media exactly the zero types' chips are off. ALL_TAP: a folder tapped
      (grid == that folder's newest), then "All media" (grid == the vault's newest, first tile in the viewport), then
-     "All media" again (unchanged). Screenshots vault-allmedia-<dev>-trigger (folder picked, All media's counts),
-     -settled (All media's grid), -again.
+     "All media" again (unchanged); on the phone the rail is the folder select, so the counts are its All media
+     option's and the picks are made in it. Screenshots vault-allmedia-<dev>-trigger (folder picked, All media's
+     counts), -settled (All media's grid), -again.
   D. Search, after C (desktop and phone, same pages): K_SEARCH old media get a PPV caption on OnlyFans holding
      SEARCH_TERM (VaultWire.caption), a term the mirror's text lacks; the term is typed in the Caption search with
      POST /admin/vault-ai/search-of held in the page (Playwright route, continued unchanged). SEARCH_PENDING: while
@@ -76,6 +78,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
@@ -219,6 +222,14 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
         await page.context.add_init_script(TOURS_SEEN + f"localStorage.setItem('vault.accountId', '{aid}');")
         tiles = page.locator("section [title^='#']")
         lists_bodies: list[dict] = []
+        # The folder in the rail: on a phone the rail is the folder select, so an option "<name> · <counts>".
+        sel = page.get_by_role("combobox", name="Folder")
+        shown = "attached" if dev == "phone" else "visible"
+
+        def folder_shown(n: str):
+            if dev == "phone":
+                return sel.locator("option").filter(has_text=re.compile(rf"^{re.escape(n)} · "))
+            return page.get_by_text(n, exact=True)
 
         async def on_lists(r) -> None:
             if urlsplit(r.url).path == LISTS_PATH and r.ok:
@@ -232,9 +243,9 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
             async with captured(ctx, page, got, f"failed-vault-refresh-{dev}"):
                 await open_vault_pro(page, ctx, timeout=WAIT_MS)
                 await tiles.first.wait_for(timeout=WAIT_MS)
-                await page.get_by_text(vw.vault(aid)["folders"][0]["name"], exact=True).first.wait_for(timeout=WAIT_MS)
+                await folder_shown(vw.vault(aid)["folders"][0]["name"]).first.wait_for(state=shown, timeout=WAIT_MS)
                 await page.wait_for_timeout(1500)
-                got["before_folder"] = await page.get_by_text(name, exact=True).count()
+                got["before_folder"] = await folder_shown(name).count()
                 got["before_sync"] = len(sent)
                 folder, news = await made_on_of(aid, K_NEW, name)
                 got["folder"], got["news"] = folder, [m["id"] for m in news]
@@ -246,12 +257,15 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
                     await page.get_by_role("button", name="Refresh", exact=True).click(timeout=10_000)
                 r = await resp.value
                 got["sync"] = {"status": r.status, "body": await r.json() if r.ok else (await r.text())[:300]}
-                await page.get_by_text(name, exact=True).first.wait_for(timeout=SETTLE_MS)
+                await folder_shown(name).first.wait_for(state=shown, timeout=SETTLE_MS)
                 await page.locator(f"section [title^='#{news[-1]['id']} ']").first.wait_for(timeout=SETTLE_MS)
-                await page.get_by_text(name, exact=True).first.scroll_into_view_if_needed(timeout=5000)  # phone: in view
+                await (sel if dev == "phone" else folder_shown(name).first).scroll_into_view_if_needed(timeout=5000)
                 await page.wait_for_timeout(1500)
                 got["grid"] = [int(t.split(" ", 1)[0][1:]) for t in
                                await tiles.evaluate_all("els => els.map(e => e.getAttribute('title'))")][:K_NEW + 3]
+                if dev == "phone":  # the new folder is pickable in the select (the settled shot shows it picked)
+                    await sel.select_option(str(folder["id"]))
+                    await page.wait_for_timeout(800)
                 got["settled_shot"] = await ui.shot(ctx, page, f"vault-refresh-{dev}-settled")
                 got["of_calls"] = _of_calls(ctx, c0)
             got["sent"] = [{"url": s["url"], "status": s["status"]} for s in sent]
@@ -304,6 +318,10 @@ _GRID_STATE = """() => {
           first_top: r ? Math.round(r.top) : null, vh: innerHeight, scroll_y: Math.round(scrollY)};
 }"""
 _ROW_COUNTS = "b => Object.fromEntries([...b.querySelectorAll('[title]')].map(e => [e.getAttribute('title'), e.textContent]))"
+# The phone's folder select: the All media option's "All media · 7 photos · 2 GIFs" as {kind: "n"}, as _ROW_COUNTS.
+_OPTION_COUNTS = ("s => Object.fromEntries([...s.querySelector('option[value=\"\"]').textContent.split(' · ').slice(1)]"
+                  ".map(p => p.split(' ')).filter(p => p.length === 2)"
+                  ".map(([n, w]) => [w.toLowerCase().replace(/s$/, ''), n]))")
 CHIPS = {"photo": "Photo", "video": "Video", "gif": "GIF", "audio": "Audio"}
 
 
@@ -319,36 +337,57 @@ async def _grid_until(page, want: list[int]) -> dict:
 
 async def _all_media(ctx, page, vw, aid: str, dev: str, tiles, lists_bodies: list[dict]) -> dict:
     """The "All media" row: its counts against OF's `all` (and what the browser got), the chips under it; then a
-    folder tapped, "All media" tapped (the grid back to the whole vault, in view), and tapped again."""
+    folder tapped, "All media" tapped (the grid back to the whole vault, in view), and tapped again. On a phone the
+    rail is the folder select: its All media option's counts, and picks in it."""
     out: dict = {"want_all": vw.all_counts(aid)}
-    press = (lambda loc: loc.tap(timeout=10_000)) if dev == "phone" else (lambda loc: loc.click(timeout=10_000))
-    rail = page.locator("aside").filter(has_text="All media").first
-    all_row = rail.locator("button").filter(has_text="All media").first
-    await all_row.scroll_into_view_if_needed(timeout=5000)
+    f0 = vw.vault(aid)["folders"][0]
+    if dev == "phone":
+        sel = page.get_by_role("combobox", name="Folder")
+        await sel.scroll_into_view_if_needed(timeout=5000)
+        # From All media: the Refresh leg left the new folder picked, and the chips follow the picked folder (#58).
+        await sel.select_option("")
+        await page.wait_for_timeout(800)
+        all_row = sel
+        out["row_counts"] = await sel.evaluate(_OPTION_COUNTS)
+
+        async def pick_folder():
+            await sel.select_option(str(f0["id"]))
+
+        async def pick_all():
+            await sel.select_option("")
+    else:
+        rail = page.locator("aside").filter(has_text="All media").first
+        all_row = rail.locator("button").filter(has_text="All media").first
+        await all_row.scroll_into_view_if_needed(timeout=5000)
+        out["row_counts"] = await all_row.evaluate(_ROW_COUNTS)
+        row = rail.locator("[role=button]").filter(has_text=f0["name"]).first
+
+        async def pick_folder():
+            await row.scroll_into_view_if_needed(timeout=5000)
+            await row.click(timeout=10_000)
+
+        async def pick_all():
+            await all_row.scroll_into_view_if_needed(timeout=5000)
+            await all_row.click(timeout=10_000)
     out["browser_all"] = (lists_bodies[-1] if lists_bodies else {}).get("all")
     out["lists_reads"] = len(lists_bodies)
-    out["row_counts"] = await all_row.evaluate(_ROW_COUNTS)
     out["chips_off"] = sorted([k for k, name in CHIPS.items()
                                if await page.locator("section").get_by_role("button", name=name, exact=True)
                                .first.is_disabled()])
-    f0 = vw.vault(aid)["folders"][0]
     want_f = [m["id"] for m in vw.listing(aid, list_id=f0["id"])][:4]
     want_all = vw.newest(aid, 6)
     out["want_folder"], out["want_grid"] = want_f, want_all
-    row = rail.locator("[role=button]").filter(has_text=f0["name"]).first
-    await row.scroll_into_view_if_needed(timeout=5000)
-    await press(row)
+    await pick_folder()
     out["folder"] = await _grid_until(page, want_f)
     await all_row.scroll_into_view_if_needed(timeout=5000)
     out["trigger_shot"] = await ui.shot(ctx, page, f"vault-allmedia-{dev}-trigger")
-    await press(all_row)
+    await pick_all()
     out["all"] = await _grid_until(page, want_all)
     await page.wait_for_timeout(500)
     out["all"] = await page.evaluate(_GRID_STATE)
     out["settled_shot"] = await ui.shot(ctx, page, f"vault-allmedia-{dev}-settled")
     # Again, with All media already the pick.
-    await all_row.scroll_into_view_if_needed(timeout=5000)
-    await press(all_row)
+    await pick_all()
     await page.wait_for_timeout(800)
     out["again"] = await page.evaluate(_GRID_STATE)
     out["again_shot"] = await ui.shot(ctx, page, f"vault-allmedia-{dev}-again")

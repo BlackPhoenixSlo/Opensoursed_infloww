@@ -69,9 +69,10 @@ export function trialFigures(l: TrialLink | null, net: boolean): Array<{ title: 
   ];
 }
 
-/** The figures' widths, as the Tracking links columns of the same names. */
+/** The figures' widths: the bundle's for the Tracking links columns of the same names (Spend/Claim as Spending CVR),
+ *  so no head overprints its neighbour. */
 const FIGURE_WIDTH: Record<string, number> = {
-  "Spend/Claim": 112, "Promo cost": 139, Earnings: 128, "Fans who spent": 92, Profit: 139, AEPS: 112, ROI: 139,
+  "Spend/Claim": 159, "Promo cost": 139, Earnings: 139, "Fans who spent": 185, Profit: 139, AEPS: 123, ROI: 139,
 };
 
 /** The columns the Edit dialog fills, drawn once some link has a value (as Tracking links' `visibleCols`). */
@@ -123,6 +124,7 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
   const all = linksQ.data?.links ?? [];
   const links = all.filter(filters.keep);
   const ofAvailable = linksQ.data?.of_available ?? false;
+  const unreachable = !!linksQ.data && !ofAvailable && !sessionGone;
   const sources = linksQ.data?.sources ?? [];
   const tagOptions = linksQ.data?.tags ?? [];
   // The picks still in the list (a filter or another Creator leaves the rest out).
@@ -130,8 +132,8 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
   const shown = owner ? tab : "list";
 
   const columns: Array<FrameCol<TrialLink>> = [
-    { title: "Date created", width: 104, cell: (l) => dateOnly(l.created_at, reportTz) },
-    { title: "Claim", width: 80, cell: (l) => claimsText(l.claim_counts, l.subscribe_counts) },
+    { title: "Date created", width: 121, cell: (l) => dateOnly(l.created_at, reportTz) },
+    { title: "Claim", width: 100, cell: (l) => claimsText(l.claim_counts, l.subscribe_counts) },
     ...trialFigures(null, net).map((h, i) => ({
       title: h.title, tip: h.tip, width: FIGURE_WIDTH[h.title] ?? 112, cell: (l: TrialLink) => trialFigures(l, net)[i].value,
     })),
@@ -170,16 +172,26 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
           onCreate={() => setCreating(true)}
           onExport={exportCsv}
           exportTitle={`${EXTRA_LABEL}: downloads a CSV of the filtered links; Infloww emails its export`}
+          /* One status line: OnlyFans unreachable wins over "Not read yet"; an earlier read keeps its age beside it. */
           update={linksQ.data ? (
             <>
-              <span className="flex items-center gap-2 text-sm text-fg-dim">
-                <span data-metrics-updated
-                  title="Earnings and Fans who spent: the claimers OnlyFans lists under each link, with their spend in our ledger since they claimed. Read again when over an hour old.">
-                  {updatedAgo(linksQ.data.metrics_updated_at)}
-                  {linksQ.data.metrics_refreshing && " · refreshing…"}
+              {unreachable ? (
+                <span className="flex flex-wrap items-center gap-2 text-sm text-fg-dim">
+                  {linksQ.data.metrics_updated_at && (
+                    <span data-metrics-updated>{updatedAgo(linksQ.data.metrics_updated_at)} ·</span>
+                  )}
+                  <Unreachable text="OnlyFans not reachable — showing saved links only." />
                 </span>
-                <ExtraTag />
-              </span>
+              ) : (
+                <span className="flex items-center gap-2 text-sm text-fg-dim">
+                  <span data-metrics-updated
+                    title="Earnings and Fans who spent: the claimers OnlyFans lists under each link, with their spend in our ledger since they claimed. Read again when over an hour old.">
+                    {updatedAgo(linksQ.data.metrics_updated_at)}
+                    {linksQ.data.metrics_refreshing && " · refreshing…"}
+                  </span>
+                  <ExtraTag />
+                </span>
+              )}
               {/* Ours: read OnlyFans again now. */}
               <button type="button" aria-label="Refresh" title={`${EXTRA_LABEL}: read OnlyFans again`}
                 onClick={() => void linksQ.refetch()} disabled={linksQ.isFetching}
@@ -188,10 +200,9 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
               </button>
             </>
           ) : null}
-          notice={linksQ.data && !ofAvailable && !sessionGone
-            ? <Unreachable text="OnlyFans not reachable — showing saved links only." /> : null}
           loading={linksQ.isLoading || (!accountId && accountsLoading)}
           columns={columns}
+          phoneMetrics={["Claim", "Earnings", "Spend/Claim"]}
           rows={links}
           rowKey={(l) => keyOf(l)}
           rowName={(l) => l.name}
@@ -315,11 +326,13 @@ function CreateTrialModal({ accountId, sources, tags, onClose }: {
           </div>
           <div className="flex flex-col gap-2">
             <span className="text-base">Offer expiration</span>
-            <SelectInput ariaLabel="Offer expiration" value={form.expiration} options={EXPIRATIONS} onChange={(expiration) => set({ expiration })} />
+            <SelectInput ariaLabel="Offer expiration" value={form.expiration} options={EXPIRATIONS}
+              onChange={(expiration) => set({ expiration })} />
           </div>
           <div className="flex flex-col gap-2">
             <span className="text-base">Free trial duration</span>
-            <SelectInput ariaLabel="Free trial duration" value={form.duration} options={TRIAL_DURATIONS} onChange={(duration) => set({ duration })} />
+            <SelectInput ariaLabel="Free trial duration" value={form.duration} options={TRIAL_DURATIONS}
+              onChange={(duration) => set({ duration })} />
           </div>
           <LinkMetaFields f={f} id="trial-new" accountId={accountId} sources={sources} tags={tags} />
         </form>

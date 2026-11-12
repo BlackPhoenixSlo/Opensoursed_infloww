@@ -147,13 +147,36 @@ export interface TrackingLinksList {
   bot_check_available: boolean;
 }
 
+/** A redirect link's stats range, in report-zone days. */
+export type StatsDays = 7 | 30 | 90;
+
+/** One row of a breakdown: a class key ("" = browser / direct / unknown) and its clicks. */
+export interface StatsKeyRow { key: string; clicks: number }
+
 export interface TrackingAnalytics {
-  link: TrackingLink;
-  total_clicks: number;
-  recent: Array<{ clicked_at: string | null; referer: string | null }>;
-  by_day: Array<{ day: string; clicks: number }>;
-  subscribers: number | null;
-  revenue_cents: number | null;
+  /** The report zone the days are cut in; null = UTC. */
+  tz: string | null;
+  from: string;
+  to: string;
+  days: StatsDays;
+  /** Every local day of the range, oldest first, zero-filled. */
+  series: Array<{ day: string; clicks: number }>;
+  totals: { clicks: number; verified_clicks: number };
+  opened_in: StatsKeyRow[];
+  came_from: StatsKeyRow[];
+  country: StatsKeyRow[];
+}
+
+/** Every redirect link of a Creator at a glance (`GET /admin/tracking-links/summary`). */
+export interface TrackingSummary {
+  tz: string | null;
+  today: string;
+  clicks: { today: number; d7: number; d30: number };
+  /** Most clicks in 30 days; null with none. */
+  top: { id: number; name: string; clicks: number } | null;
+  /** Link id → its last 7 days' clicks, oldest first. */
+  spark: Record<string, number[]>;
+  verified_clicks: number;
 }
 
 export function useTrackingLinks(accountId: string | null) {
@@ -197,14 +220,24 @@ export function useDeleteTrackingLink(accountId: string | null) {
   });
 }
 
-export function useTrackingAnalytics(accountId: string | null, linkId: number | null) {
+/** Keyed under the list's prefix, so a create / patch / delete refreshes it. */
+export function useTrackingSummary(accountId: string | null) {
+  return useQuery<TrackingSummary>({
+    queryKey: [TRACK_KEY, accountId, "summary"],
+    enabled: !!accountId,
+    staleTime: 15_000,
+    queryFn: () => relay.get(`/admin/tracking-links/summary?account_id=${encodeURIComponent(accountId!)}`),
+  });
+}
+
+export function useTrackingAnalytics(accountId: string | null, linkId: number | null, days: StatsDays) {
   return useQuery<TrackingAnalytics>({
-    queryKey: [TRACK_KEY, "analytics", accountId, linkId],
+    queryKey: [TRACK_KEY, accountId, "analytics", linkId, days],
     enabled: !!accountId && !!linkId,
     staleTime: 15_000,
     queryFn: () =>
       relay.get(
-        `/admin/tracking-links/${linkId}/analytics?account_id=${encodeURIComponent(accountId!)}`,
+        `/admin/tracking-links/${linkId}/analytics?account_id=${encodeURIComponent(accountId!)}&days=${days}`,
       ),
   });
 }

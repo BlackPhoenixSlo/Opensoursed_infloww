@@ -1,10 +1,9 @@
 import type { ComponentType } from "react";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import AboutTab from "@/components/settings/AboutTab";
 import AiKeysTab from "@/components/settings/AiKeysTab";
 import AuditTab from "@/components/settings/AuditTab";
-import BalanceTab from "@/components/settings/BalanceTab";
 import BillingTab from "@/components/settings/BillingTab";
 import CotagTab from "@/components/settings/CotagTab";
 import MessagingSettingsTab from "@/components/settings/MessagingSettingsTab";
@@ -27,7 +26,6 @@ const SETTINGS_PANELS: Partial<Record<string, ComponentType>> = {
   "/settings/security-org": SecurityOrgTab,
   "/settings/security-personal": SecurityPersonalTab,
   "/settings/billing": BillingTab,
-  "/settings/balance": BalanceTab,
   "/settings/roles": RoleSettingsTab,
   "/settings/sales": SalesSettingsTab,
   "/settings/time-tracking": TimeTrackingTab,
@@ -42,6 +40,8 @@ const SETTINGS_PANELS: Partial<Record<string, ComponentType>> = {
 
 export default async function Page({ params }: { params: Promise<{ tab: string }> }) {
   const { tab } = await params;
+  // Your Balance (what an agency paid Infloww) was removed; old links land on Your Account.
+  if (tab === "balance") redirect("/settings/account");
   const link = SETTINGS_TABS.find((t) => t.href === `/settings/${tab}`);
   if (!link) notFound();
   const Panel = SETTINGS_PANELS[link.href];

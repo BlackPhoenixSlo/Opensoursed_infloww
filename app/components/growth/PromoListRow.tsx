@@ -19,7 +19,7 @@
 import { useState } from "react";
 
 import { useFanLists } from "@/components/audience/fanLists";
-import { IfSelect, IfSwitch, type IfOption } from "@/components/ui/infloww";
+import { IfHelp, IfSelect, IfSwitch, type IfOption } from "@/components/ui/infloww";
 import { errMsg, useIfConfirm } from "@/components/growth/_bits";
 import { LIST_NAME_MAX } from "@/components/growth/LinkMetaFields";
 import { usePromoList, useSavePromoList, type PromoListSetting } from "@/hooks/useGrowth";
@@ -27,7 +27,9 @@ import { usePromoList, useSavePromoList, type PromoListSetting } from "@/hooks/u
 export const MODIFY_LIST = "Modify list?\n\nEditing the list will not affect already-added fans";
 export const DELETE_LIST = "Delete the list?\n\nOnce deleted, new subscribers will not be added to the list";
 
-export const PROMO_LIST_HELP =
+/** One line under the row; the detail (later claimers join when the figures are next read, about hourly) on hover. */
+export const PROMO_LIST_HELP = "Adds every promotion's fans to this OnlyFans list, then new claimers about hourly.";
+const PROMO_LIST_DETAIL =
   "Adds every promotion's fans to this OnlyFans list now. Fans who claim later are added when the figures are next " +
   "read from OnlyFans, about every hour. Fans already added stay in it.";
 
@@ -114,7 +116,7 @@ export default function PromoListRow({ accountId }: { accountId: string | null }
           </span>
         </div>
       </div>
-      <p className="text-[14px] text-fg-dim">{PROMO_LIST_HELP}</p>
+      <IfHelp title={PROMO_LIST_DETAIL}>{PROMO_LIST_HELP}</IfHelp>
       {q.isError && (
         <div role="alert" className="text-err text-xs">Couldn&apos;t read this setting. Reload to try again.</div>
       )}

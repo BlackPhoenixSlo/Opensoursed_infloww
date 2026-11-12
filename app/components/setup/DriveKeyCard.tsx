@@ -15,7 +15,7 @@
 import { useUser } from "@/contexts/UserContext";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { useSaveSecrets, useSecrets } from "@/hooks/useSecrets";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { Button } from "@/components/ui/primitives";
 import SecretKeyField from "@/components/setup/SecretKeyField";
 import { Skeleton } from "@/components/ui/Skeleton";
 
@@ -62,14 +62,11 @@ function DriveKeyEditor() {
   );
 }
 
+/** The section body; AI keys' Panel gives it its "Google Drive (server key)" Section title. */
 export default function DriveKeyCard() {
   const { user } = useUser();
   return (
-    <Card className="space-y-3">
-      <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold">Google Drive</h2>
-        <Badge color="muted">server key</Badge>
-      </div>
+    <div className="space-y-3">
       <Intro />
       {user?.is_admin === true ? (
         <DriveKeyEditor />
@@ -78,6 +75,6 @@ export default function DriveKeyCard() {
           This key belongs to the server, so its owner sets it here.
         </p>
       )}
-    </Card>
+    </div>
   );
 }

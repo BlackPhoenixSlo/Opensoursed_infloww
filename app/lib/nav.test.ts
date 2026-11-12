@@ -82,7 +82,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
   });
 
   it("shows an owner every Settings tab but the master's System tab", () => {
-    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(14);
+    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(13);
   });
 
   it("hides owner-only sections from a chatter-only session", () => {

@@ -45,6 +45,19 @@ Cases:
       None, media_id coercion/skips, last-wins dupes.
   case_normalise_verdicts_unknown_rung — pure: a rung not in the category's
       rungs (incl. another category's) raises UnknownRung.
+  case_price_tier_table                — pure: $100 inserted > $50 labia > $10
+      topless / labia hidden by a hand; anus never prices; unflagged -> None;
+      an offscreen insertion is not one.
+  case_likelihood_ranks_subject_first  — pure: primary_folder / lone body_focus /
+      subject words beat a crowded body_focus and a bare "feet" mention; payoff
+      acts damp; Jev's `_jev.feet_subject` wins outright, junk / top-level ignored.
+  case_suggest_table                   — pure: priced body -> nude-body even in
+      heels; covered feet -> tease (barefoot overrides); bare -> nude; unknown
+      tier (no `_jev.lane5`, no flags) never prefills the free rung: nude by
+      clothing_state -> nude-body, else None; below SUGGEST_MIN -> None.
+  case_candidates_ranked_and_prefilled — route: likely-first order, each with
+      suggested + tier + score; `limit` cuts the unfiled queue only, filed items
+      always come back after it; "soles" in text alone generates a candidate.
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_pack_picker.py
@@ -73,7 +86,7 @@ from db.models import (  # noqa: E402
     Account, User, UserAccount, VaultFolder, VaultFolderItem, VaultItem,
 )
 
-_TEST_ACCOUNTS = {"acc_owner", "acc_foreign"}
+_TEST_ACCOUNTS = {"acc_owner", "acc_foreign", "acc_rank"}
 _orig_get_account = account_registry.get_account
 _orig_list_accounts = account_registry.list_accounts
 account_registry.get_account = (
@@ -613,11 +626,162 @@ def case_normalise_verdicts_unknown_rung():
             raise AssertionError(f"{cat.name} {given!r} -> {got!r}, want UnknownRung")
 
 
+_RANK = "acc_rank"
+_FLAGGED = {"underwear_visible": False, "breasts_vis": "not_in_frame",
+            "vulva_vis": "not_in_frame", "anus_vis": "not_in_frame"}
+
+
+def _flags(**regions) -> dict:
+    return {**_FLAGGED, **regions}
+
+
+def case_price_tier_table():
+    tier = vault_pack_picker.price_tier
+    rows = [
+        ("unflagged, nothing inserted", {"clothing_state": "fully_nude"}, None),
+        ("unflagged, toy inserted", {"penetration": "toy", "vulva_vis": "bare"}, 100),
+        ("flagged, nothing on show", _flags(), 0),
+        ("topless", _flags(breasts_vis="bare"), 10),
+        ("labia visible", _flags(breasts_vis="bare", vulva_vis="bare"), 50),
+        ("fingers inserted", {**_flags(vulva_vis="bare"), "acts": ["fingering"]}, 100),
+        ("anus alone never prices", _flags(anus_vis="bare"), 0),
+        ("labia hidden by her hand", {**_flags(vulva_vis="covered"), "over_vulva": "her right hand"}, 10),
+        ("vulva under a thong", {**_flags(vulva_vis="covered"), "over_vulva": "black thong"}, 0),
+        ("insertion offscreen is none", {**_flags(), "acts": ["fingering"]}, 0),
+        ("not a dict", None, None),
+        # Jev's lane5 wins over the qwen reading; "free" is a known 0; junk falls through.
+        ("jev $50 over covered flags", {**_flags(), "_jev": {"lane5": "$50"}}, 50),
+        ("jev $10, unflagged", {"_jev": {"lane5": "$10"}}, 10),
+        ("jev $100", {"_jev": {"lane5": "$100"}}, 100),
+        ("jev free over topless flags", {**_flags(breasts_vis="bare"), "_jev": {"lane5": "free"}}, 0),
+        ("jev free, unflagged: known", {"clothing_state": "fully_nude", "_jev": {"lane5": "free"}}, 0),
+        ("jev junk lane falls through", {**_flags(breasts_vis="bare"), "_jev": {"lane5": "$7"}}, 10),
+        ("jev review (nn veto) is unknown, even over free flags", {**_flags(), "_jev": {"lane5": "review"}}, None),
+        ("jev without lane5, unflagged", {"_jev": {"feet_subject": 0.9}}, None),
+    ]
+    for name, fields, want in rows:
+        got = tier(fields)
+        assert got == want, f"{name}: price_tier={got!r}, want {want!r}"
+
+
+def case_likelihood_ranks_subject_first():
+    feet = vault_pack_picker.category("feet")
+    p = lambda f, t="": vault_pack_picker.likelihood(feet, f, t)  # noqa: E731
+    folder = p({"primary_folder": "feet", "body_focus": ["feet", "legs"]})
+    alone = p({"body_focus": ["feet"], "description": "close-up of her soles"})
+    crowded = p({"body_focus": ["face", "breasts", "legs", "feet"], "description": "lingerie pose"})
+    mention = p({}, "standing on her feet in the kitchen")
+    act = p({"primary_folder": "feet", "body_focus": ["feet", "pussy"], "acts": ["fingering"]})
+    assert folder > crowded and alone > crowded, (folder, alone, crowded)
+    assert crowded > mention > 0, (crowded, mention)
+    assert act < folder, "a payoff act makes the feet a bystander"
+    assert p({}, "") == 0.0
+    # Jev's measured probability (`_jev.feet_subject`): wins outright, clamped; junk is ignored.
+    jev = lambda v, **f: {"_jev": {"v": "v8+nn.10", "feet_subject": v}, **f}  # noqa: E731
+    assert p(jev(0.07, primary_folder="feet")) == 0.07
+    assert p(jev(1.7)) == 1.0
+    for junk in (True, "0.9", None, float("nan")):
+        assert p(jev(junk, primary_folder="feet")) == p({"primary_folder": "feet"}), junk
+    # A top-level feet_subject is not the contract: ignored.
+    assert p({"feet_subject": 0.07, "primary_folder": "feet"}) == p({"primary_folder": "feet"})
+    assert p({"_jev": "junk", "primary_folder": "feet"}) == p({"primary_folder": "feet"})
+
+
+def case_suggest_table():
+    feet = vault_pack_picker.category("feet")
+    sure = 0.9
+    rows = [
+        ("unlikely", {"clothing_items": ["socks"]}, 0.2, None),
+        ("covered feet", {**_flags(), "clothing_items": ["white ankle socks"]}, sure, "tease"),
+        ("heels, body covered", {**_flags(), "clothing_items": ["red high heels", "black dress"]}, sure, "tease"),
+        ("barefoot overrides", {**_flags(), "clothing_items": ["socks"],
+                                "description": "barefoot, socks on the floor"}, sure, "nude"),
+        ("bare feet, lingerie", {**_flags(), "clothing_items": ["black lace thong"]}, sure, "nude"),
+        ("topless in heels", {**_flags(breasts_vis="bare"), "clothing_items": ["heels"]}, sure, "nude-body"),
+        ("labia visible", _flags(vulva_vis="bare"), sure, "nude-body"),
+        ("anus only stays nude", _flags(anus_vis="bare"), sure, "nude"),
+        ("unflagged fully_nude", {"clothing_state": "fully_nude"}, sure, "nude-body"),
+        # Unknown tier: never below the top rung (the free preview would carry a nude body the describe missed).
+        ("unflagged lingerie: no prefill", {"clothing_state": "lingerie_on"}, sure, None),
+        ("unflagged socks never free", {"clothing_items": ["white socks"], "clothing_state": "fully_clothed"},
+         sure, None),
+        ("unflagged socks, nude by describe", {"clothing_items": ["socks"], "clothing_state": "fully_nude"},
+         sure, "nude-body"),
+        ("unflagged barefoot: no prefill", {"description": "barefoot on the rug"}, sure, None),
+        # Jev's lane5 makes the tier known: "free" may prefill the free rung, a price never does.
+        ("jev free, socks", {"clothing_items": ["socks"], "_jev": {"lane5": "free"}}, sure, "tease"),
+        ("jev $50 overrides covered flags", {**_flags(), "clothing_items": ["socks"], "_jev": {"lane5": "$50"}},
+         sure, "nude-body"),
+        ("jev without lane5, unflagged socks", {"clothing_items": ["socks"], "_jev": {"feet_subject": 0.9}},
+         sure, None),
+    ]
+    for name, fields, p, want in rows:
+        got = vault_pack_picker.suggest(feet, fields, p)
+        assert got == want, f"{name}: suggest={got!r}, want {want!r}"
+
+
+async def case_candidates_ranked_and_prefilled():
+    c = _login(_OWNER_USER)
+    # 301 lingerie pose with feet in frame (crowded focus), 302 the describe pass's
+    # own feet item, 303 soles in the text only, 304 a bare "feet" mention, 305 a
+    # topless feet close-up, 306 none of it.
+    seeds = {
+        301: ({"description": "lingerie pose on the bed",
+               "body_focus": ["face", "breasts", "legs", "feet"], **_flags()}, None),
+        302: ({"description": "her feet up on the sofa", "primary_folder": "feet",
+               "body_focus": ["feet"], "clothing_items": ["pink socks"], **_flags()}, None),
+        303: (None, "close up of her soles"),
+        304: ({"description": "standing on her feet in the kitchen", "body_focus": ["face"]},
+              "standing on her feet in the kitchen"),
+        305: ({"description": "topless, toes pointed", "body_focus": ["feet", "breasts"],
+               **_flags(breasts_vis="bare")}, None),
+        306: ({"description": "mirror selfie", "body_focus": ["face"]}, "mirror selfie"),
+    }
+    for mid, (fields, text) in seeds.items():
+        await _seed_item(_RANK, mid, fields=fields, search_text=text)
+
+    def get(**params):
+        r = c.get("/admin/vault-ai/pack-candidates",
+                  params={"account_id": _RANK, "category": "feet", **params})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    body = get()
+    order = [x["media_id"] for x in body["candidates"]]
+    assert order[0] == 302 and 306 not in order, order
+    assert order.index(305) < order.index(301) < order.index(304), order
+    assert 303 in order, "a subject word in the text alone generates a candidate"
+    by = {x["media_id"]: x for x in body["candidates"]}
+    assert (by[302]["suggested"], by[302]["tier"]) == ("tease", 0), by[302]
+    assert (by[305]["suggested"], by[305]["tier"]) == ("nude-body", 10), by[305]
+    assert by[304]["suggested"] is None and by[304]["tier"] is None, by[304]
+    scores = [x["score"] for x in body["candidates"]]
+    assert scores == sorted(scores, reverse=True), scores
+
+    # File the top one: it leaves the queue's limit and comes back after it.
+    r = _triage(c, [{"media_id": 302, "rung": "tease"}], aid=_RANK)
+    assert r.status_code == 200, r.text
+    cut = get(limit=2)
+    ids = [x["media_id"] for x in cut["candidates"]]
+    assert len(ids) == 3 and ids[-1] == 302 and ids[:2] == order[1:3], (ids, order)
+    assert cut["candidates"][-1]["rung"] == "tease" and cut["filed"] == 1, cut
+
+    # A capped scan is deterministic: the newest (highest) ids, every call.
+    real_cap = vault_pack_picker._SCAN_CAP
+    vault_pack_picker._SCAN_CAP = 2
+    try:
+        capped = [sorted(x["media_id"] for x in get()["candidates"]) for _ in range(3)]
+    finally:
+        vault_pack_picker._SCAN_CAP = real_cap
+    assert capped == [[304, 305]] * 3, capped
+
+
 async def _seed_fixtures():
     owner_uid = await _seed_user(_OWNER_USER)
     stranger_uid = await _seed_user(_STRANGER_USER)
     await _seed_account(_AID, owner_uid)
     await _seed_account(_FOREIGN, stranger_uid)
+    await _seed_account(_RANK, owner_uid)
     # 101: matches on the denormalised search blob (tags + description).
     await _seed_item(_AID, 101, search_text="barefoot feet soles on the bed")
     # 102: matches only inside ai_fields_json — the body_focus signal, which is
@@ -650,4 +814,8 @@ _harness.run(
     case_category_lookup_table,
     case_normalise_verdicts_table,
     case_normalise_verdicts_unknown_rung,
+    case_price_tier_table,
+    case_likelihood_ranks_subject_first,
+    case_suggest_table,
+    case_candidates_ranked_and_prefilled,
 )

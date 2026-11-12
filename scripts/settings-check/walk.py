@@ -16,9 +16,6 @@ Mocks (Playwright routes on the browser context, no relay; synthetic data only):
   /admin/employees                     "Alpha One", "Beta Two", "Gamma Three" (each with a login)
   GET  /admin/settings/{tab}           {tab, config} from an in-memory dict ({} when unset)
   PUT  /admin/settings/{tab}           stores the body, returns {tab, config}
-  GET  /api/of/v2/payments/referrals/balance, /api/of/v2/payouts/requests/referral   synthetic, for
-       X-Account-Id acc1 only (120.00 / 80.00 / 25.00 / 15.00 and one payout); another account is a 404.
-       Each such GET is recorded on the Referral-read list as [path?query, X-Account-Id].
   any other /auth/**, /chatter/**, /admin/**, /api/** request   []
   A request to a host other than localhost/127.0.0.1 is aborted and fails the run.
   Pages, scripts and styles go to the dev server. Before every load the first synthetic employee is
@@ -64,7 +61,6 @@ Checks (one {"check","want","got"} JSON line each), on every tab and viewport:
   And once: the Write list of the plain walk is [].
 
 Outputs, in /tmp/settings-shots/: settings-<tab>.png (1440x900), settings-<tab>-390.png (390x844), and
-settings-balance-model.png (the `balance` scenario's 1440 view in scope model:acc1, for Reading only),
 settings-report.json {"tabs": {tab: {"1440"|"390": {geometry...}}}, "writes": [...], "failures": [...]}.
 Exits 1 on any failure.
 """
@@ -94,13 +90,6 @@ EMPLOYEES={"employees":[
     {"id":2,"display_name":"Beta Two","color":"#60a5fa","is_active":True,"chatter_id":"c2","created_at":"2026-01-01T00:00:00Z"},
     {"id":3,"display_name":"Gamma Three","color":"#34d399","is_active":True,"chatter_id":"c3","created_at":"2026-01-01T00:00:00Z"},
 ]}
-# The Referral balance routes' synthetic answers, by X-Account-Id.
-BALANCE={"acc1":{
-    "/api/of/v2/payments/referrals/balance":{"referralEarnings":120,"availableEarnings":80,
-                                             "pendingEarnings":25,"withdrawnEarnings":15},
-    "/api/of/v2/payouts/requests/referral":{"list":[{"createdAt":"2026-01-15T12:00:00+00:00","amount":15,"state":"done"}],
-                                            "marker":None}}}
-REFERRAL_PATHS=set(BALANCE["acc1"])
 SETTINGS={}  # the in-memory Settings blob store: tab -> config
 
 # (tab, name, run(page), want_writes): later Phases append; each checks the writes its run caused.
@@ -125,13 +114,13 @@ SCENARIOS.append(("preferences", "choose Sunday and Save", save_week_start,
                     {"report_tz":"Asia/Tokyo","tz":"Asia/Tokyo","week_start":"sunday","language":"en"}]]))
 
 def security_org(pg):
-    """Security (organization): the roster's names show, force-clicks on the Not wired 2FA switch and a
-    "Reset" write nothing, and at 390x844 the table scrolls in its own box
-    (docs/spec/settings-tabs/phase-02-security.md, Seam 3)."""
+    """Security (organization): the roster's names show, a force-click on the 2FA switch writes nothing, no
+    "Reset" shows (no mock login has 2FA on; Reset renders only where it is), and at 390x844 the table scrolls
+    in its own box (docs/spec/settings-tabs/phase-02-security.md, Seam 3)."""
     for name in ("Alpha One", "Beta Two", "Gamma Three"):
         check(f"scenario security-org: {name} shown", pg.get_by_role("cell", name=name).count(), 1)
     pg.get_by_role("switch", name="Two-factor authentication").click(force=True)
-    pg.get_by_role("button", name="Reset").first.click(force=True)
+    check("scenario security-org: no Reset without 2FA", pg.get_by_role("button", name="Reset").count(), 0)
     pg.set_viewport_size({"width":390,"height":844})
     pg.wait_for_timeout(500)
     got=pg.evaluate("""() => ({
@@ -140,18 +129,17 @@ def security_org(pg):
     check("scenario security-org@390: table box overflow-x", got["box_overflow_x"], "auto")
     pg.set_viewport_size({"width":1440,"height":900})
 
-SCENARIOS.append(("security-org", "names shown, 2FA switch and Reset write nothing", security_org, []))
+SCENARIOS.append(("security-org", "names shown, 2FA switch writes nothing, no Reset without 2FA", security_org, []))
 
 def security_personal(pg):
-    """Security (personal): force-clicks on the Not wired "Change password" and "Enable 2FA" write
+    """Security (personal): a force-click on "Enable 2FA" writes
     nothing, then "Sign out" posts {} to /auth/logout (docs/spec/settings-tabs/phase-02-security.md,
     Seam 3). Sign out is a hard navigation, so it is this scenario's last action."""
-    pg.get_by_role("button", name="Change password").click(force=True)
     pg.get_by_role("button", name="Enable 2FA").click(force=True)
     with pg.expect_navigation(url=f"{BASE}/"):
         pg.get_by_role("button", name="Sign out").click()
 
-SCENARIOS.append(("security-personal", "Not wired write nothing, Sign out posts /auth/logout {}", security_personal,
+SCENARIOS.append(("security-personal", "Enable 2FA writes nothing, Sign out posts /auth/logout {}", security_personal,
                   [["POST", "/auth/logout", {}]]))
 
 def add_role(pg):
@@ -242,50 +230,22 @@ def time_tracking_cancel(pg):
 
 SCENARIOS.append(("time-tracking", "Edit, 15, Cancel", time_tracking_cancel, []))
 
-def messaging_prompt_save(pg):
-    """Messaging settings: Edit the AI Translator prompt, type "synthetic prompt"; at 390x844 the open
-    editor does not overflow; then Save (docs/spec/settings-tabs/phase-04-time-tracking-messaging.md, Acceptance)."""
-    pg.get_by_role("button", name="Edit").click()
-    pg.get_by_label("AI Translator prompt").fill("synthetic prompt")
+def messaging_switch(pg):
+    """Messaging settings: no AI Translator prompt (removed: Google's free translate takes no instructions); at
+    390x844 no overflow; turning AI translation off saves at once, the stored prompt key kept."""
+    check("scenario messaging: no prompt editor", pg.get_by_label("AI Translator prompt").count(), 0)
     no_overflow_at_390(pg, "messaging")
-    pg.get_by_role("button", name="Save").click()
+    pg.get_by_role("switch").first.click()
 
-SCENARIOS.append(("messaging", "Edit prompt, synthetic prompt, Save", messaging_prompt_save,
-                  [["PUT", "/admin/settings/messaging", {"ai_translation":True, "prompt":"synthetic prompt"}]]))
+SCENARIOS.append(("messaging", "AI translation off saves at once", messaging_switch,
+                  [["PUT", "/admin/settings/messaging", {"ai_translation":False, "prompt":""}]]))
 
 def billing(pg):
-    """Billing: the free plan card and "No invoices" show, force-clicks on the five Not wired actions write
-    nothing, and "AI Copilot" shows "No invoices" too (docs/spec/settings-tabs/phase-05-billing-balance-about.md)."""
-    check("scenario billing: plan card shown", pg.get_by_text("Inflowwww — self-hosted, free", exact=True).count(), 1)
-    check("scenario billing: No invoices shown", pg.get_by_role("cell", name="No invoices").count(), 1)
-    for name in ("Pricing plans", "Update card", "Cancel subscription", "Billing information", "Make a Payment"):
-        pg.get_by_role("button", name=name).click(force=True)
-    pg.get_by_role("tab", name="AI Copilot").click()
-    check("scenario billing: AI Copilot No invoices shown", pg.get_by_role("cell", name="No invoices").count(), 1)
+    """Billing: one line, self-hosted and free; no payment actions, no invoice table."""
+    check("scenario billing: free line shown", pg.get_by_text("Inflowwww is self-hosted and free", exact=False).count(), 1)
+    check("scenario billing: no buttons in the Panel body", pg.locator('[data-settings="panel-body"] button').count(), 0)
 
-SCENARIOS.append(("billing", "plan card, No invoices, Not wired actions write nothing", billing, []))
-
-def balance(pg):
-    """Your Balance: in scope `all` (this context sets none) it asks for a creator and no referral route was
-    ever requested, by this scenario or the plain walk; then a fresh context whose init script sets
-    `chatterly:scope = model:acc1` shows the four synthetic cards and the synthetic payout row, from
-    exactly the two referral GETs sent with X-Account-Id acc1
-    (docs/spec/settings-tabs/phase-05-billing-balance-about.md, Testing Decisions)."""
-    check("scenario balance (all): Select a creator shown", pg.get_by_text("Select a creator to see its balance", exact=True).count(), 1)
-    check("scenario balance (all): referral reads so far", referral_reads, [])
-    ctx, mp=open_context(pg.context.browser, 1440, 900, "localStorage.setItem('chatterly:scope', 'model:acc1');")
-    open_tab(mp, "balance")
-    mp.get_by_text("$120.00", exact=True).wait_for(timeout=15000)
-    check("scenario balance (model:acc1): cards", [mp.locator("dt").all_inner_texts(), mp.locator("dd").all_inner_texts()],
-          [["Total earnings", "Available to withdraw", "Pending earnings", "Withdrawn"], ["$120.00", "$80.00", "$25.00", "$15.00"]])
-    check("scenario balance (model:acc1): payout rows",
-          [r.locator("td").all_inner_texts() for r in mp.locator("tbody tr").all()], [["Jan 15, 2026", "$15.00", "done"]])
-    check("scenario balance (model:acc1): referral reads", sorted(referral_reads),
-          [["/api/of/v2/payments/referrals/balance", "acc1"], ["/api/of/v2/payouts/requests/referral?limit=10", "acc1"]])
-    mp.screenshot(path=f"{SHOTS}/settings-balance-model.png")
-    ctx.close()
-
-SCENARIOS.append(("balance", "scope all asks for a creator, model:acc1 shows the synthetic cards and payout", balance, []))
+SCENARIOS.append(("billing", "one self-hosted, free line", billing, []))
 
 def about(pg):
     """About: in its Panel, "Version " plus the app's version, the desktop-app box's "Download" link to /download and the
@@ -302,7 +262,6 @@ SCENARIOS.append(("about", "Version line, Download and MIT License links write n
 
 failures=[]
 writes=[]
-referral_reads=[]  # [path?query, X-Account-Id] per GET to a REFERRAL_PATHS route
 def check(label, got, want):
     print(json.dumps({"check":label,"want":want,"got":got}))
     if got!=want: failures.append(f"{label}: got {got!r}, expected {want!r}")
@@ -334,11 +293,6 @@ def handle(route):
     if path=="/chatter/me/accounts": return reply(route, [])
     if path.startswith("/chatter/me"): return reply(route, {"chatter":None,"owners":[]})
     if path=="/admin/employees": return reply(route, EMPLOYEES)
-    if path in REFERRAL_PATHS:
-        account=req.headers.get("x-account-id")
-        referral_reads.append([path+(f"?{u.query}" if u.query else ""), account])
-        if account in BALANCE: return reply(route, BALANCE[account][path])
-        return reply(route, {"detail":"unknown account"}, 404)
     return reply(route, [])
 
 # The resolved value of a custom property on <html>.

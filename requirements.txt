@@ -46,6 +46,17 @@ Pillow==12.2.0
 requests==2.34.2
 # The served Browserbase login: Playwright connect_over_cdp, no local browser.
 playwright==1.63.0
+# TypeSafe's SDK for Jev (service/vault_jev.py; brings its own httpx2, not httpx).
+typesafe-sdk==0.7.5
+# NudeNet 640m for the Jev v8 vault flags (service/vault_jev.py): a HARD
+# dependency of that per-account pass (no NudeNet → the pass refuses), imported
+# lazily so the relay boots without it. Weights are fetched + md5-checked in the
+# Dockerfile (NUDENET_640M_PATH). Versions = the ones the bench parity ran on;
+# cp313 manylinux_2_28 wheels exist for amd64 + arm64.
+nudenet==3.4.2
+onnxruntime==1.31.1
+opencv-python-headless==5.0.0.93
+numpy==2.5.4
 # Web Push (service/push_send.py): aes128gcm payload encryption + VAPID ES256.
 http-ece==1.2.1
 py-vapid==1.9.6

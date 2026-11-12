@@ -182,6 +182,19 @@ Cases:
       a disputed free-tier still does not join an outfit script (its free
       opener rungs); a disputed paid one keeps its place.
 
+  case_a_duplicate_set_is_one_item_in_every_folder:
+      a hashed Duplicates set plans as its original only; the copies are in no
+      folder and counted in `dupes_collapsed` (unhashed control: they were).
+  case_collapse_keeps_the_original_unless_it_has_no_reading:
+      `collapse_dupes` table — original kept, an unread original gives way.
+  case_a_colourless_set_keys_on_garment_and_setting:
+      no colour → `<garment class> <setting>`; either half alone is no key.
+  case_keep_zero_builds_lanes_only:
+      apply keep=0 makes no script folder (was 2); absent → 2; junk → 400.
+  case_preview_counts_what_confirm_will_create_keep_and_retire:
+      the plan's `changes` (create / keep / retire / retire_on_of) equal what
+      the apply then does, by the same match.
+
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_scripts.py
 Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
@@ -1791,7 +1804,166 @@ def case_disputed_item_never_opens_a_script() -> None:
     assert set(ids) == {2101, 2102, 2104, 2105} and ids[0] == 2101, ids
 
 
+# ── PR-A: dupes, colourless sets, keep 0, retire counts ─────────────
+
+async def _hash(aid: str, packed: dict[int, str]) -> None:
+    """Store `content_hash` as the Duplicates scan leaves it."""
+    import vault_dupes
+    async with get_session() as s:
+        for mid, h in packed.items():
+            row = (await s.execute(select(VaultItem).where(
+                VaultItem.account_id == aid, VaultItem.media_id == mid))).scalar_one()
+            row.content_hash, row.content_hash_kind = h, vault_dupes.HASH_KIND
+        await s.commit()
+
+
+def case_a_duplicate_set_is_one_item_in_every_folder() -> None:
+    """Re-uploads share one describe answer, so every copy keys to the same
+    outfit and passes the same lanes: one folder held the photo twice. The
+    plan collapses each Duplicates set to its original before grouping."""
+    import vault_dupes
+    aid = _next_account()
+    _plan_seed(aid)
+    plan_rows = asyncio.run(vault_scripts._load_rows(aid))
+    fields = {r["media_id"]: r["fields"] for r in plan_rows}
+    asyncio.run(_seed_more(aid, [(2006, 5.0, fields[2003], "photo"),
+                                 (2007, 5.1, fields[2005], "video")]))
+
+    def _together(plan: dict, a: int, b: int) -> list[str]:
+        return [f["name"] for f in plan["folders"]
+                if {a, b} <= {r["media_id"] for r in f["items"]}]
+
+    # No hashes yet: not candidates, so the copy sits beside its original.
+    before = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    assert _together(before, 2003, 2006), "control: the copy should be foldered unhashed"
+
+    asyncio.run(_hash(aid, {2003: vault_dupes.pack_hash("a" * 32, 0, 0),
+                            2006: vault_dupes.pack_hash("a" * 32, 0, 0),
+                            2005: vault_dupes.pack_hash("b" * 32, 1, 1),
+                            2007: vault_dupes.pack_hash("b" * 32, 1, 1)}))
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    placed = {r["media_id"] for f in plan["folders"] for r in f["items"]}
+    assert not _together(plan, 2003, 2006) and not _together(plan, 2005, 2007), plan["folders"]
+    assert {2003, 2005} <= placed and not ({2006, 2007} & placed), placed
+    assert plan["dupes_collapsed"] == [2006, 2007], plan["dupes_collapsed"]
+    assert plan["summary"]["dupes_collapsed"] == 2
+
+
+def case_collapse_keeps_the_original_unless_it_has_no_reading() -> None:
+    rows = [{"media_id": 1, "fields": {}}, {"media_id": 2, "fields": {"x": 1}},
+            {"media_id": 3, "fields": {"x": 1}}, {"media_id": 4, "fields": {"x": 1}},
+            {"media_id": 5, "fields": {"x": 1}}]
+    for name, groups, want_kept, want_drop in (
+        ("original kept", [[2, 3]], [1, 2, 4, 5], [3]),
+        ("unread original gives way to the first read copy", [[1, 2, 3]], [2, 4, 5], [1, 3]),
+        ("a set with one live member is no set", [[4, 99]], [1, 2, 3, 4, 5], []),
+        ("two sets", [[2, 3], [4, 5]], [1, 2, 4], [3, 5]),
+    ):
+        kept, dropped = vault_scripts.collapse_dupes(rows, groups)
+        assert [r["media_id"] for r in kept] == want_kept and dropped == want_drop, \
+            (name, [r["media_id"] for r in kept], dropped)
+
+
+async def _seed_more(aid: str, items: list[tuple]) -> None:
+    """`_seed` for an account that already exists."""
+    async with get_session() as s:
+        for mid, minutes, fields, kind in items:
+            s.add(VaultItem(
+                account_id=aid, media_id=mid, kind=kind,
+                created_at=datetime(2026, 7, 1) + timedelta(minutes=minutes),
+                tags="[]", describe_status="described", ai_fields_json=json.dumps(fields)))
+        await s.commit()
+
+
+def case_a_colourless_set_keys_on_garment_and_setting() -> None:
+    """No colour named used to drop the item from every shoot. Garment class +
+    setting stands in; either half alone is not a key."""
+    key = vault_scripts.outfit_key
+    assert key({"clothing_items": ["bra", "thong"], "setting": "bedroom"}) == "lingerie_set bedroom"
+    assert key({"clothing_items": ["bra"], "setting": "Shower "}) == "lingerie_set shower"
+    assert key({"clothing_items": ["bra"], "setting": "other"}) == "", "'other' names no place"
+    assert key({"clothing_items": ["bra"]}) == "", "garment alone pools unrelated sets"
+    assert key({"clothing_items": ["earrings"], "setting": "bedroom"}) == "", "room alone"
+    assert key({"clothing_items": ["red bra"], "setting": "bedroom"}) == "red lingerie_set", \
+        "a colour still wins"
+
+    aid = _next_account()
+    bra = {"clothing_items": ["bra", "thong"], "setting": "bedroom"}
+    asyncio.run(_seed(aid, [
+        (2201, 0.0, {**_outfit([], ["posing"], "sfw", "dressed"), **bra}, "photo"),
+        (2202, 0.1, {**_outfit([], ["tease"], "suggestive"), **bra}, "photo"),
+        (2203, 0.2, {**_outfit([], ["fingering"], "explicit", "fully_nude"), **bra}, "video"),
+    ]))
+    scripts = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
+    assert [s["name"] for s in scripts] == ["AI-lingerie bedroom"], scripts
+    assert [r["media_id"] for r in scripts[0]["items"]] == [2201, 2202, 2203]
+
+
+def case_keep_zero_builds_lanes_only() -> None:
+    """`int(keep or 2)` turned keep=0 into 2 shoots. 0 is lanes only; an absent
+    keep is still 2; a non-number is a 400."""
+    from fastapi import HTTPException
+
+    import vault_ai_api
+    aid = _next_account()
+    _split_shoot_seed(aid)
+    res = asyncio.run(_apply_with_of(aid, _FakeOF(), keep=0, mirror=False))
+    assert not [c for c in res["created"] if c["source"] == "script"], res["created"]
+    assert res["summary"]["scripts"] == 0, res["summary"]
+
+    res = asyncio.run(vault_ai_api.apply_folder_plan({"account_id": aid, "confirm": True}))
+    assert res["summary"]["scripts"] == 2, "absent keep must stay 2"
+    try:
+        asyncio.run(vault_ai_api.apply_folder_plan(
+            {"account_id": aid, "confirm": True, "keep": "lots"}))
+    except HTTPException as e:
+        assert e.status_code == 400 and e.detail == {"error": "bad_keep"}, e.detail
+    else:
+        raise AssertionError("keep='lots' was accepted")
+
+
+def case_preview_counts_what_confirm_will_create_keep_and_retire() -> None:
+    """The preview says what Confirm does to the folders already there, by the
+    SAME match the apply makes — including how many retired folders are bound
+    to an OF list (the apply unlinks them, never deletes them on OF)."""
+    aid = _next_account()
+    _plan_seed(aid)
+    first = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    assert first["changes"] == {"create": len(first["folders"]), "keep": 0, "retire": 0,
+                                "retire_on_of": 0, "retired": []}, first["changes"]
+    assert {f["change"] for f in first["folders"]} == {"new"}
+    asyncio.run(vault_scripts.apply_ai_folders(aid, first))
+
+    async def _old_generation():
+        async with get_session() as s:
+            s.add(VaultFolder(account_id=aid, name="AI-old on OF", of_list_id=777,
+                              created_by="vault_ai_script"))
+            s.add(VaultFolder(account_id=aid, name="AI-old local",
+                              created_by="vault_ai_script"))
+            s.add(VaultFolder(account_id=aid, name="AI-mine", created_by="operator"))
+            await s.commit()
+    asyncio.run(_old_generation())
+
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))   # drops the script
+    ch = plan["changes"]
+    lanes = len(plan["folders"])
+    assert (ch["create"], ch["keep"], ch["retire"], ch["retire_on_of"]) == (0, lanes, 3, 1), ch
+    assert sorted(r["name"] for r in ch["retired"]) == sorted(
+        ["AI-old on OF", "AI-old local", *[f["name"] for f in first["folders"]
+                                          if f["source"] == "script"]]), ch["retired"]
+    assert {f["change"] for f in plan["folders"]} == {"keep"}
+
+    res = asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
+    assert (res["new"], res["reused"]) == (ch["create"], ch["keep"]), res
+    assert res["retired"] == ch["retired"], (res["retired"], ch["retired"])
+
+
 _harness.run(
+    case_a_duplicate_set_is_one_item_in_every_folder,
+    case_collapse_keeps_the_original_unless_it_has_no_reading,
+    case_a_colourless_set_keys_on_garment_and_setting,
+    case_keep_zero_builds_lanes_only,
+    case_preview_counts_what_confirm_will_create_keep_and_retire,
     case_disputed_items_read_the_least_harmful_way,
     case_disputed_item_never_opens_a_script,
     case_ladder_orders_the_arc,

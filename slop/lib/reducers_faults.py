@@ -168,8 +168,8 @@ SCRIPTS_SWITCH_CLEARS = ("scripts: a Remove from tag answered 500 (its error sho
                          "the script keeps its tag (route)")
 
 # Tier 2, batch 2 (docs/reducer-scan.md): VaultManagePanel editor/browse, the shared useHoverPreview
-VM_TICKS = ("vault manage: switching the media type clears the ticked files (no Selected bar on the new view, "
-            "none ticked back on All)")
+VM_TICKS = ("vault manage: a media type switch keeps the ticked files (Video names the hidden ones, All shows "
+            "Selected 2; owner 11-11) and a tag chip, a new view, clears them (no bar)")
 VM_PRICE = ("vault manage: letters typed as a price are not a $0 price (Save & lock stays off; with a description "
             "edit the PATCH carries only the description and the row keeps no price)")
 REDESCRIBE_SHOWS = ("vault editor: a Re-describe on an untouched editor shows the new tags and description, and nothing "
@@ -531,10 +531,10 @@ def register(Fault) -> dict:
         "smartlist-between-unchecked": Fault(None, (SMARTLIST_GATE,), browser=(
             (r'if \(kind === \\?"enum\\?" \|\| kind === \\?"tag\\?"\) return null;', "return null;"),
         )),
-        # slop/run 2026-10-29-state-reducers --break --fault=vault-type-keeps-ticks
-        # app/components/vault/vaultBrowseReducer.ts `view`: a new folder / type / search keeps the ticks (the
+        # slop/run 2026-10-29-state-reducers --break --fault=vault-view-keeps-ticks
+        # app/components/vault/vaultBrowseReducer.ts `view`: a new folder / search / tag chip keeps the ticks (the
         # pre-reducer bug: "Selected 2" over a grid showing none of them).
-        "vault-type-keeps-ticks": Fault(None, (VM_TICKS,), browser=(
+        "vault-view-keeps-ticks": Fault(None, (VM_TICKS,), browser=(
             (rf"\.\.\.patch,{_WS}selected: NONE", "...patch, selected: state.selected"),
         )),
         # slop/run 2026-10-29-state-reducers --break --fault=vault-letters-price-zero

@@ -7,6 +7,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
+import { EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import type { VaultList, VaultMedia } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 
@@ -108,9 +109,11 @@ vi.mock("@/components/chat/VaultPicker", () => ({ VaultVideoPreview: () => null 
 import { VaultDownloadProvider } from "./VaultDownloadPanel";
 import VaultManagePanel, { FOLDER_LOADING } from "./VaultManagePanel";
 
-/** The panel as VaultProPage mounts it: under the page's one download (`headerSlot`: its header button's place). */
-const renderPanel = (headerSlot?: HTMLElement) =>
-  renderWithProviders(<VaultDownloadProvider><VaultManagePanel headerSlot={headerSlot} /></VaultDownloadProvider>);
+/** The panel as VaultProPage mounts it: under the page's one download (`extrasOpen`: the page's ⋯ opened the drawer). */
+const renderPanel = (extrasOpen = false, onCloseExtras = () => {}) =>
+  renderWithProviders(
+    <VaultDownloadProvider><VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={onCloseExtras} /></VaultDownloadProvider>,
+  );
 
 beforeAll(() => {
   globalThis.IntersectionObserver = class {
@@ -245,19 +248,18 @@ describe("the item editor's price", () => {
   });
 });
 
-describe("the header download button", () => {
+describe("the Extras drawer's full download", () => {
   // The relay soft-denies "All" to a folder-limited chatter on both sources (here a partial mirror of its folders,
   // count 12, complete:false: the live path), so a whole-vault download would read "Nothing to download".
-  // The button is portalled into VaultProPage's header slot; here a bare div stands in for it.
-  const button = () => screen.getByTestId("vault-header-download");
-  let slot: HTMLElement;
-  const render = () => renderPanel(slot);
+  // The drawer is open (VaultProPage's ⋯); `closeExtras` is the page's close.
+  const button = () => screen.getByTestId("vault-extras-download");
+  const closeExtras = vi.fn();
+  const render = () => renderPanel(true, closeExtras);
   beforeEach(() => {
-    slot = document.body.appendChild(document.createElement("div"));
+    closeExtras.mockReset();
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve(null);
   });
   afterEach(() => {
-    slot.remove();
     delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
   });
 
@@ -272,7 +274,7 @@ describe("the header download button", () => {
     h.summary.data = { count: 12, complete: false };
     h.access = access;
     render();
-    expect(slot).toContainElement(button());
+    expect(screen.getByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toContainElement(button());
     expect(button()).toHaveTextContent("Download full vault");
     if (off) {
       expect(button()).toBeDisabled();
@@ -303,6 +305,7 @@ describe("the header download button", () => {
     expect(button()).toHaveAttribute("title", FOLDER_LOADING);
     fireEvent.click(button());
     expect(screen.queryByLabelText("Vault download")).toBeNull();
+    expect(closeExtras).not.toHaveBeenCalled();
   });
 
   // #430 + #29: a selection made in a folder saves into it; one made in a folder not resolved yet is off, not guessed.
@@ -324,7 +327,7 @@ describe("the header download button", () => {
     }
   });
 
-  // #24: the header click downloads the scope it names: the listing carries the selected folder's id, or none.
+  // #24: the click downloads the scope it names, and closes the drawer so the download card shows: the listing carries the selected folder's id, or none.
   it.each<[string, string | null, string | null]>([
     ["All media: the whole vault", null, null],
     ["a selected folder: that folder", "rail:Beach", String(BEACH.id)],
@@ -336,6 +339,7 @@ describe("the header download button", () => {
     render();
     if (railClick) fireEvent.click(screen.getByRole("button", { name: railClick }));
     fireEvent.click(button());
+    expect(closeExtras).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(h.get.mock.calls.some(([p]) => String(p).startsWith("/api/of/v2/vault/media?"))).toBe(true));
     const listing = h.get.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith("/api/of/v2/vault/media?"));
     expect(listing.map((p) => new URLSearchParams(p.split("?")[1]).get("list_id"))).toEqual([listId]);

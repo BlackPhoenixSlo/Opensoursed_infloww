@@ -64,6 +64,23 @@ function optionsOf(combobox: HTMLElement) {
   return names;
 }
 
+describe("PromotionTab before its first data", () => {
+  it("draws placeholder rows, never the empty state, while the campaigns read is out", () => {
+    get.mockImplementation(() => new Promise(() => {}));
+    const { container } = mount(<PromotionTab accountId="a1" />);
+    expect(container.querySelector("[data-empty-state]")).toBeNull();
+    expect(container.querySelectorAll("table [data-loading]").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("table", { name: "Campaigns" })).queryByText(/Loading/)).toBeNull();
+  });
+  it("draws placeholder rows while the Creators load (no Creator picked yet), the empty state after", () => {
+    const { container, rerender } = mount(<PromotionTab accountId={null} creatorsLoading />);
+    expect(container.querySelector("[data-empty-state]")).toBeNull();
+    expect(container.querySelectorAll("table [data-loading]").length).toBeGreaterThan(0);
+    rerender(<QueryClientProvider client={client}><PromotionTab accountId={null} /></QueryClientProvider>);
+    expect(container.querySelector("[data-empty-state]")).not.toBeNull();
+  });
+});
+
 describe("PromotionTab", () => {
   it("creates in Infloww's pop-up with its fields and sends OF Manager's body (audience list, offer expiration)", async () => {
     mount(<PromotionTab accountId="a1" />);
@@ -129,6 +146,40 @@ describe("PromotionTab", () => {
     expect(within(row).getByText("Enable to automatically reactivate your promotions when they expire")).toBeTruthy();
     expect(within(row).getByRole("switch", { name: "Auto-activate campaign" })).toBeTruthy();
   });
+
+  it("Auto-activate is the one control: no Keep promos running card; switching on creates the rule, dry run on", async () => {
+    mount(<PromotionTab accountId="a1" />);
+    const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
+    expect(screen.queryByText("Keep promos running")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create automation" })).toBeNull();
+    expect(await within(row).findByText("1 campaign set to keep running")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("switch", { name: "Auto-activate campaign" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/automation-rules", {
+      account_id: "a1", kind: "promo_reactivate", name: "Keep promos running", every_seconds: 3600,
+      payload: { max_reactivations: 0, dry_run: true }, is_enabled: true,
+    }));
+  });
+
+  it("Settings opens the engine's knobs in a pop-up; Save writes them to the existing rule", async () => {
+    const rule = { id: 9, kind: "promo_reactivate", is_enabled: true, every_seconds: 3600,
+      payload: { dry_run: true, max_reactivations: 0 }, last_run: null };
+    const base = get.getMockImplementation()!;
+    get.mockImplementation((path: string) =>
+      path.startsWith("/admin/automation-rules") ? Promise.resolve({ rules: [rule] }) : base(path));
+    mount(<PromotionTab accountId="a1" />);
+    const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
+    await waitFor(() => expect(within(row).getByRole("switch", { name: "Auto-activate campaign" })).toHaveAttribute("aria-checked", "true"));
+    expect(within(row).getByText(/Dry run: reports only/)).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: "Settings" }));
+    const dlg = screen.getByRole("dialog", { name: "Auto-activate settings" });
+    fireEvent.click(within(dlg).getByRole("switch", { name: /Dry run/ }));
+    fireEvent.change(within(dlg).getByRole("spinbutton", { name: "Check every (minutes)" }), { target: { value: "30" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/automation-rules/9", {
+      is_enabled: true, every_seconds: 1800, payload: { max_reactivations: 0, dry_run: false },
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Auto-activate settings" })).toBeNull());
+  });
 });
 
 describe("Profile promotion's Add fans to list", () => {
@@ -161,11 +212,13 @@ describe("Profile promotion's Add fans to list", () => {
   const answer = (name: string, button: "Cancel" | "Confirm") =>
     fireEvent.click(within(dialog(name)).getByRole("button", { name: button }));
 
-  it("sits on Profile promotion above Campaign insights", async () => {
+  it("sits on Profile promotion under Campaign insights, after Auto-activate", async () => {
     mount(<PromotionTab accountId="a1" />);
     const row = await screen.findByRole("region", { name: "Add fans to list" });
     const insights = screen.getByRole("region", { name: "Campaign insights" });
-    expect(row.compareDocumentPosition(insights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const auto = screen.getByRole("region", { name: "Auto-activate campaign" });
+    expect(insights.compareDocumentPosition(auto) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(auto.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("offers the custom lists; the switch needs a list; the first pick turns it on with no confirm", async () => {
@@ -173,8 +226,9 @@ describe("Profile promotion's Add fans to list", () => {
     await waitFor(() => expect(optionsOf(select())).toEqual(["None", "VIP", "Whales"]));
     expect(toggle().disabled).toBe(true);
     // Later claimers are added by the next figures read (about hourly); the copy says so, not "as fans claim".
-    expect(screen.getByText("Adds every promotion's fans to this OnlyFans list now. Fans who claim later are added " +
-      "when the figures are next read from OnlyFans, about every hour. Fans already added stay in it.")).toBeTruthy();
+    expect(screen.getByText("Adds every promotion's fans to this OnlyFans list, then new claimers about hourly."))
+      .toHaveAttribute("title", "Adds every promotion's fans to this OnlyFans list now. Fans who claim later are added " +
+        "when the figures are next read from OnlyFans, about every hour. Fans already added stay in it.");
     choose(select(), "Whales");
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
       { account_id: "a1", enabled: true, list_id: "800002", list_name: "Whales" }));

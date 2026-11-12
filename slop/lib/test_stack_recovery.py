@@ -242,3 +242,37 @@ def test_view_of_malformed_state_is_disk_and_read_only(tmp_path, state, capsys):
     before = _disk(app)
     recovery.AppFiles(app, stack.RESTORE, files.state_path).save()  # the next holder: never raises on it
     assert _disk(app) == before
+
+
+SIDE = """import http.server, os, signal, sys
+srv = http.server.HTTPServer(("127.0.0.1", int(os.environ["SIDE_PORT"])), http.server.SimpleHTTPRequestHandler)
+def term(*_):
+    open(os.environ["SIDE_MARK"], "a").write("drained\\n")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, term)
+print("up", flush=True)
+srv.serve_forever()
+"""
+
+
+def test_sidecar_stop_is_a_sigterm_drain_and_start_reuses_port_env_and_log(tmp_path, monkeypatch):
+    """stop_sidecar: SIGTERM, waits for the exit (its handler ran), reaped; start_sidecar: same port and env, log
+    appended, health waited for."""
+    monkeypatch.setattr(recovery, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(stack, "ROOT", tmp_path)
+    monkeypatch.setattr(stack, "PY", sys.executable)
+    (tmp_path / "side.py").write_text(SIDE)
+    (tmp_path / "logs").mkdir()
+    s = stack.Stack(ui=False, fault=None, logdir=tmp_path / "logs", sidecars={"side": ("side.py", "SIDE_PORT", "/")})
+    s._relay_envs.append(dict(os.environ, SIDE_MARK=str(tmp_path / "mark")))
+    try:
+        s.start_sidecar("side", timeout=20)
+        first = s.sidecar_procs["side"]
+        _, took = s.stop_sidecar("side", grace_s=10)
+        assert took is not None and first.poll() == 0 and first not in s.procs
+        assert (tmp_path / "mark").read_text() == "drained\n"
+        s.start_sidecar("side", timeout=20)
+        assert s.sidecar_procs["side"].pid != first.pid and s.sidecar_procs["side"].poll() is None
+        assert (tmp_path / "logs" / s._log("side", 0)).read_text().count("up") == 2
+    finally:
+        s.__exit__(None, None, None)

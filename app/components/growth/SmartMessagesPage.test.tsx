@@ -309,6 +309,8 @@ async function mount(url = "/growth/smart-messages", fixture: Fixture = {}) {
 }
 
 const parentTabs = () => screen.getByRole("tablist", { name: "Smart Messages" });
+/** A row's message text: the Messages cell's button (the cell adds a phone-only Trigger · Status line). */
+const messageOf = (row: HTMLElement) => within(row).getAllByRole("cell")[0].querySelector("button")?.textContent;
 const tabNames = () => within(parentTabs()).getAllByRole("tab").map((t) => t.textContent);
 const selected = () => within(parentTabs()).getAllByRole("tab")
   .filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.textContent);
@@ -423,7 +425,9 @@ describe("Automated Messages tab (ticket 41)", () => {
     await mount(undefined, { nudge: { [A.id]: true }, lines: { [A.id]: "Hey you, fixture line" } });
     expect(rows()).toHaveLength(1);
     const cells = within(rows()[0]).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells[0]).toBe("Hey you, fixture line");
+    expect(messageOf(rows()[0])).toBe("Hey you, fixture line");
+    // Below md the cell's second line names the Trigger and Status.
+    expect(cells[0]).toBe(`Hey you, fixture line${triggerLabels[0]} · ${statusValues[1]}`);
     expect(cells[1]).toBe(statusValues[1]); // Active
     expect(cells[2]).toBe(triggerLabels[0]); // Nudge
     expect(within(panel()).queryByText(NO_DATA)).toBeNull();
@@ -555,13 +559,13 @@ describe("Automated Messages tab (ticket 41)", () => {
     // The first Creator is the pick until another is clicked on the creator column.
     expect(creatorRow(A.nickname)).toHaveAttribute("aria-current", "true");
     expect(creatorRow(B.nickname)).not.toHaveAttribute("aria-current");
-    expect(within(rows()[0]).getAllByRole("cell")[0].textContent).toBe("Line of Model A");
+    expect(messageOf(rows()[0])).toBe("Line of Model A");
 
     const reads = relayGet.mock.calls.length;
     await pickCreator(B.nickname);
     expect(creatorRow(B.nickname)).toHaveAttribute("aria-current", "true");
     expect(creatorRow(A.nickname)).not.toHaveAttribute("aria-current");
-    await waitFor(() => expect(within(rows()[0]).getAllByRole("cell")[0].textContent).toBe("Line of Model B"));
+    await waitFor(() => expect(messageOf(rows()[0])).toBe("Line of Model B"));
     const nudgeReads = relayGet.mock.calls.slice(reads).map(([p]) => String(p))
       .filter((p) => p.startsWith("/admin/nudge-config"));
     expect(nudgeReads).toEqual([`/admin/nudge-config?account_id=${B.id}`]);
@@ -800,7 +804,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(rows()).toHaveLength(1);
     const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
     const cells = within(welcomeRow()!).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells[0]).toBe("Welcome new subscribers");
+    expect(messageOf(welcomeRow()!)).toBe("Welcome new subscribers");
     expect(cells[1]).toBe(statusValues[1]); // Active
     expect(cells[2]).toBe(WELCOME);
     expect(cells[headers.indexOf(labelOf(51))]).toBe("Feb 3, 2026");
@@ -812,7 +816,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
 
   it("names the row by its message, the first of several variants", async () => {
     await mount(undefined, { welcomeRules: { [A.id]: { on: true, message: ["Hey {name}, one", "Hey {name}, two"] } } });
-    expect(within(welcomeRow()!).getAllByRole("cell")[0].textContent).toBe("Hey {name}, one");
+    expect(messageOf(welcomeRow()!)).toBe("Hey {name}, one");
   });
 
   it("follows the Nudge row, in the catalogue's order, and the Trigger filter and search pick it out", async () => {
@@ -1219,7 +1223,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
     await mount(undefined, { purchase: { [A.id]: FIXTURE_PURCHASE } });
     expect(rows()).toHaveLength(1);
     const cells = within(purchasedRow()!).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells[0]).toBe(FIXTURE_PURCHASE.text);
+    expect(messageOf(purchasedRow()!)).toBe(FIXTURE_PURCHASE.text);
     expect(cells[1]).toBe(statusValues[1]); // Active
     expect(cells[2]).toBe(PURCHASED);
     cleanup();
@@ -1330,7 +1334,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     });
     expect(rows().map(triggerOf)).toEqual([PURCHASED, ...LIFECYCLE_ROWS.map(([t]) => t)]);
     const cells = within(rowOfTrigger(triggerLabels[6])!).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells[0]).toBe("Happy birthday, fixture");
+    expect(messageOf(rowOfTrigger(triggerLabels[6])!)).toBe("Happy birthday, fixture");
     expect(cells[1]).toBe(statusValues[3]); // Canceled
     expect(within(rowOfTrigger(triggerLabels[3])!).getAllByRole("cell")[1].textContent).toBe(statusValues[1]);
     await applyFilters({ trigger: triggerLabels[4] });

@@ -100,7 +100,7 @@ describe("TimeZoneLabel", () => {
     const save = screen.getByRole("button", { name: /save/i });
     await waitFor(() => expect(save).toBeEnabled());
 
-    fireEvent.keyDown(screen.getByLabelText("Time zone"), { key: "Enter" });
+    fireEvent.keyDown(screen.getByLabelText("Regular time zone"), { key: "Enter" });
     fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "Asia/Shanghai" }));
     fireEvent.click(save);
 

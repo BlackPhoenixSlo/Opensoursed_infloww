@@ -4,7 +4,7 @@
   case_click_records_and_redirects  GET /t/{slug} → 302 + a TrackingClick row +
                                      click_count increments per hit.
   case_unknown_slug_404             a slug that doesn't exist → 404 (no redirect).
-  case_crud_and_analytics           create → list → analytics(total) → delete.
+  case_crud_and_analytics           create → list → analytics(totals) → delete.
   case_target_normalization         no scheme → https:// prepended; other schemes /
                                      undotted hosts refused (unit + create route).
   case_gated_*/case_verify_*        "Bot check before redirect" (Turnstile): the gated
@@ -100,8 +100,7 @@ def case_crud_and_analytics():
     assert _client.get(f"/t/{slug}", follow_redirects=False).status_code == 302
     # analytics reflects the click
     an = _client.get(f"/admin/tracking-links/{lid}/analytics?account_id={aid}").json()
-    assert an["total_clicks"] == 1, an
-    assert an["subscribers"] is None and an["revenue_cents"] is None, "subs/$ are a TODO"
+    assert an["totals"]["clicks"] == 1 and len(an["series"]) == 30, an
     # list shows it
     lst = _client.get(f"/admin/tracking-links?account_id={aid}").json()["links"]
     assert any(x["id"] == lid for x in lst), lst

@@ -12,6 +12,9 @@
  *     ticking photos then videos for one download is the point (owner, 11-11).
  *     The ticks hold the media themselves, so a download still has the ones the
  *     filter hides.
+ *   • The tag chips (`tags`, AND) are a new view too: toggling one CLEARS the
+ *     ticks, as a search does. They stay across a folder or type change (they
+ *     narrow whatever is open), as the search does.
  *   • Re-picking the same folder / type / search changes nothing.
  *   • Paging is not here: the grid's pages live in the query hooks, keyed by
  *     folder / type / search, so a change already starts from page one.
@@ -32,6 +35,8 @@ export interface BrowseState {
   folderId: FanId | null;
   /** The settled search (the debounced box). */
   query: string;
+  /** The picked tag chips (lower-case, in pick order); the grid shows items carrying all of them. */
+  tags: readonly string[];
   selectMode: boolean;
   /** The ticked media by id, in tick order. */
   selected: ReadonlyMap<number, VaultMedia>;
@@ -41,6 +46,9 @@ export type BrowseAction =
   | { type: "folder"; id: FanId | null }
   | { type: "mediaType"; value: MediaType }
   | { type: "query"; value: string }
+  /** A tag chip tapped: picked if it was not, else dropped. */
+  | { type: "toggleTag"; tag: string }
+  | { type: "clearTags" }
   | { type: "toggleSelectMode" }
   /** The toolbar's Select all: select mode on, every loaded file ticked. */
   | { type: "selectAll"; media: readonly VaultMedia[] }
@@ -53,6 +61,7 @@ export const initialBrowseState: BrowseState = {
   type: "all",
   folderId: null,
   query: "",
+  tags: [],
   selectMode: false,
   selected: NONE,
 };
@@ -70,6 +79,14 @@ export function vaultBrowseReducer(state: BrowseState, action: BrowseAction): Br
       return action.value === state.type ? state : { ...state, type: action.value };
     case "query":
       return action.value === state.query ? state : view(state, { query: action.value });
+    case "toggleTag": {
+      const tag = action.tag.trim().toLowerCase();
+      if (!tag) return state;
+      const tags = state.tags.includes(tag) ? state.tags.filter((t) => t !== tag) : [...state.tags, tag];
+      return view(state, { tags });
+    }
+    case "clearTags":
+      return state.tags.length === 0 ? state : view(state, { tags: [] });
     case "toggleSelectMode":
       return { ...state, selectMode: !state.selectMode, selected: NONE };
     case "selectAll":

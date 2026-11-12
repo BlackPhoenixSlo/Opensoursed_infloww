@@ -15,7 +15,9 @@
 
 import { infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
+import type { TagFolderPayload } from "@/components/vault/tagFolderForm";
 import { folderSortAfter, loadFolderSort, saveFolderSort, type FolderSortState } from "@/components/vault/vaultFolderSort";
+import type { PlanChanges } from "@/components/vault/vaultAiFoldersForm";
 import { useSweepStatus } from "@/hooks/useVaultSweep";
 import { vaultListsKey, vaultMediaKey } from "@/hooks/useVaultMedia";
 import { relay, type VaultMedia } from "@/lib/relay";
@@ -56,6 +58,12 @@ export interface PackCandidate {
   kind: string;
   /** The rung it is filed on now, or null if unruled. */
   rung: string | null;
+  /** The rung its stored flags suggest (a prefill to confirm, never saved by itself), or null. */
+  suggested: string | null;
+  /** Her body's price tier from the flags: 100 inserted, 50 labia visible, 10 topless, 0 none; null unflagged. */
+  tier: number | null;
+  /** How likely the category is the subject, 0..1; the list comes most likely first. */
+  score: number;
   /** Enough to reject on text alone, before any pixel is fetched. */
   description: string;
 }
@@ -280,6 +288,8 @@ export function useDescribePlan(accountId: string | null, promptVersion: PromptV
     prompt_version: PromptVersion;
     /** Absent only against a relay that predates the cap gate. */
     cap?: VisionCapState;
+    /** The Jev v8 flags opt-in and whether it can run (absent on an older relay). */
+    jev?: { enabled: boolean; ready: boolean; reason: string };
   }>({
     queryKey: ["vault-describe-plan", accountId, promptVersion],
     enabled: !!accountId,
@@ -328,6 +338,8 @@ export interface AiFolder {
    *  null exactly when `solo` is false. */
   solo: boolean;
   solo_of: number | null;
+  /** What Confirm does with it: make a new folder, or refresh the generated one of this name. */
+  change: "new" | "keep";
 }
 
 export interface AiFolderPlan {
@@ -336,6 +348,11 @@ export interface AiFolderPlan {
   solo: boolean;
   shoots_found: number;
   folders: AiFolder[];
+  /** What Confirm does to the AI- folders already there, by the same match the apply makes. `keep` counts folders
+   *  (not the shoot count above); `retire_on_of` = retired ones bound to an OF list (unlinked, never deleted on OF). */
+  changes: PlanChanges;
+  /** Duplicate copies left out: each Duplicates set is planned as its kept item only. */
+  dupes_collapsed: number[];
   summary: {
     folders: number;
     scripts: number;
@@ -344,6 +361,7 @@ export interface AiFolderPlan {
     solo_cuts: number;
     unique_media: number;
     memberships: number;
+    dupes_collapsed: number;
   };
   /** Only computed when `solo` was asked for. `is_solo` refuses to call an item
    *  solo without the evidence (`people_count` / `partner_visible`, both V2
@@ -670,6 +688,8 @@ export interface MirrorItemsOpts {
   internalFolderId?: number | null;
   /** OF/Fansly folder id — FanId, since Fansly albums are snowflakes >2^53. */
   ofFolderId?: FanId | null;
+  /** The grid's picked tag chips (AND). */
+  tags?: readonly string[];
   enabled?: boolean;
 }
 
@@ -690,11 +710,11 @@ export function mirrorItemsKey(accountId: string | null) {
 export function mirrorItemsQuery(opts: Omit<MirrorItemsOpts, "enabled">) {
   const {
     accountId, type = "all", query = "", sort = "newest",
-    internalFolderId = null, ofFolderId = null,
+    internalFolderId = null, ofFolderId = null, tags = NO_TAGS,
   } = opts;
   const q = query.trim();
   return infiniteQueryOptions({
-    queryKey: [...mirrorItemsKey(accountId), type, sort, q, internalFolderId, ofFolderId],
+    queryKey: [...mirrorItemsKey(accountId), type, sort, q, internalFolderId, ofFolderId, tags.join("\n")],
     initialPageParam: 0,
     getNextPageParam: (last: MirrorResp, all: MirrorResp[]) => (last.hasMore ? all.length * PAGE : undefined),
     queryFn: async ({ pageParam }) => {
@@ -707,10 +727,60 @@ export function mirrorItemsQuery(opts: Omit<MirrorItemsOpts, "enabled">) {
       if (q) p.set("query", q);
       if (internalFolderId != null) p.set("internal_folder_id", String(internalFolderId));
       if (ofFolderId != null) p.set("of_folder_id", String(ofFolderId));
+      for (const t of tags) p.append("tags", t);
       return relay.get<MirrorResp>(`/admin/vault-ai/items?${p.toString()}`);
     },
     staleTime: 30_000,
   });
+}
+
+const NO_TAGS: readonly string[] = [];
+
+// ── Tag chips ─────────────────────────────────────────────────────
+
+export interface TagFacets {
+  /** The busiest tags over the grid's view (type, search, folder, picked chips), each with its item count. */
+  tags: { tag: string; count: number }[];
+  /** Items matching the whole view: what "Save as folder" would hold. */
+  total: number;
+  selected: string[];
+}
+
+/** GET /admin/vault-ai/tag-facets for the grid's view. Under `mirrorItemsKey`, so every grid invalidation
+ *  (an edit, a describe sweep, a refresh) refreshes the chips too. */
+export function useTagFacets(opts: {
+  accountId: string | null; type: string; query: string; ofFolderId: FanId | null; tags: readonly string[];
+  enabled: boolean;
+}) {
+  const { accountId, type, ofFolderId, tags, enabled } = opts;
+  const q = opts.query.trim();
+  return useQuery({
+    queryKey: [...mirrorItemsKey(accountId), "tag-facets", type, q, ofFolderId, tags.join("\n")],
+    queryFn: () => {
+      const p = new URLSearchParams({ account_id: accountId!, type });
+      if (q) p.set("query", q);
+      if (ofFolderId != null) p.set("of_folder_id", String(ofFolderId));
+      for (const t of tags) p.append("tags", t);
+      return relay.get<TagFacets>(`/admin/vault-ai/tag-facets?${p.toString()}`);
+    },
+    enabled: enabled && !!accountId,
+    staleTime: 30_000,
+    // A chip tap keeps the old row on screen while the new counts load (no flash of an empty row).
+    placeholderData: (prev) => prev,
+  });
+}
+
+export interface TagFolderResult {
+  folder_id: number;
+  name: string;
+  tags: string[];
+  items: number;
+}
+
+/** "Save as folder": an internal folder (created_by operator) holding what the chips' view shows, resolved by
+ *  the relay from the same filters. Body from `tagFolderForm.buildPayload`. */
+export async function saveTagFolder(body: TagFolderPayload) {
+  return relay.post<TagFolderResult>(`/admin/vault-ai/folders/from-tags`, body, { accountId: body.account_id });
 }
 
 /** Paginated read of the LOCAL mirror. Same surface as useVaultMedia so the

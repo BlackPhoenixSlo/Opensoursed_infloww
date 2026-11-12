@@ -87,18 +87,20 @@ class Http:
                                    limits=httpx.Limits(max_connections=limits, max_keepalive_connections=limits,
                                                        keepalive_expiry=KEEPALIVE_EXPIRY_S))
 
-    async def request(self, method: str, path: str, **kw) -> httpx.Response:
+    async def request(self, method: str, path: str, *, route: str | None = None,
+                      expect: tuple[int, ...] = (), **kw) -> httpx.Response:
+        route = self.prefix + (route or label(method, path))
         t0 = time.perf_counter()
         try:
             r = await self.c.request(method, path, **kw)
         except httpx.HTTPError as e:
-            self.rec.add(self.prefix + label(method, path), 599, (time.perf_counter() - t0) * 1000)
+            self.rec.add(route, 599, (time.perf_counter() - t0) * 1000)
             self.rec.errors.append(f"{method} {path}: {type(e).__name__} {e} "
                                    f"(cause {e.__cause__ or e.__context__!r}; stage {self.rec.stage})")
             raise
-        self.rec.add(self.prefix + label(method, path), r.status_code, (time.perf_counter() - t0) * 1000)
+        self.rec.add(route, r.status_code, (time.perf_counter() - t0) * 1000)
         self.rec.urls.add((f"{r.request.url.host}:{r.request.url.port}", r.request.url.path))
-        if r.status_code >= 400 and len(self.rec.errors) < 50:
+        if r.status_code >= 400 and r.status_code not in expect and len(self.rec.errors) < 50:
             self.rec.errors.append(f"{self.prefix}{method} {path} -> {r.status_code} {r.text[:200]}")
         return r
 

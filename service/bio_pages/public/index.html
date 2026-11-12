@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linkme Clone</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-lock" viewBox="0 0 448 512"><path d="M80 192V144C80 64.47 144.5 0 224 0C303.5 0 368 64.47 368 144V192H384C419.3 192 448 220.7 448 256V448C448 483.3 419.3 512 384 512H64C28.65 512 0 483.3 0 448V256C0 220.7 28.65 192 64 192H80zM144 192H304V144C304 99.82 268.2 64 224 64C179.8 64 144 99.82 144 144V192z"/></symbol></svg>
+    <template id="small-lock"><svg class="icon icon-lock lock-icon-small" viewBox="0 0 448 512" aria-hidden="true"><use href="#i-lock"/></svg></template>
+    <div class="container">
+        <!-- Profile Header -->
+        <header class="profile-header">
+            <div class="avatar-container">
+                <img src="" alt="" id="avatar" class="avatar">
+            </div>
+            <div class="profile-info">
+                <h1 id="displayName">Loading...</h1>
+                <img src="/images/verified.svg" alt="Verified"
+                    class="verified-badge" id="verifiedBadge" style="display: none;">
+            </div>
+            <p id="bio" class="bio"></p>
+        </header>
+
+        <!-- Links Container -->
+        <main class="links-container" id="linksContainer">
+            <!-- Links will be injected here by JS -->
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Powered by <a href="landing.html">ofl.ink</a></p>
+        </footer>
+    </div>
+
+    <!-- Mature Content Overlay (Hidden by default) -->
+    <div id="overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <div class="lock-icon">
+                <svg class="icon icon-lock" viewBox="0 0 448 512" aria-hidden="true"><use href="#i-lock"/></svg>
+            </div>
+            <h2>Mature Content Disclaimer</h2>
+            <p>This link may contain graphic or adult content.</p>
+            <a id="continueBtn" class="continue-btn" role="button">Continue (18+)</a>
+            <button id="closeOverlayBtn" class="close-btn" aria-label="Close"><svg class="icon icon-xmark" viewBox="0 0 320 512" aria-hidden="true"><path d="M310.6 361.4c12.5 12.5 12.5 32.75 0 45.25C304.4 412.9 296.2 416 288 416s-16.38-3.125-22.62-9.375L160 301.3L54.63 406.6C48.38 412.9 40.19 416 32 416S15.63 412.9 9.375 406.6c-12.5-12.5-12.5-32.75 0-45.25l105.4-105.4L9.375 150.6c-12.5-12.5-12.5-32.75 0-45.25s32.75-12.5 45.25 0L160 210.8l105.4-105.4c12.5-12.5 32.75-12.5 45.25 0s12.5 32.75 0 45.25l-105.4 105.4L310.6 361.4z"/></svg></button>
+        </div>
+    </div>
+    <!-- Escape Overlay (Hidden by default): the avatar blurred behind a card with the ··· menu steps -->
+    <div id="igOverlay" class="overlay hidden">
+        <!-- Inline SVG so the cue to the ··· menu always renders, with no webfont to wait on -->
+        <svg class="ig-arrow" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7" />
+        </svg>
+        <!-- The card is an anchor. script.js gives it an href (Instagram's own open-in-browser link to the escape
+             target) only in iOS 17+ Instagram with the kill switch on; anywhere else it has none and a tap does nothing.
+             This card does not navigate on load: only a tap on this anchor leaves, and Cancel on Instagram's prompt keeps the page. -->
+        <a id="igCard" class="ig-card">
+            <h2>Open in your browser</h2>
+            <p>To continue, open this page in your browser</p>
+            <ol class="ig-steps">
+                <li><span class="ig-step-n">1</span><span>Tap the <strong>&middot;&middot;&middot;</strong> in the <strong>top right</strong></span></li>
+                <li><span class="ig-step-n">2</span><span>Select <strong>Open in Browser</strong></span></li>
+            </ol>
+        </a>
+    </div>
+
+    <script src="/script.js"></script>
+</body>
+
+</html>

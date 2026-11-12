@@ -1,7 +1,7 @@
 """service/client_addr.py — the browser's own address behind the proxies in front of the relay.
 
-Used by the sign-in throttle (login_throttle) and the tracking-link click rows
-(tracking_links_api). Two env vars, both read at import:
+Used by bio pages, the sign-in throttle (login_throttle) and the tracking-link click rows
+(tracking_links_api, its country via `edge`). Two env vars, both read at import:
 
 TRUSTED_PROXIES  the peers whose X-Forwarded-For is believed: IPs or CIDRs,
                  comma-separated, replacing the default (loopback + the private
@@ -37,9 +37,15 @@ import logging
 import os
 
 from fastapi import Request
+import re
 
 Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 Addr = ipaddress.IPv4Address | ipaddress.IPv6Address
+_COUNTRY = re.compile(r"[A-Z]{2}")
+
+
+def valid_country(c: str | None) -> bool:
+    return bool(c and _COUNTRY.fullmatch(c))
 
 _LOOPBACK = "127.0.0.0/8,::1/128"
 _DEFAULT_TRUSTED = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
@@ -110,28 +116,40 @@ def _is_trusted_proxy(peer: str) -> bool:
     return _in(_ip(peer), TRUSTED_PROXIES)
 
 
-def client_address(request: Request) -> Addr | str:
-    """The client's address: the socket peer, or the LAST X-Forwarded-For entry
-    when the peer is in TRUSTED_PROXIES and the entry parses; then, when that
-    address is in EDGE_PROXIES, the CDN's `CF-Connecting-IP` if it parses. A
-    peer that is no address at all (a test client) comes back as its string.
+def edge(request: Request) -> tuple[Addr | str, str]:
+    """The client's address and CDN country: socket peer, or the LAST
+    X-Forwarded-For entry when the peer is in TRUSTED_PROXIES and the entry
+    parses; then CF-Connecting-IP and CF-IPCountry only when that hop is in
+    EDGE_PROXIES. A non-IP peer (a test client) comes back as its string.
 
-    The relay is reached through a proxy: the Next app (its rewrites, on the
-    compose network) and, where the compose labels route relay paths
-    straight to it, Traefik. Next adds the browser's socket address only when
-    the header is absent and never appends, and its rewrite passes the header
-    on unchanged. Traefik (its untrusted clients' forwarded headers are
-    dropped) sets the header to the client's address, and the cloudflared
-    tunnel appends it after whatever the client sent. Either way the last entry
-    is the one our proxy wrote. A peer outside TRUSTED_PROXIES (a public
-    address reaching the relay directly) has its header ignored and is the
-    client itself (warned once per peer).
+    The relay is reached through Next (its rewrites) or Traefik. Next adds the
+    browser's socket address only when the header is absent and never appends;
+    its rewrite passes the header unchanged. Traefik drops untrusted forwarded
+    headers and sets it to the client's address. A cloudflared tunnel appends
+    it after whatever the client sent. The last entry is the proxy's entry.
+    A peer outside TRUSTED_PROXIES has its header ignored (warned once).
 
-    The remaining gap: the default trusts every private address, so any other
-    container on a docker network the relay shares can still spoof the header.
-    Setting TRUSTED_PROXIES to the proxies' own addresses closes it.
+    The default trusts every private address, so another container on a shared
+    docker network can spoof the header. Set TRUSTED_PROXIES to the proxies'
+    own addresses to close that gap.
     """
     peer = request.client.host if request.client else "unknown"
+    hop = _proxied_hop(request, peer)
+    country = "XX"
+    if _in(hop, EDGE_PROXIES):
+        c = request.headers.get("cf-ipcountry", "").strip().upper()
+        if valid_country(c):
+            country = c
+        hop = _ip(request.headers.get("cf-connecting-ip", "").strip()) or hop
+    return (hop if hop is not None else peer), country
+
+
+def client_address(request: Request) -> Addr | str:
+    return edge(request)[0]
+
+
+def _proxied_hop(request: Request, peer: str) -> Addr | None:
+    """The address our proxies saw: the peer, or the last X-Forwarded-For entry when the peer is trusted."""
     hop = _ip(peer)
     last = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
     if last:
@@ -141,6 +159,4 @@ def client_address(request: Request) -> Addr | str:
                 log.warning("X-Forwarded-For from %s ignored: not in TRUSTED_PROXIES", peer)
         else:
             hop = _ip(last) or hop
-    if _in(hop, EDGE_PROXIES):
-        hop = _ip(request.headers.get("cf-connecting-ip", "").strip()) or hop
-    return hop if hop is not None else peer
+    return hop

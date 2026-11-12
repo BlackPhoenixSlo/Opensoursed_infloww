@@ -62,7 +62,6 @@ import {
   ShieldCheck,
   User,
   Users,
-  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -339,7 +338,6 @@ export const SETTINGS_TABS: NavLink[] = [
   { label: "Security (organization)", href: "/settings/security-org", icon: ShieldCheck, chatterHidden: true },
   { label: "Security (personal)", href: "/settings/security-personal", icon: RectangleEllipsis },
   { label: "Billing", href: "/settings/billing", icon: Database },
-  { label: "Your Balance", href: "/settings/balance", icon: Wallet },
   { label: "Role Settings", href: "/settings/roles", icon: Users, chatterHidden: true },
   { label: "Sales Settings", href: "/settings/sales", icon: ChartColumn, chatterHidden: true },
   { label: "Time tracking", href: "/settings/time-tracking", icon: AlarmClockCheck, chatterHidden: true },

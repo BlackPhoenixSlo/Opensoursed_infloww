@@ -15,7 +15,7 @@ import {
 import { MediaStrip } from "@/components/settings/TemplateDraftEditor";
 import { OfRichText } from "@/components/chat/OfRichText";
 import { useOutsideClose } from "@/components/ui/Menu";
-import { EmptyState } from "@/components/ui/infloww";
+import { EmptyState, IfNativeSelect } from "@/components/ui/infloww";
 import type { SeqSort, SeqSortBy } from "@/components/growth/scriptsPageState";
 import { useRenderCap } from "@/hooks/useRenderCap";
 import { fmtPrice } from "@/lib/format";
@@ -58,7 +58,8 @@ function onMenuKey(e: ReactKeyboardEvent<HTMLElement>, close: () => void) {
 }
 
 /** The More menu (#12 to #17). Add sequence and Import open submenus in the bundle; they are shown open, as labelled
- *  groups. */
+ *  groups. The trigger is a labelled "+ Add" button (the bundle's bare accent plus read as nothing); its accessible
+ *  name stays "More", which tests and slop address. */
 export function MoreMenu({
   onAddScript, onAddSequence, onAddTag, onImportExcel, onImportCreators,
 }: {
@@ -110,9 +111,10 @@ export function MoreMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="w-6 h-6 grid place-items-center rounded-full bg-accent text-white hover:opacity-90"
+        className="h-8 px-3 inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-accent text-sm text-white hover:bg-accent-hover"
       >
         <Plus size={16} strokeWidth={2.5} aria-hidden />
+        Add
       </button>
       {open && (
         <div role="menu" aria-label="More" className={cn(MENU_PANEL, "right-0 w-52")}>
@@ -131,8 +133,12 @@ export function MoreMenu({
 /** A sidebar row's Share / Rename / Delete menu (#58). Share copies this entry's scripts to other Creators
  *  (or all of them) — the header Share's per-row twin. */
 function RowMenu({
-  label, onShare, onRename, onDelete,
-}: { label: string; onShare: () => void; onRename: () => void; onDelete: () => void }) {
+  label, onShare, onRename, onDelete, name = `${label} menu`,
+}: {
+  label: string; onShare: () => void; onRename: () => void; onDelete: () => void;
+  /** The trigger's and menu's accessible name (the phone bar's twin is "<entry> actions"). */
+  name?: string;
+}) {
   const { open, setOpen, ref } = useOutsideClose();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = () => {
@@ -146,7 +152,7 @@ function RowMenu({
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`${label} menu`}
+        aria-label={name}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
@@ -155,7 +161,7 @@ function RowMenu({
         <MoreHorizontal size={16} aria-hidden />
       </button>
       {open && (
-        <div role="menu" aria-label={`${label} menu`} className={cn(MENU_PANEL, "right-0 w-32")}>
+        <div role="menu" aria-label={name} className={cn(MENU_PANEL, "right-0 w-32")}>
           <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
             onClick={() => { close(); onShare(); }}>
             Share
@@ -186,7 +192,8 @@ const SEQ_SORTS: Array<[SeqSortBy, string]> = [["custom", "Custom"], ["recent", 
 
 /** The Tag and Sequence sidebar (#53 to #58): 248px, a search, then one row per entry with its script count. The
  *  Sequence sidebar sorts (Custom / Recent / Name; the one on again flips its order). Rows render in steps of 200
- *  (`useRenderCap`), always through the selected one. */
+ *  (`useRenderCap`), always through the selected one. Below md the search and rows give way to one select (each
+ *  entry with its count) and the selected entry's menu, so the scripts show on the first screen. */
 export function Sidebar({
   kind, items, selected, onSelect, onShare, onRename, onDelete, sort, onSort,
 }: {
@@ -209,21 +216,41 @@ export function Sidebar({
   );
   const { cap, hasMore, more, sentinel } = useRenderCap(shown.length, `${kind}|${needle}`);
   const upTo = Math.max(cap, shown.findIndex((i) => i.id === selected) + 1);
+  const picked = items.find((i) => i.id === selected);
+  const noun = kind === "tag" ? "tag" : "sequence";
   return (
     <aside
       aria-label={kind === "tag" ? "Tags" : "Sequences"}
-      className="w-full md:w-[248px] shrink-0 px-4 py-2 border-b md:border-b-0 md:border-r border-border"
+      className="w-full md:w-[248px] shrink-0 px-3 md:px-4 py-2 border-b md:border-b-0 md:border-r border-border"
     >
+      {/* Phone: the whole list as one select, then the picked entry's Share / Rename / Delete. */}
+      <div className="md:hidden mb-2 flex items-center gap-2">
+        <IfNativeSelect
+          aria-label={`Pick ${noun}`}
+          value={selected ?? ""}
+          onChange={(e) => onSelect(e.target.value)}
+          className="flex-1 min-w-0 text-base"
+        >
+          {selected == null && <option value="" disabled>{kind === "tag" ? "Pick a tag" : "Pick a sequence"}</option>}
+          {items.map((i) => (
+            <option key={i.id} value={i.id}>{i.name} · {i.count}</option>
+          ))}
+        </IfNativeSelect>
+        {picked && !picked.fixed && (
+          <RowMenu label={picked.name} name={`${picked.name} actions`} onShare={() => onShare(picked)}
+            onRename={() => onRename(picked)} onDelete={() => onDelete(picked)} />
+        )}
+      </div>
       <input
         type="search"
         aria-label={`Search ${kind === "tag" ? "tags" : "sequences"}`}
         placeholder="Search"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        className="w-full mb-2 rounded-md border border-border bg-transparent px-2 py-1 text-sm"
+        className="hidden md:block w-full mb-2 rounded-md border border-border bg-transparent px-2 py-1 text-sm"
       />
       {sort && (
-        <div role="group" aria-label="Sort sequences" className="mb-2 flex items-center gap-1 text-xs">
+        <div role="group" aria-label="Sort sequences" className="mb-0 md:mb-2 flex items-center gap-1 text-xs">
           {SEQ_SORTS.map(([by, label]) => (
             <button
               key={by}
@@ -243,8 +270,8 @@ export function Sidebar({
           ))}
         </div>
       )}
-      {shown.length === 0 && <EmptyState size="sm" text="No data" />}
-      <ul className="space-y-0.5 max-h-60 md:max-h-[calc(100dvh-14rem)] overflow-y-auto">
+      {shown.length === 0 && <div className="hidden md:block"><EmptyState size="sm" text="No data" /></div>}
+      <ul className="hidden md:block space-y-0.5 md:max-h-[calc(100dvh-14rem)] overflow-y-auto">
         {shown.slice(0, upTo).map((i) => (
           <li key={i.id}>
             <div
@@ -322,17 +349,19 @@ export function SequenceEmpty({ onCreate }: { onCreate: () => void }) {
 
 /** The tags and sequences column (#41): three chips, then a "+N" count; a chip opens its tag or sequence. */
 function ScriptChips({
-  r, onOpen,
+  r, onOpen, hideEmpty = false,
 }: {
   r: SavedReply;
   onOpen: (kind: "tag" | "sequence", name: string) => void;
+  /** Nothing, not a dash, when there is no chip (a sequence card's header line). */
+  hideEmpty?: boolean;
 }) {
   const chips: Array<{ kind: "tag" | "sequence"; name: string }> = [
     ...(r.tags ?? []).map((name) => ({ kind: "tag" as const, name })),
     ...(r.script_id ? [{ kind: "sequence" as const, name: r.script_id }] : []),
   ];
   const [all, setAll] = useState(false);
-  if (chips.length === 0) return <span className="text-fg-dim">—</span>;
+  if (chips.length === 0) return hideEmpty ? null : <span className="text-fg-dim">—</span>;
   const shown = all ? chips : chips.slice(0, 3);
   return (
     <div className="flex flex-wrap gap-1">
@@ -365,8 +394,9 @@ function ScriptChips({
   );
 }
 
-/** One script (#38 to #49): checkbox, name (or the step in a sequence), tags, then text, media, price, stats and
- *  notes, then the actions. Phone-wide the cells wrap under the name. */
+/** One script (#38 to #49): checkbox, name with its tag and sequence chips under it (or the step in a sequence, the
+ *  name and chips then heading the text), then text, media, price, stats and notes, then the actions. The text takes
+ *  every pixel the fixed cells leave. Phone-wide the cells wrap under the name. */
 export function ScriptRow({
   r, stepLabel, last, accountId, expanded, checked, onCheck, onEdit, onShare, onDelete, removeLabel, onOpenChip, busy,
 }: {
@@ -417,7 +447,8 @@ export function ScriptRow({
         onChange={(e) => onCheck(e.target.checked)}
         className="mt-3 shrink-0 accent-accent"
       />
-      {/* #38, #40: a 118px name cell (72px holding the step in a sequence), 8px 16px padding, at most three lines. */}
+      {/* #38, #40: a 180px name cell (72px holding the step in a sequence), 8px 16px padding, at most three lines,
+          its chips (#41) under it rather than in a column of their own, so the text gets that width. */}
       {inSequence ? (
         <div className="relative self-stretch w-[72px] shrink-0 flex justify-center py-1">
           <span
@@ -431,14 +462,20 @@ export function ScriptRow({
           )}
         </div>
       ) : (
-        <div className="shrink-0 w-[118px] px-4 py-2 text-sm font-medium break-words line-clamp-3">{r.title}</div>
+        <div className="shrink-0 w-[180px] px-4 py-2 space-y-1.5">
+          <div className="text-sm font-medium break-words line-clamp-3">{r.title}</div>
+          <div aria-label="Tags" className="text-sm">
+            <ScriptChips r={r} onOpen={onOpenChip} />
+          </div>
+        </div>
       )}
-      {/* #41: the tags and sequences column. */}
-      <div aria-label="Tags" className="w-[172px] shrink-0 px-4 py-2 text-sm">
-        <ScriptChips r={r} onOpen={onOpenChip} />
-      </div>
       <div className="flex-1 min-w-[200px] py-2">
-        {inSequence && r.title && <div className="text-sm font-medium mb-0.5">{r.title}</div>}
+        {inSequence && (
+          <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+            {r.title && <div className="text-sm font-medium">{r.title}</div>}
+            <div aria-label="Tags" className="text-sm"><ScriptChips r={r} onOpen={onOpenChip} hideEmpty /></div>
+          </div>
+        )}
         {/* #42: two lines, then the row's arrow or the Expand scripts switch lifts the clamp. */}
         <div ref={textRef} className="flex items-start gap-2">
           <OfRichText as="p" raw={r.text} className={cn("flex-1 text-sm whitespace-pre-wrap break-words", !open && "line-clamp-2")} />

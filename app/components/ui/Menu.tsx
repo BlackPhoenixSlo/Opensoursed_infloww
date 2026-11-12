@@ -43,13 +43,16 @@ export function useOutsideClose<T extends HTMLElement = HTMLDivElement>() {
  *  the Organization Chart's ⋮ (`ariaLabel` names a trigger whose `label` is only a glyph). Closes on an outside
  *  click, on picking an item, and when the trigger turns off. It pops from the trigger's corner and fades out on
  *  a copy that takes no click (`useExitGhost`). */
-export function Menu({ label, ariaLabel, items, disabled = false, link = false }: {
+export function Menu({ label, ariaLabel, items, disabled = false, link = false, align }: {
   /** Text, or an icon (the Vault rail's 20px row menu) with `ariaLabel` naming it. */
   label: ReactNode;
   ariaLabel?: string;
   items: MenuItem[];
   disabled?: boolean;
   link?: boolean;
+  /** Which trigger edge the popover lines up with; default right for `link`, left otherwise (Auto Funnel's phone
+   *  row ⋯ sits at the row's right edge). */
+  align?: "left" | "right";
 }) {
   const { open, setOpen, ref } = useOutsideClose();
   if (open && disabled) setOpen(false);
@@ -72,7 +75,8 @@ export function Menu({ label, ariaLabel, items, disabled = false, link = false }
         </Button>
       )}
       {open && (
-        <div ref={panelRef} role="menu" className={cn(MENU_PANEL, link ? "right-0 w-32 origin-top-right" : "left-0 w-40 origin-top-left")}>
+        <div ref={panelRef} role="menu" className={cn(MENU_PANEL, link ? "w-32" : "w-40",
+          (align ?? (link ? "right" : "left")) === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left")}>
           {items.map((item) => (
             <button
               key={item.label}

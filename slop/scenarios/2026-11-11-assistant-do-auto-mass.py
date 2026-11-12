@@ -27,6 +27,24 @@ Checks:
   no_5xx                 no 5xx to the drafts or in either browser session
 Side effects: rules.json (rows + POST bodies), drafts.json.
 
+EDIT (spec D11, owner 2026-11-12: bulk edits of existing Auto mass rules). Seeded by SQL before the browser: an
+Auto mass (unsend after 8h) on Creator 1 (ON) and Creator 2 (OFF), and one on a Creator of a second Agency
+(registered through POST /auth/register, its account rows by SQL), ON, unsend 8h. After the create passes (so C's
+new rules, unsend 1h, join the plan), the owner's desktop browser: help bot -> Do it for me -> EDIT_PHRASE (the
+owner's words) -> the edit plan card (`edit-plan`) -> Do it -> the per-rule results (`edit-results`). --no-ui: the
+same draft + POST /admin/assistant/edit/apply through the API.
+  edit_plan_card_shown        the card says "Unsend after → never", ≥2 models, has Do it; the other Agency's rule
+                              is in no draft
+  edit_unsend_off_all_models  every Auto mass rule on the owner's Creators has no unsend left (SQL) and every
+                              apply result is ok
+  edit_enabled_unchanged      each owner rule's is_enabled as before the edit (the ON one stays ON); the apply sent
+                              only the unsend change
+  edit_other_account_untouched the other Agency's rule byte-identical (steps, trigger, is_enabled), never in an
+                              apply body
+Side effects: edit.json (before/after rows, drafts, apply bodies + answers).
+FAULT `assistant-edit-skips-second-account` (`--break --fault=assistant-edit-skips-second-account`, relay side:
+apply_one answers ok and changes nothing on any rule outside the focused Creator): edit_unsend_off_all_models alone.
+
 FAULT `assistant-do-skips-disabled` (client: drops BOTH OFF layers -- ReadyMadeRuleEditor's forced-OFF guard in the
 agent save and doFlows.ts' "Leaving it OFF" step patch, since either alone keeps the rule OFF and would mask the
 other; the blank editor's enabled default stands): rule_saved_disabled alone. Each rewrite must match, else INFRA. No
@@ -45,7 +63,9 @@ Outputs: video/do-mode-demo.webm, do-mode-demo.mp4 (ffmpeg H.264, trimmed to the
 Bypasses (declared): OnlyFans is lib/of_wire.py; the browser's /api/of/v2/lists and /api/of/v2/vault/lists go
 through to the relay and on to it, every other /api/of/ read stays held (actors/ui). DeepSeek is the fake above
 (the intent is canned; the folder, lists, name and unsend hours are the product's own resolution). Not a volume
-path: one owner, one sentence, proven on the real page.
+path: one owner, one sentence, proven on the real page. EDIT: the "no opt-in" leg is not driven (an owner session
+always passes the Auto Mass opt-in gate); the account the plan must not reach is another Agency's (the session's
+clamp), and service/tests/test_assistant_draft.py covers a refused account with a patched opt_in_refusal.
 """
 from __future__ import annotations
 
@@ -65,8 +85,8 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from slop.actors import ui
-from slop.lib.assistant_do_relay import CAPTIONS, PHRASE, PROMPTS, RULE_NAME, request_of
-from slop.seed import assistant_do_vault, of_sessions
+from slop.lib.assistant_do_relay import CAPTIONS, EDIT_PHRASE, PHRASE, PROMPTS, RULE_NAME, request_of
+from slop.seed import agency, assistant_do_vault, creators as creator_seed, of_sessions, ts
 
 PROFILE = "agency_inbox"
 UI = True
@@ -91,6 +111,11 @@ C_PLAN, C_FOLDER, C_DISABLED, C_PAYLOAD, C_NOSEND, C_5XX = (
     "plan_card_shown", "folder_is_sfw_teasers", "rule_saved_disabled", "rule_payload_matches", "no_send_happened",
     "no_5xx")
 C_VIDEO = "video_recorded"
+C_EPLAN, C_EOFF, C_EENABLED, C_EOTHER = (
+    "edit_plan_card_shown", "edit_unsend_off_all_models", "edit_enabled_unchanged", "edit_other_account_untouched")
+EDIT_APPLY = "/admin/assistant/edit/apply"
+EDIT_UNSEND_H = 8
+EDIT_CHANGE_LINE = "Unsend after → never"
 # video=1 (module docstring): pacing, outputs, the model priced.
 TYPE_MS, INTRO_S, PLAN_HOLD_S, DONE_HOLD_S, COST_HOLD_S = 35, 2.5, 1.5, 3.0, 6.0
 VIDEO_DIR, WEBM, MP4, MP4_MIN_BYTES = "video", "do-mode-demo.webm", "do-mode-demo.mp4", 100_000
@@ -498,6 +523,171 @@ async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video
     return res
 
 
+def _edit_rule(con, aid: str, name: str, enabled: bool, now) -> int:
+    payload = {"messages": [{"texts": ["hey you 😘", "miss me?"], "user_lists": ["fans", "following"],
+                             "excluded_user_lists": [], "unsend_after_hours": EDIT_UNSEND_H}]}
+    return con.execute("INSERT INTO automation_rules (account_id, name, kind, trigger_json, steps_json, is_enabled, "
+                       "created_at) VALUES (?,?,?,?,?,?,?)",
+                       (aid, name, "mass_premade", json.dumps({"every_seconds": 3600}), json.dumps(payload),
+                        1 if enabled else 0, ts(now))).lastrowid
+
+
+async def _seed_edit(w, creators: list[dict]) -> dict:
+    """EDIT's world (module docstring): two owner rules (ON / OFF) and another Agency's ON rule, all unsend 8h."""
+    from slop.lib.client import Http   # as seed/agency.py: a second signed-in session
+    other_uid = await agency._register(Http(str(w.owner.c.base_url), w.owner.rec), f"{w.user_prefix}{w.seed}edit")
+    c1, c2 = creators[1], creators[2] if len(creators) > 2 else creators[1]
+    con = w.sql()
+    with con:
+        other = creator_seed._add(w, con, 900, 499_000_001, other_uid)
+        ids = {"on": _edit_rule(con, c1["id"], "Edit me ON", True, w.now),
+               "off": _edit_rule(con, c2["id"], "Edit me OFF", False, w.now),
+               "other": _edit_rule(con, other["id"], "Other agency mass", True, w.now)}
+    con.close()
+    return {"ids": ids, "owner_accounts": [c["id"] for c in creators], "other_account": other["id"],
+            "other_user": other_uid}
+
+
+def _rules_raw(w, account_ids: list[str]) -> dict[int, dict]:
+    con = w.sql()
+    try:
+        q = ("SELECT id, account_id, name, kind, is_enabled, trigger_json, steps_json FROM automation_rules "
+             f"WHERE account_id IN ({','.join('?' * len(account_ids))}) ORDER BY id")
+        rows = con.execute(q, account_ids).fetchall()
+    finally:
+        con.close()
+    return {r[0]: {"id": r[0], "account_id": r[1], "name": r[2], "kind": r[3], "is_enabled": r[4],
+                   "trigger_json": r[5], "steps_json": r[6]} for r in rows}
+
+
+def _unsend_left(row: dict) -> list:
+    msgs = (json.loads(row["steps_json"] or "{}") or {}).get("messages") or []
+    return [m.get("unsend_after_hours") for m in msgs if isinstance(m, dict) and m.get("unsend_after_hours")]
+
+
+async def _edit_pass(ctx, aid: str, nick: str) -> dict:
+    """EDIT in the owner's desktop browser (module docstring): plan card, Do it, the per-rule results."""
+    res: dict = {"drafts": [], "applies": [], "shots": {}, "errors": []}
+    async with ui.owner_browser(ctx, viewport=DESKTOP, through=THROUGH) as page:
+        drafts, applies = [], []
+
+        def on_resp(r) -> None:
+            path = urlsplit(r.url).path
+            if r.request.method == "POST" and path.endswith(DRAFT):
+                drafts.append(r)
+            elif r.request.method == "POST" and path.endswith(EDIT_APPLY):
+                applies.append(r)
+
+        page.on("response", on_resp)
+        page.context.set_default_navigation_timeout(WAIT_MS)
+        try:
+            await page.goto(f"{ctx.app}/growth/auto-mass?creator={aid}", wait_until="domcontentloaded")
+            launcher = page.locator('button[aria-label="Help assistant"], button[aria-label="Show help assistant"]')
+            await launcher.first.wait_for(timeout=WAIT_MS)
+            tucked = page.get_by_role("button", name="Show help assistant", exact=True)
+            if await tucked.count():
+                await tucked.click()
+            await page.get_by_role("button", name="Help assistant", exact=True).first.click(timeout=30_000)
+            res["focus"] = await _focus(page, nick)
+            await page.get_by_role("button").filter(has_text="Opens the page and fills it in").first.click(timeout=30_000)
+            box = page.get_by_placeholder("What should I set up?")
+            await box.fill(EDIT_PHRASE)
+            await box.press("Enter")
+            plan = page.locator('[data-testid="do-edit-plan"]')
+            await plan.wait_for(timeout=60_000)
+            res["plan_text"] = await plan.inner_text()
+            do_it = plan.get_by_role("button", name="Do it", exact=True)
+            res["do_it"] = await do_it.count()
+            res["shots"]["plan"] = await _shot(ctx, page, "edit-plan")
+            await do_it.click(timeout=10_000)
+            out = page.locator('[data-testid="do-edit-results"]')
+            await out.wait_for(timeout=60_000)
+            res["results_text"] = await out.inner_text()
+            res["shots"]["results"] = await _shot(ctx, page, "edit-results")
+        except Exception as e:  # noqa: BLE001 — the checks below say what was missing
+            res["errors"].append(f"{type(e).__name__}: {str(e)[:300]}")
+            res["shots"]["error"] = await ui.shot(ctx, page, "error-edit")
+        for r in drafts:
+            try:
+                res["drafts"].append({"status": r.status, "body": await r.json()})
+            except Exception:  # noqa: BLE001
+                res["drafts"].append({"status": r.status, "body": None})
+        for r in applies:
+            try:
+                res["applies"].append({"status": r.status, "body": r.request.post_data_json, "answer": await r.json()})
+            except Exception:  # noqa: BLE001
+                res["applies"].append({"status": r.status, "body": r.request.post_data_json, "answer": None})
+        res["statuses"] = list(page.slop["statuses"])
+    return res
+
+
+async def _edit_api(ctx, aid: str) -> dict:
+    """EDIT under --no-ui: the same draft, then the apply its plan card would send."""
+    res: dict = {"drafts": [], "applies": [], "shots": {}, "errors": [], "statuses": []}
+    r = await ctx.owner.post(DRAFT, json={"request": EDIT_PHRASE, "account_id": aid})
+    body = r.json() if r.status_code == 200 else None
+    res["drafts"].append({"status": r.status_code, "body": body})
+    slots = (body or {}).get("slots") or {}
+    if (body or {}).get("flow") == "mass_edit" and slots.get("rules"):
+        req = {"account_id": aid, "rules": [{"id": x["id"], "version": x["version"]} for x in slots["rules"]],
+               "changes": slots.get("changes") or {}}
+        a = await ctx.owner.post(EDIT_APPLY, json=req)
+        res["applies"].append({"status": a.status_code, "body": req,
+                               "answer": a.json() if a.status_code == 200 else None})
+    else:
+        res["errors"].append(f"no mass_edit plan: {str(body)[:300]}")
+    return res
+
+
+async def _edit_checks(ctx, w, aid: str, nick: str, seeded: dict, before: dict[int, dict]) -> list[tuple[int, str]]:
+    """EDIT's flow + its four checks (module docstring); the 5xx it saw."""
+    ep = await _edit_pass(ctx, aid, nick) if ctx.app else await _edit_api(ctx, aid)
+    owners, other = seeded["owner_accounts"], seeded["other_account"]
+    after = _rules_raw(w, owners + [other])
+    mine_before = {i: r for i, r in before.items() if r["account_id"] in owners and r["kind"] == "mass_premade"}
+    mine_after = {i: r for i, r in after.items() if r["account_id"] in owners and r["kind"] == "mass_premade"}
+    other_id = seeded["ids"]["other"]
+    draft_rule_ids = [x.get("id") for d in ep["drafts"] for x in ((d["body"] or {}).get("slots") or {}).get("rules") or []]
+    draft_accounts = {x.get("account_id") for d in ep["drafts"] for x in ((d["body"] or {}).get("slots") or {}).get("rules") or []}
+    applied_ids = [x.get("id") for a in ep["applies"] for x in (a["body"] or {}).get("rules") or []]
+    results = [x for a in ep["applies"] for x in ((a["answer"] or {}).get("results") or [])]
+    (ctx.out / "edit.json").write_text(json.dumps({"seeded": seeded, "before": before, "after": after,
+                                                   **{k: v for k, v in ep.items() if k != "statuses"}},
+                                                  indent=2, ensure_ascii=False, default=str))
+    if not ctx.app:
+        ctx.skip(C_EPLAN, "--no-ui")
+    else:
+        text = ep.get("plan_text") or ""
+        m = re.search(r"(\d+) rules? · (\d+) models?", text)
+        ctx.check(C_EPLAN, EDIT_CHANGE_LINE in text and bool(m) and int(m.group(2)) >= 2 and ep.get("do_it") == 1
+                  and other_id not in draft_rule_ids and other not in draft_accounts and not ep["errors"],
+                  plan_text=text, headline=m and m.group(0), do_it=ep.get("do_it"), errors=ep["errors"],
+                  draft_rule_ids=draft_rule_ids, screenshots=[ep["shots"].get("plan"), ep["shots"].get("results")])
+    left = {i: _unsend_left(r) for i, r in mine_after.items()}
+    ctx.check(C_EOFF, bool(mine_after) and not any(left.values()) and bool(results)
+              and all(x.get("ok") for x in results) and all(a["status"] == 200 for a in ep["applies"])
+              and {seeded["ids"]["on"], seeded["ids"]["off"]} <= set(applied_ids),
+              unsend_left={i: v for i, v in left.items() if v}, rules=len(mine_after), results=results,
+              apply_status=[a["status"] for a in ep["applies"]], results_text=ep.get("results_text"),
+              errors=ep["errors"])
+    flips = {i: (mine_before[i]["is_enabled"], r["is_enabled"]) for i, r in mine_after.items()
+             if i in mine_before and mine_before[i]["is_enabled"] != r["is_enabled"]}
+    sent = [(a["body"] or {}).get("changes") for a in ep["applies"]]
+    ctx.check(C_EENABLED, not flips and after.get(seeded["ids"]["on"], {}).get("is_enabled") == 1
+              and after.get(seeded["ids"]["off"], {}).get("is_enabled") == 0
+              and bool(sent) and all(c == {"unsend_after_hours": 0} for c in sent),
+              flips=flips, sent_changes=sent,
+              on=after.get(seeded["ids"]["on"], {}).get("is_enabled"), off=after.get(seeded["ids"]["off"], {}).get("is_enabled"))
+    keys = ("steps_json", "trigger_json", "is_enabled")
+    ob, oa = before.get(other_id) or {}, after.get(other_id) or {}
+    ctx.check(C_EOTHER, bool(ob) and all(ob.get(k) == oa.get(k) for k in keys) and other_id not in applied_ids
+              and _unsend_left(oa) == [EDIT_UNSEND_H],
+              before={k: ob.get(k) for k in keys}, after={k: oa.get(k) for k in keys}, applied_ids=applied_ids)
+    bad = [(d["status"], "edit draft") for d in ep["drafts"] if d["status"] >= 500]
+    bad += [(a["status"], "edit apply") for a in ep["applies"] if a["status"] >= 500]
+    return bad + [(st, u) for st, u in ep["statuses"] if st >= 500]
+
+
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     creators = w.data["creators"]
@@ -506,6 +696,7 @@ async def run(ctx) -> None:
     aid, nick = c["id"], c.get("nickname") or c["id"]
     vault = assistant_do_vault.seed(w, c)
     sfw_id = vault["sfw_id"]
+    seeded = await _seed_edit(w, creators)
     fake = ctx.of_wire
     with fake.lock:
         fake.lists[aid] = [dict(MASS_EXCLUDE, usersCount=0), dict(VIP, usersCount=0)]
@@ -586,6 +777,9 @@ async def run(ctx) -> None:
         ctx.metric("cursor", {p["tag"]: {"label": p.get("cursor_label"), "pill": p.get("pill"), "url": p.get("url"),
                                          "shot": p["shots"].get("cursor")} for p in passes})
 
+    edit_before = _rules_raw(w, seeded["owner_accounts"] + [seeded["other_account"]])
+    edit_5xx = await _edit_checks(ctx, w, aid, nick, seeded, edit_before)
+
     with fake.lock:
         calls = list(fake.calls)
         state = {k: {a: len(v) for a, v in getattr(fake, k).items() if v} for k in ("sends", "queue", "posts", "unsends")}
@@ -613,4 +807,5 @@ async def run(ctx) -> None:
     ctx.metric("fake_calls", fc.get("calls"))
     bad = [(d["via"], d["status"]) for d in drafts if d["status"] >= 500]
     bad += [(s, u) for p in passes for s, u in p["statuses"] if s >= 500]
+    bad += edit_5xx
     ctx.check(C_5XX, not bad, count=len(bad), sample=bad[:5])

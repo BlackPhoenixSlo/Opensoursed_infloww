@@ -10,6 +10,8 @@
  * SAFETY: every recipe ends with Enabled OFF (and Dry run off) right before Save — the user's toggle is the go-live
  * (D2). A slot left at the blank form's default makes NO step: the agent never "touches" a default it wasn't asked to
  * change (onlineOnly, excludeLastChatHours, the audience).
+ *
+ * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
  */
 
 import type { RuleEditorAction } from "@/components/automations/ruleEditorForm";
@@ -18,8 +20,11 @@ import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import { blankRow, type Row } from "@/components/compose/premadeRows";
 import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
 import type { Kind } from "@/components/compose/payloadRules";
+import type { MassEditSlots } from "./massEdit";
 
-export type DoFlowId = "mass_premade";
+/** A flow the runner plays in a form (DO_FLOWS). */
+export type EditorFlowId = "mass_premade";
+export type DoFlowId = EditorFlowId | "mass_edit";
 
 export interface FolderTiers {
   sfw: number;
@@ -44,15 +49,20 @@ export interface MassPremadeSlots {
   excludes: string[];
   unsend_after_hours: number | null;
   exclude_last_chat_hours: number | null;
+  /** The optional knobs (absent / null = the form's default). */
+  price?: number | null;
+  media_count?: number | null;
+  exclude_replied_hours?: number | null;
+  exclude_inbound_hours?: number | null;
+  unread_limit?: number | null;
+  recent_chat_hours?: number | null;
+  recent_chat_limit?: number | null;
 }
 
-/** POST /admin/assistant/draft's 200 (always 200). */
-export interface DoDraft {
+interface DraftBase {
   id: string;
-  flow: DoFlowId | null;
   account_id: string;
   summary: string;
-  slots: MassPremadeSlots | null;
   assumptions: string[];
   unresolved: string[];
   /** A human sentence: the flow:null pointer to Q&A, or the error's words. */
@@ -60,7 +70,15 @@ export interface DoDraft {
   error: string | null;
 }
 
-export type AgentAction = RuleEditorAction | "open" | "save";
+/** POST /admin/assistant/draft's 200 (always 200). */
+export type DoDraft = DraftBase & (
+  | { flow: "mass_premade"; slots: MassPremadeSlots | null }
+  | { flow: "mass_edit"; slots: MassEditSlots | null }
+  | { flow: null; slots: null }
+);
+
+/** `reveal`: click a disclosure open (only when `aria-expanded="false"`) so the next fields show. */
+export type AgentAction = RuleEditorAction | "open" | "save" | "reveal";
 
 export interface AgentStep {
   /** The element id the cursor goes to. */
@@ -115,6 +133,13 @@ function massToActions(s: MassPremadeSlots): AgentStep[] {
   });
   if (s.folder) {
     steps.push({ target: `pm-${MP}-folder`, action: rowPatch({ folderId: String(s.folder.id) }), label: `Picking folder “${s.folder.name}”…` });
+    // The count box shows only once a folder is set.
+    if (pos(s.media_count) && s.media_count !== 1) {
+      steps.push({ target: `pm-${MP}-media-count`, action: rowPatch({ mediaCount: String(s.media_count) }), label: `${s.media_count} photos per mass` });
+    }
+  }
+  if (pos(s.price)) {
+    steps.push({ target: `pm-${MP}-price`, action: rowPatch({ price: String(s.price) }), label: `Price $${s.price}` });
   }
   if (s.online_only !== BLANK.onlineOnly) {
     steps.push({
@@ -140,11 +165,32 @@ function massToActions(s: MassPremadeSlots): AgentStep[] {
   if (!sameSet(s.excludes, BLANK.excludes)) {
     steps.push({ target: `pm-${MP}-lists-panel`, action: rowPatch({ excludes: [...s.excludes] }), label: "Excluding lists…" });
   }
+  // Behind "More settings": opened first; each set knob one step (the two guards keep an explicit 0 = off).
+  const more: AgentStep[] = [];
+  for (const [key, field, id, label] of MORE) {
+    const v = s[key];
+    const guard = key === "exclude_replied_hours" || key === "exclude_inbound_hours";
+    if (typeof v === "number" && (guard ? v >= 0 : v > 0)) {
+      more.push({ target: `pm-${MP}-${id}`, action: rowPatch({ [field]: String(v) }), label: label(v) });
+    }
+  }
+  if (more.length) steps.push({ target: `pm-${MP}-more-toggle`, action: "reveal", label: "Opening more settings…" }, ...more);
   // ALWAYS, last before Save: the rule is saved OFF (D2).
   steps.push({ target: `rm-${MP}-enabled`, action: { type: "field", patch: { enabled: false, dryRun: false } }, label: "Leaving it OFF — you turn it on" });
   steps.push({ target: `rm-${MP}-save`, action: "save", label: "Saving…" });
   return steps;
 }
+
+const pos = (v: number | null | undefined): v is number => typeof v === "number" && v > 0;
+
+/** The "More settings" knobs: slot key, Row field, element id suffix, cursor label. */
+const MORE: Array<[keyof MassPremadeSlots, keyof Row, string, (v: number) => string]> = [
+  ["exclude_replied_hours", "excludeRepliedHours", "replied", (v) => (v > 0 ? `Skip fans I messaged in ${v}h` : "Not skipping fans I messaged")],
+  ["exclude_inbound_hours", "excludeInboundHours", "inbound", (v) => (v > 0 ? `Skip fans who messaged in ${v}h` : "Not skipping fans who messaged")],
+  ["recent_chat_hours", "recentChatHours", "recent-hours", (v) => `Adding fans chatted with in ${v}h`],
+  ["recent_chat_limit", "recentChatLimit", "recent-limit", (v) => `At most ${v} recent-chat fans`],
+  ["unread_limit", "unreadLimit", "unread", (v) => `Adding fans with unread, up to ${v}`],
+];
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const SYSTEM_LABEL = new Map(SYSTEM_AUDIENCES.map((a) => [a.id, a.label]));
@@ -181,11 +227,28 @@ function massPlanLines(s: MassPremadeSlots): string[] {
     `Audience: ${s.online_only ? "online fans only" : "online and offline fans"}${lists.length ? `, ${lists.join(", ")}` : ""}`,
     ...(skip !== null ? [skip > 0 ? `Skips fans chatted with in the last ${skip}h` : "Doesn't skip recent chats"] : []),
     s.unsend_after_hours ? `Unsend after ${s.unsend_after_hours}h` : "Never unsent",
+    ...(pos(s.price) ? [`PPV $${s.price}${s.folder ? "" : " — needs photos: pick a folder"}`] : []),
+    ...(s.folder && pos(s.media_count) && s.media_count !== 1 ? [`${s.media_count} photos per mass`] : []),
+    ...moreLines(s),
     "Saved OFF — you turn it on",
   ];
 }
 
-export const DO_FLOWS: Record<DoFlowId, DoFlow> = {
+function moreLines(s: MassPremadeSlots): string[] {
+  const out: string[] = [];
+  const guard = (v: number | null | undefined, on: (h: number) => string, off: string) => {
+    if (typeof v === "number" && v >= 0) out.push(v > 0 ? on(v) : off);
+  };
+  guard(s.exclude_replied_hours, (h) => `Skips fans you messaged in the last ${h}h`, "Doesn't skip fans you messaged");
+  guard(s.exclude_inbound_hours, (h) => `Skips fans who messaged you in the last ${h}h`, "Doesn't skip fans who messaged you");
+  if (pos(s.recent_chat_hours)) {
+    out.push(`Adds fans chatted with in the last ${s.recent_chat_hours}h${pos(s.recent_chat_limit) ? ` (up to ${s.recent_chat_limit})` : ""}`);
+  } else if (pos(s.recent_chat_limit)) out.push(`Recent-chat fans capped at ${s.recent_chat_limit}`);
+  if (pos(s.unread_limit)) out.push(`Adds fans with unread messages (up to ${s.unread_limit})`);
+  return out;
+}
+
+export const DO_FLOWS: Record<EditorFlowId, DoFlow> = {
   mass_premade: {
     kind: "mass_premade",
     routeBase: "/growth/auto-mass",
@@ -200,9 +263,9 @@ export const DO_FLOWS: Record<DoFlowId, DoFlow> = {
 export const PLAN_NOTE = "Photos added to this folder later are included too.";
 
 /** The flow whose page an answer link opens (query / hash ignored), or null. */
-export function flowForHref(href: string): DoFlowId | null {
+export function flowForHref(href: string): EditorFlowId | null {
   const path = href.split(/[?#]/)[0].replace(/\/+$/, "");
-  for (const [id, f] of Object.entries(DO_FLOWS) as Array<[DoFlowId, DoFlow]>) {
+  for (const [id, f] of Object.entries(DO_FLOWS) as Array<[EditorFlowId, DoFlow]>) {
     if (path === f.routeBase) return id;
   }
   return null;

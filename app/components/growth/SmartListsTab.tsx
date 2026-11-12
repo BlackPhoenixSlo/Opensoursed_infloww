@@ -219,7 +219,7 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
           </span>
         )}
         <IfInput search aria-label="Search list name" placeholder="Search list name" value={search}
-          onChange={(e) => setSearch(e.target.value)} className="w-[260px]" />
+          onChange={(e) => setSearch(e.target.value)} className="w-full sm:w-[260px]" />
         <IfButton onClick={() => setShowPresets((v) => !v)} disabled={!accountId}>Presets</IfButton>
         {createButton}
       </div>
@@ -250,6 +250,9 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
 
       {actionErr && <div role="alert" className="text-[12px] text-err">{actionErr}</div>}
 
+      {/* The state (loading, empty, error) sits under the table, not in a row of it, so on a phone it is centred on
+          the screen rather than on the 720px table. */}
+      <div>
       <div className="overflow-x-auto">
         <table aria-label="Smart lists" className={cn(IF_TABLE.table, "min-w-[720px]")}>
           <thead>
@@ -260,9 +263,7 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
             </tr>
           </thead>
           <tbody>
-            {body ? (
-              <tr><td colSpan={HEADS.length} className="py-10">{body}</td></tr>
-            ) : shown.map((l) => {
+            {!body && shown.map((l) => {
               const locked = l.sync_state === "syncing";
               const full = !l.is_active && maxActive > 0 && activeCount >= maxActive;
               return (
@@ -302,6 +303,8 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
             })}
           </tbody>
         </table>
+      </div>
+      {body && <div className="py-10">{body}</div>}
       </div>
 
       {draft && accountId && (

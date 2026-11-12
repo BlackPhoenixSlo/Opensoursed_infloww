@@ -90,7 +90,7 @@ describe("S4SSchedule", () => {
     expect(within(done).getByText("Posted at May. 10 06:15")).toBeInTheDocument();
     expect(screen.getByText("Scheduled for May 10").previousSibling).toHaveTextContent("2");
     expect(screen.getByText("Completed Share for Shares").previousSibling).toHaveTextContent("1");
-    expect(screen.getByText("Total Growth").parentElement).toHaveAttribute("title", "not wired");
+    expect(screen.queryByText("Total Growth")).toBeNull();
     expect(urls()).toEqual([`/admin/s4s/schedule?${MAY_Q}`]);
   });
 

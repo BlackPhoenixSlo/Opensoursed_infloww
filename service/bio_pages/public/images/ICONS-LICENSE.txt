@@ -1,0 +1,5 @@
+The lock and xmark icon paths inlined in ../index.html (and cloned by ../script.js) are from
+Font Awesome Free 6.0.0 by Fonticons, Inc. - https://fontawesome.com
+License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Paths unchanged.
+
+verified.svg is our own drawing (blue circle, white check).

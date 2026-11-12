@@ -15,15 +15,19 @@
  * skipping messages that are only a photo. Human style, at the bottom: the
  * engine's realism layers (human style, typos, non-native English, space before
  * "?"), the same `autoreply` keys of the style blob (`/admin/style-config`)
- * the Settings Auto Convo tab edits; all default ON. Model: the ACCOUNT's AI
- * model + effort (`/admin/account-config`, shared with every AI automation that
- * has no pin of its own), sent by the same Save only when it changed; "Default"
- * = null, labelled from the server's `default_model`. A failed config read hides
- * the row (the rest of the page still saves).
+ * the Settings Auto Convo tab edits; all default ON. Then "AI model (all AI
+ * automations)": the ACCOUNT's AI model + effort (`/admin/account-config`,
+ * shared with every AI automation that has no pin of its own), sent by the same
+ * Save only when it changed; "Default" = null, labelled from the server's
+ * `default_model`. A failed config read hides the row (the rest of the page
+ * still saves). Under the Save, Model info (ModelInfoBlock, shared with Get to
+ * know fans) with its own Save.
  *
  * On Infloww's look (page-parity ticket 16): the page header holds the creator
- * select (`?creator=`), Learn (the blurb) and the Auto-reply switch; the form is
- * the S4S-settings blocks with a switch row per option.
+ * select (`?creator=`), Learn (the blurb), the On / Off pill and the Auto-reply
+ * switch, which saves the moment it flips (its own PUT of the stored blob with
+ * only `enabled` changed; the far-down Save is for the rest). The form is the
+ * S4S-settings blocks with a switch row per option.
  */
 
 import { useReducer } from "react";
@@ -33,12 +37,14 @@ import { useMutation } from "@tanstack/react-query";
 import { IfInput, IfLearn, IfSelect, IfSwitch, SaveRow } from "@/components/ui/infloww";
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { ListColumn, useFanLists } from "@/components/audience/fanLists";
+import { HeaderSwitch } from "@/components/automations/HeaderSwitch";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
+import { ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import { unsaved } from "@/components/automations/sentDraft";
 import { FormBlock, NoCreator, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp, type BrainConfig } from "@/hooks/useAccountConfig";
+import { useAccountConfig, useAccountConfigBusy, useSaveAccountConfig, type AccountConfigResp, type BrainConfig } from "@/hooks/useAccountConfig";
 import {
   useAutoreplyConfig,
   useSaveAutoreplyConfig,
@@ -48,7 +54,7 @@ import {
 
 import {
   answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS, pickOf,
-  randomiseOn, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
+  randomiseOn, switchPayload, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
 } from "./autoReplyForm";
 
 const TITLE = "Auto-reply";
@@ -94,12 +100,13 @@ function AutoReplyForm({ accountId, creators }: { accountId: string; creators: C
       defaults={cfgQ.data.defaults ?? {}}
       visionKey={cfgQ.data.vision_key}
       brain={brainQ.data}
+      refetching={cfgQ.isFetching}
     />
   );
 }
 
 function AutoReplyFields({
-  accountId, creators, stored, defaults, visionKey, brain,
+  accountId, creators, stored, defaults, visionKey, brain, refetching,
 }: {
   accountId: string;
   creators: CreatorPick;
@@ -107,9 +114,15 @@ function AutoReplyFields({
   defaults: AutoreplyConfig;
   visionKey?: AutoreplyKeyState;
   brain?: AccountConfigResp;
+  /** The blob is being re-read: `stored` may be behind the last PUT, so the header switch waits. */
+  refetching: boolean;
 }) {
   const replyM = useSaveAutoreplyConfig(accountId);
+  // The header switch's own PUT, so its pending/error never reads as the page Save's.
+  const switchM = useSaveAutoreplyConfig(accountId);
   const brainM = useSaveAccountConfig(accountId);
+  // A brain PUT (Model info's, or this Save's own) or re-read is out: this Save's brain copy may be stale, so it waits.
+  const brainBusy = useAccountConfigBusy(accountId);
   // Seeded once from defaults ⊕ stored; a refetch does not re-seed (autoReplyForm.ts).
   const [state, dispatch] = useReducer(autoReplyReducer, undefined, () => initState({ ...defaults, ...stored }, brain));
   // One Save, two PUTs (the brain's only when the model moved): one mutation, pending until both settle, failed if
@@ -139,6 +152,16 @@ function AutoReplyFields({
   const { delay } = draft;
   const noSource = !canSubmit(draft);
 
+  // Saves at once: flips the draft (and its sent copy, so "Saved" holds), PUTs the stored blob with only `enabled`
+  // changed, and flips back if that PUT fails. Waits while the page Save or a re-read is out (`stored` behind).
+  const flip = (on: boolean) => {
+    const body = switchPayload(defaults, stored, on);
+    if (!body) return;
+    dispatch({ type: "switched", on });
+    switchM.mutate(body, { onError: () => dispatch({ type: "switched", on: !on }) });
+  };
+  const switchRefused = !draft.enabled && !switchPayload(defaults, stored, true);
+
   const save = () => verdict.save(() => {
     saveM.mutate({ reply: buildPayload(draft, stored), brain: brain ? brainPayload(state, brain) : null });
   });
@@ -147,14 +170,16 @@ function AutoReplyFields({
     <PageFrame
       title={TITLE}
       creators={creators}
-      actions={<>{LEARN}<IfSwitch label={<span className="max-sm:sr-only">Auto-reply</span>} aria-label="Auto-reply"
-        checked={draft.enabled} onChange={sw("enabled")} /></>}
+      actions={<>{LEARN}<HeaderSwitch label={TITLE} checked={draft.enabled} loading={switchM.isPending}
+        disabled={refetching || saveM.isPending || switchRefused} onChange={flip} /></>}
     >
       <div className="max-w-[720px] space-y-8">
         {/* Missing key, or the key the last run was refused on (401/402/403). */}
         <AiKeyNotice accountId={accountId} kinds={["autoreply"]} />
 
-        {brain && <ModelBlock draft={draft} brain={brain} edit={verdict.edit} />}
+        {switchM.isError && (
+          <p className="text-[12px] text-err">Couldn&apos;t switch Auto-reply: {switchM.error.message}</p>
+        )}
 
         <FormBlock title="When to reply">
           <label className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
@@ -232,7 +257,7 @@ function AutoReplyFields({
             )}
           </SwitchRow>
 
-          {noSource && (
+          {!draft.foldersOn && !draft.newOn && (
             <div className="text-[12px] text-warn">Turn on folders or new fans, or nobody gets a reply.</div>
           )}
         </FormBlock>
@@ -264,7 +289,13 @@ function AutoReplyFields({
 
         <HumanStyleBlock style={style} />
 
-        <SaveRow save={verdict} onSave={save} disabled={noSource} />
+        {brain && <ModelBlock draft={draft} brain={brain} edit={verdict.edit} />}
+
+        <SaveRow save={verdict} onSave={save} disabled={noSource || switchM.isPending || brainBusy} />
+
+        {/* Same read as the AI model row: with it failed there is nothing to edit (and a re-mount would re-read it
+            under the load gate above). */}
+        {brain && <ModelInfoBlock accountId={accountId} />}
       </div>
     </PageFrame>
   );
@@ -281,7 +312,7 @@ function ModelBlock({ draft, brain, edit }: {
     ...brain.model_options.map((m) => ({ value: m, label: m })),
   ];
   return (
-    <FormBlock title="Model">
+    <FormBlock title="AI model (all AI automations)">
       <div className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
         <span className="w-16">Model</span>
         <IfSelect aria-label="Model" value={draft.model} options={models}
@@ -296,8 +327,8 @@ function ModelBlock({ draft, brain, edit }: {
         </div>
       )}
       <div className="text-[12px] text-muted">
-        Answers with <span className="text-fg">{answersWith(draft, brain)}</span>. Account-wide: AI automations
-        without a model of their own use it too.
+        Answers with <span className="text-fg">{answersWith(draft, brain)}</span>. Account-wide: every AI automation
+        without a model of its own uses it too.
       </div>
     </FormBlock>
   );

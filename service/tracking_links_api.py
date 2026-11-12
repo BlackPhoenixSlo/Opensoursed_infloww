@@ -1,15 +1,10 @@
-"""service/tracking_links_api.py — Tracking / UTM links + click analytics.
+"""service/tracking_links_api.py — Tracking / UTM redirects and owner CRUD.
 
 Fully internal (no OnlyFans dependency). An operator mints a named link with a
 short `slug`; the PUBLIC endpoint `GET /t/{slug}` records one click and 302s to
 the `target_url`. Per-link analytics = clicks over time (subscriber / revenue
-attribution is a deliberate TODO — there's no reliable click→sub join yet).
-
-That TODO now has a design note: the operator asked for the collective SPEND of
-the fans a link brought in. A TrackingClick carries no fan-joinable identity
-(no cookie, no click token — just referer/UA/ip) and the fan never lands on OF
-from here, so it needs one of the three approaches in
-library/TRACKING_LINK_SPEND_PARKED.md. Parked, not forgotten.
+attribution is unavailable: a TrackingClick has no fan-joinable identity and
+the fan never lands on OnlyFans from here).
 
 A link may ask for a "Bot check before redirect" (`bot_check`, Cloudflare
 Turnstile, needs TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY): GET /t/{slug} then
@@ -22,20 +17,21 @@ Routes:
   Public (share-token exempt in server.py):
     GET  /t/{slug}                                record click → 302 target_url
                                                   (bot_check: Turnstile page, no click)
-    POST /t/{slug}/verify {token}                 siteverify → record click → {url}
+    POST /t/{slug}/verify {token, ref}            siteverify → record click → {url}
 
   Owner-gated (/admin/*):
     GET    /admin/tracking-links?account_id=      list links (+ click_count)
     POST   /admin/tracking-links                  create (auto or custom slug)
     PATCH  /admin/tracking-links/{link_id}        {bot_check}
     DELETE /admin/tracking-links/{link_id}        delete (cascades clicks)
-    GET    /admin/tracking-links/{link_id}/analytics?account_id=
-                                                  total + recent + by-day series
+  Click stats (summary, per-link analytics): tracking_stats.py, which also owns the
+  bounded raw click reads.
 """
 from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -49,10 +45,12 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 import client_addr
+import tracking_stats
+import click_classify
 import of_origin
 import token_bucket
 from auth import assert_account_owned
@@ -219,7 +217,7 @@ button{{background:#1d1d25;color:#e5e5ea;border:1px solid #33333d;border-radius:
 cursor:pointer}}</style>
 <script nonce="{nonce}">
 function okTs(t){{fetch(location.pathname.replace(/[/]+$/,"")+"/verify",{{method:"POST",
-headers:{{"content-type":"application/json"}},body:JSON.stringify({{token:t}})}})
+headers:{{"content-type":"application/json"}},body:JSON.stringify({{token:t,ref:{ref}}})}})
 .then(function(r){{return r.ok?r.json():Promise.reject(r.status)}})
 .then(function(j){{location.replace(j.url)}}).catch(failTs)}}
 function failTs(){{document.getElementById("r").style.display="block"}}
@@ -237,9 +235,9 @@ document.getElementById("rb").addEventListener("click",retryTs)}})
 """
 
 
-def _gate_page(site_key: str) -> HTMLResponse:
+def _gate_page(site_key: str, ref: str) -> HTMLResponse:
     nonce = secrets.token_urlsafe(16)
-    body = _GATE_PAGE.format(nonce=nonce, site_key=html.escape(site_key, quote=True))
+    body = _GATE_PAGE.format(nonce=nonce, site_key=html.escape(site_key, quote=True), ref=json.dumps(ref))
     return HTMLResponse(body, headers={
         "Cache-Control": "no-store",
         "X-Robots-Tag": "noindex, nofollow",
@@ -268,23 +266,30 @@ def _serialize(row: TrackingLink) -> dict:
 
 # ── Public redirect (NO auth — a fan clicks this) ─────────────────────
 
-async def _record_click(link_id: int, slug: str, request: Request) -> None:
-    """Best-effort click write in its OWN session, the try WRAPPING the commit —
-    a failed click costs us the stat, never the fan's redirect (see
-    follow_tracking_link for why it must not share the lookup's transaction)."""
+async def _record_click(link_id: int, slug: str, request: Request, *, gate_ref: str | None = None,
+                        verified: bool = False) -> None:
+    """Best-effort click row and count in one transaction; labels may fail independently."""
+    addr = None
+    referer = request.headers.get("referer") or None
+    try:
+        addr, country = client_addr.edge(request)
+        cls = click_classify.classify(request.headers.get("user-agent"), referer)
+        if gate_ref is not None:
+            # Forgeable by the fan; it affects only analytics labels, never access or redirect.
+            cls = cls._replace(ref=gate_ref if gate_ref in click_classify.REF_FAMILIES else "")
+    except Exception as e:
+        log.warning("tracking click classify failed slug=%s: %r", slug, e)
+        country = None
+        cls = click_classify.ClickClass(None, None)
     try:
         async with get_session() as s2:
             s2.add(TrackingClick(
-                tracking_link_id=link_id,
-                referer=(request.headers.get("referer") or None),
-                user_agent=(request.headers.get("user-agent") or None),
-                ip=(str(client_addr.client_address(request)) if request.client else None),
+                tracking_link_id=link_id, clicked_at=tracking_stats.utcnow().replace(tzinfo=None),
+                referer=referer, user_agent=request.headers.get("user-agent"), ip=str(addr) if request.client else None,
+                country=country, in_app=cls.in_app, ref=cls.ref, verified=verified,
             ))
-            await s2.execute(
-                update(TrackingLink)
-                .where(TrackingLink.id == link_id)
-                .values(click_count=TrackingLink.click_count + 1)
-            )
+            await s2.execute(update(TrackingLink).where(TrackingLink.id == link_id)
+                             .values(click_count=TrackingLink.click_count + 1))
     except Exception:
         log.warning("tracking click record failed slug=%s", slug, exc_info=True)
 
@@ -320,8 +325,14 @@ async def follow_tracking_link(slug: str, request: Request):
     """
     link_id, target, gated = await _lookup(slug)
     keys = _turnstile_keys()
-    if gated and keys:
-        return _gate_page(keys[0])
+    gate = bool(gated and keys)
+    if gate:
+        try:
+            ref = click_classify.ref_family(request.headers.get("referer"))
+        except Exception as e:
+            log.warning("tracking gate referer classify failed slug=%s: %r", slug, e)
+            ref = ""
+        return _gate_page(keys[0], ref)
     await _record_click(link_id, slug, request)
     # 302 so the browser doesn't cache the hop (each click must re-record).
     return RedirectResponse(url=target, status_code=302)
@@ -329,6 +340,7 @@ async def follow_tracking_link(slug: str, request: Request):
 
 class _VerifyBody(BaseModel):
     token: str = ""
+    ref: str = ""
 
 
 @router.post("/t/{slug}/verify")
@@ -344,7 +356,8 @@ async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = 
                             headers={"Cache-Control": "no-store", "Retry-After": str(wait)})
     link_id, target, gated = await _lookup(slug)
     keys = _turnstile_keys()
-    if gated and keys:
+    gate = bool(gated and keys)
+    if gate:
         token = (body.token or "").strip()
         ok = False
         if token and len(token) <= _MAX_TOKEN:
@@ -354,7 +367,7 @@ async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = 
             log.info("tracking bot check failed slug=%s verdict=%s", slug, ok)
             return JSONResponse({"detail": "bot check failed"}, status_code=503 if ok is None else 403,
                                 headers={"Cache-Control": "no-store"})
-    await _record_click(link_id, slug, request)
+    await _record_click(link_id, slug, request, gate_ref=body.ref if gate else None, verified=gate)
     return JSONResponse({"url": target}, headers={"Cache-Control": "no-store"})
 
 
@@ -446,39 +459,3 @@ async def delete_tracking_link(link_id: int) -> dict[str, Any]:
         await s.delete(row)  # clicks cascade (FK ondelete=CASCADE)
     log.info("tracking_link_deleted id=%s", link_id)
     return {"deleted": link_id}
-
-
-@router.get("/admin/tracking-links/{link_id}/analytics")
-async def tracking_link_analytics(link_id: int, account_id: str = Query(...)) -> dict[str, Any]:
-    assert_account_owned(account_id)
-    async with get_session() as s:
-        row = await s.get(TrackingLink, link_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(404, "tracking link not found")
-        total = (await s.execute(
-            select(func.count()).select_from(TrackingClick)
-            .where(TrackingClick.tracking_link_id == link_id)
-        )).scalar_one()
-        recent = (await s.execute(
-            select(TrackingClick.clicked_at, TrackingClick.referer)
-            .where(TrackingClick.tracking_link_id == link_id)
-            .order_by(TrackingClick.clicked_at.desc())
-            .limit(25)
-        )).all()
-        by_day = (await s.execute(
-            select(func.date(TrackingClick.clicked_at), func.count())
-            .where(TrackingClick.tracking_link_id == link_id)
-            .group_by(func.date(TrackingClick.clicked_at))
-            .order_by(func.date(TrackingClick.clicked_at))
-        )).all()
-    return {
-        "link": _serialize(row),
-        "total_clicks": int(total or 0),
-        "recent": [{"clicked_at": c.isoformat() if c else None, "referer": r}
-                   for c, r in recent],
-        "by_day": [{"day": str(d), "clicks": int(n)} for d, n in by_day],
-        # subscribers / revenue attribution is intentionally not computed — no
-        # reliable click→subscriber join exists yet.
-        "subscribers": None,
-        "revenue_cents": None,
-    }

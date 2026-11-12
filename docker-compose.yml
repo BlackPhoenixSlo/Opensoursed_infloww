@@ -193,6 +193,13 @@ services:
       # `cloudflare-tunnel` also from loopback (a cloudflared tunnel on the host).
       # Unset = the header is never read.
       EDGE_PROXIES: "${EDGE_PROXIES:-}"
+      # Bio pages editor (service/bio_pages/admin.py): the public base its URLs use
+      # (e.g. https://new.ofl.ink, https://ofl.ink at cutover; unset = paths only) and
+      # the bio service's health URL for the editor's "serving" flag. The default is
+      # the bio service on this compose network: with the `bio` profile off the name
+      # does not resolve, so the editor says not serving (deploy/bio/README.md).
+      BIO_PUBLIC_URL: "${BIO_PUBLIC_URL:-}"
+      BIO_HEALTH_URL: "${BIO_HEALTH_URL:-http://openinflowwww-bio:8788/internal/healthz}"
       # Custom redirect links' "Bot check before redirect" (service/tracking_links_api.py,
       # Cloudflare Turnstile). Both unset = the option is off and a gated link is a plain 302.
       TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
@@ -228,6 +235,9 @@ services:
       # Generic /img proxy byte cache (chat bubbles, avatars, wall media),
       # keyed by host+path with the signature stripped.
       - ./service/img_cache:/app/service/img_cache
+      # Bio pages files (avatars, link backgrounds/icons): written by the relay's
+      # /admin/bio-pages API, served by the bio service (same host dir).
+      - ./service/bio_files:/app/service/bio_files
     healthcheck:
       # ⚠️ These numbers are a load-shedding decision, not boilerplate. On
       # 2026-08-21/22 the box lost ~90% of its CPU to hypervisor steal, /livez
@@ -279,6 +289,45 @@ services:
     # health sweep reads a whole interval through a redeploy.
     logging:
       driver: ${RELAY_LOG_DRIVER:-local}
+
+  openinflowwww-bio:
+    image: openinflowwww-relay:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["bio"]
+    command: ["uvicorn", "bio_pages.app:app", "--workers", "1", "--host", "0.0.0.0", "--port", "8788", "--no-proxy-headers", "--no-server-header", "--no-access-log", "--timeout-graceful-shutdown", "5"]
+    environment:
+      PYTHONPATH: /app/service
+      DATABASE_URL: sqlite+aiosqlite:////app/service/data/chatterly.db
+      BIO_PRIMARY_HOSTS: "${BIO_PRIMARY_HOSTS:-ofl.ink}"
+      BIO_FILES_DIR: /app/service/bio_files
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+      EDGE_PROXIES: "${EDGE_PROXIES:-}"
+      BIO_REVEAL_LIMIT_PER_MINUTE: "${BIO_REVEAL_LIMIT_PER_MINUTE:-60}"
+      BIO_FLUSH_SECONDS: "${BIO_FLUSH_SECONDS:-5}"
+      BIO_ESCAPE_TAP: "${BIO_ESCAPE_TAP:-1}"
+    volumes:
+      - ./service/data:/app/service/data
+      - ./service/bio_files:/app/service/bio_files
+    # Every bio box sets BIO_PORT in its .env (deploy/bio/README.md): the default
+    # 8788 is the AE relay's host port. Its Traefik route file points at this port.
+    ports:
+      - "127.0.0.1:${BIO_PORT:-8788}:8788"
+    cpus: ${BIO_CPUS:-0.5}
+    mem_limit: 512m
+    restart: unless-stopped
+    stop_grace_period: 45s
+    logging:
+      driver: ${RELAY_LOG_DRIVER:-local}
+    labels:
+      autoheal: "true"
+      autoheal.stop.timeout: "45"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8788/internal/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   openinflowwww-app:
     build:

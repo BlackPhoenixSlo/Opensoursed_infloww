@@ -1,17 +1,20 @@
 /**
  * The Audit log tab (roadmap W6 6.16): the server's readable label over the
  * raw method + path, and a from/to day filter sent as UTC bounds (`to` is the
- * next local midnight, so its day is included).
+ * next local midnight, so its day is included), and the app's own background
+ * writes hidden unless "Show system writes" is ticked.
  */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
 vi.mock("@/hooks/useRoster", () => ({ useRoster: () => ({ rows: [] }) }));
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "acc1", nickname: "Ruby" }] }));
 
 import { renderWithProviders } from "@/test-utils";
 import { relay } from "@/lib/relay";
-import AuditTab, { dayBound } from "@/components/settings/AuditTab";
+import AuditTab from "@/components/settings/AuditTab";
+import { dayBound } from "@/components/settings/auditFilters";
 
 const get = relay.get as unknown as Mock;
 afterEach(() => { cleanup(); get.mockReset(); });
@@ -40,6 +43,26 @@ describe("AuditTab", () => {
       expect(qs.get("from")).toBe(new Date(2026, 9, 1).toISOString());
       expect(qs.get("to")).toBe(new Date(2026, 9, 4).toISOString());
     });
+  });
+
+  it("hides system writes by default and asks for them when ticked", async () => {
+    get.mockResolvedValue({ limit: 50, offset: 0, actions: [] });
+    renderWithProviders(<AuditTab />);
+    const qs = () => new URLSearchParams(String(get.mock.lastCall?.[0]).split("?")[1]);
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(qs().get("include_background")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Show system writes"));
+    await waitFor(() => expect(qs().get("include_background")).toBe("true"));
+  });
+
+  it("names the creator instead of the raw account id", async () => {
+    get.mockResolvedValue({ limit: 50, offset: 0, actions: [
+      { id: 1, employee_id: null, account_id: "acc1", action: "POST /admin/x", label: "Did x",
+        target_type: null, target_id: null, payload: null, at: "2026-10-20T09:00:00" },
+    ] });
+    renderWithProviders(<AuditTab />);
+    expect((await screen.findAllByText("Ruby")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Audit log" })).toBeInTheDocument();
   });
 
   it("dayBound ignores an empty or partial day", () => {

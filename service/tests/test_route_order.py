@@ -30,6 +30,20 @@ After rebase on main a9ae82cc8: main's own drift since its 094966d87 golden =
 help bot routes POST /admin/assistant/draft + GET /admin/assistant/do-caps; inspected, intentional.
 Golden refresh (2026-11-11): rwl W28-relay-infra on main 6c68e13ed: only the tracking-link
 verify doc adds "429 + Retry-After" (verify throttle); inspected, intentional.
+Golden refresh (2026-11-12): merge main 6083d918e into feat/redirect-links-stats: OpenAPI diff
+merged-vs-main == base-vs-branch exactly (tracking-links /summary + /{id}/analytics?days, verify body ref);
+inspected, intentional.
+Golden refresh (2026-11-12): merge main 78eaf88bc into feat/redirect-links-stats: same check, OpenAPI diff
+merged-vs-main == base-vs-branch exactly; inspected, intentional.
+Golden refresh (2026-11-11, bio admin API): adds the 15 /admin/bio-pages* rows right after the
+link-share rows (bio_pages/admin.py); no existing row moves. The base's OpenAPI sha already
+mismatched the golden before this change (88bfcd7a… vs 8b932eca…); the new sha includes both.
+Golden refresh (2026-11-12): merge feat/bio-pages-port (main 6083d918e + redirect-link stats) into
+feat/bio-admin-api: OpenAPI diff merged-vs-bio-pages-port == base-vs-bio-admin-api exactly; inspected.
+Golden refresh (2026-11-12): merge feat/bio-pages-port (main 78eaf88bc) into feat/bio-admin-api: same check;
+inspected.
+Golden refresh (2026-11-12): do-mode mass_edit (spec D11) adds POST /admin/assistant/edit/apply
+(assistant_draft.edit_apply); inspected, intentional.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

@@ -17,6 +17,10 @@ client build's error as before.
   vault_media_lookup_hash       GET /vault/media/hash: the minted media for (md5, size), or None.
   vault_media_by_id             GET /vault/media/{id}: the minted media's dict (photo / video).
   add_media_to_vault_list       POST /vault/lists/{id}/media: recorded, answered {id, mediaIds}.
+  create_vault_list             POST /vault/lists: mints a list id (`made`: {id, name, account}), for a
+                                folder publish (POST /admin/vault-ai/folders/{id}/publish).
+  vault_media(list_id=<made>)   GET /vault/media?list=: a made list's members (every id added to it, in
+                                order), paged; any other vault_media call re-raises the build error.
 
   GET /__slop/vault/fake  {claims, carriers, lists, minted}: what OnlyFans received, in order.
 
@@ -39,10 +43,11 @@ if os.environ.get("DEMO_SHOTS_TMP") and not os.environ.get("VAULT_SPOOL_DIR"):
     os.environ["VAULT_SPOOL_DIR"] = str(Path(os.environ["DEMO_SHOTS_TMP"]) / "vault_spool")
 
 VAULT_ID_BASE = 8_800_000_000
+LIST_ID_BASE = 6_600_000_000
 POST_ID_BASE = 7_700_000_000
 VIDEO = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
 _lock = threading.Lock()  # vault_upload runs on a worker thread
-_fake: dict = {"claims": [], "carriers": [], "lists": [], "minted": {}}
+_fake: dict = {"claims": [], "carriers": [], "lists": [], "minted": {}, "made": []}
 _by_key: dict[tuple, int] = {}   # (md5, size) -> vault id
 _posts: dict[int, list[int]] = {}
 
@@ -141,6 +146,27 @@ class OF:
         with _lock:
             _fake["lists"].append({"list_id": int(list_id), "media_ids": [int(m) for m in media_ids]})
         return {"id": int(list_id), "mediaIds": [int(m) for m in media_ids]}
+
+    def create_vault_list(self, name) -> dict:
+        if not _on():
+            raise self._err
+        with _lock:
+            lid = LIST_ID_BASE + len(_fake["made"]) + 1
+            _fake["made"].append({"id": lid, "name": str(name), "account": self.account_id})
+        return {"id": lid, "name": str(name)}
+
+    def vault_media(self, *, limit=10, offset=0, list_id=None, **_kw) -> dict:
+        with _lock:
+            made = _on() and list_id is not None and any(m["id"] == int(list_id) for m in _fake["made"])
+            ids = list(dict.fromkeys(m for c in _fake["lists"] if c["list_id"] == int(list_id or 0)
+                                     for m in c["media_ids"])) if made else []
+        if not made:   # another plugin's vault read, else the build error (as before this method existed)
+            nxt = getattr(super(), "vault_media", None)
+            if nxt is None:
+                raise self._err
+            return nxt(limit=limit, offset=offset, list_id=list_id, **_kw)
+        page = ids[int(offset):int(offset) + int(limit)]
+        return {"list": [{"id": m} for m in page], "hasMore": int(offset) + len(page) < len(ids)}
 
 
 def wire(app, loopback, relay) -> None:

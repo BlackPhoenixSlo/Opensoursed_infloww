@@ -32,12 +32,18 @@ per item: `shrink_data_url` never enlarges, so the flags pass's re-encode keeps 
     refuse  -> M30: "I'm sorry, I can't help with that." (`vision.is_refusal`), M235: the ok answer
     blank   -> "" from both models
   flags prompt (`_FLAGS_PROMPT`) -> the flags JSON, plus a hostile `description` / `tags` the flags pass must ignore
+  Jev-fed describe prompts (`vault_describe_jev`, D51: a base prompt with the VERIFIED FACTS block right before its
+  "RULES" line) are describe calls too, told apart by `recipe` (`recipe_of`): "v6" (`_DESCRIBE_PROMPT_V2` + facts,
+  the ok JSON above) or "prose" (`PROSE_PROMPT` + facts: `{"description": prose_text(...), "clothing_items":
+  PROSE_GARMENTS}`, the marker sentence plus one sentence per lane-critical claim, `PROSE_CLAIMS`, which the product
+  must scrub down to the planted facts, and garments it must store as they are).
 Usage per answer (`_usage`), billed by `_billed_mc` from `llm_models.MODELS`' listed prices directly (not the
 product's `llm_client._cost_millicents`, so a wrong product formula cannot agree with itself): that per-call
 `billed_mc` is what the scenario sums against what the sweeps report. Every call waits `latency_s` (file; real
 describe calls take ~14 s, compressed: declared).
 Record per call: i, t, purpose (describe|flags|other), model, account_id, media_id, answer, images, tokens_in,
-tokens_out, billed_mc, auth (the request carried the agency's dummy key as a Bearer).
+tokens_out, billed_mc, auth (the request carried the agency's dummy key as a Bearer), and on describe calls recipe
+(v2|v6|prose), facts (the facts block's lines), hedge (the review hedge is one of them).
 """
 
 import json
@@ -73,6 +79,36 @@ def size_key(wh) -> str:
 def describe_text(account_id, media_id, model: str) -> str:
     """The description the fake's ok answer carries for one item and model (the scenario reads it back)."""
     return f"slop vault item {account_id}:{media_id} described by {model}"
+
+
+# The prose recipe's answer: the marker, then one sentence per lane-critical claim (in this order).
+PROSE_CLAIMS = {"nipple": "Her nipples are visible.", "vulva": "Her pussy is visible.",
+                "pen": "A toy is inserted into her."}
+
+
+PROSE_GARMENTS = ["red lace bra", "black thong"]
+
+
+def prose_text(account_id, media_id, model: str) -> str:
+    return " ".join([describe_text(account_id, media_id, model) + ".", *PROSE_CLAIMS.values()])
+
+
+def recipe_of(text: str) -> tuple[str | None, list[str]]:
+    """(recipe, fact lines) of a describe prompt: v2 = today's (V2 / v1, verbatim); v6 / prose = the Jev-fed base
+    with a facts block before its "RULES" line; (None, []) = not a describe prompt."""
+    import vault_ai_vision
+    import vault_describe_jev
+
+    if text in (vault_ai_vision._DESCRIBE_PROMPT_V2, vault_ai_vision._DESCRIBE_PROMPT):
+        return "v2", []
+    for name, base in (("v6", vault_ai_vision._DESCRIBE_PROMPT_V2), ("prose", vault_describe_jev.PROSE_PROMPT)):
+        i = base.index("RULES\n")
+        head, tail = base[:i], base[i:]
+        if len(text) > len(base) and text.startswith(head) and text.endswith(tail):
+            block = text[len(head):len(text) - len(tail)]
+            if block.startswith(vault_describe_jev.HEAD):
+                return name, [ln[2:] for ln in block[len(vault_describe_jev.HEAD):].splitlines() if ln.startswith("- ")]
+    return None, []
 
 
 async def arm_run(http, tmp: Path, items: list[dict], latency_s: float) -> dict:
@@ -132,10 +168,13 @@ def _answer(body: dict, auth: str) -> tuple[int, dict]:
     images = [p["image_url"]["url"] for p in parts if p.get("type") == "image_url"]
     wire = body.get("model")
     model = next((k for k, m in llm_client.MODELS.items() if m.wire_model() == wire), wire)
-    purpose = ("describe" if text in (vault_ai_vision._DESCRIBE_PROMPT_V2, vault_ai_vision._DESCRIBE_PROMPT)
-               else "flags" if text == vault_ai_vision._FLAGS_PROMPT else "other")
+    recipe, facts = recipe_of(text)
+    purpose = "describe" if recipe else "flags" if text == vault_ai_vision._FLAGS_PROMPT else "other"
     item = _cfg["items"].get(_size_of(images[0])) if images else None
     base = {"purpose": purpose, "model": model, "images": len(images), "auth": auth == f"Bearer {FAKE_KEY}"}
+    if recipe:
+        import vault_describe_jev
+        base.update(recipe=recipe, facts=facts, hedge=vault_describe_jev.HEDGE in facts)
     if purpose == "other" or item is None:
         _record(**base, account_id=None, media_id=None, answer="unknown", tokens_in=0, tokens_out=0, billed_mc=0)
         return 503, {"error": {"message": f"slop: deepinfra fake answers only the vault describe/flags prompts "
@@ -154,6 +193,8 @@ def _answer(body: dict, auth: str) -> tuple[int, dict]:
         content = _REFUSAL
     elif answer == "blank":
         content = ""
+    elif recipe == "prose":
+        content = json.dumps({"description": prose_text(aid, mid, model), "clothing_items": PROSE_GARMENTS})
     else:
         content = json.dumps({"description": describe_text(aid, mid, model), "tags": ["slop", "vault"],
                               "explicitness": "suggestive", "nsfw": True, "sellable": True,

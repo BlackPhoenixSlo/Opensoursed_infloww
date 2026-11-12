@@ -40,6 +40,8 @@ service/sessions/
 service/storyboard_cache/
 service/vault_thumbs/
 service/vault_posters/
+# Bio page files (service/bio_pages: avatars, link images), written by the bio editor / importer
+service/bio_files/
 service/s4s_media/
 service/vault_images/
 service/img_cache/

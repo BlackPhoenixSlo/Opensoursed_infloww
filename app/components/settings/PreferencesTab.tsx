@@ -2,11 +2,11 @@
 
 /**
  * Your Preferences (docs/spec/settings-tabs/phase-01-account-preferences.md):
- * Report time zone, Time zone, Week start day, Language and "Disable free trial
+ * Report time zone, Regular time zone, Week start day and "Disable free trial
  * popup", saved whole to the `preferences` Settings blob behind the Load gate.
- * The time zones, week start and the popup switch are Applied (ADR-0012,
- * docs/spec/phase-04-apply-stored-settings.md; the switch hides
- * FreeTrialExpiredModal); Language is not applied yet, so the note names only it.
+ * All are Applied (ADR-0012, docs/spec/phase-04-apply-stored-settings.md; the
+ * switch hides FreeTrialExpiredModal). Language is hidden until the app is
+ * translated (owner, 2026-11-11); its stored `language` key still rides every save.
  *
  * The zone lists and the browser's zone are read through useSyncExternalStore
  * with empty server snapshots, so the server-rendered markup never disagrees
@@ -16,7 +16,7 @@
 import { useSyncExternalStore } from "react";
 
 import { useSettingsBlob } from "@/lib/settingsBlob";
-import { BlobNotes, Field, FieldSelect, NotAppliedYet, Section, SettingsPanel, ToggleRow } from "@/components/settings/SettingsPanel";
+import { BlobNotes, Field, FieldSelect, Section, SettingsPanel, ToggleRow } from "@/components/settings/SettingsPanel";
 import { SaveRow } from "@/components/settings/StickySaveBar";
 import PlatformSwitches from "@/components/settings/PlatformSwitches";
 
@@ -39,10 +39,6 @@ const WEEK_STARTS = [
   { value: "monday", label: "Monday" },
   { value: "sunday", label: "Sunday" },
 ] as const;
-const LANGUAGES = [
-  { value: "en", label: "English" },
-  { value: "es", label: "Spanish" },
-] as const;
 
 /** Every zone this browser knows, plus `value` when the list lacks it, so a stored zone stays selected; 400+
  *  zones, so the list has a filter box. */
@@ -58,6 +54,11 @@ function ZoneSelect({ id, value, list, onChange, describedBy }: {
   return <FieldSelect searchable id={id} aria-describedby={describedBy} value={value} options={options} onChange={onChange} />;
 }
 
+/** A field's one help line, between its label and its control. */
+function Help({ id, children }: { id: string; children: string }) {
+  return <p id={id} className="mb-2 text-[length:var(--if-fs-sm)] text-[var(--if-fg-3)]">{children}</p>;
+}
+
 export default function PreferencesTab() {
   const list = useSyncExternalStore(subscribe, browserZones, () => NO_ZONES);
   const zone = useSyncExternalStore(subscribe, browserZone, () => "");
@@ -69,9 +70,7 @@ export default function PreferencesTab() {
   return (
     <SettingsPanel title="Your Preferences" actions={<SaveRow {...blob.save} gateNote={null} look="settings" />}>
       <Field label="Report time zone" htmlFor="pref-report-tz">
-        <p id="pref-report-tz-desc" className="pt-2 mb-2 text-[length:var(--if-fs)] text-[var(--if-fg-3)]">
-          Your preferred time zone for Creator and fan reports
-        </p>
+        <Help id="pref-report-tz-desc">Creator and fan reports</Help>
         <ZoneSelect
           id="pref-report-tz"
           describedBy="pref-report-tz-desc"
@@ -80,8 +79,9 @@ export default function PreferencesTab() {
           onChange={(report_tz) => blob.set({ report_tz })}
         />
       </Field>
-      <Field label="Time zone" htmlFor="pref-tz">
-        <ZoneSelect id="pref-tz" value={v.tz} list={list} onChange={(tz) => blob.set({ tz })} />
+      <Field label="Regular time zone" htmlFor="pref-tz">
+        <Help id="pref-tz-desc">Top bar clock and Employees&apos; monthly figures</Help>
+        <ZoneSelect id="pref-tz" describedBy="pref-tz-desc" value={v.tz} list={list} onChange={(tz) => blob.set({ tz })} />
       </Field>
       <Field label="Week start day" htmlFor="pref-week-start">
         <FieldSelect
@@ -91,16 +91,6 @@ export default function PreferencesTab() {
           onChange={(week_start) => blob.set({ week_start })}
         />
       </Field>
-      <Section title="Language Settings">
-        <Field label="Language" htmlFor="pref-language">
-          <FieldSelect
-            id="pref-language"
-            value={v.language}
-            options={LANGUAGES}
-            onChange={(language) => blob.set({ language })}
-          />
-        </Field>
-      </Section>
       <Section title="Free trial">
         <ToggleRow
           title="Disable free trial popup"
@@ -110,10 +100,7 @@ export default function PreferencesTab() {
         />
       </Section>
       <PlatformSwitches />
-      <div className="flex flex-col gap-3">
-        <NotAppliedYet fields={["Language"]} />
-        <BlobNotes note={blob.save.gateNote} q={blob.query} />
-      </div>
+      <BlobNotes note={blob.save.gateNote} q={blob.query} />
     </SettingsPanel>
   );
 }

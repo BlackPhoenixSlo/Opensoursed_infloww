@@ -12,6 +12,8 @@
 import { useState } from "react";
 
 import { Badge, Button, ExtraTag } from "@/components/ui/primitives";
+import { IfButton } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmDeleteButton, SelectInput, errMsg } from "@/components/growth/_bits";
 import { useBundleSettings, useDeleteBundle, useOfMe, useSaveBundle } from "@/hooks/useGrowth";
 import { bundleAmount, bundleBlock, bundleHelp, bundleOptions, type BundleForm } from "@/lib/ofMirrorOffers";
@@ -76,13 +78,13 @@ export default function SubscriptionBundles({ accountId }: { accountId: string |
           <h3 className="flex items-center gap-2 text-base font-semibold">Subscription bundles <ExtraTag /></h3>
           <p className="text-sm text-fg-dim">Offer several months of subscription as a discounted bundle.</p>
         </div>
-        <Button size="sm" variant="ghost" onClick={() => open()} title={addWhy || undefined}
+        <IfButton onClick={() => open()} title={addWhy || undefined}
           disabled={!accountId || !me || !!addWhy || !!editing}>
           Add bundle
-        </Button>
+        </IfButton>
       </div>
 
-      {meQ.isLoading && <div className="text-sm text-fg-dim">Loading…</div>}
+      {meQ.isLoading && <Skeleton className="h-3 w-48" />}
       {meQ.isError && <div className="text-sm text-warn">OnlyFans not reachable — bundles can&apos;t be read.</div>}
       {me && !bundles.length && !editing && <div className="text-sm text-fg-dim">No subscription bundles yet.</div>}
 

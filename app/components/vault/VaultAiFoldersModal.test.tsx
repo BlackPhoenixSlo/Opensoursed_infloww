@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
-const plan = vi.hoisted(() => ({ flagsReady: true, noFolders: false }));
+const plan = vi.hoisted(() => ({ flagsReady: true, noFolders: false, retireOnOf: 0 }));
 vi.mock("@/hooks/useVaultCache", () => ({
   mirrorThumbSrc: () => "",
   applyAiFolders: vi.fn(),
@@ -20,6 +20,11 @@ vi.mock("@/hooks/useVaultCache", () => ({
         tiers: {}, closes_on_own: 0, items: [], solo: false }],
       summary: { folders: plan.noFolders ? 0 : 1, scripts: 0, lanes: 1, solo_cuts: 0, unique_media: 0, memberships: 0 },
       flags: { stills: 10, flagged: plan.flagsReady ? 10 : 4, missing: plan.flagsReady ? 0 : 6, ready: plan.flagsReady },
+      changes: {
+        create: plan.noFolders ? 0 : 1, keep: 0, retire: plan.retireOnOf ? 2 : 0, retire_on_of: plan.retireOnOf,
+        retired: plan.retireOnOf ? [{ folder_id: 7, name: "AI-old on OF", of_list_id: 77 },
+          { folder_id: 8, name: "AI-old local", of_list_id: null }] : [],
+      },
     },
   }),
 }));
@@ -32,7 +37,7 @@ const apply = vi.mocked(applyAiFolders);
 const runFlags = vi.mocked(runVaultFlags);
 const RESULT = { folders: 1, new: 1, reused: 0, items: 3, of_mirrored: 1, of_failed: 0, created: [] };
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); plan.flagsReady = true; plan.noFolders = false; });
+afterEach(() => { cleanup(); vi.clearAllMocks(); plan.flagsReady = true; plan.noFolders = false; plan.retireOnOf = 0; });
 
 describe("VaultAiFoldersModal", () => {
   it("a failed build says why, an option change keeps it; a landed build shows until an option changes", async () => {
@@ -58,6 +63,27 @@ describe("VaultAiFoldersModal", () => {
       ["acc-1", { keep: 2, solo: false, mirrorToOf: true }],
       ["acc-1", { keep: 2, solo: true, mirrorToOf: true }],
     ]);
+  });
+
+  it("previews create / keep / retire before Confirm; retiring OF-linked folders shows on the button", async () => {
+    plan.retireOnOf = 1;
+    apply.mockResolvedValueOnce(RESULT);
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    expect(screen.getByText("Confirm will create 1 · keep 0 · retire 2")).toBeInTheDocument();
+    expect(screen.getByText(/Retiring AI-old on OF, AI-old local/)).toBeInTheDocument();
+    expect(screen.getByText(/1 of them is linked to an OnlyFans list/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create 1 folders · retire 1 linked to OnlyFans" }));
+    expect(await screen.findByText(/Created 1 new/)).toBeInTheDocument();
+  });
+
+  it("keep offers 0 (lanes only) to 20 and sends 0 as 0", async () => {
+    apply.mockResolvedValueOnce(RESULT);
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    const select = screen.getByLabelText("Keep as scripts");
+    expect(select.querySelectorAll("option")).toHaveLength(21);
+    fireEvent.change(select, { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1", { keep: 0, solo: false, mirrorToOf: true }));
   });
 
   it("the flags pass shows its own failure", async () => {

@@ -95,6 +95,58 @@ describe("mass_premade toActions", () => {
   });
 });
 
+describe("mass_premade extras (price, photo count, More settings)", () => {
+  const BASE: MassPremadeSlots = { ...PILOT, excludes: [], online_only: true, unsend_after_hours: null, name: "", captions: ["hi"] };
+  const row = (patch: object) => ({ type: "row", a: { type: "patch", patch } });
+  const XTRA: MassPremadeSlots = {
+    ...BASE, price: 15, media_count: 3, exclude_replied_hours: 0, exclude_inbound_hours: 4, unread_limit: 50,
+    recent_chat_hours: 12, recent_chat_limit: 20,
+  };
+
+  it("steps after the folder; More settings opened (reveal) before its fields; OFF + save stay last", () => {
+    const steps = flow.toActions(XTRA);
+    expect(shape(steps).slice(4, -2)).toEqual([
+      ["pm-mass_premade-media-count", row({ mediaCount: "3" })],
+      ["pm-mass_premade-price", row({ price: "15" })],
+      ["pm-mass_premade-more-toggle", "reveal"],
+      ["pm-mass_premade-replied", row({ excludeRepliedHours: "0" })],      // an explicit 0 = off
+      ["pm-mass_premade-inbound", row({ excludeInboundHours: "4" })],
+      ["pm-mass_premade-recent-hours", row({ recentChatHours: "12" })],
+      ["pm-mass_premade-recent-limit", row({ recentChatLimit: "20" })],
+      ["pm-mass_premade-unread", row({ unreadLimit: "50" })],
+    ]);
+    expect(steps.at(-2)!.action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
+  });
+
+  it.each<[string, Partial<MassPremadeSlots>, string[]]>([
+    ["nulls make no step", { price: null, media_count: null, unread_limit: null }, []],
+    ["1 photo = the default: no step", { media_count: 1 }, []],
+    ["no folder: no photo-count step (its box isn't shown)", { folder: null, media_count: 3 }, []],
+    ["price without a folder still types (the form warns)", { folder: null, price: 9 }, ["pm-mass_premade-price"]],
+    ["one More knob: reveal + it", { unread_limit: 5 }, ["pm-mass_premade-more-toggle", "pm-mass_premade-unread"]],
+  ])("%s", (_, patch, want) => {
+    const ids = flow.toActions({ ...BASE, ...patch }).map((st) => st.target);
+    const extra = ids.filter((t) => /price|media-count|more-toggle|replied|inbound|recent|unread/.test(t));
+    expect(extra).toEqual(want);
+  });
+
+  it("played into the editor's reducer, the payload carries every extra", () => {
+    let st = initRuleEditor("mass_premade", null);
+    for (const step of flow.toActions(XTRA)) if (typeof step.action !== "string") st = ruleEditorReducer(st, step.action);
+    const item = (buildBody(st)!.payload as { messages: Record<string, unknown>[] }).messages[0];
+    expect(item).toMatchObject({ price: 15, media_count: 3, exclude_replied_hours: 0, exclude_inbound_hours: 4,
+      unread_limit: 50, recent_chat_hours: 12, recent_chat_limit: 20 });
+  });
+
+  it("plan lines say each extra", () => {
+    const lines = flow.planLines(XTRA);
+    for (const l of ["PPV $15", "3 photos per mass", "Doesn't skip fans you messaged", "Skips fans who messaged you in the last 4h",
+      "Adds fans chatted with in the last 12h (up to 20)", "Adds fans with unread messages (up to 50)"]) expect(lines).toContain(l);
+    expect(flow.planLines({ ...BASE, folder: null, price: 9 })).toContain("PPV $9 — needs photos: pick a folder");
+    expect(lines.at(-1)).toBe("Saved OFF — you turn it on");
+  });
+});
+
 describe("an unresolved include list (includes: [])", () => {
   const EMPTY = { ...PILOT, includes: [] };
   it("clears the audience in a step (never widened to everyone)", () => {

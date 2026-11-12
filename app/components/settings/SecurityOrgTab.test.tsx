@@ -10,6 +10,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 import { UserProvider } from "@/contexts/UserContext";
+import { fmtDateTime } from "@/lib/format";
 import SecurityOrgTab from "@/components/settings/SecurityOrgTab";
 
 const ROSTER = {
@@ -67,7 +68,7 @@ function mount() {
 const bodyRows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
 
 describe("SecurityOrgTab", () => {
-  it("lists the roster rows with each login's 2FA status and last login", async () => {
+  it("lists the roster rows with each login's 2FA status (Active/Inactive) and short last login", async () => {
     mount();
     expect(screen.getByRole("heading", { name: "Security (organization)" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Gamma Three")).toBeInTheDocument());
@@ -75,9 +76,9 @@ describe("SecurityOrgTab", () => {
       within(screen.getByRole("table")).getAllByRole("columnheader").map((h) => h.textContent),
     ).toEqual(["Name", "2FA status", "Last login", "Operations"]);
     expect(bodyRows().map((r) => within(r).getAllByRole("cell").map((c) => c.textContent))).toEqual([
-      ["Alpha One", "Enabled", new Date("2026-10-01T10:00:00Z").toLocaleString(), "Reset"],
-      ["Beta Two", "Disabled", "—", "Reset"],
-      ["Gamma Three", "—", "—", "Reset"],
+      ["Alpha One", "Active", fmtDateTime("2026-10-01T10:00:00Z"), "Reset"],
+      ["Beta Two", "Inactive", "—", ""],
+      ["Gamma Three", "—", "—", ""],
     ]);
   });
 
@@ -117,14 +118,11 @@ describe("SecurityOrgTab", () => {
     expect(writes()).toEqual([]);
   });
 
-  it("Reset is on only for an active login with 2FA, and posts the reset after the confirm", async () => {
+  it("Reset shows only on an active login with 2FA, and posts the reset after the confirm", async () => {
     mount();
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Reset" })).toHaveLength(3));
-    const [alpha, beta, gamma] = screen.getAllByRole("button", { name: "Reset" });
-    expect(alpha).toBeEnabled();
-    expect(beta).toBeDisabled();
-    expect(gamma).toBeDisabled();
-    fireEvent.click(alpha);
+    await waitFor(() => expect(screen.getByText("Gamma Three")).toBeInTheDocument());
+    expect(screen.getAllByRole("button", { name: "Reset" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     const dialog = await screen.findByRole("dialog", { name: "Reset two-factor authentication for employee's account?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());

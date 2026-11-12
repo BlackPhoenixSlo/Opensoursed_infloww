@@ -33,6 +33,21 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# NudeNet 640m weights for the Jev v8 vault flags (service/vault_jev.py). The
+# md5 is the file the bench measured; a different file fails the build here
+# rather than moving answers in prod (vault_jev re-checks it at load). The
+# release asset (v3.4-weights/640m.onnx, 103,538,690 B) is fetched through the
+# API: the plain releases/download URL answered anonymous curl with a login
+# redirect (2026-11-11). Above requirements.txt: a deps bump must not refetch
+# 100 MB of weights.
+ARG NUDENET_640M_URL=https://api.github.com/repos/notAI-tech/NudeNet/releases/assets/176832019
+ARG NUDENET_640M_MD5=d04bbbd55428dc307b379ae1dfa55314
+RUN mkdir -p /app/models \
+ && curl -fsSL --retry 3 -H "Accept: application/octet-stream" "$NUDENET_640M_URL" \
+      -o /app/models/nudenet-640m.onnx \
+ && echo "$NUDENET_640M_MD5  /app/models/nudenet-640m.onnx" | md5sum -c -
+ENV NUDENET_640M_PATH=/app/models/nudenet-640m.onnx
+
 # Install deps first so the layer caches across code edits.
 COPY requirements.txt ./
 RUN pip install -r requirements.txt

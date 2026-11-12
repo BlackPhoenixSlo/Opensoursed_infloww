@@ -4,9 +4,10 @@
  * S4S settings (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI), Infloww's `S4sSettingPage` (menu 55,
  * page-parity 15), for the creator picked on the rail: "Primary post" (its caption in the bordered box with the
  * "Primary" tag, or "Create post"; "Manage posts" opens the post list, up to 20, Create / Edit in a pop-up),
- * "Limit daily S4S" (1, 2 or 3 with its own Save, sending `daily_limit` only), "Discoverability settings" (saves on
- * toggle). Ours, labelled: "Take part in Share for Share" (the opt-in ADR-0011's bounded directory needs; Infloww has
- * none, a primary post is taking part), and "Profile shown to partners" (read only: the Creator's own OnlyFans name,
+ * "Limit daily S4S" (1, 2 or 3, sending `daily_limit` only), "Discoverability settings" (saves on toggle).
+ * Proposal (UI flow audit C38, owner review): Discoverability first, the Discover switch nested under Take part and
+ * disabled while opted out; the limit saves on pick with a "Saved" line instead of its own Save button.
+ * Ours, labelled: "Take part in Share for Share" (the opt-in ADR-0011's bounded directory needs; Infloww has none, a primary post is taking part), and "Profile shown to partners" (read only: the Creator's own OnlyFans name,
  * @username and avatar, which the Relay re-reads on every list). The post pop-up's "Add from Vault", and each post's
  * in Manage posts, pick up to 5 of the Creator's own vault items; Save stores them as vault references, and a
  * partner's slot reads them from this Creator's vault and uploads them to the partner's account (ADR-0015). A creator with posts always
@@ -39,7 +40,8 @@ const LIMIT_OPTIONS: IfOption[] = S4S_DAILY_LIMITS.map((n) => ({
 }));
 const HEAD = "text-[16px] font-semibold text-fg";
 const BOX = "rounded-lg border border-border";
-const ROW = cn(BOX, "flex min-h-14 items-center justify-between gap-4 px-4 py-2 text-[14px] text-fg-dim");
+/** A row inside the Discoverability box. */
+const ROW_IN = "flex min-h-14 items-center justify-between gap-4 px-4 py-2 text-[14px] text-fg-dim";
 const OUTLINE = "border-accent text-accent";
 export const PARTNER_PROFILE_LINE = "From this creator's OnlyFans profile, read again each time this page opens.";
 const tooMany = (n: number) => `An S4S post carries at most ${S4S_MAX_MEDIA} media; you picked ${n}.`;
@@ -47,24 +49,23 @@ const tooMany = (n: number) => `An S4S post carries at most ${S4S_MAX_MEDIA} med
 /** One profile save; the reply replaces the cached profile, then the list reads again. */
 function useSaveProfile(accountId: string) {
   const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // One save's state: which key is in flight, the last one that landed, or the failure.
+  const [st, setSt] = useState<{ busy: string | null; saved: string | null; error: string | null }>(
+    { busy: null, saved: null, error: null });
   async function save(key: string, body: S4SProfileUpdate) {
-    setBusy(key);
-    setError(null);
+    setSt({ busy: key, saved: null, error: null });
     try {
       const saved = await updateS4SProfile(accountId, body);
       qc.setQueryData<S4SProfiles>(S4S_PROFILES_KEY, (d) => d && {
         ...d, profiles: d.profiles.map((p) => (p.account_id === accountId ? { ...p, ...saved } : p)),
       });
       await qc.invalidateQueries({ queryKey: S4S_PROFILES_KEY });
+      setSt({ busy: null, saved: key, error: null });
     } catch (e) {
-      setError(`Couldn't save: ${message(e)}`);
-    } finally {
-      setBusy(null);
+      setSt({ busy: null, saved: null, error: `Couldn't save: ${message(e)}` });
     }
   }
-  return { save, busy, error };
+  return { save, ...st };
 }
 
 export default function S4SSettingPanel({ query, profile }: {
@@ -81,8 +82,7 @@ export default function S4SSettingPanel({ query, profile }: {
 }
 
 function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => void }) {
-  const { save, busy, error } = useSaveProfile(profile.account_id);
-  const [limit, setLimit] = useState(String(profile.daily_limit));
+  const { save, busy, error, saved } = useSaveProfile(profile.account_id);
   const [creating, setCreating] = useState(false);
   const name = profile.display_name || profile.account_id;
   const primary = profile.posts.find((p) => p.is_primary) ?? null;
@@ -91,7 +91,27 @@ function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => 
     <section aria-label={`S4S settings for ${name}`} className="max-w-[900px] p-6">
       {error && <p role="alert" className="mb-4 text-[14px] text-err">{error}</p>}
 
-      <div className="flex items-center justify-between">
+      {/* Proposal (C38): the master switch first, Discover visibility nested under it (it means nothing opted out). */}
+      <h2 className={HEAD}>Discoverability settings</h2>
+      <div className={cn(BOX, "mt-4 divide-y divide-border")}>
+        <div className={ROW_IN}>
+          <span>
+            <span className="flex items-center gap-2 text-fg">Take part in Share for Share <ExtraTag /></span>
+            <span className="block text-[12px]">{OPT_IN_LINE}</span>
+          </span>
+          <IfSwitch aria-label="Take part in Share for Share" checked={profile.opted_in} loading={busy === "opted_in"}
+            onChange={(opted_in) => void save("opted_in", { opted_in })} />
+        </div>
+        <div className={cn(ROW_IN, "pl-8", !profile.opted_in && "opacity-60")}
+          title={profile.opted_in ? undefined : "Take part in Share for Share first"}>
+          <span>{`Allow ${name} to appear on the Discover Creators page`}</span>
+          <IfSwitch aria-label="Appear on Discover Creators" checked={profile.discovery_visible}
+            loading={busy === "discovery_visible"} disabled={!profile.opted_in}
+            onChange={(discovery_visible) => void save("discovery_visible", { discovery_visible })} />
+        </div>
+      </div>
+
+      <div className="mt-8 flex items-center justify-between">
         <h2 className={HEAD}>Primary post</h2>
         <IfButton className={OUTLINE} onClick={onManage}>Manage posts</IfButton>
       </div>
@@ -115,27 +135,14 @@ function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => 
         <p className="text-[14px] text-fg-dim">
           Set the maximum S4S permitted <span className="text-[#ff7c71]">per day</span>. Changes do not affect S4S already scheduled.
         </p>
-        <div className="mt-4 flex items-center">
-          <IfSelect aria-label="Limit daily S4S" value={limit} options={LIMIT_OPTIONS} onChange={setLimit} className="w-[240px]" />
-          <IfButton variant="primary" className="ml-6 w-[76px]" disabled={busy === "limit" || Number(limit) === profile.daily_limit}
-            onClick={() => void save("limit", { daily_limit: Number(limit) })}>Save</IfButton>
-        </div>
-      </div>
-
-      <h2 className={cn(HEAD, "mt-8")}>Discoverability settings</h2>
-      <div className="mt-4 space-y-2">
-        <div className={ROW}>
-          <span>
-            <span className="flex items-center gap-2 text-fg">Take part in Share for Share <ExtraTag /></span>
-            <span className="block text-[12px]">{OPT_IN_LINE}</span>
-          </span>
-          <IfSwitch aria-label="Take part in Share for Share" checked={profile.opted_in} loading={busy === "opted_in"}
-            onChange={(opted_in) => void save("opted_in", { opted_in })} />
-        </div>
-        <div className={ROW}>
-          <span>{`Allow ${name} to appear on the Discover Creators page`}</span>
-          <IfSwitch aria-label="Appear on Discover Creators" checked={profile.discovery_visible} loading={busy === "discovery_visible"}
-            onChange={(discovery_visible) => void save("discovery_visible", { discovery_visible })} />
+        {/* Proposal (C38): saves on pick, as the switches do; no separate Save. */}
+        <div className="mt-4 flex items-center gap-4">
+          <IfSelect aria-label="Limit daily S4S" value={String(profile.daily_limit)} options={LIMIT_OPTIONS}
+            disabled={busy === "limit"}
+            onChange={(v) => { if (Number(v) !== profile.daily_limit) void save("limit", { daily_limit: Number(v) }); }}
+            className="w-[240px]" />
+          {busy === "limit" ? <span className="text-[12px] text-fg-dim">Saving…</span>
+            : saved === "limit" && <span role="status" className="text-[12px] text-[#2ad4ac]">Saved</span>}
         </div>
       </div>
 

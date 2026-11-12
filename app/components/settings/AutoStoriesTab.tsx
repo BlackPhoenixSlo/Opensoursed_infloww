@@ -16,18 +16,23 @@
  * Per-trigger count ("how many to post") → payload.per_run; default 1.
  *
  * On Infloww's look (page-parity ticket 16): the page header holds the creator
- * select (`?creator=`), Learn (the blurb) and "Edit raw JSON"; the form is the
- * S4S-settings blocks (Source, When to post, Stories, Vault clean-up, Status).
+ * select (`?creator=`), Learn (the blurb), the On / Off pill + switch, a "More
+ * actions" menu (Run now, Edit raw JSON for fast imports, Delete) and the primary
+ * Save; the form is the S4S-settings blocks (Source, When to post, Stories, Vault
+ * clean-up). The switch saves the moment it flips once the rule exists (a PATCH of
+ * `is_enabled` alone); before that it picks whether Save creates the rule on.
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Images, Plus, Trash2 } from "lucide-react";
+import { Images, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 
 import { IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfSelect } from "@/components/ui/infloww";
-import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
+import { EditRuleJsonModal } from "@/components/automations/EditRuleJsonModal";
+import { HeaderSwitch } from "@/components/automations/HeaderSwitch";
 import {
   ConfirmDelete, FormBlock, NoCreator, SwitchRow, useAutomationCreator,
 } from "@/components/automations/automationPage";
+import { MENU_ITEM, MENU_PANEL, useOutsideClose } from "@/components/ui/Menu";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultLists } from "@/hooks/useVaultMedia";
@@ -137,6 +142,8 @@ export default function AutoStoriesTab() {
   const createM = useCreateRule(accountId);
   const updateM = useUpdateRule(accountId);
   const deleteM = useDeleteRule(accountId);
+  // The header switch's own PATCH, so its pending never reads as the Save's.
+  const switchM = useUpdateRule(accountId);
   const runM = useRunRuleNow(accountId);
   const busy = createM.isPending || updateM.isPending || deleteM.isPending;
 
@@ -144,6 +151,13 @@ export default function AutoStoriesTab() {
   const [runMsg, setRunMsg] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editingJson, setEditingJson] = useState(false);
+
+  // With a rule: saves at once (is_enabled alone), flipping back if the PATCH fails. Without one: Save creates it so.
+  function flip(on: boolean) {
+    set("enabled", on);
+    if (rule) switchM.mutate({ id: rule.id, is_enabled: on }, { onError: () => set("enabled", !on) });
+  }
 
   async function runNow() {
     if (!rule) return;
@@ -214,7 +228,18 @@ export default function AutoStoriesTab() {
   const actions = (
     <>
       {LEARN}
-      <EditRuleJsonButton accountId={accountId} kind="auto_stories" className="max-sm:hidden" />
+      <HeaderSwitch label={TITLE} checked={form.enabled} loading={switchM.isPending}
+        disabled={busy || rulesQ.isLoading} status={rule ? undefined : "Not saved"} onChange={flip} />
+      <ActionsMenu items={[
+        { label: runM.isPending ? "Posting…" : "Run now", onClick: runNow, disabled: !rule || runM.isPending,
+          title: rule ? "Post one batch now (bypasses the schedule)" : "Save this automation first" },
+        { label: "Edit raw JSON", onClick: () => setEditingJson(true), disabled: !rule,
+          title: rule ? "Edit the raw JSON payload for this rule" : "Save this automation once, then edit its raw JSON" },
+        { label: "Delete", onClick: () => setDeleting(true), disabled: !rule || deleteM.isPending, danger: true },
+      ]} />
+      <IfButton variant="primary" onClick={save} disabled={busy || switchM.isPending} className="min-w-[64px]">
+        {createM.isPending || updateM.isPending ? "Saving…" : "Save"}
+      </IfButton>
     </>
   );
 
@@ -227,6 +252,28 @@ export default function AutoStoriesTab() {
   return (
     <PageFrame title={TITLE} creators={creators} actions={actions}>
       <div className="max-w-[720px] space-y-8">
+        {(err || runMsg || switchM.isError || (rule && last)) && (
+          <div className="space-y-1">
+            {err && <p className="text-[14px] text-err">{err}</p>}
+            {switchM.isError && <p className="text-[14px] text-err">Couldn&apos;t switch Auto Story: {switchM.error.message}</p>}
+            {runMsg && <p className="text-[14px] text-accent">{runMsg}</p>}
+            {rule && last && (
+              <p className="text-[12px] text-muted">
+                Last run: <span className="text-fg">{last.status}</span>
+                {typeof last.stats?.posted === "number" && (
+                  <span className="text-fg"> · posted {last.stats.posted as number}</span>
+                )}
+                {typeof last.stats?.failed === "number" && (last.stats.failed as number) > 0 && (
+                  <span className="text-err"> · {last.stats.failed as number} failed</span>
+                )}
+                {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
+                {rule.has_pending_job && " · job queued"}
+                {last.error_text && <span className="text-err"> · {last.error_text}</span>}
+              </p>
+            )}
+          </div>
+        )}
+
         <FormBlock title="Source">
           <div>
             <IfLabel htmlFor="story-folder">Vault folder</IfLabel>
@@ -329,45 +376,6 @@ export default function AutoStoriesTab() {
           />
         </FormBlock>
 
-        <FormBlock title="Status">
-          <SwitchRow label="Enabled" checked={form.enabled} onChange={(on) => set("enabled", on)} />
-        </FormBlock>
-
-        {err && <p className="text-[14px] text-err">{err}</p>}
-
-        <div className="flex flex-wrap items-center gap-2">
-          <IfButton variant="primary" onClick={save} disabled={busy} className="min-w-[76px]">
-            {rule ? "Save" : "Create automation"}
-          </IfButton>
-          {rule && (
-            <>
-              <IfButton onClick={runNow} disabled={runM.isPending} title="Post one batch now (bypasses the schedule)">
-                {runM.isPending ? "Posting…" : "Run now"}
-              </IfButton>
-              <IfButton onClick={() => setDeleting(true)} disabled={deleteM.isPending}
-                className="text-err hover:border-err hover:text-err sm:ml-auto">
-                Delete
-              </IfButton>
-            </>
-          )}
-        </div>
-
-        {runMsg && <p className="text-[14px] text-accent">{runMsg}</p>}
-
-        {rule && last && (
-          <p className="text-[12px] text-muted">
-            Last run: <span className="text-fg">{last.status}</span>
-            {typeof last.stats?.posted === "number" && (
-              <span className="text-fg"> · posted {last.stats.posted as number}</span>
-            )}
-            {typeof last.stats?.failed === "number" && (last.stats.failed as number) > 0 && (
-              <span className="text-err"> · {last.stats.failed as number} failed</span>
-            )}
-            {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
-            {rule.has_pending_job && " · job queued"}
-            {last.error_text && <span className="text-err"> · {last.error_text}</span>}
-          </p>
-        )}
       </div>
 
       {deleting && rule && (
@@ -379,6 +387,11 @@ export default function AutoStoriesTab() {
         >
           Auto Story stops posting for this Creator.
         </ConfirmDelete>
+      )}
+
+      {editingJson && rule && (
+        <EditRuleJsonModal rule={rule} accountId={accountId} onClose={() => setEditingJson(false)}
+          extraCount={(rulesQ.data ?? []).filter((r) => r.kind === "auto_stories").length - 1} />
       )}
 
       <VaultPicker
@@ -398,7 +411,33 @@ export default function AutoStoriesTab() {
 
 // ── small bits ────────────────────────────────────────────────────────
 
-/** One selectable schedule mode, a radio card: 1px L1 radius 8; selected, 1px M1 on a 40% #384360 fill, its own
+/** The header's "More actions" (⋯) menu: the rule's less-used actions, right-aligned under the trigger so it never
+ *  runs off a phone's edge. Closes on a pick, an outside click or Escape. */
+function ActionsMenu({ items }: {
+  items: { label: string; onClick: () => void; disabled?: boolean; title?: string; danger?: boolean }[];
+}) {
+  const { open, setOpen, ref } = useOutsideClose();
+  return (
+    <div ref={ref} className="relative" onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
+      <IfButton icon={MoreHorizontal} aria-label="More actions" title="More actions" aria-haspopup="menu"
+        aria-expanded={open} onClick={() => setOpen(!open)} className="w-8 px-0 [&>svg]:h-4 [&>svg]:w-4" />
+      {open && (
+        <div role="menu" aria-label="More actions" className={cn(MENU_PANEL, "right-0 z-50 w-44 origin-top-right")}>
+          {items.map((it) => (
+            <button key={it.label} type="button" role="menuitem" disabled={it.disabled} title={it.title}
+              onClick={() => { setOpen(false); it.onClick(); }}
+              className={cn(MENU_ITEM, "text-[14px]", it.disabled ? "cursor-not-allowed text-fg-dim opacity-60"
+                : cn("hover:bg-bg-elev-1", it.danger ? "text-err" : "text-fg"))}>
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One selectable schedule mode, a radio card: 1px L1 radius 8; selected, 1px M1 on the selected-row tint (40%), its own
  *  controls (time pickers / interval input) below. Clicking anywhere on the card selects it. */
 function ScheduleOption({
   selected, onSelect, title, desc, children,
@@ -421,7 +460,7 @@ function ScheduleOption({
       }}
       className={cn(
         "cursor-pointer rounded-lg border p-4 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
-        selected ? "border-accent bg-[#384360]/40" : "border-border hover:border-accent",
+        selected ? "border-accent bg-selected/40" : "border-border hover:border-accent",
       )}
     >
       <div className="flex items-start gap-2.5">

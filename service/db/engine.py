@@ -44,6 +44,11 @@ DATABASE_URL = os.environ.get(
     f"sqlite+aiosqlite:///{HERE.parent / 'chatterly.db'}",
 )
 
+
+def sync_database_url(url: str | None = None) -> str:
+    """SQLAlchemy's sync driver URL for an async engine URL (default: the module's DATABASE_URL, read at call time)."""
+    return (DATABASE_URL if url is None else url).replace("+aiosqlite", "").replace("+asyncpg", "")
+
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
 # A file SQLite keeps its connections in a pool. aiosqlite's own default for a
@@ -224,6 +229,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # replacement exists, so a failed CREATE never leaves the table without both.
 _RETIRED_INDEXES = {
     "ix_messages_account_fan_time": ("messages", "ix_messages_chat_seq"),  # W5 5.1
+    "ix_tracking_clicks_link_time": ("tracking_clicks", "ix_tracking_clicks_stats"),  # 0111 covering stats
 }
 
 
@@ -345,7 +351,7 @@ async def init_db() -> None:
     # when the on-disk revision != head.
     from sqlalchemy import create_engine, inspect, text
 
-    sync_url = DATABASE_URL.replace("+aiosqlite", "").replace("+asyncpg", "")
+    sync_url = sync_database_url()
     sync_engine = create_engine(sync_url, connect_args={"timeout": 30} if _is_sqlite else {})
     try:
         # PRAGMAs the async engine sets per-connection (above) need to also

@@ -1,6 +1,7 @@
 /**
  * VaultPackPickerModal: unsaved verdicts are not dropped by Done or Escape (only the ×, a discard, closes while
- * dirty); a failed Save says so and keeps the verdicts; Publish to OF asks in an IfModal before the same request.
+ * dirty); a failed Save says so and keeps the verdicts; Publish to OF asks in an IfModal before the same request; the
+ * keys (1/2/3, x, Enter, j/k) file the focused tile and Save sends exactly those verdicts, never a bare suggestion.
  * The vault hooks are faked at the module (the candidates query and the two writes); every name is fake.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -22,8 +23,9 @@ vi.mock("@/hooks/useVaultCache", () => ({
         { rung: "nude-body", name: "feet-body", folder_id: null, count: 0, of_list_id: null },
       ],
       candidates: [
-        { media_id: 1, kind: "photo", rung: null, description: "one" },
-        { media_id: 2, kind: "photo", rung: null, description: "two" },
+        { media_id: 1, kind: "photo", rung: null, suggested: null, tier: null, score: 0.3, description: "one" },
+        { media_id: 2, kind: "photo", rung: null, suggested: "nude-body", tier: 10, score: 0.9, description: "two" },
+        { media_id: 3, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.8, description: "three" },
       ],
       filed: 0,
     },
@@ -96,5 +98,39 @@ describe("VaultPackPickerModal Publish to OF", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
     expect(publish.mock.calls).toEqual([["acc-1", 11], ["acc-1", 12]]);
     await waitFor(() => expect(screen.getByText(/f11 → OF list 911/)).toBeInTheDocument());
+  });
+});
+
+describe("VaultPackPickerModal keys", () => {
+  const tile = (id: number) => document.querySelector<HTMLElement>(`[data-pack-tile="${id}"]`)!;
+
+  it("first tile focused; Enter confirms a suggestion, x rejects, 2 files; Save sends only those", async () => {
+    save.mockResolvedValue({ category: "feet", saved: 3, rejected: 1, folders: [] });
+    mount();
+    expect(tile(1)).toHaveAttribute("aria-current", "true");
+    expect(tile(2)).toHaveTextContent("nude-body?");   // a suggestion, not a verdict
+    expect(tile(2)).toHaveTextContent("$10");
+    const key = (k: string) => fireEvent.keyDown(document.activeElement ?? document.body, { key: k });
+    screen.getByRole("dialog").focus();
+    key("j");                          // -> tile 2
+    expect(tile(2)).toHaveAttribute("aria-current", "true");
+    key("Enter");                      // confirm its suggestion, focus hands on to 3 (2 left "undecided")
+    expect(tile(3)).toHaveAttribute("aria-current", "true");
+    key("x");                          // reject 3, focus back to 1
+    key("2");                          // file 1 on nude
+    expect(btn("Save 3")).not.toBeDisabled();
+    fireEvent.click(btn("Save 3"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save).toHaveBeenCalledWith("acc-1", "feet", [
+      { media_id: 1, rung: "nude" }, { media_id: 2, rung: "nude-body" }, { media_id: 3, rung: null },
+    ]);
+  });
+
+  it("a key typed while the Publish confirm is open does nothing to the grid", async () => {
+    mount();
+    fireEvent.click(btn("Publish to OF (2)"));
+    const ask = await screen.findByRole("dialog", { name: /REAL folder/ });
+    fireEvent.keyDown(within(ask).getByRole("button", { name: "Cancel" }), { key: "1" });
+    expect(screen.getByRole("button", { name: "Saved", hidden: true })).toBeDisabled();
   });
 });

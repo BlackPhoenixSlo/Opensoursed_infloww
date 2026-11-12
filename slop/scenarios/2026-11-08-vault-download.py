@@ -24,18 +24,18 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
            selected (`vault-download-select-folder-trigger`, `-settled`): both under that folder only.  SELECT_IN_FOLDER.
   folder   the rail's first folder: its row menu > Download folder (`vault-download-folder-trigger`, `-settled`).
                                                                                                FOLDER.
-  vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the header's Download full vault
-           (testid `vault-header-download`; shots `vault-download-vault-trigger`, `-settled`): every media fetched once,
-           a copy in each of its custom folders (#430); the stale ones 403 direct, are re-signed by listing window
-           (one OF read per window, 0 by-id) and fetched direct again.                         VAULT.
-  header   the header button's scope: the vault phase's run listed with no folder id (label "Download full vault");
-           then rail folder 2 selected, the label "Download full folder", the header clicked
+  vault    STALE of A's mirror urls re-signed for a proxy A left (OLD_EGRESS), then the Extras drawer's Download full
+           vault (the header's ⋯ `EXTRAS`, then testid `vault-extras-download`; shots `vault-download-vault-trigger`,
+           `-settled`): every media fetched once, a copy in each of its custom folders (#430); the stale ones 403
+           direct, are re-signed by listing window (one OF read per window, 0 by-id) and fetched direct again.  VAULT.
+  header   the Extras drawer's full download scope: the vault phase's run listed with no folder id (label "Download
+           full vault"); then rail folder 2 selected, the label "Download full folder", it clicked
            (`vault-download-header-folder-trigger`, `-settled`): its listing requests (the download's page sizes,
            the browser's own requests) carry that folder's id; exactly its media saved, all direct.   HEADER_SCOPE.
-  switch   a fresh browser on A: the header's Download full vault, then, while it runs (SWITCH_FREE CDN fetches
+  switch   a fresh browser on A: the Extras drawer's Download full vault, then, while it runs (SWITCH_FREE CDN fetches
            through, the next held), Creator B in the creator column (`vault-download-switch-trigger`: B's grid, A's card
-           running, B's header button "Add full vault to queue", on: a run never blocks the next); the CDN released, the
-           card settles (`-settled`): every one of A's media on disk once with exact bytes, data-phase done (not
+           running, B's Extras drawer item "Add full vault to queue", on: a run never blocks the next); the CDN
+           released, the card settles (`-settled`): every one of A's media on disk once with exact bytes, data-phase done (not
            cancelled), data-failed 0, the card titled with A's name. The old per-model remount aborted it.  SWITCH.
   open-folder  the card's "Open folder" (`dl-open-folder`) after select (`vault-download-select-open-folder`), after
            folder (`-folder-open-folder`) and mid-run in switch (A's card while held, B's grid up): the computer's file
@@ -56,8 +56,8 @@ UI (one owner, Chromium 1440x900, Vault Pro on A, the folder picker stubbed, fil
   phone    a fresh phone browser on B (390x844, touch, no folder picker, share stubbed): Select all (> 20) is off
            with "Phone: up to 20 at a time", 20 ticked is on, 21 off, Download folder / whole vault off with their
            reason (`vault-download-phone-cap`).                                                PHONE_CAP.
-           The header's Download on that phone: its icon shown, its label screen-reader-only, disabled, titled with
-           the desktop-only reason (`vault-download-phone-header`).                            PHONE_HEADER.
+           The Extras drawer's Download on that phone: shown (icon and label), disabled, titled with the
+           desktop-only reason (`vault-download-phone-header`).                                PHONE_HEADER.
            Then 3 photos + 2 videos padded to PHONE_VIDEO_MB each (> SHARE_BATCH_BYTES/2, so never one batch):
            Download selected (`vault-download-phone-trigger`), the first "Save 1–N" (`-ready`) dismissed once
            (AbortError: the button stays), then every Save tapped until all are saved (`-settled`).  PHONE_SHARE.
@@ -117,8 +117,8 @@ again) turns only RELAY_STALE and VAULT red; vault-download-selection-ignores-fo
 SELECT_IN_FOLDER red; vault-download-links-cdn-for-proxied (client: `linkRows` drops the direct rule) turns only LINKS and
 PHONE_LINKS red; vault-download-direct-ignores-proxy (client: `sourceFor` drops the proxy rule) turns only PROXIED and
 PHONE_SHARE red; vault-download-share-batch-drops-item (client: `addToBatches` loses the file that opens a batch)
-turns only PHONE_SHARE red; vault-download-header-ignores-folder (client: the header's click starts the whole vault
-under a selected folder, its label still "Download full folder") turns only HEADER_SCOPE red;
+turns only PHONE_SHARE red; vault-download-header-ignores-folder (client: the Extras drawer's full download starts the
+whole vault under a selected folder, its label still "Download full folder") turns only HEADER_SCOPE red;
 vault-download-switch-aborts-run (client: the run's unmount cleanup re-runs when the remembered Creator changes,
 the pre-fix per-Creator lifetime; the app-level provider has no per-Creator subtree to key) turns only SWITCH +
 QUEUE_* red; vault-download-no-stall-watchdog (client: STALL_MS 10 min) turns only QUEUE_STALL red;
@@ -182,7 +182,7 @@ WAIT_MS = 120_000
 SETTLE_S = 180
 STALE = 3
 SWITCH_FREE = 3                    # switch stage: A's download fetches let through before the hold (declared)
-QUEUE_VAULT = "Add full vault to queue"    # the header's Download while a download runs (folder sink)
+QUEUE_VAULT = "Add full vault to queue"    # the Extras drawer's full download while a download runs (folder sink)
 QUEUE_FREE = 2                     # queue stage: A's fetches let through before the hold (declared)
 STALL_AFTER = 1024                 # queue stage: bytes of B's stalled photo sent before the CDN goes silent
 STALL_HOLD_S = 45                  # > the browser's STALL_MS (20 s); the relay's curl drops it at 30 s
@@ -196,7 +196,8 @@ DOWNLOAD = "/admin/vault-ai/download"
 LISTS_PATH = "/api/of/v2/vault/lists"
 MEDIA_PATH = "/api/of/v2/vault/media"
 PANEL = "[aria-label='Vault download']"
-HEADER_DL = "vault-header-download"
+EXTRAS_DL = "vault-extras-download"    # the Extras drawer's Download full vault / folder
+EXTRAS = "Inflowwww extras"            # EXTRAS_OVERFLOW_LABEL (app/lib/openinflowwwwExtras.ts): the header's ⋯, its drawer
 # vaultDownload.ts listAll's page sizes (MIRROR_PAGE, LIVE_PAGE): the grid pages by 40 / 24, so these are the
 # download's own listing requests.
 LIST_PAGES = {"/admin/vault-ai/items": "500", MEDIA_PATH: "100"}
@@ -396,6 +397,30 @@ def _expected(vw, aid: str, creator: str, ms: list[dict], folder: str | None) ->
             out[f"{creator}/{f}/{m['id']}.{ext}"] = {"mid": m["id"], "key": _key(aid, m),
                                                     "size": None if ext == "mp4" else m["sizes"][1]}
     return out
+
+
+async def _extras_dl(page, timeout: int = 10_000):
+    """The Extras drawer's full download (`EXTRAS_DL`), the drawer opened from the header's ⋯ if shut. Scoped by role:
+    the drawer's exit copy (`useExitGhost`) is aria-hidden, so never matched."""
+    drawer = page.get_by_role("dialog", name=EXTRAS)
+    if not await drawer.count():
+        await page.locator(f'button[aria-label="{EXTRAS}"][aria-haspopup="dialog"]').click(timeout=timeout)
+    btn = drawer.get_by_test_id(EXTRAS_DL)
+    await btn.wait_for(timeout=timeout)
+    return btn
+
+
+async def _extras_close(page) -> None:
+    """Shut the Extras drawer if open (its ×), so it covers nothing (the card, a phone's whole screen)."""
+    drawer = page.get_by_role("dialog", name=EXTRAS)
+    if await drawer.count():
+        await drawer.get_by_role("button", name="Close", exact=True).click(timeout=10_000)
+        await drawer.wait_for(state="hidden", timeout=10_000)
+
+
+async def _click_full(page) -> None:
+    """Start the full download from the Extras drawer (the click closes the drawer)."""
+    await (await _extras_dl(page)).click(timeout=10_000)
 
 
 async def _card(panel) -> dict | None:
@@ -837,7 +862,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         h: dict = {}
         try:
             await page.evaluate("window.__slopPickHold = true")
-            await page.get_by_test_id("vault-header-download").click(timeout=10_000)
+            await _click_full(page)
             hint = page.get_by_test_id("dl-pick-hint")
             await hint.wait_for(timeout=10_000)
             h["text"] = await hint.inner_text()
@@ -884,7 +909,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
         except Exception as e:  # noqa: BLE001 — the check reports it
             d["error"] = f"{type(e).__name__}: {e}"[:600]
             await ui.shot(ctx, page, "failed-vault-download-select-folder")
-        finally:  # back to All media even on failure, so the vault phase's header still scopes the whole vault
+        finally:  # back to All media even on failure, so the vault phase's full download scopes the whole vault
             try:
                 await page.locator("aside button").filter(has_text="All media").first.click(timeout=10_000)
                 await page.wait_for_timeout(1000)
@@ -918,9 +943,9 @@ async def _ui(ctx, world: _UiWorld) -> None:
         every = vw.vault(a)["media"]
         stale = [m for m in every if m["type"] == "photo"][-STALE:]
         vault_week.set_urls(w, vw, a, [m["id"] for m in stale], egress=OLD_EGRESS)
-        hdr = page.get_by_test_id(HEADER_DL)
-        hs: dict = {"vault_label": (await hdr.inner_text()).strip()}
-        d = await phase_run("vault", page, a, every, None, lambda: hdr.click(timeout=10_000),
+        full_dl = await _extras_dl(page)   # the drawer open: the trigger shot shows it
+        hs: dict = {"vault_label": (await full_dl.inner_text()).strip()}
+        d = await phase_run("vault", page, a, every, None, lambda: full_dl.click(timeout=10_000),
                             extra={"stale": [m["id"] for m in stale]})
         hs["vault"] = {"listings": d["listings"], "trigger_shot": d.get("trigger_shot"),
                        "settled_shot": d.get("settled_shot"), "settled": settled(d, len(every))}
@@ -956,15 +981,15 @@ async def _ui(ctx, world: _UiWorld) -> None:
             finally:
                 await hp.close()
 
-        # the header button on a selected folder: "Download full folder", that folder only
+        # the Extras drawer's full download on a selected folder: "Download full folder", that folder only
         f2 = vw.vault(a)["folders"][1]
         f2ms = [m for m in vw.vault(a)["media"] if f2["id"] in m["folders"]]
         try:
             await page.get_by_role("button", name="Close download").click(timeout=10_000)
             await page.locator("aside [role='button']").filter(has_text=f2["name"]).first.click(timeout=10_000)
-            await page.get_by_test_id(HEADER_DL).filter(has_text="Download full folder").wait_for(timeout=10_000)
-            hs["folder_label"] = (await hdr.inner_text()).strip()
-            d = await phase_run("header-folder", page, a, f2ms, f2["name"], lambda: hdr.click(timeout=10_000))
+            await (await _extras_dl(page)).filter(has_text="Download full folder").wait_for(timeout=10_000)
+            hs["folder_label"] = (await full_dl.inner_text()).strip()
+            d = await phase_run("header-folder", page, a, f2ms, f2["name"], lambda: full_dl.click(timeout=10_000))
         except Exception as e:  # noqa: BLE001 — the check reports it
             d = {"error": f"{type(e).__name__}: {e}"[:600], "listings": [], "disk": {}}
         hs["folder"] = {k: v for k, v in d.items() if k not in ("browser_by_key", "links")}
@@ -1021,7 +1046,7 @@ async def _ui(ctx, world: _UiWorld) -> None:
 
 
 async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok, open_folder) -> dict:
-    """A fresh browser on A: the header's Download full vault (`phase_run`), B picked in the creator column mid-run
+    """A fresh browser on A: the Extras drawer's Download full vault (`phase_run`), B picked in the creator column mid-run
     (A's CDN held after SWITCH_FREE fetches, declared), released once B is on screen; A's run must still finish every
     file. Mid-run (held, B's grid up) A's card's Open folder is clicked: returned for OPEN_FOLDER."""
     from slop.actors import ui
@@ -1049,9 +1074,10 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok, open
         await page.locator(f"section [title^='#{newest_b} ']").first.wait_for(timeout=WAIT_MS)
         o["b_grid"] = {"b_current": await row(page, b).get_attribute("aria-current"),
                        "a_current": await row(page, a).get_attribute("aria-current"), "b_newest_tile": newest_b}
-        btn = page.get_by_test_id(HEADER_DL)
+        btn = await _extras_dl(page)
         o["b_download"] = {"disabled": await btn.is_disabled(timeout=10_000),
                            "text": (await btn.inner_text(timeout=10_000)).strip()}
+        await _extras_close(page)   # off A's card
         o["at_switch"] = await _card(panel)
         o["open_folder"] = await open_folder(page, f"switch/{creator}", None)
         o["trigger_shot"] = await ui.shot(ctx, page, "vault-download-switch-trigger")
@@ -1066,7 +1092,7 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok, open
                 hold.armed = True
                 d.update(await phase_run(
                     "switch", page, a, every, None,
-                    lambda: page.get_by_test_id(HEADER_DL).click(timeout=10_000),
+                    lambda: _click_full(page),
                     during=during))
             finally:
                 hold.go.set()
@@ -1089,24 +1115,26 @@ async def _switch(ctx, world: _UiWorld, setup, phase_run, settled, disk_ok, open
 
 
 async def _phone_header(ctx, page) -> dict:
-    """The header's Download on a portrait phone: shown as its icon, the label sr-only, off with the desktop-only
-    reason; shot. Never raises: the check reports what it saw."""
+    """The Extras drawer's Download on a portrait phone (the header's ⋯ opened): shown, icon and label, off with the
+    desktop-only reason; shot, then the drawer shut. Never raises: the check reports what it saw."""
     from slop.actors import ui
 
     ph: dict = {}
     try:
-        btn = page.get_by_test_id(HEADER_DL)
-        await btn.wait_for(timeout=WAIT_MS)
+        btn = await _extras_dl(page, WAIT_MS)
         ph.update(await btn.evaluate("""(el) => {
-            const r = el.getBoundingClientRect(), svg = el.querySelector("svg"), span = el.querySelector("span");
-            const sb = span && span.getBoundingClientRect(), ib = svg && svg.getBoundingClientRect();
+            const r = el.getBoundingClientRect(), svg = el.querySelector("svg"), ib = svg && svg.getBoundingClientRect();
+            const t = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+            const rg = t && document.createRange();
+            if (rg) rg.selectNodeContents(t);
+            const tb = rg && rg.getBoundingClientRect();
             return { visible: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight,
                      icon_px: ib ? Math.round(ib.width * ib.height) : 0,
-                     label: span ? span.textContent : null,
-                     label_sr_only: !!sb && sb.width <= 1 && sb.height <= 1 && getComputedStyle(span).position === "absolute",
+                     label: t ? t.textContent.trim() : null, label_px: tb ? Math.round(tb.width * tb.height) : 0,
                      enabled: !el.disabled, title: el.getAttribute("title") };
         }"""))
         ph["shot"] = await ui.shot(ctx, page, "vault-download-phone-header")
+        await _extras_close(page)
     except Exception as e:  # noqa: BLE001 — the check reports it
         ph["error"] = f"{type(e).__name__}: {e}"[:600]
     return ph
@@ -1305,8 +1333,9 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
             await page.get_by_role("button", name="Select all").tap(timeout=10_000)
             await page.get_by_role("button", name="Download selected").wait_for(timeout=10_000)
             cap["all"] = await dl_state(page)
-            vault_btn = page.get_by_test_id("vault-header-download")
+            vault_btn = await _extras_dl(page)
             cap["vault"] = {"enabled": await vault_btn.is_enabled(), "title": await vault_btn.get_attribute("title")}
+            await _extras_close(page)   # it covers a phone's whole screen
             cap["shot"] = await ui.shot(ctx, page, "vault-download-phone-cap")
             await page.get_by_role("button", name="Clear").tap(timeout=10_000)
             await tick(page, [m["id"] for m in ms[:PHONE_MAX]])
@@ -1314,18 +1343,22 @@ async def _phone(ctx, vw, b: str, peg: str, port: int, assets: dict) -> None:
             await tick(page, [ms[PHONE_MAX]["id"]])
             cap["twentyone"] = await dl_state(page)
             await page.get_by_role("button", name="Clear").tap(timeout=10_000)
-            row = page.locator("aside [role='button']").filter(has_text=vw.vault(b)["folders"][0]["name"]).first
-            await row.scroll_into_view_if_needed(timeout=10_000)
-            await row.get_by_role("button", name="More").tap(timeout=10_000)
+            # On a phone the rail is a folder select: pick the folder, its "Folder actions" menu, then All media again
+            # (the grid's ticks below are across the whole vault).
+            folder_sel = page.get_by_role("combobox", name="Folder")
+            await folder_sel.select_option(str(vw.vault(b)["folders"][0]["id"]))
+            acts = page.get_by_role("button", name="Folder actions")
+            await acts.tap(timeout=10_000)
             item = page.get_by_role("menuitem", name=re.compile(r"^Download folder"))
             cap["folder"] = {"label": await item.inner_text(), "enabled": await item.is_enabled(),
                              "title": await item.get_attribute("title")}
-            await row.get_by_role("button", name="More").tap(timeout=10_000)   # closes the menu
+            await acts.tap(timeout=10_000)   # closes the menu
+            await folder_sel.select_option("")
         except Exception:  # noqa: BLE001 — the check reports it
             async with captured(ctx, page, cap, "failed-vault-download-phone-cap"):
                 raise
-        ctx.check(PHONE_HEADER, "error" not in ph and ph["visible"] and ph["icon_px"] > 0 and ph["label_sr_only"]
-                  and ph["enabled"] is False and ph["title"] == PHONE_MODE_OFF, **ph)
+        ctx.check(PHONE_HEADER, "error" not in ph and ph["visible"] and ph["icon_px"] > 0 and ph["label_px"] > 0
+                  and ph["label"] == "Download full vault" and ph["enabled"] is False and ph["title"] == PHONE_MODE_OFF, **ph)
         ok = "error" not in cap
         ctx.check(PHONE_CAP, ok and cap["picker"] == "undefined"
                   and int(cap["all"]["count"] or 0) > PHONE_MAX and not cap["all"]["enabled"]

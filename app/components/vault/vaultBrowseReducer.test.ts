@@ -44,6 +44,7 @@ describe("a new folder or search clears the ticks (select mode stays)", () => {
     ["folder", { type: "folder", id: 29271410 }, { folderId: 29271410 }],
     ["Fansly album snowflake", { type: "folder", id: "900605470987055104" }, { folderId: "900605470987055104" }],
     ["search", { type: "query", value: "beach" }, { query: "beach" }],
+    ["tag chip picked", { type: "toggleTag", tag: "Feet" }, { tags: ["feet"] }],
   ])("%s", (_name, action, expected) => {
     const s = vaultBrowseReducer(ticked, action);
     expect(s).toMatchObject(expected);
@@ -64,6 +65,18 @@ describe("a new folder or search clears the ticks (select mode stays)", () => {
     ["search", { type: "query", value: "" }],
   ])("re-picking the same %s keeps the ticks (same object)", (_name, action) => {
     expect(vaultBrowseReducer(ticked, action)).toBe(ticked);
+  });
+});
+
+describe("type switch vs tag chip (state-reducers VM_TICKS)", () => {
+  it.each<[string, BrowseAction[], number[]]>([
+    ["Video then All: both kept", [{ type: "mediaType", value: "video" }, { type: "mediaType", value: "all" }], [1, 2]],
+    ["a chip after a type switch: cleared", [{ type: "mediaType", value: "video" }, { type: "toggleTag", tag: "slop" }], []],
+    ["a chip dropped: cleared", [{ type: "toggleTag", tag: "slop" }, { type: "toggle", media: m(3) },
+      { type: "toggleTag", tag: "slop" }], []],
+    ["Clear tags: cleared", [{ type: "toggleTag", tag: "slop" }, { type: "toggle", media: m(3) }, { type: "clearTags" }], []],
+  ])("%s", (_name, actions, want) => {
+    expect(ids(run(actions, ticked))).toEqual(want);
   });
 });
 
@@ -109,5 +122,31 @@ describe("browseMapReducer: one view per model", () => {
     const map: BrowseMap = {};
     expect(browseFor(map, "X")).toBe(initialBrowseState);
     expect(browseMapReducer(map, a("X", { type: "clearSelection" }))).toBe(map);
+  });
+});
+
+describe("tag chips: toggle, AND, a new view", () => {
+  it("toggles in pick order, lower-cased; a second tap drops it", () => {
+    const s = run([{ type: "toggleTag", tag: "Feet" }, { type: "toggleTag", tag: "lace" }]);
+    expect(s.tags).toEqual(["feet", "lace"]);
+    expect(run([{ type: "toggleTag", tag: "feet " }], s).tags).toEqual(["lace"]);
+  });
+  it("picking or dropping a chip clears the ticks (select mode stays)", () => {
+    const s = vaultBrowseReducer(ticked, { type: "toggleTag", tag: "feet" });
+    expect(s.selected.size).toBe(0);
+    expect(s.selectMode).toBe(true);
+  });
+  it("chips stay across a folder / type change; clearTags drops them; a blank tag or clearing none is a no-op", () => {
+    const s = run([{ type: "toggleTag", tag: "feet" }, { type: "folder", id: 7 }, { type: "mediaType", value: "video" }]);
+    expect(s).toMatchObject({ tags: ["feet"], folderId: 7, type: "video" });
+    expect(vaultBrowseReducer(s, { type: "clearTags" }).tags).toEqual([]);
+    expect(vaultBrowseReducer(initialBrowseState, { type: "clearTags" })).toBe(initialBrowseState);
+    expect(vaultBrowseReducer(s, { type: "toggleTag", tag: "  " })).toBe(s);
+  });
+  it("kept per model", () => {
+    let map: BrowseMap = browseMapReducer({}, { accountId: "A", action: { type: "toggleTag", tag: "feet" } });
+    map = browseMapReducer(map, { accountId: "B", action: { type: "toggleTag", tag: "lace" } });
+    expect(browseFor(map, "A").tags).toEqual(["feet"]);
+    expect(browseFor(map, "B").tags).toEqual(["lace"]);
   });
 });

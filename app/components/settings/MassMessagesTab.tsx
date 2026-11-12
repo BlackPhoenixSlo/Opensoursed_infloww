@@ -13,11 +13,19 @@
  * already write-throughs the cache + invalidates the read query, so the UI
  * converges without manual refetch logic. The hourly Auto-unsend card is its
  * own Smart Messages tab (`AutoUnsendCard`).
+ *
+ * Above the card, the capture's OF filter bar (#66 to #79): Search for message and Sending Date filter the
+ * loaded rows client side when Search is pressed (or Enter), Reset clears them, Export downloads the listed
+ * rows as CSV (`massFilterBar.ts`). The bulk actions act on the filtered rows only. A Sending Date older than
+ * the "Sent in" window widens it until Reset, as the cache read takes `days_back` alone (up to 365 days, 100 rows per
+ * Creator).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { EmptyState, IF_TABLE, IfButton, IfCard, IfHelp, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
+import {
+  EmptyState, IF_TABLE, IfButton, IfCard, IfHelp, IfInput, IfNativeSelect, IfRangePicker, IfSwitch,
+} from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useIfConfirm } from "@/hooks/useIfConfirm";
@@ -29,18 +37,19 @@ import {
 } from "@/hooks/useMassMessages";
 import { SM, SM_MASS_COLUMNS } from "@/components/growth/smartMessagesControls";
 import { useAppliedSettings } from "@/lib/appliedSettings";
+import { downloadCsv } from "@/lib/csv";
 import { cn } from "@/lib/utils";
 
 import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
+import { filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, narrowedBy, RANGE_DAYS } from "./massFilterBar";
 import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
 
-const RANGE_OPTIONS = [
-  { label: "Last 7 days", days: 7 },
-  { label: "Last 30 days", days: 30 },
-  { label: "Last 90 days", days: 90 },
-  { label: "Last 365 days", days: 365 },
-];
+const RANGE_OPTIONS = RANGE_DAYS.map((days) => ({ label: `Last ${days} days`, days }));
+
+/** What the page shows for a failed refresh / load; the raw error stays in the tooltip and the console. */
+const REFRESH_FAILED = "Couldn't refresh from OnlyFans. Check the creator's connection.";
+const LOAD_FAILED = "Couldn't load sent mass messages.";
 
 /** Concurrency cap for bulk cancels. Each cancel is one OF request +
  *  one DB update — small enough to run a few in parallel, large
@@ -50,7 +59,8 @@ const BULK_CHUNK = 4;
 export default function MassMessagesTab() {
   const accounts = useActiveAccounts();
   const accountIds = useMemo(() => accounts.map((a) => a.id), [accounts]);
-  const [daysBack, setDaysBack] = useState(30);
+  const [filter, dispatch] = useReducer(massFilterReducer, initialMassFilter);
+  const { daysBack, draft } = filter;
   const [hideUnsent, setHideUnsent] = useState(true);
   // Multi-select model filter. Empty set = no filter (show all). Otherwise
   // restrict to the accounts in the set. Bulk actions inherit this scope.
@@ -60,17 +70,21 @@ export default function MassMessagesTab() {
   const [bulkNote, setBulkNote] = useState<string | null>(null);
   const { ask, modal: confirmModal } = useIfConfirm();
 
-  const { rows, isLoading, isFetching, error } = useMassMessages(accountIds, { daysBack });
+  const { rows: loaded, isLoading, isFetching, error, queries } = useMassMessages(accountIds, { daysBack });
   const cancelM = useCancelMassMessage();
   const refreshM = useRefreshMassMessages();
   // Broadcasts OF is still delivering; each one's finish refreshes its Creator's rows.
   const sending = useMassQueueProgress(accountIds, daysBack);
   // The Sent date & time column reads in the report time zone, as the bundle's does.
   const reportTz = useAppliedSettings().data?.preferences?.report_tz ?? null;
+  // The filter bar's applied search + Sending Date; everything below (list, counts, bulk) reads these rows.
+  const rows = useMemo(() => filterMassRows(loaded, filter.applied, reportTz), [loaded, filter.applied, reportTz]);
 
+  const refreshVia = (vars: { accountIds: string[]; daysBack: number }) =>
+    refreshM.mutate(vars, { onError: (e) => console.warn("[mass-messages] refresh failed:", e.message) });
   const refresh = () => {
     if (accountIds.length === 0) return;
-    refreshM.mutate({ accountIds, daysBack });
+    refreshVia({ accountIds, daysBack });
   };
 
   // First-mount auto-warm: if the cache is empty for this account/range,
@@ -79,11 +93,11 @@ export default function MassMessagesTab() {
   useEffect(() => {
     if (isLoading || isFetching || refreshM.isPending) return;
     if (accountIds.length === 0) return;
-    if (rows.length > 0) return;
+    if (loaded.length > 0) return;
     const key = `${daysBack}|${accountIds.join(",")}`;
     if (autoRefreshedRef.current.has(key)) return;
     autoRefreshedRef.current.add(key);
-    refreshM.mutate({ accountIds, daysBack });
+    refreshVia({ accountIds, daysBack });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountIds.join(","), daysBack, isLoading, isFetching]);
 
@@ -120,7 +134,7 @@ export default function MassMessagesTab() {
     }
     const ok = await ask(
       label,
-      `Unsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"} from EVERY recipient? This can't be undone.`,
+      `Unsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"}${narrowedBy(filter.applied)} from EVERY recipient? This can't be undone.`,
       "Unsend",
     );
     if (!ok) return;
@@ -155,6 +169,44 @@ export default function MassMessagesTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* The OF filter bar (#66, #73, #76, #77, #79), all 32px: fields 12px
+       *  apart at the sides (#74), labels 8px from their field (#75), buttons
+       *  8px apart (#78). The search box is 230px (#66), Sending Date antd's
+       *  250px range. Search (or Enter) applies, Reset clears. */}
+      <form
+        className="flex flex-wrap items-center"
+        onSubmit={(e) => { e.preventDefault(); dispatch({ type: "apply", now: Date.now() }); }}
+      >
+        <IfInput
+          search
+          aria-label={SM.search.label}
+          placeholder={SM.search.label}
+          value={draft.q}
+          onChange={(e) => dispatch({ type: "draft", patch: { q: e.target.value } })}
+          className="mx-3 mt-4 w-[230px] max-sm:mx-0 max-sm:w-full"
+        />
+        <div className="mx-3 mt-4 flex max-w-full items-center gap-2 max-sm:mx-0">
+          <label htmlFor="sm-mass-sending-date" className="shrink-0 text-[14px] text-fg">{SM.sendingDate.label}</label>
+          <IfRangePicker
+            id="sm-mass-sending-date"
+            from={draft.from}
+            to={draft.to}
+            onChange={({ from, to }) => dispatch({ type: "draft", patch: { from, to } })}
+            className="max-w-full"
+          />
+        </div>
+        <div className="mx-3 mt-4 flex items-center gap-2 max-sm:mx-0">
+          <IfButton onClick={() => dispatch({ type: "reset" })}>{SM.reset.label}</IfButton>
+          <IfButton type="submit" variant="primary">{SM.searchButton.label}</IfButton>
+          <IfButton
+            disabled={visibleRows.length === 0}
+            title={visibleRows.length === 0 ? "Nothing listed to export" : "Download the listed rows as CSV"}
+            onClick={() => downloadCsv(`mass-messages-${new Date().toISOString().slice(0, 10)}.csv`, massCsvRows(visibleRows, accountName))}
+          >
+            {SM.exportButton.label}
+          </IfButton>
+        </div>
+      </form>
       <IfCard title="Mass messages" extra={(
         <div className="flex items-center gap-3 flex-wrap justify-end">
           {/* An Inflowwww extra: the list's own filters, where Infloww's
@@ -164,7 +216,7 @@ export default function MassMessagesTab() {
           <IfNativeSelect
             aria-label="Sent in"
             value={daysBack}
-            onChange={(e) => setDaysBack(Number(e.target.value))}
+            onChange={(e) => dispatch({ type: "daysBack", days: Number(e.target.value) })}
           >
             {RANGE_OPTIONS.map((o) => (
               <option key={o.days} value={o.days}>{o.label}</option>
@@ -245,15 +297,9 @@ export default function MassMessagesTab() {
 
         {bulkNote && <div role="alert" className="text-[14px] text-err mb-3">{bulkNote}</div>}
         {error && (
-          <div className="text-[14px] text-err mb-3">
-            Failed to load: {error.message}
-          </div>
+          <FailLine text={LOAD_FAILED} detail={error.message} onRetry={() => queries.forEach((q) => q.refetch())} />
         )}
-        {refreshM.error && (
-          <div className="text-[14px] text-err mb-3">
-            Refresh failed: {refreshM.error.message}
-          </div>
-        )}
+        {refreshM.error && <FailLine text={REFRESH_FAILED} detail={refreshM.error.message} onRetry={refresh} />}
         {sending.map((q) => (
           <div key={q.queueId} role="status" className="text-[14px] text-fg-dim mb-3">
             {accountName(q.accountId)}: Sending…
@@ -335,6 +381,16 @@ export default function MassMessagesTab() {
         </div>
       </IfCard>
       {confirmModal}
+    </div>
+  );
+}
+
+/** A failed read's plain line and its Retry; the raw error is the line's tooltip. */
+function FailLine({ text, detail, onRetry }: { text: string; detail: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="mb-3 flex flex-wrap items-center gap-x-3 text-[14px] text-err">
+      <span title={detail}>{text}</span>
+      <IfButton variant="link" onClick={onRetry}>Retry</IfButton>
     </div>
   );
 }

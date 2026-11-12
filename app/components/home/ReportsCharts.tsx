@@ -109,11 +109,16 @@ export function SummaryTile({ label, Icon, rgb, total, value, growth, growthTitl
   );
 }
 
-/** #102 to #104: a Creator statistics card, 104px high, its label (16px weight 500, a 16px info icon 4px away) 12px
- *  over its value (32px weight 500). A `null` value is Not wired. */
-export function StatCard({ label, tip, value }: { label: string; tip: string; value: string | null }) {
+/** #102 to #104: a Creator statistics card, 104px high, its label (16px weight 500, a 16px info icon 4px away when
+ *  it has a `tip`) 12px over its value (32px weight 500). A `null` value is Not wired; `valueTitle` is a tooltip on
+ *  the value (a caveat, e.g. a partial figure). */
+export function StatCard({ label, tip, value, valueTitle, stat }: {
+  label: string; tip?: string; value: string | null; valueTitle?: string;
+  /** A stable key for tests and slop (`data-stat` on the card, `data-value` on its figure). */
+  stat?: string;
+}) {
   return (
-    <li className="flex-1 min-w-0 md:mr-4 md:last:mr-0">
+    <li data-stat={stat} className="flex-1 min-w-0 md:mr-4 md:last:mr-0">
       <div
         role="group"
         aria-label={label}
@@ -123,9 +128,9 @@ export function StatCard({ label, tip, value }: { label: string; tip: string; va
         {/* #53, #103: body1's 0.032px tracking on the label, heading1's 0.128px on the value. */}
         <span className="flex items-center gap-1 text-base leading-5 tracking-[0.032px] font-medium">
           {label}
-          <InfoTip text={tip} iconClassName="h-4 w-4" style={{ color: "var(--color-fg-dim)" }} />
+          {tip && <InfoTip text={tip} iconClassName="h-4 w-4" style={{ color: "var(--color-fg-dim)" }} />}
         </span>
-        <span className="text-[32px] leading-9 tracking-[0.128px] font-medium tabular-nums truncate">
+        <span data-value={stat ? "" : undefined} title={valueTitle} className="text-[32px] leading-9 tracking-[0.128px] font-medium tabular-nums truncate">
           {value === null ? <NotWired label={label} /> : value}
         </span>
       </div>

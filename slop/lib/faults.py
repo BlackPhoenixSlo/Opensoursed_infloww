@@ -216,6 +216,25 @@ def _restore_stale_point(fleet) -> None:
     fleet.flags.add("restore-stale-point")
 
 
+def _assistant_edit_skips_second_account() -> None:
+    """Do-mode's bulk edit (spec D11, service/assistant_edit.apply_one) applies the change on the focused model
+    only: every rule on another account answers ok with no diffs, so the results card still reads green (bug
+    class: a scope "all" plan whose apply silently drops the other models)."""
+    import assistant_edit
+
+    orig = assistant_edit.apply_one
+
+    async def apply_one(rule_id, version, changes, *, home, allowed):
+        async with assistant_edit.get_session() as s:
+            rule = await s.get(assistant_edit.AutomationRule, rule_id)
+            acct = rule.account_id if rule is not None else home
+        if acct != home:
+            return {"id": rule_id, "ok": True, "diffs": []}
+        return await orig(rule_id, version, changes, home=home, allowed=allowed)
+
+    assistant_edit.apply_one = apply_one
+
+
 def _chatter_access_ignored() -> None:
     """A chatter's per-Creator access (the Employee setup's account list,
     chatter_account_access) is ignored: every chatter sees all of its Agency's
@@ -892,6 +911,8 @@ FAULTS: dict[str, Fault] = {
         (r"patch:(?:\s|\\n)*\{(?:\s|\\n)*enabled:(?:\s|\\n)*(?:false|!1),(?:\s|\\n)*dryRun:(?:\s|\\n)*(?:false|!1)"
          r"(?:\s|\\n)*\}", "patch: {}"),
     ), browser_files=3),
+    # slop/run 2026-11-11-assistant-do-auto-mass --break --fault=assistant-edit-skips-second-account (relay side)
+    "assistant-edit-skips-second-account": Fault(_assistant_edit_skips_second_account, ("edit_unsend_off_all_models",)),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

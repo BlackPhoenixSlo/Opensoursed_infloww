@@ -28,10 +28,12 @@ export type S4SSection = "discover-creators" | "requests" | "schedule" | "settin
 
 export default function S4SPage({ title, section }: { title: string; section: S4SSection }) {
   const chatterOnly = useIsChatterOnly();
-  const utc = section === "requests" || section === "schedule";
+  const showUtc = (section === "requests" || section === "schedule") && !chatterOnly;
   return (
     <div className="flex min-h-full flex-col">
-      <InflowwPageHeader title={title} extra={utc && !chatterOnly ? <span className="text-[14px] text-[#999]">{UTC_NOTE}</span> : undefined} />
+      <InflowwPageHeader title={title} extra={showUtc ? <span className="hidden text-[14px] text-[#999] md:inline">{UTC_NOTE}</span> : undefined} />
+      {/* Proposal: on a phone the note gets its own line, so the title isn't cut ("S4S sched…"). */}
+      {showUtc && <p className="border-b border-border px-6 py-2 text-[12px] text-[#999] md:hidden">{UTC_NOTE}</p>}
       {chatterOnly
         ? <p className="px-6 py-4 text-sm text-fg-dim">Only the agency owner manages Share for Share.</p>
         : <OwnerBody section={section} />}

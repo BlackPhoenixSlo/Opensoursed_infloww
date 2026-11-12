@@ -92,6 +92,18 @@ export interface FunnelSummary {
   description: string | null;
   opening_message: string;
   step_count: number;
+  /** One model's activity — only on a list read with `?account_id=` (funnels_api._account_stats). */
+  stats?: FunnelStats;
+}
+
+/** A funnel's activity on one model (read-only). */
+export interface FunnelStats {
+  /** Newest sent funnel run on the model (naive UTC); null = never started there. */
+  last_started_at: string | null;
+  /** Distinct fans still being walked through the steps. */
+  active_fans: number;
+  /** A run can still take new repliers (inside the walker's discovery window, not unsent). */
+  listening: boolean;
 }
 
 export interface FunnelFull extends FunnelSummary {
@@ -121,11 +133,13 @@ export interface FunnelUpdate {
 
 // ── Reads ─────────────────────────────────────────────────────────────
 
-export function useFunnels() {
+/** The funnels; with `accountId`, each carries that model's `stats` (Auto Funnel's Status / Fans in funnel). */
+export function useFunnels(accountId?: string | null) {
   return useQuery<FunnelSummary[]>({
-    queryKey: [KEY],
+    queryKey: [KEY, "list", accountId ?? null],
     queryFn: async () => {
-      const r = await relay.get<{ funnels: FunnelSummary[] }>("/admin/funnels", BG_CTX);
+      const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+      const r = await relay.get<{ funnels: FunnelSummary[] }>(`/admin/funnels${q}`, BG_CTX);
       return r.funnels ?? [];
     },
     staleTime: 60_000,

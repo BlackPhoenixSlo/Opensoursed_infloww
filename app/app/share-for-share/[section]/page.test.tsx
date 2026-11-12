@@ -90,7 +90,7 @@ describe("/share-for-share/[section]", () => {
   ])("%s renders its header and the S4S rail", async (section, title, utc) => {
     await render(section);
     expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
-    expect(screen.queryByText("Date/Time shown in UTC time zone") !== null).toBe(utc);
+    expect(screen.queryAllByText("Date/Time shown in UTC time zone").length > 0).toBe(utc);
     const rows = await screen.findAllByTestId("of-creator-row");
     expect(rows).toHaveLength(2);
     await waitFor(() => expect(within(rows[0]).getByText("S4S")).toBeInTheDocument());
@@ -106,7 +106,7 @@ describe("/share-for-share/[section]", () => {
 
   it("requests shows the first creator's latest request", async () => {
     await render("requests");
-    const latest = screen.getByRole("region", { name: "Latest request" });
+    const latest = await screen.findByRole("region", { name: "Latest request" });
     expect(await within(latest).findByRole("article", { name: "Request from Fixture Partner" })).toBeInTheDocument();
     expect(within(latest).getByText("(1/1)")).toBeInTheDocument();
   });

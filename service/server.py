@@ -99,6 +99,7 @@ import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoin
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
 import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
 import of_call_counter  # noqa: E402  # every OF call counted (Caller kind, path, Creator, status), to a file
+import stats_file  # noqa: E402  # lane-stats file: path, read, tmp + os.replace
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 from bg_lane import BgLane, BgLease  # noqa: E402  # a Creator's background sub-cap, loop + threads
 import relay_hooks  # noqa: E402
@@ -129,10 +130,13 @@ from copilot_api import router as _copilot_router  # noqa: E402
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
 from trial_links_api import router as _trial_links_router  # noqa: E402
 from tracking_links_api import router as _tracking_links_router  # noqa: E402
+import tracking_stats  # noqa: E402
+from db.engine import sync_database_url  # noqa: E402
 from of_tracking_api import router as _of_tracking_router  # noqa: E402
 from link_metrics import router as _link_metrics_router  # noqa: E402
 from promotions_api import router as _promotions_router  # noqa: E402
 from link_share_api import router as _link_share_router  # noqa: E402
+from bio_pages.admin import router as _bio_admin_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
     router as _tenant_keys_router,
     admin_router as _tenant_keys_admin_router,
@@ -427,11 +431,14 @@ app.include_router(_chatters_admin_router)
 app.include_router(_smart_lists_router)
 app.include_router(_trial_links_router)
 app.include_router(_tracking_links_router)
+app.include_router(tracking_stats.router)
 app.include_router(_of_tracking_router)
 app.include_router(_link_metrics_router)
 app.include_router(_promotions_router)
 # Share links: owner routes under /admin/*, and the public report /share/{key}/data (exempted below).
 app.include_router(_link_share_router)
+# Bio pages owner editor API (the public bio app is its own process, bio_pages/app.py).
+app.include_router(_bio_admin_router)
 
 # ── The one no-auth allowlist ───────────────────────────────────────
 #
@@ -1505,6 +1512,7 @@ async def _start_event_pumps() -> None:
     try:
         await db_init()
         log.info("db ready (DATABASE_URL=%s)", _redact(os.environ.get("DATABASE_URL", "(default)")))
+        _spawn_bg(tracking_stats.classify_old_rows_background(sync_database_url()), "tracking-click-classify")
     except Exception:
         log.exception("db_init failed — relay will run but SSE/inbox writes will error")
 
@@ -2178,18 +2186,7 @@ _LANE_GAUGES = ("in_flight", "bg_in_flight", "loop_waiting_background", "threads
 def _lane_stats_file() -> Path | None:
     """Where the cumulative counters live between restarts, or None to keep
     them in memory only."""
-    raw = os.environ.get("PRIORITY_LANE_STATS_PATH")
-    if raw is not None:
-        raw = raw.strip()
-        return Path(raw) if raw else None
-    url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("sqlite") and ":///" in url:
-        db = url.split(":///", 1)[1].split("?", 1)[0]
-        if db:
-            parent = Path(db).parent
-            if parent.is_dir():
-                return parent / "priority_lane_stats.json"
-    return None
+    return stats_file.beside_db("PRIORITY_LANE_STATS_PATH", "priority_lane_stats.json")
 
 
 _LANE_STATS_PATH: Path | None = _lane_stats_file()
@@ -2237,7 +2234,7 @@ def _lane_stats_load() -> None:
     if p is None:
         return
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = stats_file.read(p)
     except FileNotFoundError:
         return
     except Exception as exc:
@@ -2291,10 +2288,7 @@ def _lane_stats_flush(force: bool = False) -> None:
         return
     _lane_stats_last_flush = now
     try:
-        payload = json.dumps(_lane_stats_snapshot())
-        tmp = p.parent / (p.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, p)
+        stats_file.write(p, _lane_stats_snapshot())
         _lane_stats_write_error = None
     except Exception as exc:
         _lane_stats_write_error = f"{type(exc).__name__}: {exc}"[:200]

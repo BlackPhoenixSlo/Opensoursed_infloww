@@ -16,7 +16,6 @@ import { createContext, useCallback, useContext, useEffect, useReducer, useRef, 
 
 import { Download, FolderOpen, X } from "lucide-react";
 
-import { LEARN } from "@/components/ui/infloww";
 import { useAccounts } from "@/hooks/useAccounts";
 import { cn } from "@/lib/utils";
 
@@ -62,7 +61,8 @@ export interface VaultDownload {
   keepAccounts: (ids: readonly string[]) => void;
 }
 
-/** The download controller: ONE for the app (`VaultDownloadProvider`). */
+/** The download controller: ONE for the app (`VaultDownloadProvider`). Every Download control (selection bar, rail,
+ *  Extras drawer) calls this one. */
 export function useVaultDownload(): VaultDownload {
   const [state, dispatch] = useReducer(vaultDownloadReducer, initialDownloadState);
   const ref = useRef(state);
@@ -289,19 +289,6 @@ export function VaultDownloadAccountGuard() {
     keep([...(data.accounts ?? []).map((a) => a.id), ...(data.watchers ?? []).map((a) => a.id)]);
   }, [keep, data]);
   return null;
-}
-
-/** The Vault Pro header's Download, Learn's look: an icon and its label (the label screen-reader-only on a phone, as
- *  the header's Learn elsewhere). Off with the reason as its title. */
-export function HeaderDownloadButton({ label, reason, onClick }: { label: string; reason: string; onClick?: () => void }) {
-  return (
-    <button type="button" data-testid="vault-header-download" onClick={onClick} disabled={!!reason}
-      title={reason || `${label} (full quality, into a folder you pick)`}
-      className={cn(LEARN, "font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-accent")}>
-      <Download className="h-4 w-4" aria-hidden />
-      <span className="max-sm:sr-only">{label}</span>
-    </button>
-  );
 }
 
 function mb(n: number): string {

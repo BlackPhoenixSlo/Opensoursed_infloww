@@ -182,7 +182,7 @@ MAP = {"scenarios": {
                        "slop/actors/notif_click.py": ["click"]}},
     # reaches the app's /site-auth route handler over plain HTTP only (no browser)
     "s-api": {"sha": "B", "seconds": 10, "pages": ["/site-auth"], "http_pages": ["/site-auth"],
-              "py": {"service/a.py": ["top"]}},
+              "py": {"service/a.py": ["top"], "service/bio_pages/assets.py": ["page"]}},
     # 17 more that run Box.open and visit /: 20 mapped, so `flow` is reach by at most 3 of them
     **{f"f{i:02d}": {"sha": "A", "seconds": 100 + i, "pages": ["/"], "py": {"service/a.py": ["Box.open"]}}
        for i in range(17)},
@@ -256,6 +256,8 @@ ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")  # added on main after t
      []),
     ("slop/lib .mjs: the scenarios running app_ts", {}, {"A": ["slop/lib/focus_ts.mjs"]}, [], {"s-vault": "flow"},
      []),
+    ("bio sidecar static page: the scenarios loading bio_pages/assets.py", {},
+     {"B": ["service/bio_pages/public/script.js"]}, [], {"s-api": "flow"}, []),
     ("fetch-guard.cjs: every browser scenario", {}, {"A": ["scripts/demo-shots/fetch-guard.cjs"]}, [],
      {n: "layout" for n in BROWSER}, []),
     ("non-py runtime file under service/: every scenario, shared, warned", {},

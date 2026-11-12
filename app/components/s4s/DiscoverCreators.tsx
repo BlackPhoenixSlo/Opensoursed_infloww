@@ -6,8 +6,9 @@
  * radius 8, hover M1). One card per opted-in, visible Creator with a Primary post on this Deployment, the owner's own
  * other Creators included and tagged "Your agency"; the creator picked on the rail is left out (it cannot send to
  * itself). A card shows the S4S projection and nothing else: the 44px avatar, display name, @username, a Daily
- * limit tile (in place of Infloww's stat tiles, which we have no figures for) and the Primary post's caption. A card
- * click opens the request pop-up (850), Infloww's layout: the Primary post's media carousel on the left; the avatar,
+ * limit tile (in place of Infloww's stat tiles, which we have no figures for), the Primary post's caption and its first
+ * still (64px), and a "Request" button top right (ours: Infloww's card has none). A card click or Request opens the
+ * request pop-up (850), Infloww's layout: the Primary post's media carousel on the left; the avatar,
  * name, @username, tags (Daily limit in place of Infloww's VIP / ranking / Active Fans, which we have no figures for)
  * and "<name>'s S4S post" caption on the right. The request goes from the creator picked on the rail, at a proposed
  * time, as `POST /admin/s4s/requests`; the Relay decides every refusal and the pop-up shows its reason.
@@ -31,15 +32,16 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Play } from "lucide-react";
 
 import { EmptyState, IfButton, IfInput, IfModal } from "@/components/ui/infloww";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
 import { ProjectionAvatar, S4SMediaCarousel, message } from "@/components/s4s/s4sBits";
 import {
-  S4S_BLOCKS_KEY, S4S_REQUESTS_KEY, blockS4SCreator, proposeS4SSlot, sendS4SRequest, unblockS4SCreator, useS4SBlocks,
-  useS4SDiscover,
-  type S4SDiscoveryItem, type S4SProfile,
+  S4S_BLOCKS_KEY, S4S_REQUESTS_KEY, blockS4SCreator, proposeS4SSlot, s4sMediaUrl, sendS4SRequest, unblockS4SCreator,
+  useS4SBlocks, useS4SDiscover,
+  type S4SDiscoveryItem, type S4SMedia, type S4SProfile,
 } from "@/lib/s4s";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -210,12 +212,33 @@ function RequestModal({ item, from, onClose }: { item: S4SDiscoveryItem; from: S
   );
 }
 
+/** The Primary post's first still, 64px, as Discover's card shows it; nothing when the post has no media or the
+ *  Relay cannot read it (the item left its vault). */
+function PostThumb({ media = [] }: { media?: S4SMedia[] }) {
+  const [broken, setBroken] = useState(false);
+  const m = media[0];
+  if (!m || broken) return null;
+  return (
+    <span className="relative h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-bg-elev-1">
+      {/* eslint-disable-next-line @next/next/no-img-element -- a Relay-served still, not a Next asset */}
+      <img src={s4sMediaUrl(m.id)} alt={`${media.length > 1 ? `1 of ${media.length}, ` : ""}S4S ${m.media_type}`}
+        onError={() => setBroken(true)} className="h-full w-full object-cover" />
+      {m.media_type === "video" && (
+        <span aria-hidden className="absolute inset-0 grid place-items-center">
+          <span className="grid h-6 w-6 place-items-center rounded-full bg-black/50 text-white"><Play className="h-3 w-3" /></span>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** A card: the whole card opens the request pop-up, and "Request" top right says so. */
 function CreatorCard({ item, onOpen }: { item: S4SDiscoveryItem; onOpen: () => void }) {
   return (
-    <article aria-label={item.display_name}>
-      <button type="button" onClick={onOpen}
-        className="w-full rounded-lg border border-border p-4 text-left transition-colors hover:border-accent">
-        <div className="flex items-center gap-3">
+    <article aria-label={item.display_name}
+      className="relative rounded-lg border border-border transition-colors hover:border-accent">
+      <button type="button" onClick={onOpen} className="w-full p-4 text-left">
+        <div className="flex items-center gap-3 pr-24">
           <ProjectionAvatar item={item} px={44} round />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -227,14 +250,16 @@ function CreatorCard({ item, onOpen }: { item: S4SDiscoveryItem; onOpen: () => v
             <div className="text-[14px] text-[#999]">@{item.username}</div>
           </div>
         </div>
-        <div className="mt-3 flex gap-1.5">
-          <div className="flex h-[50px] w-[68px] flex-col items-center justify-center rounded-lg bg-bg-elev-1">
+        <div className="mt-3 flex items-start gap-3">
+          <div className="flex h-[50px] w-[68px] shrink-0 flex-col items-center justify-center rounded-lg bg-bg-elev-1">
             <span className="text-[16px] font-medium text-fg">{item.daily_limit}</span>
             <span className="text-[10px] text-[#999]">Daily limit</span>
           </div>
+          <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[14px] text-fg-dim line-clamp-3">{item.primary_caption}</p>
+          <PostThumb media={item.primary_media} />
         </div>
-        <p className="mt-3 whitespace-pre-wrap break-words text-[14px] text-fg-dim line-clamp-4">{item.primary_caption}</p>
       </button>
+      <IfButton className="absolute right-4 top-4" onClick={onOpen}>Request</IfButton>
     </article>
   );
 }

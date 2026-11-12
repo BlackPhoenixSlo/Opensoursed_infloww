@@ -230,9 +230,10 @@ export default function VaultMediaToolbar({
         <SortBox sort={sort} onSort={onSort} disabled={disabled} />
       </div>
 
-      {/* #54: 0 24px 16px, the tabs left (scrolling sideways) and the tools right. */}
-      <div className="px-3 md:px-6 pb-4 flex flex-wrap md:flex-nowrap items-center justify-between gap-2">
-        <div className="md:flex-1 flex items-center min-w-0 max-w-full overflow-x-auto">
+      {/* #54: 0 24px 16px, the tabs left and the tools right; when the pane is too narrow for both, the tabs wrap
+          (never clipped under the tools) and the tools drop to the right of the next line. */}
+      <div className="px-3 md:px-6 pb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-y-2 min-w-0">
           <span className="text-sm mr-2 shrink-0">Media:</span>
           {TYPE_TABS.map((t) => {
             // #58: a type with no files in the chosen folder is off. All media has no per-type count.
@@ -273,7 +274,7 @@ export default function VaultMediaToolbar({
           )}
         </div>
         {/* #63 to #68: the media tools, 32px tall; icons in 28px boxes. */}
-        <div className="h-8 shrink-0 flex items-center">
+        <div className="h-8 ml-auto shrink-0 flex items-center">
           {refreshNote && <span role="status" className="mr-2 text-[12px] text-warn">{refreshNote}</span>}
           <button type="button" aria-label="Refresh" title="Refresh" onClick={onRefresh} disabled={disabled || refreshing}
             aria-busy={refreshing} className={iconBox}>

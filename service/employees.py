@@ -762,12 +762,17 @@ async def list_audit(
     offset: int = Query(0, ge=0),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    include_background: bool = Query(False),
 ) -> dict[str, Any]:
     """Paginated `actions` rows, filterable by employee + account and by
     time: `from` (inclusive) and `to` (exclusive), each an ISO datetime (a
     zone offset or Z is converted to UTC) or a date (a `to` date includes
     that whole UTC day); 422 when unreadable. Each row carries `label`, the
     action's name for people (audit_labels.action_label), or null.
+
+    The app's own background writes (`BACKGROUND_WRITES`: perf-log flushes,
+    error reports) are left out unless `include_background=true`; they are
+    still recorded. Filtered in SQL, so a page is a page of what is shown.
 
     Scoped to the signed-in friend: only actions whose `account_id` is in
     their `user_accounts` set OR whose `employee_id` is one they own.
@@ -779,6 +784,8 @@ async def list_audit(
     user = get_request_user()
     async with get_session() as s:
         stmt = select(Action).order_by(desc(Action.at)).limit(limit).offset(offset)
+        if not include_background:
+            stmt = stmt.where(*(Action.action.not_like(f"{audit_action(m, p)}%") for m, p in BACKGROUND_WRITES))
         if from_ is not None:
             stmt = stmt.where(Action.at >= _audit_bound(from_, "from"))
         if to is not None:

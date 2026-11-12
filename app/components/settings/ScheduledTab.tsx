@@ -6,22 +6,41 @@
  * Surfaces what's about to fire (or already overdue) so the operator can
  * cancel before it goes out. Direct + mass sends share the queue; we
  * label each row by recipient count so a 1-fan send vs a 200-fan blast
- * is unambiguous.
+ * is unambiguous. A table (one row per send, Actions pinned right) with the
+ * house empty state; the help line links to Auto Mass for repeating sends
+ * (shown only when the role may open it).
  */
 
+import Link from "next/link";
 import { useMemo } from "react";
 import { Lock, Paperclip } from "lucide-react";
 
-import { IfButton, IfCard, IfHelp } from "@/components/ui/infloww";
+import { useGrantedPages } from "@/components/shell/useGrantedPages";
+import { EmptyState, IF_TABLE, IfButton, IfCard, IfHelp } from "@/components/ui/infloww";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
 import type { OFScheduledMessage } from "@/lib/relay";
+import { deniedPage } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
 import { ofPlainText } from "@/lib/ofRichText";
 
 import { RefreshButton } from "./RefreshButton";
+
+const AUTO_MASS = "/growth/auto-mass";
+
+/** The list's columns at their widths (px); Actions pinned right, as the Mass messages table pins it. */
+const COLUMNS = [
+  { label: "Scheduled for", width: 210 },
+  { label: "Creator", width: 160 },
+  { label: "Audience", width: 180 },
+  { label: "Message", width: 360 },
+  { label: "Attachment / Price", width: 160 },
+  { label: "Actions", width: 100 },
+] as const;
+const TABLE_WIDTH = COLUMNS.reduce((w, c) => w + c.width, 0);
 
 export default function ScheduledTab() {
   const accounts = useActiveAccounts();
@@ -29,6 +48,8 @@ export default function ScheduledTab() {
   const { rows, isLoading, isFetching, error, queries } = useScheduledMessages(accountIds);
   const cancelM = useCancelScheduled();
   const { ask, modal: confirmModal } = useIfConfirm();
+  // Repeating sends live on My Automations' Auto Mass; its link shows only where the role may open it.
+  const autoMass = deniedPage(AUTO_MASS, useGrantedPages()) === null;
 
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -42,37 +63,66 @@ export default function ScheduledTab() {
       <IfCard title="Scheduled messages" extra={(
         <RefreshButton onClick={refresh} refreshing={isFetching} />
       )}>
-        <IfHelp className="mb-4">All queued sends across the agency. Cancel before they fire.</IfHelp>
+        <IfHelp className="mb-4">
+          All queued sends across the agency. Cancel before they fire.
+          {autoMass && (
+            <>
+              {" "}
+              <Link href={AUTO_MASS} className="text-fg-dim underline underline-offset-2 hover:text-accent">
+                Repeat a mass on a schedule → Auto Mass
+              </Link>
+            </>
+          )}
+        </IfHelp>
 
         {error && (
-          <div className="text-[14px] text-err mb-3">
-            Failed to load: {error.message}
+          <div role="alert" className="mb-3 flex flex-wrap items-center gap-x-3 text-[14px] text-err">
+            <span title={error.message}>Couldn&apos;t load scheduled messages.</span>
+            <IfButton variant="link" onClick={refresh}>Retry</IfButton>
           </div>
         )}
 
-        {isLoading && rows.length === 0 && (
-          <div className="text-[14px] text-fg-dim">Loading…</div>
-        )}
-
-        {!isLoading && rows.length === 0 && (
-          <div className="text-[14px] text-fg-dim">Nothing queued.</div>
-        )}
-
-        <div className="space-y-2">
-          {rows.map((m) => (
-            <ScheduledRow
-              key={`${m.__accountId}:${m.id}`}
-              m={m}
-              accountLabel={accountName(m.__accountId)}
-              busy={cancelM.isPending && cancelM.variables?.id === m.id}
-              onCancel={async () => {
-                const accountId = m.__accountId;
-                if (!accountId) return;
-                if (!(await ask("Cancel this scheduled send?", undefined, "Cancel send"))) return;
-                cancelM.mutate({ id: m.id, accountId });
-              }}
-            />
-          ))}
+        <div className="@container overflow-x-auto">
+          <table className={cn(IF_TABLE.table, "table-fixed")} style={{ width: TABLE_WIDTH, minWidth: "100%" }}>
+            <thead>
+              <tr>
+                {COLUMNS.map((c) => (
+                  <th key={c.label} style={{ width: c.width }} className={cn(
+                    IF_TABLE.th, IF_TABLE.thDivider, "border-b border-border",
+                    c.label === "Actions" && cn(IF_TABLE.fixedRightHead, "z-[1] text-center"),
+                  )}>
+                    {c.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading && rows.length === 0 ? (
+                <SkeletonRows cols={COLUMNS.length} rows={3} cellClassName={IF_TABLE.td} />
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={COLUMNS.length} className="p-0">
+                    <div className="sticky left-0 w-[100cqw]">
+                      <EmptyState kind="data" size="md" text="Nothing queued." className="py-16" />
+                    </div>
+                  </td>
+                </tr>
+              ) : rows.map((m) => (
+                <ScheduledRow
+                  key={`${m.__accountId}:${m.id}`}
+                  m={m}
+                  accountLabel={accountName(m.__accountId)}
+                  busy={cancelM.isPending && cancelM.variables?.id === m.id}
+                  onCancel={async () => {
+                    const accountId = m.__accountId;
+                    if (!accountId) return;
+                    if (!(await ask("Cancel this scheduled send?", undefined, "Cancel send"))) return;
+                    cancelM.mutate({ id: m.id, accountId });
+                  }}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       </IfCard>
       {confirmModal}
@@ -103,45 +153,51 @@ function ScheduledRow({
   ]
     .filter(Boolean)
     .join(" + ") || "?";
+  const media = m.mediaCount ?? 0;
+  const priced = !!m.price && m.price > 0;
+  const text = ofPlainText(m.text || "");
 
   return (
-    <div className={cn(
-      "border border-border rounded-md px-3 py-2.5 flex items-start gap-3",
-      busy && "opacity-60",
-    )}>
-      <div className="flex-1 min-w-0 space-y-1">
-        <div className="flex items-center gap-2 text-[12px] flex-wrap">
-          <span className={cn(
-            "px-1.5 py-0.5 rounded",
-            overdue ? "bg-warn/15 text-warn" : "bg-accent/15 text-accent",
-          )}>
-            {when ? when.toLocaleString() : "no time"}
-            {overdue && " (overdue)"}
+    <tr className={cn(IF_TABLE.row, busy && "opacity-60")}>
+      <td className={IF_TABLE.td}>
+        <span className={cn(
+          "inline-block rounded px-1.5 py-0.5 text-[12px]",
+          overdue ? "bg-warn/15 text-warn" : "bg-accent/15 text-accent",
+        )}>
+          {when ? when.toLocaleString() : "no time"}
+          {overdue && " (overdue)"}
+        </span>
+      </td>
+      <td className={cn(IF_TABLE.td, "truncate")}>{accountLabel}</td>
+      <td className={cn(IF_TABLE.td, "text-fg-dim")}>
+        {isMass ? `Mass (${massLabel})` : `Direct to ${directCount} fan${directCount === 1 ? "" : "s"}`}
+      </td>
+      <td className={IF_TABLE.td}>
+        {text
+          ? <div className="line-clamp-2 whitespace-pre-wrap break-words" title={text}>{text}</div>
+          : <span className="text-fg-dim">--</span>}
+      </td>
+      <td className={IF_TABLE.td}>
+        {media === 0 && !priced ? <span className="text-fg-dim">--</span> : (
+          <span className="inline-flex items-center gap-3 text-[12px]">
+            {media > 0 && (
+              <span className="text-fg-dim inline-flex items-center gap-1">
+                <Paperclip size={12} aria-hidden /> {media}
+              </span>
+            )}
+            {priced && (
+              <span className="text-warn inline-flex items-center gap-1">
+                <Lock size={12} aria-hidden /> {fmtPrice(Math.round(m.price! * 100))}
+              </span>
+            )}
           </span>
-          <span className="text-fg-dim">{accountLabel}</span>
-          {isMass ? (
-            <span className="text-fg-dim">Mass ({massLabel})</span>
-          ) : (
-            <span className="text-fg-dim">Direct to {directCount} fan{directCount === 1 ? "" : "s"}</span>
-          )}
-          {(m.mediaCount ?? 0) > 0 && (
-            <span className="text-fg-dim inline-flex items-center gap-1">
-              <Paperclip size={12} aria-hidden /> {m.mediaCount}
-            </span>
-          )}
-          {m.price && m.price > 0 && (
-            <span className="text-warn inline-flex items-center gap-1">
-              <Lock size={12} aria-hidden /> {fmtPrice(Math.round(m.price * 100))}
-            </span>
-          )}
-        </div>
-        <div className="text-[14px] whitespace-pre-wrap break-words line-clamp-3">
-          {ofPlainText(m.text || "")}
-        </div>
-      </div>
-      <IfButton variant="link" onClick={onCancel} disabled={busy}>
-        Cancel
-      </IfButton>
-    </div>
+        )}
+      </td>
+      <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] bg-bg-elev-1 text-center")}>
+        <IfButton variant="link" onClick={onCancel} disabled={busy}>
+          Cancel
+        </IfButton>
+      </td>
+    </tr>
   );
 }

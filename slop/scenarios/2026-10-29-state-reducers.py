@@ -119,7 +119,7 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    /admin/users/llm-key-status request (both are master-only on the relay). Screenshots admin-gate-trigger,
    admin-gate-settled.
 9. Auto-reply (My Automations > Auto-reply, `?creator=` Creator 0, its blob first PUT through the real
-   route with quiet hours and max_nudges): every field edited (header switch, delay, randomise, a
+   route with quiet hours and max_nudges): every field edited (header switch, its own PUT at once; delay, randomise, a
    folder, the folder cap, new fans, its window and cap, both photo options, a Human style box),
    Save, reload: the form shows each edit, and GET /admin/autoreply-config + /admin/style-config
    hold them with the other knobs kept (autoreply-get.json). Screenshots autoreply-edited-trigger,
@@ -132,7 +132,7 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    next Save PUTs and stores it. Screenshots autoreply-style-during-save, autoreply-style-landed,
    autoreply-style-after-save.
 9b. Get to know fans (My AI Chatter > Get to know fans, `?creator=` Creator 0). First on a 390x844 phone, dark:
-   no rule, the Automation card's switch off -> the settings show the catalog defaults; cutoff, caption and price
+   no rule, the header switch off -> the settings show the catalog defaults; cutoff, caption and price
    typed, Save -> one POST /admin/automation-rules with is_enabled false, no switch call, the DB row parked with
    them; switch on then off -> the same row on, then off, the values kept on screen and stored. Screenshots
    gtkf-off-no-rule, gtkf-off-saved, gtkf-on-off-kept. Then (desktop) the switch wakes that rule: cutoff typed,
@@ -262,10 +262,12 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    session-revalidate-neterror, session-revalidate-401, session-boot-neterror,
    session-signed-back-in.
 21. Vault manage (app/components/vault/vaultBrowseReducer.ts, vaultItemEditorReducer.ts), Vault Pro on
-   Creator 0, run before 20: two files ticked on All, then the Video tab -> no Selected bar there nor back
-   on All; item 9021's editor (seeded described) with "abc" as the price -> Save & lock stays off, then a
+   Creator 0, run before 20: two files ticked on All, then the Video tab -> the ticks kept ("2 selected · 2
+   hidden by filter", owner 11-11), back on All "Selected 2"; the "slop" tag chip -> no bar (a new view clears
+   them), Clear tags; item 9021's editor (seeded described) with "abc" as the price -> Save & lock stays off, then a
    description edit -> one PATCH /admin/vault-ai/items/9021 with fields = description only, the row with
-   no price. Screenshots vault-ticked-trigger, vault-type-switched, vault-price-letters, vault-price-saved.
+   no price. Screenshots vault-ticked-trigger, vault-type-switched, vault-tag-cleared-ticks, vault-price-letters,
+   vault-price-saved.
 22. Vault editor Re-describe (vaultItemEditorReducer.ts `refresh`), item 9021: a Re-describe on the
    untouched editor shows the answer's text and tags with Save & lock off; reopened, a description typed
    first survives the next Re-describe and Save & lock sends only it (the row has it, locked).
@@ -319,7 +321,8 @@ its sales from /api/of/* chat-media reads ui.py holds; vitest (FanDrawer.scrub.t
    list, a chat's row, its thread (OFM_FAN, then OF's wire sends to that fan) and /users/list are answered at the
    browser's wire from the relay's own chats; the word selection is set by script.
 27. Mass Auto Unsend Messages tab (app/components/settings/AutoUnsendPanel.tsx, autoUnsendForm.ts `saveBody`;
-   lib/mass_unsend_faults.py). `?tab=unsend`: Creator 0 has no rule, its class rows hidden; its switch on shows
+   lib/mass_unsend_faults.py). `?tab=unsend`: one Creator's form at a time, picked on the creator column
+   (`ui.pick_creator`). Creator 0 has no rule, its class rows hidden; its switch on shows
    the three, PPV on, Save -> one 'Auto-unsend mass' automation_rules row, on, policy {text 4, price 48}.
    Creator 1 holds a legacy rule (by SQL: on, empty policy, a 'done' scheduled_jobs row fired now so the hourly
    rule is not due during the run): hydrated with every class off, its switch off hides them and Update sends
@@ -453,7 +456,7 @@ checks),
 (every rule valid, so a one-bound between saves),
 `fanlist-placeholder-crosses-creators` (the old Creator's rows stand in across a Creator switch),
 `bell-open-keeps-badge` (opening the bell zeroes no arrivals),
-`vault-type-keeps-ticks` (a type switch keeps the ticks), `vault-letters-price-zero` (letters parse as $0),
+`vault-view-keeps-ticks` (a new view, here a tag chip, keeps the ticks), `vault-letters-price-zero` (letters parse as $0),
 `redescribe-keeps-old-text` (the inputs keep the old text, every field reads edited),
 `redescribe-overwrites-edit` (the describe replaces typed text), `picker-shimmer-stuck` (a failed frame 0
 keeps the shimmer),
@@ -1248,8 +1251,9 @@ async def _auto_unsend(ctx, page, chk) -> None:
 
     await page.goto(f"{ctx.app}/growth/smart-messages?tab=unsend", wait_until="domcontentloaded")
     p0, p1 = panel(nick0), panel(nick1)
+    # One Creator's form shows at a time (the creator column picks it); each keeps its own rule.
+    await ui.pick_creator(page, nick0, timeout_ms=WAIT_MS)
     await p0.get_by_role("button", name="Save", exact=True).wait_for(timeout=WAIT_MS)
-    await p1.get_by_role("button", name="Update", exact=True).wait_for(timeout=30_000)
     selected = await page.get_by_role("tab", selected=True).inner_text()
     off_rows = await classes(nick0)
     await _painted(page)
@@ -1270,6 +1274,8 @@ async def _auto_unsend(ctx, page, chk) -> None:
         selected=selected, off_rows=off_rows, on_rows=on_rows, saved=saved)
 
     # Creator 1: hydrated on with every class off; switch off hides the rows, Update turns the rule off.
+    await ui.pick_creator(page, nick1)
+    await p1.get_by_role("button", name="Update", exact=True).wait_for(timeout=30_000)
     legacy_rows = await classes(nick1)
     await p1.get_by_role("switch", name=nick1, exact=True).click(timeout=10_000)
     hidden_rows = await classes(nick1)
@@ -3951,7 +3957,6 @@ async def _gtkf_off(ctx, page, chk, aid: str) -> None:
     await page.wait_for_function("(b) => b && !b.disabled", arg=await sw.element_handle(), timeout=WAIT_MS)
     start = await sw.get_attribute("aria-checked")
     before = await _gtkf_rows(ctx, aid)
-    card = await sw.evaluate("(b) => b.closest('section')?.querySelector('h2')?.textContent ?? null")
     in_header = await sw.evaluate("(b) => !!b.closest('header')")
     cutoff = page.get_by_role("spinbutton", name="Message cutoff")
     caption = page.get_by_role("textbox", name="Closing PPV caption")
@@ -3970,7 +3975,7 @@ async def _gtkf_off(ctx, page, chk, aid: str) -> None:
     await cutoff.fill("9")
     await caption.fill(GTKF_OFF_CAPTION)
     await price.fill("7")
-    save = page.get_by_role("button", name="Save", exact=True).first
+    save = _gtkf_save(page)
     with recorded(page, "POST", "/admin/automation-rules") as posts, \
             recorded(page, "POST", "/admin/automation-rules/switch") as switches:
         await save.click()
@@ -3995,15 +4000,23 @@ async def _gtkf_off(ctx, page, chk, aid: str) -> None:
     want = (9, GTKF_OFF_CAPTION, 700)
     body = (posts[0]["body"] or {}) if posts else {}
     rid = after_save[0][0] if after_save else None
-    chk(GTKF_OFF, start == "false" and before == [] and card == "Automation" and not in_header
+    chk(GTKF_OFF, start == "false" and before == [] and in_header
         and seeded[0] == "10" and seeded[2] == "10" and bool(seeded[1])
         and len(posts) == 1 and body.get("is_enabled") is False and switches == []
         and switch_after_save == "false" and after_save == [(rid, 0, *want)]
         and on_rows == [(rid, 1, *want)] and off_rows == [(rid, 0, *want)] and kept == ["9", GTKF_OFF_CAPTION, "7"],
-        switch_before=start, rows_before=before, switch_card=card, in_header=in_header, seeded=seeded,
+        switch_before=start, rows_before=before, in_header=in_header, seeded=seeded,
         posts=[{"status": p["status"], "body": p["body"]} for p in posts], switch_calls=len(switches),
         switch_after_save=switch_after_save, rows_after_save=after_save, rows_on=on_rows, rows_off=off_rows,
         kept=kept, account=aid)
+
+
+def _gtkf_save(page):
+    """The rule form's Save, whatever it reads ("Save", or "Saving…" while its PATCH is out): the button of the first
+    row after the "When the chat ends" card that is not itself a card (Human style is a card; Model info's own
+    "Save model info" sits inside its card, never matched)."""
+    return page.locator("xpath=//section[h2[normalize-space()='When the chat ends']]"
+                        "/following-sibling::div[button][1]/button")
 
 
 async def _gtkf(ctx, page, chk) -> None:
@@ -4027,7 +4040,7 @@ async def _gtkf(ctx, page, chk) -> None:
     await cutoff.wait_for(timeout=WAIT_MS)
     caption = page.get_by_role("textbox", name="Closing PPV caption")
     price = page.get_by_role("spinbutton", name="Closing PPV price in dollars")
-    save = page.get_by_role("button", name="Save", exact=True).first  # the rule's; Model info's is the last
+    save = _gtkf_save(page)
     saved_label = page.get_by_text("Saved", exact=True)
 
     is_rule = lambda u: re.fullmatch(r"/admin/automation-rules/\d+", urlsplit(u).path) is not None  # noqa: E731
@@ -4501,16 +4514,26 @@ async def _vaultmanage(ctx, page, chk) -> None:
         await bar.wait_for(timeout=10_000)
         ticked = (await bar.locator("xpath=..").inner_text()).split()
         await ui.shot(ctx, page, "vault-ticked-trigger")
+        count = page.get_by_test_id("selection-count")
         await page.get_by_role("button", name="Video", exact=True).click(timeout=10_000)
         await page.wait_for_timeout(800)
-        bars_video = await bar.count()
+        on_video = await count.all_inner_texts()
         await ui.shot(ctx, page, "vault-type-switched")
         await page.get_by_role("button", name="All", exact=True).click(timeout=10_000)
         await tile(VAULT_IDS[0]).wait_for(timeout=30_000)
         await page.wait_for_timeout(500)
-        bars_all = await bar.count()
-        chk(VM_TICKS, ticked == ["Selected", "2"] and bars_video == 0 and bars_all == 0, bar_before=ticked,
-            bars_on_video=bars_video, bars_back_on_all=bars_all)
+        on_all = [" ".join(t.split()) for t in await count.all_inner_texts()]
+        # A tag chip is a new view (vaultBrowseReducer `view`): item 9021's seeded "slop" tag; the ticks go.
+        chips = page.get_by_role("group", name="Tags")
+        await chips.get_by_role("button", name=re.compile(r"^slop\s*\d+$")).click(timeout=30_000)
+        await page.wait_for_timeout(800)
+        bars_tagged = await count.count()
+        await ui.shot(ctx, page, "vault-tag-cleared-ticks")
+        await chips.get_by_role("button", name="Clear tags", exact=True).click(timeout=10_000)
+        await tile(VAULT_IDS[0]).wait_for(timeout=30_000)
+        chk(VM_TICKS, ticked == ["Selected", "2"] and on_video == ["2 selected · 2 hidden by filter"]
+            and on_all == ["Selected 2"] and bars_tagged == 0, bar_before=ticked,
+            on_video=on_video, back_on_all=on_all, bars_after_tag=bars_tagged)
 
         # 2. "abc" as the price, then a description edit and Save & lock.
         await page.get_by_role("button", name="Selecting", exact=True).click(timeout=10_000)

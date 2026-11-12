@@ -14,6 +14,9 @@
  *   • The state is the draft plus the draft the last Save sent
  *     (automations/sentDraft.ts: `unsaved` holds "Saved" off over an edit made
  *     while that save was in flight).
+ *   • `enabled` is the header switch's, which saves at once (its own PUT, not the
+ *     page Save): `switched` sets it in the draft AND in the sent draft, so a flip
+ *     never turns "Saved" off, and the next page Save sends the same value.
  *   • Model + effort are the ACCOUNT's (`account_ai_config.model` /
  *     `reasoning_effort`, the account-config PUT), not this blob's: seeded by
  *     `brainSeed`, sent by `brainPayload` only while a pick made here has not
@@ -77,7 +80,10 @@ export type AutoReplyEdit =
 /** The brain PUT carrying `pick` landed. */
 type BrainSaved = { type: "brainSaved"; pick: Pick2 };
 
-export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved;
+/** The header switch flipped (its PUT is out), or flipped back (that PUT failed). */
+export type Switched = { type: "switched"; on: boolean };
+
+export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved | Switched;
 
 /** [lo, hi] per number input. The delay tops out well under the engine's
  *  `silence_max_minutes` (default 1115), past which a delay (or its randomised
@@ -161,6 +167,15 @@ export const randomiseOn = (d: AutoReplyDraft) => d.randomise && d.delay > 0;
 /** Both sources off with the switch on = nobody qualifies: an "on" that never replies. */
 export const canSubmit = (d: AutoReplyDraft) => !(d.enabled && !d.foldersOn && !d.newOn);
 
+/** The header switch's PUT body: the stored blob with only `enabled` set. Null = refused: turning it on with both
+ *  STORED sources off (`defaults` ⊕ `stored`, what the engine reads) would be an "on" that never replies. Judged on
+ *  the stored blob, not the draft: the switch saves only `enabled`, so an unsaved source in the draft never lands. */
+export function switchPayload(defaults: AutoreplyConfig, stored: AutoreplyConfig, on: boolean): AutoreplyConfig | null {
+  const eff = { ...defaults, ...stored };
+  if (on && !eff.folders_enabled && !eff.new_fans_enabled) return null;
+  return { ...stored, enabled: on };
+}
+
 /** The PUT body: the stored blob with this page's fields set from the draft. */
 export function buildPayload(d: AutoReplyDraft, stored: AutoreplyConfig): AutoreplyConfig {
   return {
@@ -207,5 +222,11 @@ const sentReducer = withSent(editDraft);
 export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoReplyState {
   // A landed brain PUT clears the pick, unless it moved again while the PUT ran.
   if (a.type === "brainSaved") return samePick(s.draft, a.pick) ? { ...s, modelTouched: false } : s;
+  if (a.type === "switched") {
+    const draft = { ...s.draft, enabled: a.on };
+    // A clean form stays clean (sent === draft); a dirty one stays dirty, its sent draft carrying the same flip.
+    const sent = s.sent === s.draft ? draft : s.sent && { ...s.sent, enabled: a.on };
+    return { ...s, draft, sent };
+  }
   return { ...sentReducer(s, a), modelTouched: s.modelTouched || a.type === "model" || a.type === "effort" };
 }

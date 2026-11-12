@@ -34,6 +34,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Float,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -1531,6 +1532,10 @@ class AccountAiConfig(Base):
     # split. Nullable with no server default so init_db's ADD-COLUMN catch-up
     # lands it on an existing box with no backfill.
     split_inbox_json: Mapped[str | None] = mapped_column(Text)
+    # Jev v8 vault flags (vault_jev): TypeSafe Jev + NudeNet on every vault
+    # PHOTO before describe, stored as ai_fields_json["_jev"]. NULL ≡ OFF (the
+    # default; the operator opts an account in from the Vault extras drawer).
+    vault_jev_enabled: Mapped[bool | None] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -3461,9 +3466,18 @@ class TrackingClick(Base):
     referer: Mapped[str | None] = mapped_column(Text)
     user_agent: Mapped[str | None] = mapped_column(Text)
     ip: Mapped[str | None] = mapped_column(String)
+    # CF-IPCountry is trusted only through client_addr.edge; app/ref are
+    # classifications, NULL ref means old/unclassified. verified means a passed
+    # Turnstile check. Additive columns self-heal in init_db.
+    country: Mapped[str | None] = mapped_column(String(2))
+    in_app: Mapped[str | None] = mapped_column(String)
+    ref: Mapped[str | None] = mapped_column(String)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
 
     __table_args__ = (
-        Index("ix_tracking_clicks_link_time", "tracking_link_id", "clicked_at"),
+        # Covers summary + analytics (no table lookups): 30 d over a 105k-click link
+        # 106 -> 26 ms summary, 224 -> 51 ms analytics. Replaces ix_tracking_clicks_link_time.
+        Index("ix_tracking_clicks_stats", "tracking_link_id", "clicked_at", "verified", "country", "in_app", "ref"),
     )
 
 
@@ -3759,3 +3773,116 @@ class OfConsentAccept(Base):
     at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (Index("ix_of_consent_accepts_account_id", "account_id", "id"),)
+
+
+# ── Bio pages (ofl.ink ported; service/bio_pages) ────────────────────
+# Ids are PocketBase-shaped strings (15 x [a-z0-9] rows, 12 for a Link's public id), so an imported Profile keeps its
+# ids, file URLs and the page's `linkme_tracking_id:<profile id>` key. The public bio app (BIO_PORT) reads these;
+# the editor (PR2) and the importer (PR3) write them.
+
+class BioProfile(Base):
+    """One bio page at `/<username>`. `owner_user_id` is the signed-in owner (deleted with them);
+    `account_id` the Creator it belongs to, when any (OF tracking codes, stats join). `mode` is `direct` or
+    `escape_ig` (anything else reads as `escape_ig`); `slot` and `v1_key` are imported data only."""
+    __tablename__ = "bio_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    account_id: Mapped[str | None] = mapped_column(String, ForeignKey("accounts.id", ondelete="SET NULL"))
+    username: Mapped[str] = mapped_column(String, nullable=False)  # lower-case [a-z0-9_]
+    display_name: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    bio: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    avatar: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    mode: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    v1_key: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
+    slot: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (UniqueConstraint("username", name="uq_bio_profiles_username"),)
+
+
+class BioLink(Base):
+    """One link on a bio page. `link_id` is its public id (Profile JSON, Reveal); `destination` is never sent to the
+    page, only Reveal's answer (with `/c<code>` appended for a tracking code). `geo` is a JSON rule (country ->
+    code, or country -> {region|default: code}, plus `default`) as text. `bot_check` is PR4's, unread before."""
+    __tablename__ = "bio_links"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String, ForeignKey("bio_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    link_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    destination: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"), default="")
+    default_tracking_code: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    mode: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    icon: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    background_image: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    v1_key: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    geo: Mapped[str | None] = mapped_column(Text)
+    is_adult: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
+    tracking: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
+    sort_order: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"), default=0)
+    bot_check: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        UniqueConstraint("link_id", name="uq_bio_links_link_id"),
+        Index("ix_bio_links_profile_order", "profile_id", "sort_order"),
+    )
+
+
+class BioCustomDomain(Base):
+    """A Profile's own domain: `/` is that Profile once `live`; a `pending` one names nobody. One live row per
+    domain (the partial unique index), one row per Profile."""
+    __tablename__ = "bio_custom_domains"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String, ForeignKey("bio_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    domain: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)  # 'pending' | 'live'
+    token: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    checked: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", name="uq_bio_custom_domains_profile_id"),
+        Index("ix_bio_custom_domains_live", "domain", unique=True, sqlite_where=text("status = 'live'"),
+              postgresql_where=text("status = 'live'")),
+    )
+
+
+class BioSpareDomain(Base):
+    """An extra host of ours that serves `/<username>` pages as the primary host does."""
+    __tablename__ = "bio_spare_domains"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    domain: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (UniqueConstraint("domain", name="uq_bio_spare_domains_domain"),)
+
+
+class BioDaily(Base):
+    """Page Views and Clicks per UTC day, upserted per hit (no raw events). `link_id` is bio_links.id, '' for a Page
+    View (no FK: a deleted link keeps its history); `country` 2 letters or XX; `in_app` '' or the in-app browser;
+    `code` the tracking code Reveal appended ('' none). Every key part is '', never NULL, so the upsert conflicts."""
+    __tablename__ = "bio_daily"
+
+    day: Mapped[str] = mapped_column(String, primary_key=True)  # YYYY-MM-DD, UTC
+    profile_id: Mapped[str] = mapped_column(
+        String, ForeignKey("bio_profiles.id", ondelete="CASCADE"), primary_key=True
+    )
+    link_id: Mapped[str] = mapped_column(String, primary_key=True)
+    country: Mapped[str] = mapped_column(String, primary_key=True)
+    in_app: Mapped[str] = mapped_column(String, primary_key=True)
+    code: Mapped[str] = mapped_column(String, primary_key=True)
+    views: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"), default=0)
+    clicks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"), default=0)
+
+    __table_args__ = (Index("ix_bio_daily_profile_day", "profile_id", "day"),)

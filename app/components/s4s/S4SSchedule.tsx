@@ -4,13 +4,17 @@
  * S4S schedule (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI and Display status), on Infloww's `Index$5`
  * (page-parity 15), for the creator picked on the rail, in UTC (the header says so): left, "Scheduled S4S" and the
  * picked day's slots from `GET /admin/s4s/schedule?from&to` (one UTC month); right, 265px, a month calendar with a
- * red dot on days with S4S (only those days and today pickable), then "S4S statistics": the day's slots, Total Growth
- * (not wired, "In the statistics" as Infloww shows under 10) and the month's completed ones. Each slot shows the
+ * red dot on days with S4S (only those days and today pickable), then "S4S statistics": the day's slots and the
+ * month's completed ones. Each slot shows the
  * partner as the request stored it at send (never a live read of the other Agency, ADR-0011) and Infloww's status:
  * "Will be posted shortly", "In progress", "Complete", "Cancelled", or "Failed" (Inflowwww extra, its tooltip) with
  * the reason. Ours, labelled: "Cancel" on a slot that will still post (`POST /admin/s4s/slots/{id}/cancel`, behind a
  * confirm), the live-posting line while the Deployment's live posting is off, and "Partner's post: …" on a slot
  * whose partner deleted, archived or edited its own post of the pair before removal (`partner_issue`, ADR-0015).
+ *
+ * PROPOSAL (owner review, deviates from Infloww): no "Total Growth" tile (Infloww's is a placeholder too, and ours
+ * was never wired); on a phone the order is calendar, the day's slots, then statistics (Infloww stacks the statistics
+ * above the slots); the empty day sits 40px down on a phone instead of 180px.
  *
  * ASSUMPTION: a reason is shown as its stored code with underscores read as spaces ("partner opted out"). Rung 5
  * (no reason copy exists in the Inventory). Overturned by Infloww's own reason wording.
@@ -71,8 +75,14 @@ export default function S4SSchedule({ profile, livePosting }: { profile: S4SProf
   const pickedDate = new Date(`${picked}T00:00:00Z`);
 
   return (
-    <div className="flex flex-col pl-6 md:flex-row">
-      <section aria-label="Scheduled S4S" className="min-w-0 flex-1 pr-6 pt-6 pb-6">
+    // Phone: calendar, slots, statistics. md up: slots left over both rows, calendar then statistics in the 265px column.
+    <div className="grid grid-cols-1 pl-6 md:grid-cols-[minmax(0,1fr)_265px] md:grid-rows-[auto_1fr]">
+      <aside aria-label="S4S calendar"
+        className="border-border pt-6 pr-3 md:col-start-2 md:row-start-1 md:border-l md:pl-6">
+        <MonthCalendar month={month} picked={picked} today={utcDay(today)} marked={new Set(byDay.keys())}
+          onMonth={(n) => setMonth((m) => addMonths(m, n))} onPick={setPicked} />
+      </aside>
+      <section aria-label="Scheduled S4S" className="min-w-0 pr-6 pt-6 pb-6 md:col-start-1 md:row-span-2 md:row-start-1">
         <h2 className="text-[16px] font-medium text-fg">Scheduled S4S</h2>
         <p className="mt-1 text-[14px] text-accent">{utcDate(pickedDate)}</p>
         {livePosting === false && (
@@ -85,7 +95,7 @@ export default function S4SSchedule({ profile, livePosting }: { profile: S4SProf
           </div>
         )}
         {q.isSuccess && daySlots.length === 0 && (
-          <EmptyState size="md" className="mt-[180px]" textClassName="text-[14px] font-semibold text-fg" text="No scheduled Share for Shares" />
+          <EmptyState size="md" className="mt-10 md:mt-[180px]" textClassName="text-[14px] font-semibold text-fg" text="No scheduled Share for Shares" />
         )}
         {daySlots.length > 0 && (
           <ul className="mt-4 space-y-4">
@@ -93,25 +103,22 @@ export default function S4SSchedule({ profile, livePosting }: { profile: S4SProf
           </ul>
         )}
       </section>
-      <aside aria-label="S4S calendar"
-        className="order-first w-full shrink-0 border-border pt-6 pr-3 pb-[50px] md:order-none md:w-[265px] md:border-l md:pl-6">
-        <MonthCalendar month={month} picked={picked} today={utcDay(today)} marked={new Set(byDay.keys())}
-          onMonth={(n) => setMonth((m) => addMonths(m, n))} onPick={setPicked} />
-        <h3 className="mt-6 text-[16px] font-medium text-fg">S4S statistics</h3>
+      <section aria-label="S4S statistics"
+        className="border-border pt-6 pr-3 pb-[50px] md:col-start-2 md:row-start-2 md:border-l md:pl-6">
+        <h3 className="text-[16px] font-medium text-fg">S4S statistics</h3>
         <div className="mt-4 space-y-4">
           <Tile figure={String(daySlots.length)} caption={`Scheduled for ${monthName(pickedDate.getUTCMonth()).slice(0, 3)} ${pickedDate.getUTCDate()}`} />
-          <Tile figure="In the statistics" small caption="Total Growth" title="not wired" />
           <Tile figure={String(completed)} caption="Completed Share for Shares" />
         </div>
-      </aside>
+      </section>
     </div>
   );
 }
 
-function Tile({ figure, caption, small, title }: { figure: string; caption: string; small?: boolean; title?: string }) {
+function Tile({ figure, caption }: { figure: string; caption: string }) {
   return (
-    <div title={title} className="rounded-lg bg-[#2f2f2f] p-4 [html[data-theme=light]_&]:bg-bg-elev-2">
-      <div className={cn("text-fg", small ? "text-[18px] font-medium" : "text-[24px] font-bold")}>{figure}</div>
+    <div className="rounded-lg bg-[#2f2f2f] p-4 [html[data-theme=light]_&]:bg-bg-elev-2">
+      <div className="text-[24px] font-bold text-fg">{figure}</div>
       <div className="mt-4 text-[12px] text-[#999]">{caption}</div>
     </div>
   );

@@ -6,9 +6,10 @@
  *
  * "Promotion campaigns" with the primary "Create promotion" (Infloww's `CreatePromotionModal`, 520px: User type,
  * Promotion type, Offer limit, Offer expiration, Free trial duration or Discount percent, Message; the body is OF
- * Manager's own promotionBody), the tips box, "Auto-activate campaign" (`PromoReactivateCard`), "Add fans to list"
- * (`PromoListRow`, Infloww's account-level switch and list), then "Campaign insights": Show expired, the antd table
- * (Promo / Claims / Revenue / Actions) and its pager, 10 a page. OF is the source of truth; a local mirror keeps the
+ * Manager's own promotionBody), the tips box, then "Campaign insights": Show expired, the antd table (Promo / Claims /
+ * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`)
+ * and "Add fans to list" (`PromoListRow`, Infloww's account-level switch and list). Infloww puts the two rows above
+ * Campaign insights; ours lead with the campaigns, the page's reason (UI flow audit C33). OF is the source of truth; a local mirror keeps the
  * operator's name, the discount (OF does not echo it) and the Keep running switch.
  * Revenue "from N fans" (Infloww's RevenueCell) is the campaign's claimers' spend in our ledger since each claimed,
  * net, over every OF promo a re-armed campaign has been (the relay's cached read, "Updated N min ago"); Spend/Claim
@@ -22,6 +23,7 @@ import { Fragment, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
 
 import { Badge, ExtraTag } from "@/components/ui/primitives";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import {
   EmptyState, IF_TABLE, IfButton, IfInput, IfLabel, IfModal, IfPager, IfSelect, IfSwitch, IfTextArea, type IfOption,
 } from "@/components/ui/infloww";
@@ -96,7 +98,8 @@ function Tips() {
   );
 }
 
-export default function PromotionTab({ accountId }: { accountId: string | null }) {
+/** `creatorsLoading`: the Creators read is still out, so no Creator is picked yet (placeholder rows, not the empty state). */
+export default function PromotionTab({ accountId, creatorsLoading = false }: { accountId: string | null; creatorsLoading?: boolean }) {
   const promosQ = usePromotions(accountId);
   const deleteM = useDeletePromotion(accountId);
   const finishM = useFinishPromotion(accountId);
@@ -135,10 +138,6 @@ export default function PromotionTab({ accountId }: { accountId: string | null }
         )}
       </section>
 
-      <PromoReactivateCard accountId={accountId} />
-
-      <PromoListRow accountId={accountId} />
-
       <section aria-label="Campaign insights" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className={TITLE}>Campaign insights</h2>
@@ -166,12 +165,8 @@ export default function PromotionTab({ accountId }: { accountId: string | null }
               </tr>
             </thead>
             <tbody>
-              {promosQ.isLoading ? (
-                <tr className={IF_TABLE.row}>
-                  <td colSpan={4} className={cn(IF_TABLE.td, "text-fg-dim")}>
-                    <span className="inline-flex items-center gap-2">Loading… <ExtraTag /></span>
-                  </td>
-                </tr>
+              {promosQ.isLoading || (!accountId && creatorsLoading) ? (
+                <SkeletonRows cols={4} rows={4} cellClassName={IF_TABLE.td} />
               ) : rows.length === 0 ? (
                 <tr className={IF_TABLE.row}>
                   <td colSpan={4} className="pb-8 pt-10"><EmptyState kind="data" /></td>
@@ -255,6 +250,11 @@ export default function PromotionTab({ accountId }: { accountId: string | null }
           </span>
         </div>
       </section>
+
+      {/* The settings rows after the campaigns they act on (Infloww has them above Campaign insights). */}
+      <PromoReactivateCard accountId={accountId} />
+
+      <PromoListRow accountId={accountId} />
 
       <SubscriptionBundles accountId={accountId} />
 
@@ -386,7 +386,7 @@ export function PromotionPage() {
   const creator = useGrowthCreator();
   return (
     <GrowthRailFrame title="Profile promotion" creator={creator}>
-      <PromotionTab accountId={creator.accountId} />
+      <PromotionTab accountId={creator.accountId} creatorsLoading={creator.loading} />
     </GrowthRailFrame>
   );
 }

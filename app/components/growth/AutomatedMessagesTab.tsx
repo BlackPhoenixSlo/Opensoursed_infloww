@@ -135,10 +135,16 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
 
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
-    const messages = (trigger: WiredTrigger, text: string) => (
-      <button type="button" className="max-w-full truncate text-left hover:text-accent" onClick={() => setEditing(trigger)}>
-        {text}
-      </button>
+    // The Messages cell; below md, where the other columns sit off screen, the text takes two lines and a
+    // second line names the Trigger and Status.
+    const messages = (trigger: WiredTrigger, text: string, status: string) => (
+      <>
+        <button type="button" className="max-w-full break-words text-left hover:text-accent md:truncate max-md:line-clamp-2"
+          onClick={() => setEditing(trigger)}>
+          {text}
+        </button>
+        <span className="block text-[12px] text-fg-dim md:hidden">{trigger} · {status}</span>
+      </>
     );
     // The rules read keeps the previous Creator's list while the next one
     // loads, so a rule counts only for the Creator it belongs to.
@@ -155,7 +161,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         search: [rule.name, ...lines],
         status,
         cells: {
-          Messages: messages(NUDGE.label, lines[0] ?? rule.name),
+          Messages: messages(NUDGE.label, lines[0] ?? rule.name, status),
           Status: <StatusPill status={status} />,
           Trigger: NUDGE.label,
           "Date created": shortDate(rule.created_at, reportTz) ?? undefined,
@@ -177,7 +183,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         search: [welcome.name, text],
         status,
         cells: {
-          Messages: messages(WELCOME.label, text),
+          Messages: messages(WELCOME.label, text, status),
           Status: <StatusPill status={status} />,
           Trigger: WELCOME.label,
           Sent: sentOf(welcome),
@@ -204,7 +210,7 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
         search: [r.name, text],
         status,
         cells: {
-          Messages: messages(trigger, text),
+          Messages: messages(trigger, text, status),
           Status: <StatusPill status={status} />,
           Trigger: trigger,
           Sent: sentOf(r),

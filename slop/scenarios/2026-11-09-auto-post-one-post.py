@@ -25,6 +25,7 @@ UI only (`--no-ui` skips): not a volume path, proven once on the real page.
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urlsplit
 
 from slop.actors import ui
@@ -56,6 +57,12 @@ _FITS = """() => ({page: document.documentElement.scrollWidth, vw: innerWidth,
 _SETTLED = """() => document.getAnimations().filter((a) => a.playState === 'running'
   && a.effect && a.effect.getComputedTiming().iterations !== Infinity).length === 0"""
 
+
+
+async def _row_edit(page, row) -> None:
+    """A phone rule row's Edit: its "⋯" menu (the wide row's links are desktop only)."""
+    await row.get_by_role("button", name=re.compile(r"^More actions for ")).click(timeout=30_000)
+    await row.get_by_role("menuitem", name="Edit", exact=True).click(timeout=10_000)
 
 async def _shot(ctx, page, name: str) -> str:
     await page.wait_for_function(_SETTLED, timeout=15_000)
@@ -182,7 +189,7 @@ async def run(ctx) -> None:
                   db=db, want=WANT, timer_keys=timers, screenshots=[saved])
 
         row = page.locator("tr").filter(has=page.get_by_text(LEGACY_NAME, exact=True))
-        await row.get_by_role("button", name="Edit", exact=True).click(timeout=30_000)
+        await _row_edit(page, row)
         old = page.get_by_role("dialog", name=f"Edit · {LEGACY_NAME}")
         await old.wait_for(timeout=30_000)
         notice = old.get_by_text(NOTICE, exact=True)

@@ -65,36 +65,35 @@ export function useLinks(accountId: string | null, net: boolean) {
   return { q, links };
 }
 
-/** In the capture's order (#57). The earnings columns read the merged earnings (`useLinks`); a link without a figure
- *  is "—", and the columns draw once any link has one. The drawn columns' widths are tighter than the capture's (its
- *  1,718px for these nine scrolled at 1600px, hiding Spending CVR, EPC and AEPS under the sticky Actions); the
- *  widths below sum to 1,304px, inside a 1600px window's 1,316px panel. */
+/** In the capture's order (#57), at the bundle's widths (#38 to #55) so every head fits its label and tip. The
+ *  earnings columns read the merged earnings (`useLinks`); a link without a figure is "—", and the columns draw once
+ *  any link has one. Wider than the panel, the table scrolls sideways under the sticky name and Actions. */
 const METRIC_COLS: Col[] = [
   {
-    title: "Date created", width: 104, core: true,
+    title: "Date created", width: 121, core: true,
     cell: (l, tz) => dateOnly(l.created_at, tz), csv: (l, tz) => createdDay(l, tz) ?? "",
   },
-  { title: "Clicks", width: 80, core: true, cell: (l) => count(l.clicks), csv: (l) => String(l.clicks) },
-  { title: "Subs", width: 72, core: true, cell: (l) => count(l.subscribers), csv: (l) => String(l.subscribers) },
-  { title: "Subscription CVR", width: 112, tip: TIPS.cvr, core: true, cell: cvr },
+  { title: "Clicks", width: 100, core: true, cell: (l) => count(l.clicks), csv: (l) => String(l.clicks) },
+  { title: "Subs", width: 100, core: true, cell: (l) => count(l.subscribers), csv: (l) => String(l.subscribers) },
+  { title: "Subscription CVR", width: 179, tip: TIPS.cvr, core: true, cell: cvr },
   {
     title: "Promo cost", width: 139, tip: TIPS.promoCost,
     cell: (l) => (l.promo_cost_cents ? fmtPrice(l.promo_cost_cents) : null),
     csv: (l) => (l.promo_cost_cents ? (l.promo_cost_cents / 100).toFixed(2) : ""),
   },
   {
-    title: "Earnings", width: 128, tip: TIPS.earnings, net: true,
+    title: "Earnings", width: 139, tip: TIPS.earnings, net: true,
     cell: (l) => (l.earnings_cents == null ? null : money(l.earnings_cents) + (l.earnings_partial ? PARTIAL : "")),
     hint: (l) => (l.earnings_partial ? PARTIAL_HINT : undefined),
     csv: (l) => (l.earnings_cents == null ? "" : (l.earnings_cents / 100).toFixed(2)),
   },
   {
-    title: "Fans who spent", width: 92,
+    title: "Fans who spent", width: 185,
     cell: (l) => (l.fans_who_spent == null ? null : count(l.fans_who_spent)),
     csv: (l) => (l.fans_who_spent == null ? "" : String(l.fans_who_spent)),
   },
   {
-    title: "Spending CVR", width: 96, tip: TIPS.spendingCvr,
+    title: "Spending CVR", width: 159, tip: TIPS.spendingCvr,
     // Over the link's claimers, the same fans the numerator is counted from.
     cell: (l) => (l.fans_who_spent == null ? null : share(l.fans_who_spent, l.fans_counted)),
   },
@@ -104,9 +103,9 @@ const METRIC_COLS: Col[] = [
     cell: (l) => { const p = profitCents(l.earnings_cents, l.promo_cost_cents); return p == null ? null : money(p); },
   },
   { title: "CPC", width: 123, tip: TIPS.cpc, cell: (l) => (l.promo_cost_cents ? costPer(l.promo_cost_cents, l.clicks) : null) },
-  { title: "EPC", width: 100, tip: TIPS.epc, net: true, cell: (l) => per(l.earnings_cents, l.clicks) },
+  { title: "EPC", width: 123, tip: TIPS.epc, net: true, cell: (l) => per(l.earnings_cents, l.clicks) },
   { title: "CPS", width: 123, tip: TIPS.cps, cell: (l) => (l.promo_cost_cents ? costPer(l.promo_cost_cents, l.subscribers) : null) },
-  { title: "AEPS", width: 112, tip: TIPS.aeps, net: true, cell: (l) => per(l.earnings_cents, l.fans_counted) },
+  { title: "AEPS", width: 123, tip: TIPS.aeps, net: true, cell: (l) => per(l.earnings_cents, l.fans_counted) },
   {
     title: "ROI", width: 139, tip: TIPS.roi, net: true,
     cell: (l) => (profitCents(l.earnings_cents, l.promo_cost_cents) == null ? null : roi(l.earnings_cents, l.promo_cost_cents)),
@@ -213,6 +212,8 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
           title: c.title, width: c.width, tip: c.tip, hint: c.hint, cell: (l: OfTrackingLink) => c.cell?.(l, reportTz) ?? "—",
         }))}
         rows={matched}
+        /* On a phone: Clicks, Subs and Earnings (Subscription CVR until earnings arrive). */
+        phoneMetrics={["Clicks", "Subs", "Earnings", "Subscription CVR"]}
         rowKey={rowKey}
         selection={{
           selected: pickedRows.map(rowKey), onChange: setPicked, canSelect: (l) => l.id != null,

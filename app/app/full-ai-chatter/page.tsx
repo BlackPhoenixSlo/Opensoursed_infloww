@@ -6,6 +6,13 @@ import { PageFrame } from "@/components/shell/PageFrame";
 
 export const metadata: Metadata = { title: "Full AI Chatter" };
 
+/** The AI pages that run today (nav.ts labels). */
+const LIVE = [
+  { label: "Auto-reply", href: "/growth/auto-reply" },
+  { label: "Get to know fans", href: "/growth/get-to-know-fans" },
+  { label: "Auto Funnel", href: "/growth/auto-funnel" },
+];
+
 // Full AI Chatter (ours, nav.ts): a coming-soon page for the fully autonomous chatter. Owner-only in the sidebar.
 export default function Page() {
   return (
@@ -26,8 +33,14 @@ export default function Page() {
             A fully autonomous AI chatter that greets, warms up and sells to every fan on its own, around the clock.
           </p>
           <p className="relative mt-8 text-[13px] text-muted">
-            Until then, the AI lanes live in{" "}
-            <Link href="/growth/auto-reply" className="text-link hover:underline">My AI Chatter</Link>.
+            Until then, the live AI lanes:{" "}
+            {LIVE.map(({ label, href }, i) => (
+              <span key={href}>
+                {i > 0 && (i === LIVE.length - 1 ? " and " : ", ")}
+                <Link href={href} className="text-link hover:underline">{label}</Link>
+              </span>
+            ))}
+            .
           </p>
         </div>
       </section>

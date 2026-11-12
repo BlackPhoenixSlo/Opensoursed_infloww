@@ -72,10 +72,13 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     # tracking-links-clicks
     "tracking_links_links": (4, 10, 20), "tracking_links_campaigns": (6, 12, 24),
     "tracking_links_claimed": (30, 150, 1_000), "tracking_links_clicks": (600, 8_000, 30_000),
+    "tracking_links_hot_per_day": (200, 3_500, 5_000),
     # sales-attribution-tips-ppv
     "sales_attribution_episodes": (30, 120, 300),
     # vault-describe-sweep
     "vault_describe_items": (200, 2_000, 20_000),
+    # vault-jev-flags: the describe seeder's items, over the Creators (Creator 0 needs >= 8 photo units)
+    "vault_jev_items": (90, 600, 2_000),
     # runtime-switches
     "runtime_switches_dm_fans": (5, 20, 40), "runtime_switches_burst_fans": (10, 40, 80),
     # ledger-reports-volume

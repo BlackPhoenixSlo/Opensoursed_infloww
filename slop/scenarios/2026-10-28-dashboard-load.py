@@ -62,7 +62,7 @@ chat) opened on a phone, four tabs at once, its relay reads held until the held 
 and shot (`screenshots/pages/NN_<route>-held.png`), then released and measured settled (`-settled`):
 held, no spinner, no "Loading…" line, no empty state (`[data-empty-state]`) and no blank area (no
 placeholder bars and content well short of the settled depth); settled, none of those and no
-placeholder left (`page-sweep.json`). Billing's static "No invoices" is exempt (`SWEEP_STATIC_EMPTY`).
+placeholder left (`page-sweep.json`). A static empty state is exempted in `SWEEP_STATIC_EMPTY` (none today).
 Budgets: Total earnings on a return visit per network (`BUDGET_MS`).
 Break-it-once (each turns only its targets red):
   dashboard-total-waits-of-reads  the revenue answer held until the page's OF reads are
@@ -446,7 +446,7 @@ SWEEP_ROUTES = """/ /analytics/creator-reports /analytics/employee-reports /anal
 /growth/auto-story /growth/free-trial-links /growth/gen-info /growth/get-to-know-fans
 /growth/profile-promotion /growth/scripts /growth/sensitive-words /growth/smart-lists /growth/smart-messages
 /growth/tracking-links /growth/vault-pro /help-center /messages-pro /notifications /admin/manage
-/settings/about /settings/account /settings/ai-keys /settings/audit /settings/balance /settings/billing
+/settings/about /settings/account /settings/ai-keys /settings/audit /settings/billing
 /settings/cotag /settings/messaging /settings/preferences /settings/roles /settings/sales /settings/security-org
 /settings/security-personal /settings/system /settings/time-tracking /share-for-share/discover-creators
 /share-for-share/requests /share-for-share/schedule /share-for-share/settings /fansly-manager/notifications
@@ -455,9 +455,7 @@ SWEEP_ROUTES = """/ /analytics/creator-reports /analytics/employee-reports /anal
 /of-manager/statistics /of-manager/bank /of-manager/profile /of-manager/settings /of-manager/collections
 /of-manager/streaming /of-manager/release-forms /of-manager/new-post""".split() + list(navs.extras("SWEEP_ROUTES"))
 #: Pages whose empty state is their content, not a read's answer (no read to wait for), and why.
-SWEEP_STATIC_EMPTY = {
-    "/settings/billing": "Billing's 'No invoices' on both subtabs is static: Inflowwww bills nothing",
-}
+SWEEP_STATIC_EMPTY: dict[str, str] = {}
 SWEEP_PASS = ("/auth/me", "/chatter/me", "/_next/", "/__nextjs", "/favicon", "/icon", "/manifest")
 SWEEP_TABS = 4
 #: Settled = no `[data-loading]` placeholder for 1.5 s on end (polled per frame).

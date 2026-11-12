@@ -681,6 +681,22 @@ describe("AssistantWidget: Do it for me", () => {
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
   });
 
+  it("an answer do-mode sent to Q&A never offers Do it for me back (no ping-pong)", async () => {
+    relayPost.mockImplementation((path: string) => Promise.resolve(path === "/admin/assistant/draft"
+      ? draft({ flow: null, slots: null, answer: "I can only set up a new Auto mass." })
+      : { answer: "Open **My Automations → Auto Mass** and press New.", error: null, id: 1 }));
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "mass now to VIP");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Ask as a question" }));
+    await screen.findByRole("link", { name: "My Automations → Auto Mass" });
+    expect(screen.queryByRole("button", { name: "Do it for me" })).toBeNull();
+    // The same answer asked straight in Q&A still offers it.
+    await ask("auto mass?");
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Do it for me" })).toHaveLength(1));
+  });
+
   it("a Q&A answer linking Auto Mass offers the chip; it starts do-mode with that question", async () => {
     relayPost.mockImplementation((path: string, body: { question?: string }) => Promise.resolve(path === "/admin/assistant/draft"
       ? draft()
@@ -700,6 +716,43 @@ describe("AssistantWidget: Do it for me", () => {
     expect(posts("/admin/assistant/draft")[0][1].thread_id).not.toBe(posts("/admin/assistant/ask")[0][1].thread_id);
     expect(await screen.findByTestId("do-plan")).toBeTruthy();
     expect(screen.getByPlaceholderText("What should I set up?")).toBeTruthy();
+  });
+
+  it("a mass_edit plan: change + rules per model, Do it applies once and lists each rule's result", async () => {
+    const rule = (id: number, account_id: string, account_name: string, name: string, is_enabled: boolean) => ({
+      id, account_id, account_name, name, is_enabled, version: `v${id}`,
+      diffs: [{ field: "unsend_after_hours", label: "Unsend after", before: 8, after: null }],
+    });
+    const EDIT = {
+      scope: "all", match: null, changes: { unsend_after_hours: 0 }, already: 1, skipped: [],
+      rules: [rule(11, "1001", "Ava", "Morning mass", true), rule(12, "1002", "Bea", "Night mass", false)],
+    };
+    relayPost.mockImplementation((path: string) => Promise.resolve(path === "/admin/assistant/draft"
+      ? draft({ flow: "mass_edit", slots: EDIT, assumptions: [], unresolved: [] })
+      : { results: [{ id: 11, ok: true, diffs: [] }, { id: 12, ok: false, reason: "changed since you saw it" }], changed: 1 }));
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "please turn off auto mass unsend for every model");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    const plan = await screen.findByTestId("do-edit-plan");
+    expect(within(plan).getByText("Unsend after → never")).toBeTruthy();
+    expect(within(plan).getByText("2 rules · 2 models")).toBeTruthy();
+    expect(within(plan).getByText("Ava")).toBeTruthy();
+    expect(within(plan).getAllByText("Unsend after 8h → never")).toHaveLength(2);
+    expect(within(plan).getByText("1 rule already set — left alone")).toBeTruthy();
+    expect(within(plan).queryByText("LIVE")).toBeNull();                  // unsend off sends no more
+    expect(within(plan).queryByRole("button", { name: "Skip animation" })).toBeNull();
+
+    await userEvent.click(within(plan).getByRole("button", { name: "Do it" }));
+    const res = await screen.findByTestId("do-edit-results");
+    expect(within(res).getByText("Changed 1 of 2 rules")).toBeTruthy();
+    expect(within(res).getByText("✓ Morning mass · Ava")).toBeTruthy();
+    expect(within(res).getByText("Night mass · Bea — changed since you saw it")).toBeTruthy();
+    expect(posts("/admin/assistant/edit/apply")).toEqual([[
+      "/admin/assistant/edit/apply",
+      { account_id: "1001", rules: [{ id: 11, version: "v11" }, { id: 12, version: "v12" }], changes: { unsend_after_hours: 0 } },
+      { accountId: "1001", employeeId: 7 },
+    ]]);
   });
 });
 
@@ -748,10 +801,10 @@ describe("AssistantWidget on a phone", () => {
     return screen.getByRole("button", { name: "Help assistant" });
   }
 
-  it("starts tucked into the left edge above the composer: only the tab shows", async () => {
+  it("starts tucked into the right edge above the composer: only the tab shows", async () => {
     render();
     const tab = await screen.findByRole("button", { name: "Show help assistant" });
-    expect(tab.className).toContain("left-0");
+    expect(tab.className).toContain("right-0");
     expect(tab.style.top).toBe(`${844 - 48 - 180}px`);
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
     expect(window.localStorage.getItem(LAUNCHER_KEY)).toBeNull();
@@ -766,9 +819,9 @@ describe("AssistantWidget on a phone", () => {
   it("the tab pulls the icon out at the same height; a tap opens the full-screen sheet", async () => {
     render();
     const bubble = await pullOut();
-    expect(bubble.style.left).toBe("12px");
+    expect(bubble.style.left).toBe(`${390 - 48 - 12}px`);
     expect(bubble.style.top).toBe(`${844 - 48 - 180}px`);
-    expect(stored()).toEqual({ edge: "left", along: 180, tucked: false });
+    expect(stored()).toEqual({ edge: "right", along: 180, tucked: false });
     await userEvent.click(bubble);
 
     const box = screen.getByPlaceholderText("Ask a question…");
@@ -835,13 +888,13 @@ describe("AssistantWidget on a phone", () => {
   it("a drag moves it and snaps to the nearest edge, swallowing the release click", async () => {
     render();
     const bubble = await pullOut();
-    await drag(bubble, 280, -300);
+    await drag(bubble, -280, -300);
 
-    // Dropped near the right side: snapped flush to it, panel NOT opened.
+    // Dropped near the left side: snapped flush to it, panel NOT opened.
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
     const moved = screen.getByRole("button", { name: "Help assistant" });
-    expect(moved.style.left).toBe(`${390 - 48 - 12}px`);
-    expect(stored()).toEqual({ edge: "right", along: 480, tucked: false });
+    expect(moved.style.left).toBe("12px");
+    expect(stored()).toEqual({ edge: "left", along: 480, tucked: false });
 
     // The next real tap still opens it (the swallow is one-shot).
     await userEvent.click(moved);
@@ -864,24 +917,24 @@ describe("AssistantWidget on a phone", () => {
   it("re-tucks when pushed past a side edge; the chevron tab pulls it back out", async () => {
     render();
     const bubble = await pullOut();
-    await drag(bubble, -60, 0);
+    await drag(bubble, 60, 0);
 
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
     let tab = screen.getByRole("button", { name: "Show help assistant" });
-    expect(tab.className).toContain("left-0");
-    expect(stored()).toEqual({ edge: "left", along: 180, tucked: true });
-
-    // Out again, over to the right side, tucked there.
-    await userEvent.click(tab);
-    await drag(screen.getByRole("button", { name: "Help assistant" }), 390, 0);
-    tab = screen.getByRole("button", { name: "Show help assistant" });
     expect(tab.className).toContain("right-0");
     expect(stored()).toEqual({ edge: "right", along: 180, tucked: true });
+
+    // Out again, over to the left side, tucked there.
+    await userEvent.click(tab);
+    await drag(screen.getByRole("button", { name: "Help assistant" }), -390, 0);
+    tab = screen.getByRole("button", { name: "Show help assistant" });
+    expect(tab.className).toContain("left-0");
+    expect(stored()).toEqual({ edge: "left", along: 180, tucked: true });
 
     await userEvent.click(tab);
     expect(screen.queryByRole("button", { name: "Show help assistant" })).toBeNull();
     expect(screen.getByRole("button", { name: "Help assistant" }).style.top).toBe(`${844 - 48 - 180}px`);
-    expect(stored()).toEqual({ edge: "right", along: 180, tucked: false });
+    expect(stored()).toEqual({ edge: "left", along: 180, tucked: false });
   });
 
   it("dots the default tab when a reply lands while it is tucked", async () => {
@@ -891,7 +944,7 @@ describe("AssistantWidget on a phone", () => {
     await userEvent.click(await pullOut());
     await ask("anything");
     await userEvent.click(screen.getByRole("button", { name: "Close help" }));
-    await drag(screen.getByRole("button", { name: "Help assistant" }), -60, 0);
+    await drag(screen.getByRole("button", { name: "Help assistant" }), 60, 0);
     settle({ answer: "an answer", error: null });
     const dot = await screen.findByLabelText("New reply");
     expect(dot.closest("button")?.getAttribute("aria-label")).toBe("Show help assistant");

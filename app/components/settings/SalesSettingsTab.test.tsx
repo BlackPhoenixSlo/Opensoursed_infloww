@@ -86,7 +86,7 @@ describe("SalesSettingsTab", () => {
 
   it("says under the radios that Shift schedule credits sales only while Time tracking is on", () => {
     renderWithProviders(<SalesSettingsTab />);
-    const line = screen.getByText("Shift schedule credits sales only while Time tracking is on.");
+    const line = screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "Shift schedule credits sales only while Time tracking is on.");
     // Under the radios: after the last attribution control (the opt-in checkbox) in document order.
     const optIn = screen.getByRole("checkbox", { name: "Opt in to chatters" });
     expect(optIn.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -196,8 +196,15 @@ describe("SalesSettingsTab", () => {
     expect(screen.getByRole("spinbutton", { name: "Converters window hours" })).toHaveValue(1);
     expect(screen.getByRole("spinbutton", { name: "Converters window minutes" })).toHaveValue(0);
     expect(screen.getByText(/Sale is attributed to the last Chatter who messaged the fan within/)).toBeInTheDocument();
-    expect(screen.getByText(/If no Chatter messaged the fan within 1 hours and 0 minutes before they unlock the/))
-      .toHaveTextContent("the sale will not be attributed to anyone.");
+    expect(screen.getByText("No Chatter within 1 hour and 0 minutes: the sale stays unassigned.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Time tracking" })).toHaveAttribute("href", "/settings/time-tracking");
+  });
+
+  it("puts Set effective date first, above the switches, and the history last", async () => {
+    await mountLoaded();
+    const date = screen.getByLabelText("Effective date");
+    const firstSwitch = screen.getAllByRole("switch")[0];
+    expect(date.compareDocumentPosition(firstSwitch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("3 hours 30 minutes saves converters_window_seconds 12600; a stored window pre-fills both inputs", async () => {

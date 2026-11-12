@@ -76,6 +76,11 @@ const DEFAULT_ROLES = [
 ];
 /** The five built-ins' names, in list order. */
 const BUILT_IN_NAMES = ["Owner", "Admin", "Team Leader", "Chatter", "Creator"];
+/** Their display-only descriptions while none is stored. */
+const BUILT_IN_DESCRIPTIONS = [
+  "Full access; owns the Agency", "Full access to every page", "Chatting, creators, employees and reports for their team",
+  "Dashboard and chatting pages, own chats only", "OF Manager pages: posts, vault, queue, profile",
+];
 const ALPHA = { id: "role-alpha", name: "Alpha Role", description: "Stored", permissions: { "/": false }, scope: "self" };
 /** Grants Dashboard and Scripts, plus a stale href no nav page has; every other page is absent. */
 const BETA = {
@@ -137,30 +142,10 @@ async function fillAddRole(name: string, description = "") {
   return within(dialog).getByRole("button", { name: "Submit" });
 }
 
-/** The Employee roles selects, in roster order. */
-const selects = () => screen.queryAllByRole("combobox");
-/** The Employee roles Save (the header's SaveRow). */
-const saveButton = () => screen.getByRole("button", { name: "Save" });
-/** The text of the option the Employee named `name` has selected. */
-const selected = (name: string) => screen.getByRole("combobox", { name }).textContent;
-/** The option texts of the Employee named `name`'s select: open its listbox with Enter, read it, Escape. */
-const optionTexts = (name: string) => {
-  const s = screen.getByRole("combobox", { name });
-  fireEvent.keyDown(s, { key: "Enter" });
-  const texts = within(screen.getByRole("listbox", { name })).getAllByRole("option").map((o) => o.textContent);
-  fireEvent.keyDown(s, { key: "Escape" });
-  return texts;
-};
-/** Open the Employee named `name`'s select with Enter and pick the option named `option`. */
-const pick = (name: string, option: string) => {
-  fireEvent.keyDown(screen.getByRole("combobox", { name }), { key: "Enter" });
-  fireEvent.click(within(screen.getByRole("listbox", { name })).getByRole("option", { name: option }));
-};
-/** The Employee named `name`'s select, once the blob has loaded. */
-async function loadedSelect(name: string) {
-  const s = await screen.findByRole("combobox", { name });
-  await waitFor(() => expect(s).toBeEnabled());
-  return s;
+/** Resolves once the active roster has loaded, which the pageless count reads. */
+async function rosterLoaded() {
+  await waitFor(() => expect(calls().some((c) => c.url === "/admin/employees?include_disabled=false")).toBe(true));
+  await new Promise((r) => setTimeout(r, 20));
 }
 
 /** Clicks "Edit" on the row named `name` once the blob has loaded; returns the "Edit Role" dialog. */
@@ -194,7 +179,7 @@ describe("RoleSettingsTab", () => {
     expect(within(screen.getByRole("table", { name: "Roles" })).getAllByRole("columnheader").map((h) => h.textContent))
       .toEqual(["Name", "Description", "Status", "Operations"]);
     await waitFor(() => expect(addRole()).toBeEnabled());
-    expect(rows()).toEqual(BUILT_IN_NAMES.map((n) => [n, "", "", "EditSet Permissions"]));
+    expect(rows()).toEqual(BUILT_IN_NAMES.map((n, i) => [n, BUILT_IN_DESCRIPTIONS[i], "", "EditSet Permissions"]));
     for (const row of within(screen.getByRole("table", { name: "Roles" })).getAllByRole("row").slice(1)) {
       const ops = within(row).getAllByRole("cell")[3];
       expect(within(ops).getAllByRole("button").map((b) => b.textContent)).toEqual(["Edit", "Set Permissions"]);
@@ -394,10 +379,6 @@ describe("RoleSettingsTab", () => {
     mount();
     const retry = await screen.findByRole("button", { name: "Retry" });
     expect(addRole()).toBeDisabled();
-    await waitFor(() => expect(selects()).toHaveLength(2));
-    selects().forEach((s) => expect(s).toBeDisabled());
-    expect(saveButton()).toBeDisabled();
-    fireEvent.click(saveButton());
     const edits = () => within(screen.getByRole("table", { name: "Roles" })).getAllByRole("button", { name: "Edit" });
     const setPerms = () => within(screen.getByRole("table", { name: "Roles" })).getAllByRole("button", { name: "Set Permissions" });
     expect(edits()).toHaveLength(5);
@@ -417,55 +398,26 @@ describe("RoleSettingsTab", () => {
     await waitFor(() => expect(addRole()).toBeEnabled());
     edits().forEach((b) => expect(b).toBeEnabled());
     setPerms().forEach((b) => expect(b).toBeEnabled());
-    selects().forEach((s) => expect(s).toBeEnabled());
-    expect(saveButton()).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(puts()).toEqual([]);
   });
 
-  it("Employee roles lists Alpha One and Beta Two, not the disabled Gamma Three, each unassigned at Chatter over every role, with no \"No role\"", async () => {
-    getReply = () => jsonRes({ tab: "roles", config: { roles: [ALPHA] } });
+  it("has no Employee roles table or Save: it links to Employees, where roles are assigned", async () => {
     mount();
-    expect(screen.getByRole("heading", { name: "Employee roles" })).toBeInTheDocument();
-    await waitFor(() => expect(selects().map((s) => s.getAttribute("aria-label"))).toEqual(["Alpha One", "Beta Two"]));
-    expect(screen.queryByLabelText("Gamma Three")).toBeNull();
-    const beta = screen.getByRole("combobox", { name: "Beta Two" });
-    await waitFor(() => expect(beta).toBeEnabled());
-    expect(optionTexts("Beta Two")).toEqual([...BUILT_IN_NAMES, "Alpha Role"]);
-    expect(selected("Alpha One")).toBe("Chatter");
-    expect(selected("Beta Two")).toBe("Chatter");
+    await waitFor(() => expect(addRole()).toBeEnabled());
+    expect(screen.queryByRole("heading", { name: "Employee roles" })).toBeNull();
+    expect(screen.queryByRole("table", { name: "Employee roles" })).toBeNull();
+    expect(screen.queryAllByRole("combobox")).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Employees" })).toHaveAttribute("href", "/employees");
   });
 
-  it("assigning Beta Two a role and Saving sends one PUT keeping an unlisted Employee's assignment and an unknown key", async () => {
-    const stored = { roles: [ALPHA], assignments: { "9": "role-alpha" }, extra_key: 1 };
-    getReply = () => jsonRes({ tab: "roles", config: stored });
+  it("Cancel closes the role modal and saves nothing", async () => {
     mount();
-    await loadedSelect("Beta Two");
-    pick("Beta Two", "Alpha Role");
-    fireEvent.click(saveButton());
-
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0].body).toEqual({ ...stored, assignments: { "9": "role-alpha", "2": "role-alpha" } });
-  });
-
-  it("changing two selects sends nothing until Save, then exactly one PUT with both", async () => {
-    mount();
-    await loadedSelect("Alpha One");
-    pick("Alpha One", "Owner");
-    await loadedSelect("Beta Two");
-    pick("Beta Two", "Admin");
-    expect(selected("Alpha One")).toBe("Owner");
-    await new Promise((r) => setTimeout(r, 20));
+    await fillAddRole("Never Saved");
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Add Role" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(puts()).toEqual([]);
-
-    fireEvent.click(saveButton());
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(puts()).toEqual([{
-      method: "PUT",
-      url: "/admin/settings/roles",
-      body: { roles: [], assignments: { "1": "owner", "2": "admin" } },
-    }]);
   });
 
   /** Clicks "Delete" on the row named `name` once the blob has loaded. */
@@ -521,30 +473,14 @@ describe("RoleSettingsTab", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Beta Role status" }));
     expect(confirm).toHaveBeenCalledWith('Disable the role "Beta Role"? 1 active Employee holds it and will be refused every page.');
     await waitFor(() => expect(puts()).toHaveLength(2));
-    // A disabled role grants no page: the warning counts Beta Two, and its select names the role disabled.
+    // A disabled role grants no page: the warning counts Beta Two.
     expect(await screen.findByText(/1 active Employee holds a role granting no page/)).toBeInTheDocument();
-    expect(selected("Beta Two")).toBe("Beta Role (disabled)");
   });
 
   it("a built-in role stored disabled still reads on, as the Relay ignores it", async () => {
     getReply = () => jsonRes({ tab: "roles", config: { roles: [{ ...ADMIN, disabled: true }], assignments: {} } });
     mount();
     await waitFor(() => expect(screen.getByRole("switch", { name: "Admin status" })).toHaveAttribute("aria-checked", "true"));
-  });
-
-  it("an assignment naming a role id no role has shows as \"Unknown role\" and is kept on Save", async () => {
-    const stored = { roles: [ALPHA], assignments: { "1": "role-gone", "2": "role-alpha" } };
-    getReply = () => jsonRes({ tab: "roles", config: stored });
-    mount();
-    await loadedSelect("Alpha One");
-    expect(selected("Alpha One")).toBe("Unknown role (role-gone)");
-    expect(optionTexts("Alpha One")).toEqual([...BUILT_IN_NAMES, "Alpha Role", "Unknown role (role-gone)"]);
-    expect(optionTexts("Beta Two")).toHaveLength(6);
-    pick("Beta Two", "Owner");
-    fireEvent.click(saveButton());
-
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0].body).toEqual({ roles: [ALPHA], assignments: { "1": "role-gone", "2": "owner" } });
   });
 
   describe("Enforce role permissions", () => {
@@ -563,7 +499,7 @@ describe("RoleSettingsTab", () => {
         getReply = () => jsonRes({ tab: "roles", config: stored });
         const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
         mount();
-        await loadedSelect("Beta Two");
+        await rosterLoaded();
         fireEvent.click(await enforceSwitch());
 
         expect(confirm).toHaveBeenCalledTimes(1);
@@ -580,7 +516,7 @@ describe("RoleSettingsTab", () => {
         jsonRes({ tab: "roles", config: { enforce: false, roles: [ALPHA], assignments: { "1": "role-alpha" } } });
       const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
       mount();
-      await loadedSelect("Beta Two");
+      await rosterLoaded();
       fireEvent.click(await enforceSwitch());
       expect(confirm.mock.calls[0][0]).toContain("1 active Employee holds a role granting no page and will be refused every page");
     });
@@ -589,7 +525,7 @@ describe("RoleSettingsTab", () => {
       getReply = () => jsonRes({ tab: "roles", config: { enforce: false, assignments: { "1": "admin" } } });
       const confirm = vi.spyOn(window, "confirm");
       mount();
-      await loadedSelect("Beta Two");
+      await rosterLoaded();
       fireEvent.click(await enforceSwitch());
       await waitFor(() => expect(puts()).toHaveLength(1));
       expect(confirm).not.toHaveBeenCalled();
@@ -601,14 +537,14 @@ describe("RoleSettingsTab", () => {
         tab: "roles", config: { roles: [ALPHA], assignments: { "1": "role-alpha", "2": "role-gone", "3": "role-alpha" } },
       });
       mount();
-      await loadedSelect("Beta Two");
+      await rosterLoaded();
       expect(await screen.findByText("2 active Employees hold a role granting no page and are refused every page."))
         .toBeInTheDocument();
-      pick("Alpha One", "Chatter");
-      expect(await screen.findByText("1 active Employee holds a role granting no page and is refused every page."))
-        .toBeInTheDocument();
-      pick("Beta Two", "Admin");
-      await waitFor(() => expect(screen.queryByText(/a role granting no page/)).toBeNull());
+      cleanup();
+      getReply = () => jsonRes({ tab: "roles", config: { assignments: { "1": "admin" } } });
+      mount();
+      await rosterLoaded();
+      expect(screen.queryByText(/a role granting no page/)).toBeNull();
     });
 
     it("declining the confirm saves nothing and leaves it off", async () => {

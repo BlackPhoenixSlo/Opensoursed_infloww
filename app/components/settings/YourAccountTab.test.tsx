@@ -73,11 +73,9 @@ describe("YourAccountTab", () => {
     expect(screen.getByText("Agency info")).toBeInTheDocument();
   });
 
-  it("renders Edit and the Personal picture's camera veil disabled with \"not wired\"; the Agency one is live", async () => {
+  it("has no Username Edit; the Personal picture's camera veil is disabled \"not wired\"; the Agency one is live", async () => {
     mount();
-    const edit = screen.getByRole("button", { name: "Edit" });
-    expect(edit).toBeDisabled();
-    expect(edit).toHaveAttribute("title", "not wired");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
     const personal = screen.getByRole("button", { name: "Upload picture (not wired)" });
     expect(personal).toBeDisabled();
@@ -163,10 +161,10 @@ describe("YourAccountTab", () => {
     expect(puts()).toEqual([]);
   });
 
-  it("never calls the Creator's OnlyFans profile and says it is not applied yet", async () => {
+  it("never calls the Creator's OnlyFans profile and says the Agency Name is not applied yet", async () => {
     mount();
     await waitFor(() => expect(save()).toBeEnabled());
-    expect(screen.getByText("Saved for your organization; not applied yet.")).toBeInTheDocument();
+    expect(screen.getByText("Saved for your organization; Agency Name is not applied yet.")).toBeInTheDocument();
     expect(calls().some((c) => c.url.includes("/api/of/v2/users/me"))).toBe(false);
   });
 });

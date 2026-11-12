@@ -149,13 +149,19 @@ export function Badge({
 
 // ── ExtraTag ──────────────────────────────────────────────────────
 
-/** The visible "Inflowwww extra" tag, with `title={EXTRA_LABEL}`, beside a
- *  control or heading the Layout capture lacks (ADR-0003). */
+/** The visible Inflowwww-extra mark beside a control or heading the Layout
+ *  capture lacks (ADR-0003): a 14px "+" badge (owner, 2026-11-11: the old
+ *  text chip cluttered pages). `EXTRA_LABEL` stays its text (0px, so screen
+ *  readers and text matchers still read it) and its tooltip; the "+" is CSS. */
 export function ExtraTag() {
   return (
     <span
       title={EXTRA_LABEL}
-      className="rounded-[4px] bg-bg-elev-2 px-1.5 text-[11px] text-fg-dim"
+      className={cn(
+        "inline-flex h-3.5 w-3.5 shrink-0 cursor-help select-none items-center justify-center overflow-hidden rounded-full",
+        "bg-bg-elev-2 align-middle text-[0px] leading-none text-fg-dim",
+        "before:text-[11px] before:font-semibold before:content-['+']",
+      )}
     >
       {EXTRA_LABEL}
     </span>

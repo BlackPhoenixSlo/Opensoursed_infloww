@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import json
 import logging
 import math
 import os
@@ -49,6 +48,8 @@ import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+import stats_file
 
 log = logging.getLogger("of-relay.of_call_counter")
 
@@ -78,16 +79,7 @@ MAX_ROWS = int(_env_float("OF_CALL_STATS_MAX_ROWS", 20000))
 
 def stats_path() -> Path | None:
     """The Relay's counter file (`OF_CALL_STATS_PATH`), or None for memory only."""
-    raw = os.environ.get("OF_CALL_STATS_PATH")
-    if raw is not None:
-        raw = raw.strip()
-        return Path(raw) if raw else None
-    url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("sqlite") and ":///" in url:
-        db = url.split(":///", 1)[1].split("?", 1)[0]
-        if db and Path(db).parent.is_dir():
-            return Path(db).parent / "of_call_stats.json"
-    return None
+    return stats_file.beside_db("OF_CALL_STATS_PATH", "of_call_stats.json")
 
 
 _lock = threading.Lock()          # the counts
@@ -202,9 +194,7 @@ def flush() -> None:
             at = time.time()
             snap = snapshot()
             snap["flushed_at"] = at
-            tmp = p.parent / (p.name + ".tmp")
-            tmp.write_text(json.dumps(snap, separators=(",", ":")), encoding="utf-8")
-            os.replace(tmp, p)
+            stats_file.write(p, snap, separators=(",", ":"))
             _flushed_at, _write_error = at, None
         except Exception as exc:  # noqa: BLE001
             _write_error = f"{type(exc).__name__}: {exc}"[:200]
@@ -227,7 +217,7 @@ def _load(p: Path) -> None:
     a part of one under its old started_at. Every check runs before any state changes, inside the try."""
     global _started_at, _boots, _folded, _unobserved_s, _unobserved_since
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = stats_file.read(p)
         if not isinstance(raw, dict) or raw.get("v") != SCHEMA:
             log.warning("of_call_stats_schema_mismatch path=%s; fresh window", p)
             return

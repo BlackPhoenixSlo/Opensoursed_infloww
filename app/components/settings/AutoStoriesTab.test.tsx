@@ -1,9 +1,12 @@
 /**
  * My Automations > Auto Story (`AutoStoriesTab`) on Infloww's look (page-parity
  * ticket 16). Rendered with `@/lib/relay` mocked over one Creator and one vault
- * folder. What is pinned: the page header (Learn, Edit raw JSON), the five
- * blocks, the Vault clean-up and Enabled options as switches that save, the
- * radio cards, and Delete through a dialog, never `window.confirm`.
+ * folder. What is pinned: the page header (Learn, the On / Off pill + switch,
+ * the More actions menu holding Run now / Edit raw JSON / Delete, the primary
+ * Save), the four blocks, the Vault clean-up switch saving with the form, the
+ * header switch saving at once once a rule exists (and riding the create
+ * before), the radio cards on the theme's selected tint, and Delete through a
+ * dialog, never `window.confirm`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -42,6 +45,9 @@ const RULE = {
   quiet_hours: null, created_at: null, last_run: null, next_due_at: null, has_pending_job: false,
 };
 
+/** Waits until the rule's values seeded the form (Stories per run 2, not the default 1). */
+const seeded = () => waitFor(() => expect(screen.getByLabelText("Stories per run")).toHaveValue(2));
+
 function mockRules(rules: unknown[]) {
   get.mockImplementation((path: string) =>
     path.startsWith("/admin/automation-rules") ? Promise.resolve({ rules }) : Promise.resolve({}));
@@ -57,51 +63,108 @@ afterEach(() => {
 });
 
 describe("Auto Story (AutoStoriesTab)", () => {
-  it("has the page header, the five blocks and Create automation when new", async () => {
+  it("has the page header, the four blocks and Save when new", async () => {
     mockRules([]);
     renderWithProviders(<AutoStoriesTab />);
     const bar = screen.getByRole("banner");
     expect(within(bar).getByRole("heading", { level: 1, name: "Auto Story" })).toBeTruthy();
-    expect(within(bar).getByRole("button", { name: "Edit raw JSON" })).toBeTruthy();
     fireEvent.click(within(bar).getByRole("button", { name: "Learn" }));
     expect(screen.getByRole("note")).toHaveTextContent(/random photos from a vault folder/);
+    expect(await within(bar).findByText("Not saved")).toBeTruthy();
+    expect(within(bar).getByRole("button", { name: "Save" })).toBeTruthy();
+
+    // Raw JSON stays reachable (fast imports), in the menu; disabled until the rule exists.
+    fireEvent.click(within(bar).getByRole("button", { name: "More actions" }));
+    expect(screen.getByRole("menuitem", { name: "Edit raw JSON" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Run now" })).toBeDisabled();
 
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent))
-      .toEqual(["Source", "When to post (choose one)", "Stories", "Vault clean-up", "Status"]);
-    expect(await screen.findByRole("button", { name: "Create automation" })).toBeTruthy();
+      .toEqual(["Source", "When to post (choose one)", "Stories", "Vault clean-up"]);
 
     const clock = screen.getByRole("radio", { name: "At set times each day" });
     const every = screen.getByRole("radio", { name: "Every few hours" });
     expect(clock).toHaveAttribute("aria-checked", "true");
+    expect(clock.className).toContain("bg-selected/40");   // the theme token, readable light and dark
+    expect(clock.className).not.toMatch(/#[0-9a-f]{3,6}/i);
     fireEvent.click(every);
     expect(every).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("spinbutton", { name: "Every N hours" })).toHaveValue(6);
   });
 
-  it("saves the clean-up and Enabled switches", async () => {
+  it("with no rule the header switch only rides the create", async () => {
+    mockRules([]);
+    const post = relay.post as unknown as Mock;
+    post.mockResolvedValue({ ...RULE, is_enabled: false });
+    renderWithProviders(<AutoStoriesTab />);
+    const sw = within(screen.getByRole("banner")).getByRole("switch", { name: "Auto Story" });
+    await waitFor(() => expect(sw).not.toBeDisabled());
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Vault folder" }));
+    fireEvent.click(screen.getByRole("option", { name: /Teasers/ }));
+    fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    expect(post.mock.calls[0][1]).toMatchObject({ kind: "auto_stories", is_enabled: false, payload: { folder_id: 5 } });
+  });
+
+  it("the header switch saves at once (is_enabled alone); clean-up saves with the form", async () => {
     mockRules([RULE]);
     renderWithProviders(<AutoStoriesTab />);
-    const save = await screen.findByRole("button", { name: "Save" });
-    const dupe = screen.getByRole("switch", { name: "Remove the re-uploaded copy from the vault" });
-    const enabled = screen.getByRole("switch", { name: "Enabled" });
-    expect(dupe).toHaveAttribute("aria-checked", "true");
-    expect(enabled).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByLabelText("Stories per run")).toHaveValue(2);
+    const bar = screen.getByRole("banner");
+    const save = within(bar).getByRole("button", { name: "Save" });
+    await seeded();
+    const sw = within(bar).getByRole("switch", { name: "Auto Story" });
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    expect(within(bar).getByText("On")).toBeTruthy();
 
-    fireEvent.click(dupe);
-    fireEvent.click(enabled);
-    fireEvent.click(save);
+    fireEvent.click(sw);
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-    const [path, body] = patch.mock.calls[0];
+    expect(patch.mock.calls[0]).toEqual(["/admin/automation-rules/7", { is_enabled: false }]);
+    await waitFor(() => expect(within(bar).getByText("Off")).toBeTruthy());
+
+    const dupe = screen.getByRole("switch", { name: "Remove the re-uploaded copy from the vault" });
+    expect(dupe).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(dupe);
+    expect(patch).toHaveBeenCalledTimes(1);   // not saved until Save
+    await waitFor(() => expect(save).not.toBeDisabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    const [path, body] = patch.mock.calls[1];
     expect(path).toBe("/admin/automation-rules/7");
     expect(body).toMatchObject({ is_enabled: false, payload: { folder_id: 5, remove_vault_dupe: false } });
+  });
+
+  it("a failed switch flips back and says why", async () => {
+    mockRules([RULE]);
+    patch.mockRejectedValueOnce(new Error("rule refused"));
+    renderWithProviders(<AutoStoriesTab />);
+    await seeded();
+    const sw = within(screen.getByRole("banner")).getByRole("switch", { name: "Auto Story" });
+    fireEvent.click(sw);
+    expect(await screen.findByText(/Couldn.t switch Auto Story: rule refused/)).toBeTruthy();
+    expect(sw).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("Edit raw JSON opens from the More actions menu once the rule exists", async () => {
+    mockRules([RULE]);
+    renderWithProviders(<AutoStoriesTab />);
+    await seeded();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit raw JSON" }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent(/rule #7/);
   });
 
   it("Delete asks in a dialog, not window.confirm", async () => {
     const confirm = vi.spyOn(window, "confirm");
     mockRules([RULE]);
     renderWithProviders(<AutoStoriesTab />);
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await seeded();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = screen.getByRole("dialog", { name: "Delete this automation?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/7"));

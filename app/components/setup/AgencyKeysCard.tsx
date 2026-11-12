@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * AgencyKeysCard — Settings → AI keys, YOUR agency's LLM keys.
+ * AgencyKeysCard — Settings → AI keys, YOUR agency's LLM keys: the provider fields only. The edit state
+ * (`useKeyDraft`) and the Save live in AiKeysTab, whose Panel header carries Save like every Settings tab.
  *
  * Every OF account you own bills the key you paste here, so no other agency on
  * this server can spend on your credential and you cannot spend on theirs. That
@@ -13,33 +14,27 @@
  * that card.
  */
 
-import { useTenantKeys, useSaveTenantKeys } from "@/hooks/useTenantKeys";
+import { useTenantKeys } from "@/hooks/useTenantKeys";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
-import { useKeyDraft } from "@/hooks/useKeyDraft";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import type { KeyDraft } from "@/hooks/useKeyDraft";
+import { Badge } from "@/components/ui/primitives";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { FieldInput } from "@/components/settings/SettingsPanel";
 
-export default function AgencyKeysCard() {
+export default function AgencyKeysCard({ keys, pending }: {
+  /** The tab's draft: the typed fields, and `clear` for one stored key. */
+  keys: Pick<KeyDraft, "draft" | "setField" | "clear">;
+  /** A save or clear is in flight. */
+  pending: boolean;
+}) {
   const { data, isLoading, error } = useTenantKeys();
-  const save = useSaveTenantKeys();
-  const { draft, dirty, setField, save: onSave, clear, note } = useKeyDraft(
-    save.mutateAsync,
-    "Saved — takes effect on the next message.",
-  );
+  const { draft, setField, clear } = keys;
 
   const providers = data?.providers ?? {};
   const shared = data?.shared_accounts ?? [];
 
   return (
-    <Card className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">Your AI keys</h2>
-        <p className="text-sm text-fg-dim">
-          The API keys your models&apos; AI runs on. They belong to your account
-          only — every model you own uses them, and no one else on this server
-          can. Leave a field blank to keep the key that&apos;s already stored.
-        </p>
-      </div>
+    <div className="space-y-4">
 
       {shared.some((a) => a.contested.length > 0) && (
         <div className="rounded-md border border-err/40 bg-err/5 p-3 space-y-1">
@@ -114,12 +109,12 @@ export default function AgencyKeysCard() {
       {Object.entries(providers).map(([name, k]) => (
         <div key={name} className="space-y-1">
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium">{LABELS[name] ?? name}</label>
+            <label htmlFor={`ai-key-${name}`} className="text-[length:var(--if-fs)] text-[var(--if-fg)]">{LABELS[name] ?? name}</label>
             {k.set ? <Badge color="ok">set</Badge> : <Badge color="muted">not set</Badge>}
             {k.set && (
               <button
                 type="button"
-                disabled={save.isPending}
+                disabled={pending}
                 onClick={() => {
                   // One click here stops every automation on every account this
                   // owner runs — the calls fail closed with no key. Worth a beat.
@@ -134,10 +129,11 @@ export default function AgencyKeysCard() {
               </button>
             )}
           </div>
-          <Input
+          <FieldInput
+            id={`ai-key-${name}`}
             type="password"
             value={draft[name] ?? ""}
-            placeholder={k.set ? `${k.hint} — leave blank to keep` : "not set"}
+            placeholder={k.set ? `${k.hint} — leave blank to keep` : "Paste key"}
             autoComplete="off"
             onChange={(e) => setField(name, e.target.value)}
           />
@@ -150,13 +146,6 @@ export default function AgencyKeysCard() {
           )}
         </div>
       ))}
-
-      <div className="flex items-center gap-3 pt-1">
-        <Button onClick={onSave} disabled={!dirty || save.isPending}>
-          {save.isPending ? "Saving…" : "Save changes"}
-        </Button>
-        {note && <span className="text-sm text-fg-dim">{note}</span>}
-      </div>
-    </Card>
+    </div>
   );
 }

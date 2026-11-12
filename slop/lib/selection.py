@@ -36,7 +36,9 @@ PAGES = ()
 RUNTIME = ((re.compile(r"scripts/demo-shots/fetch-guard\.cjs$"), PAGES),
            (re.compile(r"deploy/fleet/"), ("slop/lib/box.py", "slop/lib/edge.py")),
            (re.compile(r"desktop/"), ("slop/actors/notif_click.py",)),
-           (re.compile(r"slop/lib/[^/]+\.mjs$"), ("slop/lib/app_ts.py",)))
+           (re.compile(r"slop/lib/[^/]+\.mjs$"), ("slop/lib/app_ts.py",)),
+           # the bio sidecar's static page (html/js/css/icons): only service/bio_pages/assets.py reads it
+           (re.compile(r"service/bio_pages/public/"), ("service/bio_pages/assets.py",)))
 
 
 # ---------- python: functions by line ----------

@@ -83,7 +83,7 @@ from db.models import (  # noqa: E402
 
 OWN_ID = "999"
 # ⚠️ The clock is RELATIVE, not a literal calendar date. reply_mass_funnel bounds
-# discovery to broadcasts younger than `_DISCOVERY_WINDOW_DAYS`, so a fixture
+# discovery to broadcasts younger than `DISCOVERY_WINDOW_DAYS`, so a fixture
 # pinned to a fixed date would quietly age out of that window and turn this whole
 # file red on a day nobody touched it — the failure would look like a regression
 # in the walker rather than an expired fixture. Anchoring to `utcnow()` keeps the
@@ -923,7 +923,7 @@ async def case_no_next_walks_linearly():
 
 
 async def case_aged_broadcast_stops_discovering():
-    """A broadcast older than _DISCOVERY_WINDOW_DAYS with nobody mid-funnel is
+    """A broadcast older than DISCOVERY_WINDOW_DAYS with nobody mid-funnel is
     FINISHED: it must drop out of the anchor set entirely, so discovery never
     re-scans its recipients again.
 
@@ -936,7 +936,7 @@ async def case_aged_broadcast_stops_discovering():
     aid = "acc_f_aged"
     await _seed_account(aid)
     fid = await _seed_funnel("f_aged", _TWO_STEP)
-    old = T0 - timedelta(days=a11._DISCOVERY_WINDOW_DAYS + 1)
+    old = T0 - timedelta(days=a11.DISCOVERY_WINDOW_DAYS + 1)
     mr = await _seed_mass_run(aid, fid, started_at=old)
     await _seed_msg(aid, 8201, 5_900_000 + mr, "out", old, mass_run_id=mr,
                     body="How many strokes? 😈")
@@ -956,7 +956,7 @@ async def case_aged_broadcast_still_walks_pending_fan():
     aid = "acc_f_aged_live"
     await _seed_account(aid)
     fid = await _seed_funnel("f_aged_live", _TWO_STEP)
-    old = T0 - timedelta(days=a11._DISCOVERY_WINDOW_DAYS + 1)
+    old = T0 - timedelta(days=a11.DISCOVERY_WINDOW_DAYS + 1)
     mr = await _seed_mass_run(aid, fid, started_at=old)
     await _seed_msg(aid, 8301, 5_910_000 + mr, "out", old, mass_run_id=mr,
                     body="How many strokes? 😈")

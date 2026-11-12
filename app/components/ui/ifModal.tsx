@@ -201,7 +201,7 @@ export function IfModal({
   title, label, width = 520, size, footer, footerSlot = false, onClose, closable = true, keyboard = closable, children,
   className,
 }: ModalProps & {
-  /** "editor": a long form's dialog, (almost) full-screen below `sm`. */
+  /** "editor": a long form's dialog, (almost) full-screen below `sm`, its footer set off by a hairline there. */
   size?: "editor";
   footerSlot?: boolean;
 }) {
@@ -235,7 +235,9 @@ export function IfModal({
           <FooterSlotContext.Provider value={footerSlot ? slot : undefined}>{children}</FooterSlotContext.Provider>
         </div>
         {(footer || footerSlot) && (
-          <div className="flex flex-wrap items-center justify-end gap-2 px-6 pb-5">
+          // The phone editor's hairline marks the footer seam mid-scroll; desktop stays borderless on purpose.
+          <div className={cn("flex flex-wrap items-center justify-end gap-2 px-6 pb-5",
+            size === "editor" && "max-sm:border-t max-sm:border-border max-sm:pt-4")}>
             {footer}
             {footerSlot && <span ref={setSlot} className="contents" />}
           </div>

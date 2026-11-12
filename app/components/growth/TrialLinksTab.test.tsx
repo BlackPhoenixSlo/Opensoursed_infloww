@@ -70,6 +70,14 @@ function choose(combobox: HTMLElement, option: string | RegExp) {
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
+/** The options' text behind `combobox` (opens and closes it). */
+function optionsOf(combobox: HTMLElement): string[] {
+  fireEvent.click(combobox);
+  const out = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent ?? "");
+  fireEvent.click(combobox);
+  return out;
+}
+
 const rowOf = (name: string) => screen.getByText(name).closest("tr")!;
 const metric = (row: string, title: string) => rowOf(row).querySelector(`[data-metric="${title}"]`)?.textContent;
 
@@ -132,18 +140,18 @@ describe("TrialLinksTab Create", () => {
     fireEvent.change(field("source"), { target: { value: "Reddit" } });
     fireEvent.change(field("cost"), { target: { value: "40" } });
     fireEvent.change(field("tag"), { target: { value: "may" } });
-    await waitFor(() => expect([...(field("list") as HTMLSelectElement).options].map((o) => o.textContent))
-      .toEqual(["None", "VIP", "Whales"]));
-    fireEvent.change(field("list"), { target: { value: "800002" } });
+    await waitFor(() => expect(field("list").textContent).not.toMatch(/Loading/));
+    expect(optionsOf(field("list"))).toEqual(["None", "VIP", "Whales"]);
+    choose(field("list"), "Whales");
     return dlg;
   }
 
   it("creates with Infloww's/OF's fields, sending the offer expiration", async () => {
     const dlg = await open();
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Twitter 7-day"), { target: { value: "  Reddit" } });
-    fireEvent.change(within(dlg).getByLabelText("Offer limit"), { target: { value: "50" } });
-    fireEvent.change(within(dlg).getByLabelText("Offer expiration"), { target: { value: "0" } });
-    fireEvent.change(within(dlg).getByLabelText("Free trial duration"), { target: { value: "30" } });
+    choose(within(dlg).getByRole("combobox", { name: "Offer limit" }), "50 subscribers");
+    choose(within(dlg).getByRole("combobox", { name: "Offer expiration" }), "No expiration");
+    choose(within(dlg).getByRole("combobox", { name: "Free trial duration" }), "1 month");
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/trial-links", {
       account_id: "a1", name: "Reddit", subscribe_counts: 50, expire_days: 0, subscribe_days: 30,

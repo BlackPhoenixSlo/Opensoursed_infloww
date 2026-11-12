@@ -71,7 +71,8 @@ afterEach(() => {
 });
 
 const urls = () => fetchMock.mock.calls.map(([url]) => String(url));
-const openCard = (name: string) => fireEvent.click(within(screen.getByRole("article", { name })).getByRole("button"));
+const openCard = (name: string) =>
+  fireEvent.click(within(screen.getByRole("article", { name })).getByRole("button", { name: "Request" }));
 
 describe("DiscoverCreators", () => {
   it("renders one card per Creator with the projection fields only, the own agency's tagged, the rail's own left out", async () => {
@@ -85,9 +86,13 @@ describe("DiscoverCreators", () => {
     expect(within(partner).getByRole("img", { name: "Fixture Partner" })).toHaveAttribute(
       "src", "https://example.invalid/partner.png");
     expect(within(partner).queryByText("Your agency")).toBeNull();
+    // A visible Request, and the Primary post's first still (none on a post with no media).
+    expect(within(partner).getByRole("button", { name: "Request" })).toBeInTheDocument();
+    expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("src", "/admin/s4s/media/71");
 
     const sibling = screen.getByRole("article", { name: "Fixture Sibling" });
     expect(within(sibling).getByText("Your agency")).toBeInTheDocument();
+    expect(within(sibling).queryByRole("img", { name: /S4S/ })).toBeNull();
     expect(screen.queryByRole("article", { name: "Fixture Own" })).toBeNull();
 
     expect(document.body.textContent).not.toContain("7000009");

@@ -4,10 +4,10 @@
  * Growth > Vault Pro, laid out from its Layout capture (`docs/infloww-layouts/growth-vault-pro.md`, ticket 36).
  *
  * The header is the bundle's: Infloww's 48px page header holding "Vault Pro", "Learn" and "Add media" (#3 to #11),
- * plus ours: "Download full vault" / "Download full folder" left of Learn (the manage panel renders it into the header;
- * it starts the app's one download, `VaultDownloadProvider` in the root layout) and our one Extras overflow button left of Add media,
- * which opens our own tools (collect, describe, harvest, duplicates, the pack picker, AI folders and the flags
- * review) in a right drawer. The Creator is picked on
+ * plus our one Extras overflow button left of Add media, which opens our own tools in a right drawer: "Download
+ * full vault" / "Download full folder" (the open folder's scope; "Add … to queue" while a run is busy; it starts the
+ * app's one download, `VaultDownloadProvider` in the root layout), collect, describe, harvest, duplicates, the pack
+ * picker, AI folders and the flags review. The Creator is picked on
  * the creator column left of the page (`CreatorRail`, as Smart lists'), in place of the bundle's header select (#6).
  * Beside it, flush and filling the page (#15, #16), the existing Vault manage panel holds the folder rail and the
  * grid; with no Creator, a static frame of the same rail and toolbar, disabled, around an empty state. "Add media"
@@ -25,7 +25,6 @@ import { CreatorRail } from "@/components/shell/CreatorRail";
 import { EmptyState, IfButton, IfLearn, InflowwPageHeader } from "@/components/ui/infloww";
 import { VaultAccountProvider, useVaultAccount } from "@/components/vault/VaultAccount";
 import { RAIL_CLASS, RAIL_HEAD_CLASS, RAIL_ICON_BOX, RAIL_ROW_INNER, railRowClass } from "@/components/vault/VaultFolderRail";
-import { HeaderDownloadButton } from "@/components/vault/VaultDownloadPanel";
 import VaultImportCard from "@/components/vault/VaultImportCard";
 import { VaultBrowseMemory } from "@/components/vault/VaultBrowseMemory";
 import VaultManagePanel, { VAULT_GRID_CLASS, VAULT_PANES_CLASS } from "@/components/vault/VaultManagePanel";
@@ -72,13 +71,11 @@ const UPLOAD_TOUR: VaultTourStep[] = [
   },
 ];
 
-/** The capture's header bar (#3 to #11): title, then our Download, Learn, our Extras overflow and Add media at the
- *  right; a rule beneath. On a phone the right-hand group wraps under the title. `downloadSlot`: where the manage
- *  panel puts its Download (with no Creator, a disabled one stands there). */
-function VaultHeader({ onAddMedia, onExtras, downloadSlot }: {
+/** The capture's header bar (#3 to #11): title, then Learn, our Extras overflow and Add media at the right; a rule
+ *  beneath. On a phone the right-hand group wraps under the title. */
+function VaultHeader({ onAddMedia, onExtras }: {
   onAddMedia: () => void;
   onExtras?: () => void;
-  downloadSlot: (el: HTMLElement | null) => void;
 }) {
   const { accountId, account, sessionLost, ready } = useVaultAccount();
   const noCreator = ready ? NO_CREATOR : LOADING_CREATORS;
@@ -89,9 +86,6 @@ function VaultHeader({ onAddMedia, onExtras, downloadSlot }: {
         className="max-md:h-auto max-md:min-h-12 max-md:flex-wrap max-md:gap-y-2 max-md:px-3 max-md:py-1.5"
         actions={
           <div className="flex items-center gap-6">
-            {accountId === null
-              ? <HeaderDownloadButton label="Download full vault" reason={noCreator} />
-              : <span ref={downloadSlot} className="contents" />}
             {/* #7 to #9: the book icon and 14px M1 text, to Infloww's help article. */}
             <IfLearn href={LEARN_HREF} className="font-medium" />
             <div className="flex items-center gap-2">
@@ -204,8 +198,6 @@ function VaultProBody() {
   const options = account && !accounts.some((a) => a.id === account.id) ? [account, ...accounts] : accounts;
   const [adding, setAdding] = useState(false);
   const [extrasOpen, setExtrasOpen] = useState(false);
-  // The header's Download slot (a DOM node): the keyed manage panel portals its button into it.
-  const [downloadSlot, setDownloadSlot] = useState<HTMLElement | null>(null);
   // The bundle's order: the Add media tour once the page has a Creator to add to, the upload guide the first time
   // the upload card opens. Each shows once (`useVaultTour`); opening the card ends the first, as there.
   const [addTour, closeAddTour] = useVaultTour("batchUploadEntry", accountId !== null && !adding);
@@ -220,7 +212,6 @@ function VaultProBody() {
           setAdding(true);
         }}
         onExtras={accountId === null ? undefined : () => setExtrasOpen((o) => !o)}
-        downloadSlot={setDownloadSlot}
       />
       {addTour && !adding && <VaultTour steps={ADD_MEDIA_TOUR} variant="coach" placement="left" spotlightClicks onClose={closeAddTour} />}
       {uploadTour && adding && <VaultTour steps={UPLOAD_TOUR} variant="guide" placement="right" onClose={closeUploadTour} />}
@@ -256,7 +247,7 @@ function VaultProBody() {
           )
         ) : (
           <div key={accountId} className="flex-1 min-h-0 flex flex-col">
-            <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} headerSlot={downloadSlot} />
+            <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} />
 
             {/* #78 to #80: the upload card over the whole page, a 20px back arrow, a 24px body that scrolls. The
                 card stays mounted while hidden, so files staged in it survive closing it; it is remounted with the

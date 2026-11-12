@@ -1,5 +1,5 @@
 /**
- * My Automations › Get to know fans: the switch sits in the Automation card, the settings show with no rule and
+ * My AI Chatter › Get to know fans: the switch (and its On / Off pill) sits in the page header, the settings show with no rule and
  * the switch off (catalog defaults), and their Save then creates the rule OFF (never the switch). The Model info box opens on the
  * relay's prewritten template while the account has no note (its untouched label lines never reach a
  * prompt: service/tests/test_bio_consistency.py), but on the stored note once there is one. Save sends
@@ -8,7 +8,7 @@
  * "Saved" off once it lands.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -64,20 +64,33 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("Get to know fans", () => {
-  it("shows the switch in the Automation card and prefills the template while there is no note", async () => {
+  it("shows the switch in the page header and prefills the template while there is no note", async () => {
     serve(null);
     renderWithProviders(<GetToKnowFansPage />, makeTestQueryClient());
     const sw = await screen.findByRole("switch", { name: "Get to know fans" });
-    expect(sw.closest("section")?.querySelector("h2")?.textContent).toBe("Automation");
+    expect(sw.closest("header")).toBe(screen.getByRole("banner"));
+    await waitFor(() => expect(within(screen.getByRole("banner")).getByText("Off")).toBeTruthy());
     const box = (await screen.findByRole("textbox", { name: "Model info" })) as HTMLTextAreaElement;
     expect(box.value).toBe(TEMPLATE);
 
     fireEvent.change(box, { target: { value: "Name: Mia\nAge: \nFrom: " } });
-    fireEvent.click(screen.getAllByRole("button", { name: "Save" }).at(-1)!);
+    fireEvent.click(screen.getByRole("button", { name: "Save model info" }));
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config", {
       account_id: ACC, config: { persona: "Ella.", model_notes: "Name: Mia\nAge: \nFrom: " },
     }]);
+  });
+
+  it("the rule form's Save is the one row after its card (the slop scenario's locator), never Model info's", async () => {
+    serve("Name: Mia");
+    renderWithProviders(<GetToKnowFansPage />, makeTestQueryClient());
+    await screen.findByRole("spinbutton", { name: "Message cutoff" });
+    await screen.findByRole("textbox", { name: "Model info" });
+    // slop/scenarios/2026-10-29-state-reducers.py `_gtkf_save`.
+    const hits = document.evaluate("//section[h2[normalize-space()='When the chat ends']]/following-sibling::div[button][1]/button",
+      document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    expect(hits.snapshotLength).toBe(1);
+    expect(hits.snapshotItem(0)!.textContent).toBe("Save");
   });
 
   it("shows the settings with no rule and the switch off; Save creates the rule OFF", async () => {

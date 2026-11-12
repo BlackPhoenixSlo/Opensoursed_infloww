@@ -12,7 +12,9 @@
  * tab), "Import from Excel", "Export Excel" and "+ Add Sensitive Word" (Infloww's
  * `top:55px; right:28px`: the title's 48px plus the toolbar's 7px puts it at the
  * toolbar's right end, and the letter row, spread across the full width, has no
- * room for it). Each word card shows "Edit"
+ * room for it). Each letter tab shows how many words it holds (of those the
+ * search matches); a letter with none is dimmed, and the page opens on the first
+ * letter that has words. Each word card shows "Edit"
  * and "Delete" over itself on hover or focus. The add dialog takes up to 20 words
  * of at most 32 characters ("+ Add the next column"); edit reuses it with one
  * row. Delete is immediate, as in Infloww. Excel import reads column A under a
@@ -65,7 +67,8 @@ const LINK_BUTTON = cn(
 export default function SensitiveWordsPage() {
   const qc = useQueryClient();
   const listQ = useSensitiveWords();
-  const [tab, setTab] = useState<string>(LETTER_TABS[0]);
+  // The letter the user opened; until then, the first letter with a word (`tab`).
+  const [picked, setTab] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [editor, setEditor] = useState<{ mode: "add" } | { mode: "edit"; word: string } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -83,10 +86,19 @@ export default function SensitiveWordsPage() {
   });
 
   const words = listQ.data?.words;
-  const shown = useMemo(() => {
+  // Each letter's words the search matches: the tab counts, and the open tab's cards.
+  const byTab = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return (words ?? []).filter((w) => tabOf(w) === tab && w.toLowerCase().includes(q));
-  }, [words, tab, search]);
+    const m = new Map<string, string[]>();
+    for (const w of words ?? []) {
+      if (!w.toLowerCase().includes(q)) continue;
+      const t = tabOf(w);
+      m.set(t, [...(m.get(t) ?? []), w]);
+    }
+    return m;
+  }, [words, search]);
+  const tab = picked ?? LETTER_TABS.find((t) => byTab.has(t)) ?? LETTER_TABS[0];
+  const shown = byTab.get(tab) ?? [];
 
   // The letter tabs are one Tab stop; the arrows (and Home / End) open the next tab and move focus to it.
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
@@ -146,7 +158,9 @@ export default function SensitiveWordsPage() {
       <div className="my-[15px] shrink-0 bg-bg px-6 py-[13px]">
         <div role="tablist" aria-label="First letter"
           className="flex flex-wrap gap-[3px] sm:flex-nowrap sm:justify-between">
-          {LETTER_TABS.map((t, i) => (
+          {LETTER_TABS.map((t, i) => {
+            const n = byTab.get(t)?.length ?? 0;
+            return (
             <button
               key={t}
               ref={(el) => { tabRefs.current[i] = el; }}
@@ -154,27 +168,31 @@ export default function SensitiveWordsPage() {
               role="tab"
               aria-selected={t === tab}
               tabIndex={t === tab ? 0 : -1}
+              title={`${n} word${n === 1 ? "" : "s"}`}
               onClick={() => setTab(t)}
               onKeyDown={(e) => onTabKey(e, i)}
               className={cn(
-                "flex h-[30px] min-w-[30px] shrink-0 items-center justify-center whitespace-nowrap rounded border px-[0.8vw]",
+                "flex h-[30px] min-w-[30px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded border px-[0.6vw]",
                 "border-bg-elev-2 bg-bg-elev-2 text-[14px] text-fg transition-colors hover:border-accent hover:text-accent",
                 "[html[data-theme=light]_&]:border-[#eff4ff] [html[data-theme=light]_&]:bg-[#eff4ff]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+                n === 0 && t !== tab && "text-muted",
                 t === tab && "border-accent text-accent [html[data-theme=light]_&]:border-accent",
               )}
             >
               {t}
+              {/* aria-hidden: the tab's name stays the letter; the count is its title. */}
+              {n > 0 && <span aria-hidden className="text-[11px] leading-none opacity-70">{n}</span>}
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col px-6">
         <div role="tabpanel" aria-label={tab}
           className={cn("min-h-0 flex-1 overscroll-contain sm:overflow-y-auto sm:overflow-x-hidden", HOME_B_TH)}>
-          <h2 className="my-4 text-[14px] font-medium text-fg">Sensitive words list</h2>
-          <div className={cn("rounded-lg px-2.5 py-[15px]", HOME_B_TH)}>
+          <div className={cn("mt-2 rounded-lg px-2.5 py-[15px]", HOME_B_TH)}>
             {listQ.isLoading ? (
               <div className="flex flex-wrap gap-2" aria-busy="true">
                 {["w-16", "w-24", "w-20", "w-14", "w-28", "w-16", "w-20"].map((w, i) => (
@@ -185,7 +203,9 @@ export default function SensitiveWordsPage() {
               <EmptyState kind="error" size="md" text="Couldn't load the list." onRetry={() => void listQ.refetch()}
                 className={EMPTY_BOX} />
             ) : shown.length === 0 ? (
-              <EmptyState kind="data" size="md" className={EMPTY_BOX} />
+              <EmptyState kind="data" size="md" className={EMPTY_BOX}
+                text={words?.length ? undefined : "No sensitive words yet"}
+                action={<IfButton variant="primary" icon={Plus} onClick={() => setEditor({ mode: "add" })}>Add word</IfButton>} />
             ) : (
               <ul className="flex flex-wrap" aria-label="Sensitive words">
                 {shown.map((w) => (

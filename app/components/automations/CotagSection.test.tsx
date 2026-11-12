@@ -7,7 +7,7 @@
  *     performers-search and a result is the pick, stored as its handle.
  *  3. A stored handle shows as the pick whatever the search says, and a failed
  *     search keeps it.
- *  4. CotagCard (Settings › Co-creator tag) saves the stored config back with
+ *  4. CotagForm (Settings › Co-creator tag) hands its Save to the tab; it saves the stored config back with
  *     only the co-tag key changed: the account-config PUT replaces what it holds.
  */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -27,7 +27,8 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   };
 });
 
-import CotagSection, { CotagCard } from "@/components/automations/CotagSection";
+import CotagSection, { CotagForm } from "@/components/automations/CotagSection";
+import { SaveRow } from "@/components/settings/StickySaveBar";
 import { relay } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
@@ -105,16 +106,20 @@ describe("CotagSection", () => {
     expect(screen.getByTestId("cotag-pick").textContent).toBe("@coone");
   });
 
-  it("CotagCard saves the stored config with only the pick changed", async () => {
+  it("CotagForm saves the stored config with only the pick changed", async () => {
     const config = { persona: "Ella.", model_notes: "note", cotag_tag_videos: false, cotag_username: null };
     relayGet.mockImplementation((path: string) => Promise.resolve(
       path.startsWith("/admin/account-config") ? { account_id: ACC, config } : FOUND));
     relayPut.mockResolvedValue({ account_id: ACC, config: { ...config, cotag_username: "coone" } });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<QueryClientProvider client={client}><CotagCard accountId={ACC} /></QueryClientProvider>);
+    render(
+      <QueryClientProvider client={client}>
+        <CotagForm accountId={ACC}>{(save, form) => <>{form}<SaveRow {...save} look="settings" /></>}</CotagForm>
+      </QueryClientProvider>,
+    );
     await screen.findByLabelText("Search creators");
     expect(screen.getByTestId("cotag-pick").textContent).toBe("No co-creator tag");
-    const save = screen.getByRole("button", { name: "Save co-creator tag" }) as HTMLButtonElement;
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     search("co");
     fireEvent.click(await screen.findByRole("button", { name: /@coone/ }));
@@ -123,6 +128,6 @@ describe("CotagSection", () => {
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config",
       { account_id: ACC, config: { ...config, cotag_username: "coone" } }]);
-    expect(await screen.findByText("Saved")).toBeTruthy();
+    expect(await screen.findByText("Saved ✓")).toBeTruthy();
   });
 });

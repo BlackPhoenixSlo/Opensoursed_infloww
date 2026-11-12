@@ -225,8 +225,9 @@ _FEATURE_LABELS = {
     "help_assistant": "The help assistant",
     "help_assistant_do": "The help assistant",
     "autoreply": "Auto-reply", "reply_mass_funnel": "Auto Funnel",
-    "welcome_chatter_for_info": "Info chatter", "followup": "Follow-ups",
-    "gen_info": "Fan info",
+    # Named as the sidebar names their pages (app/lib/nav.ts).
+    "welcome_chatter_for_info": "Get to know fans", "followup": "Follow-ups",
+    "gen_info": "Gen-Info",
 }
 
 
@@ -724,6 +725,22 @@ async def cap_state(account_id: str | None, provider: str,
     }
 
 
+async def spend_today(account_id: str) -> dict[str, Any]:
+    """Today's (UTC) spend per provider for one account, read-only: the rows
+    `_reserve` writes, held reservations included. The cap applies to each
+    provider's row on its own, so this is a list, not one total."""
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(GrokDailyCost.provider, GrokDailyCost.cost_cents, GrokDailyCost.is_capped)
+            .where(GrokDailyCost.day == day, GrokDailyCost.account_id == account_id)
+            .order_by(GrokDailyCost.provider)
+        )).all()
+    return {"day": day, "providers": [
+        {"provider": p, "spent_millicents": int(c or 0), "flagged": bool(f)}
+        for p, c, f in rows]}
+
+
 def _ledger(account_id: str | None, user_id: str | None):
     """The daily rollup a call reserves against: (table, its scope column, key).
 
@@ -1165,6 +1182,44 @@ async def _reserve_call(model: str, messages: list[dict], *, account_id: str | N
     await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
                    user_id)  # raises LLMCapExceeded
     return hold
+
+
+@dataclass(frozen=True)
+class ExternalHold:
+    """A reservation + pending audit row for a call made OUTSIDE `chat()` (an
+    SDK that is not OpenAI-shaped, e.g. TypeSafe). `done` writes the receipt and
+    settles the rollup to the real cost — failed calls included, since a
+    multi-step call can bill tokens before it fails."""
+    hold: _Hold
+    call_id: int | None
+
+    async def done(self, actual_mc: int, *, tokens_in: int | None, ok: bool,
+                   latency_ms: int, error: str = "", response: str = "",
+                   tokens_out: int | None = None) -> None:
+        await _finalize_call(
+            self.call_id, status="done" if ok else "error",
+            error_text=None if ok else error[:2000],
+            response_text=response[:_RESP_TEXT_CAP] if ok else None,
+            latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
+            cost_cents=actual_mc)  # millicents (see _cost_millicents)
+        await self.hold.settle(actual_mc)
+
+
+async def reserve_external(account_id: str | None, provider: str, model: str,
+                           reserve_mc: int, *, purpose: str, request: dict,
+                           endpoint: str = "") -> ExternalHold:
+    """Reserve `reserve_mc` on the account's (day, account, `provider`) rollup
+    against the same daily cap `chat()` uses, and write the pending audit row.
+    Raises LLMCapExceeded. `request` is the audit body (no image bytes)."""
+    now = datetime.utcnow()
+    hold = _Hold(now, account_id, None, provider, int(reserve_mc))
+    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
+    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider)  # raises LLMCapExceeded
+    call_id = await _insert_pending_call(
+        purpose=purpose, provider=provider, account_id=account_id, fan_id=None,
+        model=model, endpoint=endpoint or provider, temperature=0.0,
+        request_body=request, now=now)
+    return ExternalHold(hold, call_id)
 
 
 async def _give_up(call_id: int | None, hold: _Hold, body: dict, msg: str,

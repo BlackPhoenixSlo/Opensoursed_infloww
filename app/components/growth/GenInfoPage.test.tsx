@@ -4,7 +4,7 @@
  * it the one-shot old-fans run (`process_old_fans`, pushed to OnlyFans).
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -57,7 +57,7 @@ const mount = (rules: unknown[] | Promise<never>) => {
       : Promise.resolve({}));
   renderWithProviders(<GenInfoPage />, client);
 };
-const theSwitch = () => screen.getByRole("switch", { name: "Gen-Info" }) as HTMLButtonElement;
+const theSwitch = () => within(screen.getByRole("banner")).getByRole("switch", { name: "Gen-Info" }) as HTMLButtonElement;
 const callsTo = (path: string) => relayPost.mock.calls.filter((c) => String(c[0]) === path);
 
 describe("Gen-Info page", () => {
@@ -78,6 +78,7 @@ describe("Gen-Info page", () => {
       error_text: null, stats: { generated: 3 },
     })]);
     await waitFor(() => expect(theSwitch().getAttribute("aria-checked")).toBe("true"));
+    expect(within(screen.getByRole("banner")).getByText("On")).toBeTruthy();
     expect(screen.getByText(/3 fans updated/)).toBeTruthy();
     await act(async () => { fireEvent.click(theSwitch()); });
     await waitFor(() => expect(callsTo("/admin/automation-rules/switch").length).toBe(1));

@@ -42,7 +42,7 @@ Checks (names in lib/scripts_library_faults.py):
   ALL_MODELS_VIEW GET /admin/saved-replies/overview lists every owned Creator and, per sequence / tag name, each
                  Creator's count == that Creator's own stored rows (an independent per-account read-back of the lean
                  projection).
-  UI_ALL_MODELS  /growth/scripts, the Creator column's "All models" pick: the matrix's columns == the overview's
+  UI_ALL_MODELS  /growth/scripts, the Creator column's "All creators" pick: the matrix's columns == the overview's
                  accounts == the whole roster, its Sequence and Tag rows (rendered + "Show more (k)") == the overview
                  in order, each cell's count (missing = 0) == per_account; the header's write actions (Learn, Share,
                  More and its Add script / Create new / Add tag / From Excel / From other creators), shown on a
@@ -450,7 +450,7 @@ _SIDEBAR = """(label) => { const a = document.querySelector(`aside[aria-label="$
     .find(Boolean);
   return { items, more: more ? Number(more[1]) : 0 }; }"""
 _CARDS = r"""() => [...document.querySelectorAll('[aria-label^="Step "]')].map((e) => { const li = e.closest('li');
-  return { label: e.textContent.trim(), name: li.querySelector('div.mb-0\\.5')?.textContent ?? null,
+  return { label: e.textContent.trim(), name: li.querySelector('div.flex-1 > div.mb-1 > div.font-medium')?.textContent ?? null,
     text: (li.querySelector('p')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
     notes: li.querySelector('[aria-label="Internal notes"]')?.getAttribute('title') ?? null }; })"""
 
@@ -630,8 +630,8 @@ async def _ui_all_models(ctx, page, accounts: list[dict], ov: dict) -> None:
         before = await _present(page)
         await page.keyboard.press("Escape")
         col = page.locator('aside[aria-label="Creators"]')
-        await col.locator("button[aria-expanded]", has_text="All models").click()  # the menu, not Collapse
-        pick = col.locator("button:not([aria-expanded])", has_text=re.compile(r"^All models$"))
+        await col.locator("button[aria-expanded]", has_text="All creators").click()  # the menu, not Collapse
+        pick = col.locator("button:not([aria-expanded])", has_text=re.compile(r"^All creators$"))
         await pick.wait_for(timeout=10_000)
         await ui.shot(ctx, page, "scripts-all-models-trigger")
         await pick.click()

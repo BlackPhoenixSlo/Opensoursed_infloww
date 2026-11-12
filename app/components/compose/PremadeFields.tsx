@@ -99,6 +99,7 @@ export function PremadeFields({
        *  (picked images ∪ folder). Shown once either source is set. */}
       {(r.media.length > 0 || r.folderId) && (
         <CountLine
+          id={`pm-${kind}-media-count`}
           lead="Send"
           value={r.mediaCount}
           onChange={(v) => patchRow({ mediaCount: v })}
@@ -113,7 +114,7 @@ export function PremadeFields({
         {/* PPV price — a priced post/broadcast is paywalled; OF needs at
          *  least one image attached. Blank/0 = free. Both kinds support it
          *  (auto_posts→create_post, mass_premade→send_mass_message). */}
-        <Field label="Price (USD)" help={ppvPrice(r.price) > 0 && (
+        <Field id={`pm-${kind}-price`} label="Price (USD)" help={ppvPrice(r.price) > 0 && (
           <span className="flex items-center gap-1 text-warn">
             <Lock className="h-3 w-3" aria-hidden />PPV {priceLabel(r.price)} · needs an image
           </span>
@@ -219,7 +220,7 @@ export function PremadeFields({
 
           {/* The other DB-sourced add/exclude knobs (resolved server-side), rarely used: behind a disclosure. */}
           <div>
-            <button type="button" onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen}
+            <button type="button" id={`pm-${kind}-more-toggle`} onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen}
               aria-controls={`pm-${kind}-more`}
               className="flex items-center gap-1 text-[14px] font-medium text-fg-dim hover:text-fg">
               More settings
@@ -228,19 +229,19 @@ export function PremadeFields({
             {moreOpen && (
               <div id={`pm-${kind}-more`} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {/* Default-on server-side (absent = GUARD_DEFAULT_H); 0 turns the guard off. */}
-                <NumField label="Exclude I replied to"
+                <NumField id={`pm-${kind}-replied`} label="Exclude I replied to"
                   help={`last N hours · blank = default ${GUARD_DEFAULT_H.replied}h · 0 = off`}
                   placeholder={String(GUARD_DEFAULT_H.replied)}
                   value={r.excludeRepliedHours} onChange={(v) => patchRow({ excludeRepliedHours: v })} />
-                <NumField label="Exclude who messaged me"
+                <NumField id={`pm-${kind}-inbound`} label="Exclude who messaged me"
                   help={`last N hours · blank = default ${GUARD_DEFAULT_H.inbound}h · 0 = off`}
                   placeholder={String(GUARD_DEFAULT_H.inbound)}
                   value={r.excludeInboundHours} onChange={(v) => patchRow({ excludeInboundHours: v })} />
-                <NumField label="Include chatted-with" help="last N hours"
+                <NumField id={`pm-${kind}-recent-hours`} label="Include chatted-with" help="last N hours"
                   value={r.recentChatHours} onChange={(v) => patchRow({ recentChatHours: v })} />
-                <NumField label="Cap recent-chat to" help="N fans"
+                <NumField id={`pm-${kind}-recent-limit`} label="Cap recent-chat to" help="N fans"
                   value={r.recentChatLimit} onChange={(v) => patchRow({ recentChatLimit: v })} />
-                <NumField label="Include fans with unread" help="up to N"
+                <NumField id={`pm-${kind}-unread`} label="Include fans with unread" help="up to N"
                   value={r.unreadLimit} onChange={(v) => patchRow({ unreadLimit: v })} />
               </div>
             )}
@@ -318,7 +319,9 @@ function LastChatChips({ id, hours, onChange }: { id?: string; hours: string; on
 }
 
 /** "Send [n] images at random per fire": how many of a pool go out each time. */
-function CountLine({ lead, value, onChange, tail }: {
+function CountLine({ id, lead, value, onChange, tail }: {
+  /** A stable id for the input (the help bot's cursor target). */
+  id?: string;
   lead: string;
   value: string;
   onChange: (v: string) => void;
@@ -327,7 +330,7 @@ function CountLine({ lead, value, onChange, tail }: {
   return (
     <label className="flex flex-wrap items-center gap-2 text-fg-dim">
       <span>{lead}</span>
-      <IfInput inputMode="numeric" value={value} placeholder="1" className="w-16 text-center"
+      <IfInput id={id} inputMode="numeric" value={value} placeholder="1" className="w-16 text-center"
         onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ""))} />
       <span>{tail}</span>
     </label>

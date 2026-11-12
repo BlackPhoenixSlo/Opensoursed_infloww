@@ -1,43 +1,25 @@
 "use client";
 
 /**
- * PromoReactivateCard — settings for the automation that re-creates finished
- * promos (kind: "promo_reactivate").
- *
- * Infloww's "Auto-activate campaign" row (bundle: ProfilePromotionCampaign): the title, its T2 line and a switch
- * that turns the automation on or off (saved on toggle). Ours under it, labelled: the engine config (schedule,
- * dry-run, cycle cap); the per-campaign "Keep running" boxes in Campaign insights are the opt-in. Infloww's
- * "Offer expiration" select in this row is not built: the re-arm keeps each campaign's own.
+ * PromoReactivateCard — Infloww's "Auto-activate campaign" row (bundle: ProfilePromotionCampaign): the title, its T2
+ * line and a switch, the one place that runs the automation re-creating finished promos (kind: "promo_reactivate").
+ * The switch saves on toggle; with no rule yet, switching on creates it with the defaults (dry run on, every 60 min,
+ * no re-arm cap). Ours, labelled: a status line under the row (what is set to keep running, dry run, last check) and
+ * a "Settings" pop-up beside the switch for the engine (dry run, schedule, cycle cap, Check now). The per-campaign
+ * "Keep running" boxes in Campaign insights are the opt-in. Infloww's "Offer expiration" select in this row is not
+ * built: the re-arm keeps each campaign's own.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer } from "react";
 
 import { ExtraTag } from "@/components/ui/primitives";
-import { IfButton, IfHelp, IfSwitch } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfModal, IfSwitch } from "@/components/ui/infloww";
 import { Field, NumInput, errMsg } from "@/components/growth/_bits";
+import { initialState, reactivateReducer, rulePatch } from "@/components/growth/promoReactivateForm";
 import { RunStats, isDryRun } from "@/lib/runStats";
+import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { usePromotions } from "@/hooks/useGrowth";
-import {
-  useAutomationRules, useCreateRule, useUpdateRule, useRunRuleNow,
-  type AutomationRule,
-} from "@/hooks/useAutomations";
-
-interface RForm {
-  enabled: boolean;
-  dryRun: boolean;
-  everyMinutes: number;
-  maxCycles: number;   // 0 = unlimited
-}
-
-function ruleToForm(rule: AutomationRule | null): RForm {
-  const p = rule?.payload ?? {};
-  return {
-    enabled: rule?.is_enabled ?? false,
-    dryRun: isDryRun(rule),          // default TRUE
-    everyMinutes: rule?.every_seconds ? Math.max(1, Math.round(rule.every_seconds / 60)) : 60,
-    maxCycles: typeof p.max_reactivations === "number" ? p.max_reactivations : 0,
-  };
-}
+import { useAutomationRules, useCreateRule, useUpdateRule, useRunRuleNow } from "@/hooks/useAutomations";
 
 export default function PromoReactivateCard({ accountId }: { accountId: string | null }) {
   const promosQ = usePromotions(accountId);
@@ -50,34 +32,35 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
   const runM = useRunRuleNow(accountId);
   const busy = createM.isPending || updateM.isPending;
 
-  const [form, setForm] = useState<RForm>(ruleToForm(null));
-  const [err, setErr] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [{ form, settings, err, msg }, dispatch] = useReducer(reactivateReducer, null, () => initialState());
+  useEffect(() => { dispatch({ type: "adopt", rule }); }, [rule?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { setForm(ruleToForm(rule)); }, [rule?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const set = <K extends keyof RForm>(k: K, v: RForm[K]) => setForm((f) => ({ ...f, [k]: v }));
-
-  async function save() {
-    setErr(null); setMsg(null);
+  /** The rule updated, or created from the form (a new rule takes the form's defaults, dry run on). */
+  async function write(patch: { is_enabled: boolean } & Partial<ReturnType<typeof rulePatch>>) {
     if (!accountId) return;
-    const every_seconds = Math.max(60, Math.round(form.everyMinutes) * 60);
-    const payload = { max_reactivations: form.maxCycles, dry_run: form.dryRun };
-    try {
-      if (rule) {
-        await updateM.mutateAsync({ id: rule.id, every_seconds, payload, is_enabled: form.enabled });
-      } else {
-        await createM.mutateAsync({
-          account_id: accountId, kind: "promo_reactivate", name: "Keep promos running",
-          every_seconds, payload, is_enabled: form.enabled,
-        });
-      }
-      setMsg("Saved.");
-    } catch (e) { setErr(errMsg(e, "Save failed")); }
+    if (rule) await updateM.mutateAsync({ id: rule.id, ...patch });
+    else await createM.mutateAsync({ account_id: accountId, kind: "promo_reactivate", name: "Keep promos running", ...rulePatch(form), ...patch });
   }
 
+  /** Infloww's switch saves on toggle: the rule's on/off, with the rest as last saved. */
+  async function toggle(on: boolean) {
+    dispatch({ type: "toggle", on });
+    try { await write({ is_enabled: on }); } catch (e) { dispatch({ type: "toggleFailed", on, err: errMsg(e, "Save failed") }); }
+  }
+
+  async function save() {
+    dispatch({ type: "clear" });
+    try {
+      await write({ is_enabled: form.enabled, ...rulePatch(form) });
+      dispatch({ type: "saved" });
+    } catch (e) { dispatch({ type: "failed", err: errMsg(e, "Save failed") }); }
+  }
+
+  const closeSettings = () => dispatch({ type: "closeSettings", rule });
+
   async function runNow() {
-    if (!rule) { setErr("Save the automation first."); return; }
-    setErr(null); setMsg(null);
+    if (!rule) return;
+    dispatch({ type: "clear" });
     // Run now executes the SAVED rule — key the warning off the saved payload.
     const savedDryRun = isDryRun(rule);
     if (!savedDryRun && !window.confirm(
@@ -85,98 +68,94 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
     )) return;
     try {
       await runM.mutateAsync(rule.id);
-      setMsg(savedDryRun
+      dispatch({ type: "notice", msg: savedDryRun
         ? "Dry run queued — it will report what it would re-create, and change nothing."
-        : "Checking now — finished campaigns get re-created within ~30s.");
-    } catch (e) { setErr(errMsg(e, "Run failed")); }
+        : "Checking now — finished campaigns get re-created within ~30s." });
+    } catch (e) { dispatch({ type: "failed", err: errMsg(e, "Run failed") }); }
   }
 
   const last = rule?.last_run;
-
-  /** Infloww's switch saves on toggle: the rule's on/off, with the rest as last saved (a new rule takes the form's
-   *  defaults, dry run on). */
-  async function toggle(on: boolean) {
-    setErr(null); setMsg(null);
-    if (!accountId) return;
-    set("enabled", on);
-    try {
-      if (rule) {
-        await updateM.mutateAsync({ id: rule.id, is_enabled: on });
-      } else {
-        await createM.mutateAsync({
-          account_id: accountId, kind: "promo_reactivate", name: "Keep promos running",
-          every_seconds: Math.max(60, Math.round(form.everyMinutes) * 60),
-          payload: { max_reactivations: form.maxCycles, dry_run: form.dryRun }, is_enabled: on,
-        });
-      }
-    } catch (e) { set("enabled", !on); setErr(errMsg(e, "Save failed")); }
-  }
+  const lastLine = rule && last && (
+    <>
+      Last check: <span className="text-fg">{last.status}</span>
+      <RunStats stats={last.stats} />
+      {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
+      {last.error_text && <span className="text-err"> · {last.error_text}</span>}
+    </>
+  );
 
   return (
-    <section aria-label="Auto-activate campaign" className="space-y-4">
+    <section aria-label="Auto-activate campaign" className="space-y-1">
       {/* The bundle's row: 16 / 500 T1 and the switch right; the T2 line 4px under it. */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-[16px] font-medium text-fg">Auto-activate campaign</div>
           <p className="mt-1 text-[14px] text-fg-dim">Enable to automatically reactivate your promotions when they expire</p>
         </div>
-        <IfSwitch aria-label="Auto-activate campaign" checked={form.enabled} disabled={busy || !accountId}
-          onChange={(on) => void toggle(on)} />
-      </div>
-
-      {/* Ours under it, labelled: how the re-arm runs. */}
-      <div className="space-y-4 rounded-md border border-border p-4 text-[14px]">
-        <div>
-          <h3 className="flex items-center gap-2 text-[14px] font-medium text-fg">Keep promos running <ExtraTag /></h3>
-          <IfHelp>
-            Re-creates a finished campaign ticked <b>Keep running</b> below, same discount and cap.{" "}
-            {armed > 0
-              ? <span className="text-fg">{armed} campaign{armed === 1 ? "" : "s"} set to keep running.</span>
-              : <span>Nothing is set to keep running yet; tick a campaign below.</span>}
-          </IfHelp>
-        </div>
-
-        <div>
-          <IfSwitch label="Dry run" checked={form.dryRun} onChange={(on) => set("dryRun", on)} />
-          <IfHelp>Report only, creates nothing.</IfHelp>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2 max-w-md">
-          <div>
-            <Field label="Check every (minutes)">
-              <NumInput value={form.everyMinutes} min={1} onChange={(v) => set("everyMinutes", v)} />
-            </Field>
-          </div>
-          <div>
-            <Field label="Max re-arms each">
-              <NumInput value={form.maxCycles} min={0} onChange={(v) => set("maxCycles", v)} />
-            </Field>
-            <IfHelp>0 = no limit.</IfHelp>
-          </div>
-        </div>
-
-        {err && <div className="text-[14px] text-err">{err}</div>}
-        {msg && <div className="text-[14px] text-accent">{msg}</div>}
-
-        <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
-          {rule && last && (
-            <div className="mr-auto text-[12px] text-fg-dim">
-              Last check: <span className="text-fg">{last.status}</span>
-              <RunStats stats={last.stats} />
-              {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
-              {last.error_text && <span className="text-err"> · {last.error_text}</span>}
-            </div>
-          )}
-          {rule && (
-            <IfButton onClick={runNow} disabled={runM.isPending}>
-              {runM.isPending ? "Checking…" : "Check now"}
-            </IfButton>
-          )}
-          <IfButton variant="primary" onClick={save} disabled={busy || !accountId}>
-            {rule ? "Save changes" : "Create automation"}
+        <div className="flex shrink-0 items-center gap-4">
+          {/* Ours: the engine's knobs. */}
+          <IfButton variant="link" title={EXTRA_LABEL} disabled={!accountId} onClick={() => dispatch({ type: "openSettings" })}>
+            Settings
           </IfButton>
+          <IfSwitch aria-label="Auto-activate campaign" checked={form.enabled} disabled={busy || !accountId}
+            onChange={(on) => void toggle(on)} />
         </div>
       </div>
+
+      {/* Ours, one line: what the switch acts on and how it is set. */}
+      <IfHelp data-promo-reactivate-status>
+        {armed > 0
+          ? <span className="text-fg">{armed} campaign{armed === 1 ? "" : "s"} set to keep running</span>
+          : <span>Tick <b>Keep running</b> on a campaign in Campaign insights to re-create it when it ends</span>}
+        {form.enabled && isDryRun(rule) && <span> · Dry run: reports only, creates nothing</span>}
+        {lastLine && <span> · {lastLine}</span>}
+      </IfHelp>
+      {!settings && err && <div role="alert" className="text-[14px] text-err">{err}</div>}
+      {!settings && msg && <div className="text-[14px] text-accent">{msg}</div>}
+
+      {settings && (
+        <IfModal
+          title="Auto-activate settings"
+          width={520}
+          onClose={closeSettings}
+          footer={(
+            <>
+              {rule && (
+                <IfButton className="mr-auto" onClick={() => void runNow()} disabled={runM.isPending}>
+                  {runM.isPending ? "Checking…" : "Check now"}
+                </IfButton>
+              )}
+              <IfButton onClick={closeSettings}>Cancel</IfButton>
+              <IfButton variant="primary" onClick={() => void save()} disabled={busy || !accountId}>Save</IfButton>
+            </>
+          )}
+        >
+          <div className="flex flex-col gap-5 text-[14px]">
+            <p className="flex items-start gap-2 text-fg-dim">
+              <span>Re-creates a finished campaign ticked <b>Keep running</b>, same discount and cap.</span>
+              <span className="shrink-0 whitespace-nowrap"><ExtraTag /></span>
+            </p>
+            <div>
+              <IfSwitch label="Dry run" checked={form.dryRun} onChange={(dryRun) => dispatch({ type: "edit", patch: { dryRun } })} />
+              <IfHelp>Report only, creates nothing.</IfHelp>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Check every (minutes)">
+                <NumInput value={form.everyMinutes} min={1} onChange={(everyMinutes) => dispatch({ type: "edit", patch: { everyMinutes } })} />
+              </Field>
+              <div>
+                <Field label="Max re-arms each">
+                  <NumInput value={form.maxCycles} min={0} onChange={(maxCycles) => dispatch({ type: "edit", patch: { maxCycles } })} />
+                </Field>
+                <IfHelp>0 = no limit.</IfHelp>
+              </div>
+            </div>
+            {lastLine && <div className="text-[12px] text-fg-dim">{lastLine}</div>}
+            {err && <div role="alert" className="text-err">{err}</div>}
+            {msg && <div className="text-accent">{msg}</div>}
+          </div>
+        </IfModal>
+      )}
     </section>
   );
 }

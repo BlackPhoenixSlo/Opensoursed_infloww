@@ -44,6 +44,24 @@ from of_shapes import still_url  # shared OF payload-shape reader
 
 log = logging.getLogger("of-relay.vault_frames")
 
+# Why a frameless item got no frames, as a `describe_status`.
+#
+# The two outcomes want OPPOSITE retry policies, and collapsing them is what made
+# the 2026-08-04 incident invisible: every failure was stamped `blocked_drm`, so
+# 1,777 items whose signatures had merely expired inherited the 7-day cool-off
+# meant for clips OF genuinely cannot render, and the next sweep skipped them.
+#   no_variant   → OF answered with a payload carrying nothing renderable.
+#                  Asking again changes nothing. Cool off.
+#   fetch_failed → we could not read bytes we have every reason to think exist.
+#                  Retry on the very next sweep, no cool-off.
+#   gone         → OF has deleted it. The still store already stamped
+#                  `removed_at`, which every candidate query filters on, so this
+#                  status is only ever read by whoever asked for THIS item.
+# Unknown reasons fall to the retryable side: over-retrying costs a fetch,
+# under-retrying costs a description nobody notices is missing.
+NO_IMAGE_STATUS = {"no_variant": "blocked_drm", "fetch_failed": "fetch_failed",
+                    "gone": "gone"}
+
 # How many storyboard frames a describe asks for when nothing overrides it.
 DESCRIBE_FRAMES = 9
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AutomationRunRow } from "@/hooks/useStats";
 import { parseStats, runSummary } from "./RuleTable";
+import { ruleStatus, runStatus, type PillTone } from "./StatusPill";
 
 const T0 = "2026-10-31T10:00:00Z";
 const run = (stats_json: string | null, started_at: string | null = T0): AutomationRunRow => ({
@@ -60,5 +61,35 @@ describe("runSummary", () => {
     ],
   ])("%s", (_, stats, want, started = T0) => {
     expect(runSummary(run(stats, started))).toBe(want);
+  });
+});
+
+describe("ruleStatus", () => {
+  const last = (status: string) => ({ status, started_at: T0, completed_at: null, error_text: null, stats: null });
+  it.each<[string, boolean, string | null, string, PillTone]>([
+    ["off, never run", false, null, "Paused", "warn"],
+    ["off beats a failed run", false, "error", "Paused", "warn"],
+    ["off beats a running run", false, "running", "Paused", "warn"],
+    ["on, never run", true, null, "Active", "ok"],
+    ["on, last ok", true, "ok", "Active", "ok"],
+    ["on, last skipped", true, "skipped", "Active", "ok"],
+    ["on, last failed", true, "error", "Failed", "err"],
+    ["on, running", true, "running", "Running", "active"],
+  ])("%s", (_, is_enabled, st, label, tone) => {
+    const s = ruleStatus({ is_enabled, last_run: st ? last(st) : null });
+    expect([s.label, s.tone]).toEqual([label, tone]);
+  });
+});
+
+describe("runStatus", () => {
+  it.each<[string, string, PillTone]>([
+    ["ok", "Done", "ok"],
+    ["error", "Failed", "err"],
+    ["running", "Running", "active"],
+    ["skipped", "Skipped", "idle"],
+    ["", "Unknown", "idle"],
+  ])("%s", (st, label, tone) => {
+    const s = runStatus(st);
+    expect([s.label, s.tone]).toEqual([label, tone]);
   });
 });

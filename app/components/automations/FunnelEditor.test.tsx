@@ -2,8 +2,9 @@
  * My Automations > Auto Funnel: `AutoFunnelPage` over `MassFunnelsTab` on
  * Infloww's legacy list page (page-parity ticket 16). Rendered with
  * `@/lib/relay` mocked over one Creator. What is pinned: Learn and "New funnel"
- * in the page header, the "Reply walking" row as a switch that creates the
- * walker rule, the funnels as a table, the editor as a dialog, and Delete
+ * in the page header, the "Follow up on replies" switch that creates the
+ * walker rule, the funnels as a table with this creator's Status / Fans in
+ * funnel, the editor as a dialog (steps as cards, one open), and Delete
  * through a dialog, never `window.confirm`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -51,7 +52,8 @@ beforeEach(() => {
     if (path.startsWith("/admin/funnels/1")) return Promise.resolve(GAPPED);
     if (path.startsWith("/admin/funnels")) {
       return Promise.resolve({ funnels: [
-        { id: 1, name: "strokes", description: "the default", opening_message: "hey", step_count: 3 },
+        { id: 1, name: "strokes", description: "the default", opening_message: "hey", step_count: 3,
+          stats: { last_started_at: "2026-11-11T10:00:00", active_fans: 7, listening: true } },
       ] });
     }
     if (path.startsWith("/admin/automation-rules")) return Promise.resolve({ rules: [] });
@@ -77,18 +79,45 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
 
     const table = await screen.findByRole("table");
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Name", "Steps", "Description", "Actions"]);
+      .toEqual(["Funnel", "Status", "Steps", "Fans in funnel", "Last started", "Actions"]);
     const row = (await within(table).findByText("strokes")).closest("tr")!;
     expect(within(row).getByText("3")).toBeTruthy();
+    expect(within(row).getByText("7")).toBeTruthy();
+    // Follow-ups off (no rule) with fans walking → Paused, in the wide cell and the phone line.
+    expect(within(row).getAllByText("Paused")).toHaveLength(2);
+    expect(get).toHaveBeenCalledWith("/admin/funnels?account_id=acc-a", expect.anything());
     for (const name of ["Media", "Start", "Edit", "Delete"]) expect(within(row).getByRole("button", { name })).toBeTruthy();
 
     fireEvent.click(within(bar).getByRole("button", { name: "New funnel" }));
     expect(screen.getByRole("dialog", { name: "New funnel" })).toBeTruthy();
   });
 
-  it("Reply walking is a switch that creates the walker rule", async () => {
+  it("no status pill until the follow-up switch loads (a running funnel never flashes Paused)", async () => {
+    let loadRules: (v: unknown) => void = () => {};
+    const base = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ...rest: unknown[]) => (path.startsWith("/admin/automation-rules")
+      ? new Promise((res) => { loadRules = res; })
+      : base(path, ...rest)));
     renderWithProviders(<AutoFunnelPage />);
-    const sw = await screen.findByRole("switch", { name: "Reply walking" });
+    const row = (await screen.findByText("strokes")).closest("tr")!;
+    await within(row).findByText("7");
+    expect(within(row).queryByText("Paused")).toBeNull();
+    expect(within(row).queryByText("Running")).toBeNull();
+    loadRules({ rules: [{ id: 5, kind: "reply_mass_funnel", is_enabled: true, every_seconds: 120 }] });
+    expect(await within(row).findAllByText("Running")).toHaveLength(2);
+  });
+
+  it("phone ⋯ is the house Menu with the row's four actions", async () => {
+    renderWithProviders(<AutoFunnelPage />);
+    const trigger = await screen.findByRole("button", { name: "More actions for strokes" });
+    fireEvent.click(trigger);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((b) => b.textContent))
+      .toEqual(["Start", "Edit", "Media", "Delete"]);
+  });
+
+  it("Follow up on replies is a switch that creates the walker rule", async () => {
+    renderWithProviders(<AutoFunnelPage />);
+    const sw = await screen.findByRole("switch", { name: "Follow up on replies" });
     await waitFor(() => expect(sw).not.toBeDisabled());
     expect(sw).toHaveAttribute("aria-checked", "false");
     fireEvent.click(sw);
@@ -114,9 +143,9 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     renderWithProviders(<AutoFunnelPage />);
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     const dialog = screen.getByRole("dialog", { name: "New funnel" });
-    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Edit as JSON" }));
     const area = within(dialog).getByPlaceholderText(/opening_message/);
-    const typed = () => within(dialog).getByRole("radio", { name: "Typed fields" });
+    const typed = () => within(dialog).getByRole("button", { name: "Back to form" });
     const create = () => within(dialog).getByRole("button", { name: "Create funnel" });
 
     fireEvent.change(area, { target: { value: JSON.stringify({ name: "n", opening_message: "o", steps: [{ messages: ["a"] }] }) } });
@@ -146,11 +175,11 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     renderWithProviders(<AutoFunnelPage />);
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     const dialog = screen.getByRole("dialog", { name: "New funnel" });
-    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Edit as JSON" }));
     fireEvent.change(within(dialog).getByPlaceholderText(/opening_message/), { target: { value: JSON.stringify({
       name: "n", opening_message: "o", steps: [{ step: 7, type: "paid_ppv", messages: ["b"] }],
     }) } });
-    fireEvent.click(within(dialog).getByRole("radio", { name: "Typed fields" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back to form" }));
     expect((dialog.querySelector("#funnel-name") as HTMLInputElement).value).toBe("n");
     fireEvent.click(within(dialog).getByRole("button", { name: "Create funnel" }));
     // Typed save keeps the step number; no price → none sent (server default).
@@ -173,7 +202,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
 
   it("edit a gapped funnel in raw JSON: the buffer shows its ids and an edit saves them", async () => {
     const dialog = await openEdit();
-    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Edit as JSON" }));
     const area = within(dialog).getByPlaceholderText(/opening_message/) as HTMLTextAreaElement;
     expect(JSON.parse(area.value).steps.map((s: { step: number }) => s.step)).toEqual([1, 7]);
     fireEvent.change(area, { target: { value: area.value.replace('"b"', '"b2"') } });
@@ -189,7 +218,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     it("seeded and untouched (a mode switch included): Escape closes", async () => {
       const dialog = await openEdit();
-      fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Edit as JSON" }));
       escape();
       expect(screen.queryByRole("dialog", { name: /Edit funnel/ })).toBeNull();
     });
@@ -259,6 +288,33 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
     expect(screen.getByRole("dialog", { name: "New funnel" })).toBeTruthy();
+  });
+
+  it("steps are cards, one open at a time; a closed card shows its type, price and first line", async () => {
+    const dialog = await openEdit();
+    const header = (n: number) => within(dialog).getByRole("button", { name: new RegExp(`^Step ${n}`) });
+    expect(header(1)).toHaveTextContent(/Reply.*a/);
+    expect(header(2)).toHaveTextContent("Paid PPV · $9");
+    expect(within(dialog).queryByPlaceholderText("Message…")).toBeNull();
+    fireEvent.click(header(2));
+    expect(header(2)).toHaveAttribute("aria-expanded", "true");
+    expect(within(dialog).getByLabelText("Price (USD)")).toHaveValue(9);
+    fireEvent.click(header(1));
+    expect(header(2)).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).queryByLabelText("Price (USD)")).toBeNull();
+  });
+
+  it("Start: follow-ups off → says starting turns them on; extra options fold under More options", async () => {
+    renderWithProviders(<AutoFunnelPage />);
+    const row = (await screen.findByText("strokes")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Start" }));
+    expect(await screen.findByText(/Also turns on Follow up on replies for Creator A/)).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "Online only" })).toBeNull();
+    const more = screen.getByRole("button", { name: /More options/ });
+    expect(more).toHaveTextContent("auto-unsend after 4 h");
+    fireEvent.click(more);
+    expect(screen.getByRole("switch", { name: "Online only" })).toBeTruthy();
+    expect(screen.queryByText(/Enable reply walking/)).toBeNull();
   });
 
   it("Media labels a PPV step by its position, not its id (id 7 is Step 2)", async () => {

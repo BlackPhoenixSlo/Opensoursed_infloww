@@ -11,6 +11,7 @@ import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DO_FLOWS, PLAN_NOTE, type DoDraft } from "./doFlows";
 import { canStart, type DoRun } from "./doRunReducer";
+import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
 /** The messenger's card (the home screen's "Ask a question"). */
 export const CARD = "rounded-xl border border-[#ededed] bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
@@ -23,13 +24,123 @@ const BTN_SOFT = cn(BTN, "border border-[#dcdcdc] bg-white text-[#14161a] hover:
 
 export const DO_HINT =
   "Tell me what to set up — e.g. “auto mass to fans every hour, delete after 8h, SFW folder, 10 captions”. "
-  + "For now I can set up an Auto Mass; it is saved OFF and you turn it on.";
+  + "I can set up a new Auto Mass (saved OFF — you turn it on) or change unsend, schedule, online-only, "
+  + "skip-recent-chats or turn off on your existing ones, here or on every model.";
 
 /** The plan card's text, pure (DoMode.test.ts): the flow's plain-words lines, the draft's assumptions and open
  *  questions, and the fixed note. */
 export function planCardText(d: DoDraft): { lines: string[]; assumptions: string[]; unresolved: string[]; note: string } | null {
-  if (!canStart(d)) return null;
+  if (!canStart(d) || d.flow !== "mass_premade") return null;
   return { lines: DO_FLOWS[d.flow].planLines(d.slots), assumptions: d.assumptions, unresolved: d.unresolved, note: PLAN_NOTE };
+}
+
+/** The fixed note under an edit plan card. */
+export const EDIT_NOTE = "Nothing gets switched on — rules that are off stay off. LIVE = on now and will send more.";
+
+function Notes({ assumptions, unresolved }: { assumptions: string[]; unresolved: string[] }) {
+  return (
+    <>
+      {assumptions.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[12px] font-medium text-[#6d6f74]">I assumed</div>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[#3a3c40]">
+            {assumptions.map((a) => <li key={a}>{a}</li>)}
+          </ul>
+        </div>
+      )}
+      {unresolved.length > 0 && (
+        <div className="mt-3 rounded-lg bg-[#fff6e5] px-3 py-2 text-[#8a5a00]" role="note">
+          <div className="flex items-center gap-1.5 text-[12px] font-medium">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden />Couldn&apos;t match
+          </div>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {unresolved.map((u) => <li key={u}>{u}</li>)}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The mass_edit plan card: the change, "N rules · M models", each model's rules with before → after. */
+function EditPlanCard({ draft, slots, children }: { draft: DoDraft; slots: MassEditSlots; children?: ReactNode }) {
+  const t = editPlanText(slots);
+  return (
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-[#14161a]")} data-testid="do-edit-plan">
+      <div className="mb-1 text-[14px] font-semibold">Change existing Auto masses</div>
+      <ul className="space-y-0.5">{t.changes.map((l) => <li key={l} className="font-medium">{l}</li>)}</ul>
+      <div className="mt-2 text-[12px] text-[#6d6f74]">{t.headline}</div>
+      <div className="mt-1 max-h-[40vh] space-y-2 overflow-y-auto">
+        {t.groups.map((g) => (
+          <div key={g.model}>
+            <div className="text-[12px] font-semibold text-[#3a3c40]">{g.model}</div>
+            <ul className="space-y-1 pl-2">
+              {g.rules.map((r) => (
+                <li key={r.id} className="break-words">
+                  <span className="font-medium">{r.name}</span>
+                  {r.live && <span className="ml-1.5 rounded bg-[#ffe9e6] px-1 text-[11px] font-semibold text-[#b42318]">LIVE</span>}
+                  {r.lines.map((l) => <div key={l} className="text-[#3a3c40]">{l}</div>)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      {t.notes.length > 0 && <ul className="mt-2 space-y-0.5 text-[12px] text-[#6d6f74]">{t.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
+      <Notes assumptions={draft.assumptions} unresolved={draft.unresolved} />
+      <p className="mt-3 text-[12px] text-[#6d6f74]">{EDIT_NOTE}</p>
+      {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/** The apply's per-rule outcome: ✓ or the skip reason. */
+function EditResults({ results, slots }: { results: EditResult[]; slots: MassEditSlots }) {
+  return (
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-[#14161a]")} role="status" data-testid="do-edit-results">
+      <div className="flex items-center gap-2 font-semibold">
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-[#1a7f37]" aria-hidden />{resultHeadline(results)}
+      </div>
+      <ul className="mt-2 space-y-0.5">
+        {resultLines(results, slots).map((l) => (
+          <li key={l.id} className={l.ok ? "text-[#1a7f37]" : "text-[#8a5a00]"}>{l.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** The do-mode conversation for a mass_edit draft: plan card → applying → results (no cursor, no Stop once out). */
+function EditThread({ run, draft, slots, on, request }: {
+  run: Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>; draft: DoDraft; slots: MassEditSlots; on: DoCallbacks; request: ReactNode;
+}) {
+  return (
+    <>
+      {request}
+      {run.phase === "planned" ? (
+        <EditPlanCard draft={draft} slots={slots}>
+          <button type="button" className={BTN_MAIN} onClick={on.start}>Do it</button>
+          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Cancel</button>
+        </EditPlanCard>
+      ) : <EditPlanCard draft={draft} slots={slots} />}
+      {run.phase === "running" && (
+        <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">Changing the rules…</span></div>
+      )}
+      {run.phase === "done" && <EditResults results={run.results ?? []} slots={slots} />}
+      {(run.phase === "aborted" || run.phase === "failed") && (
+        <>
+          <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
+            {run.phase === "failed"
+              ? `Couldn't finish: ${run.msg.trim().replace(/[.\s]*$/, ".")} Some rules may have changed — check the Auto mass table.`
+              : `${run.reason}.`}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
+          </div>
+        </>
+      )}
+    </>
+  );
 }
 
 function PlanCard({ draft, children }: { draft: DoDraft; children?: ReactNode }) {
@@ -41,24 +152,7 @@ function PlanCard({ draft, children }: { draft: DoDraft; children?: ReactNode })
       <ul className="space-y-1">
         {t.lines.map((l) => <li key={l} className="break-words">{l}</li>)}
       </ul>
-      {t.assumptions.length > 0 && (
-        <div className="mt-3">
-          <div className="text-[12px] font-medium text-[#6d6f74]">I assumed</div>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[#3a3c40]">
-            {t.assumptions.map((a) => <li key={a}>{a}</li>)}
-          </ul>
-        </div>
-      )}
-      {t.unresolved.length > 0 && (
-        <div className="mt-3 rounded-lg bg-[#fff6e5] px-3 py-2 text-[#8a5a00]" role="note">
-          <div className="flex items-center gap-1.5 text-[12px] font-medium">
-            <AlertTriangle className="h-3.5 w-3.5" aria-hidden />Couldn&apos;t match
-          </div>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4">
-            {t.unresolved.map((u) => <li key={u}>{u}</li>)}
-          </ul>
-        </div>
-      )}
+      <Notes assumptions={t.assumptions} unresolved={t.unresolved} />
       <p className="mt-3 text-[12px] text-[#6d6f74]">{t.note}</p>
       {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
     </div>
@@ -104,6 +198,7 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
       </>
     );
   }
+  if (draft.flow === "mass_edit") return <EditThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
   const total = DO_FLOWS[draft.flow].toActions(draft.slots).length;
   return (
     <>
@@ -159,7 +254,7 @@ export function pillFor(run: DoRun, expanded: DoRun | null): boolean {
 
 /** The pill's short outcome line once the run is over (DoMode.test.ts). */
 export function pillStatus(run: DoRun): string {
-  if (run.phase === "done") return "Created OFF";
+  if (run.phase === "done") return run.results ? resultHeadline(run.results) : "Created OFF";
   if (run.phase === "aborted") return "Stopped";
   if (run.phase === "failed") return "Couldn't finish";
   return run.phase === "running" && run.saving ? "Saving…" : "Doing it…";

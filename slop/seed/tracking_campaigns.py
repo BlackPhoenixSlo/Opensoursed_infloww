@@ -2,9 +2,12 @@
 tracking links (/campaigns) with the fans each one brought in and those fans' ledger.
 
 Ours (SQL, as `tracking_links_api` writes them): per Creator `links` rows in `tracking_links` (a custom
-numeric slug, `_slugify` keeps digits; a Linktree-like target), each with 0..MAX_CLICKS past
-`tracking_clicks` rows (a REFERERS / UAS pick each) over the last CLICK_DAYS days and `click_count` equal
-to them.
+numeric slug, `_slugify` keeps digits; a Linktree-like target), each with 1..MAX_CLICKS past
+`tracking_clicks` rows (a REFERERS / UAS / COUNTRIES pick each) over the last CLICK_DAYS days, at least one of
+them between 00:00 and 04:00 UTC (its UTC day is not its New York day), and `click_count` equal to them; plus
+one `hot` link per Creator (`hot_per_day` > 0) with that many clicks a day over HOT_DAYS days, spread evenly,
+their labels cycling through HOT_MIX. Each click carries its labels on the raw row; some old rows have NULL labels for the background classifier. REFERERS / UAS are (value, hand label) pairs: the labels are the stats checks' oracle,
+written by hand, never by the product's classifier.
 
 OnlyFans' (`<tmp>/of-campaigns.json`, lib/tracking_relay.py answers from it; `<tmp>/of-me.json` for
 `me()`): per Creator `campaigns` links, newest first, created 80 days ago down to 80 / `campaigns` days
@@ -18,7 +21,8 @@ OF's net at 80 %, every kind it classifies, its mapped statuses: 15 % chargedbac
 5 % the WS pump (`source` ws, a tip or a PPV unlock with its message id, cleared, no net); plus the same
 for a few fans who claimed nothing.
 
-`w.data["tracking_campaigns"]`: {links: [{id, account_id, slug, target, by_day: {UTC day: n}}],
+`w.data["tracking_campaigns"]`: {links: [{id, account_id, name, slug, target, hot, seeded: Counter{(UTC hour
+'%Y-%m-%d %H:00:00', country, in-app, referer family): n}}],
 campaigns: {account: [row]}, claimers: {campaign id: [fan id]}, tx: [(account, fan, kind, gross,
 net|None, occurred_at, status)]}. Deterministic from the World's seed (stream "tracking_campaigns")."""
 from __future__ import annotations
@@ -45,16 +49,37 @@ KINDS = ("subscription", "rebill", "ppv_post", "ppv_message", "custom", "ppv_str
 # transaction_ingest_decide._STATUS_MAP's outputs (done / loading / undo / pending_return)
 STATUSES = ("cleared",) * 70 + ("pending",) * 15 + ("chargedback",) * 10 + ("refund_pending",) * 5
 OF_LATENCY_S = 0.05   # a guess at OF's per-call latency
-REFERERS = (None, "https://www.instagram.com/", "https://t.co/", "https://www.reddit.com/")
-UAS = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", "Mozilla/5.0 (Linux; Android 14)",
-       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+# (value, hand label): the label the stats must file it under (tracking_stats' families / in-app names)
+REFERERS = ((None, ""), ("https://www.instagram.com/", "instagram"), ("https://l.instagram.com/", "instagram"),
+            ("https://t.co/", "x"), ("https://www.reddit.com/", "reddit"), ("https://www.tiktok.com/", "tiktok"),
+            ("https://example.org/page", "other"))
+UAS = (("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", ""), ("Mozilla/5.0 (Linux; Android 14)", ""),
+       ("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", ""),
+       ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Mobile/15E148 Instagram 302.0.0.23.114", "instagram"),
+       ("Mozilla/5.0 (Linux; Android 14; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36 "
+        "musical_ly_2023203030 BytedanceWebview/d8a21c6", "tiktok"),
+       ("facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", "bot"))
+COUNTRIES = ("DE", "US", "GB", None)   # None: no CF-IPCountry (a pre-PR row, or no CDN), filed XX
+HOT_DAYS = 90
+HOT_COUNTRIES = ("US", "GB", "DE", "FR", "ES", "IT", "NL", "BE", "SE", "NO", "DK", "PL", "CZ", "AT", "CH",
+                 "CA", "AU", "NZ", "BR", "JP")
+# 5 referer families x 3 browser labels x 20 countries = 300 distinct dimension groups.
+HOT_MIX = tuple((ref, ua, country) for ref in (REFERERS[0], REFERERS[1], REFERERS[3], REFERERS[4], REFERERS[5])
+                for ua in (UAS[0], UAS[3], UAS[4]) for country in HOT_COUNTRIES)
+HOUR = "%Y-%m-%d %H:00:00"
 
 
 def _of_time(d: datetime) -> str:
     return d.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
-def seed(w: World, creators: list[dict], tmp: Path, *, links: int, campaigns: int, claimed: int) -> dict:
+def label(country: str | None) -> str:
+    return country or "XX"
+
+
+def seed(w: World, creators: list[dict], tmp: Path, *, links: int, campaigns: int, claimed: int,
+         hot_per_day: int = 0) -> dict:
     rng = w.rng("tracking_campaigns")
     out: dict = {"links": [], "campaigns": {}, "claimers": {}, "tx": []}
     who: dict[int, dict] = {}   # fan id -> OF's claimer row
@@ -66,10 +91,24 @@ def seed(w: World, creators: list[dict], tmp: Path, *, links: int, campaigns: in
         for k in range(links):
             slug = str(SLUG_BASE + ci * 1000 + k)
             created = w.now - timedelta(days=rng.randint(CLICK_DAYS + 1, 60), seconds=rng.randint(0, 86_399))
-            seeded = [w.now - timedelta(days=rng.uniform(0, CLICK_DAYS), seconds=rng.randint(60, 3600))
-                      for _ in range(rng.randint(0, MAX_CLICKS))]
+            seeded = [(w.now - timedelta(days=rng.uniform(0, CLICK_DAYS), seconds=rng.randint(60, 3600)),
+                       rng.choice(REFERERS), rng.choice(UAS), rng.choice(COUNTRIES))
+                      for _ in range(rng.randint(1, MAX_CLICKS))]
+            if not any(at.hour < 4 for at, *_ in seeded):   # UTC 00-03h: the day before in New York (EDT and EST)
+                at, *rest = seeded[0]
+                at = at.replace(hour=rng.randint(0, 3))
+                seeded[0] = (at if at < w.now - timedelta(minutes=1) else at - timedelta(days=1), *rest)
             link_rows.append((aid, f"{c['name']} link {k}", slug, f"https://linktr.ee/slop{aid}/{k}", ts(created),
-                              sorted(seeded)))
+                              sorted(seeded, key=lambda x: x[0]), False))
+        if hot_per_day > 0:   # the read-at-scale link: hot_per_day clicks a day over HOT_DAYS days, a generator
+            step = 86_400 / hot_per_day
+            day0 = w.now.replace(hour=0, minute=0, second=0)
+            last = w.now - timedelta(minutes=1)
+            hot = ((at, *HOT_MIX[(d * hot_per_day + j) % len(HOT_MIX)])
+                   for d in range(HOT_DAYS) for j in range(hot_per_day)
+                   for at in (day0 - timedelta(days=d) + timedelta(seconds=j * step + step / 2),) if at < last)
+            link_rows.append((aid, f"{c['name']} hot", str(SLUG_BASE + ci * 1000 + 999),
+                              f"https://linktr.ee/slop{aid}/hot", ts(w.now - timedelta(days=HOT_DAYS + 1)), hot, True))
         # ── OnlyFans': campaigns, claimers, their ledger ──
         rows, live = [], []
         for k in range(campaigns):
@@ -126,16 +165,22 @@ def seed(w: World, creators: list[dict], tmp: Path, *, links: int, campaigns: in
     con = w.sql()
     try:
         with con:
-            for aid, name, slug, target, created, seeded in link_rows:
+            for aid, name, slug, target, created, seeded, is_hot in link_rows:
                 lid = con.execute("INSERT INTO tracking_links(account_id, name, slug, target_url, click_count, "
-                                  "created_at) VALUES (?,?,?,?,?,?)",
-                                  (aid, name, slug, target, len(seeded), created)).lastrowid
-                con.executemany("INSERT INTO tracking_clicks(tracking_link_id, clicked_at, referer, user_agent, ip) "
-                                "VALUES (?,?,?,?,?)",
-                                [(lid, ts(at), rng.choice(REFERERS), rng.choice(UAS),
-                                  f"203.0.113.{rng.randint(1, 254)}") for at in seeded])
-                out["links"].append({"id": lid, "account_id": aid, "slug": slug, "target": target,
-                                     "by_day": dict(Counter(at.date().isoformat() for at in seeded))})
+                                  "created_at) VALUES (?,?,?,?,?,?)", (aid, name, slug, target, 0, created)).lastrowid
+                by_key: Counter = Counter()   # hand-labelled oracle
+
+                def rows(lid=lid, seeded=seeded, by_key=by_key):
+                    for n, (at, (ref, ref_l), (ua, ua_l), country) in enumerate(seeded):
+                        by_key[(at.strftime(HOUR), label(country), ua_l, ref_l)] += 1
+                        old = n % 17 == 0
+                        yield lid, ts(at), ref, ua, f"203.0.113.{n % 254 + 1}", country, None if old else ua_l, None if old else ref_l
+
+                con.executemany("INSERT INTO tracking_clicks(tracking_link_id, clicked_at, referer, user_agent, ip, "
+                                "country, in_app, ref) VALUES (?,?,?,?,?,?,?,?)", rows())
+                con.execute("UPDATE tracking_links SET click_count = ? WHERE id = ?", (by_key.total(), lid))
+                out["links"].append({"id": lid, "account_id": aid, "name": name, "slug": slug, "target": target,
+                                     "hot": is_hot, "seeded": by_key})
             con.executemany(
                 "INSERT INTO transactions(account_id, fan_id, kind, amount_cents, currency, occurred_at, ingested_at, "
                 "provider_transaction_id, message_id, status, net_cents, fee_cents, vat_cents, source) "

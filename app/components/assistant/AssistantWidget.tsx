@@ -106,6 +106,7 @@ import { AgentBridgeProvider, createAgentBridge } from "./agentBridge";
 import { AgentCursor } from "./AgentCursor";
 import { CARD, DoPill, DoThread, pillFor, type DoCallbacks } from "./DoMode";
 import { flowForHref, type DoDraft } from "./doFlows";
+import { editApplyBody, editResultsOf } from "./massEdit";
 import { doOfferOf, doRunReducer, draftFrom, initialDoRun, previousOf, type DoOffer, type DoRun } from "./doRunReducer";
 import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
@@ -120,7 +121,8 @@ export type { Turn } from "./assistantReducer";
  *  it comes back under "Earlier".) */
 const OPEN_KEY = "chatterly:assistant_open";
 /** Where the phone launcher was dropped / tucked (launcherDockReducer.ts).
- *  v2: the default became tucked-left; v1 spots (often an accidental drag,
+ *  v2: the default became tucked (right edge since 11-11; a saved v2 spot
+ *  still wins); v1 spots (often an accidental drag,
  *  since a swipe that starts on the icon moves it) are dropped so every phone
  *  starts from that default once. */
 export const LAUNCHER_KEY = "chatterly:assistant_launcher_v2";
@@ -179,6 +181,8 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   /** Start do-mode on a Q&A turn's question (the swap chip). */
   doFromQuestion: (question: string) => void;
   doCallbacks: DoCallbacks;
+  /** Q&A turns do-mode sent ("Ask as a question"): no swap chip on them — it would bounce straight back. */
+  fromDo: ReadonlySet<number>;
 }
 
 /** A conversation id: made here, stored by the server as-is. Not
@@ -211,6 +215,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // reducer holds both and reads them when the answer lands.
   useEffect(() => { dispatch({ type: "route", onHelpPage: pathname === HELP_PATH }); }, [pathname]);
   const nextId = useRef(0);
+  const [fromDo, setFromDo] = useState<ReadonlySet<number>>(() => new Set());
 
   // OWNED accounts, a dropped session or a deactivated Creator included: the
   // server answers about any of them (its reach), and a page may pick one
@@ -270,9 +275,10 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       .catch(() => dispatch({ type: "history_failed" }));
   }, [wantHistory]);
 
-  const ask = useCallback(async (question: string) => {
+  const ask = useCallback(async (question: string, sentByDo = false) => {
     if (accountId === undefined) return;   // the composer is disabled meanwhile
     const id = nextId.current++;
+    if (sentByDo) setFromDo((s) => new Set(s).add(id));
     // The open thread, or a new one this first ask names — made here only.
     const thread = active ?? newThreadId();
     dispatch({ type: "asked", id, question, ts: new Date().toISOString(), thread, accountId });
@@ -308,6 +314,19 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const doOffer = doOfferOf(capsOf && capsOf.accountId === accountId ? capsOf.body : null, isUser);
   const navigate = useCallback((href: string) => router.push(href), [router]);
   const cursor = useDoRunner({ run: doRun, dispatch: doDispatch, bridge, navigate });
+  // A mass_edit run (D11) is one apply POST, once per started draft; the server re-applies the change to the fresh
+  // rules and answers per rule.
+  const editDraft = doRun.phase === "running" && doRun.draft.flow === "mass_edit" ? doRun.draft : null;
+  const applied = useRef<DoDraft | null>(null);
+  useEffect(() => {
+    if (!editDraft || editDraft.flow !== "mass_edit" || !editDraft.slots || applied.current === editDraft) return;
+    applied.current = editDraft;
+    const slots = editDraft.slots;
+    relay.post<unknown>("/admin/assistant/edit/apply", editApplyBody(editDraft.account_id, slots),
+      { accountId: editDraft.account_id, employeeId })
+      .then((r) => doDispatch({ type: "applied", results: editResultsOf(r, slots) }))
+      .catch((e: unknown) => doDispatch({ type: "fail", msg: e instanceof Error && e.message ? e.message : "The change didn't go through" }));
+  }, [editDraft, employeeId]);
   const enterDo = useCallback(() => doDispatch({ type: "enter" }), []);
   const exitDo = useCallback(() => doDispatch({ type: "exit" }), []);
   const sendDo = useCallback(async (request: string) => {
@@ -342,7 +361,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     skipAnimation: () => startRun("skipAnimation"),
     cancel: () => doDispatch({ type: "reset" }),
     stop: () => doDispatch({ type: "abort", reason: "Stopped" }),
-    askAsQuestion: (request: string) => { doDispatch({ type: "exit" }); void ask(request); },
+    askAsQuestion: (request: string) => { doDispatch({ type: "exit" }); void ask(request, true); },
   }), [startRun, ask]);
 
   const pick = useCallback((focus: Focus) => dispatch({ type: "pick", focus }), []);
@@ -369,7 +388,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     appFocus: appFocusOf(state),
     shown, threads,
     pick, newChat, openThread, userName,
-    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
   };
   return (
     <AssistantContext.Provider value={value}>
@@ -441,7 +460,7 @@ export function AssistantWidget() {
   );
 }
 
-/** The phone launcher: starts tucked into the left edge behind its chevron
+/** The phone launcher: starts tucked into the right edge behind its chevron
  *  tab (a tap pulls the icon out). The icon drags anywhere; on release it
  *  snaps to the nearest left / right / bottom edge, or — dropped past a side
  *  edge — tucks into it behind a chevron tab that pulls it back out. A tap
@@ -602,7 +621,7 @@ export function AssistantPanel({
   const {
     shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus,
     ask, pick, newChat, openThread,
-    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
   } = useAssistant();
   const answer = useLazyModule(answerText);
   const [draft, setDraft] = useState("");
@@ -670,7 +689,7 @@ export function AssistantPanel({
           {text(t.answer, !!t.error)}
         </div>
       )}
-      {doOffer.enabled && t.answer !== null && !t.error && offersDo(t.answer) && (
+      {doOffer.enabled && t.answer !== null && !t.error && !fromDo.has(t.id) && offersDo(t.answer) && (
         <button
           type="button"
           onClick={() => doFromQuestion(t.question)}

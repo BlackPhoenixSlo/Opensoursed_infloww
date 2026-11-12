@@ -3,7 +3,9 @@
 /**
  * Requests (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI and Contracts), on Infloww's `Index$6`
  * (page-parity 15), for the creator picked on the rail: "Latest request" shows its pending received requests one at a
- * time, "(i/N)", with Accept, Decline, Skip and View Schedule; Accept opens "Share for Share Scheduled!". Under it
+ * time, "(i/N)", with Accept, Decline, Skip and View Schedule; Accept opens "Share for Share Scheduled!". Ours: with no
+ * pending request the box is not drawn (Infloww's empty box spoke of a share link we have none of); both tabs' empty
+ * states carry Infloww's Sent-tab "Discover Creators" button. Under it
  * "Your requests": Received and Sent tabs over a table (Creators, Request Date, Status, Operation) with "Review" on a
  * new received request and "Cancel" (behind Infloww's confirm) on a sent one, 10 a page. Every request shows the
  * Creators as the request stored them at send time, never a live read of the other Agency (ADR-0011). A skipped
@@ -76,7 +78,7 @@ export default function S4SRequests({ profile, accountId }: { profile: S4SProfil
   return (
     <div className="p-6">
       <LatestRequest profileId={pid} accountId={accountId} onAccepted={setScheduled} />
-      <section aria-label="Your requests" className="mt-8">
+      <section aria-label="Your requests">
         <h2 className="text-[16px] font-medium text-fg">Your requests</h2>
         <IfTabs aria-label="Your requests" tabs={TABS} value={box} onChange={setBox} className="px-0" />
         <RequestTable key={box} box={box} profileId={pid} accountId={accountId} onReview={setReview} />
@@ -104,24 +106,21 @@ function LatestRequest({ profileId, accountId, onAccepted }: {
   const i = Math.min(at, Math.max(0, pending.length - 1));
   const current = pending[i];
 
+  // Ours: no new request, no box; Received's empty state below says so once, with the way to Discover.
+  if (!current && !q.isError) return null;
   return (
-    <section aria-label="Latest request">
+    <section aria-label="Latest request" className="mb-8">
       <h2 className="flex items-center gap-[15px] text-[16px] font-medium text-fg">
         Latest request
         {pending.length > 0 && <span className="text-fg-dim">({i + 1}/{pending.length})</span>}
       </h2>
-      <div className={cn("mt-4 w-full max-w-[500px] rounded-lg border border-border p-6", !current && "flex min-h-[337px] flex-col items-center justify-center text-center")}>
-        {q.isError ? (
-          <p role="alert" className="text-[14px] text-err">{message(q.error)}</p>
-        ) : current ? (
+      <div className={cn("mt-4 w-full max-w-[500px] rounded-lg border border-border p-6", !current && "text-center")}>
+        {current ? (
           <RequestDetail key={current.id} request={current} accountId={accountId}
             onDone={(r, accepted) => { if (accepted) onAccepted(r); }}
             onSkip={() => setAt(i)} />
         ) : (
-          <>
-            <p className="text-[16px] font-semibold text-fg">You don’t have any new requests</p>
-            <p className="mt-2 text-[14px] text-fg-dim">Share your link and invite Creators to Share for Share with you</p>
-          </>
+          <p role="alert" className="text-[14px] text-err">{message(q.error)}</p>
         )}
       </div>
     </section>
@@ -224,12 +223,12 @@ function RequestTable({ box, profileId, accountId, onReview }: {
                 <td colSpan={4} className="py-10">
                   <EmptyState size="md" textClassName="text-[12px] text-[#666]"
                     text={box === "received" ? "You haven’t received any requests from other Creators" : "You haven’t sent any requests to other Creators"}
-                    action={box === "sent" ? (
+                    action={(
                       <Link href={`/share-for-share/discover-creators?creator=${encodeURIComponent(accountId)}`}
                         className="flex h-10 w-[250px] items-center justify-center rounded-[10px] bg-accent text-[14px] text-white hover:bg-accent-hover">
                         Discover Creators
                       </Link>
-                    ) : undefined} />
+                    )} />
                 </td>
               </tr>
             )}

@@ -5,12 +5,12 @@
 
 import { cn } from "@/lib/utils";
 
-/** Infloww's 32px default button (the Panel header's Edit / Cancel): a 1px `--if-line` border, white text,
- *  no fill, no icon. */
+/** Infloww's 32px default button (the Panel header's Edit / Cancel): a 1px `--if-line` border, `--if-fg-0`
+ *  text (white in dark, black in light), no fill, no icon. */
 export const IF_BTN = cn(
-  "h-8 px-[15px] rounded-[6px] text-sm border border-[var(--if-line)] text-white",
+  "h-8 px-[15px] rounded-[6px] text-sm border border-[var(--if-line)] text-[var(--if-fg-0)]",
   "hover:border-[var(--if-accent)] hover:text-[var(--if-accent)] disabled:opacity-50 disabled:cursor-not-allowed",
-  "disabled:hover:border-[var(--if-line)] disabled:hover:text-white",
+  "disabled:hover:border-[var(--if-line)] disabled:hover:text-[var(--if-fg-0)]",
 );
 /** Infloww's 32px primary button (Save): `--if-accent` fill, white text, no icon. */
 export const IF_BTN_PRIMARY =

@@ -6,18 +6,20 @@
  * gate. Owner and Admin are built in and always listed first; "+ Add Role"
  * appends a custom role, deny-all with scope `self`. "Edit" reopens the same
  * modal pre-filled (a built-in's name locked). "Set Permissions" swaps the Panel
- * for that role's Permission editor. No built-in role is deleted. Below the roles,
- * the "Employee roles" table gives each active Employee a role select, staged
- * until the header's Save. The "Enforce role permissions" switch, on unless `enforce: false` is stored, saves `enforce`
+ * for that role's Permission editor. No built-in role is deleted. Roles are
+ * assigned on Employees (EmployeesTab), which a line here links to; every write
+ * here commits at once, so the Panel has no Save. Built-ins with no stored
+ * description show a display-only one (BUILT_IN_DESCRIPTIONS, never saved).
+ * Below sm Description hides and the Operations stack, so they fit a 390px phone.
+ * The "Enforce role permissions" switch, on unless `enforce: false` is stored, saves `enforce`
  * at once: with it on the Relay refuses each chatter the pages its role does not
  * grant (docs/spec/phase-04-apply-stored-settings.md). Turning it on first
  * confirms with the count of active Employees whose role grants no page, who will
  * be refused every page; turning it off needs no confirm. The not-enforced note
  * shows only while it is off; while it is on, a warning counts those Employees.
  *
- * Every Employee holds a role: the select has no "No role" (one never assigned
- * reads as Chatter, which the Relay gives it on joining and on any save), and a
- * role in use cannot be deleted, as Infloww refuses ("This role is in use and
+ * Every Employee holds a role (one never assigned reads as Chatter, which the
+ * Relay gives it on joining and on any save), and a role in use cannot be deleted, as Infloww refuses ("This role is in use and
  * cannot be deleted").
  *
  * A custom role's Status switch (Infloww's RolePermissions_DisableActiveRole) saves `disabled` at once: a
@@ -30,30 +32,42 @@
  */
 
 import { useState, type ReactNode } from "react";
+import Link from "next/link";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import { useRoster } from "@/hooks/useRoster";
 import {
-  BlobNotes, Card, Field, FieldInput, FieldSelect, IF_BTN_PRIMARY, LoadError, NotAppliedYet, SettingsPanel, SettingsTable,
-  Switch, TABLE_CELL, TABLE_ROW,
+  BlobNotes, Card, Field, FieldInput, IF_BTN, IF_BTN_PRIMARY, LoadError, NotAppliedYet, SettingsPanel, SettingsTable,
+  Switch, TABLE_CELL, TABLE_ROW, type TableColumn,
 } from "@/components/settings/SettingsPanel";
-import { SaveRow } from "@/components/settings/StickySaveBar";
 import PermissionEditor, { type PermissionRole } from "@/components/settings/PermissionEditor";
 import {
-  allPages, assignedRole, isBuiltIn, unknownRoleLabel, withBuiltIns, type RolesBlob,
+  allPages, assignedRole, isBuiltIn, withBuiltIns, type RolesBlob,
 } from "@/lib/roles";
 import { cn } from "@/lib/utils";
 
 const ENFORCE = "Enforce role permissions";
 
-const COLUMNS = ["Name", "Description", "Status", "Operations"];
-const EMPLOYEE_COLUMNS = ["Employee", "Role"];
+const COLUMNS: TableColumn[] = [
+  "Name", { label: "Description", className: "hidden sm:table-cell" }, "Status",
+  "Operations",
+];
 
-/** An Operations cell action: a plain text button in `--if-accent` (M1); Delete is D1. */
+/** What a built-in does, shown when its stored description is empty; display only, never saved. */
+const BUILT_IN_DESCRIPTIONS: Record<string, string> = {
+  owner: "Full access; owns the Agency",
+  admin: "Full access to every page",
+  "team-leader": "Chatting, creators, employees and reports for their team",
+  chatter: "Dashboard and chatting pages, own chats only",
+  creator: "OF Manager pages: posts, vault, queue, profile",
+};
+const roleDescription = (r: PermissionRole) => r.description || BUILT_IN_DESCRIPTIONS[r.id] || "";
+
 /** The Status switch is off: a built-in role is always on, as the Relay reads it. */
 const isOff = (r: PermissionRole) => r.disabled === true && !isBuiltIn(r.id);
 
+/** An Operations cell action: a plain text button in `--if-accent` (M1); Delete is D1. */
 const OPERATION = "text-[var(--if-accent)] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
 const DELETE = cn(OPERATION, "text-[#ff7c71]");
 
@@ -79,12 +93,13 @@ function SaveError({ error }: { error: string | null }) {
 
 /** The role modal's body, for "Add Role" (`role` undefined) and "Edit Role"; mounted on open, so each
  *  opening starts blank or from the edited role. The duplicate check skips the edited role. */
-function RoleForm({ role, roles, saving, error, onSubmit }: {
+function RoleForm({ role, roles, saving, error, onSubmit, onCancel }: {
   role?: PermissionRole;
   roles: PermissionRole[];
   saving: boolean;
   error: string | null;
   onSubmit: (name: string, description: string) => void;
+  onCancel: () => void;
 }) {
   const [name, setName] = useState(role?.name ?? "");
   const [description, setDescription] = useState(role?.description ?? "");
@@ -106,6 +121,7 @@ function RoleForm({ role, roles, saving, error, onSubmit }: {
       </Field>
       <div className="mb-5 flex items-center justify-end gap-3">
         <SaveError error={error} />
+        <button type="button" className={IF_BTN} onClick={onCancel}>Cancel</button>
         <button
           type="button"
           className={IF_BTN_PRIMARY}
@@ -129,15 +145,6 @@ export default function RoleSettingsTab() {
   const editRole = roles.find((r) => r.id === editing);
   const { query: rosterQuery, rows: employees } = useRoster({ includeDisabled: false });
   const assignments = blob.value.assignments ?? {};
-  const roleOptions = roles.map((r) => ({ value: r.id, label: isOff(r) ? `${r.name} (disabled)` : r.name }));
-  /** An assignment naming a role id that no role has keeps its own option, so it shows and saves as stored. */
-  const optionsFor = (roleId: string | undefined) =>
-    roleId === undefined || roles.some((r) => r.id === roleId)
-      ? roleOptions
-      : [...roleOptions, { value: roleId, label: unknownRoleLabel(roleId) }];
-
-  /** Stages one Employee's role. */
-  const assign = (employeeId: string, roleId: string) => blob.set({ assignments: { ...assignments, [employeeId]: roleId } });
 
   /** Active Employees the Relay refuses every page: their role grants none, or names a role no role has. */
   const pageless = employees.filter((e) => {
@@ -190,6 +197,22 @@ export default function RoleSettingsTab() {
     blob.commit({ roles: roles.filter((r) => r.id !== role.id) });
   };
 
+  const operations = (r: PermissionRole) => (
+    <div className="flex flex-col items-start gap-1 sm:flex-row sm:gap-4">
+      <button type="button" className={OPERATION} disabled={!blob.loaded} onClick={() => setModal({ role: r })}>
+        Edit
+      </button>
+      <button type="button" className={OPERATION} disabled={!blob.loaded} onClick={() => setEditing(r.id)}>
+        Set Permissions
+      </button>
+      {!isBuiltIn(r.id) && (
+        <button type="button" className={DELETE} disabled={!blob.loaded} onClick={() => removeRole(r)}>
+          Delete
+        </button>
+      )}
+    </div>
+  );
+
   const roleModal = (
     <Dialog.Root open={modal !== null} onOpenChange={(open) => setModal(open ? {} : null)}>
       <Dialog.Trigger asChild>
@@ -211,6 +234,7 @@ export default function RoleSettingsTab() {
             roles={roles}
             saving={blob.save.saving}
             error={blob.save.error ?? null}
+            onCancel={close}
             onSubmit={(name, description) => {
               const edited = modal?.role;
               if (edited) replaceRole({ ...edited, name, description }, close);
@@ -243,17 +267,15 @@ export default function RoleSettingsTab() {
   return (
     <SettingsPanel
       title="Role Settings"
-      actions={
-        <>
-          <SaveRow {...blob.save} gateNote={null} look="settings" />
-          {roleModal}
-        </>
-      }
+      actions={roleModal}
     >
       <BlobNotes className="mb-4" note={blob.save.gateNote} q={blob.query} />
+      {blob.save.error && modal === null && (
+        <div className="mb-4"><SaveError error={blob.save.error} /></div>
+      )}
       <div className="mb-4">
         <Card
-          box="filled"
+          box="bordered"
           title={ENFORCE}
           control={
             <Switch
@@ -277,7 +299,7 @@ export default function RoleSettingsTab() {
           {roles.map((r) => (
             <tr key={r.id} className={TABLE_ROW}>
               <td className={TABLE_CELL}>{r.name}</td>
-              <td className={TABLE_CELL}>{r.description}</td>
+              <td className={cn(TABLE_CELL, "hidden sm:table-cell text-[var(--if-fg-2)]")}>{roleDescription(r)}</td>
               <td className={TABLE_CELL}>
                 <Switch
                   checked={!isOff(r)}
@@ -286,48 +308,16 @@ export default function RoleSettingsTab() {
                   onChange={!isBuiltIn(r.id) && blob.loaded && !blob.save.saving ? (on) => setStatus(r, on) : undefined}
                 />
               </td>
-              <td className={TABLE_CELL}>
-                <div className="flex gap-4">
-                  <button type="button" className={OPERATION} disabled={!blob.loaded} onClick={() => setModal({ role: r })}>
-                    Edit
-                  </button>
-                  <button type="button" className={OPERATION} disabled={!blob.loaded} onClick={() => setEditing(r.id)}>
-                    Set Permissions
-                  </button>
-                  {!isBuiltIn(r.id) && (
-                    <button type="button" className={DELETE} disabled={!blob.loaded} onClick={() => removeRole(r)}>
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </td>
+              <td className={cn(TABLE_CELL, "max-sm:h-auto max-sm:py-2")}>{operations(r)}</td>
             </tr>
           ))}
         </SettingsTable>
       </TableBlock>
-      <TableBlock title="Employee roles">
-        <LoadError error={rosterQuery.error} />
-        <SettingsTable aria-label="Employee roles" columns={EMPLOYEE_COLUMNS}>
-          {employees.map((e) => {
-            const id = String(e.id);
-            return (
-              <tr key={id} className={TABLE_ROW}>
-                <td className={TABLE_CELL}>{e.display_name}</td>
-                <td className={TABLE_CELL}>
-                  <FieldSelect
-                    aria-label={e.display_name}
-                    value={assignments[id] ?? DEFAULT_ROLE}
-                    options={optionsFor(assignments[id])}
-                    disabled={!blob.loaded}
-                    onChange={(roleId) => assign(id, roleId)}
-                    className="w-[200px]"
-                  />
-                </td>
-              </tr>
-            );
-          })}
-        </SettingsTable>
-      </TableBlock>
+      <LoadError error={rosterQuery.error} />
+      <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">
+        Assign roles to Employees on{" "}
+        <Link href="/employees" className="text-[var(--if-accent)] hover:underline">Employees</Link>.
+      </p>
     </SettingsPanel>
   );
 }
