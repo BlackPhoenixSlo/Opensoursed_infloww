@@ -16,7 +16,9 @@ Create with a Creator: an empty display name takes the Creator's OnlyFans name, 
 "OnlyFans" link straight to https://onlyfans.com/<username> (never through /t/: that would break /c<code> tracking).
 Both read the Creator's cached `users_me` (the app's own `of-me` read fills it), so at most one OnlyFans call.
 Vault avatar: `POST /{pid}/avatar/vault {media_id}` takes a photo of the page's Creator through vault_stills (disk,
-mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload.
+mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload;
+`POST /{pid}/links/{lid}/background/vault` the same for a link's background. Setting a Creator later (PATCH) adds the
+"OnlyFans" link first when the page has no onlyfans.com link yet.
 
 Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
 X-Forwarded-Host/Proto when a proxy set them) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
@@ -38,7 +40,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.datastructures import UploadFile
 
@@ -278,6 +280,18 @@ async def _of_me(account_id: str) -> dict[str, Any] | None:
     return me if isinstance(me, dict) else None
 
 
+def _of_username(me: dict | None) -> str:
+    u = str((me or {}).get("username") or "").strip()
+    return u if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", u) else ""
+
+
+def _of_link(lid: str, pid: str, of_user: str, icon: str, sort_order: int, now: datetime) -> BioLink:
+    """The Creator's "OnlyFans" link; tracking on: Reveal appends the visitor's /c<code>."""
+    return BioLink(id=lid, profile_id=pid, link_id=files.new_id(12), title="OnlyFans",
+                   destination=f"https://onlyfans.com/{of_user}", icon=icon, tracking=True,
+                   sort_order=sort_order, created_at=now, updated_at=now)
+
+
 def _blank(v: Any) -> bool:
     return v is None or (isinstance(v, str) and not v.strip())
 
@@ -292,8 +306,7 @@ async def create_page(request: Request) -> dict[str, Any]:
     body = _check(decide.check_profile({**raw, "display_name": "-"} if fill else raw, create=True))
     await _check_account(body)
     me = await _of_me(body["account_id"]) if body.get("account_id") else None
-    of_user = str((me or {}).get("username") or "").strip()
-    of_user = of_user if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", of_user) else ""
+    of_user = _of_username(me)
     if fill:
         name = str((me or {}).get("name") or "").strip() or of_user
         body = _check(decide.check_profile({**raw, "display_name": name[:decide.MAX_DISPLAY_NAME]}, create=True))
@@ -305,11 +318,9 @@ async def create_page(request: Request) -> dict[str, Any]:
             async with get_session() as s:
                 now = _now()
                 s.add(BioProfile(id=pid, owner_user_id=owner, created_at=now, updated_at=now, **body))
-                if of_user:  # flushed after the profile (its FK); tracking on: Reveal appends the visitor's /c<code>
+                if of_user:  # flushed after the profile (its FK)
                     await s.flush()
-                    s.add(BioLink(id=lid, profile_id=pid, link_id=files.new_id(12), title="OnlyFans",
-                                  destination=f"https://onlyfans.com/{of_user}", icon=icon, tracking=True,
-                                  sort_order=0, created_at=now, updated_at=now))
+                    s.add(_of_link(lid, pid, of_user, icon, 0, now))
                 await s.flush()
                 return await _page(s, owner, pid)
     except IntegrityError:
@@ -363,11 +374,32 @@ async def patch_page(pid: str, request: Request) -> dict[str, Any]:
     _id_or_404(pid)
     body = _check(decide.check_profile(await json_object(request, 422), create=False))
     await _check_account(body)
-    async with get_session() as s:
-        await _lock_own(s, owner, pid)
-        if body:
-            await s.execute(update(BioProfile).where(BioProfile.id == pid).values(**body))
-        return await _page(s, owner, pid)
+    # A Creator set after create gets the same first "OnlyFans" link, unless the page already links to OnlyFans.
+    of_user = _of_username(await _of_me(body["account_id"])) if body.get("account_id") else ""
+    lid = files.new_id(15)
+    icon = _file_name("onlyicon") if of_user else ""
+    data = await asyncio.to_thread(_stock_data, "onlyicon") if of_user else None
+    added = False
+    async with files.staged("links", lid, icon, data):
+        async with get_session() as s:
+            await _lock_own(s, owner, pid)
+            if body:
+                await s.execute(update(BioProfile).where(BioProfile.id == pid).values(**body))
+            if of_user:
+                n, low, has_of = (await s.execute(select(
+                    func.count(), func.min(BioLink.sort_order),
+                    func.sum(case((or_(*(BioLink.destination.ilike(f"{sch}{h}onlyfans.com%")
+                                          for sch in ("https://", "http://") for h in ("", "www."))), 1), else_=0)),
+                ).where(BioLink.profile_id == pid))).one()
+                if not has_of and n < decide.MAX_LINKS:
+                    s.add(_of_link(lid, pid, of_user, icon, (low if low is not None else 1) - 1, _now()))
+                    await s.flush()
+                    added = True
+                    log.info("bio admin: OnlyFans link added: page=%s account=%s", pid, body["account_id"])
+            page = await _page(s, owner, pid)
+    if data is not None and not added:  # staged for nothing: no link points at it
+        await files.discard("links", lid)
+    return page
 
 
 @router.delete("/{pid}", status_code=204)
@@ -494,11 +526,8 @@ async def _vault_still(account_id: str, media_id: int) -> bytes:
     raise HTTPException(502, "Couldn't fetch that photo from OnlyFans. Try again.")
 
 
-@router.post("/{pid}/avatar/vault")
-@_safe_write
-async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
-    owner = await _owner()
-    _id_or_404(pid)
+async def _vault_image(owner: str, pid: str, request: Request, side: int) -> tuple[str, int, bytes]:
+    """A photo of the page's Creator's vault, encoded at `side`: (account, media id, WebP bytes)."""
     async with get_session() as s:
         aid = (await s.execute(select(BioProfile.account_id).where(*_own_profile(owner, pid)))).first()
     if aid is None:
@@ -515,10 +544,18 @@ async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
     raw = await _vault_still(aid[0], mid)
     async with _ENCODE:
         try:
-            data = await asyncio.to_thread(images.encode, raw, images.AVATAR_SIDE)
+            return aid[0], mid, await asyncio.to_thread(images.encode, raw, side)
         except images.Refused as e:
             raise HTTPException(e.status, e.msg) from None
-    log.info("bio admin: avatar from vault: page=%s account=%s media=%s", pid, aid[0], mid)
+
+
+@router.post("/{pid}/avatar/vault")
+@_safe_write
+async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    aid, mid, data = await _vault_image(owner, pid, request, images.AVATAR_SIDE)
+    log.info("bio admin: avatar from vault: page=%s account=%s media=%s", pid, aid, mid)
     return await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar", data)
 
 
@@ -628,6 +665,18 @@ async def upload_background(pid: str, lid: str, request: Request) -> dict[str, A
     await _require(owner, pid, lid)
     return await _set_file(owner, pid, BioLink, BioLink.background_image, "links", lid, "backgroundImage",
                            await _encode(request, images.BACKGROUND_SIDE))
+
+
+@router.post("/{pid}/links/{lid}/background/vault")
+@_safe_write
+async def background_from_vault(pid: str, lid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    _id_or_404(lid)
+    await _require(owner, pid, lid)
+    aid, mid, data = await _vault_image(owner, pid, request, images.BACKGROUND_SIDE)
+    log.info("bio admin: background from vault: page=%s link=%s account=%s media=%s", pid, lid, aid, mid)
+    return await _set_file(owner, pid, BioLink, BioLink.background_image, "links", lid, "backgroundImage", data)
 
 
 @router.delete("/{pid}/links/{lid}/background")

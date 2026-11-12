@@ -187,6 +187,7 @@ ROUTES = [("GET", BASE), ("POST", BASE), ("GET", f"{BASE}/stock/onlyicon.webp"),
           ("POST", f"{BASE}/{B_PID}/links"), ("PUT", f"{BASE}/{B_PID}/links/order"),
           ("PATCH", f"{BASE}/{B_PID}/links/{B_LID}"), ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}"),
           ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background"),
+          ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background/vault"),
           ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}/background")]
 
 
@@ -581,6 +582,37 @@ def case_create_with_creator_fills_name_and_onlyfans_link():
         bio_admin._of_me = real
 
 
+def case_creator_set_later_adds_onlyfans_link_first():
+    me: dict | None = {"name": "Ava", "username": "ava.later"}
+
+    async def fake_me(aid):
+        return me
+    real, bio_admin._of_me = bio_admin._of_me, fake_me
+    try:
+        aid = IDS["creator_a"]
+        pid = create(owner, "later_page")["profile"]["id"]
+        add_link(owner, pid, title="Mine")
+        r = owner.patch(f"{BASE}/{pid}", json={"account_id": aid})
+        assert r.status_code == 200, r.text
+        links = r.json()["links"]
+        assert [(lk["title"], lk["destination"], lk["tracking"]) for lk in links] == [
+            ("OnlyFans", "https://onlyfans.com/ava.later", True), ("Mine", DEST, False)], links
+        # already links to OnlyFans: none added on a re-set; OF unreadable: none either
+        dirs = lambda: sorted(p.name for p in (bio_admin.files.files_dir() / "links").iterdir())
+        before = dirs()
+        assert len(owner.patch(f"{BASE}/{pid}", json={"account_id": aid}).json()["links"]) == 2
+        assert dirs() == before, "no orphan icon when no link is added"
+        www = create(owner, "later_www")["profile"]["id"]
+        add_link(owner, www, title="Mine", destination="http://www.OnlyFans.com/ava")
+        assert len(owner.patch(f"{BASE}/{www}", json={"account_id": aid}).json()["links"]) == 1, "www/http variant counts"
+        me = None
+        bare = create(owner, "later_bare")["profile"]["id"]
+        assert owner.patch(f"{BASE}/{bare}", json={"account_id": aid}).json()["links"] == []
+        assert owner.patch(f"{BASE}/{bare}", json={"bio": "x"}).status_code == 200
+    finally:
+        bio_admin._of_me = real
+
+
 # ── vault avatar ─────────────────────────────────────────────────────
 
 def case_vault_avatar_photo_only_and_owned():
@@ -616,6 +648,17 @@ def case_vault_avatar_photo_only_and_owned():
         assert owner.post(f"{BASE}/{B_PID}/avatar/vault", json={"media_id": 9001}).status_code == 404
         assert other.post(url, json={"media_id": 9001}).status_code == 404
         assert _b_snapshot() == before and owner.get(f"{BASE}/{pid}").json()["profile"]["avatar"] == name
+        # a link's background from the vault: photo only, the link's own page
+        lid = add_link(owner, pid)["links"][-1]["id"]
+        burl = f"{BASE}/{pid}/links/{lid}/background/vault"
+        r = owner.post(burl, json={"media_id": 9001, "type": "photo"})
+        assert r.status_code == 200, r.text
+        lk = next(x for x in r.json()["links"] if x["id"] == lid)
+        assert lk["background_image"].startswith("backgroundImage_"), lk
+        assert served(lk["background_url"]).size[0] > 512, lk
+        assert owner.post(burl, json={"media_id": 9002}).status_code == 415
+        assert owner.post(f"{BASE}/{bare}/links/{lid}/background/vault", json={"media_id": 9001}).status_code == 404
+        assert other.post(burl, json={"media_id": 9001}).status_code == 404
     finally:
         vault_stills.IMAGE_DIR = real_dir
 

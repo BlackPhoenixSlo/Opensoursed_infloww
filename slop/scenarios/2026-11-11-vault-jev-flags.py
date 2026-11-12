@@ -600,10 +600,14 @@ async def run(ctx) -> None:
         lane, top, fr = CLIPS[it["clip"]][1], j.get("frame"), blob_frames(j)
         at = fr[top] if isinstance(top, int) and 0 <= top < len(fr) and isinstance(fr[top], dict) else {}
         lanes_seen[j.get("lane5")] += 1
-        good = (j.get("lane5") == lane and isinstance(top, int) and at.get("lane5") == lane
+        # a 240p read under $100 is lane5 "review", its read lane kept as read_lane5 (vault_jev_rules.video_blob);
+        # that the 240p ones are review is JEV_VIDEO_OVER_CAP / NO_720's
+        read = j.get("read_lane5") if j.get("lane5") == "review" else j.get("lane5")
+        good = (read == lane and isinstance(top, int) and at.get("lane5") == lane
                 and (it["clip"] != "max" or top == MAX_FRAME) and (it["clip"] != "top3" or "2" in at))
         if not good:
-            lane_bad[it["key"]] = {"clip": it["clip"], "want": lane, "lane5": j.get("lane5"), "frame": top,
+            lane_bad[it["key"]] = {"clip": it["clip"], "want": lane, "lane5": j.get("lane5"), "read": read,
+                                   "frame": top,
                                    "frame_lanes": [f.get("lane5") for f in fr if isinstance(f, dict)]}
     ctx.check(JEV_VIDEO_LANE, bool(live_clips) and not lane_bad, clips=len(live_clips), lanes=dict(lanes_seen),
               bad=len(lane_bad), sample=dict(list(lane_bad.items())[:4]))
@@ -624,11 +628,13 @@ async def run(ctx) -> None:
         j, keys = _jev_of(pf.rows[it["key"]]) or {}, clip_keys(it)
         disputed = "jev_review" in codes.get(it["key"], [])
         if it["src"] == "720":
-            want = {"src": "720", "review": None, "bytes": bytes_by.get(keys["720"]), "disputed": False}
-        else:
+            want = {"src": "720", "review": None, "bytes": bytes_by.get(keys["720"]), "disputed": False,
+                    "lane5_review": False}
+        else:   # every planned clip lane is under $100, so a 240p read is lane5 review (vault_jev_rules.video_blob)
             want = {"src": "240", "review": "over_cap" if it["src"] == "overcap" else "no_720",
-                    "bytes": bytes_by.get(keys["240"]), "disputed": True}
-        got = {"src": j.get("src"), "review": j.get("review"), "bytes": j.get("bytes"), "disputed": disputed}
+                    "bytes": bytes_by.get(keys["240"]), "disputed": True, "lane5_review": True}
+        got = {"src": j.get("src"), "review": j.get("review"), "bytes": j.get("bytes"), "disputed": disputed,
+               "lane5_review": j.get("lane5") == "review"}
         answered = it["src"] != "overcap" or got_by[keys["720"]] >= 1
         return None if got == want and want["bytes"] and answered else {"want": want, "got": got,
                                                                         "720_gets": got_by[keys["720"] or ""]}

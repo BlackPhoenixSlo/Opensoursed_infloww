@@ -65,12 +65,15 @@ _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 def _review_fields(graded: bool) -> dict:
     """The review routes' seed: both passes answered (flags_known), contradicting
     each other (fully_nude + a garment: listed by flags-review as passes_disagree),
-    tagged "feet" (a pack candidate), graded at the current prompt when asked
-    (flags-accuracy counts it)."""
+    with a confident Jev feet answer (a pack candidate), graded at the current
+    prompt when asked (flags-accuracy counts it)."""
     fields = {"description": "lying on her back", "explicitness": "explicit",
               "clothing_state": "fully_nude", "underwear_visible": True,
               "vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame",
-              "over_vulva": "black lace thong", "tags": ["feet"]}
+              "over_vulva": "black lace thong", "tags": ["feet"],
+              "_jev": {"status": "ok", "lane5": "free", "breasts_bare": "n", "crotch_bare": "n",
+                       "penetration": "n", "feet_subject": 0.9, "P": {"feet_focus": 0.9},
+                       "tags": {"feet_any": "y", "feet_focus": "y", "feet_detail": "socks"}}}
     if graded:
         fields["_graded"] = {"v": vault_ai_vision._FLAGS_VERSION, "corrected": [],
                              "confirmed": {"vulva_vis": "covered", "breasts_vis": "bare",

@@ -12,8 +12,8 @@ own namespace. The bug lives mid-function, so wrapping the function or patching 
 from __future__ import annotations
 
 EXACTLY_ONCE = ("describe sweep: every undescribed photo/clip got exactly one answer that described it, and its row "
-                "holds that answer (blank ones end 'refused', nothing written); a photo one Jev call first and the "
-                "Jev-fed prose recipe")
+                "holds that answer (blank ones end 'refused', nothing written); its Jev pass first (a photo one call, "
+                "a clip one per frame) and the Jev-fed recipe (prose / vid)")
 PLAN = ("describe sweep: the plan's undescribed count == the items the sweep called the model for plus the "
         "re-uploads it copied == its progress total (pass 1: == the seeded undescribed count)")
 CACHE = ("describe sweep: no model call for a row already described (the seeded cache rows in pass 1, every row "
@@ -23,17 +23,17 @@ ESCALATE = ("describe sweep: a refusal or blank answer escalates to qwen3-vl-235
 COST = ("describe sweep: the cost flags-all and describe-all pass 2 report == the fakes' billed sum for the "
         "sweep's own calls, DeepInfra's plus TypeSafe Jev's (pass 2: its describe calls plus any auto-flags, none for "
         "its blank retries; flags-all: its flags calls and Jev calls)")
-COST_INCL_FLAGS = ("describe sweep: the cost describe-all reports includes the flags calls it makes after each "
-                   "described clip (pass 1: reported == describe + Jev + auto-flags billed)")
-FLAGS = ("flags-all: every live photo/clip flagged (4 qwen calls per clip, none per photo: one Jev call for each photo "
-         "pass 1 left without `_jev`, none for the rest, `_flags_model` jev; a planted re-upload copied from its set "
-         "instead: none), no description, tags, describe status or non-flag ai_fields_json key rewritten (a photo's "
+COST_INCL_FLAGS = ("describe sweep: the cost describe-all reports includes the Jev pass (the flags) it runs on "
+                   "each item (pass 1: reported == describe + Jev billed, Jev > 0)")
+FLAGS = ("flags-all: every live photo/clip flagged (no qwen flags call: a Jev pass for each item pass 1 left "
+         "without `_jev`, none for the rest, `_flags_model` jev; a planted re-upload copied from its set instead: "
+         "none), no description, tags, describe status or non-flag ai_fields_json key rewritten (a photo's "
          "Jev lane fields aside), the flags answer's description/tags stored nowhere")
 REUSE = ("duplicate reuse: the Duplicates route's sets at threshold 2 == the planted re-upload sets; pass 1 called the "
          "model for the undescribed minus the planted copies, and each copy ends described with `_copied_from` a "
-         "member of its set and that member's description and flags (a photo set with a cached member pays one: a "
-         "pre-Jev describe is never a photo's source); flags: one paid member per set (a photo set's Jev, over pass 1 "
-         "and flags-all), the rest copy it (clips `_flags_copied_from` with its flags, photos its `_jev` with a mark)")
+         "member of its set and that member's description and flags (a set with a cached member pays one: a pre-Jev "
+         "describe is never a photo's or clip's source); flags: one Jev-paid member per set over pass 1 and "
+         "flags-all, the rest copy its `_jev` with a mark")
 ONE_SWEEP = "describe-all pressed by several owners at once: one sweep per Creator (one 200, the rest 409)"
 UI_SETTLED = ("UI: Vault Pro's 'Describe all (N)' shows the plan's count, the click starts the sweep and the button "
               "settles on the plan's count after it; the Creator's rows are described in the DB")

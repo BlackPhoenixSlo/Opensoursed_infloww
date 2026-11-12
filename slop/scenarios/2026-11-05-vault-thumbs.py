@@ -26,7 +26,7 @@ Per Creator, `--users` tile fetches in flight:
             role enforcement is on by default and the built-in Chatter role has no Vault Pro page, so its review
             routes 403 — measured 20261105T183026Z-...-59d4; every pre-enforcement login holds Admin), on Vault
             Pro's review routes and the picker's stats (pack-candidates, flags-review, flags-accuracy,
-            media-stats; 3 in-folder + 3 outside items seeded as reviewed and sent, by SQL): the owner lists every
+            media-stats; 3 in-folder + 3 outside photos seeded as reviewed and sent, by SQL): the owner lists every
             seeded id, the chatter only in-folder ids and counts; flags-review/grade and
             pack-triage on an outside item 404 for the chatter, 200 in-folder, 200 for the owner.
                                                                      vault_pro_restricted_chatter_scoped.
@@ -129,10 +129,14 @@ FLAGS_VERSION = 3  # service/vault_ai_vision._FLAGS_VERSION: a grade at the curr
 
 def _review_fields() -> dict:
     """An item both passes answered, contradicting each other (fully_nude + a garment: passes_disagree, so
-    flags-review lists it), tagged "feet" (a pack candidate), graded at the current prompt (flags-accuracy counts it)."""
+    flags-review lists it), a confident Jev feet photo (a pack candidate: the feet pack is Jev photos >= .6 only),
+    graded at the current prompt (flags-accuracy counts it)."""
     return {"description": "lying on her back", "explicitness": "explicit", "clothing_state": "fully_nude",
             "underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame",
             "over_vulva": "black lace thong", "tags": ["feet"],
+            "_jev": {"status": "ok", "lane5": "free", "breasts_bare": "n", "crotch_bare": "n", "penetration": "n",
+                     "feet_subject": 0.9, "P": {"feet_focus": 0.9},
+                     "tags": {"feet_any": "y", "feet_focus": "y", "feet_detail": "socks"}},
             "_graded": {"v": FLAGS_VERSION, "corrected": [],
                         "confirmed": {"vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame"}}}
 
@@ -340,8 +344,12 @@ async def run(ctx):
             # ── scoped: the same chatter, as Admin, on Vault Pro's review routes + the picker's stats ──
             role = await grant_admin(owner, rec["chatter_id"])
             in_all = {m for m, it in vw.vault(aid)["by_id"].items() if f0["id"] in it["folders"]}
-            seed_review(w, aid, inside[:3] + outside[:3])
-            scoped_ok, scoped = await _scoped(owner, ch, aid, inside[:3], outside[:3], in_all)
+            # Photos only: the feet pack never lists or files a clip (400 feet_photos_only).
+            by_id = vw.vault(aid)["by_id"]
+            rev_in = [m for m in inside if by_id[m]["type"] == "photo"][:3]
+            rev_out = [m for m in outside if by_id[m]["type"] == "photo"][:3]
+            seed_review(w, aid, rev_in + rev_out)
+            scoped_ok, scoped = await _scoped(owner, ch, aid, rev_in, rev_out, in_all)
         finally:
             await ch.aclose()
         fol_ok = bool(fol_ids) and all(f0["id"] in vw.vault(aid)["by_id"][m]["folders"] for m in fol_ids)
@@ -349,7 +357,7 @@ async def run(ctx):
                   and all_list == [] and fol_ok, login=login, inside=ins, outside=outs,
                   all_status=all_r.status_code, all_len=None if all_list is None else len(all_list),
                   folder_status=fol_r.status_code, folder_items=len(fol_ids), folder_ok=fol_ok)
-        ctx.check(SCOPED, scoped_ok and role == 200, role_save=role, seeded_in=inside[:3], seeded_out=outside[:3],
+        ctx.check(SCOPED, scoped_ok and role == 200, role_save=role, seeded_in=rev_in, seeded_out=rev_out,
                   **scoped)
 
         # ── proxy change ──

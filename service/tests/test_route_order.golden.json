@@ -1,4 +1,4 @@
-{"openapi_sha1": "20deb310e1d9fc563844edcf6cf3c4c869a38799",
+{"openapi_sha1": "bc0afd965c696e93232cba8c00ab62b6dff9a951",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -315,6 +315,7 @@
   ["PATCH", "/admin/bio-pages/{pid}/links/{lid}", "patch_link"],
   ["DELETE", "/admin/bio-pages/{pid}/links/{lid}", "delete_link"],
   ["POST", "/admin/bio-pages/{pid}/links/{lid}/background", "upload_background"],
+  ["POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault", "background_from_vault"],
   ["DELETE", "/admin/bio-pages/{pid}/links/{lid}/background", "remove_background"],
   ["GET", "/admin/secrets", "admin_secrets_status"],
   ["PUT", "/admin/secrets", "admin_secrets_set"],

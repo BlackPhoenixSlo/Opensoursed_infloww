@@ -23,16 +23,19 @@ JEV_VIDEO_FRAMES = ("Jev v8 videos (D54): every clip Jev paid for got pass 1 on 
 JEV_VIDEO_TOP3 = ("Jev v8 videos (D54): pass 2 / L ran only on frames whose planted answers ask for it, on "
                   "min(3, that many) of them per clip (5 coin-flip frames -> exactly 3 pass-2 calls), never twice "
                   "on a frame; pass 2 and L each exercised")
-JEV_VIDEO_LANE = ("Jev v8 videos (D54): every clip's `_jev.lane5` is the max of its frames' planned lanes ($50 off a "
+JEV_VIDEO_LANE = ("Jev v8 videos (D54): every clip's read lane (`_jev.lane5`, a review clip's `read_lane5`) is the max "
+                  "of its frames' planned lanes ($50 off a "
                   "bare-vulva lower crop at frame 6 behind a $10 topless frame 3 and a dressed frame 0; $10 off the "
                   "escalated coin flips; free all dressed) and `_jev.frame` a frame planned at that lane")
 JEV_VIDEO_OVER_CAP = ("Jev v8 videos (D54): a clip whose 720p mp4 is over 50 MB is read off its 240p one: the 720p "
                       "GET was answered but not taken, `_jev.src` 240 with `review` over_cap and `bytes` the 240p "
-                      "file's, the row disputed (`jev_review`); no `files.full` GET for any clip")
+                      "file's, `lane5` review (its read lane under $100), the row disputed (`jev_review`); no "
+                      "`files.full` GET for any clip")
 JEV_VIDEO_NO_720 = ("Jev v8 videos (D54): a clip OF offers no 720p rendition and no `files.full` for is read off "
                     "its 240p one: "
-                    "`_jev.src` 240 with `review` no_720, the row disputed (`jev_review`); a clip with a 720p mp4 "
-                    "under the cap is read off it (`src` 720, no review, `bytes` its size, not disputed)")
+                    "`_jev.src` 240 with `review` no_720, `lane5` review, the row disputed (`jev_review`); a clip with "
+                    "a 720p mp4 under the cap is read off it (`src` 720, no review, `lane5` not review, `bytes` its "
+                    "size, not disputed)")
 JEV_VIDEO_SCRUB = ("Jev v8 videos (D54): the 720p pass writes the clip's 12 scrub frames (400 px wide) under its 240p "
                    "url's storyboard hash, and the describe reads them: no clip's 240p mp4 is fetched more than its "
                    "Jev read needed (0 when read off the 720p, 1 when off the 240p)")

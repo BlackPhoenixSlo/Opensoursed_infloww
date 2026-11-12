@@ -24,6 +24,11 @@
  * Every folder is prefixed `AI-`, re-running refreshes those folders instead of
  * duplicating them, and a folder the operator made by hand is never touched.
  *
+ * TOPIC FOLDERS (Jev) are opt-in: a checklist of topics (`service/vault_topic_folders.py`), none ticked by
+ * default. Each ticked topic adds one folder per price (`AI-bikini free`, `AI-bikini $10`, …) cut from the photos'
+ * Jev answers; a free one never holds anything Jev saw bare. Unticking a topic retires its folders on the next
+ * build (the preview's retire line names them). Disabled until Jev is on and has read some photos.
+ *
  * Before Confirm the plan's `changes` says what it does to the AI- folders already there (create / keep / retire);
  * retiring one bound to an OnlyFans list unlinks that list, so the button says so. Options live in
  * `vaultAiFoldersForm.ts` (pure reducer); keep runs 0 (lanes only) to 20.
@@ -33,7 +38,7 @@
 
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Send, Shirt, User } from "lucide-react";
+import { Copy, Send, Shirt, Tag, User } from "lucide-react";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 
 import {
@@ -42,6 +47,7 @@ import {
   useAiFolderPlan,
   useVaultFlagsStatus,
   type AiFolder,
+  type AiFolderPlan,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
 import { mirrorThumbSrc } from "@/lib/mediaUrl";
@@ -57,6 +63,8 @@ import {
   INITIAL_FORM,
   KEEP_CHOICES,
   keepLabel,
+  topicGroups,
+  topicsUsable,
 } from "@/components/vault/vaultAiFoldersForm";
 
 const TIER_STYLE: Record<string, string> = {
@@ -84,7 +92,7 @@ function FolderCard({
       <header className="px-3 py-2 flex items-start justify-between gap-3 border-b border-border">
         <div className="min-w-0">
           <h3 className="text-[14px] font-semibold flex items-center gap-2">
-            {(() => { const Icon = folder.solo ? User : isScript ? Shirt : Send; return <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />; })()}
+            {(() => { const Icon = folder.solo ? User : isScript ? Shirt : folder.source === "topic" ? Tag : Send; return <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />; })()}
             <span className="truncate">{folder.name}</span>
             {folder.change && (
               <span className="shrink-0 rounded border border-border px-1 text-[11px] font-normal text-muted">
@@ -168,9 +176,21 @@ export default function VaultAiFoldersModal({
 }) {
   const qc = useQueryClient();
   const [form, dispatch] = useReducer(aiFoldersFormReducer, INITIAL_FORM);
-  const { keep, solo, mirrorToOf } = form;
+  const { keep, solo, mirrorToOf, topics } = form;
 
-  const plan = useAiFolderPlan(accountId, { keep, solo }, true);
+  const plan = useAiFolderPlan(accountId, { keep, solo, topics }, true);
+  // The topic checklist (+ Jev coverage) does not depend on the options, so it stays drawn while a toggle re-plans.
+  const [lastTopics, setLastTopics] = useState<Pick<AiFolderPlan, "topic_catalogue" | "jev"> | null>(null);
+  useEffect(() => {
+    if (!plan.data) return;
+    const next = { topic_catalogue: plan.data.topic_catalogue, jev: plan.data.jev };
+    // Same content keeps the same object: no re-render loop when a refetch hands back an equal plan.
+    setLastTopics((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  }, [plan.data]);
+  const catalogue = plan.data?.topic_catalogue ?? lastTopics?.topic_catalogue ?? [];
+  const groups = topicGroups(catalogue);
+  const jev = plan.data?.jev ?? lastTopics?.jev;
+  const topicsOn = topicsUsable(jev);
 
   // Items that land in more than one folder — the case the per-folder ordering
   // exists for. Flagged in the preview so the overlap is visible up front
@@ -182,7 +202,7 @@ export default function VaultAiFoldersModal({
   const multi = new Set([...seen.entries()].filter(([, n]) => n > 1).map(([m]) => m));
 
   const applyM = useMutation({
-    mutationFn: (opts: { keep: number; solo: boolean; mirrorToOf: boolean }) => applyAiFolders(accountId, opts),
+    mutationFn: (opts: ReturnType<typeof buildPayload>) => applyAiFolders(accountId, opts),
     onSuccess: () => {
       // The folder rail and any per-folder grid are now stale.
       qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
@@ -240,6 +260,26 @@ export default function VaultAiFoldersModal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sweep?.running, flagsStatus.dataUpdatedAt, since]);
+
+  const topicRow = (t: (typeof catalogue)[number]) => (
+      <label
+        key={t.slug}
+        className={`flex items-baseline gap-2 text-[13px] ${topicsOn ? "cursor-pointer" : "opacity-60"}`}
+      >
+        <input
+          type="checkbox"
+          className="accent-accent translate-y-[1px]"
+          checked={topics.includes(t.slug)}
+          disabled={busy || !topicsOn}
+          onChange={(e) => { dispatch({ type: "topic", slug: t.slug, on: e.target.checked }); optionChanged(); }}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="text-fg">{t.name}</span>{" "}
+          <span className="text-[12px] text-muted">{t.description}</span>
+        </span>
+        <span className="text-[12px] text-muted tabular-nums">{t.count}</span>
+      </label>
+  );
 
   const flagsM = useMutation({
     mutationFn: () => runVaultFlags(accountId),
@@ -358,13 +398,58 @@ export default function VaultAiFoldersModal({
           />
         </span>
       </div>
+      <section className="mt-4 rounded-md border border-border px-3 py-2.5" data-testid="ai-folders-topics">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-[14px] font-semibold">Topic folders (Jev)</span>
+          {jev && (
+            <span className="text-[12px] text-muted tabular-nums">
+              {jev.with_jev} of {jev.photos} photos have Jev data
+            </span>
+          )}
+          <span className="ml-auto flex gap-2">
+            <IfButton
+              onClick={() => { dispatch({ type: "topicsAll", slugs: groups.topics.map((t) => t.slug) }); optionChanged(); }}
+              disabled={busy || !topicsOn || groups.topics.length === 0}
+            >
+              Select all
+            </IfButton>
+            <IfButton
+              onClick={() => { dispatch({ type: "topicsNone" }); optionChanged(); }}
+              disabled={busy || topics.length === 0}
+            >
+              None
+            </IfButton>
+          </span>
+        </div>
+        <IfHelp>
+          {topicsOn
+            ? "One folder per ticked topic and price (free / $10 / $50 / $100), from Jev's answers. Free never holds anything Jev saw bare; photos Jev is unsure about go nowhere."
+            : "Needs Jev classification: check the stills, then come back."}
+        </IfHelp>
+        <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+          {groups.topics.map(topicRow)}
+        </div>
+        {groups.feet.length > 0 && (
+          <div className="mt-3 border-t border-border pt-2" data-testid="ai-folders-feet">
+            <span className="text-[13px] font-semibold">Feet</span>
+            <IfHelp>
+              Three folders, AI-feet tease / nude / nude-body, from the same Jev feet score and rung the Feet pack
+              preselects. Tease never holds anything Jev saw bare. Off unless ticked.
+            </IfHelp>
+            <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+              {groups.feet.map(topicRow)}
+            </div>
+          </div>
+        )}
+      </section>
       {(plan.isFetching || s) && (
         <IfHelp className="mt-3">
           {plan.isFetching && "planning… "}
           {s && (
             <>
               {s.folders} folders ({s.scripts} scripts, {s.lanes} lanes
-              {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}) · {s.unique_media} media ·{" "}
+              {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}
+              {s.topics > 0 && `, ${s.topics} topic`}) · {s.unique_media} media ·{" "}
               {s.memberships} placements
               {multi.size > 0 && ` · ${multi.size} in more than one`}
               {s.dupes_collapsed > 0 && ` · ${s.dupes_collapsed} duplicate copies left out`}

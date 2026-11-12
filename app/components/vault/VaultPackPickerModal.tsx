@@ -3,31 +3,36 @@
 /**
  * VaultPackPickerModal — one button, every candidate, one Save.
  *
- * The operator opens it, sees every photo in the vault that might be a feet
- * photo, files each one on a rung (or rejects it), and presses Save. That
- * writes the rung folders and their membership. Publishing them to her real
- * OnlyFans vault is a separate, explicit button per rung.
+ * The operator opens it, sees the photos Jev is confident are feet photos,
+ * files each one on a rung (or rejects it), and presses Save. That writes the
+ * rung folders and their membership. Publishing them to her real OnlyFans
+ * vault is a separate, explicit button per rung.
  *
  * WHY A HUMAN IS IN THIS LOOP AT ALL. The vault's own taxonomy cannot find this
- * content. Measured on prod 2026-08-10: `primary_folder='feet'` is set on 265
- * items roster-wide but ZERO on either pilot account, and zero of the 68 items
- * the operator hand-picked on 08-01 carry it. `body_focus` DOES say "feet" — on
- * 278 items on 8000149 — but it says so whenever feet are VISIBLE, not when they
- * are the subject, so a lingerie pose with her feet in frame matches. Hence a
- * 22% hit rate (307 candidates -> 68 keepers) and hence this screen: selling
- * straight off the tag would charge a fan for three photos he did not ask for
- * out of every four.
+ * content (measured on prod 2026-08-10: `primary_folder='feet'` on zero of the
+ * 68 items the operator hand-picked; `body_focus` says "feet" whenever feet are
+ * merely VISIBLE). Jev v8 can, but not perfectly, so the operator confirms.
  *
- * TWO PASSES, and the first one is free. Roughly half the set is rejectable on
- * the DESCRIPTION alone — "walks away from the camera on a paved street" is not
- * a feet picture whatever the tag says — so every tile carries its description
- * and the keyboard works without ever waiting for a pixel.
+ * PRECISION ONLY (vault_pack_picker.confident / jev_pick). The grid holds only
+ * Jev-classified photos with feet score >= .6 (measured precision 1.0), most
+ * likely first: no lower-scored suggestions, no word-search candidates (a photo
+ * Jev has not classified yet waits for it), no videos (photos only: a clip
+ * filed before the rule shows on its rung and can only be unfiled; the server
+ * refuses one on any rung, `feet_photos_only`; a rung's publish skips one,
+ * `skipped_videos`). None yet: an empty state says
+ * Jev checks new photos automatically. Each tile shows a dashed `rung?` from
+ * Jev's tier + covering answer. A prefill is never a verdict: Enter (or a tap
+ * on that rung) confirms it, 1/2/3 pick a rung, x rejects, arrows / j k move.
+ * State lives in packPickerState.ts. On a phone: 2 columns, 44px taps. When
+ * Jev says her body may be on show the free rung (tease) is disabled, and the
+ * server refuses it there anyway (`not_free_safe`). One already filed there
+ * (before the guard) shows "not free-safe", keeps tease pressable to unfile it,
+ * and publishing tease skips it (`skipped_unsafe`).
  *
- * RANKED AND PREFILLED (vault_pack_picker.likelihood / suggest). The grid comes
- * most-likely-first, and a likely tile shows a dashed `rung?` from its stored
- * flags (priced body -> nude-body). A prefill is never a verdict: Enter (or a
- * tap on that rung) confirms it, 1/2/3 pick a rung, x rejects, arrows / j k
- * move. State lives in packPickerState.ts. On a phone: 2 columns, 44px taps.
+ * PRESELECTED. A tile whose rung is known and safe (`preselect`) arrives TICKED
+ * on it; an unsure body arrives unticked with no suggestion. "File N
+ * preselected" files every ticked tile on its rung (plus any unsaved verdict)
+ * in one triage, so the operator only unticks what is wrong.
  *
  * ⚠️ IMAGES ARE RATE-GATED ON PURPOSE. Tiles use /image (full frame), never
  * /thumb: the thumb is a 300x300 centre-crop of a 3:4 portrait and feet sit at
@@ -53,14 +58,20 @@ import { mirrorFullSrc } from "@/lib/mediaUrl";
 import { makeSlotGate } from "@/components/vault/slotGate";
 import { initialPackStatus, packStatusReducer } from "@/components/vault/packStatus";
 import {
+  buildFilePayload,
   buildPayload,
+  canFileTicked,
+  canPress,
   canSubmit,
   focusedId,
   initialPickerState,
+  isTicked,
   keyAction,
   pickerReducer,
   rungTally,
   shownRung,
+  tickable,
+  tickedVerdicts,
   visibleCandidates,
 } from "@/components/vault/packPickerState";
 import { IfButton, IfModal, IfSegmented } from "@/components/ui/infloww";
@@ -127,8 +138,11 @@ function Tile({
   suggested,
   focused,
   rungs,
+  ticked,
+  pressable,
   onRule,
   onFocus,
+  onTick,
 }: {
   accountId: string;
   item: PackCandidate;
@@ -138,8 +152,13 @@ function Tile({
   /** The tile the keys act on: the focus ring. */
   focused: boolean;
   rungs: string[];
+  /** The preselect tick: null = not tickable (decided, or nothing safe suggested). */
+  ticked: boolean | null;
+  /** Per rung: may its button be pressed (`canPress`). */
+  pressable: (rung: string) => boolean;
   onRule: (mediaId: number, rung: string | null) => void;
   onFocus: (mediaId: number) => void;
+  onTick: (mediaId: number, on: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
@@ -214,9 +233,23 @@ function Tile({
         )}
         <span className="absolute left-1 top-1 flex gap-1 text-[12px] text-white">
           {isVideo && <span className="rounded bg-black/70 px-1">{item.kind}</span>}
+          {item.jev && (
+            <span className="rounded bg-black/70 px-1" title="Ranked and priced by Jev v8">
+              Jev
+            </span>
+          )}
+          {item.unsafe_on_free && (
+            <span
+              className="flex items-center gap-0.5 rounded bg-err/80 px-1"
+              title="On the free rung but Jev says the body may be on show: publish skips it. Unfile it."
+            >
+              <AlertTriangle className="h-3 w-3" aria-hidden />
+              not free-safe
+            </span>
+          )}
           {/* Her body's price tier from the flags: why a tile is prefilled on the top rung. */}
           {!!item.tier && (
-            <span className="rounded bg-black/70 px-1" title="Her body's price tier from the stored flags">
+            <span className="rounded bg-black/70 px-1" title="Body price tier from Jev">
               ${item.tier}
             </span>
           )}
@@ -225,6 +258,22 @@ function Tile({
           <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[12px] text-white">
             {suggested ? `${rung}?` : rung}
           </span>
+        )}
+        {/* The preselect tick: "File N preselected" files every ticked tile on its suggested rung. */}
+        {ticked !== null && rung && (
+          <label
+            className="absolute bottom-1 left-1 flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded bg-black/70 sm:min-h-0 sm:min-w-0 sm:px-1 sm:py-0.5"
+            title={ticked ? `Preselected: "File preselected" puts it on ${rung}` : `Tick to file it on ${rung}`}
+          >
+            <input
+              type="checkbox"
+              data-pack-tick={item.media_id}
+              aria-label={`preselect on ${rung}`}
+              className="accent-accent h-4 w-4"
+              checked={ticked}
+              onChange={(e) => onTick(item.media_id, e.target.checked)}
+            />
+          </label>
         )}
       </div>
 
@@ -243,9 +292,16 @@ function Tile({
             key={r}
             type="button"
             onClick={() => onRule(item.media_id, rung === r && !suggested ? null : r)}
-            title={`${i + 1}: ${RUNG_HELP[r] ?? r}`}
+            disabled={!pressable(r)}
+            title={
+              pressable(r)
+                ? `${i + 1}: ${RUNG_HELP[r] ?? r}`
+                : item.kind !== "photo"
+                  ? `${i + 1}: photos only: a clip never goes in this pack`
+                  : `${i + 1}: Jev says the body may be on show: never the free preview`
+            }
             className={cn(
-              "min-h-11 whitespace-nowrap px-1 py-1.5 transition-colors sm:min-h-0",
+              "min-h-11 whitespace-nowrap px-1 py-1.5 transition-colors sm:min-h-0 disabled:cursor-not-allowed disabled:opacity-40",
               rung === r && !suggested && "bg-accent text-white font-medium",
               rung === r && suggested && "bg-accent/25 text-fg font-medium",
               rung !== r && "bg-bg hover:bg-bg-hover",
@@ -308,6 +364,10 @@ export default function VaultPackPickerModal({
   const tally = useMemo(() => rungTally(data?.candidates ?? [], draft), [data, draft]);
 
   const dirty = Object.keys(draft).length;
+  const candidates = useMemo(() => data?.candidates ?? [], [data]);
+  /** Ticked tiles (packPickerState.isTicked): what "File N preselected" files on their suggested rungs. */
+  const tickedN = useMemo(() => tickedVerdicts(candidates, pick, rungs).length, [candidates, pick, rungs]);
+  const anyPreselect = useMemo(() => candidates.some((c) => c.preselect), [candidates]);
   /** Rungs that exist and have something in them — the only ones publishable. */
   const stocked = shelf.filter((f) => f.folder_id && f.count);
   const allPublished = stocked.length > 0 && stocked.every((f) => f.of_list_id);
@@ -367,9 +427,30 @@ export default function VaultPackPickerModal({
     }
   }
 
+  /** "File N preselected": every ticked tile on its suggested rung plus the unsaved draft, one triage. The server
+   *  still refuses the free rung for a body Jev says is not free-safe (nothing written). */
+  async function fileTicked() {
+    if (!canFileTicked(candidates, pick, rungs, !!busy)) return;
+    dispatchStatus({ type: "start", busy: "filing…" });
+    try {
+      const verdicts = buildFilePayload(candidates, pick, rungs);
+      const res = await savePackTriage(accountId, category, verdicts);
+      await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
+      dispatch({ type: "saved", verdicts });
+      await qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
+      dispatchStatus({ type: "ok", note: `filed ${res.saved - res.rejected} (${res.rejected} rejected)` });
+    } catch (e) {
+      dispatchStatus({ type: "fail", note: `file failed: ${errText(e)}` });
+    }
+  }
+
   function describe(res: Awaited<ReturnType<typeof publishFolderToOf>>): string {
+    const skipped = res.skipped_unsafe?.length ?? 0;
+    const clips = res.skipped_videos?.length ?? 0;
     return (
       `${res.name} → OF list ${res.of_list_id}: pushed ${res.pushed}` +
+      (skipped ? ` · ${skipped} skipped (Jev: not free-safe; unfile them)` : "") +
+      (clips ? ` · ${clips} skipped (videos: a pack is photos only; unfile them)` : "") +
       (res.stale_on_of.length
         ? ` · ${res.stale_on_of.length} still on OF that this rung no longer holds`
         : " · exact copy")
@@ -470,6 +551,16 @@ export default function VaultPackPickerModal({
           <IfButton onClick={onClose} disabled={!!dirty} title={dirty ? "Save or discard first" : undefined}>
             Done
           </IfButton>
+          {anyPreselect && (
+            <IfButton
+              variant="primary"
+              onClick={fileTicked}
+              disabled={!canFileTicked(candidates, pick, rungs, !!busy)}
+              title="Files every ticked tile on its suggested rung, plus any unsaved verdict"
+            >
+              {`File ${tickedN} preselected`}
+            </IfButton>
+          )}
           <IfButton variant="primary" onClick={save} disabled={!canSubmit(pick, !!busy)}>
             {dirty ? `Save ${dirty}` : "Saved"}
           </IfButton>
@@ -492,10 +583,11 @@ export default function VaultPackPickerModal({
           options={["undecided", ...rungs, "all"].map((f) => ({ value: f, label: f }))}
         />
       </div>
-      {/* Most likely first; a dashed tile with "?" is the rung its flags suggest, not yet a verdict. */}
+      {/* Most likely first; a dashed tile with "?" is the rung Jev suggests, not yet a verdict. */}
       <p className="mt-2 hidden text-[12px] text-muted sm:block">
         Keys: {rungs.map((r, i) => `${i + 1} ${r === "nude-body" ? "body" : r}`).join(" · ")} · x reject · Enter
         confirm the suggestion · ←→ / j k move
+        {anyPreselect && " · ticked tiles (Jev sure it is feet) go on their rung with File preselected"}
       </p>
 
       {/* The shelf, always — publishing must not be reachable only in the
@@ -508,8 +600,8 @@ export default function VaultPackPickerModal({
             <IfButton
               variant="link"
               onClick={() => f.folder_id && publish(f.folder_id, f.name)}
-              disabled={!f.folder_id || !f.count || !!busy}
-              title="Create this as a REAL folder in the OnlyFans vault"
+              disabled={!f.folder_id || !f.count || !!dirty || !!busy}
+              title={dirty ? publishTitle : "Create this as a REAL folder in the OnlyFans vault"}
               className="h-auto px-1 text-[12px]"
             >
               {f.of_list_id ? "re-publish" : "publish to OF"}
@@ -533,9 +625,11 @@ export default function VaultPackPickerModal({
         )}
         {data && shown.length === 0 && (
           <p className="p-6 text-center text-muted">
-            {filter === "undecided"
-              ? "Nothing left undecided. Switch to a rung to review what you filed."
-              : "Nothing here."}
+            {data.candidates.length === 0
+              ? `No confident ${category} photos yet: Jev checks new photos automatically.`
+              : filter === "undecided"
+                ? "Nothing left undecided. Switch to a rung to review what you filed."
+                : "Nothing here."}
           </p>
         )}
         <div ref={gridRef} className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
@@ -550,8 +644,11 @@ export default function VaultPackPickerModal({
                 suggested={s.suggested}
                 focused={c.media_id === focusId}
                 rungs={rungs}
+                ticked={tickable(c, pick, rungs) ? isTicked(c, pick, rungs) : null}
+                pressable={(r) => canPress(c, r, rungs, draft)}
                 onRule={rule}
                 onFocus={(mediaId) => dispatch({ type: "focus", mediaId })}
+                onTick={(mediaId, on) => dispatch({ type: "tick", mediaId, on })}
               />
             );
           })}

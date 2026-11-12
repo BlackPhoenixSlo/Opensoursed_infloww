@@ -29,6 +29,7 @@ from sqlalchemy import select
 
 import vault_ai_brief
 import vault_dupes
+import vault_topic_folders
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
 
@@ -1057,6 +1058,25 @@ async def collect_purpose_folders(
     return out
 
 
+def collect_topic_folders(rows: list[dict[str, Any]], topics: Iterable[str]) -> list[dict[str, Any]]:
+    """One folder per ticked topic and price split (`vault_topic_folders`), in send order. Photos with a
+    current `_jev` only; additive — an item in a lane or script may also be here. Read-only."""
+    out: list[dict[str, Any]] = []
+    for (slug, price), picked in vault_topic_folders.assign(rows, topics).items():
+        topic = vault_topic_folders.BY_SLUG[slug]
+        picked = sorted((_with_why(r) for r in picked),
+                        key=lambda r: send_sort_key(r["fields"], media_id=r["media_id"]))
+        kinds, tiers, closes = _tally(picked)
+        out.append({
+            "topic": slug, "price": price,
+            "name": ai_folder_name(vault_topic_folders.folder_name(topic, price)),
+            "purpose": f"{topic.description} — {price}",
+            "kinds": kinds, "tiers": tiers, "closes_on_own": closes,
+            "items": _ordered_items(picked),
+        })
+    return out
+
+
 # ── The whole plan: what the vault button previews and creates ──────
 #
 # One call so the UI previews EXACTLY what it will create. `apply_ai_folders`
@@ -1127,6 +1147,7 @@ async def plan_ai_folders(
     window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
     min_items: int = MIN_SCRIPT_ITEMS,
     solo: bool = False,
+    topics: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Every folder the pipeline proposes, scripts and lanes together.
 
@@ -1137,8 +1158,13 @@ async def plan_ai_folders(
     both a script and a lane is the design.
 
     `solo` adds a `-solo` cut of each lane (see `collect_purpose_folders`).
+
+    `topics` (slugs, `vault_topic_folders.SLUGS`; validate with `parse_topics`) adds one folder per ticked
+    topic and price, cut from the photos' Jev v8 answers (`collect_topic_folders`). None ticked = no topic
+    folders, and any built earlier are retired like every other AI- folder the plan no longer makes.
     """
-    # Loaded and dupe-collapsed ONCE, for shoots and lanes alike.
+    topics = vault_topic_folders.parse_topics(topics)
+    # Loaded and dupe-collapsed ONCE, for shoots, lanes and topics alike.
     rows, dupes_dropped = await _grouping_rows(account_id)
     shoots = await collect_outfit_scripts(
         account_id, window_hours=window_hours, min_items=min_items, rows=rows)
@@ -1176,6 +1202,9 @@ async def plan_ai_folders(
         _folder(f, "lane", f["purpose"], lane=f["lane"],
                 solo=f["solo"], solo_of=f["solo_of"])
         for f in lanes
+    ] + [
+        _folder(f, "topic", f["purpose"], topic=f["topic"], price=f["price"])
+        for f in collect_topic_folders(rows, topics)
     ]
 
     # Names unique across the plan: apply and the OF mirror both join on name.
@@ -1218,14 +1247,21 @@ async def plan_ai_folders(
     # Only when asked: it is a second full read of the vault, and it answers a
     # question nobody has posed unless the box is ticked.
     solo_cov = await solo_coverage(account_id) if solo else None
+    # Topic folders read Jev only: whether it is on for the account, how many photos carry it, and every
+    # topic's size (ticked or not — the checklist shows them all).
+    jev = {"enabled": True,  # Jev v8 is the default for every photo (#511)
+           **vault_topic_folders.coverage(rows)}
 
     return {
         "account_id": account_id,
         "keep": keep,
         "solo": solo,
+        "topics": topics,
         "shoots_found": len(shoots),
         "flags": coverage,
         "solo_coverage": solo_cov,
+        "jev": jev,
+        "topic_catalogue": vault_topic_folders.catalogue(rows),
         "folders": folders,
         # Confirm's effect: `create` new / `keep` refreshed / `retire` soft-
         # deleted (`retire_on_of` of those bound to an OF list). `keep` here is
@@ -1246,6 +1282,7 @@ async def plan_ai_folders(
             "lanes": sum(1 for f in folders
                          if f["source"] == "lane" and not f["solo"]),
             "solo_cuts": sum(1 for f in folders if f["solo"]),
+            "topics": sum(1 for f in folders if f["source"] == "topic"),
             "unique_media": len(unique),
             "memberships": sum(f["size"] for f in folders),
             "settled_unlaned": len(settled_unlaned),

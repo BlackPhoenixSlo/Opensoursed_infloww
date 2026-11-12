@@ -9,9 +9,9 @@ from __future__ import annotations
 # Re-pin both sides together after reviewing asset changes; also update the MD5 table in
 # service/tests/test_bio_decide.py:case_assets_pinned.
 ASSET_SHA256 = {
-    "index.html": ("48af258c1edde168f2b9854679ddd6fdf0b14942a5d357cbc815d2743c4ade18",
+    "index.html": ("09cffdaf12cf606398d4d6ddb1e96e7cc94a6843364f76a626014a9adcae8464",
                    "96b81351b6a3b6fd77d24acc94cdbed87a94e11e6e70d25cab63df29d894307d"),
-    "script.js": ("30c33e60661803ac52a80909c96decd96a6ff9b78849cf4959f6fc84b69558ad",
+    "script.js": ("12f0936460ceb2e17f32f0b77327111409f623059e851618fac2c1b9393e03dc",
                   "34aa2a993971ce1ada0fce6a901e83b5147983df886219b305a7ef0b6bd82433"),
     "style.css": ("19738d2c5370860356cc36a71cdca6e9d83d825dc3297c4f6beb24976fc3f262",
                   "28714ba9316b1952e44ad7adae2a7738245011b13ffe790ac179da81182f99c4"),

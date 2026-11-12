@@ -184,6 +184,11 @@ export const useDeleteBioLink = (pid: string) =>
 export const useReorderBioLinks = (pid: string) =>
   usePageWrite(pid, (ids: string[]) => relay.put<BioPage>(`${pagePath(pid)}/links/order`, { ids }));
 
+/** A photo of the page's Creator's vault as a link's background (the relay fetches and encodes it, photo only). */
+export const useBioLinkBackgroundFromVault = (pid: string) =>
+  usePageWrite(pid, ({ lid, m }: { lid: string; m: { id: number; type: string } }) =>
+    relay.post<BioPage>(`${linkPath(pid, lid)}/background/vault`, { media_id: m.id, type: m.type }));
+
 /** A file uploads the link's background; `null` removes it. */
 export const useBioLinkBackground = (pid: string) =>
   usePageWrite(pid, ({ lid, file }: { lid: string; file: File | null }) => file

@@ -1,5 +1,5 @@
-"""Vault Pro's feet pack picker (ranked, prefilled, keyboard): check names and break-it-once faults, for
-scenarios/2026-11-11-vault-feet-picker.py. lib/faults.py merges `register(Fault)`.
+"""Vault Pro's feet pack picker (precision only: confident Jev photos, prefilled, keyboard): check names and
+break-it-once faults, for scenarios/2026-11-11-vault-feet-picker.py. lib/faults.py merges `register(Fault)`.
 """
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ PREFILL = "feet_prefill_matches_flags"
 NO_FREE = "feet_no_free_prefill_without_tier"
 KEYS = "feet_keyboard_confirm_members"
 PHONE = "feet_phone_layout_tap_save"
+JEV_RANK = "feet_jev_selects_and_ranks"
+JEV_FREE_GUARD = "feet_jev_free_guard"
+PRESELECT = "feet_preselect_confirm"
 
 
 def _need(vp, *names: str) -> None:
@@ -17,39 +20,70 @@ def _need(vp, *names: str) -> None:
 
 
 def _like_only() -> None:
-    """The ranking falls back to LIKE-only: every candidate scores 0, so the queue comes back in media_id order
-    (the pre-change grid, the base rate) and nothing is prefilled (below SUGGEST_MIN)."""
+    """The gate falls back to "Jev saw feet" (the LIKE-era recall): every Jev score is 1, so every Jev photo with
+    a feet tag "y" is a candidate, the half-sure .55 rows (and any other below the gate) queued and prefilled.
+    (Name kept from the qwen-ranking era, when it zeroed the old blended score; that score is gone.)"""
     import vault_pack_picker as vp
 
-    _need(vp, "likelihood", "SUGGEST_MIN")
-    vp.likelihood = lambda cat, fields, text="": 0.0
+    _need(vp, "jev_likelihood", "confident")
+    vp.jev_likelihood = lambda cat, j: 1.0
 
 
 def _free_prefill_unknown_tier() -> None:
-    """The pre-fix prefill: an unknown tier (no `_jev.lane5`, no flags) guessed from clothing alone, so socks on an
-    unflagged row land on the free preview rung (a nude body the describe missed would ride free)."""
+    """The pre-fix prefill: an unknown Jev tier (lane5 review, an unsure body answer) guessed from Jev's covering
+    answer alone, so socks land on the free preview rung (a body Jev half-saw would ride free)."""
     import vault_pack_picker as vp
 
-    _need(vp, "suggest", "price_tier", "SUGGEST_MIN")
-    real = vp.suggest
+    _need(vp, "jev_pick", "jev_tier", "confident", "JEV_KEY", "_jev_tags")
+    real = vp.jev_pick
 
-    def leaky(cat, fields, p):
-        got = real(cat, fields, p)
-        if got is None and p >= vp.SUGGEST_MIN and isinstance(fields, dict) and vp.price_tier(fields) is None:
-            worn = " ".join(str(x).lower() for x in fields.get("clothing_items") or [])
-            return cat.rungs[0] if any(g in worn for g in cat.covered_by) else cat.rungs[1]
+    def leaky(cat, j):
+        got = real(cat, j)
+        if got is None and vp.confident(cat, {vp.JEV_KEY: j}) is not None and vp.jev_tier(j) is None:
+            detail = vp._jev_tags(j).get(cat.jev_detail) if cat.jev_detail else None
+            return cat.rungs[1] if detail == "bare" else cat.rungs[0]
         return got
 
-    vp.suggest = leaky
+    vp.jev_pick = leaky
+
+
+def _jev_free_guard_off() -> None:
+    """The pre-fix Jev tier: lane5 "free" is tier 0 whatever the body answers, so a free-filed photo with
+    breasts_bare / crotch_bare / penetration "unsure" (settle nn.10 can do that) is prefilled on, and filed to, the
+    free preview rung."""
+    import vault_pack_picker as vp
+
+    _need(vp, "jev_tier", "free_ok", "NotFreeSafe")
+    real = vp.jev_tier
+    vp.jev_tier = lambda j: 0 if j.get("lane5") == "free" else real(j)
+
+
+def _preselect_threshold_low() -> None:
+    """The Jev gate back down at 0.3 (below the measured .6): a Jev row Jev is only half sure is feet (the seeded
+    `jev_maybe`, feet_subject .55) is a candidate again, prefilled and PRESELECTED, so "File N preselected" files
+    it unseen."""
+    import vault_pack_picker as vp
+
+    _need(vp, "FEET_PRESELECT_SCORE", "jev_pick")
+    vp.FEET_PRESELECT_SCORE = 0.3
 
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-11-vault-feet-picker --break (the scenario's FAULT). Server. The keyboard check is
-        # targeted too: with nothing ranked or prefilled, the top tiles show no prefill for Enter to confirm.
-        "feet-rank-like-only": Fault(_like_only, (RANKED, PREFILL, KEYS)),
-        # --fault=feet-free-prefill-unknown-tier: the free-rung leak (server).
-        "feet-free-prefill-unknown-tier": Fault(_free_prefill_unknown_tier, (NO_FREE, PREFILL)),
+        # slop/run 2026-11-11-vault-feet-picker --break (the scenario's FAULT). Server. Below-gate Jev rows in the
+        # queue (ranked: set != keepers; jev rank: out-row back), prefilled (prefill: stray) and preselected
+        # (preselect: API extra). The keyboard check is no longer targeted: the top tiles still show a prefill.
+        "feet-rank-like-only": Fault(_like_only, (RANKED, PREFILL, JEV_RANK, PRESELECT)),
+        # --fault=feet-free-prefill-unknown-tier: the free-rung leak (server): the unknown-tier rows prefilled
+        # (prefill), on tease (no-free), and preselected (preselect).
+        "feet-free-prefill-unknown-tier": Fault(_free_prefill_unknown_tier, (NO_FREE, PREFILL, PRESELECT)),
+        # --fault=feet-jev-free-guard-off: Jev's lane5 free trusted over unsure body answers (server): the unsafe
+        # rows prefilled tease (prefill), flagged free-safe, the triage 400 gone, the UI's tease enabled (guard).
+        "feet-jev-free-guard-off": Fault(_jev_free_guard_off, (JEV_FREE_GUARD, PREFILL)),
+        # --fault=feet-preselect-threshold-low: the Jev gate at 0.3 (server): the half-sure Jev rows come back as
+        # candidates (ranked, jev rank), preselected (preselect check: API flags, ticked tiles, the File POST) and
+        # prefilled (prefill).
+        "feet-preselect-threshold-low": Fault(_preselect_threshold_low, (PRESELECT, PREFILL, RANKED, JEV_RANK)),
         # --fault=feet-keys-enter-ignores-suggestion: app/components/vault/packPickerState.ts, Enter only moves on
         # (never takes the suggestion). Client; `next dev` serves the module unminified.
         "feet-keys-enter-ignores-suggestion": Fault(None, (KEYS,), browser=(

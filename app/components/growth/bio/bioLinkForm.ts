@@ -1,6 +1,6 @@
 /**
  * The bio editor's link dialog: closed or open with a nullable saved `base`, the Creator's edits,
- * the background picked or marked for removal, the "Tracking" disclosure, the save in flight and its
+ * the background picked (a file, or a photo of the Creator's vault) or marked for removal, the "Tracking" disclosure, the save in flight and its
  * refusal. A pure reducer (BioEditor holds it, BioLinkDialog only dispatches), the API's link rules mirrored
  * (`decide.check_link`) and the body a save sends: the whole link on create, only what changed on edit.
  *
@@ -31,9 +31,13 @@ export interface LinkDraft {
   code: string;
 }
 
+/** A vault photo picked as the background: the relay fetches it on save; `url` previews it. */
+export interface BgVault { id: number; type: string; url: string }
+
 interface LinkFormFields {
   draft: LinkDraft;
   bgFile: File | null;
+  bgVault: BgVault | null;
   bgRemove: boolean;
   advanced: boolean;
   busy: boolean;
@@ -46,6 +50,7 @@ export type Action =
   | { type: "open_edit"; link: BioLink }
   | { type: "set"; patch: Partial<LinkDraft> }
   | { type: "pick_bg"; file: File | null }
+  | { type: "pick_bg_vault"; media: BgVault }
   | { type: "remove_bg"; on: boolean }
   | { type: "toggle_advanced" }
   | { type: "submit" }
@@ -58,7 +63,7 @@ const NEW_DRAFT: LinkDraft = {
 };
 
 export const INITIAL_LINK: BioLinkForm = {
-  open: false, draft: NEW_DRAFT, bgFile: null, bgRemove: false, advanced: false, busy: false, error: null,
+  open: false, draft: NEW_DRAFT, bgFile: null, bgVault: null, bgRemove: false, advanced: false, busy: false, error: null,
 };
 
 const asLinkMode = (m: string): LinkMode => isBioMode(m) ? m : "";
@@ -122,7 +127,7 @@ export function buildLinkPayload(base: BioLink | null, draft: LinkDraft): LinkBo
 
 export const canSubmit = (f: BioLinkForm) => f.open && !f.busy && linkFormError(f.draft, f.base) === null;
 export const isDirty = (f: BioLinkForm) => f.open && (
-  f.bgFile !== null || f.bgRemove || (f.base ? buildLinkPayload(f.base, f.draft) !== null
+  f.bgFile !== null || f.bgVault !== null || f.bgRemove || (f.base ? buildLinkPayload(f.base, f.draft) !== null
     : f.draft.title !== "" || f.draft.destination !== "https://" || f.draft.icon !== "none"
       || f.draft.isAdult || f.draft.mode !== "" || f.draft.tracking || f.draft.code !== "")
 );
@@ -140,9 +145,17 @@ export function bioLinkReducer(state: BioLinkForm, action: Action): BioLinkForm 
     case "set":
       return { ...state, draft: { ...state.draft, ...action.patch }, error: null };
     case "pick_bg":
-      return { ...state, bgFile: action.file, bgRemove: action.file ? false : state.bgRemove, error: null };
+      return {
+        ...state, bgFile: action.file, bgVault: action.file ? null : state.bgVault,
+        bgRemove: action.file ? false : state.bgRemove, error: null,
+      };
+    case "pick_bg_vault":
+      return { ...state, bgVault: action.media, bgFile: null, bgRemove: false, error: null };
     case "remove_bg":
-      return { ...state, bgRemove: action.on, bgFile: action.on ? null : state.bgFile, error: null };
+      return {
+        ...state, bgRemove: action.on, bgFile: action.on ? null : state.bgFile,
+        bgVault: action.on ? null : state.bgVault, error: null,
+      };
     case "toggle_advanced":
       return { ...state, advanced: !state.advanced };
     case "submit": {

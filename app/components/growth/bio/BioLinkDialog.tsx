@@ -7,15 +7,17 @@
  * BioEditor (the preview draws the draft); this dialog dispatches and runs the save: the link write, then the
  * background upload or removal. A background that fails after the link saved leaves the dialog on the saved link.
  */
-import { useId, type Dispatch } from "react";
+import { useId, useState, type Dispatch } from "react";
 import { ChevronDown } from "lucide-react";
 
 import {
   IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfSwitch,
 } from "@/components/ui/infloww";
+import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useOfTrackingLinks } from "@/hooks/useGrowth";
+import { mirrorFullSrc } from "@/lib/mediaUrl";
 import {
-  BIO_MODES, bioFailure, useBioLinkBackground, useCreateBioLink, usePatchBioLink,
+  BIO_MODES, bioFailure, useBioLinkBackground, useBioLinkBackgroundFromVault, useCreateBioLink, usePatchBioLink,
   type BioLink, type BioMode, type BioPage, type StockIcon,
 } from "@/hooks/useBioPages";
 import {
@@ -44,6 +46,8 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
   const create = useCreateBioLink(pid);
   const patch = usePatchBioLink(pid);
   const background = useBioLinkBackground(pid);
+  const bgFromVault = useBioLinkBackgroundFromVault(pid);
+  const [vaultOpen, setVaultOpen] = useState(false);
   const accountId = page.profile.account_id;
   const ofLinks = useOfTrackingLinks(accountId);
   const codes = trackingRows(ofLinks.data?.links ?? [], page.profile.public_url ?? `/${page.profile.username}`);
@@ -81,6 +85,7 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
     if (!link) return;
     try {
       if (form.bgFile) await background.mutateAsync({ lid: link.id, file: form.bgFile });
+      else if (form.bgVault) await bgFromVault.mutateAsync({ lid: link.id, m: form.bgVault });
       else if (form.bgRemove && link.background_image) await background.mutateAsync({ lid: link.id, file: null });
     } catch (err) {
       dispatch({ type: "failed", msg: `Link saved; the background failed: ${bioFailure(err, "upload failed").msg}` });
@@ -140,11 +145,24 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
                 <span aria-hidden className="h-11 w-[110px] shrink-0 rounded-md bg-cover bg-center"
                   style={{ backgroundImage: `url("${bgSrc}")` }} />
               )}
-              <input key={String(form.bgRemove)} id={`${id}-bg`} type="file" accept={IMAGE_ACCEPT}
+              <input key={`${form.bgRemove}-${form.bgVault?.id ?? ""}`} id={`${id}-bg`} type="file" accept={IMAGE_ACCEPT}
                 className="min-w-0 max-w-full text-[13px] text-fg-dim file:mr-3 file:h-8 file:rounded-md file:border file:border-border file:bg-transparent file:px-3 file:text-fg"
                 onChange={(e) => dispatch({ type: "pick_bg", file: e.target.files?.[0] ?? null })} />
             </div>
-            <IfHelp>Any photo: jpg, png, gif or webp. Shown behind the title.</IfHelp>
+            {accountId && (
+              <IfButton className="mt-2" onClick={() => setVaultOpen(true)}>Pick from vault</IfButton>
+            )}
+            <IfHelp>Any photo: jpg, png, gif or webp, or one from the Creator&rsquo;s vault. Shown behind the title.</IfHelp>
+            {accountId && vaultOpen && (
+              <VaultPicker open onClose={() => setVaultOpen(false)} accountId={accountId} fanId={null}
+                initialSelectedIds={[]}
+                onConfirm={(picked) => {
+                  setVaultOpen(false);
+                  // One background: the first photo picked (a lone video goes through, for the relay's refusal).
+                  const m = picked.find((p) => p.type === "photo") ?? picked[0];
+                  if (m) dispatch({ type: "pick_bg_vault", media: { id: m.id, type: m.type, url: mirrorFullSrc(accountId, m.id) } });
+                }} />
+            )}
             {base?.background_image && (
               <div className="mt-2">
                 <IfSwitch checked={form.bgRemove} label="Remove background"

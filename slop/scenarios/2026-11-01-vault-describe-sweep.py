@@ -14,11 +14,13 @@ lib/vault_describe_relay.py with their outcomes (`arm_run`) and lib/vault_jev_re
 is a dummy set through the real Setup > Keys route (`PUT /admin/my-llm-keys`). Nothing is switched on: the describe
 plan's `jev` block must say ready for every Creator before anything is pressed, else the run stops (INFRA).
 
-Jev v8 is every photo's only flags source and feeds its describe (2026-11-11-vault-jev-flags holds the lanes and
-recipes per answer): a photo the describe sweep visits gets one Jev call first, then the Jev-fed prose describe (its
-stored text the marker sentence alone: nothing bare to claim); the flags pass gives Jev to the photos with no
-`_jev` yet (the seeded cache rows) and makes no DeepInfra flags call for a photo; clips keep the V2 describe and
-the qwen flags call (4 frames).
+Jev v8 is every photo's and clip's only flags source and feeds its describe (D51/D54; 2026-11-11-vault-jev-flags
+holds the lanes and recipes per answer): a photo the describe sweep visits gets one Jev call first, then the Jev-fed
+prose describe (its stored text the marker sentence alone: nothing bare to claim); a clip one Jev pass over its 12
+frames (every frame JEV_PROFILE), then the Jev-fed "vid" describe on the scrub frames that pass published (its
+stored text the marker alone). The flags pass gives Jev to the items with no `_jev` yet (the seeded cache rows) and
+makes no DeepInfra flags call at all. Clips get real mp4s on OF's CDN as in 2026-11-11-vault-jev-flags (`_clips`:
+a 12 s colour clip, frames 800 x H plus a tint, unique per clip; OF says 10 s; no seeded storyboard).
 
 Each phase (`_phase`) runs its presses while `--users` owner tabs poll its status route at the app's 2.5 s
 (useVaultSweep POLL_MS), round-robin over the Creators, and ends once every Creator's sweep settled and the fake
@@ -54,12 +56,16 @@ Bypasses (declared):
     `--set llm_latency_s=` (0.05 s) per call instead of DeepInfra's ~14 s (time compression: the sweep's
     concurrency 8 and the process-wide gate 8 are real).
   - The frames: `vault_frames.collect` reads the local still stores a collect warms (photo IMAGE_DIR files, a
-    clip's storyboard frames), seeded by the seeder into the run's temp dir, which the relay part's arm hook
-    points `vault_stills` / `storyboard` at. OnlyFans is never reached. The grid tiles (`/admin/vault-ai/thumb`)
-    and `vault_dupes`' hashes read seeded 300px grey-grid stand-ins from the same temp THUMB_DIR.
+    clip's storyboard frames), photos' seeded by the seeder into the run's temp dir, which the relay part's arm hook
+    points `vault_stills` / `storyboard` at; a clip's are the scrub frames its Jev pass publishes there. A clip's
+    Jev pass reads its mp4s off OF's CDN, lib/img_relay.py's loopback fake (`mp4_frames`), signed by OF's by-id read
+    (lib/vault_jev_relay.py `OF.vault_media_by_id`); OnlyFans itself is never reached. The grid tiles
+    (`/admin/vault-ai/thumb`) and `vault_dupes`' hashes read seeded 300px grey-grid stand-ins from the same temp
+    THUMB_DIR.
   - The UI run's browser aborts `/img` / `/img/scrub` (the grid's OF CDN tiles through the account's OF client:
     OF is unreachable, and the relay's 500 on a session-less client is not what this flow is about).
-  - Items are told apart by their pictures' pixel sizes (unique per item), the fake's only handle on "which item".
+  - Items are told apart by their pictures' pixel sizes (unique per item; a clip's frames by size + tint), the
+    fakes' only handle on "which item".
   - The vault rows are SQL (only columns a collect / an earlier sweep writes); the key is a dummy, never a real
     one, and SLOP_LIVE=1 is refused (every check SKIPs).
   - Owner tabs are one owner session's connection pool, not browsers (the UI run has one browser besides).
@@ -89,12 +95,15 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from slop.actors import ui
+from slop.lib.img_relay import arm_run as arm_cdn
 from slop.lib.procmon import pct
 from slop.lib.vault_describe_faults import (
     CACHE, COST, COST_INCL_FLAGS, ESCALATE, EXACTLY_ONCE, FLAGS, ONE_SWEEP, PLAN, REUSE, UI_SETTLED,
 )
-from slop.lib.vault_describe_relay import FAKE_KEY, HOSTILE_DESC, HOSTILE_TAG, M30, M235, arm_run, describe_text
-from slop.lib.vault_jev_relay import arm_jev, photo_sizes, price_mc
+from slop.lib.vault_describe_relay import (
+    FAKE_KEY, HOSTILE_DESC, HOSTILE_TAG, M30, M235, arm_run, clip_rgb, describe_text,
+)
+from slop.lib.vault_jev_relay import arm_jev, clip_keys, photo_sizes, price_mc
 from slop.seed import vault_items_describe
 
 PROFILE = "agency_inbox"
@@ -113,15 +122,22 @@ FLAGS_STATUS = f"{FLAGS_ALL}/status"
 # vault_jev_flags.apply), besides its own `_flags_*` stamps. Any other key it changes is a bug.
 FLAG_FIELDS = ("underwear_visible", "vulva_vis", "breasts_vis", "anus_vis", "over_breasts", "over_vulva", "over_anus")
 COPY_MARK, FLAGS_COPY_MARK = "_copied_from", "_flags_copied_from"  # vault_ai_vision_decide's copy stamps
-# What else a photo's flags run may write (Jev is a photo's only flags source): its `_jev` and the describe fields
-# Jev's lane decides (service/vault_jev_flags.reading).
+# What else a photo's or clip's flags run may write (Jev is its only flags source): its `_jev` and the describe
+# fields Jev's lane decides (service/vault_jev_flags.reading).
 JEV_FIELDS = ("_jev", "clothing_state", "genitals_covered", "explicitness")
-# The flags Jev decides; a photo's `over_` garment names come from its own describe's clothing_items
-# (service/vault_jev_flags.garments), so a photo copy carries its source's `_jev` and these, not its names.
+# The flags Jev decides; an item's `over_` garment names come from its own describe's clothing_items
+# (service/vault_jev_flags.garments), so a copy carries its source's `_jev` and these, not its names.
 JEV_FLAGS = ("underwear_visible", "vulva_vis", "breasts_vis", "anus_vis")
-# Every photo's fake Jev answer (lib/vault_jev_relay.py PROFILES): dressed, nothing bare -> free in one pass, the
-# prose describe recipe; the lanes and recipes per answer are 2026-11-11-vault-jev-flags' (module docstring).
+# Every photo's and clip frame's fake Jev answer (lib/vault_jev_relay.py PROFILES): dressed, nothing bare -> free in
+# one pass, the prose (photo) / vid (clip) describe recipe; the lanes and recipes per answer are
+# 2026-11-11-vault-jev-flags' (module docstring).
 JEV_PROFILE = "none"
+# Clips (D54), as 2026-11-11-vault-jev-flags plans them: a 12 s file of 12 flat-colour seconds, frames 800 x (480 + 4j)
+# (j < CLIP_SPAN; a tint per further CLIP_SPAN clips), so Jev keeps the frame's size and the 400 px scrub frame is
+# 400 x (240 + 2j); OF says CLIP_OF_S (the describe asks the duration ladder's 6 scrub frames).
+CLIP_FRAMES = 12
+CLIP_W, CLIP_H0, CLIP_SPAN, TINTS = 800, 480, 120, 8
+CLIP_OF_S = 10
 NUDENET = os.environ.get("NUDENET_640M_PATH") or "/tmp/nn-weights/640m.onnx"
 RELAY_ENV = {"NUDENET_640M_PATH": NUDENET}
 JEV_COUNT, JEV_CALLS = "/__slop/vault-jev/count", "/__slop/vault-jev/calls"
@@ -181,7 +197,7 @@ class Phase:
     calls: list     # the fake's calls during the phase, in arrival order
     rows: dict      # vault rows by item key, after
     seconds: float
-    jev: list = ()  # the fake TypeSafe's calls during the phase (Jev, photos only)
+    jev: list = ()  # the fake TypeSafe's calls during the phase (Jev: a photo's one, a clip's one per frame)
 
     @property
     def timed_out(self) -> list:
@@ -218,7 +234,7 @@ class Phase:
         return out
 
     def jev_billed(self) -> Counter:
-        """aid -> the phase's Jev spend at TypeSafe's price, rounded up per photo (`price_mc`)."""
+        """aid -> the phase's Jev spend at TypeSafe's price, rounded up per item (`price_mc`)."""
         out = Counter()
         for k, cs in self.jev_by_item().items():
             out[cs[0]["account_id"]] += price_mc(sum(c["tokens_in"] for c in cs))
@@ -409,8 +425,8 @@ class Run:
         return [i for i in self.targets if i["outcome"] == outcome]
 
     def copied(self, rows: dict, it: dict, marker: str = COPY_MARK) -> bool:
-        """`it` is a planted copy in `rows`: `marker` names another member of its set, whose flags it carries (a
-        photo: its `_jev` and Jev's flags, `_flags_of`; and, for a describe copy, its status, model and text)."""
+        """`it` is a planted copy in `rows`: `marker` names another member of its set, whose flags it carries (its
+        `_jev` and Jev's flags, `_flags_of`; and, for a describe copy, its status, model and text)."""
         if not it["dupe_set"]:
             return False
         members = {m["media_id"]: m for m in self.sets[it["dupe_set"]]}
@@ -421,20 +437,18 @@ class Run:
         s = rows[members[src]["key"]]
         same = marker != COPY_MARK or (row["status"] == s["status"] == "described" and row["text"] == s["text"]
                                        and row["model"] == s["model"])
-        photo = it["kind"] == "photo"
-        return same and _flags_of(row, photo) == _flags_of(s, photo)
+        return same and _flags_of(row) == _flags_of(s)
 
 
-def _flags_of(row: dict, photo: bool = False) -> dict:
+def _flags_of(row: dict) -> dict:
     ai = row["ai"] or {}
-    if photo:
-        return {"_jev": ai.get("_jev"), **{k: ai.get(k) for k in JEV_FLAGS}}
-    return {k: ai.get(k) for k in FLAG_FIELDS}
+    return {"_jev": ai.get("_jev"), **{k: ai.get(k) for k in JEV_FLAGS}}
 
 
 def _want_text(it: dict, model: str) -> str:
-    """The text an item's answer stores: a clip's V2 answer; a photo's Jev-fed prose answer scrubbed to what its
-    Jev answer (JEV_PROFILE: nothing bare) lets it claim, the marker sentence alone."""
+    """The text an item's answer stores: a clip's vid answer as it is (its facts, JEV_PROFILE on every frame, spell
+    no claim to append); a photo's Jev-fed prose answer scrubbed to what its Jev answer (JEV_PROFILE: nothing bare)
+    lets it claim, the marker sentence alone."""
     marker = describe_text(it["account_id"], it["media_id"], model)
     return marker + "." if it["kind"] == "photo" else marker
 
@@ -444,24 +458,32 @@ def _jev_of(row: dict) -> dict:
     return j if isinstance(j, dict) else {}
 
 
+def _one_jev(it: dict, calls: list) -> bool:
+    """`calls` (one item's answered Jev calls in a phase) are one Jev pass: a photo's one call, a clip's pass 1 on
+    each of its CLIP_FRAMES frames once (JEV_PROFILE asks no pass 2 / L)."""
+    if it["kind"] == "photo":
+        return len(calls) == 1
+    return sorted(c["frame"] for c in calls) == list(range(CLIP_FRAMES)) and {c["pass"] for c in calls} == {"1"}
+
+
 def _check_exactly_once(ctx, r: Run) -> None:
-    """Pass 1: one answer that described each undescribed item, and its row holds it (a planted copy: its set's). A
-    photo the sweep calls the model for got its one Jev call first in the same sweep and is described with the
-    Jev-fed prose recipe (`_describe` path prose), never the V2 one."""
+    """Pass 1: one answer that described each undescribed item, and its row holds it (a planted copy: its set's). An
+    item the sweep calls the model for got its one Jev pass first in the same sweep and is described with the
+    Jev-fed recipe (`_describe` path prose for a photo, vid for a clip), never the V2 one."""
     d1, j1, bad = r.p1.by_item("describe"), r.p1.jev_by_item(), {}
     for it in r.targets:
         k, row = it["key"], r.p1.rows[it["key"]]
         oks = [m for m, a in d1.get(k, []) if a == "ok"]
-        photo = it["kind"] == "photo"
+        want_path = "prose" if it["kind"] == "photo" else "vid"
         path = ((row["ai"] or {}).get("_describe") or {}).get("path")
-        jev_ok = not photo or (len(j1.get(k, [])) == 1 and _jev_of(row).get("status") == "ok")
+        jev_ok = _one_jev(it, j1.get(k, [])) and _jev_of(row).get("status") == "ok"
         if it["outcome"] == "blank":
             good = not oks and row["status"] == "refused" and row["text"] is None and jev_ok
         elif k not in d1 and r.copied(r.p1.rows, it):
             good = True
         else:
             good = (len(oks) == 1 and row["status"] == "described" and row["model"] == oks[0]
-                    and row["text"] == _want_text(it, oks[0]) and jev_ok and (path == "prose") == photo)
+                    and row["text"] == _want_text(it, oks[0]) and jev_ok and path == want_path)
         if not good:
             bad[k] = {"outcome": it["outcome"], "kind": it["kind"], "calls": d1.get(k, []),
                       "jev_calls": len(j1.get(k, [])), "path": path, "status": row["status"], "text": row["text"]}
@@ -521,12 +543,12 @@ def _check_escalate(ctx, r: Run) -> None:
 
 def _check_cost(ctx, r: Run) -> None:
     """Each sweep's reported cost == the fakes' billed sum for the sweep's own calls (DeepInfra's plus TypeSafe's Jev
-    calls at its price). COST: flags-all (clips' flags calls, Jev for the photos pass 1 left unread) and pass 2
-    (describe + any auto-flags; its retries are blank answers, so it makes no auto-flags). COST_INCL_FLAGS: pass 1,
-    its describe and Jev calls plus the auto-flags it makes (clips': a photo makes none), which must be > 0 per
-    Creator (else reported == billed would hold with the flags cost dropped). One total cannot say which part went
-    missing, so a describe under-report reds both; a dropped flags cost only COST_INCL_FLAGS (pass 2 flags none to
-    drop)."""
+    calls at its price). COST: flags-all (Jev for the items pass 1 left unread; no DeepInfra flags call is made,
+    D52/D54, and any would be billed here) and pass 2 (describe; its retries are blank answers whose `_jev` is
+    current, so no Jev). COST_INCL_FLAGS: pass 1, its describe calls plus the Jev pass (the flags) it runs on each
+    item, whose cost must be > 0 per Creator (else reported == billed would hold with the flags cost dropped). One
+    total cannot say which part went missing, so a describe under-report reds both; a dropped flags cost only
+    COST_INCL_FLAGS (pass 2 has none to drop)."""
     sweeps = (("flags", r.pf, ("flags",)), ("pass2", r.p2, ("describe", "flags")))
     own = {aid: {name: [p.reported(aid), p.billed(*purposes)[aid] + p.jev_billed()[aid]]
                  for name, p, purposes in sweeps} for aid in r.aids}
@@ -534,60 +556,56 @@ def _check_cost(ctx, r: Run) -> None:
     ctx.check(COST, ok, per_creator=own, reported_mc=sum(rep or 0 for c in own.values() for rep, _ in c.values()),
               billed_mc=sum(b for c in own.values() for _, b in c.values()))
     both, flags1, jev1 = r.p1.billed("describe", "flags"), r.p1.billed("flags"), r.p1.jev_billed()
-    incl = {aid: [r.p1.reported(aid), both[aid] + jev1[aid], flags1[aid]] for aid in r.aids}
-    ctx.check(COST_INCL_FLAGS, all(rep == b and f > 0 for rep, b, f in incl.values()),
-              per_creator_reported_billed_flags=incl, auto_flags_mc=sum(flags1.values()), jev_mc=sum(jev1.values()))
+    incl = {aid: [r.p1.reported(aid), both[aid] + jev1[aid], jev1[aid]] for aid in r.aids}
+    ctx.check(COST_INCL_FLAGS, all(rep == b and j > 0 for rep, b, j in incl.values()),
+              per_creator_reported_billed_jev=incl, qwen_flags_mc=sum(flags1.values()), jev_mc=sum(jev1.values()))
 
 
-def _non_flag(ai: dict | None, photo: bool = False) -> dict:
-    own = FLAG_FIELDS + JEV_FIELDS if photo else FLAG_FIELDS
-    return {k: v for k, v in (ai or {}).items() if k not in own and not k.startswith("_flags_")}
+def _non_flag(ai: dict | None) -> dict:
+    return {k: v for k, v in (ai or {}).items() if k not in FLAG_FIELDS + JEV_FIELDS and not k.startswith("_flags_")}
 
 
 def _check_flags(ctx, r: Run) -> None:
-    """flags-all: 4 DeepInfra flags calls per clip and none for any photo (Jev is a photo's only flags source:
-    `_flags_model` jev on every photo, never on a clip); one Jev call for each photo pass 1 left without a `_jev`
-    (the seeded cache rows), none for one it read; a planted copy: no call, its set's answer. Every live row
-    flagged, nothing of describe's rewritten (a photo's Jev-decided lane fields aside, JEV_FIELDS)."""
+    """flags-all: no DeepInfra flags call for any item (Jev is a photo's and clip's only flags source, D52/D54:
+    `_flags_model` jev on every live row); one Jev pass (`_one_jev`) for each item pass 1 left without a `_jev` (the
+    seeded cache rows), none for one it read; a planted copy: no call, its set's answer. Every live row flagged,
+    nothing of describe's rewritten (the Jev-decided lane fields aside, JEV_FIELDS)."""
     ff, jf, before, after = r.pf.by_item("flags"), r.pf.jev_by_item(), r.p1.rows, r.pf.rows
-    photo = {i["key"]: i["kind"] == "photo" for i in r.live}
-    want_calls = {k: (0 if p else 4) for k, p in photo.items()}
-    flag_copies = {i["key"] for i in r.live if i["key"] not in ff and i["key"] not in jf
-                   and r.copied(after, i, FLAGS_COPY_MARK)}
-    count_bad = {k: len(ff.get(k, [])) for k, n in want_calls.items()
-                 if len(ff.get(k, [])) != n and k not in flag_copies}
-    extra = [k for k in ff if k not in want_calls]
-    jev_want = {k for k, p in photo.items() if p and _jev_of(before[k]).get("status") != "ok" and k not in flag_copies}
-    jev_bad = {k: len(jf.get(k, [])) for k in set(jf) | jev_want if len(jf.get(k, [])) != (k in jev_want)}
-    model_bad = [k for k, p in photo.items() if ((after[k]["ai"] or {}).get("_flags_model") == "jev") != p]
+    live = {i["key"]: i for i in r.live}
+    flag_copies = {k for k, i in live.items() if k not in ff and k not in jf and r.copied(after, i, FLAGS_COPY_MARK)}
+    count_bad = {k: len(v) for k, v in ff.items() if k in live}
+    extra = [k for k in ff if k not in live]
+    jev_want = {k for k in live if _jev_of(before[k]).get("status") != "ok" and k not in flag_copies}
+    jev_bad = {k: len(jf.get(k, [])) for k in set(jf) | jev_want
+               if (k in jev_want) != (k in jf and k in live and _one_jev(live[k], jf[k]))
+               or (k not in jev_want and k in jf)}
+    model_bad = [k for k in live if (after[k]["ai"] or {}).get("_flags_model") != "jev"]
     keep = ("status", "model", "description", "video_description", "tags", "tier")
     rewritten = [k for k in before if any(before[k][c] != after[k][c] for c in keep)]
-    ai_rewritten = [k for k in before if _non_flag(before[k]["ai"], photo.get(k, False))
-                    != _non_flag(after[k]["ai"], photo.get(k, False))]
-    unflagged = [k for k in want_calls if not ((after[k]["ai"] or {}).get("_flags_v") == 3
-                                               and isinstance((after[k]["ai"] or {}).get("underwear_visible"), bool))]
+    ai_rewritten = [k for k in before if _non_flag(before[k]["ai"]) != _non_flag(after[k]["ai"])]
+    unflagged = [k for k in live if not ((after[k]["ai"] or {}).get("_flags_v") == 3
+                                         and isinstance((after[k]["ai"] or {}).get("underwear_visible"), bool))]
     hostile = [k for k, row in after.items() if any(h in (row[c] or "") for h in (HOSTILE_DESC, HOSTILE_TAG)
                                                     for c in ("description", "video_description", "search", "tags",
                                                               "ai_raw"))]
-    live = _per_creator(r.live)
-    cands = {aid: [r.pf.want[aid], live[aid]] for aid in r.aids}
+    n_live = _per_creator(r.live)
+    cands = {aid: [r.pf.want[aid], n_live[aid]] for aid in r.aids}
     ctx.check(FLAGS, not count_bad and not extra and not jev_bad and not model_bad
               and not rewritten and not ai_rewritten and not unflagged and not hostile
               and all(a == b for a, b in cands.values()) and not r.pf.stray and not r.pf.timed_out,
               calls=sum(len(v) for v in ff.values()), count_bad=dict(list(count_bad.items())[:5]), extra=extra[:5],
               jev_want=len(jev_want), jev_bad=dict(list(jev_bad.items())[:5]), model_bad=model_bad[:5],
               rewritten=rewritten[:5], ai_rewritten=ai_rewritten[:5],
-              ai_sample={k: [_non_flag(before[k]["ai"], photo.get(k, False)),
-                             _non_flag(after[k]["ai"], photo.get(k, False))] for k in ai_rewritten[:2]},
+              ai_sample={k: [_non_flag(before[k]["ai"]), _non_flag(after[k]["ai"])] for k in ai_rewritten[:2]},
               unflagged=len(unflagged), hostile=hostile[:5], candidates=cands, stray=r.pf.stray[:5],
               timed_out=r.pf.timed_out)
 
 
 def _check_reuse(ctx, r: Run) -> None:
-    """The Duplicates route's sets == the planted ones; pass 1 pays one member per planted set (a clip set: none when
-    it holds a cached member; a photo set pays one even then: a pre-Jev describe is never a photo's source), the rest
-    copy it; flags: a clip set's flags-all pays one member, a photo set's Jev is paid by one member over pass 1 and
-    flags-all, the rest carry that member's `_jev` with a copy mark."""
+    """The Duplicates route's sets == the planted ones; pass 1 pays one member per planted set (one even when it holds
+    a cached member: a pre-Jev describe is never a photo's or clip's source, D51/D54), the rest copy it; flags: a
+    set's Jev is paid by one member over pass 1 and flags-all, the rest carry that member's `_jev` with a copy mark
+    (and none gets a DeepInfra flags call)."""
     planted = defaultdict(list)
     for ms in r.sets.values():
         planted[ms[0]["account_id"]].append(sorted(m["media_id"] for m in ms))
@@ -597,21 +615,16 @@ def _check_reuse(ctx, r: Run) -> None:
     jev = {**r.p1.jev_by_item(), **r.pf.jev_by_item()}
     n_copies, set_bad = Counter(), {}
     for sid, ms in r.sets.items():
-        photo = ms[0]["kind"] == "photo"
         todo = [m for m in ms if not m["cached"]]
-        want_paid = 0 if any(m["cached"] for m in ms) and not photo else 1
+        want_paid = 1
         n_copies[ms[0]["account_id"]] += len(todo) - want_paid
         paid = [m["media_id"] for m in todo if m["key"] in d1]
         not_copied = [m["media_id"] for m in todo if m["key"] not in d1 and not r.copied(r.p1.rows, m)]
-        if photo:  # its Jev paid once over pass 1 and flags-all; every other member a copy (describe or flags)
-            fpaid = [m["media_id"] for m in ms if m["key"] in jev]
-            fnot_copied = [m["media_id"] for m in ms if m["key"] not in jev and not (
-                r.copied(r.pf.rows, m) or r.copied(r.pf.rows, m, FLAGS_COPY_MARK))]
-            fnot_copied += [m["media_id"] for m in ms if m["key"] in ff]  # a photo never gets a flags call
-        else:
-            fpaid = [m["media_id"] for m in ms if m["key"] in ff]
-            fnot_copied = [m["media_id"] for m in ms
-                           if m["key"] not in ff and not r.copied(r.pf.rows, m, FLAGS_COPY_MARK)]
+        # its Jev paid once over pass 1 and flags-all; every other member a copy (describe or flags)
+        fpaid = [m["media_id"] for m in ms if m["key"] in jev]
+        fnot_copied = [m["media_id"] for m in ms if m["key"] not in jev and not (
+            r.copied(r.pf.rows, m) or r.copied(r.pf.rows, m, FLAGS_COPY_MARK))]
+        fnot_copied += [m["media_id"] for m in ms if m["key"] in ff]  # no item gets a flags call
         if len(paid) != want_paid or not_copied or len(fpaid) != 1 or fnot_copied:
             set_bad[sid] = {"members": [m["media_id"] for m in ms], "describe_paid": paid, "want_paid": want_paid,
                             "not_copied": not_copied, "flags_paid": fpaid, "flags_not_copied": fnot_copied,
@@ -670,6 +683,32 @@ def _check_budgets(ctx) -> None:
     ctx.metric("p95_vs_last_green_n", ns)
 
 
+def _clips(items) -> None:
+    """Every clip its frames' size + tint (unique per clip), its 400 px scrub size, JEV_PROFILE on every frame, a
+    720p source, OF's CLIP_OF_S and no seeded storyboard (its Jev pass publishes the scrub frames; module docstring).
+    One duration for all, so a planted clip set stays one duration (the finder's rule)."""
+    clips = [it for it in items if it["kind"] == "video"]
+    if len(clips) > CLIP_SPAN * TINTS:
+        raise ValueError(f"slop: {len(clips)} clips > {CLIP_SPAN * TINTS} (size, tint) pairs; lower --set items=")
+    for c, it in enumerate(clips):
+        h = CLIP_H0 + 4 * (c % CLIP_SPAN)
+        it.update(frame_size=(CLIP_W, h), size=(CLIP_W // 2, h // 2), tint=c // CLIP_SPAN, storyboard=False,
+                  src="720", duration=CLIP_OF_S, frames=[JEV_PROFILE] * CLIP_FRAMES)
+
+
+def _cdn_plan(items) -> tuple[dict, dict]:
+    """(assets, mp4_frames) for lib/img_relay.py: each clip's 240p / 720p / files.full mp4, its colour clip."""
+    assets, frames = {}, {}
+    for it in items:
+        if it.get("frames") is None:
+            continue
+        clip = {"size": list(it["frame_size"]), "rgb": [list(clip_rgb(it["tint"], i)) for i in range(CLIP_FRAMES)]}
+        for k in clip_keys(it).values():
+            if k:
+                assets[k], frames[k] = {"size": 1}, clip
+    return assets, frames
+
+
 async def run(ctx) -> None:
     if os.environ.get("SLOP_LIVE") == "1":
         for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, REUSE, ONE_SWEEP, UI_SETTLED):
@@ -688,8 +727,11 @@ async def run(ctx) -> None:
     for it in items:
         if it["kind"] == "photo":
             it["jev"] = JEV_PROFILE
+    _clips(items)
     armed = await arm_run(ctx.owner, ctx.stack.tmp, items, ctx.param("llm_latency_s", 0.05))
     await arm_jev(ctx.owner, ctx.stack.tmp, items, ctx.param("jev_latency_s", 0.1))
+    assets, mp4_frames = _cdn_plan(items)
+    await arm_cdn(ctx.owner, ctx.stack.tmp, assets, ctx.param("cdn_latency_s", 0.02), mp4_frames=mp4_frames)
     await vault_items_describe.seed(w, items, armed)
     jev_plan = {aid: p.get("jev") for aid, p in (await _plans(ctx, aids)).items()}
     if not all((j or {}).get("ready") for j in jev_plan.values()):

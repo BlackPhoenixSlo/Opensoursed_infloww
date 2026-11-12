@@ -48,6 +48,10 @@ export interface PublishFolderResult {
   of_list_id: number;
   created: boolean;
   pushed: number;
+  /** A pack's free rung only: members left out because Jev says they may not ride free. */
+  skipped_unsafe?: number[];
+  /** Any pack rung: clips / gifs filed before photos-only, left out (a pack is photos only). */
+  skipped_videos?: number[];
   synced: number;
   stale_on_of: number[];
 }
@@ -59,12 +63,22 @@ export interface PackCandidate {
   kind: string;
   /** The rung it is filed on now, or null if unruled. */
   rung: string | null;
-  /** The rung its stored flags suggest (a prefill to confirm, never saved by itself), or null. */
+  /** The rung Jev's tier + covering answer suggest (a prefill to confirm, never saved by itself), or null. */
   suggested: string | null;
-  /** Her body's price tier from the flags: 100 inserted, 50 labia visible, 10 topless, 0 none; null unflagged. */
+  /** Her body's price tier from Jev: 100 inserted, 50 labia visible, 10 topless, 0 none; null unknown / no Jev. */
   tier: number | null;
-  /** How likely the category is the subject, 0..1; the list comes most likely first. */
+  /** How likely the category is the subject, 0..1 (unfiled: >= .6); the list comes most likely first. */
   score: number;
+  /** A Jev v8 photo (`_jev`): every unfiled candidate; false only for a row filed before the precision rule. */
+  jev?: boolean;
+  /** May ride the free (cheapest) rung: false = Jev says her body may be on show (the server refuses it there);
+   *  null = no Jev answer, the operator decides. */
+  free_ok?: boolean | null;
+  /** Jev says feet are the subject (score >= FEET_PRESELECT_SCORE) and `suggested` is safe: the tile arrives ticked
+   *  for "File N preselected". */
+  preselect?: boolean;
+  /** Filed on the free rung although `free_ok` is false (filed before the guard): publish skips it; unfile it. */
+  unsafe_on_free?: boolean;
   /** Enough to reject on text alone, before any pixel is fetched. */
   description: string;
 }
@@ -323,7 +337,7 @@ export interface AiFolderItem {
 
 export interface AiFolder {
   name: string;
-  source: "script" | "lane";
+  source: "script" | "lane" | "topic";
   purpose: string;
   size: number;
   kinds: Record<string, number>;
@@ -341,14 +355,36 @@ export interface AiFolder {
   solo_of: number | null;
   /** What Confirm does with it: make a new folder, or refresh the generated one of this name. */
   change: "new" | "keep";
+  /** Topic folders only: the topic slug and its price split ("free" | "$10" | "$50" | "$100"). */
+  topic?: string;
+  price?: string;
+}
+
+/** One opt-in Jev topic (`service/vault_topic_folders.py`) and how many photos it holds across its price splits,
+ *  ticked or not. `price`: "split" (free/$10/$50/$100), "paid" (never free), "free" (free only). */
+export interface AiFolderTopic {
+  slug: string;
+  name: string;
+  description: string;
+  /** "rung": one folder per feet rung (AI-feet tease / nude / nude-body), not per price. */
+  price: "split" | "paid" | "free" | "rung";
+  /** The checklist group: "topics", or "feet" (its own group). */
+  group?: string;
+  count: number;
 }
 
 export interface AiFolderPlan {
   account_id: string;
   keep: number;
   solo: boolean;
+  /** The topic slugs this plan was built with (catalogue order). */
+  topics: string[];
   shoots_found: number;
   folders: AiFolder[];
+  /** Every topic, ticked or not, with its size. */
+  topic_catalogue: AiFolderTopic[];
+  /** Jev on for the account, and how many of the planned photos carry a current Jev answer. */
+  jev: { enabled: boolean; photos: number; with_jev: number };
   /** What Confirm does to the AI- folders already there, by the same match the apply makes. `keep` counts folders
    *  (not the shoot count above); `retire_on_of` = retired ones bound to an OF list (unlinked, never deleted on OF). */
   changes: PlanChanges;
@@ -360,6 +396,7 @@ export interface AiFolderPlan {
     /** Lanes NOT counting their solo cuts. */
     lanes: number;
     solo_cuts: number;
+    topics: number;
     unique_media: number;
     memberships: number;
     dupes_collapsed: number;
@@ -432,6 +469,8 @@ export interface FolderPlanOptions {
   keep?: number;
   /** Add a `-solo` cut of each lane, keeping only the items nobody else is in. */
   solo?: boolean;
+  /** Jev topic slugs to add as topic folders (none = no topic folders). */
+  topics?: string[];
 }
 
 /** Preview the folders the pipeline would create. Read-only — creates nothing.
@@ -440,16 +479,18 @@ export interface FolderPlanOptions {
  *  IS, and the SAME options have to reach `applyAiFolders` (see there). */
 export function useAiFolderPlan(
   accountId: string | null,
-  { keep = 2, solo = false }: FolderPlanOptions = {},
+  { keep = 2, solo = false, topics = [] }: FolderPlanOptions = {},
   enabled = false,
 ) {
+  const topicsParam = topics.join(",");
   return useQuery<AiFolderPlan>({
-    queryKey: ["vault-ai-folder-plan", accountId, keep, solo],
+    queryKey: ["vault-ai-folder-plan", accountId, keep, solo, topicsParam],
     enabled: !!accountId && enabled,
     queryFn: () =>
       relay.get(
         `/admin/vault-ai/folder-plan?account_id=${encodeURIComponent(accountId!)}&keep=${keep}` +
-          `&solo=${solo ? "true" : "false"}`,
+          `&solo=${solo ? "true" : "false"}` +
+          (topicsParam ? `&topics=${encodeURIComponent(topicsParam)}` : ""),
       ),
     staleTime: 30_000,
   });
@@ -487,12 +528,12 @@ export interface ApplyAiFoldersResult {
  *  lanes and delete every `-solo` folder in the same call. */
 export async function applyAiFolders(
   accountId: string,
-  { keep = 2, solo = false, mirrorToOf = false }:
+  { keep = 2, solo = false, mirrorToOf = false, topics = [] }:
     FolderPlanOptions & { mirrorToOf?: boolean } = {},
 ): Promise<ApplyAiFoldersResult> {
   return relay.post(
     `/admin/vault-ai/folder-plan/apply`,
-    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo },
+    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo, topics },
     { accountId },
   );
 }

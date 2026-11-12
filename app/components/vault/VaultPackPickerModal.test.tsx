@@ -7,6 +7,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
+/** Extra candidates for one test (appended after the three base tiles). */
+const extra = vi.hoisted(() => ({ candidates: [] as Record<string, unknown>[], none: false }));
+
 vi.mock("@/hooks/useVaultCache", () => ({
   mirrorFullSrc: (a: string, m: number) => `/img/${a}/${m}`,
   savePackTriage: vi.fn(),
@@ -22,10 +25,11 @@ vi.mock("@/hooks/useVaultCache", () => ({
         { rung: "nude", name: "feet-nude", folder_id: 12, count: 1, of_list_id: null },
         { rung: "nude-body", name: "feet-body", folder_id: null, count: 0, of_list_id: null },
       ],
-      candidates: [
+      candidates: extra.none ? [] : [
         { media_id: 1, kind: "photo", rung: null, suggested: null, tier: null, score: 0.3, description: "one" },
         { media_id: 2, kind: "photo", rung: null, suggested: "nude-body", tier: 10, score: 0.9, description: "two" },
         { media_id: 3, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.8, description: "three" },
+        ...extra.candidates,
       ],
       filed: 0,
     },
@@ -42,7 +46,7 @@ const publish = publishFolderToOf as unknown as Mock;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); extra.candidates = []; extra.none = false; });
 
 function mount() {
   const onClose = vi.fn();
@@ -101,6 +105,30 @@ describe("VaultPackPickerModal Publish to OF", () => {
   });
 });
 
+describe("VaultPackPickerModal per-rung publish", () => {
+  it("is off while verdicts are unsaved, with the same reason as the bulk button", () => {
+    mount();
+    const rung = () => screen.getAllByRole("button", { name: "publish to OF" })[0];
+    expect(rung()).not.toBeDisabled();
+    ruleOne();
+    expect(rung()).toBeDisabled();
+    expect(rung()).toHaveAttribute("title", "Save your verdicts first — publish ships the saved shelf");
+    fireEvent.click(rung());
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("says how many clips it left out", async () => {
+    publish.mockResolvedValueOnce({
+      folder_id: 12, name: "feet-nude", of_list_id: 912, created: true, pushed: 1, synced: 1,
+      skipped_unsafe: [], skipped_videos: [7], stale_on_of: [],
+    });
+    mount();
+    fireEvent.click(screen.getAllByRole("button", { name: "publish to OF" })[1]);
+    await waitFor(() => expect(screen.getByText(/1 skipped \(videos: a pack is photos only/)).toBeInTheDocument());
+    expect(publish).toHaveBeenCalledWith("acc-1", 12);
+  });
+});
+
 describe("VaultPackPickerModal keys", () => {
   const tile = (id: number) => document.querySelector<HTMLElement>(`[data-pack-tile="${id}"]`)!;
 
@@ -132,5 +160,76 @@ describe("VaultPackPickerModal keys", () => {
     const ask = await screen.findByRole("dialog", { name: /REAL folder/ });
     fireEvent.keyDown(within(ask).getByRole("button", { name: "Cancel" }), { key: "1" });
     expect(screen.getByRole("button", { name: "Saved", hidden: true })).toBeDisabled();
+  });
+});
+
+describe("VaultPackPickerModal Jev free guard", () => {
+  it("a Jev tile whose body is not free-safe has its free rung disabled and a Jev badge; other rungs stay", () => {
+    extra.candidates = [{ media_id: 5, kind: "photo", rung: null, suggested: null, tier: null, score: 0.7,
+      description: "five", jev: true, free_ok: false }];
+    mount();
+    const five = document.querySelector<HTMLElement>('[data-pack-tile="5"]')!;
+    expect(five).toHaveTextContent("Jev");
+    expect(within(five).getByRole("button", { name: "tease" })).toBeDisabled();
+    expect(within(five).getByRole("button", { name: "nude" })).not.toBeDisabled();
+    const one = document.querySelector<HTMLElement>('[data-pack-tile="1"]')!;
+    expect(within(one).getByRole("button", { name: "tease" })).not.toBeDisabled();
+  });
+
+  it("a clip filed before photos-only: only its own rung (to unfile it) and reject are pressable", () => {
+    extra.candidates = [{ media_id: 9, kind: "video", rung: "nude", suggested: null, tier: 0, score: 0,
+      description: "nine", jev: false, free_ok: true }];
+    mount();
+    fireEvent.click(screen.getByRole("radio", { name: "all" }));
+    const nine = document.querySelector<HTMLElement>('[data-pack-tile="9"]')!;
+    expect(within(nine).getByRole("button", { name: "tease" })).toBeDisabled();
+    expect(within(nine).getByRole("button", { name: "body" })).toBeDisabled();
+    expect(within(nine).getByRole("button", { name: "body" })).toHaveAttribute("title", expect.stringMatching(/photos only/));
+    expect(within(nine).getByRole("button", { name: "nude" })).not.toBeDisabled();
+    expect(within(nine).getByRole("button", { name: "Reject" })).not.toBeDisabled();
+  });
+});
+
+describe("VaultPackPickerModal empty", () => {
+  it("no confident photos: says Jev checks new photos automatically", () => {
+    extra.none = true;
+    mount();
+    expect(screen.getByText("No confident feet photos yet: Jev checks new photos automatically.")).toBeInTheDocument();
+  });
+});
+
+describe("VaultPackPickerModal preselect", () => {
+  const tick = (id: number) => document.querySelector<HTMLInputElement>(`[data-pack-tick="${id}"]`);
+
+  it("preselected tiles arrive ticked; untick drops one; File N files the ticked at their suggestion", async () => {
+    save.mockResolvedValue({ category: "feet", saved: 2, rejected: 0, folders: [] });
+    extra.candidates = [
+      { media_id: 6, kind: "photo", rung: null, suggested: "tease", tier: 0, score: 0.7, description: "six",
+        jev: true, free_ok: true, preselect: true },
+      { media_id: 7, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.65, description: "seven",
+        jev: true, free_ok: true, preselect: true },
+      { media_id: 8, kind: "photo", rung: null, suggested: "nude-body", tier: 10, score: 0.9, description: "eight",
+        jev: true, free_ok: true, preselect: true },
+    ];
+    mount();
+    expect(tick(6)).toBeChecked();
+    expect(tick(7)).toBeChecked();
+    expect(tick(8)).toBeChecked();
+    expect(tick(2)).not.toBeChecked();   // a suggestion without preselect: shown, unticked
+    expect(tick(1)).toBeNull();          // no suggestion: nothing to tick
+    expect(btn("File 3 preselected")).not.toBeDisabled();
+    fireEvent.click(tick(8)!);           // untick
+    expect(tick(8)).not.toBeChecked();
+    fireEvent.click(tick(2)!);           // tick a non-preselected suggestion
+    fireEvent.click(btn("File 3 preselected"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save).toHaveBeenCalledWith("acc-1", "feet", [
+      { media_id: 2, rung: "nude-body" }, { media_id: 6, rung: "tease" }, { media_id: 7, rung: "nude" },
+    ]);
+  });
+
+  it("no preselect in the queue: no File button", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: /preselected/ })).toBeNull();
   });
 });

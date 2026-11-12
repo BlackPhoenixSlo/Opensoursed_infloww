@@ -57,6 +57,8 @@ Golden refresh (2026-11-12): merge main 46223e71c into p3-final (f5e594c3d): rou
 OpenAPI diff merged-vs-main == base(6d6f8a61d)-vs-P3(4421feb87) exactly (measured, 18 leaves); inspected.
 Golden refresh (2026-11-12, bio vault avatar): adds POST /admin/bio-pages/{pid}/avatar/vault
 (bio_pages/admin.avatar_from_vault) after the avatar upload row; no existing row moves; inspected, intentional.
+Golden refresh (2026-11-12, bio vault background): adds POST /admin/bio-pages/{pid}/links/{lid}/background/vault
+(bio_pages/admin.background_from_vault) after the background upload row; no existing row moves; inspected, intentional.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

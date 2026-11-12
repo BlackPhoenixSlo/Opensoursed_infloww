@@ -30,7 +30,9 @@ from sqlalchemy import delete, func, select, update
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_cache
 import vault_dupes
+import vault_pack_picker
 import vault_scripts
+import vault_topic_folders
 from auth import assert_account_owned
 from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
@@ -110,6 +112,7 @@ async def get_folder_plan(
     account_id: str = Query(...),
     keep: int = Query(2, ge=0, le=20),
     solo: bool = Query(False),
+    topics: str = Query(""),
 ) -> dict[str, Any]:
     """PREVIEW the folders the pipeline would create. Read-only, free, instant —
     no LLM, no OF traffic, nothing written. This is what the vault button shows
@@ -118,11 +121,27 @@ async def get_folder_plan(
     `solo` adds a `-solo` cut of each lane, keeping only the items nobody else
     is in. `changes` (+ each folder's `change`) is what Confirm does to the
     AI- folders already there: create / keep / retire, and how many retired
-    ones are bound to an OF list."""
+    ones are bound to an OF list.
+
+    `topics` — comma-separated topic slugs (`vault_topic_folders.SLUGS`) to add as Jev topic folders; an
+    unknown slug is a 422. `topic_catalogue` + `jev` always come back, so the checklist shows every topic's
+    size and the Jev coverage whatever is ticked."""
     assert_account_owned(account_id)
     from vault_ai_api import assert_owner_scope
     await assert_owner_scope(account_id)
-    return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
+    picked = _topics_or_422(topics)
+    return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=picked)
+
+
+def _topics_or_422(raw: Any) -> list[str]:
+    """The requested topic slugs (comma string or list), or a 422 naming the unknown ones."""
+    if raw is not None and not isinstance(raw, (str, list)):
+        raise HTTPException(status_code=422, detail={"error": "bad_topics"})
+    try:
+        return vault_topic_folders.parse_topics(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"error": "unknown_topics",
+                                                      "unknown": e.args[0]}) from None
 
 
 async def _read_of_list_members(client, of_list_id: int) -> set[int]:
@@ -341,6 +360,12 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
     Send order: members are pushed in `manual_order` (the operator's rank, NULLs
     last), but OF holds its own in-list order and we do not claim it honours
     ours. Rank is read from `vault_folder_items` at send time, not from OF.
+
+    🚨 A pack's free rung (`vault_pack_picker.free_rung_category`, e.g.
+    `feet-tease`) never ships a member Jev says may not ride free
+    (`vault_pack_picker.unsafe_on_free`): it is left out and named in
+    `skipped_unsafe`. Rows filed there before the triage guard existed are what
+    this catches; the operator unfiles them in the picker.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
@@ -364,10 +389,21 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
                 VaultFolderItem.media_id,
             )
         )).scalars().all()]
+        # 🚨 Any pack rung (`pack_rung_category`) is photos only: a clip filed there before the rule is left
+        # out and named in `skipped_videos`. `pushed` counts only what was pushed.
+        skipped_videos = (await vault_pack_picker.non_photos(s, account_id, members)
+                          if vault_pack_picker.pack_rung_category(name) else [])
+        clips = set(skipped_videos)
+        members = [m for m in members if m not in clips]
+        skipped_unsafe = (await vault_pack_picker.unsafe_on_free(s, account_id, members)
+                          if vault_pack_picker.free_rung_category(name) else [])
+    skip = set(skipped_unsafe)
+    members = [m for m in members if m not in skip]
 
     if not members:
         # An empty OF list is noise in her vault and tells the operator nothing.
-        raise HTTPException(status_code=400, detail={"error": "folder_empty"})
+        raise HTTPException(status_code=400, detail={
+            "error": "folder_empty", "skipped_unsafe": skipped_unsafe, "skipped_videos": skipped_videos})
 
     # These ids came out of the DB, not off the wire — and they are checked
     # anyway, because /folders/{id}/add wrote them there from the wire. A folder
@@ -418,6 +454,8 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
         "of_list_id": of_list_id,
         "created": pushed["created"],
         "pushed": len(members),
+        "skipped_unsafe": skipped_unsafe,
+        "skipped_videos": skipped_videos,
         "synced": synced,
         "stale_on_of": stale_on_of,
     }
@@ -444,7 +482,8 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     `solo` must match what the preview was showing. It is part of what the plan
     IS, and `apply_ai_folders` retires generated folders the current plan no
     longer makes — so applying without it after previewing with it would create
-    the lanes and retire every `-solo` folder in the same call.
+    the lanes and retire every `-solo` folder in the same call. `topics` likewise (a list of slugs; unknown
+    → 422): previewed topic folders not posted back would be retired.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
@@ -459,7 +498,8 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     except ValueError:
         raise HTTPException(status_code=400, detail={"error": "bad_keep"}) from None
     solo = bool(payload.get("solo"))
-    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
+    topics = _topics_or_422(payload.get("topics"))
+    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=topics)
     result = await vault_scripts.apply_ai_folders(account_id, plan)
 
     if payload.get("mirror_to_of"):

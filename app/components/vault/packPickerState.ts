@@ -5,8 +5,13 @@
  * the component only dispatches.
  *
  * A tile shows, in order: its unsaved verdict, else its saved rung, else the server's `suggested` rung (a prefill from
- * the stored flags). A suggestion is never a verdict: only a press (a rung, Enter, a tap) puts it in `draft`, and only
+ * Jev's answer). A suggestion is never a verdict: only a press (a rung, Enter, a tap) puts it in `draft`, and only
  * `draft` is saved (`buildPayload`).
+ *
+ * PRESELECT. Every unfiled tile is a confident Jev photo (feet score >= .6); one the server marks `preselect` (a known,
+ * safe rung) arrives TICKED on its suggestion; `ticks` holds only the operator's untick / retick overrides. "File N preselected" (`buildFilePayload`) files every
+ * ticked tile on its suggestion plus the unsaved draft (a rung pressed on a tile is a draft verdict and wins), in one
+ * triage. A tick is never a verdict either: Save still sends only `draft`.
  */
 
 import type { PackCandidate } from "@/hooks/useVaultCache";
@@ -18,6 +23,8 @@ export interface PickerState {
   filter: string;
   /** The tile keys act on; null = the first shown. */
   focus: number | null;
+  /** Untick (false) / retick (true) overrides of the server's `preselect`. Absent = `preselect`. */
+  ticks: Record<number, boolean>;
 }
 
 /** `order` is the media ids the grid showed when the action was taken: where focus goes next is read from it. */
@@ -27,10 +34,11 @@ export type PickerAction =
   | { type: "move"; delta: number; order: number[] }
   | { type: "focus"; mediaId: number }
   | { type: "filter"; value: string }
+  | { type: "tick"; mediaId: number; on: boolean }
   /** Save answered for these verdicts: they leave the draft, unless re-ruled while the request was out. */
   | { type: "saved"; verdicts: { media_id: number; rung: string | null }[] };
 
-export const initialPickerState: PickerState = { draft: {}, filter: "undecided", focus: null };
+export const initialPickerState: PickerState = { draft: {}, filter: "undecided", focus: null, ticks: {} };
 
 /** The tile after `id` in `order` (else the one before it, else none): a verdict hands focus on. */
 function after(order: number[], id: number): number | null {
@@ -70,10 +78,19 @@ export function pickerReducer(state: PickerState, action: PickerAction): PickerS
       return state.focus === action.mediaId ? state : { ...state, focus: action.mediaId };
     case "filter":
       return { ...state, filter: action.value, focus: null };
+    case "tick":
+      return state.ticks[action.mediaId] === action.on
+        ? state
+        : { ...state, ticks: { ...state.ticks, [action.mediaId]: action.on } };
     case "saved": {
       const draft = { ...state.draft };
-      for (const v of action.verdicts) if (draft[v.media_id] === v.rung) delete draft[v.media_id];
-      return { ...state, draft };
+      const ticks = { ...state.ticks };
+      for (const v of action.verdicts) {
+        if (draft[v.media_id] === v.rung) delete draft[v.media_id];
+        // A saved reject comes back undecided (nothing is stored about it): never re-ticked by its preselect.
+        if (v.rung === null) ticks[v.media_id] = false;
+      }
+      return { ...state, draft, ticks };
     }
   }
 }
@@ -87,6 +104,49 @@ export function effectiveRung(item: PackCandidate, draft: PickerState["draft"]):
 export function shownRung(item: PackCandidate, draft: PickerState["draft"]): { rung: string | null; suggested: boolean } {
   if (item.media_id in draft || item.rung !== null) return { rung: effectiveRung(item, draft), suggested: false };
   return { rung: item.suggested, suggested: item.suggested !== null };
+}
+
+/** May `item` be filed on `rung`? Photos only (a clip filed before the rule can still be unfiled: `canPress`), and
+ *  never the free (cheapest) rung when Jev says the body is not free-safe. The server refuses both. */
+export function canFile(item: PackCandidate, rung: string, rungs: string[]): boolean {
+  return item.kind === "photo" && !(rung === rungs[0] && item.free_ok === false);
+}
+
+/** May the tile be ticked: undecided (no saved rung, no unsaved verdict) with a suggestion it may be filed on. */
+export function tickable(item: PackCandidate, state: PickerState, rungs: string[]): boolean {
+  return (
+    item.rung === null && !(item.media_id in state.draft) && !!item.suggested && canFile(item, item.suggested, rungs)
+  );
+}
+
+/** Ticked: tickable, and the operator's override or else the server's `preselect`. */
+export function isTicked(item: PackCandidate, state: PickerState, rungs: string[]): boolean {
+  return tickable(item, state, rungs) && (state.ticks[item.media_id] ?? !!item.preselect);
+}
+
+/** The ticked tiles' verdicts: each on its suggestion. */
+export function tickedVerdicts(
+  all: PackCandidate[], state: PickerState, rungs: string[],
+): { media_id: number; rung: string | null }[] {
+  return all.filter((c) => isTicked(c, state, rungs)).map((c) => ({ media_id: c.media_id, rung: c.suggested }));
+}
+
+export function canFileTicked(all: PackCandidate[], state: PickerState, rungs: string[], busy: boolean): boolean {
+  return !busy && all.some((c) => isTicked(c, state, rungs));
+}
+
+/** "File N preselected"'s verdicts: the ticked tiles on their suggestion plus the unsaved draft, by media id. */
+export function buildFilePayload(
+  all: PackCandidate[], state: PickerState, rungs: string[],
+): { media_id: number; rung: string | null }[] {
+  return [...tickedVerdicts(all, state, rungs), ...buildPayload(state)].sort((a, b) => a.media_id - b.media_id);
+}
+
+/** May the tile's `rung` button be pressed? `canFile`, or the tile is decided on that rung (not merely suggested):
+ *  the press unfiles it, so a row already on the free rung that `canFile` refuses can always be taken off. */
+export function canPress(item: PackCandidate, rung: string, rungs: string[], draft: PickerState["draft"]): boolean {
+  const shown = shownRung(item, draft);
+  return canFile(item, rung, rungs) || (shown.rung === rung && !shown.suggested);
 }
 
 /** The tiles the current view shows, in the server's order (most likely first). */
@@ -122,7 +182,8 @@ export function buildPayload(state: PickerState): { media_id: number; rung: stri
 
 /**
  * The action a key press means on the grid, or null (not ours). 1/2/3 file the focused tile on that rung, x rejects
- * it, Enter confirms its suggestion (or moves on); ←/→ and k/j step one tile, ↑/↓ one row of `cols`.
+ * it, Enter confirms its suggestion (or moves on); ←/→ and k/j step one tile, ↑/↓ one row of `cols`. A rung `canFile`
+ * refuses (any rung for a clip, the free rung for a Jev body that is not free-safe) is no action.
  */
 export function keyAction(
   key: string,
@@ -140,6 +201,7 @@ export function keyAction(
   if (key === "x" || key === "X") return { type: "rule", mediaId: focused.media_id, rung: null, order };
   const n = Number(key);
   if (Number.isInteger(n) && n >= 1 && n <= rungs.length && key.length === 1) {
+    if (!canFile(focused, rungs[n - 1], rungs)) return null;
     return { type: "rule", mediaId: focused.media_id, rung: rungs[n - 1], order };
   }
   return null;

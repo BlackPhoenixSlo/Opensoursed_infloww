@@ -1004,12 +1004,24 @@ async def pack_triage(payload: dict = Body(...)) -> dict[str, Any]:
     except vault_pack_picker.UnknownRung as e:
         raise HTTPException(status_code=400, detail={
             "error": "unknown_rung", "rung": str(e)}) from None
+    except vault_pack_picker.InvalidMediaIds as e:
+        raise HTTPException(status_code=400, detail={
+            "error": "invalid_media_ids", "media_ids": e.media_ids}) from None
     if not verdicts:
         raise HTTPException(status_code=400, detail={"error": "verdicts_required"})
     await assert_media_visible(account_id, *verdicts)  # a chatter files only what it may see
 
-    folders = await vault_pack_picker.triage(
-        account_id, cat, verdicts, allowed=await allowed_folder_ids_for_chatter(account_id))
+    try:
+        folders = await vault_pack_picker.triage(
+            account_id, cat, verdicts, allowed=await allowed_folder_ids_for_chatter(account_id))
+    except vault_pack_picker.NotFreeSafe as e:
+        # Jev says her body may be on show: never the free preview rung. Nothing was written.
+        raise HTTPException(status_code=400, detail={
+            "error": "not_free_safe", "rung": cat.free_rung, "media_ids": e.media_ids}) from None
+    except vault_pack_picker.PhotosOnly as e:
+        # A pack is photos only (owner, 2026-11-12): no clip on any rung. Nothing was written.
+        raise HTTPException(status_code=400, detail={
+            "error": f"{cat.name}_photos_only", "media_ids": e.media_ids}) from None
     return {
         "account_id": account_id,
         "category": cat.name,

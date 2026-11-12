@@ -1,4 +1,10 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Served under an app host's /p path: credit that site, not ofl.ink.
+    const poweredBy = document.getElementById('poweredBy');
+    if (poweredBy && !/(^|\.)ofl\.ink$/.test(location.hostname)) {
+        poweredBy.textContent = location.hostname.replace(/^(www|app)\./, '');
+        poweredBy.href = location.origin + '/';
+    }
     const profileContainer = {
         name: document.getElementById('displayName'),
         bio: document.getElementById('bio'),

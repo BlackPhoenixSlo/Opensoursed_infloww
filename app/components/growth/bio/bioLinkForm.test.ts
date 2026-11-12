@@ -133,8 +133,18 @@ describe("bioLinkReducer submit", () => {
     expect(run([{ type: "remove_bg", on: true }], s)).toMatchObject({ bgFile: null, bgRemove: true });
   });
 
+  it("a vault photo, a file and Remove each replace the others", () => {
+    const media = { id: 7, type: "photo", url: "/v/7" };
+    const file = new File(["x"], "bg.png");
+    const v = run([{ type: "pick_bg", file }, { type: "pick_bg_vault", media }], opened());
+    expect(v).toMatchObject({ bgVault: media, bgFile: null, bgRemove: false });
+    expect(run([{ type: "pick_bg", file }], v)).toMatchObject({ bgVault: null, bgFile: file });
+    expect(run([{ type: "remove_bg", on: true }], v)).toMatchObject({ bgVault: null, bgRemove: true });
+  });
+
   it.each([
     ["clean", [], false],
+    ["vault photo", [{ type: "pick_bg_vault", media: { id: 7, type: "photo", url: "/v/7" } }], true],
     ["picked image", [{ type: "pick_bg", file: new File(["x"], "bg.png") }], true],
     ["remove image", [{ type: "remove_bg", on: true }], true],
     ["changed title", [{ type: "set", patch: { title: "Updated" } }], true],
