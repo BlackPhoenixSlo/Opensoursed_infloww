@@ -74,48 +74,64 @@ ogDescription: "Two ways, both $0: our hosted app is free for agencies under $50
 </section>
 
 {#- Live demo: the answer to their "Book a demo" button. demo.inflowwww.com runs the public tree on a synthetic
-    agency (demo/ in the private repo); the login form comes prefilled, data resets nightly 04:00 UTC. -#}
+    agency (demo/ in the private repo); its login page signs in as demodemo by itself, so the iframe below opens
+    signed in (same site as inflowwww.com, so its Lax session cookie works framed). Data resets nightly 04:00 UTC.
+    Phones get the screenshot + link: a whole app framed inside a scrolling page traps the scroll. -#}
 <section id="demo" aria-labelledby="demo-title" class="band-ink">
-  <div class="wrap grid items-center gap-12 py-20 sm:py-24 lg:grid-cols-[1fr_1.15fr]">
-    <div>
-      <p class="eyebrow">Live demo</p>
-      <h2 id="demo-title" class="section-title mt-3 text-white">They book a demo call. We left one running.</h2>
-      <p class="mt-4 max-w-xl text-lg text-pretty text-white/70">
-        Log in to a busy fake agency and click anything: 20 creators, a sale about every minute, fans writing in,
-        automations sending. No signup, no sales rep, no calendar link.
-      </p>
-      <dl class="mt-8 grid max-w-md grid-cols-2 overflow-hidden rounded-2xl ring-1 ring-white/15">
-        <div class="bg-white/5 px-5 py-4">
-          <dt class="text-xs font-medium tracking-wide text-white/60 uppercase">Username</dt>
-          <dd class="mt-1 font-mono text-lg text-white">{{ site.demoLogin }}</dd>
-        </div>
-        <div class="border-l border-white/15 bg-white/5 px-5 py-4">
-          <dt class="text-xs font-medium tracking-wide text-white/60 uppercase">Password</dt>
-          <dd class="mt-1 font-mono text-lg text-white">{{ site.demoLogin }}</dd>
-        </div>
-      </dl>
-      <p class="mt-3 text-sm text-white/60">Already filled in for you. Just press Log in.</p>
-      <div class="mt-8 flex flex-col gap-3 sm:flex-row">
-        <a class="btn-light" href="{{ site.demoUrl }}">
-          Open the live demo
-          <svg class="size-4" aria-hidden="true" focusable="false"><use href="#i-arrow" /></svg>
-        </a>
-        <a class="btn-outline-light" href="#deploy">Or deploy your own</a>
+  <div class="wrap py-20 sm:py-24">
+    <div class="grid items-end gap-8 lg:grid-cols-[1.2fr_1fr]">
+      <div>
+        <p class="eyebrow">Live demo</p>
+        <h2 id="demo-title" class="section-title mt-3 text-white">They book a demo call. We left one running.</h2>
+        <p class="mt-4 max-w-xl text-lg text-pretty text-white/70">
+          A busy fake agency, already signed in. Click anything: 20 creators, a sale about every minute, fans writing in,
+          automations sending. No signup, no sales rep, no calendar link.
+        </p>
       </div>
-      <ul class="mt-8 flex flex-wrap gap-x-5 gap-y-2 text-sm text-white/70">
-        <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Real AI replies</li>
-        <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Works on a phone</li>
-        <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Resets every night</li>
-        <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Never touches OnlyFans</li>
-      </ul>
+      <div>
+        <ul class="flex flex-wrap gap-x-5 gap-y-2 text-sm text-white/70">
+          <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Real AI replies</li>
+          <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Works on a phone</li>
+          <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Resets every night</li>
+          <li class="flex items-center gap-2"><svg class="size-4 text-mint" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Never touches OnlyFans</li>
+        </ul>
+        <div class="mt-6 flex flex-col gap-3 sm:flex-row">
+          <a class="btn-light" href="{{ site.demoUrl }}" target="_blank" rel="noopener">
+            Open full screen
+            <svg class="size-4" aria-hidden="true" focusable="false"><use href="#i-arrow" /></svg>
+          </a>
+          <a class="btn-outline-light" href="#deploy">Or deploy your own</a>
+        </div>
+        <p class="mt-3 text-sm text-white/60">Signed out? Log in as <span class="font-mono text-white">{{ site.demoLogin }}</span> / <span class="font-mono text-white">{{ site.demoLogin }}</span>.</p>
+      </div>
     </div>
-    <a href="{{ site.demoUrl }}" class="group block" aria-label="Open the live demo">
+
+    <div class="mt-12 hidden overflow-hidden rounded-2xl bg-white shadow-[0_40px_80px_-30px_rgba(0,0,0,0.6)] ring-1 ring-white/15 md:block">
+      <div class="flex items-center gap-3 border-b border-ink/10 bg-cream px-4 py-2.5">
+        <span class="flex gap-1.5" aria-hidden="true">
+          <span class="size-3 rounded-full bg-ink/15"></span><span class="size-3 rounded-full bg-ink/15"></span><span class="size-3 rounded-full bg-ink/15"></span>
+        </span>
+        <span class="mx-auto flex items-center gap-2 rounded-full bg-white px-4 py-1 font-mono text-xs text-muted ring-1 ring-ink/10">
+          <span class="size-1.5 rounded-full bg-mint motion-safe:animate-pulse" aria-hidden="true"></span>
+          {{ site.demoUrl | replace("https://", "") }} · live
+        </span>
+        <a class="text-xs font-medium text-muted hover:text-ink" href="{{ site.demoUrl }}" target="_blank" rel="noopener">Pop out ↗</a>
+      </div>
+      <iframe
+        src="{{ site.demoUrl }}"
+        title="Inflowwww live demo, signed in as a synthetic agency"
+        class="block h-[min(820px,80vh)] w-full border-0 bg-white"
+        loading="lazy"
+        allow="clipboard-write; fullscreen"
+        referrerpolicy="strict-origin-when-cross-origin"
+      ></iframe>
+    </div>
+
+    <a href="{{ site.demoUrl }}" class="group mt-12 block md:hidden" aria-label="Open the live demo">
       <img
-        class="shot h-auto w-full border-white/10 motion-safe:transition-transform motion-safe:group-hover:-translate-y-1"
-        src="{{ '/img/messages-pro-combo.webp' | url }}"
-        srcset="{{ '/img/messages-pro-combo-720.webp' | url }} 720w, {{ '/img/messages-pro-combo.webp' | url }} 1440w"
-        sizes="(min-width: 1024px) 600px, 100vw"
-        width="1440" height="900"
+        class="shot h-auto w-full border-white/10"
+        src="{{ '/img/messages-pro-combo-720.webp' | url }}"
+        width="720" height="450"
         alt="The live demo's Messages Pro inbox on desktop and phone: a fan thread with a paid PPV and a tip"
         loading="lazy" decoding="async"
       />
