@@ -34,12 +34,17 @@ that answers the four routes below and hands every other request to of_wire's ow
                                          (what a completed walk, or a tick that took a row out of a
                                          reversal, polls: service/transaction_chargebacks); outside the bucket (a GUESS),
                                          logged as route `chargebacks`
+  POST /api2/v2/lists/{list}/users/{trial|promo}/{id}/claims, .../campaign/{id}/claimers
+                                         OF's add-to-list on a link's claimers (OFClient.add_link_claimers_to_list):
+                                         200 `{"count": <claimers the link has now>}` (OF answers the newly
+                                         added; not modelled), outside the bucket, logged as route
+                                         `list_add` with `list`, `kind`, `link`
 
 OF's limit: a GUESS at OF's real policy (declared bypass; OF publishes none and it was never
 measured): a token bucket per Creator across these four routes, BURST (10)
 requests deep, refilled REFILL_PER_S (2) a second. A request finding no whole token is answered 429
 with OF's body `{"error":{"code":429,"message":"Too many requests. Please allow 1 seconds"}}` and
-takes none. `share[uid] = key` puts Creators on one bucket (a proxy's, were OF's limit per IP: also a
+takes none. `depth[key] = n` makes one bucket n deep. `share[uid] = key` puts Creators on one bucket (a proxy's, were OF's limit per IP: also a
 GUESS, same depth and refill). So a page's own burst fits (a person's lookup + the Fan List's 8-batch name fill = 9),
 a walk at the pacer's ~1 page/s never drains it, and back-to-back pages (50 ms each) drain it within
 a second. Not measured against OF (prod: 148 /users/list 429s in 18 h over far more name fills, so
@@ -57,6 +62,7 @@ or "direct", the tunnel the request came through)}.
 from __future__ import annotations
 
 import calendar
+import re
 import threading
 import time
 from datetime import datetime
@@ -74,6 +80,7 @@ ROUTES = {"/api2/v2/promotions": "promotions", "/api2/v2/subscriptions/subscribe
           "/api2/v2/payouts/transactions": "transactions", "/api2/v2/users/list": "users_list"}
 LOGGED = {"/api2/v2/campaigns": "campaigns", "/api2/v2/trials": "trials"}  # of_wire answers; arrival logged
 CHARGEBACKS = "/api2/v2/payouts/chargebacks"
+LIST_ADD = re.compile(r"/api2/v2/lists/(\d+)/users/(?:(trial|promo)/(\d+)/claims|(campaign)/(\d+)/claimers)")
 
 
 @lru_cache(maxsize=100_000)
@@ -102,6 +109,7 @@ class SweepWire:
         self.startdate_iso = False             # read a date-only startDate as ISO (OF: empty)
         self.honest: set[str] = set()          # Creators the two lies above spare
         self.share: dict[str, str] = {}        # Creator -> the bucket it shares
+        self.depth: dict[str, int] = {}        # bucket key -> its own depth (default `burst`)
         self.log: list[dict] = []
         self._bucket: dict[str, tuple[float, float]] = {}   # Creator or shared key -> (tokens, at)
         self._lock = threading.Lock()
@@ -121,6 +129,16 @@ class SweepWire:
                     off, lim = _page(q)
                     return self._record(uid, f"GET {path}", 200, {"list": sw.disputes.get(uid, [])[off:off + lim],
                                                                   "marker": int(time.time())})
+                lm = LIST_ADD.fullmatch(path) if method == "POST" else None
+                if lm:
+                    uid = self.headers.get("User-ID") or ""
+                    kind, link = (lm.group(2), int(lm.group(3))) if lm.group(2) else (lm.group(4), int(lm.group(5)))
+                    n = len(sw.claims.get((uid, link), ()))
+                    with sw._lock:
+                        sw.log.append({"t": time.time(), "account": uid, "route": "list_add", "query": "",
+                                       "offset": None, "view": None, "status": 200, "asked": None,
+                                       "list": lm.group(1), "kind": kind, "link": link, "count": n})
+                    return self._record(uid, f"POST {path}", 200, {"count": n})
                 if method == "GET" and path in LOGGED:
                     sw._arrive(self.headers.get("User-ID") or "", LOGGED[path], urlsplit(self.path).query)
                 return super()._serve(method)
@@ -142,8 +160,9 @@ class SweepWire:
                 with self.fake.lock:
                     self.fake.unsigned += 1
             key = self.share.get(uid, uid)
-            tokens, at = self._bucket.get(key, (float(self.burst), now))
-            tokens = min(float(self.burst), tokens + (now - at) * self.refill_per_s)
+            depth = float(self.depth.get(key, self.burst))
+            tokens, at = self._bucket.get(key, (depth, now))
+            tokens = min(depth, tokens + (now - at) * self.refill_per_s)
             inj = self.inject.get((uid, name))
             text, blank = None, False
             fire = (inj and not inj.get("done") and inj["offset"] == off and inj.get("view") in (None, view)

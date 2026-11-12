@@ -31,14 +31,22 @@ Checks (lib/vault_collect_faults.py names):
                          no walk offset fetched twice but that one, the walk reaches auto:done, mirror complete.
   user_read_p95          picker + chat reads during load: p95 <= BUDGET_MS each; stock p95 vs last green
                          (P95_VS_LAST) on the same keys.
+  rewarm_after_switch    after the load: every other Creator made due (its last done run aged past STALE_S by
+                         SQL), then, while the collector walks one of them, a quiet Creator with a fresh run is moved
+                         to a proxy (POST /admin/proxies + /assign, lib/proxy_wire.py). Its hot pass (folder-list
+                         call through the new proxy) comes before any due Creator's that was not already walking (a
+                         rival's first folder-list call must be seen, after it), and its picker hot keys are back in
+                         vault_response_cache.
 User vs collector on a busy Creator: an OF vault call inside one of the harness's own picker requests to that
 Creator (+-50 ms) is the user's; the rest the collector's.
 
 Bypasses (declared): OF at its wire (lib/of_wire.py + lib/vault_wire.py), OF's CDN in the relay process
 (lib/img_relay.py, `pictures`: small PNGs), vault_stills / storyboard dirs re-pointed by env
 (lib/vault_collect_relay.py), the collector's env knobs shortened (RELAY_ENV; USER_QUIET_S 20 s, not 120 s, so
-a run stays minutes long), picker users are httpx clients reading the picker's routes (no browser).
-Break-it-once: collect-unpaced (GAP_S 0: only collect_pacing goes red).
+a run stays minutes long), picker users are httpx clients reading the picker's routes (no browser), 6 h passing
+for rewarm_after_switch is an SQL age of finished_at, the proxy is a loopback SOCKS5 (lib/proxy_wire.py).
+Break-it-once: collect-unpaced (GAP_S 0: only collect_pacing goes red); no-rewarm-on-switch (only
+rewarm_after_switch).
 """
 from __future__ import annotations
 
@@ -48,20 +56,23 @@ import json
 import random
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from slop.actors import fan_dm
 from slop.actors.chatter import Chatters
 from slop.lib.img_relay import arm_run
-from slop.lib.vault_collect_faults import (FILLS_MIRROR, ONE_AT_A_TIME, PACING, RESUME, SKIPS_BUSY, THUMBS_WARM,
-                                           USER_P95)
+from slop.lib.proxy_wire import ProxyWire
+from slop.lib.vault_collect_faults import (FILLS_MIRROR, ONE_AT_A_TIME, PACING, RESUME, REWARM, SKIPS_BUSY,
+                                           THUMBS_WARM, USER_P95)
+from slop.seed import ts
 from slop.lib.vault_collect_relay import stills_dir
 from slop.lib.vault_ui import cdn_calls
 from slop.seed.vault_cache import LISTS_KEY
 from slop.lib.vault_wire import VaultWire, owner_of
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))  # the pacer's leaf dependencies
-from of_pacing import PAGE_GAP_S, JITTER_S
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # of_pacing imports its sibling of_call_counter
+from of_pacing import JITTER_S, PAGE_GAP_S  # noqa: E402
 
 PROFILE = "flat_agency"
 UI = False
@@ -81,6 +92,8 @@ LINGER_S = 15.0
 SPAN_GAP_S = 20.0
 HOT_THUMBS = 100
 TOL_S = 0.05
+STALE_S = 21600           # vault_collect's default, not shortened here
+WAIT_S = 360.0            # one walk in flight (<= a full walk) + the re-warm's run + the next rival's start, with room
 
 
 def _q(path: str, **kv) -> str:
@@ -335,5 +348,89 @@ async def run(ctx):
     ctx.metric("p95_vs_last_green", p95)
     ctx.metric("p95_vs_last_green_n", {k: summ[k]["n"] for k in p95})
     ctx.check(USER_P95, bool(p95) and not over, budget=True, p95_ms=p95, over=over)
+    # rewarm_after_switch
+    rw = await _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto)
     (Path(ctx.out) / "vault-collect-records.json").write_text(json.dumps(
-        {"busy": busy, "quiet": quiet, "spans": spans, "resume": resume, "gaps": gaps}, default=str))
+        {"busy": busy, "quiet": quiet, "spans": spans, "resume": resume, "gaps": gaps, "rewarm": rw}, default=str))
+
+
+async def _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto) -> dict:
+    """A proxy switch on a quiet Creator whose run is fresh, while the collector walks a due one: that Creator's hot
+    pass is the next one to start, ahead of every other due Creator (never-walked or stale)."""
+    if not quiet or len(cs) < 2:
+        ctx.skip(REWARM, "needs a quiet Creator and one other")
+        return {}
+    t = quiet[0]
+    con = ctx.world.sql()
+    try:
+        old = ts(datetime.utcnow() - timedelta(seconds=STALE_S + 60))
+        for a in cs:
+            la = latest_auto(a)
+            if a != t and la and la["status"] == "done":
+                con.execute("UPDATE vault_cache_runs SET finished_at=? WHERE id=?", (old, la["id"]))
+        con.commit()
+    finally:
+        con.close()
+
+    def running() -> set[str]:
+        return {r["account_id"] for r in runs("status='running' AND phase LIKE 'auto:%'")}
+
+    t0 = time.time()
+    while not (running() - {t}) and time.time() - t0 < 30:
+        await asyncio.sleep(0.2)
+    label = "slop-vault-collect-rw"
+    with ProxyWire() as pw:
+        try:
+            await ctx.owner.post("/admin/proxies", json={"label": label, "scheme": "socks5", "host": "127.0.0.1",
+                                                         "port": pw.port, "notes": "slop: vault-collect rewarm"})
+            await asyncio.sleep(1.0)  # proxies.json writes apart (dead-proxy scenario's measured race)
+            v0 = len(fake.vault_calls)
+            inflight = running()
+            bind = (await ctx.owner.post("/admin/proxies/assign", json={"label": label, "account_id": t})).status_code
+            t_sw = time.time()
+            inflight |= running()
+            rivals = sorted(set(cs) - inflight - {t})
+            egress = f"127.0.0.1:{pw.port}"
+
+            def first_lists() -> dict[str, float]:
+                out: dict[str, float] = {}
+                for c in fake.vault_calls[v0:]:
+                    if c["route"] == "lists" and c["account"] not in out:
+                        out[c["account"]] = c["t"]
+                return out
+
+            # one Creator walks at a time: the first rival's hot pass starting fixes the order (and the target's keys)
+            while rivals and not any(a in first_lists() for a in rivals) and time.time() - t_sw < WAIT_S:
+                await asyncio.sleep(0.5)
+            fl = first_lists()
+            t_hot = fl.get(t)
+            ahead = sorted(a for a in rivals if a in fl and (t_hot is None or fl[a] < t_hot))
+            rival_first = {a: fl[a] for a in rivals if a in fl}
+            reason = ("bind != 200" if bind != 200 else "no hot pass for the target" if t_hot is None
+                      else f"a rival's hot pass first: {ahead}" if ahead
+                      else f"no rival's hot pass within {WAIT_S:.0f} s of the switch" if not rival_first
+                      else None)
+            t_calls = [c for c in fake.vault_calls[v0:] if c["account"] == t]
+            via = sorted({c["egress"] for c in t_calls})
+            con = ctx.world.sql()
+            try:
+                keys = {k for (k,) in con.execute("SELECT query_key FROM vault_response_cache WHERE account_id=?", (t,))}
+            finally:
+                con.close()
+            want = {"lists:view=main|limit=50|offset=0"} | {
+                f"media:type=all|list={f['id']}|offset=0|limit=24|sort=desc|field=recent|query="
+                for f in vw.vault(t)["folders"]} | {
+                f"media:type=all|list=None|offset={o}|limit=24|sort=desc|field=recent|query=" for o in (0, 24)}
+            miss = sorted(want - keys)
+            detail = {"aid": t, "bind": bind, "inflight": sorted(inflight), "rivals": rivals, "ahead": ahead,
+                      "hot_after_s": None if t_hot is None else round(t_hot - t_sw, 1), "egress": via,
+                      "missing_keys": miss[:3], "rival_first_s": {a: round(v - t_sw, 1) for a, v in rival_first.items()},
+                      "reason": reason or (f"egress {via}" if via != [egress] else "missing keys" if miss else None)}
+            if not rivals:
+                ctx.skip(REWARM, "no due Creator left to race the re-warm", **detail)
+            else:
+                ctx.check(REWARM, reason is None and via == [egress] and not miss, **detail)
+            return detail
+        finally:
+            await ctx.owner.post(f"/admin/proxies/{label}/unbind", json={"account_id": t})
+            await asyncio.sleep(1.0)

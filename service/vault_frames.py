@@ -30,6 +30,9 @@ consumer; this module only produces the picture.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
+import contextvars
 import logging
 from typing import Any, NamedTuple
 
@@ -157,6 +160,7 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
         return "busy"
     dest = storyboard._STORYBOARD_DIR / h
     src_path = dest / "source.tmp"
+    r = None
     try:
         dest.mkdir(parents=True, exist_ok=True)
         r = client.http.get(url, timeout=client.timeout_s, stream=True)
@@ -166,10 +170,6 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
             for chunk in r.iter_content(chunk_size=256 * 1024):
                 if chunk:
                     f.write(chunk)
-        try:
-            r.close()
-        except Exception:  # noqa: BLE001
-            pass
         ok = storyboard._storyboard_extract_batch(
             src_path, dest, storyboard._ALL_FRAME_INDICES, max(0.1, dur or 1.0)
         )
@@ -178,6 +178,11 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
         log.warning("warm storyboard failed url=%s", url[:100], exc_info=True)
         return "error"
     finally:
+        if r is not None:
+            try:
+                r.close()
+            except Exception:  # noqa: BLE001
+                log.warning("storyboard response close failed", exc_info=True)
         try:
             src_path.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
@@ -364,6 +369,312 @@ async def collect(account_id: str, item: VaultItem, raw: dict,
         log.exception("collect failed account=%s media=%s kind=%s",
                       account_id, item.media_id, item.kind)
         return Collected([], "fetch_failed", f"{type(e).__name__}: {e}"[:200])
+
+
+# ── A video's Jev frames (D54) ──────────────────────────────────────
+#
+# Jev reads a clip off 12 frames from its 720p rendition (the bench's 400px storyboard lost $100 insertions, D53).
+# The whole 720p mp4 comes through the account's client (no range seeks: one plain GET, as `warm_one_sync`), capped:
+# above JEV_VIDEO_CAP_BYTES the 240p one (capped too) is read and the reading is marked `review` (never a free lane).
+# With no 720p rendition OF's `files.full` (the native upload: 640x480 / 564x360 on the 3/30 such clips probed
+# 11-12) is tried before the 240p; read off it, the reading is `review` no_720 only when its frames' short side is
+# under JEV_VIDEO_MIN_SHORT_PX; read off the 240p, always. Nothing readable → OF's poster frames, `review` too.
+# The cap is env `JEV_VIDEO_CAP_BYTES` (default 50 MB; the per-clip budget grows with it). One ffmpeg pass writes the
+# native frames Jev reads (transient) and, when the clip's storyboard is not on disk yet, the 400px scrub frames
+# under the hash hover scrub and describe look them up by (`video_url`'s: the 240p url's), so the describe that
+# follows reads the same frames and hover never builds them again.
+
+JEV_VIDEO_FRAMES = storyboard._STORYBOARD_FRAMES
+JEV_VIDEO_MIN_SHORT_PX = 480   # a no-720p clip's native frames at least this on their short side: no review
+_JEV_VIDEO_CAP_DEFAULT = 50_000_000
+
+
+def _env_cap_bytes() -> int:
+    """Env `JEV_VIDEO_CAP_BYTES`: the per-clip download cap in bytes (unset / unparsable / <= 0 → 50 MB). Every byte
+    under it is proxy traffic: probed 11-12, 11 of 27 720p mp4s were over 50 MB (p90 182 MB, max 1.08 GB)."""
+    import os
+    try:
+        v = int(os.environ.get("JEV_VIDEO_CAP_BYTES") or 0)
+    except ValueError:
+        v = 0
+    return v if v > 0 else _JEV_VIDEO_CAP_DEFAULT
+
+
+def _budget_s(cap: int) -> int:
+    """Whole budget for one clip's frames: re-sign, a cap-sized download at ~1 MB/s through a proxy, the ffmpeg
+    pass, the poster fallback (190 s + 1 s per MB of cap: 240 s at 50 MB), bounded at 15 min. Past it the item is
+    `fetch_failed` (retry next sweep)."""
+    return min(900, 190 + cap // 1_000_000)
+
+
+JEV_VIDEO_CAP_BYTES = _env_cap_bytes()
+JEV_VIDEO_TIMEOUT_S = _budget_s(JEV_VIDEO_CAP_BYTES)
+_JEV_FFMPEG_TIMEOUT_S = 90   # capped further by the clip's deadline (`_ffmpeg_timeout`)
+_JEV_DL_RESERVE_S = 30       # the download stops this long before the clip's deadline: ffmpeg's share
+
+
+class JevFrames(NamedTuple):
+    """One clip's frames for `vault_jev.run_video` (native-resolution JPEG bytes, clip order), and why not."""
+
+    frames: list[bytes]
+    reason: str              # `Collected.reason`'s vocabulary
+    detail: str = ""
+    src: str = ""            # "720" | "240" | "full" | "poster"
+    review: str | None = None  # no_720 | over_cap | src_failed | few_frames | poster_only: the reading may be too low
+    nbytes: int = 0
+
+
+def _download_capped(client: Any, url: str, path: Any, deadline: float) -> tuple[str, int]:
+    """("ok" | "over_cap" | "dl_fail", bytes seen). Refuses on content-length before reading a byte, and stops
+    reading once past the cap or the deadline (a missing header cannot pull an uncapped file)."""
+    import time
+    r = client.http.get(url, timeout=client.timeout_s, stream=True)
+    try:
+        if r.status_code not in (200, 206):
+            return "dl_fail", 0
+        try:
+            cl = int(r.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            cl = 0
+        if cl > JEV_VIDEO_CAP_BYTES:
+            return "over_cap", cl
+        n = 0
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                n += len(chunk)
+                if n > JEV_VIDEO_CAP_BYTES:
+                    return "over_cap", n
+                if time.monotonic() > deadline:
+                    return "dl_fail", n
+                f.write(chunk)
+        return "ok", n
+    finally:
+        try:
+            r.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _ffmpeg_timeout(deadline: float) -> float:
+    """ffmpeg's timeout: `_JEV_FFMPEG_TIMEOUT_S`, never past the clip's absolute `deadline` (min 1 s)."""
+    import time
+    return max(1.0, min(_JEV_FFMPEG_TIMEOUT_S, deadline - time.monotonic()))
+
+
+def _extract_jev(src: Any, dur: float, out: Any, scrub: Any | None, deadline: float) -> list[bytes]:
+    """One ffmpeg run: frame i at storyboard's mid-segment time, native resolution (q2) into `out`, and 400px
+    (storyboard's scale + q5) into `scrub` when given; killed at `_ffmpeg_timeout(deadline)`. Returns the
+    native frames that landed, in order."""
+    import subprocess
+    safe = max(0.1, dur - 0.1)
+    args = ["ffmpeg", "-y", "-nostdin", "-loglevel", "error"]
+    for i in range(JEV_VIDEO_FRAMES):
+        ts = min((i + 0.5) * dur / JEV_VIDEO_FRAMES, safe)
+        args += ["-ss", f"{ts:.4f}", "-i", str(src),
+                 "-map", f"{i}:v:0", "-frames:v", "1", "-q:v", "2", str(out / f"{i}.jpg")]
+        if scrub is not None:
+            args += ["-map", f"{i}:v:0", "-frames:v", "1", "-vf", f"scale={storyboard._STORYBOARD_WIDTH}:-2",
+                     "-q:v", "5", str(scrub / f"{i}.jpg")]
+    try:
+        subprocess.run(args, check=False, capture_output=True, timeout=_ffmpeg_timeout(deadline))
+    except Exception:  # noqa: BLE001 — timeout, no ffmpeg: whatever landed is the answer
+        log.warning("jev video ffmpeg failed src=%s", src, exc_info=True)
+    return [(out / f"{i}.jpg").read_bytes() for i in range(JEV_VIDEO_FRAMES) if (out / f"{i}.jpg").is_file()]
+
+
+def _publish_scrub(tmp: Any, h: str) -> None:
+    """Move a full 400px set into the storyboard store (missing frames backfilled from the nearest, as
+    `_storyboard_extract_batch` does), one atomic rename per frame."""
+    import os
+    import shutil
+    have = [i for i in range(JEV_VIDEO_FRAMES) if (tmp / f"{i}.jpg").is_file()]
+    if not have:
+        return
+    dest = storyboard._STORYBOARD_DIR / h
+    dest.mkdir(parents=True, exist_ok=True)
+    for i in range(JEV_VIDEO_FRAMES):
+        if i not in have:
+            shutil.copyfile(tmp / f"{min(have, key=lambda j: abs(j - i))}.jpg", tmp / f"{i}.jpg")
+    for i in range(JEV_VIDEO_FRAMES):
+        os.replace(tmp / f"{i}.jpg", dest / f"{i}.jpg")
+
+
+def _short_side(jpeg: bytes) -> int:
+    """A decoded frame's short side in px (0 when it does not decode)."""
+    import io
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(jpeg)) as im:
+            return min(im.size)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _jev_frames_sync(client: Any, media: dict, dur: float, deadline: float) -> JevFrames | None:
+    """The download + ffmpeg half (a thread), all inside the clip's absolute `deadline` (monotonic): downloads
+    stop `_JEV_DL_RESERVE_S` before it, ffmpeg is killed at it. A source that fails (download, decode) or lands
+    fewer than `JEV_VIDEO_FRAMES` frames hands over to the next, whose reading is then `review` src_failed; with
+    none whole, the source that landed the most frames is read, `review` few_frames. No frame at all: None when
+    every mp4 was over the cap, else `fetch_failed` (the caller reads the posters either way)."""
+    import shutil
+    import tempfile
+    import time
+    from pathlib import Path
+    vs = media.get("videoSources") if isinstance(media.get("videoSources"), dict) else {}
+    files = media.get("files") if isinstance(media.get("files"), dict) else {}
+    full = (files.get("full") or {}).get("url") if isinstance(files.get("full"), dict) else None
+    no720 = not vs.get("720")
+    order = (("full", full), ("240", vs.get("240"))) if no720 else \
+        (("720", vs.get("720")), ("240", vs.get("240")), ("full", full))
+    cands = [(k, u) for k, u in order if u]
+    review = None
+    scrub_url = video_url(media)
+    h = storyboard._video_path_hash(scrub_url) if scrub_url else None
+    best: tuple[list[bytes], str, int] | None = None   # the most frames a short source landed
+    fails: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="jev-video-") as td:
+        tmp = Path(td)
+        for label, url in cands:
+            if time.monotonic() > deadline - _JEV_DL_RESERVE_S:
+                break
+            for p in ("out", "scrub"):   # the last source's frames
+                shutil.rmtree(tmp / p, ignore_errors=True)
+            try:
+                got, n = _download_capped(client, url, tmp / "src.mp4", deadline - _JEV_DL_RESERVE_S)
+            except Exception:  # noqa: BLE001 — the connection, not the clip: try the next source
+                log.warning("jev video download raised src=%s", label, exc_info=True)
+                got, n = "dl_fail", 0
+            if got == "over_cap":
+                review = review or "over_cap"
+                continue
+            name = label if label == "full" else f"{label}p"
+            if got != "ok":
+                fails.append(f"{name} download failed")
+                continue
+            lock = None
+            if h and not storyboard._storyboard_all_frames_present(h):
+                lock = storyboard._storyboard_lock_for(h)
+                if not lock.acquire(blocking=False):   # a hover is building it: leave the scrub to it
+                    lock = None
+            try:
+                (tmp / "out").mkdir()
+                if lock is not None:
+                    (tmp / "scrub").mkdir()
+                # the file's own length (the bench's), not OF's whole-second `duration`: seeks past the real
+                # end land no frame (measured 11-12: 9/12 on 2-3 s clips)
+                d = storyboard._storyboard_probe_duration(tmp / "src.mp4") or dur
+                frames = _extract_jev(tmp / "src.mp4", max(0.1, d or 1.0), tmp / "out",
+                                      tmp / "scrub" if lock is not None else None, deadline)
+                if lock is not None:
+                    _publish_scrub(tmp / "scrub", h)
+            finally:
+                if lock is not None:
+                    lock.release()
+            if len(frames) < JEV_VIDEO_FRAMES:
+                fails.append(f"ffmpeg read {len(frames)}/{JEV_VIDEO_FRAMES} frames from the {name} mp4")
+                if frames and (best is None or len(frames) > len(best[0])):
+                    best = (frames, label, n)
+                continue
+            if no720 and (label != "full" or _short_side(frames[0]) < JEV_VIDEO_MIN_SHORT_PX):
+                review = "no_720"
+            elif fails:
+                review = review or "src_failed"
+            return JevFrames(frames, "ok", src=label, review=review, nbytes=n)
+    if best is not None:
+        return JevFrames(best[0], "ok", src=best[1], review="few_frames", nbytes=best[2])
+    return JevFrames([], "fetch_failed", "; ".join(fails)[:200]) if fails else None
+
+
+# A sweep's clip took its JEV_VIDEO slot before its vision slot (`lane_ahead`): `_collect_jev_video` claims that slot
+# instead of entering the lane, and owns its release from then on (the frame thread's end). One mutable cell, so a
+# task spawned under the visit (copied context) claims the same slot.
+_LANE_TICKET: contextvars.ContextVar[list[bool] | None] = contextvars.ContextVar("jev_lane_ticket", default=None)
+
+
+@contextlib.asynccontextmanager
+async def lane_ahead(label: str):
+    """Take a JEV_VIDEO slot, waiting as long as it takes (the caller holds nothing meanwhile), for this task's
+    next `_collect_jev_video`; given back on exit (or by `drop_lane`) unless that claimed it."""
+    await admission.JEV_VIDEO.enter_async(label, forever=True)
+    ticket = [False]
+    tok = _LANE_TICKET.set(ticket)
+    try:
+        yield
+    finally:
+        _LANE_TICKET.reset(tok)
+        if not ticket[0]:
+            admission.JEV_VIDEO.exit()
+
+
+def _claim_lane() -> bool:
+    """Take over this task's `lane_ahead` slot (True), once; False: none held, enter the lane yourself."""
+    t = _LANE_TICKET.get()
+    if t is None or t[0]:
+        return False
+    t[0] = True
+    return True
+
+
+def drop_lane() -> None:
+    """Give back this task's unclaimed `lane_ahead` slot now (the Jev pass is over: no frames left to read), so it
+    is not held through the describe call after."""
+    if _claim_lane():
+        admission.JEV_VIDEO.exit()
+
+
+async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) -> JevFrames:
+    """Every step inside one absolute `deadline` (monotonic, set once by `collect_jev_video`): the re-sign and
+    the posters are cut at it, the download + ffmpeg thread stops itself by it (`_jev_frames_sync`)."""
+    import time
+
+    def left() -> float:
+        return max(0.0, deadline - time.monotonic())
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    fresh = await asyncio.wait_for(vault_stills.resolve_fresh(account_id, item.media_id, client), left())
+    if fresh.media is None:
+        return JevFrames([], fresh.reason)
+    media = fresh.media
+    dur = float(media.get("duration") or item.duration_seconds or 0)
+    if video_url(media):
+        # a sweep's clip already holds its slot (`lane_ahead`); a lone visit waits briefly (`admission.JEV_VIDEO`)
+        if not _claim_lane() and not await admission.JEV_VIDEO.enter_async(f"jev video media={item.media_id}"):
+            return JevFrames([], "fetch_failed", "jev_video lane full — retried next sweep")
+
+        async def held() -> JevFrames | None:
+            try:
+                return await asyncio.to_thread(_jev_frames_sync, client, media, dur, deadline)
+            finally:
+                admission.JEV_VIDEO.exit()
+        # shielded: a cancelled caller leaves the thread (bounded by `deadline`) to finish and free the lane itself
+        got = await asyncio.shield(asyncio.ensure_future(held()))
+        if got is not None and got.frames:
+            return got
+    else:
+        got = None
+    posters = await asyncio.wait_for(
+        _poster_stills(account_id, item.media_id, media, JEV_VIDEO_FRAMES, ""), left())
+    if not posters.images:   # every mp4 failed: that (retry next sweep), not the posters' reason
+        return got if got is not None else JevFrames([], posters.reason, posters.detail)
+    return JevFrames([base64.b64decode(u.split(",", 1)[1]) for u in posters.images], "ok", src="poster",
+                     review="poster_only")
+
+
+async def collect_jev_video(account_id: str, item: VaultItem) -> JevFrames:
+    """One clip's Jev frames (module section above). Re-signs once (the mp4s and posters all come from that one
+    fresh payload). Never raises; a failure is the result's `reason` (+ `detail`), `collect`'s vocabulary. One
+    absolute deadline, `JEV_VIDEO_TIMEOUT_S` from now, bounds every step (`_collect_jev_video`)."""
+    import time
+    try:
+        return await _collect_jev_video(account_id, item, time.monotonic() + JEV_VIDEO_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log.warning("collect_jev_video timed out after %ss account=%s media=%s",
+                    JEV_VIDEO_TIMEOUT_S, account_id, item.media_id)
+        return JevFrames([], "fetch_failed", f"gave up reading the clip after {JEV_VIDEO_TIMEOUT_S}s")
+    except Exception as e:  # noqa: BLE001
+        log.exception("collect_jev_video failed account=%s media=%s", account_id, item.media_id)
+        return JevFrames([], "fetch_failed", f"{type(e).__name__}: {e}"[:200])
 
 
 async def _collect(account_id: str, item: VaultItem, raw: dict,

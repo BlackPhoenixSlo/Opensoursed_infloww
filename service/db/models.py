@@ -718,6 +718,9 @@ class ScrapeHistory(Base):
     last_message_id: Mapped[int | None] = mapped_column(BigInteger)
     last_message_text: Mapped[str | None] = mapped_column(Text)
     last_scrape_at: Mapped[datetime] = _ts_now()
+    # Set when a `{}` sweep kept only page 1 of a Silent mass-only chat (deep history
+    # deferred, cursor NULL); every cursor write clears it. NULL = not deferred.
+    history_deferred_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 # ── §4.4 Transactions (split for fast spend queries) ─────────────────

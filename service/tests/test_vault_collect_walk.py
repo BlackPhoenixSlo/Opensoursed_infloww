@@ -152,6 +152,7 @@ async def _reset(*aids: str, n: int = 250, fail_at_offset: int | None = None) ->
     _LIVE[:] = list(aids)
     _ACTIVE.clear()
     vc._skipped_since.clear()
+    vc._rewarm.clear()
     _thumb_fetches.clear()
     async with get_session() as s:
         for t in (VaultCacheRun, VaultItem, VaultResponseCache, AccountHealth):
@@ -516,6 +517,199 @@ async def case_proxy_switch_stops_the_walk():
         assert made == ["accX", "accX"], made
         (run,) = await _runs("accX")
         assert (run.status, run.phase) == ("done", "auto:done"), (run.status, run.phase)
+    finally:
+        ax._make_client = real_make
+
+
+_HOT_KINDS = [("lists", 50, 0, None), ("media", 24, 0, 7), ("media", 24, 0, None), ("media", 24, 24, None)]
+
+
+def _kinds(calls) -> list[tuple]:
+    return [(c[2], c[3].get("limit"), c[3].get("offset"), c[3].get("list_id")) for c in calls]
+
+
+async def _switched(*aids: str) -> None:
+    """A proxy switch through the product's hook, its loop task given time to run."""
+    server._on_proxy_switched(list(aids))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+
+
+async def case_proxy_switch_rewarms_fresh_account_first():
+    """After the switch the next tick walks that account's hot set although its last run
+    is fresh: after an interrupted walk (rank 0), ahead of a never-walked and a stale one."""
+    await _reset("accRw", "accRwI", "accRwN", "accRwS", n=150)
+    async with get_session() as s:
+        now = datetime.utcnow()
+        s.add(VaultCacheRun(account_id="accRw", status="done", phase="auto:done", pages_done=2,
+                            started_at=now - timedelta(minutes=2), finished_at=now - timedelta(minutes=1)))
+        s.add(VaultCacheRun(account_id="accRwS", status="done", phase="auto:done", pages_done=2,
+                            started_at=now - timedelta(seconds=vc.STALE_S + 120),
+                            finished_at=now - timedelta(seconds=vc.STALE_S + 60)))
+        s.add(VaultCacheRun(account_id="accRwI", status="running", phase="auto:all:100",
+                            pages_done=1, total_seen=100, upserted=100))
+    await vc.tick()                                   # the interrupted walk first (rank 0)
+    assert {c[1] for c in FakeOF.calls} == {"accRwI"}, FakeOF.calls
+    await _switched("accRw")
+    FakeOF.calls.clear()
+    order = []
+    for _ in range(3):
+        n = len(FakeOF.calls)
+        await vc.tick()
+        order.append({c[1] for c in FakeOF.calls[n:]})
+    assert order == [{"accRw"}, {"accRwN"}, {"accRwS"}], order
+    rw = [c for c in FakeOF.calls if c[1] == "accRw"]
+    assert _kinds(rw) == _HOT_KINDS, _kinds(rw)       # hot set only: the full walk is fresh
+    runs = await _runs("accRw")
+    assert runs[-1].status == "done" and len(runs) == 2, [(r.status, r.phase) for r in runs]
+
+
+async def case_proxy_switch_mid_full_walk_rewarms_then_resumes_cursor():
+    await _reset("accRwW", n=350)
+    walk = asyncio.create_task(vc.tick())
+    await _until(lambda: any(c[3].get("limit") == 100 for c in FakeOF.calls))
+    await _switched("accRwW")
+    await asyncio.wait_for(walk, 2)
+    (run,) = await _runs("accRwW")
+    assert run.status == "running" and run.phase.startswith("auto:all:"), (run.status, run.phase)
+    cursor = int(run.phase.rsplit(":", 1)[1])
+    FakeOF.calls.clear()
+    await vc.tick()
+    k = _kinds(FakeOF.calls)
+    assert k[:4] == _HOT_KINDS, k[:6]
+    assert k[4:] == [("media", 100, o, None) for o in range(cursor, 350, 100)], (cursor, k[4:])
+    (after,) = await _runs("accRwW")
+    assert (after.id, after.status, after.phase, after.total_seen) == (run.id, "done", "auto:done", 350), (
+        after.status, after.phase, after.total_seen)
+
+
+async def case_proxy_switch_mid_thumbs_rewarms_then_resumes_thumbs():
+    await _reset("accRwT", n=150)
+    async with get_session() as s:
+        s.add(VaultCacheRun(account_id="accRwT", status="running", phase="auto:thumbs",
+                            pages_done=2, total_seen=150, upserted=150))
+    await _switched("accRwT")
+    await vc.tick()
+    assert _kinds(FakeOF.calls) == _HOT_KINDS, _kinds(FakeOF.calls)
+    assert _thumb_fetches, "the saved thumbs phase was not carried on"
+    (run,) = await _runs("accRwT")
+    assert (run.status, run.phase, run.pages_done) == ("done", "auto:done", 2), (run.status, run.phase)
+
+
+async def case_proxy_rewarm_interrupted_hot_retries_before_saved_phase():
+    """A person interrupts the proxy rewarm, not its saved All/thumbs phase.
+    The next quiet tick must finish hot pages before resuming that cursor."""
+    for phase in ("auto:all:100", "auto:thumbs", "auto:thumbs:capped"):
+        aid = "accRwYield"
+        await _reset(aid, n=150)
+        async with get_session() as s:
+            s.add(VaultCacheRun(account_id=aid, status="running", phase=phase,
+                                pages_done=1, total_seen=100, upserted=100))
+        await _switched(aid)
+        walk = asyncio.create_task(vc.tick())
+        await _until(lambda: len(FakeOF.calls) >= 2)  # lists + first hot folder
+        _ACTIVE[aid] = time.monotonic()
+        await asyncio.wait_for(walk, 5)
+        (paused,) = await _runs(aid)
+        assert (paused.status, paused.phase, paused.pages_done) == ("running", phase, 1)
+        assert _kinds(FakeOF.calls) == _HOT_KINDS[:2]
+        FakeOF.calls.clear()
+        await vc.tick()
+        assert FakeOF.calls == [], "rewarm ignored the active person"
+        _ACTIVE.clear()
+        await vc.tick()
+        expected = _HOT_KINDS + ([("media", 100, 100, None)] if phase.startswith(vc.P_ALL) else [])
+        assert _kinds(FakeOF.calls) == expected, (phase, _kinds(FakeOF.calls))
+        (done,) = await _runs(aid)
+        assert (done.id, done.status, done.phase) == (paused.id, "done", vc.P_DONE)
+        assert bool(done.error) == (phase == vc.P_CAPPED)
+        FakeOF.calls.clear()
+        await vc.tick()
+        assert FakeOF.calls == [], "finished rewarm ran twice"
+
+
+async def case_proxy_rewarm_finished_hot_is_not_repeated_after_later_pause():
+    aid = "accRwHotDone"
+    await _reset(aid, n=350)
+    async with get_session() as s:
+        s.add(VaultCacheRun(account_id=aid, status="running", phase="auto:all:100",
+                            pages_done=1, total_seen=100, upserted=100))
+    await _switched(aid)
+    walk = asyncio.create_task(vc.tick())
+    await _until(lambda: any(c[3].get("limit") == 100 for c in FakeOF.calls))
+    _ACTIVE[aid] = time.monotonic()
+    await asyncio.wait_for(walk, 5)
+    assert _kinds(FakeOF.calls) == _HOT_KINDS + [("media", 100, 100, None)]
+    FakeOF.calls.clear()
+    _ACTIVE.clear()
+    await vc.tick()
+    assert _kinds(FakeOF.calls) == [("media", 100, 200, None), ("media", 100, 300, None)]
+    (run,) = await _runs(aid)
+    assert (run.status, run.total_seen) == ("done", 350)
+
+
+async def case_proxy_rewarm_hot_error_keeps_backoff():
+    aid = "accRwError"
+    await _reset(aid, n=150)
+    async with get_session() as s:
+        s.add(VaultCacheRun(account_id=aid, status="running", phase="auto:thumbs"))
+    real_lists = _CLIENTS[aid].vault_lists
+
+    def broken_lists(**kw):
+        real_lists(**kw)
+        raise RuntimeError("hot lists failed (fake)")
+
+    _CLIENTS[aid].vault_lists = broken_lists
+    await _switched(aid)
+    await vc.tick()
+    (run,) = await _runs(aid)
+    assert run.status == "error" and "hot lists failed" in run.error
+    FakeOF.calls.clear()
+    await vc.tick()
+    assert FakeOF.calls == [], "hot failure bypassed error backoff"
+
+
+async def case_proxy_switch_second_request_is_one_entry():
+    await _reset("accRw2", n=150)
+    await vc.tick()                                   # first walk: fresh from here on
+    await _switched("accRw2")
+    await _switched("accRw2")
+    FakeOF.calls.clear()
+    await vc.tick()
+    assert _kinds(FakeOF.calls) == _HOT_KINDS, _kinds(FakeOF.calls)
+    FakeOF.calls.clear()
+    await vc.tick()
+    assert FakeOF.calls == [], "a second request made a second hot pass"
+
+
+async def case_proxy_switch_setup_failure_does_not_keep_rank_1():
+    """The re-warm walk's setup raises (client build): the run errors, and the next pick
+    is the stale rival, not the switched account again (its error backoff holds)."""
+    await _reset("accRwF", "accRwR", n=150)
+    async with get_session() as s:
+        now = datetime.utcnow()
+        s.add(VaultCacheRun(account_id="accRwF", status="done", phase="auto:done", pages_done=2,
+                            started_at=now - timedelta(minutes=2), finished_at=now - timedelta(minutes=1)))
+        s.add(VaultCacheRun(account_id="accRwR", status="done", phase="auto:done", pages_done=2,
+                            started_at=now - timedelta(seconds=vc.STALE_S + 120),
+                            finished_at=now - timedelta(seconds=vc.STALE_S + 60)))
+    real_make = ax._make_client
+    made: list[str] = []
+
+    def _make(aid):
+        made.append(aid)
+        if aid == "accRwF":
+            raise RuntimeError("client build failed (fake)")
+        return real_make(aid)
+    ax._make_client = _make
+    try:
+        await _switched("accRwF")
+        await vc.tick()
+        assert made == ["accRwF"], made
+        assert (await _runs("accRwF"))[-1].status == "error"
+        await vc.tick()
+        assert made == ["accRwF", "accRwR"], made
+        assert {c[1] for c in FakeOF.calls} == {"accRwR"}, FakeOF.calls
     finally:
         ax._make_client = real_make
 

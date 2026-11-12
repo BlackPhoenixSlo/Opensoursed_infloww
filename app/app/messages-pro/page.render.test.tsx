@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("@/components/chat/composerTestHarness")).mockRelayModule(await orig()));
@@ -60,11 +61,12 @@ vi.mock("@/contexts/EmployeeContext", async (orig) => {
 vi.mock("@/components/chat/ChatSurface", async () => {
   const { OpenInNewTabButton } = await import("@/components/chat/FanTabs");
   return {
-    ChatSurface: ({ accountId, fanId, chat }: {
+    ChatSurface: ({ accountId, fanId, chat, prefetchWindowMs }: {
       accountId: string; fanId: number | string; chat: { withUser?: { name?: string }; lastMessage?: unknown };
+      prefetchWindowMs?: number;
     }) => (
       <>
-        <section aria-label="Thread" data-chat={chat.lastMessage ? "row" : "deep-link"}>
+        <section aria-label="Thread" data-chat={chat.lastMessage ? "row" : "deep-link"} data-prefetch-window={prefetchWindowMs ?? "none"}>
           {`Creator ${accountId}, Fan ${fanId}`}
         </section>
         <OpenInNewTabButton accountId={accountId} fanId={fanId} name={chat.withUser?.name ?? ""} />
@@ -78,6 +80,7 @@ import { MoneyRail } from "@/components/MoneyRail";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { renderWithProviders } from "@/test-utils";
 import { readBlurMode } from "@/hooks/useBlurMode";
+import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
 import {
   expectDomOrder, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf,
@@ -283,6 +286,46 @@ describe("the Messages Pro page", () => {
 
     await userEvent.click(row(FANS[1]));
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
+  });
+
+  it("the inbox Thread rides the unread warm: it is handed UNREAD_WARM_REUSE_MS (20 s) as its prefetch window, on the index and the Deep link route (fetch-diet 16)", async () => {
+    expect(UNREAD_WARM_REUSE_MS).toBe(20_000);
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    const first = renderPage("/messages-pro");
+    await userEvent.click(await screen.findByText("Fixture Fan Two"));
+    expect(screen.getByRole("region", { name: "Thread" })).toHaveAttribute("data-prefetch-window", "20000");
+    first.unmount();
+
+    renderPage(`/messages-pro/${ACCOUNT_ID}/200000003`);
+    await vi.waitFor(() => expect(screen.getByRole("region", { name: "Thread" })).toHaveAttribute("data-prefetch-window", "20000"));
+  });
+
+  it("the Fan List's press warm-up skips a thread warmed inside UNREAD_WARM_REUSE_MS (17 s ago, past the 15 s default) and reads one warmed past it (23 s ago) (fetch-diet 16)", async () => {
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    const threadReads = (fanId: number) =>
+      relayGet.mock.calls.filter(([path]) => path.startsWith(`/api/of/v2/chats/${fanId}/messages`));
+    for (const f of FANS.slice(0, 2)) {
+      routeRelay(`/api/of/v2/chats/${f.id}/messages`, () => ({ list: [], hasMore: false }));
+    }
+    // The client's own gcTime, not the kit's 0: a warmed thread has no observer until it opens.
+    const rendered = renderWithProviders(pageTree("/messages-pro"),
+      new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    await screen.findByText("Fixture Fan Three");
+    // Fan One warmed 17 s ago (inside 20 s, past the 15 s every other open uses), Fan Two 23 s ago.
+    const warmed = (f: (typeof FANS)[number], agoMs: number) => rendered.queryClient.setQueryData(
+      ["messages", ACCOUNT_ID, f.id], [{ id: 700000000 + f.id % 10, text: "warmed", fromUser: { id: f.id }, createdAt: ago(2) }],
+      { updatedAt: Date.now() - agoMs });
+    warmed(FANS[0], 17_000);
+    warmed(FANS[1], 23_000);
+    relayGet.mockClear();
+
+    await userEvent.click(row(FANS[0]));
+    expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000001`);
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(threadReads(FANS[0].id)).toHaveLength(0);
+
+    await userEvent.click(row(FANS[1]));
+    await vi.waitFor(() => expect(threadReads(FANS[1].id)).toHaveLength(1));
   });
 
   it("Deep link route: the page opens with the link's Creator and Fan in the Thread", async () => {

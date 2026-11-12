@@ -84,16 +84,22 @@ export interface TrialLinksResult extends MetricsState {
   tags: string[];
 }
 
-/** While the relay refreshes the cached figures, read the list again shortly. */
+/** While a Growth page is viewed, its lists (and the tracking links' earnings) are read again this often, so
+ *  its figures stay under about an hour old: the relay's hourly background prewarm only walks links with a List
+ *  (LINK_PREWARM_SCOPE, service/link_prewarm.py). react-query's default `refetchIntervalInBackground: false`
+ *  makes it "while the tab is visible". */
+export const GROWTH_VIEWED_REFRESH_MS = 3_600_000;
+
+/** While the relay refreshes the cached figures, read the list again shortly; otherwise hourly while viewed. */
 const whileRefreshing = (q: { state: { data?: Partial<MetricsState> } }) =>
-  q.state.data?.metrics_refreshing ? 15_000 : false;
+  q.state.data?.metrics_refreshing ? 15_000 : GROWTH_VIEWED_REFRESH_MS;
 
 export function useTrialLinks(accountId: string | null) {
   return useQuery<TrialLinksResult>({
     queryKey: [TRIAL_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
-    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
+    // eslint-disable-next-line local/no-fixed-polling -- 15 s while the relay refreshes, else hourly while viewed
     refetchInterval: whileRefreshing,
     queryFn: () =>
       relay.get(`/admin/trial-links?account_id=${encodeURIComponent(accountId!)}`),
@@ -338,6 +344,8 @@ export function useOfTrackingLinks(accountId: string | null) {
     queryKey: [OF_TRACK_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- hourly while Growth is viewed: the prewarm no longer reads it
+    refetchInterval: GROWTH_VIEWED_REFRESH_MS,
     queryFn: () =>
       relay.get(`/admin/of-tracking-links?account_id=${encodeURIComponent(accountId!)}`),
   });
@@ -350,6 +358,8 @@ export function useOfTrackingEarnings(accountId: string | null) {
     queryKey: [OF_TRACK_KEY, accountId, "earnings"],
     enabled: !!accountId,
     staleTime: 5 * 60_000,
+    // eslint-disable-next-line local/no-fixed-polling -- hourly while Growth is viewed: the prewarm no longer reads it
+    refetchInterval: GROWTH_VIEWED_REFRESH_MS,
     retry: false,
     queryFn: () =>
       relay.get(`/admin/of-tracking-links/earnings?account_id=${encodeURIComponent(accountId!)}`),
@@ -450,7 +460,7 @@ export function usePromotions(accountId: string | null) {
     queryKey: [PROMO_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
-    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
+    // eslint-disable-next-line local/no-fixed-polling -- 15 s while the relay refreshes, else hourly while viewed
     refetchInterval: whileRefreshing,
     queryFn: () =>
       relay.get(`/admin/promotions?account_id=${encodeURIComponent(accountId!)}`),

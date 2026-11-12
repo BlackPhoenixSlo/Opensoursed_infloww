@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Vault-AI describe — the `vault_ai_vision._describe_one` / `_flags_one` state
+Vault-AI describe — the `vault_ai_vision._describe_one` / `_jev_and_flag` state
 machine and the "Describe all" sweep (`_run_describe_all`). Durable regression
 suite (plain-assert, no pytest — repo convention). The recurring
 `describe_media` automation that used to share this file was deleted (cleanup
@@ -28,10 +28,9 @@ Cases (selected):
       audio has no frame — it is not swept, and the plan's total does not count
       it. 591 audio rows were being swept per pass; the 45 with live signatures
       posted MP3 bytes to a vision endpoint.
-  case_flags_failure_is_written_down:
-      the TAGGING pass shares the frame path, so it broke the same way and said
-      nothing at all. It now records `_flags_status` on the row — WITHOUT
-      `_flags_v`, so the item stays in the retry set.
+  case_flags_failure_stays_in_todo:
+      a photo's flags are its Jev pass's: a still it cannot fetch is that
+      item's `fetch_failed` — no `_flags_v`, so the item stays in the retry set.
   case_a_dead_collect_stops_claiming_it_is_running:
       a collect finalises its own row, so a restart mid-sweep strands `running`
       forever. One prod row said `running / warming` for three days while the
@@ -67,9 +66,12 @@ import llm_client  # noqa: E402
 import llm_providers  # noqa: E402
 import vault_ai_api  # noqa: E402 — collect status (_run_status)
 import vault_runs  # noqa: E402 — manual_running
-import vault_ai_vision  # noqa: E402 — _describe_one / _flags_one under test
+import vault_ai_vision  # noqa: E402 — _describe_one / _jev_and_flag under test
 import vault_ai_vision_decide  # noqa: E402 — the frame ladder
 import vault_frames  # noqa: E402 — the frame-collection seam both of them call
+import vault_describe_jev  # noqa: E402
+import vault_jev_pass  # noqa: E402 — the Jev pass (flags) describe runs first
+from _jev_fixtures import video_jev  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (Account, AccountAiConfig, GrokDailyCost,  # noqa: E402
                        VaultCacheRun, VaultItem)
@@ -115,12 +117,14 @@ async def _seed_account(aid: str, *, cap_cents: int = 1000) -> None:
 
 
 async def _seed_items(aid: str, media_ids: list[int], *, kind: str = "video") -> None:
-    """Clips by default: the qwen describe + flags this file pins are a clip's (a photo is Jev's, test_vault_jev)."""
+    """Clips by default, each with a current `_jev` (D54: a clip's qwen describe is fed its Jev reading; the Jev
+    pass itself is test_vault_jev's), so the qwen describe state machine this file pins runs."""
     base = datetime(2026, 6, 1, 10, 0, 0)
     async with get_session() as s:
         for i, mid in enumerate(media_ids):
             s.add(VaultItem(account_id=aid, media_id=int(mid), kind=kind,
-                            created_at=base + timedelta(minutes=i), tags="[]"))
+                            created_at=base + timedelta(minutes=i), tags="[]",
+                            ai_fields_json=json.dumps({"_jev": video_jev()}) if kind == "video" else None))
 
 
 async def _get(aid: str, media_id: int) -> VaultItem:
@@ -196,7 +200,7 @@ async def case_frame_ladder_by_duration() -> None:
     async with get_session() as s:
         s.add(VaultItem(account_id=aid, media_id=70, kind="video",
                         created_at=datetime(2026, 6, 1), tags="[]",
-                        duration_seconds=900))
+                        duration_seconds=900, ai_fields_json=json.dumps({"_jev": video_jev()})))
         await s.commit()
 
     seen: dict[str, Any] = {}
@@ -215,8 +219,9 @@ async def case_frame_ladder_by_duration() -> None:
 
 
 async def case_prompt_version_selects_variant() -> None:
-    """A/B is a real switch: v1 sends the one-sentence prompt, v2 the structured
-    one, and the row records WHICH produced it so a re-scan can find it."""
+    """A clip is Jev-fed (D54): v1 and v2 both send the V2 prompt with the clip's
+    Jev facts (no v1 describe for a Jev kind); the row still records which was
+    asked, so a re-scan can find it."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [80, 81])
@@ -246,10 +251,9 @@ async def case_prompt_version_selects_variant() -> None:
         llm_client.chat = orig_chat
 
     assert len(sent) == 2, sent
-    assert sent[0] == vault_ai_vision._DESCRIBE_PROMPT, "v1 did not send the V1 prompt"
-    assert sent[1] == vault_ai_vision._DESCRIBE_PROMPT_V2, "v2 did not send the V2 prompt"
-    assert "one literal sentence" in sent[0]
-    assert "pulled_aside" in sent[1]
+    want = vault_describe_jev.prompt_for("vid", video_jev(), vault_ai_vision._DESCRIBE_PROMPT_V2)
+    assert sent[0] == sent[1] == want, "a clip was not sent the Jev-fed V2 prompt"
+    assert "pulled_aside" in sent[1] and "one literal sentence" not in sent[0]
 
     # The stamp is what the re-scan sweep selects on.
     v1_row = json.loads((await _get(aid, 80)).ai_fields_json)
@@ -260,15 +264,17 @@ async def case_prompt_version_selects_variant() -> None:
 
 async def case_restage_selects_only_stale_rows() -> None:
     """The re-scan sweep picks up rows from the OTHER prompt version (and rows
-    that predate the stamp), and leaves already-current rows alone — so an
-    interrupted re-scan resumes rather than paying for the whole vault twice."""
+    that predate the stamp, and photos whose describe was not Jev-fed), and
+    leaves already-current rows alone — so an interrupted re-scan resumes
+    rather than paying for the whole vault twice."""
     aid = _fresh_account()
     await _seed_account(aid)
     async with get_session() as s:
         for mid, blob in (
             (90, '{"_prompt_version": "v1"}'),   # stale → re-scan
-            (91, '{"_prompt_version": "v2"}'),   # current → skip
+            (91, '{"_prompt_version": "v2", "_describe": {"path": "prose"}}'),   # current, Jev-fed → skip
             (92, None),                          # predates the stamp → re-scan
+            (93, '{"_prompt_version": "v2"}'),   # current version, not Jev-fed (pre-Jev photo) → re-scan
         ):
             s.add(VaultItem(account_id=aid, media_id=mid, kind="photo",
                             created_at=datetime(2026, 6, 1), tags="[]",
@@ -287,7 +293,7 @@ async def case_restage_selects_only_stale_rows() -> None:
         await vault_ai_vision._run_describe_all(aid, "restage", prompt_version="v2")
     finally:
         vault_ai_vision._describe_one = orig
-    assert sorted(described) == [90, 92], described
+    assert sorted(described) == [90, 92, 93], described
 
 
 async def case_describe_also_flags():
@@ -295,11 +301,12 @@ async def case_describe_also_flags():
     NOTHING about what is actually on show, because the flags pass was a second
     button. A freshly-described vault therefore had no flags at all, and every
     lane gated on them (`AI-safe explicit`, both price tiers) was silently
-    empty until somebody remembered. The two passes now run in one breath.
+    empty until somebody remembered. The two passes now run in one breath: a
+    clip's flags come from its Jev pass, which runs FIRST (D54; never the qwen
+    flags call), and its spend rides on the sweep's.
 
-    Also pins the failure DIRECTION: the flags call is cheap (~3s, ~$0.00002)
-    and the describe call is not (~16s, ~$0.0086), so a flags failure must
-    never lose a description that has already been written and paid for.
+    A raising Jev pass never takes the sweep down (`vault_jev_pass.safe`): the
+    item is skipped with Jev's status (no describe without its reading).
     """
     aid = _fresh_account()
     await _seed_account(aid)
@@ -307,27 +314,28 @@ async def case_describe_also_flags():
 
     flagged: list[int] = []
     described: list[int] = []
-    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
+    o_desc, o_one = vault_ai_vision._describe_one, vault_jev_pass.one
 
     async def _desc(_aid, mid, **_k):
         described.append(int(mid))
+        jr = _k.get("jev_res")
+        if jr and not jr["ok"]:
+            return {"media_id": mid, "ok": False, "status": jr["status"]}
         return {"media_id": mid, "ok": True, "status": "described", "cost_millicents": 70}
 
-    async def _flags(_aid, mid, **_k):
+    async def _jev(_aid, mid, **_k):
         flagged.append(int(mid))
-        return {"media_id": mid, "ok": True, "status": "flagged", "cost_millicents": 3}
+        return {"media_id": mid, "ok": True, "status": "ok", "lane5": "free", "cost_millicents": 3}
 
-    vault_ai_vision._describe_one = _desc
-    vault_ai_vision._flags_one = _flags
+    vault_ai_vision._describe_one, vault_jev_pass.one = _desc, _jev
     try:
         await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
         assert described == [9001], described
         assert flagged == [9001], f"describe did not flag what it described: {flagged}"
-        # The sweep's spend is BOTH calls: the auto-flag is paid for too.
+        # The sweep's spend is BOTH calls: the Jev pass is paid for too.
         cost = vault_ai_vision._describe_progress[aid]["cost_millicents"]
-        assert cost == 73, f"the sweep's cost dropped the flags call: {cost}"
+        assert cost == 73, f"the sweep's cost dropped the Jev pass: {cost}"
 
-        # A flags failure must not take the description down with it.
         flagged.clear()
         described.clear()
 
@@ -335,15 +343,14 @@ async def case_describe_also_flags():
             flagged.append(int(mid))
             raise RuntimeError("provider down")
 
-        vault_ai_vision._flags_one = _boom
+        vault_jev_pass.one = _boom
         await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
-        assert flagged == [9001], "the flags call was skipped"
-        assert described == [9001], (
-            "a cheap flags failure stopped the expensive describe sweep")
+        assert flagged == [9001], "the Jev pass was skipped"
+        assert described == [9001], "a raising Jev pass stopped the sweep"
         cost = vault_ai_vision._describe_progress[aid]["cost_millicents"]
-        assert cost == 70, f"a raised flags call changed describe's cost: {cost}"
+        assert cost == 0, f"a failed Jev pass + skipped describe cost something: {cost}"
     finally:
-        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one, vault_jev_pass.one = o_desc, o_one
 
 
 async def case_one_exploding_item_does_not_end_the_sweep():
@@ -370,7 +377,7 @@ async def case_one_exploding_item_does_not_end_the_sweep():
     await _seed_items(aid, [1, 2, 3, 4, 5])
 
     seen: list[int] = []
-    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
+    o_desc = vault_ai_vision._describe_one
 
     async def _desc(_aid, mid, **_k):
         seen.append(int(mid))
@@ -378,15 +385,11 @@ async def case_one_exploding_item_does_not_end_the_sweep():
             raise RuntimeError("OF read blew up mid-collect")
         return {"media_id": mid, "ok": True, "status": "described"}
 
-    async def _flags(_aid, mid, **_k):
-        return {"media_id": mid, "ok": True, "status": "flagged"}
-
     vault_ai_vision._describe_one = _desc
-    vault_ai_vision._flags_one = _flags
     try:
         await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
     finally:
-        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one = o_desc
 
     assert sorted(seen) == [1, 2, 3, 4, 5], (
         f"one raising item ended the sweep — only {sorted(seen)} were attempted")
@@ -435,6 +438,7 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
                 "_flags_model": "qwen3-vl-30b",
                 # settled by the OPERATOR on the disputes screen
                 "explicitness": "suggestive",
+                "_jev": video_jev(),
             }),
             # `explicitness` is FIXABLE — a dispute fix, read straight out of
             # ai_fields_json, so it has to be restored INTO it. `description` is
@@ -469,7 +473,8 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
     assert got["description"] == "new prose", (
         "an edit_item lock must NOT stamp itself into the blob — that would "
         "erase the evidence a re-run ever ran (case_rerun_respects_lock)")
-    assert got["clothing_state"] == "lingerie_on", got
+    import vault_jev_flags   # a clip's lane fields are its Jev reading's (D54), not qwen's
+    assert got["clothing_state"] == vault_jev_flags.reading(video_jev())["clothing_state"], got
     for key, want in (("vulva_vis", "covered"), ("breasts_vis", "bare"),
                       ("anus_vis", "not_in_frame"),
                       ("over_vulva", "black lace thong"), ("_flags_v", 3)):
@@ -481,39 +486,31 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
 async def case_describing_one_item_flags_it_too():
     """The sweep has flagged in the same breath for a while; the ONE-item button
     never did, so a hand-described item was the only row in the vault the gated
-    lanes could not read — and nothing on screen said so."""
+    lanes could not read — and nothing on screen said so. A clip's flags are its
+    Jev pass's (D54), run first; its cost is reported with describe's."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [80])
 
     flagged: list[int] = []
-    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
+    o_desc, o_one = vault_ai_vision._describe_one, vault_jev_pass.one
 
     async def _desc(_aid, mid, **_k):
         return {"media_id": mid, "ok": True, "status": "described", "cost_millicents": 70}
 
-    async def _flags(_aid, mid, **_k):
+    async def _jev(_aid, mid, **_k):
         flagged.append(int(mid))
-        return {"media_id": mid, "ok": True, "status": "flagged", "cost_millicents": 3}
+        return {"media_id": mid, "ok": True, "status": "ok", "lane5": "free", "cost_millicents": 3}
 
-    vault_ai_vision._describe_one = _desc
-    vault_ai_vision._flags_one = _flags
+    vault_ai_vision._describe_one, vault_jev_pass.one = _desc, _jev
     try:
         out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
         assert out["ok"], out
         assert flagged == [80], f"the single-item describe did not flag it: {flagged}"
-        assert out["cost_millicents"] == 73, f"the flags call's cost went unreported: {out}"
-
-        # …and a flags failure must not lose the description that was paid for.
-        async def _boom(_aid, mid, **_k):
-            raise RuntimeError("provider down")
-
-        vault_ai_vision._flags_one = _boom
-        out2 = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
-        assert out2["ok"], "a cheap flags failure sank an expensive describe"
-        assert out2["cost_millicents"] == 70, out2
+        assert out["cost_millicents"] == 73, f"the Jev pass's cost went unreported: {out}"
+        assert out["jev_status"] == "ok" and out["jev_cost_millicents"] == 3, out
     finally:
-        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one, vault_jev_pass.one = o_desc, o_one
 
 
 async def case_describe_all_attempts_every_undescribed_item() -> None:
@@ -643,11 +640,10 @@ async def case_audio_is_never_a_describe_candidate() -> None:
     assert plan["total"] == 1, f"plan counted the audio row: {plan}"
 
 
-async def case_flags_failure_is_written_down() -> None:
-    """The TAGGING pass shares the fetch path, so it broke the same way — and
-    said nothing at all: it returned `no_image` to a caller that logged it and
-    moved on, leaving a described-but-unflagged row with no record of why. The
-    marker must NOT claim the flags are current, or the retry stops."""
+async def case_flags_failure_stays_in_todo() -> None:
+    """A photo's flags are its Jev pass's (no qwen flags call): a still it cannot
+    fetch is that item's `fetch_failed`, reported, and nothing on the row may
+    claim the flags are current, or the retry stops."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [90], kind="photo")
@@ -655,16 +651,18 @@ async def case_flags_failure_is_written_down() -> None:
     async def _cold(*_a, **_k):
         return vault_frames.Collected([], "fetch_failed")
 
-    orig = vault_frames.collect
-    vault_frames.collect = _cold
+    async def _ready():
+        return None
+
+    o_c, o_p = vault_frames.collect, vault_jev_pass.vault_jev.preflight
+    vault_frames.collect, vault_jev_pass.vault_jev.preflight = _cold, _ready
     try:
-        out = await vault_ai_vision._flags_one(aid, 90)
+        out = await vault_ai_vision._jev_and_flag(aid, 90)
     finally:
-        vault_frames.collect = orig
+        vault_frames.collect, vault_jev_pass.vault_jev.preflight = o_c, o_p
     assert out["ok"] is False and out["status"] == "fetch_failed", out
 
     fields = json.loads((await _get(aid, 90)).ai_fields_json or "{}")
-    assert fields.get("_flags_status") == "fetch_failed", fields
     assert "_flags_v" not in fields, "a failure must not mark flags current"
     assert 90 in await vault_ai_vision._flags_todo(aid), "failed item dropped out of todo"
 
@@ -1005,6 +1003,6 @@ _harness.run(
     case_describe_all_attempts_every_undescribed_item,
     case_fetch_failure_is_not_blocked_drm,
     case_audio_is_never_a_describe_candidate,
-    case_flags_failure_is_written_down,
+    case_flags_failure_stays_in_todo,
     case_a_dead_collect_stops_claiming_it_is_running,
 )

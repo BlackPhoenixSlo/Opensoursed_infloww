@@ -27,9 +27,11 @@ Deletions stay lazy: nothing here removes mirror rows. A media OF has deleted is
 stamped `removed_at` when a still request for it 404s on re-sign
 (vault_stills.resolve_fresh), not by the walk.
 
-Picking (one per tick): an unfinished `auto:*` run (resume) → an account with no
-auto run → the stalest done run older than STALE_S, or an errored run past its
-1 h backoff (resumed at its cursor; the backoff is the only retry bound — a dead
+Picking (one per tick): an unfinished `auto:*` run (resume) → an account a proxy
+switch asked to re-warm (`request_rewarm`, whatever its last run's age) → an account
+with no auto run → the stalest done run older than STALE_S, or an errored run past its
+1 h backoff (resumed at its cursor; the backoff bounds retries — a switch re-tries
+an errored run once, early, as its request drops when that walk starts — and a dead
 session drops out of `_live_accounts`). Skipped while a manual Collect holds it
 (vault_runs.manual_running) or a user-priority request hit its lane within
 USER_QUIET_S — unless that has kept it waiting MAX_SKIP_S, then it walks anyway (the
@@ -43,7 +45,11 @@ person uses the account mid-walk (USER_QUIET_S, unless this walk was the
 MAX_SKIP_S one) or when the account's proxy changes (`preempt` from
 server._on_proxy_switched: the walk's client is bound to the old IP). Its row
 stays `running` at its cursor, so it is resumed first once the account is free,
-with a fresh client. Dead-session / OTP / deactivated accounts are not
+with a fresh client. A re-warm run walks the hot set first, also when it resumes a
+saved full-walk or thumbs phase, then carries on from that phase and cursor; the
+request drops when that walk starts, but returns if hot pages are preempted
+(in memory: a restart falls back to STALE_S).
+Dead-session / OTP / deactivated accounts are not
 candidates. Every OF call runs inside an of_pacing walk (the Creator's shared
 pacer, one retry on OF's 429). vault_ai_api's Collect reuses only (a)-(b)
 (`hot_folders`, with its own call pacing); the rest is its own (it also warms full
@@ -126,6 +132,7 @@ _auto_running: set[str] = set()        # the account being walked (≤1)
 _abort: dict[str, asyncio.Event] = {}  # aid → set by `preempt`
 _skipped_since: dict[str, float] = {}  # aid → monotonic() of its first skip / yield; cleared when a walk ends any other way or on `preempt`
 _last_call_end = 0.0                   # monotonic() when the last OF call returned
+_rewarm: set[str] = set()              # aids a proxy switch asked to re-warm; dropped when that hot pass starts
 
 
 # One OF call: `await call(client.method, **kw)`. The collector's is `_of_call`
@@ -145,7 +152,7 @@ def _user_active_at(aid: str) -> float | None:
 
 async def _live_accounts() -> list[str]:
     """OF accounts with a session, not flagged dead (wrong user / OTP / none)
-    and not deactivated — the same filter link_metrics.prewarm_all uses."""
+    and not deactivated — the same filter link_prewarm.prewarm_all uses."""
     live = [m["id"] for m in account_registry.list_accounts()
             if m.get("has_session") and m.get("platform", "onlyfans") == "onlyfans"]
     if not live:
@@ -207,6 +214,13 @@ async def preempt(aid: str) -> None:
                     aid, PREEMPT_WAIT_S)
 
 
+def request_rewarm(aid: str) -> None:
+    """A proxy switch wiped `aid`'s vault cache (server._vault_after_proxy_switch): walk
+    its hot set at the next pick, ahead of every stale or never-walked account. A set:
+    a second request before that pass is the same one."""
+    _rewarm.add(aid)
+
+
 # ── pacing + one OF call ──────────────────────────────────────────────
 
 async def _of_call(aid: str, fn: Callable[..., Any], **kw: Any) -> Any:
@@ -250,17 +264,19 @@ async def _walked_recently(aid: str) -> bool:
 
 # ── picking ───────────────────────────────────────────────────────────
 
-def _due_rank(run: VaultCacheRun | None, now: datetime) -> tuple | None:
+def _due_rank(run: VaultCacheRun | None, now: datetime, rewarm: bool) -> tuple | None:
     """Sort key for an account that is due, None when it is not."""
-    if run is None or run.status == "abandoned":   # "abandoned": a legacy terminal row
-        return (1, datetime.min)
-    if run.status == "running":
+    if run is not None and run.status == "running":
         return (0, run.started_at or datetime.min)   # interrupted walk: resume first
+    if rewarm:
+        return (1, datetime.min)                     # proxy switch: whatever the last run's age
+    if run is None or run.status == "abandoned":   # "abandoned": a legacy terminal row
+        return (2, datetime.min)
     fin = run.finished_at or run.started_at or datetime.min
     if run.status == "error" and fin <= now - timedelta(seconds=ERROR_BACKOFF_S):
-        return (2, fin)
+        return (3, fin)
     if run.status == "done" and fin <= now - timedelta(seconds=STALE_S):
-        return (2, fin)
+        return (3, fin)
     return None
 
 
@@ -270,7 +286,7 @@ async def _pick() -> tuple[str, VaultCacheRun | None] | None:
     due: list[tuple[tuple, str, VaultCacheRun | None]] = []
     for aid in await _live_accounts():
         run = await _latest_auto_run(aid)
-        rank = _due_rank(run, now)
+        rank = _due_rank(run, now, aid in _rewarm)
         if rank is not None:
             due.append((rank, aid, run))
     due.sort(key=lambda t: t[0])
@@ -408,6 +424,8 @@ async def walk(aid: str, run: VaultCacheRun | None = None) -> None:
     if aid in vault_runs.manual_running:   # a manual Collect got there first
         return
     _auto_running.add(aid)
+    rewarm = aid in _rewarm   # dropped now: a setup that keeps failing must not stay rank 1 every tick
+    _rewarm.discard(aid)
     _abort[aid] = asyncio.Event()
     run_id: int | None = None
     try:
@@ -426,9 +444,11 @@ async def walk(aid: str, run: VaultCacheRun | None = None) -> None:
             await vault_runs.update_run(run_id, status="running", error=None, finished_at=None)
         client = await asyncio.to_thread(ax._make_client, aid)
 
-        if phase == P_HOT:
+        if phase == P_HOT or rewarm:   # a re-warm does the hot set first, then the saved phase
             upserted += await _hot(aid, client)
-            phase = f"{P_ALL}0"
+            rewarm = False  # hot finished: a later pause only resumes the saved phase
+            if phase == P_HOT:
+                phase = f"{P_ALL}0"
             await vault_runs.update_run(run_id, phase=phase, upserted=upserted)
 
         if phase.startswith(P_ALL) and await _walked_recently(aid):
@@ -470,6 +490,8 @@ async def walk(aid: str, run: VaultCacheRun | None = None) -> None:
         log.info("vault collect done account=%s run=%s pages=%s upserted=%s",
                  aid, run_id, pages, upserted)
     except Preempted as e:   # not an error: the row stays running at its cursor
+        if rewarm:  # the saved phase alone cannot remember unfinished hot pages
+            _rewarm.add(aid)
         log.info("vault collect paused account=%s run=%s: %s", aid, run_id, e)
     except Exception as e:  # noqa: BLE001 — a dead session must not kill the periodic
         log.warning("vault collect stopped account=%s run=%s: %s", aid, run_id, e)

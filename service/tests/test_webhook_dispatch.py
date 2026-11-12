@@ -21,6 +21,12 @@ Covers the event-driven dispatch path and the manual-chatter HARD YIELD:
       two jobs with neither waiting; the per-fan lock dict empties after.
   case_supervisor_wakes_on_event:
       wake_supervisor() makes the supervisor drain a due job well under 30s.
+  case_deferred_fan_dm_enqueues_one_backfill / case_deferred_backfill_shares_the_blast_claim /
+  case_not_deferred_fan_gets_no_backfill / case_deferred_check_failing_never_costs_the_reply:
+      a deferred chat's (scrape_history.history_deferred_at) DM enqueues one
+      `deferred_history` one-fan scrape, due now, supervisor woken, gate on or off,
+      beside the reply plan; a second DM inside the window none; a blast reply plus a
+      deferred chat one job; a not-deferred fan none; a failing check still replies.
   case_hard_yield_human_send_sets_cooldown:
       write_outbound_attribution with a HUMAN emp + mass_run_id=None → fan paused;
       the Automation sentinel and a manual BROADCAST (mass_run_id set) do NOT.
@@ -54,6 +60,7 @@ from db.models import (  # noqa: E402
     MassRun,
     Message,
     ScheduledJob,
+    ScrapeHistory,
     SkipList,
 )
 
@@ -512,7 +519,7 @@ async def _seed_blast_run(aid: str, *, minutes_ago: float) -> None:
 
 
 def _clear_claims() -> None:
-    wd._blast_scrape_claims.clear()
+    wd._fan_scrape_claims.clear()
 
 
 async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
@@ -643,6 +650,104 @@ async def case_the_scrape_runs_even_for_a_fan_nobody_will_answer():
     assert chat == [], [j.kind for j in chat]
 
 
+# ── fetch-diet phase-03: a deferred chat backfills on the fan's reply ─────────
+
+async def _seed_deferred(aid: str, fan_id: int, *, cursor: int | None = None) -> None:
+    """The row a `{}` sweep leaves for a Silent mass-only chat (cursor NULL, mark set);
+    `cursor` = a scraped chat instead (mark NULL)."""
+    now = datetime.utcnow()
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan_id, last_message_id=cursor, last_scrape_at=now,
+                            history_deferred_at=None if cursor else now))
+
+
+async def _scrapes(aid: str) -> list[dict]:
+    """Every scrape_chats job's payload on `aid`, whatever its status."""
+    async with get_session() as s:
+        return [json.loads(j.payload_json) for j in (await s.execute(
+            select(ScheduledJob).where(ScheduledJob.account_id == aid,
+                                       ScheduledJob.kind == "scrape_chats").order_by(ScheduledJob.id)
+        )).scalars().all()]
+
+
+async def case_deferred_fan_dm_enqueues_one_backfill():
+    """Gate off (no W7 config): his DM still buys the backfill, one job due now, woken.
+    Gate on: the same job beside the reply's own, which is untouched."""
+    _clear_claims()
+    for aid, gate in (("w7_deferred_off", None), ("w7_deferred_on", True)):
+        fan = 6401
+        await _seed_account(aid, webhook_enabled=gate)
+        await _seed_deferred(aid, fan)
+        woke = {"n": 0}
+        orig = ax.wake_supervisor
+        ax.wake_supervisor = lambda: woke.__setitem__("n", woke["n"] + 1)
+        try:
+            await wd.on_inbound_message(aid, fan, 1)
+        finally:
+            ax.wake_supervisor = orig
+        jobs = await _pending_jobs(aid, "scrape_chats")
+        assert [json.loads(j.payload_json) for j in jobs] == [
+            {"fan_ids": [fan], "source": "deferred_history"}], [j.payload_json for j in jobs]
+        assert jobs[0].run_at <= datetime.utcnow() + timedelta(seconds=2), jobs[0].run_at
+        replies = await _pending_jobs(aid, "welcome_chatter_for_info")
+        assert woke["n"] == (2 if gate else 1), woke
+        assert len(replies) == (1 if gate else 0), [j.payload_json for j in replies]
+        if gate:
+            assert _knobs(replies[0]) == {"only_fan_ids": [fan]}, replies[0].payload_json
+            # The backfill's write comes after the reply plan's, never ahead of it.
+            assert replies[0].id < jobs[0].id, (replies[0].id, jobs[0].id)
+        # A second DM inside the window: none (the first job pending, then done).
+        await wd.on_inbound_message(aid, fan, 2)
+        async with get_session() as s:
+            (await s.get(ScheduledJob, jobs[0].id)).status = "done"
+        await wd.on_inbound_message(aid, fan, 3)
+        assert await _scrapes(aid) == [{"fan_ids": [fan], "source": "deferred_history"}], await _scrapes(aid)
+
+
+async def case_deferred_backfill_shares_the_blast_claim():
+    """A blast reply on a deferred chat: one job (the blast's), not two."""
+    aid, fan = "w7_deferred_blast", 6402
+    await _seed_account(aid, webhook_enabled=True)
+    _clear_claims()
+    await _seed_blast_run(aid, minutes_ago=5)
+    await _seed_deferred(aid, fan)
+    await wd.on_inbound_message(aid, fan, 1)
+    await wd.on_inbound_message(aid, fan, 2)
+    assert await _scrapes(aid) == [{"fan_ids": [fan], "source": "blast_reply"}], await _scrapes(aid)
+
+
+async def case_not_deferred_fan_gets_no_backfill():
+    """No scrape_history row, or a scraped chat (cursor, no mark): his DM buys no scrape."""
+    _clear_claims()
+    aid = "w7_not_deferred"
+    await _seed_account(aid, webhook_enabled=None)
+    await _seed_deferred(aid, 6404, cursor=77)
+    await wd.on_inbound_message(aid, 6403, 1)
+    await wd.on_inbound_message(aid, 6404, 1)
+    assert await _scrapes(aid) == [], await _scrapes(aid)
+    # ...and claims nothing: a later deferred trigger for the same fan still enqueues.
+    assert await wd.enqueue_fan_scrape(aid, 6403, wd.DEFERRED_HISTORY_SOURCE) is True
+
+
+async def case_deferred_check_failing_never_costs_the_reply():
+    """The deferred read raising: no scrape, the reply still enqueued."""
+    _clear_claims()
+    aid, fan = "w7_deferred_raises", 6405
+    await _seed_account(aid, webhook_enabled=True)
+    await _seed_deferred(aid, fan)
+    orig = wd.history_deferred
+
+    async def boom(*a, **k):
+        raise RuntimeError("db gone")
+    wd.history_deferred = boom
+    try:
+        await wd.on_inbound_message(aid, fan, 1)
+    finally:
+        wd.history_deferred = orig
+    assert await _scrapes(aid) == [], await _scrapes(aid)
+    assert len(await _pending_jobs(aid, "welcome_chatter_for_info")) == 1
+
+
 _harness.run(
     case_gate_off_no_enqueue,
     case_global_kill_switch,
@@ -663,6 +768,10 @@ _harness.run(
     case_inbound_after_a_blast_enqueues_a_one_fan_scrape,
     case_a_human_of_app_blast_triggers_the_scrape_too,
     case_the_scrape_runs_even_for_a_fan_nobody_will_answer,
+    case_deferred_fan_dm_enqueues_one_backfill,
+    case_deferred_backfill_shares_the_blast_claim,
+    case_not_deferred_fan_gets_no_backfill,
+    case_deferred_check_failing_never_costs_the_reply,
     case_concurrent_same_fan_one_job,
     case_concurrent_two_fans_neither_waits,
 )

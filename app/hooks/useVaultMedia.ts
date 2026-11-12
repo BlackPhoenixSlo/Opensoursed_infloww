@@ -7,11 +7,14 @@
  * cache cleanly. Pages are appended via loadMore so the user can scroll-
  * fetch in the picker. Returns merged list + hasMore + isLoading + error.
  *
- * No background polling — the vault is owner-managed, refresh is on demand.
+ * No background polling — the vault is owner-managed, refresh is on demand. A picker open revalidates its
+ * folder list and first page once (`revalidateVaultLists`, `revalidateVaultMediaFirstPage`).
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import { infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type QueryClient, type QueryKey,
+} from "@tanstack/react-query";
 
 import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultTypeCounts, type VaultMediaResp } from "@/lib/relay";
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
@@ -19,6 +22,7 @@ import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { type FanId } from "@/lib/fanId";
 import { mirrorThumbSrc } from "@/lib/mediaUrl";
+import { invalidateVaultQueries, vaultReadOwners } from "@/lib/vaultInvalidation";
 
 const PAGE = 24;
 
@@ -70,11 +74,12 @@ export function useChatterFolderAccess(accountId: string | null, enabled = true)
  *  this — a single-page queryFn under the same key would repoison the
  *  cache with a truncated folder list for its whole staleTime. */
 export async function fetchAllVaultLists(
-  ctx: RelayContext, { refresh = false }: { refresh?: boolean } = {},
+  ctx: RelayContext, { refresh = false, revalidate = false }: { refresh?: boolean; revalidate?: boolean } = {},
 ): Promise<VaultListsResp> {
   const LISTS_PAGE = 50;
-  // `refresh=1`: the relay skips its shared vault cache (a day's TTL) and asks OF.
-  const bypass = refresh ? "&refresh=1" : "";
+  // `refresh=1`: the relay skips its shared vault cache (a day's TTL) and asks OF. `revalidate=1` (the picker's
+  // open): the relay's copy only when younger than VAULT_PICKER_REVALIDATE_S, else OF.
+  const bypass = refresh ? "&refresh=1" : revalidate ? "&revalidate=1" : "";
   const merged: VaultList[] = [];
   let all: VaultTypeCounts | undefined;
   let offset = 0;
@@ -193,6 +198,157 @@ export async function dropRelayVaultCache(accountId: string): Promise<void> {
   }
 }
 
+/** The query string of one live vault listing page (`vaultMediaQuery`'s fetcher and the picker's revalidate). */
+function vaultMediaParams(opts: Omit<UseVaultMediaOpts, "enabled">, offset: number): URLSearchParams {
+  const { type = "all", listId = null, sort = "newest", query = "" } = opts;
+  const params = new URLSearchParams();
+  params.set("limit", String(PAGE));
+  params.set("offset", String(offset));
+  params.set("type", type);
+  // OF orders server-side; asc = oldest-first. Sorting here (not a
+  // client reverse) keeps infinite-scroll appending in the right place.
+  params.set("sort", sort === "oldest" ? "asc" : "desc");
+  if (listId != null) params.set("list_id", String(listId));
+  if (query.trim()) params.set("query", query.trim());
+  return params;
+}
+
+// Sidecar reads do not run through Query.fetch. Give each one ownership until a newer
+// sidecar, normal refresh, cache write/reset, invalidation or removal supersedes it.
+// Listen to fetch START, not data identity/time: a refetch can share all its old data.
+// Pagination is the sole exception; it appends to the snapshot we are refreshing.
+function ownVaultRead(qc: QueryClient, queryKey: QueryKey) {
+  const cache = qc.getQueryCache();
+  const query = cache.build(qc, { queryKey });
+  const token = Symbol();
+  vaultReadOwners.set(query, token);
+  let valid = true;
+  let cancelling = false;
+  const stop = cache.subscribe((event) => {
+    if (event.query !== query) return;
+    if (event.type === "removed") valid = false;
+    if (event.type !== "updated") return;
+    const action = event.action;
+    if ((action.type === "fetch" && !action.meta?.fetchMore)
+        || (action.type === "success" && (action.manual || !query.state.fetchMeta?.fetchMore))
+        || action.type === "invalidate"
+        || (action.type === "setState" && !cancelling)) valid = false;
+  });
+  return {
+    query,
+    current: () => valid && vaultReadOwners.get(query) === token
+      && cache.find({ queryKey, exact: true }) === query,
+    cancel: () => {
+      // cancelQueries synchronously restores the pre-pagination state. That one
+      // setState is ours; newer fetch/write events still revoke ownership.
+      cancelling = true;
+      try { return qc.cancelQueries({ queryKey, exact: true }); }
+      finally { cancelling = false; }
+    },
+    release: () => {
+      stop();
+      if (vaultReadOwners.get(query) === token) vaultReadOwners.delete(query);
+    },
+  };
+}
+
+/** Settle only pagination before writing: its snapshot still contains the old signed
+ *  URLs. A normal refetch owns its result (even if it began before this sidecar). */
+async function writeAfterVaultPaging(
+  read: ReturnType<typeof ownVaultRead>, unchanged: boolean, write: () => void,
+): Promise<void> {
+  const q = read.query;
+  while (read.current() && q.state.fetchStatus !== "idle") {
+    if (!q.state.fetchMeta?.fetchMore) return;
+    if (unchanged) await q.promise?.catch(() => {});
+    else await read.cancel();
+  }
+  // No yield between the final ownership/paging check and the cache write.
+  if (read.current()) write();
+}
+
+/** The picker's open: read folders through the relay's age gate, swapping the
+ *  painted copy only while no newer refresh or local folder edit owns it. */
+export async function revalidateVaultLists(qc: QueryClient, accountId: string): Promise<void> {
+  const key = vaultListsKey(accountId);
+  const read = ownVaultRead(qc, key);
+  try {
+    const r = await fetchAllVaultLists({ accountId }, { revalidate: true });
+    if (read.current() && read.query.state.fetchStatus === "idle") qc.setQueryData(key, r);
+  } finally { read.release(); }
+}
+
+const sameIds = (a: VaultMediaResp, b: VaultMediaResp): boolean => {
+  const x = a.list ?? [], y = b.list ?? [];
+  return x.length === y.length && x.every((m, i) => m.id === y[i].id) && !!a.hasMore === !!b.hasMore;
+};
+
+/** The same for the open view's first media page. Unchanged ids: replace page 1, keep later pages. Changed: restart from the
+ *  fresh page 1 (an in-flight next page cancelled) and the eager prefetch reads page 2 again at the new offsets;
+ *  keeping the old later pages would drop (or repeat) the media the new ones shifted. The relay dropped its own
+ *  copies of those offsets when it saw page 1's new ids (server._vault_read), so that read goes to OF. */
+export async function revalidateVaultMediaFirstPage(
+  qc: QueryClient, opts: Omit<UseVaultMediaOpts, "enabled">,
+): Promise<void> {
+  const { queryKey } = vaultMediaQuery(opts);
+  const read = ownVaultRead(qc, queryKey);
+  const old = qc.getQueryData(queryKey);
+  try {
+    const params = vaultMediaParams(opts, 0);
+    params.set("revalidate", "1");
+    const fresh = await relay.get<VaultMediaResp>(
+      `/api/of/v2/vault/media?${params.toString()}`, { accountId: opts.accountId ?? undefined },
+    );
+    if (!old?.pages.length) return;
+    const unchanged = sameIds(old.pages[0], fresh);
+    await writeAfterVaultPaging(read, unchanged, () => qc.setQueryData(queryKey, (current) => {
+      if (!read.current() || !current) return undefined;
+      return unchanged
+        ? { ...current, pages: [fresh, ...current.pages.slice(1)] }
+        : { pages: [fresh], pageParams: [0] };
+    }));
+  } finally { read.release(); }
+}
+
+/** A grid's broken thumbnails on the live listing (hooks/vaultRefresh `reloadBrokenThumbs`): every loaded page of
+ *  each view on screen read again through the relay's age gate (`revalidate=1`), page 1 first, and put back in
+ *  place. Page 1's read joins the open's in-flight revalidate (the relay coalesces them) or finds the copy it just
+ *  stored, so a reload right after an open costs OF no second page-1 read; an older copy is read from OF, freshly
+ *  signed. Views not on screen are only marked stale. */
+export async function revalidateLoadedVaultPages(qc: QueryClient, accountId: string): Promise<void> {
+  const root = vaultMediaKey(accountId);
+  const active = qc.getQueryCache().findAll({ queryKey: root, type: "active" });
+  // refetchType:none invalidates synchronously; take ownership before yielding.
+  void invalidateVaultQueries(qc, { queryKey: root, refetchType: "none" });
+  await Promise.allSettled(active.map(async (q) => {
+    const read = ownVaultRead(qc, q.queryKey);
+    try {
+      const [, , type, listId, sort, query] = q.queryKey as [
+        string, string, UseVaultMediaOpts["type"], FanId | null, UseVaultMediaOpts["sort"], string,
+      ];
+      const opts: Omit<UseVaultMediaOpts, "enabled"> = { accountId, type, listId, sort, query };
+      const data = qc.getQueryData<InfiniteData<VaultMediaResp, number>>(q.queryKey);
+      if (!data?.pages.length) return;
+      const pages: VaultMediaResp[] = [];
+      for (const offset of data.pageParams) {
+        if (!read.current()) return;
+        const params = vaultMediaParams(opts, offset);
+        params.set("revalidate", "1");
+        pages.push(await relay.get<VaultMediaResp>(`/api/of/v2/vault/media?${params.toString()}`, { accountId }));
+        if (!pages[pages.length - 1].hasMore) break;
+      }
+      const unchanged = pages.length === data.pages.length && pages.every((page, i) => sameIds(data.pages[i], page));
+      await writeAfterVaultPaging(read, unchanged, () => qc.setQueryData<InfiniteData<VaultMediaResp, number>>(q.queryKey, (current) => {
+        if (!read.current() || !current) return undefined;
+        // Appended pages remain valid only when the refreshed offsets have the same membership.
+        return unchanged
+          ? { ...current, pages: [...pages, ...current.pages.slice(pages.length)] }
+          : { pages, pageParams: data.pageParams.slice(0, pages.length) };
+      }));
+    } finally { read.release(); }
+  }));
+}
+
 /** The one key, pager and fetcher for a live vault listing view: useVaultMedia
  *  and a background Vault warm (on the background lane)
  *  both take them from here. */
@@ -208,15 +364,7 @@ export function vaultMediaQuery(
     getNextPageParam: (last: VaultMediaResp, all: VaultMediaResp[]) =>
       last.hasMore ? all.length * PAGE : undefined,
     queryFn: async ({ pageParam, signal }) => {
-      const params = new URLSearchParams();
-      params.set("limit", String(PAGE));
-      params.set("offset", String(pageParam ?? 0));
-      params.set("type", type);
-      // OF orders server-side; asc = oldest-first. Sorting here (not a
-      // client reverse) keeps infinite-scroll appending in the right place.
-      params.set("sort", sort === "oldest" ? "asc" : "desc");
-      if (listId != null) params.set("list_id", String(listId));
-      if (queryTrimmed) params.set("query", queryTrimmed);
+      const params = vaultMediaParams(opts, (pageParam as number) ?? 0);
       // Per-fetch perf op. `vault.media` covers the initial fetch (the one
       // the user feels as "vault open"), filter switches (a fresh fetch
       // under a new queryKey), and infinite-scroll page loads. We tag the

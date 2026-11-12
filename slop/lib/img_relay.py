@@ -6,15 +6,18 @@ it: without the file `POST /__slop/img/arm` is a 409 that changes nothing, and n
 other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the client build error, as
 `_OfflineOF.__getattr__` did before this part existed: unarmed, nothing here can reach curl).
 
-  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None, stall=None)  (harness side) writes
-       `of-cdn.json` {latency_s, pictures, assets: {"host/path": size}, mp4_sizes, stall}, POSTs the arm hook and
+  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None, stall=None, mp4_frames=None)  (harness
+       side) writes `of-cdn.json` {latency_s, pictures, assets: {"host/path": size}, mp4_sizes, stall, mp4_frames},
+       POSTs the arm hook and
        answers its body. `stall` {"host/path": {"after": K, "hold_s": S}}: that key's 200 sends its headers and first
        K bytes, then nothing for S s (a CDN response throttled to zero bytes mid-body), then the rest if the peer
        is still there (the relay's curl drops it first: LOW_SPEED_TIME = its 30 s timeout).
        `pictures`: every asset's bytes are a real picture (`picture_bytes`, a small PNG; size ignored) so a browser
        draws it and vault_stills keeps it. `mp4_sizes` {"host/path.mp4": size}: that video is the clip padded to
-       exactly `size` (`padded_mp4`: one trailing `free` box), a big file without encoding one. Arming again
-       re-reads the file (same server; a re-sized key's cached bytes are dropped).
+       exactly `size` (`padded_mp4`: one trailing `free` box), a big file without encoding one. `mp4_frames`
+       {"host/path.mp4": {"size": [W, H], "rgb": [[r, g, b], ...]}}: that video is `colour_clip` instead (one flat
+       colour per second, W x H; padded too when in `mp4_sizes`). Arming again re-reads the file (same server; a
+       re-sized key's cached bytes are dropped).
   POST /__slop/img/arm   (loopback; 409 without the file or under SLOP_LIVE=1)
        1. The fake CDN: a loopback ThreadingHTTPServer in the relay process (a thread per request). Per request,
           after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
@@ -22,7 +25,8 @@ other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the cli
           Key-Pair-Id, whose Policy's `exp` is past, or whose Policy names an `AWS:SourceIp` other than the
           request's egress, is 403 AccessDenied (CloudFront's answer; the Policy is CloudFront's custom one,
           `policy_b64` / `policy_exp` / `policy_ip`); an unseeded path 404. A `.mp4` key's bytes are a real
-          12 s clip (`video_bytes`, ffmpeg testsrc 64x64 at 1 fps, size ignored), so /img/scrub's ffmpeg slices it.
+          12 s clip (`video_bytes`, ffmpeg testsrc 64x64 at 1 fps, size ignored; an `mp4_frames` key's its
+          `colour_clip`), so /img/scrub's ffmpeg slices it.
           A `Range: bytes=` header (one spec) gets that slice: 206 + Content-Range (416 past the end).
        2. curl_cffi at its wire: `relay._guard_curl_cffi()` first (curl_cffi goes past relay_guarded's socket guard;
           it refuses every non-loopback host from now on), then `curl_cffi.requests.Session.request` wrapped so a
@@ -80,7 +84,8 @@ ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `cr
 OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
 _lock = threading.Lock()
 _calls: list[dict] = []
-_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}, "stall": {}}
+_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}, "stall": {},
+              "mp4_frames": {}}
 _state = {"port": None, "armed": False, "inflight": 0}
 _bytes: dict[str, bytes] = {}
 _sessions: dict[str, object] = {}
@@ -154,11 +159,11 @@ def creator_headers(account_id: str) -> dict[str, str]:
 
 
 async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False,
-                  mp4_sizes: dict | None = None, stall: dict | None = None) -> dict:
+                  mp4_sizes: dict | None = None, stall: dict | None = None, mp4_frames: dict | None = None) -> dict:
     """Harness side: `assets` {"host/path": {size, ...}} into the config file, then the arm hook."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
         "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()},
-        "mp4_sizes": mp4_sizes or {}, "stall": stall or {}}))
+        "mp4_sizes": mp4_sizes or {}, "stall": stall or {}, "mp4_frames": mp4_frames or {}}))
     r = await http.post("/__slop/img/arm")
     if r.status_code != 200:
         raise RuntimeError(f"slop: img arm hook answered {r.status_code}: {r.text[:200]}")
@@ -220,6 +225,24 @@ def video_bytes() -> bytes:
         return out.read_bytes()
 
 
+@cache
+def colour_clip(w: int, h: int, rgb: tuple) -> bytes:
+    """A len(rgb)-second w x h H.264 mp4, second i one flat colour rgb[i]. 4 fps, so the product's mid-second seek
+    (`vault_frames._extract_jev`: frame i at i + 0.5 s) lands on a frame of second i (at 1 fps ffmpeg's accurate
+    seek drops the frame at i and returns the next: measured 11-12)."""
+    import subprocess
+    import tempfile
+
+    from PIL import Image
+    raw = b"".join(Image.new("RGB", (w, h), tuple(c)).tobytes() for c in rgb for _ in range(4))
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "clip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", "4",
+                        "-i", "-", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
+                       input=raw, check=True, timeout=60)
+        return out.read_bytes()
+
+
 def padded_mp4(clip: bytes, size: int) -> bytes:
     """`clip`, then one ISO-BMFF `free` box (players skip it) up to exactly `size` bytes."""
     pad = size - len(clip)
@@ -230,9 +253,11 @@ def _body(key: str, size: int) -> bytes:
     with _lock:
         b = _bytes.get(key)
         big = _cfg["mp4_sizes"].get(key)
+        fr = _cfg["mp4_frames"].get(key)
     if b is None:
         if key.endswith(".mp4"):
-            b = padded_mp4(video_bytes(), int(big)) if big else video_bytes()
+            clip = colour_clip(*fr["size"], tuple(tuple(c) for c in fr["rgb"])) if fr else video_bytes()
+            b = padded_mp4(clip, int(big)) if big else clip
         else:
             b = picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
         with _lock:
@@ -406,9 +431,10 @@ def _arm() -> dict:
     with _lock:
         assets = d.get("assets") or {}
         big = d.get("mp4_sizes") or {}
-        for k in set(big) | set(_cfg["mp4_sizes"]):
+        frames = d.get("mp4_frames") or {}
+        for k in set(big) | set(_cfg["mp4_sizes"]) | set(frames) | set(_cfg["mp4_frames"]):
             _bytes.pop(k, None)
-        _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets}, mp4_sizes=big,
+        _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets}, mp4_sizes=big, mp4_frames=frames,
                     latency_s=float(d.get("latency_s") or 0), pictures=bool(d.get("pictures")),
                     stall=d.get("stall") or {})
     cache = Path(os.environ["DEMO_SHOTS_TMP"]) / "img-cache"

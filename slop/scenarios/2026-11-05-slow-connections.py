@@ -62,6 +62,27 @@ counts only its own requests). TARGET_MS (the post-fix aims) is recorded in the 
 a post-fix run met it with the budgets' jitter headroom (receive on jp, jp-mobile: RECEIVE_LIMIT_MS); the rest keep
 BUDGET_MS, gaps there.
 
+Before the profiles (`_pins_and_wall`, untimed, UI or not; each profile's cold relay drops the caches after it):
+PINS_ONCE (fetch-diet 09: server's `chat_pinned` relay_cache, PINS_CACHE_TTL_S): the opened chat's `/api/of/v2/chats/{fan}/pinned`
+read twice in a row (two tabs) and another chat of its Creator three at once make one OF `/pinned` read each
+(`/chats/{fan}/messages?filter=pinned` on the wire), the answers 200 and the two alike. WALL_NO_ME: every Creator's
+wall-media warm (`GET /admin/vault/wall-media`, the picker's read) answers 200, and the OF call counter's file
+(service/of_call_counter.py, flushed every 1 s here: RELAY_ENV) holds no `/users/me` under that route's Caller kind
+and one `/users/{}/posts` per warm (so the scan ran). Faults (slop/lib/faults.py): `pins-uncached` (TTL 0) targets
+PINS_ONCE, `wall-calls-me` (the scan asks /users/me again) targets WALL_NO_ME; both run `--no-ui` too.
+
+After the profiles (`_warm_reuse`, untimed, UI only; fetch-diet 16): Messages Pro at 1600x1000 through the edge,
+unthrottled. Two Fans DM first (`dm`: OF's thread and chat list too), so they are the two newest unread chats and the
+unread warm's first tier reads both. LATE_DM_S after X's warm landed X DMs again (SSE puts it in the cached thread).
+WARM_REUSED: X's row clicked REUSE_OPEN_S (17.5) after its warm, inside UNREAD_WARM_REUSE_MS (20 s) but past the 15 s
+every other open uses: X's head GETs, in the page and on OF's wire, stay one (the warm's). WARM_FRESH: X's open shows
+the late DM, and Y's row clicked PAST_OPEN_S (23) after its warm reads the head page again (two). Screenshots
+`warm-reuse-trigger.png` (the Fan List, X's row with the late DM), `warm-reuse-settled.png` (X's thread),
+`warm-past-settled.png`. Fault `warm-not-reused` (slop/lib/faults.py, a client fault: the leg's context alone routes
+the production build's JS through actors/ui.py `_patched`, from the app on loopback) drops the window from the inbox
+Thread and the Fan List's press warm-up (the fix reverted): targets WARM_REUSED only. `warm-window-wide` widens both
+to 60 s, so Y's open rides the warm too: targets WARM_FRESH only.
+
 Raw Playwright behind lib/wan.py's edge, not actors/ui.py's owner_browser: that context routes every request
 (`route("**/*")`: Chromium's HTTP cache off, so each flow would refetch every chunk a phone keeps) and holds
 /api/of/, and it opens the app's own port, not the TLS + HTTP/2 edge a deployment serves. `_cold_relay` is not
@@ -121,9 +142,12 @@ from urllib.parse import parse_qs, urlsplit
 from playwright.async_api import async_playwright
 
 from slop.actors import fan_dm, manager
-from slop.actors.ui import LAUNCH_ARGS, track
+from slop.actors.ui import LAUNCH_ARGS, _client_fault, _patched, track
+from slop.lib import of_call_stats
 from slop.lib.chat_open_faults import THREAD_BUNDLE, THREAD_ONCE
+from slop.lib.faults import PINS_ONCE, WALL_NO_ME, WARM_FRESH, WARM_REUSED
 from slop.lib.img_relay import arm_run, policy_exp, signed
+from slop.lib.http_failure_evidence import HttpFailureEvidence
 from slop.lib.net import DEFAULT_PROFILES, PROFILES, Meter, emulate, is_wire
 from slop.lib.netloss import HELPER, INSTALL, calibrate, wired
 from slop.lib.net_faults import LOSSY_SI_FORCED, SI_FORCED, budget_check
@@ -136,7 +160,8 @@ from slop.seed import creators as creators_seed
 
 UI = True
 APP_MODE = "prod"
-RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test"}  # push on, as in prod (else GET /push/key 503)
+RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test",  # push on, as in prod (else GET /push/key 503)
+             "OF_CALL_STATS_FLUSH_S": "1"}  # WALL_NO_ME reads the OF call counter's file (prod flushes every 30 s)
 OF_WIRE = True
 WIRE_NET = True  # this scenario drives the browser through a shaped edge port
 FAULT = SI_FORCED
@@ -291,7 +316,7 @@ C_SSE_ALL = "receive: every DM reached the manager's /events"
 C_NO_5XX = "no request the page sent was answered 5xx"
 C_HTML_PRIVATE = ("a signed-in document load's HTML (it carries that user's inline answers) is never stored: Cache-Control "
                   "private and no-store")
-UI_CHECKS = (C_HTML_PRIVATE, C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE, C_AGAIN,
+UI_CHECKS = (WARM_REUSED, WARM_FRESH, C_HTML_PRIVATE, C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE, C_AGAIN,
              C_INLINE, THREAD_ONCE, THREAD_BUNDLE)
 # C_INLINE: per document-load flow, the reads its HTML carries (app/lib/inlineBoot.server.ts inlinePaths; a bundle's
 # follow-up, `accounts=`, is the browser's own). The Dashboard's HTML carries no bundle: none of its cards reads one,
@@ -320,6 +345,156 @@ SEEN_JS = r"""() => { if (window.__seen) return; window.__seen = {};
   mark(); new MutationObserver(mark).observe(document.body, {childList: true, subtree: true}); }"""
 
 
+WALL = "route:GET /admin/vault/wall-media"   # the wall scan's Caller kind in the OF call counter's file
+WALL_ME, WALL_POSTS = "GET /api2/v2/users/me", "GET /api2/v2/users/{}/posts"
+
+
+def _pinned_calls(fake, since: int, aid: str, fan: int) -> int:
+    """OF's /pinned reads (`/chats/{fan}/messages?filter=pinned`) of `aid` on the wire since call index `since`."""
+    with fake.lock:
+        calls = fake.calls[since:]
+    return sum(1 for c in calls if c["account"] == aid and c["path"] == f"/api2/v2/chats/{fan}/messages"
+               and "filter=pinned" in (c.get("query") or ""))
+
+
+async def _pins_and_wall(ctx, cs: list[dict], opened: dict, by_creator: dict) -> dict:
+    """Untimed, before the profiles (each restarts the relay: its caches go): PINS_ONCE and WALL_NO_ME on the real
+    routes. Pins: the opened chat read twice in a row (two tabs), another chat of its Creator three at once; OF's
+    /pinned reads on the wire. Wall: every Creator's wall-media warm (`GET /admin/vault/wall-media`, the picker's
+    read), then the OF call counter's file (lib/of_call_stats.py: settled, flushed every 1 s via RELAY_ENV) under
+    that route's Caller kind."""
+    fake, aid, fan = ctx.of_wire, opened["account_id"], opened["id"]
+    other = next(f["id"] for f in by_creator[aid] if f["id"] != fan)
+    hdr = {"X-Account-Id": aid}
+    with fake.lock:
+        since = len(fake.calls)
+    seq = [await ctx.owner.get(f"/api/of/v2/chats/{fan}/pinned", headers=hdr) for _ in range(2)]
+    par = await asyncio.gather(*(ctx.owner.get(f"/api/of/v2/chats/{other}/pinned", headers=hdr) for _ in range(3)))
+    pins = {"statuses": [r.status_code for r in (*seq, *par)], "seq_of_calls": _pinned_calls(fake, since, aid, fan),
+            "par_of_calls": _pinned_calls(fake, since, aid, other),
+            "same_body": seq[0].status_code == 200 and seq[0].json() == seq[1].json()}
+    ctx.check(PINS_ONCE, all(x == 200 for x in pins["statuses"]) and pins["same_body"]
+              and pins["seq_of_calls"] == 1 and pins["par_of_calls"] == 1, **pins)
+
+    walls = await asyncio.gather(*(ctx.owner.get(f"/admin/vault/wall-media?account_id={c['id']}") for c in cs))
+    raw, _all, _n = await of_call_stats.settled(fake, of_call_stats.path(ctx))
+    rows: dict[str, int] = {}
+    for (route, _creator, klass), n in of_call_stats.counts(raw, WALL).items():
+        rows[f"{route} {klass}"] = rows.get(f"{route} {klass}", 0) + n
+    me = sum(n for k, n in rows.items() if k.startswith(WALL_ME + " "))
+    wall = {"warms": len(cs), "statuses": sorted({r.status_code for r in walls}), "me_calls": me,
+            "posts_calls": rows.get(f"{WALL_POSTS} 2xx", 0), "rows": rows}
+    ctx.check(WALL_NO_ME, wall["statuses"] == [200] and me == 0 and wall["posts_calls"] == len(cs), **wall)
+    return {"pins": pins, "wall": wall}
+
+
+# The warm leg (fetch-diet 16): app/hooks/useUnreadMessagesPrefetch.ts UNREAD_WARM_REUSE_MS, the inbox Thread's
+# prefetch window; every other open's is useChatMessages' STALE_MS (15 s). Opens at these offsets from the warm's read
+# landing: inside the window but past 15 s (only the window reuses), and past it.
+WARM_REUSE_S, REUSE_OPEN_S, PAST_OPEN_S, LATE_DM_S = 20.0, 17.5, 23.0, 5.0
+HEAD_RX = re.compile(r"^/api/of/v2/chats/(\d+)/messages$")
+
+
+def _head_fan(path: str, query: str) -> int | None:
+    """The Fan a thread's head-page GET names (`/api/of/v2/chats/{fan}/messages`, no `before_id` / `filter`)."""
+    m = HEAD_RX.match(path)
+    return int(m.group(1)) if m and not {"before_id", "id", "filter"} & set(parse_qs(query)) else None
+
+
+def _wire_heads(fake, since: int, aid: str, fan: int) -> int:
+    """OF's head reads of (`aid`, `fan`) on the wire since call index `since` (no `id` cursor, no pinned filter)."""
+    with fake.lock:
+        calls = fake.calls[since:]
+    return sum(1 for c in calls if c["account"] == aid and c["path"] == f"/api2/v2/chats/{fan}/messages"
+               and not {"id", "filter"} & set(parse_qs(c.get("query") or "")))
+
+
+async def _warm_reuse(ctx, browser, edge, plan: dict, by_creator: dict) -> dict:
+    """Untimed, after the profiles (it leaves the opened Fan's place alone): WARM_REUSED and WARM_FRESH in Messages
+    Pro (1600x1000, the edge unthrottled). Fans X and Y DM (X last: the two newest unread chats, the unread warm's
+    first tier), then the page loads and warms both. LATE_DM_S after X's warm landed X DMs again; at REUSE_OPEN_S
+    X's row is clicked (its thread must show the late DM), at PAST_OPEN_S Y's. Head GETs per Fan from the page's
+    requests and OF's wire. Under a client fault the page's JS comes patched from the app on loopback."""
+    fake, shots = ctx.of_wire, ctx.out / "screenshots"
+    rng = ctx.world.rng("slow-conn:warm")
+    pool = [dict(f, account_id=c["id"]) for c in plan["creators"] for f in by_creator[c["id"]]
+            if f["id"] != plan["opened"]["id"]]
+    y, x = rng.sample(pool, 2)
+    texts = {"x": f"slop warm x {ctx.seed}", "y": f"slop warm y {ctx.seed}", "late": f"slop late x {ctx.seed}"}
+    out: dict = {"x": {"account_id": x["account_id"], "fan": x["id"]}, "y": {"account_id": y["account_id"],
+                                                                              "fan": y["id"]}}
+
+    async def dm(f: dict, text: str) -> int:
+        mid = next(_IDS)
+        fr = fan_dm.frame(mid, f, text)
+        with fake.lock:
+            fake.messages.setdefault(f["account_id"], {}).setdefault(f["id"], []).insert(0, fr["api2_chat_message"])
+            fake.head_chat(f["account_id"], f["id"], fr["api2_chat_message"])
+            head = fake.chats[f["account_id"]][0]  # unread on OF's list, as an inbound message leaves it
+            head["unreadMessagesCount"] = (head.get("unreadMessagesCount") or 0) + 1
+        (await fan_dm.inject(ctx.owner, f["account_id"], fr)).raise_for_status()
+        await manager.quiesce(ctx.owner)
+        return mid
+
+    await dm(y, texts["y"])
+    await asyncio.sleep(1.1)  # X newest by any stamp
+    await dm(x, texts["x"])
+    bctx = await browser.new_context(viewport={"width": 1600, "height": 1000}, service_workers="block")
+    track(ctx, bctx)
+    if patches := _client_fault(ctx):
+        await bctx.route("**/_next/static/**/*.js", lambda r: _patched(r, ctx, patches, origin=ctx.app))
+    await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url, "expires": time.time() + 86400}
+                            for c in ctx.owner.c.cookies.jar])
+    heads: dict[int, list[float]] = {}
+
+    def finished(req) -> None:
+        u = urlsplit(req.url)
+        fan = _head_fan(u.path, u.query) if req.method == "GET" else None
+        if fan is not None:
+            heads.setdefault(fan, []).append(time.monotonic())
+    try:
+        with fake.lock:
+            since = len(fake.calls)
+        page = await bctx.new_page()
+        page.on("requestfinished", finished)
+        await page.goto(edge.url + "/messages-pro", wait_until="commit", timeout=plan["timeout_ms"])
+        await page.locator("[data-chat-row]").first.wait_for(timeout=plan["timeout_ms"])
+        end = time.monotonic() + 30
+        while not (heads.get(x["id"]) and heads.get(y["id"])) and time.monotonic() < end:
+            await asyncio.sleep(0.05)
+        if not (heads.get(x["id"]) and heads.get(y["id"])):
+            out["error"] = f"the unread warm did not read both threads within 30 s: {sorted(heads)}"
+            return out
+        t_x, t_y = heads[x["id"]][0], heads[y["id"]][0]
+        await asyncio.sleep(max(0.0, t_x + LATE_DM_S - time.monotonic()))
+        late = await dm(x, texts["late"])
+        row_x = page.locator("[data-chat-row]", has_text=texts["late"]).first
+        await row_x.wait_for(timeout=10_000)  # SSE moved the late DM into X's row (and its cached thread)
+        await asyncio.sleep(max(0.0, t_x + REUSE_OPEN_S - time.monotonic()))
+        await _shot(page, str(shots / "warm-reuse-trigger.png"))
+        t0 = time.monotonic()
+        await row_x.click()
+        out["x"]["open_after_warm_s"] = round(t0 - t_x, 2)
+        try:
+            await page.locator(f'[data-msg-id="{late}"]').first.wait_for(timeout=10_000)
+            out["x"]["late_dm_ms"] = round((time.monotonic() - t0) * 1000)
+        except Exception:  # noqa: BLE001  judged by WARM_FRESH
+            out["x"]["late_dm_ms"] = None
+        await page.wait_for_timeout(2_000)  # a read the open sends would have landed by now
+        await _shot(page, str(shots / "warm-reuse-settled.png"))
+        out["x"].update(browser_heads=len(heads.get(x["id"], [])), wire_heads=_wire_heads(fake, since, x["account_id"],
+                                                                                           x["id"]))
+        await asyncio.sleep(max(0.0, t_y + PAST_OPEN_S - time.monotonic()))
+        t0 = time.monotonic()
+        await page.locator("[data-chat-row]", has_text=texts["y"]).first.click()
+        out["y"]["open_after_warm_s"] = round(t0 - t_y, 2)
+        await page.wait_for_timeout(2_500)
+        await _shot(page, str(shots / "warm-past-settled.png"))
+        out["y"].update(browser_heads=len(heads.get(y["id"], [])), wire_heads=_wire_heads(fake, since, y["account_id"],
+                                                                                           y["id"]))
+    finally:
+        await bctx.close()
+    return out
 
 
 
@@ -564,6 +739,7 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
     await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url, "expires": time.time() + 86400}
                             for c in ctx.owner.c.cookies.jar])
     out: dict = {"flows": {}, "found": {}, "relay": plan["relay"]}
+    failure_evidence = HttpFailureEvidence(bctx)
     try:
         page = await bctx.new_page()
         cdp = await bctx.new_cdp_session(page)
@@ -769,7 +945,11 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
         out["found"]["again"] = {"bumped": bumped, "new_count": count(bumped) if bumped is not None else None,
                                  "fans": await page.evaluate(FANS_JS), "converged_ms": r["converged_ms"]}
     finally:
-        await bctx.close()
+        try:
+            evidence = await failure_evidence.finish()
+            (ctx.out / f"http-failures-{prof}.json").write_text(json.dumps(evidence, indent=2))
+        finally:
+            await bctx.close()
     return out
 
 
@@ -811,6 +991,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     chunks = {p: pool[i * ctx.users:(i + 1) * ctx.users] for i, p in enumerate(bursts)}
     if ctx.users < 1 or any(len(v) != ctx.users for v in chunks.values()):
         raise RuntimeError(f"receive: {len(pool)} Fans seeded, {len(bursts)} bursts x --users={ctx.users} wanted")
+
+    ctx.metric("pins_and_wall", await _pins_and_wall(ctx, cs, opened, by_creator))
 
     if not ctx.ui:
         b = await _burst(ctx, chunks[profiles[0]], None)
@@ -860,6 +1042,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                     burst = res[p].pop("burst")
                     res[p]["burst"] = {k: burst[k] for k in ("sent", "e2e", "missing_sse", "stats", "tracked")}
                     (ctx.out / f"net-{p}.json").write_text(json.dumps(res[p], indent=1, default=str))
+                warm = await _warm_reuse(ctx, browser, edge, plan, by_creator)
             finally:
                 await browser.close()
     finally:
@@ -913,6 +1096,15 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              *(f"{p:12} {f:10} {d['n']:>4} {str(d['p50']):>7} {str(d['p95']):>7} {str(d['max']):>7}  "
                f"{d['over_10s']:>3} {d['over_60s']:>3} {d['unfinished']:>3} {d['failed']:>3}  {d['max_path']}"
                for p, by in req_ms.items() for f, d in by.items()))
+
+    # The warm leg (fetch-diet 16): X opened inside the window rides the warm; Y past it reads again.
+    ctx.metric("warm_reuse", warm)
+    wx, wy = warm["x"], warm["y"]
+    ctx.check(WARM_REUSED, "error" not in warm and wx.get("open_after_warm_s", 99) < WARM_REUSE_S
+              and wx.get("browser_heads") == 1 and wx.get("wire_heads") == 1, **warm)
+    ctx.check(WARM_FRESH, "error" not in warm and wx.get("late_dm_ms") is not None
+              and wy.get("open_after_warm_s", 0) > WARM_REUSE_S and wy.get("browser_heads") == 2
+              and wy.get("wire_heads") == 2, **warm)
 
     # Correctness, per profile.
     bad_rows = {p: res[p]["found"].get("fan_rows") for p in profiles if res[p]["found"].get("fan_rows") != want_rows}

@@ -22,13 +22,27 @@ The contract below was captured LIVE (2026-07-22, Ava):
     `hasMore` is ALWAYS true — stop on a short page, never on hasMore.
   • deleting a promo does not remove it from /promotions; OF flips it to
     isFinished=true / canClaim=false and keeps it in history.
+
+A history longer than the page cap is read in full at most once per
+PROMO_HISTORY_REREAD_S (`fetch_of_promos`' memo, docs/spec/phase-03-smaller-cuts.md).
+
+Env knobs (read at call time, through `promo_history_reread_s()`):
+  PROMO_HISTORY_REREAD_S=86400   inside it, a capped account's reads page only to the
+                                 promotions that can still change (the rest from the
+                                 memo); 0 = a full read every call (the old behaviour)
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
+
+from sqlalchemy import select
 
 import automation_executor as ax
+from db.engine import get_session
+from db.models import PromoCampaign, PromoListSetting
 from of_coerce import cents_or_zero
 
 log = logging.getLogger("of-relay.of_promos")
@@ -151,6 +165,16 @@ def _rows_from_payload(raw, keys: tuple[str, ...]) -> list | None:
 _PAGE = 100
 _MAX_PAGES = 12          # 1200 promos — a hard backstop, see below
 
+# Why paged_of_fetch stopped (PagedRows.stop).
+STOP_END = "end"         # a short page: the real end of history
+STOP_NEED = "need_ids"   # every id the caller asked about was seen
+STOP_CAP = "cap"         # max_pages read, OF still had more: history truncated
+
+
+class PagedRows(list):
+    """paged_of_fetch's rows (a plain list to every caller) and why paging stopped."""
+    stop: str = STOP_END
+
 
 async def paged_of_fetch(
     account_id: str,
@@ -162,11 +186,11 @@ async def paged_of_fetch(
     max_pages: int = _MAX_PAGES,
     need_ids: set[int] | None = None,
     label: str = "of",
-) -> list[dict] | None:
+) -> PagedRows | None:
     """Best-effort live OF fetch of a PAGED list endpoint. Returns the (possibly
     empty) normalised list on success, or None when the fetch failed (no session /
     OF error) — callers use None-vs-list to tell 'not reachable' apart from
-    'reachable, zero rows'.
+    'reachable, zero rows'. The list's `stop` says why paging ended (STOP_*).
 
     OF list endpoints paginate and their `hasMore` flag is unreliable (it can stay
     true past the real end), so we stop on a short/empty page, with `max_pages` as a
@@ -183,7 +207,7 @@ async def paged_of_fetch(
         log.info("%s OF client failed account=%s — mirror-only", label, account_id, exc_info=True)
         return None
 
-    out: list[dict] = []
+    out = PagedRows()
     seen: set[int] = set()
     outstanding = set(need_ids or ())
     for page in range(max_pages):
@@ -211,13 +235,56 @@ async def paged_of_fetch(
                 outstanding.discard(rid)
             out.append(item)
         if len(rows) < _PAGE:
-            break                      # short page = end of history
+            out.stop = STOP_END        # short page = end of history
+            break
         if need_ids is not None and not outstanding:
-            break                      # found everything the caller asked about
+            out.stop = STOP_NEED       # found everything the caller asked about
+            break
     else:
+        out.stop = STOP_CAP
         log.warning("%s paging hit the %s-page cap account=%s — history truncated",
                     label, max_pages, account_id)
     return out
+
+
+_REREAD_DEFAULT_S = 86_400.0
+
+
+def promo_history_reread_s() -> float:
+    """Knob PROMO_HISTORY_REREAD_S, read now: the capped-history memo's window in
+    seconds (0 = off). A malformed or negative value warns and gives the default."""
+    raw = os.environ.get("PROMO_HISTORY_REREAD_S")
+    if raw is None or not raw.strip():
+        return _REREAD_DEFAULT_S
+    try:
+        v = float(raw)
+    except ValueError:
+        v = -1.0
+    if v < 0:
+        log.warning("promo_bad_env name=PROMO_HISTORY_REREAD_S value=%r — using default %s",
+                    raw, _REREAD_DEFAULT_S)
+        return _REREAD_DEFAULT_S
+    return v
+
+
+# account -> (monotonic time of its last capped read, that read's rows as merged by
+# the reads since, the account's mirrored of_promo_ids as of that read). In-process:
+# a restart costs one full read.
+_MEMO: dict[str, tuple[float, list[dict], frozenset[int]]] = {}
+
+
+async def _promo_list_sync_on(account_id: str) -> bool:
+    """The account's promotion List is on (link_metrics.sync_lists' rule)."""
+    async with get_session() as s:
+        st = await s.get(PromoListSetting, account_id)
+    return st is not None and bool(st.enabled) and bool(st.list_id)
+
+
+async def _mirror_promo_ids(account_id: str) -> set[int]:
+    async with get_session() as s:
+        return {int(o) for o in (await s.execute(select(PromoCampaign.of_promo_id).where(
+            PromoCampaign.account_id == account_id,
+            PromoCampaign.of_promo_id.is_not(None)))).scalars()}
 
 
 async def fetch_of_promos(
@@ -226,24 +293,65 @@ async def fetch_of_promos(
     need_ids: set[int] | None = None,
     max_pages: int = _MAX_PAGES,
 ) -> list[dict] | None:
-    """Best-effort live OF fetch of /promotions, PAGED. Thin wrapper over
-    paged_of_fetch (the shared skeleton /trials uses too).
+    """Best-effort live OF fetch of /promotions, PAGED, over paged_of_fetch (the
+    shared skeleton /trials uses too).
 
     /promotions' `hasMore` is useless — it stayed true past offset 180 on a
     230-promo history — so paging stops on a short page. `need_ids` is an early
     exit: promo_reactivate only needs to locate its own armed campaigns, so it
-    costs one request instead of two dozen.
+    costs one request instead of two dozen. A call with `need_ids` never touches
+    the memo below.
+
+    The memo: a read with no `need_ids` that hits the page cap is kept with its
+    time and the account's mirrored of_promo_ids. Inside PROMO_HISTORY_REREAD_S of
+    it, on an account whose promotion List is off, a read with no `need_ids` pages
+    only until it has seen the promotions that can still change (the memo's ones
+    on offer, plus every mirror of_promo_id new since the memo's read: a promotion
+    made or re-armed through the app shows on the next read) and returns those
+    pages merged over the memo by id, fresh rows winning. A short page (the real
+    end) clears the memo, a need_ids stop keeps it (its rows merged, its mirror ids
+    now), a cap stop renews it with that read's rows alone (nothing pushed past the
+    cap lingers); a failed read is None and leaves it. With the List on, every
+    pass reads in full, so a new promotion's claimers are never enrolled late.
     """
-    return await paged_of_fetch(
-        account_id,
-        page_call=lambda c, off, lim: c.promotions(offset=off, limit=lim),
-        normalise=normalise_of_promo,
-        id_key="of_promo_id",
-        payload_keys=("items", "list"),
-        max_pages=max_pages,
-        need_ids=need_ids,
-        label="promotions",
-    )
+    async def read(need: set[int] | None) -> PagedRows | None:
+        return await paged_of_fetch(
+            account_id,
+            page_call=lambda c, off, lim: c.promotions(offset=off, limit=lim),
+            normalise=normalise_of_promo,
+            id_key="of_promo_id",
+            payload_keys=("items", "list"),
+            max_pages=max_pages,
+            need_ids=need,
+            label="promotions",
+        )
+
+    window = promo_history_reread_s()
+    if need_ids is not None or window <= 0:
+        return await read(need_ids)
+    memo = _MEMO.get(account_id)
+    if memo is not None and (time.monotonic() - memo[0] >= window
+                             or await _promo_list_sync_on(account_id)):
+        memo = None
+    mirrors = frozenset(await _mirror_promo_ids(account_id))
+    need = None
+    if memo is not None:
+        need = {r["of_promo_id"] for r in memo[1]
+                if not r.get("is_finished") and r.get("of_promo_id") is not None}
+        need |= mirrors - memo[2]
+    rows = await read(need)
+    if rows is None:
+        return None
+    out: list[dict] = rows
+    if rows.stop == STOP_END:
+        _MEMO.pop(account_id, None)
+    elif rows.stop == STOP_CAP:
+        _MEMO[account_id] = (time.monotonic(), out, mirrors)
+    elif memo is not None:
+        fresh = {r.get("of_promo_id") for r in rows}
+        out = [*rows, *(r for r in memo[1] if r.get("of_promo_id") not in fresh)]
+        _MEMO[account_id] = (memo[0], out, mirrors)
+    return out
 
 
 def normalise_of_trial(item: dict) -> dict:

@@ -264,7 +264,7 @@ def test_digest_from_fake_folders(tmp_path):
          "map": {"rule": "smoke: unmapped only", "mapped": [], "unmapped_left": ["d"], "restored": "restored"}}
     md = nt.digest(s)
     assert md.splitlines()[0] == "NIGHTLY INFRA S: 1/0/1/2/0 of 4"
-    assert "| b | FAIL | 20 | T2-b-bad | nothing dropped |" in md
+    assert "| b | small, UI on | FAIL | 20 | T2-b-bad | nothing dropped |" in md
     assert "infra: stack: port taken" in md and "latest" not in md
     assert "- unmapped left: d" in md
     assert "gate wait: 7s total, max 7s (a)" in md
@@ -410,6 +410,21 @@ def test_invalid_map_phase_keeps_rows_and_reports_infra(tmp_path, monkeypatch):
     assert result["map_error"] == rows[0]["infra"]
     assert result["mapped"] == [] and result["unmapped_left"] == []
     assert (night_out / "map.json").read_text() == "{"
+
+
+def test_changed_load_not_reported_as_improvement():
+    name='2026-11-05-relay-admission'
+    # an earlier run at another load (main's standard volume is 120 since 9fdbb71d1; rows without
+    # `knobs` read as today's default, so this one names its 200 explicitly)
+    old=R('volume',name,'FAIL',{'flood':900},knobs=['--scale=medium','--users=200','--no-ui'])
+    new=R('volume',name,'OK',{'flood':600},knobs=nt.effective_knobs('volume',name))
+    result=nt.changes([new],[old])
+    assert result['p95']==[] and result['newly_green']==[]
+    assert 'not comparable' in result['load_changed'][0]
+    assert '--users=200' in result['load_changed'][0]
+    assert '--users=120' in result['load_changed'][0]
+    plan=nt._plan_text('stamp','sha',False,{'volume':[name]},'reason')
+    assert '--users=120' in plan and '--users=200' not in plan
 
 
 def _ph(startup, seeding, execution, teardown, calls=1, failed=0, waits=()):

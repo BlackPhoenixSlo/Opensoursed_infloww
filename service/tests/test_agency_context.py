@@ -432,7 +432,7 @@ def case_chatter_gets_503_when_the_mirror_employee_cannot_be_resolved():
     original = employees.get_or_create_mirror_employee
     employees.get_or_create_mirror_employee = _db_down
     try:
-        r = _probe(chatter_a, AGENCY_PROBE, IDS["creator_a"])
+        r = _probe(chatter_a, AGENCY_PROBE)
     finally:
         employees.get_or_create_mirror_employee = original
     assert r.status_code == 503 and r.json() == {"detail": "mirror employee unavailable"}, \

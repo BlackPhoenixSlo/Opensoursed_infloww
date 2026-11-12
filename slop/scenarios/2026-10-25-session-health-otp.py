@@ -124,7 +124,7 @@ READS = 12  # concurrent inbox reads per OTP_IDX Creator at the flip, alongside 
 # and the waiters are refused as retired (a GET re-runs once on the current client). All before its pump's
 # reconnect (1 s): a pump waiting on that slot would be refused too and retry off its schedule.
 RACE_IDX = 1  # Agency 1's Creator 5 (not the UI owner's)
-SIGNED_SLOTS = 8  # service/of_client.py: signed calls in flight per OFClient (_SignedSessionPool.SIZE)
+SIGNED_SLOTS = 8  # service/of_client.py: signed calls in flight per OFClient (OFClient.SIGNED_SLOTS)
 # The first held answers and evicts; the rest keep their slots past a polling waiter's 0.25 s re-check.
 RACE_HOLD_S = (0.4,) + (1.4,) * (SIGNED_SLOTS - 1)
 # Declared bypass: the per-account lane (default 5) at READS, above SIGNED_SLOTS, so the burst queues on the

@@ -17,8 +17,17 @@ ALL_COUNTS = ("vault all media: Vault Pro's \"All media\" row shows the whole va
 ALL_TAP = ("vault all media: on a phone (and desktop) tapping a folder then \"All media\" shows the whole vault in "
            "the grid (newest first, in view), and tapping \"All media\" again keeps it")
 THUMBS_RELOAD = ("vault picker: page 1 served from the relay's cache with expired thumb urls (CDN 403) reloads "
-                 "itself once (one cache invalidate), the CDN then serves each of those paths 200 and every top "
-                 "tile draws (desktop and phone); the relay's cached page 1 is the fresh one (DB)")
+                 "itself once (one page-1 revalidate read after the open's, or one cache invalidate), the CDN then "
+                 "serves each of those paths 200 and every top tile draws (desktop and phone); the relay's cached "
+                 "page 1 is the fresh one (DB); the reload joins the open's revalidate: exactly one OF page-1 read "
+                 "per open")
+PICKER_OPEN_FRESH = ("vault picker open: media made on OnlyFans after the relay cached the picker's page 1 and folders "
+                     "(older than the open revalidate gate) shows once the picker opens, no Refresh (desktop and phone): it paints the cached "
+                     "page within the paint budget, then one revalidate=1 read each of page 1 and the folders swaps "
+                     "the new media in first and the new folder in, the whole grid then OF's listing (count, order, no "
+                     "duplicate), and a second owner's fresh picker shows OF's whole listing too; OF got exactly "
+                     "that one page-1 read and one folder read; concurrent opens share the age gate (5 on a young "
+                     "copy: no OF read, 5 on an old one: one); the OF call counter files them under the vault routes' Caller kinds")
 PICKER_FAILURE = "vault_picker_refresh_pending_single_post_and_failure_note"
 SEARCH_PENDING = ("vault search: a caption search only OnlyFans' own search answers spins \"Searching OnlyFans…\" "
                   "in the empty grid while that search is in flight, and never shows \"No data\" from typing to the "
@@ -56,6 +65,14 @@ def _no_coalesce() -> None:
     vault_ai_api.relay_coalesce = types.SimpleNamespace(coalesce=each)
 
 
+def _picker_open_cache_only() -> None:
+    """The picker's open is answered from the shared cache whatever its age, as before the revalidate:
+    `server._vault_picker_revalidate_s` (looked up per call by `_vault_read`) says no entry is ever too old."""
+    import server
+
+    server._vault_picker_revalidate_s = lambda: 10 ** 9
+
+
 def register(Fault) -> dict:
     return {
         # slop/run vault-refresh --break: the pre-fix Refresh (only invalidateVaultGrid; the sync URL 404s and the
@@ -74,4 +91,8 @@ def register(Fault) -> dict:
         "vault-search-no-spinner": Fault(None, (SEARCH_PENDING,), browser=(_SEARCH_NO_SPINNER,), browser_files=1),
         # slop/run vault-refresh --break --fault=vault-sync-no-coalesce --no-ui
         "vault-sync-no-coalesce": Fault(_no_coalesce, (SYNC_COALESCED,)),
+        # slop/run vault-refresh --break --fault=picker-open-cache-only: relay side, the picker's open revalidate
+        # is served the cached copy whatever its age; the thumb reload reads through that same gate
+        # (revalidateLoadedVaultPages), so its expired copy is served back too: THUMBS_RELOAD
+        "picker-open-cache-only": Fault(_picker_open_cache_only, (PICKER_OPEN_FRESH, THUMBS_RELOAD)),
     }

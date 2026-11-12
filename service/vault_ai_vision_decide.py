@@ -3,12 +3,9 @@
 No DB, no IO, no LLM: what `vault_ai_vision` hands a model answer / a row to and
 gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
 
-  flags fold        _garment_over, _ground_in_named_garment, _reconcile_with_acts,
-                    _fold_clip_flags, _clip_arc
   describe          _frames_for_duration, _parse_describe, next_attempt,
                     describe_answer, prompt_variant, build_describe_update,
-                    with_flags_cost
-  flags merge       build_flags_fields — the row's ai_fields after a flags run.
+                    with_jev
   selection         live_describable (the base every vision sweep walks) and
                     describe_selection — the ONE predicate both the describe-all
                     sweep and its plan count read, so the two cannot drift.
@@ -24,7 +21,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, NamedTuple
 
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from sqlalchemy.sql.elements import ColumnElement
 
 import vault_ai_brief
@@ -33,217 +30,6 @@ import vault_jev_flags
 import vault_jev_rules
 from db.models import VaultItem
 from vault_of_folders_decide import parse_folder_ids
-
-
-# What the model writes in an `over_` field when it means "nothing there". It
-# is told to use null; it also says these.
-_NOTHING_OVER = frozenset({"", "null", "none", "nothing", "n/a", "na", "nil",
-                           "not_in_frame", "not in frame", "nude", "naked",
-                           "no clothing", "no garment", "uncovered", "exposed"})
-
-# The model is told to answer null and mostly does, but it also narrates the
-# absence — "nothing, bare skin", "no clothing - she is bare". Any answer whose
-# words are only about there being nothing there is nothing there. Matched on
-# words rather than on the whole string so the phrasings do not have to be
-# enumerated: a real garment always contributes a word that is not in this set.
-_ABSENCE_WORDS = frozenset({"bare", "skin", "nothing", "no", "not", "none",
-                            "null", "n/a", "visible", "is", "she", "her",
-                            "exposed", "uncovered", "nude", "naked", "at",
-                            "all", "and", "the", "a", "-", "—", ","})
-
-
-def _garment_over(answer: dict[str, Any], key: str) -> str:
-    """The named garment/object over a region, or "" for nothing.
-
-    Errs toward "nothing": a false garment silently marks an exposed region
-    covered, which is the direction that puts explicit material in a mass send.
-    A false absence only costs the override, and the state field still stands.
-    """
-    v = answer.get(key)
-    if not isinstance(v, str):
-        return ""
-    s = v.strip()
-    if s.lower().strip(".") in _NOTHING_OVER:
-        return ""
-    words = [w for w in re.split(r"[\s,./-]+", s.lower()) if w]
-    return "" if words and all(w in _ABSENCE_WORDS for w in words) else s
-
-
-def _ground_in_named_garment(answer: dict[str, Any]) -> dict[str, Any]:
-    """Let what the model NAMED overrule what it CLASSIFIED.
-
-    Asking for a state directly ("is her chest bare?") measured badly in both
-    polarities: `covered` pulled toward false on anything racy, and `bare` came
-    back on a white tank top and a black halter top, because a one-word verdict
-    invites the model to answer the vibe of the picture. Naming the garment is
-    a much easier question and the describe pass already answers it correctly —
-    the same model wrote "wearing a white tank top" in prose about the same
-    photo it then called bare.
-
-    So the naming is made LOAD-BEARING rather than advisory: name something over
-    a region and the region is covered, whatever the state field said. Only
-    `bare` is overridden — `not_in_frame` is left alone, because a garment can
-    be named on a body part that is genuinely out of shot.
-    """
-    out = dict(answer)
-    for region, over in vault_ai_brief.OVER_KEYS.items():
-        if out.get(region) == "bare" and _garment_over(out, over):
-            out[region] = "covered"
-        elif out.get(region) == "not_in_frame":
-            # Nothing can be over a part of her that is not in the picture.
-            # The model still names the one garment it can see for EVERY
-            # region — a woman face down in a bodystocking came back with
-            # "black lace bodysuit" over her anus. Left in place that name
-            # reads downstream as evidence she is dressed there.
-            out.pop(over, None)
-    return out
-
-
-# Acts that cannot happen through fabric. Insertion only — `rubbing_clit` and
-# `groping_own_breasts` are both perfectly possible over underwear, so they are
-# deliberately absent: this list has to be airtight or it manufactures exposure
-# rather than detecting it.
-_INSERTION_ACTS = frozenset({
-    "fingering", "toy_insertion", "riding_toy",
-    "sex_missionary", "sex_doggy", "sex_riding",
-})
-_REAL_PENETRATION = frozenset({"fingers", "toy", "penis"})
-
-
-def _reconcile_with_acts(fields: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-    """Let what is HAPPENING overrule what the flags pass thought it saw.
-
-    The flags pass looks at one frame and names the garment nearest the action,
-    then calls the region covered. On this vault that produced, verbatim: "A
-    hand is inserting two fingers into the vagina" with `vulva_vis: covered,
-    over_vulva: 'pink lace thong'`. Fingers do not go through a thong. Four of
-    the operator's fourteen round-2 corrections were this exact shape, and all
-    four were on the most explicit — which is to say most valuable — items in
-    the vault.
-
-    Deliberately narrow. Only INSERTION counts, because insertion is physically
-    incompatible with a covered region; rubbing and groping happen over
-    underwear all the time and would turn this into a machine for inventing
-    exposure. A rule that gates money and mass sends has to be right in the
-    direction it fires, not merely often right.
-    """
-    acts = {str(a).strip().lower() for a in (fields.get("acts") or [])}
-    pen = str(fields.get("penetration") or "").strip().lower()
-    if not (acts & _INSERTION_ACTS or pen in _REAL_PENETRATION):
-        return data
-    focus = {str(x).strip().lower() for x in (fields.get("body_focus") or [])}
-    out = dict(data)
-    # Anal only when the row actually says so; otherwise insertion means vulva.
-    region = "anus_vis" if (focus & {"anus"}) and "pussy" not in focus else "vulva_vis"
-    if out.get(region) == "covered":
-        out[region] = "bare"
-        out.pop(vault_ai_brief.OVER_KEYS[region], None)
-    return out
-
-
-def _fold_clip_flags(per_frame: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fold per-frame answers into one verdict for the whole clip.
-
-    Regions fold by MAX exposure (`vault_ai_brief.fold_vis`) and
-    `underwear_visible` by `any()` — both conservative, which is the right
-    default for flags that gate what may be shown publicly and what is priced
-    as a full reveal.
-
-    The v1 fold was `all()` over "covered" booleans, and it collapsed: a frame
-    that could not see the region answered `covered=False`, indistinguishable
-    from a frame where she was bare, so ANY frame that simply missed the region
-    marked the whole clip uncovered. 20 of 21 the graded vault clips folded to
-    uncovered, which is no signal at all. With `not_in_frame` as its own state
-    those frames fold away instead of voting for exposure.
-
-    Deliberately folded HERE rather than asked of the model. The reason this
-    pass exists at all is that the model got `fully_nude` wrong; making it also
-    reason across frames would add a second thing it can get wrong, on top of a
-    question it has already been measured good at one image at a time.
-    """
-    out: dict[str, Any] = {}
-    seen = [bool(f["underwear_visible"]) for f in per_frame
-            if isinstance(f.get("underwear_visible"), bool)]
-    if seen:
-        out["underwear_visible"] = any(seen)
-    for region in vault_ai_brief.VIS_REGIONS:
-        folded = vault_ai_brief.fold_vis([str(f.get(region) or "") for f in per_frame])
-        if folded:
-            out[region] = folded
-    return out
-
-
-def _clip_arc(per_frame: list[dict[str, Any]]) -> str | None:
-    """Which way the clip escalates, from the frames already paid for.
-
-    Compares how much is on show in the first frame against the last. A clip
-    that opens covered and ends bare is a build-up; the reverse is a payoff
-    that was uploaded (or shot) back to front. `vault_scripts` currently infers
-    this direction with a rank correlation across SEPARATE items, which is a
-    far weaker signal than watching one clip change — so this is recorded now
-    even though nothing reads it yet.
-    """
-    if len(per_frame) < 2:
-        return None
-    def heat(f: dict[str, Any]) -> int:
-        ranks = [vault_ai_brief.VIS_STATES.index(f[r]) for r in vault_ai_brief.VIS_REGIONS
-                 if f.get(r) in vault_ai_brief.VIS_STATES]
-        return max(ranks) if ranks else -1
-    first, last = heat(per_frame[0]), heat(per_frame[-1])
-    if first < 0 or last < 0 or first == last:
-        return "flat"
-    return "escalates" if last > first else "reverses"
-
-
-def build_flags_fields(prev: Mapping[str, Any], per_frame: list[dict[str, Any]], *,
-                       locked: Collection[str], is_video: bool, model: str,
-                       version: int) -> dict[str, Any]:
-    """The row's `ai_fields_json` after a flags run: `prev` (its current blob)
-    with the folded, act-reconciled flags MERGED in. Never touches the
-    description, tags or taxonomy — enrichment only. `per_frame` is non-empty
-    (each entry already `_ground_in_named_garment`-ed); `version` is the flags
-    prompt version stamped as `_flags_v`."""
-    fields = dict(prev)
-    data = _reconcile_with_acts(fields, _fold_clip_flags(per_frame))
-    # An operator correction outranks the model, and must survive a forced
-    # re-run — otherwise the next `flags-all --force` silently reverts it and
-    # the operator has no reason to look at the item again. Same override+lock
-    # contract `vault_ai_effective` defines for `description`; `vault_ai_fix`
-    # writes the lock.
-    for key in vault_ai_brief.FLAG_KEYS:
-        if key in data and key not in locked:
-            fields[key] = data[key]
-    # Persisted, not merely used and discarded. Two jobs: when a region says
-    # `covered` this is WHY in the model's own words (a wrong flag is far
-    # cheaper to diagnose from "white tank top" than from "covered"), and
-    # `vault_scripts._is_nude` reads it as the direct evidence that she is
-    # dressed. Taken from the FIRST frame, which is where a clip starts out.
-    for over in vault_ai_brief.OVER_KEYS.values():
-        if over in locked:
-            continue
-        named = _garment_over(per_frame[0], over)
-        if named:
-            fields[over] = named[:60]
-        else:
-            fields.pop(over, None)
-    if is_video:
-        fields["_flags_frames"] = len(per_frame)
-        arc = _clip_arc(per_frame)
-        if arc:
-            fields["_flags_arc"] = arc
-    # Superseded shapes, dropped rather than left to rot: `genitals_covered`
-    # conflated vulva and breasts, and the `*_covered` pair asked two opposite
-    # questions under one name. Leaving either behind would let a caller that
-    # was never updated keep reading a stale answer that looks current.
-    for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
-        fields.pop(dead, None)
-    fields["_flags_model"] = model
-    fields["_flags_v"] = version
-    # A recovered item must stop reporting the failure it recovered from, and
-    # flags of its OWN are no longer a copy of anyone's.
-    for stale in ("_flags_status", "_flags_failed_at", "_flags_error", FLAGS_COPY_MARK):
-        fields.pop(stale, None)
-    return fields
 
 
 # Frames per clip. V1 shipped a hardcoded 3 for a clip of ANY length (a 17-minute
@@ -346,7 +132,8 @@ def describe_selection(account_id: str, mode: DescribeMode,
                       "we have a better prompt now, re-scan the old rows" pass.
                       Cheaper than force: rows already on this version are left
                       alone, so an interrupted re-scan resumes instead of
-                      starting over.
+                      starting over. A photo / clip whose describe was not
+                      Jev-fed is stale whatever its version.
       "undescribed" — only items not yet successfully described.
     """
     base = live_describable(account_id)
@@ -355,12 +142,17 @@ def describe_selection(account_id: str, mode: DescribeMode,
     if mode == "restage":
         # `_prompt_version` is stamped into ai_fields_json by _describe_one.
         # A row that predates the stamp has no marker at all, so it counts
-        # as stale and gets re-scanned.
+        # as stale and gets re-scanned. So does a photo / clip whose describe
+        # is not Jev-fed (`_describe.path`, the meta's first key, not in
+        # JEV_FED): a v2 / pre-Jev describe, whatever its prompt version.
+        jev_fed = or_(*(VaultItem.ai_fields_json.like(
+            f'%"{vault_describe_jev.DESCRIBE_KEY}": {{"path": "{p}"%') for p in vault_describe_jev.JEV_FED))
         return and_(base,
                     (VaultItem.describe_status != "described")
                     | (VaultItem.describe_status.is_(None))
                     | (VaultItem.ai_fields_json.is_(None))
-                    | (~VaultItem.ai_fields_json.like(f'%"_prompt_version": "{pv}"%')))
+                    | (~VaultItem.ai_fields_json.like(f'%"_prompt_version": "{pv}"%'))
+                    | (VaultItem.kind.in_(JEV_KINDS) & ~jev_fed))
     if mode == "undescribed":
         # Everything not already described — INCLUDING blocked_drm, with
         # no cool-off. This is a button a person pressed, having just read the
@@ -386,24 +178,11 @@ def describe_answer(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def with_flags_cost(describe_res: Mapping[str, Any],
-                    flags_res: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Describe's result with the auto-flag call's cost added: describe-and-flag
-    bills both, and the sweep reports what its items' results carry. No flags
-    result (it raised / never ran) or no cost on it: describe's cost unchanged —
-    an unparsed flags answer carries none, so that billed call is not reported."""
-    out = dict(describe_res)
-    if flags_res and "cost_millicents" in flags_res:
-        out["cost_millicents"] = (int(out.get("cost_millicents") or 0)
-                                  + int(flags_res.get("cost_millicents") or 0))
-    return out
-
-
 def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[str, Any]:
     """`res` (a describe / flags result) with the Jev pass that ran before it
     folded in: its spend added to `cost_millicents` (the sweep sums it) and its
     outcome as `jev_status` / `jev_lane5` / `jev_cost_millicents`. No Jev
-    result (not a photo, or its `_jev` already current): `res` unchanged."""
+    result (another kind, or its `_jev` already current): `res` unchanged."""
     out = dict(res)
     if not jev_res:
         return out
@@ -485,7 +264,9 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
     }
     _put_unlocked(vals, locked, {
         "tip_vault_flag": sellable, "tags": json.dumps(tags),
-        "explicitness_tier": ans["explicitness_tier"],
+        # Beside a Jev reading the column follows the blob's (operator-fixed)
+        # `explicitness` exactly as the Jev pass writes it, or the two flip it.
+        vault_jev_flags.TIER_COLUMN: vault_jev_flags.column_tier(out, ans["explicitness_tier"], locked),
         ("video_description" if is_video else "description"): desc,
         "search_text": search_text})
     return vals
@@ -510,6 +291,7 @@ FLAGS_BLOB_KEYS: tuple[str, ...] = (
 # through `FLAGS_BLOB_KEYS` — an exact flags copy from a source that has no
 # `_jev` must not wipe the copy's own paid answer. Defined in `vault_jev_rules`.
 JEV_KEY = vault_jev_rules.JEV_KEY
+JEV_KINDS = vault_jev_rules.JEV_KINDS
 
 
 def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any]) -> Any:
@@ -675,7 +457,7 @@ def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
     garment names too, from its own `clothing_items`), as the Jev pass would."""
     fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
-        fields.pop(dead, None)  # what a flags run drops (`build_flags_fields`)
+        fields.pop(dead, None)  # superseded flag shapes
     _put_jev(fields, jev_for_copy(src_ai, prev))
     fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), locked)
     fields[FLAGS_COPY_MARK] = int(src_id)
@@ -737,21 +519,22 @@ def _jev_failed(f: Mapping[str, Any]) -> bool:
     return isinstance(j, dict) and j.get("status") not in (None, "ok")
 
 
-def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any], str | None, Any]], *,
+def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any], str | None, Any, Any]], *,
                 flags: bool, flags_version: int) -> tuple[set[int], set[int]]:
-    """(done, bad) over (media_id, describe_status, ai_fields, kind, locked_fields_json) rows, for
+    """(done, bad) over (media_id, describe_status, ai_fields, kind, locked_fields_json, explicitness_tier) rows, for
     `reuse_plan`: done = its answer may be copied (described / current flags);
-    bad = its last attempt failed. A photo's flags are a source only when they
-    are its current `_jev`'s (`vault_jev_flags.row_in_sync`, locks included); a photo's describe
+    bad = its last attempt failed. A photo's or clip's flags are a source only when they
+    are its current `_jev`'s (`vault_jev_flags.row_in_sync`, locks and tier column included); its describe
     only when Jev-fed and its row still holds the `_jev` it was fed
     (`vault_describe_jev.reusable`): the copy takes that `_jev` along
     (`jev_for_copy`), so the pair agrees."""
     done: set[int] = set()
     bad: set[int] = set()
-    for mid, status, f, kind, locked in rows:
+    for mid, status, f, kind, locked, tier in rows:
         if flags:
-            ok = flags_current(f, flags_version) and (kind != "photo" or vault_jev_flags.row_in_sync(f, locked))
-            failed = "_flags_status" in f or (kind == "photo" and _jev_failed(f))
+            ok = flags_current(f, flags_version) and (
+                kind not in JEV_KINDS or vault_jev_flags.row_in_sync(f, locked, tier=tier))
+            failed = "_flags_status" in f or (kind in JEV_KINDS and _jev_failed(f))
         else:
             ok = status == "described" and vault_describe_jev.reusable(f, kind)
             failed = status in _DESCRIBE_FAILED

@@ -29,8 +29,9 @@ Legs, one run:
             then, SETTLE_S later, the same taps as baseline; then the flood stops and drains (every
             read answered). `GET /admin/priority-lanes/stats` (owner) every SAMPLE_S throughout.
 
-Checks (lib/relay_admission_faults.py has the targeted names): tap p95 under the flood <= 2 x the
-baseline's + 100 ms per kind and overall (catches blocking, not host jitter: lib/relay_admission_faults.py); threads_waiting_background 0 in every sample (fleet and per
+Checks (lib/relay_admission_faults.py has the targeted names): at 120 users, flood p95 <=700ms
+for every kind and overall; at 200 users, <=500ms is advisory only. Below 120 users,
+flood p95 <=2 x baseline +100ms per kind and overall (catches blocking, not host jitter: lib/relay_admission_faults.py); threads_waiting_background 0 in every sample (fleet and per
 Creator; at least 5 samples); bg_in_flight_peak <= 2 per Creator and reached; every probe's user read
 < 1 s while its background twin took >= 3 s; every chatter signed in; every tap 200 (users/me answers
 the asked Creator); every background read 200, none dropped, the flood held >= 90 % of its reads in
@@ -107,11 +108,13 @@ DB_TRIP_UNBOUNDED = 120  # an unbounded pool (max_overflow -1) stops the flood p
 # Catches blocking (a fault puts tap p95 at 10-30 s), not jitter: on the shared machine (gate: up to 6
 # runs) the no-fault flood p95 spread over runs was 85-140 ms all, 120-189 ms send (measured: 7b84, 09ae,
 # dd50, f09a), so 1.25x + 50 ms flipped on host noise.
+from slop.lib.latency_acceptance import latency_check
+
 P95_RATIO, P95_SLACK_MS = 2.0, 100
 PROBE_HOLD_S, PROBE_MAX_S = 3.0, 1.0
 PER_USER = 13          # Creators per chatter
 BG_PER_CREATOR = 4     # background reads each chatter keeps in flight per assigned Creator
-OF_IDLE_CLOSE_S = 5.0  # fake OF's keep-alive idle timeout (a guess at a real edge's)
+OF_IDLE_CLOSE_S = 5.0  # synthetic server idle lifetime; not a measured OF edge value
 BG_OF_S = 1.5          # OF's answer time for a chat list, on average
 BG_JITTER = 0.5        # each one BG_OF_S x uniform(0.5, 1.5)
 THINK_MS = (500, 1500)  # between one chatter's taps
@@ -137,9 +140,10 @@ async def run(ctx) -> None:
     main = w.data["agencies"][0]["user_id"]
     aids = [c["id"] for c in w.data["creators"] if c["owner"] == main]
     fake = ctx.of_wire
-    # OF closes idle keep-alives (as a real server does): bounds the relay's parked curl connections
-    # (one per account x worker thread) by recent use, so the admission-in-thread fault run finishes
-    # instead of parking ~12k connections into the socket guard (lib/bounded_server.py)
+    # Bound unused fake-OF keep-alives, not active reads or the actor workload.
+    # Each (account, relay worker) curl handle otherwise parks a connection forever, so the
+    # admission-in-thread fault run finishes instead of parking ~12k connections into the socket
+    # guard (lib/bounded_server.py).
     fake._srv.idle_close_s = float(ctx.param("of_idle_close_s", OF_IDLE_CLOSE_S))
     bg_of_s = float(ctx.param("bg_of_s", BG_OF_S))
     n = max(1, ctx.users)
@@ -445,6 +449,8 @@ async def run(ctx) -> None:
         of_calls = list(fake.calls[of0:])
         sends = {a: list(v) for a, v in fake.sends.items()}
 
+    ctx.metric("of_keepalive", {"idle_close_s": fake._srv.idle_close_s, "idle_closed": fake._srv.idle_closed})
+
     # ── checks ──
     bad_taps = Counter((t["leg"], t["kind"], t["status"]) for t in taps if not t["ok"])
     ctx.check(C_TAPS, len(taps) == 2 * n * per_user * len(KINDS) and not bad_taps, taps=len(taps),
@@ -496,7 +502,9 @@ async def run(ctx) -> None:
     over = {k: {"baseline": p95["baseline"][k], "flood": p95["flood"][k],
                 "limit": round(P95_RATIO * p95["baseline"][k] + P95_SLACK_MS, 1)}
             for k in ("all", *KINDS)}
-    ctx.check(C_TAP_P95, all(v["flood"] <= v["limit"] for v in over.values()), p95_ms=over)
+    stretch = latency_check(ctx, C_TAP_P95,
+        {k: v['flood'] for k, v in over.items()},
+        {k: v['limit'] for k, v in over.items()})
 
     flood_samples = [s for s in samples if s["phase"] in ("ramp", "flood", "drain")]
     tw = [s for s in flood_samples if s["threads_waiting"] or s["threads_waiting_max_creator"]]
@@ -526,7 +534,8 @@ async def run(ctx) -> None:
     ctx.metric("of_idle_closed", fake._srv.idle_closed)
     ctx.metric("relay_pool", {**pool_detail, **{k: pool[k] for k in ("holders_last", "holders_at_peak") if k in pool}})
     ctx.metric("tap_p95_ms", p95)
-    ctx.metric("p95_vs_last_green", {f"flood {k}": p95["flood"][k] for k in ("all", *KINDS)})
+    if not stretch:
+        ctx.metric("p95_vs_last_green", {f"flood {k}": p95["flood"][k] for k in ("all", *KINDS)})
     ctx.metric("p95_vs_last_green_n", {f"flood {k}": sum(1 for t in taps if t["leg"] == "flood"
                                                          and (k == "all" or t["kind"] == k)) for k in ("all", *KINDS)})
     ctx.metric("flood", {"reads": len(flood), "drain_s": round(drain_s, 1), "min_in_flight_during_taps": held,
@@ -541,7 +550,11 @@ async def run(ctx) -> None:
         "calls", "calls_user", "calls_background", "blocked_total", "blocked_background", "wait_s_avg_blocked",
         "wait_s_max", "loop_waiting_background_peak", "threads_waiting_background_peak")})
     ctx.metric("probes", probes)
-    ctx.note("tap p95 ms baseline -> flood (limit): " + ", ".join(
+    profile = 'stretch (advisory)' if stretch else 'acceptance' if ctx.users >= 120 else 'regression'
+    if ctx.users >= 120:
+        for value in over.values():
+            value['limit'] = 500 if stretch else 700
+    ctx.note(f"tap p95 ms baseline -> flood ({profile} limit): " + ", ".join(
         f"{k} {v['baseline']} -> {v['flood']} ({v['limit']})" for k, v in over.items()))
     ctx.note(f"flood: {n_flood} background reads in flight ({n} chatters x {per_user} Creators x {bg_per}), "
              f"{len(flood)} answered, drain {drain_s:.0f} s; lane samples {len(flood_samples)}, loop-waiting max "

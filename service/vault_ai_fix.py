@@ -22,7 +22,7 @@ ways, because a correction a re-run silently reverts is worse than none:
   * into `ai_fields_json`, so every reader (`vault_scripts` lanes and prices,
     the copy brief) sees it with no changes;
   * into `operator_overrides_json`, the documented override tier;
-  * into `locked_fields_json`, which `_flags_one` / `_describe_one` check
+  * into `locked_fields_json`, which the Jev pass / `_describe_one` check
     before writing, so a forced re-run refreshes everything EXCEPT this.
 
 That is the same override+lock contract `vault_ai_effective` already defines

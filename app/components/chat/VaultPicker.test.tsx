@@ -10,7 +10,7 @@ import { useState } from "react";
 
 import { RelayError, type VaultMedia } from "@/lib/relay";
 import type { FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
-import { renderWithProviders } from "@/test-utils";
+import { renderWithProviders, settled } from "@/test-utils";
 import { observerStub, relayGet, relayPost, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { VaultPicker } from "./VaultPicker";
 import { NOT_WIRED } from "./NotWired";
@@ -93,6 +93,11 @@ let mirrorComplete: boolean | undefined;
 let mediaReply: VaultMedia[];
 /** The mirror's page; a test swaps it to fail. */
 let itemsReply: () => unknown;
+/** The relay's answers to the picker's open revalidate (`revalidate=1`); null = the cached answer. */
+let revalidateMedia: (() => unknown) | null;
+let revalidateLists: (() => unknown) | null;
+/** The whole live media route, by path (offset-aware); null = the replies above. */
+let mediaRoute: ((path: string) => unknown) | null;
 
 beforeEach(() => {
   resetComposerHarness();
@@ -103,10 +108,15 @@ beforeEach(() => {
   session.chatter = null;
   mediaReply = MEDIA;
   itemsReply = () => ({ list: [MIRROR_PHOTO], hasMore: false, source: "mirror" });
+  revalidateMedia = null;
+  revalidateLists = null;
+  mediaRoute = null;
   vi.stubGlobal("IntersectionObserver", observerStub);
   routeRelay("/admin/vault-ai/cache/summary", () => ({ account_id: "acct-1", count: mirrorCount, complete: mirrorComplete, running: false, last_run: null }));
-  routeRelay("/api/of/v2/vault/lists", () => ({ list: [], hasMore: false }));
-  routeRelay("/api/of/v2/vault/media", () => ({ list: mediaReply, hasMore: false }));
+  routeRelay("/api/of/v2/vault/lists", (path) =>
+    revalidateLists && path.includes("revalidate=1") ? revalidateLists() : { list: [], hasMore: false });
+  routeRelay("/api/of/v2/vault/media", (path) => mediaRoute ? mediaRoute(path)
+    : revalidateMedia && path.includes("revalidate=1") ? revalidateMedia() : { list: mediaReply, hasMore: false });
   routeRelay("/admin/vault/fan-history", () => fanHistoryReply());
   routeRelay("/admin/vault/wall-media", () => ({ media_ids: [], scanned_posts: 0, has_more: false }));
   routeRelay("/admin/vault-ai/items", () => itemsReply());
@@ -842,5 +852,104 @@ describe("VaultPicker as a modal layer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Toggle over" }));
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
+  const FRESH: VaultMedia = { id: 7101, type: "photo", isReady: true, canView: true };
+  const NEW_FOLDER = { id: 55, name: "Made on OF", type: "custom", hasMedia: true, videosCount: 0, photosCount: 1 };
+  const reads = (path: string) => relayGet.mock.calls.map(([p]) => p).filter((p) => p.startsWith(`${path}?`));
+  const revalidated = (path: string) => reads(path).filter((p) => p.includes("revalidate=1"));
+
+  it("paints the cached page first, then one revalidate=1 read, then swaps the fresh page in", async () => {
+    let release: (() => void) | null = null;
+    revalidateMedia = () => new Promise((resolve) => {
+      release = () => resolve({ list: [FRESH, ...MEDIA], hasMore: false });
+    });
+    revalidateLists = () => ({ list: [NEW_FOLDER], hasMore: false });
+    // A history row, so its card's tooltip names its id (as 7001-7003's do).
+    fanHistoryReply = () => ({ by_media: { ...FAN_HISTORY.by_media, "7101": FAN_HISTORY.by_media["7002"] } });
+    renderPicker(42);
+
+    // The paint: the cached page, no fresh media, from the plain read.
+    await waitFor(() => expect(card(7001)).toBeInTheDocument());
+    await waitFor(() => expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1));
+    expect(screen.queryByTitle(/· 7101 ·/)).toBeNull();
+    const media = reads("/api/of/v2/vault/media");
+    expect(media[0]).not.toContain("revalidate=1");
+    expect(media[media.length - 1]).toContain("revalidate=1");
+    expect(revalidated("/api/of/v2/vault/media")[0]).toContain("offset=0");
+
+    // Then the fresh page is swapped in, first in the grid; the folder list too.
+    await act(async () => release!());
+    await waitFor(() => expect(cardTitles()[0]).toMatch(/· 7101 ·/));
+    expect(cardTitles()).toHaveLength(MEDIA.length + 1);
+    expect(screen.getByRole("option", { name: /Made on OF/ })).toBeInTheDocument();
+    // One of each per open, no Refresh.
+    expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1);
+    expect(revalidated("/api/of/v2/vault/lists")).toHaveLength(1);
+    expect(relayPost.mock.calls.map(([p]) => p)).not.toContainEqual(expect.stringContaining("/admin/vault"));
+  });
+
+  it("a changed page 1 restarts the view: page 2 re-read at the new offsets, nothing dropped or repeated", async () => {
+    // 40 media cached in two pages (24 + 16), then 5 made on OF: the listing is 45, every offset shifted by 5. The
+    // relay serves its cached (old) pages until the revalidate sees page 1's new ids and drops the view's other
+    // offsets (server._vault_read): from then on a plain read is OF's listing.
+    const m = (id: number): VaultMedia => ({ id, type: "photo", isReady: true, canView: true });
+    const old = Array.from({ length: 40 }, (_, i) => m(8040 - i));
+    const now = [...[8045, 8044, 8043, 8042, 8041].map(m), ...old];
+    const page = (list: VaultMedia[], path: string) => {
+      const off = Number(new URLSearchParams(path.split("?")[1]).get("offset"));
+      return { list: list.slice(off, off + 24), hasMore: off + 24 < list.length };
+    };
+    let release: (() => void) | null = null;
+    let dropped = false;
+    mediaRoute = (path) => {
+      if (!path.includes("revalidate=1")) return page(dropped ? now : old, path);
+      return new Promise((resolve) => { release = () => { dropped = true; resolve(page(now, path)); }; });
+    };
+    const sentFree = FAN_HISTORY.by_media["7002"];
+    fanHistoryReply = () => ({ by_media: Object.fromEntries(now.map((x) => [String(x.id), sentFree])) });
+    renderPicker(42);
+
+    // Page 2 (old offsets) lands before the revalidate answers: 40 tiles.
+    await waitFor(() => expect(cardTitles()).toHaveLength(40));
+    await waitFor(() => expect(release).not.toBeNull());
+    await act(async () => release!());
+    await waitFor(() => expect(cardTitles()).toHaveLength(45));
+    await settled();
+    const ids = cardTitles().map((t) => Number(/· (\d+) ·/.exec(t)![1]));
+    expect(ids).toEqual(now.map((x) => x.id));
+    expect(new Set(ids).size).toBe(45);
+    // One revalidate (page 1); page 2 was read again, plain, after the restart.
+    expect(revalidated("/api/of/v2/vault/media").map((p) => /offset=(\d+)/.exec(p)![1])).toEqual(["0"]);
+    expect(reads("/api/of/v2/vault/media").filter((p) => p.includes("offset=24"))).toHaveLength(2);
+  });
+
+  it("an unchanged page 1 leaves the view alone", async () => {
+    revalidateMedia = () => ({ list: MEDIA, hasMore: false });
+    renderPicker(42);
+    await waitFor(() => expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1));
+    await settled();
+    expect(cardTitles()).toHaveLength(MEDIA.length);
+    expect(reads("/api/of/v2/vault/media")).toHaveLength(2);
+  });
+
+  it("a failed revalidate keeps the painted page", async () => {
+    revalidateMedia = () => Promise.reject(new RelayError(502, "OnlyFans unavailable"));
+    renderPicker(42);
+    await waitFor(() => expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1));
+    await settled();
+    await waitFor(() => expect(card(7001)).toBeInTheDocument());   // under load the grid can land a tick later
+    expect(cardTitles()).toHaveLength(MEDIA.length);
+  });
+
+  it("a complete mirror's grid is not revalidated on OF; the folder list is", async () => {
+    mirrorCount = 5;
+    renderPicker(42);
+    await waitFor(() => expect(card(7001)).toBeInTheDocument());
+    await waitFor(() => expect(revalidated("/api/of/v2/vault/lists")).toHaveLength(1));
+    await settled();
+    expect(reads("/api/of/v2/vault/media").filter((p) => p.includes("revalidate=1"))).toEqual([]);
   });
 });

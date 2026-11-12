@@ -54,6 +54,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from slop.lib import of_call_stats
 from slop.lib.client import Recorder
 
 PROFILE = "flat_agency"
@@ -133,50 +134,16 @@ def _wire(fake) -> Counter:
                    for c in calls if c["path"].startswith("/api2/"))
 
 
-def _file(path) -> tuple[dict, Counter]:
-    raw = json.loads(path.read_text())
-    out: Counter = Counter()
-    for _caller, key, aid, status, n in raw["rows"]:
-        out[(key, aid, status)] += n
-    return raw, out
-
-
 def _diff(want: Counter, got: Counter) -> dict:
     keys = set(want) | set(got)
     return {" | ".join(k): {"wire": want[k], "file": got[k]} for k in sorted(keys) if want[k] != got[k]}
-
-
-async def _quiet(fake, quiet_s: float = 2.5, max_s: float = 60.0) -> bool:
-    """Until no OF call arrived for `quiet_s` (the counter flushes every 1 s)."""
-    t0 = time.monotonic()
-    n = -1
-    while time.monotonic() - t0 < max_s:
-        with fake.lock:
-            m = len(fake.calls)
-        if m == n:
-            return True
-        n = m
-        await asyncio.sleep(quiet_s)
-    return False
-
-
-async def _settled(fake, path) -> tuple[dict, Counter, Counter]:
-    """The file and the wire read with no call in between: (raw file, file counts, wire counts)."""
-    for _ in range(20):
-        await _quiet(fake)
-        w1 = _wire(fake)
-        await asyncio.sleep(2.5)     # > 2 flushes
-        raw, got = _file(path)
-        if _wire(fake) == w1:
-            return raw, got, w1
-    return raw, got, _wire(fake)
 
 
 async def run(ctx) -> None:
     w, fake = ctx.world, ctx.of_wire
     await ctx.build(PROFILE)
     cs = [c["id"] for c in w.data["creators"]]
-    stats = ctx.stack.db.parent / "of_call_stats.json"
+    stats = of_call_stats.path(ctx)
     if LEG:
         LEG.seed(w)
     owner = ctx.owner.share()
@@ -256,7 +223,7 @@ async def run(ctx) -> None:
         fake.fail.discard((cs[1 % len(cs)], LEDGER))
         fake.throttle.clear()
 
-    raw1, file1, wire1 = await _settled(fake, stats)
+    raw1, file1, wire1 = await of_call_stats.settled(fake, stats, _wire)
     led = {k: n for k, n in wire1.items() if k[0] == LEDGER}
     armed = {"429": led.get((LEDGER, cs[0], "429"), 0), "retry_2xx": led.get((LEDGER, cs[0], "2xx"), 0),
              "5xx": sum(n for k, n in wire1.items() if k[2] == "5xx")}
@@ -291,16 +258,16 @@ async def run(ctx) -> None:
     await owner.aclose()
     await hook.aclose()
     t_term, took = await asyncio.to_thread(ctx.stack.stop_relay, 0, STOP_GRACE_S)
-    raw2, file2 = _file(stats)
+    raw2, file2 = of_call_stats.read(stats)
     wire2 = _wire(fake)
     with fake.lock:
         held = [c for c in fake.calls if c["account"] == aid and c["route"] == QUEUE]
     after_term = [round(c["t"] - t_term, 2) for c in held if c["t"] > t_term]
     d2 = _diff(wire2 - wire1, file2 - file1)
     await asyncio.to_thread(ctx.stack.start_relay)
-    raw_up, file_up = _file(stats)
+    raw_up, file_up = of_call_stats.read(stats)
     lost = {" | ".join(k): {"stopped": n, "restarted": file_up[k]} for k, n in file2.items() if file_up[k] < n}
-    raw3, file3, wire3 = await _settled(fake, stats)
+    raw3, file3, wire3 = await of_call_stats.settled(fake, stats, _wire)
     d3 = _diff(wire3 - wire2, file3 - file2)
     ctx.check(RESTART, arrived and (bool(after_term) or not LEG) and not d2 and not d3 and not lost
               and raw_up.get("boots") == raw2.get("boots", 0) + 1 and raw3.get("started_at") == raw1.get("started_at"),

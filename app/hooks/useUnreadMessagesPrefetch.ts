@@ -38,6 +38,11 @@ import { prefetchChatMessages } from "./useChatMessages";
 
 /** Unread threads warmed per tier, from the top of the list as the user sees it. */
 export const UNREAD_PREFETCH_TIERS: readonly number[] = [3, 2, 2];
+/** How long an inbox open rides a warmed head page instead of reading OF again
+ *  (the inbox ChatSurface's `prefetchWindowMs`). Past it the open reads OF as
+ *  before, so a thread a chatter replies to is never older than this at open;
+ *  live messages still land in the cached thread over SSE. */
+export const UNREAD_WARM_REUSE_MS = 20_000;
 /** How long the user must do nothing before an idle tier may start. */
 export const PREFETCH_QUIET_MS = 2_500;
 /** The idle callback's deadline, so a main thread that never idles still lets an idle tier run. */

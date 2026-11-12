@@ -1,6 +1,6 @@
-"""The vault Jev v8 pass's part of the slop relay (lib/relay.py loads it: `wire` runs at the end of its `_wire`; no
-`OF` class). Used by scenarios/2026-11-11-vault-jev-flags.py and 2026-11-01-vault-describe-sweep.py, beside
-lib/vault_describe_relay.py (DeepInfra, stills).
+"""The vault Jev v8 pass's part of the slop relay (lib/relay.py loads it: `wire` runs at the end of its `_wire`; its
+`OF` joins `_OfflineOF`'s bases). Used by scenarios/2026-11-11-vault-jev-flags.py, beside lib/vault_describe_relay.py
+(DeepInfra, stills) and lib/img_relay.py (OF's CDN: the clips' mp4s).
 
 TypeSafe's System One wire for `service/vault_jev.py`: the product's real `typesafe_sdk` client posts to
 `$TYPESAFE_BASE_URL/v1/systemone` (lib/stack.py points it at the relay's `/__slop/fake/typesafe`, served by
@@ -11,14 +11,19 @@ asset); everything else falls through to the route's other handlers, untouched.
 Inert unless the run wrote `$DEMO_SHOTS_TMP/typesafe-vault.json` (the scenario does, through `arm_jev`) AND armed it
 (`POST /__slop/vault-jev/arm`; 409 without the file or under SLOP_LIVE=1).
 
-  arm_jev(http, tmp, items, latency_s)  (harness side) writes {items: {"WxH": [acct, id, profile]}, latency_s}, arms.
+  arm_jev(http, tmp, items, latency_s)  (harness side) writes {items: {"WxH": [acct, id, profile], "WxH:gT": [acct,
+       id, [profile per frame]]}, clips: {"acct:id": {240, 720, full, duration}}, latency_s}, arms.
   photo_sizes(items), price_mc(tokens)  (harness side) the sizes it tells apart, what its tokens cost.
   GET /__slop/vault-jev/calls?since=N&until=M  {calls}   GET /__slop/vault-jev/count  {n}
+  OF.vault_media_by_id(id)  an armed clip's media, OF's shape, signed now (`clip_keys`; "no720": 720 null, no full);
+       any other id falls through to the next plugin (lib/vault_relay.py's minted media).
 
-Which item: the image of state `photo` (pass 1 / pass 2) or `full_photo` (pass L), by its pixel size. The scenario
-gives every photo a size with both edges in [280, 448], which every pass keeps: `vault_jev.shrink` (EDGE 1024 / 1568)
-neither enlarges nor shrinks a still whose short edge is >= 280 and long edge <= 1024, `enc` never enlarges, and
-the describe side's `shrink_data_url` keeps <= 448 (lib/vault_describe_relay.py reads the same size).
+Which item: the image of state `photo` (pass 1 / pass 2) or `full_photo` (pass L), by `vault_describe_relay
+.image_key`: a photo by its pixel size, a clip frame by its size + tint, its frame by its red. The scenario gives
+every photo a size with both edges in [280, 448] and every clip 800 x H frames (H in [480, 958]), which every pass
+keeps: `vault_jev.shrink` (EDGE 1024 / 1568) neither enlarges nor shrinks a still whose short edge is >= 280 and long
+edge <= 1024, `enc` never enlarges, and the describe side's `shrink_data_url` keeps <= 448 (lib/vault_describe_relay.py
+reads the same key; a clip's describe frames are its 400 px scrub frames, 400 x H/2 + tint).
 
 Which pass: the question set (`vault_jev.Q` on `photo` = 1, `vault_jev.Q2` on `photo` = 2, the two vulva twins on
 `full_photo` + crops = L); anything else is a 500 (recorded `pass: "other"`).
@@ -28,7 +33,8 @@ at 0.95 (the rest share 0.05), so an item is "nothing there" unless its profile 
 the lane each profile must end in from what the answers SAY (a bare vulva at .95 is a $50 photo), never from the
 product's rules. Usage: `TOKENS[pass] + media_id % 89` input tokens (deterministic, per call; the scenario prices
 them), output 1 per question. Profile `down`: a 400 and no answer, recorded status 400 / tokens 0.
-Record per call: i, t (arrival), pass, account_id, media_id, profile, tokens_in, status, auth (Bearer of the stack's
+Record per call: i, t (arrival), pass, account_id, media_id, frame (a clip's, else None), profile, tokens_in, status,
+auth (Bearer of the stack's
 TYPESAFE_API_KEY), danger (the `TypeSafe-Danger-Zone-Images: true` header), model, questions, state (keys).
 """
 
@@ -70,7 +76,7 @@ PROFILES = {
 }
 _lock = threading.Lock()
 _calls: list[dict] = []
-_cfg: dict = {"items": {}, "latency_s": 0.0, "armed": False}
+_cfg: dict = {"items": {}, "clips": {}, "latency_s": 0.0, "armed": False}
 
 
 def _file() -> Path:
@@ -81,14 +87,29 @@ def _on() -> bool:
     return bool(os.environ.get("DEMO_SHOTS_TMP")) and _file().is_file()
 
 
+def clip_keys(it: dict) -> dict[str, str | None]:
+    """A planned clip's CDN keys ("host/path"): its 240p (the seeder's url's path), 720p and `files.full` mp4s;
+    `it["src"]` "no720": both None (no 720p rendition and no native file, so the product reads the 240p: a native
+    `full` would be read first, and this fake's frames are all >= 480 px, D54's no-review size)."""
+    base = f"cdn2.onlyfans.com/files/slop/{it['account_id']}/{it['media_id']}"
+    no720 = it["src"] == "no720"
+    return {"240": f"{base}_240.mp4", "720": None if no720 else f"{base}_720.mp4",
+            "full": None if no720 else f"{base}_full.mp4"}
+
+
 async def arm_jev(http, tmp: Path, items: list[dict], latency_s: float) -> dict:
-    """Harness side: the profile file for every planned photo (`it["jev"]`), then the arm hook."""
-    from slop.lib.vault_describe_relay import size_key
+    """Harness side: the profile file for every planned photo (`it["jev"]`) and clip (`it["frames"]`: a profile per
+    frame, keyed by its frames' size + tint; its `clip_keys` for `OF.vault_media_by_id`), then the arm hook."""
+    from slop.lib.vault_describe_relay import clip_key, size_key
 
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
         "latency_s": latency_s,
-        "items": {size_key(it["size"]): [it["account_id"], it["media_id"], it["jev"]]
-                  for it in items if it.get("jev")}}))
+        "items": {**{size_key(it["size"]): [it["account_id"], it["media_id"], it["jev"]]
+                     for it in items if it.get("jev")},
+                  **{clip_key(it["frame_size"], it["tint"]): [it["account_id"], it["media_id"], it["frames"]]
+                     for it in items if it.get("frames")}},
+        "clips": {f"{it['account_id']}:{it['media_id']}": {**clip_keys(it), "duration": it["duration"]}
+                  for it in items if it.get("frames")}}))
     r = await http.post("/__slop/vault-jev/arm", json={})
     if r.status_code != 200:
         raise RuntimeError(f"slop: vault-jev arm hook answered {r.status_code}: {r.text[:200]}")
@@ -119,6 +140,37 @@ def photo_sizes(items) -> None:
         it["size"] = (lo + j % span, lo + j // span)
 
 
+def _signed(key: str) -> str:
+    """`https://<key>` with a CloudFront custom Policy good for a day and no SourceIp (lib/img_relay.py's check)."""
+    from img_relay import policy_b64  # relay side: lib/relay.py loaded it by its stem
+
+    url = f"https://{key}"
+    pol = policy_b64({"Statement": [{"Resource": url, "Condition": {
+        "DateLessThan": {"AWS:EpochTime": int(time.time()) + 86_400}}}]})
+    return f"{url}?Policy={pol}&Signature=slop&Key-Pair-Id=slop"
+
+
+class OF:
+    """GET /vault/media/{id} for an armed clip: OF's video shape, freshly signed (`videoSources` 240 / 720, the
+    720 null when OF has none; `files.full` when planned, the thumb and preview). Any other id: the next plugin's
+    answer."""
+
+    def vault_media_by_id(self, media_id) -> dict:
+        c = _cfg["clips"].get(f"{self.account_id}:{int(media_id)}") if _cfg["armed"] else None
+        if c is None:
+            nxt = getattr(super(), "vault_media_by_id", None)
+            if nxt is None:
+                raise self._err
+            return nxt(media_id)
+        base = c["240"].rsplit("_", 1)[0]
+        return {"id": int(media_id), "type": "video", "isReady": True, "hasError": False, "canView": True,
+                "duration": c["duration"],
+                "videoSources": {"240": _signed(c["240"]), "720": _signed(c["720"]) if c["720"] else None},
+                "files": {**({"full": {"url": _signed(c["full"])}} if c["full"] else {}),
+                          "thumb": {"url": f"https://{base}_thumb.jpg"},
+                          "preview": {"url": f"https://{base}_preview.jpg"}}}
+
+
 def _parts(body: bytes, ctype: str) -> dict[str, bytes]:
     """multipart/form-data parts by name (the SDK's `encode_multipart`: CRLF, one Content-Disposition each)."""
     m = re.search(r'boundary="?([^";]+)"?', ctype)
@@ -133,17 +185,6 @@ def _parts(body: bytes, ctype: str) -> dict[str, bytes]:
         if n:
             out[n.group(1).decode()] = data[:-2] if data.endswith(b"\r\n") else data
     return out
-
-
-def _size(data: bytes) -> str | None:
-    import io
-
-    from PIL import Image
-    try:
-        with Image.open(io.BytesIO(data)) as im:
-            return f"{im.size[0]}x{im.size[1]}"
-    except Exception:  # noqa: BLE001 — not an image the seeder made
-        return None
 
 
 def _pass(state: dict, qs: set) -> str:
@@ -196,12 +237,17 @@ async def _handle(request):
         body = json.loads(parts.get("request") or b"{}")
     except ValueError:
         body = {}
+    from vault_describe_relay import image_key  # relay side: lib/relay.py loaded it by its stem
+
     state, qs = body.get("state") or {}, body.get("questions") or {}
     pss = _pass(state, set(qs))
     ref = state.get("full_photo" if pss == "L" else "photo")
     part = ((body.get("assets") or {}).get(ref) or {}).get("part") if isinstance(ref, str) else None
-    item = _cfg["items"].get(_size(parts.get(part) or b"")) if part else None
-    base = {"pass": pss, "model": body.get("model"), "questions": len(qs), "state": sorted(state),
+    key, frame = image_key(parts.get(part) or b"") if part else (None, None)
+    item = _cfg["items"].get(key)
+    if item is not None and isinstance(item[2], list):   # a clip: the profile of the frame its red spells
+        item = [*item[:2], item[2][frame]] if frame is not None and 0 <= frame < len(item[2]) else None
+    base = {"pass": pss, "model": body.get("model"), "questions": len(qs), "state": sorted(state), "frame": frame,
             "auth": request.headers.get("authorization", "") == f"Bearer {os.environ.get('TYPESAFE_API_KEY', '')}",
             "danger": request.headers.get("typesafe-danger-zone-images") == "true"}
     if pss == "other" or item is None:
@@ -234,8 +280,9 @@ def wire(app, loopback, _relay) -> None:
             return JSONResponse({"error": f"slop: no $DEMO_SHOTS_TMP/{CFG_FILE} (or SLOP_LIVE=1): not armed"},
                                 status_code=409)
         d = json.loads(_file().read_text())
-        _cfg.update(items=d.get("items") or {}, latency_s=float(d.get("latency_s") or 0), armed=True)
-        return {"items": len(_cfg["items"])}
+        _cfg.update(items=d.get("items") or {}, clips=d.get("clips") or {}, latency_s=float(d.get("latency_s") or 0),
+                    armed=True)
+        return {"items": len(_cfg["items"]), "clips": len(_cfg["clips"])}
 
     async def calls(request: Request, since: int = 0, until: int | None = None) -> dict:
         loopback(request)

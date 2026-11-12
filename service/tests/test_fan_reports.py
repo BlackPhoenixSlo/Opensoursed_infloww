@@ -191,4 +191,84 @@ def case_another_agencys_creator_is_refused():
     _get(f"/admin/stats/fan-report?account_id={IDS['creator_b']}", status=403)
 
 
+
+def case_json_spend_materialized_once_with_two_reads_and_indexed_claims():
+    # A real request must do one aggregation, not two independently executed queries.
+    # This fails on the old runtime even though its figures are correct.
+    import sqlite3
+    import sys
+    from sqlalchemy import event
+    engine = sys.modules["db.engine"].engine.sync_engine
+    calls = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if "net_or_80_cents" in statement and "transactions" in statement:
+            calls.append((statement, parameters))
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        body = _get(f"/admin/stats/fan-report?account_id={C1}&{MARCH}&limit=1").json()
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert len(body["top_fans"]) == 1
+    assert sum(t["fans"] for t in body["traffic"]) == 2, body
+    assert len(calls) == 1, f"spend executed {len(calls)} times, expected one shared statement"
+    sql, params = calls[0]
+    with sqlite3.connect(f"file:{_harness.DB_PATH}?mode=ro", uri=True) as con:
+        plan = [r[3] for r in con.execute("EXPLAIN QUERY PLAN " + sql, params)]
+    assert sum("MATERIALIZE fan_spend" in p for p in plan) == 1, plan
+    assert sum(p.startswith(("SCAN fan_spend", "SEARCH fan_spend")) for p in plan) == 2, plan
+    assert any("ix_link_claimers_account_fan" in p for p in plan), plan
+    assert "FROM (SELECT" in sql and "LIMIT" in sql.split("UNION ALL")[0], sql
+    assert "ORDER BY fan_report_rows.branch" in sql, sql
+    # CSV must retain its independent streaming query, without materialization or UNION.
+    calls.clear()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        _get(f"/admin/stats/fan-report?account_id={C1}&{MARCH}&format=csv")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert len(calls) == 1 and "MATERIALIZED" not in calls[0][0] and "UNION ALL" not in calls[0][0], calls
+
+
+def case_signed_zero_net_and_cutoff_ties_preserve_membership_and_order():
+    a, b = _creator("5600006"), _creator("5600007")
+    at = datetime(2026, 3, 10)
+    _sale(a, 1, "tip", 101, at)
+    _sale(a, 1, "custom", -101, at)  # signed floor: 80 + (-81), total zero still a spender
+    _sale(a, 2, "tip", 1000, at, net=0)
+    _sale(a, 3, "ppv_message", 500, at)
+    _sale(b, 3, "ppv_message", 500, at)  # every existing ordering key ties across accounts
+    _sale(a, 4, "subscription", 500, at)
+    _sale(a, 5, "rebill", -3, at)
+    _sale(a, 11, "custom", -1, at, status="pending")
+    for fan, status in enumerate(("refunded", "chargedback", "refund_pending", "failed"), 20):
+        _sale(a, fan, "tip", 999999, at, status=status)
+    _sale(a, 30, "tip", 999999, datetime(2026, 4, 1))
+    q = f"/admin/stats/fan-report?account_id={a},{b}&{MARCH}"
+    expected = {(a, 1): (0, -1, 101, 0, 0), (a, 2): (1000, 0, 1000, 0, 0),
+                (a, 3): (500, 400, 0, 500, 0), (b, 3): (500, 400, 0, 500, 0),
+                (a, 4): (500, 400, 0, 0, 500), (a, 5): (-3, -3, 0, 0, -3),
+                (a, 11): (-1, -1, 0, 0, 0)}
+    fields = ("total_cents", "net_or_80_cents", "tips_cents", "ppv_cents", "subs_cents")
+    for sort, col in (("total", 0), ("tips", 2), ("ppv", 3), ("subs", 4)):
+        ordered_keys = sorted((-v[col], -v[0], k[1]) for k, v in expected.items())
+        for limit in (1, 2, 3, 100, 5000):
+            body = _get(q + f"&sort={sort}&limit={limit}").json()
+            rows = body["top_fans"]
+            assert len(rows) == min(limit, len(expected)), rows
+            keys = [(r["account_id"], r["fan_id"]) for r in rows]
+            assert len(keys) == len(set(keys)), rows
+            assert all(tuple(r[f] for f in fields) == expected[k] for k, r in zip(keys, rows)), rows
+            assert [(-r[fields[col]], -r["total_cents"], r["fan_id"]) for r in rows] == ordered_keys[:limit], rows
+            # Existing order deliberately leaves account ties unspecified, including cutoff ties.
+            assert sum(t["fans"] for t in body["traffic"]) == len(expected), body
+            assert sum(t["total_cents"] for t in body["traffic"]) == sum(v[0] for v in expected.values()), body
+            assert [t["total_cents"] for t in body["traffic"]] == sorted(
+                [t["total_cents"] for t in body["traffic"]], reverse=True), body
+        rows = list(csv.DictReader(io.StringIO(_get(q + f"&sort={sort}&format=csv&limit=1").text)))
+        assert len(rows) == len(expected), rows
+        assert {(r["account_id"], int(r["fan_id"])): tuple(int(r[f]) for f in fields) for r in rows} == expected
+    empty = _get(f"/admin/stats/fan-report?account_id={a},{b}&from=2027-01-01&to=2027-01-02").json()
+    assert empty == {"top_fans": [], "traffic": [], "growth": []}, empty
+
+
 _harness.run()

@@ -34,6 +34,7 @@ Covered — the cache half:
   case_toast_drops_the_entry                  (toasts)
   case_typing_event_does_not_drop_the_entry   (over-invalidation guard)
   case_a_purchase_busts_the_badge_too (the whole set, not just the feed)
+  case_a_purchase_drops_the_cached_pins       (chat_pinned: a pinned PPV's lock)
   case_invalidation_is_account_scoped
 
 Run: ./venv/bin/python service/tests/test_notifications_cache.py   (exit 0 = pass)
@@ -324,6 +325,27 @@ async def case_a_purchase_busts_the_badge_too():
             if await relay_cache.get_or_fetch(ns, _AID, (), ttl,
                                               lambda: {"warm": False}) == {"warm": True}]
     assert not live, f"a sale left these serving pre-sale bodies: {live}"
+
+
+async def case_a_purchase_drops_the_cached_pins():
+    """A pinned PPV shows its lock/price (app/lib/ofMirrorThread.ts) and a fan's
+    payment flips it with no write of ours: a sale drops the account's cached
+    pins (server's `chat_pinned`, every chat), so the reopened chat shows it paid."""
+    _reset()
+    for chat in (777008, 777009):
+        await relay_cache.get_or_fetch("chat_pinned", _AID, (chat,), 300.0, lambda: {"warm": True})
+    await relay_cache.get_or_fetch("chat_pinned", _OTHER_AID, (777008,), 300.0, lambda: {"warm": True})
+    await pn._broadcast_purchase(_AID, {
+        "notif_id": "117301756208", "fan_id": 777008,
+        "message_id": 10491720677796, "amount_cents": 900,
+        "created_at": "2026-08-25T10:09:00+00:00", "name": "Daniel",
+    })
+    for chat in (777008, 777009):
+        got = await relay_cache.get_or_fetch("chat_pinned", _AID, (chat,), 300.0, lambda: {"warm": False})
+        assert got == {"warm": False}, f"a sale left chat {chat}'s pins cached"
+    other = await relay_cache.get_or_fetch("chat_pinned", _OTHER_AID, (777008,), 300.0, lambda: {"warm": False})
+    assert other == {"warm": True}, "a sale on one model dropped another model's pins"
+    relay_cache.invalidate("chat_pinned", _OTHER_AID)
 
 
 async def case_invalidation_is_account_scoped():

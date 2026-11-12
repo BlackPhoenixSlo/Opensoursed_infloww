@@ -12,6 +12,15 @@ gate themselves with `assert_account_owned(body.account_id)`.
   case_anonymous_is_refused:
       no session → 401 on both routes, nothing written. Pins the perimeter
       (the general admin gate already 401s); not this fix.
+  case_wall_scan_takes_the_session_user_id:
+      `GET /admin/vault/wall-media` walks `/users/{id}/posts` with the
+      session's own `user_id` and makes zero `/users/me` calls.
+  case_wall_scan_without_a_usable_user_id_is_a_500:
+      a missing, empty, non-numeric, zero or negative `user_id` → the same 500
+      as the old missing `/users/me` id, and no posts read (never an empty wall).
+  case_fansly_wall_scan_stays_a_500:
+      a Fansly account (its shim's `user_id` is a digit string, its old
+      `/users/me` id a string) → today's 500, no `me`, no timeline read.
 
 Run: ./venv/bin/python service/tests/test_vault_sends_owned.py  (exit 0 = pass)
 """
@@ -115,6 +124,67 @@ def case_anonymous_is_refused() -> None:
         assert _send(c, aid, 5).status_code == 401
         assert _backfill(c, aid, 6).status_code == 401
     assert (_rows(ACC_A), _rows(ACC_B)) == before
+
+
+class _WallClient:
+    """A fake OF client for the wall scan: counts `me()` and records `user_posts` ids."""
+
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.me_calls = 0
+        self.posts_for: list = []
+
+    def me(self):
+        self.me_calls += 1
+        return {"id": 999}
+
+    def user_posts(self, uid, **_kw):
+        self.posts_for.append(uid)
+        return {"list": [{"id": 5, "postedAt": "2026-11-01T10:00:00+00:00", "media": [{"id": 4242}]}],
+                "hasMore": False}
+
+
+def _wall(c: TestClient, fake: _WallClient):
+    orig = server._load_client
+    server._load_client = lambda _aid: fake
+    try:
+        return c.get("/admin/vault/wall-media", params={"account_id": ACC_A, "force": "true"})
+    finally:
+        server._load_client = orig
+
+
+def case_wall_scan_takes_the_session_user_id() -> None:
+    c = _login("owner_a")
+    fake = _WallClient("12345")
+    r = _wall(c, fake)
+    assert r.status_code == 200, f"{r.status_code} {r.text}"
+    assert fake.me_calls == 0, f"/users/me called {fake.me_calls}x"
+    assert fake.posts_for == [12345], fake.posts_for
+    assert 4242 in r.json()["media_ids"], r.json()
+
+
+def case_wall_scan_without_a_usable_user_id_is_a_500() -> None:
+    c = _login("owner_a")
+    for bad in (None, "", "abc", "12a", "0", "-5", "1.5"):
+        fake = _WallClient(bad)
+        r = _wall(c, fake)
+        assert r.status_code == 500, f"user_id={bad!r}: {r.status_code} {r.text}"
+        assert r.json().get("detail") == "Could not resolve current user id from /users/me", r.text
+        assert fake.posts_for == [] and fake.me_calls == 0, (bad, fake.posts_for, fake.me_calls)
+
+
+def case_fansly_wall_scan_stays_a_500() -> None:
+    c = _login("owner_a")
+    fake = _WallClient("123456789012345678")  # FanslyShimClient.user_id: str(session.account_id)
+    orig = account_registry.get_platform
+    account_registry.get_platform = lambda aid: "fansly" if aid == ACC_A else orig(aid)
+    try:
+        r = _wall(c, fake)
+    finally:
+        account_registry.get_platform = orig
+    assert r.status_code == 500, f"{r.status_code} {r.text}"
+    assert r.json().get("detail") == "Could not resolve current user id from /users/me", r.text
+    assert fake.posts_for == [] and fake.me_calls == 0, (fake.posts_for, fake.me_calls)
 
 
 _harness.run()

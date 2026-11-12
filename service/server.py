@@ -11,6 +11,14 @@ the frontend can speak OF's shape directly — we just sign + forward + return.
 
 Run from the repo root with whichever venv has curl_cffi + fastapi + uvicorn:
   ./venv/bin/uvicorn service.server:app --reload --port 8787
+
+Env knobs (read at call time):
+  PINS_CACHE_TTL_S=300   a chat's pins cached in the Relay, shared by every tab
+                         and Employee; our message writes clear it (0 = today's uncached read)
+  VAULT_PICKER_REVALIDATE_S=300
+                         the vault picker's open (`revalidate=1` on /vault/lists and
+                         /vault/media) serves the shared cache only when younger, else
+                         reads OF once for every opener (0 = every open reads OF)
 """
 from __future__ import annotations
 
@@ -1332,8 +1340,9 @@ def _on_proxy_switched(account_ids: list[str]) -> None:
     WS leave from the same IP from now on, not after the next relay restart.
     OF's signed vault urls are bound to the egress IP too, so the account's
     cached vault pages read as misses from now on (vault_cache.mark_stale),
-    the background vault walk on the old client stops (cursor kept) and the
-    rows are deleted, so a restart cannot serve them either."""
+    the background vault walk on the old client stops (cursor kept), the
+    rows are deleted, so a restart cannot serve them either, and the collector
+    re-warms the account's hot set at its next pick (vault_collect.request_rewarm)."""
     for aid in account_ids:
         _invalidate_client(aid)
         _reroute_account_pump(aid)
@@ -1345,6 +1354,7 @@ async def _vault_after_proxy_switch(account_id: str) -> None:
     import vault_collect
     await vault_collect.preempt(account_id)
     await vault_cache.invalidate(account_id)
+    vault_collect.request_rewarm(account_id)   # the hot set back on cache within a pass, not after STALE_S
 
 
 proxy_registry.on_switch(_on_proxy_switched)
@@ -1439,6 +1449,8 @@ async def _close_streams_on_term() -> None:
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
+    from of_session_registry import Registry
+    Registry.instance()  # start exactly one idle sweeper before any OFClient
     _event_stats["started_at"] = _time_mod.time()
 
     # Inflowwww proxy pool, before anything below (vault sweep, pumps, the
@@ -1627,11 +1639,11 @@ async def _start_event_pumps() -> None:
                         first_after_s=60), "clock-in-missed")
 
     # Tracking / free trial / promotion link figures, read hourly per live
-    # account so Growth pages open from cache (link_metrics.prewarm_all). First
-    # pass 10 min in, clear of the boot herd.
-    import link_metrics
+    # account for List sync (link_prewarm.prewarm_all; LINK_PREWARM_SCOPE=all: every
+    # link, so Growth pages open from cache). First pass 10 min in, clear of the boot herd.
+    import link_prewarm
     _spawn_bg(_periodic(
-        "link figures prewarm", link_metrics.PREWARM_PAUSE_S, link_metrics.prewarm_all,
+        "link figures prewarm", link_prewarm.PREWARM_PAUSE_S, link_prewarm.prewarm_all,
         first_after_s=600), "link-figures-prewarm")
 
     # Vault week cache: one Creator at a time, paced ≥5 s between OF calls on the
@@ -1699,6 +1711,8 @@ async def _stop_push() -> None:
 
 @app.on_event("shutdown")
 async def _stop_event_pumps() -> None:
+    from of_session_registry import Registry
+    registry = Registry.instance()
     # Save the lane counters before anything else can raise — a clean stop is
     # the one restart where we can avoid losing the last flush interval.
     _lane_stats_flush(force=True)
@@ -1709,6 +1723,9 @@ async def _stop_event_pumps() -> None:
     from automation_executor import drain as _drain_automations
     with contextlib.suppress(Exception):
         await _drain_automations()
+    # Claimed writes retain their business grace (including delete -> send).
+    # Only after that bounded drain do we deny new transport leases.
+    registry.stop_admission()
     # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
     # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
     # at every clean shutdown.
@@ -1726,12 +1743,21 @@ async def _stop_event_pumps() -> None:
     _account_pumps.clear()
     _pump_runs.clear()
 
+    # Stop remaining producers. Cancellation of to_thread waiters does not mean
+    # their native workers finished; registry.drain below waits on real owners.
+    background = list(_bg_tasks)
+    for task in background:
+        task.cancel()
+    if background:
+        await asyncio.gather(*background, return_exceptions=True)
+    await asyncio.to_thread(registry.drain)
+
     # Drain the persist worker last — pumps are already cancelled above, so
     # no new events are arriving. Anything still in the queue is dropped.
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await _stop_persist_worker()
 
-    # Idle signed curl handles close now; any in-flight lease closes on return.
+    # Pooled clients refuse new signed calls (registry.drain closed their handles).
     client_pool.evict()
 
     # Close the pooled SQLite connections (db/engine.py), so the last one out
@@ -2554,12 +2580,13 @@ def _proxy(call, *, client: OFClient | None = None):
     except OFSessionRetired as e:  # before OFDeniedError (its base)
         # This request never left (a multi-request write's earlier ones may have); the
         # account's current client takes the caller's next try.
-        log.warning("signed call refused before sending account=%s method=%s: %s: 503", aid,
-                    req.method if req is not None else None, e)
         busy = isinstance(e, OFSignedPoolBusy)   # nothing evicted: its handles stay leased a while
+        reason = "signed_pool_busy" if busy else "session_retired"
+        # watch:signed_pool_503 counts these per account (scripts/proxy-health/watch.py).
+        log.warning("signed_pool_503 account=%s reason=%s method=%s", aid, reason,
+                    req.method if req is not None else None)
         raise HTTPException(status_code=503, headers={"Retry-After": "5" if busy else "1"},
-                            detail={"upstream_status": "signed_pool_busy" if busy else "session_retired",
-                                    "upstream_body": str(e)}) from e
+                            detail={"upstream_status": reason, "upstream_body": str(e)}) from e
     except OFDeniedError as e:
         # The Relay's own deny-list (of_client._denied), never sent: not an upstream failure.
         raise HTTPException(status_code=403,
@@ -3384,12 +3411,49 @@ async def get_pinned(chat_id: int) -> dict[str, Any]:
     is irrelevant here (different segment) — but it DOES have to come before any
     future `/chats/{chat_id}/{something}` catch-all, same trap as mark-as-read.
 
-    Cheap enough to call per open chat: one OF request, no pagination (see
-    of_client.get_pinned_messages — `hasMore` lies on this filter)."""
-    async with _bg_admission():
-        rows = await asyncio.to_thread(
-            _proxy, lambda: _get_client().get_pinned_messages(chat_id))
-    return {"list": rows}
+    One OF request, no pagination (see of_client.get_pinned_messages —
+    `hasMore` lies on this filter), cached per (account, chat) for
+    `_pins_cache_ttl_s()` and shared by every tab and Employee; the cache's
+    per-key lock makes concurrent opens one OF read. Our own message writes
+    (pin, unpin, unpin-all, unsend, hide, like, bookmark) clear the account's
+    pins (`_proxy_message_write`), and so does every money event (a sale's
+    lock/price flip: `chat_pinned` is in `relay_cache._MONEY_FEED_NAMESPACES`),
+    so only a change made on OF web can show up to the TTL late. The TTL
+    defaults to 300 s like `get_messages_tail`. TTL 0 reads OF every time."""
+    async def _fetch() -> dict[str, Any]:
+        async with _bg_admission():
+            rows = await asyncio.to_thread(
+                _proxy, lambda: _get_client().get_pinned_messages(chat_id))
+        return {"list": rows}
+
+    ttl = _pins_cache_ttl_s()
+    if ttl <= 0:
+        return await _fetch()
+    return await relay_cache.get_or_fetch(
+        "chat_pinned", _current_aid(), (chat_id,), ttl_seconds=ttl, fetcher=_fetch)
+
+
+def _pins_cache_ttl_s() -> float:
+    """Knob PINS_CACHE_TTL_S, read at call time (default 300; 0 = uncached)."""
+    try:
+        return max(0.0, float(os.environ.get("PINS_CACHE_TTL_S", "300")))
+    except ValueError:
+        return 300.0
+
+
+def _proxy_message_write(fn: Callable[[], Any]) -> Any:
+    """`_proxy(fn)` for a message write (pin, unpin, unpin-all, unsend, hide,
+    like, bookmark), then drop the account's cached pins (every chat: a message
+    write names no chat), OF's answer or error alike, before returning. The
+    drop never raises: a miss costs one stale TTL, a raise would fail a write
+    OF already took. Sync: async routes call it via `asyncio.to_thread`."""
+    try:
+        return _proxy(fn)
+    finally:
+        try:
+            relay_cache.invalidate("chat_pinned", _current_aid())
+        except Exception:  # noqa: BLE001
+            log.debug("chat_pinned invalidation skipped", exc_info=True)
 
 
 # ── Users ──────────────────────────────────────────────────────
@@ -4140,6 +4204,51 @@ def of_post_comments(post_id: int, limit: int = Query(20, ge=1, le=50), offset: 
 
 # ── Vault ──────────────────────────────────────────────────────
 
+def _vault_picker_revalidate_s() -> float:
+    """Knob VAULT_PICKER_REVALIDATE_S, read at call time (default 300): the age past
+    which the picker's open (`revalidate=1`) reads OF instead of the shared cache."""
+    try:
+        return max(0.0, float(os.environ.get("VAULT_PICKER_REVALIDATE_S", "300")))
+    except ValueError:
+        return 300.0
+
+
+def _listing_ids(payload: Any) -> list[Any] | None:
+    """The media ids of a vault page, in order (None: not a listing)."""
+    rows = payload.get("list") if isinstance(payload, dict) else None
+    return [m.get("id") if isinstance(m, dict) else m for m in rows] if isinstance(rows, list) else None
+
+
+async def _vault_read(aid: str, key: str, *, refresh: bool, revalidate: bool,
+                      fetch: Callable[[], Awaitable[Any]], first_page: bool = False) -> Any:
+    """The vault routes' read: the shared cache unless `refresh`; the picker's open
+    (`revalidate`) takes only an entry younger than VAULT_PICKER_REVALIDATE_S, and its
+    misses share one OF read (many chatters opening one Creator's picker at once).
+    `fetch` reads OF; the answer is put here. A revalidate of a view's first media page
+    (`first_page`) whose ids differ from the cached copy drops that view's other offsets
+    first: they were cut from the old listing (new media shift every offset)."""
+
+    async def _fetch_put(compare: Any) -> Any:
+        t0 = datetime.utcnow()
+        result = await fetch()
+        if compare is not None and _listing_ids(compare) != _listing_ids(result):
+            await vault_cache.drop_view_pages(aid, key)
+        await vault_cache.put(aid, key, result, started_at=t0)
+        return result
+
+    if not refresh:
+        cached = (await vault_cache.get(aid, key, max_age_s=_vault_picker_revalidate_s())
+                  if revalidate else await vault_cache.get(aid, key))
+        if cached is not None:
+            return cached
+        if revalidate:
+            async def _revalidate() -> Any:
+                old = await vault_cache.get(aid, key) if first_page else None
+                return await _fetch_put(old)
+            return await relay_coalesce.coalesce(("vault_revalidate", aid, key), _revalidate)
+    return await _fetch_put(None)
+
+
 # THE cache keys for /vault/media and /vault/lists live in vault_cache, shared
 # with the background collector (vault_collect) so the pages it warms are the
 # pages these routes read.
@@ -4159,6 +4268,8 @@ async def of_vault_media(
     before_publish_date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$",
                                             description="OF's Go to date (wire param `beforePublishDate`)"),
     refresh: bool = Query(False, description="Bypass the shared server cache; forces a fresh OF fetch"),
+    revalidate: Annotated[bool, Query(description="The picker's open: the cache only when younger than "
+                                                  "VAULT_PICKER_REVALIDATE_S, else a fresh OF fetch")] = False,
 ):
     """My vault items. Filter by media kind via `type=`, order via `sort=`
     (asc/desc — OF honors both), full-text search via `query=`.
@@ -4185,21 +4296,18 @@ async def of_vault_media(
     key = vault_cache.vault_media_cache_key(type=type, list_id=list_id, offset=offset,
                                             limit=limit, sort=sort, field=field, q_norm=q_norm,
                                             before=before_publish_date)
-    if not refresh:
-        cached = await vault_cache.get(aid, key)
-        if cached is not None:
-            return cached
-    t0 = datetime.utcnow()
-    result = await asyncio.to_thread(
-        _proxy,
-        lambda: _get_client().vault_media(
-            limit=limit, offset=offset, type=type, list_id=list_id,
-            sort=sort, field=field, query=q_norm or None,
-            before_publish_date=before_publish_date,
-        ),
-    )
-    await vault_cache.put(aid, key, result, started_at=t0)
-    return result
+    async def _fetch() -> Any:
+        return await asyncio.to_thread(
+            _proxy,
+            lambda: _get_client().vault_media(
+                limit=limit, offset=offset, type=type, list_id=list_id,
+                sort=sort, field=field, query=q_norm or None,
+                before_publish_date=before_publish_date,
+            ),
+        )
+
+    return await _vault_read(aid, key, refresh=refresh, revalidate=revalidate, fetch=_fetch,
+                             first_page=offset == 0)
 
 
 @app.get("/api/of/v2/vault/media/{media_id}")
@@ -4290,7 +4398,9 @@ async def admin_vault_cache_invalidate() -> dict[str, Any]:
 async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1, le=50),
                          offset: int = Query(0, ge=0),
                          query: str | None = Query(None, description="The folder search (wire param `query`)"),
-                         refresh: bool = Query(False, description="Bypass the shared server cache")):
+                         refresh: bool = Query(False, description="Bypass the shared server cache"),
+                         revalidate: Annotated[bool, Query(description="The picker's open: the cache only when "
+                                                           "younger than VAULT_PICKER_REVALIDATE_S")] = False):
     """Vault folders. Note OF's required `view` param value is `main`.
     Cached server-side via vault_cache (same invalidation semantics as
     /api/of/v2/vault/media)."""
@@ -4301,19 +4411,17 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
     allowed_folders = await _allowed_folder_ids_for_chatter(aid)
     q_norm = (query or "").strip()
     key = vault_cache.vault_lists_cache_key(view=view, limit=limit, offset=offset, q_norm=q_norm)
-    result = None
-    if not refresh:
-        result = await vault_cache.get(aid, key)
-    if result is None:
-        t0 = datetime.utcnow()
-        result = await asyncio.to_thread(
+
+    async def _fetch() -> Any:
+        # The UNFILTERED payload is cached (by _vault_read) — owners + other chatters
+        # share this entry. Filtering happens per-response below, never written back.
+        return await asyncio.to_thread(
             _proxy,
             lambda: _get_client().vault_lists(view=view, limit=limit, offset=offset,
                                               query=q_norm or None),
         )
-        # Cache the UNFILTERED payload — owners + other chatters share this
-        # entry. Filtering happens per-response below, never written back.
-        await vault_cache.put(aid, key, result, started_at=t0)
+
+    result = await _vault_read(aid, key, refresh=refresh, revalidate=revalidate, fetch=_fetch)
     if allowed_folders is not None and isinstance(result, dict):
         # Filter on READ only, into a new dict of just the allowed folders and
         # `hasMore`: OF's other keys (`all`: whole-vault counts + cover urls)
@@ -4691,8 +4799,8 @@ async def of_unsend_message(request: Request, message_id: int):
                 with_user_id = int(parsed["withUserId"])
     except Exception:
         with_user_id = None
-    resp = await asyncio.to_thread(
-        _proxy, lambda: _get_client().unsend_message(message_id, with_user_id=with_user_id))
+    resp = await asyncio.to_thread(  # an unsent pin leaves the pinned page
+        _proxy_message_write, lambda: _get_client().unsend_message(message_id, with_user_id=with_user_id))
     # OF took the bubble down — mirror that onto our `messages` row, or the
     # chat pane's DB seed (GET /admin/messages) paints it again on the next
     # reload as an EMPTY locked shell (the seed carries no media, and a PPV
@@ -4714,43 +4822,43 @@ class _BookmarkBody(BaseModel):
 @app.put("/api/of/v2/messages/{message_id}/hide")
 def of_hide_message(message_id: int, body: _WithUserBody = Body(...)):
     """Hide a message the other side sent (OF web's per-message "Hide": PUT /messages/{id}/hide {withUserId})."""
-    return _proxy(lambda: _get_client().hide_message(message_id, body.withUserId))
+    return _proxy_message_write(lambda: _get_client().hide_message(message_id, body.withUserId))
 
 @app.post("/api/of/v2/messages/{message_id}/bookmark")
 def of_bookmark_message(message_id: int, body: _BookmarkBody | None = Body(None)):
     """Bookmark a chat message (OF web: POST /posts/{id}/bookmarks {chat_group_id})."""
-    return _proxy(lambda: _get_client().bookmark_message(message_id, body.chat_group_id if body else None, True))
+    return _proxy_message_write(lambda: _get_client().bookmark_message(message_id, body.chat_group_id if body else None, True))
 
 @app.delete("/api/of/v2/messages/{message_id}/bookmark")
 def of_unbookmark_message(message_id: int, body: _BookmarkBody | None = Body(None)):
-    return _proxy(lambda: _get_client().bookmark_message(message_id, body.chat_group_id if body else None, False))
+    return _proxy_message_write(lambda: _get_client().bookmark_message(message_id, body.chat_group_id if body else None, False))
 
 @app.delete("/api/of/v2/chats/{chat_id}/messages/pin")
 def of_unpin_all_messages(chat_id: int):
     """OF web's pinned page "Unpin all messages": DELETE /chats/{id}/messages/pin."""
-    result = _proxy(lambda: _get_client().unpin_all_messages(chat_id))
+    result = _proxy_message_write(lambda: _get_client().unpin_all_messages(chat_id))
     _bust_chat_list_cache()  # the chat drops off the list's Pinned tab
     return result
 
 @app.post("/api/of/v2/messages/{message_id}/like")
 def of_like_message(message_id: int):
     """Like a message you received (can't like your own)."""
-    return _proxy(lambda: _get_client().like_message(message_id))
+    return _proxy_message_write(lambda: _get_client().like_message(message_id))
 
 @app.delete("/api/of/v2/messages/{message_id}/like")
 def of_unlike_message(message_id: int):
-    return _proxy(lambda: _get_client().unlike_message(message_id))
+    return _proxy_message_write(lambda: _get_client().unlike_message(message_id))
 
 @app.post("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
 def of_pin_message(message_id: int, user_id: int):
     """Pin a message inside a chat. Path mirrors OF's wire shape
     (`/messages/{msg}/pin/user/{chat_partner}`) — the shorter `/pin` form
     didn't reliably pin to the chat's visible pinned list."""
-    return _proxy(lambda: _get_client().pin_message(message_id, user_id))
+    return _proxy_message_write(lambda: _get_client().pin_message(message_id, user_id))
 
 @app.delete("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
 def of_unpin_message(message_id: int, user_id: int):
-    return _proxy(lambda: _get_client().unpin_message(message_id, user_id))
+    return _proxy_message_write(lambda: _get_client().unpin_message(message_id, user_id))
 
 # Chat-level actions (VERIFIED LIVE) — mark read/unread, mute, hide.
 # Static path BEFORE dynamic /chats/{chat_id}/... to avoid `chat_id="mark-as-read"`

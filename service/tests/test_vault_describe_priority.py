@@ -61,6 +61,7 @@ import vault_ai_vision_decide as d  # noqa: E402
 import vault_dupes  # noqa: E402
 import vault_frames  # noqa: E402
 import vault_stills  # noqa: E402
+from _jev_fixtures import video_jev  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountAiConfig, VaultItem  # noqa: E402
 
@@ -206,11 +207,6 @@ def case_own_rerun_clears_copy_markers() -> None:
     assert "_copied_from" not in ai, "an own describe still claims to be a copy"
     # the flags it kept are still the copied ones, failure record included
     assert ai["_flags_copied_from"] == 12 and ai["_flags_status"] == "error", ai
-    f = d.build_flags_fields(prev, [{"underwear_visible": True, "vulva_vis": "bare",
-                                     "breasts_vis": "bare", "anus_vis": "not_in_frame"}],
-                             locked=set(), is_video=False, model="m", version=3)
-    assert "_flags_copied_from" not in f and "_flags_status" not in f, f
-    assert f["_copied_from"] == 11, "the description is still the copied one"
 
 
 # ── DB cases (real describe/flags paths, faked frames + LLM) ─────────
@@ -253,9 +249,11 @@ async def _world(items: list[tuple[int, int, int, int]], cols: dict | None = Non
             for root, seed in ((vault_stills.THUMB_DIR, ts), (vault_stills.IMAGE_DIR, fs)):
                 (root / aid).mkdir(parents=True, exist_ok=True)
                 (root / aid / f"{mid}.jpg").write_bytes(_jpeg(seed))
-            # Clips by default: the qwen describe + flags these sweeps pay for are a
-            # clip's (a photo's are Jev's; its reuse lives in test_vault_jev).
-            extra = {"kind": "video", "duration_seconds": 20, **(cols or {}).get(mid, {})}
+            # Clips by default, each with a current `_jev` (D54: the qwen describe these
+            # sweeps pay for is fed it; flags are stamped from it, never a qwen call — the
+            # Jev pass and a photo's reuse live in test_vault_jev).
+            extra = {"kind": "video", "duration_seconds": 20, "ai_fields_json": json.dumps({"_jev": video_jev()}),
+                     **(cols or {}).get(mid, {})}
             s.add(VaultItem(account_id=aid, media_id=mid, tags="[]",
                             created_at=T0 + timedelta(days=day), **extra))
         await s.commit()
@@ -329,7 +327,8 @@ async def case_describe_all_one_call_per_duplicate() -> None:
     assert not {1, 3} & set(await vault_ai_vision._flags_todo(aid)), "copy would be re-flagged"
     prog = vault_ai_vision._describe_progress[aid]
     assert prog["total"] == prog["done"] == 3 and prog["failed"] == 0, prog
-    assert prog["cost_millicents"] == 5 + 5, prog  # 1 describe + 1 flags
+    assert prog["cost_millicents"] == 5, prog  # 1 describe; flags from the current `_jev`, no call
+    assert "describe_flags" not in m.calls, m.calls
 
 
 async def case_already_described_member_is_the_source() -> None:
@@ -398,12 +397,15 @@ async def case_dupe_scan_raising_still_sweeps() -> None:
 async def case_flags_sweep_one_call_per_duplicate() -> None:
     aid = await _world([(1, 1, 140, 240), (2, 3, 140, 240), (3, 2, 141, 241)],
                        {i: {"describe_status": "described",
-                            "ai_fields_json": json.dumps({"description": "x"})} for i in (1, 2, 3)})
+                            "ai_fields_json": json.dumps({"description": "x", "_jev": video_jev()})}
+                        for i in (1, 2, 3)})
+    # D54: a clip's flags are stamped from its `_jev` (current here: nothing to pay), never a qwen call; a set's
+    # one-Jev-per-duplicate is test_vault_jev's (case_dupe_followers_get_the_leaders_jev).
     with _Model() as m:
         await vault_ai_vision._run_flags_all(aid, await vault_ai_vision._flags_todo(aid))
-    assert m.n("describe_flags") == 2, m.calls
+    assert m.calls == [], m.calls
     a = _ai(await _row(aid, 1))
-    assert a.get("_flags_copied_from") == 2 and a["description"] == "x", a
+    assert a["_flags_model"] == "jev" and a["description"] == "x", a
     assert await vault_ai_vision._flags_todo(aid) == [], "a flags copy is not current"
     prog = vault_ai_vision._flags_progress[aid]
     assert prog["total"] == prog["done"] == 3 and prog["failed"] == 0, prog
@@ -530,7 +532,9 @@ async def case_sweep_walks_priority_order() -> None:
         vault_ai_vision._DESCRIBE_CONCURRENCY = o_conc
     want = list(range(120, 20, -1)) + [3] + list(range(1, 3)) + list(range(4, 21))
     assert seen == want, seen[:5] + ["…"] + seen[98:105]
-    assert await vault_ai_vision._flags_todo(aid) == want
+    # the Jev pass ahead of each describe stamped every clip's flags; the flags walk is the same order
+    assert await vault_ai_vision._flags_todo(aid) == []
+    assert await vault_ai_vision._flags_todo(aid, force=True) == want
 
 
 _harness.run()

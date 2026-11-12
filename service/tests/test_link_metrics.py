@@ -35,6 +35,9 @@ Locks:
     (only a moved count re-reads claimers, an expired claimers TTL alone does
     not; a backed-off kind is skipped), so the page then opens from cache; it
     runs for every OnlyFans account with a session, dead sessions skipped.
+    Under LINK_PREWARM_SCOPE=list_sync (default) a Creator with no List gets no
+    OF call and only links with a List are walked (display-only ones refresh
+    on their page's read); `all` restores the pass above.
 
 Run: ./venv/bin/python service/tests/test_link_metrics.py
 """
@@ -55,6 +58,8 @@ from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
 import link_metrics as lm  # noqa: E402
+import link_prewarm as lp  # noqa: E402
+import of_tracking_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, LinkClaimer, LinkMeta, PromoCampaign, Transaction  # noqa: E402
 
@@ -405,7 +410,7 @@ def case_refresh_waits_for_the_account_lock():
         await task
         assert len(f.claim_calls) == 1
     asyncio.run(go())
-    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
+    of_tracking_api._WALK_LOCKS.pop(aid, None)
 
 
 def case_details_while_locked_returns_cache_flagged():
@@ -418,7 +423,7 @@ def case_details_while_locked_returns_cache_flagged():
     asyncio.run(hold())
     d = _fans(aid, "trial", 52, count=1)
     assert d["refreshing"] is True and d["fans"] == [] and f.claim_calls == []
-    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
+    of_tracking_api._WALK_LOCKS.pop(aid, None)
     d = _fans(aid, "trial", 52, count=1)
     assert [x["fan_id"] for x in d["fans"]] == [870_101], "unlocked: walked on demand"
 
@@ -832,7 +837,7 @@ def case_list_of_error_stops_the_pass_and_backs_off():
         async with lm.walk_lock(aid):
             return await lm.sync_lists(aid, "trial", None, {211: 1, 212: 1})
     assert asyncio.run(sync2()) == 2 and [c[2] for c in f.list_calls[-2:]] == [211, 212], f.list_calls
-    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
+    of_tracking_api._WALK_LOCKS.pop(aid, None)
 
 
 def case_list_on_a_tracking_link_follows_its_subscribers():
@@ -1160,7 +1165,7 @@ def case_promo_list_is_per_account():
         async with lm.walk_lock(b):
             return await lm.sync_lists(b, "promo", FakeOF(), {301: 5})
     assert asyncio.run(sync()) == 0, "b's pass never reads a's setting"
-    lm.of_tracking_api._WALK_LOCKS.pop(b, None)
+    of_tracking_api._WALK_LOCKS.pop(b, None)
     # Each on its own list, with the same OnlyFans promotion ids: every add carries its own account's list.
     fa, fb = FakeOF(), FakeOF()
     for fk in (fa, fb):
@@ -1220,7 +1225,7 @@ def case_stale_rewalk_not_while_locked_or_backed_off():
     asyncio.run(hold())
     d = _fans(aid, "trial", 231, count=1)
     assert d["refreshing"] is False and not _spawned and len(f.claim_calls) == 1, "a walk holds the lock: no second"
-    lm.of_tracking_api._WALK_LOCKS.pop(aid, None)
+    of_tracking_api._WALK_LOCKS.pop(aid, None)
     import time
     lm._FAILED_AT[(aid, "trial")] = time.monotonic()
     d = _fans(aid, "trial", 231, count=1)
@@ -1260,7 +1265,7 @@ def case_accounts_never_mix():
         async with lm.walk_lock(a2):
             return await lm.sync_lists(a2, "trial", f, {111: 9})
     assert asyncio.run(sync()) == 0 and len(f.list_calls) == 1, "a2's pass never adds a1's links"
-    lm.of_tracking_api._WALK_LOCKS.pop(a2, None)
+    of_tracking_api._WALK_LOCKS.pop(a2, None)
     seen = []
     real = lm.assert_account_owned
     lm.assert_account_owned = seen.append
@@ -1274,9 +1279,19 @@ def case_accounts_never_mix():
 
 # ── Pre-warm ──
 
+def _scope(value):
+    """LINK_PREWARM_SCOPE for one case (None: unset, the default)."""
+    if value is None:
+        os.environ.pop("LINK_PREWARM_SCOPE", None)
+    else:
+        os.environ["LINK_PREWARM_SCOPE"] = value
+
+
 def case_prewarm_reads_every_kind_and_the_page_opens_from_cache():
+    """LINK_PREWARM_SCOPE=all: today's pass, every kind and link of a Creator with no List."""
     import time
     import of_tracking_api
+    _scope("all")
 
     class Track(FakeOF):
         subs = 1
@@ -1305,7 +1320,7 @@ def case_prewarm_reads_every_kind_and_the_page_opens_from_cache():
             return c.id
     cid = asyncio.run(seed())
     # A tracking link never read since boot waits for its page; trial and promo links are walked.
-    asyncio.run(lm.prewarm(aid))
+    asyncio.run(lp.prewarm(aid))
     assert f.campaign_calls == [], f.campaign_calls
     assert {c[:2] for c in f.claim_calls} == {("trial", 121), ("promo", 122)}, f.claim_calls
     assert _meta(aid, "promo", 122).campaign_id == cid, "a promotion walk keeps its campaign"
@@ -1323,20 +1338,21 @@ def case_prewarm_reads_every_kind_and_the_page_opens_from_cache():
     of_tracking_api._CLAIMERS_CACHE[key] = (n, time.monotonic() - 3 * of_tracking_api._CLAIMERS_TTL, fans)
     f.claim_calls.clear()
     f.campaign_calls.clear()
-    asyncio.run(lm.prewarm(aid))
+    asyncio.run(lp.prewarm(aid))
     assert f.claim_calls == [] and f.campaign_calls == [], (f.claim_calls, f.campaign_calls)
     assert time.monotonic() - of_tracking_api._CLAIMERS_CACHE[key][1] < 60, "a held count renews the cache"
     # A moved count is re-read.
     f.subs = 2
-    asyncio.run(lm.prewarm(aid))
+    asyncio.run(lp.prewarm(aid))
     assert f.campaign_calls == [4545], f.campaign_calls
     # A kind backed off by an OF failure is skipped, moved count or not.
     f.count("trial", 121, 2)
     lm._FAILED_AT[(aid, "trial")] = time.monotonic()
-    asyncio.run(lm.prewarm(aid))
+    asyncio.run(lp.prewarm(aid))
     assert not [c for c in f.claim_calls if c[0] == "trial"], f.claim_calls
     of_tracking_api._COMPUTED.clear()
     of_tracking_api._CLAIMERS_CACHE.clear()
+    _scope(None)
 
 
 def case_walks_never_hold_the_growth_lock_across_an_of_call():
@@ -1384,7 +1400,11 @@ def case_walks_never_hold_the_growth_lock_across_an_of_call():
     held.clear()
     f.probe = True
     f.subs = 2                                # moved: the prewarm re-reads it
-    asyncio.run(lm.prewarm(aid))
+    _scope("all")
+    try:
+        asyncio.run(lp.prewarm(aid))
+    finally:
+        _scope(None)
     assert {w for w, _l, _wl in held} == {"campaigns", "claimers", "trial", "promo"}, held
     assert not [h for h in held if h[1]], f"_LOCKS held across an OF call: {held}"
     assert all(wl for _w, _l, wl in held if _w in ("campaigns", "claimers", "trial")), held
@@ -1400,6 +1420,133 @@ def case_walks_never_hold_the_growth_lock_across_an_of_call():
     ota._CLAIMERS_CACHE.clear()
     ota._WALK_LOCKS.pop(aid, None)
     ota._LOCKS.pop(aid, None)
+
+
+class _Growth(FakeOF):
+    """Every Growth list OF serves, each read counted: tracking links `subs` {campaign id: countSubscribers}."""
+
+    def __init__(self):
+        super().__init__()
+        self.subs: dict[int, int] = {}
+        self.reads: list[str] = []
+        self.campaign_calls: list[int] = []
+
+    def tracking_links(self, *, limit=None, offset=0, with_deleted=False):
+        self.reads.append("campaigns")
+        return {"list": [{"id": cid, "campaignCode": cid, "campaignName": f"C{cid}", "createdAt": _of_time(_T0),
+                          "countTransitions": 10, "countSubscribers": n} for cid, n in self.subs.items()][offset:],
+                "hasMore": False}
+
+    def campaign_claimers(self, campaign_id, *, limit=50, offset=0):
+        self.campaign_calls.append(int(campaign_id))
+        return {"list": [{"id": 970_000 + int(campaign_id) % 1000}][offset:], "hasMore": False}
+
+    def trial_links(self, *, offset=0, limit=100):
+        self.reads.append("trials")
+        return super().trial_links(offset=offset, limit=limit)
+
+    def promotions(self, *, offset=0, limit=100):
+        self.reads.append("promotions")
+        return super().promotions(offset=offset, limit=limit)
+
+
+def _prewarm_all(aids):
+    """link_prewarm.prewarm_all over `aids` (live OnlyFans sessions, no spread); the clients it made."""
+    made: list[str] = []
+    real = (lp.account_registry.list_accounts, lp._PREWARM_SPREAD_S, ax._make_client)
+    inner = ax._make_client
+
+    def counting(account_id):
+        made.append(account_id)
+        return inner(account_id)
+    lp.account_registry.list_accounts = lambda: [{"id": a, "has_session": True, "platform": "onlyfans"} for a in aids]
+    lp._PREWARM_SPREAD_S, ax._make_client = 0, counting
+    try:
+        asyncio.run(lp.prewarm_all())
+    finally:
+        lp.account_registry.list_accounts, lp._PREWARM_SPREAD_S, ax._make_client = real
+    return made
+
+
+def case_prewarm_list_sync_skips_a_creator_without_a_list():
+    """Default scope: a Creator with Growth links but no List gets no OF call at all; one whose promotion
+    List is on is walked (every promotion) and its claimers go in; `all` gives the display-only one today's pass."""
+    import of_tracking_api as ota
+    _scope(None)
+    shown, synced = _acct(), _acct()
+    f = _use(_Growth())
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
+    f.subs = {5151: 1}
+    f.trial(151, [_fan(951_001)])
+    f.promo(152, [_fan(951_002), _fan(951_003)])
+    assert _promo_list(synced, enabled=True, list_id="900081", list_name="Promo fans").status_code == 200
+    _drop_spawned()                       # the save's own first pass: not the prewarm's
+    made = _prewarm_all([shown, synced])
+    assert made.count(shown) == 0, f"no OF client for a Creator without a List: {made}"
+    assert f.reads == ["promotions"], f"only the synced Creator's promotions list: {f.reads}"
+    assert {c[:2] for c in f.claim_calls} == {("promo", 152)} and not f.campaign_calls, f.claim_calls
+    assert f.list_calls == [("900081", "promo", 152)], f"its claimers reach the List: {f.list_calls}"
+    assert _meta(shown, "trial", 151) is None and _meta(shown, "promo", 152) is None, "nothing touched"
+    _scope("everything")                  # a bad value: the default, read at call time
+    try:
+        f.reads.clear()
+        assert _prewarm_all([shown]) == [] and f.reads == [], f.reads
+    finally:
+        _scope(None)
+    _scope(" ALL ")
+    try:
+        made = _prewarm_all([shown])
+        assert made and set(made) == {shown} and f.reads == ["campaigns", "trials", "promotions"], (made, f.reads)
+        assert _meta(shown, "trial", 151).checked_at is not None, "`all`: today's pass walks it"
+    finally:
+        _scope(None)
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
+
+
+def case_prewarm_list_sync_walks_only_list_links_and_a_page_read_refreshes_the_rest():
+    """A Creator with a trial and a tracking link on Lists, a display-only trial, a display-only tracking link
+    and promotions with the promotion List off: the pass reads trials and tracking links (not promotions),
+    walks and adds only the List links, and leaves the display-only links' checked_at alone, so opening the
+    Free trial links page starts their refresh."""
+    import of_tracking_api as ota
+    _scope(None)
+    aid = _acct()
+    f = _use(_Growth())
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
+    f.subs = {6161: 1, 6262: 1}
+    f.trial(161, [_fan(961_001)])
+    f.trial(162, [_fan(961_002)])
+    f.promo(163, [_fan(961_003)])
+    _put(account_id=aid, kind="trial", of_id=161, list_id="900091")
+    _put(account_id=aid, kind="campaign", of_id=6161, list_id="900092")
+    _run_spawned()                         # the saves' first adds
+    asyncio.run(ota._compute(aid))         # the earnings route's body: a person's Tracking links read: every claimer list cached
+    assert sorted(f.campaign_calls) == [6161, 6262], f.campaign_calls
+    f.subs = {6161: 2, 6262: 2}            # both moved
+    f.claimers[("trial", 161)].append(_fan(961_004))
+    f.count("trial", 161, 2)
+    f.campaign_calls.clear()
+    f.reads.clear()
+    f.list_calls.clear()
+    ota._COMPUTED.clear()
+    assert set(_prewarm_all([aid])) == {aid}
+    assert f.reads == ["campaigns", "trials"], f"promotions not read (its List off): {f.reads}"
+    assert f.campaign_calls == [6161], f"only the tracking link with a List re-read: {f.campaign_calls}"
+    assert {c[:2] for c in f.claim_calls} == {("trial", 161)}, f.claim_calls
+    assert sorted(f.list_calls) == [("900091", "trial", 161), ("900092", "campaign", 6161)], f.list_calls
+    assert _meta(aid, "trial", 161).checked_at is not None and len(_claimers(aid, "trial", 161)) == 2
+    assert _meta(aid, "trial", 162) is None, "the display-only trial: never walked, never marked checked"
+    assert ota._CLAIMERS_CACHE[(aid, 6262)][0] == 1, "the display-only tracking link keeps its old read"
+    d, by = _trials(aid)
+    assert d["metrics_refreshing"] is True and _spawned, "its page read starts the refresh"
+    _run_spawned()
+    assert ("trial", 162) in {c[:2] for c in f.claim_calls} and _meta(aid, "trial", 162).checked_at is not None
+    assert by[161]["list_id"] == "900091"
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
 
 
 def case_links_of_promos_folds_earlier_rearms_into_their_campaign():
@@ -1425,12 +1572,12 @@ def case_prewarm_all_skips_dead_sessions_and_non_onlyfans_accounts():
     async def fake_prewarm(aid):
         seen.append(aid)
         raise RuntimeError("one account failing must not stop the pass")
-    real = (lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S)
-    lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S = (lambda: rows), fake_prewarm, 0
+    real = (lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S)
+    lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S = (lambda: rows), fake_prewarm, 0
     try:
-        asyncio.run(lm.prewarm_all())
+        asyncio.run(lp.prewarm_all())
     finally:
-        lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S = real
+        lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S = real
     assert seen == ["first", live], seen
 
 
@@ -1441,16 +1588,16 @@ def case_prewarm_all_walks_a_busy_creator_after_one_skip():
 
     async def fake_prewarm(aid):
         seen.append(aid)
-    real = (lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S, lm.of_pacing.user_active)
-    lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S = (lambda: rows), fake_prewarm, 0
-    lm.of_pacing.user_active = lambda _aid: True   # a person reads on it every pass
+    real = (lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S, lp.of_pacing.user_active)
+    lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S = (lambda: rows), fake_prewarm, 0
+    lp.of_pacing.user_active = lambda _aid: True   # a person reads on it every pass
     try:
         for _ in range(4):
-            asyncio.run(lm.prewarm_all())
+            asyncio.run(lp.prewarm_all())
     finally:
-        (lm.account_registry.list_accounts, lm.prewarm, lm._PREWARM_SPREAD_S,
-         lm.of_pacing.user_active) = real
-        lm._PREWARM_SKIPPED.discard(busy)
+        (lp.account_registry.list_accounts, lp.prewarm, lp._PREWARM_SPREAD_S,
+         lp.of_pacing.user_active) = real
+        lp._PREWARM_SKIPPED.discard(busy)
     assert seen == [busy, busy], seen   # skip, walk, skip, walk: never starved
 
 
@@ -1496,6 +1643,8 @@ _harness.run(
     case_accounts_never_mix,
     case_prewarm_reads_every_kind_and_the_page_opens_from_cache,
     case_walks_never_hold_the_growth_lock_across_an_of_call,
+    case_prewarm_list_sync_skips_a_creator_without_a_list,
+    case_prewarm_list_sync_walks_only_list_links_and_a_page_read_refreshes_the_rest,
     case_links_of_promos_folds_earlier_rearms_into_their_campaign,
     case_prewarm_all_skips_dead_sessions_and_non_onlyfans_accounts,
     case_prewarm_all_walks_a_busy_creator_after_one_skip,

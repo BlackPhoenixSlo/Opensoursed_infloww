@@ -1,9 +1,9 @@
-"""vault_jev_flags.py — a photo's flags, and the describe fields that must agree with them, read off its `_jev`.
+"""vault_jev_flags.py — a photo's or clip's flags, and the describe fields that must agree with them, off its `_jev`.
 
-Jev v8 is the only flags pass for photos (clips keep qwen's `_FLAGS_PROMPT`). Every consumer reads the qwen flags
-shape (`vault_ai_brief.FLAG_KEYS` + `_flags_v`: flags_current, the brief's settled_reading / contradictions /
-is_disputed, vault_scripts' lanes, the pack picker, the OF folders), so `_jev` is mapped into exactly that shape
-and stamped with it (`vault_jev_pass`). Pure (`row_in_sync` only parses the two JSON columns).
+Jev v8 is the only flags pass for photos and clips (a clip's `_jev` is its max frame's, same shape). Every consumer
+reads the qwen flags shape (`vault_ai_brief.FLAG_KEYS` + `_flags_v`: flags_current, the brief's settled_reading /
+contradictions / is_disputed, vault_scripts' lanes, the pack picker, the OF folders), so `_jev` is mapped into exactly
+that shape and stamped with it (`vault_jev_pass`). Pure (`row_in_sync` only parses the two JSON columns).
 
 What is bare comes from the FINAL lane (`lane5`, after settle), so the price the consumers compute is Jev's:
   $100  something inserted: vulva bare (the anus when Jev saw the crotch NOT bare); breasts bare iff breasts_bare y
@@ -74,9 +74,9 @@ def _vulva_beside_anus(jev: Mapping[str, Any]) -> str:
 
 def reading(jev: Any) -> dict[str, Any] | None:
     """The flags + lane-critical describe fields for one `_jev`; None when it is not a current, settled reading."""
-    if not vault_jev_rules.current({JEV_KEY: jev}) or jev.get("lane5") not in _LANES:
+    lane = vault_jev_rules.read_lane(jev) if isinstance(jev, dict) else None   # a review clip: what it read
+    if not vault_jev_rules.current({JEV_KEY: jev}) or lane not in _LANES:
         return None
-    lane = jev["lane5"]
     bare_b = lane == "$10" or (lane in ("$50", "$100") and jev.get("breasts_bare") == "y")
     bare_v = lane == "$50" or (lane == "$100" and jev.get("crotch_bare") != "n")
     bare_a = lane == "$100" and not bare_v
@@ -160,11 +160,27 @@ def apply(prev: Mapping[str, Any], jev: Any, locked: Collection[str] = ()) -> di
     return out
 
 
-def row_in_sync(ai_fields_json: Any, locked_fields_json: Any) -> bool:
-    """`in_sync` straight off a row's two JSON columns (text or already parsed), its locks included — the one way
-    every caller (flags todo, reuse source, copy source, the Jev pass) asks, so they never disagree on a photo
-    whose flags an operator locked."""
-    return in_sync(load_json(ai_fields_json, {}) or {}, set(load_json(locked_fields_json, []) or []))
+# The `vault_items` column the mapped `explicitness` also lands in, and its lock key
+# (`vault_ai_vision_decide._COLUMN_LOCK`): folder picks (`assistant_draft`) and the admin read it.
+TIER_COLUMN = "explicitness_tier"
+
+
+def column_tier(fields: Mapping[str, Any], cur: Any, locked: Collection[str]) -> Any:
+    """The `explicitness_tier` column a row should hold beside `fields` (already `apply`-mapped): their
+    `explicitness` when they carry a current `_jev` reading, else `cur` (no reading, or the column operator-locked)."""
+    if TIER_COLUMN in locked or reading(fields.get(JEV_KEY)) is None:
+        return cur
+    return fields.get("explicitness")
+
+
+def row_in_sync(ai_fields_json: Any, locked_fields_json: Any, *, tier: Any) -> bool:
+    """`in_sync` straight off a row's two JSON columns (text or already parsed), its locks included, AND its
+    `explicitness_tier` column (`tier`) matching (`column_tier`) — the one way every caller (flags todo, reuse
+    source, copy source, the Jev pass) asks, so they never disagree on a photo whose flags an operator locked or
+    whose tier a pre-Jev describe left."""
+    fields = load_json(ai_fields_json, {}) or {}
+    locked = set(load_json(locked_fields_json, []) or [])
+    return in_sync(fields, locked) and column_tier(fields, tier, locked) == tier
 
 
 def in_sync(fields: Mapping[str, Any] | None, locked: Collection[str]) -> bool:

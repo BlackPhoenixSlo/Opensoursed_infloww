@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+import accounts as account_registry
 from auth import assert_account_owned
 from relay_host import load_client as _load_client
 
@@ -159,6 +160,22 @@ def _parse_of_iso(s: Any) -> datetime | None:
         return None
 
 
+def _session_user_id(account_id: str, client: Any) -> int | None:
+    """The Creator's own OF id from the signed session (`OFClient.user_id`, a
+    string): a positive int, or None when it is not all ASCII digits. A Fansly
+    account is None: its old `/users/me` id was a string, so the scan has
+    always 500'd there."""
+    # ASSUMPTION: Fansly keeps today's 500 (rung 2, ticket "same 500 as today"; no Fansly wall-media path found).
+    # Overturned when Fansly wall media becomes a supported path (FanslyShimClient.user_posts walks /timelinenew).
+    if account_registry.get_platform(account_id) == "fansly":
+        return None
+    s = str(client.user_id)
+    if not (s.isascii() and s.isdigit()):
+        return None
+    n = int(s)
+    return n if n > 0 else None
+
+
 @router.get("/admin/vault/wall-media")
 async def admin_vault_wall_media(
     request: Request,
@@ -187,9 +204,10 @@ async def admin_vault_wall_media(
     incomplete (older history remains) — the frontend uses it to
     optionally trigger another fetch in the background.
 
-    The OF httpx calls (`client.me()`, `client.user_posts(...)`) are
-    blocking; we run each via `asyncio.to_thread` so the event loop
-    stays responsive — the up-to-5 sequential page walks otherwise
+    The Creator's own id comes from the session the Relay holds
+    (`client.user_id`), never a `/users/me` call. The OF httpx calls
+    (`client.user_posts(...)`) are blocking; we run each via
+    `asyncio.to_thread` so the event loop stays responsive — the up-to-5 sequential page walks otherwise
     froze SSE / webhooks for the full duration (observed 13.5s in the
     wild). `request.is_disconnected()` checks between pages so a folder
     switch mid-walk frees the per-account proxy slot promptly."""
@@ -199,9 +217,8 @@ async def admin_vault_wall_media(
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     client = _load_client(account_id)
-    me_resp = await asyncio.to_thread(client.me)
-    my_id = me_resp.get("id")
-    if not isinstance(my_id, int):
+    my_id = _session_user_id(account_id, client)
+    if my_id is None:
         raise HTTPException(status_code=500, detail="Could not resolve current user id from /users/me")
 
     # 1. Load scan state; honor `force` by wiping watermarks (rows stay —

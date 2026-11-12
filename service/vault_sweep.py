@@ -16,7 +16,7 @@ few minutes for an hour, ~47% of it stopped. Fixing it in two places would have
 left the next fault class to be fixed in one and not the other, which is how the
 two drifted in the first place (they disagreed about what `done` counts).
 
-WHAT A `visit` MUST RETURN. A dict — the shape `_describe_one` / `_flags_one`
+WHAT A `visit` MUST RETURN. A dict — the shape `_describe_one` / `_jev_and_flag`
 return, plus the optional `extra` a visit that settles riders adds:
 
     ok               truthy ⇒ the item was processed. Anything else is a failure.
@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, NamedTuple
 
 from llm_client import LLMKeyError, key_error_payload
@@ -94,6 +95,7 @@ async def run(
     label: str,
     extra_total: int = 0,
     settled: Sequence[dict[str, Any]] = (),
+    hold: Callable[[int], AbstractAsyncContextManager[Any]] | None = None,
 ) -> SweepResult:
     """Visit every id, `concurrency` at a time, publishing progress as it goes.
 
@@ -101,6 +103,10 @@ async def run(
     the running loop. `into[key]` is rewritten after every item — that dict is
     what the status endpoint serves, and it deliberately outlives the sweep so a
     UI arriving late still learns how the last pass ended.
+
+    `hold(id)`, when given, is entered BEFORE both slots and held through the
+    visit: a resource the item needs (a clip's `admission.JEV_VIDEO` slot) is
+    waited for while holding nothing, so the wait idles no vision slot.
     """
     total = len(ids) + extra_total + len(settled)
     done = failed = cost = jev_cost = 0
@@ -133,7 +139,7 @@ async def run(
 
     async def _one(mid: int) -> None:
         nonlocal done, failed, cost, capped, first_error, key_error
-        async with sem, gate():  # per-sweep bound + process-wide gate
+        async with (hold(mid) if hold else nullcontext()), sem, gate():  # hold first, then per-sweep + global
             if capped or key_error:
                 return
             try:

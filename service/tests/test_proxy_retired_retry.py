@@ -13,6 +13,8 @@ with upstream 500 "signed session retired" instead of OF's 400.
       client busy is not an evict: no re-run, 503 signed_pool_busy, Retry-After 5.
   case_retired_write_is_not_rerun: a non-GET is never re-run (a multi-request
       write could repeat what it sent): 503 + Retry-After, one call.
+  Every 503 logs one `signed_pool_503 account= reason= method=` line
+  (watch:signed_pool_503 counts them).
   case_dead_session_on_a_replaced_client_keeps_the_fresh_one: a 101 met on a
       client the pool already replaced evicts nothing; the fresh one stays live.
   case_preloaded_client_late_101_keeps_the_fresh_one: the same for a client
@@ -30,6 +32,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 _harness.bootstrap()
 
 import json  # noqa: E402
+import logging  # noqa: E402
 import types  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
@@ -112,6 +115,25 @@ def _status(method: str) -> HTTPException:
     raise AssertionError("_proxy answered")
 
 
+class _Lines(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.msgs: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.msgs.append(record.getMessage())
+
+
+def _status_logged(method: str) -> tuple[HTTPException, list[str]]:
+    """_status plus the signed_pool_503 lines the call logged."""
+    h = _Lines()
+    server.log.addHandler(h)
+    try:
+        return _status(method), [m for m in h.msgs if m.startswith("signed_pool_503 ")]
+    finally:
+        server.log.removeHandler(h)
+
+
 server._kick_mark_session_dead = lambda *a, **k: None  # the flag's own tests: test_agency_notifications
 
 
@@ -129,7 +151,8 @@ def _pool_busy(c):
 
 def case_pool_busy_read_answers_503_without_a_rerun():
     built = _with_pool([_pool_busy])
-    e = _status("GET")
+    e, lines = _status_logged("GET")
+    assert lines == [f"signed_pool_503 account={AID} reason=signed_pool_busy method=GET"], lines
     assert e.status_code == 503 and e.detail["upstream_status"] == "signed_pool_busy", (e.status_code, e.detail)
     assert (e.headers or {}).get("Retry-After") == "5", e.headers
     assert [c.calls for c in built] == [1], [c.calls for c in built]
@@ -137,7 +160,8 @@ def case_pool_busy_read_answers_503_without_a_rerun():
 
 def case_retired_read_twice_answers_503():
     built = _with_pool([_evicted_under_it, _evicted_under_it, lambda c: {"ok": True}])
-    e = _status("GET")
+    e, lines = _status_logged("GET")
+    assert lines == [f"signed_pool_503 account={AID} reason=session_retired method=GET"], lines
     assert e.status_code == 503 and e.headers == {"Retry-After": "1"}, (e.status_code, e.headers)
     assert e.detail["upstream_status"] == "session_retired", e.detail
     assert [c.calls for c in built] == [1, 1], [c.calls for c in built]
@@ -146,7 +170,8 @@ def case_retired_read_twice_answers_503():
 def case_retired_write_is_not_rerun():
     for method in ("POST", "PUT", "PATCH", "DELETE"):
         built = _with_pool([_evicted_under_it, lambda c: {"ok": True}])
-        e = _status(method)
+        e, lines = _status_logged(method)
+        assert lines == [f"signed_pool_503 account={AID} reason=session_retired method={method}"], (method, lines)
         assert e.status_code == 503 and e.headers == {"Retry-After": "1"}, (method, e.status_code)
         assert e.detail["upstream_status"] == "session_retired", (method, e.detail)
         assert [c.calls for c in built] == [1], (method, [c.calls for c in built])

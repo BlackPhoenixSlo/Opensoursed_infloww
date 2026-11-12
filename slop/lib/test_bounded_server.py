@@ -38,6 +38,45 @@ def test_pool_close_uses_one_deadline_for_busy_workers():
     assert took < 1.5
 
 
+def test_idle_keepalive_expires_and_fresh_connection_still_answers():
+    import http.client
+    import select
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if self.path == "/slow":
+                time.sleep(0.5)  # active work outlives the idle limit
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            pass
+
+    server = BoundedHTTPServer(("127.0.0.1", 0), Handler)
+    server.idle_close_s = 0.3
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
+    try:
+        client.request("GET", "/")
+        assert client.getresponse().read() == b"ok"
+        sock = client.sock
+        assert select.select([sock], [], [], 2)[0], "idle connection stayed open"
+        assert sock.recv(1) == b"", "idle connection did not receive EOF"
+        assert server.idle_closed == 1
+        client.close()
+        client.request("GET", "/slow")
+        assert client.getresponse().read() == b"ok"
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+
+
 def test_idle_close_s_closes_a_parked_keepalive_and_the_client_reconnects():
     import http.client
 

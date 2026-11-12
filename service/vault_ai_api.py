@@ -29,7 +29,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_ai_vision  # flags + describe passes; routes included at their old spots below
-import vault_ai_vision_decide
 import vault_collect  # preempt: the Collect button stops the background walk of its account first
 # The permanent, signature-free picture stores (thumbs / full previews / DRM poster
 # frames), including the whole route body behind the three serve endpoints below.
@@ -39,6 +38,7 @@ import vault_mirror
 import vault_of_folders  # duplicates list/hide, folder plan + publish, OF folder CRUD; routes included at their old spots below
 import relay_coalesce
 import vault_ingest  # has_live_mirror: the grid's own "is the mirror on" question
+import vault_jev_rules  # JEV_KEY: a clip's per-frame answers stay out of `_overlay`
 import vault_pack_picker
 import vault_runs
 import vault_stills
@@ -57,14 +57,12 @@ from vault_mirror import in_of_folders
 
 log = logging.getLogger("of-relay.vault_ai_api")
 
-# Re-exported for callers that still reach them here (test_llm_zai_glm,
-# test_vault_scripts). Patch the originals on `vault_ai_vision` — patching a
+# Re-exported for callers that still reach them here (test_llm_zai_glm).
+# Patch the originals on `vault_ai_vision` — patching a
 # re-export here does not change what the sweep calls.
 _describe_running = vault_ai_vision._describe_running  # the same set object
 describe_all = vault_ai_vision.describe_all
 describe_one = vault_ai_vision.describe_one
-_ground_in_named_garment = vault_ai_vision_decide._ground_in_named_garment
-_reconcile_with_acts = vault_ai_vision_decide._reconcile_with_acts
 
 # Re-exported from `vault_of_folders` (same objects), read here by
 # test_vault_dupes, test_vault_foreign_media_guard, test_vault_scripts,
@@ -588,6 +586,10 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
     # still go through the override+lock path on the real columns.
     ai = load_json(item.ai_fields_json, None)
     if isinstance(ai, dict):
+        jev = ai.get(vault_jev_rules.JEV_KEY)
+        if isinstance(jev, dict) and "frames" in jev:
+            # a clip's per-frame Jev answers (~10 KB, read only by the rules): never sent to the browser
+            ai = {**ai, vault_jev_rules.JEV_KEY: {k: v for k, v in jev.items() if k != "frames"}}
         base["_ai"]["fields"] = {
             k: v for k, v in ai.items()
             # `description`/`tags` are already served from their columns (which
@@ -672,7 +674,16 @@ async def local_items(
         bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
         stmt = _apply_common(stmt)
         stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc(), VaultItem.media_id.desc()).limit(limit + 1).offset(offset)
-        pairs = (await s.execute(stmt)).all()
+        # Sort/page only keys and order values. Carrying each full media JSON
+        # through the folder sort makes deep pages expensive on large vaults.
+        page = stmt.with_only_columns(VaultItem.media_id, mo).subquery()
+        page_order = page.c.manual_order
+        page_bucket = case((page_order.is_(None), 1), (page_order >= 0, 0), else_=2)
+        hydrated = (select(VaultItem, page_order)
+                    .join(page, (VaultItem.account_id == account_id)
+                          & (VaultItem.media_id == page.c.media_id))
+                    .order_by(page_bucket, page_order, VaultItem.created_at.desc(), VaultItem.media_id.desc()))
+        pairs = (await s.execute(hydrated)).all()
         for item, m_ord in pairs[:limit]:
             out.append(_overlay(item, m_ord))
         return len(pairs) > limit

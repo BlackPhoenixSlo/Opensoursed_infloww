@@ -1,7 +1,7 @@
 """service/vault_ai_vision.py — the vision passes over the vault mirror.
 
-Split out of `vault_ai_api` (routes unchanged): the cheap FLAGS pass
-(`_flags_one`, `flags-all`) and the DESCRIBE pass (`_describe_one`, `describe`,
+Split out of `vault_ai_api` (routes unchanged): the FLAGS pass (`_jev_and_flag`,
+`flags-all`) and the DESCRIBE pass (`_describe_one`, `describe`,
 `describe-all`), plus the vision budget and the process-wide vision gate they
 share. Pure decisions live in `vault_ai_vision_decide`.
 
@@ -9,15 +9,16 @@ Two routers, one per block, because `vault_ai_api` includes each at the spot the
 block used to occupy — FastAPI matches routes in registration order. This module
 never imports `vault_ai_api` (one-way dependency, no cycle).
 
-Tests patch `vault_ai_vision._describe_one` / `_flags_one` /
+Tests patch `vault_ai_vision._describe_one` /
 `_DESCRIBE_CONCURRENCY` — the names are looked up HERE. The Jev v8 wiring
 lives in `vault_jev_pass` (patch `vault_jev_pass.safe` / `plan`).
 
-Photos vs clips: Jev v8 is the default for every PHOTO — its pass stamps the
-photo's flags (`vault_jev_flags`) and feeds its describe (`vault_describe_jev`:
-prose / v6). A photo Jev cannot read (no NudeNet / key, capped, error) is
-skipped and retried by the next sweep, never described or flagged without it.
-CLIPS keep the qwen flags call (`_FLAGS_PROMPT`) and the V2 describe.
+Jev v8 is the default for every PHOTO and CLIP — its pass stamps the item's
+flags (`vault_jev_flags`) and feeds its describe (`vault_describe_jev`: photos
+prose / v6; clips "vid", the V2 describe + Jev facts). An item Jev cannot read
+(no NudeNet / key, capped, error, no frames) is skipped and retried by the next
+sweep, never described or flagged without it. There is no qwen flags call
+(D52/D54): photos and clips are the only describable kinds.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from sqlalchemy import func, select, update
 import llm_client
 import vault_ai_brief
 import vault_ai_fix
-import vault_ai_vision_decide  # module attr `with_flags_cost`, looked up per call
+import vault_ai_vision_decide  # module attr `with_jev`, looked up per call
 import vault_describe_jev
 import vault_dupes  # module attr `reuse_groups`, looked up per call
 import vault_frames
@@ -47,10 +48,11 @@ from db.engine import get_session
 from db.models import VaultItem
 from jsonsafe import load_json
 from llm_client import LLMCapExceeded, LLMError
+from vault_jev_rules import JEV_KINDS
 from vault_ai_vision_decide import (
-    _DESCRIBABLE_KINDS, DescribeMode, _frames_for_duration, _ground_in_named_garment, _parse_describe,
+    DescribeMode, _frames_for_duration, _parse_describe,
     COPY_MARK, FLAGS_COPY_MARK, JEV_KEY, ReusePlan, build_copy_update, build_describe_update,
-    build_flags_copy, build_flags_fields, describe_answer, describe_selection, flags_current,
+    build_flags_copy, describe_answer, describe_selection, flags_current,
     live_describable, next_attempt, priority_order, prompt_variant, reuse_plan, reuse_state,
 )
 
@@ -68,145 +70,9 @@ describe_router = APIRouter()
 _VISION_PROVIDER = "deepinfra"
 
 
-# Frames sampled from a CLIP for the flags pass.
-#
-# A clip changes state along its length — she can be dressed at 0:05 and nude at
-# 1:30 — so a single frame answers the wrong question half the time. Four frames
-# spread across the clip, each asked independently, then folded in code.
-_FLAGS_VIDEO_FRAMES = 4
-
-
-
-
-# ── Flags prompt (the cheap pass) ───────────────────────────────────
-#
-# `clothing_state` was wrong on ~1 in 3 of the items the $50 tier is built from:
-# it reported `fully_nude` for shots where she still had panties on, and the
-# error was invisible to every stored-data check because the enum, the garment
-# list and the prose all agreed and all three were wrong.
-#
-# Two fixes, and this is the cheap one. Rather than re-running a full describe
-# (2,788 tokens, ~16s/item) to recover two booleans the tier actually reads, ask
-# ONLY for those booleans: ~350 tokens, ~3s/item — measured 5x faster and ~40x
-# cheaper over the graded vault, about $0.001 for a 103-item vault.
-#
-# The image still has to keep its ASPECT RATIO. `files.thumb` is 300x300 and
-# OF's stills are 3:4, so the thumb is a centre-CROP with the bottom of the
-# frame missing — which is precisely where a waistband sits, and precisely why
-# describe kept saying `fully_nude`. So we start from `preview` and downscale it
-# ourselves: fewer pixels, whole picture. 448px on the long edge is the measured
-# floor — 320px flips an item that 448 and 640 agree on, and 640 buys nothing.
-# (the flag-run edge now lives with the resizer — vision.MAX_EDGE_DEFAULT)
-
-# The prompt VERSION stamped onto every answer it produces: defined (with its
-# history) in `vault_ai_brief.FLAGS_VERSION`, which the Jev flags mapper stamps too.
+# The flags version stamped on every row's flags (`vault_jev_flags` stamps it): defined, with its
+# history, in `vault_ai_brief.FLAGS_VERSION`.
 _FLAGS_VERSION = vault_ai_brief.FLAGS_VERSION
-
-# Canonical in `vault_ai_brief` — `vault_scripts` gates its mass-safe lane on
-# the same tuple, and two copies would drift the moment a flag is added.
-_FLAG_KEYS = vault_ai_brief.FLAG_KEYS
-
-# Each region is asked SEPARATELY because those splits ARE the price boundaries:
-# $10 is breasts out with her vulva still covered, $50 is her vulva on show, and
-# the mass-safe lane turns on nothing being on show at all. A single conflated
-# question could not express the middle tier.
-#
-# Every region is asked in the SAME direction and with the SAME three answers.
-# The previous version asked `pussy_covered` about fabric and `breasts_covered`
-# about visibility, which meant `false` meant opposite things across two flags
-# a caller had to read together — see `vault_ai_brief.VIS_STATES` for what that
-# cost. Phrasing is positive ("what can you see") rather than a double negative
-# ("is it kept from view"), because the negative form measured ~91% constant.
-#
-# GRADED against operator labels on 27 the graded vault items (`_probe_flags_score.py`).
-# The version that asked for a state directly scored 80.2%, and 13 of its 16
-# errors were the SAME mistake: `covered` where the truth was `not_in_frame`.
-# Asked "is it covered", a model says yes whenever it cannot see skin — whether
-# the body part is behind a bodysuit or simply not in the photograph. Both read
-# as "not on show" to a human eye, and the previous wording never forced the
-# distinction. A woman lying on her stomach in a bodystocking came back
-# `covered` for all three regions when the honest answer is that none of them
-# are in the picture.
-#
-# So the question is now a two-step decision, asked in order, rather than a
-# three-way label to pick: is it in the photo at all → then is any skin
-# showing. Models follow a tree far better than they pick from a menu, and the
-# first step is the one that was being skipped.
-_FLAGS_PROMPT = (
-    "You are indexing one photo from an adult creator's own vault. She owns it "
-    "and has asked for it to be catalogued so it can be sorted. Report only "
-    "what you can SEE in this frame.\n\n"
-    "Reply with STRICT JSON only, no prose. Emit the keys in EXACTLY this "
-    "order — the `over_` answers come first because the states are read off "
-    "them:\n"
-    '{"over_breasts": "<what is over her chest, or null>",\n'
-    ' "over_vulva":   "<what is over her crotch, or null>",\n'
-    ' "over_anus":    "<what is over her backside, or null>",\n'
-    ' "breasts_vis": "...", "vulva_vis": "...", "anus_vis": "...",\n'
-    ' "underwear_visible": true|false}\n\n'
-    "For each of her breasts, her vulva and her anus, work through these three "
-    "questions IN ORDER.\n\n"
-    "STEP 1 — is that part of her body in this photograph at all?\n"
-    "  Point at it. If you cannot put your finger on the spot in THIS image, "
-    'the answer is "not_in_frame" — set the matching `over_` field to null and '
-    "move on to the next region.\n"
-    "  Answer about the picture, never about her body. You know a woman has a "
-    "vulva and you can usually guess she is wearing something over it. That is "
-    "reasoning about the person. It is not seeing. A photograph of her face and "
-    "chest contains no vulva and no anus, so both are NOT_IN_FRAME, no matter "
-    "what she is obviously wearing below.\n"
-    "  This is the answer people get wrong most often, so be deliberate:\n"
-    "   · She is photographed from the front → her anus is NOT_IN_FRAME. It is "
-    "behind her.\n"
-    "   · She is photographed from behind, or lying face down → her breasts "
-    "and her vulva are NOT_IN_FRAME.\n"
-    "   · The shot is cropped at her waist → her vulva and anus are "
-    "NOT_IN_FRAME.\n"
-    "   · She is standing fully dressed and you cannot make out where a part "
-    "of her body even is → NOT_IN_FRAME.\n"
-    '  "not_in_frame" is a normal, common, correct answer. Most photos have at '
-    "least one region that is simply not in them.\n\n"
-    "STEP 2 — it IS in the photo. NAME what is over it, in the `over_` field.\n"
-    "  Two or three words: \"white tank top\", \"black lace bra\", \"her right "
-    'hand\", "the bedsheet". Use null only when you are looking at skin with '
-    "nothing on it.\n"
-    "  Name it BEFORE you judge how exposed she is. Saying what a woman is "
-    "wearing is a far easier question than rating a photo, and the second "
-    "answer falls out of the first.\n\n"
-    "STEP 3 — now read the state off what you just named.\n"
-    '  "covered" — you named something, and it hides that skin completely.\n'
-    '  "bare"    — you can see skin, even a little. ANY of it counts: one '
-    "nipple showing between her fingers, part of a breast beside her hand, a "
-    "sliver of vulva beside a thong. Partly showing is showing.\n\n"
-    "THE MISTAKE TO AVOID at step 2: clothing that shows the SHAPE of her body "
-    'is still clothing. A tank top, t-shirt, bra, bodysuit or swimsuit is '
-    '"covered" no matter how tight, how much cleavage, or how sexy the photo '
-    "is.\n"
-    "  Sheer fabric is fabric. Lace, mesh, fishnet and a bodystocking are "
-    'CLOTHING, so skin seen THROUGH them is "covered" — the garment is on her. '
-    '"bare" means there is no garment over that skin at all: pulled down, '
-    "pulled aside, or never put on.\n\n"
-    "IF SHE IS TOUCHING HERSELF, the skin she is touching is BARE. Underwear "
-    "gets pulled aside for that. A hand between her legs, fingers or a toy "
-    "inside her, her legs spread and held open, a clitoris being stroked — in "
-    "every one of those her vulva is \"bare\", even if you can also see a thong "
-    "somewhere in the frame. Do not name that thong as covering her: it has "
-    "been moved out of the way, which is the entire reason you can see what you "
-    "are looking at.\n\n"
-    "Judge each region on its own. She is very often bare in one place and "
-    "covered in another, and that difference is the whole point of this check. "
-    "Never copy one garment into every `over_` field — a bra does not cover her "
-    "vulva, a thong does not cover her breasts, and if you find yourself "
-    "writing the same words three times, at least two of them are wrong. Do not "
-    "let how explicit the picture FEELS decide anything: a picture can be very "
-    "explicit with nothing actually on show, and a plain one can have "
-    "everything on show.\n\n"
-    "underwear_visible — is ANY garment visible anywhere on her body, worn or "
-    "pushed aside or pulled down, however small? A waistband, a strap, a thong "
-    "string, a band of lace at the hip or at the very bottom edge of the "
-    "picture, stockings — all TRUE. Look at the edges of the frame before you "
-    "answer FALSE.\n"
-)
 
 
 # ── Describe prompts (Qwen3-VL vision) ──────────────────────────────
@@ -455,7 +321,7 @@ async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
         await s.commit()
 
 
-# ── Flags: Jev for photos, qwen for clips ───────────────────────────
+# ── Flags: the Jev pass (photos and clips) ──────────────────────────
 
 async def _kind(account_id: str, media_id: int) -> str | None:
     async with get_session() as s:
@@ -465,127 +331,20 @@ async def _kind(account_id: str, media_id: int) -> str | None:
 
 async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
                         jev_sweep: vault_jev_pass.Sweep | None = None) -> dict[str, Any]:
-    """The flags sweep's visit. A clip: the qwen flags call. A photo: the Jev
-    pass, which stamps its flags (nothing to pay for when `_jev` is current:
-    its flags are re-stamped if they drifted). `force` never forces a paid Jev
-    re-run. A Jev cap is that photo's failure (`jev_capped`), not the sweep's
-    stop (`capped`)."""
+    """The flags sweep's visit. A photo or clip: the Jev pass, which stamps its
+    flags (nothing to pay for when `_jev` is current: its flags are re-stamped
+    if they drifted). `force` never forces a paid Jev re-run. A Jev cap is that
+    item's failure (`jev_capped`), not the sweep's stop (`capped`)."""
     kind = await _kind(account_id, media_id)
-    if kind != "photo":   # a clip (a missing row reports itself): the qwen flags call
-        return await _flags_one(account_id, media_id)
+    if kind not in JEV_KINDS:   # no qwen flags call: a missing row / another kind is not flaggable
+        return {"media_id": media_id, "ok": False,
+                "status": "not_in_mirror" if kind is None else "not_flaggable"}
     jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep)
     if jev is None:       # `_jev` already current: its flags re-stamped if they drifted, nothing paid
         return {"media_id": media_id, "ok": True, "status": "flagged", "cost_millicents": 0}
     return vault_ai_vision_decide.with_jev(
         {"media_id": media_id, "ok": jev["ok"], "status": "flagged" if jev["ok"] else jev["status"],
          **({"detail": jev["detail"]} if jev.get("detail") else {})}, jev)
-
-
-# ── Flags pass (one item) ───────────────────────────────────────────
-
-async def _stamp_flags_failure(account_id: str, media_id: int, status: str,
-                               detail: str = "") -> None:
-    """Record WHY an item has no flags, in the item's own row.
-
-    Flags have no status column and do not need one: `_flags_todo` decides from
-    `flags_known()`, so a failed item is already retried by the next sweep. What
-    was missing is any way to ASK. The pass returned `no_image` to a caller that
-    logged it and moved on, so an operator looking at a described-but-unflagged
-    row had nothing to read — the failure existed only in a log line that had
-    long since rotated.
-
-    Deliberately does NOT write `_flags_v`: that stamp is what marks flags
-    CURRENT, and a failure must leave the item in the todo set."""
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-        if item is None:
-            return
-        fields = load_json(item.ai_fields_json, {}) or {}
-        fields["_flags_status"] = status
-        fields["_flags_failed_at"] = datetime.utcnow().isoformat()
-        if detail:
-            fields["_flags_error"] = detail[:200]
-        else:
-            fields.pop("_flags_error", None)
-        item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
-        await s.commit()
-
-
-async def _flags_one(account_id: str, media_id: int,
-                     model: str = "qwen3-vl-30b") -> dict[str, Any]:
-    """Ask the three booleans for one item and MERGE them into its existing
-    `ai_fields_json`. Never rewrites the description, tags or taxonomy — this is
-    an enrichment pass, so a cheap call can't damage an expensive one.
-
-    Photos ask once. Clips ask `_FLAGS_VIDEO_FRAMES` times, one frame per call,
-    and fold via `build_flags_fields`.
-    """
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    if item is None:
-        return {"media_id": media_id, "ok": False, "status": "not_in_mirror"}
-    if item.kind not in _DESCRIBABLE_KINDS:
-        return {"media_id": media_id, "ok": False, "status": "not_flaggable"}
-
-    is_video = item.kind == "video"
-    raw = load_json(item.raw_json, {}) or {}
-    want = _FLAGS_VIDEO_FRAMES if is_video else 1
-    got = await vault_frames.collect(account_id, item, raw, want=want)
-    if not got.images:
-        status = vault_frames.NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
-        await _stamp_flags_failure(account_id, media_id, status)
-        return {"media_id": media_id, "ok": False, "status": status,
-                "detail": got.detail or f"no frames ({status})"}
-
-    per_frame: list[dict[str, Any]] = []
-    cost = 0
-    result = None
-    for img in got.images:
-        content = [{"type": "text", "text": _FLAGS_PROMPT},
-                   {"type": "image_url", "image_url": {"url": vision.shrink_data_url(img)}}]
-        try:
-            result = await llm_client.chat(
-                model=model, messages=[{"role": "user", "content": content}],
-                purpose="describe_flags", account_id=account_id, temperature=0.1,
-            )
-        except LLMCapExceeded as e:
-            if not per_frame:
-                # Same sentence describe's refusals carry — both sweeps spend
-                # the same budget, and an operator reading two different
-                # explanations of one cap has to work out they are one thing.
-                budget = await _vision_budget(account_id, model)
-                return {"media_id": media_id, "ok": False, "status": "capped",
-                        "detail": budget["blocked_reason"] or str(e)}
-            break  # keep what we already read rather than losing the whole clip
-        except llm_client.LLMKeyError:
-            raise  # the key, not the item: the caller tells the owner (424 / sweep stop)
-        except LLMError as e:
-            if not per_frame:
-                await _stamp_flags_failure(account_id, media_id, "error", str(e))
-                return {"media_id": media_id, "ok": False, "status": "error",
-                        "detail": str(e)[:300]}
-            break
-        cost += int(result.cost_cents or 0)
-        parsed = _parse_describe(result.content)
-        if any(k in parsed for k in _FLAG_KEYS):
-            per_frame.append(_ground_in_named_garment(parsed))
-
-    if not per_frame:
-        raw_head = (result.content if result else "") or ""
-        await _stamp_flags_failure(account_id, media_id, "unparsed", raw_head)
-        return {"media_id": media_id, "ok": False, "status": "unparsed",
-                "raw": raw_head[:200]}
-
-    fields = build_flags_fields(
-        load_json(item.ai_fields_json, {}) or {}, per_frame,
-        locked=set(load_json(item.locked_fields_json, []) or []),
-        is_video=is_video, model=model, version=_FLAGS_VERSION)
-
-    await _write_item(account_id, media_id,
-                      ai_fields_json=json.dumps(fields, ensure_ascii=False, default=str))
-    return {"media_id": media_id, "ok": True, "status": "flagged",
-            **{k: fields.get(k) for k in _FLAG_KEYS},
-            "frames": len(per_frame), "cost_millicents": cost}
 
 
 # ── Answer reuse across duplicates (both sweeps) ────────────────────
@@ -619,12 +378,13 @@ async def _reuse(account_id: str, order: list[int], *,
         rows = []
         async with get_session() as s:
             for i in range(0, len(members), 500):
-                for mid, st, fj, kind, lj in (await s.execute(
+                for mid, st, fj, kind, lj, tier in (await s.execute(
                         select(VaultItem.media_id, VaultItem.describe_status,
-                               VaultItem.ai_fields_json, VaultItem.kind, VaultItem.locked_fields_json)
+                               VaultItem.ai_fields_json, VaultItem.kind, VaultItem.locked_fields_json,
+                               VaultItem.explicitness_tier)
                         .where(live_describable(account_id),
                                VaultItem.media_id.in_(members[i:i + 500])))).all():
-                    rows.append((mid, st, load_json(fj, {}) or {}, kind, lj))
+                    rows.append((mid, st, load_json(fj, {}) or {}, kind, lj, tier))
             done, bad = reuse_state(rows, flags=flags, flags_version=_FLAGS_VERSION)
             plan = reuse_plan(groups, order, done, bad)
             for mid, fj in (await s.execute(
@@ -699,13 +459,14 @@ async def _copy_flags(account_id: str, src_id: int, dst_id: int) -> dict[str, An
             return {"media_id": dst_id, "ok": False, "status": "not_in_mirror"}
         src_ai = load_json(src.ai_fields_json, {}) or {}
         if not flags_current(src_ai, _FLAGS_VERSION) or (
-                src.kind == "photo" and not vault_jev_flags.row_in_sync(src_ai, src.locked_fields_json)):
+                src.kind in JEV_KINDS and not vault_jev_flags.row_in_sync(
+                    src_ai, src.locked_fields_json, tier=src.explicitness_tier)):
             return {"media_id": dst_id, "ok": False, "status": "source_unflagged",
                     "detail": f"duplicate of {src_id}, which has no current flags"}
-        dst.ai_fields_json = json.dumps(build_flags_copy(
-            load_json(dst.ai_fields_json, {}) or {}, src_ai,
-            locked=set(load_json(dst.locked_fields_json, []) or []), src_id=src_id),
-            ensure_ascii=False, default=str)
+        dst_locked = set(load_json(dst.locked_fields_json, []) or [])
+        fields = build_flags_copy(load_json(dst.ai_fields_json, {}) or {}, src_ai, locked=dst_locked, src_id=src_id)
+        dst.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
+        dst.explicitness_tier = vault_jev_flags.column_tier(fields, dst.explicitness_tier, dst_locked)
         await s.commit()
     return {"media_id": dst_id, "ok": True, "status": "flags_copied",
             "copied_from": src_id, "cost_millicents": 0}
@@ -776,7 +537,7 @@ async def _flags_todo(account_id: str, *, force: bool = False,
     async with get_session() as s:
         q = (select(VaultItem.media_id, VaultItem.created_at,
                     VaultItem.of_folder_ids, VaultItem.ai_fields_json, VaultItem.kind,
-                    VaultItem.locked_fields_json)
+                    VaultItem.locked_fields_json, VaultItem.explicitness_tier)
              .where(live_describable(account_id)))
         if only:
             q = q.where(VaultItem.media_id.in_(only))
@@ -787,9 +548,9 @@ async def _flags_todo(account_id: str, *, force: bool = False,
     for mid in priority_order((r[0], r[1], r[2]) for r in rows):
         r = by_id[mid]
         f = load_json(r[3], {}) or {}
-        if r[4] == "photo":
-            # A photo's flags are its `_jev`'s: work when either is missing / stale.
-            stale = not vault_jev_flags.row_in_sync(f, r[5])
+        if r[4] in JEV_KINDS:
+            # A photo's / clip's flags are its `_jev`'s: work when either is missing / stale.
+            stale = not vault_jev_flags.row_in_sync(f, r[5], tier=r[6])
         else:
             # `flags_known`, not a key-presence test: a row carrying the superseded
             # boolean shape, or a region the model answered with something outside
@@ -813,6 +574,7 @@ async def _run_flags_all(account_id: str, todo: list[int], *, force: bool = Fals
         walked = set(todo)
         settled = await _copy_up_front(account_id, plan, _copy_flags)
         jev_sweep = vault_jev_pass.Sweep()
+        due = await vault_jev_pass.clips_due(account_id)   # clips that queue for the Jev video lane
 
         async def visit(mid: int) -> dict[str, Any]:
             return await _lead(account_id, mid,
@@ -826,7 +588,8 @@ async def _run_flags_all(account_id: str, todo: list[int], *, force: bool = Fals
             concurrency=_FLAGS_CONCURRENCY, gate=_vision_gate,
             into=_flags_progress, key=account_id,
             label=f"flags_all account={account_id}",
-            extra_total=len(plan.riders()), settled=settled)
+            extra_total=len(plan.riders()), settled=settled,
+            hold=lambda mid: vault_jev_pass.clip_lane(due, mid, jev_sweep))
         if c.failed:
             log.warning("flags_all account=%s visited=%s/%s FAILED=%s capped=%s first_error=%s",
                         account_id, c.done, c.total, c.failed, c.capped, c.error)
@@ -882,8 +645,8 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
         done, failed, cost = 0, 0, 0
         jev_sweep = vault_jev_pass.Sweep()
         for mid in todo:
-            # Re-runs qwen on clips (the probe's point); Jev only where `_jev`
-            # is missing / stale — never a paid Jev re-run per probe.
+            # Jev only where `_jev` is missing / stale (else its flags re-stamped
+            # if they drifted) — never a paid Jev re-run per probe.
             res = await _jev_and_flag(account_id, mid, force=True, jev_sweep=jev_sweep)
             if res.get("ok"):
                 done += 1
@@ -957,8 +720,8 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     # D51: a photo is described off its `_jev` (`vault_describe_jev`: prose @640
     # off the review lane, v6 JSON @960 on it) — or not at all: no feedable
     # `_jev` (Jev unavailable / failed / capped) is a skip, retried by the next
-    # sweep. Nothing is written, so a described row keeps its describe. Clips
-    # keep today's describe, unchanged.
+    # sweep. Nothing is written, so a described row keeps its describe. A clip:
+    # "vid" (the V2 describe + Jev facts, its storyboard frames), same skip rule.
     prev_ai = load_json(item.ai_fields_json, {}) or {}
     path, jev = vault_describe_jev.route(kind=item.kind, fields=prev_ai)
     if path is None:
@@ -968,7 +731,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         else:
             why = j.get("status") if j.get("status") not in (None, "ok") else "jev_missing"
         return {"media_id": media_id, "ok": False, "status": why,
-                "detail": f"no Jev reading for this photo ({why}) — skipped, retried next sweep"}
+                "detail": f"no Jev reading for this {item.kind} ({why}) — skipped, retried next sweep"}
     raw = load_json(item.raw_json, {}) or {}
     want = int(frames) if frames else _frames_for_duration(item.duration_seconds)
     got = await vault_frames.collect(account_id, item, raw, want=want)
@@ -986,8 +749,9 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
 
     images = list(got.images)
     if jev is not None:
-        px = vault_describe_jev.PX[path]
-        images = [await asyncio.to_thread(vision.shrink_data_url, u, px) for u in images]
+        px = vault_describe_jev.PX.get(path)   # a clip: its 400px storyboard frames as they are
+        if px:
+            images = [await asyncio.to_thread(vision.shrink_data_url, u, px) for u in images]
         prompt = vault_describe_jev.prompt_for(path, jev, _DESCRIBE_PROMPT_V2)
     else:
         prompt = _DESCRIBE_PROMPT if prompt_variant(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
@@ -1055,10 +819,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
                 "raw": (result.content if result else "" or "")[:200],
                 "cost_millicents": cost}
 
-    if path == vault_describe_jev.PROSE:
-        data = vault_describe_jev.prose_answer(data, jev)
-    elif path == vault_describe_jev.V6:
-        data = vault_describe_jev.v6_answer(data, jev)
+    data = vault_describe_jev.answer(path, data, jev)
     data = {**data, vault_describe_jev.DESCRIBE_KEY: vault_describe_jev.meta(path, jev, used_model)}
 
     locked = set(load_json(item.locked_fields_json, []))
@@ -1083,35 +844,18 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
 async def _describe_and_flag(account_id: str, media_id: int, *,
                              jev_sweep: vault_jev_pass.Sweep | None = None,
                              **describe_kw: Any) -> dict[str, Any]:
-    """Describe one item, then flag it in the same breath — the single-item
-    route and the describe-all sweep both. "Described" used to mean prose plus
-    `clothing_state` and nothing about what is actually on show, so a
-    freshly-described vault had no flags at all and every gated lane was empty
-    until someone remembered a second button. The flags pass is ~3s and
-    ~$0.00002 against describe's ~16s and ~$0.0086 — a fifth of a percent — so
-    making it conditional bought nothing but a way to forget it.
-
-    The flags call's cost rides on the result (`vault_sweep.run` sums
-    `cost_millicents`), so both callers report describe + flags billed — except
-    an unparsed flags answer, which carries no cost, so that call's spend is not
-    reported. `_describe_one` / `_flags_one` / `vault_ai_vision_decide
-    .with_flags_cost` are looked up per call, so patches bite.
-
-    A photo gets the Jev pass FIRST (`vault_jev_pass.safe`), which also stamps
-    its flags — there is no qwen flags call for a photo. Its outcome and spend
-    ride on the result (`with_jev`); when it leaves the photo without a reading,
-    `_describe_one` skips the photo with Jev's status."""
+    """Flag one item, then describe it — the single-item route and the
+    describe-all sweep both, so a described item always has its flags (the
+    gated lanes read them). A photo or clip gets the Jev pass FIRST
+    (`vault_jev_pass.safe`), which stamps its flags; there is no qwen flags
+    call (D52/D54). Its outcome and spend ride on the result (`with_jev`;
+    `vault_sweep.run` sums `cost_millicents`); when it leaves the item without
+    a reading, `_describe_one` skips the item with Jev's status.
+    `_describe_one` / `vault_ai_vision_decide.with_jev` are looked up per
+    call, so patches bite."""
     kind = await _kind(account_id, media_id)
-    jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep) if kind == "photo" else None
+    jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep) if kind in JEV_KINDS else None
     res = await _describe_one(account_id, media_id, jev_res=jev, **describe_kw)
-    if res.get("ok") and kind != "photo":
-        try:
-            res = vault_ai_vision_decide.with_flags_cost(
-                res, await _flags_one(account_id, media_id))
-        except Exception:  # noqa: BLE001
-            # Never let the cheap pass take down the expensive one: the
-            # description is already written and worth keeping.
-            log.exception("flags after describe failed media=%s", media_id)
     return vault_ai_vision_decide.with_jev(res, jev)
 
 
@@ -1191,6 +935,7 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
         plan, index = await _reuse(account_id, ids, flags=False)
         settled = await _copy_up_front(account_id, plan, _copy_describe)
         jev_sweep = vault_jev_pass.Sweep()
+        due = await vault_jev_pass.clips_due(account_id)   # clips that queue for the Jev video lane
 
         async def visit(mid: int) -> dict[str, Any]:
             return await _lead(
@@ -1206,7 +951,8 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
             concurrency=_DESCRIBE_CONCURRENCY,
             gate=_vision_gate, into=_describe_progress, key=account_id,
             label=f"describe_all account={account_id}",
-            extra_total=len(plan.riders()), settled=settled)
+            extra_total=len(plan.riders()), settled=settled,
+            hold=lambda mid: vault_jev_pass.clip_lane(due, mid, jev_sweep))
         try:
             q = await vault_ai_fix.review_queue(account_id, limit=1,
                                                 version=_FLAGS_VERSION,

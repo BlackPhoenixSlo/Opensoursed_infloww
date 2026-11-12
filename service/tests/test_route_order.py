@@ -16,11 +16,16 @@ Golden refresh (2026-11-09): inspected ce072f9ce -> 40cd38d1e OpenAPI diff:
   (9d5c8d811, dashboard daily employee sales).
 Routes/order and all other schema fields are unchanged; Phase 2's schema is
 identical to 40cd38d1e. Keep these intentional base changes in the golden.
+Phase 3 integration also retains its vault lists/media revalidate query params
+and pins/head-read handler descriptions. The combined schema has its own hash;
+route order stays unchanged.
 
 Golden refresh (2026-11-10): main 8ab4d6fb4 intentionally adds POST
 /admin/agency-notifications/dismiss-all and /{notification_id}/dismiss.
 Removing exactly those paths reproduces the prior OpenAPI hash; remaining
 routes retain their order. Refresh after integrating main into Phase 2.
+Phase 3's hash = that schema plus Phase 3's four GET param/description edits
+(measured: OpenAPI diff vs 40cd38d1e is exactly main's two paths + those four).
 
 Golden refresh (2026-11-11): inspected ac38007b9 -> rwl W28-shell-notif OpenAPI diff:
 - POST /admin/agency-notifications/dismiss-all takes an optional JSON body
@@ -44,6 +49,12 @@ Golden refresh (2026-11-12): merge feat/bio-pages-port (main 78eaf88bc) into fea
 inspected.
 Golden refresh (2026-11-12): do-mode mass_edit (spec D11) adds POST /admin/assistant/edit/apply
 (assistant_draft.edit_apply); inspected, intentional.
+Golden refresh (2026-11-12): merge main 130d15eb4 into ship/fetch-diet-p3 (4421feb87): routes == main's golden
+(main adds bio-pages/tracking-stats rows); OpenAPI diff merged-vs-main == base(6d6f8a61d)-vs-P3 exactly
+(measured, 18 leaves): P3's four GET edits (vault/lists + vault/media revalidate params, pinned + wall-media
+descriptions); inspected, intentional.
+Golden refresh (2026-11-12): merge main 46223e71c into p3-final (f5e594c3d): routes == main's golden (611);
+OpenAPI diff merged-vs-main == base(6d6f8a61d)-vs-P3(4421feb87) exactly (measured, 18 leaves); inspected.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

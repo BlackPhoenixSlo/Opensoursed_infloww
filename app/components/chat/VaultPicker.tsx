@@ -24,7 +24,8 @@ import { IF_FIELD, IfNativeSelect } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
 
-import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
+import { useQueryClient } from "@tanstack/react-query";
+import { revalidateVaultLists, revalidateVaultMediaFirstPage, useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { SUMMARY_WAIT_MS, useOfRefresh, vaultPickerSource } from "@/hooks/vaultRefresh";
 import { useMirrorItems, useOfSearch, useVaultCacheSummary } from "@/hooks/useVaultCache";
@@ -50,6 +51,7 @@ import { resolveStatus } from "./vaultTileStatus";
 import { firstUsableFolderId, folderChips, folderSelectItems } from "./vaultPickerFolders";
 import { bumpAccountCount, loadAccountCounts, loadFanMru, loadFanState, MRU_CAP, nextMru, saveFanMru, saveFanState } from "./vaultPickerPersist";
 import { fetchSort, initialFilters, vaultFiltersReducer, type MediaType, type Sort } from "./vaultPickerFilters";
+import { mediaReady, revalidateDue, revalidateInit, revalidateReducer } from "./vaultPickerRevalidate";
 
 // Moved out of this file; re-exported so every existing importer keeps working.
 export { progressiveVideoSrc, gifClipSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, VaultVideoPreview } from "./VaultVideoPreview";
@@ -134,6 +136,8 @@ export function VaultPicker(props: VaultPickerProps) {
   // The picked ids, plus the media seen for them across filter switches (vaultPickerPicked.ts).
   const [picked, pick] = useReducer(pickedReducer, initialSelectedIds, pickedInit);
   const selectedIds = picked.ids;
+  // This open's revalidate reads (vaultPickerRevalidate.ts), armed with the filters' hydrate.
+  const [revalidation, revalidate] = useReducer(revalidateReducer, revalidateInit);
 
   const listsQ = useVaultLists(accountId, open);
   // Chatter Access (folders): for a RESTRICTED chatter session this is the
@@ -153,6 +157,7 @@ export function VaultPicker(props: VaultPickerProps) {
   // Both hooks always mount; only the enabled one fetches, and neither before the summary's first answer
   // (`vaultPickerSource` "pending": the grid shows loading, never a false "No media in this filter"). A live
   // listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race (U4).
+  const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
   // A summary still pending after SUMMARY_WAIT_MS lists live rather than hold the grid on Loading (#15).
   const summaryPending = open && vaultPickerSource(cacheSummary) === "pending";
@@ -313,6 +318,9 @@ export function VaultPicker(props: VaultPickerProps) {
       paintedRef.current = false;
       perfLog(id, "vault.open", "requested", { accountId, fanId });
       pick({ type: "reset", ids: initialSelectedIds });
+      // One revalidate read of the folder list and the open view's first page, due from the render the
+      // hydrate below lands in (vaultPickerRevalidate).
+      revalidate({ type: "open" });
       // Restore the whole picker position for this fan: folder, sort,
       // type. If the chatter has never opened the picker for this fan,
       // fall back to All / Newest / All-types. Crucially we DON'T force
@@ -343,6 +351,27 @@ export function VaultPicker(props: VaultPickerProps) {
     if (listId != null && allowedFolderIds.has(listId)) return;
     if (firstUsable != null) dispatch({ type: "setListId", value: firstUsable });
   }, [open, restricted, listId, allowedFolderIds, firstUsable]);
+
+  // Revalidate on open (vaultPickerRevalidate): once the painted copy is on screen, each of the folder list and the
+  // open view's first page is read once more with `revalidate=1` (the relay asks OF only when its shared copy is
+  // older than VAULT_PICKER_REVALIDATE_S) and swapped into its query key. A failed read keeps the painted copy.
+  const listsPainted = listsQ.data !== undefined && !listsQ.isFetching;
+  const mediaPainted = mediaReady({
+    source,
+    sourceSettled: cacheSummary.data !== undefined || cacheSummary.isError,
+    folderSettled: !folderAccessQ.isLoading && (!restricted || (listId != null && allowedFolderIds.has(listId))),
+    painted: !vaultLive.isLoading && !vaultLive.isFetching && !vaultLive.isPlaceholderData && !vaultLive.error,
+  });
+  useEffect(() => {
+    if (!open || !accountId) return;
+    for (const target of revalidateDue(revalidation, { lists: listsPainted, media: mediaPainted })) {
+      revalidate({ type: "sent", target });
+      const read = target === "lists"
+        ? revalidateVaultLists(qc, accountId)
+        : revalidateVaultMediaFirstPage(qc, { accountId, type, listId, sort: ofSort, query });
+      read.catch(() => {});
+    }
+  }, [open, accountId, revalidation, listsPainted, mediaPainted, qc, type, listId, ofSort, query]);
 
   // Persist the full picker state on every change so reopening the
   // picker (same tab, popout, or restart) lands on the exact same view.

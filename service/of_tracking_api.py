@@ -445,10 +445,12 @@ def _read_moved(client, account_id: str, moved: list[dict]) -> dict[tuple[str, i
     return out
 
 
-async def prewarm(account_id: str) -> bool:
-    """link_metrics.prewarm_all's tracking-link pass, one walk per account
+async def prewarm(account_id: str, lists: set[int] | None) -> bool:
+    """link_prewarm.prewarm_all's tracking-link pass, one walk per account
     (walk_lock): OF's /campaigns read, the claimers re-read only for a link
-    whose countSubscribers moved since its cached read, then the List adds. A
+    whose countSubscribers moved since its cached read, then the List adds.
+    `lists` (LINK_PREWARM_SCOPE list_sync): only the links with a List among
+    them are re-read; None: every moved link. A
     link whose count held keeps its claimers, renewed (an expired _CLAIMERS_TTL
     alone costs no OF call here); one never read since boot waits for its page.
     A link OF failed on within _CLAIMERS_FAIL_TTL is not retried. No OF read or
@@ -469,7 +471,7 @@ async def prewarm(account_id: str) -> bool:
                 continue
             if hit[0] == safe_int(c.get("countSubscribers")):
                 _CLAIMERS_CACHE[key] = (hit[0], now, hit[2])
-            else:
+            elif lists is None or key[1] in lists:
                 moved.append(c)
         keys = {(account_id, safe_int(c.get("id"))) for c in moved}
         _CLAIMERS_WALKING.update(keys)

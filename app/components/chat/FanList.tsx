@@ -82,7 +82,7 @@ export interface FanListSelection {
 }
 
 export function FanList({
-  selected, onSelect, setTabTitle = true, actions, onlineOnly = false, onlineIds,
+  selected, onSelect, setTabTitle = true, actions, onlineOnly = false, onlineIds, warmWindowMs,
 }: {
   selected: FanListSelection | null;
   onSelect: (sel: FanListSelection) => void;
@@ -99,6 +99,10 @@ export function FanList({
   /** Fan ids (as text) on the scoped Creator's OnlyFans online list: each
    *  counts as online alongside the row rule. */
   onlineIds?: ReadonlySet<string>;
+  /** The opened Thread's prefetch window (its `prefetchWindowMs`): a row's
+   *  hover or press warm-up skips a thread fetched more recently than this,
+   *  so the open rides that read instead of reading again. Unset: 15 s. */
+  warmWindowMs?: number;
 }) {
   const { scope } = useScope();
   const accounts = usePlatformAccounts();
@@ -150,8 +154,8 @@ export function FanList({
   const PREFETCH_DWELL_MS = 120;
   const prefetchMessages = useCallback((aid: string, fid: FanId, user = false) => {
     if (!aid || !fid) return;
-    void prefetchChatMessages(qc, aid, fid, { yieldOnOpen: false, user });
-  }, [qc]);
+    void prefetchChatMessages(qc, aid, fid, { yieldOnOpen: false, user, staleTime: warmWindowMs });
+  }, [qc, warmWindowMs]);
   // Vault prefetch on hover. TanStack treats prefetchQuery as a no-op
   // when the query is still fresh (staleTime), so this is cheap to fire
   // on every hover — if the inbox-wide warmer already populated this

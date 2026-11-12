@@ -23,6 +23,8 @@ import json
 import re
 from typing import Any
 
+import vault_jev_rules  # pure, no imports: no cycle
+
 # Ordered low → high. This IS the escalation ladder: a night's sends walk it
 # upward, a re-sell to someone who already owns the top walks it back down.
 EXPLICITNESS_LADDER = ("sfw", "suggestive", "explicit", "hardcore")
@@ -285,6 +287,9 @@ CONTRADICTIONS: dict[str, str] = {
     "nude_but_clothed": "clothing_state=fully_nude, yet a garment is visible",
     "lingerie_but_nothing_on": "clothing_state=lingerie_on, yet no garment is visible",
     "penetration_offscreen": "genital act recorded, yet neither vulva nor anus is in frame",
+    # Not two passes disagreeing: Jev read a clip off frames that can miss what the 720p ones show (no 720p
+    # rendition, over the download cap, or OF's posters only; `_jev.review`, D54), so its lane may be too low.
+    "jev_review": "Jev read this clip off low-res, partial or poster frames, so its lane may be too low",
 }
 
 # The `acts` values that assert something is inside her, and the `penetration`
@@ -363,6 +368,9 @@ def contradictions(fields: dict[str, Any] | None) -> list[str]:
             and vis(fields, "vulva_vis") == "not_in_frame" \
             and vis(fields, "anus_vis") == "not_in_frame":
         out.append("penetration_offscreen")
+    jev = fields.get(vault_jev_rules.JEV_KEY)
+    if isinstance(jev, dict) and jev.get("review"):
+        out.append("jev_review")
     return out
 
 
@@ -510,6 +518,7 @@ def settled_notes(fields: dict[str, Any] | None) -> list[str]:
         "dressed_but_bare": f"priced as {s.get('explicitness')}, copy claims no nudity",
         "sfw_but_bare": f"priced as {s.get('explicitness')}, copy claims no nudity",
         "penetration_offscreen": "copy claims no genital act",
+        "jev_review": f"priced as {s.get('explicitness')}, describe hedged",
     }
     out = [f"{CONTRADICTIONS[c]} → {how[c]}" for c in codes]
     if codes:

@@ -24,6 +24,7 @@ import { relay, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { flushPersistedCache } from "@/lib/rqPersister";
 import { errText } from "@/lib/errText";
+import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
 // simultaneously is what made the grid slow). Infinite-scroll fetches the next
@@ -974,8 +975,7 @@ export function vaultGridKeys(accountId: string | null): readonly (readonly unkn
  *  restores this cache (any edit made before the call, the lists marked stale), not the one from before the write.
  *  Resolves once the mounted ones refetched; callers that only mark stale may drop it. */
 export function invalidateVaultGrid(qc: QueryClient, accountId: string | null): Promise<void> {
-  const refetched = vaultGridKeys(accountId).map((queryKey) => qc.invalidateQueries({ queryKey }));
+  const refetched = vaultGridKeys(accountId).map((queryKey) => invalidateVaultQueries(qc, { queryKey }));
   flushPersistedCache();
   return Promise.all(refetched).then(() => undefined);
 }
-

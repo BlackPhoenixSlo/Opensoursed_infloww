@@ -64,7 +64,9 @@ from datetime import datetime, timedelta  # noqa: E402
 
 import llm_client  # noqa: E402
 import vault_ai_vision  # noqa: E402
+import vault_jev_flags  # noqa: E402
 import vault_jev_pass  # noqa: E402
+from _jev_fixtures import video_jev  # noqa: E402
 
 
 # flags-all pre-flights the vision key (a missing one is the typed 424, pinned
@@ -95,22 +97,31 @@ def _flagged(v: int = vault_ai_vision._FLAGS_VERSION) -> dict:
             "over_breasts": "black top", "_flags_v": v}
 
 
+def _synced() -> dict:
+    """A clip whose flags are its current `_jev`'s (D54: a clip's flags are stamped from Jev, never qwen)."""
+    j = video_jev()
+    return vault_jev_flags.apply({"_jev": j}, j)
+
+
 async def _seed(aid: str, rows: list[tuple[int, dict | None]],
                 kind: str = "video") -> None:
-    """Clips by default: the qwen flags sweep pinned here is a clip's (a photo's flags are its `_jev`'s)."""
+    """Clips by default (their flags are their Jev pass's, `vault_jev_pass.safe`, faked here by `_Gate`), the
+    `explicitness_tier` column as the Jev pass leaves it (the blob's `explicitness`)."""
     base = datetime(2026, 7, 1, 12, 0, 0)
     async with get_session() as s:
         s.add(Account(id=aid))
         for i, (mid, fields) in enumerate(rows):
             s.add(VaultItem(account_id=aid, media_id=mid, kind=kind, tags="[]",
                             created_at=base + timedelta(seconds=i),
-                            ai_fields_json=json.dumps(fields) if fields else None))
+                            ai_fields_json=json.dumps(fields) if fields else None,
+                            explicitness_tier=(fields or {}).get("explicitness")))
         await s.commit()
 
 
 class _Gate:
-    """Stand-in for `_flags_one` that can be held open, so a case can observe
-    the sweep WHILE it runs rather than only after."""
+    """Stand-in for the Jev pass (`vault_jev_pass.safe`, which stamps a photo's /
+    clip's flags) that can be held open, so a case can observe the sweep WHILE it
+    runs rather than only after."""
 
     def __init__(self, *, hold: bool = False, fail: set[int] | None = None) -> None:
         self.calls: list[int] = []
@@ -128,10 +139,11 @@ class _Gate:
         async with get_session() as s:
             item = await s.get(VaultItem, (account_id, media_id))
             fields = json.loads(item.ai_fields_json) if item.ai_fields_json else {}
-            fields.update(_flagged())
+            fields.update(_synced())
             item.ai_fields_json = json.dumps(fields)
+            item.explicitness_tier = fields["explicitness"]   # the Jev pass writes the column too
             await s.commit()
-        return {"media_id": media_id, "ok": True, "status": "flagged",
+        return {"media_id": media_id, "ok": True, "status": "ok", "lane5": "free",
                 "cost_millicents": 1}
 
 
@@ -150,7 +162,7 @@ async def case_post_returns_before_the_sweep_finishes():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(600, 610)])
     gate = _Gate(hold=True)
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         out = await asyncio.wait_for(
             vault_ai_vision.flags_all({"account_id": aid}), timeout=1.0)
@@ -166,14 +178,14 @@ async def case_post_returns_before_the_sweep_finishes():
         assert sorted(gate.calls) == list(range(600, 610)), gate.calls
     finally:
         gate.release.set()
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
 
 
 async def case_second_click_does_not_start_a_second_sweep():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(620, 626)])
     gate = _Gate(hold=True)
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         first = await vault_ai_vision.flags_all({"account_id": aid})
         second = await vault_ai_vision.flags_all({"account_id": aid})
@@ -187,7 +199,7 @@ async def case_second_click_does_not_start_a_second_sweep():
         assert sorted(gate.calls) == list(range(620, 626)), gate.calls
     finally:
         gate.release.set()
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
 
 
 async def case_status_reports_progress_and_db_coverage():
@@ -227,11 +239,17 @@ async def case_status_reports_progress_and_db_coverage():
 async def case_todo_skips_current_and_keeps_stale():
     aid = _next_account()
     await _seed(aid, [
-        (660, _flagged()),                              # current — skip
-        (661, _flagged(vault_ai_vision._FLAGS_VERSION - 1)),        # older prompt — redo
+        (660, _synced()),                               # current — skip
+        (661, _flagged()),                              # qwen-flagged (pre-D54 clip) — redo
         (662, None),                                    # never flagged — do
-        (663, {"vulva_vis": "bare", "_flags_v": vault_ai_vision._FLAGS_VERSION}),  # partial — redo
+        (663, {**_synced(), "vulva_vis": "bare"}),      # drifted from its `_jev` — redo
     ])
+    # a stale `explicitness_tier` column (a pre-Jev describe's tier) beside in-sync flags is drift too
+    await _seed(aid2 := _next_account(), [(664, _synced())])
+    async with get_session() as s:
+        (await s.get(VaultItem, (aid2, 664))).explicitness_tier = "sfw"
+        await s.commit()
+    assert await vault_ai_vision._flags_todo(aid2) == [664]
     # NEWEST-first (_seed stamps created_at ascending, so 663 is the most
     # recent). The order is asserted, not just the membership, because `limit`
     # makes it decide WHICH items a bounded pass covers at all.
@@ -247,7 +265,7 @@ async def case_named_ids_stay_inline():
     aid = _next_account()
     await _seed(aid, [(670, None), (671, None)])
     gate = _Gate()
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         out = await vault_ai_vision.flags_all({"account_id": aid, "media_ids": [670]})
         # Answers in the response, not a job id — the grading probe reads these.
@@ -257,14 +275,14 @@ async def case_named_ids_stay_inline():
         assert gate.calls == [670], gate.calls
         assert aid not in vault_ai_vision._flags_running
     finally:
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
 
 
 async def case_a_failing_item_does_not_stop_the_sweep():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(680, 685)])
     gate = _Gate(fail={682})
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         await vault_ai_vision.flags_all({"account_id": aid})
         await _drain(aid)
@@ -275,7 +293,7 @@ async def case_a_failing_item_does_not_stop_the_sweep():
         # The one bad row is exactly what a re-run picks up.
         assert await vault_ai_vision._flags_todo(aid) == [682]
     finally:
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
 
 
 async def case_done_counts_visits_so_a_finished_pass_reads_as_finished():
@@ -296,12 +314,12 @@ async def case_done_counts_visits_so_a_finished_pass_reads_as_finished():
     ids = list(range(690, 695))
     await _seed(aid, [(i, None) for i in ids])
     gate = _Gate(fail={692})
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     vault_ai_vision._flags_running.add(aid)
     try:
         await vault_ai_vision._run_flags_all(aid, ids)
     finally:
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
     prog = vault_ai_vision._flags_progress[aid]
     assert prog["total"] == 5, prog
     assert prog["done"] == 5, f"a pass that finished must read as finished: {prog}"

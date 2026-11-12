@@ -1,5 +1,5 @@
 """Background OnlyFans list walks, paced (service/of_pacing.py): the hourly link prewarm pass
-(link_metrics.prewarm_all: tracking links, trials, promotions), the lifecycle roster crawl
+(link_prewarm.prewarm_all: tracking links, trials, promotions), the lifecycle roster crawl
 (subscribers), four passes of the 900 s ledger supervisor (transaction_ingest.supervisor_cycle,
 payouts transactions: the first fill (backfill), the full 7-day walk of a period turned over (the
 backfilled Creators' last_full_at backdated one period by SQL before it), then recent 24 h walks) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
@@ -36,6 +36,13 @@ offset 100 429 TWICE (the first send and the retry). The last busy Creator (GROW
 promotions (3 pages: its Promotions page reads them unpaced, as a person's), the first
 GROWTH_CLAIMED of them with GROWTH_CLAIMS claimers each (5 claimer pages each: 25 pages, so even
 unpaced the refresh outlasts OF's bucket and meets the other walks).
+Every profile Creator has its promotion List on (promo_list_settings, SQL), so the prewarm, which
+under LINK_PREWARM_SCOPE=list_sync (the product default) walks only Creators with a List, walks
+them all. The first idle Creator (LISTED) has one promotion with LISTED_CLAIMS claimers; OF gains
+LISTED_CLAIMS more between the passes. DISPLAY, one more Creator (an empty ledger), has Growth links
+and no List: DISPLAY_PROMOS promotions, the first DISPLAY_CLAIMED with DISPLAY_CLAIMS claimers each,
+one OF tracking link with subscribers and a Source on it (link_meta, no list_id). The ledger-only
+Creators, CAP and PX hold no List either.
 
 Flow: prewarm_all's spread is compressed to 0 (`POST /__slop/sweep-pacing/knobs`; prod 30 min);
 of_pacing.USER_WINDOW_S is the product's 10 s. `--users` chatters (actors/chatter.py) read and answer the busy Creators' threads; every reply is a real
@@ -66,6 +73,12 @@ Checks (names in lib/sweep_pacing_faults.py):
                          ago) and none for an idle one, sent no prewarm GET for a busy Creator and
                          walked every idle one; pass 2 (everyone idle) skipped none and walked every
                          busy one.
+  prewarm_scope          in both prewarm passes no Creator without a List (DISPLAY, the ledger-only
+                         ones, PX, CAP) had a Growth list read (campaigns, trials, promotions) or a
+                         claimer page sent to OF, and the relay logged DISPLAY's link_prewarm_skip in
+                         each; LISTED's promotion went into the List once in each pass (OF's add-to-list,
+                         pass 1 at LISTED_CLAIMS, pass 2 after the gain), link_meta's list_added_count
+                         at the gain. List adds keep the background cadence; display-only reads go.
   growth_refresh_walked  the Promotions page answered refreshing; OF saw every claimer page of
                          GROWTH's claimed promotions; link_claimers holds GROWTH_CLAIMS rows each.
   growth_route_not_blocked  every earnings read answered 200 within EARNINGS_MAX_MS, at
@@ -152,6 +165,10 @@ Checks (names in lib/sweep_pacing_faults.py):
   tx_failed_full_consumes_period  one Creator's full walk failed on a terminal second 429 (injected
                          twice): error kept, the period spent (same-period ticks recent), the next
                          period's tick walks full again.
+  promo_cap_once         then (lib/sweep_pacing_promo_cap.py, its docstring): CAP, 1,300 promotions past
+                         the 12-page cap, no promotion List, a finished mirror past the cap: its owner's
+                         Promotions page (`GET /admin/promotions`) read 1 reads the cap, reads 2 and 3
+                         each fewer pages (of_promos' memo), every read all 1,201 rows, the live one active.
   tx_proxy_pages_spaced  last (lib/sweep_pacing_proxy.py, its docstring): PX_N Creators bound 2 a proxy
                          through the real pool assign, simultaneous full walks, an ADR-0030 move, again:
                          per egress at OF every ledger GET >= PAGE_GAP_S apart, each Creator through its
@@ -178,8 +195,11 @@ Bypasses (declared):
     `account_health.deactivated_at` is backdated by SQL between its real off and on (the gap's 30 days
     are not waited). Admin /run resumes REACT after pass 1 through the real endpoint. OF's limit is per
     Creator here (CROWD's shared bucket aside): the Creators sharing a fake proxy share no OF bucket.
-  - The tracking links and trials are of_wire's empty ones; only GROWTH's claimed promotions have
-    claimers. A GROWTH /campaigns GET OF saw during an earnings read is that read's (a person's),
+  - The promotion Lists and DISPLAY's link_meta row are SQL (the rows PUT /admin/promo-list and the
+    Edit dialog's save write; the save's own first add is not run). OF's add-to-list is
+    lib/sweep_pacing_wire.py's, answering the claimers the link has (OF answers the new ones).
+  - The tracking links and trials are of_wire's empty ones (DISPLAY's one tracking link aside); only
+    GROWTH's, LISTED's and DISPLAY's claimed promotions have claimers. A GROWTH /campaigns GET OF saw during an earnings read is that read's (a person's),
     not a walk's. Chatters reach the relay directly (no Next proxy); the Fan List's lookups are httpx
     calls, not a browser.
 
@@ -200,6 +220,8 @@ tx-backfill-* (`--fault=`, lib/sweep_pacing_faults.py): the walk's own, each to 
 tx-full-watermark-forgotten / tx-failed-full-not-stamped / tx-full-failure-hidden (`--fault=`):
 tx_restart_keeps_full_schedule / tx_failed_full_consumes_period (both of the latter).
 tx-proxy-pacing-bypassed (`--fault=`): tx_proxy_pages_spaced.
+promo-memo-cleared-on-need-ids (`--fault=`): promo_cap_once.
+prewarm-all-accounts (`--fault=`: LINK_PREWARM_SCOPE=all, today's pass): prewarm_scope.
 """
 from __future__ import annotations
 
@@ -220,9 +242,9 @@ from slop.lib.procmon import pct
 from slop.lib import sweep_pacing_backfill
 from slop.lib.sweep_pacing_evidence import TX_START as _TX_START, held, scan_one, tx_status as _tx_status
 from slop.lib.sweep_pacing_faults import (BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
-                                          PAGES_SPACED, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
+                                          PAGES_SPACED, PREWARM_SCOPE, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
                                           TX_NEW_ROW, TX_WINDOW, USER_P95, WINDOW_IGNORED)
-from slop.lib import sweep_pacing_proxy, sweep_pacing_watermark
+from slop.lib import sweep_pacing_promo_cap, sweep_pacing_proxy, sweep_pacing_watermark
 from slop.lib.sweep_pacing_ledger import (CROWD_N, CROWD_ROWS, DEEP_BELOW, DEEP_FAIL_AFTER, DEEP_ROWS, LEDGER_ID,
                                           LEDGER_ID_STRIDE, REACT_BELOW, REACT_BLANK_AFTER, REACT_DISPUTED,
                                           REACT_FLIP_FROM, REACT_FLIPS, REACT_GAP_D, REACT_HELD, REACT_ROWS, TX_CYCLES,
@@ -256,6 +278,9 @@ GAP_ROWS, GAP_HELD, GAP_BELOW = 1_540, 200, 300   # 110 rows a day, measured sha
 ADMIN_RUN_TIMEOUT_S = 120
 GROWTH_PROMOS, GROWTH_CLAIMED, GROWTH_CLAIMS = 250, 5, 100
 CLAIMER_PAGE = 20            # link_metrics._PAGE: claimers OF answers a page
+LISTED_CLAIMS = 20           # LISTED's promotion: one claimer page; as many again before pass 2
+DISPLAY_PROMOS, DISPLAY_CLAIMED, DISPLAY_CLAIMS = 3, 2, 20
+PROMO_LIST_ID = "910000001"  # the profile Creators' promotion List (an OF custom list's number)
 TERMINAL_SNAPSHOT = 120
 RUN_TIMEOUT_S = 900
 USER_READ_P95_MS = 1_000     # measured 66-68 ms small / 20 users, 99-635 ms medium / 200 users
@@ -265,12 +290,13 @@ P95_VS_LAST_MIN_N = 10
 # A walk OF cut short with a 429 logs its failure with the traceback.
 EXPECTED_TRACEBACKS = tuple((m, '"code": 429') for m in (
     "OF fetch failed", "ingest_tx_scan failed", "ingest_tx_scan_failed", "ingest_tx_backfill failed",
-    "link_metrics refresh failed", "link_metrics prewarm failed"))
+    "link_metrics refresh failed", "link_prewarm failed"))
 TX_COLS = ("account_id, fan_id, kind, message_id, amount_cents, currency, occurred_at, ingested_at, "
            "provider_transaction_id, status, net_cents, fee_cents, vat_cents, source, description")
 WALK_ROUTES = ("campaigns", "trials", "promotions", "subscribers", "transactions")
 PREWARM_ROUTES = ("campaigns", "trials", "promotions")
 _SKIP = re.compile(r"bg_walk_skip account=(\S+) kind=link_prewarm")
+_NO_LIST = re.compile(r"link_prewarm_skip account=(\S+) reason=no_list_sync")
 _TX_FULL_OK = re.compile(r"ingest_tx_scan_end account=(\S+) mode=refresh ")
 _TX_IGNORED = "ingest_tx_recent_window_ignored"
 _TX_EMPTY = "ingest_tx_recent_walk_empty"
@@ -341,17 +367,19 @@ def _hold_by_sql(con, w, aid: str, rows: list[dict], status=lambda _k: "cleared"
     return spend
 
 
-def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[str], dict[str, list[dict]]]:
+def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[str], dict[str, list[dict]], str, str]:
     """DEEP, REACT, BLANK, GAP, CROWD (module docstring): Creators, fans, sessions, OF's ledger, the held rows.
-    And PX's Creators (lib/sweep_pacing_proxy.py), an empty ledger until their stage: its rows, by Creator."""
-    extras = creators.extra(w, 4 + CROWD_N + sweep_pacing_proxy.PX_N)
+    And PX's Creators (lib/sweep_pacing_proxy.py), an empty ledger until their stage: its rows, by Creator.
+    And CAP (lib/sweep_pacing_promo_cap.py), an empty ledger. And DISPLAY, the last, an empty ledger."""
+    extras = creators.extra(w, 4 + CROWD_N + sweep_pacing_proxy.PX_N + 2)
     keep = w.data["fans"]
     pool = fans.seed(w, extras, LEDGER_FANS)
     w.data["fans"] = keep
     of_sessions.seed(w, [*w.data["creators"], *extras])
     deep, react, blank, gap = (extras[k]["id"] for k in range(4))
     crowd = [c["id"] for c in extras[4:4 + CROWD_N]]
-    px = [c["id"] for c in extras[4 + CROWD_N:]]
+    px = [c["id"] for c in extras[4 + CROWD_N:-2]]
+    cap, display = extras[-2]["id"], extras[-1]["id"]
     rng = w.rng("scenario:sweep-pacing:ledger")
     ids = {c["id"]: [f["id"] for f in pool[c["id"]]] for c in extras}
     sw.txs[deep] = [*_ledger(rng, LEDGER_ID["deep"], ids[deep], DEEP_ROWS, w.now - timedelta(hours=3), timedelta(days=80),
@@ -402,7 +430,42 @@ def _seed_ledger_creators(w, sw: SweepWire) -> tuple[str, str, str, str, list[st
                 (deep, 0, None, None, None, "error", 2)):
             con.execute(scan, (a, done, floor, oldest, newest, st, streak, ts(w.now), ts(w.now)))
     con.close()
-    return deep, react, blank, gap, crowd, px_rows
+    return deep, react, blank, gap, crowd, px_rows, cap, display
+
+
+def _seed_lists(w, sw: SweepWire, aids: list[str], listed: str, display: str) -> int:
+    """Every profile Creator's promotion List on (SQL, PUT /admin/promo-list's row); LISTED's claimed
+    promotion; DISPLAY's display-only links on OF and its Source (link_meta, no list_id). LISTED's promotion id."""
+    con = w.sql()
+    with con:
+        con.executemany("INSERT INTO promo_list_settings (account_id, enabled, list_id, list_name, updated_at)"
+                        " VALUES (?, 1, ?, 'slop promo fans', ?)", [(a, PROMO_LIST_ID, ts(w.now)) for a in aids])
+    lp = sw.promos[listed][0]
+    lp["claimsCount"] = LISTED_CLAIMS
+    sw.claims[(listed, lp["id"])] = [{"id": lp["id"] + 800_000 + j, "name": f"Listed {j}", "username": f"l{j}",
+                                      "subscribedOnData": {"subscribeAt": _iso(w.now - timedelta(days=j + 1))}}
+                                     for j in range(LISTED_CLAIMS)]
+    base = 60_000_000_000
+    sw.promos[display] = [{"id": base + k, "message": f"slop display promo {k}", "price": 4.99, "type": "all",
+                           "claimsCount": DISPLAY_CLAIMS if k < DISPLAY_CLAIMED else 0, "subscribeCounts": 10,
+                           "subscribeDays": 0, "createdAt": _iso(w.now - timedelta(days=k + 1)), "finishedAt": None,
+                           "isFinished": False, "canClaim": True} for k in range(DISPLAY_PROMOS)]
+    for k in range(DISPLAY_CLAIMED):
+        sw.claims[(display, base + k)] = [{"id": base + 900_000 + k * 1_000 + j, "name": f"Shown {j}",
+                                           "username": f"s{k}_{j}",
+                                           "subscribedOnData": {"subscribeAt": _iso(w.now - timedelta(days=j + 1))}}
+                                          for j in range(DISPLAY_CLAIMS)]
+    cid = base + 500_000
+    with sw.fake.lock:
+        sw.fake.campaigns[display] = [{"id": cid, "campaignCode": 1, "campaignName": "slop IG", "countTransitions": 40,
+                                       "countSubscribers": 5, "createdAt": _iso(w.now - timedelta(days=9)),
+                                       "endDate": None}]
+    con = w.sql()
+    with con:
+        con.execute("INSERT INTO link_meta (account_id, kind, of_id, source, updated_at) VALUES (?, 'campaign', ?, 'IG', ?)",
+                    (display, cid, ts(w.now)))
+    con.close()
+    return lp["id"]
 
 
 def _seed_mirror(w, aid: str, fans: list[dict]) -> str:
@@ -444,10 +507,12 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     fake = ctx.of_wire
     sw = SweepWire(fake)
     sw.window = ctx.fault != WINDOW_IGNORED
-    deep, react, blank, gap_a, crowd, px_rows = _seed_ledger_creators(w, sw)   # the sessions of every Creator too
+    deep, react, blank, gap_a, crowd, px_rows, cap, display = _seed_ledger_creators(w, sw)   # every Creator's session too
     px = list(px_rows)
     ledger_only = (deep, react, blank, gap_a, *crowd)
     _seed_of(sw, w, aids, n_promo, n_sub, n_tx, growth)
+    listed = idle[0]
+    listed_promo = _seed_lists(w, sw, aids, listed, display)
     for a in idle:
         sw.inject[(a, "promotions")] = {"offset": 100, "text": "Too many requests. Please allow 2 seconds"}
         sw.inject[(a, "subscribers")] = {"offset": 100, "text": TOO_MANY}
@@ -465,6 +530,7 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     tx0 = dict(con.execute("SELECT account_id, COUNT(*) FROM transactions GROUP BY account_id").fetchall())
     con.close()
     ctx.metric("world", {"creators": len(aids), "busy": busy, "idle": idle, "growth": growth, "terminal": terminal,
+                         "listed": listed, "display": display,
                          "promos": n_promo_all, "subscribers": n_sub, "transactions": n_tx, "users": ctx.users})
 
     r = await ctx.owner.post("/__slop/sweep-pacing/knobs", json=KNOBS)
@@ -616,6 +682,12 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
     await earn
     await chatters.stop()
     # ── pass 2: everyone idle past the window, the next prewarm pass walks the skipped ──────────
+    lp = next(p for p in sw.promos[listed] if p["id"] == listed_promo)
+    with sw._lock:   # OF gains LISTED_CLAIMS claimers on LISTED's promotion: the pass's add takes them in
+        sw.claims[(listed, listed_promo)] = [*sw.claims[(listed, listed_promo)], *(
+            {"id": listed_promo + 850_000 + j, "name": f"Listed late {j}", "username": f"ll{j}",
+             "subscribedOnData": {"subscribeAt": _iso(datetime.now(timezone.utc))}} for j in range(LISTED_CLAIMS))]
+        lp["claimsCount"] = 2 * LISTED_CLAIMS
     await asyncio.sleep(knobs["USER_WINDOW_S"] + IDLE_SLACK_S)
     (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "link_prewarm"})).raise_for_status()
     got = await runs_until(lambda runs: all(x["t1"] for x in runs))
@@ -721,6 +793,36 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
         }
     ctx.check(SKIPS, len(passes) == 2 and bool(busy) and not any(sk.values()), passes=len(passes), **sk,
               pass_s=[round(x["t1"] - x["t0"], 1) if x["t1"] else None for x in passes])
+
+    # ── prewarm_scope ───────────────────────────────────────────────────────
+    no_list = (display, *ledger_only, *px, cap)
+
+    def growth_read(e) -> bool:   # a Growth list read or a claimer page
+        return e["route"] in PREWARM_ROUTES or (e["route"] == "subscribers" and "filter" in (e["query"] or ""))
+    scope: dict = {"passes": len(passes)}
+    if len(passes) == 2:
+        reads = {f"pass{i + 1}": dict(Counter(f"{'DISPLAY' if e['account'] == display else e['account']} {e['route']}"
+                                              for e in log if e["account"] in no_list and growth_read(e)
+                                              and in_pass(e["t"], x)))
+                 for i, x in enumerate(passes)}
+        no_skip = [i + 1 for i, x in enumerate(passes)
+                   if not any(in_pass(y["t"], x) and (m := _NO_LIST.search(y["msg"])) and m.group(1) == display
+                              for y in plog)]
+        adds = [[e["count"] for e in log if e["route"] == "list_add" and e["account"] == listed
+                 and e["link"] == listed_promo and in_pass(e["t"], x)] for x in passes]
+        con = w.sql()
+        lm_row = con.execute("SELECT list_id, list_added_count FROM link_meta WHERE account_id = ? AND kind = 'promo'"
+                             " AND of_id = ?", (listed, listed_promo)).fetchone()
+        con.close()
+        scope |= {"no_list_reads": reads, "display_skip_missing_in_pass": no_skip,
+                  "listed_adds_per_pass": adds, "listed_meta": list(lm_row) if lm_row else None,
+                  "display_list_adds": sum(1 for e in log if e["route"] == "list_add" and e["account"] == display)}
+        ok = (not any(reads.values()) and not no_skip and adds == [[LISTED_CLAIMS], [2 * LISTED_CLAIMS]]
+              and scope["listed_meta"] == [PROMO_LIST_ID, 2 * LISTED_CLAIMS] and not scope["display_list_adds"])
+    else:
+        ok = False
+    ctx.check(PREWARM_SCOPE, ok, display=display, listed=listed, listed_promo=listed_promo,
+              no_list_creators=len(no_list), **scope)
 
     # ── growth_refresh_walked ───────────────────────────────────────────────
     claimed = [p["id"] for p in sw.promos[growth] if p["claimsCount"]]
@@ -873,7 +975,9 @@ async def _run(ctx, wires: ExitStack) -> None:  # noqa: C901  one flow, its chec
                f"{s['creators']} Creators ({s['pages_per_creator']})" for s in sup),
              f"ledger calls/h per Creator at {tick}/{full_s} s (inferred): {per_h} vs budget {budget_h}")
 
+    # ── a capped promotions history: reads 2 and 3 read less than the cap (before the restart below) ──
+    await sweep_pacing_promo_cap.run(ctx, w, sw, cap)
     # ── the full walk's persisted watermark: restart, failed full walk (after every check above) ──
-    await sweep_pacing_watermark.run(ctx, w, sw, shared=set(crowd) | set(px))
+    await sweep_pacing_watermark.run(ctx, w, sw, shared=set(crowd) | set(px) | {cap, display})
     # ── ledger pages per bound proxy: shared / separate proxies, an ADR-0030 move (lib/sweep_pacing_proxy.py) ──
     await sweep_pacing_proxy.run(ctx, w, sw, px, px_rows, gap=gap, slack=SPACE_SLACK_S)

@@ -19,6 +19,7 @@ import { useEffect } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
+import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 
 type Body = Record<string, unknown>;
 
@@ -104,7 +105,7 @@ export function useAccountStateEvents(): void {
     // The relay could not replay what this tab missed: refetch everything.
     // Leading refetch, then at most one trailing one per window, so a resync
     // that lands while the first refetch is in flight is not lost.
-    const resync = throttle(() => void qc.invalidateQueries(), RESYNC_MIN_MS);
+    const resync = throttle(() => void invalidateVaultQueries(qc), RESYNC_MIN_MS);
     offs.push(eventBus.on("resync", resync.call), resync.cancel);
 
     const sale = throttle(

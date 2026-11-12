@@ -13,6 +13,10 @@ bench's lanes on every dev image. Do NOT tune here: a rule change is a new bench
   settle(d)              settle.py MODE "nn.10" (D42: no human review queue; `review` settles itself).
   blob(...)              the stored `ai_fields_json["_jev"]` (storage contract, `vault_jev`).
 
+Videos (D53 hr12 maxF, D54; bench `jv-jev.py` / `jv-score.py`): `final` per frame, pass 2 / L only on the top-3
+frames derive8 asks for (`video_targets`), lane = the max frame's (`video_final`); `video_blob` stores the max
+frame's photo-shaped blob plus every frame's answers (`pack`, so the rules re-derive without a refetch).
+
 Not ported (bench decisions): toy pass T (D37, cfg "toy2" off), pass S (D46, rejected).
 """
 from __future__ import annotations
@@ -23,6 +27,10 @@ from typing import Any
 VERSION = "v8+nn.10"
 # Where the blob lives in `ai_fields_json` (the one definition; every vault module reads it from here).
 JEV_KEY = "_jev"
+# The kinds Jev reads (photos: one still; videos: 12 frames, `video_blob`) — the only kinds with flags.
+JEV_KINDS = ("photo", "video")
+# A video blob's frame source + combine (12 frames @720p, top-3 escalation, max lane): `current` needs it too.
+VIDEO_VERSION = "jv1"
 
 # ── score7 (helpers + tag lists) ────────────────────────────────────
 
@@ -235,7 +243,97 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
 def current(fields: dict[str, Any] | None) -> bool:
     """The row carries a successful `_jev` of this VERSION (nothing for a sweep to do). A blob without `state` (made
     before the region states were stored, same VERSION) is not current: the flags mapper needs it to tell a region
-    out of frame from a covered one, so the photo re-runs (no such reading ever reached prod)."""
+    out of frame from a covered one, so the photo re-runs (no such reading ever reached prod). A video blob also
+    needs this VIDEO_VERSION and its frames."""
     j = (fields or {}).get(JEV_KEY)
     return (isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
-            and isinstance(j.get("state"), dict))
+            and isinstance(j.get("state"), dict)
+            and (j.get("kind") != "video" or (j.get("vv") == VIDEO_VERSION and isinstance(j.get("frames"), list))))
+
+
+# ── Videos (jv-jev.py / jv-score.py, hr12 maxF) ─────────────────────
+
+TOP_K = 3
+RANK = {"free": 0, "$10": 1, "$50": 2, "$100": 3}
+
+
+def max_rec(recs):
+    """jv-jev.max_rec: per-question max over frames (Noul: max p; Choice: per-option max, not renormalized; choice = argmax)."""
+    out = {}
+    for q in recs[0]:
+        xs = [r[q] for r in recs if q in r]
+        if xs[0]["type"] == "noul": out[q] = {**xs[0], "noul": max(x["noul"] for x in xs)}
+        else:
+            pr = {o: max(x["probabilities"].get(o, 0) for x in xs) for o in xs[0]["probabilities"]}; out[q] = {**xs[0], "probabilities": pr, "choice": max(pr, key=pr.get)}
+    return out
+
+
+def sev(d): return max(d.get("penetration_p", 0), d.get("crotch_pb", 0), d.get("crotch_n", 0), d.get("breasts_pb", 0), d.get("breasts_n", 0))
+
+
+def video_targets(recs: list[dict[str, Any]], need: str, k: int = TOP_K) -> list[int]:
+    """jv-jev.targets over one video's frame records: the top-`k` frames by `sev` among those derive8 asks `need`
+    ("need2" / "needL") for; none asking but the pass-1 per-question max record asking → the top-`k` overall."""
+    if not recs:
+        return []
+    D = [derive8(r) for r in recs]
+    comb = derive8({"resp": {"answers": max_rec([r["resp"]["answers"] for r in recs])}})
+    pool = [i for i in range(len(recs)) if D[i][need]] or (list(range(len(recs))) if comb.get(need) else [])
+    return sorted(pool, key=lambda i: -sev(D[i]))[:k]
+
+
+def video_final(recs: list[dict[str, Any]], scores: list[dict[str, float]]) -> tuple[list[dict[str, Any]], int]:
+    """`final` per frame, and the frame whose lane the video takes (maxF): the highest lane, ties to the higher
+    `sev`, then the earlier frame."""
+    ds = [final(r, s) for r, s in zip(recs, scores)]
+    return ds, max(range(len(ds)), key=lambda i: (RANK[ds[i]["lane5"]], sev(ds[i]), -i))
+
+
+Order = "list[tuple[str, list[str] | None]]"   # (question, its Choice options in spec order | None for a Noul)
+
+
+def pack(answers: dict[str, Any], order: Order) -> list[Any]:
+    """One pass's answers, positional: a Noul → p, a Choice → [chosen option's index, p per option], 4 dp."""
+    out: list[Any] = []
+    for q, opts in order:
+        x = answers[q]
+        if opts is None:
+            out.append(round(float(x["noul"]), 4))
+        else:
+            pr = x["probabilities"]
+            out.append([opts.index(x["choice"]), *(round(float(pr.get(o, 0)), 4) for o in opts)])
+    return out
+
+
+def unpack(vals: list[Any], order: Order) -> dict[str, Any]:
+    """`pack`'s inverse: the answers shape derive8 reads."""
+    out: dict[str, Any] = {}
+    for (q, opts), v in zip(order, vals):
+        if opts is None:
+            out[q] = {"type": "noul", "noul": v}
+        else:
+            out[q] = {"type": "choice", "choice": opts[v[0]], "probabilities": dict(zip(opts, v[1:]))}
+    return out
+
+
+def video_blob(ds: list[dict[str, Any]], top: int, recs: list[dict[str, Any]], scores: list[dict[str, float]], *,
+               frames: list[dict[str, Any]], passes: list[str], tok: int, px: list[list[int]], at: str, src: str,
+               review: str | None, nbytes: int) -> dict[str, Any]:
+    """A video's `_jev`: the max frame's photo-shaped `blob` (the flags mapper and the describe facts read it
+    unchanged) + `kind` video, `vv`, the max `frame`, every frame's packed answers (`frames`), the frame source
+    (`src` 720 | 240 | full | poster), `review` (why the reading may be too low: no_720 | over_cap | poster_only |
+    few_frames; `vault_ai_brief` keeps such a video out of every free lane) and the downloaded `bytes`. A review
+    reading under $100 is `lane5` "review" (an unknown tier: `vault_pack_picker` never prefills it free), its own
+    lane kept as `read_lane5` (`read_lane`, what the flags mapper reads); a $100 one cannot be priced too low."""
+    b = blob(ds[top], scores[top], passes=passes, tok=tok, px=px[top], at=at, answers=overlay(recs[top], ds[top]))
+    b.update(kind="video", vv=VIDEO_VERSION, frame=top, frames=frames, src=src, review=review or None,
+             bytes=int(nbytes))
+    if review and b["lane5"] != "$100":
+        b.update(lane5="review", read_lane5=b["lane5"])
+    return b
+
+
+def read_lane(jev: Any) -> Any:
+    """The lane a `_jev` READ: its `lane5`, or a review clip's `read_lane5` (`video_blob`)."""
+    lane = (jev or {}).get("lane5")
+    return (jev or {}).get("read_lane5") if lane == "review" else lane

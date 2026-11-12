@@ -6,9 +6,10 @@ the OF response keyed on (account_id, query_key) lets the second
 picker-open (from any browser) skip the OF round-trip entirely.
 
 API:
-    await get(account_id, query_key)                        -> dict | None  (None = miss/stale)
+    await get(account_id, query_key, max_age_s=None)        -> dict | None  (None = miss/stale/older than max_age_s)
     await put(account_id, query_key, payload, started_at=t0) -> None         (write-through; t0 = utcnow() before the fetch)
     await invalidate(account_id)                            -> int          (rows deleted)
+    await drop_view_pages(account_id, query_key)            -> int          (the view's other offsets deleted)
     mark_stale(account_id)                                  -> None         (sync, RAM)
 
 One TTL for every key: `CHATTERLY_VAULT_CACHE_TTL_SECONDS` (default and cap
@@ -46,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -123,10 +125,14 @@ def mark_stale(account_id: str) -> None:
     _invalidated_at[account_id] = datetime.utcnow()
 
 
-async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
+async def get(account_id: str, query_key: str, *, max_age_s: float | None = None) -> dict[str, Any] | None:
     """Return the cached response for (account_id, query_key) if it is
     within TTL. Returns None on miss or stale row. Stale rows are left in
     place — `put` overwrites them on the next upstream success.
+
+    `max_age_s` (the picker's revalidate, server.py): also None for a row
+    stored more than that long ago, by the row's `fetched_at`. None = the TTL
+    alone, as always.
 
     A DB failure is reported as a miss: the caller then fetches upstream
     and serves real data, which is the whole point of a cache being
@@ -134,7 +140,10 @@ async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
     ttl = _ttl_seconds()
     if ttl == 0:
         return None
-    cutoff = datetime.utcnow() - timedelta(seconds=ttl)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(seconds=ttl)
+    if max_age_s is not None:
+        cutoff = max(cutoff, now - timedelta(seconds=max(max_age_s, 0)))
     # An invalidate whose DELETE failed (or a `mark_stale`) raises the bar past
     # the TTL, so rows the mutation should have deleted are not served.
     mark = _invalidated_at.get(account_id)
@@ -278,4 +287,37 @@ async def invalidate(account_id: str) -> int:
         log.warning("vault_cache: invalidate failed for account=%s (%s) — "
                     "serving misses for this account until a fresh write lands",
                     account_id, e.__class__.__name__)
+        return 0
+
+
+_OFFSET = re.compile(r"\|offset=\d+\|")
+
+
+def _view(query_key: str) -> str:
+    """A listing key without its offset: the view its pages belong to."""
+    return _OFFSET.sub("|offset=*|", query_key, count=1)
+
+
+async def drop_view_pages(account_id: str, query_key: str) -> int:
+    """Delete the cached pages of `query_key`'s view (same key but the offset) other than `query_key` itself.
+    The picker's revalidate (server._vault_read) calls it when a page 1 refetch shows new ids: every later
+    offset was cut from the old listing, so serving one would drop or repeat media. View-scoped and no RAM mark,
+    unlike `invalidate`: the fresh page 1 put that follows must land.
+
+    Never raises: a failed delete leaves those rows to the TTL (returns 0)."""
+    view = _view(query_key)
+    try:
+        async with get_session() as s:
+            keys = (await s.execute(
+                select(VaultResponseCache.query_key).where(VaultResponseCache.account_id == account_id)
+            )).scalars().all()
+            gone = [k for k in keys if k != query_key and _view(k) == view]
+            if not gone:
+                return 0
+            result = await s.execute(delete(VaultResponseCache).where(
+                VaultResponseCache.account_id == account_id, VaultResponseCache.query_key.in_(gone)))
+            return result.rowcount or 0
+    except SQLAlchemyError as e:
+        log.warning("vault_cache: view drop failed for account=%s key=%s (%s)",
+                    account_id, query_key, e.__class__.__name__)
         return 0

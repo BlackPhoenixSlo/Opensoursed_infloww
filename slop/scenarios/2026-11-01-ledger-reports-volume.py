@@ -41,20 +41,15 @@ offered, then the route lifted, Load more renders that page's rows (the side eff
 fan-reports-settled, fan-reports-download-trigger, message-dashboard, sales-records, page-error-trigger,
 page-error-settled.
 
-KNOWN_RED (open findings, `KnownRed`): a budget red on a green harness from a measured product cause,
-keyed by route, with the scales it was measured red at (parked); at FAN_NARROWED scales (within
-fan-report's parked) the crowd avoids the big Creators on fan-report. A parked budget is judged on the
-crowd's p95 and on a probe, the crowd stopped (label `probe `, metric known_red_probe); a probe counts
-only if every call answered 200, else the budget FAILs (probe_status). A slow route's probe is one
-call: tips-list = Agency 0's Agency-wide first page (its 3 big Creators, 45 days), fan-report = one big
-Creator's 45 days; crowd or probe red -> SKIP with the reason and both
-figures; both within budget -> FAIL "stale KNOWN_RED entry, remove it". A starved route's probe
-(top-tippers) is the route alone: the crowd's owners, split, think time and windows, reading only
-top-tippers (Agency-wide, as the crowd does) on the page loads that open the Tips tab (TIPS_TAB share),
-for PROBE_ALONE_S: the crowd with the other routes stopped, its top-tippers rate unchanged (a burst at
-every page load, 4x that rate, is red by itself: run 355e, p95 7.1 s, n 261). Crowd within budget ->
-PASS; crowd red and alone within -> SKIP "starved" with both figures; both red -> FAIL (the route itself). No fault targets a
-parked check. Every other budget, and every budget at a scale not parked (huge: never run), is live.
+Acceptance: all three crowd p95 budgets and all three isolated probe budgets are mandatory,
+independent checks at every scale. Missing samples, missing probes, non-200 probe responses, and
+latencies over budget FAIL. Probe selection never depends on historical waiver metadata. With the
+crowd stopped, tips-list reads Agency 0's 45-day first page and fan-report reads one big Creator's
+45-day report. Top-tippers runs alone for PROBE_ALONE_S with the same owners, Agency split, think
+time, windows and Tips-tab share. Big Creators remain eligible for crowd fan-report reads and exports.
+Historical known-red reasons and narrowed-run results are retained in
+slop/evidence/fd3-integration/ledger-contract/historical-contract.txt and ledger-volume-attribution.md;
+they neither waive a current failure nor turn a within-budget measurement into a stale-marker failure.
 
 Break-it-once (targets in lib/ledger_reports_faults.py): fan-report-counts-refunds (FAULT; reversals
 counted as spend: fan totals, fan-report rank, fan-report CSV, traffic), --fault=top-tippers-crosses-agency
@@ -71,13 +66,7 @@ ingest, the WS pump, the mass send and OF's claimer walk are not run), in the sh
 leave; the tx_rollup triggers fire on the inserts as on any write. The oracle reads the same DB rows
 the product reads (it checks the reads, not the writers). OnlyFans is never reached; in the browser
 `/api/of/*` stays held; the Tips tab's next-page 500s are answered at the browser's wire. The Message dashboard and Sales records screens are screenshot only; their
-figures are checked through the API. At FAN_NARROWED scales the crowd's one-Creator fan-report and
-fan-report exports read only Creators that are not big (Agency-wide reads still include them), which
-bypasses both the budget's sampling there (the probe stands in) and the stock no-transport-error check
-on those calls: before the
-query-shape fixes a big Creator's read under the crowd ran 101-120 s against the crowd's 120 s timeout;
-after them, unnarrowed (run 4de0), no call timed out but the big Creators' reads starve the relay
-(fan-report crowd p95 30.0 s, its exports' 61.5 s; pool wait p95 2000 ms, 79 spills).
+figures are checked through the API.
 """
 from __future__ import annotations
 
@@ -115,49 +104,8 @@ def _budget_name(route: str) -> str:
     return f"ledger reports: p95 {route} <= {P95_MS[route]} ms under the crowd (stage load)"
 
 
-class KnownRed(NamedTuple):
-    """An open finding on a budget (the docstring's KNOWN_RED): the scales measured red (parked), why,
-    and the probe that judges it: one call (the route is slow by itself) or, `starved`, the crowd's reads
-    of the route alone (other routes take its capacity)."""
-    parked: tuple[str, ...]
-    reason: str
-    starved: bool = False
-
-
-# Medium on one product code (44c4f608d, c57cad20c, 26c382292) runs in two modes on the same seeded request mix.
-_BIMODAL = (
-    "; medium is bimodal: a fast mode, relay ~2 cores (runs 2c65, 9e26, 9241, ac00), {fast}, and a slow "
-    "mode, relay ~4 cores, every route's p50 4-15x (runs 7385, d5b5, 1ec1, 9ed5), {slow}; with crowd and "
-    "probe within budget this entry FAILs stale. Cause open: not a plan flip (measured: the post-load checks "
-    "cost the same in both modes), not the WAL (measured: reset after the seed in both, runs ac00, f962), not "
-    "plain host CPU load (measured: 11 CPU burners, run 11d5, also raise the event loop's CPU per page load, "
-    "the slow mode leaves it unchanged)")
-
-KNOWN_RED: dict[str, KnownRed] = {
-    TIPS_ROUTE: KnownRed(
-        ("medium",),
-        "open finding (perf paused, owner 10-29; query shape done): tips_list joins messages on their full "
-        "PK (one seek per tip), so Agency 0's 45-day first page alone (probe, crowd stopped) takes 77 ms (run "
-        "2f96; its 7-day one 31.7 s before, run ae72) and small is within budget (run 6786)"
-        + _BIMODAL.format(fast="crowd p95 0.27-0.65 s", slow="0.74-1.24 s (0.74 s in 9ed5)")),
-    FAN_ROUTE: KnownRed(
-        ("medium",),
-        "open finding (perf paused, owner 10-29; query shape done): fan_report's traffic query seeks each "
-        "spender's earliest claim (ix_link_claimers_account_fan) instead of scanning a row_number() subquery "
-        "per spender, so one big Creator's 45-day fan-report alone (probe, crowd stopped) takes 146 ms (run "
-        "b24c; 2.2 s before, run ae72); big Creators in the crowd's one-Creator reads starve the relay (crowd "
-        "p95 30.0 s, run 4de0), so medium keeps them out (FAN_NARROWED)"
-        + _BIMODAL.format(fast="crowd p95 1.0-1.46 s", slow="3.3-4.54 s")),
-    TOP_ROUTE: KnownRed(
-        ("medium",),
-        "open finding: top-tippers starved by the parked crowd routes (tips-list, fan-report): under the crowd "
-        "its p95 is over budget at medium (4.8 s run 9b86, 5.3 s run ae72; relay pool wait p95 2 s) while "
-        "the same owners' top-tippers reads alone, the other routes stopped, stay within it (p95 169 ms, n 178, "
-        "run 9b86)",
-        starved=True),
-}
-FAN_NARROWED = ("medium",)  # scales where the crowd's one-Creator fan-report reads keep off the big Creators
-assert set(FAN_NARROWED) <= set(KNOWN_RED[FAN_ROUTE].parked), "a narrowed scale must be parked"
+# Isolated checks use the same unchanged thresholds, separately from crowd verdicts.
+PROBE_P95_MS = {FAN_ROUTE: 1500, TIPS_ROUTE: 800, TOP_ROUTE: 800}
 TIPS_TAB = (0.35, 0.6)  # the share of an owner's page loads that open the Tips tab (tips-list + top-tippers)
 PROBE_ALONE_S = 30  # top-tippers alone: how long (~170 calls at 200 owners)
 
@@ -191,9 +139,8 @@ class Window(NamedTuple):
 
 class Menu(NamedTuple):
     """What one Agency's owners may read: its Creators (tips-list, top-tippers and their exports), the
-    Creators a one-Creator fan-report (and its export) may read, and the rows an XLSX export posts."""
+    including big Creators for fan-report and its export, and the rows an XLSX export posts."""
     creators: list[str]
-    fan_pick: list[str]
     fan_rows: list
 
 
@@ -399,7 +346,7 @@ async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop
         if x < TIPS_TAB[0]:
             q = {**win, "sort": rng.choice(SORTS)}
             if rng.random() < 0.75:
-                q["account_id"] = rng.choice(menu.fan_pick)
+                q["account_id"] = rng.choice(menu.creators)
             reads.append((pool, "GET", f"/admin/stats/fan-report?{urlencode(q)}", None))
         elif x < TIPS_TAB[1]:
             q = {**win, "limit": 50}
@@ -418,7 +365,7 @@ async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop
                 rows = [["Fan", "Total spend"]] + [[r[0], r[1]] for r in menu.fan_rows[:k]]
                 reads.append((export, "POST", "/admin/stats/xlsx", {"sheet": "Top fans", "rows": rows}))
             else:
-                path, pick = {"fan": ("/admin/stats/fan-report", menu.fan_pick),
+                path, pick = {"fan": ("/admin/stats/fan-report", menu.creators),
                               "tips": ("/admin/tips-list", menu.creators),
                               "top": ("/admin/top-tippers", menu.creators)}[kind]
                 q = {**win, "account_id": rng.choice(pick), "format": "csv"}
@@ -512,72 +459,48 @@ async def _alone(ctx, *, http: dict, windows: list[dict]) -> dict:
     return _probe_stats(calls, alone_s=PROBE_ALONE_S, owners=sum(per.values()))
 
 
-async def _probes(ctx, *, w, http: dict, parked: dict[str, KnownRed], big: set, win: Window, o_fans0: dict,
+async def _probes(ctx, *, w, http: dict, big: set, win: Window, o_fans0: dict,
                   o_tips0: list) -> dict:
-    """Each parked KNOWN_RED entry's probe, the crowd stopped: top-tippers (starved) read alone, else one
-    call as Agency 0's owner (its big Creators)."""
-    out: dict = {}
-    if TOP_ROUTE in parked:
-        out[TOP_ROUTE] = await _alone(ctx, http=http, windows=[win.q(), win.q(week=True)])
-    one = [r for r, kr in parked.items() if not kr.starved]
-    if one and big:
+    """All three required isolated probes, independent of historical findings."""
+    out = {TOP_ROUTE: await _alone(ctx, http=http, windows=[win.q(), win.q(week=True)])}
+    if big:
         probe = ctx.owner.share(limits=1)
         probe.prefix = "probe "
         aid = sorted(big)[0]
         for route, path, q in (
                 (TIPS_ROUTE, "/admin/tips-list", {**win.q(), "limit": 50}),
                 (FAN_ROUTE, "/admin/stats/fan-report", {**win.q(), "sort": "total", "account_id": aid})):
-            if route in one:
-                out[route] = _probe_stats([await _timed(probe, f"{path}?{urlencode(q)}", 900)],
+            out[route] = _probe_stats([await _timed(probe, f"{path}?{urlencode(q)}", 900)],
                                           account_id=q.get("account_id", "all of Agency 0"), **{"from": q["from"]})
         await probe.aclose()
         msgs = _rows(w, "SELECT COUNT(*) FROM messages WHERE account_id = ?", [aid])[0][0]
         out["creator"] = {"id": aid, "tips_45d": sum(1 for t in o_tips0 if t[1] == aid),
                           "spenders_45d": sum(1 for k in o_fans0 if k[0] == aid), "messages": msgs}
     if out:
-        ctx.metric("known_red_probe", out)
+        ctx.metric("ledger_probes", out)
     return out
 
 
-def _budgets(ctx, parked: dict[str, KnownRed], probes: dict) -> None:
-    """Live budget: the crowd's p95. Parked: a probe that is not all 200 fails it; a slow route's entry
-    SKIPs while the crowd or its probe is red, else FAILs as stale; a starved route's entry PASSes on
-    the crowd, SKIPs when only the crowd is red, FAILs when its reads alone are red too."""
+def _budgets(ctx, probes: dict) -> None:
+    """Crowd and isolated budgets stand independently; absent evidence fails closed."""
     routes = ctx.rec.summary("load")
     for route, budget in P95_MS.items():
-        name, s, kr, pr = _budget_name(route), routes.get(route), parked.get(route), probes.get(route)
-        crowd = s["p95_ms"] if s else None
-        detail = {"p95": crowd, "n": s and s["n"], "users": ctx.users}
-        if kr is None or not (s or pr):
-            if s:
-                ctx.check(name, crowd <= budget, budget=True, **detail)
-            else:
-                ctx.skip(name, "no samples")
-            continue
-        detail["probe"] = pr
-        if pr and not pr["ok"]:
-            ctx.check(name, False, budget=True, probe_status=pr["status"], **detail)
-            continue
-        crowd_red, probe_red = crowd is not None and crowd > budget, pr is not None and pr["p95_ms"] > budget
-        measured = f" (crowd p95 {crowd} ms, {'isolated' if kr.starved else 'probe'} {pr and pr['p95_ms']} ms)"
-        if kr.starved:
-            if s is None:
-                ctx.skip(name, "no samples", **detail)
-            elif not crowd_red:
-                ctx.check(name, True, budget=True, **detail)
-            elif pr and not probe_red:
-                ctx.skip(name, kr.reason + measured, **detail)
-            else:
-                ctx.check(name, False, budget=True, why="crowd and alone both over budget: the route "
-                          "itself, not starvation", **detail)
-        elif crowd_red or probe_red:
-            ctx.skip(name, kr.reason + measured, **detail)
-        else:
-            ctx.check(name, False, budget=True, stale="KNOWN_RED entry is stale (crowd p95 and probe within "
-                      "budget): remove it", **detail)
+        sample = routes.get(route) or {}
+        crowd = sample.get("p95_ms")
+        ctx.check(_budget_name(route), bool(sample.get("n")) and crowd is not None and crowd <= budget,
+                  budget=True, p95=crowd, n=sample.get("n", 0), users=ctx.users)
+    for route, budget in PROBE_P95_MS.items():
+        probe = probes.get(route) or {}
+        latency = probe.get("p95_ms")
+        status = probe.get("status", {})
+        valid = (probe.get("n", 0) > 0 and probe.get("ok") is True
+                 and status == {200: probe["n"]} and latency is not None)
+        ctx.check(f"ledger reports: p95 {route} <= {budget} ms isolated probe",
+                  valid and latency <= budget, budget=True, probe=probe, users=ctx.users)
     # Every route with samples, so the stock check lists the thin ones as skipped; none when no route
     # reaches P95_VS_LAST_MIN_N (a short small run): the stock check fails a comparison of 0 routes.
-    seen = [r for r in (*P95_MS, *P95_ALSO) if r in routes]
+    seen = [r for r in (*P95_MS, *P95_ALSO)
+            if routes.get(r, {}).get("n", 0) > 0 and routes[r].get("p95_ms") is not None]
     if any(routes[r]["n"] >= P95_VS_LAST_MIN_N for r in seen):
         ctx.metric("p95_vs_last_green", {r: routes[r]["p95_ms"] for r in seen})
         ctx.metric("p95_vs_last_green_n", {r: routes[r]["n"] for r in seen})
@@ -790,13 +713,10 @@ async def run(ctx) -> None:
     names = {(c["id"], f["id"]): f["name"] for c in creators for f in w.data["fans"][c["id"]]}
     scope = Scope(accounts)
 
-    # At FAN_NARROWED scales the crowd's one-Creator fan-report keeps off big Creators (declared bypass, docstring).
-    parked = {r: kr for r, kr in KNOWN_RED.items() if ctx.scale in kr.parked}
-    narrow = ctx.scale in FAN_NARROWED
-    menus = {i: Menu(creators=mine[i], fan_pick=[a for a in mine[i] if not (narrow and a in big)],
+    menus = {i: Menu(creators=mine[i],
                      fan_rows=[[names.get(k, str(k[1])), o_fans[i][k][0]] for k in ranked(o_fans[i], "total")[:1000]])
              for i in (0, 1)}
-    for i in menus:  # the crowd's one-Creator reads and the Sales records check need a Creator not big
+    for i in menus:  # the Sales records check needs a Creator that is not big
         if not set(mine[i]) - big:
             raise RuntimeError(f"Agency {i}: no Creator that is not big ({mine[i]}); the world changed")
 
@@ -804,9 +724,9 @@ async def run(ctx) -> None:
     http = {0: ctx.owner, 1: w.data["agencies"][1]["http"]}
     ctx.metric("page_loads", await _load(ctx, http=http, menus=menus, windows=[win.q(), win.q(week=True)],
                                          load_s=load_s, scope=scope))
-    probes = await _probes(ctx, w=w, http=http, parked=parked, big=big, win=win, o_fans0=o_fans[0],
+    probes = await _probes(ctx, w=w, http=http, big=big, win=win, o_fans0=o_fans[0],
                            o_tips0=o_tips[0])
-    _budgets(ctx, parked, probes)
+    _budgets(ctx, probes)
 
     # ── Checks, against the oracle. ──────────────────────────────────────────
     ck = Checks(http, scope)

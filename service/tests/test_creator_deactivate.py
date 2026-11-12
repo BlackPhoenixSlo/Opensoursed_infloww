@@ -89,7 +89,7 @@ from sqlalchemy import select, update  # noqa: E402
 import account_health  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import automation_executor as ax  # noqa: E402
-import link_metrics  # noqa: E402
+import link_prewarm  # noqa: E402
 import of_client  # noqa: E402
 import of_stats_daily  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
@@ -417,14 +417,14 @@ async def case_link_prewarm_skips() -> None:
     async def _prewarm(aid):
         warmed.append(aid)
 
-    saved = link_metrics.prewarm, link_metrics._PREWARM_SPREAD_S, account_registry.list_accounts
-    link_metrics.prewarm, link_metrics._PREWARM_SPREAD_S = _prewarm, 0.0
+    saved = link_prewarm.prewarm, link_prewarm._PREWARM_SPREAD_S, account_registry.list_accounts
+    link_prewarm.prewarm, link_prewarm._PREWARM_SPREAD_S = _prewarm, 0.0
     account_registry.list_accounts = lambda: [
         {"id": a, "has_session": True, "platform": "onlyfans"} for a in (OFF, ON)]
     try:
-        await link_metrics.prewarm_all()
+        await link_prewarm.prewarm_all()
     finally:
-        link_metrics.prewarm, link_metrics._PREWARM_SPREAD_S, account_registry.list_accounts = saved
+        link_prewarm.prewarm, link_prewarm._PREWARM_SPREAD_S, account_registry.list_accounts = saved
     assert warmed == [ON], f"prewarmed: {warmed}"
 
 

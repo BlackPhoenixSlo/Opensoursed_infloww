@@ -117,7 +117,7 @@ def case_fix_survives_a_forced_rerun() -> None:
     asyncio.run(F.apply_fix(aid, 730, {"clothing_state": "pulled_down"}))
 
     async def rerun() -> None:
-        # Exactly what `_flags_one` does on a forced pass: merge fresh model
+        # Exactly what a forced flags pass does: merge fresh model
         # output into the stored fields, skipping locked keys.
         async with get_session() as s:
             item = await s.get(VaultItem, (aid, 730))

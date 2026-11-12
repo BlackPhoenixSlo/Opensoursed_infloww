@@ -34,6 +34,7 @@
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Send, Shirt, User } from "lucide-react";
+import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 
 import {
   applyAiFolders,
@@ -186,7 +187,7 @@ export default function VaultAiFoldersModal({
       // The folder rail and any per-folder grid are now stale.
       qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-of-folders-mirror", accountId] });
-      qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
+      invalidateVaultQueries(qc, { queryKey: ["vault-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
       // The preview's create / keep / retire counts were against the folders before this build.
       qc.invalidateQueries({ queryKey: ["vault-ai-folder-plan", accountId] });

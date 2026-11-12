@@ -1035,6 +1035,56 @@ if "of-counter-drops-errors" in FAULTS:
 FAULTS["of-counter-drops-errors"] = Fault(_of_counter_drops_errors, ("counts_match_wire",))
 
 
+# --- Pins cache + wall scan identity (fetch-diet ticket 09) ---
+# slop/run slow-conn --break --fault=pins-uncached: server._pins_cache_ttl_s answers 0 (today's uncached read), so
+# every chat open re-reads OF's /pinned. --fault=wall-calls-me: the wall-media scan asks OF's /users/me for the
+# Creator's id again (vault_sends_api before the cut).
+PINS_ONCE = "PINS_ONCE: opens of one chat inside the pins TTL make one /pinned OF call (two in a row, three at once)"
+WALL_NO_ME = "WALL_NO_ME: wall-media warms add no /users/me (counter rows under the route; its posts reads all there)"
+
+
+def _pins_uncached() -> None:
+    import server
+    server._pins_cache_ttl_s = lambda: 0.0
+
+
+def _wall_calls_me() -> None:
+    import vault_sends_api
+
+    def old(_account_id, client):  # the scan before the cut: a /users/me read, an int id
+        my_id = client.me().get("id")
+        return my_id if isinstance(my_id, int) else None
+
+    vault_sends_api._session_user_id = old
+
+
+for _name in ("pins-uncached", "wall-calls-me"):
+    if _name in FAULTS:
+        raise SystemExit(f"slop: faults.py redefines {_name}")
+FAULTS["pins-uncached"] = Fault(_pins_uncached, (PINS_ONCE,))
+FAULTS["wall-calls-me"] = Fault(_wall_calls_me, (WALL_NO_ME,))
+
+
+# --- Unread warm reuse (fetch-diet ticket 16) ---
+# slop/run slow-conn --break --fault=warm-not-reused: the fix reverted in flight (a client fault on the production
+# build's Messages Pro chunk, slow-connections' warm leg routes it): the inbox Thread and the Fan List's press
+# warm-up lose UNREAD_WARM_REUSE_MS, so an open 15-20 s after the unread warm reads the head page again.
+WARM_REUSED = ("WARM_REUSED: a Fan warmed by the unread warm and opened inside 20 s makes one head GET (the warm's), "
+               "in the browser and on OF's wire")
+WARM_FRESH = ("WARM_FRESH: a Fan DM after the warm shows on the reused open; an open past 20 s of the warm reads "
+              "the head page again")
+if "warm-not-reused" in FAULTS:
+    raise SystemExit("slop: faults.py redefines warm-not-reused")
+FAULTS["warm-not-reused"] = Fault(None, (WARM_REUSED,), browser=(
+    (r"(insightsOpenAtStart:[^,{}]+,)prefetchWindowMs:[\w$.]+,", r"\1"),
+    (r"warmWindowMs:[\w$.]+,(actions:)", r"\1")), browser_files=1)
+# --fault=warm-window-wide: the inbox window widened to 60 s in the same chunk, so the open 23 s after the warm
+# rides it too (no second head read).
+FAULTS["warm-window-wide"] = Fault(None, (WARM_FRESH,), browser=(
+    (r"(insightsOpenAtStart:[^,{}]+,prefetchWindowMs:)[\w$.]+,", r"\g<1>6e4,"),
+    (r"(warmWindowMs:)[\w$.]+,(actions:)", r"\g<1>6e4,\2")), browser_files=1)
+
+
 # --- mass send reads no roster (the Audience crawl deleted, 2026-11-12) ---
 # slop/run mass-send-no-roster-reads --break: every OF mass send (both paths call OFClient.send_mass_message) is
 # followed by one fans and one following roster page, the deleted crawl's bug class.

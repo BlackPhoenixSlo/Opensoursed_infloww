@@ -20,7 +20,8 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { mergeOlderPage, mergeTopPage, orderThread, prefetchChatMessages, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
-import type { OFMessage } from "@/lib/relay";
+import type { OFMessage, OFMessagesResp } from "@/lib/relay";
+import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
 // so the test only exercises the cache-merge contract.
@@ -317,6 +318,33 @@ describe("prefetchChatMessages", () => {
     expect(calls.filter((u) => !u.includes("before_id="))).toHaveLength(1); // the prefetch alone
     expect(calls.filter((u) => u.includes("before_id="))).toEqual([
       `/api/of/v2/chats/${FAN}/messages?limit=30&order=desc&before_id=100`,
+    ]);
+  });
+
+  it("an inbox reopen inside UNREAD_WARM_REUSE_MS scrolls up from the unread warm's head page, not from the first open's deeper pages below the gap (fetch-diet 16)", async () => {
+    const pages: Record<string, OFMessagesResp> = {
+      head1: resp([msg(101), msg(100)], true), "100": resp([msg(99), msg(98)], true),
+      head2: resp([msg(121), msg(120)], true), "120": resp([msg(119), msg(118)], true),
+    };
+    let head = "head1";
+    relayGet.mockImplementation((url: string) =>
+      Promise.resolve(pages[url.match(/before_id=(\d+)/)?.[1] ?? head]));
+    const open = () => renderHook(
+      () => useChatMessages({ accountId: ACCT, fanId: FAN, prefetchWindowMs: UNREAD_WARM_REUSE_MS }), { wrapper });
+
+    const first = open();
+    await waitFor(() => expect(ids(client.getQueryData(KEY))).toEqual(["100", "101"]));
+    await act(async () => { await first.result.current.loadOlder(); });
+    first.unmount();
+    // 20 Fan DMs later the unread warm reads the head again (thread stale by then).
+    head = "head2";
+    await prefetchChatMessages(client, ACCT, FAN, { staleTime: 0 });
+    relayGet.mockClear();
+
+    const reopened = open();
+    await act(async () => { await reopened.result.current.loadOlder(); });
+    expect(relayGet.mock.calls.map((c) => String(c[0]))).toEqual([
+      `/api/of/v2/chats/${FAN}/messages?limit=30&order=desc&before_id=120`,
     ]);
   });
 

@@ -415,7 +415,7 @@ def patch(
 
 
 # The namespaces whose bodies show MONEY — see `invalidate_money_feeds`.
-_MONEY_FEED_NAMESPACES = ("notifications", "notifications_count")
+_MONEY_FEED_NAMESPACES = ("notifications", "notifications_count", "chat_pinned")
 
 
 def invalidate_money_feeds(account_id: str) -> int:
@@ -424,7 +424,10 @@ def invalidate_money_feeds(account_id: str) -> int:
     OF serves two facts off one upstream state — the notifications feed and
     its per-category badge counts — so a tip, a subscribe or a PPV unlock
     changes both at once. (The cached `/init` bootstrap, whose embedded counts
-    were the third, went with its route in the 2026-10 cleanup.) Callers are the money-event paths: an inbound tip and a `toasts`
+    were the third, went with its route in the 2026-10 cleanup.) The chat pins
+    (`chat_pinned`, server's pinned route, every chat of the account) are the
+    third now: a pinned PPV shows its lock/price, which a fan's payment flips
+    with no write of ours. Callers are the money-event paths: an inbound tip and a `toasts`
     frame (`event_transcoder`), and a PPV purchase
     (`purchase_notifications._broadcast_purchase`). Each is the server-side
     twin of a client-side `["notif-list", aid]` invalidation in

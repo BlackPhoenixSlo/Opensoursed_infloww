@@ -62,7 +62,12 @@ async def agency_context(*, account_id: str | None = None, db_session=None) -> A
         )
     if not chatter.owner_user_ids:
         raise HTTPException(status_code=403, detail="chatter is not linked to an agency")
-    if account_id:
+    employee_id = None
+    if account_id and db_session is None:
+        agency_user_id, employee_id = await _chatter_agency_and_mirror(
+            chatter.id, chatter.owner_user_ids, account_id,
+        )
+    elif account_id:
         agency_user_id = await _chatter_agency_for_creator(
             chatter.id, chatter.owner_user_ids, account_id, db_session=db_session,
         )
@@ -70,18 +75,20 @@ async def agency_context(*, account_id: str | None = None, db_session=None) -> A
         (agency_user_id,) = chatter.owner_user_ids
     else:
         raise HTTPException(status_code=400, detail="name a creator to choose the agency")
-    return await _chatter_context(chatter, agency_user_id, db_session=db_session)
+    return await _chatter_context(chatter, agency_user_id, employee_id, db_session=db_session)
 
 
-async def _chatter_context(chatter, agency_user_id: str, *, db_session=None) -> AgencyContext:
+async def _chatter_context(
+    chatter, agency_user_id: str, employee_id: int | None = None, *, db_session=None,
+) -> AgencyContext:
     """A Chatter session's context in one linked Agency, as its Mirror
     Employee there (created on first use); 503 when it cannot be resolved."""
     import employees  # lazy: employees re-exports this module; patched there by tests
     # The role middleware already holds a session for the current blob read.
     # Reuse it for the common existing Mirror row; a missing row takes the
     # original create path in its own transaction (and grants its default role).
-    employee_id = (await employees.mirror_id(db_session, chatter.id, agency_user_id)
-                   if db_session is not None else None)
+    if employee_id is None and db_session is not None:
+        employee_id = await employees.mirror_id(db_session, chatter.id, agency_user_id)
     if employee_id is None:
         employee_id = await employees.get_or_create_mirror_employee(
             chatter.id, agency_user_id,
@@ -149,17 +156,39 @@ async def _chatter_agency_for_creator(
     allowlist applies first, so a cross-granted Creator allowed only under
     the later Agency resolves there (docs/spec/phase-01, Resolution rules).
     """
+    if db_session is not None:
+        return await _allowed_holder(db_session, chatter_id, owner_user_ids, account_id)
+    async with get_session() as s:
+        agency_user_id = await _allowed_holder(s, chatter_id, owner_user_ids, account_id)
+    return agency_user_id
+
+
+async def _chatter_agency_and_mirror(chatter_id, owner_user_ids, account_id):
+    """Read an existing mirror in the holder session; creation stays outside it.
+
+    Selection failures retain their existing refusal/error behavior. Once selected,
+    lookup or session-exit failure makes the mirror unavailable, as in the creator.
+    This short transaction does not make concurrent authorization changes atomic.
+    """
+    import employees
+    agency_user_id = None
+    try:
+        async with get_session() as s:
+            agency_user_id = await _allowed_holder(s, chatter_id, owner_user_ids, account_id)
+            employee_id = await employees.mirror_id(s, chatter_id, agency_user_id)
+    except Exception as exc:
+        if agency_user_id is None:
+            raise
+        raise HTTPException(status_code=503, detail="mirror employee unavailable") from exc
+    # Never expose the scalar before commit/session exit has succeeded.
+    return agency_user_id, employee_id
+
+
+async def _allowed_holder(s, chatter_id, owner_user_ids, account_id) -> str:
     import employees  # lazy: employees re-exports this module
     from chatters import _account_restrictions_for, _filter_owner_accounts
-    async def _read(s):
-        holders = await employees._sorted_holder_owner_ids(s, account_id, owner_user_ids)
-        restrictions = await _account_restrictions_for(s, chatter_id)
-        return holders, restrictions
-    if db_session is None:
-        async with get_session() as s:
-            holders, restrictions = await _read(s)
-    else:
-        holders, restrictions = await _read(db_session)
+    holders = await employees._sorted_holder_owner_ids(s, account_id, owner_user_ids)
+    restrictions = await _account_restrictions_for(s, chatter_id)
     allowed = [
         uid for uid in holders
         if _filter_owner_accounts([(uid, account_id)], restrictions)

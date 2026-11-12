@@ -23,7 +23,7 @@ import os  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from curl_cffi.requests import Cookies  # noqa: E402
+from curl_cffi.requests import Cookies, Headers  # noqa: E402
 
 from of_client import OFClient  # noqa: E402
 
@@ -41,6 +41,10 @@ _SESSION = {
 class _Resp:
     def __init__(self, _domain=".onlyfans.com", **cookies):
         self.cookies = Cookies()
+        self.url = "https://" + _domain.lstrip('.') + "/api2/v2/test"
+        self.headers = Headers([("Set-Cookie", f"{name}={value}; Path=/" +
+                                 (f"; Domain={_domain}" if _domain.startswith('.') else ""))
+                                for name, value in cookies.items()])
         for name, value in cookies.items():
             self.cookies.set(name, value, domain=_domain)
 

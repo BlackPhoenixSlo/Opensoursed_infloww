@@ -28,6 +28,8 @@ GATE_COUNT = ("tracking links: a bot-checked link's clicks (tracking_clicks rows
               "verifies that passed, exactly; its GETs and failed verifies count none")
 GATE_CREATE = ("tracking links: every Create with a scheme-less target stores it as https://<it>, and bot_check "
                "(set at create, or by PATCH) reads back on the list")
+UI_VIEWED = ("UI: an open Growth > Tracking links page refetches its OF links and their earnings once its hour "
+             "(GROWTH_VIEWED_REFRESH_MS) is up, not before, and the relay reads OF's /campaigns again")
 STATS_SUMMARY = ("tracking links: each Creator's summary (clicks today / 7 / 30 days, every link's 7-day sparkline, "
                  "the top link) == the seed + the storm's 302s + the plan's passed verifies, per New York day")
 STATS_BREAKDOWN = ("tracking links: each ungated link's 30-day Opened in / Came from / Country == the hand labels of "
@@ -170,4 +172,8 @@ def register(Fault) -> dict:
                                                (GATE_VERIFY, GATE_COUNT, STATS_SUMMARY, GATE_THROTTLE)),
         "tracking-stats-utc-days": Fault(_stats_utc_days, (BY_DAY, STATS_SUMMARY)),
         "tracking-verify-unthrottled": Fault(_verify_unthrottled, (GATE_THROTTLE,)),
+        # client side: the tracking links' list and earnings queries without their hourly refetch (before
+        # fetch-diet 15); both sit in useGrowth.ts, one module of the page's chunk
+        "growth-viewed-no-refetch": Fault(None, (UI_VIEWED,), browser=(
+            (r"refetchInterval:\s*GROWTH_VIEWED_REFRESH_MS", "refetchInterval: false"),)),
     }

@@ -5,15 +5,29 @@ Moved out of automation_executor unchanged. The client comes from
 read via the executor stay readable as `automation_executor.<name>` (its
 _SCRAPE_NAMES __getattr__), but the calls in this file look them up HERE: patch
 `automations.scrape_chats.<name>`.
+
+Env knobs (read at call time):
+  SCRAPE_SWEEP_FAIL_FAST=5   a `{}` sweep stops (and raises, no full_sweep) after this many
+                             systemic failures in a row (429, OF 5xx, proxy, connection,
+                             timeout) anywhere, or this many non-404 failures before its
+                             first scraped chat (5 = today's constant; < 1 reads as 5)
+  SCRAPE_EAGER_HISTORY=0     off: a `{}` sweep's first scrape of a Silent mass-only chat (page 1 all
+                             our queued mass rows, OF reports more, no fan message and no ledger
+                             spend in the DB) keeps page 1 and defers the deep history
+                             (`history_deferred_at`, cursor NULL); 1 = today's both-ends backfill
+                             on every first scrape
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
+from curl_cffi import requests as _cc  # connection / timeout errors of_client raises
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -21,9 +35,11 @@ import automation_executor as ax  # _make_client seam (tests patch ax._make_clie
 from automation_executor import _media_ids, _parse_iso, _strip_html, _to_cents
 from automation_registry import register
 from db.engine import get_session
-from db.models import Chat, Fan, Message, ScrapeHistory, SkipList, is_paid_ratchet
+from db.models import Chat, Fan, Message, ScrapeHistory, SkipList, Transaction, is_paid_ratchet
 from jsonsafe import dump_capped
-from of_client import OFAPIError, OFClient
+import of_call_counter
+import of_pacing
+from of_client import OFAPIError, OFClient, proxy_refused
 
 log = logging.getLogger("of-relay.automation")
 
@@ -36,7 +52,37 @@ _SCRAPE_RECENT_CAP = 100       # newest-end messages pulled each scrape (first/l
 _SCRAPE_OLDEST_CAP = 100       # convo-start messages, grabbed ONCE on the first scrape
 _SCRAPE_CHAT_LIMIT = 100       # how many sidebar chats one all-chats sweep covers (paginated 10/page)
 _PAGE_SLEEP_S = 0.3            # inter-page / inter-chat politeness gap (matches of_client)
-_SWEEP_FAIL_FAST = 5           # a `{}` sweep with this many non-404 failures before any scrape stops (raises)
+
+
+def _sweep_fail_fast() -> int:
+    """Knob SCRAPE_SWEEP_FAIL_FAST, read at call time (default 5, today's constant)."""
+    try:
+        n = int(os.environ.get("SCRAPE_SWEEP_FAIL_FAST", "5"))
+    except ValueError:
+        return 5
+    return n if n > 0 else 5
+
+
+def _eager_history() -> bool:
+    """Knob SCRAPE_EAGER_HISTORY, read at call time (default off: Silent mass-only chats defer)."""
+    return os.environ.get("SCRAPE_EAGER_HISTORY", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _silent_mass_page(rows: list[dict], own_user_id: str) -> bool:
+    """Page 1 holds only our own mass rows: every row from us and sent from the queue."""
+    return bool(rows) and all(
+        str((m.get("fromUser") or {}).get("id")) == str(own_user_id) and bool(m.get("isFromQueue"))
+        for m in rows)
+
+
+def _systemic_failure(e: BaseException) -> bool:
+    """The account is failing, not the chat: OF's 429 or 5xx, or the proxy / connection /
+    timeout errors of_client raises. (A 404 is handled by the caller before this.)"""
+    status = of_pacing.upstream(e)[0]
+    if isinstance(status, int):
+        return status == 429 or 500 <= status < 600
+    return proxy_refused(e) or isinstance(e, (_cc.exceptions.ConnectionError,
+                                              _cc.exceptions.Timeout))
 
 
 # ── Automation 01: scrape_chats (the reference) ──────────────────────
@@ -234,10 +280,14 @@ async def _upsert_chat_and_history(
     newest_id: int | None,
     newest_text: str | None,
     newest_at: datetime | None,
+    deferred: bool = False,
 ) -> None:
     """Advance the inbox chat preview + the scrape_history fast-skip cursor —
     both MONOTONICALLY, so backfilling old history can't clobber a newer preview
-    a WS event already wrote (guarded by a WHERE on the conflict update)."""
+    a WS event already wrote (guarded by a WHERE on the conflict update).
+
+    Writing the cursor clears `history_deferred_at`. `deferred` (a Silent mass-only
+    chat's page 1) writes no cursor and stamps the mark instead, never over a cursor."""
     if newest_id:
         chat_stmt = (
             sqlite_insert(Chat)
@@ -263,6 +313,21 @@ async def _upsert_chat_and_history(
         )
         await s.execute(chat_stmt)
 
+    now = datetime.utcnow()
+    if deferred:
+        hist_stmt = (
+            sqlite_insert(ScrapeHistory)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    last_scrape_at=now, history_deferred_at=now)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"last_scrape_at": now, "history_deferred_at": now},
+                where=ScrapeHistory.last_message_id.is_(None),
+            )
+        )
+        await s.execute(hist_stmt)
+        return
+
     hist_stmt = (
         sqlite_insert(ScrapeHistory)
         .values(
@@ -270,14 +335,16 @@ async def _upsert_chat_and_history(
             fan_id=int(fan_id),
             last_message_id=newest_id,
             last_message_text=newest_text,
-            last_scrape_at=datetime.utcnow(),
+            last_scrape_at=now,
+            history_deferred_at=None,
         )
         .on_conflict_do_update(
             index_elements=["account_id", "fan_id"],
             set_={
                 "last_message_id": newest_id,
                 "last_message_text": newest_text,
-                "last_scrape_at": datetime.utcnow(),
+                "last_scrape_at": now,
+                "history_deferred_at": None,
             },
         )
     )
@@ -287,17 +354,21 @@ async def _upsert_chat_and_history(
 async def _fetch_recent_end(
     client: OFClient, chat_id: int, *,
     last_seen_id: int | None, page_size: int, cap: int, max_pages: int,
-) -> tuple[list[dict], bool]:
+    defer_if: Callable[[list[dict]], bool] | None = None,
+) -> tuple[list[dict], bool, bool]:
     """The newest-end catch-up: page `order=desc` with the `id` older-cursor,
     looping on `hasMore`. Stops at `last_seen_id` (fast skip), once `cap`
     messages are collected, or when OF runs out. Returns (messages,
-    long_convo) where `long_convo` is whether page 1 reported more history
-    behind it — the spec's cheap "is this a long convo" probe (no messagesCount
-    exists). Never assumes the page size equals `limit`."""
+    long_convo, deferred) where `long_convo` is whether page 1 reported more
+    history behind it — the spec's cheap "is this a long convo" probe (no
+    messagesCount exists). Never assumes the page size equals `limit`.
+    `defer_if` is a page-1 stop rule: when page 1 has more behind it and the
+    rule matches its rows, the read stops there with `deferred` True."""
     collected: list[dict] = []
     cursor: int | None = None
     pages = 0
     long_convo = False
+    deferred = False
     while pages < max_pages and len(collected) < cap:
         # Sync curl_cffi call → off-thread so the event loop never blocks
         # (same idiom as transaction_ingest's `await asyncio.to_thread`).
@@ -311,6 +382,7 @@ async def _fetch_recent_end(
         has_more = bool(resp.get("hasMore"))
         if pages == 0:
             long_convo = has_more  # detect "long" via hasMore on page 1
+            deferred = has_more and defer_if is not None and defer_if(rows)
         pages += 1
         stop = False
         for m in rows:
@@ -323,13 +395,13 @@ async def _fetch_recent_end(
             collected.append(m)
             if len(collected) >= cap:
                 break
-        if stop or not has_more:
+        if stop or not has_more or deferred:
             break
         cursor = rows[-1].get("id")
         if cursor is None:
             break
         await asyncio.sleep(_PAGE_SLEEP_S)
-    return collected, long_convo
+    return collected, long_convo, deferred
 
 
 async def _fetch_oldest_end(
@@ -366,7 +438,7 @@ async def _fetch_oldest_end(
     return collected
 
 
-async def _stamp_scrape_history(account_id: str, fan_id: int) -> None:
+async def _stamp_scrape_history(account_id: str, fan_id: int, *, gone: bool = False) -> None:
     """Record "we scraped this fan at T" even when the scrape yielded NOTHING —
     an empty chat, a full fast-skip, or a chat that's GONE on OF (404 from a
     deleted/deactivated fan). gen_info's autoscrape re-enqueue gate is exactly
@@ -375,13 +447,16 @@ async def _stamp_scrape_history(account_id: str, fan_id: int) -> None:
     (the 2026-07-04 storm: ~24 dead fans × 12 404s/hour, every day). The upsert
     leaves last_message_id/text alone so the fast-skip cursor survives."""
     now = datetime.utcnow()
+    # gone (404): also drop the deferral — gen_info treats a deferred row's stamp as
+    # "never scraped", so a kept marker re-enqueued the dead chat every pass.
+    set_ = {"last_scrape_at": now, "history_deferred_at": None} if gone else {"last_scrape_at": now}
     async with get_session() as s:
         await s.execute(
             sqlite_insert(ScrapeHistory)
             .values(account_id=str(account_id), fan_id=int(fan_id), last_scrape_at=now)
             .on_conflict_do_update(
                 index_elements=["account_id", "fan_id"],
-                set_={"last_scrape_at": now},
+                set_=set_,
             )
         )
 
@@ -398,6 +473,7 @@ async def _scrape_one_chat(
     recent_cap: int = _SCRAPE_RECENT_CAP,
     oldest_cap: int = _SCRAPE_OLDEST_CAP,
     is_muted: bool | None = None,
+    may_defer: bool = False,
 ) -> tuple[int, int]:
     """Page one chat and write everything in ONE fresh AsyncSession.
 
@@ -407,7 +483,12 @@ async def _scrape_one_chat(
     the AI gets "how it started" + "where it is now" — the bounded middle is
     intentionally skipped. Capped at ~recent_cap + oldest_cap messages/fan, so a
     long history persists oldest+newest, never thousands. Returns
-    (rows_inserted, rows_seen)."""
+    (rows_inserted, rows_seen).
+
+    `may_defer` (a `{}` sweep, SCRAPE_EAGER_HISTORY off): on a first scrape of a fan
+    with no inbound message and no ledger spend in the DB, a Silent mass-only chat
+    (page 1 all our queued mass rows, OF reports more) keeps page 1 and defers the
+    rest (`history_deferred_at`, cursor NULL). Any other chat carries on as above."""
     fan_id = int(chat_id)
 
     async with get_session() as s:
@@ -415,15 +496,32 @@ async def _scrape_one_chat(
         last_seen_id = hist.last_message_id if hist else None
 
     first_scrape = last_seen_id is None
-    collected, long_convo = await _fetch_recent_end(
+    defer_if: Callable[[list[dict]], bool] | None = None
+    if may_defer and first_scrape:
+        # Silent in the DB: no fan message and no ledger spend ("what sells stays
+        # fresh": a PPV buyer or an out-of-chat tipper is never deferred).
+        async with get_session() as s:
+            engaged = (await s.execute(
+                select(Message.message_id).where(
+                    Message.account_id == str(account_id), Message.fan_id == fan_id,
+                    Message.direction == "in").limit(1)
+            )).first() is not None
+            engaged = engaged or (await s.execute(
+                select(Transaction.id).where(
+                    Transaction.account_id == str(account_id), Transaction.fan_id == fan_id,
+                    Transaction.amount_cents > 0).limit(1)
+            )).first() is not None
+        if not engaged:
+            defer_if = lambda rows: _silent_mass_page(rows, own_user_id)  # noqa: E731
+    collected, long_convo, deferred = await _fetch_recent_end(
         client, chat_id,
         last_seen_id=last_seen_id, page_size=page_size,
-        cap=recent_cap, max_pages=max_pages,
+        cap=recent_cap, max_pages=max_pages, defer_if=defer_if,
     )
 
     # Both-ends pull, ONCE: only on the first scrape of a long convo. Later
     # cycles fast-skip the recent end and leave the already-captured start alone.
-    if first_scrape and long_convo:
+    if first_scrape and long_convo and not deferred:
         await asyncio.sleep(_PAGE_SLEEP_S)
         oldest = await _fetch_oldest_end(
             client, chat_id,
@@ -509,9 +607,18 @@ async def _scrape_one_chat(
         await _upsert_chat_and_history(
             s, account_id, fan_id,
             newest_id=newest_id, newest_text=newest_text, newest_at=newest_at,
+            deferred=deferred,
         )
 
     return (inserted, len(collected))
+
+
+# An explicit scrape of a chat whose history was deferred at job start (webhook_dispatch's
+# open / reply / gen_info trigger, or a blast reply that won the shared claim) counts that
+# chat's OF calls under its own Caller kind, not `auto:scrape_chats`, so the sweep's cut
+# and the on-demand backfill it buys show apart (scripts/proxy-health/flag_report.py
+# FLAG_CANDIDATES `eager_history`). A `{}` sweep never does.
+DEFERRED_HISTORY_CALLER = "auto:scrape_chats:deferred_history"
 
 
 @register("scrape_chats")
@@ -576,19 +683,33 @@ async def _automation_scrape_chats(
     chats_scanned = 0
     chats_failed = 0
     chats_broken = 0   # failures other than OF's 404 "fan gone" (handled: stamped, skipped)
+    systemic_run = 0   # systemic failures in a row (a scraped chat or another failure resets; 404 leaves it)
+    fail_fast = _sweep_fail_fast()
+    may_defer = not payload and not _eager_history()   # explicit scrapes never defer
     messages_inserted = 0
     messages_seen = 0
+    deferred_ids: set[int] = set()
+    if explicit and targets:
+        async with get_session() as s:
+            deferred_ids = set((await s.execute(select(ScrapeHistory.fan_id).where(
+                ScrapeHistory.account_id == account_id,
+                ScrapeHistory.fan_id.in_([c for c, _w, _m in targets]),
+                ScrapeHistory.history_deferred_at.is_not(None),
+            ))).scalars().all())
     for chat_id, with_user, is_muted in targets:
         try:
-            ins, seen = await _scrape_one_chat(
-                account_id, own_user_id, client, chat_id, with_user,
-                page_size=page_size, max_pages=max_pages,
-                recent_cap=recent_cap, oldest_cap=oldest_cap,
-                is_muted=is_muted,
-            )
+            with (of_call_counter.caller(DEFERRED_HISTORY_CALLER) if chat_id in deferred_ids
+                  else contextlib.nullcontext()):
+                ins, seen = await _scrape_one_chat(
+                    account_id, own_user_id, client, chat_id, with_user,
+                    page_size=page_size, max_pages=max_pages,
+                    recent_cap=recent_cap, oldest_cap=oldest_cap,
+                    is_muted=is_muted, may_defer=may_defer,
+                )
             messages_inserted += ins
             messages_seen += seen
             chats_scanned += 1
+            systemic_run = 0
         except Exception as e:
             chats_failed += 1
             # 404 = the chat no longer exists on OF (fan deleted/deactivated).
@@ -600,19 +721,21 @@ async def _automation_scrape_chats(
                 log.info("scrape_chat_gone account=%s chat=%s (404 — fan gone; "
                          "stamping scrape_history)", account_id, chat_id)
                 try:
-                    await _stamp_scrape_history(account_id, int(chat_id))
+                    await _stamp_scrape_history(account_id, int(chat_id), gone=True)
                 except Exception:
                     log.warning("stamp_scrape_history failed account=%s chat=%s",
                                 account_id, chat_id, exc_info=True)
             else:
                 chats_broken += 1
+                systemic_run = systemic_run + 1 if _systemic_failure(e) else 0
                 log.warning(
                     "scrape_chat_failed account=%s chat=%s",
                     account_id, chat_id, exc_info=True,
                 )
-                if not payload and not chats_scanned and chats_broken >= _SWEEP_FAIL_FAST:
+                if not payload and ((not chats_scanned and chats_broken >= fail_fast)
+                                    or systemic_run >= fail_fast):
                     # The account is failing (proxy, 429 burst), not one chat: don't spend the
-                    # remaining ~95 chats x 3 attempts on it. Same effect as the post-loop raise.
+                    # remaining ~95 chats x 3 attempts on it. The post-loop raises cover both stops.
                     break
         await asyncio.sleep(_PAGE_SLEEP_S)
 
@@ -631,5 +754,9 @@ async def _automation_scrape_chats(
         if chats_broken and not chats_scanned:
             raise RuntimeError(f"full sweep scraped 0 of {len(targets)} chats: "
                                f"{chats_broken} failed of the first {chats_failed} of {len(targets)}")
+        if systemic_run >= fail_fast:
+            # Broken off after a scraped chat: what it scraped stays, but not a full sweep.
+            raise RuntimeError(f"full sweep stopped after {systemic_run} systemic failures in a row: "
+                               f"scraped {chats_scanned} of {len(targets)}")
         out["full_sweep"] = True
     return out

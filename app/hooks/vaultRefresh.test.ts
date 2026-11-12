@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { InfiniteQueryObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()),
@@ -182,18 +182,46 @@ describe("refreshVaultFromOf", () => {
   });
 });
 
-// R3-6: what each source reloads for broken thumbnails, in order (the relay's cache drop first, then the refetch).
+// R3-6: what each source reloads for broken thumbnails. The mirror: its items again. The live listing (fetch-diet 17):
+// every loaded page of the view on screen through the relay's age gate, page 1 first, put back in place; no cache
+// drop (POST), so page 1 joins the picker open's own revalidate; a view not on screen is only marked stale.
 describe("reloadBrokenThumbs", () => {
-  it.each<[VaultSource, string[]]>([
-    ["mirror", ['invalidate ["vault-mirror-items","1"]']],
-    ["live", ["POST /admin/vault/cache/invalidate", 'invalidate ["vault-media","1"]']],
-  ])("%s", async (source, want) => {
+  it("mirror: the mirror's items again", async () => {
     const log: string[] = [];
     post.mockReset();
-    post.mockImplementation(async (url: string) => { log.push(`POST ${url}`); });
     const qc = new QueryClient();
     vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => { log.push(`invalidate ${JSON.stringify(f?.queryKey)}`); });
-    await reloadBrokenThumbs(qc, "1", source);
-    expect(log).toEqual(want);
+    await reloadBrokenThumbs(qc, "1", "mirror");
+    expect(log).toEqual(['invalidate ["vault-mirror-items","1"]']);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("live: each loaded page read with revalidate=1, in order, and put back; no cache drop", async () => {
+    post.mockReset();
+    const get = relay.get as unknown as Mock;
+    get.mockReset();
+    get.mockImplementation(async (url: string) => ({ list: [{ id: Number(/offset=(\d+)/.exec(url)![1]) + 1 }], hasMore: true }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const shown = ["vault-media", "1", "all", null, "newest", ""];
+    const hidden = ["vault-media", "1", "photo", null, "newest", ""];
+    const old = { pages: [{ list: [{ id: 9 }], hasMore: true }, { list: [{ id: 8 }], hasMore: false }], pageParams: [0, 24] };
+    qc.setQueryData(shown, old);
+    qc.setQueryData(hidden, old);
+    const unsub = new InfiniteQueryObserver(qc, {
+      queryKey: shown, queryFn: async () => ({ list: [], hasMore: false }), initialPageParam: 0,
+      getNextPageParam: () => undefined,
+    }).subscribe(() => {});
+    await reloadBrokenThumbs(qc, "1", "live");
+    unsub();
+    expect(post).not.toHaveBeenCalled();
+    const urls = get.mock.calls.map(([u]) => u as string);
+    expect(urls).toHaveLength(2);
+    expect(urls.map((u) => [/offset=(\d+)/.exec(u)![1], u.includes("revalidate=1"), u.includes("type=all")]))
+      .toEqual([["0", true, true], ["24", true, true]]);
+    expect(qc.getQueryData(shown)).toEqual({
+      pages: [{ list: [{ id: 1 }], hasMore: true }, { list: [{ id: 25 }], hasMore: true }], pageParams: [0, 24],
+    });
+    expect(qc.getQueryData(hidden)).toEqual(old);
+    expect(qc.getQueryState(hidden)?.isInvalidated).toBe(true);
   });
 });

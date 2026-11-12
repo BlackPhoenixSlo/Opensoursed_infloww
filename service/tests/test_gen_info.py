@@ -18,6 +18,10 @@ populated AND a `grok_calls` row recorded.
   case_qualification_gate:
       a fan below BOTH gates (few msgs, no spend) is not processed; a fan that
       clears the spend gate ($1) is.
+  case_deferred_row_is_never_scraped_and_shares_the_claim:
+      a deferred scrape_history row stamped now (a sweep kept page 1) is still
+      enqueued, as its own `deferred_history` backfill; a fan claimed by a reply is
+      left out of the job yet still deferred; a gen_info pick then a reply make one job.
   case_rerun_gate:
       a second run on an unchanged fan is skipped (count didn't grow 22%); a
       forced id is regenerated regardless.
@@ -44,7 +48,7 @@ from sqlalchemy import select  # noqa: E402
 import llm_client  # noqa: E402
 import automation_executor as ax  # noqa: E402,F401 — registers scrape_chats + plugin loader
 from automation_executor import enqueue_job, run_once  # noqa: E402
-from automations import gen_info  # noqa: E402
+from automations import gen_info, gen_info_plan  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account,
@@ -317,6 +321,67 @@ async def case_thin_paying_fan_autoscraped():
     assert rf["deferred_for_scrape"] == 0, rf
     async with get_session() as s:
         assert await s.get(FanProfile, (aid, 8001)) is not None, "force profiles A"
+
+
+async def _scrape_jobs(aid: str) -> list[dict]:
+    async with get_session() as s:
+        return [json.loads(j.payload_json) for j in (await s.execute(
+            select(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_chats")
+            .order_by(ScheduledJob.id))).scalars().all()]
+
+
+def _thin(fan_id: int) -> gen_info_plan.Candidate:
+    c = gen_info_plan.Candidate(fan_id)
+    c.fan_msg_n, c.spend_cents = 2, 5000     # thin + paying
+    return c
+
+
+async def case_deferred_row_is_never_scraped_and_shares_the_claim():
+    import webhook_dispatch as wd
+    aid, now = "acc_gi_deferred", datetime.utcnow()
+    await _seed_account(aid)
+    deferred, claimed, plain, fresh = 8101, 8102, 8103, 8104
+    async with get_session() as s:
+        for fid in (deferred, claimed):   # the row a `{}` sweep leaves: stamped now, no cursor, marked
+            s.add(ScrapeHistory(account_id=aid, fan_id=fid, last_message_id=None, last_scrape_at=now,
+                                history_deferred_at=now))
+        s.add(ScrapeHistory(account_id=aid, fan_id=fresh, last_message_id=9, last_scrape_at=now))
+    wd._fan_scrape_claims.clear()
+    # A reply on `claimed` first: it holds the claim (and its own job).
+    await wd.on_inbound_message(aid, claimed, 1)
+    assert await _scrape_jobs(aid) == [{"fan_ids": [claimed], "source": "deferred_history"}]
+
+    out = await gen_info._enqueue_thin_fan_scrapes(
+        aid, [_thin(f) for f in (deferred, claimed, plain, fresh)], set(), now)
+    assert out == {deferred, claimed, plain}, out
+    assert await _scrape_jobs(aid) == [
+        {"fan_ids": [claimed], "source": "deferred_history"},
+        {"fan_ids": [deferred], "source": "deferred_history"},
+        {"fan_ids": [plain]},
+    ], await _scrape_jobs(aid)
+    # gen_info's pick, then his reply inside the window: still one job for him.
+    await wd.on_inbound_message(aid, deferred, 2)
+    assert sum(j["fan_ids"] == [deferred] for j in await _scrape_jobs(aid)) == 1, await _scrape_jobs(aid)
+    wd._fan_scrape_claims.clear()
+
+
+async def case_gone_deferred_chat_not_reenqueued():
+    """404 stamp on a deferred row drops the marker: the dead chat is not re-picked every pass."""
+    from automations import scrape_chats
+    aid, now = "acc_gi_gone", datetime.utcnow()
+    await _seed_account(aid)
+    gone = 8201
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=gone, last_message_id=None,
+                            last_scrape_at=now - timedelta(days=30), history_deferred_at=now))
+    await scrape_chats._stamp_scrape_history(aid, gone, gone=True)
+    async with get_session() as s:
+        row = (await s.execute(select(ScrapeHistory).where(
+            ScrapeHistory.account_id == aid, ScrapeHistory.fan_id == gone))).scalar_one()
+    assert row.history_deferred_at is None and row.last_scrape_at > now - timedelta(minutes=1), row
+    out = await gen_info._enqueue_thin_fan_scrapes(aid, [_thin(gone)], set(), datetime.utcnow())
+    assert out == set(), out
+    assert await _scrape_jobs(aid) == [], await _scrape_jobs(aid)
 
 
 # ── Re-run gate + force_ids bypass ───────────────────────────────────
@@ -912,6 +977,8 @@ _harness.run(
     case_lagging_spend_column_rescues_payer,
     case_muted_creator_not_profiled,
     case_thin_paying_fan_autoscraped,
+    case_deferred_row_is_never_scraped_and_shares_the_claim,
+    case_gone_deferred_chat_not_reenqueued,
     case_rerun_gate,
     case_prompt_is_fan_only,
     case_w2h_helpers,

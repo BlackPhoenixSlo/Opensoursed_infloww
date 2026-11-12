@@ -26,6 +26,7 @@ import {
 } from "@/components/vault/vaultFolderSort";
 import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
 import { vaultListsKey } from "@/hooks/useVaultMedia";
+import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { type FanId } from "@/lib/fanId";
 import { type VaultList, type VaultListsResp, type VaultTypeCounts } from "@/lib/relay";
 import { cn } from "@/lib/utils";
@@ -238,7 +239,7 @@ export default function VaultFolderRail({
   const [folderSort, setFolderSort] = useState<FolderSortState>(() => loadFolderSort(accountId));
   const restoring = useIsRestoring();
   useEffect(() => {
-    if (!restoring) void qc.invalidateQueries({ queryKey: vaultListsKey(accountId) }, { cancelRefetch: false });
+    if (!restoring) void invalidateVaultQueries(qc, { queryKey: vaultListsKey(accountId) }, { cancelRefetch: false });
   }, [qc, accountId, restoring]);
   const { open: sortOpen, setOpen: setSortOpen, ref: sortRef } = useOutsideClose();
   const [railSearching, setRailSearching] = useState(false);

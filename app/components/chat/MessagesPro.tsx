@@ -31,6 +31,7 @@ import { WindowHeader } from "@/components/chat/WindowHeader";
 import { useCreatorTabs } from "@/components/chat/useCreatorTabs";
 import { ScopeSelect } from "@/components/shell/ScopeSelect";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
+import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { ofUserFullKey, ofUserNameKey, ofUserNameQuery, ofUserQuery, type OFUserName } from "@/hooks/useOFUser";
 import { useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
@@ -469,6 +470,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
             onSelect={handleSelect}
             onlineOnly={onlineOnly}
             onlineIds={onlineIds}
+            warmWindowMs={UNREAD_WARM_REUSE_MS}
             actions={(
               <FanListButtons
                 onlineOnly={onlineOnly}
@@ -486,6 +488,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
             fanId={selected.fanId}
             chat={arrivalChat || selected.chat}
             insightsOpenAtStart={!arrival}
+            prefetchWindowMs={UNREAD_WARM_REUSE_MS}
             onBack={backToList}
           />
         ) : (

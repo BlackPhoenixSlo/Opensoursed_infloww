@@ -76,20 +76,13 @@ Cases:
       visibility, so with body_focus empty every "nothing shown" test passed for
       free. Both the graded vault clips survived the flags fix this way. The enum states
       "not in frame" outright; `acts` is the independent second lock.
-  case_a_named_garment_beats_the_state_the_model_chose:
-      asking for a state directly failed in BOTH polarities. Naming the garment
-      is an easier question the same model answers correctly, so the name
-      overrules the state — and a named garment also means she is dressed,
-      which `underwear_visible` alone could not tell (tank top + skirt = no
-      underwear = "nude").
+  case_a_named_garment_means_she_is_dressed:
+      a named garment means she is dressed, which `underwear_visible` alone
+      could not tell (tank top + skirt = no underwear = "nude").
   case_a_hand_over_her_breast_is_not_being_dressed:
       `covered` lumps fabric with a hand because for "how much skin is on show"
       they are the same. For the mass-safe lane they are not — a nude with her
       hands over her breasts is still a nude.
-  case_insertion_cannot_happen_through_fabric:
-      what is HAPPENING overrules what the flags thought they saw. Fingers do
-      not go through a thong. Narrow on purpose — rubbing and groping happen
-      over underwear, so firing on them would invent exposure.
   case_not_in_frame_is_an_answer_not_a_silence:
       why the shape changed at all — under booleans, "cannot see it" and "it is
       bare" were the same stored value, so no lane could tell safety from
@@ -667,29 +660,10 @@ def case_mass_safe_needs_to_know_what_is_in_frame() -> None:
     assert vault_scripts._shows_genitals(anal) is True
 
 
-def case_a_named_garment_beats_the_state_the_model_chose() -> None:
-    """Asking for a state directly failed in BOTH polarities: `covered` pulled
-    toward false on anything racy, and `bare` came back on a white tank top and
-    a black halter. Naming the garment is an easier question and the same model
-    answers it correctly — its own prose said "wearing a white tank top" about a
-    photo it then called bare. So the name overrules the state.
-    """
-    import vault_ai_api as api
+def case_a_named_garment_means_she_is_dressed() -> None:
+    """A named garment means she is dressed, whatever `underwear_visible` says
+    (that flag asks only about UNDERWEAR), and a hand is not a garment."""
     import vault_ai_brief as brief
-
-    tank = api._ground_in_named_garment(
-        {"breasts_vis": "bare", "over_breasts": "white tank top",
-         "vulva_vis": "not_in_frame"})
-    assert tank["breasts_vis"] == "covered", "a named garment did not win"
-    # `not_in_frame` is NOT overridden — a garment can be named on a body part
-    # that is genuinely out of shot, and calling that "covered" would claim we
-    # saw something we did not.
-    assert tank["vulva_vis"] == "not_in_frame"
-    # Genuinely bare: nothing named, so nothing to override.
-    for nothing in (None, "", "none", "nothing", "null", "bare skin"):
-        got = api._ground_in_named_garment(
-            {"breasts_vis": "bare", "over_breasts": nothing})
-        assert got["breasts_vis"] == "bare", f"{nothing!r} read as a garment"
 
     # And a named garment means she is dressed, whatever `underwear_visible`
     # says — that flag asks only about UNDERWEAR, so a tank top and a skirt
@@ -780,41 +754,6 @@ def case_a_hand_over_her_breast_is_not_being_dressed() -> None:
 
     # ...and she is still NUDE behind her own hand, so the price tier keeps her.
     assert vault_scripts._is_nude(nude_hands) is True
-
-
-def case_insertion_cannot_happen_through_fabric() -> None:
-    """REGRESSION, from the operator's second grading pass. The flags pass
-    looks at one frame, names the garment nearest the action and calls the
-    region covered — producing, verbatim on her vault: "A hand is inserting two
-    fingers into the vagina" with `vulva_vis: covered, over_vulva: 'pink lace
-    thong'`. Fingers do not go through a thong.
-
-    Four of fourteen corrections were this shape, all on the most explicit and
-    therefore most valuable items, and all four had been priced at nothing.
-    """
-    import vault_ai_api as api
-
-    fingering = {"acts": ["fingering"], "penetration": "fingers"}
-    got = api._reconcile_with_acts(
-        fingering, {"vulva_vis": "covered", "over_vulva": "pink lace thong"})
-    assert got["vulva_vis"] == "bare", "insertion left the vulva covered"
-    assert "over_vulva" not in got, "the disproven garment stayed named"
-
-    # Anal only when the row actually says so.
-    anal = {"acts": ["fingering"], "penetration": "fingers",
-            "body_focus": ["ass", "anus"]}
-    assert api._reconcile_with_acts(anal, {"anus_vis": "covered"})["anus_vis"] == "bare"
-
-    # NARROW ON PURPOSE. Rubbing and groping happen over underwear constantly;
-    # firing on them would manufacture exposure instead of detecting it, and
-    # this rule gates both money and mass sends.
-    for tame in (["rubbing_clit"], ["groping_own_breasts"], ["posing"], []):
-        got = api._reconcile_with_acts(
-            {"acts": tame}, {"vulva_vis": "covered", "over_vulva": "black thong"})
-        assert got["vulva_vis"] == "covered", f"{tame} invented exposure"
-    # An already-bare or out-of-shot region is never touched.
-    assert api._reconcile_with_acts(
-        fingering, {"vulva_vis": "not_in_frame"})["vulva_vis"] == "not_in_frame"
 
 
 def case_not_in_frame_is_an_answer_not_a_silence() -> None:
@@ -1985,9 +1924,8 @@ _harness.run(
     case_unflagged_stills_wait_out_of_the_price_lanes,
     case_mass_safe_needs_to_know_what_is_in_frame,
     case_partial_flags_do_not_count_as_checked,
-    case_a_named_garment_beats_the_state_the_model_chose,
+    case_a_named_garment_means_she_is_dressed,
     case_a_hand_over_her_breast_is_not_being_dressed,
-    case_insertion_cannot_happen_through_fabric,
     case_not_in_frame_is_an_answer_not_a_silence,
     case_clip_frames_fold_by_worst_not_by_all,
     case_contradictions_score_only_answered_rows,

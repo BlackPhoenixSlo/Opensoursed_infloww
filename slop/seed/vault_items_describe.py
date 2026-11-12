@@ -17,9 +17,11 @@ still stores' dirs and the clips' storyboard hashes this writes into):
               a cached row carries the columns `build_describe_update` writes (description or video_description,
               tags, tier, `describe_call_id` -> its own `grok_calls` audit row, `ai_fields_json` stamped
               `_prompt_version: v2`, `_frames` by the duration ladder, flagged at `_flags_v` 3, a clip's
-              `_flags_frames` 4 / `_flags_arc` as `build_flags_fields` leaves them).
+              `_flags_frames` 4 / `_flags_arc` as the retired qwen flags pass left them).
     stills    each photo's `IMAGE_DIR/<acct>/<id>.jpg` and each clip's `armed["frames"]` storyboard frames under its
-              url's hash (what `vault_frames.collect` reads), and for every photo/clip a 300px stand-in
+              url's hash (what `vault_frames.collect` reads; none for a clip the scenario marked `storyboard`
+              False: the product writes them, scenarios/2026-11-11-vault-jev-flags.py), and for every photo/clip a
+              300px stand-in
               `THUMB_DIR/<acct>/<id>.jpg` (the grid tile: Vault Pro's `_thumb`, `/admin/vault-ai/thumb`, read by the
               UI run, and what `vault_dupes` hashes; audio has no still, `vault_mirror.has_still`): a 9x8 grey grid
               from its own seed, so unrelated thumbs sit >= 16 bits apart on dHash/aHash (measured over 2000) and
@@ -48,7 +50,7 @@ VIDEO_FRAC, AUDIO_FRAC = 0.25, 0.03
 CACHE_FRAC, REFUSE_FRAC, BLANK_FRAC = 0.15, 0.08, 0.04
 # Clip duration -> describe frames (service/vault_ai_vision_decide.py `_FRAME_LADDER`: <30 s 6, <180 s 9, else 12).
 FRAMES = {10: 6, 60: 9, 400: 12}
-FLAGS_CLIP_FRAMES = 4  # service/vault_ai_vision.py `_FLAGS_VIDEO_FRAMES`
+FLAGS_CLIP_FRAMES = 4  # the retired qwen flags pass's clip frames (D52/D54)
 MIN_VISUAL = 4  # one cached, ok, refuse and blank per Creator
 # Planted re-upload sets per Creator: (name, kind, uncached ok members, + one cached member, near copies).
 DUPE_SETS = (("photo-pair", "photo", 2, False, False), ("photo-triple-near", "photo", 3, False, True),
@@ -159,7 +161,7 @@ async def seed(w: World, items: list[dict], armed: dict) -> list[dict]:
             if kind == "photo":
                 (dirs["images"] / aid).mkdir(parents=True, exist_ok=True)
                 (dirs["images"] / aid / f"{mid}.jpg").write_bytes(pic)
-            elif kind == "video":
+            elif kind == "video" and it.get("storyboard", True):
                 sb = dirs["storyboard"] / armed["hashes"][it["url"]]
                 sb.mkdir(parents=True, exist_ok=True)
                 for f in range(armed["frames"]):

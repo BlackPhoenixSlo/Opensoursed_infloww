@@ -1,4 +1,4 @@
-{"openapi_sha1": "f0f15f95fc03b3879385af9ea16cf4d15e96be05",
+{"openapi_sha1": "c3e26d1e11182ce502c2575bce66a95b3517b3e0",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],

@@ -110,7 +110,7 @@ STATUS = f"{DESCRIBE}/status"
 FLAGS_ALL = "/admin/vault-ai/flags-all"
 FLAGS_STATUS = f"{FLAGS_ALL}/status"
 # The keys a flags run may write into ai_fields_json (service/vault_ai_brief.py FLAG_KEYS + OVER_KEYS values;
-# vault_ai_vision_decide.build_flags_fields), besides its own `_flags_*` stamps. Any other key it changes is a bug.
+# vault_jev_flags.apply), besides its own `_flags_*` stamps. Any other key it changes is a bug.
 FLAG_FIELDS = ("underwear_visible", "vulva_vis", "breasts_vis", "anus_vis", "over_breasts", "over_vulva", "over_anus")
 COPY_MARK, FLAGS_COPY_MARK = "_copied_from", "_flags_copied_from"  # vault_ai_vision_decide's copy stamps
 # What else a photo's flags run may write (Jev is a photo's only flags source): its `_jev` and the describe fields

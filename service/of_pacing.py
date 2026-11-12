@@ -34,7 +34,7 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       A person's request for the Creator (server._lane_entered: a non-background lane entry
       made from a real request; the Promotions page) / its monotonic time (vault_collect) /
       one in the last USER_WINDOW_S (10 s):
-      link_metrics.prewarm_all skips that Creator this pass and walks it the next; no waiting.
+      link_prewarm.prewarm_all skips that Creator this pass and walks it the next; no waiting.
       No walk holds the lock the Growth page's reads take (of_tracking_api._LOCKS) across an
       OF call or a pause.
 
@@ -93,7 +93,7 @@ PAGE_GAP_S = 1.0          # OF: "Please allow 1 seconds"
 JITTER_S = 0.3
 RETRY_DEFAULT_S = 1.0     # a 429 whose text names no wait
 RETRY_MAX_S = 10.0
-USER_WINDOW_S = 10.0      # link_metrics.prewarm_all skips a Creator with a person's read this recent
+USER_WINDOW_S = 10.0      # link_prewarm.prewarm_all skips a Creator with a person's read this recent
 
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
 _PROXY_PACED_KINDS = frozenset({"transactions"})   # walks whose pages also take their exit's slot

@@ -9,6 +9,8 @@ Cases:
   version            FLAGS_V == vault_ai_vision._FLAGS_VERSION (the version consumers require)
   apply / in_sync    flags replaced, qwen garment names + clip stamps + failure record cleared, operator locks
                      kept, `_flags_model` "jev"; a non-reading leaves the row alone; in_sync ignores a copy mark
+  tier column       `column_tier` = the mapped explicitness unless the column is locked / no reading; row_in_sync
+                     counts a disagreeing `explicitness_tier` column as drift
   consumers          a Jev-mapped photo row (every golden describe blob + a lane x outfit x state grid) passes
                      flags_current / flags_known, has no contradictions (settled_reading is the row, never
                      disputed), and vault_scripts prices it at Jev's lane: shelf_price $100/$50 -> 50, $10 -> 10,
@@ -124,8 +126,10 @@ def case_apply_and_in_sync():
     lk = jf.apply({**prev, "explicitness": "softcore"}, j, locked={"explicitness"})
     assert lk["explicitness"] == "softcore" and jf.in_sync(lk, {"explicitness"}), lk
     # row_in_sync reads the locks off the row's own column (text or parsed), so no caller can drop them
-    assert jf.row_in_sync(json.dumps(locked), json.dumps(["breasts_vis", "over_breasts"]))
-    assert jf.row_in_sync(locked, ["breasts_vis", "over_breasts"]) and not jf.row_in_sync(json.dumps(locked), None)
+    tier = locked["explicitness"]
+    assert jf.row_in_sync(json.dumps(locked), json.dumps(["breasts_vis", "over_breasts"]), tier=tier)
+    assert jf.row_in_sync(locked, ["breasts_vis", "over_breasts"], tier=tier)
+    assert not jf.row_in_sync(json.dumps(locked), None, tier=tier)
     # a v8 blob without `state` (stored before the region states) is not current: no reading, the photo re-runs
     nostate = {k: v for k, v in j.items() if k != "state"}
     assert not rules.current({"_jev": nostate}) and jf.reading(nostate) is None
@@ -134,6 +138,30 @@ def case_apply_and_in_sync():
     for bad in (None, {**j, "status": "error"}):
         assert jf.apply(prev, bad) == prev and jf.apply(prev, bad) is not prev
         assert not jf.in_sync({**prev, "_jev": bad}, ())
+
+
+def case_tier_column():
+    """The `explicitness_tier` column follows Jev's reading (folder picks and the admin read it): `column_tier`
+    gives the mapped explicitness unless the column is operator-locked or there is no reading, and `row_in_sync`
+    counts a row whose column disagrees (a pre-Jev describe's qwen tier) as drift."""
+    j = _jev("$100", "y")
+    got = jf.apply({"description": "d", "explicitness": "suggestive", "_jev": j}, j)
+    assert got["explicitness"] == "hardcore", got
+    for name, args, want in (
+        ("reading: the mapped explicitness", (got, "suggestive", ()), "hardcore"),
+        ("blank column filled", (got, None, ()), "hardcore"),
+        ("column locked: operator's", (got, "suggestive", {jf.TIER_COLUMN}), "suggestive"),
+        ("ai explicitness locked: column follows it",
+         (jf.apply({"explicitness": "softcore", "_jev": j}, j, {"explicitness"}), "hardcore", {"explicitness"}),
+         "softcore"),
+        ("no reading: unchanged", ({"explicitness": "explicit"}, "sfw", ()), "sfw"),
+        ("failed Jev: unchanged", ({"_jev": {**j, "status": "error"}}, None, ()), None),
+    ):
+        assert jf.column_tier(*args) == want, (name, jf.column_tier(*args), want)
+    assert jf.row_in_sync(got, None, tier="hardcore")
+    assert not jf.row_in_sync(got, None, tier="suggestive"), "qwen's tier beside Jev's flags is drift"
+    assert not jf.row_in_sync(got, None, tier=None), "a Jev-flagged, undescribed row's blank tier is drift"
+    assert jf.row_in_sync(got, json.dumps([jf.TIER_COLUMN]), tier="suggestive"), "a locked column is not drift"
 
 
 def case_garments_from_clothing_items():

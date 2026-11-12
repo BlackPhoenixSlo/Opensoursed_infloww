@@ -6,7 +6,7 @@ none for a few rows whose thumb is not cached yet), the describe pass (`describe
 `describe_model` its default, the prose in `description` (photo) or `video_description` (video), tags,
 `explicitness_tier`, `frames_sampled` (video), `ai_fields_json` with `_prompt_version` / `_frames`,
 `search_text` as `vault_ai_vision_decide.build_describe_update` folds it), the flags pass on most described
-rows (`build_flags_fields`: the regions, `underwear_visible`, an `over_*` garment only where one was named over
+rows (the retired qwen flags pass's shape, gone since D52/D54: the regions, `underwear_visible`, an `over_*` garment only where one was named over
 a covered region, `_flags_frames` on video, `_flags_model`, `_flags_v`), an operator grade on some (`_graded`, as
 `vault_ai_fix.record_grade`), OF's search harvest on a few (`of_terms` + the term appended to `search_text`),
 sends (`send_count`, `last_sent_at`) and earlier hides (`removed_at`). Two finished `vault_cache_runs` per
@@ -39,7 +39,7 @@ from . import World, ts
 
 HASH_KIND = "thumb/md5+dhash8+ahash8"   # vault_dupes.HASH_KIND
 FLAGS_VERSION = 3                       # vault_ai_vision._FLAGS_VERSION
-FLAGS_VIDEO_FRAMES = 4                  # vault_ai_vision._FLAGS_VIDEO_FRAMES: a clip's flags frames
+FLAGS_VIDEO_FRAMES = 4                  # the retired qwen flags pass's clip frames (D52/D54)
 FRAME_LADDER = ((30, 6), (180, 9))      # vault_ai_vision_decide._FRAME_LADDER: describe stills by duration
 FRAME_LADDER_MAX = 12                   # vault_ai_vision_decide._FRAME_LADDER_MAX
 PROMPT_VERSION = "v2"                   # vault_ai_vision's default describe prompt
@@ -243,7 +243,7 @@ def _describe_frames(row: dict) -> int:
 
 def _describe(rng, row: dict) -> bool:
     """The describe pass's columns (vault_ai_vision_decide.build_describe_update), the flags pass's on most
-    (build_flags_fields), an operator grade on some. True when the flags planted a suspect."""
+    (the retired qwen flags shape), an operator grade on some. True when the flags planted a suspect."""
     tags = rng.sample(WORDS, rng.randint(2, 5))
     desc = f"{rng.choice(('Solo', 'Close', 'Playful', 'Soft'))} {row['kind']} with {tags[0]} and {tags[1]}"
     cl = rng.choice(CLOTHING)

@@ -2,7 +2,7 @@
 merges `register(Fault)` into FAULTS. The check names live here and the scenario imports them, so a target can
 never name a check that does not exist. Each patches a product function's module attribute in the relay, one the
 product looks up per call (`vault_ai_vision._claim_describe` by bare global name, `vault_ai_vision_decide
-.with_flags_cost` by module attribute), so the patch bites on the next press.
+.with_jev` by module attribute), so the patch bites on the next press.
 
 `vault-describe-cost-last-attempt` is the harness's only fault that rewrites a product function's SOURCE: it takes
 `inspect.getsource(vault_ai_vision._describe_one)`, swaps the one `cost +=` line (refusing to arm unless it is there
@@ -97,10 +97,11 @@ def _claim_after_budget() -> None:
 
 
 def _drops_flags_cost() -> None:
-    """Describe-and-flag reports describe's cost alone, the auto-flag call's dropped (COST_INCL_FLAGS)."""
+    """Describe-and-flag reports describe's cost alone, the Jev flags pass's dropped (COST_INCL_FLAGS; the qwen
+    flags call it once dropped is gone, D52/D54)."""
     import vault_ai_vision_decide as d
 
-    d.with_flags_cost = lambda describe_res, flags_res: dict(describe_res)
+    d.with_jev = lambda describe_res, jev_res: dict(describe_res)
 
 
 def _no_reuse() -> None:

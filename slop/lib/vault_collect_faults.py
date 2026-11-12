@@ -11,6 +11,7 @@ SKIPS_BUSY = "collect_skips_busy"
 FILLS_MIRROR = "collect_fills_mirror"
 THUMBS_WARM = "collect_thumbs_warm"
 RESUME = "collect_resume"
+REWARM = "rewarm_after_switch"
 USER_P95 = "user_read_p95"
 SECOND_OPEN = "thumbs_second_open_zero_cdn"
 ROTATION = "thumbs_survive_rotation"
@@ -47,6 +48,14 @@ def _ignores_user() -> None:
 
     _need(vault_collect, "_user_active_at")
     vault_collect._user_active_at = lambda aid: None
+
+
+def _no_rewarm_on_switch() -> None:
+    """A proxy switch wipes the vault cache but queues no re-warm: the Creator waits for its next STALE_S pass."""
+    import vault_collect
+
+    _need(vault_collect, "request_rewarm")
+    vault_collect.request_rewarm = lambda aid: None
 
 
 def _thumb_keyed_by_signed_url() -> None:
@@ -131,6 +140,8 @@ def register(Fault) -> dict:
     return {
         "collect-unpaced": Fault(_unpaced, (PACING,)),
         "collect-ignores-user": Fault(_ignores_user, (SKIPS_BUSY,)),
+        # slop/run vault-collect --break --fault=no-rewarm-on-switch: only rewarm_after_switch goes red.
+        "no-rewarm-on-switch": Fault(_no_rewarm_on_switch, (REWARM,)),
         "thumb-keyed-by-signed-url": Fault(_thumb_keyed_by_signed_url, (ROTATION,)),
         # vault_stills.resolve_fresh is cdn_resign's by-id read too: the stale-IP previews go red with it.
         "thumb-no-resign": Fault(_thumb_no_resign, (DEAD_LINK, STALE_IP, UI_HOVER)),

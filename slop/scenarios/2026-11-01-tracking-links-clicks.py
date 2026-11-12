@@ -66,6 +66,11 @@ the page picks, its Redirect links tab: the summary cards == `/summary` (UI_SUMM
 days" == the API's total == the DB's rows in that window, 30 bars and the top Opened in row == the API
 (UI_STATS; `tracking-links-stats-30d`, `tracking-links-settled`); the same on a 390 x 844 phone with no
 sideways scroll, loaded and expanded (UI_PHONE; `tracking-links-phone-summary`, `tracking-links-phone-stats`).
+Then, in a fresh page with Playwright's clock installed,
+Growth > Tracking links left open (`growth-viewed-open`): its clock jumped GROWTH_VIEWED_REFRESH_MS less a minute
+in 5 min steps, a pointer move after each (an owner on the page: 10 min without input is Idle mode, which stops
+every poll until the next input) and no refetch, then the last minute: the OF links list and their earnings are read again
+(`growth-viewed-settled`) and the relay read OF's /campaigns for that Creator again (/__slop/tracking-calls).
 
 Bypasses (declared): Cloudflare's siteverify is lib/tracking_relay.py's loopback fake (the product's
 TURNSTILE_VERIFY_URL env seam, set by the relay part; 30 ms a call, a guess; a token passes iff it starts
@@ -86,7 +91,10 @@ straight from loopback (a trusted proxy, as the Next app is), no Traefik or Next
 --fault=of-tracking-claimers-no-memo (CLAIMERS); --fault=of-tracking-spend-first-link (EARNINGS);
 --fault=tracking-bot-check-fails-open (GATE_VERIFY, GATE_COUNT, STATS_SUMMARY, GATE_THROTTLE);
 --fault=tracking-classify-raises (STATS_BREAKDOWN);
---fault=tracking-verify-unthrottled (GATE_THROTTLE).
+--fault=tracking-verify-unthrottled (GATE_THROTTLE);
+--fault=growth-viewed-no-refetch (client side:
+UI_VIEWED). The page's hour is Playwright's clock jumping (`clock.fast_forward`: due timers fire once, as
+after a laptop lid), not waited (declared).
 """
 from __future__ import annotations
 
@@ -97,6 +105,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -106,7 +115,7 @@ from slop.actors import ui
 from slop.lib.client import Http, Recorder
 from slop.lib.tracking_faults import (BY_DAY, CLAIMERS, CLICKS, CLIENT_IP, CREATED, EARNINGS, GATE_COUNT,
                                      GATE_CREATE, GATE_PAGE, GATE_THROTTLE, GATE_VERIFY, REDIRECT,
-                                     STATS_BREAKDOWN, STATS_INVARIANT, STATS_SUMMARY)
+                                     STATS_BREAKDOWN, STATS_INVARIANT, STATS_SUMMARY, UI_VIEWED)
 from slop.seed import tracking_campaigns
 
 PROFILE = "agency_inbox"
@@ -813,8 +822,9 @@ async def run(ctx) -> None:
     # ── UI: Growth > Tracking links, a redirect link's Analytics ─────────
     if ctx.app:
         await _ui(ctx, tc, gated, w)
+        await _ui_viewed(ctx, tc)
     else:
-        for name in (UI_STATS_TOTAL, UI_GATE, UI_SUMMARY, UI_STATS, UI_PHONE):
+        for name in (UI_STATS_TOTAL, UI_GATE, UI_SUMMARY, UI_STATS, UI_PHONE, UI_VIEWED):
             ctx.skip(name, "--no-ui")
     await reader.aclose()
 
@@ -827,6 +837,70 @@ UI_PHONE = ("UI: on a 390 x 844 phone the summary cards and a link's Analytics t
             "scroll loaded or expanded")
 CARDS = ("today", "d7", "d30")
 HEADER = re.compile(r"^\s*([\d,]+) clicks · last 30 days")
+_GROWTH_TS = Path(__file__).resolve().parents[2] / "app" / "hooks" / "useGrowth.ts"
+
+
+def _viewed_refresh_ms() -> int:
+    """app/hooks/useGrowth.ts GROWTH_VIEWED_REFRESH_MS, read from the source (one number, the app's)."""
+    m = re.search(r"export const GROWTH_VIEWED_REFRESH_MS = ([\d_]+);", _GROWTH_TS.read_text())
+    return int(m.group(1).replace("_", ""))
+
+
+async def _ui_viewed(ctx, tc) -> None:
+    """Growth > Tracking links left open: its OF links list and earnings refetch on the hour, page clock jumped."""
+    every = _viewed_refresh_ms()
+    creator_of = {r["campaignName"]: aid for aid, rows in tc["campaigns"].items() for r in rows}
+    reads: list[tuple[str, int, float]] = []   # (list | earnings, status, wall time)
+
+    def on_response(resp) -> None:
+        m = re.search(r"/admin/of-tracking-links(/earnings)?\?account_id=", resp.url)
+        if m:
+            reads.append(("earnings" if m.group(1) else "list", resp.status, time.time()))
+
+    def n(kind: str) -> int:
+        return sum(1 for k, st, _t in reads if k == kind and st == 200)
+
+    async def until(pred, timeout_s: float) -> bool:
+        t_end = time.monotonic() + timeout_s
+        while not pred():
+            if time.monotonic() > t_end:
+                return False
+            await asyncio.sleep(0.2)
+        return True
+
+    async with ui.owner_browser(ctx) as page:
+        await page.clock.install()
+        page.on("response", on_response)
+        await page.goto(f"{ctx.app}/growth/tracking-links", wait_until="domcontentloaded")
+        await page.get_by_text(re.compile(r"OF link 0$")).first.wait_for(timeout=90_000)
+        aid = creator_of.get((await page.get_by_text(re.compile(r"OF link 0$")).first.inner_text()).strip())
+        opened = await until(lambda: n("list") >= 1 and n("earnings") >= 1, 30)
+        await ui.shot(ctx, page, "growth-viewed-open")
+        before = {"list": n("list"), "earnings": n("earnings")}
+        # an owner on the page: a pointer move every 5 min keeps Idle mode (useIdleMode, 10 min without
+        # input: polls stop until the next input) away, as a viewer does
+        left, x = every - 60_000, 0
+        while left > 0:
+            step = min(5 * 60_000, left)
+            await page.clock.fast_forward(step)
+            left -= step
+            x = 400 + (x + 37) % 300
+            await page.mouse.move(x, 500)
+            await asyncio.sleep(0.3)
+        await asyncio.sleep(3)
+        early = {"list": n("list"), "earnings": n("earnings")}
+        of0 = (await ctx.owner.get("/__slop/tracking-calls")).json()["campaigns"].get(aid or "", 0)
+        await page.clock.fast_forward(60_000)
+        refetched = await until(lambda: n("list") > before["list"] and n("earnings") > before["earnings"], 30)
+        await page.get_by_text(re.compile(r"OF link 0$")).first.wait_for(timeout=30_000)
+        await ui.shot(ctx, page, "growth-viewed-settled")
+        after = {"list": n("list"), "earnings": n("earnings")}
+        of1 = (await ctx.owner.get("/__slop/tracking-calls")).json()["campaigns"].get(aid or "", 0)
+        not_200 = [(k, st) for k, st, _t in reads if st != 200]
+    ctx.check(UI_VIEWED, bool(aid) and opened and early == before and refetched
+              and after == {k: v + 1 for k, v in before.items()} and of1 > of0 and not not_200,
+              creator=aid, refresh_ms=every, opened=opened, reads_open=before, reads_59_min=early,
+              reads_60_min=after, of_campaigns_reads=[of0, of1], not_200=not_200[:5])
 
 
 async def _open(ctx, page, tc) -> str | None:

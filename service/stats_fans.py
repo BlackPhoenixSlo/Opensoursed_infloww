@@ -20,7 +20,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import SQLColumnExpression, and_, case, column, func, literal_column, or_, select, text
+from sqlalchemy import (BigInteger, DateTime, Integer, SQLColumnExpression, String, and_, case, cast, column,
+                        func, literal, literal_column, null, or_, select, text, union_all)
 from sqlalchemy.orm import aliased
 
 import csv_export
@@ -139,7 +140,7 @@ async def fan_report(
     def _sum_if(cond: Any) -> Any:
         return func.coalesce(func.sum(case((cond, T.amount_cents), else_=0)), 0)
 
-    spend = (
+    spend_q = (
         select(
             T.account_id, T.fan_id,
             func.sum(T.amount_cents).label("total_cents"),
@@ -150,8 +151,10 @@ async def fan_report(
         )
         .where(*scope)
         .group_by(T.account_id, T.fan_id)
-        .subquery()
     )
+    # JSON consumes the aggregate twice in one statement; CSV keeps its original query.
+    spend = (spend_q.subquery() if format == "csv" else
+             spend_q.cte("fan_spend").prefix_with("MATERIALIZED", dialect="sqlite"))
     top_q = (
         select(spend, Fan.of_display_name, Fan.of_username, SubscriberSnapshot.subscribe_at)
         .outerjoin(Fan, and_(Fan.account_id == spend.c.account_id, Fan.fan_id == spend.c.fan_id))
@@ -199,6 +202,29 @@ async def fan_report(
         .order_by(func.sum(spend.c.total_cents).desc())
     )
 
+    # Limit only the ordered top branch, never traffic's full spender population.
+    top_rows = top_q.limit(limit).subquery("top_fans")
+    traffic_rows = traffic_q.order_by(None).subquery("fan_traffic")
+    combined = union_all(
+        select(literal(0).label("branch"), top_rows,
+               cast(null(), String).label("kind"), cast(null(), BigInteger).label("of_id"),
+               cast(null(), Integer).label("fans"), top_rows.c[_FAN_SORTS[sort]].label("sort_cents")),
+        select(literal(1).label("branch"), traffic_rows.c.account_id,
+               cast(null(), BigInteger).label("fan_id"), traffic_rows.c.total_cents,
+               cast(null(), Integer).label("net_or_80_cents"), cast(null(), Integer).label("tips_cents"),
+               cast(null(), Integer).label("ppv_cents"), cast(null(), Integer).label("subs_cents"),
+               cast(null(), String).label("of_display_name"), cast(null(), String).label("of_username"),
+               cast(null(), DateTime).label("subscribe_at"), traffic_rows.c.kind, traffic_rows.c.of_id,
+               traffic_rows.c.fans, traffic_rows.c.total_cents.label("sort_cents")),
+    ).subquery("fan_report_rows")
+    # UNION emission order is unspecified. Keep each branch's existing order and ties:
+    # top = sort/total desc, fan_id asc; traffic = total desc (no account tie-breaker).
+    combined_q = select(combined).order_by(
+        combined.c.branch, combined.c.sort_cents.desc(),
+        case((combined.c.branch == 0, combined.c.total_cents)).desc(),
+        case((combined.c.branch == 0, combined.c.fan_id)),
+    )
+
     new_q = new_subs_q(account_ids, start, end)  # each fan on his first day in the window
     renew_q = (
         select(T.account_id, T.fan_id, T.occurred_at)
@@ -206,8 +232,9 @@ async def fan_report(
     )
 
     async with get_session() as s:
-        top = [_fan(r) for r in (await s.execute(top_q.limit(limit))).all()]
-        traffic_rows = (await s.execute(traffic_q)).all()
+        rows = (await s.execute(combined_q)).all()
+        top = [_fan(r) for r in rows if r.branch == 0]
+        traffic_rows = [r for r in rows if r.branch == 1]
         new_rows = (await s.execute(new_q)).all()
         renew_rows = (await s.execute(renew_q)).all()
         traffic = await _link_names(s, traffic_rows)

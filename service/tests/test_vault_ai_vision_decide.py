@@ -4,23 +4,17 @@ vault_ai_vision_decide — table tests over the pure rules the vision passes han
 off (`vault_ai_vision` keeps the DB / frame / LLM side; test_vault_ai_describe
 and test_vault_flags_sweep walk that on a DB).
 
-  case_garment_over_table:            "nothing there" phrasings fold to "".
-  case_ground_in_named_garment_table: a named garment turns `bare` → covered;
-                                      not_in_frame drops its `over_`.
-  case_reconcile_with_acts_table:     only INSERTION un-covers a region.
-  case_fold_clip_flags_table:         regions by max exposure, underwear by any().
-  case_clip_arc_table:                first vs last frame heat.
-  case_build_flags_fields_table:      the flags merge — locks, first-frame
-                                      garments, dead/failure keys, stamps.
   case_frames_for_duration_table:     the duration ladder.
   case_parse_describe_table:          JSON pulled out of prose, else {}.
   case_next_attempt_table:            30b → 235b ONCE, never past 235b.
-  case_with_flags_cost_table:         describe-and-flag reports both calls' cost.
   case_describe_selection_table:      the WHOLE where clause (live, describable,
                                       mode), run on a real SQLite table — the
-                                      set the sweep walks = the plan's count.
+                                      set the sweep walks = the plan's count;
+                                      restage re-scans a photo / clip whose
+                                      describe was not Jev-fed.
   case_describe_answer_table:         headline fields of an answer.
   case_build_describe_update_table:   locks, carried flags, operator fixes, stamps.
+  case_describe_tier_follows_locked_explicitness: tier column = Jev's column_tier.
 
 No DB of the app's, no OF, no LLM. Run: venv/bin/python service/tests/test_vault_ai_vision_decide.py
 """
@@ -34,6 +28,7 @@ from datetime import datetime  # noqa: E402
 from sqlalchemy import create_engine, insert, select  # noqa: E402
 
 import vault_ai_vision_decide as d  # noqa: E402
+import vault_describe_jev  # noqa: E402
 from db.models import VaultItem  # noqa: E402
 
 N = datetime(2026, 10, 30, 12, 0, 0)
@@ -44,113 +39,6 @@ def _table(rows, fn) -> None:
     """Run every row, collect every mismatch, fail once naming them all."""
     bad = [f"{rid}: {got!r} != {want!r}" for rid, args, want in rows if (got := fn(*args)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
-
-
-def case_garment_over_table():
-    _table([
-        ("missing key", ({}, "over_vulva"), ""),
-        ("not a string", ({"over_vulva": 3}, "over_vulva"), ""),
-        ("null word", ({"over_vulva": "None."}, "over_vulva"), ""),
-        ("narrated absence", ({"over_vulva": "nothing, bare skin"}, "over_vulva"), ""),
-        ("narrated absence 2", ({"over_vulva": "nothing - she is bare"}, "over_vulva"), ""),
-        ("real garment kept verbatim", ({"over_vulva": " pink lace thong "}, "over_vulva"), "pink lace thong"),
-    ], d._garment_over)
-
-
-def case_ground_in_named_garment_table():
-    _table([
-        ("named over a bare region: covered",
-         ({"breasts_vis": "bare", "over_breasts": "white tank top"},),
-         {"breasts_vis": "covered", "over_breasts": "white tank top"}),
-        ("bare with nothing named: stays bare",
-         ({"breasts_vis": "bare", "over_breasts": None},), {"breasts_vis": "bare", "over_breasts": None}),
-        ("not_in_frame drops its over_",
-         ({"anus_vis": "not_in_frame", "over_anus": "black bodysuit"},), {"anus_vis": "not_in_frame"}),
-        ("covered untouched",
-         ({"vulva_vis": "covered", "over_vulva": "thong"},), {"vulva_vis": "covered", "over_vulva": "thong"}),
-    ], d._ground_in_named_garment)
-
-
-def case_reconcile_with_acts_table():
-    cov = {"vulva_vis": "covered", "over_vulva": "pink thong", "anus_vis": "covered"}
-    _table([
-        ("no insertion: unchanged", ({"acts": ["rubbing_clit"]}, cov), cov),
-        ("fingering un-covers vulva",
-         ({"acts": ["fingering"]}, cov), {"vulva_vis": "bare", "anus_vis": "covered"}),
-        ("penetration field alone counts",
-         ({"penetration": "toy"}, cov), {"vulva_vis": "bare", "anus_vis": "covered"}),
-        ("anal focus un-covers anus",
-         ({"acts": ["toy_insertion"], "body_focus": ["anus"]}, cov),
-         {"vulva_vis": "covered", "over_vulva": "pink thong", "anus_vis": "bare"}),
-        ("anus + pussy focus: vulva",
-         ({"acts": ["toy_insertion"], "body_focus": ["anus", "pussy"]}, cov),
-         {"vulva_vis": "bare", "anus_vis": "covered"}),
-        ("already bare: unchanged", ({"acts": ["fingering"]}, {"vulva_vis": "bare"}), {"vulva_vis": "bare"}),
-    ], d._reconcile_with_acts)
-
-
-def case_fold_clip_flags_table():
-    _table([
-        ("empty", ([],), {}),
-        ("max exposure + any underwear",
-         ([{"vulva_vis": "covered", "underwear_visible": False},
-           {"vulva_vis": "bare", "underwear_visible": True}],),
-         {"underwear_visible": True, "vulva_vis": "bare"}),
-        ("not_in_frame folds away",
-         ([{"breasts_vis": "not_in_frame"}, {"breasts_vis": "covered"}],), {"breasts_vis": "covered"}),
-        ("non-bool underwear ignored", ([{"underwear_visible": "yes"}],), {}),
-    ], d._fold_clip_flags)
-
-
-def case_clip_arc_table():
-    _table([
-        ("one frame: None", ([{"vulva_vis": "bare"}],), None),
-        ("covered → bare escalates", ([{"vulva_vis": "covered"}, {"vulva_vis": "bare"}],), "escalates"),
-        ("bare → covered reverses", ([{"vulva_vis": "bare"}, {"vulva_vis": "covered"}],), "reverses"),
-        ("same heat: flat", ([{"vulva_vis": "bare"}, {"breasts_vis": "bare"}],), "flat"),
-        ("unreadable end: flat", ([{"vulva_vis": "bare"}, {}],), "flat"),
-    ], d._clip_arc)
-
-
-def case_build_flags_fields_table():
-    prev = {"description": "she poses", "tags": ["bed"], "acts": ["posing"],
-            "vulva_vis": "bare", "over_breasts": "old top", "genitals_covered": True,
-            "_flags_status": "error", "_flags_failed_at": "x", "_flags_error": "boom"}
-    covered = {"breasts_vis": "covered", "over_breasts": "white tank top " * 6,
-               "vulva_vis": "covered", "over_vulva": "pink thong",
-               "anus_vis": "not_in_frame", "underwear_visible": True}
-    bare = {**covered, "vulva_vis": "bare", "over_vulva": None}
-    kept = {"description": "she poses", "tags": ["bed"], "acts": ["posing"]}
-    stamp = {"_flags_model": "m", "_flags_v": 3}
-
-    def build(prev, per_frame, locked=(), is_video=False):
-        return d.build_flags_fields(prev, per_frame, locked=set(locked),
-                                    is_video=is_video, model="m", version=3)
-
-    _table([
-        ("photo: merged, first-frame garments (<=60), dead + failure keys dropped",
-         (prev, [covered]),
-         {**kept, **stamp, "breasts_vis": "covered", "vulva_vis": "covered",
-          "anus_vis": "not_in_frame", "underwear_visible": True,
-          "over_breasts": ("white tank top " * 6)[:60], "over_vulva": "pink thong"}),
-        ("locked flag + locked over_ keep the operator's value",
-         (prev, [covered], ["vulva_vis", "over_breasts"]),
-         {**kept, **stamp, "breasts_vis": "covered", "vulva_vis": "bare",
-          "anus_vis": "not_in_frame", "underwear_visible": True,
-          "over_breasts": "old top", "over_vulva": "pink thong"}),
-        ("insertion in prev acts un-covers vulva",
-         ({**prev, "acts": ["fingering"]}, [covered]),
-         {**kept, **stamp, "acts": ["fingering"], "breasts_vis": "covered",
-          "vulva_vis": "bare", "anus_vis": "not_in_frame", "underwear_visible": True,
-          "over_breasts": ("white tank top " * 6)[:60], "over_vulva": "pink thong"}),
-        ("video: frame count + arc; max exposure across frames",
-         (kept, [covered, bare], (), True),
-         {**kept, **stamp, "breasts_vis": "covered", "vulva_vis": "bare",
-          "anus_vis": "not_in_frame", "underwear_visible": True,
-          "over_breasts": ("white tank top " * 6)[:60], "over_vulva": "pink thong",
-          "_flags_frames": 2, "_flags_arc": "escalates"}),
-    ], build)
-    assert "genitals_covered" in prev, "prev must not be mutated"
 
 
 def case_frames_for_duration_table():
@@ -178,21 +66,6 @@ def case_next_attempt_table():
     ], d.next_attempt)
 
 
-def case_with_flags_cost_table():
-    ok = {"media_id": 1, "ok": True, "status": "described", "cost_millicents": 70}
-    _table([
-        ("described + flagged: both costs", (ok, {"ok": True, "cost_millicents": 3}),
-         {**ok, "cost_millicents": 73}),
-        ("flags raised / not run (None): describe's cost", (ok, None), ok),
-        ("unparsed flags (billed, no cost on it): its cost not reported, describe's alone",
-         (ok, {"ok": False, "status": "unparsed"}), ok),
-        ("describe reported no cost: flags' alone", ({"ok": True}, {"cost_millicents": 3}),
-         {"ok": True, "cost_millicents": 3}),
-        ("describe failed (not flagged): unchanged", ({"ok": False, "status": "refused", "cost_millicents": 9}, None),
-         {"ok": False, "status": "refused", "cost_millicents": 9}),
-    ], d.with_flags_cost)
-
-
 def case_describe_selection_table():
     """Evaluate the WHOLE clause on a real SQLite table, the way both consumers
     do — account, removed_at and kind included, so no caller re-adds them."""
@@ -200,6 +73,10 @@ def case_describe_selection_table():
     VaultItem.__table__.create(eng)
     v2 = json.dumps({"_prompt_version": "v2"})
     v1 = json.dumps({"_prompt_version": "v1"})
+
+    def fed(path):   # a v2-stamped describe row with its `_describe` meta, serialised as the product writes it
+        meta = vault_describe_jev.meta(path, {"v": 8, "at": "2026-11-01"}, "qwen3-vl-235b")
+        return json.dumps({"_prompt_version": "v2", "_jev": {"v": 8}, "_describe": meta}, ensure_ascii=False)
     rows = [  # media_id, describe_status, ai_fields_json, account, kind, removed
         (1, None, None, "a", "photo", False), (2, "described", v2, "a", "photo", False),
         (3, "described", v1, "a", "video", False), (4, "described", None, "a", "photo", False),
@@ -208,6 +85,10 @@ def case_describe_selection_table():
         (8, None, None, "b", "photo", False),      # other account: never
         (9, None, None, "a", "audio", False),      # no frame: never
         (10, None, None, "a", "photo", True),      # gone from OF: never
+        (11, "described", fed("prose"), "a", "photo", False),   # Jev-fed: current under restage v2
+        (12, "described", fed("vid"), "a", "video", False),
+        (13, "described", fed("v6"), "a", "photo", False),
+        (14, "described", fed("v2"), "a", "photo", False),      # v2 path: stale whatever its version
     ]
     with eng.begin() as c:
         c.execute(insert(VaultItem), [
@@ -221,14 +102,15 @@ def case_describe_selection_table():
             return [r[0] for r in c.execute(q)]
 
     _table([
-        ("live describable base", (d.live_describable("a"),), [1, 2, 3, 4, 5, 6, 7]),
+        ("live describable base", (d.live_describable("a"),), [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
         ("force: every live describable row", (d.describe_selection("a", "force", "v2"),),
-         [1, 2, 3, 4, 5, 6, 7]),
+         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
         ("undescribed: NULL + every non-described status (blocked_drm too)",
          (d.describe_selection("a", "undescribed", "v2"),), [1, 5, 6]),
-        ("restage v2: undescribed + other/no stamp",
-         (d.describe_selection("a", "restage", "v2"),), [1, 3, 4, 5, 6, 7]),
-        ("restage v1", (d.describe_selection("a", "restage", "v1"),), [1, 2, 4, 5, 6, 7]),
+        ("restage v2: undescribed + other/no stamp + photo/clip not Jev-fed (2, 14: v2-stamped)",
+         (d.describe_selection("a", "restage", "v2"),), [1, 2, 3, 4, 5, 6, 7, 14]),
+        ("restage v1: 3 too (a clip, not Jev-fed)", (d.describe_selection("a", "restage", "v1"),),
+         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
         ("other account", (d.describe_selection("b", "force", "v2"),), [8]),
     ], picked)
     try:
@@ -291,6 +173,34 @@ def case_build_describe_update_table():
          {**photo, "ai_fields_json": {**{k: v for k, v in ai.items() if k != "acts"},
                                       "vulva_vis": "bare"}}),
     ], build)
+
+
+def case_describe_tier_follows_locked_explicitness():
+    """Beside a current `_jev`, the tier column is `column_tier` of the written blob — an operator-locked
+    `explicitness` (FIXABLE) included — so describe and the Jev pass never flip it between them."""
+    import vault_jev_flags as jf
+    import vault_jev_rules as rules
+    assert "explicitness" in __import__("vault_ai_fix").FIXABLE
+    jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "lane": "$10", "settled": False,
+           "breasts_bare": "y", "crotch_bare": "n", "penetration": "n", "tags": {"outfit": "nude"}, "state": {}}
+    data = {"description": "d", "explicitness": "explicit"}
+
+    def tier(prev, locked=(), overrides=None):
+        vals = d.build_describe_update(
+            False, data, prev_ai=prev, locked=set(locked), overrides=overrides or {},
+            used_model="m", n_frames=1, pv="v2", fixable=("explicitness",), call_id=None, now=N)
+        out = json.loads(vals["ai_fields_json"])
+        if jf.TIER_COLUMN in vals and jf.reading(out.get(d.JEV_KEY)) is not None:
+            assert vals[jf.TIER_COLUMN] == jf.column_tier(out, None, set(locked)), "describe and Jev disagree"
+        return vals.get(jf.TIER_COLUMN, "<untouched>")
+
+    _table([
+        ("no reading: the model's tier", ({},), "explicit"),
+        ("reading: the blob's explicitness", ({"_jev": jev},), "explicit"),
+        ("reading + locked fix: the operator's", ({"_jev": jev}, ["explicitness"], {"explicitness": "suggestive"}),
+         "suggestive"),
+        ("column locked: untouched", ({"_jev": jev}, [jf.TIER_COLUMN]), "<untouched>"),
+    ], tier)
 
 
 _harness.run()

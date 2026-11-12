@@ -9,8 +9,10 @@
  *     so. Any other failure (401/403/422, ...) is thrown, after the same reload. `useOfRefresh` is it as both grids'
  *     mutation (pending, note, the thumbs redrawn).
  *   • reloadBrokenThumbs   a grid's broken thumbnails (useThumbAutoRefresh): the mirror's items again (its thumb
- *     route re-signs by id; no OF listing read), or the live listing with the relay's cache dropped first so every
- *     loaded page comes back freshly signed. Refetched in place: no flash, no scroll jump.
+ *     route re-signs by id; no OF listing read), or every loaded page of the live listing read through the relay's
+ *     age gate (`revalidate=1`, useVaultMedia `revalidateLoadedVaultPages`): a copy older than the gate comes back
+ *     freshly signed from OF, a young one (signed minutes ago) is served, and page 1 joins the picker open's own
+ *     revalidate instead of costing OF a second read. Put back in place: no flash, no scroll jump.
  *
  * The one-shot `refresh=1` of useVaultLists().refresh stays where it is: it bypasses the cache for that one read
  * only, where the drop above makes every other cached page of the Creator go to OF again too.
@@ -20,7 +22,7 @@ import { useIsMutating, useMutation, useQueryClient, type QueryClient } from "@t
 
 import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
 import { invalidateVaultGrid, mirrorItemsKey, type VaultCacheSummary } from "@/hooks/useVaultCache";
-import { dropRelayVaultCache, vaultMediaKey } from "@/hooks/useVaultMedia";
+import { revalidateLoadedVaultPages } from "@/hooks/useVaultMedia";
 import { type FanId } from "@/lib/fanId";
 import { relay, RelayError } from "@/lib/relay";
 
@@ -85,8 +87,8 @@ export function vaultBrowseSource(summary: SourceSummary): VaultSource {
 
 /** A grid's broken thumbnails: refetch the listing that hands out their urls, never a full OF sync. */
 export async function reloadBrokenThumbs(qc: QueryClient, accountId: string, source: VaultSource): Promise<void> {
-  if (source === "live") await dropRelayVaultCache(accountId);
-  await qc.invalidateQueries({ queryKey: source === "mirror" ? mirrorItemsKey(accountId) : vaultMediaKey(accountId) });
+  if (source === "live") return revalidateLoadedVaultPages(qc, accountId);
+  await qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
 }
 
 export interface OfRefresh {

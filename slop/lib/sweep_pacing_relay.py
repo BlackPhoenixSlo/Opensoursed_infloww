@@ -2,14 +2,14 @@
 end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until called.
 
   POST /__slop/sweep-pacing/knobs {NAME: seconds, ...}  sets service/of_pacing.py's USER_WINDOW_S
-       and link_metrics' _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's,
-       link_metrics' and transaction_ingest's log lines (each ledger walk's mode: ingest_tx_scan_start).
+       and link_prewarm's _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's,
+       link_metrics', link_prewarm's and transaction_ingest's log lines (each ledger walk's mode: ingest_tx_scan_start).
        Pins transaction_ingest.full_phase_s for the run (bypass, declared); `"PHASE_PIN": false`
        restores the product's crc32 phase instead (the watermark stage: a restarted relay).
        The pacer's own PAGE_GAP_S / JITTER_S and the 429 retry are never set here.
   POST /__slop/sweep-pacing/run {job, account_ids, cycles}  starts the production job in a fresh
        context (no request around it, as the supervisors' tasks), and answers at once:
-         link_prewarm  link_metrics.prewarm_all()   once (the hourly loop's pass; account_ids unused)
+         link_prewarm  link_prewarm.prewarm_all()   once (the hourly loop's pass; account_ids unused)
          subscribers   lifecycle_messages.refresh_roster(aid, ax._make_client(aid), now=utcnow())
                        per Creator (the lifecycle sweep's roster crawl)
          tx_cycles     transaction_ingest.supervisor_cycle() `cycles` times back to back (the
@@ -34,7 +34,7 @@ import time
 from datetime import datetime
 
 KNOBS = ("USER_WINDOW_S",)
-SPREAD = "PREWARM_SPREAD_S"   # link_metrics._PREWARM_SPREAD_S
+SPREAD = "PREWARM_SPREAD_S"   # link_prewarm._PREWARM_SPREAD_S
 _runs: list[dict] = []
 _log: list[dict] = []
 _tasks: set = set()
@@ -56,8 +56,8 @@ _keep = _Keep(logging.INFO)
 
 async def _job(job: str, aid: str, cycles: int = 1):
     if job == "link_prewarm":
-        import link_metrics
-        return await link_metrics.prewarm_all()
+        import link_prewarm
+        return await link_prewarm.prewarm_all()
     if job == "subscribers":
         import automation_executor as ax
         from automations import lifecycle_messages
@@ -79,18 +79,18 @@ def wire(app, loopback, _relay) -> None:
 
     async def knobs(request: Request) -> dict:
         loopback(request)
-        import link_metrics
+        import link_prewarm
         import of_pacing
         body = await request.json()
         pin = body.pop("PHASE_PIN", True)
         for k, v in body.items():
             if k == SPREAD:
-                link_metrics._PREWARM_SPREAD_S = float(v)
+                link_prewarm._PREWARM_SPREAD_S = float(v)
             elif k in KNOBS:
                 setattr(of_pacing, k, float(v))
             else:
                 raise HTTPException(400, f"not a knob: {k}")
-        for name in ("of-relay.of_pacing", link_metrics.log.name, "of-relay.ingest_tx"):
+        for name in ("of-relay.of_pacing", "of-relay.link_metrics", link_prewarm.log.name, "of-relay.ingest_tx"):
             lg = logging.getLogger(name)
             if _keep not in lg.handlers:
                 lg.addHandler(_keep)
@@ -103,7 +103,7 @@ def wire(app, loopback, _relay) -> None:
         ti.full_phase_s = ((lambda _account_id, every=ti._FULL_EVERY_S: (every / 4 - now) % every) if pin
                            else transaction_ingest_decide.full_phase_s)
         return {**{k: getattr(of_pacing, k) for k in (*KNOBS, "PAGE_GAP_S", "JITTER_S")},
-                SPREAD: link_metrics._PREWARM_SPREAD_S}
+                SPREAD: link_prewarm._PREWARM_SPREAD_S}
 
     async def run(request: Request) -> dict:
         loopback(request)

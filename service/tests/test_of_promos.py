@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""of_promos: the pure OF promo/trial helpers as tables. No DB use, no relay, no I/O.
+"""of_promos: the pure OF promo/trial helpers as tables (no DB, no relay, no I/O), then
+fetch_of_promos' capped-history memo through a fake OF client and the harness's temp DB (test_memo_*).
 
 Pins: to_cents IS of_coerce.cents_or_zero (its table lives in test_of_coerce.py). coerce_of_id is
 plain int(): floats truncate, bools are ints, "123"/" 12 " parse, "12.0"/"1e3"/""/None/junk → None.
@@ -298,6 +299,221 @@ LI = ("list", "items")
 ])
 def test_rows_from_payload(raw, keys, want):
     assert _rows_from_payload(raw, keys) == want
+
+
+# ── fetch_of_promos: the capped-history memo (docs/spec/phase-03-smaller-cuts.md, ticket 13) ──
+# A fake OF client behind ax._make_client; the DB (mirrors, the promotion List setting) is the
+# harness's temp one. Pages are 100 promos and the cap is 12 pages, so 1,300 promos are capped.
+
+CAP_PAGES = 12
+_DB: list = []
+_accounts = iter(range(1, 1_000))
+
+
+def _db() -> None:
+    if not _DB:
+        _harness.bootstrap()
+        _DB.append(True)
+
+
+def _promo(pid: int, *, live: bool = False, claims: int = 0) -> dict:
+    return {"id": pid, "message": f"p{pid}", "price": 0, "type": "all", "claimsCount": claims,
+            "subscribeCounts": 10, "subscribeDays": 0, "isFinished": not live, "canClaim": live}
+
+
+class _FakeOF:
+    """OF's /promotions as captured (hasMore always true, stop on a short page), plus the
+    claimer read and add-to-list a promotion List's sync makes."""
+
+    def __init__(self, rows: list[dict]):
+        self.rows, self.offsets, self.fail, self.adds = rows, [], False, []
+        self.claimers: dict[int, list[dict]] = {}
+
+    def promotions(self, *, offset: int = 0, limit: int = 100) -> dict:
+        if self.fail:
+            raise RuntimeError("OF 500")
+        self.offsets.append(offset)
+        return {"hasMore": True, "items": self.rows[offset:offset + limit]}
+
+    def offer_claims(self, offer_id, kind, *, limit=10, offset=0) -> dict:
+        return {"list": self.claimers.get(int(offer_id), [])[offset:offset + limit], "hasMore": False}
+
+    def add_link_claimers_to_list(self, list_id, kind, link_id):
+        self.adds.append((str(list_id), kind, int(link_id)))
+        return {"count": 1}
+
+    def pages(self) -> int:
+        """Pages read since the last call."""
+        n, self.offsets = len(self.offsets), []
+        return n
+
+
+def _setup(rows: list[dict], *, list_sync: bool = False, mirrors: tuple[int, ...] = ()):
+    """A fresh Creator, OF's history `rows` (newest first), its mirrors and List setting."""
+    import asyncio
+
+    import automation_executor as ax
+    from db.engine import get_session
+    from db.models import Account, PromoCampaign, PromoListSetting
+    _db()
+    aid = f"of_promos_memo_{next(_accounts)}"
+
+    async def go():
+        async with get_session() as s:
+            s.add(Account(id=aid, nickname=aid))
+        async with get_session() as s:
+            for o in mirrors:
+                s.add(PromoCampaign(account_id=aid, of_promo_id=o, name=f"m{o}"))
+            if list_sync:
+                s.add(PromoListSetting(account_id=aid, enabled=True, list_id="77", list_name="Promo fans"))
+    asyncio.run(go())
+    fake = _FakeOF(rows)
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    return aid, fake
+
+
+def _fetch(aid: str, **kw):
+    import asyncio
+
+    import of_promos
+    return asyncio.run(of_promos.fetch_of_promos(aid, **kw))
+
+
+def _history(n: int = 1_300, *, live_at: tuple[int, ...] = ()) -> list[dict]:
+    """`n` finished promos newest first, ids 1..n by position; `live_at` positions on offer."""
+    return [_promo(k + 1, live=k in live_at) for k in range(n)]
+
+
+def _ids(rows) -> list[int]:
+    return [r["of_promo_id"] for r in rows]
+
+
+def _window(value: str | None):
+    import os
+    if value is None:
+        os.environ.pop("PROMO_HISTORY_REREAD_S", None)
+    else:
+        os.environ["PROMO_HISTORY_REREAD_S"] = value
+
+
+def test_memo_capped_history_read_in_full_once_then_by_need_ids():
+    _window(None)
+    aid, f = _setup(_history(live_at=(250,)))           # a live promo on page 3
+    got = _fetch(aid)
+    assert f.pages() == CAP_PAGES and _ids(got) == list(range(1, 1_201)), "first read: the whole cap"
+    f.rows[0] = _promo(1, claims=9)                       # OF's figure moved on page 1
+    for call in ("second", "third"):
+        got = _fetch(aid)
+        assert f.pages() == 3, f"{call} read stops on the page holding the live promo"
+        assert _ids(got) == list(range(1, 1_201)), f"{call} read: fresh pages + the memo, nothing dropped"
+        assert got[0]["subscriber_count"] == 9, "fresh rows win over the memo"
+    # promo_reactivate's own need_ids call bypasses the memo: today's early exit, no merge.
+    got = _fetch(aid, need_ids={50})
+    assert f.pages() == 1 and _ids(got) == list(range(1, 101))
+    # A failed read is None, as today, and keeps the memo.
+    f.fail = True
+    assert _fetch(aid) is None
+    f.fail = False
+    assert len(_fetch(aid)) == 1_200 and f.pages() == 3, "the memo survived the failed read"
+
+
+def test_memo_list_sync_reads_in_full_and_a_new_unmirrored_promo_reaches_sync_lists():
+    import asyncio
+
+    import link_metrics
+    _window(None)
+    aid, f = _setup(_history(), list_sync=True)
+    assert len(_fetch(aid)) == 1_200 and f.pages() == CAP_PAGES
+    # A promotion made on OF web, no mirror, where a need_ids read would never page (page 12).
+    f.rows.insert(1_150, _promo(5_000, live=True, claims=2))
+    f.claimers[5_000] = [{"id": 900 + j, "name": f"c{j}", "username": f"c{j}"} for j in range(2)]
+    got = _fetch(aid)
+    assert f.pages() == CAP_PAGES, "promotion List sync on: every call reads in full"
+    assert 5_000 in _ids(got)
+    asyncio.run(link_metrics.refresh(aid, "promo", link_metrics.links_of_promos(got, [], {})))
+    assert ("77", "promo", 5_000) in f.adds, f.adds
+    assert _fetch(aid) and f.pages() == CAP_PAGES
+
+
+def test_memo_new_mirror_id_is_found_inside_the_window():
+    import asyncio
+
+    from db.engine import get_session
+    from db.models import PromoCampaign
+    _window(None)
+    aid, f = _setup(_history())
+    _fetch(aid)
+    assert f.pages() == CAP_PAGES
+    assert _fetch(aid) is not None and f.pages() == 1, "nothing can change: page 1 only"
+    # A promotion created through the app: its mirror holds its id; OF lists it on page 7.
+    f.rows.insert(640, _promo(6_000, live=True))
+
+    async def mirror():
+        async with get_session() as s:
+            s.add(PromoCampaign(account_id=aid, of_promo_id=6_000, name="made here"))
+    asyncio.run(mirror())
+    got = _fetch(aid)
+    assert f.pages() == 7 and 6_000 in _ids(got)
+    assert next(r for r in got if r["of_promo_id"] == 6_000)["status"] == "active"
+
+
+def test_memo_old_mirrors_are_not_chased():
+    _window(None)
+    # Mirrors persist until deleted in the app: a finished one on page 11 and one past the cap.
+    aid, f = _setup(_history(live_at=(250,)), mirrors=(1_050, 1_250))
+    _fetch(aid)
+    assert f.pages() == CAP_PAGES
+    for call in ("second", "third"):
+        got = _fetch(aid)
+        assert f.pages() == 3, f"{call} read stops on the live promo's page, not on the old mirrors"
+        assert _ids(got) == list(range(1, 1_201)), call
+
+
+def test_memo_capped_read_keeps_only_its_own_rows():
+    _window(None)
+    aid, f = _setup(_history(live_at=(250,)))
+    _fetch(aid)
+    assert f.pages() == CAP_PAGES
+    # 1,000 new finished promotions on OF web push the live one (id 251) past the cap.
+    f.rows[0:0] = [_promo(10_000 + k) for k in range(1_000)]
+    got = _fetch(aid)
+    assert f.pages() == CAP_PAGES and 251 not in _ids(got), "a row pushed past the cap is not kept from the memo"
+    assert _ids(got) == [*range(10_000, 11_000), *range(1, 201)]
+    got = _fetch(aid)
+    assert f.pages() == 1 and 251 not in _ids(got) and len(got) == 1_200, "nothing on offer left in the memo"
+
+
+def test_memo_short_read_clears_it():
+    _window(None)
+    aid, f = _setup(_history())
+    _fetch(aid)
+    assert f.pages() == CAP_PAGES
+    full = f.rows
+    f.rows = full[:50]                                    # OF answers a short page: the real end
+    assert _ids(_fetch(aid)) == list(range(1, 51)) and f.pages() == 1
+    assert _ids(_fetch(aid)) == list(range(1, 51)), "no memo left to merge"
+    f.pages()
+    f.rows = full
+    _fetch(aid)
+    assert f.pages() == CAP_PAGES, "memo cleared: the next read is full"
+
+
+def test_memo_window_zero_reads_in_full_every_call():
+    _window("0")
+    try:
+        aid, f = _setup(_history(live_at=(250,)))
+        for _ in range(3):
+            assert len(_fetch(aid)) == 1_200 and f.pages() == CAP_PAGES
+    finally:
+        _window(None)
+
+
+def test_memo_window_accessor():
+    import of_promos
+    for raw, want in ((None, 86_400.0), ("0", 0.0), ("3600", 3_600.0), ("junk", 86_400.0), ("-5", 86_400.0)):
+        _window(raw)
+        assert of_promos.promo_history_reread_s() == want, (raw, of_promos.promo_history_reread_s())
+    _window(None)
 
 
 if __name__ == "__main__":

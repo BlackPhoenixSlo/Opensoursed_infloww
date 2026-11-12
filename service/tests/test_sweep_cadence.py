@@ -22,7 +22,7 @@ sweep_cadence — full chat sweeps (`scrape_chats` `{}`) on a cadence, not per r
       a `{}` scrape_chats run whose every target chat failed raises (the job
       retries, then parks 'error'); one scraped chat finalises `full_sweep`; an
       explicit-id run with every chat failed still returns its stats. A sweep whose
-      first _SWEEP_FAIL_FAST chats all failed stops there (no more OF calls) and raises.
+      first SCRAPE_SWEEP_FAIL_FAST (5) chats all failed stops there (no more OF calls) and raises.
       OF's 404 (fan gone) is handled, not a failure: 5 gone then good chats, and an
       all-gone small sidebar, finalise `full_sweep` without raising.
 
@@ -202,7 +202,7 @@ async def case_sweep_with_every_chat_failed_raises_not_full_sweep():
             raise RuntimeError("boom")
         return 1, 1
 
-    async def stamp(_aid, _fid):
+    async def stamp(_aid, _fid, **_kw):
         return None
     real = (ax._make_client, sc._scrape_one_chat, sc._PAGE_SLEEP_S, sc._stamp_scrape_history)
     ax._make_client, sc._scrape_one_chat, sc._PAGE_SLEEP_S = (lambda _aid: _Client()), one_chat, 0
@@ -224,7 +224,7 @@ async def case_sweep_with_every_chat_failed_raises_not_full_sweep():
             raise AssertionError("a failing {} sweep must raise")
         except RuntimeError as e:
             assert "5 failed of the first 5 of 40" in str(e), e
-        assert len(tried) == sc._SWEEP_FAIL_FAST, tried
+        assert len(tried) == sc._sweep_fail_fast() == 5, tried
         # 5 gone fans at the top, then good chats: a healthy sweep.
         chats[:], tried[:] = list(range(200, 210)), []
         gone_ids |= set(range(200, 205))

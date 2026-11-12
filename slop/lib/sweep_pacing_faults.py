@@ -55,6 +55,13 @@ so a target can never name a check that does not exist.
                        reads ok / green there after a passing recent walk although its full walk failed.
   tx-proxy-pacing-bypassed  ledger walk pages paced per Creator only (of_pacing's proxy-paced kinds
                        empty: no exit slot): Creators on one proxy page at once.
+  promo-memo-cleared-on-need-ids  of_promos' capped-history memo cleared by a need_ids stop too (the
+                       pre-review rule, spec D4; of_promos.paged_of_fetch reports STOP_NEED as STOP_END):
+                       pass 2 pages to the live promo and answers those pages alone, pass 3 rereads
+                       the whole cap (promo_cap_once red).
+  prewarm-all-accounts  link_prewarm's prewarm back on LINK_PREWARM_SCOPE=all (`prewarm_scope` answers
+                       `all`: today's pass): every Creator without a List, DISPLAY's display-only links
+                       too, gets its Growth lists read in the background (prewarm_scope red).
 """
 from __future__ import annotations
 
@@ -87,6 +94,8 @@ BF_SHARED = "tx_backfill_shared_bucket"
 TX_RESTART = "tx_restart_keeps_full_schedule"
 TX_FAILED_FULL = "tx_failed_full_consumes_period"
 TX_PROXY_SPACED = "tx_proxy_pages_spaced"
+PROMO_CAP = "promo_cap_once"
+PREWARM_SCOPE = "prewarm_scope"
 
 
 def _unpaced() -> None:
@@ -307,6 +316,23 @@ def _tx_proxy_pacing_bypassed() -> None:
     of_pacing._PROXY_PACED_KINDS = frozenset()
 
 
+def _promo_memo_cleared_on_need_ids() -> None:
+    import of_promos
+    real = of_promos.paged_of_fetch
+
+    async def relabelled(*a, **kw):
+        rows = await real(*a, **kw)
+        if rows is not None and rows.stop == of_promos.STOP_NEED:
+            rows.stop = of_promos.STOP_END     # a need_ids stop reads as the real end: the memo clears
+        return rows
+    of_promos.paged_of_fetch = relabelled
+
+
+def _prewarm_all_accounts() -> None:
+    import link_prewarm
+    link_prewarm.prewarm_scope = lambda: "all"
+
+
 def register(Fault) -> dict:
     return {
         # slop/run sweep-pacing --break
@@ -338,4 +364,7 @@ def register(Fault) -> dict:
         "tx-failed-full-not-stamped": Fault(_tx_failed_full_not_stamped, (TX_FAILED_FULL,)),
         "tx-full-failure-hidden": Fault(_tx_full_failure_hidden, (TX_FAILED_FULL,)),
         "tx-proxy-pacing-bypassed": Fault(_tx_proxy_pacing_bypassed, (TX_PROXY_SPACED,)),
+        "promo-memo-cleared-on-need-ids": Fault(_promo_memo_cleared_on_need_ids, (PROMO_CAP,)),
+        # slop/run sweep-pacing --break --fault=prewarm-all-accounts --baseline=<green run>
+        "prewarm-all-accounts": Fault(_prewarm_all_accounts, (PREWARM_SCOPE,)),
     }

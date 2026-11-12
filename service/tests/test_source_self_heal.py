@@ -161,7 +161,7 @@ async def case_unmute_clears_skip_on_fast_skip_scrape():
     assert await _has_muted_skip(fid)
 
     async def _nothing_new(*a, **kw):
-        return [], False
+        return [], False, False
     scrape_chats._fetch_recent_end = _nothing_new
     res = await scrape_chats._scrape_one_chat(
         ACCT, OWN, None, fid, {"id": fid}, page_size=10, max_pages=1,

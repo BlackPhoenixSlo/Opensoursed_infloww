@@ -30,7 +30,8 @@ from collections import deque
 from pathlib import Path
 
 from slop.lib import covmap, gate, phases, procs
-from slop.lib.identity import LOCK_SHA  # in app/node_modules
+from slop.lib.identity import GATE_ENV, LOCK_SHA  # LOCK_SHA in app/node_modules
+from slop.lib.latency_acceptance import volume_knobs
 from slop.lib.procs import kill_tree, stop_child
 from slop.lib.report import EVIDENCE, parse_folder_line, write_atomic
 
@@ -196,15 +197,27 @@ def merge_map(cur: dict, got: dict, names: list[str]) -> tuple[dict, list[str], 
     return {**cur, "scenarios": sc}, replaced, added, [n for n in names if n not in new]
 
 
+def effective_knobs(phase, name):
+    return volume_knobs(name, KNOBS[phase]) if phase == 'volume' else list(KNOBS[phase])
+
+
+def recorded_knobs(row):
+    # Old nightly rows predate scenario overrides: they used the phase defaults.
+    return row.get('knobs', KNOBS[row['phase']])
+
+
 def changes(rows: list[dict], prev: list[dict] | None) -> dict:
     """vs the previous nightly's rows: newly red (now FAIL, before not), newly green (now OK/FLAKY,
     before FAIL), p95_vs_last_green keys that moved > P95_MOVE."""
     if prev is None:
-        return {"newly_red": [], "newly_infra": [], "newly_green": [], "p95": [], "first": True}
+        return {"newly_red": [], "newly_infra": [], "newly_green": [], "p95": [], "load_changed": [], "first": True}
     before = {(r["phase"], r["scenario"]): r for r in prev}
-    red, infra, green, p95 = [], [], [], []
+    red, infra, green, p95, load_changed = [], [], [], [], []
     for r in rows:
         k, b = (r["phase"], r["scenario"]), before.get((r["phase"], r["scenario"]))
+        if b is not None and recorded_knobs(r) != recorded_knobs(b):
+            load_changed.append(f"{k[0]} {k[1]}: {' '.join(recorded_knobs(b))} -> {' '.join(recorded_knobs(r))}; not comparable")
+            continue
         if r["verdict"] in RED and (b is None or b["verdict"] not in RED):
             red.append(f"{k[0]} {k[1]}")
         if r["verdict"] == "INFRA" and (b is None or b["verdict"] != "INFRA"):
@@ -215,7 +228,7 @@ def changes(rows: list[dict], prev: list[dict] | None) -> dict:
             last = ((b or {}).get("p95") or {}).get(key)
             if now is not None and last and abs(now - last) / last > P95_MOVE:
                 p95.append(f"{k[0]} {k[1]} {key}: {last} -> {now} ms ({(now - last) / last:+.0%})")
-    return {"newly_red": red, "newly_infra": infra, "newly_green": green, "p95": p95, "first": False}
+    return {"newly_red": red, "newly_infra": infra, "newly_green": green, "p95": p95, "load_changed": load_changed, "first": False}
 
 
 def _cell(r: dict) -> str:
@@ -269,10 +282,10 @@ def digest(s: dict) -> str:
         rows = [r for r in s["rows"] if r["phase"] == p]
         ok = [r for r in rows if r["verdict"] == "OK"]
         show = rows if len(rows) <= FULL_TABLE_MAX else [r for r in rows if r["verdict"] != "OK"]
-        out += ["", f"## {p} `{' '.join(KNOBS[p]) or 'small, UI on'}`: {len(ok)} OK of {len(rows)}"]
+        out += ["", f"## {p}: {len(ok)} OK of {len(rows)} (effective knobs per row)"]
         if show:
-            out += ["| scenario | verdict | s | folder | failed / infra |", "|---|---|---|---|---|"]
-            out += [f"| {r['scenario']} | {r['verdict']} | {r['seconds']:.0f} | {_folders(r)} | {_cell(r)} |"
+            out += ["| scenario | knobs | verdict | s | folder | failed / infra |", "|---|---|---|---|---|---|"]
+            out += [f"| {r['scenario']} | {' '.join(recorded_knobs(r)) or 'small, UI on'} | {r['verdict']} | {r['seconds']:.0f} | {_folders(r)} | {_cell(r)} |"
                     for r in show]
         if len(show) < len(rows):
             out.append(f"{len(ok)} OK rows not listed (folders: summary.json `rows`)")
@@ -283,6 +296,7 @@ def digest(s: dict) -> str:
                 f"- newly infra: {', '.join(c['newly_infra']) or 'none'}",
                 f"- newly green: {', '.join(c['newly_green']) or 'none'}",
                 f"- p95 moved > {P95_MOVE:.0%}:" + ("" if c["p95"] else " none")]
+        out += [f"- load changed: {x}" for x in c.get("load_changed", [])]
         out += [f"  - {x}" for x in c["p95"][:15]] + ([f"  - (+{len(c['p95']) - 15} more)"] if len(c["p95"]) > 15 else [])
     if s.get("map"):
         m = s["map"]
@@ -391,8 +405,10 @@ class Night:
     def run(self, phase: str, name: str) -> dict:
         """One `slop/run <name> <knobs>`; its folder from report.FOLDER_LINE."""
         t0 = time.time()
-        code, folder, tail, _, gate_line = self.stream([str(RUN), name, *KNOBS[phase]], SLOP.parent, env=child_env(os.environ))
+        knobs = effective_knobs(phase, name)
+        code, folder, tail, _, gate_line = self.stream([str(RUN), name, *knobs], SLOP.parent, env=child_env(os.environ))
         r = row_of(phase, name, folder, time.time() - t0, code, tail, gate_line)
+        r["knobs"] = knobs
         self.say(f"slop: nightly {phase} {r['verdict']} {name} ({r['seconds']:.0f}s) {r['folder']}")
         return r
 
@@ -431,8 +447,8 @@ def _plan_text(stamp: str, sha: str, smoke: bool, plan: dict, why: str) -> str:
     for p, names in plan.items():
         how = {"all": "every scenario (as slop/run all)", "volume": f"{VOLUME_PER_NIGHT} scenarios declaring volume gates (dated rotation)",
                "map": why}[p] if not smoke else ("smoke set" if p != "map" else why)
-        lines += [f"{p} `{' '.join(KNOBS[p]) or 'small, UI on'}` ({len(names)}): {how}"]
-        lines += [f"  {n}" for n in names]
+        lines += [f"{p} ({len(names)}): {how}; effective knobs below"]
+        lines += [f"  {n} {' '.join(effective_knobs(p, n)) or 'small, UI on'}" for n in names]
     return "\n".join(lines) + "\n"
 
 

@@ -1,6 +1,7 @@
-"""vault_jev.py — the Jev v8 vault flags pass for one stored still: questions, calls, NudeNet, spend.
+"""vault_jev.py — the Jev v8 vault flags pass for one stored still (`run`) or one video's frames (`run_video`):
+questions, calls, NudeNet, spend.
 
-Every vault photo (no opt-in; clips keep qwen), the only flags a photo gets. The owner-accepted
+Every vault photo and video (no opt-in), the only flags either gets. The owner-accepted
 bench config (D48, `.scratch/jev-vault-bench/`: jev_flags8.py + jev_crop8.py MODE "lower", frozen with
 score8 `--veto --promote` and settle.py `nn.10`) ported as-is:
 
@@ -408,6 +409,7 @@ def cost_millicents(tokens_in: int) -> int:
 class JevResult(TypedDict, total=False):
     ok: bool
     status: str        # ok | no_nudenet | no_key | capped | error
+    call_failed: bool  # an `error` from the model / NudeNet call itself (not the item's image): outage evidence
     blob: dict[str, Any]
     detail: str
     cost_millicents: int
@@ -477,12 +479,132 @@ async def run(account_id: str, data: bytes) -> JevResult:
                         latency_ms=int((time.monotonic() - t0) * 1000))
         log.warning("vault_jev failed account=%s passes=%s: %s", account_id, passes, type(e).__name__)
         return JevResult(ok=False, status="error", detail=f"{type(e).__name__}: {e}"[:300],
-                         cost_millicents=actual, tok=tok)
+                         cost_millicents=actual, tok=tok, call_failed=True)
     actual = cost_millicents(tok)
     await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),
                     response=f"lane5={d['lane5']} passes={','.join(passes)}")
     b = rules.blob(d, scores, passes=passes, tok=tok, px=px, at=datetime.utcnow().isoformat(),
                    answers=rules.overlay(rec, d))
+    return JevResult(ok=True, status="ok", blob=b, cost_millicents=actual, tok=tok)
+
+
+# ── Videos (D53 hr12 maxF, D54) ─────────────────────────────────────
+# Pass 1 + NudeNet on every frame (`vault_frames.collect_jev_video`: 12 frames @720p), pass 2 / L only on the top-3
+# frames derive8 asks for (`vault_jev_rules.video_targets`, bench jv-jev.py), lane = max over frames.
+
+# TypeSafe calls in flight for one video (the bench ran 6).
+FRAME_CONCURRENCY = 6
+# Pass L guard: Jev answers 400 "Invalid image dimensions" on a 400x202 crop (D53). A frame whose encoded crops
+# are not all ≥ this on their short edge (shrink's own floor) skips pass L, recorded as `"Ls": "small"`.
+MIN_L_EDGE = 280
+
+
+def _order(qs: dict[str, dict]) -> "rules.Order":
+    return [(k, None if q["type"] == "noul" else list(q["criteria"])) for k, q in qs.items()]
+
+
+# Each pass's positional layout in a stored video frame (`vault_jev_rules.pack`).
+ORDER = {"1": _order(Q), "2": _order(Q2), "L": _order(crop_questions({"full_photo": 0, "lower_part": 0}))}
+_RESP = {"1": "resp", "2": "resp2", "L": "respL"}
+_NN = ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED")   # the classes NN_D34 reads, stored per frame
+
+
+def frame_recs(jev: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
+    """A stored video `_jev`'s frames back as bench records + NudeNet scores: `vault_jev_rules.video_final` over
+    them re-derives the stored lane without a refetch."""
+    recs = [{_RESP[p]: {"answers": rules.unpack(f[p], ORDER[p])} for p in ORDER if p in f} for f in jev["frames"]]
+    return recs, [dict(zip(_NN, f["nn"])) for f in jev["frames"]]
+
+
+async def _settled(coros: list[Any]) -> list[Any]:
+    """`gather` that lets every call finish (so its tokens are counted before the hold settles), then raises the
+    first failure."""
+    out = await asyncio.gather(*coros, return_exceptions=True)
+    for x in out:
+        if isinstance(x, BaseException):
+            raise x
+    return out
+
+
+async def run_video(account_id: str, frames: list[bytes], *, src: str, review: str | None,
+                    nbytes: int) -> JevResult:
+    """The whole pass over one video's frames (native stills, clip order). `run`'s contract: never raises for a
+    model / NudeNet failure; any frame's failed call fails the video (`error`, retried next sweep)."""
+    import llm_client
+    from llm_providers import typesafe_key
+    from PIL import Image as PImage
+
+    refusal = await preflight()
+    if refusal is not None:
+        return refusal
+    key = typesafe_key()
+    try:
+        if not frames:
+            raise ValueError("no frames")
+        px = [list(PImage.open(io.BytesIO(f)).size) for f in frames]
+    except Exception as e:  # noqa: BLE001
+        return JevResult(ok=False, status="error", detail=f"unreadable frame: {type(e).__name__}: {e}"[:300],
+                         cost_millicents=0, tok=0)
+    try:
+        hold = await llm_client.reserve_external(
+            account_id, PROVIDER, MODEL, cost_millicents(RESERVE_TOKENS * len(frames)), purpose=PURPOSE,
+            request={"questions": len(Q), "frames": len(frames), "src": src, "px": px[0]})
+    except llm_client.LLMCapExceeded as e:
+        return JevResult(ok=False, status="capped", detail=str(e), cost_millicents=0, tok=0)
+
+    sem = asyncio.Semaphore(FRAME_CONCURRENCY)
+    tok = 0
+    packs: list[dict[str, Any]] = [{"px": p} for p in px]
+    recs: list[dict[str, Any]] = [{} for _ in frames]
+
+    async def ask(i: int, p: str, state: dict[str, bytes], qs: dict[str, dict]) -> None:
+        nonlocal tok
+        async with sem:
+            r = await _ask(key, state, qs)
+        tok += _tokens(r)
+        # derive from the stored (packed) answers, so a later re-derive (`frame_recs`) gives the same lane
+        packs[i][p] = rules.pack(r["answers"], ORDER[p])
+        recs[i][_RESP[p]] = {"answers": rules.unpack(packs[i][p], ORDER[p])}
+
+    async def p1(i: int) -> None:
+        await ask(i, "1", {"photo": await asyncio.to_thread(shrink, frames[i], EDGE)}, Q)
+
+    async def p2(i: int) -> None:
+        await ask(i, "2", {"photo": await asyncio.to_thread(shrink, frames[i], EDGE2)}, Q2)
+
+    async def pl(i: int) -> None:
+        def _crop_state() -> dict[str, bytes]:
+            return {k: enc(v, EDGE_L) for k, v in crops(frames[i], "lower").items()}
+        st = await asyncio.to_thread(_crop_state)
+        if min(min(PImage.open(io.BytesIO(b)).size) for b in st.values()) < MIN_L_EDGE:
+            packs[i]["Ls"] = "small"
+            return
+        await ask(i, "L", st, crop_questions(st, "lower"))
+
+    t0 = time.monotonic()
+    try:
+        got = await _settled([*(p1(i) for i in range(len(frames))), *(nudenet_scores(f) for f in frames)])
+        scores = got[len(frames):]
+        await _settled([p2(i) for i in rules.video_targets(recs, "need2")])
+        await _settled([pl(i) for i in rules.video_targets(recs, "needL")])
+        scores = [{c: s.get(c, 0) for c in _NN} for s in scores]
+        ds, top = rules.video_final(recs, scores)
+    except Exception as e:  # noqa: BLE001 — SDK, HTTP, timeout, NudeNet decode, a missing answer
+        actual = cost_millicents(tok)
+        await hold.done(actual, tokens_in=tok, ok=False, error=f"{type(e).__name__}: {e}"[:300],
+                        latency_ms=int((time.monotonic() - t0) * 1000))
+        log.warning("vault_jev video failed account=%s frames=%s: %s", account_id, len(frames), type(e).__name__)
+        return JevResult(ok=False, status="error", detail=f"{type(e).__name__}: {e}"[:300],
+                         cost_millicents=actual, tok=tok, call_failed=True)
+    passes = [p for p in ORDER if any(p in f for f in packs)]
+    for f, d, s in zip(packs, ds, scores):
+        f["nn"] = [s[c] for c in _NN]
+        f["lane5"] = d["lane5"]
+    actual = cost_millicents(tok)
+    await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),
+                    response=f"lane5={ds[top]['lane5']} frame={top}/{len(frames)} src={src} passes={','.join(passes)}")
+    b = rules.video_blob(ds, top, recs, scores, frames=packs, passes=passes, tok=tok, px=px,
+                         at=datetime.utcnow().isoformat(), src=src, review=review, nbytes=nbytes)
     return JevResult(ok=True, status="ok", blob=b, cost_millicents=actual, tok=tok)
 
 

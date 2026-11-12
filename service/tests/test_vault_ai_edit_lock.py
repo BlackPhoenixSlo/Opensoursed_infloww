@@ -61,6 +61,9 @@ async def _seed(aid: str, media_id: int, *, kind: str = "photo") -> None:
         "tags": ["beach", "bikini"],
         "explicitness": "suggestive",
     }
+    if kind == "video":   # a clip's qwen describe is fed its `_jev` (D54)
+        from _jev_fixtures import video_jev
+        ai["_jev"] = video_jev()
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))

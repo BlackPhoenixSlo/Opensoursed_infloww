@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 of_pacing — background OF walks: 429 parse, the shared per-Creator pacer, the
-one retry, no claim; the browser name fill's retry; link_metrics.prewarm_all's
+one retry, no claim; the browser name fill's retry; link_prewarm.prewarm_all's
 busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
 
   case_parse_allow_table:   "Please allow N seconds" -> N; none -> default; cap.
@@ -257,10 +257,10 @@ def case_retry_429_unpaced():
 
 
 def case_prewarm_busy_table():
-    import link_metrics
-    real = {k: getattr(link_metrics, k) for k in ("prewarm", "dead_session_map", "is_deactivated",
+    import link_prewarm
+    real = {k: getattr(link_prewarm, k) for k in ("prewarm", "dead_session_map", "is_deactivated",
                                                   "_PREWARM_SPREAD_S")}
-    real_list = link_metrics.account_registry.list_accounts
+    real_list = link_prewarm.account_registry.list_accounts
     walked: list[tuple[str, float]] = []
 
     async def prewarm(aid):
@@ -271,9 +271,9 @@ def case_prewarm_busy_table():
 
     async def active(_aid):
         return False
-    link_metrics.prewarm, link_metrics.dead_session_map, link_metrics.is_deactivated = prewarm, no_dead, active
-    link_metrics._PREWARM_SPREAD_S = 0.0
-    link_metrics.account_registry.list_accounts = lambda: [
+    link_prewarm.prewarm, link_prewarm.dead_session_map, link_prewarm.is_deactivated = prewarm, no_dead, active
+    link_prewarm._PREWARM_SPREAD_S = 0.0
+    link_prewarm.account_registry.list_accounts = lambda: [
         {"id": a, "has_session": True, "platform": "onlyfans"} for a in ("a", "b", "c")]
     try:
         # busy: Creators with a person's read now; pass 1 / pass 2 (busy idle by then) walk order
@@ -287,17 +287,17 @@ def case_prewarm_busy_table():
                 of_pacing.note_user(a)
             walked.clear()
             t0 = time.monotonic()
-            asyncio.run(link_metrics.prewarm_all())
+            asyncio.run(link_prewarm.prewarm_all())
             assert [a for a, _ in walked] == first, (busy, walked)
             assert time.monotonic() - t0 < 0.1, "a pass never waits for a busy Creator"
             time.sleep(0.25)   # the person's read leaves the window
             walked.clear()
-            asyncio.run(link_metrics.prewarm_all())
+            asyncio.run(link_prewarm.prewarm_all())
             assert [a for a, _ in walked] == second, (busy, walked)
     finally:
         for k, v in real.items():
-            setattr(link_metrics, k, v)
-        link_metrics.account_registry.list_accounts = real_list
+            setattr(link_prewarm, k, v)
+        link_prewarm.account_registry.list_accounts = real_list
 
 
 E1 = ("socks5://u:pw@10.0.0.1:1080", "pool-a")

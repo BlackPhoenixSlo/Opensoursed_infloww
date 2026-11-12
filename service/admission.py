@@ -96,7 +96,7 @@ class Lane:
         log.warning("%s lane full: waited %ss, %s already running (%s)",
                     self.name, self.wait_s, self.cap, label or "-")
 
-    async def enter_async(self, label: str = "") -> bool:
+    async def enter_async(self, label: str = "", *, forever: bool = False) -> bool:
         """`enter` for an `async def` caller: the same slots, cap, `wait_s` and
         `rejected`, but the waiter parks on its event loop, not on a thread.
 
@@ -111,7 +111,8 @@ class Lane:
         (the semaphore is never released in between, so a newcomer cannot take
         it first), and a newcomer queues whenever anyone is queued. Mixing: a
         sync `enter` on the same lane gets a slot only via the semaphore, i.e.
-        when no `enter_async` waiter is queued; the cap covers both."""
+        when no `enter_async` waiter is queued; the cap covers both. `forever`:
+        no `wait_s` limit (a caller that holds nothing while it waits)."""
         loop = asyncio.get_running_loop()
         with self._lock:
             if not self._waiters and self._sem.acquire(blocking=False):
@@ -120,7 +121,7 @@ class Lane:
             fut = loop.create_future()
             self._waiters.append(fut)
         try:
-            await asyncio.wait_for(fut, self.wait_s)
+            await asyncio.wait_for(fut, None if forever else self.wait_s)
             return True               # handed a slot; `busy` already counts it
         except BaseException as e:
             # One fact decides: did `exit` pop us? Popped = handed a slot, ours
@@ -348,6 +349,14 @@ IMG_FETCH = Lane("img_fetch", "IMG_FETCH_CONCURRENCY", 8, 15.0)
 # what once gave 1,777 merely-unsigned items a 7-day cooldown.
 STORYBOARD_BUILD = Lane("storyboard_build", "STORYBOARD_BUILD_CONCURRENCY", 3, 20.0)
 
+# A vault video's Jev frames (`vault_frames.collect_jev_video`, D54): a whole 720p download (capped, 50 MB default) and
+# one ffmpeg pass over it, ~4x the bytes and pixels of a 240p storyboard build. Its own lane, LOWER than
+# STORYBOARD_BUILD's, so a describe / flags sweep walking a vault of clips never holds the slots a hover scrub
+# needs. A sweep's clip takes its slot BEFORE its vision slot and waits as long as it takes (`vault_jev_pass.clip_lane`),
+# so a waiting clip idles nothing; the 5 s here is for a lone visit (no sweep) only, whose full lane is `fetch_failed`
+# (retry next sweep), like STORYBOARD_BUILD's.
+JEV_VIDEO = Lane("jev_video", "JEV_VIDEO_CONCURRENCY", 2, 5.0)
+
 
 # ── The loop lanes ──────────────────────────────────────────────────
 #
@@ -415,7 +424,7 @@ TRACKING_STATS_READ = LoopLane("tracking_stats_read", "TRACKING_STATS_CONCURRENC
 # Every lane, so diagnostics can be DERIVED rather than restated. `admin_streams`
 # merges `all_stats()`; adding a lane above and forgetting it here is the only
 # way it can go unreported, which is one place to look instead of two files.
-LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD)
+LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD, JEV_VIDEO)
 LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, VAULT_DOWNLOAD, TRACKING_STATS_READ)
 
 

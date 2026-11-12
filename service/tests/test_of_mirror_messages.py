@@ -26,6 +26,13 @@ row "x") and Mark all as read.
   case_message_menu_paths
   case_message_menu_routes_call_the_client
   case_unrestrict_unhides_only_when_asked
+  case_pins_two_reads_inside_the_ttl_cost_one_of_call
+  case_pin_unpin_and_unpin_all_clear_the_chats_pins
+  case_every_message_write_clears_the_accounts_pins
+  case_a_failed_message_write_still_clears_the_pins
+  case_pins_ttl_zero_reads_of_every_time
+  case_head_read_on_a_deferred_chat_enqueues_its_backfill_once
+  case_head_read_never_waits_on_the_backfill
 
 Run: ./venv/bin/python service/tests/test_of_mirror_messages.py
 """
@@ -435,6 +442,310 @@ def case_unrestrict_unhides_only_when_asked():
     finally:
         server._get_client, server._resolve_account_id, common.set_of_restricted_skip = orig
     assert skips == [("acc", FAN, False), ("acc", FAN, False)], skips
+
+class _PinsClient:
+    """A fake OF client for the pinned route: counts `/pinned` reads, records
+    message writes; `fail_writes` makes every write raise OF's error."""
+
+    def __init__(self):
+        self.pinned_reads = 0
+        self.writes = []
+        self.fail_writes = False
+
+    def get_pinned_messages(self, chat_id):
+        self.pinned_reads += 1
+        return [{"id": 100 + self.pinned_reads, "chat": chat_id}]
+
+    def _answer(self, *write):
+        self.writes.append(write)
+        if self.fail_writes:
+            raise of_client.OFAPIError(f"504 for https://onlyfans.com/api2/v2/messages/77/{write[0]}")
+        return {"success": True}
+
+    def pin_message(self, message_id, user_id):
+        return self._answer("pin", message_id, user_id)
+
+    def unsend_message(self, message_id, with_user_id=None):
+        return self._answer("unsend", message_id, with_user_id)
+
+    def hide_message(self, message_id, user_id):
+        return self._answer("hide", message_id, user_id)
+
+    def like_message(self, message_id):
+        return self._answer("like", message_id)
+
+    def unlike_message(self, message_id):
+        return self._answer("unlike", message_id)
+
+    def bookmark_message(self, message_id, group, on):
+        return self._answer("bookmark" if on else "unbookmark", message_id)
+
+    def unpin_message(self, message_id, user_id):
+        return self._answer("unpin", message_id, user_id)
+
+    def unpin_all_messages(self, chat_id):
+        return self._answer("unpin_all", chat_id)
+
+
+def _with_pins(ttl, run):
+    """Run `async run(c)` with a fake pins client on account `acct-pins` and
+    PINS_CACHE_TTL_S=`ttl` (None = unset, the default); returns the client."""
+    import os
+    c = _PinsClient()
+    orig = (server._get_client, server._resolve_account_id, server._bust_chat_list_cache)
+    orig_env = os.environ.get("PINS_CACHE_TTL_S")
+    server._get_client = lambda *a, **k: c
+    server._resolve_account_id = lambda *a, **k: "acct-pins"
+    server._bust_chat_list_cache = lambda *a, **k: None
+    if ttl is None:
+        os.environ.pop("PINS_CACHE_TTL_S", None)
+    else:
+        os.environ["PINS_CACHE_TTL_S"] = ttl
+    server.relay_cache.invalidate("chat_pinned", "acct-pins")
+    try:
+        asyncio.run(run(c))
+    finally:
+        (server._get_client, server._resolve_account_id, server._bust_chat_list_cache) = orig
+        if orig_env is None:
+            os.environ.pop("PINS_CACHE_TTL_S", None)
+        else:
+            os.environ["PINS_CACHE_TTL_S"] = orig_env
+        server.relay_cache.invalidate("chat_pinned", "acct-pins")
+    return c
+
+
+def case_pins_two_reads_inside_the_ttl_cost_one_of_call():
+    async def run(c):
+        first = await server.get_pinned(FAN)
+        second = await server.get_pinned(FAN)
+        assert c.pinned_reads == 1, c.pinned_reads
+        assert first == second == {"list": [{"id": 101, "chat": FAN}]}, (first, second)
+        # Another chat is its own entry.
+        await server.get_pinned(FAN + 1)
+        assert c.pinned_reads == 2, c.pinned_reads
+        # Concurrent opens of a cold chat share one OF read (the per-key lock).
+        server.relay_cache.invalidate("chat_pinned", "acct-pins")
+        await asyncio.gather(*(server.get_pinned(FAN) for _ in range(5)))
+        assert c.pinned_reads == 3, c.pinned_reads
+    _with_pins(None, run)
+
+
+def case_pin_unpin_and_unpin_all_clear_the_chats_pins():
+    async def run(c):
+        await server.get_pinned(FAN)
+        assert c.pinned_reads == 1
+        for write in (lambda: server.of_pin_message(77, FAN),
+                      lambda: server.of_unpin_message(77, FAN),
+                      lambda: server.of_unpin_all_messages(FAN)):
+            reads = c.pinned_reads
+            assert write() == {"success": True}
+            await server.get_pinned(FAN)
+            assert c.pinned_reads == reads + 1, (c.writes[-1], c.pinned_reads)
+            # ...and the read after that is cached again.
+            await server.get_pinned(FAN)
+            assert c.pinned_reads == reads + 1, (c.writes[-1], c.pinned_reads)
+        assert c.writes == [("pin", 77, FAN), ("unpin", 77, FAN), ("unpin_all", FAN)], c.writes
+    _with_pins(None, run)
+
+
+class _UnsendReq:
+    """The unsend route reads its optional `{withUserId}` body off the request."""
+
+    async def body(self):
+        return b'{"withUserId": %d}' % FAN
+
+
+async def _unsend():
+    return await server.of_unsend_message(_UnsendReq(), 77)
+
+
+# Every message write route the pinned page offers, as the server handlers.
+_MESSAGE_WRITES = (
+    lambda: server.of_pin_message(77, FAN),
+    lambda: server.of_unpin_message(77, FAN),
+    lambda: server.of_unpin_all_messages(FAN),
+    _unsend,
+    lambda: server.of_hide_message(77, server._WithUserBody(withUserId=FAN)),
+    lambda: server.of_like_message(77),
+    lambda: server.of_unlike_message(77),
+    lambda: server.of_bookmark_message(77, None),
+    lambda: server.of_unbookmark_message(77, None),
+)
+
+
+def case_every_message_write_clears_the_accounts_pins():
+    """Unsend, hide, like/unlike and bookmark/unbookmark name no chat, and the
+    pinned page offers each: every one drops the account's pins (both chats)."""
+    async def run(c):
+        for write in _MESSAGE_WRITES[3:]:
+            await server.get_pinned(FAN)
+            await server.get_pinned(FAN + 1)
+            reads = c.pinned_reads
+            out = write()
+            out = await out if asyncio.iscoroutine(out) else out
+            assert out == {"success": True}, out
+            await server.get_pinned(FAN)
+            await server.get_pinned(FAN + 1)
+            assert c.pinned_reads == reads + 2, (c.writes[-1], c.pinned_reads)
+        assert [w[0] for w in c.writes] == ["unsend", "hide", "like", "unlike", "bookmark", "unbookmark"], c.writes
+    _with_pins(None, run)
+
+
+def case_a_failed_message_write_still_clears_the_pins():
+    """OF may have applied a write it answered with an error (a timeout): every
+    message write route drops the pins anyway, so the next read asks OF."""
+    from fastapi import HTTPException
+
+    async def run(c):
+        c.fail_writes = True
+        for write in _MESSAGE_WRITES:
+            await server.get_pinned(FAN)
+            reads = c.pinned_reads
+            try:
+                out = write()
+                await out if asyncio.iscoroutine(out) else out
+            except HTTPException as e:
+                assert e.status_code == 502, (c.writes[-1], e.status_code)
+            else:
+                raise AssertionError(f"a failed write answered OK: {c.writes[-1]}")
+            await server.get_pinned(FAN)
+            assert c.pinned_reads == reads + 1, (c.writes[-1], c.pinned_reads)
+        assert len(c.writes) == len(_MESSAGE_WRITES), c.writes
+    _with_pins(None, run)
+
+
+def case_pins_ttl_zero_reads_of_every_time():
+    async def run(c):
+        for _ in range(3):
+            await server.get_pinned(FAN)
+        assert c.pinned_reads == 3, c.pinned_reads
+    _with_pins("0", run)
+
+
+class _HeadClient:
+    """A fake OF client for the messages route: counts OF reads per (chat, before_id)."""
+
+    def __init__(self):
+        self.reads = []
+
+    def get_messages(self, chat_id, limit=10, order="desc", before_id=None):
+        self.reads.append((chat_id, before_id))
+        return {"list": [{"id": 500 + len(self.reads), "text": "hi", "fromUser": {"id": chat_id}}],
+                "hasMore": False}
+
+
+class _Req:
+    """What `_current_priority` reads off the request in flight."""
+
+    def __init__(self, priority):
+        self.headers = {"x-priority": priority} if priority else {}
+
+
+def _with_head(run):
+    """Run `async run(c, read)` on account `acct-open` with a fake OF client; `read(chat, priority=None,
+    before_id=None)` calls the route as that request would and lets its fired tasks finish."""
+    import webhook_dispatch as wd
+    c = _HeadClient()
+    orig = (server._get_client, server._resolve_account_id)
+    server._get_client = lambda *a, **k: c
+    server._resolve_account_id = lambda *a, **k: "acct-open"
+    wd._fan_scrape_claims.clear()
+
+    async def read(chat, priority=None, before_id=None):
+        token = server._request_ctx.set(_Req(priority))
+        try:
+            out = await server.get_messages(chat, limit=10, order="desc", before_id=before_id, refresh=True)
+        finally:
+            server._request_ctx.reset(token)
+        await asyncio.gather(*(t for t in asyncio.all_tasks() if t.get_name().startswith("deferred-history")))
+        return out
+
+    try:
+        asyncio.run(run(c, read))
+    finally:
+        server._get_client, server._resolve_account_id = orig
+        wd._fan_scrape_claims.clear()
+    return c
+
+
+async def _seed_history(aid, fan, *, deferred):
+    from datetime import datetime
+    from db.engine import get_session
+    from db.models import Account, ScrapeHistory
+    now = datetime.utcnow()
+    async with get_session() as s:
+        if await s.get(Account, aid) is None:
+            s.add(Account(id=aid))
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=None if deferred else 77,
+                            last_scrape_at=now, history_deferred_at=now if deferred else None))
+
+
+async def _backfills(aid):
+    """{fan: deferred_history jobs} on `aid`."""
+    import json
+    from collections import Counter
+    from sqlalchemy import select
+    from db.engine import get_session
+    from db.models import ScheduledJob
+    async with get_session() as s:
+        rows = (await s.execute(select(ScheduledJob.payload_json).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_chats"))).scalars().all()
+    out = Counter()
+    for p in rows:
+        p = json.loads(p)
+        assert p.get("source") == "deferred_history" and len(p["fan_ids"]) == 1, p
+        out[p["fan_ids"][0]] += 1
+    return dict(out)
+
+
+def case_head_read_on_a_deferred_chat_enqueues_its_backfill_once():
+    """A head read of a deferred chat enqueues its backfill once, at user and at background
+    priority; a second read inside the window none; a not-deferred chat and an older page
+    none; every head read still reaches OF."""
+    aid, user_fan, bg_fan, plain_fan, older_fan = "acct-open", 9101, 9102, 9103, 9104
+
+    async def run(c, read):
+        await _seed_history(aid, user_fan, deferred=True)
+        await _seed_history(aid, bg_fan, deferred=True)
+        await _seed_history(aid, plain_fan, deferred=False)
+        await _seed_history(aid, older_fan, deferred=True)
+        out = await read(user_fan)
+        assert out["list"][0]["id"] == 501, out
+        assert await _backfills(aid) == {user_fan: 1}, await _backfills(aid)
+        await read(user_fan)
+        await read(user_fan, priority="background")
+        assert await _backfills(aid) == {user_fan: 1}, await _backfills(aid)
+        await read(bg_fan, priority="background")
+        await read(plain_fan)
+        await read(older_fan, before_id=400)
+        assert await _backfills(aid) == {user_fan: 1, bg_fan: 1}, await _backfills(aid)
+        assert c.reads == [(user_fan, None)] * 3 + [(bg_fan, None), (plain_fan, None), (older_fan, 400)], c.reads
+    _with_head(run)
+
+
+def case_head_read_never_waits_on_the_backfill():
+    """The trigger is fired and forgotten: a backfill that never finishes holds no head read."""
+    import webhook_dispatch as wd
+    aid, fan = "acct-open", 9105
+    gate = {}
+    orig = wd.backfill_if_deferred
+
+    async def stuck(*_a):
+        await gate["ev"].wait()
+
+    async def run(c, _read):
+        gate["ev"] = asyncio.Event()
+        await _seed_history(aid, fan, deferred=True)
+        wd.backfill_if_deferred = stuck
+        try:
+            out = await asyncio.wait_for(server.get_messages(fan, limit=10, order="desc", before_id=None,
+                                                             refresh=False), timeout=2)
+        finally:
+            wd.backfill_if_deferred = orig
+            gate["ev"].set()
+        assert out["list"] and c.reads == [(fan, None)], (out, c.reads)
+    _with_head(run)
+
 
 def case_messages_basic_grants_no_payment_route():
     """The mirror's Tip is disabled, so Messages Basic must not open POST /tips (a payment) to a chatter."""

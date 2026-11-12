@@ -18,6 +18,25 @@ Plus the harness primitives every P4 automation depends on:
   case_scrape_full_sweep_mark_only_on_empty_payload:
       only a `{}` run stamps full_sweep (sweep_cadence's anchor), not fan_ids or
       {"limit": 50}; unread chats are read like any other.
+  case_scrape_sweep_stops_after_five_systemic_failures_in_a_row /
+  case_scrape_sweep_fail_fast_counts_only_in_a_row /
+  case_scrape_sweep_fail_fast_before_first_scan_and_knob:
+      a `{}` sweep stops after SCRAPE_SWEEP_FAIL_FAST (5) systemic failures in a row
+      (429, OF 5xx, proxy, timeout) anywhere, raises (no full_sweep) and keeps what it
+      scraped; a scraped chat or a parse failure resets the count, a 404 never counts;
+      the before-first-scan stop is unchanged; the Knob is read at call time.
+  case_scrape_silent_mass_only_chat_costs_one_page_and_defers /
+  case_scrape_not_silent_chats_are_backfilled_as_today /
+  case_scrape_cursor_write_clears_the_deferred_mark /
+  case_scrape_eager_history_knob_restores_todays_calls /
+  case_history_deferred_at_self_heals_on_init_db /
+  case_scrape_deferred_backfill_counts_under_its_own_caller_kind:
+      a `{}` sweep's first scrape of a Silent mass-only chat reads page 1 only, keeps
+      rows / identity / mute / preview, adopts placeholders, leaves history_deferred_at
+      with a NULL cursor; a fan reply on OF or in the DB, a ledger purchase, own non-queue rows or a short
+      convo get today's calls; an explicit or post-reply scrape pulls both ends and
+      clears the mark; SCRAPE_EAGER_HISTORY=1 restores today; init_db self-heals the column;
+      a `deferred_history` backfill's OF calls count as `auto:scrape_chats:deferred_history`.
   case_fan_lease_acquire_block_steal:
       a live lease blocks a second automation; an expired one can be stolen;
       release frees it. The per-(account, fan) send guard (one send per cycle).
@@ -80,6 +99,7 @@ from db.models import (  # noqa: E402
     Message,
     ScheduledJob,
     ScrapeHistory,
+    Transaction,
 )
 
 # Our account's own OF user id — a message whose fromUser.id matches this is
@@ -467,6 +487,356 @@ async def case_scrape_desc_catch_up_no_refetch_start():
         )).scalars().all())
         assert ids == list(range(181, 201)), ids
         assert 1 not in ids, "convo start was NOT re-fetched on a catch-up"
+
+
+# ── A full sweep stops after SCRAPE_SWEEP_FAIL_FAST systemic failures in a row ──
+
+class ScriptedSweepClient(FakeClient):
+    """A `{}` sweep over `script` (chat id -> "ok" | "429" | "503" | "proxy" | "timeout" |
+    "404" | "parse"), in that order. "ok" serves one inbound message; the rest raise what
+    of_client raises for that OF answer. `tried` records each chat's page-1 read."""
+
+    def __init__(self, script: list[tuple[int, str]]):
+        from curl_cffi import requests as cc
+        self._cc = cc
+        self.script = dict(script)
+        super().__init__({c: [_of_msg(c * 10 + 1, True, "hi", "2026-06-05T10:00:00+00:00", fan_id=c)]
+                          for c, _ in script})
+        self.tried: list[int] = []
+
+    def get_messages(self, chat_id, **kw) -> dict:
+        cid = int(chat_id)
+        if kw.get("before_id") is None and kw.get("order", "desc") == "desc":
+            self.tried.append(cid)
+        how = self.script[cid]
+        exc = self._cc.exceptions
+        if how in ("429", "503", "404"):
+            from of_client import OFAPIError
+            raise OFAPIError(how, response=type("R", (), {"status_code": int(how)})())
+        if how == "proxy":
+            raise exc.ProxyError("proxy refused")
+        if how == "timeout":
+            raise exc.Timeout("timed out")
+        if how == "parse":
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+        return super().get_messages(chat_id, **kw)
+
+
+async def _sweep(aid: str, script: list[tuple[int, str]]):
+    """One `{}` scrape_chats run over `script`: (result or the raised error, client)."""
+    from automations import scrape_chats as sc
+    await _seed_account(aid)
+    fake = ScriptedSweepClient(script)
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    real_sleep, sc._PAGE_SLEEP_S = sc._PAGE_SLEEP_S, 0
+    try:
+        return await sc._automation_scrape_chats(aid, {}, run_id=0), fake
+    except RuntimeError as e:
+        return e, fake
+    finally:
+        sc._PAGE_SLEEP_S = real_sleep
+
+
+async def case_scrape_sweep_stops_after_five_systemic_failures_in_a_row():
+    """A good chat, then a 429 burst (and, separately, a dead proxy): the sweep stops at
+    the 5th failed read, raises (no full_sweep), and keeps the chat it scraped."""
+    for aid, how in (("acc_ff_429", "429"), ("acc_ff_proxy", "proxy")):
+        base = 6000 if how == "429" else 6100
+        script = [(base, "ok")] + [(base + i, how) for i in range(1, 20)]
+        res, fake = await _sweep(aid, script)
+        assert isinstance(res, RuntimeError), (how, res)
+        assert fake.tried == [base] + [base + i for i in range(1, 6)], (how, fake.tried)
+        async with get_session() as s:
+            assert await s.get(ScrapeHistory, (aid, base)) is not None, "the good chat is kept"
+            n = len((await s.execute(select(Message).where(Message.account_id == aid))).scalars().all())
+            assert n == 1, (how, n)
+    # OF 5xx and timeouts are systemic too (mixed, still in a row).
+    script = [(6200, "ok"), (6201, "503"), (6202, "timeout"), (6203, "429"), (6204, "proxy"),
+              (6205, "503"), (6206, "ok")]
+    res, fake = await _sweep("acc_ff_mix", script)
+    assert isinstance(res, RuntimeError) and fake.tried == [6200 + i for i in range(6)], (res, fake.tried)
+
+
+async def case_scrape_sweep_fail_fast_counts_only_in_a_row():
+    """A scraped chat or a non-systemic failure resets the count; a 404 never counts
+    (and never resets); five parse failures between good chats finish the sweep."""
+    s429 = [(6300, "ok")] + [(6300 + i, "429") for i in range(1, 5)] + [(6305, "ok")] + \
+        [(6305 + i, "429") for i in range(1, 5)] + [(6310, "ok")]
+    res, fake = await _sweep("acc_ff_reset", s429)
+    assert isinstance(res, dict) and res["full_sweep"] is True and res["chats_scanned"] == 3, res
+    assert len(fake.tried) == 11, fake.tried
+    parse = [(6400, "ok")] + [(6400 + i, "parse") for i in range(1, 6)] + [(6406, "ok")]
+    res, fake = await _sweep("acc_ff_parse", parse)
+    assert isinstance(res, dict) and res["full_sweep"] is True and res["chats_scanned"] == 2, res
+    assert len(fake.tried) == 7, fake.tried
+    # four 429s, a parse failure (resets), four 429s, a good chat: no stop.
+    mixed = [(6500, "ok")] + [(6500 + i, "429") for i in range(1, 5)] + [(6505, "parse")] + \
+        [(6505 + i, "429") for i in range(1, 5)] + [(6510, "ok")]
+    res, fake = await _sweep("acc_ff_nonsys", mixed)
+    assert isinstance(res, dict) and res["full_sweep"] is True and len(fake.tried) == 11, (res, fake.tried)
+    # 404s between 429s neither count nor reset: 2 x 429, 3 x 404, 3 x 429 stops at the 5th 429.
+    gone = [(6600, "ok"), (6601, "429"), (6602, "429"), (6603, "404"), (6604, "404"), (6605, "404"),
+            (6606, "429"), (6607, "429"), (6608, "429"), (6609, "ok")]
+    res, fake = await _sweep("acc_ff_gone", gone)
+    assert isinstance(res, RuntimeError) and fake.tried == [6600 + i for i in range(9)], (res, fake.tried)
+    # Ten 404s after a good chat: a healthy sweep.
+    res, fake = await _sweep("acc_ff_allgone", [(6700, "ok")] + [(6700 + i, "404") for i in range(1, 11)])
+    assert isinstance(res, dict) and res["full_sweep"] is True and len(fake.tried) == 11, res
+
+
+async def case_scrape_sweep_fail_fast_before_first_scan_and_knob():
+    """Today's stop before the first scraped chat (any non-404 failure) still fires at
+    5; SCRAPE_SWEEP_FAIL_FAST is read at call time (3 stops at the 3rd systemic failure)."""
+    import os
+    res, fake = await _sweep("acc_ff_first", [(6800 + i, "parse") for i in range(20)])
+    assert isinstance(res, RuntimeError) and "0 of 20" in str(res), res
+    assert len(fake.tried) == 5, fake.tried
+    os.environ["SCRAPE_SWEEP_FAIL_FAST"] = "3"
+    try:
+        res, fake = await _sweep("acc_ff_knob", [(6900, "ok")] + [(6900 + i, "429") for i in range(1, 10)])
+        assert isinstance(res, RuntimeError) and len(fake.tried) == 4, (res, fake.tried)
+    finally:
+        del os.environ["SCRAPE_SWEEP_FAIL_FAST"]
+
+
+# ── A `{}` sweep defers a Silent mass-only chat's deep history (SCRAPE_EAGER_HISTORY) ──
+
+def _mass_msg(mid: int, *, fan_id: int, text: str | None = None, queued: bool = True) -> dict:
+    """One of OUR mass rows as OF lists it in a chat (`isFromQueue`: sent from the queue)."""
+    m = _of_msg(mid, False, text or f"mass {mid}",
+                f"2026-06-06T{mid // 60 % 24:02d}:{mid % 60:02d}:00+00:00", fan_id=fan_id)
+    if queued:
+        m["isFromQueue"] = True
+    return m
+
+
+class DeepSweepClient(PagedFakeClient):
+    """PagedFakeClient (13 rows a page, desc by `id`, asc by `offset`) whose chat list
+    holds its one chat, muted on OF, so a `{}` sweep reaches it."""
+
+    def list_chats(self, **kw) -> dict:
+        return {"list": [{"withUser": {"id": self.chat_id, "username": f"deep_{self.chat_id}",
+                                       "name": "Deep", "subscribedOn": True},
+                          "isMutedNotifications": True}], "hasMore": False}
+
+
+async def _scrape(aid: str, fake, payload: dict) -> dict:
+    """One scrape_chats run on `fake`, no page sleeps."""
+    from automations import scrape_chats as sc
+    await _seed_account(aid)
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    real_sleep, sc._PAGE_SLEEP_S = sc._PAGE_SLEEP_S, 0
+    try:
+        return await sc._automation_scrape_chats(aid, payload, run_id=0)
+    finally:
+        sc._PAGE_SLEEP_S = real_sleep
+
+
+async def _thread(aid: str, fan: int) -> tuple:
+    """(message ids ascending, ScrapeHistory row, Chat row, Fan row)."""
+    async with get_session() as s:
+        ids = sorted(m.message_id for m in (await s.execute(
+            select(Message).where(Message.account_id == aid, Message.fan_id == fan))).scalars().all())
+        return ids, await s.get(ScrapeHistory, (aid, fan)), await s.get(Chat, (aid, fan)), \
+            await s.get(Fan, (aid, fan))
+
+
+async def case_scrape_silent_mass_only_chat_costs_one_page_and_defers():
+    """150 of our queued mass rows, no fan message anywhere: the `{}` sweep reads page 1
+    only, keeps its rows, identity, mute and preview, adopts the thread's placeholder, and
+    leaves a deferred row with a NULL cursor. A second silent sweep costs the same page."""
+    aid, fan = "acc_defer", 5300
+    msgs = [_mass_msg(i, fan_id=fan) for i in range(1, 151)]
+    fake = DeepSweepClient(fan, msgs)
+    await _seed_account(aid)
+    # The optimistic stub `write_mass_optimistic_rows` left for the newest send (OF echoed no ids).
+    async with get_session() as s:
+        s.add(Message(account_id=aid, fan_id=fan, message_id=5_000_000_000_000_150, direction="out",
+                      sender_name="", body="mass 150", media_ids="[]", media_count=0, price_cents=0,
+                      is_tip=False, is_unsent=False, is_promise=False, automation_kind="mass_message",
+                      created_at=datetime(2026, 6, 6, 2, 30)))
+
+    res = await _scrape(aid, fake, {})
+    assert res["full_sweep"] is True and res["chats_scanned"] == 1, res
+    assert fake.calls == [("desc", None, None)], fake.calls
+    ids, hist, chat, f = await _thread(aid, fan)
+    assert ids == list(range(138, 151)), ids                      # page 1's 13 rows; the stub folded in
+    assert hist.last_message_id is None and hist.history_deferred_at is not None, \
+        (hist.last_message_id, hist.history_deferred_at)
+    assert hist.last_scrape_at is not None
+    assert chat.last_message_id == 150 and "mass 150" in chat.last_message_preview, chat.last_message_id
+    assert f.of_username == "deep_5300" and f.is_muted is True, (f.of_username, f.is_muted)
+    async with get_session() as s:
+        real = await s.get(Message, (aid, fan, 150))
+        assert real.automation_kind == "mass_message", real.automation_kind
+
+    res = await _scrape(aid, fake, {})
+    assert res["full_sweep"] is True and fake.calls == [("desc", None, None)] * 2, fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.last_message_id is None and hist.history_deferred_at is not None
+
+
+async def case_scrape_not_silent_chats_are_backfilled_as_today():
+    """A fan message on OF page 1, a fan message in the DB, a ledger purchase by the fan
+    (a PPV buyer or out-of-chat tipper on a silent page), our own non-queue rows, or a
+    short convo (no hasMore): the `{}` sweep makes exactly the calls an explicit scrape of
+    the same thread makes (today's both-ends pull) and writes the cursor, no mark."""
+    def reply_on_page1(fan):
+        msgs = [_mass_msg(i, fan_id=fan) for i in range(1, 151)]
+        msgs[145] = _of_msg(146, True, "hey", "2026-06-06T02:26:00+00:00", fan_id=fan)
+        return msgs
+
+    variants = (
+        ("reply", reply_on_page1, False, 150),
+        ("dbin", lambda fan: [_mass_msg(i, fan_id=fan) for i in range(1, 151)], "in", 150),
+        ("manual", lambda fan: [_mass_msg(i, fan_id=fan, queued=False) for i in range(1, 151)], False, 150),
+        ("short", lambda fan: [_mass_msg(i, fan_id=fan) for i in range(1, 11)], False, 10),
+        ("paid", lambda fan: [_mass_msg(i, fan_id=fan) for i in range(1, 151)], "tx", 150),
+    )
+    for k, (name, build, db_seed, newest) in enumerate(variants):
+        fan, aid = 5400 + k, "acc_defer"
+        today = DeepSweepClient(fan + 50, build(fan + 50))
+        await _scrape(aid, today, {"fan_ids": [fan + 50]})
+        fake = DeepSweepClient(fan, build(fan))
+        if db_seed == "in":   # the transcoder kept a fan DM OF no longer lists on page 1
+            async with get_session() as s:
+                s.add(Message(account_id=aid, fan_id=fan, message_id=9999, direction="in", sender_name="",
+                              body="old dm", media_ids="[]", media_count=0, price_cents=0, is_tip=False,
+                              is_unsent=False, is_promise=False, created_at=datetime(2026, 5, 1)))
+        if db_seed == "tx":   # the ledger holds his PPV unlock; no fan message anywhere
+            async with get_session() as s:
+                s.add(Transaction(account_id=aid, fan_id=fan, kind="ppv_message", amount_cents=1500,
+                                  occurred_at=datetime(2026, 5, 1), provider_transaction_id=f"tx{fan}",
+                                  source="ingest"))
+        res = await _scrape(aid, fake, {})
+        assert res["full_sweep"] is True, (name, res)
+        assert fake.calls == today.calls, (name, fake.calls, today.calls)
+        if name != "short":
+            assert {o for o, _b, _off in fake.calls} == {"desc", "asc"}, (name, fake.calls)
+        _, hist, _, _ = await _thread(aid, fan)
+        assert hist.last_message_id == newest and hist.history_deferred_at is None, \
+            (name, hist.last_message_id, hist.history_deferred_at)
+
+
+async def case_scrape_cursor_write_clears_the_deferred_mark():
+    """A deferred chat: an explicit `fan_ids` scrape pulls both ends and clears the mark;
+    a later `{}` sweep after the fan replied on OF does the same."""
+    for aid, fan, how in (("acc_defer", 5500, "explicit"), ("acc_defer", 5501, "reply")):
+        msgs = [_mass_msg(i, fan_id=fan) for i in range(1, 151)]
+        fake = DeepSweepClient(fan, msgs)
+        await _scrape(aid, fake, {})
+        _, hist, _, _ = await _thread(aid, fan)
+        assert hist.history_deferred_at is not None, how
+        fake.calls.clear()
+        if how == "reply":
+            fake._asc.append(_of_msg(151, True, "finally", "2026-06-06T03:00:00+00:00", fan_id=fan))
+        await _scrape(aid, fake, {"fan_ids": [fan]} if how == "explicit" else {})
+        assert {o for o, _b, _off in fake.calls} == {"desc", "asc"}, (how, fake.calls)
+        assert ("asc", None, 0) in fake.calls, (how, fake.calls)
+        ids, hist, _, _ = await _thread(aid, fan)
+        want = 151 if how == "reply" else 150
+        assert hist.last_message_id == want and hist.history_deferred_at is None, \
+            (how, hist.last_message_id, hist.history_deferred_at)
+        assert ids[0] == 1 and ids[-1] == want, (how, ids[:3], ids[-3:])
+
+
+async def case_scrape_eager_history_knob_restores_todays_calls():
+    """SCRAPE_EAGER_HISTORY=1 (read at call time): a silent mass-only chat gets today's
+    both-ends pull on the sweep, the same calls an explicit scrape makes, and no mark."""
+    import os
+    fan = 5600
+    today = DeepSweepClient(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
+    await _scrape("acc_defer", today, {"fan_ids": [fan]})
+    fan += 1
+    fake = DeepSweepClient(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
+    os.environ["SCRAPE_EAGER_HISTORY"] = "1"
+    try:
+        await _scrape("acc_defer", fake, {})
+    finally:
+        del os.environ["SCRAPE_EAGER_HISTORY"]
+    assert fake.calls == today.calls and len(fake.calls) > 1, (fake.calls, today.calls)
+    _, hist, _, _ = await _thread("acc_defer", fan)
+    assert hist.last_message_id == 150 and hist.history_deferred_at is None
+
+
+async def case_scrape_deferred_backfill_counts_under_its_own_caller_kind():
+    """Through the executor (which labels a run `auto:scrape_chats`): an explicit scrape of a
+    chat deferred at job start counts its OF reads under `auto:scrape_chats:deferred_history`,
+    whichever trigger won the claim (a blast reply too); one of a chat not deferred stays
+    `auto:scrape_chats`."""
+    import of_call_counter
+
+    class Labelled(DeepSweepClient):
+        def get_messages(self, chat_id, **kw):
+            self.kinds.append(of_call_counter.caller_kind())
+            return super().get_messages(chat_id, **kw)
+
+    got = {}
+    for fan, source, deferred in ((5700, "deferred_history", True), (5701, "blast_reply", True),
+                                  (5702, "blast_reply", False)):
+        fake = Labelled(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
+        fake.kinds = []
+        await _seed_account("acc_defer")
+        if deferred:
+            async with get_session() as s:
+                s.add(ScrapeHistory(account_id="acc_defer", fan_id=fan, last_message_id=None,
+                                    last_scrape_at=datetime.utcnow(),
+                                    history_deferred_at=datetime.utcnow()))
+        ax._make_client = lambda account_id, f=fake: f  # type: ignore[attr-defined]
+        res = await ax.run_once("acc_defer", "scrape_chats", payload={"fan_ids": [fan], "source": source})
+        assert res["status"] == "ok", res
+        got[fan] = set(fake.kinds)
+        assert len(fake.kinds) > 1, fake.kinds
+    assert got == {5700: {"auto:scrape_chats:deferred_history"},
+                   5701: {"auto:scrape_chats:deferred_history"},
+                   5702: {"auto:scrape_chats"}}, got
+
+
+async def case_history_deferred_at_self_heals_on_init_db():
+    """`scrape_history.history_deferred_at` is on a fresh DB and is ALTERed onto an old one
+    by init_db; an old row reads NULL (not deferred), no backfill."""
+    import importlib
+    import os
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+
+    import sqlalchemy as sa
+    import sqlalchemy.dialects.sqlite  # noqa: F401
+    from sqlalchemy.schema import CreateTable
+
+    db_engine = importlib.import_module("db.engine")
+    tmp = Path(tempfile.gettempdir())
+    old, fresh = tmp / f"sh_old_{os.getpid()}.db", tmp / f"sh_fresh_{os.getpid()}.db"
+    for p in (old, fresh):
+        p.unlink(missing_ok=True)
+    ddl = str(CreateTable(ScrapeHistory.__table__).compile(dialect=sa.dialects.sqlite.dialect()))
+    con = sqlite3.connect(old)
+    con.executescript(f"""
+        CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
+        INSERT INTO alembic_version VALUES ('0108_tracking_link_bot_check');
+        {ddl};
+        ALTER TABLE scrape_history DROP COLUMN history_deferred_at;
+        INSERT INTO scrape_history (account_id, fan_id, last_message_id, last_scrape_at)
+            VALUES ('legacy1', 1, 42, '2026-06-01 00:00:00');
+    """)
+    con.commit()
+    con.close()
+    prev = db_engine.DATABASE_URL
+    try:
+        for p in (old, fresh):
+            db_engine.DATABASE_URL = f"sqlite+aiosqlite:///{p}"
+            await db_engine.init_db()
+    finally:
+        db_engine.DATABASE_URL = prev
+    for p in (old, fresh):
+        con = sqlite3.connect(p)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(scrape_history)")}
+        rows = con.execute("SELECT account_id, last_message_id, history_deferred_at FROM scrape_history").fetchall()
+        con.close()
+        p.unlink(missing_ok=True)
+        assert "history_deferred_at" in cols, (p.name, sorted(cols))
+        assert rows == ([("legacy1", 42, None)] if p == old else []), (p.name, rows)
 
 
 # ── Per-(account, fan) lease primitive ───────────────────────────────
@@ -1550,6 +1920,15 @@ _harness.run(
     case_scrape_full_sweep_mark_only_on_empty_payload,
     case_scrape_long_convo_both_ends,
     case_scrape_desc_catch_up_no_refetch_start,
+    case_scrape_sweep_stops_after_five_systemic_failures_in_a_row,
+    case_scrape_sweep_fail_fast_counts_only_in_a_row,
+    case_scrape_sweep_fail_fast_before_first_scan_and_knob,
+    case_scrape_silent_mass_only_chat_costs_one_page_and_defers,
+    case_scrape_not_silent_chats_are_backfilled_as_today,
+    case_scrape_cursor_write_clears_the_deferred_mark,
+    case_scrape_eager_history_knob_restores_todays_calls,
+    case_scrape_deferred_backfill_counts_under_its_own_caller_kind,
+    case_history_deferred_at_self_heals_on_init_db,
     case_fan_lease_acquire_block_steal,
     case_fan_cooldown_set_check_expire,
     case_kind_priority_ordering,

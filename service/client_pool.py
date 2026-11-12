@@ -1,15 +1,14 @@
 """
 The relay's one OFClient pool.
 
-Why this module exists: curl_cffi's default Session has a handle per thread.
-An evicting thread cannot close those worker handles. Signed OF calls now use
-bounded, non-thread-local leased handles that eviction retires and closes;
-legacy raw media calls still use the original Session. A client per call was
-an fd per call. Under a proxy swap every IP-signed vault url died at once,
-every tile took the re-sign path, and the relay hit EMFILE.
+Why this module exists: a client per call was an fd per call. Under a proxy
+swap every IP-signed vault url died at once, every tile took the re-sign path,
+and the relay hit EMFILE.
 
-So clients are pinned per account. Steady-state handle count is bounded by
-(accounts x threadpool size) instead of growing with request count.
+So clients are pinned per account. A client's ManagedSession leases a handle
+per in-flight request (signed calls at most OFClient.SIGNED_SLOTS) and the
+registry sweeps idle ones, so handles follow concurrency, not request count.
+An evicted client refuses new signed calls (`close_signed_sessions`).
 
 It lives in its own module rather than in `server.py` or
 `automation_executor.py` because both of those need it and importing either
