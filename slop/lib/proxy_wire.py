@@ -16,7 +16,10 @@ refusal after `refuse_s` with the same 0x02, as prod's provider-side bursts
 (slop/evidence/20261105T150727Z-ae-proxy-refusals-296e9299c). While it refuses, a tunnel
 carries one HTTP exchange: a request on a reused tunnel closes it (curl re-dials on a
 fresh CONNECT), so the share of CONNECTs is the share of attempts (with keep-alive, 30 %
-of CONNECTs was 7.7 % of attempts); a WebSocket upgrade keeps its tunnel.
+of CONNECTs was 7.7 % of attempts); judged per request, so a tunnel dialed before the
+refusals began closes too (since the relay's signed curl handles are shared across workers,
+such a warm tunnel carried ~325 of ~1,570 attempts: 24.0 % shown vs 30.3 % of CONNECTs,
+...-022c); a WebSocket upgrade keeps its tunnel.
 
 `connects` records every CONNECT in arrival order: {t, alive, dest} (alive False = refused).
 
@@ -35,9 +38,11 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import socket
 import threading
 import time
+from typing import Callable
 
 
 REFUSE_S = 0.33
@@ -65,21 +70,28 @@ def registry_pool(path) -> dict[str, int]:
     return {p["label"]: p["port"] for p in data["proxies"] if p.get("pool")}
 
 
+_INTERIM = re.compile(rb"HTTP/1\.[01] 1(?!01)\d\d ")  # interim 1xx answer (101 upgrade excluded: a WebSocket keeps its tunnel anyway)
+
+
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tuple,
-                mark: asyncio.Event | None = None, once: asyncio.Event | None = None) -> None:
+                mark: asyncio.Event | None = None, once: asyncio.Event | None = None,
+                refusing: Callable[[], bool] | None = None) -> None:
     """Copy src to dst; `mark` is set once a chunk went through; with `once` (the answer's mark),
-    a chunk after the answer began (the next request on this tunnel) closes it instead. Either
-    direction ending shuts both sockets, which ends the other."""
+    a chunk after the answer began (the next request on this tunnel) closes it instead while
+    `refusing()` holds then (judged per request, not at the CONNECT: a keep-alive tunnel dialed
+    before the refusals began closes too). The cut assumes one request in flight per tunnel (curl never
+    pipelines); a 1xx interim answer does not count as the answer. Either direction ending shuts both
+    sockets, which ends the other."""
     try:
         while chunk := await src.read(65536):
             if once is not None and b"upgrade: websocket" in chunk.lower():
                 once = None  # the first request upgrades this tunnel before its 101 answer
-            if once is not None and once.is_set():
+            if once is not None and once.is_set() and (refusing is None or refusing()):
                 break
             dst.write(chunk)
             await dst.drain()
-            if mark is not None:
-                mark.set()
+            if mark is not None and not _INTERIM.match(chunk):
+                mark.set()  # a `100 Continue` is not the answer: the request body still follows it
         # Every buffered byte to the kernel before the shutdown below: drain() stops at the transport's high-water
         # mark, and the shutdown dropped what was left (a slow reader's big body lost its last <= 64 KiB, measured).
         dst.transport.set_write_buffer_limits(0)
@@ -208,8 +220,9 @@ class ProxyWire:
                 self._open.update((c, u))
             cw.write(b"\x05\x00\x00\x01" + b"\0" * 6)
             await cw.drain()
-            answered = asyncio.Event() if self.refuse_share else None   # one exchange per tunnel
-            await asyncio.gather(_pipe(ur, cw, (u, c), answered), _pipe(cr, uw, (c, u), None, answered))
+            answered = asyncio.Event()   # one exchange per tunnel while refusing (whenever it was dialed)
+            await asyncio.gather(_pipe(ur, cw, (u, c), answered),
+                                 _pipe(cr, uw, (c, u), None, answered, lambda: bool(self.refuse_share)))
         except (OSError, asyncio.IncompleteReadError):
             pass
         finally:

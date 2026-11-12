@@ -1532,10 +1532,6 @@ class AccountAiConfig(Base):
     # split. Nullable with no server default so init_db's ADD-COLUMN catch-up
     # lands it on an existing box with no backfill.
     split_inbox_json: Mapped[str | None] = mapped_column(Text)
-    # Jev v8 vault flags (vault_jev): TypeSafe Jev + NudeNet on every vault
-    # PHOTO before describe, stored as ai_fields_json["_jev"]. NULL ≡ OFF (the
-    # default; the operator opts an account in from the Vault extras drawer).
-    vault_jev_enabled: Mapped[bool | None] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = _ts_now()
 
 

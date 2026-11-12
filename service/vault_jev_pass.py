@@ -1,12 +1,13 @@
-"""service/vault_jev_pass.py — the Jev v8 pass wired into the vault sweeps (one photo, opt-in per account).
+"""service/vault_jev_pass.py — the Jev v8 pass wired into the vault sweeps (one photo; every photo, no opt-in).
 
-`vault_jev`: TypeSafe Jev + NudeNet → `ai_fields_json["_jev"]`. Runs BEFORE describe (both sweeps and the
-single-item route) and before the qwen flags call (flags sweep); clips keep the qwen path only. Spend sits on
+`vault_jev`: TypeSafe Jev + NudeNet → `ai_fields_json["_jev"]`, and with it the photo's flags
+(`vault_jev_flags.apply`: the only flags a photo gets — clips keep the qwen flags call). Runs BEFORE describe
+(both sweeps and the single-item route), which a photo needs: no feedable `_jev`, no describe. Spend sits on
 the account's own `typesafe` cap row, so a Jev cap never stops a sweep (deepinfra row) — it only skips Jev for
-the rest of that sweep (`Sweep`).
+the rest of that sweep (`Sweep`), and those photos wait for the next one.
 
-Names are looked up per call (`vault_ai_vision` calls `vault_jev_pass.<name>`, this module calls `enabled` /
-`vault_jev.run` by global name), so test / slop-fault patches on this module bite.
+Names are looked up per call (`vault_ai_vision` calls `vault_jev_pass.<name>`, this module calls
+`vault_jev.run` / `preflight` by module attr), so test / slop-fault patches bite.
 """
 from __future__ import annotations
 
@@ -14,27 +15,27 @@ import base64
 import json
 import logging
 from datetime import datetime
-from typing import Any
-
-from sqlalchemy import select
+from typing import Any, Collection
 
 import llm_providers
+import vault_ai_vision_decide as decide
 import vault_frames
 import vault_jev  # module attrs `run` / `preflight` / `nudenet_ready`, looked up per call
+import vault_jev_flags
 import vault_jev_rules
 from db.engine import get_session
-from db.models import AccountAiConfig, VaultItem
+from db.models import VaultItem
 from jsonsafe import load_json
 
 log = logging.getLogger("of-relay.vault_jev_pass")
 
-JEV_KEY = "_jev"
+JEV_KEY = vault_jev_rules.JEV_KEY
 CAP_SKIP = "Jev daily cap reached earlier in this sweep — Jev skipped"
 
 
 class Sweep:
     """One sweep's Jev state: once TypeSafe's cap trips, the rest of the sweep skips Jev (no still fetch,
-    no reserve) while describe / qwen flags carry on."""
+    no reserve) while clips carry on."""
 
     __slots__ = ("capped",)
 
@@ -42,10 +43,8 @@ class Sweep:
         self.capped = False
 
 
-async def enabled(account_id: str) -> bool:
-    async with get_session() as s:
-        return bool(await s.scalar(select(AccountAiConfig.vault_jev_enabled).where(
-            AccountAiConfig.account_id == account_id)))
+def _locked(item: VaultItem) -> set[str]:
+    return set(load_json(item.locked_fields_json, []) or [])
 
 
 async def _stamp(account_id: str, media_id: int, res: vault_jev.JevResult) -> None:
@@ -53,7 +52,22 @@ async def _stamp(account_id: str, media_id: int, res: vault_jev.JevResult) -> No
         item = await s.get(VaultItem, (account_id, media_id))
         if item is not None:
             fields = vault_jev.merge(load_json(item.ai_fields_json, {}) or {}, res, datetime.utcnow())
+            fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), _locked(item))
             item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
+            await s.commit()
+
+
+async def _sync_flags(account_id: str, media_id: int) -> None:
+    """Re-stamp a current `_jev`'s flags on a row whose flags drifted from it (a pre-mapping row, an old qwen
+    answer). Free: no call."""
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id), with_for_update=True)
+        if item is None:
+            return
+        fields = load_json(item.ai_fields_json, {}) or {}
+        new = vault_jev_flags.apply(fields, fields.get(JEV_KEY), _locked(item))
+        if new != fields:
+            item.ai_fields_json = json.dumps(new, ensure_ascii=False, default=str)
             await s.commit()
 
 
@@ -70,17 +84,18 @@ def _out(media_id: int, res: vault_jev.JevResult) -> dict[str, Any]:
 
 async def one(account_id: str, media_id: int, *,
               sweep: Sweep | None = None) -> dict[str, Any] | None:
-    """Run the Jev pass on one photo and merge `_jev` into its blob. None when there is nothing to do
-    (setting off, not a photo, already current) — no TypeSafe or NudeNet call happens then. Readiness
-    (NudeNet + key) is checked before the still is fetched. Never raises for a model failure: `vault_jev.run`
-    reports it as the result's `status`, stamped on the row."""
-    if not await enabled(account_id):
-        return None
+    """Run the Jev pass on one photo and merge `_jev` (+ its flags) into its blob. None when there is nothing
+    to pay for (not a photo, or already current — its flags re-stamped if they drifted); no TypeSafe or
+    NudeNet call happens then. Readiness (NudeNet + key) is checked before the still is fetched. Never raises
+    for a model failure: `vault_jev.run` reports it as the result's `status`, stamped on the row."""
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
     if item is None or item.kind != "photo":
         return None
-    if vault_jev_rules.current(load_json(item.ai_fields_json, {}) or {}):
+    fields = load_json(item.ai_fields_json, {}) or {}
+    if vault_jev_rules.current(fields):
+        if not vault_jev_flags.row_in_sync(fields, item.locked_fields_json):
+            await _sync_flags(account_id, media_id)
         return None
     if sweep is not None and sweep.capped:
         return {"media_id": media_id, "ok": False, "status": "jev_capped", "detail": CAP_SKIP,
@@ -113,26 +128,35 @@ async def safe(account_id: str, media_id: int, *,
                 "detail": f"{type(e).__name__}: {e}"[:200], "cost_millicents": 0}
 
 
-async def plan(account_id: str) -> dict[str, Any]:
-    """The Jev toggle's state for the drawer: on/off, and whether NudeNet can run here (Jev refuses
-    without it). Only loads NudeNet when on; no thread once it is loaded."""
-    if not await enabled(account_id):
-        return {"enabled": False, "ready": False, "reason": ""}
+async def plan() -> dict[str, Any]:
+    """Whether Jev can run on this server, for the drawer's notice: NudeNet (Jev refuses without it) and the
+    TypeSafe key. Without either, photos are not flagged or described (skipped, retried next sweep)."""
     ready, reason = await vault_jev.nudenet_ready()
     if ready and not llm_providers.typesafe_key():
         ready, reason = False, "TYPESAFE_API_KEY is not set on this server"
-    return {"enabled": True, "ready": ready, "reason": reason}
+    return {"ready": ready, "reason": reason}
 
 
-def keep_current(cur_json: str | None, new_json: str) -> str:
-    """`new_json` (a blob built from a row read seconds ago) with the row's CURRENT `_jev` put back: a Jev
-    pass that landed while a describe / flags call was in flight must not be overwritten by the stale read."""
-    cur = (load_json(cur_json, {}) or {}).get(JEV_KEY)
+def keep_current(cur_json: str | None, new_json: str, locked: Collection[str] = ()) -> str:
+    """`new_json` (a blob built from a row read seconds ago) with the row's CURRENT `_jev` put back, and the
+    flags mapped from it when the row carries those: a Jev pass that landed while a describe / flags call was
+    in flight must not be overwritten by the stale read. The mapping is redone over the new blob, so a describe's
+    fresh `clothing_items` name the photo's garments (`vault_jev_flags.garments`); `locked` keys keep the new
+    blob's value."""
+    cur_f = load_json(cur_json, {}) or {}
+    cur = cur_f.get(JEV_KEY)
     if cur is None:
         return new_json
     new = json.loads(new_json or "{}") or {}
-    if new.get(JEV_KEY) == cur:
+    want = dict(new)
+    want[JEV_KEY] = cur
+    if cur_f.get("_flags_model") == vault_jev_flags.MODEL:
+        if vault_jev_flags.reading(cur) is None:
+            decide.carry_flags(want, cur_f, exact=True)
+        else:
+            want = vault_jev_flags.apply(want, cur, locked)
+            if cur_f.get(decide.FLAGS_COPY_MARK):   # a copy's flags are still its source's
+                want[decide.FLAGS_COPY_MARK] = cur_f[decide.FLAGS_COPY_MARK]
+    if want == new:
         return new_json
-    new[JEV_KEY] = cur
-    return json.dumps(new, ensure_ascii=False, default=str)
-
+    return json.dumps(want, ensure_ascii=False, default=str)

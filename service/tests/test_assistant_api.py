@@ -604,6 +604,43 @@ async def case_the_system_prompt_is_byte_stable():
     assert AID not in a and "acc_" not in a, "an account id is in the system prompt"
 
 
+async def case_the_prompt_documents_the_live_figure_markers():
+    """Spec D12: the bot writes markers, never figures; the app renders each as a
+    live card. The grammar here must be the one app/components/assistant/markers.ts
+    parses (METRICS, WINDOWS, SCOPES), or every card is silently dropped."""
+    import re
+    system = assistant_api._build_system_prompt()
+    flat = " ".join(system.split())
+    assert "[[data:METRIC|WINDOW|SCOPE]]" in flat
+    for metric in ("revenue", "per_model", "top_spenders", "top_tippers", "unread"):
+        assert f"{metric} (" in flat, f"metric {metric} is not documented"
+    assert "WINDOW: today, yesterday, 7d, 30d, this_month, last_month, or now." in flat
+    assert "SCOPE: this (the model in focus) or all (every model the asker can see)." in flat
+    assert "Only unread takes now, and unread takes nothing else." in flat
+    assert "At most 2 markers in one answer." in flat
+    assert "NO marker" in flat, "how-to questions must be told to carry no marker"
+    assert "online_fans" not in flat, "a dropped metric is still offered"
+    assert "[[chat:@handle]]" in flat
+    # The refusal: never claims an action, never switches an automation on.
+    assert "YOU CANNOT ACT FROM HERE." in flat
+    assert "never switch an automation on" in flat
+    # Every marker an exemplar writes is one the app accepts.
+    grammar = re.compile(
+        r"\[\[data:(revenue|per_model|top_spenders|top_tippers)\|"
+        r"(today|yesterday|7d|30d|this_month|last_month)\|(this|all)\]\]"
+        r"|\[\[data:unread\|now\|(this|all)\]\]|\[\[chat:@[A-Za-z0-9_.-]{1,64}\]\]")
+    shown = re.findall(r"\[\[[^\]]*\]\]", assistant_api._FEWSHOTS)
+    assert shown, "no exemplar shows a marker"
+    assert all(grammar.fullmatch(m) for m in shown), f"an exemplar writes a marker the app drops: {shown}"
+    # No exemplar answer writes a figure beside its marker.
+    for block in re.split(r"\nQ(?= |:)", assistant_api._FEWSHOTS)[1:]:
+        _, _, a = block.partition("\nA:")
+        if "[[data:" in a:
+            assert not re.search(r"\$\d|\d[\d,]*\.\d\d", a), f"a marker exemplar writes a figure: {a!r}"
+    # Static text only: two builds are byte-identical (the prefix cache).
+    assert assistant_api._build_system_prompt() == system
+
+
 # ── v3: the fan evidence pack ─────────────────────────────────────────
 
 async def _seed_fan(aid, fan_id, **fan_kw):
@@ -2616,6 +2653,7 @@ _harness.run(
     case_a_fetch_that_never_returns_degrades_on_its_budget,
     case_the_state_block_respects_the_cap_dropping_last_run_first,
     case_the_system_prompt_is_byte_stable,
+    case_the_prompt_documents_the_live_figure_markers,
     case_a_planted_skip_row_comes_back_verbatim_and_his_words_do_not,
     case_a_skip_row_names_who_it_stops_and_who_ignores_it,
     case_a_subscription_only_spender_fails_the_content_payer_gate,

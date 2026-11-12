@@ -7,16 +7,21 @@ Cases:
   golden replay      34 bench records (dv6-F-hyb30nm A/B: 6dev incl. 619/649, set4, 5dev; dev ids only) —
                      the PRODUCT blob through the product module: route, facts, prompt, struct and scrub ==
                      the bench's byte for byte (fixture: .scratch/jev-vault-bench/dv6-golden-gen.py)
-  route table        fail-safe: Jev off / missing / errored / stale / no `C` / clip / v1 / junk -> v2
-  reusable table     a Jev-fed describe is a dupe source only while it still holds the `_jev` it was fed
-  prose fields       the lane-feeding fields the prose path adds (explicitness, acts, folder, tags)
+  route table        clips -> (v2, None); a photo -> (prose / v6, its `_jev`), or (None, None) (skip) when missing /
+                     errored / stale / no `C` / junk — never v2, whatever prompt version
+  reusable table     a photo's describe is a dupe source only when Jev-fed and still holding the `_jev` it was
+                     fed (same v and `at`; a v2 / pre-stamp photo describe never); a clip's always
+  prose fields       the lane-feeding fields the prose path adds (explicitness, acts, folder, tags), lane fields
+                     == `vault_jev_flags.reading`
   prose garments     the prose path's `clothing_items` (qwen's, robust parse) -> vault_scripts.outfit_key non-empty
   blob C             `vault_jev_rules.blob(answers=...)` keeps the fact Choices; no Choices, not feedable
-  wiring prose       Jev on, lane not review: prose prompt @640 on the caller's model, Jev struct, scrubbed prose,
-                     garments, `_describe`
-  wiring v6          review lane: v2 prompt + facts @960, enforced JSON, `_describe`
-  wiring off         Jev off: today's prompt, image as collected, `_describe.path` v2
-  reuse              reuse_state + `_copy_describe` refuse a source whose `_jev` moved on (incl. replaced, same v)
+  wiring prose       lane not review: prose prompt @640 on the caller's model, Jev struct, scrubbed prose,
+                     garments (+ the row's `over_` names from them), `_describe`
+  wiring v6          review lane: v2 prompt + facts @960, enforced JSON, Jev's lane fields, `_describe`
+  wiring skip        a photo with no feedable `_jev`: no frames, no call, nothing written (status = Jev's);
+                     a clip: today's prompt, image as collected, `_describe.path` v2
+  reuse              reuse_state + `_copy_describe` refuse a photo source whose `_jev` moved on (incl. replaced,
+                     same v) / a v2 photo
 
 Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_describe_jev.py
 """
@@ -41,12 +46,17 @@ import vault_ai_vision  # noqa: E402
 import vault_ai_vision_decide as decide  # noqa: E402
 import vault_describe_jev as vdj  # noqa: E402
 import vault_frames  # noqa: E402
+import vault_jev_flags  # noqa: E402
 import vault_jev_rules as rules  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountAiConfig, VaultItem  # noqa: E402
 
 GOLD = json.load(gzip.open(Path(__file__).parent / "fixtures" / "vault_describe_jev" / "golden.json.gz", "rt"))
 CASES = GOLD["cases"]
+# The bench blobs predate the stored region states (`vault_jev_rules.current` needs `state`); empty = every hidden
+# region reads covered, what the bench's describe assumed. Nothing the golden pins (route, facts, prompt) reads it.
+for _c in CASES:
+    _c["jev"].setdefault("state", {})
 V2P = vault_ai_vision._DESCRIBE_PROMPT_V2
 
 
@@ -70,10 +80,10 @@ def case_golden_replay():
     for c in CASES:
         j, F = c["jev"], c["facts"]
         base = vdj.PROSE_BENCH if c["path"] == "prose" else V2P
-        got = {"route": vdj.route(kind="photo", jev_on=True, fields={"_jev": j})[0],
+        got = {"route": vdj.route(kind="photo", fields={"_jev": j})[0],
                "facts": [list(x) for x in vdj.facts(j)],
                "prompt": hashlib.sha256(vdj.build_prompt(base, vdj.facts(j)).encode()).hexdigest()}
-        assert vdj.route(kind="photo", jev_on=True, fields={"_jev": j})[1] is j
+        assert vdj.route(kind="photo", fields={"_jev": j})[1] is j
         if c["path"] == "v6":
             assert vdj.prompt_for("v6", j, V2P) == vdj.build_prompt(V2P, vdj.facts(j))
         F = [tuple(x) for x in F]
@@ -88,9 +98,14 @@ def case_golden_replay():
             bad.append((c["key"], c["run"], "struct"))
         if (text, log) != (c["desc_final"], c["scrub_log"]):
             bad.append((c["key"], c["run"], "scrub", text, c["desc_final"]))
+        # Not bench: the lane fields are Jev's (`vault_jev_flags.reading`) on both paths, so describe never
+        # contradicts the flags stamped from the same reading.
+        r = vault_jev_flags.reading(j)
         if ans["description"] != c["desc_final"] or any(ans.get(k) != v for k, v in c["struct"].items()
-                                                         if k != "description"):
+                                                         if k != "description" and k not in vdj.LANE_FIELDS):
             bad.append((c["key"], c["run"], "answer"))
+        if any(ans.get(k) != r[k] for k in vdj.LANE_FIELDS):
+            bad.append((c["key"], c["run"], "lane fields"))
     assert not bad, f"{len(bad)} mismatches: {bad[:4]}"
     # The fixture exercises what matters: both paths, hedge, every scrub action.
     assert any(f[0] == "hedge" for c in CASES for f in c["facts"])
@@ -104,23 +119,27 @@ def _blob(**kw) -> dict:
 
 def case_route_table():
     good = _blob(settled=False, lane="$10")
+    P = dict(kind="photo")
     _table([
-        ("prose", (dict(kind="photo", jev_on=True, fields={"_jev": good}),), "prose"),
-        ("review lane (settled) -> v6", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "settled": "nn.10"}}),), "v6"),
-        ("jev off", (dict(kind="photo", jev_on=False, fields={"_jev": good}),), "v2"),
-        ("video", (dict(kind="video", jev_on=True, fields={"_jev": good}),), "v2"),
-        ("gif", (dict(kind="gif", jev_on=True, fields={"_jev": good}),), "v2"),
-        ("v1 ask", (dict(kind="photo", jev_on=True, fields={"_jev": good}, prompt_version="v1"),), "v2"),
-        ("no _jev", (dict(kind="photo", jev_on=True, fields={}),), "v2"),
-        ("fields None", (dict(kind="photo", jev_on=True, fields=None),), "v2"),
-        ("errored", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "status": "error"}}),), "v2"),
-        ("stale version", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "v": "v7"}}),), "v2"),
-        ("pre-C blob", (dict(kind="photo", jev_on=True, fields={"_jev": {k: v for k, v in good.items() if k != "C"}}),), "v2"),
-        ("C missing a choice", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "C": {"toy": good["C"]["toy"]}}}),), "v2"),
-        ("junk blob", (dict(kind="photo", jev_on=True, fields={"_jev": "x"}),), "v2"),
-        ("junk C", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "C": {q: 1 for q in vdj.FACT_CHOICES}}}),), "v2"),
-        ("C dicts without the keys", (dict(kind="photo", jev_on=True, fields={"_jev": {**good, "C": {q: {} for q in vdj.FACT_CHOICES}}}),), "v2"),
+        ("prose", ({**P, "fields": {"_jev": good}},), "prose"),
+        ("review lane (settled) -> v6", ({**P, "fields": {"_jev": {**good, "settled": "nn.10"}}},), "v6"),
+        ("video", (dict(kind="video", fields={"_jev": good}),), "v2"),
+        ("video, no _jev", (dict(kind="video", fields={}),), "v2"),
+        ("gif", (dict(kind="gif", fields=None),), "v2"),
+        ("no _jev", ({**P, "fields": {}},), None),
+        ("fields None", ({**P, "fields": None},), None),
+        ("errored", ({**P, "fields": {"_jev": {**good, "status": "error"}}},), None),
+        ("refused (no NudeNet)", ({**P, "fields": {"_jev": {"v": rules.VERSION, "status": "no_nudenet"}}},), None),
+        ("stale version", ({**P, "fields": {"_jev": {**good, "v": "v7"}}},), None),
+        ("pre-C blob", ({**P, "fields": {"_jev": {k: v for k, v in good.items() if k != "C"}}},), None),
+        ("C missing a choice", ({**P, "fields": {"_jev": {**good, "C": {"toy": good["C"]["toy"]}}}},), None),
+        ("junk blob", ({**P, "fields": {"_jev": "x"}},), None),
+        ("junk C", ({**P, "fields": {"_jev": {**good, "C": {q: 1 for q in vdj.FACT_CHOICES}}}},), None),
+        ("C dicts without the keys", ({**P, "fields": {"_jev": {**good, "C": {q: {} for q in vdj.FACT_CHOICES}}}},), None),
+        ("unknown lane5", ({**P, "fields": {"_jev": {**good, "lane5": "review"}}},), None),
     ], lambda kw: vdj.route(**kw)[0])
+    assert vdj.route(kind="video", fields={"_jev": good})[1] is None
+    assert vdj.route(kind="photo", fields={})[1] is None
     # the bench prompt + exactly the clothing_items ask
     p = vdj.PROSE_BENCH
     for old, new in vdj._CLOTHING_ASK:
@@ -137,25 +156,30 @@ def case_reusable_table():
     assert vdj.meta("v2", j, "m") == {"path": "v2", "v": vdj.RECIPE_V, "jev_v": None, "jev_at": None,
                                       "model": "m", "px": None}
     _table([
-        ("pre-stamp describe", ({"description": "x"},), True),
-        ("v2 describe, any jev", ({"_describe": vdj.meta("v2", None, "m"), "_jev": {"status": "error"}},), True),
-        ("prose on its own jev", ({"_describe": meta, "_jev": j},), True),
-        ("prose, jev now review", ({"_describe": meta, "_jev": {**j, "settled": "nn.10"}},), False),
-        ("prose, jev errored", ({"_describe": meta, "_jev": {**j, "status": "error"}},), False),
-        ("prose, jev gone", ({"_describe": meta},), False),
-        ("prose, jev other version", ({"_describe": {**meta, "jev_v": "v8"}, "_jev": j},), False),
-        ("prose, jev replaced (same v, new at)", ({"_describe": meta, "_jev": {**j, "at": "2026-11-12T00:00:00"}},),
-         False),
-        ("v6 on a review jev", ({"_describe": vdj.meta("v6", j, "m"), "_jev": {**j, "settled": "nn.10"}},), True),
-        ("None", (None,), True),
+        ("photo, pre-stamp describe", ({"description": "x"}, "photo"), False),
+        ("photo, v2 describe", ({"_describe": vdj.meta("v2", None, "m"), "_jev": j}, "photo"), False),
+        ("prose on its own jev", ({"_describe": meta, "_jev": j}, "photo"), True),
+        ("prose, jev now review", ({"_describe": meta, "_jev": {**j, "settled": "nn.10"}}, "photo"), False),
+        ("prose, jev errored", ({"_describe": meta, "_jev": {**j, "status": "error"}}, "photo"), False),
+        ("prose, jev gone", ({"_describe": meta}, "photo"), False),
+        ("prose, jev other version", ({"_describe": {**meta, "jev_v": "v8"}, "_jev": j}, "photo"), False),
+        ("prose, jev replaced (same v, new at)",
+         ({"_describe": meta, "_jev": {**j, "at": "2026-11-12T00:00:00"}}, "photo"), False),
+        ("v6 on a review jev", ({"_describe": vdj.meta("v6", j, "m"), "_jev": {**j, "settled": "nn.10"}}, "photo"), True),
+        ("photo, None", (None, "photo"), False),
+        ("clip, v2 describe", ({"_describe": vdj.meta("v2", None, "m")}, "video"), True),
+        ("clip, pre-stamp", ({"description": "x"}, "video"), True),
+        ("clip, None", (None, "video"), True),
     ], vdj.reusable)
 
 
 def case_prose_fields_table():
+
     base = _blob()
 
     def pf(lane, pen=None, tags=None, F=()):
-        j = {**base, "lane": lane, "tags": {**base["tags"], **(tags or {})}}
+        lane5 = lane if lane in vault_jev_flags.EXPLICITNESS else "free"
+        j = {**base, "lane": lane, "lane5": lane5, "tags": {**base["tags"], **(tags or {})}}
         return vdj.prose_fields(j, list(F), {"penetration": pen})
     assert pf("$100", "toy")["explicitness"] == "hardcore" and pf("$100", "toy")["acts"] == ["toy_insertion"]
     assert pf("$50")["explicitness"] == pf("$10")["explicitness"] == "explicit"
@@ -168,19 +192,25 @@ def case_prose_fields_table():
     assert out["setting"] == "bathroom" and out["camera"] == "mirror"
     assert all("_" not in t for t in out["tags"])
 
-    def cl(outfit, bf, lane="$10"):
+    def cl(outfit, lane, bb="n", cb="n"):
         C = {**base["C"], "outfit": {k: (.9 if k == outfit else .02) for k in base["C"]["outfit"]}}
-        o = vdj.prose_fields({**base, "lane": lane, "C": C}, [], {"body_focus": bf, "penetration": "none"})
+        j = {**base, "lane": lane, "lane5": lane if lane in vault_jev_flags.EXPLICITNESS else "free", "C": C,
+             "breasts_bare": bb, "crotch_bare": cb, "tags": {**base["tags"], "outfit": outfit}}
+        o = vdj.prose_fields(j, [], {"penetration": "none"})
+        r = vault_jev_flags.reading(j)
+        assert all(o[k] == r[k] for k in vdj.LANE_FIELDS), (outfit, lane, o, r)   # describe == flags
         return o["clothing_state"], o["underwear_visible"], o["nsfw"]
     import vault_ai_brief
     _table([
-        ("nude outfit", ("nude", ["nipples", "pussy"], "$50"), ("fully_nude", False, True)),
-        ("topless (settle's table)", ("topless_with_bottoms", ["nipples"]),
+        ("nude outfit, $50", ("nude", "$50", "y", "y"), ("fully_nude", False, True)),
+        ("nude tag on a $10 (topless, labia hidden)", ("nude", "$10", "y"),
          (vault_ai_brief._CLOTHING_FOR[(True, False)], True, True)),
-        ("vulva only", ("lingerie_or_bodysuit", ["pussy"], "$50"), (vault_ai_brief._CLOTHING_FOR[(False, True)], True, True)),
-        ("dressed, free", ("everyday_clothes", [], "mass"), ("dressed", True, False)),
-        ("lingerie, free", ("lingerie_or_bodysuit", [], "lingerie"), ("lingerie_on", True, True)),
-        ("towel, free", ("sheet_or_towel", [], "implied"), ("dressed", True, True)),
+        ("topless (settle's table)", ("topless_with_bottoms", "$10", "y"),
+         (vault_ai_brief._CLOTHING_FOR[(True, False)], True, True)),
+        ("vulva only", ("lingerie_or_bodysuit", "$50", "n", "y"), (vault_ai_brief._CLOTHING_FOR[(False, True)], True, True)),
+        ("dressed, free", ("everyday_clothes", "mass"), ("dressed", False, False)),
+        ("lingerie, free", ("lingerie_or_bodysuit", "lingerie"), ("lingerie_on", True, True)),
+        ("towel, free", ("sheet_or_towel", "implied"), ("dressed", False, True)),
     ], cl)
 
 
@@ -235,8 +265,9 @@ def case_prose_garments():
         ("mixed junk", (["black bodysuit", 3, None, "", "  "],), ["black bodysuit"]),
     ], vdj.garments)
     C = {**_blob()["C"], "outfit": {k: (.9 if k == "lingerie_or_bodysuit" else .02) for k in _blob()["C"]["outfit"]}}
-    j = _blob(settled=False, lane="lingerie", breasts_bare="n", crotch_bare="n", penetration="n", C=C)
-    assert vdj.route(kind="photo", jev_on=True, fields={"_jev": j})[0] == "prose"
+    j = _blob(settled=False, lane="lingerie", lane5="free", breasts_bare="n", crotch_bare="n", penetration="n", C=C,
+              tags={**_blob()["tags"], "outfit": "lingerie_or_bodysuit"})
+    assert vdj.route(kind="photo", fields={"_jev": j})[0] == "prose"
     a = vdj.prose_answer({"description": "She stands in a bedroom.", "clothing_items": ["red lace bra", "red thong"]}, j)
     assert a["clothing_items"] == ["red lace bra", "red thong"] and a["clothing_state"] == "lingerie_on"
     assert vault_scripts.outfit_key(a) == "red lingerie_set", vault_scripts.outfit_key(a)
@@ -268,15 +299,15 @@ def _jpeg(w: int, h: int) -> bytes:
     return b.getvalue()
 
 
-async def _seed(jev_on: bool, fields: dict, mids=(9001,)) -> str:
+async def _seed(fields: dict, mids=(9001,), kind: str = "photo") -> str:
     global _N
     _N += 1
     aid = f"acc_vdj_{_N}"
     async with get_session() as s:
         s.add(Account(id=aid))
-        s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=1000, vault_jev_enabled=jev_on))
+        s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=1000))
         for m in mids:
-            s.add(VaultItem(account_id=aid, media_id=m, kind="photo", tags="[]", created_at=datetime(2026, 6, 1),
+            s.add(VaultItem(account_id=aid, media_id=m, kind=kind, tags="[]", created_at=datetime(2026, 6, 1),
                             ai_fields_json=json.dumps(fields)))
         await s.commit()
     return aid
@@ -316,7 +347,7 @@ class _Fakes:
 
 async def case_wiring_prose():
     c = _case("prose")
-    aid = await _seed(True, {"_jev": c["jev"]})
+    aid = await _seed({"_jev": c["jev"]})
     ans = {"description": c["parsed"]["description"], "clothing_items": ["black lace thong"]}
     with _Fakes(json.dumps(ans)) as fk:
         res = await vault_ai_vision._describe_one(aid, 9001)
@@ -332,7 +363,7 @@ async def case_wiring_prose():
         assert f[k] == v, k
     assert f["explicitness"] in ("suggestive", "explicit", "hardcore")
     # the operator-picked model is the one called (no prose-only swap)
-    aid2 = await _seed(True, {"_jev": c["jev"]})
+    aid2 = await _seed({"_jev": c["jev"]})
     with _Fakes(json.dumps({"description": "Nude on a bed."})) as fk:
         await vault_ai_vision._describe_one(aid2, 9001, model="qwen3-vl-235b")
     assert [x["model"] for x in fk.calls] == ["qwen3-vl-235b"]
@@ -341,7 +372,7 @@ async def case_wiring_prose():
 
 async def case_wiring_v6():
     c = next(x for x in CASES if x["path"] == "v6" and x["key"] == "6dev/619.jpg")
-    aid = await _seed(True, {"_jev": c["jev"]})
+    aid = await _seed({"_jev": c["jev"]})
     with _Fakes(json.dumps(c["parsed"])) as fk:
         res = await vault_ai_vision._describe_one(aid, 9001)
     assert res["ok"], res
@@ -351,20 +382,47 @@ async def case_wiring_v6():
     f = await _fields(aid)
     assert f["_describe"]["path"] == "v6" and f["_describe"]["px"] == 960
     assert f["description"] == c["desc_final"]
+
+    r = vault_jev_flags.reading(c["jev"])
     for k, v in c["struct"].items():
         if k != "description":
-            assert f[k] == v, k
+            assert f[k] == (r[k] if k in vdj.LANE_FIELDS else v), k
+    assert all(f[k] == r[k] for k in vdj.LANE_FIELDS), "v6 lane fields are not Jev's"
 
 
-async def case_wiring_off():
+async def case_wiring_skip():
+    """A photo with no feedable `_jev` is skipped — never described by v2 — and nothing is written (a described
+    row keeps its describe); a clip keeps today's v2 describe."""
     c = _case("prose")
-    aid = await _seed(False, {"_jev": c["jev"]})
+    old = {"description": "old words", "_describe": vdj.meta("prose", c["jev"], "m")}
+    for jev, want in ((None, "jev_missing"), ({"v": rules.VERSION, "status": "no_key"}, "no_key"),
+                      ({**c["jev"], "status": "error"}, "error"), ({**c["jev"], "v": "v7"}, "jev_missing")):
+        fields = {**old, **({"_jev": jev} if jev is not None else {})}
+        aid = await _seed(fields)
+        async with get_session() as s:
+            (await s.get(VaultItem, (aid, 9001))).describe_status = "described"
+            await s.commit()
+        with _Fakes(json.dumps({"description": "A woman.", "tags": ["x"], "explicitness": "sfw"})) as fk:
+            res = await vault_ai_vision._describe_one(aid, 9001)
+        assert not res["ok"] and res["status"] == want and "jev_skip" not in res, (jev, res)
+        assert fk.calls == [], "a photo without Jev was described"
+        assert await _fields(aid) == fields, "a skip wrote the row"
+        async with get_session() as s:
+            assert (await s.get(VaultItem, (aid, 9001))).describe_status == "described"
+    # the Jev pass that just ran names the skip (a cap is never stamped on the row)
+    aid = await _seed({})
+    with _Fakes("{}") as fk:
+        res = await vault_ai_vision._describe_one(aid, 9001, jev_res={"ok": False, "status": "jev_capped"})
+    assert res["status"] == "jev_capped" and not res["ok"] and fk.calls == [], res
+    aid = await _seed({"_jev": c["jev"]}, kind="video")
     with _Fakes(json.dumps({"description": "A woman.", "tags": ["x"], "explicitness": "sfw"})) as fk:
         res = await vault_ai_vision._describe_one(aid, 9001)
     assert res["ok"], res
     assert fk.calls[0]["prompt"] == V2P and fk.calls[0]["px"] == [1440, 1080]
-    f = await _fields(aid)
-    assert f["_describe"] == vdj.meta("v2", None, "qwen3-vl-30b") and f["description"] == "A woman."
+    async with get_session() as s:
+        row = await s.get(VaultItem, (aid, 9001))
+    f = json.loads(row.ai_fields_json)
+    assert f["_describe"] == vdj.meta("v2", None, "qwen3-vl-30b") and row.video_description == "A woman."
 
 
 async def case_reuse_gate():
@@ -372,13 +430,18 @@ async def case_reuse_gate():
     j = c["jev"]
     fed = {"description": "x", "_describe": vdj.meta("prose", j, "m"), "_jev": j}
     moved = {**fed, "_jev": {**j, "status": "error"}}
+    v2_photo = {"description": "x", "_describe": vdj.meta("v2", None, "m"), "_jev": j}
     replaced = {**fed, "_jev": {**j, "at": "2026-11-12T00:00:00"}}   # re-run Jev: same v, still feedable
-    assert vdj.feedable(replaced["_jev"]) and vdj.route(kind="photo", jev_on=True, fields=replaced)[0] == "prose"
-    done, _ = decide.reuse_state([(1, "described", fed), (2, "described", moved), (3, "described", {"description": "x"}),
-                                  (4, "described", replaced)], flags=False, flags_version=1)
-    assert done == {1, 3}, done
-    for src in (moved, replaced):
-        aid = await _seed(True, src, mids=(9001, 9002))
+    assert vdj.feedable(replaced["_jev"]) and vdj.route(kind="photo", fields=replaced)[0] == "prose"
+    done, _ = decide.reuse_state([(1, "described", fed, "photo", None), (2, "described", moved, "photo", None),
+                                  (3, "described", {"description": "x"}, "photo", None),
+                                  (4, "described", v2_photo, "photo", None),
+                                  (5, "described", {"description": "x"}, "video", None),
+                                  (6, "described", replaced, "photo", None)],
+                                 flags=False, flags_version=1)
+    assert done == {1, 5}, done
+    for src in (moved, v2_photo, replaced):
+        aid = await _seed(src, mids=(9001, 9002))
         async with get_session() as s:
             (await s.get(VaultItem, (aid, 9001))).describe_status = "described"
             await s.commit()

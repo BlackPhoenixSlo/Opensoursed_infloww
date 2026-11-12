@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Jev v8 vault flags (`vault_jev`, `vault_jev_rules`, the `vault_jev_pass` / `vault_ai_vision` wiring).
+Jev v8 vault flags (`vault_jev`, `vault_jev_rules`, the `vault_jev_pass` / `vault_ai_vision` wiring) — the
+default for every vault photo (no setting); clips keep the qwen flags call.
 Plain-assert suite (repo convention), no network: TypeSafe and NudeNet are faked
 at the module seams (`vault_jev._client`, `_load_detector`, `nudenet_scores`).
 
@@ -12,13 +13,14 @@ Cases:
   geometry           shrink / crops / enc output sizes == the bench functions'
   pipeline           pass 1 → 2 → L over the fake client: model pin + header, the
                      blob, spend on the `typesafe` cap row + audit row
-  setting off        no TypeSafe / NudeNet call at all
+  nothing to pay     a clip, or a photo whose `_jev` is current and flags in sync: no TypeSafe / NudeNet call
   no NudeNet         refuses before any TypeSafe call; status stamped, fields kept
   cap                over the account's daily cap: no call, nothing written, the
                      flags sweep stops
   carry              re-describe keeps `_jev`; describe / flags copies carry it
-  wiring             describe runs Jev first (photos only); the flags sweep queues a
-                     photo missing `_jev` and skips the qwen call when flags are current
+  wiring             describe runs Jev first (photos only) and never the qwen flags call for a photo; a photo
+                     Jev cannot read is skipped (Jev's status, nothing written, no qwen); the flags sweep
+                     stamps photos from Jev (never qwen) and qwen-flags clips; reuse needs Jev consistency
 
 Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_jev.py
 """
@@ -39,7 +41,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from PIL import Image as PImage  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select, update  # noqa: E402
 
 import llm_client  # noqa: E402
 import llm_providers  # noqa: E402
@@ -47,6 +49,8 @@ import vault_ai_vision  # noqa: E402
 import vault_ai_vision_decide as decide  # noqa: E402
 import vault_frames  # noqa: E402
 import vault_jev  # noqa: E402
+import vault_describe_jev  # noqa: E402
+import vault_jev_flags  # noqa: E402
 import vault_jev_pass  # noqa: E402
 import vault_jev_rules as rules  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -54,6 +58,9 @@ from db.models import Account, AccountAiConfig, GrokCall, GrokDailyCost, VaultIt
 
 FIX = Path(__file__).parent / "fixtures" / "vault_jev"
 GOLDEN = json.load(gzip.open(FIX / "golden.json.gz", "rt"))["images"]
+DESCRIBE_GOLD = json.load(gzip.open(FIX.parent / "vault_describe_jev" / "golden.json.gz", "rt"))["cases"]
+for _c in DESCRIBE_GOLD:   # bench blobs predate the stored region states: empty = every hidden region covered
+    _c["jev"].setdefault("state", {})
 FIELDS = ("lane5", "lane", "breasts_bare", "crotch_bare", "penetration", "settled")
 
 
@@ -107,7 +114,7 @@ def case_geometry():
 
 
 def case_merge_keeps_fields_on_failure():
-    prev = {"description": "x", "_jev": {"v": rules.VERSION, "status": "ok", "lane5": "$10"}}
+    prev = {"description": "x", "_jev": {"v": rules.VERSION, "status": "ok", "lane5": "$10", "state": {}}}
     now = datetime(2026, 11, 11)
     out = vault_jev.merge(prev, vault_jev.JevResult(ok=False, status="error", detail="boom"), now)
     assert out["description"] == "x"
@@ -176,14 +183,14 @@ def _golden_with(*passes):
 _N = 0
 
 
-async def _seed(*, jev: bool | None, cap_cents: int = 1000, kind: str = "photo",
+async def _seed(*, cap_cents: int = 1000, kind: str = "photo",
                 fields: dict | None = None, mids=(7001,)) -> str:
     global _N
     _N += 1
     aid = f"acc_jev_{_N}"
     async with get_session() as s:
         s.add(Account(id=aid))
-        s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=cap_cents, vault_jev_enabled=jev))
+        s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=cap_cents))
         for i, m in enumerate(mids):
             s.add(VaultItem(account_id=aid, media_id=m, kind=kind, tags="[]",
                             created_at=datetime(2026, 6, 1) + timedelta(minutes=i),
@@ -219,7 +226,7 @@ class _Collect:
 
 async def case_pipeline_all_passes_and_spend():
     g = _golden_with("resp2", "respL")
-    aid = await _seed(jev=True)
+    aid = await _seed()
     with _Seams(g["rec"], g["nn"]) as sm:
         res = await vault_jev.run(aid, _jpeg(576, 1024))
     assert res["ok"] and res["status"] == "ok", res
@@ -244,7 +251,7 @@ async def case_pipeline_all_passes_and_spend():
 
 async def case_cap_respected():
     g = _golden_with("resp")
-    aid = await _seed(jev=True, cap_cents=0, fields={"description": "kept"})
+    aid = await _seed(cap_cents=0, fields={"description": "kept"})
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
         res = await vault_jev_pass.one(aid, 7001)
         assert res["status"] == "jev_capped" and sm.client.calls == [], res
@@ -255,14 +262,13 @@ async def case_cap_respected():
 
 
 async def case_jev_cap_skips_jev_not_the_sweep():
-    """A Jev cap only skips Jev for the rest of the sweep: Jev-only visits count as failed `jev_capped`
-    (never `capped`, which would stop the sweep), the qwen work still runs, and only the first photo
-    fetches a still / tries to reserve."""
+    """A Jev cap only skips Jev for the rest of the sweep: photo visits count as failed `jev_capped` (never
+    `capped`, which would stop the sweep), the clip's qwen flags still run, and only the first photo fetches a
+    still / tries to reserve."""
     g = _golden_with("resp")
-    aid = await _seed(jev=True, cap_cents=0, mids=(7001, 7002, 7003),
-                      fields={"description": "kept", "_flags_v": 99, **_known_flags()})
-    async with get_session() as s:   # 7002's flags are missing -> it needs qwen too
-        (await s.get(VaultItem, (aid, 7002))).ai_fields_json = json.dumps({"description": "kept"})
+    aid = await _seed(cap_cents=0, mids=(7001, 7002, 7003), fields={"description": "kept"})
+    async with get_session() as s:   # a clip whose flags are missing: qwen work
+        s.add(VaultItem(account_id=aid, media_id=7004, kind="video", tags="[]", created_at=datetime(2026, 5, 1)))
         await s.commit()
     visits = []
     o, oc = vault_ai_vision._flags_one, vault_ai_vision._FLAGS_CONCURRENCY
@@ -275,14 +281,14 @@ async def case_jev_cap_skips_jev_not_the_sweep():
     try:
         with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
             todo = await vault_ai_vision._flags_todo(aid)
-            assert sorted(todo) == [7001, 7002, 7003], todo
+            assert sorted(todo) == [7001, 7002, 7003, 7004], todo
             vault_ai_vision._flags_running.add(aid)
             await vault_ai_vision._run_flags_all(aid, todo)
     finally:
         vault_ai_vision._flags_one, vault_ai_vision._FLAGS_CONCURRENCY = o, oc
     prog = vault_ai_vision._flags_progress[aid]
-    assert prog["capped"] is False and prog["done"] == 3 and prog["failed"] == 2, prog
-    assert visits == [7002] and sm.client.calls == [] and col.calls == 1, (visits, col.calls)
+    assert prog["capped"] is False and prog["done"] == 4 and prog["failed"] == 3, prog
+    assert visits == [7004] and sm.client.calls == [] and col.calls == 1, (visits, col.calls)
     assert "cap" in prog["error"].lower(), prog
 
 
@@ -295,31 +301,55 @@ def _known_flags() -> dict:
     return out
 
 
-async def case_setting_off_makes_no_calls():
+async def case_nothing_to_pay_makes_no_calls():
+    """A clip never gets Jev; a photo whose `_jev` is current with its flags in sync is not re-run (and a drifted
+    one is re-stamped for free)."""
     g = _golden_with("resp")
-    for jev in (None, False):
-        aid = await _seed(jev=jev, fields={"_flags_v": 99, **_known_flags()})
-        with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
-            assert await vault_jev_pass.one(aid, 7001) is None
-            assert await vault_ai_vision._flags_todo(aid) == []   # flags current, Jev off → nothing to do
-            plan = await vault_jev_pass.plan(aid)
-        assert sm.client.calls == [] and sm.nn_calls == 0 and col.calls == 0
-        assert plan == {"enabled": False, "ready": False, "reason": ""}
+    vid = await _seed(kind="video", fields={"_flags_v": vault_ai_vision._FLAGS_VERSION, **_known_flags()})
+    blob = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "lane": "$10", "settled": False,
+            "breasts_bare": "y", "crotch_bare": "n", "penetration": "n", "tags": {"outfit": "nude"}, "state": {}}
+    synced = vault_jev_flags.apply({"description": "d", "_jev": blob}, blob)
+    pho = await _seed(fields=synced)
+    drift = await _seed(fields={**synced, "breasts_vis": "covered", "over_breasts": "red bra"})
+    with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
+        for aid in (vid, pho, drift):
+            assert await vault_jev_pass.one(aid, 7001) is None, aid
+        assert await vault_ai_vision._flags_todo(vid) == [] and await vault_ai_vision._flags_todo(pho) == []
+    assert sm.client.calls == [] and sm.nn_calls == 0 and col.calls == 0
+    assert await _fields(drift) == synced, "a drifted photo was not re-stamped from its `_jev`"
+
+
+async def case_old_blob_without_state_reruns_once():
+    """A v8 `_jev` stored before the region states (same VERSION, no `state`) is not current: the next visit pays
+    Jev once and stores a blob with `state`; the visit after pays nothing."""
+    g = _golden_with("resp")
+    old = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "lane": "$10", "settled": False,
+           "breasts_bare": "y", "crotch_bare": "n", "penetration": "n", "tags": {"outfit": "nude"}, "at": "old"}
+    aid = await _seed(fields={"description": "d", "_jev": old, "_flags_v": 3, **_known_flags()})
+    assert not rules.current(await _fields(aid)) and await vault_ai_vision._flags_todo(aid) == [7001]
+    with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
+        res = await vault_jev_pass.one(aid, 7001)
+        paid = len(sm.client.calls)
+        assert await vault_jev_pass.one(aid, 7001) is None
+    assert res and res["ok"] and paid > 0 and len(sm.client.calls) == paid, (res, paid, sm.client.calls)
+    f = await _fields(aid)
+    assert rules.current(f) and isinstance(f["_jev"]["state"], dict) and f["_jev"]["at"] != "old", f["_jev"]
+    assert vault_jev_flags.in_sync(f, ()) and await vault_ai_vision._flags_todo(aid) == []
 
 
 async def case_no_nudenet_refuses_and_stamps():
     g = _golden_with("resp")
     prev = {"description": "kept", "_jev": {"v": rules.VERSION, "status": "error", "lane5": "$50"}}  # stale → runs
-    aid = await _seed(jev=True, fields=prev)
+    aid = await _seed(fields=prev)
     with _Seams(g["rec"], None) as sm, _Collect(_jpeg(576, 1024)) as col:
         res = await vault_jev_pass.one(aid, 7001)
-        plan = await vault_jev_pass.plan(aid)
+        plan = await vault_jev_pass.plan()
     assert res["status"] == "no_nudenet" and not res["ok"] and sm.client.calls == [], res
     assert col.calls == 0, "refused only after fetching the still from OF"
     f = await _fields(aid)
     assert f["description"] == "kept" and f["_jev"]["status"] == "no_nudenet", f
     assert f["_jev"]["lane5"] == "$50" and "failed_at" in f["_jev"] and "NUDENET" in f["_jev"]["error"]
-    assert plan["enabled"] and not plan["ready"] and "NUDENET" in plan["reason"], plan
+    assert set(plan) == {"ready", "reason"} and not plan["ready"] and "NUDENET" in plan["reason"], plan
     async with get_session() as s:
         assert (await s.execute(select(GrokDailyCost).where(GrokDailyCost.account_id == aid))).first() is None
 
@@ -340,11 +370,13 @@ async def case_no_nudenet_refuses_and_stamps():
 
 async def case_no_key_refuses_before_fetch():
     g = _golden_with("resp")
-    aid = await _seed(jev=True)
+    aid = await _seed()
     with _Seams(g["rec"], g["nn"], key="") as sm, _Collect(_jpeg(576, 1024)) as col:
         res = await vault_jev_pass.one(aid, 7001)
+        plan = await vault_jev_pass.plan()
     assert res["status"] == "no_key" and col.calls == 0 and sm.client.calls == [], res
     assert (await _fields(aid))["_jev"]["status"] == "no_key"
+    assert plan == {"ready": False, "reason": "TYPESAFE_API_KEY is not set on this server"}, plan
 
 
 async def case_loaded_detector_takes_no_lock_or_thread():
@@ -358,14 +390,13 @@ async def case_loaded_detector_takes_no_lock_or_thread():
     async def _no_thread(*a, **k):
         raise AssertionError("to_thread used while loaded")
     llm_providers.typesafe_key = lambda: "k"
-    aid = await _seed(jev=True)
     assert vault_jev._nn_load_lock.acquire(timeout=1)
     asyncio.to_thread = _no_thread
     try:
         assert vault_jev._load_detector() is sentinel
         assert await asyncio.wait_for(vault_jev.preflight(), 1) is None
         assert await vault_jev.nudenet_ready() == (True, "")
-        assert (await vault_jev_pass.plan(aid))["ready"] is True
+        assert await vault_jev_pass.plan() == {"ready": True, "reason": ""}
         vault_jev._nn_det, vault_jev._nn_err = None, "gone"   # a remembered failure: also lock-free
         assert await vault_jev.nudenet_ready() == (False, "gone")
     finally:
@@ -378,14 +409,14 @@ async def case_loaded_detector_takes_no_lock_or_thread():
 # ── Carry across re-describe / copies ────────────────────────────────
 
 def case_redescribe_and_copies_carry_jev():
-    jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10"}
+    jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "state": {}}
     vals = decide.build_describe_update(
         False, {"description": "new"}, prev_ai={"description": "old", "_jev": jev}, locked=set(),
         overrides={}, used_model="qwen3-vl-30b", n_frames=1, pv="v2", fixable=(), call_id=None,
         now=datetime(2026, 11, 11))
     assert json.loads(vals["ai_fields_json"])["_jev"] == jev
 
-    own = {"v": rules.VERSION, "status": "ok", "lane5": "free"}
+    own = {"v": rules.VERSION, "status": "ok", "lane5": "free", "state": {}}
     src_cols = {"ai_fields_json": json.dumps({"description": "d", "_jev": jev})}
     vals = decide.build_copy_update(src_cols, prev_ai={"_jev": own}, locked=set(), overrides={},
                                     fixable=(), src_id=1, now=datetime(2026, 11, 11))
@@ -425,29 +456,61 @@ async def case_describe_runs_jev_first_photos_only():
 
     vault_ai_vision._describe_one, vault_ai_vision._flags_one = _desc, _flags
     try:
-        aid = await _seed(jev=True)
+        aid = await _seed()
         with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
             res = await vault_ai_vision._describe_and_flag(aid, 7001)
-            assert order == ["describe", "jev-before", "flags"], order
+            assert order == ["describe", "jev-before"], f"a photo got the qwen flags call: {order}"
             assert len(sm.client.calls) >= 1 and res["jev_status"] == "ok", res
-            assert res["cost_millicents"] == 73 + res["jev_cost_millicents"] and res["jev_cost_millicents"] > 0
+            assert res["cost_millicents"] == 70 + res["jev_cost_millicents"] and res["jev_cost_millicents"] > 0
             assert res["jev_lane5"] == g["expect"]["lane5"]
+            f = await _fields(aid)
+            assert vault_jev_flags.in_sync(f, ()) and f["_flags_model"] == "jev", f   # flags from Jev
             # current → a second describe does not re-run Jev
             n = len(sm.client.calls)
             res2 = await vault_ai_vision._describe_and_flag(aid, 7001)
             assert len(sm.client.calls) == n and "jev_status" not in res2, res2
 
             order.clear()
-            vid = await _seed(jev=True, kind="video")
+            vid = await _seed(kind="video")
             await vault_ai_vision._describe_and_flag(vid, 7001)
             assert len(sm.client.calls) == n and order == ["describe", "no-jev", "flags"], order
     finally:
         vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
 
-async def case_flags_sweep_queues_missing_jev_and_skips_current_flags():
+async def case_describe_skips_photo_jev_cannot_read():
+    """No TypeSafe key / no NudeNet / a failed Jev: the photo is skipped with Jev's status — no describe call,
+    no qwen flags, describe_status untouched (retried next sweep), never a v2 describe."""
     g = _golden_with("resp")
-    aid = await _seed(jev=True, mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
+    o_chat, o_flags = llm_client.chat, vault_ai_vision._flags_one
+
+    async def _no(*a, **k):
+        raise AssertionError("a photo Jev could not read reached qwen")
+    llm_client.chat, vault_ai_vision._flags_one = _no, _no
+    try:
+        for seams, want in (((g["rec"], g["nn"]), {"key": ""}), ((g["rec"], None), {})):
+            aid = await _seed(fields={"description": "old"})
+            with _Seams(*seams, **want), _Collect(_jpeg(576, 1024)):
+                res = await vault_ai_vision._describe_and_flag(aid, 7001)
+            status = "no_key" if want else "no_nudenet"
+            assert not res["ok"] and res["status"] == status and res["jev_status"] == status, res
+            assert "jev_skip" not in res and "skipped" in res["detail"], res
+            async with get_session() as s:
+                row = await s.get(VaultItem, (aid, 7001))
+            f = json.loads(row.ai_fields_json)
+            assert row.describe_status is None and f["description"] == "old" and "_describe" not in f, f
+            assert f["_jev"]["status"] == status and "_flags_v" not in f, f
+    finally:
+        llm_client.chat, vault_ai_vision._flags_one = o_chat, o_flags
+
+
+async def case_flags_sweep_photos_from_jev_clips_from_qwen():
+    g = _golden_with("resp")
+    aid = await _seed(mids=(7001, 7002), fields={"_flags_v": vault_ai_vision._FLAGS_VERSION, **_known_flags(),
+                                                 "over_breasts": "red bra", "_flags_model": "qwen3-vl-30b"})
+    async with get_session() as s:
+        s.add(VaultItem(account_id=aid, media_id=7003, kind="video", tags="[]", created_at=datetime(2026, 5, 1)))
+        await s.commit()
     flagged = []
     o = vault_ai_vision._flags_one
 
@@ -458,30 +521,32 @@ async def case_flags_sweep_queues_missing_jev_and_skips_current_flags():
     try:
         with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
             todo = await vault_ai_vision._flags_todo(aid)
-            assert sorted(todo) == [7001, 7002], todo
+            assert sorted(todo) == [7001, 7002, 7003], todo   # qwen-flagged photos are stale: no `_jev`
             vault_ai_vision._flags_running.add(aid)
             await vault_ai_vision._run_flags_all(aid, todo)
-            assert flagged == [], f"qwen flags re-ran on current flags: {flagged}"
+            assert flagged == [7003], f"qwen flags ran on a photo: {flagged}"
             assert len(sm.client.calls) >= 2
             prog = vault_ai_vision._flags_progress[aid]
-            assert prog["failed"] == 0 and prog["jev_cost_millicents"] == prog["cost_millicents"] > 0, prog
+            assert prog["failed"] == 0 and prog["jev_cost_millicents"] == prog["cost_millicents"] - 3 > 0, prog
             for m in (7001, 7002):
-                assert rules.current(await _fields(aid, m)), m
-            assert await vault_ai_vision._flags_todo(aid) == []
+                f = await _fields(aid, m)
+                assert rules.current(f) and vault_jev_flags.in_sync(f, ()) and "over_breasts" not in f, f
+            # 7003's fake flags wrote nothing, so it stays queued; the photos are done
+            assert await vault_ai_vision._flags_todo(aid) == [7003]
     finally:
         vault_ai_vision._flags_one = o
 
 
 async def case_dupe_followers_get_the_leaders_jev():
     g = _golden_with("resp")
-    aid = await _seed(jev=True, mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
+    aid = await _seed(mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
     o_groups, o_flags = vault_ai_vision.vault_dupes.reuse_groups, vault_ai_vision._flags_one
 
     async def _groups(account_id, order):
         return [[7001, 7002]]
 
     async def _flags(*a, **k):
-        raise AssertionError("flags are current")
+        raise AssertionError("a photo got the qwen flags call")
     vault_ai_vision.vault_dupes.reuse_groups, vault_ai_vision._flags_one = _groups, _flags
     try:
         with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
@@ -492,16 +557,18 @@ async def case_dupe_followers_get_the_leaders_jev():
             "a duplicate paid for its own Jev call"
         a, b = await _fields(aid, 7001), await _fields(aid, 7002)
         assert rules.current(a) and rules.current(b) and a["_jev"] == b["_jev"], (a, b)
+        assert vault_jev_flags.in_sync(a, ()) and vault_jev_flags.in_sync(b, ()), (a, b)
         assert b.get("_flags_copied_from") == 7001 or a.get("_flags_copied_from") == 7002
+        assert await vault_ai_vision._flags_todo(aid) == []
     finally:
         vault_ai_vision.vault_dupes.reuse_groups, vault_ai_vision._flags_one = o_groups, o_flags
 
 
-async def case_forced_flags_rerun_qwen_without_forcing_jev():
-    """flags-all {force} on a Jev-on account re-runs qwen on every photo — also the ones that needed Jev —
-    and the named-set probe (`_jev_and_flag(force=True)`) never re-pays a current `_jev`."""
+async def case_forced_flags_never_qwen_on_photos_nor_repays_jev():
+    """flags-all {force} never calls qwen for a photo and never re-pays a current `_jev`; nor does the named-set
+    probe (`_jev_and_flag(force=True)`)."""
     g = _golden_with("resp")
-    aid = await _seed(jev=True, mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
+    aid = await _seed(mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
     flagged = []
     o = vault_ai_vision._flags_one
 
@@ -514,36 +581,53 @@ async def case_forced_flags_rerun_qwen_without_forcing_jev():
             todo = await vault_ai_vision._flags_todo(aid, force=True)
             vault_ai_vision._flags_running.add(aid)
             await vault_ai_vision._run_flags_all(aid, todo, force=True)
-            assert sorted(flagged) == [7001, 7002], f"forced sweep skipped qwen: {flagged}"
             n = len(sm.client.calls)
-            assert n >= 2
+            assert flagged == [] and n >= 2, (flagged, n)
             for m in (7001, 7002):
-                assert rules.current(await _fields(aid, m)), m
-            flagged.clear()
+                assert vault_jev_flags.in_sync(await _fields(aid, m), ()), m
+            await vault_ai_vision._run_flags_all(aid, await vault_ai_vision._flags_todo(aid, force=True), force=True)
             res = await vault_ai_vision._jev_and_flag(aid, 7001, force=True)   # the grading probe's call
-            assert flagged == [7001] and len(sm.client.calls) == n and "jev_status" not in res, res
+            assert flagged == [] and len(sm.client.calls) == n and "jev_status" not in res, res
+            assert res["ok"] and res["status"] == "flagged", res
     finally:
         vault_ai_vision._flags_one = o
 
 
-async def case_describe_sweep_copies_from_pre_jev_photos():
-    """The `_jev` copy-source filter is the flags sweep's only: a photo described before Jev stays a
-    describe copy source (no fresh paid describe for its duplicate)."""
-    aid = await _seed(jev=True, mids=(7001, 7002))
-    async with get_session() as s:
-        it = await s.get(VaultItem, (aid, 7001))
-        it.describe_status, it.ai_fields_json = "described", json.dumps({"description": "d"})
-        await s.commit()
+async def case_photo_reuse_needs_jev():
+    """A photo is a describe copy source only with a Jev-fed describe on the `_jev` it holds (a pre-Jev / v2
+    photo describe never), and a flags source only with flags in sync with a current `_jev`."""
+    c = next(x for x in DESCRIBE_GOLD if x["path"] == "prose")
+    j = c["jev"]
+    fed = vault_jev_flags.apply({"description": "d", "_describe": vault_describe_jev.meta("prose", j, "m"),
+                                 "_jev": j}, j)
     o = vault_ai_vision.vault_dupes.reuse_groups
 
     async def _groups(account_id, order):
         return [[7001, 7002]]
     vault_ai_vision.vault_dupes.reuse_groups = _groups
     try:
-        plan, _ = await vault_ai_vision._reuse(aid, [7002], flags=False)
-        assert 7002 in plan.copy_now, plan
-        plan, _ = await vault_ai_vision._reuse(aid, [7002], flags=True)
-        assert 7002 not in plan.copy_now, plan   # flags sweep: no current `_jev` -> not a source
+        for src, locks, describe_ok, flags_ok in (
+                ({"description": "d"}, [], False, False),                                       # pre-Jev
+                ({"description": "d", "_flags_v": 3, **_known_flags()}, [], False, False),      # qwen flags
+                (fed, [], True, True),
+                ({**fed, "breasts_vis": "covered"}, [], True, False),                          # flags drifted
+                # an operator-locked flag is not drift: in sync for the todo, the reuse plan and the copy alike
+                ({**fed, "breasts_vis": "covered"}, ["breasts_vis"], True, True)):
+            aid = await _seed(mids=(7001, 7002))
+            async with get_session() as s:
+                it = await s.get(VaultItem, (aid, 7001))
+                it.describe_status, it.ai_fields_json = "described", json.dumps(src)
+                it.locked_fields_json = json.dumps(locks)
+                await s.commit()
+            plan, _ = await vault_ai_vision._reuse(aid, [7002], flags=False)
+            assert (7002 in plan.copy_now) == describe_ok, (src, plan)
+            plan, _ = await vault_ai_vision._reuse(aid, [7002], flags=True)
+            assert (7002 in plan.copy_now) == flags_ok, (src, locks, plan)
+            if src is not fed and "_jev" in src:
+                todo = await vault_ai_vision._flags_todo(aid)
+                assert (7001 not in todo) == flags_ok, (locks, todo)
+                res = await vault_ai_vision._copy_flags(aid, 7001, 7002)
+                assert (res["status"] == "flags_copied") == flags_ok, (locks, res)
     finally:
         vault_ai_vision.vault_dupes.reuse_groups = o
 
@@ -551,14 +635,35 @@ async def case_describe_sweep_copies_from_pre_jev_photos():
 async def case_write_keeps_current_jev():
     """A describe / flags write built from a row read before a concurrent Jev pass landed keeps that
     `_jev` (the other sweep's paid answer) instead of the stale read's."""
-    jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10"}
-    aid = await _seed(jev=True, fields={"description": "old", "_jev": jev})
+    jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "state": {}}
+    aid = await _seed(fields={"description": "old", "_jev": jev})
     await vault_ai_vision._write_item(aid, 7001, describe_status="described",
                                       ai_fields_json=json.dumps({"description": "new"}))
     assert await _fields(aid) == {"description": "new", "_jev": jev}
     assert vault_jev_pass.keep_current(None, '{"a": 1}') == '{"a": 1}'
     assert json.loads(vault_jev_pass.keep_current(json.dumps({"_jev": jev}),
                                                   json.dumps({"_jev": {"status": "error"}})))["_jev"] == jev
+    # a row whose flags are Jev's keeps them too (a stale read's qwen-era flags never win)
+    full = {**jev, "lane": "$10", "settled": False, "breasts_bare": "y", "crotch_bare": "n", "tags": {}}
+    cur = vault_jev_flags.apply({"description": "old", "_jev": full}, full)
+    got = json.loads(vault_jev_pass.keep_current(json.dumps(cur), json.dumps({"description": "new",
+                                                                              "breasts_vis": "covered"})))
+    assert got["description"] == "new" and got["breasts_vis"] == "bare" and vault_jev_flags.in_sync(got, ()), got
+    # a describe's fresh clothing_items name the garments (the photo's only garment source); a lock keeps its value
+    got = json.loads(vault_jev_pass.keep_current(json.dumps(cur), json.dumps({"description": "new",
+                                                                              "clothing_items": ["black thong"]})))
+    assert got["over_vulva"] == "black thong" and "over_breasts" not in got and vault_jev_flags.in_sync(got, ()), got
+    got = json.loads(vault_jev_pass.keep_current(json.dumps(cur), json.dumps(
+        {"clothing_items": ["black thong"], "over_vulva": "red skirt"}), {"over_vulva"}))
+    assert got["over_vulva"] == "red skirt", got
+    aid2 = await _seed(fields=cur)
+    async with get_session() as s:
+        await s.execute(update(VaultItem).where(VaultItem.account_id == aid2)
+                        .values(locked_fields_json=json.dumps(["over_vulva"])))
+        await s.commit()
+    await vault_ai_vision._write_item(aid2, 7001, ai_fields_json=json.dumps(
+        {"clothing_items": ["black thong"], "over_vulva": "red skirt"}))
+    assert (await _fields(aid2))["over_vulva"] == "red skirt", "_write_item passes the row's locks"
 
 
 _harness.run()

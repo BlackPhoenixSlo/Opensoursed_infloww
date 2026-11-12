@@ -144,7 +144,7 @@ async def case_edit_overrides_locks_projects() -> None:
 
 async def case_rerun_respects_lock() -> None:
     aid = _fresh_account()
-    await _seed(aid, 2)
+    await _seed(aid, 2, kind="video")   # the qwen describe is a clip's (a photo's is Jev-fed)
 
     # Operator locks description + tier (but NOT suggested_caption).
     await api.edit_item(2, {

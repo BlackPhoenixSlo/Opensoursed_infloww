@@ -754,6 +754,40 @@ describe("AssistantWidget: Do it for me", () => {
       { accountId: "1001", employeeId: 7 },
     ]]);
   });
+
+  // Spec D12: deterministic commands and live figure cards.
+  it("a command runs before any LLM call: 'open settings' navigates and confirms, a question still asks", async () => {
+    relayPost.mockResolvedValue({ answer: "Settings is at the bottom of the sidebar.", error: null, id: 1 });
+    await openPanel();
+    await ask("open settings");
+    // The confirmation is an answer like any other: "Settings" in it links.
+    expect(await screen.findByText((_, el) => el?.tagName === "P" && el.textContent === "Opened Settings.")).toBeTruthy();
+    expect(nav.pushed).toEqual(["/settings"]);
+    expect(relayPost).not.toHaveBeenCalled();
+
+    await ask("how do I open settings?");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    expect(nav.pushed).toEqual(["/settings"]);
+  });
+
+  it("a data marker renders as a live card read with the session; the model's own figure is stripped", async () => {
+    relayPost.mockResolvedValue({ answer: "You made $999 today [[data:revenue|today|this]].", error: null, id: 1 });
+    relayGet.mockImplementation((path: string) => Promise.resolve(
+      path.startsWith("/admin/stats/revenue")
+        ? { rows: [{ kind: "tip", total_cents: 120000 }, { kind: "ppv", total_cents: 3400 }] }
+        : { count: 0, since_hours: 24, list: [] },
+    ));
+    await openPanel();
+    await ask("how much did I make today?");
+    const card = await screen.findByTestId("assistant-data-card");
+    expect(within(card).getByText("Revenue · Today · This model")).toBeTruthy();
+    expect(await within(card).findByText("$1,234")).toBeTruthy();
+    expect(screen.getByText("You made today.")).toBeTruthy();
+    expect(screen.queryByText(/\$999/)).toBeNull();
+    const read = relayGet.mock.calls.find(([p]) => String(p).startsWith("/admin/stats/revenue"));
+    expect(String(read?.[0])).toContain("account_id=1001");
+    expect(String(read?.[0])).toContain("group_by=kind");
+  });
 });
 
 /** Phone width: matchMedia says "below the corner launcher's breakpoint", the

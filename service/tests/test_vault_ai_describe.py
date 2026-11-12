@@ -114,7 +114,8 @@ async def _seed_account(aid: str, *, cap_cents: int = 1000) -> None:
             s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=cap_cents))
 
 
-async def _seed_items(aid: str, media_ids: list[int], *, kind: str = "photo") -> None:
+async def _seed_items(aid: str, media_ids: list[int], *, kind: str = "video") -> None:
+    """Clips by default: the qwen describe + flags this file pins are a clip's (a photo is Jev's, test_vault_jev)."""
     base = datetime(2026, 6, 1, 10, 0, 0)
     async with get_session() as s:
         for i, mid in enumerate(media_ids):
@@ -422,7 +423,7 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
     await _seed_account(aid)
     async with get_session() as s:
         s.add(VaultItem(
-            account_id=aid, media_id=70, kind="photo",
+            account_id=aid, media_id=70, kind="video",
             created_at=datetime(2026, 6, 1, 10, 0, 0), tags="[]",
             describe_status="described",
             ai_fields_json=json.dumps({
@@ -562,7 +563,7 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
     transient failure must be stamped as one, and must be retried immediately."""
     aid = _fresh_account()
     await _seed_account(aid)
-    await _seed_items(aid, [60], kind="photo")
+    await _seed_items(aid, [60])
 
     async def _cold(*_a, **_k):
         return vault_frames.Collected([], "fetch_failed")

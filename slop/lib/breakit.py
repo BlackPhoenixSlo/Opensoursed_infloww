@@ -1,44 +1,50 @@
-"""--break: break-it-once against a green baseline (run first, or read from --baseline). Moved from lib/cli.py
-(which re-exports break_one); adds the Run identity checks. cli's scenario loading and runs are looked up on the
-module at call time."""
+"""--break: break-it-once against a green baseline (run first, or read from --baseline), with the Run identity
+checks. lib/cli.py's break_one passes in its scenario loading (`load`), runs (`run_one`) and this checkout's
+source id (`source_id`); knob matching is lib/runs.py."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from slop.lib import cli, identity
+from slop.lib import identity, runs
 from slop.lib.faults import FAULTS
+from slop.lib.report import write_atomic
 
 
 def _status(checks: list[dict]) -> dict[str, str]:
     return {c["name"]: c.get("status") or ("pass" if c["ok"] else "fail") for c in checks}
 
 
-def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1) -> tuple[dict, str | None, dict]:
-    """(statuses, problem, params) from a previous no-fault run of the same scenario, knobs and Run identity."""
+def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1, *,
+                   source_id) -> tuple[dict, str | None, dict]:
+    """(statuses, problem, params) from a previous no-fault run of the same scenario, knobs, --timeout and Run
+    identity."""
     try:
         checks = json.loads((d / "invariants.json").read_text())
         meta = json.loads((d / "metrics.json").read_text())
     except (OSError, ValueError) as e:
         return {}, f"baseline {d} unreadable: {e}", {}
     bp = meta.get("params", {})
-    want = cli._run_knobs(name, args, params, ui, shards, None)
-    diff = cli._same_knobs(bp, want)
+    want = runs.run_knobs(name, args, params, ui, shards, None)
+    diff = runs.same_knobs(bp, want)
     if diff:
         return {}, f"baseline {d} was run with other knobs (have, want): {diff}", bp
-    why = identity.baseline_problem(bp, {"source_id": cli._source_id(), "env_id": args.env_id,
+    why = identity.baseline_problem(bp, {"source_id": source_id(), "env_id": args.env_id,
                                          "env_names": args.env_names})
     if why:
         return {}, f"baseline {d}: not the same Run identity: {why}", bp
+    if bp.get("timeout_s") != args.timeout:  # a shorter one can time the fault run out: red with no fault effect
+        return {}, (f"baseline {d} was run with --timeout={bp.get('timeout_s', 'unrecorded')}, this run "
+                    f"--timeout={args.timeout}: re-run with the same --timeout"), bp
     if meta.get("infra"):
         return {}, f"baseline {d} had an infra failure: {meta['infra']}", bp
     return _status(checks), None, bp
 
 
-def break_one(name: str, path: Path, args, params) -> str:
+def break_one(name: str, path: Path, args, params, *, load, run_one, source_id) -> str:
     """Break-it-once. Returns CAUGHT, NOT CAUGHT or INCONCLUSIVE."""
     try:
-        mod = cli.load(path)
+        mod = load(path)
     except Exception as e:
         print(f"slop: {name} break INCONCLUSIVE: scenario import failed: {type(e).__name__}: {e}")
         return "INCONCLUSIVE"
@@ -49,16 +55,16 @@ def break_one(name: str, path: Path, args, params) -> str:
     targets = FAULTS[fault].targets
     if args.baseline:
         base_dir = Path(args.baseline).resolve()
-        ui, shards = cli._knobs(mod, args, params)
-        base, problem, base_params = _load_baseline(base_dir, name, ui, args, params, shards)
+        ui, shards = runs.knobs(mod, args, params)
+        base, problem, base_params = _load_baseline(base_dir, name, ui, args, params, shards, source_id=source_id)
     else:
         print(f"slop: break-it-once {fault}: green baseline first")
-        b = cli.run_one(name, path, args, params, tag="baseline")
+        b = run_one(name, path, args, params, tag="baseline")
         base_dir, base, problem = b.out, _status(b.checks), (f"baseline infra failure: {b.infra}" if b.infra else None)
         base_params, problem = b.params, problem or identity.raced([b.params])
     broken_dir, broken, broken_problem = None, {}, None
     if not problem:
-        r = cli.run_one(name, path, args, params, fault=fault, tag="break")
+        r = run_one(name, path, args, params, fault=fault, tag="break")
         broken_dir, broken = r.out, _status(r.checks)
         broken_problem = f"fault run infra failure: {r.infra}" if r.infra else identity.raced([base_params, r.params])
 
@@ -93,8 +99,8 @@ def break_one(name: str, path: Path, args, params) -> str:
         summary = broken_dir / "summary.txt"
         head, _, rest = summary.read_text().partition("\n")
         head += f"  (under injected fault {fault}: red expected; break verdict {verdict}, see the end / break.json)"
-        summary.write_text(f"{head}\n{rest}\n" + "\n".join(lines) + "\n")
-        (broken_dir / "break.json").write_text(json.dumps({
+        write_atomic(summary, f"{head}\n{rest}\n" + "\n".join(lines) + "\n")
+        write_atomic(broken_dir / "break.json", json.dumps({
             "fault": fault, "verdict": verdict, "targets": list(targets), "went_red": went_red,
             "noise": noise, "inconclusive": reasons, "baseline": str(base_dir)}, indent=2))
     return verdict

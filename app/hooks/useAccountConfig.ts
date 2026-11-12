@@ -79,9 +79,6 @@ export interface BrainConfig {
   /** Get to know fans' short "Model info" note, pinned into every chat prompt. Server semantics: absent key =
    *  unchanged; null = no note (the box then prefills `model_notes_template`). */
   model_notes?: string | null;
-  /** Jev v8 vault flags opt-in (service/vault_jev.py), set from the Vault Extras drawer. Server semantics:
-   *  absent key = unchanged; default false. */
-  vault_jev_enabled?: boolean;
 }
 
 /** One creator-canon field, as served by the API — the single source of truth. */

@@ -1,15 +1,17 @@
 """vault_describe_jev.py — the pure half of the Jev-fed vault describe (D51): routing, prompts, facts, scrub.
 
-A port of the bench winner (`.scratch/jev-vault-bench/`, DV6_RESULTS.md track F, arm F-hyb30nm): for a photo
-whose account has Jev on and whose `_jev` is current, the describe call is fed the Jev reading.
+A port of the bench winner (`.scratch/jev-vault-bench/`, DV6_RESULTS.md track F, arm F-hyb30nm): every photo's
+describe call is fed its Jev reading (Jev v8 is the default for every vault photo; there is no v2 photo describe).
 
-  route(...)        ("prose" | "v6" | "v2", the `_jev` fed or None) (fail-safe: anything unexpected is "v2" =
-                    today's describe, unchanged)
+  route(...)        (recipe, the `_jev` fed): clips ("v2", None) (today's describe, unchanged); photos ("prose" |
+                    "v6", `_jev`), or (None, None) when the photo has no feedable `_jev` (Jev unavailable / failed:
+                    the photo is skipped, never described without it)
     prose           Jev lane not review: PROSE_PROMPT + facts block @640 px; qwen writes the selling description
-                    and names the garments (`clothing_items`, non-pricing: vault_scripts' outfit groups); every
-                    other structured field comes from `_jev` (`prose_answer`).
+                    and names the garments (`clothing_items`, non-pricing: vault_scripts' outfit groups and the
+                    photo's `over_` garment names, `vault_jev_flags.garments`); every other structured field comes
+                    from `_jev` (`prose_answer`).
     v6              Jev review lane: `_DESCRIBE_PROMPT_V2` + facts block (hedge, no lane facts) @960 px; qwen's
-                    JSON with the hard facts enforced (`v6_answer`).
+                    JSON with the hard facts enforced and the lane fields from Jev (`v6_answer`).
   facts(jev)        describe_ab.facts with VARIANTS["v6"] (source "final": lane-critical facts from the Jev lane)
   build_prompt      describe_ab.build_prompt (the block goes right before "RULES\\n")
   enforce / jev_struct / scrub   describe_ab.enforce / dv6_sweep.jev_struct / describe_ab.scrub, verbatim
@@ -25,11 +27,11 @@ Settle only ever moves a `review` photo and stamps `settled`, so the bench lane 
 `settled` is set (`lane0`); breasts_bare / crotch_bare / penetration are untouched by settle.
 
 Not from the bench (the bench scored lane-critical claims only, downstream reads every V2 field):
-`prose_fields` fills every other V2 key from Jev — explicitness by lane ($100 hardcore, $50 / $10 explicit, free
-suggestive), clothing_state through `vault_ai_brief._CLOTHING_FOR` (settle's own table), underwear_visible /
-genitals_covered consistent with it, nsfw, sellable, primary_folder, position, setting, people / face, acts, tags.
-`PROSE_ABSENT` lists the two V2 keys left out and why. Lane-critical claims (body_focus, penetration,
-description) are bench-exact.
+`prose_fields` fills every other V2 key from Jev — clothing_state / underwear_visible / genitals_covered /
+explicitness from `vault_jev_flags.reading` (the same table the photo's flags are stamped from, so describe and
+flags never contradict), nsfw, sellable, primary_folder, position, setting, people / face, acts, tags. The v6
+answer takes the same lane fields over qwen's. `PROSE_ABSENT` lists the two V2 keys left out and why.
+Lane-critical claims (body_focus, penetration, description) are bench-exact.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ import re
 from collections import Counter
 from typing import Any, Mapping
 
-import vault_ai_brief
+import vault_jev_flags
 import vault_jev_rules
 
 PROSE, V6, V2 = "prose", "v6", "v2"
@@ -85,7 +87,7 @@ def lane0(jev: Mapping[str, Any]) -> str:
 
 def feedable(jev: Any) -> bool:
     """A `_jev` the describe may be fed: current (this VERSION, status ok) and carrying what `facts` reads."""
-    return (vault_jev_rules.current({"_jev": jev})
+    return (vault_jev_rules.current({vault_jev_rules.JEV_KEY: jev})
             and isinstance(jev.get("C"), dict) and all(isinstance(jev["C"].get(q), dict) for q in FACT_CHOICES)
             and isinstance(jev.get("P"), dict) and isinstance(jev.get("tags"), dict)
             and jev.get("lane") is not None)
@@ -95,22 +97,22 @@ def review_lane(jev: Mapping[str, Any]) -> bool:
     return lane0(jev) == "review"
 
 
-def route(*, kind: str | None, jev_on: bool, fields: Mapping[str, Any] | None,
-          prompt_version: str = "v2") -> tuple[str, dict[str, Any] | None]:
-    """(recipe, the `_jev` it is fed) for one item. Photos of a Jev-on account with a feedable `_jev` only; v1
-    asks, clips, Jev off and a missing / failed / stale / capped `_jev` keep today's describe ("v2", None)."""
+def route(*, kind: str | None, fields: Mapping[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
+    """(recipe, the `_jev` it is fed) for one item: clips ("v2", None); a photo ("prose" | "v6", its `_jev`), or
+    (None, None) — skip: no feedable `_jev` (missing, failed, stale, capped, or a blob these functions cannot
+    read). A photo is never "v2", whatever prompt version was asked."""
+    if kind != "photo":
+        return V2, None
     try:
-        if kind != "photo" or not jev_on or str(prompt_version) == "v1":
-            return V2, None
-        jev = (fields or {}).get("_jev")
-        if not feedable(jev):
-            return V2, None
+        jev = (fields or {}).get(vault_jev_rules.JEV_KEY)
+        if not feedable(jev) or vault_jev_flags.reading(jev) is None:
+            return None, None
         path = V6 if review_lane(jev) else PROSE
-        # a blob the answer cannot be built from is today's describe, not a crash after a paid call
+        # a blob the answer cannot be built from is a skip, not a crash after a paid call
         (prose_answer if path == PROSE else v6_answer)({}, jev)
         return path, jev
-    except Exception:  # noqa: BLE001 — a malformed blob is today's describe, never a crash
-        return V2, None
+    except Exception:  # noqa: BLE001 — a malformed blob is a skip, never a crash
+        return None, None
 
 
 def meta(path: str, jev: Mapping[str, Any] | None, model: str) -> dict[str, Any]:
@@ -120,16 +122,18 @@ def meta(path: str, jev: Mapping[str, Any] | None, model: str) -> dict[str, Any]
             "jev_at": (jev or {}).get("at") if fed else None, "model": model, "px": PX.get(path)}
 
 
-def reusable(fields: Mapping[str, Any] | None) -> bool:
-    """May a duplicate copy this row's describe? A Jev-fed describe only while the row still holds the `_jev`
-    it was fed (same version and `at` stamp, still routes to the same path): the copy carries that `_jev` with it
-    (`vault_ai_vision_decide.jev_for_copy`), so the pair stays consistent. A v2 / pre-stamp describe reads no
-    Jev and is always reusable (Jev-off sharing unchanged)."""
+def reusable(fields: Mapping[str, Any] | None, kind: str | None) -> bool:
+    """May a duplicate copy this row's describe? A clip's always (v2). A photo's only when it is Jev-fed and the
+    row still holds the `_jev` it was fed (same version and `at` stamp, still routes to the same path): the copy
+    carries that `_jev` with it (`vault_ai_vision_decide.jev_for_copy`), so the pair stays consistent. A v2 /
+    pre-stamp photo describe is never a source (a copy of it would be a v2 photo describe)."""
+    if kind != "photo":
+        return True
     f = fields or {}
     d = f.get(DESCRIBE_KEY)
     if not isinstance(d, dict) or d.get("path") not in JEV_FED:
-        return True
-    jev = f.get("_jev")
+        return False
+    jev = f.get(vault_jev_rules.JEV_KEY)
     return (feedable(jev) and jev.get("v") == d.get("jev_v") and jev.get("at") == d.get("jev_at")
             and (V6 if review_lane(jev) else PROSE) == d.get("path"))
 
@@ -239,13 +243,10 @@ def jev_struct(jev: Mapping[str, Any], F: list[Fact]) -> dict[str, Any]:
     return q
 
 
-# Free lanes read `suggestive`: vault_scripts' mass lane is suggestive ONLY, and a Jev free lane is mass-sendable.
-_EXPLICITNESS = {"$100": "hardcore", "$50": "explicit", "$10": "explicit"}
 _ACTS = {"fingers": ["fingering"], "toy": ["toy_insertion"]}
 _TAG_CHOICES = ("outfit", "setting", "pose", "framing")
-# Jev outfit with nothing bare -> V2 clothing_state (nude / bare regions are decided before this).
-_DRESSED = {"everyday_clothes": "dressed", "sheet_or_towel": "dressed", "lingerie_or_bodysuit": "lingerie_on",
-            "swimwear": "lingerie_on", "topless_with_bottoms": "lingerie_on"}
+# The describe fields `vault_jev_flags.reading` decides (the photo's flags are stamped from the same reading).
+LANE_FIELDS = ("clothing_state", "underwear_visible", "genitals_covered", "explicitness")
 _POSITION = {"standing": "standing", "sitting": "sitting", "kneeling": "kneeling", "lying_on_back": "lying_on_back",
              "lying_on_stomach": "lying_on_stomach", "all_fours_or_bent_over": "on_all_fours"}
 _PEOPLE = {"one": 1, "two_or_more": 2, "none": 0}
@@ -265,23 +266,15 @@ def prose_fields(jev: Mapping[str, Any], F: list[Fact], q: Mapping[str, Any]) ->
     """Every other V2 describe field downstream reads, from Jev (module doc: not bench). The struct `q` (body_focus,
     penetration, toys, people/face from facts) wins over these where both exist (`prose_answer`).
 
-    clothing_state reuses `vault_ai_brief._CLOTHING_FOR` (the table `settled_reading` settles clothing with), keyed on
-    the struct's bare breasts / vulva, so describe-from-Jev and settle agree; a nude outfit is fully_nude; nothing
-    bare falls back to the outfit (`_DRESSED`). underwear_visible / genitals_covered follow it, so the row never
-    contradicts itself (`vault_ai_brief.contradictions`)."""
+    clothing_state / underwear_visible / genitals_covered / explicitness are `vault_jev_flags.reading`'s, the reading
+    the photo's flags are stamped from, so the row never contradicts itself (`vault_ai_brief.contradictions`)."""
     tags, C = jev.get("tags") or {}, jev.get("C") or {}
     fv = {f: v for f, v, _ in F}
-    want = struct_lane(q)
-    bare_b, bare_v = want["nipple"] == "y", want["vulva"] == "y"
+    r = vault_jev_flags.reading(jev)   # never None here: `route` only routes a photo it can read
+    bare = any(r[k] == "bare" for k in ("breasts_vis", "vulva_vis", "anus_vis"))
     outfit = _top(C, "outfit")
-    if outfit == "nude":
-        clothing = "fully_nude"
-    elif bare_b or bare_v:
-        clothing = vault_ai_brief._CLOTHING_FOR[(bare_b, bare_v)]
-    else:
-        clothing = _DRESSED.get(outfit, "unclear")
     lane = str(jev.get("lane"))
-    paid = lane in _EXPLICITNESS
+    paid = lane in vault_jev_flags.EXPLICITNESS
     pen = str(q.get("penetration") or "none")
     people = _PEOPLE.get(_top(C, "people_count"), 1)
     if tags.get("feet_focus") == "y":
@@ -307,18 +300,15 @@ def prose_fields(jev: Mapping[str, Any], F: list[Fact], q: Mapping[str, Any]) ->
         "acts": list(_ACTS.get(pen, [])) or ["posing"],
         "penetration": pen,
         "insertion_depth": "none" if pen == "none" else "unclear",
-        "clothing_state": clothing,
+        **{k: r[k] for k in LANE_FIELDS},
         "clothing_items": [],                      # Jev names no garment: qwen's list (`prose_answer`)
-        "genitals_covered": not bare_v and outfit != "nude",
-        "underwear_visible": outfit != "nude",
         "position": _POSITION.get(str(tags.get("pose")), "unclear"),
         "setting": fv.get("setting") or _SETTING_ALL.get(_top(C, "setting"), "other"),
         "people_count": people,
         "partner_visible": people >= 2,
         "face_visible": _top(C, "face_visible") != "no_face",
-        "explicitness": _EXPLICITNESS.get(lane, "suggestive"),
         # free-sfw: a free lane with nothing bare in everyday clothes / swimwear
-        "nsfw": paid or bare_b or bare_v or outfit not in _SAFE_OUTFITS,
+        "nsfw": paid or bare or outfit not in _SAFE_OUTFITS,
         "sellable": True,                          # her own vault, indexed to sell (as V2 answers it)
         "primary_folder": folder,
         "tags": [w.replace("_", " ") for w in words],
@@ -433,7 +423,8 @@ def garments(raw: Any) -> list[str]:
 
 def prose_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str, Any]:
     """The prose path's describe data: Jev struct + lane fields, qwen's prose scrubbed against them, qwen's
-    garments as `clothing_items` (descriptors only: no lane or price reads them)."""
+    garments as `clothing_items` (no price reads them; the row's `over_` garment names come from them,
+    `vault_jev_flags.garments`, only over a region Jev already calls covered)."""
     F = facts(jev); q = jev_struct(jev, F)
     out = {**prose_fields(jev, F, q), **q}   # the bench struct wins where both answer
     out["clothing_items"] = garments((parsed or {}).get("clothing_items"))
@@ -442,8 +433,11 @@ def prose_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str,
 
 
 def v6_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str, Any]:
-    """The v6 path's describe data: qwen's JSON with the hard facts enforced, its description scrubbed."""
+    """The v6 path's describe data: qwen's JSON with the hard facts enforced, its description scrubbed, and the lane
+    fields (`LANE_FIELDS`) Jev's — the settled lane prices the photo, not qwen's explicitness."""
     F = facts(jev); q = enforce(parsed, F)
     desc = (parsed or {}).get("description", "")
     q["description"], _ = scrub(desc if isinstance(desc, str) else str(desc or ""), q, F)
+    r = vault_jev_flags.reading(jev)   # never None here: `route` only routes a photo it can read
+    q.update({k: r[k] for k in LANE_FIELDS})
     return q

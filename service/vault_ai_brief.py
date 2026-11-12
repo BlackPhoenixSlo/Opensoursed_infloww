@@ -103,6 +103,21 @@ VIS_REGIONS: tuple[str, ...] = ("vulva_vis", "breasts_vis", "anus_vis")
 # rescued the $50 tier from the `fully_nude` mislabels.
 FLAG_KEYS: tuple[str, ...] = ("underwear_visible", *VIS_REGIONS)
 
+# The flags VERSION stamped onto every answer (`_flags_v`; `vault_ai_vision`'s qwen
+# prompt and `vault_jev_flags`' mapping both stamp it, consumers require it).
+#
+# Bumped whenever the wording changes in a way that could move an answer. It
+# exists because three separate times in one session a score was taken against
+# a half-finished re-run and read as a result: v2 rows and v3 rows are
+# indistinguishable once stored, so a partial sweep looks exactly like a
+# finished one. With a stamp, `flags_all` can re-run only what is stale, and a
+# scorer can refuse to report on a mixed vault.
+#
+#   1  two booleans, `pussy_covered` / `breasts_covered`
+#   2  three-state enum per region, garment named first
+#   3  in-frame/skin decision tree + sheer-fabric rule + insertion reconcile
+FLAGS_VERSION = 3
+
 # What the model NAMED over each region ("white tank top", "her right hand"),
 # absent when there was nothing to name. The flags pass asks for these before
 # it asks for a state, because naming a garment is a far easier question than

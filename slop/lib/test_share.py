@@ -29,7 +29,7 @@ def stopped(*_):
         open(a["stopped"], "w").write("SIGINT\n")
     if "close" not in a:
         print("child stopped", flush=True)
-    sys.exit(3)
+    sys.exit(int(a.get("stopcode", 3)))
 signal.signal(signal.SIGINT, stopped)
 print("child of", sys.argv[1], flush=True)
 print("slop: folder /tmp/fake-" + sys.argv[1], flush=True)
@@ -170,6 +170,15 @@ def test_leader_cancelled_leaves_followers_its_log_and_infra(w):
     assert fc == 3 and lo in fo
     assert b"slop: INFRA shared run of pid %d: leader cancelled/died without a result" % lead.pid in fo
     assert w.starts() == 1 and not list(w.dir.glob("*.result.json"))  # cancelled: no result published
+
+
+def test_cancelled_leader_is_infra_even_when_its_child_exits_0(w):
+    """R5-8: a child that exits 0 on the leader's SIGINT is no success (red before: the leader returned it)."""
+    lead, fol = _lead_and_follow(w, "stopcode=0")
+    lead.send_signal(signal.SIGTERM)
+    (lc, lo), (fc, fo) = _out(lead), _out(fol)
+    assert lc == 3 and b"child stopped" in lo and b"leader cancelled (SIGTERM)" in lo
+    assert fc == 3 and b"leader cancelled/died without a result" in fo and not list(w.dir.glob("*.result.json"))
 
 
 def test_leader_cancelled_after_its_child_closed_stdout_stops_it_gracefully(w):
@@ -359,3 +368,37 @@ def test_nightly_children_never_share(tmp_path, monkeypatch):
         n.run(phase, "s")
     args = nightly.argparse.Namespace(phases="all,volume,map", smoke=True)
     assert len(cmds) == 3 and not any("--share" in c for c in [*cmds, nightly.child_argv(args, tmp_path)])
+
+
+def test_leader_liveness_is_pid_and_start_time():
+    """A reused pid (another start time) is not the leader: no follower waits on an unrelated process."""
+    me = os.getpid()
+    assert share._leader_alive({"pid": me, "pid_start": share.procs.start_time(me)})
+    assert not share._leader_alive({"pid": me, "pid_start": "Mon Jan  1 00:00:00 2001"})
+    assert share._leader_alive({"pid": me})  # a generation published before pid_start: pid only
+    assert not share._leader_alive({"pid": "x"})
+
+
+def test_follower_reads_the_leader_start_time_at_most_every_few_seconds(tmp_path, monkeypatch):
+    """The follower polls every STEP_S: a pid probe each time, the start time (a `ps` off Linux) once per START_CHECK_S."""
+    calls = []
+    real = share.procs.start_time
+    monkeypatch.setattr(share.procs, "start_time", lambda pid: (calls.append(pid), real(pid))[1])
+    me = os.getpid()
+    meta = {"pid": me, "pid_start": real(me), "nonce": "n", "source_id": "s"}
+    lock = tmp_path / "k.lock"
+    held, fd = os.open(lock, os.O_RDWR | os.O_CREAT), os.open(lock, os.O_RDWR)
+    share.fcntl.flock(held, share.fcntl.LOCK_EX)  # the live leader's lock: another open file, so it conflicts
+    try:
+        assert share._follow(fd, tmp_path, "k", meta, wait_s=1.0) == share.INFRA  # SLOP_SHARE_WAIT_S ran out
+    finally:
+        os.close(held), os.close(fd)
+    assert len(calls) == 1
+
+
+def test_share_stays_stdlib_only():
+    """slop/run starts it with the system python3 before the gate: it imports with no site-packages, and
+    without lib/nightly.py."""
+    code = "import sys; sys.path.insert(0, %r); import slop.lib.share; print('slop.lib.nightly' in sys.modules)"
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", code % str(REPO)], capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"

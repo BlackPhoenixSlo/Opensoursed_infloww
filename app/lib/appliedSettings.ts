@@ -55,7 +55,7 @@ export interface AppliedSettings {
 export const APPLIED_SETTINGS_KEY = ["applied-settings"] as const;
 
 /** The read for the Creator `accountId` (null: none in scope), as the principal `principalId` sees it. */
-function appliedQuery(principalId: string, accountId: string | null) {
+export function appliedQuery(principalId: string, accountId: string | null) {
   return {
     queryKey: [...APPLIED_SETTINGS_KEY, principalId, accountId],
     queryFn: () => relay.get<AppliedSettings>("/admin/settings/applied", { accountId }),

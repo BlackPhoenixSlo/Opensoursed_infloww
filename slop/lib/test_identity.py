@@ -19,8 +19,8 @@ def repo(tmp_path):
     r = tmp_path / "repo"
     (r / "app").mkdir(parents=True)
     (r / "venv/bin").mkdir(parents=True)
-    (r / ".gitignore").write_text("venv\napp/.next/\napp/node_modules/\napp/.env*.local\napp/next-env.d.ts\n"
-                                  "slop/evidence/\n")
+    (r / ".gitignore").write_text("venv\napp/.next/\napp/node_modules/\nweb/node_modules/\napp/.env*.local\n"
+                                  "app/next-env.d.ts\nslop/evidence/\n")
     (r / "app/tsconfig.json").write_text('{"a": 1}\n')
     (r / "service.py").write_text("x = 1\n")
     (r / "python3.12").write_text("")
@@ -35,14 +35,16 @@ def repo(tmp_path):
 def _lock(repo, pid):
     """The app lock as lib/stack.py writes it."""
     (repo / "app/.next").mkdir(parents=True, exist_ok=True)
-    (repo / identity.APP_LOCK).write_text(f"pid {pid} since 12:00:00: slop/run x\n")
+    (repo / recovery.APP_LOCK).write_text(f"pid {pid} since 12:00:00: slop/run x\n")
 
 
 def _holder(repo, pid, originals):
-    """Another run's app lock and saved originals, as lib/stack.py and lib/recovery.py AppFiles leave them."""
+    """Another run's app lock and saved originals, as lib/stack.py and lib/recovery.py AppFiles leave them once
+    its `next` rewrote the files on disk now (`written`: noted by Stack._wait)."""
     _lock(repo, pid)
     (repo / identity.APP_STATE).write_text(json.dumps({"originals": {
-        k: None if v is None else base64.b64encode(v).decode() for k, v in originals.items()}}))
+        k: None if v is None else base64.b64encode(v).decode() for k, v in originals.items()},
+        "written": {k: recovery.content_hash(repo / "app" / k) for k in originals}}))
 
 
 def _files(repo):
@@ -64,8 +66,26 @@ def test_source_id_is_stable_and_ignores_ignored_output(repo):
 
 @pytest.mark.parametrize("change", [
     "head", "tracked_edit", "untracked_file", "app_env_file", "lock_sha", "venv_python", "tsconfig_edit",
-    "next_env_edit"])
+    "next_env_edit", "venv_dist", "app_pnpm_meta", "app_pnpm_lock", "web_npm_meta", "env_link_target",
+    "untracked_link_target", "dir_link_content", "dir_link_new_file"])
 def test_source_id_changes_with_every_input(repo, change):
+    sp = repo / "venv/lib/python3.12/site-packages"
+    sp.mkdir(parents=True)
+    (sp / "httpx-0.27.0.dist-info").mkdir()
+    for tree in ("app", "web"):
+        (repo / tree / "node_modules/.pnpm").mkdir(parents=True)
+    (repo / "app/node_modules/.modules.yaml").write_text("hoisted: a@1\n")
+    (repo / "app/node_modules/.pnpm/lock.yaml").write_text("a: 1\n")
+    (repo / "web/node_modules/.package-lock.json").write_text('{"a": "1"}\n')
+    shared = repo.parent / "shared"  # outside the checkout, as a worktree's links into the main checkout
+    shared.mkdir()
+    (shared / "app.env").write_text("X=1\n")
+    (shared / "probe").write_text("1")
+    os.symlink(shared / "app.env", repo / "app/.env.local")
+    os.symlink(shared / "probe", repo / "probe-link")
+    (shared / "dir/sub").mkdir(parents=True)
+    (shared / "dir/sub/f").write_text("1")
+    os.symlink(shared / "dir", repo / "dir-link")
     a = identity.source_id(repo)
     if change == "head":
         _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "next")
@@ -76,7 +96,6 @@ def test_source_id_changes_with_every_input(repo, change):
     elif change == "app_env_file":  # ignored, but `next` loads it
         (repo / "app/.env.local").write_text("NEXT_PUBLIC_X=1\n")
     elif change == "lock_sha":
-        (repo / "app/node_modules").mkdir()
         (repo / "app/node_modules" / identity.LOCK_SHA).write_text("abc\n")
     elif change == "venv_python":
         os.unlink(repo / "venv/bin/python")
@@ -85,15 +104,86 @@ def test_source_id_changes_with_every_input(repo, change):
         (repo / "app/tsconfig.json").write_text('{"a": 2}\n')
     elif change == "next_env_edit":  # ignored, but read by the app build
         (repo / "app/next-env.d.ts").write_text("// edited\n")
+    elif change == "venv_dist":  # pip install -U in the (shared) venv
+        (sp / "httpx-0.27.0.dist-info").rename(sp / "httpx-0.28.1.dist-info")
+    elif change == "app_pnpm_meta":
+        (repo / "app/node_modules/.modules.yaml").write_text("hoisted: a@2\n")
+    elif change == "app_pnpm_lock":
+        (repo / "app/node_modules/.pnpm/lock.yaml").write_text("a: 2\n")
+    elif change == "web_npm_meta":
+        (repo / "web/node_modules/.package-lock.json").write_text('{"a": "2"}\n')
+    elif change == "env_link_target":  # the link text stays; what it points at changed
+        (shared / "app.env").write_text("X=2\n")
+    elif change == "untracked_link_target":
+        (shared / "probe").write_text("2")
+    elif change == "dir_link_content":  # R5-10: a symlinked directory counts by what is under it
+        (shared / "dir/sub/f").write_text("2")
+    elif change == "dir_link_new_file":
+        (shared / "dir/g").write_text("")
     assert identity.source_id(repo) != a, change
+
+
+@pytest.mark.parametrize("link", ["app/.env.local", "probe-link"])
+def test_dangling_symlinked_input_leaves_no_source_id(repo, link):
+    """Unreadable target: no identity (lib/cli.py _source_id -> None), so nothing is reused at it."""
+    os.symlink(repo.parent / "gone", repo / link)
+    with pytest.raises(OSError, match="target missing"):
+        identity.source_id(repo)
+
+
+@pytest.mark.parametrize("case", ["over_cap", "cycle", "dangling_inside"])
+def test_symlinked_directory_beyond_a_manifest_leaves_no_source_id(repo, monkeypatch, case):
+    """R5-10: too many entries under a symlinked directory, a link cycle, or a dangling link inside: OSError
+    (no source_id, nothing reused), never a path-only hash."""
+    d = repo.parent / "shared"
+    d.mkdir()
+    for i in range(3):
+        (d / f"f{i}").write_text(str(i))
+    if case == "over_cap":
+        monkeypatch.setattr(identity, "MANIFEST_CAP", 2)
+    elif case == "cycle":
+        os.symlink(d, d / "up")
+    else:
+        os.symlink(d / "gone", d / "x")
+    os.symlink(d, repo / "dir-link")
+    with pytest.raises(OSError, match={"over_cap": "over 2 entries", "cycle": "cycle", "dangling_inside": "missing"}[case]):
+        identity.source_id(repo)
+
+
+@pytest.mark.parametrize("where", ["input", "inside_dir_link"])
+def test_symlink_loop_leaves_no_source_id(repo, where):
+    """R6-7: a link loop (a -> b -> a) as an input or under a symlinked directory: OSError (no source_id, nothing
+    reused), never a crash (red before: Path.resolve's RuntimeError escaped lib/cli.py _source_id)."""
+    d = repo.parent / "shared"
+    d.mkdir()
+    os.symlink(d / "b", d / "a")
+    os.symlink(d / "a", d / "b")
+    os.symlink(d / "a" if where == "input" else d, repo / "probe-link")
+    with pytest.raises(OSError, match="loop"):
+        identity.source_id(repo)
 
 
 def test_live_holders_rewrite_reads_as_its_saved_originals(repo):
     a = identity.source_id(repo)
-    _holder(repo, os.getpid(), {"tsconfig.json": b'{"a": 1}\n', "next-env.d.ts": None})
     (repo / "app/tsconfig.json").write_text('{"a": 1, "include": [".next/types"]}\n')  # `next dev`'s rewrite
     (repo / "app/next-env.d.ts").write_text("/// <reference types=\"next\" />\n")
+    _holder(repo, os.getpid(), {"tsconfig.json": b'{"a": 1}\n', "next-env.d.ts": None})
     assert identity.source_id(repo) == a
+
+
+def test_holder_pid_is_never_trusted(repo):
+    """R5-1: slop.lock names a live pid (reused by another process, or the holder): an edit slop did not make
+    reads as disk, never as the saved originals (red before: any live pid there -> originals -> a baseline
+    reused at a source that differs)."""
+    a = identity.source_id(repo)
+    (repo / "app/tsconfig.json").write_text('{"a": 1, "include": [".next/types"]}\n')  # `next dev`'s rewrite
+    _holder(repo, os.getpid(), {"tsconfig.json": b'{"a": 1}\n', "next-env.d.ts": None})
+    assert identity.source_id(repo) == a
+    (repo / "app/tsconfig.json").write_text('{"a": 2}\n')  # an edit since: the holder's exit keeps it
+    edited = identity.source_id(repo)
+    (repo / identity.APP_STATE).unlink()
+    (repo / recovery.APP_LOCK).unlink()
+    assert edited == identity.source_id(repo) != a
 
 
 def _killed_run(repo):
@@ -145,7 +235,7 @@ def test_developer_edit_after_a_killed_run_counts_as_disk(repo):
 def test_malformed_lock_or_state_reads_as_disk_and_never_raises(repo, state, lock):
     a = identity.source_id(repo)
     (repo / "app/.next").mkdir()
-    (repo / identity.APP_LOCK).write_text(lock.format(live=os.getpid(), dead=_dead_pid()))
+    (repo / recovery.APP_LOCK).write_text(lock.format(live=os.getpid(), dead=_dead_pid()))
     (repo / identity.APP_STATE).write_text(state)
     assert identity.source_id(repo) == a
     assert (repo / identity.APP_STATE).read_text() == state  # read-only: never discarded outside a stack

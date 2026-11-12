@@ -384,9 +384,5 @@ def _clean(cfg: Any, existing: PutContext) -> dict[str, Any]:
         vals["cotag_tag_videos"] = True if bool(cfg.get("cotag_tag_videos")) else None
     if cotag_user_sent:
         vals["cotag_username"] = cotag_username
-    # Jev v8 vault flags opt-in (vault_jev), same sent-only rule: only the Vault
-    # extras drawer sends it. NULL ≡ OFF.
-    if "vault_jev_enabled" in cfg:
-        vals["vault_jev_enabled"] = True if bool(cfg.get("vault_jev_enabled")) else None
     # nudge_config_json is intentionally absent → preserved on existing rows.
     return vals

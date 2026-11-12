@@ -29,6 +29,8 @@ from sqlalchemy.sql.elements import ColumnElement
 
 import vault_ai_brief
 import vault_describe_jev
+import vault_jev_flags
+import vault_jev_rules
 from db.models import VaultItem
 from vault_of_folders_decide import parse_folder_ids
 
@@ -401,7 +403,7 @@ def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[
     """`res` (a describe / flags result) with the Jev pass that ran before it
     folded in: its spend added to `cost_millicents` (the sweep sums it) and its
     outcome as `jev_status` / `jev_lane5` / `jev_cost_millicents`. No Jev
-    result (setting off, not a photo): `res` unchanged."""
+    result (not a photo, or its `_jev` already current): `res` unchanged."""
     out = dict(res)
     if not jev_res:
         return out
@@ -506,8 +508,8 @@ FLAGS_BLOB_KEYS: tuple[str, ...] = (
 
 # The Jev v8 answer (`vault_jev`): its own pass, carried by hand rather than
 # through `FLAGS_BLOB_KEYS` — an exact flags copy from a source that has no
-# `_jev` must not wipe the copy's own paid answer.
-JEV_KEY = "_jev"
+# `_jev` must not wipe the copy's own paid answer. Defined in `vault_jev_rules`.
+JEV_KEY = vault_jev_rules.JEV_KEY
 
 
 def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any]) -> Any:
@@ -641,15 +643,18 @@ def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
     its whole set on every press).
 
     A set with a done member outside the walk copies from it. Otherwise the
-    walked member ranked best in `order` (good before bad) is the ONE call and
-    the rest follow it. Not the oldest — which member is the cluster's seed
-    shifts with collect order, the priority does not."""
+    walked member ranked best in `order` (done before not, good before bad) is
+    the ONE call and the rest follow it — a done member walked anyway (a forced
+    flags sweep walks everything) leads, so a photo whose `_jev` is current
+    costs nothing and its set copies it instead of paying Jev again. Not the
+    oldest — which member is the cluster's seed shifts with collect order, the
+    priority does not."""
     rank = {int(m): i for i, m in enumerate(order)}
     copy_now: dict[int, int] = {}
     followers: dict[int, list[int]] = {}
     for g in groups:
         walked = sorted((int(m) for m in g if int(m) in rank),
-                        key=lambda m: (m in bad, rank[m]))
+                        key=lambda m: (m not in done, m in bad, rank[m]))
         if not walked:
             continue
         src = next((int(m) for m in g if int(m) not in rank and int(m) in done), None)
@@ -665,11 +670,14 @@ def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
                      locked: Collection[str], src_id: int) -> dict[str, Any]:
     """`prev` (the copy's ai_fields) with its flags blob replaced by the
     source's, stamped `FLAGS_COPY_MARK`. Enrichment only, like a flags run;
-    an operator-locked flag or garment stays the copy's own."""
+    an operator-locked flag or garment stays the copy's own. A carried `_jev`
+    that reads re-maps the copy (`vault_jev_flags.apply`: its lane fields and
+    garment names too, from its own `clothing_items`), as the Jev pass would."""
     fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
         fields.pop(dead, None)  # what a flags run drops (`build_flags_fields`)
     _put_jev(fields, jev_for_copy(src_ai, prev))
+    fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), locked)
     fields[FLAGS_COPY_MARK] = int(src_id)
     return fields
 
@@ -724,20 +732,28 @@ def flags_current(fields: Mapping[str, Any], version: int) -> bool:
 _DESCRIBE_FAILED = frozenset({"failed", "refused", "blocked_drm", "fetch_failed", "gone"})
 
 
-def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any]]], *,
+def _jev_failed(f: Mapping[str, Any]) -> bool:
+    j = f.get(JEV_KEY)
+    return isinstance(j, dict) and j.get("status") not in (None, "ok")
+
+
+def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any], str | None, Any]], *,
                 flags: bool, flags_version: int) -> tuple[set[int], set[int]]:
-    """(done, bad) over (media_id, describe_status, ai_fields) rows, for
+    """(done, bad) over (media_id, describe_status, ai_fields, kind, locked_fields_json) rows, for
     `reuse_plan`: done = its answer may be copied (described / current flags);
-    bad = its last attempt failed. A Jev-fed describe is a source only while
-    its row still holds the `_jev` it was fed (`vault_describe_jev.reusable`):
-    the copy takes that `_jev` along (`jev_for_copy`), so the pair agrees."""
+    bad = its last attempt failed. A photo's flags are a source only when they
+    are its current `_jev`'s (`vault_jev_flags.row_in_sync`, locks included); a photo's describe
+    only when Jev-fed and its row still holds the `_jev` it was fed
+    (`vault_describe_jev.reusable`): the copy takes that `_jev` along
+    (`jev_for_copy`), so the pair agrees."""
     done: set[int] = set()
     bad: set[int] = set()
-    for mid, status, f in rows:
+    for mid, status, f, kind, locked in rows:
         if flags:
-            ok, failed = flags_current(f, flags_version), "_flags_status" in f
+            ok = flags_current(f, flags_version) and (kind != "photo" or vault_jev_flags.row_in_sync(f, locked))
+            failed = "_flags_status" in f or (kind == "photo" and _jev_failed(f))
         else:
-            ok = status == "described" and vault_describe_jev.reusable(f)
+            ok = status == "described" and vault_describe_jev.reusable(f, kind)
             failed = status in _DESCRIBE_FAILED
         if ok:
             done.add(int(mid))

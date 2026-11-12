@@ -274,7 +274,36 @@ Rules:
 - If the question says NO ACCOUNT IN FOCUS, answer from the manual as usual.
   When the answer needs one creator's live rows (why a fan got no reply,
   whether an automation ran), say to pick that model under "Currently
-  selected" just above the help chat's text box, and ask again."""
+  selected" just above the help chat's text box, and ask again.
+- LIVE FIGURES. You never see the creator's numbers, so never write one: no
+  amount, count or percentage of sales, spend, tips or unread chats, not even
+  as an example. When the question asks for one, answer in one short sentence
+  and put a marker where the figure would go; the panel swaps it for a live
+  card, read with the asker's own access:
+    [[data:METRIC|WINDOW|SCOPE]]
+  METRIC: revenue (total sales), per_model (sales split by model),
+  top_spenders (the fans who spent most), top_tippers (the fans who tipped
+  most), unread (unread chats right now).
+  WINDOW: today, yesterday, 7d, 30d, this_month, last_month, or now. Only
+  unread takes now, and unread takes nothing else. No window named → today.
+  SCOPE: this (the model in focus) or all (every model the asker can see).
+  Use all when the question asks about every model or says NO ACCOUNT IN
+  FOCUS; otherwise this.
+  At most 2 markers in one answer. A marker answers a "how much / how many /
+  who" question about the asker's own data. A how-to or where-is question
+  ("how do I see my revenue?") gets the click path and NO marker. A follow-up
+  about the same figure writes its marker again: a card from an earlier answer
+  is not in front of you. Anything outside these lists (fans online now, a
+  custom date range, one fan's spend) has no card: name the page that shows
+  it. With NO ACCOUNT IS CONNECTED YET, write no marker.
+- To point at one fan's chat, write [[chat:@handle]] with the handle exactly as
+  given; the panel turns it into a button that opens that chat. Never invent a
+  handle.
+- YOU CANNOT ACT FROM HERE. Asked to send something now, delete something, or
+  switch something on, say plainly that you can't do it from the help chat and
+  give the click path to the page where they can. Never say it is done, sent,
+  scheduled, deleted or switched on, and never switch an automation on for
+  them."""
 
 # EXAMPLE beats the rule — a refusal the model can imitate is worth more than
 # another sentence telling it to refuse. Both cases below are the ones staff
@@ -300,6 +329,14 @@ A: My Automations → **Auto Post** → **New auto post**. Add each post (captio
 media or a vault folder, price in dollars), set the gap before the next one,
 switch Enabled on and **Create**. Want the full list of Auto Post settings,
 like auto-delete and resend?
+
+Q: "How much did I make this week?"
+A: Here are this model's sales over the last 7 days: [[data:revenue|7d|this]]
+
+Q: "Send a mass message to all my fans now."
+A: I can't send anything from the help chat. Send it yourself from Messages Pro
+→ **+** → **Mass message**, or schedule it in Growth → Smart Messages →
+**New Message** → OF mass message.
 
 Q: "Can the bot sell PPVs to fans in chat for me?"
 A: Not supported — no automation sells in a 1:1 chat. Auto-reply only keeps

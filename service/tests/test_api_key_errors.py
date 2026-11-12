@@ -236,8 +236,9 @@ async def case_429_is_still_retried_and_not_a_key_error():
 
 async def _vault_item(aid: str, mid: int) -> None:
     from datetime import datetime
+    # A clip: the qwen describe this file is about (a photo is described off Jev, `vault_describe_jev`).
     async with get_session() as s:
-        s.add(VaultItem(account_id=aid, media_id=mid, kind="photo",
+        s.add(VaultItem(account_id=aid, media_id=mid, kind="video",
                         created_at=datetime(2026, 6, 1), tags="[]"))
 
 

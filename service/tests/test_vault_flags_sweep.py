@@ -64,6 +64,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 import llm_client  # noqa: E402
 import vault_ai_vision  # noqa: E402
+import vault_jev_pass  # noqa: E402
 
 
 # flags-all pre-flights the vision key (a missing one is the typed 424, pinned
@@ -95,7 +96,8 @@ def _flagged(v: int = vault_ai_vision._FLAGS_VERSION) -> dict:
 
 
 async def _seed(aid: str, rows: list[tuple[int, dict | None]],
-                kind: str = "photo") -> None:
+                kind: str = "video") -> None:
+    """Clips by default: the qwen flags sweep pinned here is a clip's (a photo's flags are its `_jev`'s)."""
     base = datetime(2026, 7, 1, 12, 0, 0)
     async with get_session() as s:
         s.add(Account(id=aid))
@@ -190,9 +192,10 @@ async def case_second_click_does_not_start_a_second_sweep():
 
 async def case_status_reports_progress_and_db_coverage():
     aid = _next_account()
-    await _seed(aid, [(i, None) for i in range(640, 644)])
+    # Photos (coverage counts stills): a photo's flags come from its Jev pass, held open here.
+    await _seed(aid, [(i, None) for i in range(640, 644)], kind="photo")
     gate = _Gate(hold=True)
-    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         idle = await vault_ai_vision.flags_all_status(account_id=aid)
         assert idle["running"] is False, idle
@@ -218,7 +221,7 @@ async def case_status_reports_progress_and_db_coverage():
         assert after_restart["coverage"]["flagged"] == 4, after_restart["coverage"]
     finally:
         gate.release.set()
-        vault_ai_vision._flags_one = orig
+        vault_jev_pass.safe = orig
 
 
 async def case_todo_skips_current_and_keeps_stale():

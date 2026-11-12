@@ -108,6 +108,8 @@ def case_reuse_plan_table() -> None:
         ([[1, 3, 9]], {9}, set(), {1: 9, 3: 9}, {}),            # done non-walked member is the source
         ([[1, 3, 9]], set(), set(), {}, {3: [1]}),              # 9 not done: ignored
         ([[1, 3]], set(), {3}, {}, {1: [3]}),                   # failed last time: leads last
+        ([[1, 3]], {1}, set(), {}, {1: [3]}),                   # a done member walked anyway (forced) leads
+        ([[1, 3]], {1}, {1}, {}, {1: [3]}),                     # done beats bad
         ([[8, 9]], {8}, set(), {}, {}),                         # nothing walked
         ([[2, 9]], set(), set(), {}, {}),                       # single walked, no source: plain item
         ([[1, 2], [3, 4, 5]], set(), set(), {}, {2: [1], 5: [4, 3]}),
@@ -251,7 +253,9 @@ async def _world(items: list[tuple[int, int, int, int]], cols: dict | None = Non
             for root, seed in ((vault_stills.THUMB_DIR, ts), (vault_stills.IMAGE_DIR, fs)):
                 (root / aid).mkdir(parents=True, exist_ok=True)
                 (root / aid / f"{mid}.jpg").write_bytes(_jpeg(seed))
-            extra = {"kind": "photo", **(cols or {}).get(mid, {})}
+            # Clips by default: the qwen describe + flags these sweeps pay for are a
+            # clip's (a photo's are Jev's; its reuse lives in test_vault_jev).
+            extra = {"kind": "video", "duration_seconds": 20, **(cols or {}).get(mid, {})}
             s.add(VaultItem(account_id=aid, media_id=mid, tags="[]",
                             created_at=T0 + timedelta(days=day), **extra))
         await s.commit()
@@ -320,7 +324,7 @@ async def case_describe_all_one_call_per_duplicate() -> None:
     # B is the newest → it led (priority, not the oldest seed).
     assert _ai(a).get("_copied_from") == 2 and _ai(c).get("_copied_from") == 2, (_ai(a), _ai(c))
     assert "_copied_from" not in _ai(b)
-    assert a.description == b.description == c.description == "a photo"
+    assert a.video_description == b.video_description == c.video_description == "a photo"
     assert _ai(a).get("_flags_v") == vault_ai_vision._FLAGS_VERSION, "copy has stale flags"
     assert not {1, 3} & set(await vault_ai_vision._flags_todo(aid)), "copy would be re-flagged"
     prog = vault_ai_vision._describe_progress[aid]
@@ -335,7 +339,7 @@ async def case_already_described_member_is_the_source() -> None:
         assert m.n() == 1
         # A fresh re-upload of the same picture arrives.
         async with get_session() as s:
-            s.add(VaultItem(account_id=aid, media_id=3, kind="photo", tags="[]",
+            s.add(VaultItem(account_id=aid, media_id=3, kind="video", duration_seconds=20, tags="[]",
                             created_at=T0 + timedelta(days=9)))
             await s.commit()
         for root in (vault_stills.THUMB_DIR, vault_stills.IMAGE_DIR):
@@ -353,7 +357,7 @@ async def case_redescribed_source_refreshes_its_copies() -> None:
     aid = await _world([(1, 1, 120, 220), (2, 3, 120, 220)])
     with _Model("first") as m:
         await vault_ai_vision._run_describe_all(aid, "undescribed")
-    assert (await _row(aid, 1)).description == "first"
+    assert (await _row(aid, 1)).video_description == "first"
     # B alone needs work again; the dupe scan finds nothing this time — the
     # `_copied_from` marker alone must carry the refresh.
     async with get_session() as s:
@@ -371,7 +375,7 @@ async def case_redescribed_source_refreshes_its_copies() -> None:
         vault_dupes.reuse_groups = o
     assert m.n() == 1
     a = await _row(aid, 1)
-    assert a.description == "second" and _ai(a)["_copied_from"] == 2, (a.description, _ai(a))
+    assert a.video_description == "second" and _ai(a)["_copied_from"] == 2, (a.video_description, _ai(a))
 
 
 async def case_dupe_scan_raising_still_sweeps() -> None:
@@ -449,7 +453,7 @@ async def case_up_front_copies_survive_a_cap() -> None:
     async with get_session() as s:
         for mid in (2, 3):
             r = await s.get(VaultItem, (aid, mid))
-            r.describe_status, r.ai_fields_json, r.description = None, None, None
+            r.describe_status, r.ai_fields_json, r.video_description = None, None, None
         await s.commit()
     o = vault_ai_vision._describe_one
     seen: list[int] = []

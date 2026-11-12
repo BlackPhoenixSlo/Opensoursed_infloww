@@ -161,8 +161,6 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         # username ≡ "No co-creator tag".
         "cotag_tag_videos": bool(getattr(row, "cotag_tag_videos", None)) if row else False,
         "cotag_username": getattr(row, "cotag_username", None) if row else None,
-        # Jev v8 vault flags opt-in (vault_jev). NULL ≡ OFF.
-        "vault_jev_enabled": bool(getattr(row, "vault_jev_enabled", None)) if row else False,
     }
 
 

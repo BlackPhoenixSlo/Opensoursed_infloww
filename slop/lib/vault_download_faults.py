@@ -73,7 +73,7 @@ def _resign_by_id() -> None:
 
 # The download modules (VaultDownloadPanel, vaultDownload, vaultDownloadReducer, vaultLinksFile) ship in 2 dev chunks
 # since the provider moved to app/layout.tsx: the layout's and Vault Pro's page (`next dev` bundles a layout module
-# into each page chunk that imports it too, as ScopeContext in another flow's faults). The Dashboard ("/", the
+# into each page chunk that imports it too, as with ScopeContext). The Dashboard ("/", the
 # queue stage's away page) imports none of them.
 DL_FILES = 2
 

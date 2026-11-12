@@ -15,7 +15,11 @@ if [ -z "${SLOP_GATED:-}" ] && [ -f "$HOME/.slop/gate.py" ] && [ "${1:-}" != nig
   skip=; nw=
   for a in "$@"; do case "$a" in --list|--dry|-h|--help) skip=1;; --no-wait) nw=--no-wait;; esac; done
   # --scale >= medium with --users >= 120 runs alone (lib/gate.py exclusive(); README "The machine gate")
-  [ -n "$skip" ] || { ex=$(python3 "$(dirname "${BASH_SOURCE[0]}")/lib/gate.py" "$@") || ex=
+  # A failed pre-check refuses the run, never a downgrade to a non-exclusive one: exit 2 is a usage error
+  # (--scale/--users the parser rejects; reason on stderr), any other failure INFRA (exit 3).
+  [ -n "$skip" ] || { rc=0; ex=$(python3 "$(dirname "${BASH_SOURCE[0]}")/lib/gate.py" "$@") || rc=$?
+    [ "$rc" = 2 ] && exit 2
+    [ "$rc" = 0 ] || { echo "slop: INFRA exclusivity pre-check (lib/gate.py) failed (exit $rc): not run" >&2; exit 3; }
     exec python3 "$HOME/.slop/gate.py" run $nw $ex -- "$0" "$@"; }
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

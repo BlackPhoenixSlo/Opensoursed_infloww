@@ -24,7 +24,7 @@ ALLOWED = set(MODELS)
 AudiencePut = rules.AudiencePut
 NO_AUD = AudiencePut(False, None, False, None, False, None)
 SPARSE = ("voice", "model_notes", "daily_cost_cap_cents", "audience_mode", "audience_list_id", "audience_auto_add",
-          "cotag_tag_videos", "cotag_username", "vault_jev_enabled", "nudge_config_json")
+          "cotag_tag_videos", "cotag_username", "nudge_config_json")
 
 
 def _put(cfg, aud=NO_AUD):
@@ -91,8 +91,6 @@ def case_explicit_null_or_empty_clears():
             ({"cotag_username": " @SomeOne.Else "}, "cotag_username", "someone.else"),
             ({"cotag_tag_videos": False}, "cotag_tag_videos", None),
             ({"cotag_tag_videos": True}, "cotag_tag_videos", True),
-            ({"vault_jev_enabled": False}, "vault_jev_enabled", None),
-            ({"vault_jev_enabled": True}, "vault_jev_enabled", True),
             ({"timezone": ""}, "timezone", None),
             ({"time_activities": {}}, "time_activities_json", None),
             ({"persona_facts": {}}, "persona_facts_json", None)]

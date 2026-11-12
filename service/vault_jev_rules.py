@@ -21,6 +21,8 @@ from typing import Any
 
 # The stored blob's version: the question set + rules + settle mode it was made with.
 VERSION = "v8+nn.10"
+# Where the blob lives in `ai_fields_json` (the one definition; every vault module reads it from here).
+JEV_KEY = "_jev"
 
 # ── score7 (helpers + tag lists) ────────────────────────────────────
 
@@ -220,7 +222,9 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
         "v": VERSION, "status": "ok",
         "lane5": d["lane5"], "lane": d["lane"], "settled": d.get("settled") or False,
         "breasts_bare": d["breasts_bare"], "crotch_bare": d["crotch_bare"], "penetration": d["penetration"],
-        "nn": {"B": scores.get("FEMALE_BREAST_EXPOSED", 0), "G": scores.get("FEMALE_GENITALIA_EXPOSED", 0)},
+        # each region's state argmax (bare / *_covered / hidden_not_worn / not_visible): vault_jev_flags reads it
+        "state": {r: d[r] for r in ("breasts", "crotch", "butt") if r in d},
+        "nn":{"B": scores.get("FEMALE_BREAST_EXPOSED", 0), "G": scores.get("FEMALE_GENITALIA_EXPOSED", 0)},
         "feet_subject": d["P"].get("feet_focus"),
         "tags": tags, "P": dict(d["P"]), "passes": list(passes), "tok": int(tok), "px": list(px), "at": at,
         "C": {q: dict(P(answers, q)) for q in FACT_CHOICES
@@ -229,6 +233,9 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
 
 
 def current(fields: dict[str, Any] | None) -> bool:
-    """The row carries a successful `_jev` of this VERSION (nothing for a sweep to do)."""
-    j = (fields or {}).get("_jev")
-    return isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
+    """The row carries a successful `_jev` of this VERSION (nothing for a sweep to do). A blob without `state` (made
+    before the region states were stored, same VERSION) is not current: the flags mapper needs it to tell a region
+    out of frame from a covered one, so the photo re-runs (no such reading ever reached prod)."""
+    j = (fields or {}).get(JEV_KEY)
+    return (isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
+            and isinstance(j.get("state"), dict))

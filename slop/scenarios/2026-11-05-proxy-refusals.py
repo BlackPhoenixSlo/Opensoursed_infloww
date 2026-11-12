@@ -47,9 +47,10 @@ share alone, `refusals` {window_s, pct}: the counts are every Agency's traffic, 
 `_proxy_retry`), >= 20 of them, pct within the share +- PCT_Z (3.5) binomial sd of n (two-sided
 P 0.05 %; a fixed [20, 40] failed at n 69, 15.9 %, ...-d789: the pool row is read at its last moment
 before the move, which the hysteresis lets fall under X); the band only, not the fake's own share: the
-relay counts attempts over its 600 s window, the fake CONNECTs, and a keep-alive tunnel dialed before
-phase A carries several attempts on one CONNECT (custom 28.8 % vs the fake's 460/1536 = 29.9 %,
-...-b755; a "5 refusals' worth" tolerance was 0.33 points there); pool row from the owner's last read before the move (after
+relay counts attempts over its 600 s window (warm-up and probes included), the fake CONNECTs (custom
+28.8 % vs the fake's 460/1536 = 29.9 %, ...-b755; a "5 refusals' worth" tolerance was 0.33 points there;
+a keep-alive tunnel dialed before phase A carried ~325 attempts on one CONNECT once the relay shared
+curl handles across workers, 24.0 % vs 30.3 %, ...-022c, so lib/proxy_wire.py closes it too); pool row from the owner's last read before the move (after
 it the row leaves the owner's list), the custom row after a 1 s quiet; clean pool proxies pct 0); C_UI_TEXT (the operator sees it without
 the API: the custom row reads "refusing N% (10 min)" while refusing; knob-independent; skipped under
 --no-ui); C_FLAP_MOVES (the knob does what the ADR says, through the existing machinery, without

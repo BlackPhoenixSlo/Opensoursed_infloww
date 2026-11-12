@@ -7,6 +7,7 @@ import json
 import pytest
 
 from slop.lib import nightly as nt
+from slop.lib import procs
 
 NAMES = ["a-ui", "b-vol", "c-vol", "d-new", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"]
 DOC = {"scenarios": {"a-ui": {"sha": "x"}, "b-vol": {"sha": "x"}, "c-vol": {"sha": "x"},
@@ -42,12 +43,12 @@ def test_map_rule(ages, weekday, full, word):
 
 
 @pytest.mark.parametrize("smoke,phases,ages,weekday,want", [
-    (False, ["all", "volume", "map"], {"x": 3}, 1,
-     {"all": NAMES, "volume": ["b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"],
+    (False, ["all", "volume", "map"], {"x": 3}, 1,  # volume first; day 0: the first 3 sorted volume names
+     {"volume": ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol"], "all": NAMES,
       "map": ["d-new"]}),
     (False, ["map", "all"], {"x": 300}, 1, {"all": NAMES, "map": NAMES}),  # PHASES order, full refresh
     (True, ["all", "volume", "map"], {"x": 300}, 6,  # smoke: never the full map; a missing smoke name dropped
-     {"all": ["2026-11-03-os-ping-push"], "volume": ["2026-11-01-notifications-feed-volume"], "map": ["d-new"]}),
+     {"volume": ["2026-11-01-notifications-feed-volume"], "all": ["2026-11-03-os-ping-push"], "map": ["d-new"]}),
 ])
 def test_build_plan(smoke, phases, ages, weekday, want, monkeypatch):
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in
@@ -55,6 +56,23 @@ def test_build_plan(smoke, phases, ages, weekday, want, monkeypatch):
     plan, why = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, DOC, phases, smoke, ages, weekday)
     assert plan == want and list(plan) == list(want)
     assert why.startswith("smoke") == smoke
+
+
+@pytest.mark.parametrize("names,day,want", [
+    (["d", "b", "a", "c", "e"], 0, ["a", "b", "c"]),
+    (["d", "b", "a", "c", "e"], 1, ["d", "e", "a"]),  # wraps
+    (["d", "b", "a", "c", "e"], 2, ["b", "c", "d"]),
+    (["b", "a"], 9, ["a", "b"]),  # fewer than k: all
+    ([], 5, []),
+])
+def test_volume_slice(names, day, want):
+    assert nt.volume_slice(names, day, 3) == want
+
+
+def test_volume_rotation_covers_all():
+    names = [f"s{i:02d}" for i in range(54)]
+    seen = {n for d in range(18) for n in nt.volume_slice(names, 739000 + d)}
+    assert seen == set(names)
 
 
 def C(status, budget=False, name=None):
@@ -120,6 +138,7 @@ def test_merge_rerun(again, verdict, folder, failed, infra):
 @pytest.mark.parametrize("vs,code,word", [
     (["OK", "OK"], 0, "OK"), (["OK", "FLAKY", "SKIP"], 0, "OK"), (["OK", "FAIL", "FLAKY"], 1, "RED"),
     (["FAIL", "INFRA"], 3, "INFRA"), ([], 0, "OK"), (["OK", "RED (coverage)"], 0, "OK"),
+    (["SKIP", "SKIP"], 3, "SKIPPED"),  # every check skipped everywhere: nothing proved, never OK
 ])
 def test_exit_and_headline(vs, code, word):
     assert nt.exit_code(vs) == code
@@ -160,6 +179,14 @@ def test_child_env_leaves_the_gate():
     assert "SLOP_GATED" not in env
 
 
+def test_child_env_drops_every_gate_var():
+    """R5-9: every SLOP_GATE*, not 4 names: an exclusive or ungated parent's flag never reaches the children
+    (red before: SLOP_GATE_EXCLUSIVE made every child gate exclusive)."""
+    env = {"PATH": "/bin", "SLOP_GATE": "off", "SLOP_GATE_EXCLUSIVE": "1", "SLOP_GATE_LATER": "x", "SLOP_GATED": "1"}
+    assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200", "SLOP_NIGHTLY": "1"}
+    assert nt.scrub_gate_env(env) and env == {"PATH": "/bin"}
+
+
 @pytest.mark.parametrize("env,had,left", [
     ({"PATH": "/bin"}, False, {"PATH": "/bin"}),
     ({"PATH": "/bin", "SLOP_GATED": "1", "SLOP_GATE_PID": "1"}, True, {"PATH": "/bin"}),  # pid 1: live, reused
@@ -186,16 +213,6 @@ def test_no_abbreviations(argv, capsys):
     assert e.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("root,kids,want", [
-    (1, {}, [1]),
-    (1, {1: [2, 3], 2: [4], 3: [5, 6]}, [4, 2, 5, 6, 3, 1]),
-    (1, {1: [2], 2: [1]}, [2, 1]),  # a bogus cycle in the snapshot: each pid once
-    (2, {1: [2], 2: [3], 9: [10]}, [3, 2]),  # only root's subtree
-])
-def test_tree_order_children_first(root, kids, want):
-    assert nt.tree_order(root, kids) == want
-
-
 def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
     """As gate.py run: the workload sits in a session of its own, holding the pipe; the timeout reaps it too."""
     inner = "import subprocess, time; subprocess.Popen(['sh', '-c', 'echo $$; exec sleep 60'], start_new_session=True); time.sleep(60)"
@@ -203,7 +220,7 @@ def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
     t0 = nt.time.time()
     code, _, tail, killed, _ = n.stream([nt.sys.executable, "-c", inner], tmp_path, timeout=3)
     assert killed and code < 0 and nt.time.time() - t0 < 20
-    assert not nt._alive(int(tail))
+    assert not procs.exists(int(tail))
 
 
 def R(phase, name, v, p95=None, **kw):
@@ -458,3 +475,24 @@ def test_digest_totals_timed_attempts_and_lists_untimed_apart(tmp_path):
     assert ("run phases (2 of 4 attempts timed): startup 40s · seeding 6s · execution 70s · teardown 15s; seeding "
             "4.6% of 131s measured run seconds; untimed 2 attempts, 55s wall (no run phases); gate wait 5s"
             ) in md.splitlines(), md
+
+
+def test_prev_rotated_volume_rows(tmp_path, monkeypatch):
+    """Each rotated volume scenario's baseline is its own last nightly, not just the newest one."""
+    monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
+
+    def night(stamp, rows, phases=("volume", "all", "map")):
+        d = tmp_path / f"{stamp}-nightly-ab"
+        d.mkdir()
+        (d / "summary.json").write_text(json.dumps({"rows": rows, "smoke": False, "phase_names": list(phases)}))
+        (d / "done").write_text("")
+
+    night("20261110T0100Z", [R("volume", "v1", "FAIL"), R("all", "a", "FAIL")], ("all", "volume", "map"))
+    night("20261111T0100Z", [R("volume", "v2", "OK"), R("all", "a", "OK")])
+    name, rows = nt._prev(tmp_path / "20261112T0100Z-nightly-ab", False, ["volume", "all", "map"])
+    assert name == "20261111T0100Z-nightly-ab"
+    assert {(r["phase"], r["scenario"], r["verdict"]) for r in rows} == {
+        ("volume", "v2", "OK"), ("all", "a", "OK"), ("volume", "v1", "FAIL")}  # old `all` row not merged
+    c = nt.changes([R("volume", "v1", "FAIL"), R("volume", "v2", "OK")], rows)
+    assert c["newly_red"] == []  # v1 was already red on its last night
+    assert nt._prev(tmp_path / "20261110T0000Z-nightly-ab", False, ["volume", "all", "map"]) == (None, None)

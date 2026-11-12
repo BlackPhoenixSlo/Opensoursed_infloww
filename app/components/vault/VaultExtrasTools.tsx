@@ -9,7 +9,6 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { Download, X } from "lucide-react";
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
-import VaultJevToggle from "@/components/vault/VaultJevToggle";
 import { useExitGhost } from "@/hooks/useExitGhost";
 import { type useDescribePlan } from "@/hooks/useVaultCache";
 import { harvestSweepLabel, type VaultSweep } from "@/hooks/useVaultSweep";
@@ -237,9 +236,12 @@ export default function VaultExtrasTools({
           stops — while it runs the button carries the count — and it survives a
           reload, because the snapshot lives on the server. */}
       <AiKeyNotice accountId={accountId} kinds={["describe_media"]} />
-      <div className="hidden md:block">
-        <VaultJevToggle accountId={accountId} jev={plan?.jev} />
-      </div>
+      {/* Jev v8 describes + flags every photo (service/vault_jev_pass.py); said only when it cannot run here. */}
+      {plan?.jev && !plan.jev.ready && (
+        <p data-testid="vault-jev-notice" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-warn">
+          Photos are skipped (not described or flagged) until Jev v8 can run on this server: {plan.jev.reason}
+        </p>
+      )}
       {!describeSweep.busy && describeStopped && (
         <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
           {describeStopped.text}

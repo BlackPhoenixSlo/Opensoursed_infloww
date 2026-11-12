@@ -18,23 +18,19 @@ from pathlib import Path
 
 SLOP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` import
-sys.modules.setdefault("slop.lib.cli", sys.modules[__name__])  # one module when run as a script (lib/breakit.py)
 
-from slop.lib import covmap, gate, identity, phases, selection  # noqa: E402
-from slop.lib.breakit import break_one  # noqa: E402
+from slop.lib import breakit, covmap, gate, identity, phases, selection  # noqa: E402
 from slop.lib.client import Http, Recorder  # noqa: E402
 from slop.lib.faults import FAULTS  # noqa: E402
 from slop.lib import net, netloss  # noqa: E402
 from slop.lib.net import PROFILES  # noqa: E402
 from slop.lib.procmon import ProcMon, pool_bent, render  # noqa: E402
 from slop.lib.report import EVIDENCE, FOLDER_LINE, Report, run_dir  # noqa: E402
+from slop.lib.runs import RUN_FACTS, knobs, run_knobs, same_knobs  # noqa: E402
 from slop.lib.stack import Stack  # noqa: E402
-from slop.seed import SCALES, World  # noqa: E402
+from slop.seed import World  # noqa: E402
 
 SCEN = SLOP / "scenarios"
-# params that are facts of the run, not knobs: never compared when matching a baseline
-RUN_FACTS = ("git_sha", "git_dirty", "lock_wait_s", "load_at_start", "wire_lock_wait_s", "net_wire_stale",
-             "max_threads_proc", "max_sockets_run", "source_id", "source_id_end", "env_id", "env_names")
 
 
 def scenarios() -> dict[str, Path]:
@@ -153,20 +149,6 @@ def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
         _p95_vs_last_green(report, out, mod.P95_VS_LAST, getattr(mod, "P95_VS_LAST_MIN_N", 0))
 
 
-# Knobs that must match for a previous run to be "the same run" (baseline, last green).
-def _same_knobs(have: dict, want: dict) -> dict:
-    diff = {k: (have.get(k), v) for k, v in want.items() if have.get(k) != v}
-    diff |= {k: (have[k], None) for k in have if k not in want and k not in RUN_FACTS}
-    return diff
-
-
-def _run_knobs(name: str, args, params: dict, ui: bool, shards: int, fault: str | None) -> dict:
-    return {"scenario": name, "scale": args.scale, "users": args.users, "seed": args.seed, "ui": ui,
-            "fault": fault, **({"shards": shards} if shards > 1 else {}),
-            **({"profile": True} if args.profile else {}), **({"map": True} if args.map else {}),
-            **({"net": args.net} if args.net else {}), **params}
-
-
 def _world(metrics: dict) -> tuple:
     """The seeded world a run's p95s depend on: its profile and Creator count (metric `seed`)."""
     seed = metrics.get("seed") or {}
@@ -211,7 +193,7 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
     world = _world(report.metrics)
     last = None
     for d, meta in _green_runs(report.scenario, out):
-        if _same_knobs(meta.get("params", {}), want) or _world(meta) != world or not meta.get("p95_vs_last_green"):
+        if same_knobs(meta.get("params", {}), want) or _world(meta) != world or not meta.get("p95_vs_last_green"):
             continue
         if min_n and not meta.get("p95_vs_last_green_n"):
             continue
@@ -383,12 +365,20 @@ def _source_id() -> str | None:
         return None
 
 
-class ScenarioTimeout(BaseException):
-    """--timeout ran out. A BaseException, so a scenario's `except Exception` cannot swallow it."""
+def break_one(name: str, path: Path, args, params) -> str:
+    """--break (lib/breakit.py) with this module's scenario loading, runs and Run identity source."""
+    return breakit.break_one(name, path, args, params, load=load, run_one=run_one, source_id=_source_id)
 
 
-class RunTerminated(BaseException):
-    """SIGTERM/SIGHUP interrupts the main thread so the live stack can tear down."""
+class ScenarioTimeout(SystemExit):
+    """--timeout ran out. Not an Exception, so a scenario's `except Exception` cannot swallow it; a
+    SystemExit, which asyncio (as KeyboardInterrupt) re-raises out of any task step or loop callback (another
+    BaseException is stored on that task or logged by the loop, and the run keeps going). One that escapes
+    run_one is INFRA, exit 3 (main), never SystemExit's silent 0."""
+
+
+class RunTerminated(SystemExit):
+    """SIGTERM/SIGHUP interrupts the main thread so the live stack can tear down (SystemExit: as above)."""
 
 
 @contextlib.contextmanager
@@ -435,12 +425,12 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
     load_error = None
     try:
         mod = load(path)
-        ui, shards = _knobs(mod, args, params)
+        ui, shards = knobs(mod, args, params)
     except Exception:
         mod, ui, shards = None, False, 1
         load_error = traceback.format_exc()
-    p = {**_run_knobs(name, args, params, ui, shards, fault), **_git(), "source_id": source_id,
-         "env_id": args.env_id, "env_names": args.env_names}
+    p = {**run_knobs(name, args, params, ui, shards, fault), **_git(), "source_id": source_id,
+         "env_id": args.env_id, "env_names": args.env_names, "timeout_s": args.timeout}
     report, rec = Report(name, out, p), Recorder()
     ph, live, terminated = phases.RunPhases(), {}, None  # restarted after the gate: the four phases sum to `seconds`
     print(FOLDER_LINE.format(path=out))
@@ -457,7 +447,8 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
             with netloss.guard(args.net, wait=not args.no_wait) as facts, \
                     gate.machine_gate(wait=not args.no_wait, evidence=out,  # nested: evidence + limit hints, missing-gate INFRA
                                       max_threads_proc=thread_limit(mod, args.scale),
-                                      max_sockets_run=socket_limit(mod, args.scale)) as g:
+                                      max_sockets_run=socket_limit(mod, args.scale),
+                                      exclusive=gate.goes_alone(args.scale, args.users)) as g:
                 report.params.update(facts)
                 if facts.get("net_wire_stale"):
                     print(f"slop: {facts['net_wire_stale']}")
@@ -633,6 +624,8 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                 for sh in ctx.shards:
                     await sh.owner.aclose()
                 await ctx.owner.aclose()
+    except (ScenarioTimeout, RunTerminated):
+        raise  # run_one's: a stop, not a stack failure
     except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
         _infra_first(report, f"stack: {e}")
         report.check("stack started", False, error=str(e))
@@ -681,13 +674,6 @@ def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
         report.infra = why
 
 
-def _knobs(mod, args, params: dict | None = None) -> tuple[bool, int]:
-    """(ui, shards) a run of `mod` uses: UI unless --no-ui; --shards, else the scenario's
-    `shards_for(params)` (a layout knob that changes the shard count), else its SHARDS, else 1."""
-    n = args.shards or (mod.shards_for(params or {}) if hasattr(mod, "shards_for") else getattr(mod, "SHARDS", 1))
-    return bool(getattr(mod, "UI", False)) and not args.no_ui, int(n or 1)
-
-
 def _estimates(names, doc: dict, args, all_s: dict[str, Path], params: dict) -> tuple[dict[str, float | None], str]:
     """Seconds per scenario: its newest green non---map run at this scale and UI (evidence), else
     its map entry's (coverage-mode, slower). And which source(s) gave them."""
@@ -695,12 +681,12 @@ def _estimates(names, doc: dict, args, all_s: dict[str, Path], params: dict) -> 
     for n in names:
         e = doc["scenarios"].get(n) or {}
         try:
-            ui, shards = _knobs(load(all_s[n]), args, params)
+            ui, shards = knobs(load(all_s[n]), args, params)
         except Exception:
             ui, shards = bool(e.get("ui")) and not args.no_ui, 1
-        want = _run_knobs(n, args, params, ui, shards, None)
+        want = run_knobs(n, args, params, ui, shards, None)
         hit = next((m.get("seconds") for _, m in _green_runs(n) if m.get("seconds")
-                    and not _same_knobs(m.get("params") or {}, want)), None)
+                    and not same_knobs(m.get("params") or {}, want)), None)
         secs[n] = hit if hit is not None else e.get("seconds")
         src.add("evidence" if hit is not None else "map")
     return secs, "|".join(sorted(src)) or "-"
@@ -787,12 +773,11 @@ def _nice() -> None:
         os.environ["PLAYWRIGHT_NODEJS_PATH"] = str(SLOP / "lib" / "pw-node")
 
 
-def _main() -> int:
-    ap = argparse.ArgumentParser(prog="slop/run")
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="slop/run", allow_abbrev=False)  # --user=200 must not mean --users
     ap.add_argument("target", nargs="?", default=None, help="scenario stem (an exact name runs only that one) or any "
                     "substring of it, or all (default all; omitted with --changed)")
-    ap.add_argument("--scale", choices=list(SCALES), default="small")
-    ap.add_argument("--users", type=int, default=20, help="concurrent simulated users per actor pool")
+    gate.add_load_args(ap)  # --scale, --users: exactly what slop/run's exclusivity pre-check reads (lib/gate.py)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--break", dest="break_it", action="store_true",
                     help="run a green baseline, then the scenario's FAULT; CAUGHT only if every check "
@@ -831,6 +816,11 @@ def _main() -> int:
     ap.add_argument("--budget", type=float, default=15, metavar="MIN",
                     help="with --changed: own/flow picks always run; shared/layout ones only while the mapped "
                          "estimate stays within MIN minutes (default 15, 0 = no cap)")
+    return ap
+
+
+def _main() -> int:
+    ap = _parser()
     args, extra = ap.parse_known_args()
     args.env_id, args.env_names = identity.env_id(os.environ)  # the caller's, before this process sets any
     # Any other `--some-knob=value` is a scenario param, same as `--set some_knob=value`.
@@ -924,6 +914,9 @@ def main() -> int:
             return _main()
         except RunTerminated as e:
             print(f"slop: INFRA {e}; invocation stopped", file=sys.stderr)
+            return 3
+        except ScenarioTimeout:
+            print("slop: INFRA --timeout fired outside a scenario run; invocation stopped", file=sys.stderr)
             return 3
         except covmap.MapInvalid as e:
             print(f"slop: INFRA {covmap.map_invalid_reason(e)}", file=sys.stderr)

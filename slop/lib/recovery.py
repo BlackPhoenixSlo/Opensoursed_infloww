@@ -3,13 +3,15 @@ the gate's guard) leaves behind, put right by the next Stack.
 
 - Process groups: each run records its owner and every group it spawns, as (pid, start
   time), in `slop/evidence/.stack-*.json` (RunState). A Stack sweeps them at start: an
-  owner that is gone (or whose pid now belongs to a younger process) loses its groups, and
-  a group is signalled only while its leader still has the recorded start time, so a
-  reused pid is never hit.
+  owner that is gone (or whose pid now belongs to a younger process) loses its groups. A
+  group is the run's while its leader still has the recorded start time, or, the leader
+  gone, while the group still has members and no other process holds the leader's pid (a
+  pgid is not reused while its group lives), so a reused pid is never hit and members that
+  outlive their leader are still reaped. The state file stays until every group is empty.
 - App files `next` rewrites: the app-lock holder keeps their originals in
   `app/.next/slop.state.json` (AppFiles). Its own exit puts them back; a holder that died
-  first leaves the file, and the next holder restores a file only if it still holds what
-  slop last saw there (else a user's edit or branch switch: WARN, leave it).
+  first leaves the file for the next holder. Either way a file is restored only if it still
+  holds what slop last saw there (else a user's edit or branch switch: WARN, leave it).
 
 No start time readable (no `ps`, as in the relay image without /proc): None; the Stack
 then WARNs once and records nothing, never fails.
@@ -20,41 +22,20 @@ import base64
 import hashlib
 import json
 import os
-import shutil
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+from slop.lib import procs
 from slop.lib.report import write_atomic
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "slop/evidence"
 APP_FILES = ("tsconfig.json", "next-env.d.ts")
 APP_LOCK, APP_STATE = "app/.next/slop.lock", "app/.next/slop.state.json"
-PROC = Path("/proc")
 _warned = False
-
-
-def identity(pid: int) -> str | None:
-    """`pid`'s start time: /proc/<pid>/stat field 22 (ticks since boot) on Linux, else `ps -o lstart`
-    in the C locale (its text is locale-dependent). It survives exec (a venv python re-execs as
-    `Python`), and pid + start time is one process. None when unreadable or gone; never raises."""
-    if PROC.is_dir():
-        try:
-            return "ticks " + (PROC / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19]
-        except (OSError, IndexError):
-            return None
-    ps = shutil.which("ps")
-    if ps is None:
-        return None
-    try:
-        r = subprocess.run([ps, "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
-                           env={**os.environ, "LC_ALL": "C"})
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return (r.stdout.strip() or None) if r.returncode == 0 else None
+KILL_WAIT_S = 3  # a group's SIGTERM -> SIGKILL, then as long again for it to empty
 
 
 def write_json(path: Path, obj) -> None:
@@ -81,51 +62,53 @@ def _gone(owner: dict) -> bool:
     pid = owner.get("pid")
     if not isinstance(pid, int) or pid <= 1:
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        pass  # exists, another user's
-    now = identity(pid)
-    return now is not None and now != owner.get("start")
+    return not procs.alive(pid, owner.get("start"))
 
 
-def _same_leader(group: dict) -> bool:
-    pid = group.get("pid")
-    if not isinstance(pid, int) or pid <= 1:
+def _ours(group: dict) -> bool:
+    """The recorded group still has members of the run: its leader is the recorded process, or the leader is
+    gone, no process holds its pid and the group is not empty (a pgid is not handed out while its group lives)."""
+    pgid = group.get("pid")
+    if not isinstance(pgid, int) or pgid <= 1 or not procs.group_alive(pgid):
         return False
+    if not procs.exists(pgid):
+        return True  # leader gone, members left
     try:
-        if os.getpgid(pid) != pid:
+        if os.getpgid(pgid) != pgid:
             return False
     except (ProcessLookupError, PermissionError):
         return False
-    return identity(pid) == group.get("start")
+    return procs.start_time(pgid) == group.get("start")
 
 
-def _kill_groups(groups: list[dict]) -> None:
-    """SIGTERM each group whose leader is still the recorded process; SIGKILL what is left after 3 s."""
-    live = []
+def _signal(groups: list[dict], sig: int) -> None:
     for g in groups:
-        if _same_leader(g):
-            try:
-                os.killpg(g["pid"], signal.SIGTERM)
-                live.append(g)
-            except (ProcessLookupError, PermissionError):
-                pass
-    deadline = time.monotonic() + 3
-    while live and time.monotonic() < deadline:
-        time.sleep(0.05)
-        live = [g for g in live if _same_leader(g)]
-    for g in live:
         try:
-            os.killpg(g["pid"], signal.SIGKILL)
+            os.killpg(g["pid"], sig)
         except (ProcessLookupError, PermissionError):
             pass
 
 
+def _wait(groups: list[dict]) -> list[dict]:
+    deadline = time.monotonic() + KILL_WAIT_S
+    while groups and time.monotonic() < deadline:
+        time.sleep(0.05)
+        groups = [g for g in groups if _ours(g)]
+    return groups
+
+
+def kill_groups(groups: list[dict]) -> list[dict]:
+    """SIGTERM each group still the run's; SIGKILL whatever member is left after KILL_WAIT_S. -> the groups
+    that still have members after that (their record is kept for the next sweep)."""
+    live = [g for g in groups if _ours(g)]
+    _signal(live, signal.SIGTERM)
+    live = _wait(live)
+    _signal(live, signal.SIGKILL)
+    return _wait(live)
+
+
 def sweep(state_dir: Path | None = None) -> None:
-    """Reap the groups of every run whose owner is gone, and drop its state file."""
+    """Reap the groups of every run whose owner is gone; drop its state file once every group is empty."""
     for path in sorted((state_dir or STATE_DIR).glob(".stack-*.json")):
         state = _read_json(path)
         if state is None or not _gone(state.get("owner") or {}):
@@ -133,8 +116,13 @@ def sweep(state_dir: Path | None = None) -> None:
         groups = state.get("groups") or []
         if groups:
             print(f"slop: reaping {len(groups)} process group(s) of a dead run ({path.name})", file=sys.stderr)
-        _kill_groups(groups)
-        path.unlink(missing_ok=True)
+        left = kill_groups(groups)
+        if left:
+            print(f"slop: WARN {len(left)} process group(s) of a dead run survived SIGKILL "
+                  f"({', '.join(str(g['pid']) for g in left)}); kept in {path.name} for the next sweep", file=sys.stderr)
+            write_json(path, {**state, "groups": left})
+        else:
+            path.unlink(missing_ok=True)
 
 
 class RunState:
@@ -147,7 +135,7 @@ class RunState:
     def record(self, pid: int) -> None:
         global _warned
         if self.owner is None:
-            start = identity(os.getpid())
+            start = procs.start_time(os.getpid())
             if start is None:
                 if not _warned:
                     print("slop: WARN cannot read process start times (no /proc, no ps): a run killed past its "
@@ -157,14 +145,19 @@ class RunState:
             self.owner = {"pid": os.getpid(), "start": start}
             self.dir.mkdir(parents=True, exist_ok=True)
             self.path = self.dir / f".stack-{os.getpid()}-{time.time_ns()}.json"
-        start = identity(pid)
+        start = procs.start_time(pid)
         if start is not None:  # None: it already exited
             self.groups.append({"pid": pid, "start": start})
             write_json(self.path, {"owner": self.owner, "groups": self.groups})
 
-    def close(self) -> None:
+    def close(self, left: list[dict] = ()) -> None:
+        """The run is done: drop its record, or keep it naming only `left`, the groups that still have members
+        (kill_groups' result): this owner exits soon and the next sweep reaps them."""
         if self.path is not None:
-            self.path.unlink(missing_ok=True)
+            if left:
+                write_json(self.path, {"owner": self.owner, "groups": list(left)})
+            else:
+                self.path.unlink(missing_ok=True)
             self.path, self.owner, self.groups = None, None, []
 
 
@@ -195,17 +188,22 @@ class AppFiles:
             write_json(self.state_path, self.state)
 
     def restore(self) -> None:
-        """In-process exit: put every original back, whatever the run's `next` did to it."""
-        for name, encoded in self.state.get("originals", {}).items():
-            _put(self.app / name, encoded)
-        self.state_path.unlink(missing_ok=True)
+        """In-process exit: put back each original whose file still holds what slop last saw (note_written);
+        a file changed since (a user's edit during the run) is kept, one WARN line. Nothing saved yet (a start
+        cut before save() finished): a no-op, so a killed holder's state file stays for the next holder."""
+        if not self.state:
+            return
+        self._put_back(self.state, "during this slop run")
         self.state = {}
 
     def _reap(self) -> None:
         old = _read_json(self.state_path)
-        if old is None:
-            return
-        originals, written = _saved(old)
+        if old is not None:
+            self._put_back(old, "since a killed slop run last saw it")
+
+    def _put_back(self, state: dict, when: str) -> None:
+        originals, written = _saved(state)
+        kept = []
         for name, encoded in originals.items():
             if name not in self.names:
                 continue
@@ -217,15 +215,18 @@ class AppFiles:
                       file=sys.stderr)
                 continue
             if action == "conflict":
-                print(f"slop: WARN {path} changed since a killed slop run last saw it; keeping it", file=sys.stderr)
+                kept.append(str(path))
             elif action == "restore":
                 _put(path, encoded)
+        if kept:
+            print(f"slop: WARN {', '.join(kept)} changed {when} (not slop's rewrite); keeping it", file=sys.stderr)
         self.state_path.unlink(missing_ok=True)
 
 
 def _reap_action(path: Path, name: str, encoded: str | None, written: dict) -> str:
-    """What the next holder does to a dead holder's file: "keep" (it holds the original), "restore" (it still
-    holds what slop last saw there) or "conflict" (changed since: a user's edit or branch switch, kept).
+    """What a holder's exit, or the next holder for a dead one, does to a file: "keep" (it holds the original),
+    "restore" (it still holds what slop last saw there) or "conflict" (changed since: a user's edit or branch
+    switch, kept).
     `encoded` None = the original was absent; "" = it was empty. ValueError: corrupt (not base64 text)."""
     now = content_hash(path)
     orig = _original(encoded)
@@ -237,11 +238,12 @@ def _reap_action(path: Path, name: str, encoded: str | None, written: dict) -> s
     return "restore"
 
 
-def checkout_view(app: Path, names: tuple[str, ...], state_path: Path, live: bool) -> dict[str, bytes | None]:
+def checkout_view(app: Path, names: tuple[str, ...], state_path: Path) -> dict[str, bytes | None]:
     """`names` under `app` as the checkout holds them once slop is done with them (None = absent, b"" = empty):
-    a live holder's saved originals (its exit restores them, whatever `next` wrote); a dead holder's originals
-    where the next holder's _reap restores them; else disk. Read-only: never writes, warns or unlinks; a
-    malformed state file or entry reads as no state for that file (disk). Unreadable disk raises OSError."""
+    the saved originals where the holder's exit (live) or the next holder's _reap (dead) restores them, one
+    rule for both (_reap_action), so no holder pid is trusted; else disk. Read-only: never writes, warns or
+    unlinks; a malformed state file or entry reads as no state for that file (disk). Unreadable disk raises
+    OSError."""
     try:
         originals, written = _saved(json.loads(state_path.read_text()))
     except (OSError, ValueError):
@@ -254,7 +256,7 @@ def checkout_view(app: Path, names: tuple[str, ...], state_path: Path, live: boo
             continue
         encoded = originals[name]
         try:
-            if live or _reap_action(path, name, encoded, written) == "restore":
+            if _reap_action(path, name, encoded, written) == "restore":
                 out[name] = _original(encoded)
         except ValueError:
             pass  # corrupt: disk stands

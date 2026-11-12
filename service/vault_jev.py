@@ -1,6 +1,6 @@
 """vault_jev.py — the Jev v8 vault flags pass for one stored still: questions, calls, NudeNet, spend.
 
-Per-account opt-in (`account_ai_config.vault_jev_enabled`, default off), photos only. The owner-accepted
+Every vault photo (no opt-in; clips keep qwen), the only flags a photo gets. The owner-accepted
 bench config (D48, `.scratch/jev-vault-bench/`: jev_flags8.py + jev_crop8.py MODE "lower", frozen with
 score8 `--veto --promote` and settle.py `nn.10`) ported as-is:
 
@@ -491,9 +491,9 @@ def merge(prev: dict[str, Any], res: JevResult, now: datetime) -> dict[str, Any]
     fields and stamps `status`/`error`/`failed_at` on them; `capped` writes nothing (retry later)."""
     out = dict(prev)
     if res.get("ok"):
-        out["_jev"] = res["blob"]
+        out[rules.JEV_KEY] = res["blob"]
     elif res.get("status") != "capped":
-        old = prev.get("_jev") if isinstance(prev.get("_jev"), dict) else {}
-        out["_jev"] = {**old, "v": old.get("v", rules.VERSION), "status": res.get("status"),
+        old = prev.get(rules.JEV_KEY) if isinstance(prev.get(rules.JEV_KEY), dict) else {}
+        out[rules.JEV_KEY] = {**old, "v": old.get("v", rules.VERSION), "status": res.get("status"),
                        "error": str(res.get("detail") or "")[:200], "failed_at": now.isoformat()}
     return out

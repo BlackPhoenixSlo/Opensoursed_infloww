@@ -288,8 +288,8 @@ export function useDescribePlan(accountId: string | null, promptVersion: PromptV
     prompt_version: PromptVersion;
     /** Absent only against a relay that predates the cap gate. */
     cap?: VisionCapState;
-    /** The Jev v8 flags opt-in and whether it can run (absent on an older relay). */
-    jev?: { enabled: boolean; ready: boolean; reason: string };
+    /** Whether Jev v8 (every photo's flags + describe) can run on this server (absent on an older relay). */
+    jev?: { ready: boolean; reason: string };
   }>({
     queryKey: ["vault-describe-plan", accountId, promptVersion],
     enabled: !!accountId,

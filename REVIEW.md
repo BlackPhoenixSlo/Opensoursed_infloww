@@ -20,8 +20,9 @@ Root `REVIEW.md` is canonical. `.claude/REVIEW.md` is an identical backup mirror
 
 ## Verification
 
-- Select checks by changed behavior. Slop is usually useful for affected user flows, concurrency, volume, and shared runtime paths; it may be skipped when irrelevant, with a one-line reason. Missing slop alone is not a finding.
-- When slop is selected, follow `CLAUDE.md` and `slop/README.md`, including applicable fault checks; cite the concrete evidence folder.
+- Select checks by changed behavior. Slop is opt-in: only when the owner asked for it; missing slop is never a finding.
+- When slop was requested, follow `slop/README.md`, including applicable fault checks; cite the concrete evidence folder.
+- Evidence must be from the PR head, or from a head whose later diff touches no mapped path.
 - For runtime changes, exercise the real local path. For a bug fix, show the check fails without the fix and passes with it. UI changes need a settled screenshot and a side-effect check.
 - Use local/dev data and stub external effects. Never validate against production or paid services; retain the repository's production approval guards.
 

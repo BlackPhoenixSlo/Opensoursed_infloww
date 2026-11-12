@@ -913,6 +913,12 @@ FAULTS: dict[str, Fault] = {
     ), browser_files=3),
     # slop/run 2026-11-11-assistant-do-auto-mass --break --fault=assistant-edit-skips-second-account (relay side)
     "assistant-edit-skips-second-account": Fault(_assistant_edit_skips_second_account, ("edit_unsend_off_all_models",)),
+    # slop/run 2026-11-12-assistant-siri-box --break (client side): markers.ts' parseMarkers keeps every sentence
+    # whole (`s.includes(SLOT) ? stripFigures(s) : s` -> `s`), so a figure the model wrote beside a data marker
+    # stays in the answer next to the live card. The pattern must match (else INFRA).
+    "assistant-marker-figure-kept": Fault(None, ("figure_stripped",), browser=(
+        (r"s\.includes\(SLOT\)(?:\s|\\n)*\?(?:\s|\\n)*stripFigures\(s\)(?:\s|\\n)*:(?:\s|\\n)*s(?=\))", "s"),
+    ), browser_files=1),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

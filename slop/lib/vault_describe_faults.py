@@ -12,25 +12,28 @@ own namespace. The bug lives mid-function, so wrapping the function or patching 
 from __future__ import annotations
 
 EXACTLY_ONCE = ("describe sweep: every undescribed photo/clip got exactly one answer that described it, and its row "
-                "holds that answer (blank ones end 'refused', nothing written)")
+                "holds that answer (blank ones end 'refused', nothing written); a photo one Jev call first and the "
+                "Jev-fed prose recipe")
 PLAN = ("describe sweep: the plan's undescribed count == the items the sweep called the model for plus the "
         "re-uploads it copied == its progress total (pass 1: == the seeded undescribed count)")
 CACHE = ("describe sweep: no model call for a row already described (the seeded cache rows in pass 1, every row "
          "described by pass 1 in pass 2), their descriptions kept; pass 2 retries exactly the blank ones")
 ESCALATE = ("describe sweep: a refusal or blank answer escalates to qwen3-vl-235b exactly once, an answered item "
             "never")
-COST = ("describe sweep: the cost flags-all and describe-all pass 2 report == the fake DeepInfra's billed sum for "
-        "the sweep's own calls (pass 2: its describe calls plus any auto-flags, none for its blank retries; "
-        "flags-all: its flags calls)")
+COST = ("describe sweep: the cost flags-all and describe-all pass 2 report == the fakes' billed sum for the "
+        "sweep's own calls, DeepInfra's plus TypeSafe Jev's (pass 2: its describe calls plus any auto-flags, none for "
+        "its blank retries; flags-all: its flags calls and Jev calls)")
 COST_INCL_FLAGS = ("describe sweep: the cost describe-all reports includes the flags calls it makes after each "
-                   "described item (pass 1: reported == describe + auto-flags billed)")
-FLAGS = ("flags-all: every live photo/clip flagged (one call per photo, 4 per clip; a planted re-upload copied from "
-         "its set instead: none), no description, tags, describe status or non-flag ai_fields_json key rewritten, the "
-         "flags answer's description/tags stored nowhere")
+                   "described clip (pass 1: reported == describe + Jev + auto-flags billed)")
+FLAGS = ("flags-all: every live photo/clip flagged (4 qwen calls per clip, none per photo: one Jev call for each photo "
+         "pass 1 left without `_jev`, none for the rest, `_flags_model` jev; a planted re-upload copied from its set "
+         "instead: none), no description, tags, describe status or non-flag ai_fields_json key rewritten (a photo's "
+         "Jev lane fields aside), the flags answer's description/tags stored nowhere")
 REUSE = ("duplicate reuse: the Duplicates route's sets at threshold 2 == the planted re-upload sets; pass 1 called the "
          "model for the undescribed minus the planted copies, and each copy ends described with `_copied_from` a "
-         "member of its set and that member's description and flags; flags-all one paid member per set, the rest "
-         "`_flags_copied_from` it with its flags")
+         "member of its set and that member's description and flags (a photo set with a cached member pays one: a "
+         "pre-Jev describe is never a photo's source); flags: one paid member per set (a photo set's Jev, over pass 1 "
+         "and flags-all), the rest copy it (clips `_flags_copied_from` with its flags, photos its `_jev` with a mark)")
 ONE_SWEEP = "describe-all pressed by several owners at once: one sweep per Creator (one 200, the rest 409)"
 UI_SETTLED = ("UI: Vault Pro's 'Describe all (N)' shows the plan's count, the click starts the sweep and the button "
               "settles on the plan's count after it; the Creator's rows are described in the DB")
@@ -114,7 +117,8 @@ def _no_reuse() -> None:
 def register(Fault) -> dict:
     return {
         # slop/run vault-describe-sweep --break (the scenario's FAULT)
-        "vault-describe-ignores-cache": Fault(_ignores_cache, (CACHE, PLAN)),
+        # REUSE too: its per-Creator call count (the undescribed minus the planted copies) gains the cached rows.
+        "vault-describe-ignores-cache": Fault(_ignores_cache, (CACHE, PLAN, REUSE)),
         # slop/run vault-describe-sweep --break --fault=vault-describe-cost-last-attempt
         # Pass 1's one total is describe + flags, so the describe under-report reds COST_INCL_FLAGS too.
         "vault-describe-cost-last-attempt": Fault(_cost_last_attempt, (COST, COST_INCL_FLAGS)),

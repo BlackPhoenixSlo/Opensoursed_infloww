@@ -1,5 +1,6 @@
 """The vault Jev v8 pass's part of the slop relay (lib/relay.py loads it: `wire` runs at the end of its `_wire`; no
-`OF` class). Used by scenarios/2026-11-11-vault-jev-flags.py, beside lib/vault_describe_relay.py (DeepInfra, stills).
+`OF` class). Used by scenarios/2026-11-11-vault-jev-flags.py and 2026-11-01-vault-describe-sweep.py, beside
+lib/vault_describe_relay.py (DeepInfra, stills).
 
 TypeSafe's System One wire for `service/vault_jev.py`: the product's real `typesafe_sdk` client posts to
 `$TYPESAFE_BASE_URL/v1/systemone` (lib/stack.py points it at the relay's `/__slop/fake/typesafe`, served by
@@ -11,6 +12,7 @@ Inert unless the run wrote `$DEMO_SHOTS_TMP/typesafe-vault.json` (the scenario d
 (`POST /__slop/vault-jev/arm`; 409 without the file or under SLOP_LIVE=1).
 
   arm_jev(http, tmp, items, latency_s)  (harness side) writes {items: {"WxH": [acct, id, profile]}, latency_s}, arms.
+  photo_sizes(items), price_mc(tokens)  (harness side) the sizes it tells apart, what its tokens cost.
   GET /__slop/vault-jev/calls?since=N&until=M  {calls}   GET /__slop/vault-jev/count  {n}
 
 Which item: the image of state `photo` (pass 1 / pass 2) or `full_photo` (pass L), by its pixel size. The scenario
@@ -25,7 +27,7 @@ What it answers: `PROFILES[profile]` (below), per pass. Every Noul not named is 
 at 0.95 (the rest share 0.05), so an item is "nothing there" unless its profile says otherwise. The scenario plans
 the lane each profile must end in from what the answers SAY (a bare vulva at .95 is a $50 photo), never from the
 product's rules. Usage: `TOKENS[pass] + media_id % 89` input tokens (deterministic, per call; the scenario prices
-them), output 1 per question.
+them), output 1 per question. Profile `down`: a 400 and no answer, recorded status 400 / tokens 0.
 Record per call: i, t (arrival), pass, account_id, media_id, profile, tokens_in, status, auth (Bearer of the stack's
 TYPESAFE_API_KEY), danger (the `TypeSafe-Danger-Zone-Images: true` header), model, questions, state (keys).
 """
@@ -41,6 +43,8 @@ CFG_FILE = "typesafe-vault.json"  # in $DEMO_SHOTS_TMP
 TOKENS = {"1": 2900, "2": 1700, "L": 2300}
 LOW, HIGH = 0.01, 0.95
 # Choice questions' pick when a profile does not name one: a dressed woman, nothing added, no toy.
+# The Jev-down profile: every call about it is a 400 (the SDK does not retry a 4xx; `vault_jev.run` -> status error).
+DOWN = "down"
 BASE = {"people_count": "one", "breasts_state_a": "normal_covered", "breasts_state_b": "normal_covered",
         "crotch_state_a": "normal_covered", "crotch_state_b": "normal_covered", "butt_state_a": "not_visible",
         "added_text": "nothing_added", "toy": "no_toy", "feet_detail_a": "not_in_picture",
@@ -62,6 +66,7 @@ PROFILES = {
     "unsure": {"1": _HALF_NIPPLE},                                    # a coin-flip nipple, every pass, NudeNet 0
     "pen_unsure": {"1": {"penetration": 0.66, "penetration_b": 0.66}},  # a coin-flip insertion, every pass
     "p2_clear": {"1": _HALF_NIPPLE, "2": _NIPPLE},                    # a coin flip at 1024 px, plainly topless at 1568
+    DOWN: {},                                                         # TypeSafe refuses it: HTTP 400, never answers
 }
 _lock = threading.Lock()
 _calls: list[dict] = []
@@ -88,6 +93,30 @@ async def arm_jev(http, tmp: Path, items: list[dict], latency_s: float) -> dict:
     if r.status_code != 200:
         raise RuntimeError(f"slop: vault-jev arm hook answered {r.status_code}: {r.text[:200]}")
     return r.json()
+
+
+# Harness side, for every scenario that arms this fake: the photo sizes it can tell apart (module docstring) and
+# what its billed tokens cost. TypeSafe Jev 1.14: $0.042 per million input tokens, output free
+# (docs.typesafe.ai/models, read 11-11), in the cap unit (1 cent = 100 millicents): 0.042 * 100 * 100 / 1e6 =
+# 42 / 100,000 per token, rounded up per photo.
+MC_PER_TOKEN = (42, 100_000)
+PHOTO_EDGE = (280, 448)
+
+
+def price_mc(tokens: int) -> int:
+    n, d = MC_PER_TOKEN
+    return -(-tokens * n // d)
+
+
+def photo_sizes(items) -> None:
+    """Every planned photo a unique size, both edges in PHOTO_EDGE (clips and audio keep the seeder's)."""
+    lo, hi = PHOTO_EDGE
+    span = hi - lo + 1
+    photos = [it for it in items if it["kind"] == "photo"]
+    if len(photos) > span * span:
+        raise ValueError(f"slop: {len(photos)} photos > {span * span} sizes in {PHOTO_EDGE}")
+    for j, it in enumerate(photos):
+        it["size"] = (lo + j % span, lo + j // span)
 
 
 def _parts(body: bytes, ctype: str) -> dict[str, bytes]:
@@ -180,6 +209,9 @@ async def _handle(request):
         return JSONResponse({"detail": f"slop fake Jev (vault): unplaced call (pass={pss}, item={item})"},
                             status_code=500)
     aid, mid, profile = item
+    if profile == DOWN:
+        _record(**base, account_id=aid, media_id=mid, profile=profile, tokens_in=0, status=400)
+        return JSONResponse({"detail": "slop fake Jev (vault): this photo's profile is down"}, status_code=400)
     t_in = TOKENS[pss] + int(mid) % 89
     _record(**base, account_id=aid, media_id=mid, profile=profile, tokens_in=t_in, status=200)
     await asyncio.sleep(_cfg["latency_s"])

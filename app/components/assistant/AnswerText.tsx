@@ -18,6 +18,12 @@
  * on a link's click: the phone's full-screen sheet passes its close, because
  * a route change under a sheet that stays open is a tap that "does nothing"
  * (measured on the dev stack: URL changed, sheet still 390x844 over it).
+ *
+ * Live figures (spec D12): the bot writes `[[data:…]]` / `[[chat:@…]]` markers,
+ * never a figure; markers.ts strips them (and any figure beside one) and
+ * MarkerCards renders each as a live card under the text. `focus` is the
+ * turn's model, `accountIds` the asker's roster (a card's "all"; null while it
+ * loads), `canChat` whether the session may open Messages Pro.
  */
 
 import type { ReactNode } from "react";
@@ -25,6 +31,8 @@ import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { findPaths, type PathHit } from "./answerLinks";
+import { parseMarkers } from "./markers";
+import { MarkerCards } from "./MarkerCards";
 
 /** For the panel's "Do it for me" swap chip: the link reader rides this chunk, never the shell's first load. */
 export { findPaths };
@@ -168,8 +176,11 @@ function parse(text: string): Block[] {
   return blocks;
 }
 
-export function AnswerText({ text, muted, onNavigate }: { text: string; muted?: boolean; onNavigate?: () => void }) {
-  const blocks = parse(text);
+export function AnswerText({
+  text, muted, onNavigate, focus = null, accountIds = null, canChat = false,
+}: { text: string; muted?: boolean; onNavigate?: () => void; focus?: string | null; accountIds?: string[] | null; canChat?: boolean }) {
+  const { text: prose, markers } = parseMarkers(text);
+  const blocks = parse(prose);
 
   return (
     <div className={cn("flex flex-col gap-1.5", muted && "text-fg-dim")}>
@@ -207,6 +218,7 @@ export function AnswerText({ text, muted, onNavigate }: { text: string; muted?: 
           </List>
         );
       })}
+      {markers.length > 0 && <MarkerCards markers={markers} focus={focus} accountIds={accountIds} canChat={canChat} onNavigate={onNavigate} />}
     </div>
   );
 }

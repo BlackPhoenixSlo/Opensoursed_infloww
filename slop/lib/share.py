@@ -6,7 +6,8 @@ on, nightly never passes it, refused with --map and nightly. Per checkout (files
 slop/evidence/.share/, all kept: a run's log is small; delete them by hand only while no `--share` run is live):
 
   <key>.lock                  flock only, never unlinked: the leader holds LOCK_EX for its whole run
-  <key>.json                  the live generation {nonce, pid, argv, cwd, checkout, source_id, env_id, started}
+  <key>.json                  the live generation {nonce, pid, pid_start, argv, cwd, checkout, source_id, env_id,
+                              started}; the leader is live while pid runs with start time pid_start (lib/procs.py)
   <key>.<nonce>.log           the leader's tee'd output; never rewritten once its result exists
   <key>.<nonce>.result.json   {nonce, exit, source_id_end, finished}; never written for a cancelled leader
 
@@ -32,12 +33,13 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))  # run as a script by slop/run
 
-from slop.lib import identity, nightly  # noqa: E402
+from slop.lib import identity, procs  # noqa: E402
 from slop.lib.report import EVIDENCE, write_atomic  # noqa: E402
 
 FLAG = "--share"
 WAIT_S = 7200  # SLOP_SHARE_WAIT_S default: gate slot wait 3600 + scenario timeout 1800 + admission margin
 PUBLISH_WAIT_S, STEP_S = 10, 0.2  # a leader holding the lock may not have written <key>.json yet
+START_CHECK_S = 5  # a follower checks its leader's start time (pid reuse) this often; its pid every STEP_S
 INFRA = 3
 SIGS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 _held: list[int] | None = None  # set by _deferred(): signals are recorded, raised when it ends
@@ -77,12 +79,13 @@ def main(argv: list[str], *, run: list[str] | None = None, root: Path | str = RO
             end = time.monotonic() + PUBLISH_WAIT_S
             while True:
                 if _trylock(fd, fcntl.LOCK_EX):
-                    meta = {"nonce": secrets.token_hex(8), "pid": os.getpid(), "argv": args, "cwd": cwd,
+                    meta = {"nonce": secrets.token_hex(8), "pid": os.getpid(),
+                            "pid_start": procs.start_time(os.getpid()), "argv": args, "cwd": cwd,
                             "checkout": str(root), "source_id": src, "env_id": env,
                             "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
                     return _lead(d, k, meta, run, root)
                 meta = _read(d / f"{k}.json")
-                if meta and not (d / f"{k}.{meta['nonce']}.result.json").exists() and nightly._alive(meta["pid"]):
+                if meta and not (d / f"{k}.{meta['nonce']}.result.json").exists() and _leader_alive(meta):
                     return _follow(fd, d, k, meta, wait_s)
                 if time.monotonic() >= end:  # a finished, dead or missing generation and the lock still held
                     print(f"slop: INFRA shared run did not publish within {PUBLISH_WAIT_S}s "
@@ -119,14 +122,16 @@ def _lead(d: Path, k: str, meta: dict, run: list[str], root: Path) -> int:
                      "finished": time.strftime("%Y-%m-%dT%H:%M:%S%z")}) + "\n")
             return code
         except Stopped as e:
-            nightly.stop_child(p)  # SIGINT, its whole tree after 60 s; nothing if no child yet
+            procs.stop_child(p)  # SIGINT, its whole tree after 60 s; nothing if no child yet
             if p is not None:
                 _tee(p.stdout, out, log)
             _tee([f"slop: INFRA shared run: leader cancelled ({e}); no result published\n".encode()], out, log)
-            return _shell_code(p.wait()) if p is not None else INFRA
+            if p is not None:
+                p.wait()
+            return INFRA  # cancelled: never the child's code (a child stopped by SIGINT may exit 0)
         finally:
             if p is not None and p.poll() is None:  # crashed in here: never leave a stack behind ungated
-                nightly.kill_tree(p)
+                procs.kill_tree(p)
 
 
 def _follow(fd: int, d: Path, k: str, meta: dict, wait_s: float) -> int:
@@ -135,8 +140,17 @@ def _follow(fd: int, d: Path, k: str, meta: dict, wait_s: float) -> int:
     pid, nonce = meta["pid"], meta["nonce"]
     res_path = d / f"{k}.{nonce}.result.json"
     print(f"slop: shared run of pid {pid} (started {meta.get('started')})", flush=True)
-    end, timed_out = time.monotonic() + wait_s, False
-    while not (res_path.exists() or not nightly._alive(pid) or _trylock(fd, fcntl.LOCK_SH)):
+    end, timed_out, checked = time.monotonic() + wait_s, False, -START_CHECK_S
+
+    def leader_alive() -> bool:  # pid per poll; its start time (a `ps` off Linux) at most every START_CHECK_S
+        nonlocal checked
+        if not procs.exists(pid):
+            return False
+        if time.monotonic() - checked < START_CHECK_S:
+            return True
+        checked = time.monotonic()
+        return _leader_alive(meta)
+    while not (res_path.exists() or not leader_alive() or _trylock(fd, fcntl.LOCK_SH)):
         if time.monotonic() >= end:
             timed_out = True
             break
@@ -154,6 +168,12 @@ def _follow(fd: int, d: Path, k: str, meta: dict, wait_s: float) -> int:
         print(f"slop: INFRA shared run of pid {pid}: {why}", flush=True)
         return INFRA
     return res["exit"]
+
+
+def _leader_alive(meta: dict) -> bool:
+    """The generation's leader still runs: its pid, with its recorded start time (a reused pid is not it)."""
+    pid = meta.get("pid")
+    return isinstance(pid, int) and procs.alive(pid, meta.get("pid_start"))
 
 
 def _trylock(fd: int, kind: int) -> bool:

@@ -90,11 +90,14 @@ import { useOptionalUser } from "@/contexts/UserContext";
 import { useAppCreator } from "@/contexts/PageCreatorContext";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useTheme } from "@/hooks/useTheme";
 import { useDragPress } from "@/components/useDragPress";
 import { relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
-import { isPopoutRoute } from "@/lib/nav";
+import { fanDeepLinkHref, isPopoutRoute, sessionGrantedPages } from "@/lib/nav";
+import { useAppliedSettings } from "@/lib/appliedSettings";
+import { isChatterOnly } from "@/lib/session";
 import { BRAND_NAME } from "@/lib/brand";
 import {
   appFocusOf, assistantReducer, canGeneralOf, HISTORY_LIMIT, historyFromRows, initialAssistantState,
@@ -110,6 +113,7 @@ import { editApplyBody, editResultsOf } from "./massEdit";
 import { doOfferOf, doRunReducer, draftFrom, initialDoRun, previousOf, type DoOffer, type DoRun } from "./doRunReducer";
 import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
+import { canOpenChats, commandLinks, confirmation, prepass, type PrepassHit } from "./prepass";
 import { ThreadList } from "./ThreadList";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
@@ -148,6 +152,10 @@ const NO_ACCOUNT_CHATTER = "No creator assigned to you yet — ask your agency t
 interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unread" | "active" | "held"> {
   toggle: () => void;
   ask: (question: string) => void;
+  /** Run `question` as a deterministic command (prepass.ts: open a page, set
+   *  the theme, open a fan's chat) with no LLM call: the hit, or null to send
+   *  it on to `ask` / `sendDo`. */
+  command: (question: string) => PrepassHit | null;
   /** The focus asks go out with (sendFocusOf): an account id, null = General,
    *  undefined = none yet (a chatter's General while the roster loads). */
   accountId: Focus | undefined;
@@ -157,6 +165,8 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   rosterLoaded: boolean;
   /** A signed-in user (not a chatter): the "Add creator" hint is theirs. */
   isUser: boolean;
+  /** The session may open Messages Pro: an answer's chat marker is a button. */
+  canChat: boolean;
   /** General is on offer (a signed-in user, or nothing connected). */
   canGeneral: boolean;
   /** The app switcher's focus, resolved, for the "<model> in app" offer while `held`. */
@@ -356,6 +366,46 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     doDispatch({ type });
     if (!open) dispatch({ type: "toggle" });
   }, [open]);
+  // The composer's commands (spec D12): only the pages this session's sidebar
+  // shows, by the same Applied settings read the sidebar uses.
+  const { theme, setTheme } = useTheme();
+  const appliedSettings = useAppliedSettings().data;
+  const chatterOnly = isChatterOnly(user, chatter);
+  const isMaster = user?.is_admin === true;
+  const commandTargets = useMemo(() => commandLinks({
+    chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, appliedSettings?.permissions), master: isMaster, flags: appliedSettings?.flags,
+  }), [chatterOnly, appliedSettings?.permissions, appliedSettings?.flags, isMaster]);
+  const command = useCallback((question: string): PrepassHit | null => {
+    const hit = prepass(question, commandTargets);
+    if (!hit) return null;
+    // A command answers in the Q&A thread: a confirmation line, never a server
+    // turn (rowId null), so nothing of it reaches the model's history.
+    doDispatch({ type: "exit" });
+    const id = nextId.current++;
+    const focus = accountId ?? null;
+    dispatch({ type: "asked", id, question, ts: new Date().toISOString(), thread: active ?? newThreadId(), accountId: focus });
+    const done = (answer: string) => dispatch({ type: "settled", id, answer, error: null, rowId: null });
+    if (hit.kind === "navigate") {
+      router.push(hit.href);
+      done(confirmation(hit));
+    } else if (hit.kind === "theme") {
+      const next = hit.theme === "toggle" ? (theme === "dark" ? "light" : "dark") : hit.theme;
+      setTheme(next);
+      done(confirmation(hit, next));
+    } else if (!focus) {
+      done(`Pick a model first — @${hit.handle}'s chat belongs to one model.`);
+    } else {
+      relay.get<{ id?: number | string | null }>(`/api/of/v2/users/${encodeURIComponent(hit.handle)}`, { accountId: focus, employeeId })
+        .then((u) => {
+          if (u?.id == null || u.id === "") throw new Error("no such fan");
+          router.push(fanDeepLinkHref(focus, u.id));
+          done(confirmation(hit));
+        })
+        .catch(() => done(`Couldn't find @${hit.handle} on this model.`));
+    }
+    return hit;
+  }, [commandTargets, accountId, active, router, theme, setTheme, employeeId]);
+
   const doCallbacks = useMemo<DoCallbacks>(() => ({
     start: () => startRun("start"),
     skipAnimation: () => startRun("skipAnimation"),
@@ -382,8 +432,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     return rosterIds.flatMap((id) => meta.get(id) ?? []);
   }, [rosterIds, owned]);
   const value: AssistantState = {
-    hydrated, open, unread, active, held, toggle, ask, accountId,
-    accounts, rosterLoaded: rosterIds !== null, isUser: state.roster.isUser,
+    hydrated, open, unread, active, held, toggle, ask, command, accountId,
+    accounts, rosterLoaded: rosterIds !== null, isUser: state.roster.isUser, canChat: canOpenChats(commandTargets),
     canGeneral: canGeneralOf(state.roster),
     appFocus: appFocusOf(state),
     shown, threads,
@@ -619,8 +669,8 @@ export function AssistantPanel({
   onClose?: () => void;
 }) {
   const {
-    shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus,
-    ask, pick, newChat, openThread,
+    shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus, canChat,
+    ask, command, pick, newChat, openThread,
     doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
   } = useAssistant();
   const answer = useLazyModule(answerText);
@@ -639,8 +689,10 @@ export function AssistantPanel({
   useBodyScrollLock(v.lockPage);
   const leave = v.closeOnNavigate ? onClose : undefined;
   const column = v.column;
-  const text = (body: string, muted = false) => answer
-    ? <answer.AnswerText text={body} muted={muted} onNavigate={leave} />
+  // null while the roster loads: a card's "all" waits for it.
+  const accountIds = useMemo(() => (rosterLoaded ? accounts.map((a) => a.id) : null), [accounts, rosterLoaded]);
+  const text = (body: string, muted = false, focus: Focus = null) => answer
+    ? <answer.AnswerText text={body} muted={muted} onNavigate={leave} focus={focus} accountIds={accountIds} canChat={canChat} />
     : <span className="whitespace-pre-wrap">{body}</span>;
 
   // Follow the newest row — both when a question lands and when its answer
@@ -656,7 +708,11 @@ export function AssistantPanel({
   const send = () => {
     if (!canSend) return;
     const q = draft.trim().slice(0, MAX_QUESTION_CHARS);
-    if (doOn) sendDo(q);
+    // A command (prepass.ts) runs before any LLM call, in Q&A and do-mode alike.
+    const hit = command(q);
+    if (hit) {
+      if (hit.kind !== "theme") leave?.();
+    } else if (doOn) sendDo(q);
     else ask(q);
     setDraft("");
   };
@@ -686,7 +742,7 @@ export function AssistantPanel({
               it are real destinations — AnswerText renders both with its own
               block layout; until it loads, `text` falls back to pre-wrapped
               plain text. */}
-          {text(t.answer, !!t.error)}
+          {text(t.answer, !!t.error, t.accountId)}
         </div>
       )}
       {doOffer.enabled && t.answer !== null && !t.error && !fromDo.has(t.id) && offersDo(t.answer) && (
