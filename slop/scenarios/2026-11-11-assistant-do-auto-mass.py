@@ -53,6 +53,7 @@ import asyncio
 import html
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -94,6 +95,9 @@ C_VIDEO = "video_recorded"
 TYPE_MS, INTRO_S, PLAN_HOLD_S, DONE_HOLD_S, COST_HOLD_S = 35, 2.5, 1.5, 3.0, 6.0
 VIDEO_DIR, WEBM, MP4, MP4_MIN_BYTES = "video", "do-mode-demo.webm", "do-mode-demo.mp4", 100_000
 COST_MODEL = "deepseek-v4-flash"
+# SLOP_LIVE=1 (README "Live runs"): the real DeepSeek on the company key (HELP_ASSISTANT_DEEPSEEK_KEY, set by
+# lib/stack.py from the caller's DEEPSEEK_API_KEY); captions are the model's own, the cost card is the real bill.
+LIVE = os.environ.get("SLOP_LIVE") == "1"
 LLM_MODELS = Path(__file__).resolve().parents[2] / "service" / "llm_models.py"
 INTRO_TITLE = "Help bot · Do it for me — Auto mass"
 
@@ -134,10 +138,14 @@ def _payload_ok(row: dict, sfw_id: int) -> tuple[bool, dict]:
            "media_folder_id": m.get("media_folder_id"), "unsend_after_hours": m.get("unsend_after_hours"),
            "user_lists": m.get("user_lists"), "excluded_user_lists": excl}
     ok = (got["every_seconds"] == 3600 and got["messages"] == 1 and got["online_only"] is False
-          and got["texts"] == CAPTIONS and str(got["media_folder_id"]) == str(sfw_id)
+          and (_live_texts_ok(got["texts"]) if LIVE else got["texts"] == CAPTIONS) and str(got["media_folder_id"]) == str(sfw_id)
           and got["unsend_after_hours"] == 1 and sorted(got["user_lists"] or []) == ["fans", "following"]
           and str(MASS_EXCLUDE["id"]) not in excl and MASS_EXCLUDE["name"] not in excl)
     return ok, got
+
+
+def _live_texts_ok(texts) -> bool:
+    return isinstance(texts, list) and len(texts) == len(CAPTIONS) and all(isinstance(t, str) and t.strip() for t in texts)
 
 
 class _Recorder:
@@ -205,6 +213,15 @@ def _usd(v: float) -> str:
 def _cost_html(c: dict) -> str:
     if c.get("error"):
         rows = [("Cost", c["error"])]
+    elif c.get("live"):
+        t = c["tokens"]
+        rows = [("Model", f'{c["model"]} (real API call)'),
+                ("Tokens in", f'{t["in"]:,} ({t["cached"]:,} cached)'),
+                ("Tokens out", f'{t["out"]:,}'),
+                ("This setup", _usd(c["usd"]["this_call"])),
+                ("Per 1000 setups", _usd(c["usd"]["per_1000"])),
+                ("AI time", f'{(c.get("latency_ms") or 0) / 1000:.1f}s'),
+                ("LLM calls", "1 (draft only — filling the form uses no AI)")]
     else:
         t = c["tokens"]
         rows = [("Model", c["model"]),
@@ -216,7 +233,8 @@ def _cost_html(c: dict) -> str:
                 ("LLM calls", "1 (draft only — filling the form uses no AI)")]
     trs = "".join(f'<tr><td style="color:#9aa7b8;padding:8px 36px 8px 0">{html.escape(k)}</td>'
                   f'<td style="color:#f3f6fa;font-weight:600;padding:8px 0">{html.escape(str(v))}</td></tr>' for k, v in rows)
-    foot = f'estimate · priced from llm_models.py · tokens: {c.get("token_count", "n/a")}'
+    foot = ("measured · DeepSeek's own usage block × llm_models.py rates" if c.get("live")
+            else f'estimate · priced from llm_models.py · tokens: {c.get("token_count", "n/a")}')
     return (f'<div style="{_CARD}min-width:760px"><div style="font-size:44px;font-weight:700;margin-bottom:22px">'
             f'What this cost</div><table style="font-size:28px;color:#f3f6fa;border-collapse:collapse">{trs}</table>'
             f'<div style="margin-top:26px;font-size:18px;color:#7d8a9c">{html.escape(foot)}</div></div>')
@@ -240,8 +258,47 @@ def _llm_models():
     return mod
 
 
+def _cost_live(w, aid: str, row_id=None) -> dict:
+    """SLOP_LIVE=1: the real bill — the draft's grok_calls row (DeepSeek's own usage block) priced from
+    llm_models.py, beside the assistant_turns row's cost_millicents (cents x 100) the cap charged."""
+    con = w.sql()
+    try:
+        cols = ("id", "model", "tokens_in", "cache_hit_tokens", "tokens_out", "latency_ms", "status")
+        rows = con.execute(f"SELECT {', '.join(cols)} FROM grok_calls WHERE purpose='help_assistant_do' "
+                           "AND account_id=? ORDER BY id", (aid,)).fetchall()
+        q = "SELECT id, model, provider, cost_millicents, latency_ms, error FROM assistant_turns "
+        t = (con.execute(q + "WHERE id=?", (row_id,)).fetchone() if row_id is not None else None) or \
+            con.execute(q + "WHERE account_id=? AND question=? ORDER BY id DESC LIMIT 1", (aid, PHRASE)).fetchone()
+    finally:
+        con.close()
+    calls = [dict(zip(cols, r)) for r in rows]
+    if not calls:
+        return {"error": "no help_assistant_do grok_calls row (live)"}
+    c = calls[-1]
+    m = _llm_models().MODELS.get(c["model"]) or _llm_models().MODELS[COST_MODEL]
+    tin, hit, tout = c["tokens_in"] or 0, c["cache_hit_tokens"] or 0, c["tokens_out"] or 0
+
+    def usd(n: int, cents_per_1k: float) -> float:
+        return n / 1000 * cents_per_1k / 100
+
+    this = usd(tin - hit, m.input_per_1k_cents) + usd(hit, m.input_cache_hit_per_1k_cents) + usd(tout, m.output_per_1k_cents)
+    turn = t and dict(zip(("id", "model", "provider", "cost_millicents", "latency_ms", "error"), t))
+    return {"live": True, "estimate": False, "model": c["model"], "priced_from": "service/llm_models.py",
+            "tokens": {"in": tin, "cached": hit, "out": tout}, "latency_ms": c["latency_ms"],
+            "usd": {"this_call": this, "per_1000": this * 1000},
+            "run_calls": len(calls), "run_usd": sum(
+                usd((x["tokens_in"] or 0) - (x["cache_hit_tokens"] or 0), m.input_per_1k_cents)
+                + usd(x["cache_hit_tokens"] or 0, m.input_cache_hit_per_1k_cents)
+                + usd(x["tokens_out"] or 0, m.output_per_1k_cents) for x in calls),
+            "assistant_turn": turn,
+            "assistant_turn_usd": turn and turn.get("cost_millicents") is not None and turn["cost_millicents"] / 10000,
+            "calls": calls}
+
+
 def _cost(ctx, w, aid: str, row_id=None) -> dict:
     """The draft's price (module docstring, VIDEO): the newest captured PHRASE prompt, cost.json's body."""
+    if LIVE:
+        return _cost_live(w, aid, row_id)
     f = ctx.stack.tmp / PROMPTS
     lines = [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.is_file() else []
     mine = [x for x in lines if request_of(x.get("user") or "") == PHRASE]
@@ -457,8 +514,9 @@ async def run(ctx) -> None:
         fake.vault_lists[aid] = vault["of_lists"]
 
     # Do-mode bills the agency's own key (no platform fallback, unlike Q&A): set one, as lib/followup.py does.
-    r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})
-    ctx.metric("agency_deepseek_key", {"status": r.status_code})
+    if not LIVE:   # live: no agency key, so the draft takes the company-key fallback (D8)
+        r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})
+        ctx.metric("agency_deepseek_key", {"status": r.status_code})
 
     api = await ctx.owner.post(DRAFT, json={"request": PHRASE, "account_id": aid})
     api_body = api.json() if api.status_code == 200 else None

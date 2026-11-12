@@ -44,8 +44,11 @@ MODEL_PURPOSES: tuple[str, ...] = (
 # model through `resolve_model` (gen_info.py, welcome_chatter_for_info.py's
 # extraction, copilot_api.py). A model with `json_object_ok=False` is skipped
 # at every resolve step for these and refused as a pin (account_config_rules).
+# NOT `help_assistant_do`: the draft sends json_object only to a model that
+# takes it and parses a Claude reply out of plain text (assistant_draft
+# `parse_json_object`), so a Sonnet/Opus pin is allowed there (owner 2026-11-11).
 JSON_OBJECT_PURPOSES: frozenset[str] = frozenset(
-    {"gen_info", "welcome_chatter_for_info", "copilot", "help_assistant_do"})
+    {"gen_info", "welcome_chatter_for_info", "copilot"})
 
 
 def model_fits(model: str | None, purpose: str) -> bool:
@@ -96,8 +99,8 @@ def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -
 #
 # `help_assistant_do` (the help bot's form-fill draft, assistant_draft.py)
 # rides with `help_assistant`: its small byte-stable prefix is a cache bet too.
-# Unlike it, NO keyed Opus default: the draft is a json_object call and Claude
-# has `json_object_ok=False` (docs/spec/assistant-do-mode.md D3).
+# Unlike it, NO keyed Opus default: slot-fill needs no Opus
+# (docs/spec/assistant-do-mode.md D3); an operator may still pin Sonnet/Opus.
 PURPOSE_DEFAULT_MODELS: dict[str, str] = {
     "help_assistant": "deepseek-v4-flash",
     "help_assistant_do": "deepseek-v4-flash",

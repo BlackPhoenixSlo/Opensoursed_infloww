@@ -964,8 +964,11 @@ async def case_the_fallback_policy_is_one_reviewable_row():
     a key id is how a Setup → Keys box ends up writing where nothing reads."""
     import secrets_store
 
+    # help_assistant_do (the help bot's "Do it for me" draft) joined the
+    # DeepSeek row 2026-11-11 (owner: platform-paid like Q&A, same cap).
     assert llm_providers._FALLBACK_KEY_ENVS == {
         ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+        ("help_assistant_do", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
         ("help_assistant", "anthropic"): "HELP_ASSISTANT_ANTHROPIC_KEY",
     }, llm_providers._FALLBACK_KEY_ENVS
 

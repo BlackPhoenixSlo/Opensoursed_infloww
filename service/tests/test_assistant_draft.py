@@ -31,6 +31,8 @@ from sqlalchemy import select  # noqa: E402
 import assistant_draft  # noqa: E402
 import auth  # noqa: E402
 import llm_client  # noqa: E402
+
+REAL_CHAT = llm_client.chat     # cases spy on `chat`; a few need the real one
 from assistant_draft import (  # noqa: E402
     DraftBody, FolderStat, Intent, draft, do_caps, folder_stats, match_named,
     pick_sfw, rank_sfw, resolve,
@@ -261,6 +263,23 @@ def case_everyone_is_both_system_audiences_online_or_not():
     assert any("online or not" in a for a in d.assumptions), d.assumptions
 
 
+def case_cross_checks_flag_silent_misses_and_stay_quiet_otherwise():
+    def checks(request, **over):
+        d = _resolve(_pilot_intent(**over), request=request)
+        return [a for a in d.assumptions if a.startswith(assistant_draft.CHECK_PREFIX)]
+    fans = {"audience": {"include": ["fans", "following"], "exclude": []}}
+    assert checks("solo ai fan online, ogni ora, 10 captions", online_only=True, **fans), "following widened"
+    assert checks("only online fans, hourly, 10 captions", online_only=False,
+                  audience={"include": ["fans"], "exclude": []}), "online dropped"
+    assert not checks("online or offline, everyone, hourly, 10 captions")
+    assert not checks("to everyone online, hourly, 10 captions", online_only=True,
+                      audience={"include": ["everyone"], "exclude": []})
+    assert checks("every 4 hours, 10 captions"), "4 used nowhere"
+    assert not checks("every 1 hour, 10 captions, delete after 30 minutes", unsend_after_hours=0.5)
+    assert not checks("every 2 days, 10 captions", every={"value": 48, "unit": "hours"})
+    assert not checks("50 captions hourly", captions={"count": 50, "provided": [], "generated": ["a"] * 20})
+
+
 def case_everyone_keeps_an_explicit_online_only():
     d = _resolve(_pilot_intent(online_only=True, audience={"include": ["everyone"], "exclude": []}))
     assert d.slots["includes"] == ["fans", "following"] and d.slots["online_only"] is True, d.slots
@@ -383,6 +402,22 @@ async def case_llm_failures_come_back_as_200s():
     assert out["error"] == "empty_answer", out
 
 
+async def case_a_bad_draft_is_retried_once_on_the_same_model():
+    await _seed()
+
+    class _Seq(_Spy):
+        async def __call__(self, **kw):
+            self.content = "not json" if not self.calls else json.dumps(_pilot_intent())
+            return await super().__call__(**kw)
+    spy = _patch(_Seq())
+    out = await _draft()
+    assert len(spy.calls) == 2 and spy.calls[0]["model"] == spy.calls[1]["model"], spy.calls
+    assert out["flow"] == "mass_premade" and out["error"] is None, out
+    spy = _patch(_Spy("not json"))
+    out = await _draft()
+    assert len(spy.calls) == 2 and out["error"] == "bad_draft", (spy.calls, out)
+
+
 async def case_a_caller_who_cannot_create_the_rule_gets_a_sentence_not_a_403():
     await _seed()
     spy = _patch(_Spy(json.dumps(_pilot_intent())))
@@ -468,8 +503,250 @@ def case_both_routes_are_served_over_http():
 def case_the_purpose_is_registered_like_the_help_bot():
     assert "help_assistant_do" in MODEL_PURPOSES
     assert PURPOSE_DEFAULT_MODELS["help_assistant_do"] == "deepseek-v4-flash"
-    assert "help_assistant_do" in JSON_OBJECT_PURPOSES       # a Claude pin is refused (no json_object)
+    # Owner 2026-11-11: a Sonnet/Opus pin is allowed — the draft parses Claude's
+    # plain-text JSON itself (`parse_json_object`), so it is no json_object lane.
+    assert "help_assistant_do" not in JSON_OBJECT_PURPOSES
     assert llm_client.feature_label("help_assistant_do") == "The help assistant"
+
+
+async def case_a_refine_sees_list_and_folder_names_and_keeps_the_custom_list():
+    """`previous` is the prior response's slots (OF ids + a folder object); the
+    model only knows NAMES, so PREVIOUS DRAFT is rendered with names."""
+    await _seed()
+    prev = {"name": "VIP mass", "interval": {"value": 1, "unit": "hours"},
+            "includes": ["501", "fans"], "excludes": ["502", "999"],
+            "folder": {"id": "11", "name": "Daytime", "photos": 12, "tiers": {"sfw": 8}},
+            "captions": ["Hi"], "online_only": True}
+    refined = _pilot_intent(every={"value": 3, "unit": "hours"}, online_only=True,
+                            audience={"include": ["VIP", "fans"], "exclude": ["Whales 💰"]},
+                            folder={"want": "named", "name": "Daytime"})
+    spy = _patch(_Spy(json.dumps(refined)))
+    out = await _draft("make it every 3 hours", previous=prev)
+    user = spy.calls[0]["messages"][1]["content"]
+    line = next(x for x in user.split("\n\n") if x.startswith("PREVIOUS DRAFT: "))
+    shown = json.loads(line[len("PREVIOUS DRAFT: "):])
+    assert shown["includes"] == ["VIP", "fans"], shown
+    assert shown["excludes"] == ["Whales 💰", "999"], shown          # unknown id kept
+    assert shown["folder"] == {"name": "Daytime"}, shown
+    assert out["slots"]["includes"] == ["501", "fans"], out["slots"]
+    assert out["slots"]["excludes"] == ["502"], out["slots"]
+    assert out["slots"]["interval"] == {"value": 3, "unit": "hours"}, out["slots"]
+    # Same rendering on the eval seam.
+    spy = _patch(_Spy(json.dumps(refined)))
+    await assistant_draft.draft_for_eval("make it every 3 hours", assistant_draft.EvalContext(
+        lists=LISTS), "deepseek-v4-flash", previous=prev)
+    assert '"includes": ["VIP", "fans"]' in spy.calls[0]["messages"][1]["content"]
+
+
+# ── Who pays: the agency, else the deployment's help-bot DeepSeek key ─
+
+import llm_providers  # noqa: E402
+import tenant_keys  # noqa: E402
+from db.models import AccountAiConfig, User, UserAccount  # noqa: E402
+
+PLATFORM_KEY = "sk-deployment-help"
+
+
+async def _owned(aid: str, *, cap_cents: int = 1_000_000, agency_key: str | None = None,
+                 pin: str | None = None) -> str:
+    """An account with ONE agency owner (so the house key is out of reach)."""
+    import uuid
+    uid = uuid.uuid4().hex
+    async with get_session() as s:
+        s.add(User(id=uid, username=f"agency_{aid}", password="x", is_admin=False))
+        s.add(Account(id=aid, nickname=aid))
+        s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=cap_cents,
+                              model_by_purpose=json.dumps({"help_assistant_do": pin}) if pin else None))
+        s.add(UserAccount(user_id=uid, account_id=aid))
+    if agency_key:
+        await tenant_keys.set_keys(uid, {"deepseek": agency_key})
+    return uid
+
+
+class _PlatformKey:
+    """`llm_providers._api_key` answering only for the given env ids."""
+    def __init__(self, **envs):
+        self.envs, self.real = envs, llm_providers._api_key
+
+    def __enter__(self):
+        llm_providers._api_key = lambda env: self.envs.get(env, "")
+
+    def __exit__(self, *a):
+        llm_providers._api_key = self.real
+
+
+async def case_a_keyless_agency_drafts_on_the_platform_deepseek_key():
+    aid = "acc_draft_keyless"
+    await _owned(aid)
+    ds, an = llm_providers.PROVIDERS["deepseek"], llm_providers.PROVIDERS["anthropic"]
+    with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY,
+                      HELP_ASSISTANT_ANTHROPIC_KEY="sk-deployment-claude"):
+        assert await llm_client._tenant_api_key(aid, ds, "help_assistant_do") == PLATFORM_KEY
+        # The Q&A's Anthropic row is NOT shared: a Claude pin bills the agency.
+        try:
+            await llm_client._tenant_api_key(aid, an, "help_assistant_do")
+            raise AssertionError("the platform Claude key leaked to the draft")
+        except LLMKeyError:
+            pass
+        # …and the platform key still pays for no lane.
+        try:
+            await llm_client._tenant_api_key(aid, ds, "gen_info")
+            raise AssertionError("the platform key leaked to gen_info")
+        except LLMKeyError:
+            pass
+        # End to end on the route: the draft goes out (spied at chat).
+        spy = _patch(_Spy(json.dumps(_pilot_intent())))
+        out = await draft(DraftBody(request=PILOT, account_id=aid))
+    assert out["flow"] == "mass_premade" and out["error"] is None, out
+    assert spy.calls[0]["account_id"] == aid, spy.calls[0]
+    # An agency's own key still beats the platform's.
+    aid2 = "acc_draft_ownkey"
+    await _owned(aid2, agency_key="sk-agency-own")
+    with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY):
+        assert await llm_client._tenant_api_key(aid2, ds, "help_assistant_do") == "sk-agency-own"
+
+
+async def case_platform_paid_drafts_stop_at_the_accounts_daily_cap():
+    """The bound is Q&A's: the account's daily cost cap, enforced in
+    llm_client._reserve BEFORE any wire call. Real chat(), no spy; the wire
+    (`_fire`) explodes if reached, so nothing is ever bought."""
+    aid = "acc_draft_capped"
+    await _owned(aid, cap_cents=0)
+    real_fire = llm_client._fire
+    llm_client.chat = REAL_CHAT
+
+    async def no_wire(*a, **kw):
+        raise AssertionError("a capped draft reached the provider")
+    llm_client._fire = no_wire
+    try:
+        async def _lists(_a):
+            return LISTS
+        assistant_draft._read_lists = _lists
+        with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY):
+            out = await draft(DraftBody(request=PILOT, account_id=aid))
+    finally:
+        llm_client._fire = real_fire
+    assert out["error"] == "cap" and out["flow"] is None, out
+    assert "budget" in out["answer"], out["answer"]
+
+
+async def case_do_caps_no_key_only_when_neither_agency_nor_platform_key_resolves():
+    llm_client.chat = REAL_CHAT
+    aid = "acc_draft_caps"
+    await _owned(aid)
+    with _PlatformKey():
+        assert await do_caps(account_id=aid) == {"account_id": aid, "can_do": False, "reason": "no_key"}
+    with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY):
+        assert await do_caps(account_id=aid) == {"account_id": aid, "can_do": True, "reason": None}
+    aid2 = "acc_draft_caps_own"
+    await _owned(aid2, agency_key="sk-agency-own")
+    with _PlatformKey():
+        assert await do_caps(account_id=aid2) == {"account_id": aid2, "can_do": True, "reason": None}
+    # A Claude pin with no agency Anthropic key: the platform's DeepSeek key
+    # does not pay for it → no_key, said up front.
+    aid3 = "acc_draft_caps_claude"
+    await _owned(aid3, pin="claude-sonnet-5-5")
+    with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY,
+                      HELP_ASSISTANT_ANTHROPIC_KEY="sk-deployment-claude"):
+        assert (await do_caps(account_id=aid3))["reason"] == "no_key"
+
+
+# ── Claude: no JSON mode, the JSON parsed out of plain text ───────────
+
+def case_parse_json_object_takes_fences_and_prose():
+    obj = {"flow": "mass_premade", "name": "a {curly} \"name\"", "captions": {"count": 1}}
+    js = json.dumps(obj)
+    for text in (js, f"```json\n{js}\n```", f"```\n{js}\n```",
+                 f"Here is the JSON you asked for:\n\n```json\n{js}\n```\nLet me know!",
+                 f"Sure — {js} — done.", f"{{not json}} then {js}",
+                 f"```json\n{js}"):                       # an unclosed fence
+        assert assistant_draft.parse_json_object(text) == obj, text
+    for bad in ("", "no json here", "{broken: ", "```json\n```"):
+        try:
+            assistant_draft.parse_json_object(bad)
+            raise AssertionError(f"parsed {bad!r}")
+        except ValueError:
+            pass
+    assert assistant_draft.response_format_for("deepseek-v4-flash") == {"type": "json_object"}
+    for m in ("claude-sonnet-5-5", "claude-opus-5-5"):
+        assert assistant_draft.response_format_for(m) is None, m
+
+
+async def case_a_claude_pin_drafts_without_json_mode():
+    aid = "acc_draft_claude"
+    await _owned(aid, pin="claude-opus-5-5")
+    fenced = "Here you go:\n```json\n" + json.dumps(_pilot_intent()) + "\n```"
+    spy = _patch(_Spy(fenced))
+    out = await draft(DraftBody(request=PILOT, account_id=aid))
+    kw = spy.calls[0]
+    assert kw["model"] == "claude-opus-5-5" and "response_format" not in kw, kw
+    assert out["flow"] == "mass_premade" and out["error"] is None, out
+    assert out["slots"]["includes"] == ["fans", "following"] and len(out["slots"]["captions"]) == 10
+    _patch(_Spy("I can't help with that."))
+    out = await draft(DraftBody(request=PILOT, account_id=aid))
+    assert (out["error"], out["answer"]) == ("bad_draft", assistant_draft.BAD_DRAFT_ANSWER), out
+
+
+# ── The eval seam ─────────────────────────────────────────────────────
+
+EVAL_CTX = assistant_draft.EvalContext(
+    lists=[{"id": 501, "name": "VIP"}, {"id": 503, "name": "MASSdmEXCLUDE"}],
+    folders=[_f("Daytime", fid="11", sfw=40, suggestive=5, unknown=15),
+             _f("Spicy", fid="13", sfw=2, explicit=20)],
+    existing_names=["Hourly SFW mass"])
+
+
+async def case_draft_for_eval_runs_the_real_prompt_and_returns_usage():
+    spy = _patch(_Spy(json.dumps(_pilot_intent())))
+    out, usage = await assistant_draft.draft_for_eval(PILOT, EVAL_CTX, "deepseek-v4-flash")
+    kw = spy.calls[0]
+    assert kw["account_id"] is None and kw["purpose"] == "help_assistant_do", kw
+    assert kw["response_format"] == {"type": "json_object"}, kw
+    sys_msg, user_msg = kw["messages"]
+    assert sys_msg["content"] == assistant_draft.system_prompt()
+    assert "VIP" in user_msg["content"] and "Daytime (60 photos)" in user_msg["content"]
+    assert out["flow"] == "mass_premade" and out["error"] is None and out["id"] is None, out
+    assert out["slots"]["folder"]["id"] == "11" and out["slots"]["name"] == "Hourly SFW mass 2", out
+    assert usage == {"model": "deepseek-v4-flash", "tokens_in": 100, "tokens_cached": 90,
+                     "tokens_cache_write": 0, "tokens_out": 10, "cost_cents": 0.0,
+                     "cost_millicents": 0}, usage
+    _patch(_Spy(raises=LLMHTTPError("502", status=502)))
+    out, usage = await assistant_draft.draft_for_eval(PILOT, EVAL_CTX, "deepseek-v4-flash")
+    assert out["error"] == "provider" and usage["cost_millicents"] == 0, (out, usage)
+
+
+async def case_draft_for_eval_prices_claude_usage_from_the_provider_reply():
+    """Real llm_client.chat on Claude Sonnet, faked only at the wire (`_fire`):
+    the house ANTHROPIC_API_KEY pays (account None), no response_format goes
+    out, and usage — cache read/write + output incl. thinking — is priced by
+    llm_models, not estimated."""
+    llm_client.chat = REAL_CHAT
+    seen = {}
+    native = {"id": "msg_1", "model": "claude-sonnet-5-5", "stop_reason": "end_turn",
+              "content": [{"type": "thinking", "thinking": "hmm"},
+                          {"type": "text", "text": "```json\n" + json.dumps(_pilot_intent()) + "\n```"}],
+              "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 2000,
+                        "cache_read_input_tokens": 3000, "output_tokens": 500}}
+
+    async def wire(url, headers, body, **kw):
+        seen.update(url=url, headers=headers, body=body)
+        return native, 7
+    real_fire = llm_client._fire
+    llm_client._fire = wire
+    try:
+        with _PlatformKey(ANTHROPIC_API_KEY="sk-house-claude"):
+            out, usage = await assistant_draft.draft_for_eval(PILOT, EVAL_CTX, "claude-sonnet-5-5")
+    finally:
+        llm_client._fire = real_fire
+    assert seen["url"].endswith("/messages") and seen["headers"]["x-api-key"] == "sk-house-claude"
+    assert "response_format" not in seen["body"] and seen["body"]["thinking"] == {"type": "adaptive"}
+    assert out["flow"] == "mass_premade" and out["error"] is None, out
+    # Sonnet 5.5: 0.2 in / 0.25 write / 0.01 hit / 1.0 out (cents per 1k).
+    want_mc = round((1000 * 0.2 + 2000 * 0.25 + 3000 * 0.01 + 500 * 1.0) / 1000 * 100)
+    assert want_mc == 123 == llm_client._cost_millicents("claude-sonnet-5-5", 6000, 500, 3000, 2000)
+    assert usage == {"model": "claude-sonnet-5-5", "tokens_in": 6000, "tokens_cached": 3000,
+                     "tokens_cache_write": 2000, "tokens_out": 500, "cost_cents": 1.23,
+                     "cost_millicents": 123}, usage
 
 
 _harness.run()

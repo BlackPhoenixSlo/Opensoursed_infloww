@@ -10,9 +10,14 @@ rule.
        → 200 {id, flow, account_id, summary, slots, assumptions, unresolved, answer, error}
   GET  /admin/assistant/do-caps?account_id=  → {account_id, can_do}
 
-ONE LLM call (`help_assistant_do`, JSON mode, DeepSeek flash by default —
-`_model_pick.PURPOSE_DEFAULT_MODELS`). The model returns INTENTS only (names,
-counts, wants); the SERVER validates and resolves every id:
+ONE LLM call (`help_assistant_do`, DeepSeek flash by default —
+`_model_pick.PURPOSE_DEFAULT_MODELS`; an operator may pin another model, Claude
+Sonnet/Opus included). JSON mode (`response_format: json_object`) goes only to a
+model that takes it (`json_object_ok`); for the rest (Claude) nothing is sent
+and the system prompt's "ONE JSON object" is the contract — `parse_json_object`
+takes the first balanced {...} out of fences/prose, then the same validation
+applies, and unparseable is `bad_draft` like any bad JSON. The model returns
+INTENTS only (names, counts, wants); the SERVER validates and resolves every id:
   • fan lists by name against the account's OF lists (the same `/lists` read the
     UI's picker makes; OF ids, never local list keys — fanLists.tsx);
   • the folder from the mirror's per-photo `explicitness_tier` rows
@@ -25,6 +30,12 @@ provider's prefix cache, like assistant_api's. The request, the account's list
 and folder names, existing Auto mass names and the previous draft ride the USER
 message, the request fenced as data.
 
+WHO PAYS (owner 2026-11-11, reverses spec D8): the agency's own key, else the
+deployment's help-bot DeepSeek key (`llm_providers._FALLBACK_KEY_ENVS`, the
+row Q&A uses), bounded like Q&A by the account's daily cost cap
+(`llm_client._reserve`; a used-up cap is `error: "cap"`). do-caps says
+`no_key` only when neither resolves.
+
 200-ALWAYS like /ask: a cap, key, provider or parse failure returns `error` set
 and a friendly `answer`. The account gate (`assert_account_owned`) is /ask's.
 A caller who may not create an Auto Mass rule on the account (the same
@@ -34,6 +45,22 @@ gets `flow: null` and a sentence — never an LLM call.
 HISTORY: one `assistant_turns` row per non-blank draft (question = request,
 answer = summary), so it shows in the widget's history and the owner's audit.
 No new column: the row is a turn like any other on the asker's thread.
+
+EVAL SEAM — `draft_for_eval(request, ctx, model, previous=None)` →
+`(response, usage)`, for scripts/ (draft accuracy per model). The REAL system
+prompt + user block, ONE REAL `llm_client.chat` on `model` with
+`account_id=None` (so the key is the house env key: DEEPSEEK_API_KEY /
+ANTHROPIC_API_KEY), the REAL parse + validation + resolution against an
+in-memory `EvalContext` (lists, folders with tiers, existing rule names). No
+account reads, no route, no turn row. `response` is the route's shape (`id`
+and `account_id` None); `usage` = {model, tokens_in (whole prompt),
+tokens_cached (cache read), tokens_cache_write, tokens_out (incl. thinking),
+cost_cents (float), cost_millicents} straight from the provider's usage block
+priced by llm_models in `llm_client._finalize_ok` — never an estimate; zeros
+when no call completed. ⚠️ `llm_client.chat` still reserves the house cap row
+and writes `grok_calls`: point DATABASE_URL / CHATTERLY_DB_URL at a temp DB
+(init_db) first — never service/chatterly.db. The house cap there is
+`llm_client._DEFAULT_CAP_CENTS` per day.
 """
 from __future__ import annotations
 
@@ -58,6 +85,7 @@ from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
 from db.models import AutomationRule, VaultItem
 from jsonsafe import load_json
+from llm_client import LLMCapExceeded, LLMConfigError, LLMHTTPError
 from llm_models import MODELS
 from of_rich_text import PLAIN_MAX
 from permissions import OPT_IN_KINDS, opt_in_refusal
@@ -135,7 +163,8 @@ Rules:
   LISTS: write the request's own words for it. The mass-exclude list
   (MASSdmEXCLUDE, "mass exclude") goes in exclude as "mass-exclude". Nothing
   said about who gets it: include [].
-- "everyone" also means online_only false.
+- "everyone" also means online_only false; so does "all fans and following"
+  (include "everyone"). Online only ONLY when the request says online.
 - folder: SFW / safe / no nudes → want "sfw". A folder named in the request →
   want "named" with its exact name from VAULT FOLDERS when one matches, else the
   request's words. No folder mentioned → want "none".
@@ -144,11 +173,21 @@ Rules:
   number provided, or 1 when none). "generated" holds count minus provided new
   captions you write: short (under 200 characters), flirty but SFW teasers, no
   explicit words, no prices, no links, no placeholders like {name}, each one
-  different.
-- every: "hourly" is {"value": 1, "unit": "hours"}.
+  different. More than 20 captions asked: count 20 (still flow "mass_premade").
+- flow "mass_premade" = a RECURRING automatic mass DM, asked in any language
+  and however messy, even with odd or out-of-range values (still fill it; the
+  app clamps them; say so in assumptions). flow null for anything else: a
+  one-time / right-now mass, posts, stories, auto replies, editing or deleting
+  existing rules, several rules at once.
+- every: always minutes or hours. "hourly" = 1 hours; "daily" / "once a day" /
+  "every morning" = 24 hours; "N times a day" = 24/N hours; "weekly" = 168
+  hours; "every N days" = 24*N hours.
+- unsend_after_hours: hours, fractions allowed (20 minutes = 0.333).
 - delete with no time: delete_after true, unsend_after_hours null.
-- A "PREVIOUS DRAFT" block means the user is changing that draft: start from
-  it, apply only what the request changes, and return the whole result.
+- A "PREVIOUS DRAFT" block means the user is changing that draft: flow stays
+  "mass_premade", start from it, apply only what the request changes, and
+  return the whole result. Its captions go in "provided" and count stays their
+  number unless the request asks for more or fewer captions.
 - Never invent a list, a folder or a time the request did not ask for."""
 
 _FEWSHOTS = """\
@@ -160,7 +199,7 @@ JSON: {"flow": "mass_premade", "name": "Hourly SFW mass", "every": {"value": 1, 
 REQUEST: every 30 min send "Good morning babe ☀️" and "Miss me?" to my VIP list, online fans only, use the Beach folder, delete after 2 hours
 JSON: {"flow": "mass_premade", "name": "VIP morning mass", "every": {"value": 30, "unit": "minutes"}, "delete_after": true, "unsend_after_hours": 2, "online_only": true, "audience": {"include": ["VIP"], "exclude": []}, "folder": {"want": "named", "name": "Beach"}, "captions": {"count": 2, "provided": ["Good morning babe ☀️", "Miss me?"], "generated": []}, "keep_skip_recent": true, "assumptions": [], "unresolved": []}
 
-PREVIOUS DRAFT: {"name": "VIP morning mass", "interval": {"value": 30, "unit": "minutes"}, "captions": ["Good morning babe ☀️", "Miss me?"], "folder": {"name": "Beach"}, "online_only": true, "includes": ["VIP"], "excludes": [], "unsend_after_hours": 2}
+PREVIOUS DRAFT: {"name": "VIP morning mass", "interval": {"value": 30, "unit": "minutes"}, "captions": ["Good morning babe ☀️", "Miss me?"], "caption_count": 2, "folder": {"name": "Beach"}, "online_only": true, "includes": ["VIP"], "excludes": [], "unsend_after_hours": 2}
 REQUEST: make it every 3 hours and also send to people I'm chatting with
 JSON: {"flow": "mass_premade", "name": "VIP morning mass", "every": {"value": 3, "unit": "hours"}, "delete_after": true, "unsend_after_hours": 2, "online_only": true, "audience": {"include": ["VIP"], "exclude": []}, "folder": {"want": "named", "name": "Beach"}, "captions": {"count": 2, "provided": ["Good morning babe ☀️", "Miss me?"], "generated": []}, "keep_skip_recent": false, "assumptions": [], "unresolved": []}
 
@@ -423,7 +462,7 @@ def _unknown_list(name: str, *, lists_read: bool) -> str:
 
 
 def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
-            folders: list[FolderStat], existing_names: list[str]) -> Draft:
+            folders: list[FolderStat], existing_names: list[str], refine: bool = False) -> Draft:
     """Validate + resolve one mass_premade intent into the form's slots.
     Pure: every account read happened before (lists None = the read failed)."""
     assumptions: list[str] = []
@@ -534,7 +573,65 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
     }
     assumptions += _clean_notes(intent.assumptions)
     unresolved += _clean_notes(intent.unresolved)
+    assumptions += cross_checks(request, slots, intent, names, clamped=any(
+        "allowed range" in a or "capped" in a for a in assumptions), refine=refine)
     return Draft(slots, _dedupe(assumptions), _dedupe(unresolved), names)
+
+
+# ── Cross-checks: the draft's silent misses, flagged on the plan card ─
+# Eval 2026-11-11 (Fable round 3): the misses that hurt are silent ones — an
+# audience widened past "online fans", a number read as the wrong thing. Cheap
+# deterministic checks of the request against the slots; they only ADD a
+# CHECK_PREFIX line to assumptions, never change a slot.
+CHECK_PREFIX = "Check:"
+_ONLINE = re.compile(r"\bonline\b|en l[ií]nea|en ligne|in linea|em linha", re.I)
+_NOT_ONLY_ONLINE = re.compile(r"offline|or not|matter|whether|regardless|o no\b|ou não|oder nicht|ali ne\b|not (just|only) online"
+                              r"|online (or|o|ou|oder|ali|/) ?(off|not)", re.I)
+_NUM = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?)(?![\w.])")
+
+
+def _nums(text: str) -> set[float]:
+    return {float(m.replace(",", ".")) for m in _NUM.findall(text or "")}
+
+
+def cross_checks(request: str, slots: dict[str, Any], intent: Intent, names: dict[str, str],
+                 *, clamped: bool = False, refine: bool = False) -> list[str]:
+    """`clamped`: a range note already explains the out-of-range numbers, so
+    the number check stays quiet. "1" is never flagged (once / 1 caption / a
+    default). Eval 2026-11-11 tuned these on 1000 cases (false flags vs caught)."""
+    out: list[str] = []
+    online = bool(_ONLINE.search(request)) and not _NOT_ONLY_ONLINE.search(request)
+    if online and not slots["online_only"]:
+        out.append(f'{CHECK_PREFIX} you said "online", but this sends to fans whether online or not.')
+    said = {_norm(x) for x in intent.audience.include}
+    if (online and not refine and said & (_EVERYONE | _FOLLOWING)
+            and not re.search(r"follow|every|todos|tutti|vsem|alle|tout", request, re.I)):
+        out.append(f"{CHECK_PREFIX} the audience includes Following — you only mentioned fans.")
+    if clamped:
+        return out
+    used: set[float] = {1.0, float(len(intent.captions.generated)),
+                        float((intent.captions.count or 0) - len(intent.captions.provided))}
+    if intent.every and intent.every.value:
+        v = float(intent.every.value)
+        used |= ({v, v * 60, v / 60, v / 24, v / 168, 24 / v} if intent.every.unit == "hours"
+                 else {v, v / 60, 1440 / v})
+    iv = slots["interval"]
+    used |= {float(iv["value"]), float(intent.captions.count or 0), float(len(slots["captions"]))}
+    for h in (intent.unsend_after_hours, slots["unsend_after_hours"]):
+        if h:
+            used |= {float(h), float(h) * 60}
+    text = " ".join([*intent.captions.provided, slots["name"] or "", *names.values(),
+                     (slots["folder"] or {}).get("name") or "", *intent.audience.include,
+                     *intent.audience.exclude, intent.folder.name or ""])
+    used |= _nums(text)
+    if len(slots["captions"]) >= MAX_CAPTIONS or (intent.captions.count or 0) >= MAX_CAPTIONS:
+        used |= {n for n in _nums(request) if n > MAX_CAPTIONS}   # "30 captions" → 20 is the prompt's rule
+    missed = sorted(n for n in _nums(request) - {0.0}
+                    if not any(abs(n - u) <= max(0.02, 0.03 * n) for u in used))
+    if missed:
+        shown = ", ".join(_fmt_num(n) for n in missed[:3])
+        out.append(f"{CHECK_PREFIX} I didn't use {shown} from your request — make sure the form matches.")
+    return out
 
 
 def _dedupe(xs: list[str]) -> list[str]:
@@ -562,6 +659,84 @@ def summary(slots: dict[str, Any], names: dict[str, str]) -> str:
     if slots["unsend_after_hours"]:
         parts.append(f'deleted after {_fmt_num(slots["unsend_after_hours"])} h')
     return "; ".join(parts) + ". It's saved switched off — you turn it on."
+
+
+# ── The model's reply → a draft (pure) ────────────────────────────────
+
+_FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S | re.I)
+
+
+def _balanced_objects(text: str) -> Iterable[str]:
+    """Every top-level balanced {...} in `text`, in order, string-aware."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            c = text[i]
+            if in_str:
+                esc, in_str = (False, in_str) if esc else (c == "\\", c != '"')
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:i + 1]
+                    break
+        start = text.find("{", start + 1)
+
+
+def parse_json_object(text: str) -> Any:
+    """The model's JSON: the whole reply, else a ```json fence's body, else the
+    first balanced {...} that parses (Claude, with no JSON mode, may wrap it in
+    a fence or a sentence). ValueError when there is none."""
+    s = (text or "").strip()
+    try:
+        return json.loads(s)
+    except ValueError:
+        pass
+    for chunk in [m.group(1) for m in _FENCED.finditer(s)] + [s]:
+        try:
+            return json.loads(chunk.strip())
+        except ValueError:
+            pass
+        for obj in _balanced_objects(chunk):
+            try:
+                return json.loads(obj)
+            except ValueError:
+                continue
+    raise ValueError("no JSON object in the reply")
+
+
+def response_format_for(model: str) -> dict | None:
+    """JSON mode only where the provider takes it (Claude 400s on it). An
+    unknown id keeps it: llm_client refuses that model before any call."""
+    mdl = MODELS.get(model)
+    return None if mdl is not None and not mdl.json_object_ok else {"type": "json_object"}
+
+
+@dataclass
+class Outcome:
+    """One reply, interpreted: what the asker reads, and the draft if any."""
+    answer: str
+    error: str | None = None
+    flow: str | None = None
+    draft: Draft | None = None
+
+
+def interpret(text: str, *, request: str, lists: list[dict] | None,
+              folders: list[FolderStat], existing: list[str], refine: bool = False) -> Outcome:
+    """Parse → validate → resolve. Pure; the route and the eval seam share it."""
+    try:
+        intent = Intent.model_validate(parse_json_object(text))
+    except (ValueError, ValidationError):          # JSONDecodeError is a ValueError
+        return Outcome(BAD_DRAFT_ANSWER, error="bad_draft")
+    if intent.flow not in FLOWS:
+        return Outcome(UNSUPPORTED_ANSWER)
+    d = resolve(intent, request=request, lists=lists, folders=folders, existing_names=existing,
+                refine=refine)
+    return Outcome(summary(d.slots, d.names), flow=FLOW, draft=d)
 
 
 # ── Account reads (before the call) ───────────────────────────────────
@@ -607,6 +782,32 @@ async def _existing_names(account_id: str) -> list[str]:
         return []
 
 
+# The keys the refine few-shot shows; `captions_ai` & co. only confused the
+# model into padding captions (eval 2026-11-11: refine 49% exact, all count).
+PREVIOUS_KEYS = ("name", "interval", "captions", "folder", "online_only", "includes", "excludes",
+                 "unsend_after_hours", "exclude_last_chat_hours")
+
+
+def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
+    """A prior response's slots as the MODEL reads them: list ids → names
+    (the names ACCOUNT LISTS shows and the request resolves against; "fans" /
+    "following" stay), folder → {"name"}, as the few-shot shows. An id with no
+    list keeps its id, so resolution reports it as unresolved, never drops it."""
+    by_id = {str(lst.get("id")): str(lst.get("name") or "") for lst in (lists or [])
+             if lst.get("id") is not None}
+    out = {k: previous[k] for k in PREVIOUS_KEYS if k in previous}
+    if isinstance(out.get("captions"), list):
+        out["caption_count"] = len(out["captions"])
+    for key in ("includes", "excludes"):
+        if isinstance(out.get(key), list):
+            out[key] = [i if str(i) in SYSTEM_IDS else (by_id.get(str(i)) or str(i))
+                        for i in out[key]]
+    folder = out.get("folder")
+    if isinstance(folder, dict):
+        out["folder"] = {"name": folder.get("name")}
+    return out
+
+
 def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderStat],
                existing: list[str], previous: dict | None) -> str:
     """Everything per-request — the cached system prompt never sees it."""
@@ -617,7 +818,8 @@ def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderSt
     parts.append("VAULT FOLDERS: " + (", ".join(fl) or "(none)"))
     parts.append("EXISTING AUTO MASS RULES: " + (", ".join(sorted(existing)[:100]) or "(none)"))
     if previous:
-        parts.append("PREVIOUS DRAFT: " + json.dumps(previous, ensure_ascii=False, sort_keys=True))
+        parts.append("PREVIOUS DRAFT: " + json.dumps(previous_for_prompt(previous, lists),
+                                                     ensure_ascii=False, sort_keys=True))
     parts.append(f"<request>\n{request}\n</request>")
     return "\n\n".join(parts)
 
@@ -662,12 +864,19 @@ class DraftBody(BaseModel):
         return v
 
 
-def _out(body: DraftBody, *, row_id: int | None, answer: str, error: str | None,
+def _out(account_id: str | None, *, row_id: int | None, answer: str, error: str | None,
          flow: str | None = None, summary_: str = "", slots: dict | None = None,
          assumptions: list[str] | None = None, unresolved: list[str] | None = None) -> dict[str, Any]:
-    return {"id": row_id, "flow": flow, "account_id": body.account_id, "summary": summary_,
+    return {"id": row_id, "flow": flow, "account_id": account_id, "summary": summary_,
             "slots": slots, "assumptions": assumptions or [], "unresolved": unresolved or [],
             "answer": answer, "error": error}
+
+
+def _out_of(account_id: str | None, row_id: int | None, o: Outcome) -> dict[str, Any]:
+    d = o.draft
+    return _out(account_id, row_id=row_id, answer=o.answer, error=o.error, flow=o.flow,
+                summary_=o.answer if d else "", slots=d.slots if d else None,
+                assumptions=d.assumptions if d else None, unresolved=d.unresolved if d else None)
 
 
 @router.post("/admin/assistant/draft")
@@ -676,7 +885,8 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)          # /ask's gate (401 / 403)
     request = body.request.strip()
     if not request:                                # no model call, no turn row
-        return _out(body, row_id=None, answer="Tell me what to set up.", error="empty_request")
+        return _out(body.account_id, row_id=None, answer="Tell me what to set up.",
+                    error="empty_request")
     role = assistant_api._asker_role()
     thread_id = body.thread_id or assistant_api._new_thread_id()
 
@@ -687,7 +897,8 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
 
     if not await can_do(body.account_id):
         reply = assistant_api.Reply(NOT_ALLOWED_ANSWER, model="", provider="", error="not_allowed")
-        return _out(body, row_id=await record(reply), answer=reply.answer, error=reply.error)
+        return _out(body.account_id, row_id=await record(reply), answer=reply.answer,
+                    error=reply.error)
 
     lists, folders, existing = await asyncio.gather(
         _read_lists(body.account_id), _read_folders(body.account_id),
@@ -697,26 +908,80 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
         model, user_block(request, lists=lists, folders=folders, existing=existing,
                           previous=body.previous),
         account_id=body.account_id, fallback=fallback, purpose=PURPOSE,
-        system=system_prompt(), response_format={"type": "json_object"})
+        system=system_prompt(), response_format=response_format_for(model))
     if reply.error is not None:
-        return _out(body, row_id=await record(reply), answer=reply.answer, error=reply.error)
+        return _out(body.account_id, row_id=await record(reply), answer=reply.answer,
+                    error=reply.error)
 
-    try:
-        intent = Intent.model_validate(json.loads(reply.answer))
-    except (ValueError, ValidationError):          # JSONDecodeError is a ValueError
+    o = interpret(reply.answer, request=request, lists=lists, folders=folders, existing=existing,
+                          refine=bool(body.previous))
+    if o.error == "bad_draft":   # one retry on the same model (Fable round 3: never a bigger model on null)
         log.warning("assistant_draft: unparseable draft from %s: %.300s", reply.model, reply.answer)
-        reply = replace(reply, answer=BAD_DRAFT_ANSWER, error="bad_draft")
-        return _out(body, row_id=await record(reply), answer=reply.answer, error=reply.error)
+        again = await assistant_api._complete(
+            model, user_block(request, lists=lists, folders=folders, existing=existing,
+                              previous=body.previous),
+            account_id=body.account_id, fallback=fallback, purpose=PURPOSE,
+            system=system_prompt(), response_format=response_format_for(model))
+        if again.error is None:
+            reply = again
+            o = interpret(reply.answer, request=request, lists=lists, folders=folders, existing=existing,
+                          refine=bool(body.previous))
+    reply = replace(reply, answer=o.answer, error=o.error)
+    return _out_of(body.account_id, await record(reply), o)
 
-    if intent.flow not in FLOWS:
-        reply = replace(reply, answer=UNSUPPORTED_ANSWER)
-        return _out(body, row_id=await record(reply), answer=reply.answer, error=None)
 
-    d = resolve(intent, request=request, lists=lists, folders=folders, existing_names=existing)
-    text = summary(d.slots, d.names)
-    reply = replace(reply, answer=text)
-    return _out(body, row_id=await record(reply), answer=text, error=None, flow=FLOW,
-                summary_=text, slots=d.slots, assumptions=d.assumptions, unresolved=d.unresolved)
+@dataclass(frozen=True)
+class EvalContext:
+    """The account reads `draft` makes, held in memory for `draft_for_eval`.
+    `lists`: OF lists as `/lists` returns them ([{"id": 501, "name": "VIP"}],
+    None = the read failed); `folders`: FolderStat with per-tier photo counts;
+    `existing_names`: the account's Auto mass rule names."""
+    lists: list[dict] | None = None
+    folders: tuple[FolderStat, ...] | list[FolderStat] = ()
+    existing_names: tuple[str, ...] | list[str] = ()
+
+
+def _usage(model: str, result: Any | None) -> dict[str, Any]:
+    mc = int(getattr(result, "cost_cents", 0) or 0)      # LLMResult.cost_cents is MILLICENTS
+    return {"model": getattr(result, "model", None) or model,
+            "tokens_in": int(getattr(result, "tokens_in", 0) or 0),
+            "tokens_cached": int(getattr(result, "cache_hit_tokens", 0) or 0),
+            "tokens_cache_write": int(getattr(result, "cache_write_tokens", 0) or 0),
+            "tokens_out": int(getattr(result, "tokens_out", 0) or 0),
+            "cost_cents": mc / 100, "cost_millicents": mc}
+
+
+async def draft_for_eval(request: str, ctx: EvalContext, model: str,
+                         previous: dict | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The draft on `model` against an in-memory account — see the module
+    header's EVAL SEAM. One real completion (paid), no DB reads besides
+    llm_client's own cap/audit rows. Errors come back as the route's: `error`
+    "cap" | "config" | "provider" | "empty_answer" | "bad_draft"."""
+    request = request.strip()
+    lists, folders, existing = ctx.lists, list(ctx.folders), list(ctx.existing_names)
+    rf = response_format_for(model)
+    result = None
+    try:
+        result = await llm_client.chat(
+            model=model, purpose=PURPOSE, account_id=None, temperature=0.3,
+            messages=[{"role": "system", "content": system_prompt()},
+                      {"role": "user", "content": user_block(
+                          request, lists=lists, folders=folders, existing=existing,
+                          previous=previous)}],
+            **({"response_format": rf} if rf else {}))
+    except LLMCapExceeded as e:
+        o = Outcome(str(e), error="cap")
+    except LLMConfigError as e:                     # LLMKeyError (also an HTTP error) included
+        o = Outcome(str(e), error="config")
+    except LLMHTTPError as e:
+        o = Outcome(str(e), error="provider")
+    else:
+        if not (result.content or "").strip():
+            o = Outcome("The AI came back empty — try asking again.", error="empty_answer")
+        else:
+            o = interpret(result.content, request=request, lists=lists, folders=folders,
+                          existing=existing, refine=bool(previous))
+    return _out_of(None, None, o), _usage(model, result)
 
 
 @router.get("/admin/assistant/do-caps")

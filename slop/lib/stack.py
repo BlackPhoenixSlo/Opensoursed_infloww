@@ -180,6 +180,8 @@ class Stack:
                 # two names only; nothing else changes.
                 env.update(DEMO_SHOTS_ALLOW_HOSTS="api.typesafe.ai,api.deepseek.com", SLOP_LIVE="1",
                            DEEPSEEK_API_KEY=os.environ.get("DEEPSEEK_API_KEY", ""),
+                           # the help bot's company-key fallback (llm_providers._FALLBACK_KEY_ENVS)
+                           HELP_ASSISTANT_DEEPSEEK_KEY=os.environ.get("DEEPSEEK_API_KEY", ""),
                            TYPESAFE_API_KEY=os.environ.get("TYPESAFE_API_KEY", ""))
                 env.pop("TYPESAFE_BASE_URL", None)
             env.update(self.relay_env.get(i, {}))

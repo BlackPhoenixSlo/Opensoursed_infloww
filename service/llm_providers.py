@@ -107,8 +107,16 @@ def _api_key(env_name: str) -> str:
 # calls; widening THAT to every keyless agency would bill us for their sending
 # too. A separate id can be set, rotated or emptied on its own, and an empty
 # value simply restores the old fail-closed behaviour.
+#
+# `help_assistant_do` (the help bot's "Do it for me" form-fill draft,
+# assistant_draft.py) shares the DeepSeek row's credential: owner call
+# 2026-11-11 — a draft is one small cached call, it saves a rule switched OFF
+# and sends no fan anything, so it is paid like the Q&A it grew out of. Same
+# bound too: the account's daily cost cap (`llm_client._reserve`). No
+# Anthropic row: a Claude pin for the draft bills the agency's own key.
 _FALLBACK_KEY_ENVS: dict[tuple[str, str], str] = {
     ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+    ("help_assistant_do", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
     # Set → the help bot runs Claude Opus by default (`_model_pick`).
     ("help_assistant", "anthropic"): "HELP_ASSISTANT_ANTHROPIC_KEY",
 }
