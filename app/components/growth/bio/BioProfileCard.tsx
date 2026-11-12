@@ -1,17 +1,21 @@
 "use client";
 
 /**
- * The bio editor's Profile card: the avatar (uploads on pick; Remove), display name, the address (read-only), bio,
- * default Mode, the Verified badge and the Creator, under one Save. State: `bioProfileForm.ts`, held by BioEditor (the
- * preview draws the draft); this card only dispatches.
+ * The bio editor's Profile card: the avatar (uploads on pick, or a photo from the saved Creator's vault; Remove),
+ * display name, the address (read-only), bio, default Mode, the Verified badge and the Creator, under one Save. State:
+ * `bioProfileForm.ts`, held by BioEditor (the preview draws the draft); this card only dispatches (the vault
+ * picker's open flag is its one local boolean).
  */
-import { useId, useRef, type Dispatch } from "react";
+import { useId, useRef, useState, type Dispatch } from "react";
 
 import {
   IfButton, IfCard, IfCreatorSelect, IfHelp, IfInput, IfLabel, IfNativeSelect, IfSwitch, IfTextArea, SaveRow,
 } from "@/components/ui/infloww";
 import { useAccounts } from "@/hooks/useAccounts";
-import { BIO_MODES, bioFailure, useBioAvatar, usePatchBioPage, type BioMode, type BioPage } from "@/hooks/useBioPages";
+import { VaultPicker } from "@/components/chat/VaultPicker";
+import {
+  BIO_MODES, bioFailure, useBioAvatar, useBioAvatarFromVault, usePatchBioPage, type BioMode, type BioPage,
+} from "@/hooks/useBioPages";
 import { IMAGE_ACCEPT, MAX_DISPLAY_NAME, MAX_BIO, chars } from "@/components/growth/bio/bioRules";
 import {
   buildProfilePatch, canSubmit, isDirty, type Action, type BioProfileForm,
@@ -28,7 +32,14 @@ export function BioProfileCard({ page, form, dispatch }: {
   const accounts = useAccounts().data?.accounts ?? [];
   const patch = usePatchBioPage(pid);
   const avatar = useBioAvatar(pid);
+  const fromVault = useBioAvatarFromVault(pid);
+  const [vaultOpen, setVaultOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // The saved Creator: the relay reads the vault of the page's stored account, not the unsaved draft's.
+  const vaultAccount = page.profile.account_id || null;
+  const avatarBusy = avatar.isPending || fromVault.isPending;
+  const avatarError = avatar.error ? bioFailure(avatar.error, "Upload failed").msg
+    : fromVault.error ? bioFailure(fromVault.error, "Vault pick failed").msg : null;
   const d = form.draft;
   const dirty = isDirty(form);
 
@@ -55,17 +66,35 @@ export function BioProfileCard({ page, form, dispatch }: {
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = "";
-                if (file) avatar.mutate(file);
+                if (file) {
+                  fromVault.reset();
+                  avatar.mutate(file);
+                }
               }} />
-            <IfButton onClick={() => fileRef.current?.click()} disabled={avatar.isPending}>
-              {avatar.isPending ? "Uploading…" : page.profile.avatar ? "Change avatar" : "Upload avatar"}
+            <IfButton onClick={() => fileRef.current?.click()} disabled={avatarBusy}>
+              {avatarBusy ? "Uploading…" : page.profile.avatar ? "Change avatar" : "Upload avatar"}
             </IfButton>
+            {vaultAccount && (
+              <IfButton onClick={() => setVaultOpen(true)} disabled={avatarBusy}>Pick from vault</IfButton>
+            )}
             {page.profile.avatar && (
-              <IfButton variant="link" onClick={() => avatar.mutate(null)} disabled={avatar.isPending}>Remove</IfButton>
+              <IfButton variant="link" onClick={() => { fromVault.reset(); avatar.mutate(null); }} disabled={avatarBusy}>Remove</IfButton>
             )}
           </div>
-          {avatar.error && <p role="alert" className="w-full text-[12px] text-err">{bioFailure(avatar.error, "Upload failed").msg}</p>}
+          {avatarError && <p role="alert" className="w-full text-[12px] text-err">{avatarError}</p>}
         </div>
+        {vaultAccount && vaultOpen && (
+          <VaultPicker open onClose={() => setVaultOpen(false)} accountId={vaultAccount} fanId={null}
+            initialSelectedIds={[]}
+            onConfirm={(picked) => {
+              setVaultOpen(false);
+              // One avatar: the first photo picked (a lone video goes through, for the relay's "photo" refusal).
+              const m = picked.find((p) => p.type === "photo") ?? picked[0];
+              if (!m) return;
+              avatar.reset();
+              fromVault.mutate({ id: m.id, type: m.type });
+            }} />
+        )}
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="min-w-0">

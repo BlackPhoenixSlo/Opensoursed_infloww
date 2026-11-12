@@ -374,6 +374,46 @@ h1 {
     cursor: pointer;
 }
 
+/* Bot Check: Cloudflare's Turnstile widget, over every overlay, only while a gated Link's Reveal waits on it. */
+.ts-box {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 10000;
+}
+
+.overlay-content .reveal-error {
+    color: #ff6b6b;
+    margin: 14px 0 0;
+}
+
+.reveal-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 10001;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: #222;
+    color: #fff;
+    font-size: 0.9rem;
+}
+
+.reveal-toast button {
+    background: #fff;
+    color: #000;
+    border: none;
+    border-radius: 16px;
+    padding: 6px 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
 .hidden {
     display: none;
     /* fallback */

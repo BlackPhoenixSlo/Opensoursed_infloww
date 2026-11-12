@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { blankRow, rowReducer } from "@/components/compose/premadeRows";
 import { initRuleEditor, ruleEditorReducer, buildBody, derive } from "@/components/automations/ruleEditorForm";
-import { DO_FLOWS, flowForHref, folderLine, typingFrames, type AgentStep, type MassPremadeSlots } from "./doFlows";
+import { autoStoriesReducer, buildPayload as storyPayload, buildTrigger as storyTrigger, DEFAULT_FORM as STORY_BLANK }
+  from "@/components/settings/autoStoriesForm";
+import {
+  boundFlow, DO_FLOWS, flowForHref, folderLine, typingFrames, type AgentStep, type AutoStorySlots, type MassPremadeSlots,
+} from "./doFlows";
 
 const flow = DO_FLOWS.mass_premade;
 
@@ -185,6 +189,8 @@ describe("flowForHref", () => {
     ["/growth/auto-mass", "mass_premade"],
     ["/growth/auto-mass?creator=1", "mass_premade"],
     ["/growth/auto-mass#steps=New", "mass_premade"],
+    ["/growth/auto-story", "auto_story"],
+    ["/growth/auto-story?creator=1", "auto_story"],
     ["/growth/auto-post", null],
     ["/growth/auto-massive", null],
   ])("%s → %s", (href, id) => expect(flowForHref(href)).toBe(id));
@@ -222,5 +228,67 @@ describe("plan lines", () => {
     [{ sfw: 0, suggestive: 0, explicit: 0, hardcore: 0, unknown: 5 }, 5, "F — 0/5 flagged · 0 explicit · 5 unknown — not flagged yet"],
   ])("folder verdict %#", (tiers, photos, line) => {
     expect(folderLine({ id: 1, name: "F", photos, tiers })).toBe(line);
+  });
+});
+
+describe("auto_story toActions", () => {
+  const story = DO_FLOWS.auto_story;
+  /** What the server sends for "auto story from Daytime, nothing else said" (the blank form's own values). */
+  const BLANK: AutoStorySlots = {
+    folder: { id: "11", name: "Daytime", photos: 8 }, mode: "clock", times: ["09:00"], every_hours: 6, per_run: 1,
+    hours_to_live: 6, max_runs: null,
+  };
+  const play = (slots: AutoStorySlots) => {
+    let f = STORY_BLANK;
+    for (const step of story.toActions(slots)) if (typeof step.action !== "string") f = autoStoriesReducer(f, step.action);
+    return f;
+  };
+
+  it.each<[string, Partial<AutoStorySlots>, string[]]>([
+    ["blank-form values make no steps but folder, OFF and Save", {}, ["story-folder", "story-enabled", "story-save"]],
+    ["no folder: the form keeps its own gap", { folder: null }, ["story-enabled", "story-save"]],
+    ["clock times", { times: ["09:00", "20:00"] }, ["story-folder", "story-time-0", "story-enabled", "story-save"]],
+    ["interval at the default 6h: mode only", { mode: "interval" }, ["story-folder", "story-mode-interval", "story-enabled", "story-save"]],
+    ["interval every 4h, 2 per run, keep, 30 runs", { mode: "interval", every_hours: 4, per_run: 2, hours_to_live: 0, max_runs: 30 },
+      ["story-folder", "story-mode-interval", "story-every", "story-per-run", "story-ttl", "story-max-runs", "story-enabled", "story-save"]],
+  ])("%s", (_name, over, targets) => {
+    expect(story.toActions({ ...BLANK, ...over }).map((s) => s.target)).toEqual(targets);
+  });
+
+  it.each<Partial<AutoStorySlots>>([{}, { mode: "interval", every_hours: 3 }, { folder: null, max_runs: 5 }])(
+    "always ends with Enabled off, right before one Save %#", (over) => {
+      const steps = story.toActions({ ...BLANK, ...over });
+      expect(steps.at(-1)!.action).toBe("save");
+      expect(steps.at(-2)).toMatchObject({ target: "story-enabled", action: { type: "set", patch: { enabled: false } } });
+      expect(steps.filter((s) => s.action === "save")).toHaveLength(1);
+    });
+
+  it("played into the page's own reducer, it saves OFF with the asked-for trigger and payload", () => {
+    const f = play({ ...BLANK, times: ["20:00", "09:00"].sort(), per_run: 2, hours_to_live: 12, max_runs: 30 });
+    expect(f.enabled).toBe(false);
+    expect(storyTrigger(f, 0)).toEqual({ daily_at: ["09:00", "20:00"], tz_offset_minutes: 0, max_runs: 30 });
+    expect(storyPayload(f)).toEqual({ folder_id: 11, per_run: 2, hours_to_live: 12, remove_vault_dupe: true });
+    const iv = play({ ...BLANK, mode: "interval", every_hours: 4, hours_to_live: 0 });
+    expect(storyTrigger(iv, 0)).toEqual({ every_seconds: 4 * 3600, max_runs: undefined });
+    expect(storyPayload(iv).hours_to_live).toBe(0);
+  });
+
+  it("plan lines in plain words", () => {
+    expect(story.planLines({ ...BLANK, times: ["09:00", "20:00"], per_run: 2, max_runs: 30 })).toEqual([
+      "Folder: Daytime (8 photos)", "Daily at 09:00, 20:00", "2 stories each time", "Each deleted after 6h",
+      "Stops after 30 runs", "Saved OFF — you turn it on",
+    ]);
+    expect(story.planLines({ ...BLANK, folder: null, mode: "interval", every_hours: 1, hours_to_live: 0 })).toEqual([
+      "Folder: pick it in the form", "Every hour", "1 story each time", "Kept up (never deleted)",
+      "Runs until you turn it off", "Saved OFF — you turn it on",
+    ]);
+  });
+
+  it("binds to the story page and rests on its switch", () => {
+    const b = boundFlow({ id: "d1", account_id: "7", flow: "auto_story", slots: BLANK } as Parameters<typeof boundFlow>[0])!;
+    expect(b.kind).toBe("auto_stories");
+    expect(b.route("7")).toBe("/growth/auto-story?creator=7");
+    expect(b.savedSwitch).toBe("Auto Story");
+    expect(b.steps[0].action).not.toBe("open");
   });
 });

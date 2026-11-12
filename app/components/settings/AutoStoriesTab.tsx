@@ -21,12 +21,17 @@
  * Save; the form is the S4S-settings blocks (Source, When to post, Stories, Vault
  * clean-up). The switch saves the moment it flips once the rule exists (a PATCH of
  * `is_enabled` alone); before that it picks whether Save creates the rule on.
+ *
+ * The form is a pure reducer (autoStoriesForm.ts); the page only dispatches. It registers on the help bot's agent
+ * bridge as the `auto_stories` editor (docs/spec/assistant-do-mode.md D13): "Do it for me" fills this form and saves a
+ * NEW rule through `agentSave`, always switched off; with a rule already here it refuses (one per account).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { Images, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 
 import { IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfSelect } from "@/components/ui/infloww";
+import { useAgentEditor, type SaveResult } from "@/components/assistant/agentBridge";
 import { EditRuleJsonModal } from "@/components/automations/EditRuleJsonModal";
 import { HeaderSwitch } from "@/components/automations/HeaderSwitch";
 import {
@@ -42,69 +47,18 @@ import {
   useUpdateRule,
   useDeleteRule,
   useRunRuleNow,
-  type AutomationRule,
 } from "@/hooks/useAutomations";
-import { boolKnob } from "@/lib/boolKnob";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
-
-type Mode = "clock" | "interval";
+import {
+  autoStoriesReducer, buildPayload, buildTrigger, DEFAULT_FORM, ruleToForm, sameForm, saveGap, type AutoStoriesAction, type FormState,
+} from "./autoStoriesForm";
 
 const TITLE = "Auto Story";
-
-interface FormState {
-  folderId: number | null;
-  mediaIds: number[];       // explicit image pool — combines with the folder
-  mode: Mode;
-  times: string[];          // ["09:00", …] for clock mode
-  everyHours: number;       // interval mode
-  perRun: number;
-  hoursToLive: number;      // 0 = keep
-  removeVaultDupe: boolean; // hide the re-uploaded vault copy (default ON)
-  maxRuns: number | null;   // null = run forever
-  enabled: boolean;
-}
-
-const DEFAULT_FORM: FormState = {
-  folderId: null,
-  mediaIds: [],
-  mode: "clock",
-  times: ["09:00"],
-  everyHours: 6,
-  perRun: 1,
-  hoursToLive: 6,
-  removeVaultDupe: true,
-  maxRuns: null,
-  enabled: true,
-};
 
 /** Minutes to add to UTC to get the user's local time (e.g. +120 for UTC+2). */
 function tzOffsetMinutes(): number {
   return -new Date().getTimezoneOffset();
-}
-
-function ruleToForm(rule: AutomationRule): FormState {
-  const t = rule.trigger ?? {};
-  const p = rule.payload ?? {};
-  const clock = Array.isArray(t.daily_at) && t.daily_at.length > 0;
-  return {
-    folderId: typeof p.folder_id === "number" ? p.folder_id : null,
-    mediaIds: Array.isArray(p.media_files)
-      ? (p.media_files as unknown[]).filter((x): x is number => typeof x === "number")
-      : [],
-    mode: clock ? "clock" : "interval",
-    times: clock ? (t.daily_at as string[]) : ["09:00"],
-    everyHours: t.every_seconds ? Math.max(1, Math.round(t.every_seconds / 3600)) : 6,
-    perRun: typeof p.per_run === "number" ? p.per_run : 1,
-    hoursToLive: typeof p.hours_to_live === "number" ? p.hours_to_live : 0,
-    // Default ON: only an explicit `false` opts a rule out. Through `boolKnob`,
-    // because `auto_stories` reads the same key through `_common.bool_knob` —
-    // and this pair used to be the one that disagreed (see the ⚠️ beside
-    // `remove_dupe` in auto_stories.py).
-    removeVaultDupe: boolKnob(p.remove_vault_dupe, true),
-    maxRuns: typeof t.max_runs === "number" ? t.max_runs : null,
-    enabled: rule.is_enabled,
-  };
 }
 
 const LEARN = (
@@ -129,14 +83,14 @@ export default function AutoStoriesTab() {
     [foldersQ.data],
   );
 
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM);
-  const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
-    setForm((f) => ({ ...f, [k]: v }));
+  const [form, dispatch] = useReducer(autoStoriesReducer, DEFAULT_FORM);
+  const set = (patch: Partial<FormState>) => dispatch({ type: "set", patch });
+  // What the form was loaded with: unsaved edits = not the same.
+  const baseline = useMemo(() => (rule ? ruleToForm(rule) : DEFAULT_FORM), [rule]);
 
   // Load the existing rule into the form whenever it (re)loads.
   useEffect(() => {
-    if (rule) setForm(ruleToForm(rule));
-    else setForm(DEFAULT_FORM);
+    dispatch({ type: "load", form: rule ? ruleToForm(rule) : DEFAULT_FORM });
   }, [rule?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createM = useCreateRule(accountId);
@@ -155,8 +109,8 @@ export default function AutoStoriesTab() {
 
   // With a rule: saves at once (is_enabled alone), flipping back if the PATCH fails. Without one: Save creates it so.
   function flip(on: boolean) {
-    set("enabled", on);
-    if (rule) switchM.mutate({ id: rule.id, is_enabled: on }, { onError: () => set("enabled", !on) });
+    set({ enabled: on });
+    if (rule) switchM.mutate({ id: rule.id, is_enabled: on }, { onError: () => set({ enabled: !on }) });
   }
 
   async function runNow() {
@@ -178,46 +132,22 @@ export default function AutoStoriesTab() {
     }
   }
 
-  function buildTrigger() {
-    const max_runs = form.maxRuns && form.maxRuns > 0 ? form.maxRuns : undefined;
-    if (form.mode === "clock") {
-      return { daily_at: form.times, tz_offset_minutes: tzOffsetMinutes(), max_runs };
-    }
-    return { every_seconds: Math.max(1, Math.round(form.everyHours)) * 3600, max_runs };
-  }
-
-  function buildPayload() {
-    const p: Record<string, unknown> = {
-      folder_id: form.folderId,
-      per_run: Math.max(1, Math.round(form.perRun)),
-      hours_to_live: Math.max(0, Math.round(form.hoursToLive)),
-      remove_vault_dupe: form.removeVaultDupe,
-    };
-    // Explicit image pool combines with the folder (backend unions them).
-    if (form.mediaIds.length) p.media_files = form.mediaIds;
-    return p;
-  }
-
   async function save() {
     setErr(null);
     if (!accountId) return;
-    if (!form.folderId && form.mediaIds.length === 0) {
-      setErr("Pick a vault folder or an image pool first."); return;
-    }
-    if (form.mode === "clock" && form.times.length === 0) {
-      setErr("Add at least one time."); return;
-    }
+    const gap = saveGap(form);
+    if (gap) { setErr(gap); return; }
     try {
       if (rule) {
         await updateM.mutateAsync({
-          id: rule.id, trigger: buildTrigger(),
-          payload: buildPayload(), is_enabled: form.enabled,
+          id: rule.id, trigger: buildTrigger(form, tzOffsetMinutes()),
+          payload: buildPayload(form), is_enabled: form.enabled,
         });
       } else {
         await createM.mutateAsync({
           account_id: accountId, kind: "auto_stories",
-          name: "Auto stories", trigger: buildTrigger(),
-          payload: buildPayload(), is_enabled: form.enabled,
+          name: "Auto stories", trigger: buildTrigger(form, tzOffsetMinutes()),
+          payload: buildPayload(form), is_enabled: form.enabled,
         });
       }
     } catch (e) {
@@ -225,11 +155,37 @@ export default function AutoStoriesTab() {
     }
   }
 
+  // The help bot's save (D13): a NEW rule only, Save's own gate, switched OFF whatever the form says.
+  async function agentSave(): Promise<SaveResult> {
+    if (!accountId) return { ok: false, reason: "No creator picked — nothing was saved." };
+    if (rule) return { ok: false, reason: "Auto Story is already set up for this creator — nothing was saved." };
+    if (busy) return { ok: false, reason: "Already saving" };
+    setErr(null);
+    const gap = saveGap(form);
+    if (gap) { setErr(gap); return { ok: false, reason: gap }; }
+    try {
+      await createM.mutateAsync({
+        account_id: accountId, kind: "auto_stories",
+        name: "Auto stories", trigger: buildTrigger(form, tzOffsetMinutes()),
+        payload: buildPayload(form), is_enabled: false,
+      });
+      return { ok: true };
+    } catch (e) {
+      const reason = (e as Error)?.message || "Save failed";
+      setErr(reason);
+      return { ok: false, reason };
+    }
+  }
+  useAgentEditor<AutoStoriesAction>("auto_stories", {
+    accountId: accountId ?? "", isNew: !rule, dispatch, agentSave,
+    ready: !!accountId && rulesQ.isSuccess && !rulesQ.isPlaceholderData, dirty: !sameForm(form, baseline),
+  });
+
   // 12px apart on phones (the header's 16px left "Auto Story" too little room).
   const actions = (
     <span className="flex items-center gap-3 sm:gap-4">
       {LEARN}
-      <HeaderSwitch label={TITLE} checked={form.enabled} loading={switchM.isPending}
+      <HeaderSwitch id="story-enabled" label={TITLE} checked={form.enabled} loading={switchM.isPending}
         disabled={busy || rulesQ.isLoading} status={rule ? undefined : "Not saved"} onChange={flip} />
       {/* The rule's less-used actions, right-aligned under the ⋯ so the menu never runs off a phone's edge. */}
       <Menu align="right" menuLabel="More actions" panelClassName="z-50 w-44" itemClassName="text-[14px] text-fg disabled:opacity-60"
@@ -242,7 +198,7 @@ export default function AutoStoriesTab() {
             title: rule ? "Edit the raw JSON payload for this rule" : "Save this automation once, then edit its raw JSON" },
           { label: "Delete", onClick: () => setDeleting(true), disabled: !rule || deleteM.isPending, danger: true },
         ]} />
-      <IfButton variant="primary" onClick={save} disabled={busy || switchM.isPending} className="min-w-[64px]">
+      <IfButton id="story-save" variant="primary" onClick={save} disabled={busy || switchM.isPending} className="min-w-[64px]">
         {createM.isPending || updateM.isPending ? "Saving…" : "Save"}
       </IfButton>
     </span>
@@ -292,7 +248,7 @@ export default function AutoStoriesTab() {
                 value={form.folderId == null ? null : String(form.folderId)}
                 placeholder="Pick a folder"
                 options={folders.map((f) => ({ value: String(f.id), label: `${f.name} (${f.photosCount} photos)` }))}
-                onChange={(v) => set("folderId", Number(v))}
+                onChange={(v) => set({ folderId: Number(v) })}
                 className="w-full sm:w-[320px]"
               />
             )}
@@ -308,7 +264,7 @@ export default function AutoStoriesTab() {
                   : "Pick images"}
               </IfButton>
               {form.mediaIds.length > 0 && (
-                <button type="button" onClick={() => set("mediaIds", [])} className="text-[14px] text-accent hover:text-accent-hover">
+                <button type="button" onClick={() => set({ mediaIds: [] })} className="text-[14px] text-accent hover:text-accent-hover">
                   Clear
                 </button>
               )}
@@ -321,25 +277,27 @@ export default function AutoStoriesTab() {
         <FormBlock title={<>When to post <span className="text-[14px] font-normal text-muted">(choose one)</span></>}>
           <div role="radiogroup" aria-label="When to post" className="space-y-4">
             <ScheduleOption
+              id="story-mode-clock"
               selected={form.mode === "clock"}
-              onSelect={() => set("mode", "clock")}
+              onSelect={() => set({ mode: "clock" })}
               title="At set times each day"
               desc="Posts once at each time below, every day."
             >
-              <TimesEditor times={form.times} onChange={(times) => set("times", times)} />
+              <TimesEditor times={form.times} dispatch={dispatch} />
             </ScheduleOption>
             <ScheduleOption
+              id="story-mode-interval"
               selected={form.mode === "interval"}
-              onSelect={() => set("mode", "interval")}
+              onSelect={() => set({ mode: "interval" })}
               title="Every few hours"
               desc="Posts on a repeating interval, starting when you save (not immediately — use Run now for that)."
             >
               <label className="flex items-center gap-2 text-[14px] text-fg">
                 <span>Every</span>
                 <IfInput
-                  type="number" min={1} className="w-20" aria-label="Every N hours"
+                  id="story-every" type="number" min={1} className="w-20" aria-label="Every N hours"
                   value={form.everyHours}
-                  onChange={(e) => set("everyHours", Number(e.target.value))}
+                  onChange={(e) => set({ everyHours: Number(e.target.value) })}
                 />
                 <span>hours</span>
               </label>
@@ -352,19 +310,19 @@ export default function AutoStoriesTab() {
             <div>
               <IfLabel htmlFor="story-per-run">Stories per run</IfLabel>
               <IfInput id="story-per-run" type="number" min={1} className="w-full"
-                value={form.perRun} onChange={(e) => set("perRun", Number(e.target.value))} />
+                value={form.perRun} onChange={(e) => set({ perRun: Number(e.target.value) })} />
             </div>
             <div>
               <IfLabel htmlFor="story-ttl">Delete after</IfLabel>
               <IfInput id="story-ttl" type="number" min={0} className="w-full"
-                value={form.hoursToLive} onChange={(e) => set("hoursToLive", Number(e.target.value))} />
+                value={form.hoursToLive} onChange={(e) => set({ hoursToLive: Number(e.target.value) })} />
               <IfHelp>hours · 0 = keep</IfHelp>
             </div>
             <div>
               <IfLabel htmlFor="story-max-runs">Total runs</IfLabel>
               <IfInput id="story-max-runs" type="number" min={1} className="w-full" placeholder="∞"
                 value={form.maxRuns ?? ""}
-                onChange={(e) => set("maxRuns", e.target.value ? Number(e.target.value) : null)} />
+                onChange={(e) => set({ maxRuns: e.target.value ? Number(e.target.value) : null })} />
               <IfHelp>blank = forever</IfHelp>
             </div>
           </div>
@@ -377,7 +335,7 @@ export default function AutoStoriesTab() {
             label="Remove the re-uploaded copy from the vault"
             hint="Every story re-uploads its photo (OnlyFans requires it), leaving a duplicate in your vault. This hides that duplicate automatically once it finishes processing — your live story is unaffected."
             checked={form.removeVaultDupe}
-            onChange={(on) => set("removeVaultDupe", on)}
+            onChange={(on) => set({ removeVaultDupe: on })}
           />
         </FormBlock>
 
@@ -406,7 +364,7 @@ export default function AutoStoriesTab() {
         fanId={null}
         initialSelectedIds={form.mediaIds}
         onConfirm={(picked) => {
-          set("mediaIds", picked.map((m) => m.id));
+          set({ mediaIds: picked.map((m) => m.id) });
           setPickerOpen(false);
         }}
       />
@@ -419,8 +377,9 @@ export default function AutoStoriesTab() {
 /** One selectable schedule mode, a radio card: 1px L1 radius 8; selected, 1px M1 on the selected-row tint (40%), its own
  *  controls (time pickers / interval input) below. Clicking anywhere on the card selects it. */
 function ScheduleOption({
-  selected, onSelect, title, desc, children,
+  id, selected, onSelect, title, desc, children,
 }: {
+  id: string;
   selected: boolean;
   onSelect: () => void;
   title: string;
@@ -429,6 +388,7 @@ function ScheduleOption({
 }) {
   return (
     <div
+      id={id}
       role="radio"
       aria-checked={selected}
       aria-label={title}
@@ -469,27 +429,24 @@ function ScheduleOption({
 }
 
 function TimesEditor({
-  times, onChange,
-}: { times: string[]; onChange: (t: string[]) => void }) {
+  times, dispatch,
+}: { times: string[]; dispatch: (a: AutoStoriesAction) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {times.map((t, i) => (
         <span key={i} className="inline-flex items-center gap-1">
           <IfInput
+            id={`story-time-${i}`}
             type="time"
             aria-label={`Time ${i + 1}`}
             value={t}
             className="w-28"
-            onChange={(e) => {
-              const next = [...times];
-              next[i] = e.target.value;
-              onChange(next);
-            }}
+            onChange={(e) => dispatch({ type: "setTime", index: i, value: e.target.value })}
           />
           <button
             type="button"
             className="inline-grid size-8 shrink-0 place-items-center text-muted hover:text-err"
-            onClick={() => onChange(times.filter((_, j) => j !== i))}
+            onClick={() => dispatch({ type: "removeTime", index: i })}
             title="Remove time"
             aria-label="Remove time"
           >
@@ -497,7 +454,7 @@ function TimesEditor({
           </button>
         </span>
       ))}
-      <IfButton icon={Plus} onClick={() => onChange([...times, "12:00"])}>Add time</IfButton>
+      <IfButton icon={Plus} onClick={() => dispatch({ type: "addTime" })}>Add time</IfButton>
     </div>
   );
 }

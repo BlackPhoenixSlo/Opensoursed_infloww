@@ -3801,7 +3801,9 @@ class BioProfile(Base):
 class BioLink(Base):
     """One link on a bio page. `link_id` is its public id (Profile JSON, Reveal); `destination` is never sent to the
     page, only Reveal's answer (with `/c<code>` appended for a tracking code). `geo` is a JSON rule (country ->
-    code, or country -> {region|default: code}, plus `default`) as text. `bot_check` is PR4's, unread before."""
+    code, or country -> {region|default: code}, plus `default`) as text. `bot_check`: Reveal needs a passing
+    Cloudflare Turnstile token while TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY are set (bio_pages.app); a new link
+    gets it on (the ORM default; rows written by SQL keep the column's 0)."""
     __tablename__ = "bio_links"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -3820,7 +3822,7 @@ class BioLink(Base):
     is_adult: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
     tracking: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
     sort_order: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"), default=0)
-    bot_check: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
+    bot_check: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=True)
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
 

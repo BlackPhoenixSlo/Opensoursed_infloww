@@ -20,6 +20,11 @@ const EDIT: DoDraft = {
   ...DRAFT, flow: "mass_edit",
   slots: { scope: "all", match: null, changes: { unsend_after_hours: 0 }, rules: [], already: 0, skipped: [] },
 };
+const STORY: DoDraft = {
+  ...DRAFT, flow: "auto_story",
+  slots: { folder: { id: 11, name: "Daytime", photos: 8 }, mode: "clock", times: ["09:00"], every_hours: 6, per_run: 1,
+    hours_to_live: 6, max_runs: null },
+};
 const RESULTS = [{ id: 1, ok: true }, { id: 2, ok: false, reason: "changed since you saw it" }];
 const play = (actions: DoAction[], from: DoRun = initialDoRun) => actions.reduce(doRunReducer, from);
 const planned: DoRun = { phase: "planned", request: "r", draft: DRAFT };
@@ -98,6 +103,9 @@ describe("draftFrom", () => {
   it("keeps a good draft as is", () => {
     expect(draftFrom(DRAFT, "x")).toEqual(DRAFT);
   });
+  it("keeps an auto_story draft", () => {
+    expect(draftFrom(STORY, "x")).toEqual(STORY);
+  });
   it("keeps a mass_edit draft, its slots read defensively", () => {
     expect(draftFrom(EDIT, "x")).toEqual(EDIT);
     expect(draftFrom({ ...EDIT, slots: { rules: "junk" } } as never, "x").slots).toEqual(
@@ -161,6 +169,11 @@ describe("planCardText", () => {
     expect(t.assumptions).toEqual(["x"]);
     expect(t.unresolved).toEqual(["list “VIP” not found"]);
     expect(t.note).toBe("Photos added to this folder later are included too.");
+  });
+  it("an auto_story draft's card", () => {
+    const t = planCardText(STORY)!;
+    expect(t.lines[0]).toBe("Folder: Daytime (8 photos)");
+    expect(t.lines.at(-1)).toBe("Saved OFF — you turn it on");
   });
   it("no card for a flow:null draft", () => {
     expect(planCardText(NULL_FLOW)).toBeNull();

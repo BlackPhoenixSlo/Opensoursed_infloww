@@ -19,6 +19,11 @@ before→after; the apply route re-applies the change spec to each FRESH row the
 session owns (version-checked), never a client payload, and never turns a rule
 on. Pure + DB pieces in assistant_edit.py.
 
+`auto_story` (spec D13): a NEW Auto Story rule (`auto_stories`, one per
+account) the browser fills on /growth/auto-story and saves switched off, like
+`mass_premade`. An account that already has one gets an answer pointing at it,
+never a draft; the Auto Story opt-in gates it after the call (`_story_gate`).
+
 ONE LLM call (`help_assistant_do`, DeepSeek flash by default —
 `_model_pick.PURPOSE_DEFAULT_MODELS`; an operator may pin another model, Claude
 Sonnet/Opus included). JSON mode (`response_format: json_object`) goes only to a
@@ -93,7 +98,7 @@ from auth import assert_account_owned
 from automations._common import resolve_model_and_fallback
 from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
-from db.models import AutomationRule, VaultItem
+from db.models import Account, AutomationRule, VaultItem
 from jsonsafe import load_json
 from llm_client import LLMCapExceeded, LLMConfigError, LLMHTTPError
 from llm_models import MODELS
@@ -107,7 +112,9 @@ router = APIRouter()
 PURPOSE = "help_assistant_do"       # grok_calls tag + model_by_purpose key
 FLOW = "mass_premade"
 EDIT_FLOW = assistant_edit.EDIT_FLOW   # bulk edit of existing Auto mass rules (spec D11)
-FLOWS = (FLOW, EDIT_FLOW)
+STORY_FLOW = "auto_story"             # a new Auto Story rule (spec D13)
+STORY_KIND = "auto_stories"           # its automation_rules kind (one per account)
+FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW)
 MAX_REQUEST_CHARS = assistant_api.MAX_QUESTION_CHARS
 MAX_PREVIOUS_CHARS = 8000            # a prior draft's slots, serialized
 MIN_INTERVAL_MIN, MAX_INTERVAL_MIN = 5, 168 * 60
@@ -129,7 +136,8 @@ TIERS = ("sfw", "suggestive", "explicit", "hardcore")   # vault_ai_brief.EXPLICI
 MASS_EXCLUDE_NOTE = "Your mass-exclude list (MASSdmEXCLUDE) is always skipped."
 NO_FLAGS_NOTE = "No folder has AI flags yet — pick one in the form."
 NO_SFW_NOTE = "No folder looks SFW from its AI flags — pick one in the form."
-UNSUPPORTED_ANSWER = ("I can only set up a new Auto mass or change settings on your Auto masses so far. "
+UNSUPPORTED_ANSWER = ("I can only set up a new Auto mass or Auto Story, or change settings on your Auto masses, "
+                      "so far. "
                       "Ask me how to do this instead and I'll show you where it lives.")
 # flow null on a request that names a mass (one-time, or an existing rule): say what would work, so the user can
 # re-ask here instead of bouncing through Q&A, whose answer links Auto mass and offers "Do it for me" again.
@@ -142,18 +150,26 @@ _MASS_WORD = re.compile(r"\b(mass|masses|broadcast|blast)\b", re.I)
 # two shapes are 6 of them, and no Auto mass case in the 1000 matches either):
 #   another feature named and no mass word in any language we see ("set up auto posting from the beach folder");
 #   an edit of an existing rule ("update my auto mass interval to 30 min") — never a refine, which edits the draft.
-_ANY_MASS = re.compile(r"mass|broadcast|blast|masiv|masov|massen|masse|massa|masa", re.I)
+_ANY_MASS = re.compile(r"\b(auto[ -]?)?(mass(es|en|e|a)?|mass[ -]?\w*messag\w*|masa|masiv\w*|masov\w*|broadcast\w*|blast\w*)\b", re.I)
 _OTHER_FEATURE = re.compile(r"\b(auto ?post\w*|posts?|posting|stor(y|ies)|welcome|hello message|thank you|"
                             r"repl(y|ies))\b", re.I)
 _EDIT_VERB = re.compile(r"^\s*(update|change|edit|delete|remove|rename|pause|stop|disable|enable|"
                         r"turn (on|off)|switch (on|off))\b", re.I)
 _EXISTING = re.compile(r"\b(my|existing|made|the [\w ]{0,20}mass)\b", re.I)
 _PER_SEND = re.compile(r"\b(each|after|every)\b", re.I)    # "delete the previous one each time" = a new rule's unsend
+# auto_story (D13): a story word in the languages we see; "my/the (auto) story" after an edit verb is the existing rule.
+_STORY_WORD = re.compile(r"\b(auto ?)?(stor(y|ies|ie|ia|ias)|histori\w*|histoire|zgodb\w*)\b", re.I)
+_STORY_EXISTING = re.compile(r"\b(my|existing|current|the)\s+(auto[ -]?)?stor(y|ies)\b", re.I)
 
 
 def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
     """A `mass_edit` draft is only vetoed for another feature named with no
-    mass word; editing an existing rule is what it is for (spec D11)."""
+    mass word; editing an existing rule is what it is for (spec D11). An
+    `auto_story` draft needs a story word and no mass word, is never an edit
+    of the existing rule, and never a refine (a refine is of an Auto mass plan)."""
+    if flow == STORY_FLOW:
+        return (refine or not _STORY_WORD.search(request) or bool(_ANY_MASS.search(request))
+                or (bool(_EDIT_VERB.search(request)) and bool(_STORY_EXISTING.search(request))))
     if refine:
         return False
     other = bool(_OTHER_FEATURE.search(request)) and not _ANY_MASS.search(request)
@@ -165,6 +181,11 @@ def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
 NOT_ALLOWED_ANSWER = ("Your role can't create Auto mass rules on this account — ask "
                       "an owner or admin to set it up.")
 BAD_DRAFT_ANSWER = "I couldn't turn that into a form — try saying it another way."
+STORY_NOT_ALLOWED_ANSWER = ("Your role can't create Auto Story rules on this account — ask "
+                            "an owner or admin to set it up.")
+# One Auto Story per account: the agent never makes a second one, nor edits the one there (D13).
+STORY_EXISTS_ANSWER = ("Auto Story is already set up for {model} — open it to edit: My Automations → Auto Story. "
+                       "I only set up a new one.")
 
 
 # ── The prompt's fixed head (byte-stable) ─────────────────────────────
@@ -179,6 +200,8 @@ The forms you can fill:
 - "mass_edit": change settings on the user's EXISTING Auto mass rules — unsend
   (delete) time, how often, online only, skipping recently chatted fans,
   price, photo count, or turning them off.
+- "auto_story" (Auto Story): a NEW schedule that posts photos from a vault
+  folder as stories, at set times each day or every few hours.
 Anything else — another automation, turning a rule on, deleting or running a
 rule, editing an existing rule's captions, folder or audience, a question, a
 one-off message — is {"flow": null, ...} with every other field empty.
@@ -189,7 +212,7 @@ with these rules, and never output anything but the JSON below.
 
 Output schema (for "mass_premade" and null every key always present):
 {
-  "flow": "mass_premade" | "mass_edit" | null,
+  "flow": "mass_premade" | "mass_edit" | "auto_story" | null,
   "name": string | null,            // short rule name, ≤40 chars, not one of EXISTING AUTO MASS RULES
   "every": {"value": number, "unit": "minutes" | "hours"} | null,   // how often; null if not said
   "delete_after": boolean,          // asked to delete / unsend each mass afterwards
@@ -220,6 +243,13 @@ For "mass_edit" the keys are "flow", "edit", "assumptions", "unresolved":
     "disable_rule": boolean}}            // true = switch the rule(s) off
   A null change = not changing it. "match": words naming which rule(s) (a
   name from EXISTING AUTO MASS RULES), null = every Auto mass rule.
+For "auto_story" the keys are "flow", "folder", "every", "times", "per_run",
+"hours_to_live", "max_runs", "assumptions", "unresolved":
+  "times": [string]                 // clock times each day, "HH:MM" 24h; [] if none said
+  "every": as above                 // how often, only when no clock time is said
+  "per_run": integer | null         // stories posted each time
+  "hours_to_live": number | null    // delete each story after N hours; 0 = keep them
+  "max_runs": integer | null        // stop after N runs; null = run forever
 
 Rules:
 - audience names: "everyone" for everyone / all fans and following; "fans" for
@@ -247,7 +277,7 @@ Rules:
   said is still "mass_premade" (every null). flow null for anything else: a
   mass the request says is one-time / right now / at a set time ("once a
   week" / "weekly" is recurring, not one-time), posts,
-  stories, auto replies, deleting existing rules, creating several rules at
+  stories (a story schedule is "auto_story"), auto replies, deleting existing rules, creating several rules at
   once. Changing settings of existing Auto mass rules is "mass_edit".
 - every: always minutes or hours. "hourly" = 1 hours; "daily" / "once a day" /
   "every morning" = 24 hours; "N times a day" = 24/N hours; "weekly" = 168
@@ -262,6 +292,11 @@ Rules:
   deleting, running now, or changing captions, folder or audience of an
   existing rule = flow null.
 - delete with no time: delete_after true, unsend_after_hours null.
+- flow "auto_story" = stories posted automatically / on a schedule / on
+  repeat ("auto story", "a story every 4 hours", "daily story at 9pm"). A
+  one-time story, turning Auto Story on, changing or deleting the existing
+  one = flow null; a mass that mentions a story is a mass. A clock time ("at
+  9pm", "at 8") goes in times; no clock time: times [] and "every" as above.
 - A "PREVIOUS DRAFT" block means the user is changing that draft: flow stays
   "mass_premade", start from it, apply only what the request changes, and
   return the whole result. Its captions go in "provided" and count stays their
@@ -289,6 +324,12 @@ JSON: {"flow": "mass_edit", "edit": {"scope": "all", "match": null, "changes": {
 
 REQUEST: pause the Morning mass
 JSON: {"flow": "mass_edit", "edit": {"scope": "this", "match": "Morning mass", "changes": {"unsend_after_hours": null, "online_only": null, "every": null, "exclude_last_chat_hours": null, "price": null, "media_count": null, "disable_rule": true}}, "assumptions": [], "unresolved": []}
+
+REQUEST: auto story from my Beach folder at 9am and 8pm, 2 stories each time, delete after 12 hours
+JSON: {"flow": "auto_story", "folder": {"want": "named", "name": "Beach"}, "every": null, "times": ["09:00", "20:00"], "per_run": 2, "hours_to_live": 12, "max_runs": null, "assumptions": [], "unresolved": []}
+
+REQUEST: post a safe story every 4 hours, keep them up, stop after 30 times
+JSON: {"flow": "auto_story", "folder": {"want": "sfw", "name": null}, "every": {"value": 4, "unit": "hours"}, "times": [], "per_run": null, "hours_to_live": 0, "max_runs": 30, "assumptions": [], "unresolved": []}
 
 REQUEST: turn on auto reply for new fans and delete my old auto mass
 JSON: {"flow": null, "name": null, "every": null, "delete_after": false, "unsend_after_hours": null, "online_only": null, "audience": {"include": [], "exclude": []}, "folder": {"want": "none", "name": null}, "captions": {"count": 0, "provided": [], "generated": []}, "keep_skip_recent": true, "assumptions": [], "unresolved": []}"""
@@ -342,6 +383,11 @@ class Intent(BaseModel):
     recent_chat_hours: float | None = Field(None, allow_inf_nan=False)
     recent_chat_limit: float | None = Field(None, allow_inf_nan=False)
     edit: assistant_edit.Edit | None = None        # flow "mass_edit" only
+    # flow "auto_story" only (`folder` and `every` are shared).
+    times: list[Any] = Field(default_factory=list)   # "HH:MM"; checked in resolve_story
+    per_run: float | None = Field(None, allow_inf_nan=False)
+    hours_to_live: float | None = Field(None, allow_inf_nan=False)
+    max_runs: float | None = Field(None, allow_inf_nan=False)
     assumptions: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
 
@@ -352,7 +398,7 @@ class Intent(BaseModel):
         if isinstance(v, dict):
             v = {k: x for k, x in v.items()
                  if not (x is None and k in ("audience", "folder", "captions", "assumptions",
-                                             "unresolved", "delete_after", "keep_skip_recent"))}
+                                             "unresolved", "delete_after", "keep_skip_recent", "times"))}
         return v
 
 
@@ -809,6 +855,128 @@ def summary(slots: dict[str, Any], names: dict[str, str]) -> str:
     return "; ".join(parts) + ". It's saved switched off — you turn it on."
 
 
+# ── auto_story: a new Auto Story rule (pure, spec D13) ────────────────
+# The form's blank defaults (AutoStoriesTab DEFAULT_FORM): the client makes no step for a slot left at one.
+STORY_TIMES_DEFAULT = ["09:00"]
+STORY_EVERY_DEFAULT_H = 6
+STORY_PER_RUN_MAX = 10            # stories per run; the form has no cap, a burst of more reads as spam
+STORY_TTL_DEFAULT_H = 6
+STORY_TTL_MAX_H = 168
+STORY_EVERY_MAX_H = 168
+STORY_MAX_TIMES = 24
+STORY_MAX_RUNS = 1000
+STORY_SLOT_KEYS = ("folder", "mode", "times", "every_hours", "per_run", "hours_to_live", "max_runs")
+NO_STORY_FOLDER_NOTE = "Which vault folder should the stories come from? Pick one in the form."
+_CLOCK = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*$", re.I)
+
+
+def _clock(raw: Any) -> str | None:
+    """'9:00' / '09:00' / '21' / '6pm' / '12am' → 'HH:MM'; anything else None."""
+    m = _CLOCK.match(str(raw)) if isinstance(raw, (str, int)) and not isinstance(raw, bool) else None
+    if not m:
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+    if ap:
+        if not 1 <= h <= 12:
+            return None
+        h = h % 12 + (12 if ap == "p" else 0)
+    return f"{h:02d}:{mi:02d}" if 0 <= h <= 23 and 0 <= mi <= 59 else None
+
+
+def resolve_story(intent: Intent, *, folders: list[FolderStat]) -> Draft:
+    """Validate + resolve one auto_story intent into the Auto Story form's
+    slots. Pure. Every key is always there; a slot at the form's default
+    leaves that field untouched on screen. Never an enabled/run-now key."""
+    assumptions: list[str] = []
+    unresolved: list[str] = []
+
+    folder = None
+    want = (intent.folder.want or "none").lower()
+    if want == "sfw":
+        f, why = pick_sfw(folders)
+        if f is None:
+            unresolved.append(why)
+        else:
+            folder = f.slot()
+            assumptions.append(f'Folder "{f.name}": {f.tiers["sfw"]}/{f.photos} photos AI-flagged SFW — likely SFW.')
+    elif want == "named" and intent.folder.name:
+        f = match_named(folders, intent.folder.name)
+        if f is None:
+            unresolved.append(f'No vault folder called "{intent.folder.name}" — pick one in the form.')
+        elif f.photos == 0:          # the form only lists folders with photos
+            unresolved.append(f'Folder "{f.name}" has no photos — Auto Story only posts photos.')
+        else:
+            folder = f.slot()
+            if _norm(f.name) != _norm(intent.folder.name):
+                assumptions.append(f'Folder "{f.name}" is the closest match to "{intent.folder.name}".')
+    else:
+        unresolved.append(NO_STORY_FOLDER_NOTE)
+
+    times = sorted({c for c in (_clock(t) for t in intent.times) if c})
+    if len(times) < len(intent.times):
+        assumptions.append("A time I couldn't read was left out.")
+    every_hours = STORY_EVERY_DEFAULT_H
+    if times:
+        mode = "clock"
+        if len(times) > STORY_MAX_TIMES:
+            times = times[:STORY_MAX_TIMES]
+            assumptions.append(f"Times capped at {STORY_MAX_TIMES} a day.")
+    elif intent.every is not None and (intent.every.value or 0) > 0:
+        mode, times = "interval", list(STORY_TIMES_DEFAULT)
+        raw = intent.every.value / (1 if (intent.every.unit or "h").lower().startswith("h") else 60)
+        every_hours = int(min(max(round(raw), 1), STORY_EVERY_MAX_H))
+        if every_hours != raw:
+            assumptions.append(f"Every {every_hours} h — Auto Story runs in whole hours (1 to {STORY_EVERY_MAX_H}).")
+    else:
+        mode, times = "clock", list(STORY_TIMES_DEFAULT)
+        assumptions.append("Once a day at 09:00 — you didn't say when.")
+
+    per_run = 1
+    if (intent.per_run or 0) > 0:
+        per_run = int(min(max(round(intent.per_run), 1), STORY_PER_RUN_MAX))
+        if per_run != intent.per_run:
+            assumptions.append(f"{per_run} stories per run (1 to {STORY_PER_RUN_MAX}).")
+
+    ttl = intent.hours_to_live
+    if ttl is None and (intent.unsend_after_hours or 0) > 0:
+        ttl = intent.unsend_after_hours            # "delete after 12h" said the mass way
+    if ttl is None or ttl < 0:
+        hours_to_live = STORY_TTL_DEFAULT_H
+        assumptions.append(f"Each story is deleted after {STORY_TTL_DEFAULT_H} h — you didn't say.")
+    else:
+        hours_to_live = int(min(round(ttl), STORY_TTL_MAX_H))
+        if ttl > 0 and hours_to_live == 0:
+            hours_to_live = 1
+        if hours_to_live != ttl:
+            assumptions.append(f"Deleted after {hours_to_live} h — whole hours, up to {STORY_TTL_MAX_H}.")
+
+    max_runs = None
+    if (intent.max_runs or 0) > 0:
+        max_runs = int(min(max(round(intent.max_runs), 1), STORY_MAX_RUNS))
+        if max_runs != intent.max_runs:
+            assumptions.append(f"Stops after {max_runs} runs (1 to {STORY_MAX_RUNS}).")
+
+    slots = {"folder": folder, "mode": mode, "times": times, "every_hours": every_hours,
+             "per_run": per_run, "hours_to_live": hours_to_live, "max_runs": max_runs}
+    assumptions += _clean_notes(intent.assumptions)
+    unresolved += _clean_notes(intent.unresolved)
+    return Draft(slots, _dedupe(assumptions), _dedupe(unresolved), {})
+
+
+def story_summary(slots: dict[str, Any]) -> str:
+    when = ("daily at " + ", ".join(slots["times"]) if slots["mode"] == "clock"
+            else f'every {slots["every_hours"]} hour{"s" if slots["every_hours"] != 1 else ""}')
+    n = slots["per_run"]
+    parts = [f'Auto Story: {n} stor{"ies" if n != 1 else "y"} {when}']
+    if slots["folder"]:
+        parts.append(f'photos from "{slots["folder"]["name"]}"')
+    ttl = slots["hours_to_live"]
+    parts.append(f"each deleted after {ttl} h" if ttl else "kept up")
+    if slots["max_runs"]:
+        parts.append(f'stops after {slots["max_runs"]} runs')
+    return "; ".join(parts) + ". It's saved switched off — you turn it on."
+
+
 # ── The model's reply → a draft (pure) ────────────────────────────────
 
 _FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S | re.I)
@@ -904,6 +1072,9 @@ def interpret(text: str, *, request: str, lists: list[dict] | None,
         intent = intent.model_copy(update={"flow": None})
     if intent.flow not in FLOWS:
         return Outcome(ONE_OFF_MASS_ANSWER if _MASS_WORD.search(request) else UNSUPPORTED_ANSWER)
+    if intent.flow == STORY_FLOW:
+        d = resolve_story(intent, folders=folders)
+        return Outcome(story_summary(d.slots), flow=STORY_FLOW, draft=d)
     d = resolve(intent, request=request, lists=lists, folders=folders, existing_names=existing,
                 refine=refine)
     return Outcome(summary(d.slots, d.names), flow=FLOW, draft=d)
@@ -1096,14 +1267,21 @@ def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderSt
 
 # ── Gate ──────────────────────────────────────────────────────────────
 
-async def can_do(account_id: str) -> bool:
-    """May this session create a `mass_premade` rule on `account_id`? The
-    check `create_rule` adds via `require_opt_in_kind` (the route-level
-    account gate is the caller's). An Agency-context refusal is a no."""
+async def _may_create(kind: str, account_id: str) -> bool:
+    """May this session create a `kind` rule on `account_id`? The check
+    `create_rule` adds via `require_opt_in_kind` (the route-level account gate
+    is the caller's). An Agency-context refusal is a no."""
     try:
-        return await opt_in_refusal((OPT_IN_KINDS[FLOW],), account_id) is None
+        return await opt_in_refusal((kind,), account_id) is None
     except HTTPException:
         return False
+
+
+async def can_do(account_id: str) -> bool:
+    """Any do-mode flow for this session: Auto mass or Auto Story. Each flow is
+    re-checked after the draft (`_mass_gate`, `_story_gate`)."""
+    return (await _may_create(OPT_IN_KINDS[FLOW], account_id)
+            or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id))
 
 
 async def has_key(account_id: str) -> bool:
@@ -1198,10 +1376,34 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
             reply = again
             o = interpret(reply.answer, request=request, lists=lists, folders=folders, existing=existing,
                           refine=bool(previous))
+    if o.flow in (FLOW, EDIT_FLOW) and not await _may_create(OPT_IN_KINDS[FLOW], body.account_id):
+        o = Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
     if o.flow == EDIT_FLOW and o.draft is not None:
         o = await _with_rules(body.account_id, o)
+    if o.flow == STORY_FLOW:
+        o = await _story_gate(body.account_id, o)
     reply = replace(reply, answer=o.answer, error=o.error)
     return _out_of(body.account_id, await record(reply), o)
+
+
+async def _story_gate(account_id: str, o: Outcome) -> Outcome:
+    """A story draft only for a caller who may create `auto_stories` here, on
+    an account with none yet (one per account; the agent never edits it)."""
+    if not await _may_create(OPT_IN_KINDS[STORY_KIND], account_id):
+        return Outcome(STORY_NOT_ALLOWED_ANSWER, error="not_allowed")
+    try:
+        async with get_session() as s:
+            exists = (await s.execute(select(AutomationRule.id).where(
+                AutomationRule.account_id == account_id,
+                AutomationRule.kind == STORY_KIND).limit(1))).first() is not None
+            nick = (await s.execute(select(Account.nickname).where(
+                Account.id == account_id))).scalar_one_or_none() if exists else None
+    except Exception:
+        log.warning("assistant_draft: story rule read failed account=%s", account_id, exc_info=True)
+        return Outcome("Couldn't read your Auto Story — try again.", error="read_failed")
+    if exists:
+        return Outcome(STORY_EXISTS_ANSWER.format(model=nick or account_id))
+    return o
 
 
 async def _with_rules(account_id: str, o: Outcome) -> Outcome:

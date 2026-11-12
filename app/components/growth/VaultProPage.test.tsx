@@ -361,7 +361,6 @@ describe("the Extras drawer's full download", () => {
     await mount();
     expect(dl()).toBeDisabled();
     expect(dl()).toHaveAttribute("title", SHARE_MODE_OFF);
-    // Not in the drawer's desk-only (`hidden md:contents`) groups.
     expect(dl().closest(".hidden")).toBeNull();
   });
 
@@ -498,11 +497,8 @@ describe("the Extras overflow", () => {
       screen.getByRole("button", { name: "Build AI folders" }),
     ];
     for (const t of tools) expect(box.contains(t)).toBe(true);
-    // The feet pack picker is offered on a phone too; the batch sweeps stay desk-only (`hidden md:contents`).
-    expect(screen.getByRole("button", { name: "Feet pack" }).closest(".hidden")).toBeNull();
-    for (const name of ["Collect all", "Duplicates", "Build AI folders"]) {
-      expect(screen.getByRole("button", { name }).closest(".hidden")).not.toBeNull();
-    }
+    // Every tool is offered on a phone too: none sits in a hidden (desk-only) group.
+    for (const t of tools) expect(t.closest(".hidden")).toBeNull();
     // The drawer's × closes it; so does Escape, and the button again.
     fireEvent.click(within(box).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();

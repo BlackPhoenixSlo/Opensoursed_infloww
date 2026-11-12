@@ -219,7 +219,7 @@ oracles, bypasses).
   all but the newest 4 videos per Creator.
 - `2026-11-10-vault-ai-folders-partial-flags` (UI): `agency_inbox` + `seed/vault_flags_partial` (`vault_ai_items`
   60 / 400 / 2,000), thumbs written into the still store. Checks: `ai_folders_plan_partial_flags`,
-  `create_enabled_partial_flags`, `ai_folders_desk_only_phone` (Build AI folders is a desk-only tool),
+  `create_enabled_partial_flags`, `ai_folders_phone_offered` (Build AI folders shows on a phone too),
   `ai_folders_created_from_ui`, `ai_folders_paid_flagged_only` (DB). Faults: `ai-folders-create-blocked-on-flags`
   (default, client; create_enabled), `ai-folders-guess-unflagged` (server; plan + paid_only). Bypasses: vault by
   SQL (no OF / LLM), "Also create on OnlyFans" switched off, collector off.

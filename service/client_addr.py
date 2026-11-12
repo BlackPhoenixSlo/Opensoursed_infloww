@@ -148,6 +148,11 @@ def client_address(request: Request) -> Addr | str:
     return edge(request)[0]
 
 
+def trusted_peer(request: Request) -> bool:
+    """The socket peer is in TRUSTED_PROXIES, so its forwarded headers may be believed."""
+    return _is_trusted_proxy(request.client.host if request.client else "unknown")
+
+
 def _proxied_hop(request: Request, peer: str) -> Addr | None:
     """The address our proxies saw: the peer, or the last X-Forwarded-For entry when the peer is trusted."""
     hop = _ip(peer)

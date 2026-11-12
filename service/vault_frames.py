@@ -109,6 +109,23 @@ def poster_frames(raw: dict) -> list[str]:
     return out
 
 
+def preview_count(raw: dict) -> int:
+    """How many preview frames OF offers for a clip (`files.preview.options`): up to 9, spread across the whole
+    clip (owner-confirmed 2026-11-12); a clip under 9 s gets about one per second. 0 = only the poster thumb."""
+    prev = (raw.get("files") or {}).get("preview") or {}
+    return sum(1 for o in (prev.get("options") or []) if isinstance(o, dict) and o.get("url"))
+
+
+PREVIEW_MIN = 3   # previews that stand in for the clip's mp4: at least this many, or any on a clip this short (s)
+
+
+def previews_enough(raw: dict, dur: float) -> bool:
+    """OF's preview set reads the clip (D58: no mp4 download, no ffmpeg): ≥ PREVIEW_MIN frames, or any on a clip
+    of ≤ PREVIEW_MIN s (whose ~1 frame per second covers all of it). One poster on a longer clip is not enough."""
+    n = preview_count(raw)
+    return n >= PREVIEW_MIN or (n >= 1 and 0 < dur <= PREVIEW_MIN)
+
+
 # ── Which url each permanent store holds ────────────────────────────
 #
 # One rule per store, written once and used for BOTH the stored payload and a
@@ -278,11 +295,13 @@ async def _poster_stills(account_id: str, media_id: int, media: dict,
     frames: list[str] = []
     transient = False
     # `pick_poster` re-derives each url from the payload — one rule, one place —
-    # so all this needs from the list is how many frames are on offer.
-    for i in range(len(poster_frames(media)[:want])):
-        still = await vault_stills.bytes_for(
-            account_id, media_id, vault_stills.poster_path(account_id, media_id, i),
-            pick_poster(i))
+    # so all this needs from the list is how many frames are on offer, `want` of them spread over the set (the
+    # clip's end included). Fetched together (D58: they ARE the clip's reading now; `bytes_for` bounds the fan-out).
+    stills = await asyncio.gather(*(
+        vault_stills.bytes_for(account_id, media_id, vault_stills.poster_path(account_id, media_id, i),
+                               pick_poster(i))
+        for i in spread(len(poster_frames(media)), want)))
+    for still in stills:
         if still.data is not None:
             frames.append(vision.img_data_url(still.data))
         elif still.reason == "gone":
@@ -320,13 +339,18 @@ async def _collect_video(account_id: str, media_id: int, raw: dict,
         # opposite retry policies and the store already knows which it was.
         return Collected([], fresh.reason)
     media = fresh.media
+    dur = float(media.get("duration") or raw.get("duration") or 0)
+    if previews_enough(media, dur):   # the frames the Jev pass already stored (`_poster_stills`): no mp4 at all
+        got = await _poster_stills(account_id, media_id, media, want, "")
+        if len(got.images) >= min(PREVIEW_MIN, want, preview_count(media)):   # too few landed: the mp4 below
+            return got
 
     warm = ""
     fresh_url = video_url(media)
     if fresh_url:
         warm = await asyncio.to_thread(
             warm_one_sync, client, fresh_url,
-            float(media.get("duration") or raw.get("duration") or 0))
+            dur)
         frames = storyboard_frames(fresh_url, want)
         if frames:
             return Collected(frames, "ok")
@@ -373,6 +397,11 @@ async def collect(account_id: str, item: VaultItem, raw: dict,
 
 # ── A video's Jev frames (D54) ──────────────────────────────────────
 #
+# D58 (owner 2026-11-12, load speed): a clip with OF's preview set (`previews_enough`: up to 9 frames spread across
+# it, ~720 px) is read off those, src "preview": no mp4 download, no ffmpeg; the describe reads the same stored frames.
+# A clip longer than env `JEV_PREVIEW_LONG_S` (default 120 s) read so is `review` long: 9 frames over minutes can miss
+# the act (live 11-12: a 221 s clip read $10 off previews, $100 off its 240p). Only a clip without previews takes the
+# mp4 ladder below.
 # Jev reads a clip off 12 frames from its 720p rendition (the bench's 400px storyboard lost $100 insertions, D53).
 # The whole 720p mp4 comes through the account's client (no range seeks: one plain GET, as `warm_one_sync`), capped:
 # above JEV_VIDEO_CAP_BYTES the 240p one (capped too) is read and the reading is marked `review` (never a free lane).
@@ -387,6 +416,18 @@ async def collect(account_id: str, item: VaultItem, raw: dict,
 JEV_VIDEO_FRAMES = storyboard._STORYBOARD_FRAMES
 JEV_VIDEO_MIN_SHORT_PX = 480   # a no-720p clip's native frames at least this on their short side: no review
 _JEV_VIDEO_CAP_DEFAULT = 50_000_000
+_JEV_PREVIEW_LONG_DEFAULT = 120.0
+
+
+def _env_preview_long_s() -> float:
+    """Env `JEV_PREVIEW_LONG_S`: a clip read off previews longer than this (s) is `review` long (unset / unparsable /
+    <= 0 → 120)."""
+    import os
+    try:
+        v = float(os.environ.get("JEV_PREVIEW_LONG_S") or 0)
+    except ValueError:
+        v = 0.0
+    return v if v > 0 else _JEV_PREVIEW_LONG_DEFAULT
 
 
 def _env_cap_bytes() -> int:
@@ -419,9 +460,12 @@ class JevFrames(NamedTuple):
     frames: list[bytes]
     reason: str              # `Collected.reason`'s vocabulary
     detail: str = ""
-    src: str = ""            # "720" | "240" | "full" | "poster"
-    review: str | None = None  # no_720 | over_cap | src_failed | few_frames | poster_only: the reading may be too low
+    src: str = ""            # "preview" | "720" | "240" | "full" | "poster"
+    review: str | None = None  # no_720 | over_cap | src_failed | few_frames | poster_only | long: may be too low
     nbytes: int = 0
+    # a source failed on the way here (download failed / raised, ffmpeg short, deadline), frames or none: the reading
+    # may be better next sweep, so `vault_jev_pass` retries it (up to its ceiling) instead of stamping this one
+    transient: bool = False
 
 
 def _download_capped(client: Any, url: str, path: Any, deadline: float) -> tuple[str, int]:
@@ -486,7 +530,9 @@ def _extract_jev(src: Any, dur: float, out: Any, scrub: Any | None, deadline: fl
 
 def _publish_scrub(tmp: Any, h: str) -> None:
     """Move a full 400px set into the storyboard store (missing frames backfilled from the nearest, as
-    `_storyboard_extract_batch` does), one atomic rename per frame."""
+    `_storyboard_extract_batch` does), one atomic rename per frame. Copied into the store first: the temp dir and
+    the store are different filesystems in the container (a bind mount), where a rename across them fails EXDEV
+    (measured on AE 2026-11-12: 6 of 8 first reads of a 720p clip failed so)."""
     import os
     import shutil
     have = [i for i in range(JEV_VIDEO_FRAMES) if (tmp / f"{i}.jpg").is_file()]
@@ -498,7 +544,9 @@ def _publish_scrub(tmp: Any, h: str) -> None:
         if i not in have:
             shutil.copyfile(tmp / f"{min(have, key=lambda j: abs(j - i))}.jpg", tmp / f"{i}.jpg")
     for i in range(JEV_VIDEO_FRAMES):
-        os.replace(tmp / f"{i}.jpg", dest / f"{i}.jpg")
+        part = dest / f".{i}.jpg.{os.getpid()}.part"
+        shutil.copyfile(tmp / f"{i}.jpg", part)
+        os.replace(part, dest / f"{i}.jpg")
 
 
 def _short_side(jpeg: bytes) -> int:
@@ -517,7 +565,8 @@ def _jev_frames_sync(client: Any, media: dict, dur: float, deadline: float) -> J
     stop `_JEV_DL_RESERVE_S` before it, ffmpeg is killed at it. A source that fails (download, decode) or lands
     fewer than `JEV_VIDEO_FRAMES` frames hands over to the next, whose reading is then `review` src_failed; with
     none whole, the source that landed the most frames is read, `review` few_frames. No frame at all: None when
-    every mp4 was over the cap, else `fetch_failed` (the caller reads the posters either way)."""
+    every mp4 was over the cap, else `fetch_failed` (the caller reads the posters either way). A reading after any
+    source failed is `transient` (`vault_jev_pass` retries it)."""
     import shutil
     import tempfile
     import time
@@ -538,6 +587,7 @@ def _jev_frames_sync(client: Any, media: dict, dur: float, deadline: float) -> J
         tmp = Path(td)
         for label, url in cands:
             if time.monotonic() > deadline - _JEV_DL_RESERVE_S:
+                fails.append(f"out of time before the {label} mp4")
                 break
             for p in ("out", "scrub"):   # the last source's frames
                 shutil.rmtree(tmp / p, ignore_errors=True)
@@ -581,10 +631,10 @@ def _jev_frames_sync(client: Any, media: dict, dur: float, deadline: float) -> J
                 review = "no_720"
             elif fails:
                 review = review or "src_failed"
-            return JevFrames(frames, "ok", src=label, review=review, nbytes=n)
+            return JevFrames(frames, "ok", src=label, review=review, nbytes=n, transient=bool(fails))
     if best is not None:
-        return JevFrames(best[0], "ok", src=best[1], review="few_frames", nbytes=best[2])
-    return JevFrames([], "fetch_failed", "; ".join(fails)[:200]) if fails else None
+        return JevFrames(best[0], "ok", src=best[1], review="few_frames", nbytes=best[2], transient=True)
+    return JevFrames([], "fetch_failed", "; ".join(fails)[:200], transient=True) if fails else None
 
 
 # A sweep's clip took its JEV_VIDEO slot before its vision slot (`lane_ahead`): `_collect_jev_video` claims that slot
@@ -637,6 +687,14 @@ async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) 
         return JevFrames([], fresh.reason)
     media = fresh.media
     dur = float(media.get("duration") or item.duration_seconds or 0)
+    if previews_enough(media, dur):   # D58: OF's spread preview frames read the clip; the mp4s only without them
+        pv = await asyncio.wait_for(_poster_stills(account_id, item.media_id, media, JEV_VIDEO_FRAMES, ""), left())
+        if len(pv.images) >= min(PREVIEW_MIN, preview_count(media)):
+            short = len(pv.images) < min(JEV_VIDEO_FRAMES, preview_count(media))   # some failed: retried
+            drop_lane()   # a sweep's mp4 slot (`lane_ahead`) this read never needed: not held through Jev's call
+            review = "long" if dur > _env_preview_long_s() else "few_frames" if short else None
+            return JevFrames([base64.b64decode(u.split(",", 1)[1]) for u in pv.images], "ok", src="preview",
+                             review=review, transient=short)
     if video_url(media):
         # a sweep's clip already holds its slot (`lane_ahead`); a lone visit waits briefly (`admission.JEV_VIDEO`)
         if not _claim_lane() and not await admission.JEV_VIDEO.enter_async(f"jev video media={item.media_id}"):
@@ -657,8 +715,9 @@ async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) 
         _poster_stills(account_id, item.media_id, media, JEV_VIDEO_FRAMES, ""), left())
     if not posters.images:   # every mp4 failed: that (retry next sweep), not the posters' reason
         return got if got is not None else JevFrames([], posters.reason, posters.detail)
+    # `got` here = every mp4 failed (not over the cap, not absent): the posters stand in for a brief failure
     return JevFrames([base64.b64decode(u.split(",", 1)[1]) for u in posters.images], "ok", src="poster",
-                     review="poster_only")
+                     review="poster_only", transient=got is not None)
 
 
 async def collect_jev_video(account_id: str, item: VaultItem) -> JevFrames:
@@ -671,7 +730,7 @@ async def collect_jev_video(account_id: str, item: VaultItem) -> JevFrames:
     except asyncio.TimeoutError:
         log.warning("collect_jev_video timed out after %ss account=%s media=%s",
                     JEV_VIDEO_TIMEOUT_S, account_id, item.media_id)
-        return JevFrames([], "fetch_failed", f"gave up reading the clip after {JEV_VIDEO_TIMEOUT_S}s")
+        return JevFrames([], "fetch_failed", f"gave up reading the clip after {JEV_VIDEO_TIMEOUT_S}s", transient=True)
     except Exception as e:  # noqa: BLE001
         log.exception("collect_jev_video failed account=%s media=%s", account_id, item.media_id)
         return JevFrames([], "fetch_failed", f"{type(e).__name__}: {e}"[:200])

@@ -12,6 +12,7 @@
  * change (onlineOnly, excludeLastChatHours, the audience).
  *
  * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
+ * `auto_story` (D13) fills the Auto Story page's own form (autoStoriesForm.ts): no "open" step — the page IS the form.
  */
 
 import type { RuleEditorAction } from "@/components/automations/ruleEditorForm";
@@ -19,11 +20,12 @@ import type { Unit } from "@/components/automations/ruleInterval";
 import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import { blankRow, type Row } from "@/components/compose/premadeRows";
 import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
-import type { Kind } from "@/components/compose/payloadRules";
+import { DEFAULT_FORM as STORY_BLANK, type AutoStoriesAction } from "@/components/settings/autoStoriesForm";
+import type { AgentKind } from "./agentBridge";
 import type { MassEditSlots } from "./massEdit";
 
 /** A flow the runner plays in a form (DO_FLOWS). */
-export type EditorFlowId = "mass_premade";
+export type EditorFlowId = "mass_premade" | "auto_story";
 export type DoFlowId = EditorFlowId | "mass_edit";
 
 export interface FolderTiers {
@@ -59,6 +61,20 @@ export interface MassPremadeSlots {
   recent_chat_limit?: number | null;
 }
 
+/** The auto_story draft's slots (the server fills every key; a key at the blank form's default makes no step). */
+export interface AutoStorySlots {
+  folder: null | { id: number | string; name: string; photos: number; tiers?: FolderTiers };
+  mode: "clock" | "interval";
+  /** "HH:MM", clock mode. */
+  times: string[];
+  every_hours: number;
+  per_run: number;
+  /** 0 = keep. */
+  hours_to_live: number;
+  /** null = forever. */
+  max_runs: number | null;
+}
+
 interface DraftBase {
   id: string;
   account_id: string;
@@ -73,33 +89,50 @@ interface DraftBase {
 /** POST /admin/assistant/draft's 200 (always 200). */
 export type DoDraft = DraftBase & (
   | { flow: "mass_premade"; slots: MassPremadeSlots | null }
+  | { flow: "auto_story"; slots: AutoStorySlots | null }
   | { flow: "mass_edit"; slots: MassEditSlots | null }
   | { flow: null; slots: null }
 );
 
 /** `reveal`: click a disclosure open (only when `aria-expanded="false"`) so the next fields show. */
-export type AgentAction = RuleEditorAction | "open" | "save" | "reveal";
+export type AgentAction<A = RuleEditorAction | AutoStoriesAction> = A | "open" | "save" | "reveal";
 
-export interface AgentStep {
+/** `A`: the form's own action type (a flow's steps only ever dispatch into its one form). */
+export interface AgentStep<A = RuleEditorAction | AutoStoriesAction> {
   /** The element id the cursor goes to. */
   target: string;
-  action: AgentAction;
+  action: AgentAction<A>;
   /** The cursor bubble's words. */
   label: string;
   /** A caption the runner may type in visibly (typingFrames). */
   typing?: boolean;
 }
 
-export interface DoFlow {
-  kind: Kind;
+export interface DoFlow<S, A> {
+  kind: AgentKind;
+  /** The page's name in the runner's messages ("The Auto Mass page didn't open in time"). */
+  title: string;
   /** The page's path: a Q&A answer linking here offers the swap. */
   routeBase: string;
   route: (accountId: string) => string;
-  toActions: (slots: MassPremadeSlots) => AgentStep[];
+  toActions: (slots: S) => AgentStep<A>[];
   /** The plan card's plain-words lines. */
-  planLines: (slots: MassPremadeSlots) => string[];
-  /** The saved rule's name as the table shows it (the done cursor rests on its Enabled switch). */
-  savedName: (slots: MassPremadeSlots) => string;
+  planLines: (slots: S) => string[];
+  /** The saved rule's on/off switch, by its aria-label: the done cursor rests on it (never clicks it). */
+  savedSwitch: (slots: S) => string;
+  /** The done card's line. */
+  doneText: string;
+}
+
+/** A draft's flow with its slots bound: what the runner and the plan card call. */
+export interface BoundFlow {
+  kind: AgentKind;
+  title: string;
+  route: (accountId: string) => string;
+  steps: AgentStep[];
+  planLines: string[];
+  savedSwitch: string;
+  doneText: string;
 }
 
 const MP = "mass_premade";
@@ -111,8 +144,8 @@ function rowPatch(patch: Partial<Row>): RuleEditorAction {
   return { type: "row", a: { type: "patch", patch } };
 }
 
-function massToActions(s: MassPremadeSlots): AgentStep[] {
-  const steps: AgentStep[] = [{ target: `rm-${MP}-new`, action: "open", label: "Opening a new Auto Mass…" }];
+function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
+  const steps: AgentStep<RuleEditorAction>[] = [{ target: `rm-${MP}-new`, action: "open", label: "Opening a new Auto Mass…" }];
   const name = s.name.trim();
   if (name) steps.push({ target: `rm-${MP}-name`, action: { type: "field", patch: { name } }, label: "Naming it…" });
   const value = Math.max(1, Math.round(s.interval.value) || 1);
@@ -166,7 +199,7 @@ function massToActions(s: MassPremadeSlots): AgentStep[] {
     steps.push({ target: `pm-${MP}-lists-panel`, action: rowPatch({ excludes: [...s.excludes] }), label: "Excluding lists…" });
   }
   // Behind "More settings": opened first; each set knob one step (the two guards keep an explicit 0 = off).
-  const more: AgentStep[] = [];
+  const more: AgentStep<RuleEditorAction>[] = [];
   for (const [key, field, id, label] of MORE) {
     const v = s[key];
     const guard = key === "exclude_replied_hours" || key === "exclude_inbound_hours";
@@ -248,16 +281,97 @@ function moreLines(s: MassPremadeSlots): string[] {
   return out;
 }
 
-export const DO_FLOWS: Record<EditorFlowId, DoFlow> = {
+const storySet = (patch: Partial<typeof STORY_BLANK>): AutoStoriesAction => ({ type: "set", patch });
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const whole = (v: number, lo: number) => Math.max(lo, Math.round(v) || 0);
+
+/** The Auto Story page's own order: folder, when to post (mode, then its times or hours), stories per run, delete
+ *  after, total runs; then Enabled OFF and Save. */
+function storyToActions(s: AutoStorySlots): AgentStep<AutoStoriesAction>[] {
+  const steps: AgentStep<AutoStoriesAction>[] = [];
+  if (s.folder) {
+    steps.push({ target: "story-folder", action: storySet({ folderId: Number(s.folder.id) }), label: `Picking folder “${s.folder.name}”…` });
+  }
+  if (s.mode === "interval") {
+    steps.push({ target: "story-mode-interval", action: storySet({ mode: "interval" }), label: "Posting every few hours…" });
+    const every = whole(s.every_hours, 1);
+    if (every !== STORY_BLANK.everyHours) {
+      steps.push({ target: "story-every", action: storySet({ everyHours: every }), label: `Every ${plural(every, "hour")}` });
+    }
+  } else if (s.times.length && !sameList(s.times, STORY_BLANK.times)) {
+    steps.push({ target: "story-time-0", action: storySet({ times: [...s.times] }), label: `Posting daily at ${s.times.join(", ")}` });
+  }
+  const perRun = whole(s.per_run, 1);
+  if (perRun !== STORY_BLANK.perRun) {
+    steps.push({ target: "story-per-run", action: storySet({ perRun }), label: `${plural(perRun, "story", "stories")} each time` });
+  }
+  const ttl = whole(s.hours_to_live, 0);
+  if (ttl !== STORY_BLANK.hoursToLive) {
+    steps.push({ target: "story-ttl", action: storySet({ hoursToLive: ttl }), label: ttl ? `Delete after ${ttl}h` : "Keeping them up" });
+  }
+  if (pos(s.max_runs)) {
+    const n = whole(s.max_runs, 1);
+    steps.push({ target: "story-max-runs", action: storySet({ maxRuns: n }), label: `Stop after ${plural(n, "run")}` });
+  }
+  // ALWAYS, last before Save: the rule is saved OFF (D2).
+  steps.push({ target: "story-enabled", action: storySet({ enabled: false }), label: "Leaving it OFF — you turn it on" });
+  steps.push({ target: "story-save", action: "save", label: "Saving…" });
+  return steps;
+}
+
+function storyPlanLines(s: AutoStorySlots): string[] {
+  const ttl = whole(s.hours_to_live, 0);
+  const every = whole(s.every_hours, 1);
+  return [
+    s.folder ? `Folder: ${s.folder.name} (${plural(s.folder.photos, "photo")})` : "Folder: pick it in the form",
+    s.mode === "interval" ? `Every ${every === 1 ? "hour" : `${every} hours`}` : `Daily at ${s.times.join(", ") || "—"}`,
+    `${plural(whole(s.per_run, 1), "story", "stories")} each time`,
+    ttl ? `Each deleted after ${ttl}h` : "Kept up (never deleted)",
+    pos(s.max_runs) ? `Stops after ${plural(whole(s.max_runs, 1), "run")}` : "Runs until you turn it off",
+    "Saved OFF — you turn it on",
+  ];
+}
+
+export const DO_FLOWS: {
+  mass_premade: DoFlow<MassPremadeSlots, RuleEditorAction>;
+  auto_story: DoFlow<AutoStorySlots, AutoStoriesAction>;
+} = {
   mass_premade: {
     kind: "mass_premade",
+    title: "Auto Mass",
     routeBase: "/growth/auto-mass",
     route: (accountId) => `/growth/auto-mass?creator=${encodeURIComponent(accountId)}`,
     toActions: massToActions,
     planLines: massPlanLines,
-    savedName: (s) => s.name.trim() || KIND_COPY.mass_premade.namePlaceholder,
+    savedSwitch: (s) => `Enabled: ${s.name.trim() || KIND_COPY.mass_premade.namePlaceholder}`,
+    doneText: "Created OFF — turn it on in the table when ready",
+  },
+  auto_story: {
+    kind: "auto_stories",
+    title: "Auto Story",
+    routeBase: "/growth/auto-story",
+    route: (accountId) => `/growth/auto-story?creator=${encodeURIComponent(accountId)}`,
+    toActions: storyToActions,
+    planLines: storyPlanLines,
+    // AutoStoriesTab's HeaderSwitch (its label is the page title).
+    savedSwitch: () => "Auto Story",
+    doneText: "Created OFF — turn it on with the Auto Story switch when ready",
   },
 };
+
+function bind<S, A extends RuleEditorAction | AutoStoriesAction>(f: DoFlow<S, A>, slots: S): BoundFlow {
+  return {
+    kind: f.kind, title: f.title, route: f.route, steps: f.toActions(slots), planLines: f.planLines(slots),
+    savedSwitch: f.savedSwitch(slots), doneText: f.doneText,
+  };
+}
+
+/** The runnable draft's flow, bound to its slots; null for a mass_edit draft (no form) or no slots. */
+export function boundFlow(d: DoDraft): BoundFlow | null {
+  if (d.flow === "mass_premade" && d.slots) return bind(DO_FLOWS.mass_premade, d.slots);
+  if (d.flow === "auto_story" && d.slots) return bind(DO_FLOWS.auto_story, d.slots);
+  return null;
+}
 
 /** The fixed note under every plan card. */
 export const PLAN_NOTE = "Photos added to this folder later are included too.";
@@ -265,7 +379,7 @@ export const PLAN_NOTE = "Photos added to this folder later are included too.";
 /** The flow whose page an answer link opens (query / hash ignored), or null. */
 export function flowForHref(href: string): EditorFlowId | null {
   const path = href.split(/[?#]/)[0].replace(/\/+$/, "");
-  for (const [id, f] of Object.entries(DO_FLOWS) as Array<[EditorFlowId, DoFlow]>) {
+  for (const [id, f] of Object.entries(DO_FLOWS) as Array<[EditorFlowId, { routeBase: string }]>) {
     if (path === f.routeBase) return id;
   }
   return null;
@@ -273,7 +387,7 @@ export function flowForHref(href: string): EditorFlowId | null {
 
 /** A typing step's visible frames: the newest caption growing in `chunks` slices (the earlier ones whole). Any other
  *  step is its own single frame. */
-export function typingFrames(step: AgentStep, chunks = 4): RuleEditorAction[] {
+export function typingFrames(step: AgentStep, chunks = 4): Array<RuleEditorAction | AutoStoriesAction> {
   const a = step.action;
   if (typeof a === "string") return [];
   if (!step.typing || a.type !== "row" || a.a.type !== "patch" || !a.a.patch.texts?.length) return [a];

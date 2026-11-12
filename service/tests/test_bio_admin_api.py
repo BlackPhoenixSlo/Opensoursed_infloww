@@ -2,7 +2,9 @@
 """Bio pages owner admin API (bio_pages/admin.py) over the real relay app: auth (401 / chatter 403 by prefix and by
 handler / impersonated writes 403), tenancy (another owner's ids 404 on every route, its rows unchanged), create and
 diff PATCH, links (order, cap, stock icons), atomic reorder, image uploads (size, format, EXIF, alpha, frame 0,
-resize, fresh names), deletes (rows, cascades, files), 30-day stats and no destination/geo in any log line.
+resize, fresh names), deletes (rows, cascades, files), 30-day stats and no destination/geo in any log line; create
+with a Creator (OnlyFans name + an "OnlyFans" link from the cached users_me), the vault avatar (photo only, owned
+page) and the request-derived public base when BIO_PUBLIC_URL is unset.
 The public side is read through bio_pages.app over ASGI on the same temp DB and files dir.
 
 Run: ./venv/bin/python service/tests/test_bio_admin_api.py   (exit 0 = green)
@@ -34,6 +36,7 @@ import httpx  # noqa: E402
 from PIL import Image  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+from bio_pages import admin as bio_admin  # noqa: E402
 from bio_pages import app as bio_app  # noqa: E402
 from bio_pages import decide  # noqa: E402
 from bio_pages import images  # noqa: E402
@@ -180,6 +183,7 @@ ROUTES = [("GET", BASE), ("POST", BASE), ("GET", f"{BASE}/stock/onlyicon.webp"),
           ("GET", f"{BASE}/files/links/{B_LID}/backgroundImage_bbbbbbbbbb.webp"),
           ("GET", f"{BASE}/{B_PID}"), ("PATCH", f"{BASE}/{B_PID}"), ("DELETE", f"{BASE}/{B_PID}"),
           ("POST", f"{BASE}/{B_PID}/avatar"), ("DELETE", f"{BASE}/{B_PID}/avatar"),
+          ("POST", f"{BASE}/{B_PID}/avatar/vault"),
           ("POST", f"{BASE}/{B_PID}/links"), ("PUT", f"{BASE}/{B_PID}/links/order"),
           ("PATCH", f"{BASE}/{B_PID}/links/{B_LID}"), ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}"),
           ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background"),
@@ -359,6 +363,7 @@ def case_create_and_patch():
     assert owner.patch(f"{BASE}/{pid}", json={"username": "x"}).status_code == 422
     # legacy value (20-digit code) survives an unrelated PATCH
     lk = add_link(owner, pid)["links"][0]
+    assert sql("SELECT bot_check FROM bio_links WHERE id = ?", lk["id"]) == [(1,)], "a new Link is bot-checked"
     sql("UPDATE bio_links SET default_tracking_code = '12345678901234567890' WHERE id = ?", lk["id"])
     r = owner.patch(f"{BASE}/{pid}/links/{lk['id']}", json={"title": "Renamed"})
     assert r.status_code == 200 and r.json()["links"][0]["default_tracking_code"] == "12345678901234567890"
@@ -534,6 +539,105 @@ def case_stats_30_days():
     assert (row["views_30d"], row["clicks_30d"]) == (sum(range(1, 31)), 60), row
     assert body["profiles"][0]["id"] == pid, "updated_at DESC"
     assert row["link_count"] == 0 and row["public_url"] == "https://ofl.test/stats_page"
+
+
+# ── create with a Creator ────────────────────────────────────────────
+
+def case_create_with_creator_fills_name_and_onlyfans_link():
+    calls: list[str] = []
+    me: dict | None = {"name": "Ava From OF", "username": "ava.of"}
+
+    async def fake_me(aid):
+        calls.append(aid)
+        return me
+    real, bio_admin._of_me = bio_admin._of_me, fake_me
+    try:
+        aid = IDS["creator_a"]
+        r = owner.post(BASE, json={"username": "ava_page", "display_name": "", "account_id": aid})
+        assert r.status_code == 201, r.text
+        page = r.json()
+        assert page["profile"]["display_name"] == "Ava From OF" and calls == [aid], (page["profile"], calls)
+        [lk] = page["links"]
+        assert (lk["title"], lk["destination"], lk["tracking"], lk["icon_stock"]) == (
+            "OnlyFans", "https://onlyfans.com/ava.of", True, "onlyicon"), lk
+        assert public_json("ava_page").status_code == 200
+        # a typed name stays; the link is still added
+        page = owner.post(BASE, json={"username": "ava_two", "display_name": " Mine ", "account_id": aid}).json()
+        assert page["profile"]["display_name"] == "Mine" and len(page["links"]) == 1
+        # no name on OF: the @username; OF unreadable: no link, and an empty name is refused
+        me = {"username": "only_user"}
+        assert create(owner, "ava_three", display_name=None, account_id=aid)["profile"]["display_name"] == "only_user"
+        me = None
+        r = owner.post(BASE, json={"username": "ava_four", "account_id": aid})
+        assert r.status_code == 422 and r.json()["detail"]["field"] == "display_name", r.text
+        assert create(owner, "ava_five", account_id=aid)["links"] == []
+        # refused before any OF read: a bad username, a foreign Creator; no Creator, no read
+        calls.clear()
+        assert owner.post(BASE, json={"username": "x", "account_id": aid}).status_code == 422
+        assert owner.post(BASE, json={"username": "ava_six", "account_id": IDS["creator_b"]}).status_code in (403, 404)
+        create(owner, "ava_seven")
+        assert calls == [], calls
+    finally:
+        bio_admin._of_me = real
+
+
+# ── vault avatar ─────────────────────────────────────────────────────
+
+def case_vault_avatar_photo_only_and_owned():
+    import vault_stills
+    vault_dir = Path(tempfile.mkdtemp(prefix="bio_vault_stills_"))
+    real_dir, vault_stills.IMAGE_DIR = vault_stills.IMAGE_DIR, vault_dir
+    try:
+        aid = IDS["creator_a"]
+        for mid, kind in ((9001, "photo"), (9002, "video"), (9003, "gif")):
+            sql("INSERT INTO vault_items(account_id, media_id, kind, tags, send_count, created_at) VALUES "
+                "(?, ?, ?, '[]', 0, '2026-11-01 00:00:00')", aid, mid, kind)
+            path = vault_stills.image_path(aid, mid)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(img("JPEG", (1200, 900)))
+        pid = create(owner, "vault_page", account_id=aid)["profile"]["id"]
+        url = f"{BASE}/{pid}/avatar/vault"
+        r = owner.post(url, json={"media_id": 9001, "type": "photo"})
+        assert r.status_code == 200, r.text
+        name = r.json()["profile"]["avatar"]
+        assert name.startswith("avatar_") and name.endswith(".webp"), name
+        assert served(r.json()["profile"]["avatar_url"]).size == (512, 384)
+        # video / gif refused, by mirror kind or by the picked type; the avatar stays
+        for body in ({"media_id": 9002}, {"media_id": 9003, "type": "photo"}, {"media_id": 9001, "type": "video"}):
+            r = owner.post(url, json=body)
+            assert r.status_code == 415 and r.json()["detail"] == "Pick a photo, not a video.", (body, r.text)
+        for bad in ({}, {"media_id": "9001"}, {"media_id": True}, {"media_id": -1}):
+            assert owner.post(url, json=bad).status_code == 422, bad
+        assert owner.get(f"{BASE}/{pid}").json()["profile"]["avatar"] == name
+        # a page with no Creator: 409; another owner's page (either way round): 404, unchanged
+        bare = create(owner, "vault_bare")["profile"]["id"]
+        assert owner.post(f"{BASE}/{bare}/avatar/vault", json={"media_id": 9001}).status_code == 409
+        before = _b_snapshot()
+        assert owner.post(f"{BASE}/{B_PID}/avatar/vault", json={"media_id": 9001}).status_code == 404
+        assert other.post(url, json={"media_id": 9001}).status_code == 404
+        assert _b_snapshot() == before and owner.get(f"{BASE}/{pid}").json()["profile"]["avatar"] == name
+    finally:
+        vault_stills.IMAGE_DIR = real_dir
+
+
+# ── public base ──────────────────────────────────────────────────────
+
+def case_public_base_from_request_when_unset():
+    pid = create(owner, "base_page")["profile"]["id"]
+    saved = os.environ.pop("BIO_PUBLIC_URL")
+    try:
+        body = owner.get(BASE, headers={"x-forwarded-host": "app.test, inner", "x-forwarded-proto": "https"}).json()
+        assert body["public_base"] == "https://app.test/p", body["public_base"]
+        row = next(p for p in body["profiles"] if p["id"] == pid)
+        assert row["public_url"] == "https://app.test/p/base_page", row
+        r = owner.get(f"{BASE}/{pid}", headers={"x-forwarded-host": "App.Test:8443", "x-forwarded-proto": "https"})
+        assert r.json()["profile"]["public_url"] == "https://app.test:8443/p/base_page", r.text
+        assert owner.get(BASE).json()["public_base"] == "http://testserver/p"
+        for bad in ({"x-forwarded-host": "evil.test/x"}, {"x-forwarded-host": "a.test", "x-forwarded-proto": "ftp"}):
+            assert owner.get(BASE, headers=bad).json()["public_base"] is None, bad
+    finally:
+        os.environ["BIO_PUBLIC_URL"] = saved
+    assert owner.get(BASE, headers={"x-forwarded-host": "app.test"}).json()["public_base"] == "https://ofl.test"
 
 
 def case_no_destination_or_geo_in_logs():

@@ -321,7 +321,7 @@ def video_blob(ds: list[dict[str, Any]], top: int, recs: list[dict[str, Any]], s
                review: str | None, nbytes: int) -> dict[str, Any]:
     """A video's `_jev`: the max frame's photo-shaped `blob` (the flags mapper and the describe facts read it
     unchanged) + `kind` video, `vv`, the max `frame`, every frame's packed answers (`frames`), the frame source
-    (`src` 720 | 240 | full | poster), `review` (why the reading may be too low: no_720 | over_cap | poster_only |
+    (`src` preview | 720 | 240 | full | poster), `review` (why the reading may be too low: no_720 | over_cap | poster_only | long |
     few_frames; `vault_ai_brief` keeps such a video out of every free lane) and the downloaded `bytes`. A review
     reading under $100 is `lane5` "review" (an unknown tier: `vault_pack_picker` never prefills it free), its own
     lane kept as `read_lane5` (`read_lane`, what the flags mapper reads); a $100 one cannot be priced too low."""

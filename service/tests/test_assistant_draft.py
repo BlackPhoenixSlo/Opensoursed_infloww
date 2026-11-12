@@ -331,15 +331,23 @@ def case_massdmexclude_is_never_stored_and_always_explained():
 
 def case_the_fewshots_parse_as_the_schema_they_teach():
     shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
-    assert len(shots) == 7, len(shots)
+    assert len(shots) == 9, len(shots)
     parsed = [Intent.model_validate(json.loads(s)) for s in shots]
     assert parsed[0].flow == "mass_premade" and len(parsed[0].captions.generated) == 10
-    assert parsed[-1].flow is None and parsed[-4].every is None   # a mass with no timing is still one
-    unsend, pause = parsed[-3], parsed[-2]                        # mass_edit: unsend off ≠ switch off
+    assert parsed[-1].flow is None and parsed[-6].every is None   # a mass with no timing is still one
+    unsend, pause = parsed[-5], parsed[-4]                        # mass_edit: unsend off ≠ switch off
     assert unsend.flow == pause.flow == "mass_edit"
     assert (unsend.edit.scope, unsend.edit.changes.unsend_after_hours, unsend.edit.changes.disable_rule) == (
         "all", 0, False)
     assert (pause.edit.scope, pause.edit.match, pause.edit.changes.disable_rule) == ("this", "Morning mass", True)
+    clock, interval = parsed[-3], parsed[-2]                      # auto_story: a clock time vs "every"
+    assert clock.flow == interval.flow == "auto_story"
+    beach = assistant_draft.resolve_story(clock, folders=[_f("Beach pics", "12", sfw=4)]).slots
+    assert (beach["mode"], beach["times"], beach["per_run"], beach["hours_to_live"]) == (
+        "clock", ["09:00", "20:00"], 2, 12), beach
+    safe = assistant_draft.resolve_story(interval, folders=[_f("Daytime", "11", sfw=4)]).slots
+    assert (safe["mode"], safe["every_hours"], safe["hours_to_live"], safe["max_runs"]) == (
+        "interval", 4, 0, 30), safe
     assert PILOT in assistant_draft._FEWSHOTS
 
 
@@ -447,9 +455,9 @@ async def case_a_caller_who_cannot_create_the_rule_gets_a_sentence_not_a_403():
     spy = _patch(_Spy(json.dumps(_pilot_intent())))
     real = assistant_draft.opt_in_refusal
 
-    async def refuse(pages, account_id):
-        assert pages == ("/growth/auto-mass",), pages
-        return "Your role does not allow Auto Mass"
+    async def refuse(pages, account_id):   # neither do-mode page: refused before any call
+        assert pages in (("/growth/auto-mass",), ("/growth/auto-story",)), pages
+        return "Your role does not allow it"
     assistant_draft.opt_in_refusal = refuse
     try:
         out = await _draft()
@@ -1045,6 +1053,147 @@ def case_create_extras_are_clamped_and_need_a_folder():
     assert any("price needs photos" in u for u in d.unresolved) and any("needs a folder" in u for u in d.unresolved)
     d = _resolve(_pilot_intent())
     assert all(d.slots[k] is None for k in assistant_draft.EXTRA_KEYS), d.slots
+
+
+
+# ── auto_story (spec D13) ─────────────────────────────────────────────
+
+def _story(**over) -> dict:
+    d = {"flow": "auto_story", "folder": {"want": "named", "name": "Daytime"}, "every": None,
+         "times": [], "per_run": None, "hours_to_live": None, "max_runs": None}
+    d.update(over)
+    return d
+
+
+def _rs(intent: dict, folders=None):
+    return assistant_draft.resolve_story(Intent.model_validate(intent), folders=list(
+        folders if folders is not None else [_f("Daytime", "11", sfw=8), _f("Empty", "19")]))
+
+
+def case_a_story_draft_needs_a_story_word_and_is_never_an_edit_or_a_mass():
+    v = lambda r, **kw: assistant_draft.vetoed(r, refine=kw.get("refine", False), flow="auto_story")  # noqa: E731
+    for req in ("auto story every 3 hours", "post a story every morning automatically", "daily story at 9pm please",
+                "historia automática cada 4 horas", "stories every 4 hours from beach pics"):
+        assert not v(req), req
+    for req in ("auto mass every 3 hours to fans saying check my new story", "auto post every 2 hours",
+                "change my auto story to every 2 hours", "delete my auto story", "turn on my auto story",
+                "show my message history"):
+        assert v(req), req
+    assert v("auto story every 3 hours", refine=True)                     # a refine is of an Auto mass plan
+    o = assistant_draft.interpret(json.dumps(_story()), request="change my auto story to every 2 hours",
+                                  lists=[], folders=[], existing=[])
+    assert (o.flow, o.answer) == (None, assistant_draft.UNSUPPORTED_ANSWER), o
+
+
+def case_story_slots_are_clamped_and_default_like_the_blank_form():
+    rows = [   # intent overrides → (mode, times, every_hours, per_run, hours_to_live, max_runs)
+        ({}, ("clock", ["09:00"], 6, 1, 6, None)),
+        ({"times": ["21:00", "9:00", "9", "25:00", "x"]}, ("clock", ["09:00", "21:00"], 6, 1, 6, None)),
+        ({"times": ["6pm", "12am", "12 PM", "9:30 a.m.", "13pm"]}, ("clock", ["00:00", "09:30", "12:00", "18:00"], 6, 1, 6, None)),
+        ({"every": {"value": 3, "unit": "hours"}}, ("interval", ["09:00"], 3, 1, 6, None)),
+        ({"every": {"value": 90, "unit": "minutes"}}, ("interval", ["09:00"], 2, 1, 6, None)),
+        ({"every": {"value": 500, "unit": "hours"}}, ("interval", ["09:00"], 168, 1, 6, None)),
+        ({"times": ["08:00"], "every": {"value": 3, "unit": "hours"}}, ("clock", ["08:00"], 6, 1, 6, None)),
+        ({"per_run": 50, "hours_to_live": 0, "max_runs": 5000}, ("clock", ["09:00"], 6, 10, 0, 1000)),
+        ({"hours_to_live": 0.2, "max_runs": -3, "per_run": 0}, ("clock", ["09:00"], 6, 1, 1, None)),
+        ({"unsend_after_hours": 12}, ("clock", ["09:00"], 6, 1, 12, None)),
+        ({"hours_to_live": 900}, ("clock", ["09:00"], 6, 1, 168, None)),
+    ]
+    for over, want in rows:
+        d = _rs(_story(**over))
+        s = d.slots
+        assert tuple(s[k] for k in ("mode", "times", "every_hours", "per_run", "hours_to_live", "max_runs")) == want, (
+            over, s)
+        assert set(s) == set(assistant_draft.STORY_SLOT_KEYS), s
+        assert not any(re.search(r"(^|_)(is_)?enabled$|^dry_run$|^run_now$|^live$", k) for k in s), s
+    assert any("09:00" in a for a in _rs(_story()).assumptions)
+    assert any("deleted after 6 h" in a for a in _rs(_story()).assumptions)
+    assert not any("deleted after" in a for a in _rs(_story(hours_to_live=12)).assumptions)
+
+
+def case_a_story_folder_must_hold_photos():
+    d = _rs(_story())
+    assert d.slots["folder"]["id"] == "11" and d.unresolved == [], d
+    d = _rs(_story(folder={"want": "named", "name": "Empty"}))
+    assert d.slots["folder"] is None and any("no photos" in u for u in d.unresolved), d
+    d = _rs(_story(folder={"want": "named", "name": "Nope"}))
+    assert d.slots["folder"] is None and any('"Nope"' in u for u in d.unresolved), d
+    d = _rs(_story(folder={"want": "none", "name": None}))
+    assert d.slots["folder"] is None and d.unresolved == [assistant_draft.NO_STORY_FOLDER_NOTE], d
+    d = _rs(_story(folder={"want": "sfw", "name": None}))
+    assert d.slots["folder"]["name"] == "Daytime", d
+    s = assistant_draft.story_summary(_rs(_story(times=["09:00", "20:00"], per_run=2, max_runs=30)).slots)
+    assert s == ('Auto Story: 2 stories daily at 09:00, 20:00; photos from "Daytime"; each deleted after 6 h; '
+                 "stops after 30 runs. It's saved switched off — you turn it on."), s
+
+
+async def case_a_story_draft_is_gated_by_the_story_opt_in_and_one_rule_per_account():
+    await _seed()
+    req = "auto story from the daytime folder every 4 hours"
+    _patch(_Spy(json.dumps(_story(every={"value": 4, "unit": "hours"}))))
+    out = await _draft(req)
+    assert (out["flow"], out["error"]) == ("auto_story", None), out
+    assert out["slots"]["folder"]["id"] == "11" and out["slots"]["every_hours"] == 4, out["slots"]
+    assert out["answer"] == out["summary"] and "switched off" in out["answer"], out
+
+    real, seen = assistant_draft.opt_in_refusal, []
+
+    async def refuse_story(pages, account_id):
+        seen.append(pages)
+        return "no Auto Story" if pages == ("/growth/auto-story",) else None
+    assistant_draft.opt_in_refusal = refuse_story
+    try:
+        _patch(_Spy(json.dumps(_story(every={"value": 4, "unit": "hours"}))))
+        out = await _draft(req)
+    finally:
+        assistant_draft.opt_in_refusal = real
+    assert ("/growth/auto-story",) in seen, seen
+    assert (out["flow"], out["error"], out["answer"], out["slots"]) == (
+        None, "not_allowed", assistant_draft.STORY_NOT_ALLOWED_ANSWER, None), out
+
+    async with get_session() as ses:
+        (await ses.get(Account, AID)).nickname = "Mia"
+        ses.add(AutomationRule(account_id=AID, name="Auto stories", kind="auto_stories",
+                               trigger_json="{}", steps_json="{}", is_enabled=True))
+    try:
+        _patch(_Spy(json.dumps(_story(every={"value": 4, "unit": "hours"}))))
+        out = await _draft(req)
+    finally:
+        async with get_session() as ses:
+            for r in (await ses.execute(select(AutomationRule).where(
+                    AutomationRule.account_id == AID, AutomationRule.kind == "auto_stories"))).scalars():
+                await ses.delete(r)
+    assert (out["flow"], out["slots"], out["error"]) == (None, None, None), out
+    assert out["answer"] == ("Auto Story is already set up for Mia — open it to edit: My Automations → Auto Story. "
+                             "I only set up a new one."), out
+
+
+async def case_story_only_role_gets_story_drafts_and_mass_is_refused_after_the_call():
+    await _seed()
+    real = assistant_draft.opt_in_refusal
+
+    async def mass_refused(pages, account_id):
+        return "no Auto Mass" if pages == ("/growth/auto-mass",) else None
+    assistant_draft.opt_in_refusal = mass_refused
+    try:
+        caps = await do_caps(account_id=AID)
+        _patch(_Spy(json.dumps(_story(every={"value": 4, "unit": "hours"}))))
+        story = await _draft("auto story from the daytime folder every 4 hours")
+        _patch(_Spy(json.dumps(_pilot_intent())))
+        mass = await _draft()
+    finally:
+        assistant_draft.opt_in_refusal = real
+    assert caps["can_do"] is True, caps
+    assert (story["flow"], story["error"]) == ("auto_story", None), story
+    assert (mass["flow"], mass["error"], mass["answer"]) == (
+        None, "not_allowed", assistant_draft.NOT_ALLOWED_ANSWER), mass
+
+
+async def case_a_folder_named_like_mass_does_not_veto_a_story():
+    assert not assistant_draft.vetoed("auto story from my Massage folder every 4 hours",
+                                      refine=False, flow=assistant_draft.STORY_FLOW)
+    assert assistant_draft.vetoed("auto story and a mass message every 4 hours",
+                                  refine=False, flow=assistant_draft.STORY_FLOW)
 
 
 _harness.run()

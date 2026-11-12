@@ -14,6 +14,8 @@ import type { NextConfig } from "next";
  */
 
 const RELAY_URL = process.env.RELAY_URL || "http://127.0.0.1:8787";
+// The standalone bio app (service/bio_pages, BIO_PORT 8788), baked in at build like RELAY_URL.
+const BIO_URL = process.env.BIO_URL || "http://127.0.0.1:8788";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -176,6 +178,9 @@ const nextConfig: NextConfig = {
       // A share link's public report (Growth → Share links): the page
       // /share/<key> is Next's; only its /data read goes to the relay.
       { source: "/share/:key/data", destination: `${RELAY_URL}/share/:key/data` },
+      // Bio pages at <app host>/p/<username>, no DNS of their own: the path goes to the bio app as is, prefix
+      // and all; its BIO_PATH_PREFIX=/p cuts it and names it in every URL the page builds (bio_pages/app.py).
+      { source: "/p/:path*", destination: `${BIO_URL}/p/:path*` },
       // Desktop-app download page. Unlike everything above this is served by
       // Next itself out of `public/download.html` — it is deliberately NOT a
       // relay path, so it stays reachable with no share token and no login,

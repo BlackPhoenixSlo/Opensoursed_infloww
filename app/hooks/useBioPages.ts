@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Bio pages (Growth → Tracking links → Bio pages): the owner's link-in-bio pages over `/admin/bio-pages`
+ * Bio pages (Growth → Bio pages, /growth/bio-pages): the owner's link-in-bio pages over `/admin/bio-pages`
  * (service/bio_pages/admin.py). The list is `["bio-pages"]`, one page `["bio-pages", pid]`. Every write under a page
  * answers the whole page (`BioPage`), so each write puts that answer in the page's cache entry and marks the list
  * stale. Remounts always re-read because another tab may have changed or deleted a page.
@@ -79,6 +79,7 @@ export interface BioLink {
 /** `P`: what every read and write of one page answers. */
 export interface BioPage { profile: BioProfile; links: BioLink[] }
 
+/** With a Creator an empty `display_name` takes its OnlyFans name and the page starts with an "OnlyFans" link. */
 export type ProfileCreate = { username: string; display_name: string; account_id?: string };
 export type ProfilePatch = Partial<{ display_name: string; bio: string; mode: BioMode; verified: boolean; account_id: string | null }>;
 export type LinkBody = Partial<{
@@ -86,8 +87,8 @@ export type LinkBody = Partial<{
   tracking: boolean; default_tracking_code: string; geo: Record<string, unknown> | null;
 }>;
 
-export const bioPageHref = (pid: string) => `/growth/tracking-links/bio/${encodeURIComponent(pid)}`;
-export const BIO_LIST_HREF = "/growth/tracking-links?tab=bio";
+export const bioPageHref = (pid: string) => `/growth/bio-pages/${encodeURIComponent(pid)}`;
+export const BIO_LIST_HREF = "/growth/bio-pages";
 export const stockIconUrl = (stem: StockIcon) => `${BASE}/stock/${stem}.webp`;
 const pagePath = (pid: string) => `${BASE}/${encodeURIComponent(pid)}`;
 const linkPath = (pid: string, lid: string) => `${pagePath(pid)}/links/${encodeURIComponent(lid)}`;
@@ -164,6 +165,12 @@ export const useBioAvatar = (pid: string) =>
   usePageWrite(pid, (file: File | null) => file
     ? relay.uploadFile<BioPage>(`${pagePath(pid)}/avatar`, file)
     : relay.delete<BioPage>(`${pagePath(pid)}/avatar`));
+
+/** A photo of the page's Creator's vault as the avatar (the relay fetches and encodes it). The item's type goes along:
+ *  the relay refuses anything but a photo, so its message is the one refusal the card shows. */
+export const useBioAvatarFromVault = (pid: string) =>
+  usePageWrite(pid, (m: { id: number; type: string }) =>
+    relay.post<BioPage>(`${pagePath(pid)}/avatar/vault`, { media_id: m.id, type: m.type }));
 
 export const useCreateBioLink = (pid: string) =>
   usePageWrite(pid, (body: LinkBody) => relay.post<BioPage>(`${pagePath(pid)}/links`, body));

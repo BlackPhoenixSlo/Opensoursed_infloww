@@ -14,9 +14,10 @@
  *  - the earnings read (claimers x the ledger) fills Earnings, Fans who spent, Spending CVR, EPC, AEPS and the
  *    Dashboard's Total earnings; "Show net earnings" (on by default) switches them, one state across both tabs; a link
  *    with no figure shows "—"; Details opens the link's fans with the bundle's columns, a "Total:" row and a search;
- *  - our Redirect links tab after the capture's, carrying `EXTRA_LABEL`: the custom redirect links with the creator
- *    filter, a chatter's too (Share links and our Bio pages, `bio/BioPagesPanel.test.tsx`, are the owner's); the
- *    "OnlyFans not reachable" note shows under its condition, and the old "Confirm the link once" note is gone;
+ *  - the tabs are the capture's alone (Share links the owner's); our Redirect links is its own Growth page
+ *    (`RedirectLinksPage`, /growth/redirect-links): the custom redirect links with the creator filter (Bio pages:
+ *    `bio/BioPagesPanel.test.tsx`); the "OnlyFans not reachable" note shows under its condition, and the old "Confirm
+ *    the link once" note is gone;
  *  - "Create tracking link" opens the capture's editor pop-up (ticket 39): its labels in the capture's order, the name
  *    creating the link through the existing write for the picked Creator, and Source / Promo cost / Tag / List (the
  *    Edit dialog's fields) sent in the same request; a reply without an id says the fields were not saved;
@@ -75,6 +76,7 @@ vi.mock("@/lib/chatterAccounts", async (importOriginal) => {
 });
 
 import { TrackingLinksPage } from "@/components/growth/TrackingLinksTab";
+import { RedirectLinksPage } from "@/components/growth/RedirectLinksPanel";
 import { SmartListsPage } from "@/components/growth/SmartListsTab";
 import { relay, RelayError } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -204,6 +206,11 @@ async function mount() {
   await waitFor(() => expect(screen.getByText("Link one")).toBeTruthy());
 }
 
+/** Mount Growth → Redirect links (/growth/redirect-links); its container. */
+function mountRedirects(): HTMLElement {
+  return renderWithProviders(<RedirectLinksPage />).container;
+}
+
 /** The Links list table. */
 function table(): HTMLTableElement {
   return screen.getByRole("table", { name: "Links list" }) as HTMLTableElement;
@@ -291,27 +298,21 @@ describe("Tracking links, in the capture's order", () => {
     for (let i = 1; i < items.length; i++) expectBefore(items[i - 1].el, items[i].el);
   });
 
-  it("opens on Links list, with Share links (#11) third and our Redirect links and Bio pages after it for the owner", async () => {
+  it("opens on Links list, with Share links (#11) third for the owner; Redirect links and Bio pages are pages of their own", async () => {
     await mount();
     expect(screen.getByRole("tab", { name: "Links list" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("tab", { name: "Links list" }).getAttribute("title")).toBeNull();
-    expect(screen.getByRole("tab", { name: /^Redirect links/ }).getAttribute("title")).toBe(`${EXTRA_LABEL}: Redirect links`);
     expect(screen.getByRole("tab", { name: "Dashboard" }).getAttribute("aria-selected")).toBe("false");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent?.replace(EXTRA_LABEL, ""))).toEqual(
-      ["Links list", "Dashboard", "Share links", "Redirect links", "Bio pages"],
-    );
-    // Only ours carry the tag.
-    expect(tabs.map((t) => within(t).queryByTitle(EXTRA_LABEL) !== null)).toEqual([false, false, false, true, true]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Links list", "Dashboard", "Share links"]);
+    expect(tabs.map((t) => within(t).queryByTitle(EXTRA_LABEL) !== null)).toEqual([false, false, false]);
   });
 
-  it("gives a chatter Links list, Dashboard and Redirect links: Share links and Bio pages are the owner's", async () => {
+  it("gives a chatter Links list and Dashboard: Share links is the owner's", async () => {
     session.chatter = { chatter_id: "chatter-1", username: "helper", display_name: "Helper", color: null, owners: [] };
     renderWithProviders(<TrackingLinksPage />);
-    await waitFor(() => expect(screen.getAllByRole("tab").length).toBe(3));
-    expect(screen.getAllByRole("tab").map((t) => t.textContent?.replace(EXTRA_LABEL, ""))).toEqual(
-      ["Links list", "Dashboard", "Redirect links"],
-    );
+    await waitFor(() => expect(screen.getAllByRole("tab").length).toBe(2));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Links list", "Dashboard"]);
   });
 
   it("shows a selection column, then only the capture's columns that have data, in its order", async () => {
@@ -736,22 +737,20 @@ describe("Export", () => {
 });
 
 describe("our notes and extras", () => {
-  it("puts the redirect links in their own Redirect links tab, with the creator filter, carrying EXTRA_LABEL", async () => {
+  it("puts the redirect links on their own Redirect links page, with the creator filter; Tracking links has none", async () => {
     await mount();
     expect(screen.queryByRole("region", { name: /Custom redirect links/ })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
-    const panel = screen.getByRole("tabpanel");
-    const section = within(panel).getByRole("region", { name: /Custom redirect links/ });
-    expect(within(screen.getByRole("tab", { name: /^Redirect links/ })).getByTitle(EXTRA_LABEL)).toBeTruthy();
+    cleanup();
+    const panel = mountRedirects();
+    expect(within(panel).getByRole("heading", { level: 1, name: "Redirect links" })).toBeTruthy();
+    const section = await within(panel).findByRole("region", { name: /Custom redirect links/ });
     expectBefore(within(panel).getByRole("combobox", { name: "Creator" }), section);
     // The redirect read's link is listed without opening a second control.
     await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
   });
 
   it("shows the redirect links' summary cards and each row's 7-day sparkline from the summary read", async () => {
-    await mount();
-    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
-    const panel = screen.getByRole("tabpanel");
+    const panel = mountRedirects();
     await waitFor(() => expect(within(panel).getByRole("img", { name: "Last 7 days: 0, 0, 1, 0, 0, 0, 2" })).toBeTruthy());
     const value = (k: string) => panel.querySelector(`[data-stat="${k}"] [data-value]`)?.textContent;
     expect([value("today"), value("d7"), value("d30"), value("top")]).toEqual(["2", "3", "1,210", "Top redirect"]);
@@ -760,9 +759,7 @@ describe("our notes and extras", () => {
   });
 
   it("opens a link's analytics at 30 days, switches to 7 and 90, and hides Country when every click is XX", async () => {
-    await mount();
-    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
-    const panel = screen.getByRole("tabpanel");
+    const panel = mountRedirects();
     fireEvent.click(await within(panel).findByRole("button", { name: "Analytics" }));
     await waitFor(() => expect(within(panel).getAllByTestId("click-bar")).toHaveLength(30));
     expect(panel.querySelector("[data-stats-header]")?.textContent).toBe("3 clicks · last 30 days");
@@ -779,18 +776,14 @@ describe("our notes and extras", () => {
 
   it("shows the Country breakdown once a click carries a country", async () => {
     analyticsCountry = [{ key: "DE", clicks: 2 }, { key: "XX", clicks: 1 }];
-    await mount();
-    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
-    const panel = screen.getByRole("tabpanel");
+    const panel = mountRedirects();
     fireEvent.click(await within(panel).findByRole("button", { name: "Analytics" }));
     const country = await within(panel).findByRole("region", { name: "Country" });
     expect(within(country).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["🇩🇪 DE267%", "Unknown133%"]);
   });
 
   async function redirectSection(): Promise<HTMLElement> {
-    await mount();
-    fireEvent.click(screen.getByRole("tab", { name: /^Redirect links/ }));
-    const section = within(screen.getByRole("tabpanel")).getByRole("region", { name: /Custom redirect links/ });
+    const section = await within(mountRedirects()).findByRole("region", { name: /Custom redirect links/ });
     await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
     return section;
   }

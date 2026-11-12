@@ -45,6 +45,7 @@
             <h2>Mature Content Disclaimer</h2>
             <p>This link may contain graphic or adult content.</p>
             <a id="continueBtn" class="continue-btn" role="button">Continue (18+)</a>
+            <p id="overlayError" class="reveal-error hidden" role="alert"></p>
             <button id="closeOverlayBtn" class="close-btn" aria-label="Close"><svg class="icon icon-xmark" viewBox="0 0 320 512" aria-hidden="true"><path d="M310.6 361.4c12.5 12.5 12.5 32.75 0 45.25C304.4 412.9 296.2 416 288 416s-16.38-3.125-22.62-9.375L160 301.3L54.63 406.6C48.38 412.9 40.19 416 32 416S15.63 412.9 9.375 406.6c-12.5-12.5-12.5-32.75 0-45.25l105.4-105.4L9.375 150.6c-12.5-12.5-12.5-32.75 0-45.25s32.75-12.5 45.25 0L160 210.8l105.4-105.4c12.5-12.5 32.75-12.5 45.25 0s12.5 32.75 0 45.25l-105.4 105.4L310.6 361.4z"/></svg></button>
         </div>
     </div>
@@ -66,6 +67,13 @@
                 <li><span class="ig-step-n">2</span><span>Select <strong>Open in Browser</strong></span></li>
             </ol>
         </a>
+    </div>
+    <!-- Bot Check: script.js renders Cloudflare's Turnstile widget here for a Link the Profile JSON marks botCheck -->
+    <div id="tsBox" class="ts-box hidden"></div>
+    <!-- A failed Reveal outside the Age Gate (bot check or network): the message and Retry -->
+    <div id="revealError" class="reveal-toast hidden" role="alert">
+        <span>Couldn't open this link.</span>
+        <button id="revealRetry" type="button">Retry</button>
     </div>
 
     <script src="/script.js"></script>

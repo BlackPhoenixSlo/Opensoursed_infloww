@@ -219,12 +219,12 @@ async def _fields(aid, mid=7001) -> dict:
 
 class _Collect:
     """Fake `vault_frames.collect` (a photo's still) and `collect_jev_video` (a clip's frames: `clip`, default
-    12 copies of `data`; `review` / `src` as the frame source would report them; [] → `reason`)."""
+    12 copies of `data`; `review` / `src` / `transient` as the frame source would report them; [] → `reason`)."""
 
-    def __init__(self, data, clip=None, *, src="720", review=None, reason="fetch_failed"):
+    def __init__(self, data, clip=None, *, src="720", review=None, reason="fetch_failed", transient=False):
         self.data, self.calls, self.clip_calls = data, 0, 0
         self.clip = [data] * 12 if clip is None else clip
-        self.src, self.review, self.reason = src, review, reason
+        self.src, self.review, self.reason, self.transient = src, review, reason, transient
 
     def __enter__(self):
         self.saved = vault_frames.collect, vault_frames.collect_jev_video
@@ -236,8 +236,9 @@ class _Collect:
         async def _v(account_id, item):
             self.clip_calls += 1
             if not self.clip:
-                return vault_frames.JevFrames([], self.reason, "fake: no frames")
-            return vault_frames.JevFrames(list(self.clip), "ok", src=self.src, review=self.review, nbytes=1234)
+                return vault_frames.JevFrames([], self.reason, "fake: no frames", transient=self.transient)
+            return vault_frames.JevFrames(list(self.clip), "ok", src=self.src, review=self.review, nbytes=1234,
+                                          transient=self.transient)
         vault_frames.collect, vault_frames.collect_jev_video = _c, _v
         return self
 
@@ -438,6 +439,34 @@ async def case_no_key_refuses_before_fetch():
     assert res["status"] == "no_key" and col.calls == 0 and sm.client.calls == [], res
     assert (await _fields(aid))["_jev"]["status"] == "no_key"
     assert plan == {"ready": False, "reason": "TYPESAFE_API_KEY is not set on this server"}, plan
+
+
+async def case_refusal_logs_once_per_sweep():
+    """A refusal (`no_key`) logs ONE `vault_jev skipped status= account=` line per sweep (proxy-health
+    `vault_jev_errors` alerts on it), one per call without a sweep; every item is still stamped."""
+    import logging
+    g = _golden_with("resp")
+    aid = await _seed(mids=(7001, 7002, 7003))
+    seen: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, r):
+            seen.append(r.getMessage())
+    h = _H()
+    vault_jev_pass.log.addHandler(h)
+    try:
+        with _Seams(g["rec"], g["nn"], key=""), _Collect(_jpeg(576, 1024)):
+            sw = vault_jev_pass.Sweep()
+            for m in (7001, 7002, 7003):
+                assert (await vault_jev_pass.one(aid, m, sweep=sw))["status"] == "no_key"
+            assert seen == [f"vault_jev skipped status=no_key account={aid}"], seen
+            await vault_jev_pass.one(aid, 7001)
+            await vault_jev_pass.one(aid, 7002)
+    finally:
+        vault_jev_pass.log.removeHandler(h)
+    assert len(seen) == 3 and len(set(seen)) == 1, seen
+    for m in (7001, 7002, 7003):
+        assert (await _fields(aid, m))["_jev"]["status"] == "no_key"
 
 
 async def case_loaded_detector_takes_no_lock_or_thread():
@@ -972,6 +1001,7 @@ async def case_video_frame_source():
     with _FakeOF(media, {u720: v720, u240: v240}) as of:
         got = await vault_frames.collect_jev_video("acc_fs", item)
     assert got.reason == "ok" and got.src == "720" and got.review is None and got.nbytes == len(v720), got[1:]
+    assert not got.transient
     assert len(got.frames) == 12 and {tuple(_size(f)) for f in got.frames} == {(160, 96)} and of.gets == [u720]
     assert storyboard._storyboard_all_frames_present(h)
     assert _size(storyboard._storyboard_frame_path(h, 0).read_bytes()) == [400, 240]
@@ -994,22 +1024,26 @@ async def case_video_frame_source():
         with _FakeOF(media, {u720: v720, u240: v240}, posters=9):
             got = await vault_frames.collect_jev_video("acc_fs", item)
         assert got.src == "poster" and got.review == "poster_only" and len(got.frames) == 9, got[1:]
+        assert not got.transient, "every mp4 over the cap is the clip's real state, not a brief failure"
     finally:
         vault_frames.JEV_VIDEO_CAP_BYTES = saved
     with _FakeOF({"duration": 12, "videoSources": {"720": None, "240": u240}}, {u240: v240}):
         got = await vault_frames.collect_jev_video("acc_fs", item)
-    assert got.src == "240" and got.review == "no_720" and len(got.frames) == 12, got[1:]
+    assert got.src == "240" and got.review == "no_720" and len(got.frames) == 12 and not got.transient, got[1:]
     with _FakeOF(media, {u720: _HttpResp(403, b""), u240: v240}) as of:
         got = await vault_frames.collect_jev_video("acc_fs", item)
     assert got.reason == "ok" and got.src == "240" and got.review == "src_failed" and len(got.frames) == 12 \
         and of.gets == [u720, u240], (got[1:], of.gets)
+    assert got.transient, "a 720p that failed briefly read as the clip's real state"
     dead = {u720: _HttpResp(403, b""), u240: _HttpResp(403, b"")}
     with _FakeOF(media, dead, posters=9) as of:
         got = await vault_frames.collect_jev_video("acc_fs", item)
     assert got.src == "poster" and got.review == "poster_only" and of.gets == [u720, u240], (got[1:], of.gets)
+    assert got.transient, "posters after every mp4 failed read as the clip's real state"
     with _FakeOF(media, dead, posters=0):
         got = await vault_frames.collect_jev_video("acc_fs", item)
     assert got.reason == "fetch_failed" and not got.frames and "240p download failed" in got.detail, got
+    assert got.transient, "every source failing briefly with no posters is not retried to a ceiling"
     with _FakeOF({"duration": 12, "videoSources": {}, "files": {}}, {}, posters=0):
         got = await vault_frames.collect_jev_video("acc_fs", item)
     assert not got.frames and got.reason == "no_variant", got
@@ -1040,6 +1074,7 @@ async def case_video_short_frame_set_never_priced():
         with _FakeOF(media, {u720: v720, u240: v240}):
             got = await vault_frames.collect_jev_video("acc_sf", item)
         assert got.reason == "ok" and got.src == "720" and got.review == "few_frames" and len(got.frames) == 7, got[1:]
+        assert got.transient
     finally:
         vault_frames._extract_jev = real
     frames = _clip([_gold("free")] * 7)
@@ -1048,6 +1083,105 @@ async def case_video_short_frame_set_never_priced():
         res = await vault_jev_pass.one(aid, 7001)
     f = await _fields(aid)
     assert res["lane5"] == "review" and vault_pack_picker.price_tier(f) is None, (res, f["_jev"].get("lane5"))
+
+
+async def case_video_transient_source_retried():
+    """Frames read after a source failed briefly (`transient`) are not read and not stamped current: `fetch_failed`,
+    `_jev.retries` counted, no Jev call, the clip still due next sweep; the RETRY_MAXth such visit reads them (the
+    `review` reading stands, current). A clean read clears the count; a real verdict (no_720) is read at once."""
+    frames = _clip([_gold("free")] * 12)
+    clip = [f for f, _ in frames]
+    aid = await _seed(kind="video", fields={"description": "kept"})
+    for n in range(1, vault_jev_pass.RETRY_MAX):
+        with _FrameSeams(frames) as sm, _Collect(b"", clip, src="240", review="src_failed", transient=True):
+            res = await vault_jev_pass.one(aid, 7001)
+        f = await _fields(aid)
+        assert res["status"] == "fetch_failed" and not res["ok"] and sm.client.calls == [], res
+        assert f["_jev"]["retries"] == n and not rules.current(f) and f["description"] == "kept", f["_jev"]
+        assert 7001 in await vault_jev_pass.clips_due(aid)
+    with _FrameSeams(frames) as sm, _Collect(b"", clip, src="240", review="src_failed", transient=True):
+        res = await vault_jev_pass.one(aid, 7001)
+    f = await _fields(aid)
+    assert res["ok"] and res["lane5"] == "review" and sm.client.calls, res
+    assert rules.current(f) and f["_jev"]["review"] == "src_failed" and "retries" not in f["_jev"], f["_jev"]
+    assert vault_jev_flags.reading(f["_jev"]) is not None and f["_flags_model"] == "jev"
+    assert await vault_jev_pass.clips_due(aid) == set()
+    # one brief failure, then a clean read: the reading is the clean one, the count gone
+    aid2 = await _seed(kind="video")
+    with _FrameSeams(frames), _Collect(b"", clip, src="poster", review="poster_only", transient=True):
+        assert (await vault_jev_pass.one(aid2, 7001))["status"] == "fetch_failed"
+    with _FrameSeams(frames), _Collect(b"", clip):
+        res = await vault_jev_pass.one(aid2, 7001)
+    f2 = await _fields(aid2)
+    assert res["ok"] and res["lane5"] == "free" and "retries" not in f2["_jev"] and rules.current(f2), f2["_jev"]
+    # a real verdict is read the first time
+    aid3 = await _seed(kind="video")
+    with _FrameSeams(frames), _Collect(b"", clip, src="240", review="no_720"):
+        res = await vault_jev_pass.one(aid3, 7001)
+    assert res["ok"] and res["lane5"] == "review" and rules.current(await _fields(aid3)), res
+
+
+async def case_video_held_reading_is_never_free():
+    """A clip with an old free reading (due again: a version bump) whose sources then fail briefly: its `_jev` is held
+    as review (old lane kept as `read_lane5`), so its stale flags price unknown (`price_tier` None), read disputed and
+    sit in no free lane, the tier column unknown; a $100 one stays $100."""
+    import vault_ai_brief
+    import vault_pack_picker
+    import vault_scripts
+    frames = _clip([_gold("free")] * 12)
+    clip = [f for f, _ in frames]
+    aid = await _seed(kind="video")
+    with _FrameSeams(frames), _Collect(b"", clip):
+        assert (await vault_jev_pass.one(aid, 7001))["lane5"] == "free"
+    f = await _fields(aid)
+    assert vault_pack_picker.price_tier(f) == 0 and vault_scripts._lane_mass(vault_scripts.send_order_reason(f), f,
+                                                                             "video"), "fixture: not a free clip"
+    async with get_session() as s:
+        it = await s.get(VaultItem, (aid, 7001))
+        assert it.explicitness_tier is not None
+        f["_jev"]["v"] = "v7+old"   # a rules bump: due again
+        it.ai_fields_json = json.dumps(f)
+        await s.commit()
+    with _FrameSeams(frames) as sm, _Collect(b"", clip, src="poster", review="poster_only", transient=True):
+        res = await vault_jev_pass.one(aid, 7001)
+    assert res["status"] == "fetch_failed" and sm.client.calls == [], res
+    f = await _fields(aid)
+    j = f["_jev"]
+    assert j["lane5"] == "review" and j["read_lane5"] == "free" and j["review"] == "fetch_failed", j
+    assert vault_pack_picker.price_tier(f) is None, "a held clip priced as its stale free reading"
+    assert vault_ai_brief.is_disputed(f), vault_ai_brief.contradictions(f)
+    why = vault_scripts.send_order_reason(f)
+    assert not any(ln(why, f, "video") for ln in (vault_scripts._lane_mass, vault_scripts._lane_stories,
+                                                  vault_scripts._lane_covered_explicit)), why
+    async with get_session() as s:
+        assert (await s.get(VaultItem, (aid, 7001))).explicitness_tier is None
+    held = vault_jev_pass.held_blob({"v": rules.VERSION, "status": "ok", "lane5": "$100"}, 1, "x", "t", terminal=False)
+    assert held["lane5"] == "$100" and "read_lane5" not in held and not rules.current({"_jev": held}), held
+
+
+async def case_video_no_frames_retried_then_terminal():
+    """Every source failing briefly with no frame at all (no posters, the deadline): held (review, `retries`) and
+    retried; the RETRY_MAXth such visit stamps a terminal review reading `current` accepts (no lane read, so no flags
+    re-mapped) and the clip is never fetched again. A no-variant clip (DRM) still writes nothing."""
+    import vault_pack_picker
+    frames = _clip([_gold("free")] * 12)
+    aid = await _seed(kind="video", fields={"description": "kept"})
+    for n in range(1, vault_jev_pass.RETRY_MAX + 1):
+        with _FrameSeams(frames) as sm, _Collect(b"", [], transient=True) as col:
+            res = await vault_jev_pass.one(aid, 7001)
+        f = await _fields(aid)
+        assert res["status"] == "fetch_failed" and col.clip_calls == 1 and sm.client.calls == [], res
+        assert f["_jev"]["retries"] == n and f["_jev"]["review"] == "fetch_failed" and f["description"] == "kept"
+        assert vault_pack_picker.price_tier(f) is None
+        assert rules.current(f) == (n == vault_jev_pass.RETRY_MAX), (n, f["_jev"])
+    assert "gave up" in res["detail"] and vault_jev_flags.reading(f["_jev"]) is None, res
+    assert await vault_jev_pass.clips_due(aid) == set()
+    with _FrameSeams(frames), _Collect(b"", [], transient=True) as col:
+        assert await vault_jev_pass.one(aid, 7001) is None and col.clip_calls == 0
+    aid2 = await _seed(kind="video", fields={"description": "kept"})
+    with _FrameSeams(frames), _Collect(b"", [], reason="no_variant"):
+        assert (await vault_jev_pass.one(aid2, 7001))["status"] == "blocked_drm"
+    assert await _fields(aid2) == {"description": "kept"}
 
 
 async def case_jev_outage_stops_jev_for_the_sweep():
@@ -1110,11 +1244,13 @@ async def case_video_no_720_reads_full_first():
         with _FakeOF(media(), {ufull: hi, u240: v240}) as of:
             got = await vault_frames.collect_jev_video("acc_nf", item)
         assert got.src == "240" and got.review == "no_720" and of.gets == [ufull, u240], (got[1:], of.gets)
+        assert not got.transient, "a full over the cap is the clip's real state"
     finally:
         vault_frames.JEV_VIDEO_CAP_BYTES = saved
     with _FakeOF(media(), {ufull: _HttpResp(403, b""), u240: v240}) as of:
         got = await vault_frames.collect_jev_video("acc_nf", item)
     assert got.src == "240" and got.review == "no_720" and of.gets == [ufull, u240], (got[1:], of.gets)
+    assert got.transient, "a 240p read because full failed briefly is not the clip's real state"
     u720 = "https://cdn.test/files/b/720.mp4?sig=1"
     m720 = {**media(), "videoSources": {"720": u720, "240": u240}}
     with _FakeOF(m720, {u720: _mp4(160, 96, 3, 24), u240: v240, ufull: hi}) as of:
@@ -1215,6 +1351,125 @@ async def case_sweep_clips_queue_for_the_lane():
         f = await _fields(aid, m)
         assert f["_jev"]["status"] == "ok" and f["_jev"]["kind"] == "video", f["_jev"]
     assert admission.JEV_VIDEO.busy == 0, "the lane slot leaked"
+
+
+async def case_video_previews_first():
+    """D58: a clip with OF's preview set reads those (src `preview`, no mp4 GET at all; review only when long); some of them
+    failing → still read, `transient` (retried); one preview on a 12 s clip → the mp4 ladder; one on a 2 s clip →
+    the preview. `previews_enough` / `preview_count` table."""
+    v720, v240 = _mp4(160, 96), _mp4(64, 40)
+    u720, u240 = "https://cdn.test/files/p/720.mp4?sig=1", "https://cdn.test/files/p/240.mp4?sig=1"
+
+    def media(n, dur=12):
+        opts = [{"id": i, "url": f"https://cdn.test/p/{i}.jpg"} for i in range(n)]
+        return {"duration": dur, "videoSources": {"720": u720, "240": u240}, "files": {"preview": {"options": opts}}}
+    item = VaultItem(account_id="acc_pv", media_id=2, kind="video", duration_seconds=12)
+    with _FakeOF(media(9), {u720: v720, u240: v240}, posters=9) as of:
+        got = await vault_frames.collect_jev_video("acc_pv", item)
+    assert got.reason == "ok" and got.src == "preview" and got.review is None and len(got.frames) == 9, got[1:]
+    assert not got.transient and of.gets == [], ("an mp4 was fetched beside the previews", of.gets)
+    with _FakeOF(media(9), {u720: v720, u240: v240}, posters=5) as of:
+        got = await vault_frames.collect_jev_video("acc_pv", item)
+    assert got.src == "preview" and len(got.frames) == 5 and got.transient and of.gets == [], got[1:]
+    assert got.review == "few_frames", got[1:]   # kept after RETRY_MAX only as a review reading
+    # a sweep's mp4 slot (`lane_ahead`) is handed back on a preview read, not held through Jev's call
+    busy0 = admission.JEV_VIDEO.busy
+    async with vault_frames.lane_ahead("t"):
+        with _FakeOF(media(9), {u720: v720, u240: v240}, posters=9) as of:
+            got = await vault_frames.collect_jev_video("acc_pv", item)
+        assert got.src == "preview" and admission.JEV_VIDEO.busy == busy0, (got[1:], admission.JEV_VIDEO.busy)
+    assert admission.JEV_VIDEO.busy == busy0
+    with _FakeOF(media(1), {u720: v720, u240: v240}, posters=1) as of:
+        got = await vault_frames.collect_jev_video("acc_pv", item)
+    assert got.src == "720" and of.gets == [u720], (got[1:], of.gets)
+    short = VaultItem(account_id="acc_pv", media_id=3, kind="video", duration_seconds=2)
+    with _FakeOF(media(1, dur=2), {u720: v720, u240: v240}, posters=1) as of:
+        got = await vault_frames.collect_jev_video("acc_pv", short)
+    assert got.src == "preview" and len(got.frames) == 1 and of.gets == [], (got[1:], of.gets)
+    # a long clip read off previews is `review` long (9 frames over minutes can miss the act); env-tunable
+    long_item = VaultItem(account_id="acc_pv", media_id=4, kind="video", duration_seconds=221)
+    for env, dur, want in ((None, 121, "long"), (None, 120, None), ("300", 221, None), ("300", 301, "long"),
+                           ("junk", 221, "long"), ("-5", 100, None)):
+        old = os.environ.pop("JEV_PREVIEW_LONG_S", None)
+        if env is not None:
+            os.environ["JEV_PREVIEW_LONG_S"] = env
+        try:
+            with _FakeOF(media(9, dur=dur), {u720: v720, u240: v240}, posters=9) as of:
+                got = await vault_frames.collect_jev_video("acc_pv", long_item)
+        finally:
+            os.environ.pop("JEV_PREVIEW_LONG_S", None)
+            if old is not None:
+                os.environ["JEV_PREVIEW_LONG_S"] = old
+        assert got.src == "preview" and got.review == want and of.gets == [], (env, dur, got[1:])
+    for n, dur, want in ((0, 5, False), (1, 12, False), (2, 12, False), (3, 12, True), (9, 3000, True),
+                         (1, 2, True), (1, 3, True), (2, 4, False), (1, 0, False)):
+        assert vault_frames.previews_enough(media(n, dur), dur) is want, (n, dur)
+    assert vault_frames.preview_count({"files": {"preview": {"options": [{"url": ""}, {"id": 1}, "x"]}}}) == 0
+    assert vault_frames.preview_count({}) == 0
+
+
+async def case_preview_stills_spread_and_partial():
+    """`_poster_stills` (real) asks for `want` previews spread over the set, the clip's end included; the describe
+    (`_collect_video`) takes a preview read only when enough of them landed, else it goes on to the mp4."""
+    import vault_stills
+    asked, ok = [], set()
+
+    async def bytes_for(account_id, media_id, path, pick):
+        i = int(path.stem.rsplit("_", 1)[1])
+        asked.append(i)
+        return vault_stills.Still(_jpeg(64, 64), "ok") if i in ok else vault_stills.Still(None, "fetch_failed")
+
+    async def fresh(account_id, media_id, client, **k):
+        return vault_stills.Fresh(media, "ok")
+    media = {"duration": 20, "files": {"preview": {"options": [{"url": f"https://cdn.test/p/{i}.jpg"}
+                                                               for i in range(9)]}}}
+    warmed = []
+    saved = (vault_stills.bytes_for, vault_stills.resolve_fresh, vault_frames.warm_one_sync)
+    vault_stills.bytes_for, vault_stills.resolve_fresh = bytes_for, fresh
+    vault_frames.warm_one_sync = lambda client, url, dur: warmed.append(url) or "no_variant"
+    try:
+        ok.update(range(9))
+        got = await vault_frames._poster_stills("acc_sp", 7, media, 6, "")
+        assert sorted(asked) == vault_frames.spread(9, 6) and 8 in asked and len(got.images) == 6, asked
+        asked.clear()
+        ok.clear(); ok.add(0)   # 1 of 6 landed: not a reading of the clip → the mp4 path (none here: posters)
+        media["videoSources"] = {"240": "https://cdn.test/v/240.mp4?sig=1"}
+        got = await vault_frames._collect_video("acc_sp", 7, media, None, 6)
+        assert warmed == ["https://cdn.test/v/240.mp4?sig=1"], warmed
+        warmed.clear()
+        ok.update({3, 5})       # 3 landed: enough
+        got = await vault_frames._collect_video("acc_sp", 7, media, None, 6)
+        assert len(got.images) == 3 and warmed == [], (len(got.images), warmed)
+    finally:
+        vault_stills.bytes_for, vault_stills.resolve_fresh, vault_frames.warm_one_sync = saved
+
+
+def case_publish_scrub_across_filesystems():
+    """`_publish_scrub` never renames across directories: in the container the temp dir and the storyboard store
+    are different filesystems (EXDEV, measured on AE). A rename between two dirs raises here as it did there."""
+    import errno
+    import os
+    import tempfile
+    from pathlib import Path
+    import storyboard
+    real = os.replace
+
+    def same_dir_only(a, b):
+        if Path(a).parent != Path(b).parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real(a, b)
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        for i in (0, 5):
+            (tmp / f"{i}.jpg").write_bytes(_jpeg(40, 30 + i))
+        os.replace = same_dir_only
+        try:
+            vault_frames._publish_scrub(tmp, "exdevtest00")
+        finally:
+            os.replace = real
+    h = "exdevtest00"
+    assert storyboard._storyboard_all_frames_present(h)
+    assert not list((storyboard._STORYBOARD_DIR / h).glob(".*.part")), "a temp copy was left in the store"
 
 
 def case_video_cap_env_and_budget():

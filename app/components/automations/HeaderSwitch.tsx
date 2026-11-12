@@ -15,7 +15,9 @@ import { Badge } from "@/components/ui/primitives";
 
 const OVERRIDE_PILL = "px-1.5 sm:px-2 max-sm:w-min max-sm:whitespace-normal max-sm:text-center max-sm:leading-3 max-sm:rounded-lg";
 
-export function HeaderSwitch({ label, checked, onChange, disabled, loading, status }: {
+export function HeaderSwitch({ id, label, checked, onChange, disabled, loading, status }: {
+  /** The switch's element id (the help bot's cursor target). */
+  id?: string;
   label: string;
   checked: boolean;
   onChange: (on: boolean) => void;
@@ -28,7 +30,7 @@ export function HeaderSwitch({ label, checked, onChange, disabled, loading, stat
   return (
     <span className="inline-flex items-center gap-2 sm:gap-3">
       {pill !== null && <Badge className={status === undefined ? "hidden sm:inline-flex" : OVERRIDE_PILL} color={status === undefined && checked ? "ok" : "muted"}>{pill}</Badge>}
-      <IfSwitch aria-label={label} checked={checked} onChange={onChange} disabled={disabled} loading={loading} />
+      <IfSwitch id={id} aria-label={label} checked={checked} onChange={onChange} disabled={disabled} loading={loading} />
     </span>
   );
 }

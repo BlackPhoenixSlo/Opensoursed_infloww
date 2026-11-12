@@ -12,22 +12,31 @@ two at a time); a new random file name per upload (the bio app serves files immu
 row points at them and the old file is unlinked after commit; a crash in between leaves an orphan file, never a row
 without its file. Logs: fixed `bio admin: ` lines with ids only, never a destination or geo value.
 
-Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `public_base`/`public_url` null) and
-BIO_HEALTH_URL (the bio service's /internal/healthz, probed for `serving`; unset → false).
+Create with a Creator: an empty display name takes the Creator's OnlyFans name, and the page starts with one
+"OnlyFans" link straight to https://onlyfans.com/<username> (never through /t/: that would break /c<code> tracking).
+Both read the Creator's cached `users_me` (the app's own `of-me` read fills it), so at most one OnlyFans call.
+Vault avatar: `POST /{pid}/avatar/vault {media_id}` takes a photo of the page's Creator through vault_stills (disk,
+mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload.
+
+Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
+X-Forwarded-Host/Proto when a proxy set them) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
+`serving`; unset → false).
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
+import re
 import time
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -36,11 +45,30 @@ from starlette.datastructures import UploadFile
 from bio_pages import decide, files, images
 from bio_pages.assets import PUBLIC
 from db.engine import get_session
-from db.models import BioCustomDomain, BioDaily, BioLink, BioProfile
+from db.models import BioCustomDomain, BioDaily, BioLink, BioProfile, VaultItem
 from employees import json_object, owner_context
 
-router = APIRouter(prefix="/admin/bio-pages", tags=["bio-pages"])
 log = logging.getLogger("of-relay.bio-admin")
+_REQUEST_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar("bio_request_base", default=None)
+_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?")
+OF_IDENTITY_TIMEOUT_S = 8.0
+
+
+def request_base(request: Request) -> str | None:
+    """`<origin>/p` of this request: X-Forwarded-Host/Proto (first hop) when a proxy set them, else the Host."""
+    h = request.headers
+    host = ((h.get("x-forwarded-host") or "").split(",")[0].strip() or h.get("host") or "").lower()
+    proto = ((h.get("x-forwarded-proto") or "").split(",")[0].strip() or request.url.scheme).lower()
+    if proto not in ("http", "https") or not _HOST.fullmatch(host):
+        return None
+    return f"{proto}://{host}/p"
+
+
+async def _capture_base(request: Request) -> None:
+    _REQUEST_BASE.set(request_base(request))
+
+
+router = APIRouter(prefix="/admin/bio-pages", tags=["bio-pages"], dependencies=[Depends(_capture_base)])
 
 _OWNER_ONLY = "bio pages are owner-only"
 MAX_UPLOAD = 20 * 1024 * 1024
@@ -84,7 +112,8 @@ def _iso(v: datetime | None) -> str | None:
 
 
 def public_base() -> str | None:
-    return (os.environ.get("BIO_PUBLIC_URL") or "").rstrip("/") or None
+    """BIO_PUBLIC_URL, else this request's `<origin>/p` (the app host serves bio pages under /p)."""
+    return (os.environ.get("BIO_PUBLIC_URL") or "").rstrip("/") or _REQUEST_BASE.get()
 
 
 def _public_url(username: str, domain: dict | None) -> str | None:
@@ -234,19 +263,55 @@ async def list_pages() -> dict[str, Any]:
     return {"serving": await serving(), "public_base": public_base(), "profiles": out}
 
 
+async def _of_me(account_id: str) -> dict[str, Any] | None:
+    """The Creator's OnlyFans `/users/me` through the `GET /api/of/v2/users/me` route's own cache entry (namespace,
+    key and TTL as server.py's `users_me`, s4s_api's precedent); None when it cannot be read."""
+    import automation_executor as ax
+    import relay_cache
+    try:
+        me = await asyncio.wait_for(relay_cache.get_or_fetch(
+            "users_me", account_id, ("users_me",), 60, lambda: ax._make_client(account_id).me(),
+        ), OF_IDENTITY_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — no session, proxy refusal, timeout: create goes on without it
+        log.info("bio admin: OnlyFans profile unreadable: account=%s", account_id)
+        return None
+    return me if isinstance(me, dict) else None
+
+
+def _blank(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip())
+
+
 @router.post("", status_code=201)
 @_safe_write
 async def create_page(request: Request) -> dict[str, Any]:
     owner = await _owner()
-    body = _check(decide.check_profile(await json_object(request, 422), create=True))
+    raw = await json_object(request, 422)
+    fill = _blank(raw.get("display_name"))
+    # every other field is refused before the Creator's profile is read
+    body = _check(decide.check_profile({**raw, "display_name": "-"} if fill else raw, create=True))
     await _check_account(body)
-    pid = files.new_id(15)
+    me = await _of_me(body["account_id"]) if body.get("account_id") else None
+    of_user = str((me or {}).get("username") or "").strip()
+    of_user = of_user if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", of_user) else ""
+    if fill:
+        name = str((me or {}).get("name") or "").strip() or of_user
+        body = _check(decide.check_profile({**raw, "display_name": name[:decide.MAX_DISPLAY_NAME]}, create=True))
+    pid, lid = files.new_id(15), files.new_id(15)
+    icon = _file_name("onlyicon") if of_user else ""
+    data = await asyncio.to_thread(_stock_data, "onlyicon") if of_user else None
     try:
-        async with get_session() as s:
-            now = _now()
-            s.add(BioProfile(id=pid, owner_user_id=owner, created_at=now, updated_at=now, **body))
-            await s.flush()
-            return await _page(s, owner, pid)
+        async with files.staged("links", lid, icon, data):
+            async with get_session() as s:
+                now = _now()
+                s.add(BioProfile(id=pid, owner_user_id=owner, created_at=now, updated_at=now, **body))
+                if of_user:  # flushed after the profile (its FK); tracking on: Reveal appends the visitor's /c<code>
+                    await s.flush()
+                    s.add(BioLink(id=lid, profile_id=pid, link_id=files.new_id(12), title="OnlyFans",
+                                  destination=f"https://onlyfans.com/{of_user}", icon=icon, tracking=True,
+                                  sort_order=0, created_at=now, updated_at=now))
+                await s.flush()
+                return await _page(s, owner, pid)
     except IntegrityError:
         async with get_session() as s:
             taken = (await s.execute(select(BioProfile.id).where(BioProfile.username == body["username"]))).first()
@@ -406,6 +471,55 @@ async def upload_avatar(pid: str, request: Request) -> dict[str, Any]:
     await _require(owner, pid)
     return await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar",
                            await _encode(request, images.AVATAR_SIDE))
+
+
+async def _vault_still(account_id: str, media_id: int) -> bytes:
+    """A vault photo's bytes via vault_stills (disk, mirror url, by-id re-sign; the account's egress). Photos only:
+    a mirror row of another kind is refused, and a re-signed media that is not a photo yields no url."""
+    import vault_frames
+    import vault_stills
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+    if item is not None and item.kind != "photo":
+        raise HTTPException(415, "Pick a photo, not a video.")
+    def pick(m: dict) -> str | None:
+        return vault_frames.pick_image(m) if m.get("type", "photo") == "photo" else None
+    still = await vault_stills.bytes_for(account_id, media_id, vault_stills.image_path(account_id, media_id), pick)
+    if still.data is not None:
+        return still.data
+    if still.reason == "no_variant":
+        raise HTTPException(415, "Pick a photo, not a video.")
+    if still.reason == "gone":
+        raise HTTPException(404, "That vault item is gone.")
+    raise HTTPException(502, "Couldn't fetch that photo from OnlyFans. Try again.")
+
+
+@router.post("/{pid}/avatar/vault")
+@_safe_write
+async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    async with get_session() as s:
+        aid = (await s.execute(select(BioProfile.account_id).where(*_own_profile(owner, pid)))).first()
+    if aid is None:
+        raise HTTPException(404, "no such bio page")
+    body = await json_object(request, 422)
+    mid = body.get("media_id")
+    if not isinstance(mid, int) or isinstance(mid, bool) or mid <= 0:
+        raise HTTPException(422, {"field": "media_id", "msg": "Pick a photo from the vault."})
+    if body.get("type") not in (None, "photo"):
+        raise HTTPException(415, "Pick a photo, not a video.")
+    if not aid[0]:
+        raise HTTPException(409, "Connect a Creator to pick from its vault.")
+    await owner_context(aid[0], _OWNER_ONLY)
+    raw = await _vault_still(aid[0], mid)
+    async with _ENCODE:
+        try:
+            data = await asyncio.to_thread(images.encode, raw, images.AVATAR_SIDE)
+        except images.Refused as e:
+            raise HTTPException(e.status, e.msg) from None
+    log.info("bio admin: avatar from vault: page=%s account=%s media=%s", pid, aid[0], mid)
+    return await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar", data)
 
 
 @router.delete("/{pid}/avatar")

@@ -31,7 +31,9 @@
  *   permission    — the Permission-editor page (a `PERMISSION_PAGES` href) a
  *                   link answers to instead of being one of its own: a role
  *                   that denies that page hides this link and gets the denied
- *                   panel on it too (Fansly Manager's flagged pages).
+ *                   panel on it too, on its route and below it (Fansly
+ *                   Manager's flagged pages; Growth's Redirect links and Bio
+ *                   pages, Tracking links' former tabs).
  *   tabOf         — a tab of that page, not a sidebar entry: `visibleLinks`
  *                   drops it while the role grants that page, and the sidebar
  *                   highlights that page on its route (`sidebarHref`). A role
@@ -171,6 +173,9 @@ export const ONLYFANS_NAV: NavNode[] = [
       { label: "Profile promotion", href: "/growth/profile-promotion", chatterHidden: true },
       { label: "Free trial links", href: "/growth/free-trial-links", chatterHidden: true },
       { label: "Tracking links", href: "/growth/tracking-links", chatterHidden: true },
+      // Tracking links' former tabs (owner 11-12): their Permission page stays Tracking links. Bio pages is owner-only.
+      { label: "Redirect links", href: "/growth/redirect-links", chatterHidden: true, permission: "/growth/tracking-links" },
+      { label: "Bio pages", href: "/growth/bio-pages", chatterHidden: true, permission: "/growth/tracking-links" },
       // Infloww's Growth > Sensitive words (menu 87). Its writes are owner-only.
       { label: "Sensitive words", href: "/growth/sensitive-words", chatterHidden: true },
     ],
@@ -441,13 +446,14 @@ function keep(
 
 /**
  * The Permission-editor page `pathname` sits under (the longest matching
- * href, or the `permission` of the link at `pathname`) when the role does not
+ * href, or the `permission` of the link at or above `pathname`) when the role does not
  * grant it, else null: the shell renders the denied-page panel instead of that
  * page. `grantedPages: null` denies nothing.
  */
 export function deniedPage(pathname: string, grantedPages: Set<string> | null): string | null {
   if (!grantedPages) return null;
-  const alias = PERMISSION_OF.get(pathname);
+  const alias = PERMISSION_OF.get(pathname)
+    ?? [...PERMISSION_OF].find(([href]) => pathname.startsWith(`${href}/`))?.[1];
   if (alias) return grantedPages.has(alias) ? null : alias;
   let page: string | null = null;
   for (const href of PERMISSION_PAGES) {

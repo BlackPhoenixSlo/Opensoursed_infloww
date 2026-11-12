@@ -115,7 +115,7 @@ export default function VaultExtrasTools({
             "not collected"
           )}
         </span>
-        {/* Every screen: a phone sees it off with the desktop-only reason (`downloadGate`). */}
+        {/* Every tool shows at every width; the download alone is off on a phone (`downloadGate`). */}
         <button
           type="button"
           data-testid="vault-extras-download"
@@ -127,9 +127,6 @@ export default function VaultExtrasTools({
           <Download size={14} aria-hidden />
           {download.label}
         </button>
-        {/* Desk-only batch sweeps. `md:contents` keeps every button a direct
-            flex child at md, so the desktop row is untouched. */}
-        <div className="hidden md:contents">
           <button
             type="button"
             onClick={onCollect}
@@ -138,8 +135,6 @@ export default function VaultExtrasTools({
           >
             {isCollecting ? "Collecting…" : cachedCount > 0 ? "Re-collect" : "Collect all"}
           </button>
-        </div>
-        <div className="hidden md:contents">
           <button
             type="button"
             onClick={() => onDescribeAll("new")}
@@ -208,8 +203,6 @@ export default function VaultExtrasTools({
           >
             Duplicates
           </button>
-        </div>
-        {/* The feet pack picker works on a phone (2 columns, 44px taps): offered at every width. */}
         <button
           type="button"
           onClick={() => onOpen("packPicker")}
@@ -219,7 +212,6 @@ export default function VaultExtrasTools({
         >
           Feet pack
         </button>
-        <div className="hidden md:contents">
           <button
             type="button"
             onClick={() => onOpen("aiFolders")}
@@ -229,7 +221,6 @@ export default function VaultExtrasTools({
           >
             Build AI folders
           </button>
-        </div>
       </div>
 
       {/* A describe pass that DIED rather than finished. Only meaningful once it

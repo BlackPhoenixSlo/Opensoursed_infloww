@@ -144,3 +144,17 @@ def house_key(provider: str) -> str:
     if prov is None:
         return ""
     return _api_key(prov.api_key_env)
+
+
+# ── TypeSafe (Jev): a judge, not a chat provider ──────────────────────
+# Vault Jev (`vault_jev.py`) asks Jev through TypeSafe's own SDK, not the
+# OpenAI-compatible chat path, so it is no `PROVIDERS` row (no model list, no
+# per-agency key, no llm_client billing: TypeSafe bills this deployment per
+# input token). Its key resolves the way every provider key does: Setup > Keys,
+# then env, then service/.env.
+TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
+
+
+def typesafe_key() -> str:
+    """The deployment's TypeSafe key, or "" (Jev's reads then stop with no_key)."""
+    return _api_key(TYPESAFE_KEY_ENV)

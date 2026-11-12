@@ -1,11 +1,23 @@
-# Bio pages: one public bio host per box (PR3-0)
+# Bio pages: path mode on every box (default), own host optional
 
-Each box serves its own bio pages (`service/bio_pages`, compose service `openinflowwww-bio`, profile `bio`) on its
-own host, through its own Traefik. TLS ends at Traefik (resolver `letsencrypt`). Nothing on `ofl.ink` changes
-here: `ofl.ink` keeps going to oflinkv2 until the cutover runbook (PR3b) swaps it. The editor (relay
-`/admin/bio-pages`) links to `BIO_PUBLIC_URL/<username>` and shows "serving" once the relay reaches the bio
-service (`BIO_HEALTH_URL`; its compose default is `http://openinflowwww-bio:8788/internal/healthz`, which does not
-resolve while the profile is off).
+Each box serves its own bio pages (`service/bio_pages`, compose service `openinflowwww-bio`, on by default).
+
+**Path mode (default, no DNS).** The app rewrites `/p/*` to the bio service (`BIO_URL`, compose default
+`http://openinflowwww-bio:8788`, baked in at app build), and the bio service (`BIO_PATH_PREFIX`, compose default `/p`)
+serves `<app host>/p/<username>` with every URL on the page under `/p`. Set `BIO_PUBLIC_URL=https://<app host>/p` so
+the editor links there. A plain `docker compose up -d --build` builds and starts it; AE's targeted
+`up -d --no-deps <services>` starts it only when `openinflowwww-bio` (and `openinflowwww-app`, for the rewrite) is
+named. The overrides must name the bio image (§3). Bot check: with `TURNSTILE_SITE_KEY` + `TURNSTILE_SECRET_KEY` in
+`.env`, a Link with `bot_check` (new Links' default) Reveals only after Cloudflare Turnstile passes; unset = no check.
+Fleet shards (`deploy/fleet`) keep it off (their override profiles it out: it would mount the wrong data dir and
+oi-epoch does not fence it).
+
+**Host mode (optional, the rest of this file).** The same service on its own host (`new.ofl.ink`, `ofl.ink` at
+cutover) through the box's Traefik; any path outside `/p` is host mode, so both work at once. TLS ends at Traefik
+(resolver `letsencrypt`). Nothing on `ofl.ink` changes here: `ofl.ink` keeps going to oflinkv2 until the cutover
+runbook (PR3b) swaps it. The editor (relay `/admin/bio-pages`) links to `BIO_PUBLIC_URL/<username>` and shows
+"serving" once the relay reaches the bio service (`BIO_HEALTH_URL`; compose default
+`http://openinflowwww-bio:8788/internal/healthz`).
 
 Labels: [m] measured (read), [i] inferred, [g] guess. Never run any of this against your-host.example.com.
 
@@ -18,9 +30,9 @@ Labels: [m] measured (read), [i] inferred, [g] guess. Never run any of this agai
 | compose project | `opensource` | `ae` |
 | Traefik route file | `/root/traefik-dynamic/bio-opensource.yml` | `/root/traefik-dynamic/bio-ae.yml` |
 
-The compose bio block publishes `127.0.0.1:${BIO_PORT:-8788}:8788`: every bio box sets `BIO_PORT`, or on AE
-`up` fails on the port the relay holds [m compose]. The block's `image: openinflowwww-relay:latest` is not the
-hosts' retagged relay image, so the override names the image [m].
+The compose bio block publishes no host port (8788 is the AE relay's host port): host mode adds
+`127.0.0.1:${BIO_PORT}:8788` in the override (§3). The block's `image: openinflowwww-relay:latest` is not the
+hosts' retagged relay image, so the override names the image [m] (path mode too).
 On each box, check the chosen port is free with `ss -ltn` before deploying.
 
 ## 1. DNS (owner)
@@ -34,7 +46,6 @@ challenge needs the record live before step 5.
 ## 2. `.env` keys
 
 ```
-COMPOSE_PROFILES=bio
 BIO_PORT=8790                                   # AE: 8798
 BIO_PRIMARY_HOSTS=ofl.ink,www.ofl.ink,v2.ofl.ink,new.ofl.ink   # AE: ae.ofl.ink
 BIO_PUBLIC_URL=https://new.ofl.ink              # AE: https://ae.ofl.ink
@@ -43,7 +54,6 @@ BIO_ESCAPE_TAP=...                              # PR-E's default; leave as that 
 
 `BIO_PRIMARY_HOSTS` on public already lists `ofl.ink`: harmless before the flip, Traefik still sends `ofl.ink` to
 :8080. `BIO_HEALTH_URL` stays unset (the compose default reaches the bio service on the project network).
-`COMPOSE_PROFILES=bio` makes a plain `docker compose up -d` start the bio service too.
 On AE, the `.env` change goes through ae-deploy's env-change path (§1 of `.claude/skills/ae-deploy/SKILL.md`).
 
 ## 3. Override (host `docker-compose.override.yml`, back it up first)
@@ -53,6 +63,7 @@ services:
   openinflowwww-bio:
     image: opensource-relay:latest     # AE: the relay image name its override uses
     container_name: opensource-bio     # AE: ae-bio
+    ports: ["127.0.0.1:${BIO_PORT}:8788"]   # host mode only
 ```
 
 Check: `docker compose config openinflowwww-bio | grep -E "image|container_name|published|DATABASE_URL"` shows
@@ -128,8 +139,7 @@ Verify:
 ## Every deploy
 
 - When the relay image is rebuilt or the bio block/env changes, run `docker compose up -d --no-build
-  openinflowwww-bio` on bio boxes (AE: ae-deploy §2 with `openinflowwww-bio` added to `<services>`); a named
-  profiled service starts [i].
+  openinflowwww-bio` on bio boxes (AE: ae-deploy §2 with `openinflowwww-bio` added to `<services>`).
 - On `:prev` rollback, roll the bio service back to the previous relay image too; verify its container is
   healthy and `curl -fsS https://<bio host>/internal/healthz` succeeds.
 

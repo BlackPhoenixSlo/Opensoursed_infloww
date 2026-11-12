@@ -36,17 +36,25 @@ JEV_KEY = vault_jev_rules.JEV_KEY
 CAP_SKIP = "Jev daily cap reached earlier in this sweep — Jev skipped"
 DOWN_SKIP = "Jev failed {n} calls in a row earlier in this sweep — Jev skipped"
 DOWN_AFTER = 3   # Jev call failures in a row that read as an outage
+# A clip whose sources failed briefly (`vault_frames.JevFrames.transient`: frames read after a failed source, or none)
+# is not read: `_jev` is held (`held_blob`: review, not current, so the next sweep retries it), its count in
+# `_jev.retries`. The RETRY_MAXth such visit reads the frames it got (their `review` reading stands) or, with none,
+# stamps a terminal review reading, so a clip that always fails stops costing a download a sweep.
+RETRY_MAX = 3
+HELD = "fetch_failed"   # `_jev.review` of a held clip (`vault_ai_brief`: disputed, never in a free lane)
 
 
 class Sweep:
     """One sweep's Jev state: once TypeSafe's cap trips, or `DOWN_AFTER` Jev calls fail in a row (an outage), the
-    rest of the sweep skips Jev (no still / clip fetch, no reserve); those items wait for the next sweep."""
+    rest of the sweep skips Jev (no still / clip fetch, no reserve); those items wait for the next sweep. `warned`:
+    the sweep already logged a refusal (`no_key` / `no_nudenet`): one line a sweep, not one an item."""
 
-    __slots__ = ("capped", "failed_in_row")
+    __slots__ = ("capped", "failed_in_row", "warned")
 
     def __init__(self) -> None:
         self.capped = False
         self.failed_in_row = 0
+        self.warned = False
 
     @property
     def down(self) -> bool:
@@ -67,6 +75,40 @@ class Sweep:
 
 def _locked(item: VaultItem) -> set[str]:
     return set(load_json(item.locked_fields_json, []) or [])
+
+
+def held_blob(old: Any, n: int, detail: str, at: str, *, terminal: bool) -> dict[str, Any]:
+    """The `_jev` of a clip whose sources failed briefly `n` times (`RETRY_MAX`). Its last reading's fields are kept
+    but read as unknown: `lane5` "review" (its lane kept as `read_lane5`; a $100 stays) and `review` fetch_failed, so
+    the pack picker never prices it free and `vault_ai_brief` keeps its stale flags out of every free lane. `status`
+    fetch_failed: not current, retried. `terminal`: a current review reading with no answers and no lane it read
+    (`vault_jev_flags.reading` None: nothing re-mapped), so the sweeps stop fetching the clip."""
+    if terminal:
+        return {"v": vault_jev_rules.VERSION, "status": "ok", "kind": "video", "vv": vault_jev_rules.VIDEO_VERSION,
+                "lane5": "review", "read_lane5": None, "state": {}, "frames": [], "src": "", "review": HELD,
+                "retries": n, "error": detail[:200], "at": at}
+    old = old if isinstance(old, dict) else {}
+    b = {**old, "v": old.get("v", vault_jev_rules.VERSION), "status": "fetch_failed", "error": detail[:200],
+         "failed_at": at, "retries": n, "review": HELD}
+    if old.get("lane5") != "$100":
+        b.update(lane5="review", read_lane5=vault_jev_rules.read_lane(old))
+    return b
+
+
+async def _hold(account_id: str, media_id: int, n: int, detail: str, *, terminal: bool) -> None:
+    """Stamp `held_blob`; the `explicitness_tier` column unknown (None) unless operator-locked or $100, until a
+    retry reads the clip."""
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id), with_for_update=True)
+        if item is None:
+            return
+        fields = load_json(item.ai_fields_json, {}) or {}
+        fields[JEV_KEY] = held_blob(fields.get(JEV_KEY), n, detail, datetime.utcnow().isoformat(),
+                                    terminal=terminal)
+        item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
+        if fields[JEV_KEY].get("lane5") == "review" and vault_jev_flags.TIER_COLUMN not in _locked(item):
+            item.explicitness_tier = None
+        await s.commit()
 
 
 async def _stamp(account_id: str, media_id: int, res: vault_jev.JevResult) -> None:
@@ -115,7 +157,8 @@ async def one(account_id: str, media_id: int, *,
     nothing to pay for (another kind, or already current — its flags re-stamped if they drifted); no TypeSafe or
     NudeNet call happens then. Readiness (NudeNet + key) is checked before the still / clip is fetched. Never
     raises for a model failure: `vault_jev.run` / `run_video` report it as the result's `status`, stamped on the
-    row. A clip's frames: `vault_frames.collect_jev_video`."""
+    row. A clip's frames: `vault_frames.collect_jev_video`; frames read after a brief source failure: `RETRY_MAX`.
+    A refusal (`no_key` / `no_nudenet`) logs one line per `sweep` (per call without one)."""
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
     if item is None or item.kind not in vault_jev_rules.JEV_KINDS:
@@ -133,6 +176,10 @@ async def one(account_id: str, media_id: int, *,
                 "detail": DOWN_SKIP.format(n=sweep.failed_in_row), "cost_millicents": 0}
     refusal = await vault_jev.preflight()
     if refusal is not None:
+        if sweep is None or not sweep.warned:   # proxy-health `vault_jev_errors` alerts on it
+            log.warning("vault_jev skipped status=%s account=%s", refusal.get("status"), account_id)
+            if sweep is not None:
+                sweep.warned = True
         await _stamp(account_id, media_id, refusal)
         return _out(media_id, refusal)
     video = item.kind == "video"
@@ -142,6 +189,15 @@ async def one(account_id: str, media_id: int, *,
     else:
         got = await vault_frames.collect(account_id, item, load_json(item.raw_json, {}) or {}, want=1)
         have = got.images
+    if video and got.transient:
+        prev = fields.get(JEV_KEY) if isinstance(fields.get(JEV_KEY), dict) else {}
+        n = int(prev.get("retries") or 0) + 1
+        if n < RETRY_MAX or not have:
+            why = got.detail or f"clip sources failed briefly ({got.review or got.src})"
+            await _hold(account_id, media_id, n, why, terminal=n >= RETRY_MAX)
+            return {"media_id": media_id, "ok": False, "status": "fetch_failed", "cost_millicents": 0,
+                    "detail": f"{why}: " + (f"gave up after {n}, review" if n >= RETRY_MAX
+                                            else f"retry {n}/{RETRY_MAX} next sweep")}
     if not have:
         status = vault_frames.NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
         return {"media_id": media_id, "ok": False, "status": status,

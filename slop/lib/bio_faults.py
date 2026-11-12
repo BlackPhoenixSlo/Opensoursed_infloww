@@ -152,8 +152,8 @@ def _json_leaks_destination() -> None:
             return profile, links
         return None
 
-    def leaky(profile, links):
-        out = real(profile, links)
+    def leaky(profile, links, *rest):
+        out = real(profile, links, *rest)
         for pub, row in zip(out["links"], links):
             pub["destination"] = row["destination"]
         return out

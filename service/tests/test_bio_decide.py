@@ -155,6 +155,20 @@ def case_same_origin_table():
     ]
     for h, want in rows:
         assert d.same_origin(_hdr(**h)) is want, (h, want)
+    # Path mode via a trusted proxy (Next's /p rewrite): Host is the bio container, X-Forwarded-Host the browser's.
+    via_next = {"origin": "https://app.test", "host": "openinflowwww-bio:8788", "x_forwarded_host": "app.test",
+                "x_forwarded_proto": "https"}
+    fwd = [
+        (via_next, True, True),
+        (via_next, False, False),  # host mode / untrusted peer: X-Forwarded-Host is not believed
+        ({**via_next, "x_forwarded_host": "evil.test"}, True, False),
+        ({**via_next, "x_forwarded_host": "app.test, evil.test"}, True, False),
+        ({**via_next, "x_forwarded_proto": None}, True, False),
+        ({"origin": "http://ofl.test", "host": "ofl.test"}, True, True),  # no X-Forwarded-Host: Host as ever
+        ({**via_next, "sec_fetch_site": "cross-site"}, True, False),
+    ]
+    for h, forwarded, want in fwd:
+        assert d.same_origin(_hdr(**h), forwarded) is want, (h, forwarded, want)
 
 
 def case_host_table():
@@ -258,6 +272,46 @@ def case_public_profile_shape():
             '"icon":"/api/files/links/mmmmmmmmmmmmmmm/i.webp","backgroundImage":""}]}')
     assert got == want, got
     assert "slopdest" not in got and "geo" not in got
+    links[0]["bot_check"] = 1
+    assert d.public_profile(profile, links, None) == json.loads(got), "keys unset: v2's shape, no botCheck"
+    gated = d.public_profile(profile, links, "SITE", "/p")
+    assert gated["turnstileSiteKey"] == "SITE"
+    assert gated["links"][0]["botCheck"] is True and "botCheck" not in gated["links"][1]
+    assert gated["profile"]["avatarUrl"] == "/p/api/files/profiles/ppppppppppppppp/a.webp"
+    assert gated["links"][1]["icon"] == "/p/api/files/links/mmmmmmmmmmmmmmm/i.webp"
+    links[0]["bot_check"] = 0
+    assert "turnstileSiteKey" not in d.public_profile(profile, links, "SITE"), "no gated Link: no site key"
+    assert d.gated({"bot_check": 1}, "S") and not d.gated({"bot_check": 1}, None)
+    assert not d.gated({"bot_check": 0}, "S") and not d.gated(None, "S")
+
+
+def case_path_prefix_table():
+    for raw, want in (("", ""), (None, ""), ("/p", "/p"), (" /p/ ", "/p"), ("/bio/x", "/bio/x")):
+        assert d.parse_path_prefix(raw) == want, raw
+    for bad in ("p", "/P", "/p q", '/p"', "//p", "/p//x", "/<x>"):
+        try:
+            d.parse_path_prefix(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+    assert d.cut_prefix("/p", "/p") == "/" and d.cut_prefix("/p", "/p/") == "/"
+    assert d.cut_prefix("/p", "/p/alice/12") == "/alice/12"
+    assert d.cut_prefix("/p", "/px") is None and d.cut_prefix("/p", "/alice") is None
+    assert d.cut_prefix("", "/p/alice") is None
+    g = d.resolve_profile_request
+    assert g("primary", None, "/alice/12", "/p") == {"username": "alice", "trackingCode": "12",
+                                                     "profilePath": "/p/alice"}
+    html = assets.INDEX.read_text()
+    assert d.render_index(html, True, "") == d.render_index(html, True), "no prefix: today's page"
+    page = d.render_index(html, True, "/p")
+    assert '<body data-base="/p">' in page and 'href="/p/style.css"' in page
+    assert 'src="/p/images/verified.svg"' in page and 'src="/p/script.js"' in page
+    assert 'href="#i-lock"' in page and 'href="landing.html"' in page, "fragment and relative links untouched"
+    assert not re.search(r'(?:href|src)="/(?!p/)', page), "every root-relative URL carries the prefix"
+    req = {"username": "alice", "trackingCode": None, "profilePath": "/p/alice"}
+    boot = d.bootstrap_page(page, req, "/p")
+    assert d.parse_bootstrap(boot.encode()) == req
+    assert '</script>\n    <script src="/p/script.js"></script>' in boot
 
 
 def case_username_lookup():
@@ -275,8 +329,8 @@ def case_reserved_matches_v2():
 
 def case_assets_pinned():
     # Re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions.
-    pins = {"index.html": "a791d2925e4112fc89e069813782fa16", "script.js": "1bfeac9e0d5dcc43733706a146e6e7c4",
-            "style.css": "a425f7e280158dad64a66d36dcf458f0"}
+    pins = {"index.html": "8382d1d81e434ae0753b44368f68c52d", "script.js": "6c0101c531d87e96cbafe76f757c9352",
+            "style.css": "a7e76c39b7a97666c7033bf38a11560a"}
     for name, md5 in pins.items():
         assert hashlib.md5((assets.PUBLIC / name).read_bytes()).hexdigest() == md5, name
     stub = (assets.PUBLIC / "landing.html").read_text()
@@ -296,7 +350,8 @@ def case_public_page_loads_nothing_off_origin():
                    '<script>fetch("https://cdn.example/x")</script>',
                    '<style>@font-face{src:url(//cdn.example/x.woff)}</style>'):
         assert absolute.search(sample), sample
-    allowed_js_matches = {"//i", "//extbrowser"}  # asHttps regex and Instagram scheme
+    # asHttps regex, Instagram scheme, and Turnstile's script: loaded only for a Profile JSON with a gated Link
+    allowed_js_matches = {"//i", "//extbrowser", "https://challenges.cloudflare.com"}
     for sample in ('fetch("https://cdn.example/x")', '"//cdn.example/x.css"'):
         assert any(m.group() not in allowed_js_matches for m in absolute.finditer(sample)), sample
     for f in assets.PUBLIC.rglob("*"):

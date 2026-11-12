@@ -31,7 +31,8 @@ Checks (lib/vault_feet_picker_faults.py names):
                                     the keyed verdicts (tiles 1-3 the prefill they showed, none if none, tile 4
                                     rejected, tile 5 tease); DB: the feet-* folders' members == those + the
                                     pre-filed, nothing else.
-  feet_phone_layout_tap_save        phone: 2 grid columns, rung + reject buttons >= 44px tall, no horizontal
+  feet_phone_layout_tap_save        phone: the Extras drawer shows every tool (none desk-only), screenshot
+                                    `extras-drawer-phone`; 2 grid columns, rung + reject buttons >= 44px tall, no horizontal
                                     overflow; one POST [{tile, nude}] (200); DB: that tile on feet-nude only.
   feet_candidates_p95 [budget]      the route's p95 over the 5 reads <= CANDS_P95_MS[scale].
 
@@ -74,7 +75,10 @@ SAVE = re.compile(r"^Save \d+$")
 FREE_RUNG = "tease"   # vault_pack_picker feet rungs[0]: rides free as the preview
 
 
-async def _open_picker(ctx, page, creator: dict, *, pick: bool = True) -> list[dict]:
+EXTRAS_TOOLS = ["Re-collect", "Describe all", "Harvest OF", "Duplicates", "Feet pack", "Build AI folders"]
+
+
+async def _open_picker(ctx, page, creator: dict, *, pick: bool = True, drawer: dict | None = None) -> list[dict]:
     """Vault Pro > the Creator > Extras > Feet pack; the grid's tiles in order [{id, label}]. `pick` False (phone:
     the creator column is off-canvas) opens on the Creator Vault Pro last had (localStorage `vault.accountId`)."""
     await page.context.add_init_script(TOURS_SEEN + ("" if pick else
@@ -83,6 +87,13 @@ async def _open_picker(ctx, page, creator: dict, *, pick: bool = True) -> list[d
     if pick:
         await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
     await page.get_by_role("button", name=re.compile(r" extras$")).first.click(timeout=WAIT_MS)
+    if drawer is not None:   # every Extras tool shows at this width (none desk-only)
+        await page.get_by_role("button", name="Feet pack", exact=True).wait_for(timeout=WAIT_MS)
+        box = page.get_by_role("dialog", name=re.compile(r" extras$"))
+        drawer["visible"] = [n for n in EXTRAS_TOOLS
+                             if await box.get_by_role("button", name=re.compile("^" + re.escape(n))).first.is_visible()]
+        await page.wait_for_timeout(600)   # the sheet's slide-in settles
+        drawer["shot"] = await ui.shot(ctx, page, "extras-drawer-phone")
     await page.get_by_role("button", name="Feet pack", exact=True).click(timeout=WAIT_MS)
     await page.locator("[data-pack-tile]").first.wait_for(timeout=WAIT_MS)
     await page.wait_for_timeout(800)   # first images drawn
@@ -238,7 +249,7 @@ async def run(ctx):
     async with ui.owner_browser(ctx, viewport=PHONE_VP, touch=True) as page:
         with recorded(page, "POST", TRIAGE) as sent:
             try:
-                tiles = await _open_picker(ctx, page, creator, pick=False)
+                tiles = await _open_picker(ctx, page, creator, pick=False, drawer=phone.setdefault("drawer", {}))
                 first = tiles[0]["id"]
                 phone["tile"] = first
                 tile = page.locator(f'[data-pack-tile="{first}"]')
@@ -267,7 +278,8 @@ async def run(ctx):
               and lay.get("scroll_w", 1e9) <= lay.get("inner_w", 0) and lay.get("tile_right", 1e9) <= PHONE_VP[0]
               and len(phone_posts) == 1 and phone_posts[0]["status"] == 200
               and pbody.get("verdicts") == [{"media_id": phone.get("tile"), "rung": "nude"}]
-              and tile_in == ["feet-nude"] and "settled_shot" in phone,
+              and tile_in == ["feet-nude"] and "settled_shot" in phone
+              and (phone.get("drawer") or {}).get("visible") == EXTRAS_TOOLS,
               layout=lay, sent=pbody.get("verdicts"), tile_in=tile_in, ui=phone)
     (ctx.out / "feet-picker.json").write_text(json.dumps(
         {"truth": {k: v for k, v in truth.items() if k != "classes"},

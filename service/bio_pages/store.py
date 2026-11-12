@@ -19,7 +19,7 @@ log = logging.getLogger("of-relay.bio")
 EventKind = Literal["view", "click"]
 _PROFILE_COLS = "id, username, display_name, bio, avatar, mode, verified"
 _PUBLIC_LINK_COLS = ("id, profile_id, link_id, title, default_tracking_code, mode, icon, background_image, "
-                     "is_adult, tracking")
+                     "is_adult, tracking, bot_check")
 _LINK_COLS = _PUBLIC_LINK_COLS + ", destination, geo"
 _UPSERT = text(
     "INSERT INTO bio_daily (day, profile_id, link_id, country, in_app, code, views, clicks)"
@@ -63,6 +63,12 @@ async def link_by_link_id(link_id: str) -> dict | None:
     async with get_session() as s:
         row = (await s.execute(text(f"SELECT {_LINK_COLS} FROM bio_links WHERE link_id = :l"), {"l": link_id})).first()
     return _link(row) if row else None
+
+
+async def link_profile_id(row_id: str) -> str | None:
+    """The Profile owning the Link row `row_id` (its files' record id), or None."""
+    async with get_session() as s:
+        return (await s.execute(text("SELECT profile_id FROM bio_links WHERE id = :i"), {"i": row_id})).scalar()
 
 
 async def resolve_host_row(name: str) -> tuple[HostKind, str | None]:

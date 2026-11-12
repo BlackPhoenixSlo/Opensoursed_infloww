@@ -53,12 +53,10 @@
  * permanent and cannot be undone"), and OF keeps the deleted link and its counts,
  * which the list shows as "Deactivated" behind "Show deactivated links".
  *
- * Ours, a tab after the bundle's carrying "Inflowwww extra": "Redirect links"
- * (`RedirectLinksPanel`, every viewer of the page, with the same creator
- * filter): custom redirect links (internal /t/<slug>) for a NON-profile target
- * (a Linktree, a landing page). We count clicks; we can't see subscribers,
- * because the visitor never lands on OnlyFans. Each TABS entry says whether it
- * is `ownerOnly` (a chatter doesn't get it) and `extra` (ours, tagged).
+ * Ours, "Redirect links" and "Bio pages", were tabs here; since 11-12 they are
+ * Growth entries of their own (/growth/redirect-links, /growth/bio-pages), and
+ * this route's page sends `?tab=redirects|bio` there. Each TABS entry says
+ * whether it is `ownerOnly` (a chatter doesn't get it).
  *
  * Ticket 59 (the regrade's follow-up): the title carries the Agency's report
  * time zone (#6 to #9) from the Applied settings, as the Dashboard reads it,
@@ -70,16 +68,13 @@
  * labelled as ours.
  *
  * Files: this tab shell; the Links list, its columns, `useLinks` and Export in `TrackingLinksList`; Details in
- * `TrackingLinkDetails`; the Dashboard in `TrackingDashboard`; `CreateLinkModal`; Redirect links in `RedirectLinksPanel`
- * with its Analytics; the formulas and tooltips in `linkMetrics`; Bio pages (owner-only, ours) in `bio/BioPagesPanel`,
- * its editor in `bio/BioEditor`. `?tab=bio` opens on Bio pages (the editor's back link).
+ * `TrackingLinkDetails`; the Dashboard in `TrackingDashboard`; `CreateLinkModal`; the formulas and tooltips in
+ * `linkMetrics`.
  */
 
 import { useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
-import { RedirectLinksPanel } from "@/components/growth/RedirectLinksPanel";
-import { BioPagesPanel } from "@/components/growth/bio/BioPagesPanel";
 import { FrameTabs, GrowthHbFrame, type FrameTab } from "@/components/growth/LinksListFrame";
 import ShareLinksPanel from "@/components/growth/ShareLinksPanel";
 import { LinksList } from "@/components/growth/TrackingLinksList";
@@ -88,13 +83,11 @@ import { useOfTrackingLinks } from "@/hooks/useGrowth";
 import { useGrowthCreator } from "@/hooks/useAccounts";
 import { useUser } from "@/contexts/UserContext";
 
-type TabKey = "list" | "dashboard" | "share" | "redirects" | "bio";
+type TabKey = "list" | "dashboard" | "share";
 const TABS: Array<FrameTab<TabKey> & { ownerOnly?: true }> = [
   { key: "list", label: "Links list" },
   { key: "dashboard", label: "Dashboard" },
   { key: "share", label: "Share links", ownerOnly: true },
-  { key: "redirects", label: "Redirect links", extra: true },
-  { key: "bio", label: "Bio pages", ownerOnly: true, extra: true },
 ];
 const isTabKey = (v: string): v is TabKey => TABS.some((t) => t.key === v);
 
@@ -122,8 +115,6 @@ export default function TrackingLinksTab({
     list: <LinksList accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} accountsLoading={accountsLoading} />,
     dashboard: <Dashboard accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} />,
     share: <TrackingShares accountId={accountId} onAccountChange={onAccountChange} />,
-    redirects: <RedirectLinksPanel accountId={accountId} onAccountChange={onAccountChange} />,
-    bio: <BioPagesPanel />,
   };
   return (
     <div>

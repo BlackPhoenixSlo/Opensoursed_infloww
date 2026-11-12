@@ -423,7 +423,7 @@ VIDEO_HEDGE = HEDGE.replace("in this photo", "in this clip")
 
 def video_review(jev: Mapping[str, Any]) -> bool:
     """The clip's reading may be too low: its max frame settled out of review, or its frames were not the 720p
-    ones (`_jev.review`: no_720 / over_cap / poster_only)."""
+    ones (`_jev.review`: no_720 / over_cap / poster_only / long)."""
     return review_lane(jev) or bool(jev.get("review"))
 
 

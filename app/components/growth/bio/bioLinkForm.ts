@@ -1,19 +1,21 @@
 /**
  * The bio editor's link dialog: closed or open with a nullable saved `base`, the Creator's edits,
- * the background picked or marked for removal, the "Tracking and Geo Rule" disclosure, the save in flight and its
+ * the background picked or marked for removal, the "Tracking" disclosure, the save in flight and its
  * refusal. A pure reducer (BioEditor holds it, BioLinkDialog only dispatches), the API's link rules mirrored
  * (`decide.check_link`) and the body a save sends: the whole link on create, only what changed on edit.
  *
  * `saved` sets the open form's base: a background upload that fails after
  * the create leaves the dialog on the saved link, so a retry patches it and never creates a second one (v2
  * `links.js:109`).
+ *
+ * No Geo Rule (11-12): no body carries `geo`, so a link's stored rule is never touched from here.
  */
 import { isBioMode, isStockIcon, type BioLink, type BioMode, type LinkBody, type StockIcon } from "@/hooks/useBioPages";
-import { chars, CODE, CODE_MSG, DESTINATION, DEST_EMPTY_MSG, DEST_MSG, GEO_MSG, GEO_SIZE_MSG, MAX_DESTINATION, MAX_GEO, MAX_TITLE, TITLE_MSG, type FormError } from "@/components/growth/bio/bioRules";
-export { CODE_MSG, DEST_EMPTY_MSG, DEST_MSG, GEO_MSG, GEO_SIZE_MSG, TITLE_MSG } from "@/components/growth/bio/bioRules";
+import { chars, CODE, CODE_MSG, DESTINATION, DEST_EMPTY_MSG, DEST_MSG, MAX_DESTINATION, MAX_TITLE, TITLE_MSG, type FormError } from "@/components/growth/bio/bioRules";
+export { CODE_MSG, DEST_EMPTY_MSG, DEST_MSG, TITLE_MSG } from "@/components/growth/bio/bioRules";
 
-/** The fields inside the "Tracking and Geo Rule" disclosure: a refusal naming one opens it. */
-const ADVANCED_FIELDS = ["tracking", "default_tracking_code", "geo"];
+/** The fields inside the "Tracking" disclosure: a refusal naming one opens it. */
+const ADVANCED_FIELDS = ["tracking", "default_tracking_code"];
 
 /** "none" = no icon, "current" = the link's own non-stock icon kept as is, else a stock icon. */
 export type IconChoice = "none" | "current" | StockIcon;
@@ -27,7 +29,6 @@ export interface LinkDraft {
   mode: LinkMode;
   tracking: boolean;
   code: string;
-  geoText: string;
 }
 
 interface LinkFormFields {
@@ -53,7 +54,7 @@ export type Action =
   | { type: "close" };
 
 const NEW_DRAFT: LinkDraft = {
-  title: "", destination: "https://", icon: "none", isAdult: false, mode: "", tracking: false, code: "", geoText: "",
+  title: "", destination: "https://", icon: "none", isAdult: false, mode: "", tracking: false, code: "",
 };
 
 export const INITIAL_LINK: BioLinkForm = {
@@ -70,21 +71,10 @@ export const draftOfLink = (l: BioLink): LinkDraft => ({
   mode: asLinkMode(l.mode),
   tracking: l.tracking,
   code: l.default_tracking_code ?? "",
-  geoText: l.geo == null ? "" : JSON.stringify(l.geo, null, 2),
 });
 
 /** v2's disclosure rule (`links.js:100`): open when any of its values is set. */
-const hasAdvanced = (d: LinkDraft) => d.tracking || d.code !== "" || d.geoText.trim() !== "";
-
-/** The Geo Rule textarea: blank is no rule (null), a JSON object is the rule, anything else is refused. */
-export function parseGeo(text: string): { ok: true; value: Record<string, unknown> | null } | { ok: false; msg: string } {
-  if (!text.trim()) return { ok: true, value: null };
-  let v: unknown;
-  try { v = JSON.parse(text); } catch { return { ok: false, msg: GEO_MSG }; }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return { ok: false, msg: GEO_MSG };
-  if (new TextEncoder().encode(JSON.stringify(v)).length > MAX_GEO) return { ok: false, msg: GEO_SIZE_MSG };
-  return { ok: true, value: v as Record<string, unknown> };
-}
+const hasAdvanced = (d: LinkDraft) => d.tracking || d.code !== "";
 
 /** The first refusal the API would answer for this draft, or null. */
 export function linkFormError(d: LinkDraft, base: BioLink | null = null): FormError | null {
@@ -100,10 +90,6 @@ export function linkFormError(d: LinkDraft, base: BioLink | null = null): FormEr
   }
   if (changed("destination") && !DESTINATION.test(dest)) return { msg: DEST_MSG, fields: ["destination"] };
   if (changed("code") && !CODE.test(d.code)) return { msg: CODE_MSG, fields: ["default_tracking_code"] };
-  if (changed("geoText")) {
-    const geo = parseGeo(d.geoText);
-    if (!geo.ok) return { msg: geo.msg, fields: ["geo"] };
-  }
   return null;
 }
 
@@ -116,13 +102,10 @@ const iconBody = (icon: IconChoice): { icon?: StockIcon | null } =>
  * or null when nothing does. Call it on a draft `linkFormError` passed.
  */
 export function buildLinkPayload(base: BioLink | null, draft: LinkDraft): LinkBody | null {
-  const geo = parseGeo(draft.geoText);
-  const geoValue = geo.ok ? geo.value : null;
   if (!base) {
     return {
       title: draft.title.trim(), destination: draft.destination.trim(), ...iconBody(draft.icon),
       is_adult: draft.isAdult, mode: draft.mode, tracking: draft.tracking, default_tracking_code: draft.code,
-      geo: geoValue,
     };
   }
   const was = draftOfLink(base);
@@ -134,7 +117,6 @@ export function buildLinkPayload(base: BioLink | null, draft: LinkDraft): LinkBo
   if (draft.mode !== was.mode) out.mode = draft.mode;
   if (draft.tracking !== was.tracking) out.tracking = draft.tracking;
   if (draft.code !== was.code) out.default_tracking_code = draft.code;
-  if (draft.geoText !== was.geoText) out.geo = geoValue;
   return Object.keys(out).length ? out : null;
 }
 
@@ -142,7 +124,7 @@ export const canSubmit = (f: BioLinkForm) => f.open && !f.busy && linkFormError(
 export const isDirty = (f: BioLinkForm) => f.open && (
   f.bgFile !== null || f.bgRemove || (f.base ? buildLinkPayload(f.base, f.draft) !== null
     : f.draft.title !== "" || f.draft.destination !== "https://" || f.draft.icon !== "none"
-      || f.draft.isAdult || f.draft.mode !== "" || f.draft.tracking || f.draft.code !== "" || f.draft.geoText !== "")
+      || f.draft.isAdult || f.draft.mode !== "" || f.draft.tracking || f.draft.code !== "")
 );
 
 const opensAdvanced = (fields: string[]) => fields.some((x) => ADVANCED_FIELDS.includes(x));

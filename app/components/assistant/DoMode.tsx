@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { DO_FLOWS, PLAN_NOTE, type DoDraft } from "./doFlows";
+import { boundFlow, PLAN_NOTE, type DoDraft } from "./doFlows";
 import { canStart, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
@@ -24,14 +24,15 @@ const BTN_SOFT = cn(BTN, "border border-[#dcdcdc] bg-white text-[#14161a] hover:
 
 export const DO_HINT =
   "Tell me what to set up — e.g. “auto mass to fans every hour, delete after 8h, SFW folder, 10 captions”. "
-  + "I can set up a new Auto Mass (saved OFF — you turn it on) or change unsend, schedule, online-only, "
-  + "skip-recent-chats or turn off on your existing ones, here or on every model.";
+  + "I can set up a new Auto Mass or Auto Story (saved OFF — you turn it on) or change unsend, schedule, "
+  + "online-only, skip-recent-chats or turn off on your existing Auto Masses, here or on every model.";
 
 /** The plan card's text, pure (DoMode.test.ts): the flow's plain-words lines, the draft's assumptions and open
  *  questions, and the fixed note. */
 export function planCardText(d: DoDraft): { lines: string[]; assumptions: string[]; unresolved: string[]; note: string } | null {
-  if (!canStart(d) || d.flow !== "mass_premade") return null;
-  return { lines: DO_FLOWS[d.flow].planLines(d.slots), assumptions: d.assumptions, unresolved: d.unresolved, note: PLAN_NOTE };
+  const flow = canStart(d) ? boundFlow(d) : null;
+  if (!flow) return null;
+  return { lines: flow.planLines, assumptions: d.assumptions, unresolved: d.unresolved, note: PLAN_NOTE };
 }
 
 /** The fixed note under an edit plan card. */
@@ -199,7 +200,9 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
     );
   }
   if (draft.flow === "mass_edit") return <EditThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
-  const total = DO_FLOWS[draft.flow].toActions(draft.slots).length;
+  const flow = boundFlow(draft);
+  if (!flow) return null;
+  const total = flow.steps.length;
   return (
     <>
       {request}
@@ -224,7 +227,7 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
       {run.phase === "done" && (
         <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-[13px] text-[#14161a]")} role="status">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#1a7f37]" aria-hidden />
-          <span>Created OFF — turn it on in the table when ready</span>
+          <span>{flow.doneText}</span>
         </div>
       )}
       {(run.phase === "aborted" || run.phase === "failed") && (

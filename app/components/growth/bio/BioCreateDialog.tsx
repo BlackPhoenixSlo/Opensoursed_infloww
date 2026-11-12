@@ -1,13 +1,15 @@
 "use client";
 
-/** "New bio page": the address (username), the display name and an optional Creator. A created page opens in the
- *  editor. State: `bioCreateForm.ts`. */
-import { useId, useReducer } from "react";
+/** "New bio page": the address (username), the display name and an optional Creator. A picked Creator prefills the
+ *  name and a username from its OF profile (the shared `/users/me` query); the server adds its OnlyFans link. A
+ *  created page opens in the editor. State: `bioCreateForm.ts`. */
+import { useEffect, useId, useReducer } from "react";
 import { useRouter } from "next/navigation";
 
 import { IfButton, IfCreatorSelect, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
 import { useAccounts } from "@/hooks/useAccounts";
 import { bioFailure, bioPageHref, useCreateBioPage } from "@/hooks/useBioPages";
+import { useOfMe } from "@/hooks/useGrowth";
 import {
   INITIAL_CREATE, MAX_DISPLAY_NAME, bioCreateReducer, buildCreatePayload, canSubmit, createFormError, isDirty,
 } from "@/components/growth/bio/bioCreateForm";
@@ -19,6 +21,10 @@ export function BioCreateDialog({ publicBase, onClose }: { publicBase: string | 
   const [form, dispatch] = useReducer(bioCreateReducer, INITIAL_CREATE);
   const id = useId();
   const bad = (field: string) => form.error?.fields.includes(field) || undefined;
+  const me = useOfMe(form.accountId).data;
+  useEffect(() => {
+    if (form.accountId && me) dispatch({ type: "creator_identity", accountId: form.accountId, name: me.name, username: me.username });
+  }, [form.accountId, me]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,6 +50,14 @@ export function BioCreateDialog({ publicBase, onClose }: { publicBase: string | 
       </>}>
       <form id={id} onSubmit={submit} noValidate className="space-y-4">
         <div>
+          <IfLabel>Creator</IfLabel>
+          <IfCreatorSelect accounts={accounts} value={form.accountId} allLabel="No Creator" className="w-full"
+            onAll={() => dispatch({ type: "pick_creator", accountId: null })}
+            onChange={(accountId) => dispatch({ type: "pick_creator", accountId })} />
+          <IfHelp>Optional. Fills the name and username from this Creator&rsquo;s OnlyFans profile, adds an OnlyFans
+            link and lets the page use its tracking links.</IfHelp>
+        </div>
+        <div>
           <IfLabel htmlFor={`${id}-u`} required>Username</IfLabel>
           <div className="flex min-w-0 items-center gap-1">
             <span className="max-w-[55%] shrink-0 truncate text-[13px] text-muted" title={`${publicBase ?? ""}/`}>
@@ -56,17 +70,11 @@ export function BioCreateDialog({ publicBase, onClose }: { publicBase: string | 
           <IfHelp>Your page&rsquo;s address: 3-30 lowercase letters, digits or _. It can&rsquo;t be changed.</IfHelp>
         </div>
         <div>
-          <IfLabel htmlFor={`${id}-n`} required>Display name</IfLabel>
+          <IfLabel htmlFor={`${id}-n`} required={!form.accountId}>Display name</IfLabel>
           <IfInput id={`${id}-n`} className="w-full" value={form.displayName} maxLength={MAX_DISPLAY_NAME}
             aria-invalid={bad("display_name")}
             onChange={(e) => dispatch({ type: "set", patch: { displayName: e.target.value } })} />
-        </div>
-        <div>
-          <IfLabel>Creator</IfLabel>
-          <IfCreatorSelect accounts={accounts} value={form.accountId} allLabel="No Creator" className="w-full"
-            onAll={() => dispatch({ type: "set", patch: { accountId: null } })}
-            onChange={(accountId) => dispatch({ type: "set", patch: { accountId } })} />
-          <IfHelp>Optional. Lets the page use this Creator&rsquo;s OnlyFans tracking links.</IfHelp>
+          {form.accountId && !form.displayName.trim() && <IfHelp>Left blank: the Creator&rsquo;s OnlyFans name.</IfHelp>}
         </div>
         {form.error && <p role="alert" className="text-[12px] text-err">{form.error.msg}</p>}
       </form>

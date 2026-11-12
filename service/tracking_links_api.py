@@ -29,11 +29,9 @@ Routes:
 """
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 import logging
-import os
 import re
 import secrets
 import time
@@ -41,7 +39,6 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
@@ -51,8 +48,8 @@ from sqlalchemy.exc import IntegrityError
 import client_addr
 import tracking_stats
 import click_classify
-import of_origin
 import token_bucket
+import turnstile
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import TrackingClick, TrackingLink
@@ -103,84 +100,15 @@ def _normalize_target(url: Any) -> str | None:
 
 
 # ── Cloudflare Turnstile ("Bot check before redirect") ────────────────
-# Read per call so a key set later (or a test) takes effect without a restart.
-TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
-_TURNSTILE_TIMEOUT_S = 5.0
-_MAX_TOKEN = 2048  # Turnstile's documented token ceiling
-
-
-def _turnstile_keys() -> tuple[str, str] | None:
-    site = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
-    secret = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
-    return (site, secret) if site and secret else None
-
-
-def bot_check_available() -> bool:
-    return _turnstile_keys() is not None
-
-
-# One client per event loop, kept: a new AsyncClient per verify builds an SSL
-# context each time, which under a click burst ate the event loop (measured in
-# slop tracking-links-clicks, medium/200: /t/ p95 25 -> 276 ms).
-_verify_http: tuple[Any, httpx.AsyncClient] | None = None
-
-
-def _verify_client() -> httpx.AsyncClient:
-    global _verify_http
-    loop = asyncio.get_running_loop()
-    if _verify_http is None or _verify_http[0] is not loop or _verify_http[1].is_closed:
-        _verify_http = (loop, httpx.AsyncClient(timeout=_TURNSTILE_TIMEOUT_S,
-                                                limits=httpx.Limits(max_connections=32)))
-    return _verify_http[1]
-
-
-def _verify_url() -> str:
-    """Cloudflare's siteverify, or TURNSTILE_VERIFY_URL (env, a test double) when
-    that is an http(s) URL on loopback: the secret is posted there, so any
-    other host is ignored (of_origin.loopback_url, ADR 0024's OF_API_ORIGIN rule)."""
-    raw = os.environ.get("TURNSTILE_VERIFY_URL", "").strip()
-    if not raw:
-        return TURNSTILE_VERIFY_URL
-    if of_origin.loopback_url(raw) is None:
-        log.warning("TURNSTILE_VERIFY_URL ignored: not a loopback http(s) URL")
-        return TURNSTILE_VERIFY_URL
-    return raw
-
-
-# Outstanding siteverify calls, all clients together: past this a verify answers
-# 503 (the page shows Retry) instead of queueing behind the client's connections.
-_VERIFY_MAX_INFLIGHT = 32
-_verify_inflight = 0
-
-
-async def _turnstile_passes(secret: str, token: str, remoteip: str | None) -> bool | None:
-    """True/False = Cloudflare's verdict; None = Cloudflare unreachable, busy on
-    its side (non-200, `internal-error`), garbled, or too many calls out."""
-    global _verify_inflight
-    if _verify_inflight >= _VERIFY_MAX_INFLIGHT:
-        log.warning("turnstile siteverify: %d calls out, refusing", _verify_inflight)
-        return None
-    data = {"secret": secret, "response": token}
-    if remoteip:
-        data["remoteip"] = remoteip
-    _verify_inflight += 1
-    try:
-        r = await _verify_client().post(_verify_url(), data=data)
-        if r.status_code != 200:
-            log.warning("turnstile siteverify answered %s", r.status_code)
-            return None
-        answer = r.json()
-        if answer.get("success"):
-            return True
-        if "internal-error" in (answer.get("error-codes") or []):
-            log.warning("turnstile siteverify internal-error")
-            return None
-        return False
-    except (httpx.HTTPError, ValueError, AttributeError):
-        log.warning("turnstile siteverify unreachable", exc_info=True)
-        return None
-    finally:
-        _verify_inflight -= 1
+# The keys, the siteverify client and its in-flight cap live in turnstile.py
+# (the bio app gates its Reveal with the same); the names below are this
+# module's own seams (tests patch _turnstile_passes here).
+TURNSTILE_VERIFY_URL = turnstile.VERIFY_URL
+_MAX_TOKEN = turnstile.MAX_TOKEN
+_turnstile_keys = turnstile.keys
+bot_check_available = turnstile.available
+_verify_url = turnstile.verify_url
+_turnstile_passes = turnstile.passes
 
 
 # Per-client verify budget (client_addr: the trusted hop's address, an IPv6

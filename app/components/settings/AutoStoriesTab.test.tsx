@@ -9,7 +9,7 @@
  * dialog, never `window.confirm`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -32,6 +32,8 @@ vi.mock("@/hooks/useVaultMedia", () => ({
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 
 import AutoStoriesTab from "@/components/settings/AutoStoriesTab";
+import { AgentBridgeProvider, createAgentBridge } from "@/components/assistant/agentBridge";
+import { DO_FLOWS } from "@/components/assistant/doFlows";
 import { relay } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 
@@ -169,5 +171,56 @@ describe("Auto Story (AutoStoriesTab)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/7"));
     expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("Auto Story on the help bot's agent bridge (D13)", () => {
+  const SLOTS = {
+    folder: { id: "5", name: "Teasers", photos: 3 }, mode: "clock" as const, times: ["09:00", "20:00"], every_hours: 6,
+    per_run: 2, hours_to_live: 12, max_runs: 30,
+  };
+  const signal = () => new AbortController().signal;
+
+  it("registers as a NEW, clean editor; the played steps save a new rule OFF through Save's own POST", async () => {
+    mockRules([]);
+    const post = relay.post as unknown as Mock;
+    post.mockResolvedValue({ ...RULE, is_enabled: false });
+    const bridge = createAgentBridge();
+    renderWithProviders(<AgentBridgeProvider bridge={bridge}><AutoStoriesTab /></AgentBridgeProvider>);
+    const editor = await bridge.waitFor(() => bridge.anyEditor("auto_stories", "acc-a"), 2000, signal());
+    expect(editor.isNew).toBe(true);
+    expect(bridge.hasEditor()).toBe(false); // a clean page never blocks a run
+    const steps = DO_FLOWS.auto_story.toActions(SLOTS);
+    for (const id of ["story-folder", "story-mode-clock", "story-mode-interval", "story-time-0", "story-per-run", "story-ttl",
+      "story-max-runs", "story-enabled", "story-save"]) {
+      expect(document.getElementById(id), id).toBeTruthy();
+    }
+    for (const step of steps) if (typeof step.action !== "string") act(() => editor.dispatch(step.action as never));
+    expect(bridge.hasEditor()).toBe(true);
+    expect(screen.getByLabelText("Time 2")).toHaveValue("20:00");
+    let res: Awaited<ReturnType<typeof editor.save>> | undefined;
+    await act(async () => { res = await editor.save(); });
+    expect(res).toEqual({ ok: true });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][1]).toMatchObject({
+      kind: "auto_stories", is_enabled: false,
+      trigger: { daily_at: ["09:00", "20:00"], max_runs: 30 },
+      payload: { folder_id: 5, per_run: 2, hours_to_live: 12 },
+    });
+  });
+
+  it("with a rule already there it is not new and its save refuses (one per account)", async () => {
+    mockRules([RULE]);
+    const post = relay.post as unknown as Mock;
+    const bridge = createAgentBridge();
+    renderWithProviders(<AgentBridgeProvider bridge={bridge}><AutoStoriesTab /></AgentBridgeProvider>);
+    await seeded();
+    const editor = await bridge.waitFor(() => bridge.anyEditor("auto_stories", "acc-a"), 2000, signal());
+    expect(editor.isNew).toBe(false);
+    expect(bridge.editor("auto_stories", "acc-a")).toBeNull();
+    let res: Awaited<ReturnType<typeof editor.save>> | undefined;
+    await act(async () => { res = await editor.save(); });
+    expect(res).toMatchObject({ ok: false, reason: expect.stringContaining("already set up") });
+    expect(post).not.toHaveBeenCalled();
   });
 });

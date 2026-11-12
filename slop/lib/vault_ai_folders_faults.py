@@ -5,7 +5,7 @@ from __future__ import annotations
 
 PLAN = "ai_folders_plan_partial_flags"
 CREATE_ENABLED = "create_enabled_partial_flags"
-DESK_ONLY_PHONE = "ai_folders_desk_only_phone"
+PHONE_OFFERED = "ai_folders_phone_offered"
 CREATED = "ai_folders_created_from_ui"
 PAID_ONLY = "ai_folders_paid_flagged_only"
 NO_DUPES = "ai_folders_no_duplicate_in_folder"

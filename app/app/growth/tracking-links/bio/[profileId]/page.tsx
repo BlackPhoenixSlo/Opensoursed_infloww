@@ -1,11 +1,6 @@
-"use client";
+import { redirect } from "next/navigation";
 
-/** /growth/tracking-links/bio/[profileId]: one bio page's editor (Growth → Tracking links → Bio pages → a row). */
-import { use } from "react";
-
-import { BioEditor } from "@/components/growth/bio/BioEditor";
-
-export default function BioEditorPage({ params }: { params: Promise<{ profileId: string }> }) {
-  const { profileId } = use(params);
-  return <BioEditor profileId={profileId} />;
+/** The old editor address: bookmarks land on /growth/bio-pages/<id> (Bio pages left Tracking links 11-12). */
+export default async function OldBioEditor({ params }: { params: Promise<{ profileId: string }> }): Promise<never> {
+  redirect(`/growth/bio-pages/${encodeURIComponent((await params).profileId)}`);
 }

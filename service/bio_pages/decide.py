@@ -129,8 +129,9 @@ def _origin(s: str) -> tuple | None:
     return scheme, host, p
 
 
-def same_origin(hdr: Header) -> bool:
-    """click-guard.js:60-79."""
+def same_origin(hdr: Header, forwarded: bool = False) -> bool:
+    """click-guard.js:60-79. `forwarded` (path mode via a trusted proxy): Next's rewrite sets Host to the bio
+    container and X-Forwarded-Host to the browser's host, so the Origin is held against the latter."""
     site = hdr("sec-fetch-site")
     if site in ("cross-site", "same-site"):
         return False
@@ -138,7 +139,7 @@ def same_origin(hdr: Header) -> bool:
     if origin is None:
         return True
     proto = "https" if hdr("x-forwarded-proto") == "https" else "http"
-    host = hdr("host")
+    host = (forwarded and hdr("x-forwarded-host")) or hdr("host")
     a = _origin(origin)
     return a is not None and a == _origin(f"{proto}://{'null' if host is None else host}")
 
@@ -174,15 +175,38 @@ def is_askable(domain: str, primary: frozenset[str]) -> bool:
     return name in primary or bool(HOSTNAME.fullmatch(name))
 
 
-def resolve_profile_request(kind: HostKind, custom_username: str | None, upath: str) -> dict | None:
-    """host-resolver.js resolveProfileRequest: segments still percent-encoded, empties dropped."""
+def resolve_profile_request(kind: HostKind, custom_username: str | None, upath: str, prefix: str = "") -> dict | None:
+    """host-resolver.js resolveProfileRequest: segments still percent-encoded, empties dropped. `prefix` (path mode,
+    BIO_PATH_PREFIX, already cut from `upath`) leads the path grammar's profilePath; a Custom Domain never has one."""
     segs = [s for s in upath.split("/") if s]
     if kind == "custom":
         if len(segs) > 1:
             return None
         return {"username": custom_username, "trackingCode": segs[0] if segs else None, "profilePath": "/"}
     username = segs[0] if segs else ""
-    return {"username": username, "trackingCode": segs[1] if len(segs) > 1 else None, "profilePath": "/" + username}
+    return {"username": username, "trackingCode": segs[1] if len(segs) > 1 else None,
+            "profilePath": prefix + "/" + username}
+
+
+# ── path mode (BIO_PATH_PREFIX: `<app host>/p/<username>` through the Next app's rewrite) ──
+
+PATH_PREFIX = re.compile(r"(?:/[a-z0-9_-]+)+")
+
+
+def parse_path_prefix(raw: str | None) -> str:
+    """BIO_PATH_PREFIX as `/seg[/seg]` (no trailing slash), or "" (host mode only). Anything else raises: the prefix
+    is written into the page's attributes and script URLs, so only these characters may reach them."""
+    s = (raw or "").strip().rstrip("/")
+    if s and not PATH_PREFIX.fullmatch(s):
+        raise ValueError("invalid BIO_PATH_PREFIX")
+    return s
+
+
+def cut_prefix(prefix: str, upath: str) -> str | None:
+    """`upath` without `prefix` when it starts with it as whole segments (`/p` and `/p/...`, never `/px`), else None."""
+    if not prefix or not (upath == prefix or upath.startswith(prefix + "/")):
+        return None
+    return upath[len(prefix):] or "/"
 
 
 def to_json(value: Any) -> bytes:
@@ -201,10 +225,12 @@ BOOTSTRAP_OPEN = '<script type="application/json" id="profile-bootstrap">'
 NO_BOOTSTRAP = object()
 
 
-def bootstrap_page(index_html: str, req: dict | None) -> str:
-    """index.html with the Profile bootstrap block before the first `<script src="/script.js">` (server.js:286-299)."""
+def bootstrap_page(index_html: str, req: dict | None, prefix: str = "") -> str:
+    """index.html with the Profile bootstrap block before the first `<script src="/script.js">` (server.js:286-299);
+    a page rendered with a path prefix has that prefix on the script's src."""
+    before = f'<script src="{prefix}/script.js"></script>'
     block = f'{BOOTSTRAP_OPEN}{as_script_json(req)}</script>\n    '
-    return index_html.replace(BOOTSTRAP_BEFORE, block + BOOTSTRAP_BEFORE, 1)
+    return index_html.replace(before, block + before, 1)
 
 
 def parse_bootstrap(page: bytes):
@@ -220,12 +246,22 @@ def parse_bootstrap(page: bytes):
     return json.loads(text[start:end])
 
 
-def render_index(index_html: str, escape_tap: bool) -> str:
-    """Render the process-wide flag on the Escape Overlay card."""
+_ROOT_ATTR = re.compile(r'\b(href|src)="/(?!/)')
+
+
+def render_index(index_html: str, escape_tap: bool, prefix: str = "") -> str:
+    """Render the process-wide flag on the Escape Overlay card; with a path prefix (parse_path_prefix), lead every
+    root-relative href/src with it and name it on <body data-base> for script.js's own URLs."""
     needle = '<a id="igCard" class="ig-card">'
     if index_html.count(needle) != 1:
         raise ValueError("igCard anchor missing or duplicated")
-    return index_html.replace(needle, f'<a id="igCard" class="ig-card" data-escape-tap="{int(escape_tap)}">', 1)
+    out = index_html.replace(needle, f'<a id="igCard" class="ig-card" data-escape-tap="{int(escape_tap)}">', 1)
+    if not prefix:
+        return out
+    if out.count("<body>") != 1:
+        raise ValueError("body tag missing or duplicated")
+    out = _ROOT_ATTR.sub(lambda m: f'{m.group(1)}="{prefix}/', out)
+    return out.replace("<body>", f'<body data-base="{prefix}">', 1)
 
 
 # ── Profile JSON (public-profile.js) ──────────────────────────────────
@@ -236,12 +272,18 @@ def lookup_username(raw: str) -> str | None:
     return name if USERNAME.fullmatch(name) else None
 
 
-def _file_url(collection: str, row: Mapping, field: str) -> str:
-    return f"/api/files/{collection}/{row['id']}/{row[field]}" if row.get(field) else ""
+def _file_url(collection: str, row: Mapping, field: str, prefix: str = "") -> str:
+    return f"{prefix}/api/files/{collection}/{row['id']}/{row[field]}" if row.get(field) else ""
 
 
-def public_profile(profile: Mapping, links: Sequence[Mapping]) -> dict:
-    """The Profile JSON. Never sent: destination, geo, owner/account, slot, v1_key, bot_check."""
+def gated(link: Mapping | None, site_key: str | None) -> bool:
+    """Reveal needs a Turnstile token: the Link's bot_check while the keys are set (`site_key` None = unset)."""
+    return bool(site_key and link and link.get("bot_check"))
+
+
+def public_profile(profile: Mapping, links: Sequence[Mapping], site_key: str | None = None, prefix: str = "") -> dict:
+    """The Profile JSON. Never sent: destination, geo, owner/account, slot, v1_key. A gated Link (gated()) carries
+    `botCheck: true` and the JSON the Turnstile site key; with the keys unset the shape is v2's."""
     pmode = profile["mode"] if profile["mode"] in MODES else "escape_ig"
     out_links = []
     for link in links:
@@ -250,13 +292,18 @@ def public_profile(profile: Mapping, links: Sequence[Mapping]) -> dict:
         if link["default_tracking_code"]:
             item["default_tracknumber"] = link["default_tracking_code"]
         item["mode"] = link["mode"] if link["mode"] in MODES else pmode
-        item["icon"] = _file_url("links", link, "icon")
-        item["backgroundImage"] = _file_url("links", link, "background_image")
+        item["icon"] = _file_url("links", link, "icon", prefix)
+        item["backgroundImage"] = _file_url("links", link, "background_image", prefix)
+        if gated(link, site_key):
+            item["botCheck"] = True
         out_links.append(item)
-    return {"profile": {"id": profile["id"], "username": profile["username"], "displayName": profile["display_name"],
-                        "bio": profile["bio"], "avatarUrl": _file_url("profiles", profile, "avatar"),
-                        "verified": bool(profile["verified"]), "mode": pmode},
-            "links": out_links}
+    out = {"profile": {"id": profile["id"], "username": profile["username"], "displayName": profile["display_name"],
+                       "bio": profile["bio"], "avatarUrl": _file_url("profiles", profile, "avatar", prefix),
+                       "verified": bool(profile["verified"]), "mode": pmode},
+           "links": out_links}
+    if any(item.get("botCheck") for item in out_links):
+        out["turnstileSiteKey"] = site_key
+    return out
 
 
 # ── owner admin validation (PR2a; pure, table-tested; the editor mirrors these) ──

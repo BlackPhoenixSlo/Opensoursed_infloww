@@ -11,6 +11,8 @@ import _harness  # MUST be first
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
+import ipaddress  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
@@ -24,6 +26,7 @@ from bio_pages import assets  # noqa: E402
 from bio_pages import app as bio_app  # noqa: E402
 from bio_pages import decide, guard, store  # noqa: E402
 from bio_pages.config import BioConfig  # noqa: E402
+import client_addr  # noqa: E402
 
 PID, PID2, PID3 = "p00000000000001", "p00000000000002", "p00000000000003"
 LID, LID2 = "l00000000000001", "l00000000000002"
@@ -270,6 +273,151 @@ def case_reveal():
     assert r.status_code == 403
 
 
+def case_path_mode():
+    """BIO_PATH_PREFIX=/p: `/p/...` is served with the prefix cut and prefixed URLs; unprefixed is host mode as ever."""
+    saved = os.environ.get("BIO_PATH_PREFIX")
+    try:
+        for raw, want in (("", ""), ("/p/", "/p"), (" /bio ", "/bio")):
+            os.environ["BIO_PATH_PREFIX"] = raw
+            assert BioConfig.from_env().path_prefix == want, raw
+        for raw in ("p", "/P", "/p x", '/p"'):
+            os.environ["BIO_PATH_PREFIX"] = raw
+            try:
+                BioConfig.from_env()
+                assert False, raw
+            except ValueError:
+                pass
+    finally:
+        os.environ.pop("BIO_PATH_PREFIX", None)
+        if saved is not None:
+            os.environ["BIO_PATH_PREFIX"] = saved
+    bio_app.PATH_PREFIX = "/p"
+    bio_app.PREFIXED_INDEX_HTML = decide.render_index(assets.INDEX.read_text(), True, "/p")
+    same = {"sec_fetch_site": "same-origin"}
+    try:
+        page = call("GET", "/p/alice/12").text
+        assert _block(page) == {"username": "alice", "trackingCode": "12", "profilePath": "/p/alice"}
+        assert '<body data-base="/p">' in page and 'src="/p/script.js"' in page and 'href="/p/style.css"' in page
+        for asset in ("/script.js", "/style.css", "/images/verified.svg"):
+            r = call("GET", "/p" + asset)
+            assert r.status_code == 200 and r.content == call("GET", asset).content, asset
+        body = call("GET", "/p/api/profiles/alice.json").json()
+        assert body["profile"]["avatarUrl"] == f"/p/api/files/profiles/{PID}/a.webp"
+        r = call("GET", body["profile"]["avatarUrl"])
+        assert (r.status_code, r.content) == (200, WEBP)
+        assert call("POST", "/p/v/alice").status_code == 204
+        r = call("GET", f"/p/.netlify/functions/reveal?id={KEY}&trackingId=77", **same)
+        assert (r.status_code, r.json()) == (200, {"realUrl": DEST + "/c77"})
+        # A browser Origin through Next: Host is the container, X-Forwarded-Host the app's (peer 127.0.0.1, trusted).
+        via = {"origin": "https://app.test", "host": "openinflowwww-bio:8788", "x_forwarded_host": "app.test",
+               "x_forwarded_proto": "https"}
+        rv = f"/.netlify/functions/reveal?id={KEY}"
+        assert call("GET", "/p" + rv, **via).status_code == 200
+        assert call("GET", "/p" + rv, **{**via, "x_forwarded_host": "evil.test"}).status_code == 403
+        assert call("GET", rv, **via).status_code == 403, "host mode: Host only"
+        saved_trust = client_addr.TRUSTED_PROXIES
+        client_addr.TRUSTED_PROXIES = (ipaddress.ip_network("10.9.9.9/32"),)
+        try:
+            assert call("GET", "/p" + rv, **via).status_code == 403, "untrusted peer"
+        finally:
+            client_addr.TRUSTED_PROXIES = saved_trust
+        for p in ("/p", "/p/"):
+            r = call("GET", p)
+            assert (r.status_code, r.content) == (200, bio_app.LANDING), p
+        page = call("GET", "/alice").text
+        assert _block(page)["profilePath"] == "/alice" and "data-base" not in page, "host mode unchanged"
+        assert _block(call("GET", "/px").text)["username"] == "px", "only whole segments are the prefix"
+        assert call("GET", "/api/profiles/alice.json").json()["profile"]["avatarUrl"].startswith("/api/files/")
+        # A Custom Domain stays its one Profile's: /p/bob there is two segments, no page.
+        assert _block(call("GET", "/p/bob", host="alice.test").text) is None
+        assert "data-base" not in call("GET", "/p", host="alice.test").text
+        assert _block(call("GET", "/", host="alice.test").text)["profilePath"] == "/"
+    finally:
+        bio_app.PATH_PREFIX = ""
+        bio_app.PREFIXED_INDEX_HTML = ""
+
+
+@contextlib.contextmanager
+def _turnstile(verdict, keys=True):
+    """Turnstile keys in the env and siteverify answered at the transport (None = unreachable); yields its posts."""
+    import turnstile
+    posts: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        posts.append(req.content.decode())
+        if verdict is None:
+            raise httpx.ConnectError("cloudflare down", request=req)
+        return httpx.Response(200, json={"success": verdict, "error-codes": [] if verdict else ["bad"]})
+
+    saved = {k: os.environ.get(k) for k in ("TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "TURNSTILE_VERIFY_URL")}
+    real = turnstile._client
+    turnstile._client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    os.environ.pop("TURNSTILE_VERIFY_URL", None)
+    if keys:
+        os.environ.update(TURNSTILE_SITE_KEY="SITEKEY", TURNSTILE_SECRET_KEY="SECRETKEY")
+    else:
+        os.environ.pop("TURNSTILE_SITE_KEY", None)
+        os.environ.pop("TURNSTILE_SECRET_KEY", None)
+    try:
+        yield posts
+    finally:
+        turnstile._client = real
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _set_bot_check(on: bool):
+    c = sqlite3.connect(_harness.DB_PATH)
+    c.execute("UPDATE bio_links SET bot_check = ? WHERE link_id = ?", (int(on), KEY))
+    c.commit()
+    c.close()
+
+
+def case_reveal_bot_check():
+    same = {"sec_fetch_site": "same-origin"}
+    rv = f"/.netlify/functions/reveal?id={KEY}&trackingId=31"
+    ok = {"realUrl": DEST + "/c31"}
+    _set_bot_check(True)
+    try:
+        with _turnstile(True, keys=False) as posts:
+            assert call("GET", rv, **same).json() == ok, "keys unset: today's Reveal"
+            assert "botCheck" not in call("GET", "/api/profiles/alice.json").text
+            assert posts == []
+        with _turnstile(True) as posts:
+            body = call("GET", "/api/profiles/alice.json").json()
+            assert body["turnstileSiteKey"] == "SITEKEY" and "SECRETKEY" not in json.dumps(body)
+            assert [lk.get("botCheck", False) for lk in body["links"]] == [True, False]
+            r = call("GET", rv, **same)
+            assert (r.status_code, r.content) == (403, b'{"error":"Bot check failed"}'), "no token, no call"
+            assert posts == []
+            r = call("GET", rv, x_turnstile_token="tok-1", **same)
+            assert (r.status_code, r.json(), r.headers["cache-control"]) == (200, ok, "no-store"), "/c<code> kept"
+            assert "response=tok-1" in posts[0] and "secret=SECRETKEY" in posts[0] and "remoteip=" in posts[0]
+            assert call("GET", f"/.netlify/functions/reveal?id={KEY2}", **same).status_code == 200, "ungated Link"
+            assert len(posts) == 1
+            r = call("GET", rv, x_turnstile_token="x" * 2049, **same)
+            assert r.status_code == 403 and len(posts) == 1, "oversized token: no call"
+            r = call("GET", "/.netlify/functions/reveal?id=nope", x_turnstile_token="t", **same)
+            assert r.status_code == 404 and len(posts) == 1, "unknown Link: 404 before any check"
+            r = call("GET", rv, x_turnstile_token="t", sec_fetch_site="cross-site")
+            assert r.status_code == 403 and len(posts) == 1, "cross-origin refused before any check"
+        with _turnstile(False) as posts:
+            r = call("GET", rv, x_turnstile_token="bad", **same)
+            assert (r.status_code, r.content) == (403, b'{"error":"Bot check failed"}') and len(posts) == 1
+        with _turnstile(None) as posts:
+            r = call("GET", rv, x_turnstile_token="t", **same)
+            assert (r.status_code, r.content) == (503, b'{"error":"Bot check unavailable"}'), "Cloudflare down"
+            assert "slopdest" not in r.text
+        _set_bot_check(False)
+        with _turnstile(False) as posts:
+            assert call("GET", rv, **same).json() == ok and posts == [], "bot_check off: no gate"
+    finally:
+        _set_bot_check(False)
+
+
 def case_limits():
     NOW[0] = 5 * 60.0
     guard.configure(2, clock=lambda: NOW[0])
@@ -299,6 +447,57 @@ def case_files():
         if path.endswith("/x"):
             continue  # 4 segments: #6
         assert r.content == b"" and "content-type" not in r.headers and "cache-control" not in r.headers, path
+
+
+def case_custom_domain_isolation():
+    """A live Custom Domain (alice.test) is Alice's only: Bob's JSON, ping, Link and files 404 there, with and
+    without the /p prefix; Alice's own still answer; other hosts still serve every Profile."""
+    lid3, key3 = "l00000000000003", "k00000000003"
+    c = sqlite3.connect(_harness.DB_PATH)
+    c.execute("INSERT INTO bio_links(id, profile_id, link_id, title, destination, default_tracking_code, tracking, "
+              "bot_check, sort_order) VALUES (?, ?, ?, 'Bob', 'https://bob.example/x', '', 1, 1, 1.0)",
+              (lid3, PID2, key3))
+    c.commit()
+    c.close()
+    for rid, col in ((PID2, "profiles"), (lid3, "links"), (LID, "links")):
+        (FILES / col / rid).mkdir(parents=True, exist_ok=True)
+        (FILES / col / rid / "b.webp").write_bytes(WEBP)
+    bio_app.PATH_PREFIX = "/p"
+    a, same = {"host": "alice.test", "sec_fetch_site": "same-origin"}, {"sec_fetch_site": "same-origin"}
+    try:
+        asyncio.run(store.flush())
+        before = _daily()
+        with _turnstile(True) as posts:
+            for pre in ("", "/p"):
+                for path, method in ((f"{pre}/api/profiles/bob.json", "GET"), (f"{pre}/api/profiles/Bob.json", "GET"),
+                                     (f"{pre}/v/bob", "POST"),
+                                     (f"{pre}/.netlify/functions/reveal?id={key3}&trackingId=9", "GET"),
+                                     (f"{pre}/api/files/profiles/{PID2}/b.webp", "GET"),
+                                     (f"{pre}/api/files/links/{lid3}/b.webp", "GET")):
+                    r = call(method, path, **a)
+                    assert r.status_code == 404, (path, r.status_code, r.content[:80])
+                    assert b"slopdest" not in r.content and b"bob.example" not in r.content, path
+            assert posts == [], "another Profile's gated Link never reaches Turnstile"
+            asyncio.run(store.flush())
+            assert _daily() == before, "no view/click recorded for Bob on Alice's domain"
+            for pre in ("", "/p"):
+                assert call("GET", f"{pre}/api/profiles/alice.json", **a).json()["profile"]["username"] == "alice"
+                assert call("GET", f"{pre}/api/files/profiles/{PID}/a.webp", **a).content == WEBP
+                assert call("GET", f"{pre}/api/files/links/{LID}/b.webp", **a).content == WEBP
+                assert call("POST", f"{pre}/v/alice", **a).status_code == 204
+                r = call("GET", f"{pre}/.netlify/functions/reveal?id={KEY}&trackingId=9", **a)
+                assert (r.status_code, r.json()) == (200, {"realUrl": DEST + "/c9"}), pre
+            for h in ({}, {"host": "bob.test"}, {"host": "spare.test"}):  # not a live custom domain: every Profile
+                assert call("GET", "/api/profiles/bob.json", **h).status_code == 200, h
+                assert call("GET", f"/api/files/links/{lid3}/b.webp", **h).status_code == 200, h
+                assert call("POST", "/v/bob", **h).status_code == 204, h
+        assert call("GET", f"/.netlify/functions/reveal?id={key3}", **same).status_code == 200, "keys unset: no gate"
+    finally:
+        bio_app.PATH_PREFIX = ""
+        c = sqlite3.connect(_harness.DB_PATH)
+        c.execute("DELETE FROM bio_links WHERE id = ?", (lid3,))
+        c.commit()
+        c.close()
 
 
 def case_tls_ask():

@@ -10,13 +10,15 @@
  * before anything moves: it never fills over one, nor navigates away from it. It lives in AssistantProvider, so a
  * route change never stops it. After Save the cursor rests on the new rule's Enabled switch without clicking it.
  * A `mass_edit` run is not played here: it has no form (the provider's apply POST does it, massEdit.ts).
+ * A flow whose first step isn't "open" (auto_story: the page is the form) waits for the page's editor itself; one
+ * showing a saved rule (not new) fails the run — the agent only sets up a new one.
  */
 
 import { useEffect, useRef, useState } from "react";
 
-import type { AgentBridge, EditorHandle } from "./agentBridge";
+import type { AgentBridge, EditorHandle, PanelHandle } from "./agentBridge";
 import type { CursorState } from "./AgentCursor";
-import { DO_FLOWS, typingFrames, type AgentStep, type DoDraft } from "./doFlows";
+import { boundFlow, typingFrames, type AgentStep } from "./doFlows";
 import { canStart, isTakeover, type DoAction, type DoRun } from "./doRunReducer";
 
 const OPEN_TIMEOUT_MS = 8000;
@@ -46,9 +48,9 @@ const frame = () => new Promise<void>((r) => {
 const reducedMotion = () =>
   typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** The saved rule's Enabled switch in the table (RuleTable: `Enabled: {name}`). */
-const enabledSwitch = (name: string) =>
-  [...document.querySelectorAll<HTMLElement>('[role="switch"]')].find((el) => el.getAttribute("aria-label") === `Enabled: ${name}`) ?? null;
+/** The saved rule's on/off switch by its aria-label (RuleTable: `Enabled: {name}`; Auto Story: its header switch). */
+const enabledSwitch = (label: string) =>
+  [...document.querySelectorAll<HTMLElement>('[role="switch"]')].find((el) => el.getAttribute("aria-label") === label) ?? null;
 
 export function useDoRunner({ run, dispatch, bridge, navigate }: {
   run: DoRun;
@@ -69,7 +71,8 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
   // The run: one per start (its draft); leaving `running` aborts it.
   const runDraft = run.phase === "running" ? run.draft : null;
   useEffect(() => {
-    if (!runDraft || !canStart(runDraft) || runDraft.flow !== "mass_premade") return;
+    const flow = runDraft && canStart(runDraft) ? boundFlow(runDraft) : null;
+    if (!runDraft || !flow) return;
     const ctl = new AbortController();
     const { signal } = ctl;
 
@@ -95,9 +98,9 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
       await sleep(reducedMotion() ? 60 : GLIDE_MS, signal);
       return true;
     };
-    const restOn = async (name: string) => {
+    const restOn = async (label: string) => {
       for (let waited = 0; waited < DONE_WAIT_MS && phaseRef.current === "done"; waited += 150) {
-        const el = enabledSwitch(name);
+        const el = enabledSwitch(label);
         if (el) {
           el.scrollIntoView?.({ block: "center", inline: "nearest" });
           await frame();
@@ -109,27 +112,36 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
       }
     };
 
-    const execute = async (draft: DoDraft & { flow: "mass_premade" }) => {
-      const flow = DO_FLOWS[draft.flow];
-      const slots = draft.slots!;
-      const steps = flow.toActions(slots);
-      const acct = draft.account_id;
+    const execute = async () => {
+      const steps = flow.steps;
+      const acct = runDraft.account_id;
+      const late = (what: string) => (e: unknown) => { throw signal.aborted ? e : new Error(what); };
       if (bridge.hasEditor()) throw new Error("Close the open editor first — I won't fill over it.");
       setCursor({ x: window.innerWidth - 80, y: window.innerHeight - 140, label: "Opening the page…", clicks: 0 });
       navRef.current(flow.route(acct));
-      const panel = await bridge.waitFor(() => bridge.panel(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
-        .catch((e) => { throw signal.aborted ? e : new Error("The Auto Mass page didn't open in time — try again."); });
+      let panel: PanelHandle | null = null;
       let editor: EditorHandle | null = null;
+      if (steps[0]?.action === "open") {
+        panel = await bridge.waitFor(() => bridge.panel(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
+          .catch(late(`The ${flow.title} page didn't open in time — try again.`));
+      } else {
+        // The page is the form: its editor registers once its rule is read.
+        const page = await bridge.waitFor(() => bridge.anyEditor(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
+          .catch(late(`The ${flow.title} page didn't open in time — try again.`));
+        if (!page.isNew) throw new Error(`${flow.title} is already set up for this creator — open it to edit; nothing was changed.`);
+        editor = page;
+      }
       for (let i = 0; i < steps.length; i++) {
         if (signal.aborted) return;
         const step = steps[i];
         dispatch({ type: "step", index: i });
         const animate = !instantRef.current;
         if (step.action === "open") {
+          if (!panel) throw new Error(`The ${flow.title} page didn't open in time — try again.`);
           if (animate) { await glide(step); click(); }
           panel.openNew();
           editor = await bridge.waitFor(() => bridge.editor(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
-            .catch((e) => { throw signal.aborted ? e : new Error("The new Auto Mass editor didn't open — try again."); });
+            .catch(late(`The new ${flow.title} editor didn't open — try again.`));
           continue;
         }
         if (!editor) throw new Error("The editor was closed — nothing was saved.");
@@ -146,7 +158,7 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
           if (!r.ok) { dispatch({ type: "fail", msg: r.reason }); return; }
           dispatch({ type: "saved" });
           phaseRef.current = "done";
-          void restOn(flow.savedName(slots));
+          void restOn(flow.savedSwitch);
           return;
         }
         if (step.action === "reveal") {
@@ -171,7 +183,7 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
       }
     };
 
-    execute(runDraft as DoDraft & { flow: "mass_premade" }).catch((e: unknown) => {
+    execute().catch((e: unknown) => {
       if (signal.aborted) return;
       dispatch({ type: "fail", msg: e instanceof Error && e.message ? e.message : "Something went wrong — nothing was saved." });
     });

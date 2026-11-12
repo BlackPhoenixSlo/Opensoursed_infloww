@@ -45,6 +45,86 @@ def case_selected_columns_match_models():
         assert set(names.split(", ")) <= set(model.__table__.columns.keys())
 
 
+def case_process_path_mode_and_bot_check():
+    """The real process from its env: BIO_PATH_PREFIX=/p pages, and a bot_check Link gated by a loopback siteverify."""
+    import http.server
+    import threading
+
+    posts = []
+
+    class Verify(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = self.rfile.read(int(self.headers["content-length"])).decode()
+            posts.append(body)
+            out = b'{"success":true}' if "response=good" in body else b'{"success":false,"error-codes":["bad"]}'
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    verify = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Verify)
+    threading.Thread(target=verify.serve_forever, daemon=True).start()
+    con = sqlite3.connect(_harness.DB_PATH)
+    con.execute("INSERT INTO bio_links(id, profile_id, link_id, title, destination, tracking, bot_check, sort_order) "
+                "VALUES ('l00000000000009', ?, 'k00000000009', 'Gated', 'https://example.test/gated', 1, 1, 9)",
+                (PID,))
+    con.commit()
+    con.close()
+    port = _port()
+    env = dict(os.environ, BIO_PORT=str(port), BIO_PRIMARY_HOSTS="localhost", BIO_PATH_PREFIX="/p",
+               TURNSTILE_SITE_KEY="SITEKEY", TURNSTILE_SECRET_KEY="SECRETKEY",
+               TURNSTILE_VERIFY_URL=f"http://127.0.0.1:{verify.server_address[1]}/siteverify",
+               PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+    p = subprocess.Popen([sys.executable, "-m", "uvicorn", "bio_pages.app:app", "--host", "127.0.0.1",
+                          "--port", str(port), "--no-proxy-headers"], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}") as cl:
+            for _ in range(100):
+                try:
+                    if cl.get("/p/internal/healthz").status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.05)
+            else:
+                raise AssertionError("bio did not start")
+            page = cl.get("/p/alice/5")
+            assert page.status_code == 200 and '"profilePath":"/p/alice"' in page.text
+            assert 'src="/p/script.js"' in page.text and cl.get("/p/script.js").status_code == 200
+            body = cl.get("/p/api/profiles/alice.json").json()
+            assert body["turnstileSiteKey"] == "SITEKEY"
+            assert [lk.get("botCheck", False) for lk in body["links"]] == [False, True]
+            same = {"Sec-Fetch-Site": "same-origin"}
+            gated = "/p/.netlify/functions/reveal?id=k00000000009&trackingId=5"
+            assert cl.get(gated, headers=same).status_code == 403 and posts == []
+            r = cl.get(gated, headers={**same, "x-turnstile-token": "nope"})
+            assert r.status_code == 403 and len(posts) == 1
+            r = cl.get(gated, headers={**same, "x-turnstile-token": "good"})
+            assert (r.status_code, r.json()) == (200, {"realUrl": "https://example.test/gated/c5"})
+            assert "secret=SECRETKEY" in posts[-1]
+            r = cl.get("/p/.netlify/functions/reveal?id=k00000000001", headers=same)
+            assert r.status_code == 200 and len(posts) == 2, "ungated Link: no check"
+            verify.shutdown()
+            verify.server_close()
+            r = cl.get(gated, headers={**same, "x-turnstile-token": "good"})
+            assert r.status_code == 503, "siteverify unreachable"
+    finally:
+        verify.shutdown()
+        verify.server_close()
+        if p.poll() is None:
+            p.terminate()
+            p.wait(timeout=20)
+        con = sqlite3.connect(_harness.DB_PATH)
+        con.execute("DELETE FROM bio_daily")
+        con.execute("DELETE FROM bio_links WHERE id = 'l00000000000009'")
+        con.commit()
+        con.close()
+
+
 def case_process_shutdown_flushes():
     for trial in range(5):
         port = _port()

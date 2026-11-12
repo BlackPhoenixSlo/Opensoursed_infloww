@@ -5,6 +5,11 @@ the path (hono.url_path / route_path). FileResponse adds ETag, Last-Modified and
 supports Range (206) beyond v2's file response. It mounts nothing of the
 relay's: no /admin, /auth, /t/, SSE or session middleware exists on this port. It never logs a request, a row or an
 error's message: a Link holds its destination.
+
+Path mode (BIO_PATH_PREFIX, e.g. `/p`): a request under the prefix is dispatched with it cut, and its page, assets
+and Profile JSON name prefixed URLs, so `<app host>/p/<username>` works through the Next app's rewrite with no DNS
+of its own; requests outside it are host mode, unchanged. A Link with bot_check needs a passing Turnstile token on
+Reveal (`x-turnstile-token`) while TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY are set (turnstile.py).
 """
 from __future__ import annotations
 
@@ -18,9 +23,10 @@ from sqlalchemy.exc import OperationalError
 from starlette.requests import Request
 from starlette.responses import FileResponse, Response
 
+import turnstile
 from bio_pages import assets, decide, files, guard, hono, store
 from bio_pages.config import BioConfig
-from client_addr import client_address
+from client_addr import client_address, trusted_peer
 
 log = logging.getLogger("of-relay.bio")
 
@@ -33,6 +39,9 @@ TYPES = {".html": HTML, ".js": "text/javascript; charset=utf-8", ".css": "text/c
 
 CONFIG = BioConfig.from_env()
 INDEX_HTML = decide.render_index(assets.INDEX.read_text(encoding="utf-8"), CONFIG.escape_tap)
+PATH_PREFIX = CONFIG.path_prefix
+PREFIXED_INDEX_HTML = (decide.render_index(assets.INDEX.read_text(encoding="utf-8"), CONFIG.escape_tap, PATH_PREFIX)
+                       if PATH_PREFIX else "")
 LANDING = (assets.PUBLIC / "landing.html").read_bytes()
 ASSETS = {str(p.relative_to(assets.PUBLIC)): p.read_bytes() for p in assets.PUBLIC.rglob("*") if p.is_file()}
 
@@ -65,8 +74,34 @@ class _Req:
         raw = request.scope.get("raw_path") or request.scope["path"].encode("utf-8")
         if len(raw) + len(request.scope.get("query_string", b"")) > 16 * 1024:
             raise _LongTarget
-        self.url_path = hono.url_path(raw.split(b"?", 1)[0])  # some servers keep the query in raw_path
+        self.full_path = hono.url_path(raw.split(b"?", 1)[0])  # some servers keep the query in raw_path
+        cut = decide.cut_prefix(PATH_PREFIX, self.full_path)
+        self.prefix = PATH_PREFIX if cut is not None else ""
+        self.url_path = cut if cut is not None else self.full_path
         self.path = hono.route_path(self.url_path)
+        self._site: tuple[decide.HostKind, str | None] | None = None
+        self._own_id: str | None = None
+
+    async def site(self) -> tuple[decide.HostKind, str | None]:
+        """(kind, custom username) of the Host, resolved once per request."""
+        if self._site is None:
+            self._site = await _resolve(self.hdr("host"))
+        return self._site
+
+    async def foreign(self, username: str | None) -> bool:
+        """A live Custom Domain is its one Profile's: any other Username is not served here (prefixed or not)."""
+        kind, own = await self.site()
+        return kind == "custom" and username != own
+
+    async def foreign_owner(self, profile_id: str | None) -> bool:
+        """As `foreign`, by the owning Profile's id (a Link's or file's)."""
+        kind, own = await self.site()
+        if kind != "custom":
+            return False
+        if self._own_id is None:
+            row = await store.profile_at(own) if own else None
+            self._own_id = row["id"] if row else ""
+        return not profile_id or profile_id != self._own_id
 
     def hdr(self, name: str) -> str | None:
         vals = self.request.headers.getlist(name)
@@ -84,17 +119,26 @@ async def _resolve(host: str | None) -> tuple[decide.HostKind, str | None]:
     return await store.resolve_host_row(name)
 
 
-async def _profile_json(file: str) -> Response:
+def _site_key() -> str | None:
+    k = turnstile.keys()
+    return k[0] if k else None
+
+
+async def _profile_json(q: _Req, file: str) -> Response:
     name = decide.lookup_username(file[:-5])
+    if await q.foreign(name):
+        name = None
     found = await store.profile_with_links(name) if name else None
     if not found:
         return _json(404, {"error": "Profile not found"}, MR)
-    return _json(200, decide.public_profile(*found), MR)
+    return _json(200, decide.public_profile(*found, _site_key(), q.prefix), MR)
 
 
 async def _ping(q: _Req, username: str) -> Response:
     cc = "no-store"
     name = decide.lookup_username(username)
+    if await q.foreign(name):
+        name = None
     if name and not guard.allow_ping(str(client_address(q.request)), name):
         return _json(429, {"error": "Too many requests"}, cc)
     profile = await store.profile_at(name) if name else None
@@ -106,13 +150,21 @@ async def _ping(q: _Req, username: str) -> Response:
 
 async def _reveal(q: _Req) -> Response:
     cc = "no-store"
-    if not decide.same_origin(q.hdr):
+    if not decide.same_origin(q.hdr, bool(q.prefix) and trusted_peer(q.request)):
         return _json(403, {"error": "Cross-origin request refused"}, cc)
     if not guard.allow(str(client_address(q.request))):
         return _json(429, {"error": "Too many requests"}, cc)
     location = decide.visitor_location(q.hdr)
     link_id = q.query("id")
     link = await store.link_by_link_id(link_id) if link_id and decide.LINK_ID.fullmatch(link_id) else None
+    if link and await q.foreign_owner(link["profile_id"]):
+        link = None  # another Profile's Link: "Link not found", no bot check, no click
+    if decide.gated(link, _site_key()):
+        verdict = await turnstile.check(q.hdr("x-turnstile-token"), str(client_address(q.request)))
+        if verdict is None:  # Cloudflare unreachable/busy: tracking_links_api's 503, the page offers Retry
+            return _json(503, {"error": "Bot check unavailable"}, cc)
+        if not verdict:
+            return _json(403, {"error": "Bot check failed"}, cc)
     url, code = decide.reveal(link, q.query("trackingId"), location)
     if not url:
         return _json(404, {"error": "Link not found"}, cc)
@@ -121,8 +173,11 @@ async def _reveal(q: _Req) -> Response:
     return _json(200, {"realUrl": url}, cc)
 
 
-def _file(collection: str, record_id: str, filename: str) -> Response:
+async def _file(q: _Req, collection: str, record_id: str, filename: str) -> Response:
     path = files.safe_path(FILES_DIR, collection, record_id, filename)
+    if path and (await q.site())[0] == "custom" and await q.foreign_owner(
+            record_id if collection == "profiles" else await store.link_profile_id(record_id)):
+        path = None
     if path:
         ctype = "image/webp" if filename.endswith(".webp") else "application/octet-stream"
         return FileResponse(path, media_type=ctype, headers={"cache-control": IMM})
@@ -151,11 +206,13 @@ async def _page(q: _Req) -> Response:
         return _r(200, ASSETS[key],
                   {"content-type": TYPES.get(Path(key).suffix, "application/octet-stream"),
                                         "cache-control": MR})
-    kind, custom = await _resolve(q.hdr("host"))
-    req = decide.resolve_profile_request(kind, custom, q.url_path)
+    kind, custom = await q.site()
+    # A Custom Domain is one Profile's: `/p/<other>` there stays two segments (no page), never another Profile.
+    prefix = q.prefix if kind != "custom" else ""
+    req = decide.resolve_profile_request(kind, custom, q.url_path if prefix else q.full_path, prefix)
     if req is not None and req["username"] == "" and req["trackingCode"] is None:
         return _landing(200)
-    page = decide.bootstrap_page(INDEX_HTML, req).encode("utf-8")
+    page = decide.bootstrap_page(PREFIXED_INDEX_HTML if prefix else INDEX_HTML, req, prefix).encode("utf-8")
     return _r(200, page, {"content-type": HTML, "cache-control": MR})
 
 
@@ -165,13 +222,13 @@ async def _dispatch(q: _Req) -> Response:
     if get and (mm := _PROFILE_FILE.fullmatch(p)):
         file = hono.param(mm.group(1))
         if file.endswith(".json"):
-            return await _profile_json(file)
+            return await _profile_json(q, file)
     if m == "POST" and (mm := _PING.fullmatch(p)):
         return await _ping(q, hono.param(mm.group(1)))
     if get and p == "/.netlify/functions/reveal":
         return await _reveal(q)
     if get and (mm := _FILES.fullmatch(p)):
-        return _file(*map(hono.param, mm.groups()))
+        return await _file(q, *map(hono.param, mm.groups()))
     if _under("/api", p):
         return _json(404, {"error": "Not found"})
     if get and _under("/edit", p):

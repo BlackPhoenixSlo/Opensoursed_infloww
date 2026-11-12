@@ -5,6 +5,9 @@ TRUSTED_PROXIES and EDGE_PROXIES use the shared client-address policy.
 BIO_REVEAL_LIMIT_PER_MINUTE defaults to 60; BIO_FLUSH_SECONDS defaults to 5.
 BIO_ESCAPE_TAP (default on; off: 0/false/no/off) is the kill switch of the Escape Overlay
 card's tap escape (script.js), rendered on the card.
+BIO_PATH_PREFIX (default empty) turns on path mode next to host mode: a request under it
+(`/p/<username>` as the Next app's `/p/:path*` rewrite forwards it) is served with the
+prefix cut, and every URL its page names carries it again (decide.parse_path_prefix).
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from bio_pages.decide import parse_primary_hosts
+from bio_pages.decide import parse_path_prefix, parse_primary_hosts
 from bio_pages.files import files_dir
 
 
@@ -23,6 +26,7 @@ class BioConfig:
     files_dir: Path
     flush_seconds: float
     escape_tap: bool
+    path_prefix: str = ""
 
     @classmethod
     def from_env(cls) -> "BioConfig":
@@ -38,4 +42,4 @@ class BioConfig:
         else:
             raise ValueError("invalid BIO_ESCAPE_TAP")
         return cls(parse_primary_hosts(os.environ.get("BIO_PRIMARY_HOSTS", "")), limit,
-                   files_dir(), flush, escape_tap)
+                   files_dir(), flush, escape_tap, parse_path_prefix(os.environ.get("BIO_PATH_PREFIX")))

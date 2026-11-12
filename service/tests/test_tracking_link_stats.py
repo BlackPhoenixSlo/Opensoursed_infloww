@@ -75,13 +75,13 @@ def turnstile():
     httpx.AsyncClient = lambda **kw: real(**{**kw, "transport": httpx.MockTransport(
         lambda req: httpx.Response(200, json={"success": True}))})
     os.environ.update(TURNSTILE_SITE_KEY="1x00000000000000000000AA", TURNSTILE_SECRET_KEY="s")
-    import tracking_links_api as tla
-    tla._verify_http = None
+    import turnstile as ts
+    ts._verify_http = None
     try:
         yield
     finally:
         httpx.AsyncClient = real
-        tla._verify_http = None
+        ts._verify_http = None
         os.environ.pop("TURNSTILE_SITE_KEY", None)
         os.environ.pop("TURNSTILE_SECRET_KEY", None)
 

@@ -7,11 +7,12 @@ import { Plus } from "lucide-react";
 import { Badge, Button, Input } from "@/components/ui/primitives";
 import { HbButton, HbModal } from "@/components/ui/infloww";
 import { CopyButton, errMsg } from "@/components/growth/_bits";
-import { CreatorFilter, RowMenu } from "@/components/growth/LinksListFrame";
+import { CreatorFilter, GrowthHbFrame, RowMenu } from "@/components/growth/LinksListFrame";
 import { SectionTitle, StatCard } from "@/components/home/ReportsCharts";
 import {
   useTrackingLinks, useCreateTrackingLink, useDeleteTrackingLink, useTrackingSummary, useUpdateTrackingLink,
 } from "@/hooks/useGrowth";
+import { useGrowthCreator } from "@/hooks/useAccounts";
 import { DASH } from "@/components/growth/linkMetrics";
 import { buildPayload, formError, INITIAL_FORM, redirectFormReducer } from "@/components/growth/customRedirectForm";
 import { INITIAL_VIEW, statsRequest, statsViewReducer, summaryCards, verifiedSummary } from "@/components/growth/redirectStats";
@@ -26,7 +27,18 @@ function publicUrl(path: string): string {
   return `${window.location.origin}${path}`;
 }
 
-/** Tracking links' "Redirect links" tab (an Inflowwww extra, after the bundle's tabs): the creator filter and
+/** /growth/redirect-links (an Inflowwww extra, its own Growth entry since 11-12; was a Tracking links tab): the panel in
+ *  the Growth HB frame, every viewer of the page as before. */
+export function RedirectLinksPage() {
+  const { accountId, setAccountId } = useGrowthCreator();
+  return (
+    <GrowthHbFrame title="Redirect links">
+      <RedirectLinksPanel accountId={accountId} onAccountChange={setAccountId} />
+    </GrowthHbFrame>
+  );
+}
+
+/** Growth → Redirect links (an Inflowwww extra): the creator filter and
  *  "Create redirect link" (its pop-up, as the other link tabs create), the "Clicks" cards (the Dashboard tab's
  *  SectionTitle and StatCards), then that Creator's internal redirect links, each with its 7-day sparkline and
  *  Analytics. */

@@ -193,10 +193,9 @@ services:
       # Unset = the header is never read.
       EDGE_PROXIES: "${EDGE_PROXIES:-}"
       # Bio pages editor (service/bio_pages/admin.py): the public base its URLs use
-      # (e.g. https://new.ofl.ink, https://ofl.ink at cutover; unset = paths only) and
-      # the bio service's health URL for the editor's "serving" flag. The default is
-      # the bio service on this compose network: with the `bio` profile off the name
-      # does not resolve, so the editor says not serving (deploy/bio/README.md).
+      # (path mode: https://<app host>/p; host mode e.g. https://ofl.ink; unset = paths
+      # only) and the bio service's health URL for the editor's "serving" flag: the
+      # bio service on this compose network (deploy/bio/README.md).
       BIO_PUBLIC_URL: "${BIO_PUBLIC_URL:-}"
       BIO_HEALTH_URL: "${BIO_HEALTH_URL:-http://openinflowwww-bio:8788/internal/healthz}"
       # Custom redirect links' "Bot check before redirect" (service/tracking_links_api.py,
@@ -294,7 +293,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    profiles: ["bio"]
+    # On by default: every box serves bio pages at <app host>/p/<username> through
+    # the app's /p/* rewrite (BIO_URL), with no DNS of their own (deploy/bio/README.md).
     command: ["uvicorn", "bio_pages.app:app", "--workers", "1", "--host", "0.0.0.0", "--port", "8788", "--no-proxy-headers", "--no-server-header", "--no-access-log", "--timeout-graceful-shutdown", "5"]
     environment:
       PYTHONPATH: /app/service
@@ -306,13 +306,20 @@ services:
       BIO_REVEAL_LIMIT_PER_MINUTE: "${BIO_REVEAL_LIMIT_PER_MINUTE:-60}"
       BIO_FLUSH_SECONDS: "${BIO_FLUSH_SECONDS:-5}"
       BIO_ESCAPE_TAP: "${BIO_ESCAPE_TAP:-1}"
+      # Path mode: requests under /p (the app's rewrite) get /p-prefixed pages; any
+      # other path is host mode as before. Empty = host mode only.
+      BIO_PATH_PREFIX: "${BIO_PATH_PREFIX:-/p}"
+      # A Link with bot_check (new Links' default) Reveals only with a passing
+      # Turnstile token while both are set (service/turnstile.py); unset = no check.
+      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
+      TURNSTILE_SECRET_KEY: "${TURNSTILE_SECRET_KEY:-}"
     volumes:
       - ./service/data:/app/service/data
       - ./service/bio_files:/app/service/bio_files
-    # Every bio box sets BIO_PORT in its .env (deploy/bio/README.md): the default
-    # 8788 is the AE relay's host port. Its Traefik route file points at this port.
-    ports:
-      - "127.0.0.1:${BIO_PORT:-8788}:8788"
+    # No host port: the app reaches it on the compose network (BIO_URL), and 8788
+    # is the AE relay's host port. Host mode (own domain via a Traefik route file)
+    # adds `ports: ["127.0.0.1:${BIO_PORT}:8788"]` in the box's override
+    # (deploy/bio/README.md).
     cpus: ${BIO_CPUS:-0.5}
     mem_limit: 512m
     restart: unless-stopped
@@ -336,6 +343,8 @@ services:
       # so the relay hostname has to be passed here, not only at runtime.
       args:
         RELAY_URL: "http://openinflowwww-relay:8787"
+        # The bio service behind /p/* (bio pages at <app host>/p/<username>).
+        BIO_URL: "${BIO_URL:-http://openinflowwww-bio:8788}"
         # The public site (web/) the app links back to; empty = lib/site.ts's
         # default. Rebuild the app after changing SITE_URL.
         NEXT_PUBLIC_SITE_URL: "${SITE_URL:-}"
@@ -366,6 +375,7 @@ services:
       # next.config.ts's rewrites() forwards /api/of/*, /admin/*, /events,
       # /ws/*, /img, /health to this URL.
       RELAY_URL: "http://openinflowwww-relay:8787"
+      BIO_URL: "${BIO_URL:-http://openinflowwww-bio:8788}"
       # The one origin allowed to post the site's login/signup forms (/site-auth).
       SITE_URL: "${SITE_URL:-}"
     depends_on:

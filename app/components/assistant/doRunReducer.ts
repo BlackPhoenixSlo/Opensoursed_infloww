@@ -17,7 +17,7 @@
  *     so Stop doesn't apply) and `applied` lands its per-rule results on `done`.
  */
 
-import type { DoDraft, MassPremadeSlots } from "./doFlows";
+import type { AutoStorySlots, DoDraft, MassPremadeSlots } from "./doFlows";
 import { editSlotsFrom, type EditResult } from "./massEdit";
 
 type Planned = { request: string; draft: DoDraft };
@@ -57,7 +57,7 @@ export const canStart = (d: DoDraft | null | undefined): d is DoDraft & { slots:
   !!d && d.flow !== null && d.slots !== null && !d.error;
 
 /** The plan a new request refines: the planned Auto mass draft's slots (a chat reply while planned), else none. An
- *  edit plan is never refined: a reply re-asks from scratch. */
+ *  edit or Auto Story plan is never refined: a reply re-asks from scratch. */
 export const previousOf = (s: DoRun): MassPremadeSlots | null =>
   (s.phase === "planned" && s.draft.flow === "mass_premade" ? s.draft.slots : null);
 
@@ -105,8 +105,9 @@ const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is st
 
 /** The draft POST's 200, read defensively: a missing field never crashes the card, and a blank answer still reads. */
 export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string): DoDraft {
-  const flow = r?.flow === "mass_premade" || r?.flow === "mass_edit" ? r.flow : null;
+  const flow = r?.flow === "mass_premade" || r?.flow === "mass_edit" || r?.flow === "auto_story" ? r.flow : null;
   const pair = flow === "mass_premade" ? { flow, slots: r?.slots ? r.slots as MassPremadeSlots : null }
+    : flow === "auto_story" ? { flow, slots: r?.slots ? r.slots as AutoStorySlots : null }
     : flow === "mass_edit" ? { flow, slots: editSlotsFrom(r?.slots) }
     : { flow: null, slots: null };
   return {
@@ -117,7 +118,8 @@ export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | un
     assumptions: strs(r?.assumptions),
     unresolved: strs(r?.unresolved),
     answer: (typeof r?.answer === "string" ? r.answer : "").trim()
-      || (flow ? "" : "I can only set up or change an Auto Mass for now — ask it as a question and I'll point you to the page."),
+      || (flow ? "" : "I can only set up an Auto Mass or Auto Story, or change an Auto Mass, for now — ask it as a question "
+        + "and I'll point you to the page."),
     error: typeof r?.error === "string" ? r.error : null,
   } as DoDraft;
 }

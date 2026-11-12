@@ -16,8 +16,7 @@ bound to an OF list (retired). Each item's 300px thumb is a small PNG in the run
 Stages:
   plan  (also --no-ui) GET /admin/vault-ai/folder-plan (keep 2) by the owner.
   phone (UI) 390x844 touch Chromium: Vault Pro on the Creator (last pick, localStorage), Extras: the drawer opens and
-        "Build AI folders" is not offered (a desk-only batch tool, VaultExtrasTools `hidden md:contents`);
-        screenshot `ai-folders-phone-drawer`.
+        "Build AI folders" is offered (every Extras tool shows at every width); screenshot `ai-folders-phone-drawer`.
   desktop (UI) 1440x900: the same, the preview's "Confirm will create C · keep K · retire R" line and the Create
         button read, screenshot `ai-folders-trigger` (preview counts on screen); "Also create on OnlyFans" switched
         off; Create; settles on Rebuild with the re-planned counts, screenshot `ai-folders-settled`. --no-ui: the
@@ -29,7 +28,7 @@ Checks (lib/vault_ai_folders_faults.py names):
                                       paid still in neither, and in explicit 1:1.
   create_enabled_partial_flags        desktop: the flags note shows "<missing> of <stills> stills" (counts only; copy may change) and
                                       "Create N folders" is enabled.
-  ai_folders_desk_only_phone          phone: the Extras drawer is open (its cached count shows) and has no visible
+  ai_folders_phone_offered            phone: the Extras drawer is open (its cached count shows) and shows
                                       "Build AI folders".
   ai_folders_created_from_ui          one apply POST from the click (mirror_to_of false, keep 2, solo false), 200,
                                       the modal settles on Rebuild.
@@ -64,7 +63,7 @@ import re
 from slop.actors import ui
 from slop.lib.hold import recorded
 from slop.lib.img_relay import picture_bytes
-from slop.lib.vault_ai_folders_faults import (COLOURLESS, CREATE_ENABLED, CREATED, DESK_ONLY_PHONE, NO_DUPES,
+from slop.lib.vault_ai_folders_faults import (COLOURLESS, CREATE_ENABLED, CREATED, PHONE_OFFERED, NO_DUPES,
                                               PAID_ONLY, PLAN, PREVIEW, PREVIEW_SHOWN)
 from slop.lib.vault_collect_relay import stills_dir
 from slop.lib.vault_ui import TOURS_SEEN
@@ -187,7 +186,7 @@ async def run(ctx):
             except Exception as e:  # noqa: BLE001 — the check reports it
                 phone["error"] = f"{type(e).__name__}: {e}"[:600]
                 phone["failed_shot"] = await ui.shot(ctx, page, "failed-ai-folders-phone")
-        ctx.check(DESK_ONLY_PHONE, "error" not in phone and phone.get("build_visible") is False, ui=phone)
+        ctx.check(PHONE_OFFERED, "error" not in phone and phone.get("build_visible") is True, ui=phone)
 
         desk: dict = {}
         async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
@@ -229,7 +228,7 @@ async def run(ctx):
         r = await ctx.owner.post(APPLY, json={"account_id": aid, "confirm": True, "keep": 2, "solo": False,
                                               "mirror_to_of": False})
         applied = [{"status": r.status_code, "body": None}]
-        for name in (CREATE_ENABLED, DESK_ONLY_PHONE, CREATED, PREVIEW_SHOWN):
+        for name in (CREATE_ENABLED, PHONE_OFFERED, CREATED, PREVIEW_SHOWN):
             ctx.skip(name, "--no-ui")
 
     # ── side effect: the created folders ──

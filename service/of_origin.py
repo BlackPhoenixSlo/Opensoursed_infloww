@@ -18,7 +18,7 @@ def loopback_url(raw: str) -> SplitResult | None:
     """`raw` split, when it is an http(s) URL on a loopback host with no
     userinfo and a well-formed port; else None. The one rule for every test
     seam that may receive a signed request or a secret (OF_API_ORIGIN here,
-    TURNSTILE_VERIFY_URL in tracking_links_api)."""
+    TURNSTILE_VERIFY_URL in turnstile)."""
     try:
         parts = urlsplit(raw.strip())
         parts.port  # noqa: B018 — raises on a malformed port

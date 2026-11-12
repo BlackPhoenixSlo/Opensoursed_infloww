@@ -11,6 +11,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const continueBtn = document.getElementById('continueBtn');
     const igOverlay = document.getElementById('igOverlay');
     const igCard = document.getElementById('igCard');
+    const overlayError = document.getElementById('overlayError');
+    const revealError = document.getElementById('revealError');
+    const revealRetry = document.getElementById('revealRetry');
+    const REVEAL_FAILED = "Couldn't open this link. Please try again.";
 
     // Store links data to simulate API fetching
     let linksData = [];
@@ -33,8 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // the path carried, and the Profile path every URL the page builds for itself starts from (`/{username}`, or `/` on a
     // Custom Domain). Null when no Profile answers the path, which lands on the landing page as an unknown Username does.
     const bootstrap = JSON.parse(document.getElementById('profile-bootstrap').textContent);
+    // Path mode: the prefix the app serves this page under (`/p` for `<app host>/p/{username}`), named on <body>; every
+    // URL this script builds for the app starts with it. Empty on a host of its own.
+    const BASE = document.body.dataset.base || '';
     if (!bootstrap) {
-        window.location.href = '/landing.html';
+        window.location.href = `${BASE}/landing.html`;
         return;
     }
     let { username, profilePath } = bootstrap;
@@ -47,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!username || username === 'index.html') { // Default
         username = 'juliafilippo_';
-        profilePath = `/${username}`;
+        profilePath = `${BASE}/${username}`;
     }
 
     // A Tracking Code in the path is stored once the Profile JSON names its Profile (below)
@@ -64,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     console.log(`Loading profile: ${username}`);
 
-    fetch(`/api/profiles/${username}.json`)
+    fetch(`${BASE}/api/profiles/${username}.json`)
         .then(response => {
             if (!response.ok) throw new Error('Profile not found');
             return response.json();
@@ -75,10 +82,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (trackingId) localStorage.setItem(trackingKey(), trackingId);
             linksData = data.links;
             renderLinks(linksData);
+            siteKey = data.turnstileSiteKey || null;
+            if (siteKey && linksData.some(l => l.botCheck)) loadTurnstile().catch(() => {});
 
             // Page View Ping (Phase 4): once per load, after the Profile has rendered, never for an unknown Username (the
             // fetch above failed for one); keepalive lets it finish when the Visitor leaves at once, and nothing waits on it
-            fetch(`/v/${username}`, { method: 'POST', keepalive: true }).catch(() => {});
+            fetch(`${BASE}/v/${username}`, { method: 'POST', keepalive: true }).catch(() => {});
 
             // A Link Shortcut whose Link Id is not on this Profile is ignored: the page loads as a plain visit
             const shortcutLink = linkShortcut ? linksData.find(link => link.id === linkShortcut) : null;
@@ -112,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
         })
         .catch(error => {
             console.error('Error fetching profile:', error);
-            window.location.href = '/landing.html';
+            window.location.href = `${BASE}/landing.html`;
         });
 
     function renderProfile(profile) {
@@ -234,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Reveal URL: Link Id, Username, and a Tracking Code when the Link has tracking on
     function revealUrl(linkId) {
         const link = linksData.find(l => l.id === linkId);
-        let fetchUrl = `/.netlify/functions/reveal?id=${linkId}&user=${username}`;
+        let fetchUrl = `${BASE}/.netlify/functions/reveal?id=${linkId}&user=${username}`;
 
         if (link && link.tracking) {
             let trackingIdToUse = storedTrackingCode();
@@ -253,20 +262,93 @@ document.addEventListener('DOMContentLoaded', () => {
         return fetchUrl;
     }
 
-    // Reveal, then `go` to the answer (by default, navigate straight to it)
-    function revealAndGo(link, go = url => { window.location.href = url; }) {
-        fetch(revealUrl(link.id))
+    // Bot Check: a Link the Profile JSON marks botCheck Reveals only with a Cloudflare Turnstile token. The widget's
+    // script is loaded only for a Profile with such a Link (the JSON then carries the site key), and stays invisible
+    // unless Cloudflare asks the Visitor to interact.
+    let siteKey = null;
+    let turnstileLoad = null;
+    function loadTurnstile() {
+        if (!turnstileLoad) {
+            turnstileLoad = new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+                s.async = true;
+                s.onload = () => (window.turnstile ? resolve(window.turnstile) : reject(new Error('Bot check missing')));
+                s.onerror = () => reject(new Error('Bot check failed to load'));
+                document.head.appendChild(s);
+            }).catch(err => {
+                turnstileLoad = null; // a failed load is retried on the next Reveal, never cached
+                throw err;
+            });
+        }
+        return turnstileLoad;
+    }
+
+    // One Turnstile token: a widget rendered into #tsBox, removed once it answers
+    function botCheckToken() {
+        return loadTurnstile().then(ts => new Promise((resolve, reject) => {
+            const box = document.getElementById('tsBox');
+            box.classList.remove('hidden');
+            let widget = null;
+            const finish = fn => value => {
+                if (widget !== null) ts.remove(widget);
+                box.classList.add('hidden');
+                fn(value);
+            };
+            const fail = finish(() => reject(new Error('Bot check failed')));
+            try {
+                widget = ts.render(box, {
+                    sitekey: siteKey, appearance: 'interaction-only', theme: 'dark',
+                    callback: finish(resolve), 'error-callback': fail, 'expired-callback': fail, 'timeout-callback': fail
+                });
+            } catch (err) {
+                fail();
+            }
+        }));
+    }
+
+    // Reveal a Link by its Link Id: the answer's JSON, with a Turnstile token first when the Link is gated
+    function reveal(linkId) {
+        const link = linksData.find(l => l.id === linkId);
+        const token = link && link.botCheck && siteKey ? botCheckToken() : Promise.resolve(null);
+        return token
+            .then(t => fetch(revealUrl(linkId), t ? { headers: { 'x-turnstile-token': t } } : undefined))
             .then(res => {
                 if (!res.ok) throw new Error('Network response was not ok');
                 return res.json();
-            })
+            });
+    }
+
+    // Reveal, then `go` to the answer (by default, navigate straight to it)
+    function revealAndGo(link, go = url => { window.location.href = url; }) {
+        hideRevealError();
+        reveal(link.id)
             .then(data => {
                 if (data.realUrl) {
                     go(data.realUrl);
                 }
             })
-            .catch(err => console.error('Error revealing link:', err));
+            .catch(err => {
+                console.error('Error revealing link:', err);
+                showRevealError(() => revealAndGo(link, go));
+            });
     }
+
+    // A failed Reveal outside the Age Gate: the toast, whose Retry runs `again`
+    let retryReveal = null;
+    function showRevealError(again) {
+        retryReveal = again;
+        revealError.classList.remove('hidden');
+    }
+    function hideRevealError() {
+        retryReveal = null;
+        revealError.classList.add('hidden');
+    }
+    revealRetry.addEventListener('click', () => {
+        const again = retryReveal;
+        hideRevealError();
+        if (again) again();
+    });
 
     // Escape target: https on the host that served the page, at the Profile path with the stored Tracking Code
     function escapeTarget(linkId) {
@@ -333,6 +415,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Overlay Logic
     function openOverlay(linkId) {
         currentLinkId = linkId;
+        overlayError.classList.add('hidden');
+        continueBtn.textContent = 'Continue (18+)';
         // Continue has no href and Reveals.
         continueBtn.removeAttribute('href');
         overlay.classList.remove('hidden');
@@ -363,12 +447,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         continueBtn.textContent = 'loading...';
         continueBtn.setAttribute('aria-disabled', 'true');
+        overlayError.classList.add('hidden');
 
-        fetch(revealUrl(currentLinkId))
-            .then(res => {
-                if (!res.ok) throw new Error('Network response was not ok');
-                return res.json();
-            })
+        reveal(currentLinkId)
             .then(data => {
                 if (data.realUrl) {
                     window.location.href = data.realUrl;
@@ -379,8 +460,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeOverlay();
             })
             .catch(err => {
+                // The Age Gate stays open with the reason and Retry; the button frees only once that shows
                 console.error('Error revealing link:', err);
-                continueBtn.textContent = 'Continue (18+)';
+                overlayError.textContent = REVEAL_FAILED;
+                overlayError.classList.remove('hidden');
+                continueBtn.textContent = 'Retry';
                 continueBtn.removeAttribute('aria-disabled');
             });
     });

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { BioLink } from "@/hooks/useBioPages";
 import {
-  CODE_MSG, DEST_EMPTY_MSG, DEST_MSG, GEO_MSG, GEO_SIZE_MSG, INITIAL_LINK, TITLE_MSG, bioLinkReducer, buildLinkPayload,
-  canSubmit, draftOfLink, isDirty, linkFormError, parseGeo, type Action, type BioLinkForm, type LinkDraft,
+  CODE_MSG, DEST_EMPTY_MSG, DEST_MSG, INITIAL_LINK, TITLE_MSG, bioLinkReducer, buildLinkPayload,
+  canSubmit, draftOfLink, isDirty, linkFormError, type Action, type BioLinkForm, type LinkDraft,
 } from "@/components/growth/bio/bioLinkForm";
 
 const LINK: BioLink = {
@@ -26,7 +26,7 @@ describe("bioLinkReducer open", () => {
   it.each<[string, Partial<BioLink>, boolean]>([
     ["with a code", { default_tracking_code: "123" }, true],
     ["with tracking on", { tracking: true }, true],
-    ["with a geo rule", { geo: { US: "5" } }, true],
+    ["with only a stored geo rule (no field for it)", { geo: { US: "5" } }, false],
     ["with none", {}, false],
   ])("edit %s → disclosure open %s", (_n, over, open) => {
     expect(opened(over).advanced).toBe(open);
@@ -62,10 +62,6 @@ describe("linkFormError", () => {
     ["code 12a", { code: "12a" }, CODE_MSG, ["default_tracking_code"]],
     ["code 13 digits", { code: "1".repeat(13) }, CODE_MSG, ["default_tracking_code"]],
     ["code 12 digits", { code: "1".repeat(12) }, null, []],
-    ["geo array", { geoText: "[1]" }, GEO_MSG, ["geo"]],
-    ["geo number", { geoText: "5" }, GEO_MSG, ["geo"]],
-    ["geo broken", { geoText: "{x" }, GEO_MSG, ["geo"]],
-    ["geo > 8 KB", { geoText: JSON.stringify({ US: "1".repeat(8200) }) }, GEO_SIZE_MSG, ["geo"]],
   ])("%s", (_n, patch, msg, fields) => {
     const e = linkFormError({ ...valid, ...patch });
     expect(e?.msg ?? null).toBe(msg);
@@ -73,26 +69,14 @@ describe("linkFormError", () => {
   });
 });
 
-describe("parseGeo", () => {
-  it.each<[string, unknown]>([
-    ["", null],
-    ["  ", null],
-    ['{"US":"5"}', { US: "5" }],
-  ])("%j → %j", (text, value) => expect(parseGeo(text)).toEqual({ ok: true, value }));
-
-  it.each([["[1]"], ["5"], ["{x"], ["null"]])("%j → refused", (text) => expect(parseGeo(text).ok).toBe(false));
-});
-
 describe("buildLinkPayload", () => {
-  it("create: the whole link, trimmed; none → icon null", () => {
+  it("create: the whole link, trimmed; none → icon null; never a geo key", () => {
     const d: LinkDraft = { ...run([{ type: "open_new" }]).draft, title: " T ", destination: " https://x.test " };
     expect(buildLinkPayload(null, d)).toEqual({
       title: "T", destination: "https://x.test", icon: null, is_adult: false, mode: "", tracking: false,
-      default_tracking_code: "", geo: null,
+      default_tracking_code: "",
     });
-    expect(buildLinkPayload(null, { ...d, icon: "igicon", geoText: '{"US":"5"}' })).toMatchObject({
-      icon: "igicon", geo: { US: "5" },
-    });
+    expect(buildLinkPayload(null, { ...d, icon: "igicon" })).not.toHaveProperty("geo");
   });
 
   it.each<[string, Partial<BioLink>, Partial<LinkDraft>, ReturnType<typeof buildLinkPayload>]>([
@@ -101,7 +85,8 @@ describe("buildLinkPayload", () => {
     ["icon → none", {}, { icon: "none" }, { icon: null }],
     ["icon → stock", {}, { icon: "twitchicon" }, { icon: "twitchicon" }],
     ["current icon kept", { icon: "mine.webp", icon_stock: null }, { title: "X" }, { title: "X" }],
-    ["geo cleared", { geo: { US: "5" } }, { geoText: "" }, { geo: null }],
+    ["stored geo rule left alone", { geo: { US: "5" } }, { title: "X" }, { title: "X" }],
+    ["stored geo rule, nothing else changed", { geo: { US: "5" } }, {}, null],
     ["legacy code untouched", { default_tracking_code: "1".repeat(20) }, { title: "X" }, { title: "X" }],
   ])("%s", (_n, over, patch, want) => {
     const link = { ...LINK, ...over };
@@ -110,9 +95,9 @@ describe("buildLinkPayload", () => {
 });
 
 describe("bioLinkReducer submit", () => {
-  it("a geo refusal opens the disclosure", () => {
-    const s = run([{ type: "set", patch: { geoText: "[1]" } }, { type: "submit" }], opened());
-    expect(s).toMatchObject({ busy: false, advanced: true, error: { msg: GEO_MSG, fields: ["geo"] } });
+  it("a code refusal opens the disclosure", () => {
+    const s = run([{ type: "set", patch: { code: "1a" } }, { type: "submit" }], opened());
+    expect(s).toMatchObject({ busy: false, advanced: true, error: { msg: CODE_MSG, fields: ["default_tracking_code"] } });
   });
 
   it("an API refusal naming the code opens the disclosure", () => {

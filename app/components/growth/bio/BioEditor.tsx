@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * One bio page's editor (/growth/tracking-links/bio/<id>): the address and custom domain (read-only), the Profile,
+ * One bio page's editor (/growth/bio-pages/<id>): the address and custom domain (read-only), the Profile,
  * Links and Tracking URLs cards, Delete, and the live preview, sticky beside the cards from lg up and behind an
  * "Edit | Preview" switch below it. The Profile and link-dialog reducers live here, so the preview draws both drafts.
  */
@@ -13,7 +13,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState, IfCard, IfHelp, IfSegmented, InflowwPageHeader } from "@/components/ui/infloww";
 import { ConfirmDeleteButton, errMsg } from "@/components/growth/_bits";
 import { useUser } from "@/contexts/UserContext";
-import { BIO_KEY, BIO_LIST_HREF, isNotFound, useBioPage, useDeleteBioPage, type BioPage } from "@/hooks/useBioPages";
+import {
+  BIO_KEY, BIO_LIST_HREF, isNotFound, useBioPage, useBioPages, useDeleteBioPage, type BioPage,
+} from "@/hooks/useBioPages";
 import { initProfileForm, bioProfileReducer } from "@/components/growth/bio/bioProfileForm";
 import { INITIAL_LINK, bioLinkReducer } from "@/components/growth/bio/bioLinkForm";
 import { draftLinkView, previewModel } from "@/components/growth/bio/bioPreviewModel";
@@ -92,6 +94,8 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
   const router = useRouter();
   const qc = useQueryClient();
   const deleted = useRef(false);
+  // Whether the bio service answers (the list's health probe, shared with Bio pages); unknown until it loads.
+  const serving = useBioPages().data?.serving;
 
   useEffect(() => () => {
     if (deleted.current) qc.removeQueries({ queryKey: [BIO_KEY, profile.id], exact: true });
@@ -121,8 +125,11 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
           <div className={cn("min-w-0 space-y-4", view === "preview" && "max-lg:hidden")}>
             <IfCard title="Address">
               <PageAddress className="mt-2" url={profile.public_url} path={`/${profile.username}`} />
-              {!profile.public_url && (
-                <IfHelp>Not public here yet: this server has no public bio address. You can still edit the page.</IfHelp>
+              {(!profile.public_url || serving === false) && (
+                <IfHelp role="note">
+                  Not public here yet: {profile.public_url ? "the bio page server isn't answering" : "this server has no public bio address"},
+                  so visitors can&rsquo;t open this address. You can still edit the page.
+                </IfHelp>
               )}
               <div className="mt-3 flex flex-wrap items-baseline gap-x-2 text-[13px]">
                 <span className="text-fg-dim">Custom domain:</span>

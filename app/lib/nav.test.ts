@@ -44,7 +44,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "Analytics: Creator reports / Employee reports / Fan reports / Message dashboard",
       "Messages Pro",
       "Vault Pro",
-      "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Sensitive words",
+      "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Redirect links / Bio pages / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
       "My AI Chatter: Auto-reply / Get to know fans / Full AI Chatter",
@@ -301,6 +301,13 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
       expect(deniedPage(href, new Set([permission]))).toBeNull();
       expect(deniedPage(href, null)).toBeNull();
     }
+    // Tracking links' former tabs answer to it, on their routes and below (the bio editor).
+    const noTracking = new Set([...PERMISSION_PAGES].filter((p) => p !== "/growth/tracking-links"));
+    for (const href of ["/growth/redirect-links", "/growth/bio-pages", "/growth/bio-pages/p00000000000001"]) {
+      expect(deniedPage(href, noTracking)).toBe("/growth/tracking-links");
+      expect(deniedPage(href, new Set(["/growth/tracking-links"]))).toBeNull();
+    }
+    expect(deniedPage("/growth/bio-pagesx", noTracking)).toBeNull();
     // A Messages Pro grant alone opens none of them.
     const mp = { chatterOnly: true, grantedPages: new Set(["/messages-pro"]), flags: on };
     expect(outline(visibleSidebar(sidebarFor("fansly"), mp))[0]).not.toMatch(/Scheduled Posts|Lists|Notifications|Earning Statistics/);

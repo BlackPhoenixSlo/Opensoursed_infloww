@@ -1,20 +1,19 @@
 "use client";
 
 /** The bio editor's Tracking URLs card, only for a page with a Creator: the page's address per OnlyFans tracking link
- *  of that Creator (`<address>/<code>`), and `<address>/geo` when a link has a Geo Rule (v2 `script.js:218-250`). */
+ *  of that Creator (`<address>/<code>`), v2 `script.js:218-250` minus its `/geo` row (no Geo Rule in the UI, 11-12). */
 import { CopyButton } from "@/components/growth/_bits";
 import { IfCard, IfHelp } from "@/components/ui/infloww";
 import { useOfTrackingLinks } from "@/hooks/useGrowth";
 import type { BioPage } from "@/hooks/useBioPages";
-import { trackingRows, trackingUrl } from "@/components/growth/bio/bioPreviewModel";
+import { trackingRows } from "@/components/growth/bio/bioPreviewModel";
 
 export function BioTrackingUrls({ page }: { page: BioPage }) {
-  const { profile, links } = page;
+  const { profile } = page;
   const q = useOfTrackingLinks(profile.account_id);
   if (!profile.account_id) return null;
   const address = profile.public_url ?? `/${profile.username}`;
   const rows = trackingRows(q.data?.links ?? [], address);
-  if (links.some((l) => l.geo != null)) rows.push({ key: "geo", name: "Geo Rule", code: "geo", url: trackingUrl(address, "geo") });
 
   return (
     <IfCard title="Tracking URLs">

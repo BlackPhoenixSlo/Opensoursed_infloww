@@ -2,8 +2,8 @@
 
 /**
  * The bio editor's link dialog ("Add link" / "Edit link"), almost full screen on a phone: title, destination, icon,
- * background image, the 18+ gate, Mode, and "Tracking and Geo Rule" (OnlyFans tracking, the default code with a picker
- * of the Creator's OnlyFans tracking links, the Geo Rule). Copy after v2 `links.js`. State: `bioLinkForm.ts`, held by
+ * background image, the 18+ gate, Mode, and "Tracking" (OnlyFans tracking, the default code with a picker of the
+ * Creator's OnlyFans tracking links; no Geo Rule field since 11-12, a stored rule stays as is). Copy after v2 `links.js`. State: `bioLinkForm.ts`, held by
  * BioEditor (the preview draws the draft); this dialog dispatches and runs the save: the link write, then the
  * background upload or removal. A background that fails after the link saved leaves the dialog on the saved link.
  */
@@ -11,7 +11,7 @@ import { useId, type Dispatch } from "react";
 import { ChevronDown } from "lucide-react";
 
 import {
-  IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfSwitch, IfTextArea,
+  IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfSwitch,
 } from "@/components/ui/infloww";
 import { useOfTrackingLinks } from "@/hooks/useGrowth";
 import {
@@ -173,7 +173,7 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
               <ChevronDown aria-hidden className={cn("h-4 w-4 shrink-0 transition-transform", !form.advanced && "-rotate-90")} />
               {/* One line for the heading; the hint goes under it on a phone, beside it from sm */}
               <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-2">
-                <span className="whitespace-nowrap text-[14px] text-fg">Tracking and Geo Rule</span>
+                <span className="whitespace-nowrap text-[14px] text-fg">Tracking</span>
                 <span aria-hidden className="truncate text-[12px] text-muted">Only for OnlyFans Links.</span>
               </span>
             </button>
@@ -198,16 +198,6 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
                     )}
                   </div>
                   <IfHelp>Digits only. Used when no other code applies.</IfHelp>
-                </div>
-                <div>
-                  <IfLabel htmlFor={`${id}-geo`}>Geo Rule</IfLabel>
-                  <IfTextArea id={`${id}-geo`} rows={4} spellCheck={false} autoCapitalize="none" value={d.geoText}
-                    className="font-mono text-[13px]" aria-invalid={bad("geo")}
-                    onChange={(e) => set({ geoText: e.target.value })} />
-                  <IfHelp>
-                    Advanced: Tracking Codes per country as JSON, e.g. {'{"US": "5"}'}. Leave it empty for none. Used for
-                    visitors who arrive at /{page.profile.username}/geo.
-                  </IfHelp>
                 </div>
               </div>
             )}
