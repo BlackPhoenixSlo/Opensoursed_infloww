@@ -8,12 +8,13 @@
  * through `TwoFactorSetup` first. Either way the Relay sets the session cookie
  * on success and the caller hard-navigates, as a chatter sign-in does.
  *
- * `TwoFactorSetup` is also Security (personal)'s "Enable 2FA". There is no QR
- * code (the app has no QR library): the setup key is shown to type in, and the
- * otpauth:// link opens the authenticator app on a phone. Copy is Infloww's.
+ * `TwoFactorSetup` is also Security (personal)'s "Enable 2FA": a QR code of the
+ * otpauth:// link to scan from a computer (not on a phone), the setup key to copy or type in, and
+ * the link itself to open the authenticator app on a phone. Copy is Infloww's.
  */
 
 import { useEffect, useState } from "react";
+import QRCode from "qrcode";
 
 import { errText } from "@/lib/errText";
 import { relay } from "@/lib/relay";
@@ -27,26 +28,46 @@ interface ActivateReply { recovery_codes: string[]; kind: SignedInKind }
 /** The setup key in fours, as authenticator apps print it. */
 const grouped = (secret: string) => secret.replace(/(.{4})/g, "$1 ").trim();
 
-export function BackupCodes({ codes }: { codes: string[] }) {
+/** A copy-to-clipboard text button that says "Copied" once it worked. */
+function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="text-sm underline underline-offset-4"
+      onClick={() => { void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => {}); }}
+    >
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+/** The otpauth:// link as a QR code to scan from a computer (a PNG data URL; white quiet zone so it scans on the dark
+ *  theme too). Hidden below `sm`: a phone cannot scan its own screen, and the shorter dialog keeps the code field above
+ *  the keyboard. */
+function SetupQr({ uri }: { uri: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(uri, { margin: 2, width: 176 }).then((url) => { if (!cancelled) setSrc(url); }, () => {});
+    return () => { cancelled = true; };
+  }, [uri]);
+  if (!src) return null;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt="QR code for your authenticator app" width={176} height={176} className="mt-2 rounded-[6px] max-sm:hidden" />;
+}
+
+export function BackupCodes({ codes }: { codes: string[] }) {
   return (
     <div>
       <p className="text-sm opacity-80">
         Make a copy of these backup codes that you can enter to authenticate your account when you log in. Each
         works once.
       </p>
-      <ul aria-label="Backup codes" className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-sm">
+      <ul aria-label="Backup codes" className="mt-3 grid grid-cols-1 gap-x-6 sm:grid-cols-2 gap-y-1 font-mono text-sm">
         {codes.map((c) => <li key={c}>{c}</li>)}
       </ul>
-      <button
-        type="button"
-        className="mt-3 text-sm underline underline-offset-4"
-        onClick={() => {
-          void navigator.clipboard?.writeText(codes.join("\n")).then(() => setCopied(true), () => {});
-        }}
-      >
-        {copied ? "Copied" : "Copy codes"}
-      </button>
+      <div className="mt-3"><CopyButton text={codes.join("\n")} label="Copy codes" /></div>
     </div>
   );
 }
@@ -108,11 +129,17 @@ export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
       </div>
       <div>
         <p className="font-medium">Step 2. Add your account to the app</p>
-        <p className="text-sm opacity-80">Enter this setup key in the app (time based), or open the link on your phone.</p>
+        <p className="text-sm opacity-80">
+          Scan the QR code with the app, or on your phone open the link or copy the setup key into the app (time based).
+        </p>
         {init ? (
           <>
+            <SetupQr uri={init.otpauth_uri} />
             <p aria-label="Setup key" className="mt-2 select-all font-mono text-sm tracking-wider">{grouped(init.secret)}</p>
-            <a className="text-sm underline underline-offset-4" href={init.otpauth_uri}>Open in authenticator app</a>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+              <CopyButton text={init.secret} label="Copy setup key" />
+              <a className="text-sm underline underline-offset-4" href={init.otpauth_uri}>Open in authenticator app</a>
+            </div>
           </>
         ) : !error && <p className="mt-2 text-sm opacity-60">…</p>}
       </div>

@@ -183,12 +183,14 @@ export const IF_MODAL_BOX = "rounded-[10px] bg-[#1f1f1f] text-fg shadow-2xl outl
 const widthStyle = (width: number) => ({ width: `min(${width}px, calc(100vw - 32px))` });
 
 /** Both modals' mask: it pops in (the mask fades, the box scales from 0.96, globals.css `pop-*`) and leaves on a copy
- *  that takes no click (`useExitGhost`), so closing never holds up the page. */
+ *  that takes no click (`useExitGhost`), so closing never holds up the page. It covers the visible area
+ *  (`--vvt`/`--vvh`, layout.tsx), so the phone keyboard shrinks it from below; below `sm` the box sits at its top
+ *  instead of the middle, so opening the keyboard does not shove the dialog up. */
 function ModalMask({ children }: { children: ReactNode }) {
   const maskRef = useRef<HTMLDivElement>(null);
   useExitGhost(true, maskRef);
   return (
-    <div ref={maskRef} className={cn("pop-backdrop fixed inset-x-0 top-0 z-50 grid h-[var(--vvh,100dvh)] place-items-center overflow-y-auto p-4", IF_MODAL_MASK)}>
+    <div ref={maskRef} className={cn("pop-backdrop fixed inset-x-0 top-[var(--vvt,0px)] z-50 grid h-[var(--vvh,100dvh)] place-items-center overflow-y-auto p-4 max-sm:items-start", IF_MODAL_MASK)}>
       {children}
     </div>
   );

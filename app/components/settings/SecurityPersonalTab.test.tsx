@@ -79,6 +79,27 @@ describe("SecurityPersonalTab", () => {
     expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
   });
 
+  it("Enable 2FA shows the setup key as a QR code and copies the bare key", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const uri = "otpauth://totp/Fasttt:alphaone?secret=OPAA6ENPFLYZCLRG&issuer=Fasttt&digits=6&period=30";
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/auth/me") return jsonRes({ user_id: "u1", username: "alphaone" });
+      if (url === "/auth/2fa") return jsonRes({ enabled: false, enabled_at: null, recovery_codes_left: 0, required: false });
+      if (url === "/auth/2fa/init") return jsonRes({ secret: "OPAA6ENPFLYZCLRG", otpauth_uri: uri, enrol_token: "t" });
+      return jsonRes({ detail: "unmocked" }, 404);
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Enable 2FA" }));
+    const qr = await screen.findByRole("img", { name: "QR code for your authenticator app" });
+    expect(qr.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    expect(screen.getByLabelText("Setup key")).toHaveTextContent("OPAA 6ENP FLYZ CLRG");
+    expect(screen.getByRole("link", { name: "Open in authenticator app" })).toHaveAttribute("href", uri);
+    fireEvent.click(screen.getByRole("button", { name: "Copy setup key" }));
+    expect(writeText).toHaveBeenCalledWith("OPAA6ENPFLYZCLRG");
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
   it("Log out other sessions posts to /auth/sessions/revoke-others and says so", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === "/auth/me") return jsonRes({ user_id: "u1", username: "alphaone" });
