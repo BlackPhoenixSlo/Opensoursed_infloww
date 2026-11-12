@@ -651,7 +651,7 @@ async def case_flags_failure_stays_in_todo() -> None:
     async def _cold(*_a, **_k):
         return vault_frames.Collected([], "fetch_failed")
 
-    async def _ready():
+    async def _ready(account_id=None):
         return None
 
     o_c, o_p = vault_frames.collect, vault_jev_pass.vault_jev.preflight

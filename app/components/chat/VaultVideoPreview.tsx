@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { useModalFocus } from "@/components/ui/ifModal";
 
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -82,6 +84,9 @@ export function VaultVideoPreview({
   // surface the same friendly hint about refresh + transcoding.
   const [loadError, setLoadError] = useState(false);
   useEffect(() => { setLoadError(false); }, [media.id]);
+  // Its own focus layer: Tab and Escape follow the top layer when it opens over another modal (the vault popup).
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useModalFocus(boxRef, onClose);
   // Lock background scroll while open. The overlay is viewport-level (`fixed`),
   // so without this the page behind it still scrolls under the backdrop.
   useEffect(() => {
@@ -129,7 +134,7 @@ export function VaultVideoPreview({
     // (e.g. the /vault manager), where an absolute overlay would size itself to
     // whatever positioned ancestor it landed in — which rendered the video tiny
     // and left the page behind it scrollable.
-    <div role="dialog" aria-modal="true" aria-label="Video preview" className="fixed inset-0 z-50 flex items-center justify-center">
+    <div ref={boxRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Video preview" className="fixed inset-0 z-50 flex items-center justify-center">
       <button
         type="button"
         aria-label="Close preview"

@@ -3,12 +3,12 @@
 /**
  * AI keys: the owner's own LLM keys (AgencyKeysCard's fields) with Save in the Panel header, as every Settings
  * tab, then each Creator's daily AI spend limit (AiSpendCapCard, its own Save), then the server's Google Drive key
- * for the vault importer (DriveKeyCard, master-only to edit, own Save: a different store, /admin/secrets). Hidden from a Chatter (SETTINGS_TABS chatterHidden); the relay
+ * for the vault importer and the server's fallback TypeSafe (Jev) key, used by any agency with none of its own (ServerKeyCard, master-only to edit, own Save: a different store, /admin/secrets). Hidden from a Chatter (SETTINGS_TABS chatterHidden); the relay
  * owner-gates the keys routes regardless.
  */
 
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
-import DriveKeyCard from "@/components/setup/DriveKeyCard";
+import DriveKeyCard, { ServerKeyCard } from "@/components/setup/DriveKeyCard";
 import AiSpendCapCard from "@/components/settings/AiSpendCapCard";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { useSaveTenantKeys } from "@/hooks/useTenantKeys";
@@ -38,6 +38,13 @@ export default function AiKeysTab() {
       </Section>
       <Section>
         <AiSpendCapCard />
+      </Section>
+      <Section title="TypeSafe / Jev (server fallback key)">
+        <ServerKeyCard
+          name="TYPESAFE_API_KEY"
+          intro="Used for any agency that has not saved its own TypeSafe key above."
+          savedNote="Saved — Jev uses it on its next read."
+        />
       </Section>
       <Section title="Google Drive (server key)">
         <DriveKeyCard />

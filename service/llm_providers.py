@@ -149,12 +149,18 @@ def house_key(provider: str) -> str:
 # ── TypeSafe (Jev): a judge, not a chat provider ──────────────────────
 # Vault Jev (`vault_jev.py`) asks Jev through TypeSafe's own SDK, not the
 # OpenAI-compatible chat path, so it is no `PROVIDERS` row (no model list, no
-# per-agency key, no llm_client billing: TypeSafe bills this deployment per
-# input token). Its key resolves the way every provider key does: Setup > Keys,
-# then env, then service/.env.
+# llm_client billing). An agency may still save its own key for it
+# (`TENANT_KEY_PROVIDERS`; `tenant_keys.typesafe_key_for` picks it); this
+# deployment's key, resolved the way every provider key is (Setup > Keys, then
+# env, then service/.env), is the fallback for every agency that has not.
+TYPESAFE = "typesafe"
 TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
+
+# What an agency can save a key for: every chat provider, plus TypeSafe.
+TENANT_KEY_PROVIDERS = sorted({*PROVIDERS, TYPESAFE})
 
 
 def typesafe_key() -> str:
-    """The deployment's TypeSafe key, or "" (Jev's reads then stop with no_key)."""
+    """The deployment's TypeSafe key, or "" — the fallback for an agency with
+    no key of its own (`tenant_keys.typesafe_key_for`)."""
     return _api_key(TYPESAFE_KEY_ENV)

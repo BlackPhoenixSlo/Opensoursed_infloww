@@ -3,7 +3,8 @@
 /**
  * DriveKeyCard — Settings → AI keys → Google Drive. The one server key the vault
  * importer's Drive section needs (GOOGLE_DRIVE_API_KEY), set where an operator
- * looks for keys rather than only in the master's System tab. It is the same
+ * looks for keys rather than only in the master's System tab. `ServerKeyCard` is
+ * the same card for any one secrets-store key (AI keys also shows TypeSafe's). It is the same
  * secrets-store entry the "Server keys" card edits: stored server-side in
  * service/secrets/secrets.json, read masked, never sent back raw, and the relay
  * still falls back to the env var when it is unset here.
@@ -21,33 +22,38 @@ import { Skeleton } from "@/components/ui/Skeleton";
 
 const DRIVE_KEY = "GOOGLE_DRIVE_API_KEY";
 
-function Intro() {
-  return (
-    <p className="text-sm text-fg-dim">
-      Lets Vault Pro import from a Google Drive folder link. A plain Google API key with the
-      Drive API enabled — the folder itself must be shared as &quot;Anyone with the link can
-      view&quot;.
-    </p>
-  );
-}
+const DRIVE_INTRO = (
+  <>
+    Lets Vault Pro import from a Google Drive folder link. A plain Google API key with the
+    Drive API enabled — the folder itself must be shared as &quot;Anyone with the link can
+    view&quot;.
+  </>
+);
 
-function DriveKeyEditor() {
+type ServerKeyProps = {
+  /** The secrets-store key (service/secrets_store.py KNOWN). */
+  name: string;
+  intro: React.ReactNode;
+  savedNote: string;
+};
+
+function ServerKeyEditor({ name, savedNote }: Omit<ServerKeyProps, "intro">) {
   const { data, isLoading, error } = useSecrets();
   const save = useSaveSecrets();
   const { draft, dirty, setField, save: onSave, clear, note } = useKeyDraft(
     save.mutateAsync,
-    "Saved — Drive import works on the next upload.",
+    savedNote,
   );
-  const k = data?.keys?.[DRIVE_KEY];
+  const k = data?.keys?.[name];
 
   if (isLoading) return <div className="space-y-2" aria-busy="true"><Skeleton className="h-4 w-32" /><Skeleton className="h-9 w-full" /></div>;
   if (error || !k) return <div className="text-sm text-err">Couldn&apos;t load the key&apos;s status.</div>;
   return (
     <div className="space-y-2">
       <SecretKeyField
-        name={DRIVE_KEY}
+        name={name}
         k={k}
-        value={draft[DRIVE_KEY] ?? ""}
+        value={draft[name] ?? ""}
         setField={setField}
         clear={clear}
         pending={save.isPending}
@@ -62,14 +68,14 @@ function DriveKeyEditor() {
   );
 }
 
-/** The section body; AI keys' Panel gives it its "Google Drive (server key)" Section title. */
-export default function DriveKeyCard() {
+/** A section body; AI keys' Panel gives it its Section title. */
+export function ServerKeyCard({ name, intro, savedNote }: ServerKeyProps) {
   const { user } = useUser();
   return (
     <div className="space-y-3">
-      <Intro />
+      <p className="text-sm text-fg-dim">{intro}</p>
       {user?.is_admin === true ? (
-        <DriveKeyEditor />
+        <ServerKeyEditor name={name} savedNote={savedNote} />
       ) : (
         <p className="text-sm text-fg-dim">
           This key belongs to the server, so its owner sets it here.
@@ -77,4 +83,8 @@ export default function DriveKeyCard() {
       )}
     </div>
   );
+}
+
+export default function DriveKeyCard() {
+  return <ServerKeyCard name={DRIVE_KEY} intro={DRIVE_INTRO} savedNote="Saved — Drive import works on the next upload." />;
 }

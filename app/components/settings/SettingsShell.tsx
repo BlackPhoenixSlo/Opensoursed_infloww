@@ -35,7 +35,7 @@ export default function SettingsShell({ children }: { children: React.ReactNode 
     <div className="bg-[var(--if-bg)] min-h-[calc(100dvh-var(--shell-top,3.5rem))]">
       <header
         data-settings="header"
-        className="h-[var(--if-header-h)] px-[var(--if-panel-pad)] flex items-center gap-3 border-b border-[var(--if-line)]"
+        className="h-[var(--if-header-h)] px-3 sm:px-6 md:px-[var(--if-panel-pad)] flex items-center gap-3 border-b border-[var(--if-line)]"
       >
         <h1 className="text-[length:var(--if-fs-lg)] font-[var(--if-fw-title)] text-[var(--if-fg)]">Settings</h1>
         <div className="ml-auto flex items-center gap-3">
@@ -44,7 +44,7 @@ export default function SettingsShell({ children }: { children: React.ReactNode 
           {!inApp && (
             <a
               href="/download"
-              title={`Get the ${BRAND_NAME} desktop app for Mac and Windows`}
+              title={`Get the ${BRAND_NAME} desktop app for Mac, Windows and Linux`}
               className="hidden sm:flex items-center gap-1.5 h-8 px-3 rounded border border-[var(--if-line)] text-[length:var(--if-fs)] text-[var(--if-fg-2)] hover:text-[var(--if-fg)] whitespace-nowrap"
             >
               <span aria-hidden="true">&#8595;</span>

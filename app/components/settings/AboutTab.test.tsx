@@ -44,7 +44,7 @@ describe("AboutTab", () => {
   it("offers the desktop app in a box whose Download links to /download, as a plain anchor in the same tab", () => {
     renderWithProviders(<AboutTab />);
     expect(screen.getByText("Get the desktop app")).toBeInTheDocument();
-    expect(screen.getByText("Inflowwww for Mac and Windows")).toBeInTheDocument();
+    expect(screen.getByText("Inflowwww for Mac, Windows and Linux")).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Download" });
     expect(link).toHaveAttribute("href", "/download");
     expect(link).not.toHaveAttribute("target");

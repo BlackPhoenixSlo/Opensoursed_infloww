@@ -1067,7 +1067,7 @@ async def describe_all_plan(
             "undescribed": int(undescribed or 0),
             "restage": int(stale or 0),
             "cap": budget,
-            "jev": await vault_jev_pass.plan()}
+            "jev": await vault_jev_pass.plan(account_id)}
 
 
 @describe_router.get("/admin/vault-ai/describe-all/status")

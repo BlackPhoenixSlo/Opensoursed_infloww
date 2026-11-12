@@ -15,7 +15,7 @@ const section = (title: string) => screen.getByRole("heading", { name: title }).
 const sw = (title: string, name: string) => within(section(title)).getByRole("switch", { name });
 
 beforeEach(() => localStorage.clear());
-afterEach(() => { cleanup(); localStorage.clear(); });
+afterEach(() => { cleanup(); localStorage.clear(); document.documentElement.removeAttribute("data-theme"); });
 
 describe("PlatformSwitches", () => {
   it("shows every switch on by default, including over settings saved before the platform switches", () => {
@@ -44,5 +44,14 @@ describe("PlatformSwitches", () => {
     fireEvent.click(sw("Platform notifications", "Fansly"));
     expect(readNotifSettings().platforms).toEqual({ onlyfans: true, fansly: false });
     expect(sw("Platform notifications", "Fansly").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("Appearance → Dark mode flips the app theme at once and stores it", () => {
+    render(<PlatformSwitches />);
+    expect(sw("Appearance", "Dark mode").getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(sw("Appearance", "Dark mode"));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(localStorage.getItem("chatterly:theme")).toBe("light");
+    expect(sw("Appearance", "Dark mode").getAttribute("aria-checked")).toBe("false");
   });
 });

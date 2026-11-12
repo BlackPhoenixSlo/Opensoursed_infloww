@@ -44,3 +44,10 @@ describe("anthropic provider copy", () => {
     expect(HELP.anthropic).toMatch(/console\.anthropic\.com/);
   });
 });
+
+describe("typesafe provider copy", () => {
+  it("has a label and help text saying the server key is the fallback", () => {
+    expect(LABELS.typesafe).toMatch(/TypeSafe/);
+    expect(HELP.typesafe).toMatch(/server's key/);
+  });
+});

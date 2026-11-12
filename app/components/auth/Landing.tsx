@@ -275,7 +275,7 @@ export default function Landing() {
   // the app. The server renders as if in the app, so it appears after hydration on the web and never flashes there.
   const download = !inApp && (
     <p className="mt-2 text-sm text-pretty text-white/[0.62]">
-      <a className={LINK} href="/download">Download the desktop app</a> for Mac and Windows.
+      <a className={LINK} href="/download">Download the desktop app</a> for Mac, Windows and Linux.
     </p>
   );
 

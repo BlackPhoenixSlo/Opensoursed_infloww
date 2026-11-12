@@ -46,7 +46,7 @@ const toReady = (s: VideoLoad): VideoLoad => (s === "loading" ? "ready" : s);
  *  metadata arrives) until `loadeddata`/`canplay`, then
  *  {@link VIDEO_REVEAL_DELAY_MS} more. Keyed on the source by its caller, so a
  *  new selection starts loading afresh. */
-function VaultInlineVideo({ src, poster }: { src: string; poster?: string }) {
+function VaultInlineVideo({ src, poster, h }: { src: string; poster?: string; h: string }) {
   const [state, setState] = useState<VideoLoad>("loading");
   const revealTimer = useRef<number | undefined>(undefined);
 
@@ -81,7 +81,7 @@ function VaultInlineVideo({ src, poster }: { src: string; poster?: string }) {
         onLoadedData={onPlayable}
         onCanPlay={onPlayable}
         onError={() => setState("error")}
-        className={`vault-video w-full max-h-[30vh] object-contain bg-black${state === "loading" ? " invisible min-h-[160px]" : ""}`}
+        className={`vault-video w-full ${h} object-contain bg-black${state === "loading" ? " invisible min-h-[160px]" : ""}`}
       />
       {state === "loading" && (
         <div role="status" aria-label="Loading video" className="absolute inset-0 grid place-items-center bg-black text-fg-dim">
@@ -96,8 +96,8 @@ function VaultInlineVideo({ src, poster }: { src: string; poster?: string }) {
  *  still as poster; `fallback` (the still view) if the clip fails. Keyed on the
  *  source by its caller, so another selection starts afresh; closing the drawer
  *  or picking another lets go of the clip's decoder. */
-function VaultInlineGif({ src, poster, fallback }: {
-  src: string; poster: string | null; fallback: ReactNode;
+function VaultInlineGif({ src, poster, fallback, h }: {
+  src: string; poster: string | null; fallback: ReactNode; h: string;
 }) {
   const [failed, setFailed] = useState(false);
   const ref = useRef<HTMLVideoElement | null>(null);
@@ -120,7 +120,7 @@ function VaultInlineGif({ src, poster, fallback }: {
       loop
       playsInline
       onError={() => setFailed(true)}
-      className="w-full max-h-[30vh] object-contain bg-black"
+      className={`w-full ${h} object-contain bg-black`}
     />
   );
 }
@@ -156,11 +156,15 @@ export default function VaultPreviewMedia({
   media: m,
   accountId,
   onExpand,
+  fill = false,
 }: {
   media: VaultMedia;
   accountId: string;
   onExpand: () => void;
+  /** Fill the parent's height (the vault item popup's media pane) instead of the drawer's 30vh cap. */
+  fill?: boolean;
 }) {
+  const h = fill ? "h-full" : "max-h-[30vh]";
   const isVideo = m.type === "video";
   const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
   const drmOnly = isVideo && isDrmOnlyVideo(m);
@@ -212,7 +216,7 @@ export default function VaultPreviewMedia({
       onError={still.onError}
       onClick={isVideo ? undefined : () => setZoom(true)}
       title={isVideo ? undefined : "Click to view full size"}
-      className={`w-full max-h-[30vh] object-contain${isVideo ? "" : " cursor-zoom-in"}`}
+      className={`w-full ${h} object-contain${isVideo ? "" : " cursor-zoom-in"}`}
     />
   ) : (
     // Say so. A blank black box is how a rendering failure gets read as
@@ -222,10 +226,10 @@ export default function VaultPreviewMedia({
   );
 
   return (
-    <div className="relative w-full rounded-lg overflow-hidden bg-black">
+    <div className={`relative w-full overflow-hidden bg-black ${fill ? "h-full flex items-center justify-center" : "rounded-lg"}`}>
       {gifSrc ? (
         <VaultInlineGif key={gifSrc} src={proxyImage(gifSrc, accountId, m.id)} poster={still.src}
-          fallback={stillView} />
+          fallback={stillView} h={h} />
       ) : playable ? (
         <VaultInlineVideo
           key={rawSrc}
@@ -233,6 +237,7 @@ export default function VaultPreviewMedia({
           // `still.src` and not the first rung: a poster url that has already
           // 404'd is a dead attribute the browser retries on every render.
           poster={still.src || undefined}
+          h={h}
         />
       ) : (
         <>
@@ -257,7 +262,9 @@ export default function VaultPreviewMedia({
         onClick={isVideo ? onExpand : () => setZoom(true)}
         title="Full screen"
         aria-label="Full screen"
-        className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-xs leading-none"
+        className={`absolute rounded bg-black/60 hover:bg-black/85 text-white leading-none ${
+          fill ? "top-3 right-3 grid h-8 w-8 place-items-center rounded-full border border-white/25 text-base" : "top-1 right-1 px-1.5 py-0.5 text-xs"
+        }`}
       >
         ⤢
       </button>

@@ -70,6 +70,13 @@ KNOWN: dict[str, dict] = {
         "help": "Optional. Help assistant answers (Claude Opus); any account "
                 "an operator points at a Claude model. console.anthropic.com.",
     },
+    "TYPESAFE_API_KEY": {
+        "label": "TypeSafe API key (Jev)",
+        "group": "AI models",
+        "help": "Optional. Used by Vault Jev (reading vault items) for agencies "
+                "with no TypeSafe key of their own. Blank = those reads are "
+                "skipped. Get one at console.typesafe.ai.",
+    },
     "HELP_ASSISTANT_DEEPSEEK_KEY": {
         "label": "Help-bot fallback key (DeepSeek)",
         "group": "AI models",

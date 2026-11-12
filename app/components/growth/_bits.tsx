@@ -91,7 +91,8 @@ export function CopyButton({
       onClick={async () => {
         if (done) return;
         try {
-          await navigator.clipboard?.writeText(text);
+          if (!navigator.clipboard?.writeText) return;   // insecure origin: no fake "Copied"
+          await navigator.clipboard.writeText(text);
           setDone(true);
           setTimeout(() => setDone(false), holdMs);
         } catch { /* clipboard blocked */ }

@@ -26,11 +26,10 @@ import { dlAccess, downloadGate, safeName, type DlMode } from "@/components/vaul
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
-import VaultPreviewMedia from "@/components/vault/VaultPreviewMedia";
 import VaultPackPickerModal from "@/components/vault/VaultPackPickerModal";
 import VaultExtrasTools, { type ExtrasModal } from "@/components/vault/VaultExtrasTools";
-import VaultSelectionBar, { VaultDeleteButton } from "@/components/vault/VaultSelectionBar";
-import { VaultItemEditor } from "@/components/vault/VaultItemEditor";
+import VaultSelectionBar from "@/components/vault/VaultSelectionBar";
+import VaultItemModal from "@/components/vault/VaultItemModal";
 import {
   DESCRIBING,
   addSelectedToFolder,
@@ -118,7 +117,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // The selection bar's move opens the "Add to category" modal (#77).
   const [moving, setMoving] = useState(false);
   const [promptVersion, setPromptVersion] = useState<"v1" | "v2">("v2");
-  const drawerRef = useRef<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<() => void>(() => {});
@@ -133,36 +131,15 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     return () => clearTimeout(t);
   }, [searchRaw, dispatchBrowse]);
 
-  // Esc closes the full-screen player first, then the details drawer.
+  // Esc closes the full-screen player opened from a tile's ▶. Over the item popup, the popup's Escape does it.
   useEffect(() => {
-    if (!preview && !playMedia) return;
+    if (!playMedia || (preview && !selectMode)) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (playMedia) setPlayMedia(null);
-      else setPreview(null);
+      if (e.key === "Escape") setPlayMedia(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [preview, playMedia]);
-
-  // Clicking anywhere outside the drawer closes it, same as the ✕. Tile clicks
-  // still read as a SWAP rather than a close: this fires first, then the tile's
-  // own onClick sets the new preview in the same React batch. Skipped while the
-  // full-screen player is up, so clicking the player can't close the drawer
-  // underneath it.
-  useEffect(() => {
-    if (!preview || selectMode || playMedia) return;
-    // Phone only: the drawer is a full-screen sheet there, so there is no
-    // "outside" to click — and a thumb brushing the edge would close it.
-    if (!window.matchMedia("(min-width: 768px)").matches) return;
-    const onDown = (e: MouseEvent) => {
-      const el = drawerRef.current;
-      if (el && !el.contains(e.target as Node)) setPreview(null);
-    };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
-  }, [preview, selectMode, playMedia]);
-
+  }, [playMedia, preview, selectMode]);
 
   const summary = useVaultCacheSummary(accountId);
   const plan = useDescribePlan(accountId, promptVersion);
@@ -302,6 +279,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // source is fetching — never flash an empty state during the swap.
   const showLoading = summary.isLoading || src.isLoading;
   const items = src.items as Tile[];
+  // The open item's place in the grid, for the popup's ‹ › (-1: not in the grid as loaded now).
+  const previewIdx = preview ? items.findIndex((m) => m.id === preview.id) : -1;
   const pageFetching = src.isFetchingNextPage;
   const pageError = !!src.error && !pageFetching;
   loadMoreRef.current = src.loadMore;
@@ -638,75 +617,41 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
       )}
 
       {preview && !selectMode && (
-        // Right-side slide-over, deliberately WITHOUT a dimming backdrop so the
-        // grid stays visible AND clickable behind it — click another tile and the
-        // drawer just swaps to that item.
-        <aside
-          ref={drawerRef}
-          className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 z-40 h-full w-full md:w-[430px] flex flex-col border-l border-border bg-panel/95 backdrop-blur-sm shadow-2xl pt-[env(safe-area-inset-top)] md:pt-0 pb-[env(safe-area-inset-bottom)] md:pb-0"
-        >
-          <header className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
-            <div className="text-sm font-medium truncate">
-              #{preview.id} · {preview.type}
-              {preview.duration ? ` · ${Math.round(preview.duration)}s` : ""}
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => describeOne(preview, { ...deps, setPreview })}
-                disabled={!!busy || capped}
-                title={capped ? `${EXTRA_LABEL}\n${capReason}` : EXTRA_LABEL}
-                className="px-2.5 py-1 rounded-md text-xs border border-ok/50 bg-ok/10 text-ok hover:bg-ok/20 disabled:opacity-50"
-              >
-                {busy === DESCRIBING
-                  ? "Describing…"
-                  : capped
-                  ? "Cap reached"
-                  : (preview._ai as { describe_status?: string } | undefined)?.describe_status === "described"
-                  ? "Re-describe"
-                  : "Describe"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPreview(null)}
-                aria-label="Close details"
-                title="Close (Esc)"
-                className="w-9 h-9 md:w-7 md:h-7 grid place-items-center rounded-md border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
-              >
-                ✕
-              </button>
-            </div>
-          </header>
-          {/* The editor owns the order — action bar (sticky) → media → the
-              fields you act on → the rest below the fold. */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
-            <VaultItemEditor
-              key={preview.id}
-              media={preview}
-              accountId={accountId}
-              onSaved={onSavedItem}
-              mediaSlot={
-                <VaultPreviewMedia
-                  key={`pv-${preview.id}`}
-                  media={preview}
-                  accountId={accountId}
-                  onExpand={() => setPlayMedia(preview)}
-                />
-              }
-              deleteSlot={
-                <VaultDeleteButton
-                  key={`del-${preview.id}`}
-                  media={preview}
-                  accountId={accountId}
-                  onDeleted={() => {
-                    setPreview(null);
-                    qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
-                  }}
-                />
-              }
-            />
-          </div>
-        </aside>
+        // Infloww's media viewer (`VaultItemModal`): ‹ › step through the grid's items as loaded.
+        <VaultItemModal
+          media={preview}
+          accountId={accountId}
+          prev={previewIdx > 0 ? items[previewIdx - 1] : null}
+          next={previewIdx >= 0 && previewIdx < items.length - 1 ? items[previewIdx + 1] : null}
+          onStep={setPreview}
+          onClose={() => setPreview(null)}
+          // Escape closes the full-screen player first, then the popup.
+          onEscape={() => (playMedia ? setPlayMedia(null) : setPreview(null))}
+          keysOff={!!playMedia}
+          onExpand={() => setPlayMedia(preview)}
+          onSaved={onSavedItem}
+          onDeleted={() => {
+            setPreview(null);
+            qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
+          }}
+          describeSlot={
+            <button
+              type="button"
+              onClick={() => describeOne(preview, { ...deps, setPreview })}
+              disabled={!!busy || capped}
+              title={capped ? `${EXTRA_LABEL}\n${capReason}` : EXTRA_LABEL}
+              className="px-3 py-1.5 rounded-md text-sm border border-ok/50 bg-ok/10 text-ok hover:bg-ok/20 disabled:opacity-50"
+            >
+              {busy === DESCRIBING
+                ? "Describing…"
+                : capped
+                ? "Cap reached"
+                : (preview._ai as { describe_status?: string } | undefined)?.describe_status === "described"
+                ? "Re-describe"
+                : "Describe"}
+            </button>
+          }
+        />
       )}
       {playMedia && (
         <VaultVideoPreview

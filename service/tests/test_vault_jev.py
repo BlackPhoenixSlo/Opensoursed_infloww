@@ -438,7 +438,31 @@ async def case_no_key_refuses_before_fetch():
         plan = await vault_jev_pass.plan()
     assert res["status"] == "no_key" and col.calls == 0 and sm.client.calls == [], res
     assert (await _fields(aid))["_jev"]["status"] == "no_key"
-    assert plan == {"ready": False, "reason": "TYPESAFE_API_KEY is not set on this server"}, plan
+    assert plan == {"ready": False, "reason": "no TypeSafe key: add one in Settings → AI keys"}, plan
+
+
+async def case_agency_typesafe_key_wins_over_the_server_key():
+    """The account's agency's own TypeSafe key is what Jev is called with (and readies the pass with no server
+    key); another agency's creator stays on the server key, here none: `no_key`."""
+    import tenant_keys
+    from db.models import User, UserAccount
+    g = _golden_with("resp")
+    aid, other = await _seed(), await _seed()
+    async with get_session() as s:
+        s.add_all([User(id="u_jev_a", username="u_jev_a", password="x"),
+                   User(id="u_jev_b", username="u_jev_b", password="x")])
+        await s.flush()
+        s.add_all([UserAccount(user_id="u_jev_a", account_id=aid),
+                   UserAccount(user_id="u_jev_b", account_id=other)])
+    await tenant_keys.set_keys("u_jev_a", {"typesafe": "ts-agency-a"})
+    keys: list[str] = []
+    with _Seams(g["rec"], g["nn"], key="") as sm:
+        vault_jev._client = lambda key: (keys.append(key), sm.client)[1]
+        res = await vault_jev.run(aid, _jpeg(576, 1024))
+        assert await vault_jev_pass.plan(aid) == {"ready": True, "reason": ""}
+        refused = await vault_jev.run(other, _jpeg(576, 1024))
+    assert res["status"] == "ok" and keys and set(keys) == {"ts-agency-a"}, (res, keys)
+    assert refused["status"] == "no_key", refused
 
 
 async def case_refusal_logs_once_per_sweep():

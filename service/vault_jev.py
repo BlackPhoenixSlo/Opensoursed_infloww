@@ -17,9 +17,9 @@ JPEG q88 LANCZOS RGB and the shrink k rule are byte-identical to the bench; the 
 (`tests/test_vault_jev.py`) checks the exported spec against one generated from the bench files.
 
 NudeNet is a HARD dependency: without it (package, weights, md5) the pass refuses before any TypeSafe
-call and stamps `_jev.status = "no_nudenet"` — never a Jev-only answer. The key is the deployment's
-`TYPESAFE_API_KEY` (`llm_providers.typesafe_key`); spend is reserved and recorded against the
-account's daily cap on the `typesafe` provider row (`llm_client.reserve_external`), like every
+call and stamps `_jev.status = "no_nudenet"` — never a Jev-only answer. The key is the account's agency's own
+TypeSafe key, else the deployment's `TYPESAFE_API_KEY` (`tenant_keys.typesafe_key_for`); spend is reserved and
+recorded against the account's daily cap on the `typesafe` provider row (`llm_client.reserve_external`), like every
 other provider's.
 
 Storage contract (`ai_fields_json["_jev"]`, read by the vault lanes): see `vault_jev_rules.blob`.
@@ -416,15 +416,15 @@ class JevResult(TypedDict, total=False):
     tok: int
 
 
-async def preflight() -> JevResult | None:
-    """None when the pass can run here, else its refusal (`no_nudenet` / `no_key`). Cheap: no
-    thread once NudeNet is loaded, no network — callers check it BEFORE fetching the still."""
-    from llm_providers import typesafe_key
+async def preflight(account_id: str | None = None) -> JevResult | None:
+    """None when the pass can run here for `account_id`, else its refusal (`no_nudenet` / `no_key`).
+    Cheap: no thread once NudeNet is loaded, no network — callers check it BEFORE fetching the still."""
+    from tenant_keys import typesafe_key_for
 
     ready, why = await nudenet_ready()
     if not ready:
         return JevResult(ok=False, status="no_nudenet", detail=why, cost_millicents=0, tok=0)
-    if not typesafe_key():
+    if not await typesafe_key_for(account_id):
         return JevResult(ok=False, status="no_key", detail="no TYPESAFE_API_KEY", cost_millicents=0, tok=0)
     return None
 
@@ -433,13 +433,13 @@ async def run(account_id: str, data: bytes) -> JevResult:
     """The whole pass over one still's bytes. Never raises for a model/NudeNet failure: the result's
     `status` says what happened (`ok` | `no_nudenet` | `no_key` | `capped` | `error`)."""
     import llm_client
-    from llm_providers import typesafe_key
+    from tenant_keys import typesafe_key_for
     from PIL import Image as PImage
 
-    refusal = await preflight()
+    refusal = await preflight(account_id)
     if refusal is not None:
         return refusal
-    key = typesafe_key()
+    key = await typesafe_key_for(account_id)
     try:
         px = list(PImage.open(io.BytesIO(data)).size)   # header only: no decode on the event loop
     except Exception as e:  # noqa: BLE001
@@ -531,13 +531,13 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
     """The whole pass over one video's frames (native stills, clip order). `run`'s contract: never raises for a
     model / NudeNet failure; any frame's failed call fails the video (`error`, retried next sweep)."""
     import llm_client
-    from llm_providers import typesafe_key
+    from tenant_keys import typesafe_key_for
     from PIL import Image as PImage
 
-    refusal = await preflight()
+    refusal = await preflight(account_id)
     if refusal is not None:
         return refusal
-    key = typesafe_key()
+    key = await typesafe_key_for(account_id)
     try:
         if not frames:
             raise ValueError("no frames")

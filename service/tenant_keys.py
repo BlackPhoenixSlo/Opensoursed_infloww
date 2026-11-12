@@ -61,7 +61,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
 from db.models import Account, AccountHealth, User, UserAccount, UserLlmKey
-from llm_providers import PROVIDERS
+import llm_providers
+from llm_providers import PROVIDERS, TENANT_KEY_PROVIDERS, TYPESAFE
 from secrets_store import MASK_CHAR, mask
 
 
@@ -415,7 +416,7 @@ async def set_keys(user_id: str, values: dict[str, str | None]) -> None:
     a never-set one read identically everywhere — both are "no key", both fail
     closed. One representation, one meaning.
     """
-    known = sorted(PROVIDERS)
+    known = TENANT_KEY_PROVIDERS
     cleaned: dict[str, str] = {}
     for prov, raw in values.items():
         if prov not in known:
@@ -456,5 +457,25 @@ async def status(user_id: str) -> dict[str, dict]:
     have = {prov: (val or "").strip() for prov, val in rows}
     return {
         prov: {"set": bool(have.get(prov)), "hint": mask(have.get(prov, ""))}
-        for prov in sorted(PROVIDERS)
+        for prov in TENANT_KEY_PROVIDERS
     }
+
+
+async def typesafe_key_for(account_id: str | None) -> str:
+    """The TypeSafe (Jev) key for one account's calls: its owner's own key,
+    else the deployment's (`llm_providers.typesafe_key`, "" if none).
+
+    NOT `llm_client._tenant_api_key`'s fail-closed rule, on purpose: Jev ran on
+    the house key alone before agencies could save one, so a missing agency key
+    keeping that is today's behaviour, not a leak. The no-cross-billing half is
+    the same: only this account's billable owners (`owners_of`) are read, and
+    with several, only the one holding a TypeSafe key pays (`payer_for`); none
+    or more than one → the house key, never a guess between agencies.
+    """
+    owners = await owners_of(account_id or "")
+    payer = payer_for(owners, await keyed_providers(owners), TYPESAFE) if owners else None
+    if payer:
+        key = await get_key(payer, TYPESAFE)
+        if key:
+            return key
+    return llm_providers.typesafe_key()

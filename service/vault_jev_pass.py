@@ -20,7 +20,7 @@ from typing import Any, Collection
 
 from sqlalchemy import select
 
-import llm_providers
+import tenant_keys
 import vault_ai_vision_decide as decide
 import vault_frames
 import vault_jev  # module attrs `run` / `preflight` / `nudenet_ready`, looked up per call
@@ -174,7 +174,7 @@ async def one(account_id: str, media_id: int, *,
                     "cost_millicents": 0}
         return {"media_id": media_id, "ok": False, "status": "jev_down",
                 "detail": DOWN_SKIP.format(n=sweep.failed_in_row), "cost_millicents": 0}
-    refusal = await vault_jev.preflight()
+    refusal = await vault_jev.preflight(account_id)
     if refusal is not None:
         if sweep is None or not sweep.warned:   # proxy-health `vault_jev_errors` alerts on it
             log.warning("vault_jev skipped status=%s account=%s", refusal.get("status"), account_id)
@@ -244,12 +244,13 @@ def clip_lane(due: Collection[int], media_id: int,
     return vault_frames.lane_ahead(f"jev video media={media_id}")
 
 
-async def plan() -> dict[str, Any]:
-    """Whether Jev can run on this server, for the drawer's notice: NudeNet (Jev refuses without it) and the
-    TypeSafe key. Without either, photos are not flagged or described (skipped, retried next sweep)."""
+async def plan(account_id: str | None = None) -> dict[str, Any]:
+    """Whether Jev can run for `account_id`, for the drawer's notice: NudeNet (Jev refuses without it) and a
+    TypeSafe key (its agency's, else the server's). Without either, photos are not flagged or described (skipped,
+    retried next sweep)."""
     ready, reason = await vault_jev.nudenet_ready()
-    if ready and not llm_providers.typesafe_key():
-        ready, reason = False, "TYPESAFE_API_KEY is not set on this server"
+    if ready and not await tenant_keys.typesafe_key_for(account_id):
+        ready, reason = False, "no TypeSafe key: add one in Settings → AI keys"
     return {"ready": ready, "reason": reason}
 
 

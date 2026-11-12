@@ -19,11 +19,27 @@ const h = vi.hoisted(() => {
     FOLDERS: [BEACH],
     ALL: [
       {
-        id: 1, type: "photo",
-        _ai: { description: "old desc", tags: ["a", "b"], describe_status: "described", suggested_price_cents: 1250 },
+        id: 1, type: "photo", createdAt: "2024-05-27T12:00:00Z",
+        listStates: [
+          { id: 29271410, type: "custom", name: "Beach", hasMedia: true },
+          { id: 5, type: "custom", name: "Not in it", hasMedia: false },
+        ],
+        _ai: {
+          description: "old desc", tags: ["a", "b"], describe_status: "described", suggested_price_cents: 1250,
+          fields: {
+            acts: ["posing"], _prompt_version: "v2",
+            _jev: {
+              v: 8, status: "ok", lane5: "$50", lane: "$50", settled: true, breasts_bare: true, crotch_bare: false,
+              penetration: "n", state: { breasts: "bare", crotch: "thong_covered", butt: "not_visible" },
+              nn: { B: 0.91, G: 0.04 }, feet_subject: 0.12, tags: { outfit: "lingerie", toy_any: false },
+              P: { feet_focus: 0.12 }, passes: ["1"], tok: 1234, px: [800, 1200], at: "2026-11-11T10:00:00Z",
+              C: { toy: { none: 1 } },
+            },
+          },
+        },
       },
       { id: 2, type: "photo" },
-      { id: 3, type: "video" },
+      { id: 3, type: "video", _ai: { fields: { _jev: { v: 8, status: "error", at: "2026-11-11T10:00:00Z" } } } },
     ] as Tile[],
     IN_BEACH: [{ id: 10, type: "photo" }] as Tile[],
     describeMedia: vi.fn(),
@@ -202,7 +218,8 @@ describe("the item editor under a Re-describe", () => {
     media_id: 1, ok: true, status: "described", description: "new desc", tags: ["x", "y"],
   });
   const descBox = () => screen.getByPlaceholderText("Full description…") as HTMLTextAreaElement;
-  const tagsBox = () => screen.getByPlaceholderText("comma, separated, tags") as HTMLInputElement;
+  // The hashtag chips, read off their × buttons.
+  const chips = () => screen.queryAllByRole("button", { name: /^Remove hashtag / }).map((b) => b.getAttribute("aria-label")!.slice(15));
   const saveBtn = () => screen.getByRole("button", { name: "Save & lock" });
 
   it("shows the new description, and nothing reads as edited", async () => {
@@ -214,7 +231,7 @@ describe("the item editor under a Re-describe", () => {
     await flush();
     // Bug: the inputs kept "old desc" / "a, b" and Save turned on, armed with them.
     expect(descBox().value).toBe("new desc");
-    expect(tagsBox().value).toBe("x, y");
+    expect(chips()).toEqual(["x", "y"]);
     expect(saveBtn()).toBeDisabled();
   });
 
@@ -394,5 +411,113 @@ describe("search while OF's own search runs", () => {
     await flush();
     expect(screen.queryByText(/Searching OnlyFans/)).toBeNull();
     expect(screen.getByRole("button", { name: "tile 1" })).toBeInTheDocument();
+  });
+});
+
+describe("the item popup", () => {
+  const dialog = () => screen.queryByRole("dialog", { name: /^Media #/ });
+  const descBox = () => screen.getByPlaceholderText("Full description…") as HTMLTextAreaElement;
+
+  it("opens on a tile as a modal: date chip, folder chips, the four Infloww fields; More info closed", () => {
+    renderPanel();
+    click("tile 1");
+    expect(dialog()).toHaveAccessibleName("Media #1");
+    expect(screen.getByText("Media details")).toBeInTheDocument();
+    expect(screen.getByText("May 27, 2024")).toBeInTheDocument();
+    expect(screen.getByText("Beach", { selector: "span" })).toBeInTheDocument();
+    expect(screen.queryByText("Not in it")).toBeNull();
+    expect(descBox().value).toBe("old desc");
+    expect(screen.getByTitle(/Your price for this media/)).toHaveValue("12.50");
+    const more = screen.getByRole("button", { name: /More info/ });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    // The extras are not in the DOM until asked for.
+    expect(screen.queryByTestId("jev-reading")).toBeNull();
+    expect(screen.queryByPlaceholderText("One-line PPV/DM caption…")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Tier" })).toBeNull();
+  });
+
+  it("More info shows the Jev reading, the exposure / tier / caption / script and the AI rows; no [object Object]", () => {
+    renderPanel();
+    click("tile 1");
+    click(/More info/);
+    const jev = screen.getByTestId("jev-reading");
+    expect(jev).toHaveTextContent("$50");
+    expect(jev).toHaveTextContent("thong covered");
+    expect(jev).toHaveTextContent("not visible");
+    expect(jev).toHaveTextContent("B 91% · G 4%");
+    expect(jev).toHaveTextContent("12%");
+    expect(jev).toHaveTextContent("outfit: lingerie");
+    expect(jev).toHaveTextContent("toy any: no");
+    // The bookkeeping keys stay out.
+    for (const k of ["tok", "passes", "1234", "800"]) expect(jev).not.toHaveTextContent(k);
+    expect(screen.getByRole("combobox", { name: "Tier" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("One-line PPV/DM caption…")).toBeInTheDocument();
+    expect(screen.getByText("posing")).toBeInTheDocument();
+    expect(screen.queryByText(/prompt version/)).toBeNull();
+    expect(dialog()).not.toHaveTextContent("[object Object]");
+  });
+
+  it("an item with no _jev shows no Jev block; a failed pass shows only its status", () => {
+    renderPanel();
+    click("tile 2");
+    click(/More info/);
+    expect(screen.queryByTestId("jev-reading")).toBeNull();
+    click("Next item");
+    expect(screen.getByRole("button", { name: /More info/ })).toHaveAttribute("aria-expanded", "true");   // kept
+    expect(screen.getByTestId("jev-reading")).toHaveTextContent("status: error");
+    expect(screen.getByTestId("jev-reading")).not.toHaveTextContent("lane");
+  });
+
+  it("‹ › and ← → step through the grid; the ends are off; keys typed into a field do not step", () => {
+    renderPanel();
+    click("tile 1");
+    expect(screen.getByRole("button", { name: "Previous item" })).toBeDisabled();
+    click("Next item");
+    expect(dialog()).toHaveAccessibleName("Media #2");
+    fireEvent.keyDown(dialog()!, { key: "ArrowRight" });
+    expect(dialog()).toHaveAccessibleName("Media #3");
+    expect(screen.getByRole("button", { name: "Next item" })).toBeDisabled();
+    fireEvent.keyDown(descBox(), { key: "ArrowLeft" });
+    expect(dialog()).toHaveAccessibleName("Media #3");
+    fireEvent.keyDown(dialog()!, { key: "ArrowLeft" });
+    expect(dialog()).toHaveAccessibleName("Media #2");
+  });
+
+  it("Escape and the backdrop close it", () => {
+    renderPanel();
+    click("tile 1");
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(dialog()).toBeNull();
+    click("tile 1");
+    // a click (a selection dragged out onto the backdrop) does not close it; a press on the backdrop does
+    fireEvent.click(dialog()!.parentElement!);
+    expect(dialog()).not.toBeNull();
+    fireEvent.pointerDown(dialog()!.parentElement!);
+    expect(dialog()).toBeNull();
+  });
+
+  it("a hashtag removed with × and one typed + Enter go in the save, and nothing else", async () => {
+    renderPanel();
+    click("tile 1");
+    click("Remove hashtag a");
+    const add = screen.getByRole("textbox", { name: "Add hashtag" });
+    fireEvent.change(add, { target: { value: "beach" } });
+    fireEvent.keyDown(add, { key: "Enter" });
+    fireEvent.change(add, { target: { value: "sun," } });
+    click("Save & lock");
+    await flush();
+    expect(h.patch).toHaveBeenCalledWith(
+      "/admin/vault-ai/items/1", { account_id: AID, fields: { tags: "b, beach, sun" } }, { accountId: AID },
+    );
+  });
+
+  it("removing then re-adding the same hashtag is no edit", () => {
+    renderPanel();
+    click("tile 1");
+    click("Remove hashtag b");
+    const add = screen.getByRole("textbox", { name: "Add hashtag" });
+    fireEvent.change(add, { target: { value: "b" } });
+    fireEvent.keyDown(add, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Save & lock" })).toBeDisabled();
   });
 });

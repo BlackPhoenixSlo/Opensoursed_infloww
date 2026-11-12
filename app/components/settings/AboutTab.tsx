@@ -20,7 +20,7 @@ export default function AboutTab() {
   const inApp = useInDesktopApp();
   return (
     <SettingsPanel title="About">
-      <div className="grid justify-items-center pt-10 pb-10">
+      <div className="pt-10 pb-10">
         <div className="flex w-full flex-col items-center text-center">
           {BRAND_LOGO ? (
             // eslint-disable-next-line @next/next/no-img-element -- a static PNG from public/
@@ -37,10 +37,10 @@ export default function AboutTab() {
           <p className="mb-8 text-[length:var(--if-fs)] text-[var(--if-fg)]">Version {version}</p>
           {/* Where Infloww's `._join-beta-wrap` sits: 760px, 16px padding, an L1 border, radius 4. Not in the app. */}
           {!inApp && (
-            <div className="mb-4 flex w-[760px] max-w-full items-center justify-between gap-4 rounded border border-[var(--if-line)] p-4 text-left">
+            <div className="mb-4 flex flex-wrap w-[760px] max-w-full items-center justify-between gap-4 rounded border border-[var(--if-line)] p-4 text-left">
               <div>
                 <p className="text-[length:var(--if-fs-lg)] font-medium text-[var(--if-fg)]">Get the desktop app</p>
-                <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">{BRAND_NAME} for Mac and Windows</p>
+                <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">{BRAND_NAME} for Mac, Windows and Linux</p>
               </div>
               {/* A plain <a>: /download is a static file outside the router. */}
               <a href="/download" className={cn(IF_BTN, "inline-flex shrink-0 items-center")}>

@@ -17,6 +17,7 @@ export const LABELS: Record<string, string> = {
   deepinfra: "DeepInfra API key",
   zai: "Z.ai (GLM) API key",
   anthropic: "Anthropic (Claude) API key",
+  typesafe: "TypeSafe (Jev) API key",
 };
 
 /** A DeepSeek key is `sk-` + 32 hex and nothing else on this list looks like
@@ -48,4 +49,5 @@ export const HELP: Record<string, string> = {
   deepinfra: "Vision — vault image describes and inbound-photo replies. deepinfra.com.",
   zai: "Chat replies only — GLM models. Not used for vault or photo describes. z.ai.",
   anthropic: "Help assistant answers (Claude Opus). console.anthropic.com.",
+  typesafe: "Vault Jev (reading vault items). Blank = this server's key, if it has one. console.typesafe.ai.",
 };

@@ -1065,4 +1065,81 @@ async def case_a_call_with_no_account_is_capped_per_agency():
             "deleting the agency left its spend rows behind"
 
 
+# ── 10. TypeSafe (Jev): the agency's key, the house key as the fallback ───
+# Not llm_client's fail-closed rule: Jev ran on the house key alone before an
+# agency could save one, so "no agency key" keeps it. What must still hold is
+# that no agency's key is ever used for a creator it does not own.
+
+class _HouseTypesafe:
+    """`llm_providers.typesafe_key` pinned to a known house value."""
+
+    def __init__(self, key="ts-house"):
+        self.key = key
+
+    def __enter__(self):
+        self.saved = llm_providers.typesafe_key
+        llm_providers.typesafe_key = lambda: self.key
+        return self
+
+    def __exit__(self, *a):
+        llm_providers.typesafe_key = self.saved
+
+
+async def case_typesafe_is_an_agency_key_but_not_a_chat_provider():
+    assert "typesafe" not in llm_providers.PROVIDERS, "TypeSafe leaked into the chat registry"
+    a = await _seed_user("ts_store")
+    await tenant_keys.set_keys(a, {"typesafe": "ts-store-abcd"})
+    assert await tenant_keys.get_key(a, "typesafe") == "ts-store-abcd"
+    st = await tenant_keys.status(a)
+    assert st["typesafe"] == {"set": True, "hint": "••••abcd"}, st
+    assert st[HOUSE_PROVIDER]["set"] is False
+
+
+async def case_typesafe_agency_key_beats_the_house_key():
+    a = await _seed_user("ts_agency")
+    await _seed_account("acct_ts_agency", a)
+    await tenant_keys.set_keys(a, {"typesafe": "ts-agency-a"})
+    with _HouseTypesafe():
+        assert await tenant_keys.typesafe_key_for("acct_ts_agency") == "ts-agency-a"
+
+
+async def case_typesafe_no_agency_key_falls_back_to_the_house_key():
+    a = await _seed_user("ts_bare")
+    await _seed_account("acct_ts_bare", a)
+    await tenant_keys.set_keys(a, {HOUSE_PROVIDER: "sk-ts-bare"})   # other providers don't count
+    await _seed_account("acct_ts_orphan")
+    with _HouseTypesafe():
+        assert await tenant_keys.typesafe_key_for("acct_ts_bare") == "ts-house"
+        assert await tenant_keys.typesafe_key_for("acct_ts_orphan") == "ts-house"
+        assert await tenant_keys.typesafe_key_for(None) == "ts-house"
+    await tenant_keys.set_keys(a, {"typesafe": "ts-cleared"})
+    await tenant_keys.set_keys(a, {"typesafe": ""})
+    with _HouseTypesafe(""):
+        assert await tenant_keys.typesafe_key_for("acct_ts_bare") == "", "a cleared key still resolved"
+
+
+async def case_typesafe_never_uses_another_agencys_key():
+    a = await _seed_user("ts_owner_a")
+    b = await _seed_user("ts_owner_b")
+    await _seed_account("acct_ts_of_a", a)
+    await _seed_account("acct_ts_of_b", b)
+    await tenant_keys.set_keys(a, {"typesafe": "ts-only-a"})
+    with _HouseTypesafe():
+        assert await tenant_keys.typesafe_key_for("acct_ts_of_b") == "ts-house"
+    with _HouseTypesafe(""):
+        assert await tenant_keys.typesafe_key_for("acct_ts_of_b") == "", "B's creator got A's key"
+
+
+async def case_typesafe_shared_account_bills_only_a_sole_keyed_owner():
+    a = await _seed_user("ts_share_a")
+    b = await _seed_user("ts_share_b")
+    await _seed_account("acct_ts_shared", a, b)
+    await tenant_keys.set_keys(a, {"typesafe": "ts-share-a"})
+    with _HouseTypesafe():
+        assert await tenant_keys.typesafe_key_for("acct_ts_shared") == "ts-share-a"
+        await tenant_keys.set_keys(b, {"typesafe": "ts-share-b"})
+        assert await tenant_keys.typesafe_key_for("acct_ts_shared") == "ts-house", \
+            "two keyed owners: picked one instead of the house key"
+
+
 _harness.run()
