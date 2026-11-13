@@ -213,7 +213,7 @@ html:has([data-look="site"]) body {
   color-scheme: dark;
 }
 
-/* The help messenger (components/assistant/AssistantWidget.tsx) is always
+/* The help messenger (components/assistant/AssistantWidget.tsx dock + sheet; not the /help-center page) is always
  * light, as Infloww's own Intercom messenger is, whatever the app's theme.
  * Scoped like `data-look="site"`: the panel's token utilities (and
  * AnswerText's, which it renders) pick these values up. */
@@ -244,6 +244,67 @@ html, body {
    * picture. `manipulation` keeps panning + tap recognition; only the
    * zoom gestures get suppressed. */
   touch-action: manipulation;
+}
+
+/* Native selects wear the theme open, not only closed: Chromium's customizable select (`appearance: base-select`)
+ * keeps the `<select>` (its value, keyboard, form post, tests' `selectOptions`) and draws its list like `IfSelect`'s
+ * menu (panel fill, L1 border, 32px rows, the picked one in M1). The closed box keeps each site's own classes. In
+ * `@layer base` so a site's `appearance-none` still opts out; browsers without it keep the OS list. */
+@layer base {
+  @supports (appearance: base-select) {
+    select:not([multiple]):not([size]), ::picker(select) { appearance: base-select; }
+    /* The OS select centred its text and pushed the arrow to the far end: keep that. */
+    select:not([multiple]):not([size]) { align-items: center; column-gap: 6px; }
+    /* IfSelect's 12px T3 ChevronDown (lucide), turned up while open. */
+    select::picker-icon {
+      content: "";
+      inline-size: 12px;
+      block-size: 12px;
+      margin-inline-start: auto;
+      background-color: var(--color-muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+      transition: rotate 150ms;
+    }
+    select:open::picker-icon { rotate: 180deg; }
+    ::picker(select) {
+      /* Below the box unless it does not fit (the UA default opens toward the larger side, often over the field). */
+      position-try-order: normal;
+      margin-block: 4px;
+      padding-block: 4px;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: var(--color-panel);
+      color: var(--color-fg);
+      box-shadow: 0 6px 16px rgb(0 0 0 / 0.24);
+      max-block-size: 256px;
+    }
+    select option {
+      min-block-size: 32px;
+      padding-inline: 12px;
+      font-size: 14px;
+      white-space: nowrap;
+      background: transparent;
+    }
+    select option::checkmark { display: none; }
+    select option:hover, select option:focus-visible { background: var(--color-bg-elev-2); outline: none; }
+    select option:checked { color: var(--color-accent); font-weight: 500; }
+    select option:disabled { opacity: 0.5; }
+  }
+}
+
+/* `IfDateInput`'s field: no browser picker icon (a click opens IfDateInput's own pop-over); `.if-date-icon` draws the
+ * theme's at the right instead (T3 grey on both themes; the component pads for it). A layer, so utilities override. */
+@layer components {
+  .if-date::-webkit-calendar-picker-indicator { display: none; }
+  .if-date-icon {
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 14px 14px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='4' rx='2'/%3E%3Cpath d='M16 2v4M8 2v4M3 10h18'/%3E%3C/svg%3E");
+  }
+  .if-date-icon[type="time"] {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
+  }
 }
 
 /* Spinner used by the loading-state UI. Kept global because it's tiny

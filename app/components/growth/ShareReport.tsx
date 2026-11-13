@@ -11,6 +11,7 @@ import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { DASH, money, share } from "@/components/growth/linkMetrics";
+import { EmptyState } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
 
 type Row = {
@@ -58,12 +59,15 @@ export default function ShareReport() {
   if (q.isError || !q.data) {
     const expired = q.error instanceof Gone && q.error.status === 410;
     return (
-      <Shell>
-        <h1 className="text-lg font-semibold">{expired ? "This share link has expired" : "Share link not found"}</h1>
-        <p className="mt-2 text-sm text-fg-dim">
-          {expired ? "Ask whoever sent it for a new one." : "Check the address, or ask whoever sent it for a new one."}
-        </p>
-      </Shell>
+      <main className="grid min-h-screen place-items-center bg-bg p-6 text-fg">
+        <EmptyState
+          kind={expired ? "schedule" : "search"}
+          text={<span role="heading" aria-level={1} className="text-[16px] font-semibold text-fg">{expired ? "This share link has expired" : "Share link not found"}</span>}
+          help={<p className="mt-1 text-[14px] text-fg-dim">
+            {expired ? "Ask whoever sent it for a new one." : "Check the address, or ask whoever sent it for a new one."}
+          </p>}
+        />
+      </main>
     );
   }
   const d = q.data;

@@ -80,7 +80,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, MousePointerClick, SendHorizontal, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, MousePointerClick, X } from "lucide-react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 
@@ -654,8 +654,8 @@ const VARIANT = {
 } as const;
 
 /** The messenger's body. `dock`: Intercom's 400px panel above the launcher.
- *  `page`: the same content filling /help-center's white frame (Infloww's
- *  HelpPage: full bleed, no page header), in a centred 720px column, with no
+ *  `page`: the same content filling /help-center (full bleed, no page header,
+ *  in the app theme, unlike the always-light dock and sheet), in a centred 720px column, with no
  *  close button (the sidebar is the way out). `sheet`: the phone's full-screen
  *  messenger, pinned to the visual viewport over a locked body
  *  (useBodyScrollLock) so the keyboard never covers its composer nor scrolls
@@ -721,7 +721,7 @@ export function AssistantPanel({
 
   const renderTurn = (t: Turn) => (
     <div key={t.id} className="flex flex-col gap-2">
-      <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-[#151515] px-3.5 py-2 text-[13px] text-white whitespace-pre-wrap break-words">
+      <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-fg text-panel px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words">
         {t.question}
       </div>
       {t.answer === null ? (
@@ -749,7 +749,7 @@ export function AssistantPanel({
         <button
           type="button"
           onClick={() => doFromQuestion(t.question)}
-          className="self-start flex h-8 items-center gap-1.5 rounded-full border border-[#dcdcdc] bg-white px-3 text-[13px] font-medium text-[#14161a] hover:border-[#bdbdbd]"
+          className="self-start flex h-8 items-center gap-1.5 rounded-full border border-border-light bg-panel px-3 text-[13px] font-medium text-fg hover:border-muted"
           title="Opens the page and fills it in for you — saved OFF"
         >
           <MousePointerClick className="h-4 w-4" aria-hidden />Do it for me
@@ -760,7 +760,8 @@ export function AssistantPanel({
 
   return (
     <div
-      data-look="messenger"
+      // Dock + sheet stay light like Intercom's messenger; the /help-center page is a page, so it wears the app theme.
+      data-look={variant === "page" ? undefined : "messenger"}
       data-assistant-ui
       // A run's editor dialog sits at z-50: the dock rises over it so Stop stays in reach.
       className={cn("flex flex-col bg-panel text-fg overflow-hidden", v.frame, variant === "dock" && doRun.phase === "running" && "z-[60]")}
@@ -772,8 +773,8 @@ export function AssistantPanel({
         className={cn(
           "shrink-0 pt-[37px] text-white",
           empty
-            ? "pb-[120px] bg-[linear-gradient(180deg,#242424_0%,#2d2d2d_63%,#2d2d2d_72%,#ffffff_100%)]"
-            : "pb-10 bg-[linear-gradient(180deg,#242424_0%,#2d2d2d_55%,#ffffff_100%)]",
+            ? "pb-[120px] bg-[linear-gradient(180deg,#242424_0%,#2d2d2d_63%,#2d2d2d_72%,var(--color-panel)_100%)]"
+            : "pb-10 bg-[linear-gradient(180deg,#242424_0%,#2d2d2d_55%,var(--color-panel)_100%)]",
         )}
       >
         <div className={cn("px-10", column)}>
@@ -835,18 +836,6 @@ export function AssistantPanel({
         <div className={cn("px-5 flex flex-col gap-3", column)}>
           {empty && (
             <>
-              <button
-                type="button"
-                // preventScroll: no Safari scroll-into-view jump of the page.
-                onClick={() => composerRef.current?.focus({ preventScroll: true })}
-                className={cn(CARD, "flex items-center gap-4 text-left hover:border-[#dcdcdc]")}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[15px] font-semibold text-[#14161a]">Ask a question</span>
-                  <span className="block text-[15px] text-[#6d6f74]">Answers from the product manual</span>
-                </span>
-                <SendHorizontal className="h-5 w-5 shrink-0 fill-black text-black" aria-hidden />
-              </button>
               {doOffer.show && (
                 <div className="flex flex-col gap-1.5">
                   <button
@@ -854,32 +843,32 @@ export function AssistantPanel({
                     disabled={!doOffer.enabled}
                     onClick={() => { enterDo(); composerRef.current?.focus({ preventScroll: true }); }}
                     className={cn(CARD, "flex items-center gap-4 text-left",
-                      doOffer.enabled ? "hover:border-[#dcdcdc]" : "cursor-not-allowed opacity-60")}
+                      doOffer.enabled ? "hover:border-border-light" : "cursor-not-allowed opacity-60")}
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[15px] font-semibold text-[#14161a]">Do it for me</span>
-                      <span className="block text-[15px] text-[#6d6f74]">Opens the page and fills it in</span>
+                      <span className="block text-[15px] font-semibold text-fg">Do it for me</span>
+                      <span className="block text-[15px] text-fg-dim">Opens the page and fills it in</span>
                     </span>
-                    <MousePointerClick className="h-5 w-5 shrink-0 text-black" aria-hidden />
+                    <MousePointerClick className="h-5 w-5 shrink-0 text-fg" aria-hidden />
                   </button>
                   {/* Outside the button: the hint's settings path is a link (AnswerText). */}
-                  {doOffer.hint && <div className="px-1 text-[13px] text-[#6d6f74]" data-testid="do-hint">{text(doOffer.hint, true)}</div>}
+                  {doOffer.hint && <div className="px-1 text-[13px] text-fg-dim" data-testid="do-hint">{text(doOffer.hint, true)}</div>}
                 </div>
               )}
               {threads.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setListOpen(true)}
-                  className={cn(CARD, "flex items-center gap-4 text-left hover:border-[#dcdcdc]")}
+                  className={cn(CARD, "flex items-center gap-4 text-left hover:border-border-light")}
                 >
-                  <History className="h-[22px] w-[22px] shrink-0 text-[#14161a]" aria-hidden />
+                  <History className="h-[22px] w-[22px] shrink-0 text-fg" aria-hidden />
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[15px] font-semibold text-[#14161a]">Earlier conversations</span>
-                    <span className="block text-[15px] text-[#6d6f74]">
+                    <span className="block text-[15px] font-semibold text-fg">Earlier conversations</span>
+                    <span className="block text-[15px] text-fg-dim">
                       {threads.length} conversation{threads.length === 1 ? "" : "s"} · last {WHEN.format(new Date(threads[0].last))}
                     </span>
                   </span>
-                  <ChevronRight className="h-5 w-5 shrink-0 text-[#14161a]" aria-hidden />
+                  <ChevronRight className="h-5 w-5 shrink-0 text-fg" aria-hidden />
                 </button>
               )}
             </>
@@ -889,7 +878,7 @@ export function AssistantPanel({
       </div>
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
-      <div className="shrink-0 border-t border-[#ededed] bg-white">
+      <div className="shrink-0 border-t border-border bg-panel">
         <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", v.composerPad, column)}>
           {/* Both read the reducer's roster. No account at all: General is
               all there is, and for a user the one thing worth pointing at is
@@ -933,7 +922,7 @@ export function AssistantPanel({
               type="button"
               onClick={send}
               disabled={!canSend}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#151515] text-white transition-opacity disabled:opacity-25"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-panel transition-opacity disabled:opacity-25"
               aria-label="Ask"
               title="Send"
             >

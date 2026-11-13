@@ -47,6 +47,7 @@ import {
 } from "@/lib/roles";
 import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
 import { cn } from "@/lib/utils";
+import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 
 const ENFORCE = "Enforce role permissions";
 
@@ -158,9 +159,9 @@ export default function RoleSettingsTab() {
 
   const enforced = blob.value.enforce !== false;
   /** Saves the switch; turning it on first confirms with the active Employees the Relay will refuse every page. */
-  const setEnforce = (on: boolean) => {
+  const setEnforce = async (on: boolean) => {
     if (on && pageless > 0) {
-      if (!window.confirm(`Turn on ${ENFORCE}? ${pagelessWho} a role granting no page and will be refused every page.`))
+      if (!(await ifConfirm(`Turn on ${ENFORCE}? ${pagelessWho} a role granting no page and will be refused every page.`)))
         return;
     }
     blob.commit({ enforce: on });
@@ -179,22 +180,22 @@ export default function RoleSettingsTab() {
   };
 
   /** Saves a custom role's Status; disabling one an active Employee holds first confirms. */
-  const setStatus = (role: PermissionRole, on: boolean) => {
+  const setStatus = async (role: PermissionRole, on: boolean) => {
     const holders = employees.filter((e) => assignments[String(e.id)] === role.id).length;
     if (!on && holders > 0) {
       const who = holders === 1 ? "1 active Employee holds it" : `${holders} active Employees hold it`;
-      if (!window.confirm(`Disable the role "${role.name}"? ${who} and will be refused every page.`)) return;
+      if (!(await ifConfirm(`Disable the role "${role.name}"? ${who} and will be refused every page.`))) return;
     }
     replaceRole({ ...role, disabled: !on }, () => {});
   };
 
   /** Deletes a role no Employee holds; one in use is refused, as Infloww refuses it. */
-  const removeRole = (role: PermissionRole) => {
+  const removeRole = async (role: PermissionRole) => {
     if (Object.values(assignments).includes(role.id)) {
-      window.alert("This role is in use and cannot be deleted. Give its Employees another role first.");
+      void ifAlert("This role is in use and cannot be deleted. Give its Employees another role first.");
       return;
     }
-    if (!window.confirm(`Delete the role "${role.name}"?`)) return;
+    if (!(await ifConfirm(`Delete the role "${role.name}"?`, { danger: true }))) return;
     blob.commit({ roles: roles.filter((r) => r.id !== role.id) });
   };
 

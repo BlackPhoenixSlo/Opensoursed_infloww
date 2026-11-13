@@ -66,6 +66,7 @@ import { ChatHeaderExtras } from "./ChatHeaderExtras";
 import { MENU_BOX, MENU_ITEM, MenuStatusLine, NotWiredMenuRow, useMenuStatus } from "./MenuParts";
 import { MessageStatsRows } from "./MessageStatsLink";
 import { useMenuDismiss } from "./useMenuDismiss";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 interface Props {
   accountId: string;
@@ -243,20 +244,20 @@ export function ChatActionsMenu({
             <Item
               label={isRestricted ? "Lift restrict" : "Restrict"}
               disabled={toggleOfRestrict.isPending}
-              onClick={() => {
+              onClick={async () => {
                 const ask = isRestricted
                   ? "Lift the OnlyFans restrict on this Fan?"
                   : "Restrict this Fan on OnlyFans? The chat is hidden, and the Fan is sent nothing.";
-                if (window.confirm(ask)) toggleOfRestrict.mutate();
+                if (await ifConfirm(ask, { danger: !isRestricted })) toggleOfRestrict.mutate();
               }}
               icon={isRestricted ? "🔓" : "🛑"}
             />
             <Item
               label={blocked ? "Unblock" : "Block"}
               disabled={toggleBlock.isPending}
-              onClick={() => {
+              onClick={async () => {
                 const ask = blocked ? "Unblock this Fan on OnlyFans?" : "Block this Fan on OnlyFans?";
-                if (window.confirm(ask)) toggleBlock.mutate();
+                if (await ifConfirm(ask, { danger: !blocked })) toggleBlock.mutate();
               }}
               icon={blocked ? "✅" : "🚫"}
             />
@@ -278,8 +279,8 @@ export function ChatActionsMenu({
           <Item
             label="Delete conversation"
             disabled={deleteChat.isPending}
-            onClick={() => {
-              if (window.confirm("Delete conversation? This clears the messages on OnlyFans and cannot be undone.")) {
+            onClick={async () => {
+              if (await ifConfirm("Delete conversation? This clears the messages on OnlyFans and cannot be undone.", { danger: true })) {
                 deleteChat.mutate();
               }
             }}

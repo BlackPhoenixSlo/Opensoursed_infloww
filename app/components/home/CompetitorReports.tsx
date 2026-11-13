@@ -71,10 +71,12 @@ import styles from "./CreatorReports.module.css";
 import CreatorOverview from "./CreatorOverview";
 import CreatorPerformance from "./CreatorPerformance";
 import { INITIAL_FILTERS, creatorReportsFiltersReducer } from "./creatorReportsFilters";
+import { colsOf } from "./creatorCols";
 import { netMissingNote } from "./netMissingNote";
+import { useCreatorCols } from "./useCreatorCols";
 import { DateRangePill, ReportFilters, ShownBySelect } from "./ReportsControls";
 import {
-  type Chan, type ColCtx, type Money, type RevResp, type Tab, CHANNELS, DEFAULT_COLS,
+  type Chan, type ColCtx, type Money, type RevResp, type Tab, CHANNELS,
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
   chargebacksCents, forGrowth, isTab, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalGrowthOf, totalOf,
   viewOf, wholeHistory,
@@ -182,8 +184,9 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   // Seeded once from `?tab=`; a bogus value leaves Overview (#14).
   useTabParam("tab", isTab, setTab);
   const [extrasOpen, setExtrasOpen] = useState(false);
-  // #105: the Creator statistics columns shown, the capture's defaults first.
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(DEFAULT_COLS);
+  // #105: the Creator statistics columns shown, in order: the Agency's layout (the owner saves it), else the
+  // capture's defaults.
+  const [colKeys, setColKeys] = useCreatorCols();
   // Creator performance: the Earnings channel (#161), the picked Creator (#156), and ours, "Hide $0 creators" (on, as
   // the Clone has it). The "Shown by" bucket (#27) is the toolbar's one `gran`.
   const [perfChan, setPerfChan] = useState<Chan | "all">("all");
@@ -336,8 +339,8 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     ? [...revByKindQueries, ...revReversedQueries.filter((q) => q.isSuccess)]
       .reduce((n, q) => n + (q.data?.rows ?? []).reduce((a, r) => a + (r.net_missing_count ?? 0), 0), 0)
     : 0;
-  // The capture's column order, filtered to the Custom metrics pick.
-  const orderedCols = useMemo(() => STAT_COLS.filter((c) => visibleCols.has(c.key)), [visibleCols]);
+  // The Custom metrics pick, in its order.
+  const orderedCols = useMemo(() => colsOf(colKeys), [colKeys]);
 
   /* Creator performance (#154 to #174): the creator list (the Creator filter's pick, less the $0 ones while "Hide $0
      creators" is on), and the one picked's reads, made only while the tab is open. */
@@ -583,7 +586,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           totalGrowth={totalGrowth}
           trendPoints={trendPoints} chanPick={chanPick} setChanPick={setChanPick} channelLines={channelLines}
           from={from} to={to} net={net} buildExport={buildExport} perModel={perModel} visibleCreators={visibleCreators}
-          visibleCols={visibleCols} setVisibleCols={setVisibleCols} orderedCols={orderedCols} colCtx={colCtx}
+          colKeys={colKeys} setColKeys={setColKeys} orderedCols={orderedCols} colCtx={colCtx}
           grossCents={grossCents} netLedger={netLedger} chargebacksCents={cbCents}
           chargebacksView={chargebacksView} referralsGap={refGap}
           referralsShown={refsShown}

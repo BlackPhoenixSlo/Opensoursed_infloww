@@ -13,6 +13,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/primitives";
 import { IfSelect } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export { useIfConfirm } from "@/hooks/useIfConfirm";
 export { Field, NumInput } from "@/components/ui/fields";
@@ -58,7 +59,7 @@ export function SelectInput({
 // compatibility re-export stood here while the importers were repointed; it is
 // gone, so `_bits`'s underscore means what it says again: growth-local only.
 
-/** Danger button that guards a delete behind a native confirm. Every Growth
+/** Danger button that guards a delete behind a confirm (`ifConfirm`). Every Growth
  *  list row (trial / tracking / redirect / promo / segment) deleted through the
  *  same confirm→mutate→disabled-while-pending shape; this is that shape, once. */
 export function ConfirmDeleteButton({
@@ -72,7 +73,7 @@ export function ConfirmDeleteButton({
   return (
     <Button
       size="sm" variant="danger" disabled={pending}
-      onClick={() => { if (window.confirm(confirm)) onConfirm(); }}
+      onClick={async () => { if (await ifConfirm(confirm, { danger: true })) onConfirm(); }}
     >
       {label}
     </Button>

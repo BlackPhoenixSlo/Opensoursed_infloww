@@ -116,7 +116,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const busyRef = useRef("");
   // The selection bar's move opens the "Add to category" modal (#77).
   const [moving, setMoving] = useState(false);
-  const [promptVersion, setPromptVersion] = useState<"v1" | "v2">("v2");
+  // One describe recipe now (Jev-fed); v2 is the only prompt version the UI sends.
+  const promptVersion = "v2" as const;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<() => void>(() => {});
@@ -401,8 +402,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           plan={plan.data}
           capped={capped}
           capReason={capReason}
-          promptVersion={promptVersion}
-          setPromptVersion={setPromptVersion}
           needsReview={needsReview}
           setNeedsReview={setNeedsReview}
           flagsReviewOpen={open === "flagsReview"}

@@ -16,6 +16,7 @@ import { useState, type ReactNode } from "react";
 
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import { cancelShift, type ShiftOccurrence, type ShiftScope, type ShiftScopeAt } from "@/lib/shifts";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 /** A one-off Shift's delete confirmation (a soft cancel). */
 export const CANCEL_CONFIRM = "Cancel this Shift? It leaves the calendar and stays in the history.";
@@ -106,9 +107,9 @@ export function useShiftDelete({ onDone, onError }: {
     }
   };
   return {
-    request: (o) => {
+    request: async (o) => {
       if (isRecurring(o)) setAsking(o);
-      else if (window.confirm(CANCEL_CONFIRM)) void send(o);
+      else if (await ifConfirm(CANCEL_CONFIRM, { danger: true })) void send(o);
     },
     dialog: asking && (
       <ShiftScopeDialog action="delete" occurrence={asking} onClose={() => setAsking(null)}

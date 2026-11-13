@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 
 import { CHAT_EXTRA_ROW, ExtraMenuRow } from "./ExtraMenuRow";
 import { fmtPrice } from "@/lib/format";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export function ScheduledForChat({
   accountId, fanId,
@@ -106,8 +107,8 @@ export function ScheduledForChat({
                   <div className="flex justify-end">
                     <button
                       type="button"
-                      onClick={() => {
-                        if (!confirm("Cancel this scheduled send?")) return;
+                      onClick={async () => {
+                        if (!(await ifConfirm("Cancel this scheduled send?", { danger: true }))) return;
                         cancelM.mutate(
                           { id: m.id, accountId },
                           { onSuccess: () => queries.forEach((q) => q.refetch()) },

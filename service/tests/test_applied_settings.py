@@ -69,12 +69,15 @@ ALL_OPT_IN = ["/growth/auto-funnel", "/growth/auto-mass", "/growth/auto-post", "
 
 # Feature flags (roadmap 8.11): off until an Agency stores one on.
 FLAGS_OFF = {"fansly_manager": False}
+# No reports layout stored: the app keeps its default columns.
+NO_LAYOUT = {"creator_cols": None}
 
 DEFAULTS = {
     "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
     "messaging": {"ai_translation": True},
     "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
     "flags": FLAGS_OFF,
+    "reports": NO_LAYOUT,
 }
 # An owner of an Agency that stored `enforce: false` (Agency B).
 ROLES_OFF = {**DEFAULTS, "permissions": {**DEFAULTS["permissions"], "enforced": False}}
@@ -129,6 +132,7 @@ def case_owner_reads_its_agency_and_is_never_role_checked():
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
         "flags": FLAGS_OFF,
+        "reports": NO_LAYOUT,
     }
 
 
@@ -142,6 +146,7 @@ def case_chatter_reads_its_agency_and_its_own_role():
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": ["/messages-pro"], "scope": "self", "opt_in": [], "denied_actions": [], "denied_cards": []},
         "flags": FLAGS_OFF,
+        "reports": NO_LAYOUT,
     }
     assert _applied(CHATTER_A) == want
     assert _applied(CHATTER_A, "creator_a") == want
@@ -154,7 +159,7 @@ def case_chatter_body_carries_no_roles_list_other_assignment_or_prompt():
     for leak in ("Closer", "role-closer", "999999", "Fixture role", PROMPT, "assignments",
                  "roles", "prompt", "language", "analytics"):
         assert leak not in text, f"{leak!r} leaked into {text}"
-    assert set(r.json()) == {"preferences", "messaging", "permissions", "flags"}
+    assert set(r.json()) == {"preferences", "messaging", "permissions", "flags", "reports"}
 
 
 def case_never_saved_agency_reads_the_defaults_enforcement_on_and_roles_off_grants_every_page():
@@ -180,6 +185,7 @@ def case_two_agency_chatter_with_no_creator_gets_no_zone_strictest_translation_a
         "permissions": {"enforced": True, "pages": None, "scope": "self", "opt_in": [], "denied_actions": [],
                         "denied_cards": CHATTER_HIDDEN_CARDS},
         "flags": FLAGS_OFF,
+        "reports": NO_LAYOUT,
     }
     assert _mirror_count("chatter_ab") == 2
 
@@ -208,6 +214,7 @@ def case_two_agency_chatter_follows_the_creator_in_scope():
                         "scope": "self", "opt_in": [],
                         "denied_actions": [], "denied_cards": CHATTER_HIDDEN_CARDS},
         "flags": FLAGS_OFF,
+        "reports": NO_LAYOUT,
     }
     assert _applied(CHATTER_AB, "creator_b") == {**CHATTER_DEFAULTS, "preferences": AGENCY_B_PREFS}
 
@@ -232,6 +239,7 @@ def case_two_agency_chatter_with_both_enforcing_gets_the_union_of_granted_pages(
                             "pages": ["/analytics/employee-reports", "/messages-pro"],
                             "scope": "self", "opt_in": [], "denied_actions": [], "denied_cards": []},
             "flags": FLAGS_OFF,
+            "reports": NO_LAYOUT,
         }
         assert _applied(CHATTER_AB, "creator_b")["permissions"] == {
             "enforced": True, "pages": ["/analytics/employee-reports"], "scope": "all", "opt_in": [], "denied_actions": [], "denied_cards": []}
@@ -287,6 +295,7 @@ def case_a_stored_invalid_field_reads_as_its_default():
             # An invalid switch reads as the default: on.
             "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
             "flags": FLAGS_OFF,
+            "reports": NO_LAYOUT,
         }
     finally:
         _put(OWNER_B, "preferences", {"tz": "Asia/Tokyo"})
@@ -316,6 +325,23 @@ def case_a_stored_invalid_flag_reads_off():
         assert _applied(OWNER_A)["flags"] == FLAGS_OFF
     finally:
         _put(OWNER_A, "flags", {})
+
+
+def case_owner_saves_the_creator_columns_and_every_session_reads_them():
+    cols = ["ppvsSent", "totalEarnings", "totalSubscriptionsEarnings"]
+    try:
+        _put(OWNER_A, "reports", {"creator_cols": cols})
+        assert _applied(OWNER_A)["reports"] == {"creator_cols": cols}
+        assert _applied(CHATTER_A)["reports"] == {"creator_cols": cols}
+        assert _applied(OWNER_B)["reports"] == NO_LAYOUT
+        # A chatter saves nothing: the tab routes are the owner's.
+        assert CHATTER_A.put("/admin/settings/reports", json={"creator_cols": []}).status_code == 401
+        for bad in ("x", ["a", "a"], [""], [1], [{}], [["x"]]):
+            r = OWNER_A.put("/admin/settings/reports", json={"creator_cols": bad})
+            assert r.status_code == 400 and "reports.creator_cols" in r.text, r.text
+        assert _applied(OWNER_A)["reports"] == {"creator_cols": cols}
+    finally:
+        _put(OWNER_A, "reports", {})
 
 
 def case_signed_out_is_401():

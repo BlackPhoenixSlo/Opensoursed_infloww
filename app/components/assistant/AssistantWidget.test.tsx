@@ -455,20 +455,11 @@ describe("AssistantWidget", () => {
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
   });
 
-  it("has no Status card, and no Earlier card with no earlier conversations", async () => {
+  it("has no Ask/Status card, and no Earlier card with no earlier conversations", async () => {
     await openPanel();
-    expect(screen.getByText("Ask a question")).toBeTruthy();
+    expect(screen.queryByText("Ask a question")).toBeNull();
     expect(screen.queryByText(/Status:/)).toBeNull();
     expect(screen.queryByText("Earlier conversations")).toBeNull();
-  });
-
-  it("focuses the composer from the Ask a question card, without a scroll-into-view", async () => {
-    await openPanel();
-    const focus = vi.spyOn(HTMLElement.prototype, "focus");
-    await userEvent.click(screen.getByRole("button", { name: /Ask a question/ }));
-    expect(document.activeElement).toBe(screen.getByPlaceholderText("Ask a question…"));
-    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
-    focus.mockRestore();
   });
 
   it("a link click in the dock navigates and keeps the dock open, the page unlocked", async () => {

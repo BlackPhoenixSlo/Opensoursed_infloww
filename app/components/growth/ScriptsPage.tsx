@@ -58,6 +58,7 @@ import {
   scriptsPageReducer, selectionOf, sequenceHeader, sequenceOrder, sequencesOf, tagCountsOf, type EntryKind,
   type Modal, type NamePrompt,
 } from "@/components/growth/scriptsPageState";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 /** The Learn and Share boxes (#9, #10): 75px wide, 0 8px padding, 14px weight 500 T1, an 18px icon 4px from the
  *  text, at full ink, as the bundle shot draws them (#d9d9d9 dark). Learn is Not wired (disabled and titled). */
@@ -140,9 +141,9 @@ export default function ScriptsPage() {
     }
   }
 
-  function deleteScripts(ids: number[]) {
+  async function deleteScripts(ids: number[]) {
     const one = ids.length === 1;
-    if (!confirm(`${one ? "Delete script?" : `Delete ${ids.length} scripts?`}\n\nThis script will also be deleted from sequences that utilized this script.`)) return;
+    if (!(await ifConfirm(`${one ? "Delete script?" : `Delete ${ids.length} scripts?`}\n\nThis script will also be deleted from sequences that utilized this script.`, { danger: true }))) return;
     // A selection goes in one request (`POST /admin/saved-replies/delete`), one script by its own route.
     void run(ids, async () => {
       if (one) await deleteM.mutateAsync(ids[0]);
@@ -150,13 +151,13 @@ export default function ScriptsPage() {
     });
   }
 
-  function removeScripts(ids: number[]) {
+  async function removeScripts(ids: number[]) {
     const from = inTag ?? inSeq;
     if (!from) return;
     const kind = inTag ? "tag" : "sequence";
-    if (!confirm(kind === "tag"
+    if (!(await ifConfirm(kind === "tag"
       ? "Remove this script?\n\nThe script will be removed from this tag."
-      : "Remove this script?\n\nRemove this script from this sequence. You can add the script back any time you want.")) return;
+      : "Remove this script?\n\nRemove this script from this sequence. You can add the script back any time you want."))) return;
     // Unchecked once the server took it (`runEnd`); a failed remove keeps the ticks for a retry.
     void run(ids, async () => {
       await relabelM.mutateAsync({ kind, from, ids });
@@ -210,10 +211,10 @@ export default function ScriptsPage() {
     };
   }
 
-  function deleteEntry(kind: EntryKind, name: string) {
-    const ok = kind === "tag"
-      ? confirm("Delete tag?\n\nThis tag will be permanently removed from the script library. Its scripts stay.")
-      : confirm("Delete the Sequence?\n\nAre you sure you want to delete this sequence? Its scripts stay in the library.");
+  async function deleteEntry(kind: EntryKind, name: string) {
+    const ok = await ifConfirm(kind === "tag"
+      ? "Delete tag?\n\nThis tag will be permanently removed from the script library. Its scripts stay."
+      : "Delete the Sequence?\n\nAre you sure you want to delete this sequence? Its scripts stay in the library.", { danger: true });
     if (!ok) return;
     const done = () => dispatch({ type: "deleteEntry", kind, name, order: orderOf(kind), account: accountId });
     // A page-only tag moves on at once; anything else once the server has dropped it.

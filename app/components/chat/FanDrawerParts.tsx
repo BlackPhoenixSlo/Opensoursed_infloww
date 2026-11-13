@@ -7,7 +7,7 @@
  * AI profile card.
  */
 
-import { useEffect, useId, useRef, useState } from "react";
+import { type ChangeEvent, useEffect, useId, useRef, useState } from "react";
 
 import { useMassExclude } from "@/hooks/useMassExclude";
 import { type FanId } from "@/lib/fanId";
@@ -18,6 +18,7 @@ import { cn, fmtRelTime, type SubStatusDisplay } from "@/lib/utils";
 import { MENU, MENU_ITEM, MENU_ROW } from "./MenuParts";
 import { type InsightsBlockId } from "./useInsightsBlocks";
 import { InfoTip } from "@/components/ui/InfoTip";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 /** 🚫 Mass-exclude toggle — flags a fan onto MASSdmEXCLUDE so every mass send,
  *  priced or not (mass DM / mass PPV / online blast / nudge), skips them. It
@@ -219,25 +220,20 @@ export function BlurEdit({ id, saved, type = "text", pattern, inputMode, maxLeng
   onSave: (value: string | null) => void;
 }) {
   const [value, setValue] = useState(saved ?? "");
+  const field = {
+    id, inputMode, maxLength, value, placeholder, title,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setValue(e.target.value),
+    onBlur: () => {
+      const v = value.trim();
+      if (v === (saved ?? "")) return;
+      if (v && pattern && !pattern.test(v)) { setValue(saved ?? ""); return; }
+      onSave(v || null);
+    },
+    className: INLINE_EDIT,
+  };
   return (
     <NickEdit>
-      <input
-        id={id}
-        type={type}
-        inputMode={inputMode}
-        maxLength={maxLength}
-        value={value}
-        placeholder={placeholder}
-        title={title}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={() => {
-          const v = value.trim();
-          if (v === (saved ?? "")) return;
-          if (v && pattern && !pattern.test(v)) { setValue(saved ?? ""); return; }
-          onSave(v || null);
-        }}
-        className={INLINE_EDIT}
-      />
+      {type === "date" ? <IfDateInput type="date" {...field} /> : <input type="text" {...field} />}
     </NickEdit>
   );
 }

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from bisect import bisect_right
 from pathlib import Path
 from typing import Any
@@ -306,6 +307,87 @@ async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
         "hashed": hashed,
         "clusters": clusters,
     }
+
+
+# ── Thumb backfill (scan the WHOLE vault, not just what was rendered) ──
+#
+# The hashes come from cached thumbs, and a thumb is only cached when something
+# renders or describes it (collect keeps just the newest 100 hot). So a scan saw
+# whatever the operator had scrolled past: 446 of 1,159 on AE 562666533
+# (2026-11-13). Opening Duplicates now fetches every missing thumb in the
+# background through `vault_stills.bytes_for` (disk → stored url → one re-sign),
+# behind its process-wide OF slot; the review UI polls and the scan grows.
+_BACKFILL_CONCURRENCY = 2
+_backfill: dict[str, dict[str, int]] = {}      # account → {total, done, failed}
+_backfill_running: set[str] = set()
+_backfill_finished: dict[str, float] = {}       # account → monotonic finish time
+# After a pass, what is still missing is media OF would not give us (deleted,
+# transient fail): don't re-ask on every poll of the open modal.
+_BACKFILL_COOLDOWN_S = 600.0
+
+
+async def missing_thumb_ids(account_id: str, allowed: frozenset[int] | None = None) -> list[int]:
+    """Live, picture-capable mirror items with no current hash and no thumb on disk."""
+    from vault_stills import thumb_path
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind, VaultItem.content_hash_kind)
+            .where(VaultItem.account_id == account_id,
+                   VaultItem.removed_at.is_(None),
+                   vault_mirror.visible_to(allowed))
+            .order_by(VaultItem.created_at.desc())
+        )).all()
+    return [int(mid) for mid, kind, hk in rows
+            if hk != HASH_KIND and vault_mirror.has_still(kind)
+            and not thumb_path(account_id, int(mid)).is_file()]
+
+
+async def _run_backfill(account_id: str, ids: list[int]) -> None:
+    import vault_frames
+    import vault_stills
+    queue: asyncio.Queue[int] = asyncio.Queue()
+    for mid in ids:
+        queue.put_nowait(mid)
+    st = _backfill[account_id]
+
+    async def _worker() -> None:
+        while not queue.empty():
+            mid = queue.get_nowait()
+            try:
+                still = await vault_stills.bytes_for(
+                    account_id, mid, vault_stills.thumb_path(account_id, mid),
+                    vault_frames.pick_thumb)
+                ok = still.data is not None
+            except Exception:  # noqa: BLE001 — one bad media must not stop the rest
+                log.warning("thumb backfill failed account=%s media=%s", account_id, mid, exc_info=True)
+                ok = False
+            st["done"] += 1
+            st["failed"] += 0 if ok else 1
+
+    try:
+        await asyncio.gather(*(_worker() for _ in range(min(_BACKFILL_CONCURRENCY, len(ids)))))
+        log.info("thumb backfill done account=%s %s", account_id, st)
+    finally:
+        _backfill_finished[account_id] = time.monotonic()
+        _backfill_running.discard(account_id)
+
+
+def start_thumb_backfill(account_id: str, ids: list[int]) -> bool:
+    """Fire-and-forget backfill of `ids`; False when one is already running."""
+    if account_id in _backfill_running or not ids:
+        return False
+    last = _backfill_finished.get(account_id)
+    if last is not None and time.monotonic() - last < _BACKFILL_COOLDOWN_S:
+        return False
+    _backfill_running.add(account_id)
+    _backfill[account_id] = {"total": len(ids), "done": 0, "failed": 0}
+    asyncio.create_task(_run_backfill(account_id, ids))
+    return True
+
+
+def backfill_status(account_id: str) -> dict[str, Any] | None:
+    st = _backfill.get(account_id)
+    return None if st is None else {**st, "running": account_id in _backfill_running}
 
 
 # ── Answer reuse (the vision sweeps) ────────────────────────────────

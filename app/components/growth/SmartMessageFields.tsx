@@ -20,6 +20,7 @@ import { useState } from "react";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import { IfHelp, IfInput, IfLabel, IfNativeSelect } from "@/components/ui/infloww";
+import { IF_DATE_FIELD, IfDateInput } from "@/components/ui/ifDateInput";
 import { useReportTimeZone } from "@/lib/appliedSettings";
 import { VAULT_PICK_MAX, readPrice } from "@/lib/ofMirrorChatShared";
 import { MIN_PRICE } from "@/lib/sendGuards";
@@ -323,11 +324,12 @@ function DateChoice({ id, title, offLabel, tz, on, iso, onChange }: {
         {E.scheduledDate.label}
       </label>
       {on && (
-        <IfInput
+        <IfDateInput
           type="datetime-local"
           aria-label={`${title} date`}
           value={iso ? toZonedInput(iso, tz) : ""}
           onChange={(e) => onChange(true, fromZonedInput(e.target.value, tz))}
+          className={IF_DATE_FIELD}
         />
       )}
     </div>

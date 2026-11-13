@@ -219,7 +219,10 @@ export function IfSelect<T extends string>({ size = "md", ...p }: SelectProps<T>
  *  Put it on an `<input>`; `HbSelect` is the select built on it. */
 export const HbFilter =
   "h-7 rounded-[4px] border-0 bg-[#161616] px-3 text-[14px] text-fg placeholder:text-[#a6a6a6] outline-none " +
-  "focus-visible:ring-1 focus-visible:ring-border-light [html[data-theme=light]_&]:bg-black/5";
+  "focus-visible:ring-1 focus-visible:ring-border-light " +
+  // Light: a grey 5% fill read as disabled; white + hairline like Infloww's light inputs, #666 placeholder.
+  "[html[data-theme=light]_&]:bg-white [html[data-theme=light]_&]:shadow-[inset_0_0_0_1px_var(--color-border-light)] " +
+  "[html[data-theme=light]_&]:placeholder:text-fg-dim";
 
 /** HB's filter at Tracking links' 36px: radius 8, 16px text (its filter bar, #17-#22). */
 export const HbFilterLg = cn(HbFilter, "h-9 rounded-lg text-[16px]");

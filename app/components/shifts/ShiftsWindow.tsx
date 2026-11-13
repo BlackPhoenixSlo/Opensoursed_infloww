@@ -53,6 +53,8 @@ import {
   type CommonPeriod, type ShiftGrantable, type ShiftInput, type ShiftOccurrence, type ShiftScopeAt,
 } from "@/lib/shifts";
 import { errText } from "@/lib/errText";
+import { ifConfirm } from "@/components/ui/ifConfirm";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 /** The antd field box (`IF_FIELD` in ui/infloww.tsx) on a native input. */
 const FIELD =
@@ -192,13 +194,21 @@ export default function ShiftsWindow({
       return;
     }
     setBusy(true);
-    // One answer per (Employee, Creator) pair for the whole OK, however many rows need it.
-    const answers = new Map<string, boolean>();
-    const approve = (pairs: ShiftGrantable[]) => pairs.every((p) => {
-      const key = `${p.employee_id}:${p.account_id}`;
-      if (!answers.has(key)) answers.set(key, window.confirm(`Grant ${p.employee_name} access to ${p.account_name}?`));
-      return answers.get(key);
-    });
+    // One answer per (Employee, Creator) pair for the whole OK, however many rows need it: the pending question is
+    // kept, so a row failing while it is open waits on it instead of asking again. Pairs are asked one at a time.
+    const answers = new Map<string, Promise<boolean>>();
+    const approve = async (pairs: ShiftGrantable[]) => {
+      for (const p of pairs) {
+        const key = `${p.employee_id}:${p.account_id}`;
+        let answer = answers.get(key);
+        if (!answer) {
+          answer = ifConfirm(`Grant ${p.employee_name} access to ${p.account_name}?`);
+          answers.set(key, answer);
+        }
+        if (!(await answer)) return false;
+      }
+      return true;
+    };
     const failed = (e: unknown): Partial<Row> => {
       const clashes = shiftClashes(e);
       return { error: errorText(e, creatorName, defaultTz), replace: false,
@@ -215,7 +225,7 @@ export default function ShiftsWindow({
         // An Employee whose login lacks a Creator: ask, then resend granting the access with the Shift. The
         // Relay asks before it checks clashes, so the resend may still come back 409 (and offer Replace).
         const grantable = shiftGrantable(e);
-        if (!grantable || !approve(grantable)) return failed(e);
+        if (!grantable || !(await approve(grantable))) return failed(e);
         try {
           await send({ ...input, grant_access: true });
           return null;
@@ -268,12 +278,12 @@ export default function ShiftsWindow({
             <div className="flex flex-wrap items-end gap-3">
               <label className={LABEL}>
                 Start
-                <input type="datetime-local" className={FIELD} value={row.start}
+                <IfDateInput type="datetime-local" className={FIELD} value={row.start}
                   onChange={(e) => update(row.key, { start: e.target.value })} />
               </label>
               <label className={LABEL}>
                 End
-                <input type="datetime-local" className={FIELD} value={row.end}
+                <IfDateInput type="datetime-local" className={FIELD} value={row.end}
                   onChange={(e) => update(row.key, { end: e.target.value })} />
               </label>
               {periods.length > 0 && (
@@ -346,7 +356,7 @@ export default function ShiftsWindow({
                   {row.repeatEnds === "date" && (
                     <label className="flex items-center gap-2">
                       Repeat until
-                      <input type="date" className={FIELD} value={row.repeatUntil}
+                      <IfDateInput type="date" className={FIELD} value={row.repeatUntil}
                         onChange={(e) => update(row.key, { repeatUntil: e.target.value })} />
                     </label>
                   )}

@@ -8,6 +8,7 @@ import AuthGate from "@/components/auth/AuthGate";
 import AppShell from "@/components/shell/AppShell";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { NotificationToaster } from "@/components/NotificationToaster";
+import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { IdleOverlay } from "@/components/IdleOverlay";
 import { ApiKeyToaster } from "@/components/ApiKeyToaster";
 import { MoneyRail } from "@/components/MoneyRail";
@@ -219,6 +220,8 @@ export default async function RootLayout({
                   <ImpersonationBanner />
                   <AppShell>{children}</AppShell>
                   <NotificationToaster />
+                  {/* ifConfirm / ifAlert: the app's confirm() and alert() dialogs. */}
+                  <IfConfirmHost />
                   <IdleOverlay />
                   <ApiKeyToaster />
                   <MoneyRail />

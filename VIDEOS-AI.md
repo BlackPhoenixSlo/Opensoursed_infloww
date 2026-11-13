@@ -65,7 +65,7 @@ Pri: P1 = record first. Demo: **yes** = records today; otherwise the line says w
 
 | # | Video | Benefit | Where (labels) | Demo | Pri |
 |---|---|---|---|---|---|
-| C1 | Ask the help bot | Answer + a link to the page | Corner "Help assistant" → "Ask a question" | needs canned help answers | P1 |
+| C1 | Ask the help bot | Answer + a link to the page | Corner "Help assistant" → composer "Ask a question…" | needs canned help answers | P1 |
 | C2 | "Do it for me": an Auto mass from one sentence | It fills the form; you switch it on | Launcher → "Do it for me" → plan card → "Do it" → "Created OFF" | needs a `help_assistant_do` JSON answer + SFW-tier vault seed (or reuse slop `2026-11-11-assistant-do-auto-mass --set video=1`) | P1 |
 | C3 | "Why didn't the AI reply to him?" | The reason, from stored records | Launcher → paste the fan → ask | needs canned help answers | P1 |
 | C4 | FM Suggest when a fan goes off-script | A reply that steers back, never auto-sent | Messages Pro › FM fan › "Next in" › **Suggest** | yes after `prep.py`; better with a script-aware fake line | P1 |
@@ -94,7 +94,7 @@ Left out:
 - **A5:** Model info template → fill Name / From / Likes / Won't do → Save, with the counter on screen ("A few lines; every AI chat reads them") → fan asks "where are u from?" and the AI answers with "From".
 - **A6:** A thread with mixed bubbles → zoom on the "Auto-reply" / "Info-gather" labels ("You always see who sent what") → Message dashboard › Sender column → filter one creator.
 - **A7:** Fan insights › Mass exclude → flip MASSdmEXCLUDE ("Never in any mass send. Not in Infloww.") → the same switch in the chat header "+" → "He still gets welcomes and 1-to-1 replies."
-- **C1:** Launcher → "Ask a question" → "how do I schedule a mass?" → answer with a page link → click it and land on the page ("Answers from the manual, with a link") → "It says 'not supported' when that's the truth."
+- **C1:** Launcher → type in "Ask a question…" → "how do I schedule a mass?" → answer with a page link → click it and land on the page ("Answers from the manual, with a link") → "It says 'not supported' when that's the truth."
 - **C2:** `/growth/auto-post` → "Do it for me" → type the sentence → plan card ("Check the plan first") → "Do it": the cursor fills the form → "Created OFF" ("You switch it on") → Esc stops it at any time.
 - **C3:** Launcher → paste a fan's handle → "why didn't the AI chatter reply to him?" → answer cites stored facts, e.g. "on skip list" ("From your records, not guesses").
 - **C4:** FM fan writes something off-script → **Suggest** ("Thinking…") → draft lands in the composer ("Nothing is sent") → edit and send ("Back on script").

@@ -24,6 +24,7 @@ import { MASS_PLACEHOLDER_MIN } from "@/hooks/useChatMessages";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
 import { RelayError, type OFMessage } from "@/lib/relay";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 const UNSEND_WINDOW_MS = 24 * 3600 * 1000;
 
@@ -46,7 +47,7 @@ export default function UnsendMessageButton({ row }: { row: PaidMessageRow }) {
   const allowed = useActionAllowed("unsend");
 
   const onClick = async () => {
-    if (!window.confirm("Unsend this message? The fan will no longer see it.")) return;
+    if (!(await ifConfirm("Unsend this message? The fan will no longer see it.", { danger: true }))) return;
     setBusy(true);
     setError(null);
     try {

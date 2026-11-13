@@ -25,7 +25,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useReducer, useState } from "react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
-import { IfButton, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
+import { IfButton, IfLabel, IfModal } from "@/components/ui/infloww";
+import { IF_DATE_FIELD, IfDateInput } from "@/components/ui/ifDateInput";
+import { cn } from "@/lib/utils";
 import { initialRecordForm, recordFormReducer, validateRecord } from "@/components/stats/recordEditor";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { rangeOffsetLabel } from "@/lib/creatorClock";
@@ -143,12 +145,12 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
         <div className="flex flex-wrap items-end gap-2">
           <IfLabel className={LABEL}>
             From
-            <IfInput type="datetime-local" step={3600} max={maxValue} aria-label="From" className="tabular-nums"
+            <IfDateInput type="datetime-local" step={3600} max={maxValue} aria-label="From" className={cn(IF_DATE_FIELD, "tabular-nums")}
               value={fromValue} onChange={(e) => e.target.value && setFromInput(toHour(e.target.value))} />
           </IfLabel>
           <IfLabel className={LABEL}>
             To
-            <IfInput type="datetime-local" step={3600} max={maxValue} aria-label="To" className="tabular-nums"
+            <IfDateInput type="datetime-local" step={3600} max={maxValue} aria-label="To" className={cn(IF_DATE_FIELD, "tabular-nums")}
               value={toValue} onChange={(e) => e.target.value && setToInput(toHour(e.target.value))} />
           </IfLabel>
           {exportAllowed && (
@@ -232,14 +234,14 @@ export function RecordEditor({ record: r, tz, closing, onDone }: {
         {!closing && (
           <IfLabel className={LABEL}>
             Clock in
-            <IfInput type="datetime-local" aria-label="Clock in" className="tabular-nums"
+            <IfDateInput type="datetime-local" aria-label="Clock in" className={cn(IF_DATE_FIELD, "tabular-nums")}
               value={form.inV} onChange={(e) => dispatch({ type: "in", value: e.target.value })} />
           </IfLabel>
         )}
         {(closing || r.out_utc) && (
           <IfLabel className={LABEL}>
             Clock out
-            <IfInput type="datetime-local" aria-label="Clock out" className="tabular-nums"
+            <IfDateInput type="datetime-local" aria-label="Clock out" className={cn(IF_DATE_FIELD, "tabular-nums")}
               value={form.outV} onChange={(e) => dispatch({ type: "out", value: e.target.value })} />
           </IfLabel>
         )}

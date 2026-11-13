@@ -30,6 +30,7 @@ import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { MENU, MENU_ITEM, MENU_ROW, MenuStatusLine, useMenuStatus } from "./MenuParts";
 import { useFanListMenu } from "./useFanListMenu";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 const O = MP.ours.FanListBulkBar;
 const BUTTON = cn(O.button, "border-border text-fg hover:bg-bg-elev-1 disabled:opacity-50");
@@ -105,9 +106,10 @@ export function FanListBulkBar({
   });
 
   const remove = () => run(async () => {
-    if (!window.confirm(
+    if (!(await ifConfirm(
       `Delete ${plural(count, "selected conversation")}? This clears the messages on OnlyFans and cannot be undone.`,
-    )) return;
+      { danger: true },
+    ))) return;
     // One paced DELETE per chat (the relay spaces them), so the bar stays busy a while.
     const failed = await eachPick(async (c, accountId) => {
       await relay.delete(`/api/of/v2/chats/${c.withUser.id}`, { accountId });

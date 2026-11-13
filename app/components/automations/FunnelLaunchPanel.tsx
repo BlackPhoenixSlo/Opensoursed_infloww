@@ -36,6 +36,7 @@ import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import type { FunnelSummary } from "@/hooks/useFunnels";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 // What a funnel opener sends to on open: all fans (Following is one click).
 const OPENER_INCLUDES = ["fans"];
@@ -133,10 +134,10 @@ export function FunnelLaunchPanel({
     },
   });
 
-  function confirmAndSend() {
+  async function confirmAndSend() {
     setDone(null);
     const who = onlineOnly ? "ONLINE fans in" : "fans in";
-    const ok = window.confirm(
+    const ok = await ifConfirm(
       `Send "${funnel.name}" opener to ${who} the selected audience on ${accountName}?`
         + (followUpsOn ? "" : "\n\nThis also turns on Follow up on replies for this creator."),
     );

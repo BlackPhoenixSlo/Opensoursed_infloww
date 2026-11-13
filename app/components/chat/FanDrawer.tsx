@@ -498,7 +498,7 @@ export function FanDrawer({
                 id={`${uid}-language`}
                 value={fan.language ?? ""}
                 onChange={(e) => update.mutate({ language: e.target.value })}
-                className={cn(INLINE_EDIT, "flex-none max-w-full appearance-none cursor-pointer [text-align-last:right]")}
+                className={cn(INLINE_EDIT, "flex-none max-w-full appearance-none cursor-pointer [text-align-last:right] supports-[appearance:base-select]:[appearance:base-select] [&::picker-icon]:hidden")}
               >
                 <option value="">Default (account)</option>
                 {LANGUAGE_OPTIONS.map((l) => (
@@ -553,7 +553,7 @@ export function FanDrawer({
                   salary_frequency:
                     SALARY_FREQUENCIES.find((f) => f.value === e.target.value)?.value ?? null,
                 })}
-                className={cn(INLINE_EDIT, "flex-none max-w-full appearance-none cursor-pointer [text-align-last:right]")}
+                className={cn(INLINE_EDIT, "flex-none max-w-full appearance-none cursor-pointer [text-align-last:right] supports-[appearance:base-select]:[appearance:base-select] [&::picker-icon]:hidden")}
               >
                 <option value="">—</option>
                 {SALARY_FREQUENCIES.map((f) => (

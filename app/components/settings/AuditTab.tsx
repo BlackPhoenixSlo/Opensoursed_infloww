@@ -23,6 +23,7 @@ import { useRoster } from "@/hooks/useRoster";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { IfCreatorSelect, IfSelect } from "@/components/ui/infloww";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 import { IF_BTN, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW } from "@/components/settings/SettingsPanel";
 import {
   AUDIT_PAGE, INITIAL_AUDIT_FILTERS, auditFiltersReducer, buildAuditQuery, isFiltered,
@@ -78,10 +79,10 @@ export default function AuditTab() {
           onAll={() => dispatch({ type: "account", id: null })}
         />
         <span className="flex items-center gap-2">
-          <input type="date" aria-label="From" value={f.fromDay} className={DATE_FIELD}
+          <IfDateInput type="date" aria-label="From" value={f.fromDay} className={DATE_FIELD}
             onChange={(e) => dispatch({ type: "from", day: e.target.value })} />
           <span>to</span>
-          <input type="date" aria-label="To" value={f.toDay} className={DATE_FIELD}
+          <IfDateInput type="date" aria-label="To" value={f.toDay} className={DATE_FIELD}
             onChange={(e) => dispatch({ type: "to", day: e.target.value })} />
         </span>
         <label className="flex items-center gap-2 cursor-pointer">

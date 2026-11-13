@@ -30,6 +30,7 @@ import { fmtCents } from "@/lib/format";
 import { RelayError } from "@/lib/relay";
 import { deleteClockEvent, fmtHours, RECORDED_EARNINGS_TIP, type ShiftRecord } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 const LINK = "text-xs text-fg-dim hover:text-fg underline disabled:opacity-50";
 const SELECT = "bg-bg border border-border rounded-lg px-2 py-1 text-xs text-fg";
@@ -99,7 +100,7 @@ function RecordRow({ record: r, tz, names, employees }: {
   const [busy, setBusy] = useState(false);
 
   const remove = async () => {
-    if (!window.confirm(DELETE_CONFIRM)) return;
+    if (!(await ifConfirm(DELETE_CONFIRM, { danger: true }))) return;
     setBusy(true);
     setError(null);
     try {

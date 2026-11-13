@@ -59,6 +59,7 @@ import { newBackfillIds } from "./jumpAnchor";
 import { attributionAsks, noteAsks, type Asked } from "./attributionRefresh";
 import { useJumpToMessage } from "./useJumpToMessage";
 import { useMarkChatRead } from "./useMarkChatRead";
+import { ifAlert } from "@/components/ui/ifConfirm";
 
 export type { QuotedReply };
 
@@ -398,7 +399,7 @@ export function ChatSurface({
       await createScript({ ...draft, title: title.trim() || null });
     } catch (err) {
       const reason = errText(err);
-      window.alert(`Couldn't save the script: ${reason}`);
+      await ifAlert(`Couldn't save the script: ${reason}`);
     }
   }, [createScript]);
 

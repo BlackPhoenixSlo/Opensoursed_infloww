@@ -3,6 +3,7 @@
 
 import { type QueryClient } from "@tanstack/react-query";
 
+import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 import {
   addToOfFolder,
   cacheSummaryKey,
@@ -89,7 +90,7 @@ export async function onDescribeAll(
   if (capped) {
     // Reachable with a plan up to 30s stale (its staleTime) — the button is
     // already grey once the refetch lands. Say it rather than no-op.
-    window.alert(capReason);
+    await ifAlert(capReason);
     d.refetchPlan();
     return;
   }
@@ -106,8 +107,8 @@ export async function onDescribeAll(
       mode === "force"
         ? `Re-describe ALL ${n} items`
         : `Re-scan ${n} items still on the other prompt`;
-    if (!window.confirm(`${what} with prompt ${promptVersion.toUpperCase()}?\n\n` +
-        `Estimated ~$${est.toFixed(2)} of LLM spend against today's cap.`)) {
+    if (!(await ifConfirm(`${what} with prompt ${promptVersion.toUpperCase()}?\n\n` +
+        `Estimated ~$${est.toFixed(2)} of LLM spend against today's cap.`))) {
       return;
     }
   }
@@ -173,7 +174,7 @@ export async function describeSelected(d: ManageDeps) {
   d.qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
   if (stopped) {
     d.refetchPlan();
-    if (stopped !== "key") window.alert(stopped);
+    if (stopped !== "key") await ifAlert(stopped);
   }
 }
 
@@ -189,7 +190,7 @@ export async function describeOne(m: Tile, d: ManageDeps & { setPreview: (t: Til
     const r = await describeMedia(accountId, m.id);
     if (r.status === "capped") {
       d.refetchPlan();
-      window.alert(r.detail ?? d.capReason);
+      await ifAlert(r.detail ?? d.capReason);
       return;
     }
     d.setPreview({ ...m, _ai: { ...(m._ai ?? {}), ...r } });

@@ -44,6 +44,7 @@ import vault_jev_rules  # JEV_KEY: a clip's per-frame answers stay out of `_over
 import vault_pack_picker
 import vault_runs
 import vault_stills
+import vault_harvest_terms  # which words the OF-search harvest asks
 import vault_tags  # the grid's tag chips: tag_match / facets SQL
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
@@ -1149,27 +1150,15 @@ router.include_router(vault_ai_vision.describe_router)
 # cache the query — permanently, so next time it's instant AND local search
 # returns everything OF would PLUS our AI tags.
 _OF_SEARCH_TTL_S = 7 * 24 * 3600
-_OF_SEARCH_MAX_PAGES = 6
+# 30 pages x 100 = 3,000 hits per term. Was 6 x 40 = 240, and every common term
+# (ass, cum, pussy, face, solo) hit exactly 240 on AE 562666533 (2026-11-13).
+_OF_SEARCH_PAGE = 100
+_OF_SEARCH_MAX_PAGES = 30
+# A cache row stamped at the old cap was truncated: re-ask OF instead of trusting it.
+_OF_SEARCH_LEGACY_CAP = 240
 
-# "What sells on OnlyFans" seed set — categories + attributes we harvest OF's own
-# search for, so local search covers everything OF would match across the selling
-# taxonomy (folded in next to the AI vision tags). Explicit acts/body, clothing,
-# settings, style, and common attributes.
-_SELLING_KEYWORDS = [
-    # explicit / body
-    "nude", "naked", "topless", "porn", "masturbation", "fingering", "sex", "blowjob",
-    "cum", "pussy", "ass", "booty", "boobs", "tits", "feet", "toy", "dildo", "vibrator",
-    "anal", "squirt", "creampie", "riding",
-    # clothing / lingerie
-    "lingerie", "bra", "panties", "thong", "bikini", "dress", "outfit", "heels",
-    "stockings", "cosplay", "uniform",
-    # settings / themes
-    "shower", "bath", "bed", "pool", "beach", "car", "travel", "gym", "mirror", "outdoor",
-    # style / framing
-    "pov", "solo", "selfie", "tease", "closeup", "face", "flowers",
-    # attributes / colors
-    "tattoo", "blonde", "red", "black", "white", "blue", "pink",
-]
+# The term list (seed taxonomy + the account's own describe/Jev vocabulary)
+# lives in `vault_harvest_terms`.
 
 
 async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[str, Any]:
@@ -1181,7 +1170,8 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
     now = datetime.utcnow()
     async with get_session() as s:
         logrow = await s.get(VaultOfQueryLog, (account_id, q))
-    if logrow and (now - logrow.fetched_at).total_seconds() < _OF_SEARCH_TTL_S:
+    if (logrow and (now - logrow.fetched_at).total_seconds() < _OF_SEARCH_TTL_S
+            and logrow.match_count != _OF_SEARCH_LEGACY_CAP):
         async with get_session() as s:
             ids = [
                 r[0] for r in (
@@ -1205,7 +1195,7 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
     for _ in range(_OF_SEARCH_MAX_PAGES):
         try:
             resp = await asyncio.to_thread(
-                client.vault_media, limit=40, offset=offset, type="all", sort="desc", query=q,
+                client.vault_media, limit=_OF_SEARCH_PAGE, offset=offset, type="all", sort="desc", query=q,
             )
         except Exception:  # noqa: BLE001
             break
@@ -1215,7 +1205,7 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
         matched += [int(it["id"]) for it in items if it.get("id") is not None]
         if not (resp or {}).get("hasMore"):
             break
-        offset += 40
+        offset += _OF_SEARCH_PAGE
 
     async with get_session() as s:
         for mid in matched:
@@ -1262,14 +1252,26 @@ _kw_running: set[str] = set()
 _kw_progress: dict[str, dict[str, Any]] = {}
 
 
+async def _harvest_terms_for(account_id: str) -> list[str]:
+    """Seed + this account's own most frequent describe/Jev words."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.ai_fields_json).where(
+                VaultItem.account_id == account_id, VaultItem.removed_at.is_(None),
+                VaultItem.ai_fields_json.is_not(None))
+        )).scalars().all()
+    return vault_harvest_terms.harvest_terms(load_json(r, None) for r in rows)
+
+
 async def _run_harvest_keywords(account_id: str) -> None:
     try:
         client = await asyncio.to_thread(ax._make_client, account_id)
-        total = len(_SELLING_KEYWORDS)
+        terms = await _harvest_terms_for(account_id)
+        total = len(terms)
         done = 0
         matches = 0
         _kw_progress[account_id] = {"total": total, "done": 0, "matches": 0}
-        for kw in _SELLING_KEYWORDS:
+        for kw in terms:
             r = await _harvest_query(account_id, kw, client=client)
             matches += int(r.get("count") or 0)
             done += 1
@@ -1290,7 +1292,7 @@ async def harvest_keywords(payload: dict = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail={"error": "harvest_already_running"})
     _kw_running.add(account_id)
     asyncio.create_task(_run_harvest_keywords(account_id))
-    return {"account_id": account_id, "status": "running", "keywords": len(_SELLING_KEYWORDS)}
+    return {"account_id": account_id, "status": "running"}
 
 
 @router.get("/admin/vault-ai/harvest-keywords/status")

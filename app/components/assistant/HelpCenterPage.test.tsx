@@ -37,10 +37,10 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("HelpCenterPage", () => {
-  it("is the messenger itself: greeting, Ask card, composer; no title, no placeholder", () => {
+  it("is the messenger itself: greeting, composer, no Ask card; no title, no placeholder", () => {
     renderWithProviders(<PageCreatorProvider><AssistantProvider><HelpCenterPage /></AssistantProvider></PageCreatorProvider>);
     expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("How can we help?");
-    expect(screen.getByRole("button", { name: /Ask a question/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Ask a question/ })).toBeNull();
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Help center" })).toBeNull();
     expect(screen.queryByText(/not built yet/)).toBeNull();

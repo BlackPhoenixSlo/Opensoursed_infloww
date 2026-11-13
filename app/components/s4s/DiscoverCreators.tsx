@@ -37,6 +37,8 @@ import { Play } from "lucide-react";
 import { EmptyState, IfButton, IfInput, IfModal } from "@/components/ui/infloww";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
+import { IF_DATE_FIELD, IfDateInput } from "@/components/ui/ifDateInput";
+import { cn } from "@/lib/utils";
 import { ProjectionAvatar, S4SMediaCarousel, message } from "@/components/s4s/s4sBits";
 import {
   S4S_BLOCKS_KEY, S4S_REQUESTS_KEY, blockS4SCreator, proposeS4SSlot, s4sMediaUrl, sendS4SRequest, unblockS4SCreator,
@@ -200,7 +202,7 @@ function RequestModal({ item, from, onClose }: { item: S4SDiscoveryItem; from: S
             ) : (
               <label className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
                 <span>Proposed time (UTC):</span>
-                <IfInput aria-label="Proposed time" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="w-[220px]" />
+                <IfDateInput aria-label="Proposed time" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className={cn(IF_DATE_FIELD, "w-[220px]")} />
                 <span className="text-fg-dim">from {from?.display_name || from?.account_id}</span>
               </label>
             )}

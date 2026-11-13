@@ -12,6 +12,7 @@
 
 import type { SettingsVersion } from "@/lib/settingsBlob";
 import { Section } from "@/components/settings/SettingsPanel";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 /** `datetime-local` text (local wall time, minutes) for an instant. */
 function localInput(d: Date): string {
@@ -52,7 +53,7 @@ export default function SettingsVersions({ effective, history, recomputes, also,
         <Section title="Set effective date">
           <label className={`flex flex-wrap items-center gap-2 text-[var(--if-fg-2)] ${SMALL}`}>
             Specify the date and time for the changes to take effect:
-            <input
+            <IfDateInput
               type="datetime-local"
               aria-label="Effective date"
               max={localInput(now)}

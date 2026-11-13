@@ -48,8 +48,8 @@ const STAT_TIPS = {
 
 export default function CreatorOverview({
   ids, view, totalCents, buckets, prior, growthNow, totalGrowth, trendPoints, chanPick, setChanPick,
-  channelLines, from, to, net, buildExport, perModel, visibleCreators, visibleCols,
-  setVisibleCols, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView, referralsGap,
+  channelLines, from, to, net, buildExport, perModel, visibleCreators, colKeys,
+  setColKeys, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView, referralsGap,
   referralsShown,
 }: {
   ids: { summary: string; trends: string; channel: string; breakdown: string; stats: string; ledger: string };
@@ -62,7 +62,7 @@ export default function CreatorOverview({
   channelLines: ((typeof CHANNELS)[number] & { points: Point[] })[];
   from: string | null; to: string | null; net: boolean; buildExport: (c: ExportChoice) => Promise<Section[]>;
   perModel: { isPending: boolean; isError: boolean }; visibleCreators: PerModelRow[];
-  visibleCols: Set<string>; setVisibleCols: (next: Set<string>) => void;
+  colKeys: string[]; setColKeys: ((next: string[]) => void) | null;
   orderedCols: readonly StatCol[]; colCtx: ColCtx; grossCents: number;
   netLedger: Partial<Record<(typeof LEDGER_ROWS)[number], number>>;
   /** Chargebacks' figure, below zero, and its reversed read's state, outside `view`: pending or failed, only
@@ -242,14 +242,14 @@ export default function CreatorOverview({
         <h2 id={ids.stats} className="text-xl font-medium leading-[1.2]" style={{ color: "var(--color-fg)" }}>
           Creator statistics
         </h2>
-        <CustomMetricsPill visible={visibleCols} onChange={setVisibleCols} />
+        <CustomMetricsPill keys={colKeys} onChange={setColKeys} />
         {/* #88, #89: the bundle's Export pop-up; ours downloads at once (W5 5.9). */}
         <ExportMenu fileName={`creator-reports_${from ?? ""}_${to ?? ""}`} sheet="Creator reports"
           displays={["total", "day"]} fields net={net} build={buildExport} className="self-start" />
       </div>
 
       {/* #101 to #104: four cards side by side, 16px apart; Refunded sums the Refunds column. */}
-      <ul aria-label="Creator statistics cards" className="flex flex-col md:flex-row gap-4 md:gap-0 mb-4">
+      <ul aria-label="Creator statistics cards" className="grid grid-cols-2 gap-2 md:flex md:flex-row md:gap-0 mb-4">
         <StatCard label="Creators" tip={STAT_TIPS.creators}
           value={statsView === "ready" ? visibleCreators.length.toLocaleString("en-US") : "-"} />
         <StatCard label="Message earnings" tip={STAT_TIPS.message}

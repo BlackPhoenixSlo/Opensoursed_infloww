@@ -250,13 +250,22 @@ export default function VaultDuplicatesModal({
             ))}
           </IfNativeSelect>
         </div>
-        {scan.isFetching && <span className="flex h-8 items-center text-muted">scanning…</span>}
+        {scan.isFetching && !scan.data?.backfill?.running && <span className="flex h-8 items-center text-muted">scanning…</span>}
         {scan.data && (
           <>
             <span className="flex h-8 items-center text-muted">
               {scan.data.sets} sets · {scan.data.removable} copies ·{" "}
               {scan.data.scanned} items scanned
             </span>
+            {scan.data.backfill?.running ? (
+              <span className="flex h-8 items-center text-info">
+                fetching thumbs {scan.data.backfill.done}/{scan.data.backfill.total} — sets grow as they land
+              </span>
+            ) : !!scan.data.missing_thumbs && (
+              <span className="flex h-8 items-center text-warn" title="OF would not give a picture for these (deleted or failed); retried on the next open after 10 min">
+                {scan.data.missing_thumbs} not scannable
+              </span>
+            )}
             <span className="flex h-8 items-center font-medium text-fg">
               {selectedIds.length} selected for removal
             </span>

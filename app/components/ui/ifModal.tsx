@@ -186,11 +186,11 @@ const widthStyle = (width: number) => ({ width: `min(${width}px, calc(100vw - 32
  *  that takes no click (`useExitGhost`), so closing never holds up the page. It covers the visible area
  *  (`--vvt`/`--vvh`, layout.tsx), so the phone keyboard shrinks it from below; below `sm` the box sits at its top
  *  instead of the middle, so opening the keyboard does not shove the dialog up. */
-function ModalMask({ children }: { children: ReactNode }) {
+function ModalMask({ onMaskClick, children }: { onMaskClick?: () => void; children: ReactNode }) {
   const maskRef = useRef<HTMLDivElement>(null);
   useExitGhost(true, maskRef);
   return (
-    <div ref={maskRef} className={cn("pop-backdrop fixed inset-x-0 top-[var(--vvt,0px)] z-50 grid h-[var(--vvh,100dvh)] place-items-center overflow-y-auto p-4 max-sm:items-start", IF_MODAL_MASK)}>
+    <div ref={maskRef} onClick={onMaskClick && ((e) => { if (e.target === e.currentTarget) onMaskClick(); })} className={cn("pop-backdrop fixed inset-x-0 top-[var(--vvt,0px)] z-50 grid h-[var(--vvh,100dvh)] place-items-center overflow-y-auto p-4 max-sm:items-start", IF_MODAL_MASK)}>
       {children}
     </div>
   );
@@ -201,24 +201,29 @@ function ModalMask({ children }: { children: ReactNode }) {
  *  `footerSlot`: an editor in the body puts its buttons (`EditorFooter`) in the footer, after `footer`. */
 export function IfModal({
   title, label, width = 520, size, footer, footerSlot = false, onClose, closable = true, keyboard = closable, children,
-  className,
+  className, maskClosable = false, describedBy,
 }: ModalProps & {
+  /** The id of the body text a screen reader reads with the name (a confirm's question). */
+  describedBy?: string;
   /** "editor": a long form's dialog, (almost) full-screen below `sm`, its footer set off by a hairline there. */
   size?: "editor";
   footerSlot?: boolean;
+  /** A click on the mask calls `onClose` (antd's `maskClosable`; off by default here). */
+  maskClosable?: boolean;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   useModalFocus(boxRef, keyboard ? onClose : undefined);
   const titleId = useId();
   const [slot, setSlot] = useState<HTMLElement | null>(null);
   return (
-    <ModalMask>
+    <ModalMask onMaskClick={maskClosable ? onClose : undefined}>
       <div
         ref={boxRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
         aria-label={title ? undefined : label}
+        aria-describedby={describedBy}
         tabIndex={-1}
         style={widthStyle(width)}
         className={cn("pop-modal relative flex max-h-[calc(var(--vvh,100dvh)-32px)] flex-col", IF_MODAL_BOX,

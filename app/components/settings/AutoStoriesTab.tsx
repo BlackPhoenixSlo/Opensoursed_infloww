@@ -50,6 +50,7 @@ import {
 } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { IF_DATE_FIELD, IfDateInput } from "@/components/ui/ifDateInput";
 import {
   autoStoriesReducer, buildPayload, buildTrigger, DEFAULT_FORM, ruleToForm, sameForm, saveGap, type AutoStoriesAction, type FormState,
 } from "./autoStoriesForm";
@@ -435,12 +436,12 @@ function TimesEditor({
     <div className="flex flex-wrap items-center gap-2">
       {times.map((t, i) => (
         <span key={i} className="inline-flex items-center gap-1">
-          <IfInput
+          <IfDateInput
             id={`story-time-${i}`}
             type="time"
             aria-label={`Time ${i + 1}`}
             value={t}
-            className="w-28"
+            className={cn(IF_DATE_FIELD, "w-28")}
             onChange={(e) => dispatch({ type: "setTime", index: i, value: e.target.value })}
           />
           <button

@@ -7,6 +7,7 @@ import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { errText } from "@/lib/errText";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 /**
  * AgencyKeysForm — set an agency's LLM keys FOR them.
@@ -96,11 +97,11 @@ export function AgencyKeysForm(
                 type="button"
                 disabled={busy}
                 className="text-[11px] text-err hover:text-err disabled:opacity-40"
-                onClick={() => {
+                onClick={async () => {
                   // Someone ELSE's credential: every automation on every account
                   // they own fails closed the moment this lands, and they get no
                   // notification. Same beat the owner's own card takes.
-                  if (window.confirm(`Remove @${user.username}'s ${name} key? Their models stop replying until one is added.`)) {
+                  if (await ifConfirm(`Remove @${user.username}'s ${name} key? Their models stop replying until one is added.`, { danger: true })) {
                     void clear(name);
                   }
                 }}

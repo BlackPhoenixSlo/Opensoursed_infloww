@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /help-center: Infloww's HelpPage frame (white, full bleed, no page header,
+ * /help-center: Infloww's HelpPage frame (full bleed, no page header, in the app theme,
  * the full height under the top bar) holding our help, which is the help bot.
  * Infloww's frame holds help.infloww.com, which cannot be framed
  * (x-frame-options: DENY) and is their content, not ours. The panel is the

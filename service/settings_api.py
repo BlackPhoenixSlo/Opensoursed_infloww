@@ -366,6 +366,7 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
     prefs = await applied_blob(s, ctx.agency_user_id, "preferences")
     roles = await applied_blob(s, ctx.agency_user_id, "roles")
     flags = await applied_blob(s, ctx.agency_user_id, "flags")
+    reports = await applied_blob(s, ctx.agency_user_id, "reports")
     pages = granted_pages(ctx, roles)
     return {
         "preferences": {
@@ -384,6 +385,7 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
             "denied_cards": sorted(denied_cards(ctx, roles)),
         },
         "flags": {name: flags.get(name) is True for name in FLAGS},
+        "reports": {"creator_cols": reports.get("creator_cols")},
     }
 
 
@@ -419,6 +421,8 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
             "denied_cards": sorted({k for p in parts for k in p["permissions"]["denied_cards"]}),
         },
         "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS},
+        # Several Agencies' layouts: the first one's (the app falls back to its default when none is stored).
+        "reports": parts[0]["reports"],
     }
 
 
@@ -427,7 +431,7 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
 async def get_applied(request: Request) -> dict[str, Any]:
     """`{preferences: {tz, report_tz, week_start, hide_trial_popup}, messaging: {ai_translation},
     permissions: {enforced, pages, scope, opt_in, denied_actions, denied_cards}, flags:
-    {<name>: bool}}` for the caller's session; `null` zones mean the browser's,
+    {<name>: bool}, reports: {creator_cols}}` for the caller's session; `null` zones mean the browser's,
     `pages: null` every page, `opt_in` the My Automations pages it may use
     (`permissions.opt_in_granted`; every one for an owner session, none for a
     chatter without a stored role ticking them on an enforcing Agency), and

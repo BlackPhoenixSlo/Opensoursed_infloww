@@ -20,6 +20,7 @@ import { RunStats, isDryRun } from "@/lib/runStats";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { usePromotions } from "@/hooks/useGrowth";
 import { useAutomationRules, useCreateRule, useUpdateRule, useRunRuleNow } from "@/hooks/useAutomations";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export default function PromoReactivateCard({ accountId }: { accountId: string | null }) {
   const promosQ = usePromotions(accountId);
@@ -63,9 +64,9 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
     dispatch({ type: "clear" });
     // Run now executes the SAVED rule — key the warning off the saved payload.
     const savedDryRun = isDryRun(rule);
-    if (!savedDryRun && !window.confirm(
+    if (!savedDryRun && !(await ifConfirm(
       "Check now uses the LAST SAVED config, which has dry-run OFF — any finished campaign marked “Keep running” will be re-created on OnlyFans. Continue?",
-    )) return;
+    ))) return;
     try {
       await runM.mutateAsync(rule.id);
       dispatch({ type: "notice", msg: savedDryRun

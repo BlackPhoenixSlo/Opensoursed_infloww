@@ -42,6 +42,8 @@ vi.mock("@/contexts/ChatterContext", () => ({
 import StatsReport from "@/components/stats/StatsReport";
 
 let reportTz: string | null;
+let layout: string[] | null;
+let saveStatus: number;
 let fallback: string | null;
 let creators: Record<string, unknown>[];
 let ingestRows: Record<string, unknown>[];
@@ -62,6 +64,8 @@ beforeEach(() => {
   session.user = OWNER;
   session.chatter = null;
   reportTz = null;
+  layout = null;
+  saveStatus = 200;
   fallback = null;
   creators = [];
   ingestRows = [];
@@ -75,11 +79,13 @@ beforeEach(() => {
     if (path === "/admin/stats/chatting-stats") {
       return jsonRes({ employees: [], attribution_fallback: fallback, series: [], by_employee: {} });
     }
+    if (path === "/admin/settings/reports") return jsonRes({}, saveStatus);
     if (path === "/admin/settings/applied") {
       return jsonRes({
         preferences: { tz: null, report_tz: reportTz, week_start: "monday" },
         messaging: { ai_translation: true },
         permissions: { enforced: false, pages: null, scope: "all" },
+        reports: { creator_cols: layout },
       });
     }
     if (path === "/admin/stats/per-model") {
@@ -971,6 +977,66 @@ describe("StatsReport Creator reports Creator statistics", () => {
     expect(headers().slice(5, 9)).toEqual(["Total earnings", "Avg hourly earnings", "Refunds", "Contribution %"]);
     // Avg hourly earnings: Total earnings over the window's hours, $250 / 168.
     await waitFor(() => expect(tableRows(table)[0].slice(5, 9)).toEqual(["$250", "$1.49", "$12", "100.00%"]));
+  });
+
+  it("orders the columns from Custom metrics and saves the layout for the Agency", async () => {
+    creators = [CREATOR_A];
+    renderWithProviders(<StatsReport view="creator" />);
+    const table = await within(await screen.findByRole("region", { name: "Creator statistics" })).findByRole("table");
+    await waitFor(() => expect(within(stats()).getByRole("button", { name: "Custom metrics" })).toBeEnabled());
+    fireEvent.click(within(stats()).getByRole("button", { name: "Custom metrics" }));
+    const metrics = screen.getByRole("group", { name: "Creator report metrics" });
+    fireEvent.click(within(metrics).getByRole("button", { name: "Move Tips up" }));
+    const headers = () => within(table).getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers().slice(1, 3)).toEqual(["Tips", "Total subscription earnings"]);
+    // The first shown column has no up; a hidden one has no arrows at all.
+    expect(within(metrics).getByRole("button", { name: "Move Tips up" })).toBeDisabled();
+    expect(within(metrics).queryByRole("button", { name: "Move Posts up" })).toBeNull();
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(([u, init]) => String(u).startsWith("/admin/settings/reports")
+        && (init as RequestInit | undefined)?.method === "PUT");
+      expect(put).toBeDefined();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.creator_cols.slice(0, 2)).toEqual(["tips", "totalSubscriptionsEarnings"]);
+    });
+  });
+
+  it("opens on the Agency's saved layout", async () => {
+    creators = [CREATOR_A];
+    layout = ["ppvsSent", "tips", "retired-column"];
+    renderWithProviders(<StatsReport view="creator" />);
+    const table = await within(await screen.findByRole("region", { name: "Creator statistics" })).findByRole("table");
+    await waitFor(() => expect(within(table).getAllByRole("columnheader").map((h) => h.textContent))
+      .toEqual(["Creator", "PPVs sent", "Tips"]));
+  });
+
+  it("a save the Relay refuses goes back to the stored layout", async () => {
+    creators = [CREATOR_A];
+    layout = ["tips", "ppvsSent"];
+    saveStatus = 500;
+    renderWithProviders(<StatsReport view="creator" />);
+    const table = await within(await screen.findByRole("region", { name: "Creator statistics" })).findByRole("table");
+    const headers = () => within(table).getAllByRole("columnheader").map((h) => h.textContent);
+    await waitFor(() => expect(within(stats()).getByRole("button", { name: "Custom metrics" })).toBeEnabled());
+    fireEvent.click(within(stats()).getByRole("button", { name: "Custom metrics" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Creator report metrics" }))
+      .getByRole("button", { name: "Move PPVs sent up" }));
+    expect(headers()).toEqual(["Creator", "PPVs sent", "Tips"]);
+    await waitFor(() => expect(headers()).toEqual(["Creator", "Tips", "PPVs sent"]));
+  });
+
+  it("a return visit paints the layout the Relay holds now, not the cached one", async () => {
+    creators = [CREATOR_A];
+    layout = ["tips"];
+    const first = renderWithProviders(<StatsReport view="creator" />);
+    const headers = async () => within(await within(await screen.findByRole("region", { name: "Creator statistics" }))
+      .findByRole("table")).getAllByRole("columnheader").map((h) => h.textContent);
+    await waitFor(async () => expect(await headers()).toEqual(["Creator", "Tips"]));
+    first.unmount();
+    // Saved since (another tab, or a save the cached read predates): the cached Applied read still says ["tips"].
+    layout = ["ppvsSent"];
+    renderWithProviders(<StatsReport view="creator" />, first.queryClient);
+    await waitFor(async () => expect(await headers()).toEqual(["Creator", "PPVs sent"]));
   });
 
   it("Export writes the columns on screen", async () => {

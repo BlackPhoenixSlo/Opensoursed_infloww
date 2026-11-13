@@ -23,6 +23,7 @@ import { IfButton, IfModal } from "@/components/ui/infloww";
 import type { OFMessage } from "@/lib/relay";
 import type { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { errText } from "@/lib/errText";
+import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 
 export type UnsendScope = "chat" | "all";
 type Unsender = Pick<ReturnType<typeof useUnsendMessage>, "unsendOne" | "unsendQueue">;
@@ -44,7 +45,7 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
       resp = await unsender.unsendOne(msg);
     } catch (err) {
       const reason = errText(err);
-      window.alert(`Couldn't unsend: ${reason}`);
+      await ifAlert(`Couldn't unsend: ${reason}`);
       return;
     }
     if (scope === "chat" || !queueAllowed) return;
@@ -52,13 +53,13 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
     // only while OF says so (canUnsend, not yet canceled).
     const queue = resp?.queue;
     if (!queue?.id) {
-      if (scope === "all") window.alert("Unsent from this conversation only: OF returned no mass send to unsend for all recipients.");
+      if (scope === "all") await ifAlert("Unsent from this conversation only: OF returned no mass send to unsend for all recipients.");
       return;
     }
     const open = !queue.isCanceled && queue.canUnsend !== false;
     if (scope === "all") {
       if (!open) {
-        window.alert("Unsent from this conversation only: OF no longer lets this mass send be unsent for all recipients.");
+        await ifAlert("Unsent from this conversation only: OF no longer lets this mass send be unsent for all recipients.");
         return;
       }
     } else {
@@ -70,24 +71,24 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
       const summary = total
         ? `Sent to ${total} fan${total === 1 ? "" : "s"}${viewed ? `, ${viewed} viewed` : ""}.`
         : "";
-      if (!window.confirm(`This message was part of a mass send. ${summary} Also unsend it for all recipients?`)) return;
+      if (!(await ifConfirm(`This message was part of a mass send. ${summary} Also unsend it for all recipients?`, { danger: true }))) return;
     }
     try {
       await unsender.unsendQueue(queue.id);
     } catch (err) {
       const reason = errText(err);
-      window.alert(`Mass-unsend failed: ${reason}`);
+      await ifAlert(`Mass-unsend failed: ${reason}`);
     }
   }, [unsender, queueAllowed]);
 
-  const onUnsend = useCallback((msg: OFMessage) => {
+  const onUnsend = useCallback(async (msg: OFMessage) => {
     const id = Number(msg.id);
     if (!Number.isFinite(id) || id <= 0) return;
     if (queueAllowed && msg.isFromQueue && msg.canUnsendQueue !== false) {
       setAsk(msg);
       return;
     }
-    if (!window.confirm("Unsend this message from this chat? OF allows this within ~24h.")) return;
+    if (!(await ifConfirm("Unsend this message from this chat? OF allows this within ~24h.", { danger: true }))) return;
     void run(msg, null);
   }, [run, queueAllowed]);
 

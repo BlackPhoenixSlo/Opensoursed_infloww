@@ -186,7 +186,6 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "ltv", title: "LTV", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.ltv_cents },
   { key: "arpu", title: "ARPU", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.arpu_cents },
 ];
-export const DEFAULT_COLS = (): Set<string> => new Set(STAT_COLS.filter((c) => c.show).map((c) => c.key));
 /** The column's read in the current basis; none when it has no relay field, or no net read while net is on. */
 export function readOf(col: StatCol, ctx: ColCtx): StatCol["v"] {
   if (!ctx.net) return col.v;

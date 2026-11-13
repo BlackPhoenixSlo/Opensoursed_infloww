@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { type FanId, sameUserId } from "@/lib/fanId";
 import { relay, type OFChatItem } from "@/lib/relay";
+import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 
 export function useFanListMarkRead({ markable, wholeCreator }: {
   /** The loaded chats "Mark all as read" acts on. */
@@ -98,7 +99,7 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
     if (markingAll) return;
     const targets = markable.filter(isUnreadChat);
     if (targets.length === 0) return;
-    if (!confirm(`Mark ${targets.length} chat${targets.length === 1 ? "" : "s"} as read?`)) return;
+    if (!(await ifConfirm(`Mark ${targets.length} chat${targets.length === 1 ? "" : "s"} as read?`))) return;
     setMarkingAll(true);
     let failed = 0;
     try {
@@ -109,7 +110,7 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
       setMarkingAll(false);
     }
     if (failed > 0) {
-      alert(`Marked ${targets.length - failed} of ${targets.length}; ${failed} failed.`);
+      await ifAlert(`Marked ${targets.length - failed} of ${targets.length}; ${failed} failed.`);
     }
   }
 

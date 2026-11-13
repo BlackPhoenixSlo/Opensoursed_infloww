@@ -889,6 +889,10 @@ export interface DupeScan {
   removable: number;
   returned: number;
   clusters: DupeCluster[];
+  /** Picture items with no cached thumb yet — not hashed, so not in any set. */
+  missing_thumbs?: number;
+  /** The background thumb fetch the scan kicked off for them (null: none yet). */
+  backfill?: { total: number; done: number; failed: number; running: boolean } | null;
 }
 
 /** Scan for duplicate sets. Read-only — nothing is hidden by this call. */
@@ -902,6 +906,8 @@ export function useDuplicates(accountId: string | null, threshold = 2, enabled =
           `&threshold=${threshold}`,
       ),
     staleTime: 60_000,
+    // Thumbs for never-rendered items are being fetched: re-scan so the sets grow.
+    refetchInterval: (q) => (q.state.data?.backfill?.running ? 8_000 : false),
   });
 }
 

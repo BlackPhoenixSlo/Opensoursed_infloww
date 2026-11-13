@@ -13,7 +13,7 @@ import { NotWired } from "./ReportsCharts";
 import { UtcChip } from "./ReportsControls";
 import { type ColCtx, type StatCol, type View, cellText, creatorName, readOf } from "./reportsMath";
 
-/** #108 to #153: the Creator statistics table. "Creator" is fixed left at 180px; the headers start-aligned, 48px rows
+/** #108 to #153: the Creator statistics table. "Creator" is fixed left at 180px (120px on a phone, so a column beside it shows); the headers start-aligned, 48px rows
  *  with 18px sides; a column with no read has the Not wired marker in its header and "-" cells; "No data" with no
  *  rows; the end line under more than 20. The header stays in view under the top bar (`sticky:true`, #108): it is a
  *  table of its own, sticky to the window's top and scrolled sideways with the body, both laid out by one colgroup. */
@@ -25,17 +25,17 @@ export function CreatorTable({ creators, cols, ctx, view }: {
   const headRef = useRef<HTMLDivElement | null>(null);
   const tableStyle: React.CSSProperties = {
     color: "var(--color-fg)", width: "100%", tableLayout: "fixed",
-    minWidth: 180 + cols.reduce((a, c) => a + c.width, 0),
+    minWidth: `calc(var(--creator-col) + ${cols.reduce((a, c) => a + c.width, 0)}px)`,
   };
   const colgroup = (
     <colgroup>
-      <col style={{ width: 180 }} />
+      <col style={{ width: "var(--creator-col)" }} />
       {cols.map((c) => <col key={c.key} style={{ width: c.width }} />)}
     </colgroup>
   );
   return (
     <>
-      <div role="table" aria-label="Creator statistics" className="rounded-xl" style={{ background: "var(--color-bg-elev-1)" }}>
+      <div role="table" aria-label="Creator statistics" className="rounded-xl [--creator-col:180px] max-sm:[--creator-col:120px]" style={{ background: "var(--color-bg-elev-1)" }}>
         <div
           ref={headRef}
           role="rowgroup"

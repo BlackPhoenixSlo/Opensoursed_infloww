@@ -23,6 +23,7 @@ import { EXECUTOR_MAX_MINUTES } from "@/hooks/useSendMessage";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 /** A field's box (`MP.ppvRow.input`, PV4) in our colours: the price field's
  *  box around its `$` and input, and through `FIELD` every bare field.
@@ -95,7 +96,7 @@ export function PpvRow({
       {scheduleOn && (
         <span className="flex items-center gap-1.5">
           <span>at</span>
-          <input
+          <IfDateInput
             type="datetime-local"
             value={at}
             onChange={(e) => onAt(e.target.value)}

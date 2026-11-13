@@ -64,8 +64,6 @@ export default function VaultExtrasTools({
   plan,
   capped,
   capReason,
-  promptVersion,
-  setPromptVersion,
   needsReview,
   setNeedsReview,
   flagsReviewOpen,
@@ -88,8 +86,6 @@ export default function VaultExtrasTools({
   plan: ReturnType<typeof useDescribePlan>["data"];
   capped: boolean;
   capReason: string;
-  promptVersion: "v1" | "v2";
-  setPromptVersion: (v: "v1" | "v2") => void;
   needsReview: number;
   setNeedsReview: (n: number) => void;
   /** The flags review is up (its offer hides meanwhile). */
@@ -159,19 +155,6 @@ export default function VaultExtrasTools({
                 ? "Daily AI cap reached"
                 : `Describe all${plan?.undescribed ? ` (${plan.undescribed})` : ""}`}
           </button>
-          {/* Which bake-off prompt the sweep runs. B is the default and the only
-              one that emits the structured taxonomy auto-foldering needs; A is
-              ~4× cheaper for a rough first pass over a huge vault. */}
-          <select
-            value={promptVersion}
-            onChange={(e) => setPromptVersion(e.target.value as "v1" | "v2")}
-            disabled={describeSweep.busy}
-            title="Describe prompt variant"
-            className="px-2 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border text-fg-dim"
-          >
-            <option value="v2">B · rich</option>
-            <option value="v1">A · fast</option>
-          </select>
           {!!plan?.restage && !describeSweep.busy && !capped && (
             <button
               type="button"
@@ -188,11 +171,11 @@ export default function VaultExtrasTools({
             onClick={() => harvestSweep.start()}
             disabled={harvestSweep.busy || cachedCount === 0}
             className="px-3 py-1.5 rounded-lg text-sm border border-info/50 bg-info/10 text-info hover:bg-info/20 disabled:opacity-50"
-            title="Run OF's own search across ~50 selling keywords and fold into local search"
+            title="Run OF's own search across the selling taxonomy + this vault's own Jev/describe words, and fold the hits into local search"
           >
             {harvestSweep.busy
               ? `Harvesting ${harvestSweepLabel(harvestSweep.progress)}`
-              : "Harvest OF (50)"}
+              : "Harvest OF"}
           </button>
           <button
             type="button"

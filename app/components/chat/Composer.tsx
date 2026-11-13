@@ -84,6 +84,7 @@ import { ReplyStrip, type QuotedReply } from "./ReplyStrip";
 import { SensitiveWordWarning } from "./SensitiveWordWarning";
 import { useSensitiveHits } from "@/lib/sensitiveWords";
 import { claimSendGap, SEND_GAP_NOTE } from "@/lib/sendGuards";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export type { SendArgs } from "./composerDraft";
 
@@ -484,9 +485,9 @@ export function Composer({
    *  bought some of its media (the BOUGHT badge's history) or some was
    *  deleted from the vault. A chat-media resend (`applyTemplate`) is not a
    *  script pick, so it skips the guard. */
-  function onPickScript(t: PickedTemplate) {
+  async function onPickScript(t: PickedTemplate) {
     const warning = scriptPickWarning(t, fanVaultQ.data?.by_media);
-    if (warning && !window.confirm(`${warning}\n\nInsert it anyway?`)) return;
+    if (warning && !(await ifConfirm(`${warning}\n\nInsert it anyway?`))) return;
     onPickTemplate(t);
   }
 

@@ -27,6 +27,7 @@ import { ArrowRight, Calendar } from "lucide-react";
 
 import { useOutsideClose } from "@/components/ui/Menu";
 import { IfSelect, type IfOption } from "@/components/ui/infloww";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 import { dateBounds, presetRange, shiftYears, type FixedRangePreset } from "@/lib/dateRange";
 import { cn } from "@/lib/utils";
 
@@ -166,7 +167,7 @@ export default function DateRangePicker({
           </div>
           <div className="flex flex-col gap-2 p-1">
             <Side label="From">
-              <input type="date" aria-label="From date" value={from?.slice(0, 10) ?? ""} min={minDay}
+              <IfDateInput type="date" aria-label="From date" value={from?.slice(0, 10) ?? ""} min={minDay}
                 max={to?.slice(0, 10) ?? maxDay} onChange={(e) => handleFrom(e.target.value)} className={DATE_INPUT} />
               {hours && (
                 <IfSelect aria-label="From hour" className="w-[150px]" options={HOUR_OPTIONS}
@@ -175,7 +176,7 @@ export default function DateRangePicker({
               )}
             </Side>
             <Side label="To">
-              <input type="date" aria-label="To date" value={to?.slice(0, 10) ?? ""} min={from?.slice(0, 10) ?? minDay}
+              <IfDateInput type="date" aria-label="To date" value={to?.slice(0, 10) ?? ""} min={from?.slice(0, 10) ?? minDay}
                 max={maxDay} onChange={(e) => handleTo(e.target.value)} className={DATE_INPUT} />
               {hours && (
                 <IfSelect aria-label="To hour" className="w-[150px]" options={HOUR_OPTIONS}

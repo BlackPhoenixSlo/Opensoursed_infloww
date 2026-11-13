@@ -307,6 +307,22 @@ def _flags(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
     return _fields(raw, {name: _bool for name in FLAGS}, "flags", errors)
 
 
+MAX_REPORT_COLS = 100
+
+
+def _col_keys(v: Any) -> str | None:
+    """Creator statistics' columns, in display order: unique non-empty keys (the app's STAT_COLS; an unknown key is
+    the app's to skip, so a column renamed later never fails a stored pick)."""
+    ok = (isinstance(v, list) and len(v) <= MAX_REPORT_COLS
+          and all(isinstance(x, str) and 0 < len(x) <= 64 for x in v) and len(set(v)) == len(v))
+    return None if ok else f"must be a list of at most {MAX_REPORT_COLS} unique column keys"
+
+
+def _reports(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
+    """The reports' shared layout, saved by the owner and read by everyone in the Agency (Applied settings)."""
+    return _fields(raw, {"creator_cols": _col_keys}, "reports", errors)
+
+
 TABS: dict[str, Callable[[dict[str, Any], list[Error]], dict[str, Any]]] = {
     "account": _account,
     "preferences": _preferences,
@@ -317,6 +333,7 @@ TABS: dict[str, Callable[[dict[str, Any], list[Error]], dict[str, Any]]] = {
     "messaging": _messaging,
     "security": _security,
     "flags": _flags,
+    "reports": _reports,
 }
 
 

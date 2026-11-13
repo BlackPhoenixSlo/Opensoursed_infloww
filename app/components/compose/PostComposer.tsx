@@ -43,6 +43,7 @@ import {
   type PostField, type PostForm,
 } from "./postComposerReducer";
 import { fmtPrice } from "@/lib/format";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 interface CreatePostResp {
   id?: number;
@@ -179,10 +180,10 @@ export function PostComposer({
           <IfButton onClick={close} disabled={create.isPending}>Cancel</IfButton>
           <IfButton
             variant="primary"
-            onClick={() => {
-              if (allModels && !confirm(
+            onClick={async () => {
+              if (allModels && !(await ifConfirm(
                 `Post from ${targets.length} model${targets.length === 1 ? "" : "s"}?`,
-              )) return;
+              ))) return;
               create.mutate();
             }}
             disabled={create.isPending || invalid !== null}

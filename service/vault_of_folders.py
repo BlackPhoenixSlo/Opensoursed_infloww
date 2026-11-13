@@ -80,6 +80,11 @@ async def list_duplicates(
     assert_account_owned(account_id)
     allowed = await allowed_folder_ids_for_chatter(account_id)
     res = await vault_dupes.find_duplicates(account_id, threshold, allowed=allowed)
+    # Items with no cached thumb were never hashed, so they could not be in any
+    # set. Fetch them in the background; the modal polls while `running`.
+    missing = await vault_dupes.missing_thumb_ids(account_id, allowed)
+    vault_dupes.start_thumb_backfill(account_id, missing)
+    backfill = vault_dupes.backfill_status(account_id)
 
     def _slim(r: dict, **extra: Any) -> dict[str, Any]:
         return {
@@ -103,7 +108,8 @@ async def list_duplicates(
         for c in res["clusters"][:max(1, int(limit))]
     ]
     return {**{k: v for k, v in res.items() if k != "clusters"},
-            "account_id": account_id,
+            "account_id": account_id, "missing_thumbs": len(missing),
+            "backfill": backfill,
             "returned": len(clusters), "clusters": clusters}
 
 

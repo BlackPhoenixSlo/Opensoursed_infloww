@@ -18,6 +18,7 @@ import { Clock } from "lucide-react";
 
 import { IfButton, IfHelp, IfLabel } from "@/components/ui/infloww";
 import { IF_FIELD } from "@/components/ui/ifSelect";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 import { cn } from "@/lib/utils";
 
 import {
@@ -49,7 +50,7 @@ export function ScheduleField({
     <div>
       <IfLabel htmlFor={id}>{label}</IfLabel>
       <div className="flex items-center gap-3">
-        <input
+        <IfDateInput
           id={id}
           type="datetime-local"
           value={value}

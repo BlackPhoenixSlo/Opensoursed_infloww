@@ -54,9 +54,9 @@ const ACCOUNT_STATUS_OPTIONS = ["Activated", "Deactivated"] as const;
  *  font changes or the reviewer wants the boxes widened instead. */
 const BOX = cn(HbFilter, "px-[9px] tracking-[-0.03em] disabled:cursor-not-allowed disabled:opacity-50");
 /** The chevron, #a6a6a6 as the label (01-home.png). */
-const CHEVRON = "pointer-events-none absolute right-[9px] top-1/2 h-4 w-4 -translate-y-1/2 text-[#a6a6a6]";
+const CHEVRON = "pointer-events-none absolute right-[9px] top-1/2 h-4 w-4 -translate-y-1/2 text-[#a6a6a6] [html[data-theme=light]_&]:text-fg-dim";
 /** A select shows its own label (no value) in the placeholder's #a6a6a6, a picked value white. */
-const valueTone = (v: string | undefined) => (v ? "text-white [html[data-theme=light]_&]:text-fg" : "text-[#a6a6a6]");
+const valueTone = (v: string | undefined) => (v ? "text-white [html[data-theme=light]_&]:text-fg" : "text-[#a6a6a6] [html[data-theme=light]_&]:text-fg-dim");
 
 /** A select whose first option is its own label, the Clone's "first option Platform" (its Clone fix for #19). */
 function Filter({ label, width, value, onChange, disabled, children }: {

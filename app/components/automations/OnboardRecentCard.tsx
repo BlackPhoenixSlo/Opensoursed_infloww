@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Button, Input } from "@/components/ui/primitives";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { relay } from "@/lib/relay";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 /** "Onboard most recent N" — a one-shot run button for process_old_fans that
  *  needs no id list: enqueues {kind:"process_old_fans", payload:{recent_limit,
@@ -37,11 +38,11 @@ export function OnboardRecentCard({ accountId, pushToOf = false, intro, action =
       return;
     }
     if (
-      !window.confirm(
+      !(await ifConfirm(
         `Onboard the ${recent_limit} most-recent (${by}) fans on this account?\n\n` +
           "This flags them out of the AI chats and spends LLM credits profiling " +
           "each. It can't be undone.",
-      )
+      ))
     )
       return;
 

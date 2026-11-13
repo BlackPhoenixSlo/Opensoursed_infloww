@@ -20,6 +20,9 @@ export function useMenuDismiss(
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Focus in a modal outside this menu (a confirm it opened): that modal's Escape, not ours.
+      const at = document.activeElement;
+      if (at?.closest('[aria-modal="true"]') && !ref.current?.contains(at)) return;
       e.stopPropagation();
       escape();
     };

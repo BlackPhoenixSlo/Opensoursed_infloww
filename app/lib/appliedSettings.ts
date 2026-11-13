@@ -49,6 +49,9 @@ export interface AppliedSettings {
   };
   /** Every flag the Relay knows, false unless the Agency stored it true. */
   flags: FeatureFlags;
+  /** The owner's report layout, the Agency's for everyone: Creator statistics' shown columns in order (null: the
+   *  app's default). */
+  reports?: { creator_cols: string[] | null };
 }
 
 /** The query key prefix every Blob tab save invalidates. */

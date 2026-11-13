@@ -13,14 +13,14 @@ import { boundFlow, PLAN_NOTE, type DoDraft } from "./doFlows";
 import { canStart, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
-/** The messenger's card (the home screen's "Ask a question"). */
-export const CARD = "rounded-xl border border-[#ededed] bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
+/** The messenger's card (home screen cards, Do plan/results). */
+export const CARD = "rounded-xl border border-border bg-bg-elev-1 [[data-look=messenger]_&]:bg-white [html[data-theme=light]_&]:bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
 
-const BUBBLE_ME = "self-end max-w-[85%] rounded-2xl rounded-br-md bg-[#151515] px-3.5 py-2 text-[13px] text-white whitespace-pre-wrap break-words";
+const BUBBLE_ME = "self-end max-w-[85%] rounded-2xl rounded-br-md bg-fg text-panel px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words";
 const BUBBLE_BOT = "self-start max-w-[92%] rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2 text-[13px] leading-relaxed break-words";
 const BTN = "h-8 rounded-full px-3.5 text-[13px] font-medium transition-colors disabled:opacity-40";
-const BTN_MAIN = cn(BTN, "bg-[#151515] text-white hover:bg-black");
-const BTN_SOFT = cn(BTN, "border border-[#dcdcdc] bg-white text-[#14161a] hover:border-[#bdbdbd]");
+const BTN_MAIN = cn(BTN, "bg-fg text-panel hover:opacity-90");
+const BTN_SOFT = cn(BTN, "border border-border-light bg-panel text-fg hover:border-muted");
 
 export const DO_HINT =
   "Tell me what to set up — e.g. “auto mass to fans every hour, delete after 8h, SFW folder, 10 captions”. "
@@ -43,8 +43,8 @@ function Notes({ assumptions, unresolved }: { assumptions: string[]; unresolved:
     <>
       {assumptions.length > 0 && (
         <div className="mt-3">
-          <div className="text-[12px] font-medium text-[#6d6f74]">I assumed</div>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[#3a3c40]">
+          <div className="text-[12px] font-medium text-fg-dim">I assumed</div>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-fg">
             {assumptions.map((a) => <li key={a}>{a}</li>)}
           </ul>
         </div>
@@ -67,29 +67,29 @@ function Notes({ assumptions, unresolved }: { assumptions: string[]; unresolved:
 function EditPlanCard({ draft, slots, children }: { draft: DoDraft; slots: MassEditSlots; children?: ReactNode }) {
   const t = editPlanText(slots);
   return (
-    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-[#14161a]")} data-testid="do-edit-plan">
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} data-testid="do-edit-plan">
       <div className="mb-1 text-[14px] font-semibold">Change existing Auto masses</div>
       <ul className="space-y-0.5">{t.changes.map((l) => <li key={l} className="font-medium">{l}</li>)}</ul>
-      <div className="mt-2 text-[12px] text-[#6d6f74]">{t.headline}</div>
+      <div className="mt-2 text-[12px] text-fg-dim">{t.headline}</div>
       <div className="mt-1 max-h-[40vh] space-y-2 overflow-y-auto">
         {t.groups.map((g) => (
           <div key={g.model}>
-            <div className="text-[12px] font-semibold text-[#3a3c40]">{g.model}</div>
+            <div className="text-[12px] font-semibold text-fg">{g.model}</div>
             <ul className="space-y-1 pl-2">
               {g.rules.map((r) => (
                 <li key={r.id} className="break-words">
                   <span className="font-medium">{r.name}</span>
                   {r.live && <span className="ml-1.5 rounded bg-[#ffe9e6] px-1 text-[11px] font-semibold text-[#b42318]">LIVE</span>}
-                  {r.lines.map((l) => <div key={l} className="text-[#3a3c40]">{l}</div>)}
+                  {r.lines.map((l) => <div key={l} className="text-fg">{l}</div>)}
                 </li>
               ))}
             </ul>
           </div>
         ))}
       </div>
-      {t.notes.length > 0 && <ul className="mt-2 space-y-0.5 text-[12px] text-[#6d6f74]">{t.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
+      {t.notes.length > 0 && <ul className="mt-2 space-y-0.5 text-[12px] text-fg-dim">{t.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
       <Notes assumptions={draft.assumptions} unresolved={draft.unresolved} />
-      <p className="mt-3 text-[12px] text-[#6d6f74]">{EDIT_NOTE}</p>
+      <p className="mt-3 text-[12px] text-fg-dim">{EDIT_NOTE}</p>
       {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
     </div>
   );
@@ -98,13 +98,13 @@ function EditPlanCard({ draft, slots, children }: { draft: DoDraft; slots: MassE
 /** The apply's per-rule outcome: ✓ or the skip reason. */
 function EditResults({ results, slots }: { results: EditResult[]; slots: MassEditSlots }) {
   return (
-    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-[#14161a]")} role="status" data-testid="do-edit-results">
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} role="status" data-testid="do-edit-results">
       <div className="flex items-center gap-2 font-semibold">
-        <CheckCircle2 className="h-4 w-4 shrink-0 text-[#1a7f37]" aria-hidden />{resultHeadline(results)}
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-ok [html[data-theme=light]_&]:text-[#1a7f37]" aria-hidden />{resultHeadline(results)}
       </div>
       <ul className="mt-2 space-y-0.5">
         {resultLines(results, slots).map((l) => (
-          <li key={l.id} className={l.ok ? "text-[#1a7f37]" : "text-[#8a5a00]"}>{l.text}</li>
+          <li key={l.id} className={l.ok ? "text-ok [html[data-theme=light]_&]:text-[#1a7f37]" : "text-warn [html[data-theme=light]_&]:text-[#8a5a00]"}>{l.text}</li>
         ))}
       </ul>
     </div>
@@ -148,13 +148,13 @@ function PlanCard({ draft, children }: { draft: DoDraft; children?: ReactNode })
   const t = planCardText(draft);
   if (!t) return null;
   return (
-    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-[#14161a]")} data-testid="do-plan">
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} data-testid="do-plan">
       <div className="mb-2 text-[14px] font-semibold">Plan</div>
       <ul className="space-y-1">
         {t.lines.map((l) => <li key={l} className="break-words">{l}</li>)}
       </ul>
       <Notes assumptions={t.assumptions} unresolved={t.unresolved} />
-      <p className="mt-3 text-[12px] text-[#6d6f74]">{t.note}</p>
+      <p className="mt-3 text-[12px] text-fg-dim">{t.note}</p>
       {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
     </div>
   );
@@ -225,8 +225,8 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
         </div>
       )}
       {run.phase === "done" && (
-        <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-[13px] text-[#14161a]")} role="status">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#1a7f37]" aria-hidden />
+        <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-[13px] text-fg")} role="status">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok [html[data-theme=light]_&]:text-[#1a7f37]" aria-hidden />
           <span>{flow.doneText}</span>
         </div>
       )}

@@ -25,6 +25,7 @@ import {
   useUpdateSavedReply,
 } from "@/hooks/useSavedReplies";
 import type { SavedReply, VaultMedia } from "@/lib/relay";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 function localMediaToVault(r: SavedReply): VaultMedia[] {
   return (r.media ?? []).map((m) => ({
@@ -152,7 +153,7 @@ export function useSavedReplyEditor(accountId: string | null) {
   }
 
   async function removeReply(id: number) {
-    if (!confirm("Delete this saved reply?")) return;
+    if (!(await ifConfirm("Delete this saved reply?", { danger: true }))) return;
     try { await deleteReplyM.mutateAsync(id); }
     catch (err) { console.warn("[templates] delete reply failed", err); }
   }

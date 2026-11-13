@@ -33,6 +33,10 @@ Cases:
   case_hide_skips_sent_unless_allowed:
       a copy with send_count > 0 is skipped by default and only goes through
       with allow_sent.
+  case_backfill_scans_unrendered_items:
+      items with no cached thumb are fetched in the background on a scan
+      (audio and already-hashed rows are not), the next scan covers them, and
+      a finished pass is not relaunched by the modal's polling (cooldown).
   case_hide_marks_mirror_removed:
       a successful hide sends exactly the approved ids to OF and soft-deletes
       those mirror rows so the grid/picker/automations stop seeing them.
@@ -454,12 +458,68 @@ async def case_hide_partial_failure_is_recorded() -> None:
         assert rows[mid] is None, mid
 
 
+async def case_backfill_scans_unrendered_items() -> None:
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    import vault_of_folders
+    import vault_stills
+
+    aid = _next_account()
+    await _seed_account(aid)
+    async with get_session() as s:
+        for mid, kind, days in ((1, "photo", 30), (2, "photo", 5), (3, "photo", 1), (4, "audio", 1)):
+            s.add(VaultItem(account_id=aid, media_id=mid, kind=kind, tags="[]",
+                            created_at=datetime.utcnow() - timedelta(days=days)))
+        await s.commit()
+    await _seed_item(aid, 9, packed=_packed("9" * 32, 0xFFFF, 0xFFFF), days_old=2)
+
+    img = Image.new("RGB", (64, 64))
+    for x in range(64):
+        for y in range(64):
+            img.putpixel((x, y), (x * 4 % 256, y * 4 % 256, (x + y) % 256))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG")
+    asked: list[int] = []
+
+    async def fake_bytes_for(account_id, media_id, path, pick):
+        asked.append(media_id)
+        if media_id == 3:                       # OF has nothing for this one
+            return vault_stills.Still(None, "fetch_failed")
+        vault_stills.write(path, buf.getvalue())
+        return vault_stills.Still(buf.getvalue(), "ok")
+
+    orig_dir, orig_bf = vault_stills.THUMB_DIR, vault_stills.bytes_for
+    vault_stills.THUMB_DIR = Path(tempfile.mkdtemp())
+    vault_stills.bytes_for = fake_bytes_for
+    try:
+        first = await vault_of_folders.list_duplicates(account_id=aid, threshold=2, limit=200)
+        assert first["scanned"] == 1 and first["missing_thumbs"] == 3, first
+        assert first["backfill"]["running"] and first["backfill"]["total"] == 3, first
+        for _ in range(100):
+            if not vault_dupes.backfill_status(aid)["running"]:
+                break
+            await asyncio.sleep(0.01)
+        assert sorted(asked) == [1, 2, 3], asked   # never audio, never the hashed row
+
+        second = await vault_of_folders.list_duplicates(account_id=aid, threshold=2, limit=200)
+        assert second["scanned"] == 3, second       # 1 + 2 now hashed, 9 already was
+        assert second["missing_thumbs"] == 1, second
+        assert second["backfill"] == {"total": 3, "done": 3, "failed": 1, "running": False}, second
+        assert second["sets"] == 1 and second["clusters"][0]["original"]["media_id"] == 1, second
+        assert sorted(asked) == [1, 2, 3], "cooldown: a finished pass is not relaunched"
+    finally:
+        vault_stills.THUMB_DIR, vault_stills.bytes_for = orig_dir, orig_bf
+
+
 _harness.run(
     case_hash_roundtrip,
     case_original_is_earliest,
     case_no_transitive_chaining,
     case_video_duration_gate,
     case_cluster_matches_allpairs,
+    case_backfill_scans_unrendered_items,
     case_hide_refuses_original,
     case_hide_refuses_non_duplicate,
     case_hide_skips_sent_unless_allowed,

@@ -38,6 +38,7 @@ import { useState } from "react";
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import { GateNoteText } from "@/components/settings/StickySaveBar";
 import { IfButton, IfModal, IfSwitch } from "@/components/ui/infloww";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 import type { CommonPeriod } from "@/lib/shifts";
 
 const TIME = "h-8 rounded-md border border-border bg-bg px-2 text-[14px] text-fg tabular-nums";
@@ -83,10 +84,10 @@ export default function ShiftSettingsDialog({ onClose }: { onClose: () => void }
           <legend className="pb-1 text-[14px] text-fg">Common periods</legend>
           {periods.map((p, i) => (
             <div key={i} className="flex items-center gap-2">
-              <input type="time" aria-label={`Period ${i + 1} start`} className={TIME} value={p.start}
+              <IfDateInput type="time" aria-label={`Period ${i + 1} start`} className={TIME} value={p.start}
                 onChange={(e) => setPeriods(periods.map((q, j) => (j === i ? { ...q, start: e.target.value } : q)))} />
               <span className="text-muted">-</span>
-              <input type="time" aria-label={`Period ${i + 1} end`} className={TIME} value={p.end}
+              <IfDateInput type="time" aria-label={`Period ${i + 1} end`} className={TIME} value={p.end}
                 onChange={(e) => setPeriods(periods.map((q, j) => (j === i ? { ...q, end: e.target.value } : q)))} />
               <IfButton variant="link" onClick={() => setPeriods(periods.filter((_, j) => j !== i))}>Remove</IfButton>
             </div>

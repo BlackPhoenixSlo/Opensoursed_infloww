@@ -46,7 +46,9 @@
     ".next/slop-s07/types/**/*.ts",
     ".next/slop-s07/dev/types/**/*.ts",
     ".next/slop-prod/types/**/*.ts",
-    ".next/slop-prod/dev/types/**/*.ts"
+    ".next/slop-prod/dev/types/**/*.ts",
+    ".next/demo/types/**/*.ts",
+    ".next/demo/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

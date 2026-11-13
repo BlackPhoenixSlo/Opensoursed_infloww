@@ -38,6 +38,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { usePagedFilters } from "@/hooks/pagedFilters";
 import { addDays, createdDay, dayKey, monthStartBefore } from "@/components/growth/frameDates";
 import { InfoTip } from "@/components/ui/InfoTip";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 export const NOT_WIRED = "not wired";
 
@@ -301,11 +302,8 @@ const DATE_PRESETS: Array<{ label: string; range: (today: string) => [string, st
 ];
 
 /** A bare date input inside the Date created box: no picker glyph (the box leads with its own calendar); a click
- *  opens the browser's picker. */
-const DATE_FIELD = "min-w-0 flex-1 bg-transparent text-sm outline-none [&::-webkit-calendar-picker-indicator]:hidden";
-function openPicker(e: React.MouseEvent<HTMLInputElement>) {
-  try { e.currentTarget.showPicker?.(); } catch { /* not allowed (jsdom, a cross-origin frame) */ }
-}
+ *  opens `IfDateInput`'s calendar. */
+const DATE_FIELD = "min-w-0 flex-1 bg-transparent text-sm outline-none";
 
 /** #21 to #23: a calendar, then "Date created" as a text prefix, the range, then the bundle's presets (its picker's
  *  side panel) as a borderless chevron menu. An inclusive YYYY-MM-DD range in the report time zone; "" is open. */
@@ -329,23 +327,23 @@ function DateCreated({ from, to, onRange, tz }: {
     >
       <Calendar size={20} aria-hidden className="shrink-0 text-fg" />
       <span className="text-fg whitespace-nowrap">Date created</span>
-      <input
+      <IfDateInput
         type="date"
         aria-label="Start date"
         value={from}
         max={to || undefined}
         onChange={(e) => onRange(e.target.value, to)}
-        onClick={openPicker}
+        bare
         className={cn(DATE_FIELD, from ? "text-fg" : "text-[#a6a6a6]")}
       />
       <span className="text-fg-dim" aria-hidden>→</span>
-      <input
+      <IfDateInput
         type="date"
         aria-label="End date"
         value={to}
         min={from || undefined}
         onChange={(e) => onRange(from, e.target.value)}
-        onClick={openPicker}
+        bare
         className={cn(DATE_FIELD, to ? "text-fg" : "text-[#a6a6a6]")}
       />
       <span className="relative inline-flex shrink-0 items-center">
@@ -353,7 +351,7 @@ function DateCreated({ from, to, onRange, tz }: {
           aria-label="Date created presets"
           value={preset}
           onChange={(e) => pickPreset(e.target.value)}
-          className="h-7 w-5 cursor-pointer appearance-none bg-transparent text-transparent outline-none [&>option]:bg-panel [&>option]:text-fg"
+          className="h-7 w-5 cursor-pointer appearance-none bg-transparent text-transparent outline-none supports-[appearance:base-select]:[appearance:base-select] [&::picker-icon]:hidden [&>option]:text-fg"
         >
           <option value="" disabled>Presets</option>
           {DATE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}

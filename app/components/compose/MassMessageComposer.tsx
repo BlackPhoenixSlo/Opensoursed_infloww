@@ -55,6 +55,7 @@ import {
   type MassAction, type MassField, type MassForm,
 } from "./massMessageReducer";
 import { fmtPrice } from "@/lib/format";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 interface MassMessageComposerProps {
   onClose: () => void;
@@ -222,8 +223,8 @@ export function MassMessageComposer({
           </IfButton>
           <IfButton
             variant="primary"
-            onClick={() => {
-              if (confirm(confirmPrompt(form, sendFrom.length))) send.mutate();
+            onClick={async () => {
+              if (await ifConfirm(confirmPrompt(form, sendFrom.length))) send.mutate();
             }}
             disabled={send.isPending || invalid !== null}
             title={invalid ?? undefined}

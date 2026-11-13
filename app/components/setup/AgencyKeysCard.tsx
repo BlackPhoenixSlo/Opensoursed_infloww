@@ -20,6 +20,7 @@ import type { KeyDraft } from "@/hooks/useKeyDraft";
 import { Badge } from "@/components/ui/primitives";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { FieldInput } from "@/components/settings/SettingsPanel";
+import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export default function AgencyKeysCard({ keys, pending }: {
   /** The tab's draft: the typed fields, and `clear` for one stored key. */
@@ -115,11 +116,11 @@ export default function AgencyKeysCard({ keys, pending }: {
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => {
+                onClick={async () => {
                   // One click here stops every automation on every account this
                   // owner runs — the calls fail closed with no key. Worth a beat.
                   const label = LABELS[name] ?? name;
-                  if (window.confirm(`Remove your ${label}? Your models stop replying until you add one.`)) {
+                  if (await ifConfirm(`Remove your ${label}? Your models stop replying until you add one.`, { danger: true })) {
                     void clear(name);
                   }
                 }}

@@ -4,14 +4,16 @@
  *  select, the Channels, Creator and Custom metrics pickers, and the UTC chip. */
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Filter as FilterFunnel, SlidersHorizontal, Tag, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Filter as FilterFunnel, SlidersHorizontal, Tag, X } from "lucide-react";
 
 import { type Gran, granAllowed } from "@/components/stats/chart";
 import { dateBounds } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
-import { type Chan, type RangeKey, CHANNELS, DEFAULT_COLS, datePresets, fmtRangeLabel, GRAN_LIMIT, GRANS, STAT_COLS } from "./reportsMath";
+import { DEFAULT_KEYS, colsOf, hiddenCols, moveCol, toggleCol } from "./creatorCols";
+import { type Chan, type RangeKey, type StatCol, CHANNELS, datePresets, fmtRangeLabel, GRAN_LIMIT, GRANS } from "./reportsMath";
+import { IfDateInput } from "@/components/ui/ifDateInput";
 
 /* ── outside-click hook ── */
 
@@ -128,7 +130,7 @@ export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }
           <div className="flex flex-col gap-2 p-1" style={{ minWidth: 240 }}>
             <label className="flex items-center justify-between gap-3 text-[12px]" style={{ color: "var(--color-fg)" }}>
               <span>From</span>
-              <input
+              <IfDateInput
                 type="date"
                 aria-label="From date"
                 value={from ?? ""}
@@ -140,7 +142,7 @@ export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }
             </label>
             <label className="flex items-center justify-between gap-3 text-[12px]" style={{ color: "var(--color-fg)" }}>
               <span>To</span>
-              <input
+              <IfDateInput
                 type="date"
                 aria-label="To date"
                 value={to ?? ""}
@@ -322,75 +324,115 @@ export function FiltersPill({ models, selected, onChange }: {
   );
 }
 
-/** #105 to #107: "Custom metrics", opening "Creator report metrics": a checkbox per column in the capture's order,
- *  then ours, each labelled. */
-export function CustomMetricsPill({ visible, onChange }: {
-  visible: Set<string>; onChange: (next: Set<string>) => void;
+/** #105 to #107: "Custom metrics", opening "Creator report metrics": the shown columns in display order, each with
+ *  up and down, then the hidden ones in the capture's order. `keys` is the shown columns' order (creatorCols.ts).
+ *  On a phone it opens as a sheet over the page's bottom, so no part of it is off screen. */
+export function CustomMetricsPill({ keys, onChange }: {
+  keys: readonly string[]; onChange: ((next: string[]) => void) | null;
 }) {
   const [open, setOpen] = useState(false);
+  const change = (next: string[]) => onChange?.(next);
   const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
   const headingId = useId();
-
-  function toggle(key: string) {
-    const next = new Set(visible);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    onChange(next);
-  }
-  const linkBtn = "text-[11px] bg-transparent border-none p-0 cursor-pointer";
+  const shown = colsOf(keys);
+  const hidden = hiddenCols(keys);
+  const linkBtn = "text-[12px] bg-transparent border-none p-1 cursor-pointer";
+  const row = "flex items-center gap-2 text-[13px] sm:text-[12px] px-2 min-h-10 sm:min-h-8 rounded";
+  const arrow = "p-1.5 sm:p-1 rounded disabled:opacity-25 disabled:cursor-default hover:bg-[var(--color-bg-elev-2)]";
+  const label = (c: StatCol) => (
+    <label
+      title={c.extra ? EXTRA_LABEL : c.v ? undefined : "not wired"}
+      className="flex flex-1 min-w-0 items-center gap-2 cursor-pointer"
+      style={{ color: c.v ? "var(--color-fg)" : "var(--color-fg-dim)" }}
+    >
+      <input
+        type="checkbox"
+        checked={keys.includes(c.key)}
+        onChange={() => change(toggleCol(keys, c.key))}
+        style={{ accentColor: "var(--color-accent)" }}
+      />
+      <span className="truncate">{c.title}</span>
+    </label>
+  );
+  const sub = "px-2 pt-2 pb-1 text-[11px] uppercase tracking-wide";
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
         aria-expanded={open}
+        disabled={!onChange}
+        title={onChange ? undefined : "Loading the Agency's layout"}
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 p-1.5 rounded-md text-sm"
+        className="inline-flex items-center gap-1 p-1.5 rounded-md text-sm disabled:opacity-50"
         style={{ color: "var(--color-fg)" }}
       >
         Custom metrics
         <SlidersHorizontal size={16} aria-hidden />
       </button>
       {open && (
-        <PopoverBox anchor="right">
-          <div role="group" aria-labelledby={headingId} style={{ minWidth: 260, maxHeight: 360, overflowY: "auto" }} className="flex flex-col">
-            <div className="flex items-center justify-between px-2 py-1.5">
-              <span id={headingId} className="text-[12px] font-medium" style={{ color: "var(--color-fg)" }}>
+        <div
+          className={cn(
+            "absolute right-0 top-[calc(100%+6px)] z-50 w-[300px] max-h-[420px] flex flex-col rounded-lg border p-2",
+            "max-sm:fixed max-sm:inset-x-2 max-sm:top-auto max-sm:bottom-2 max-sm:w-auto max-sm:max-h-[75dvh]",
+          )}
+          style={{
+            background: "var(--color-bg-elev-1)", borderColor: "var(--color-border)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.2)",
+          }}
+        >
+          <div role="group" aria-labelledby={headingId} className="flex flex-col min-h-0">
+            <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span id={headingId} className="text-[13px] sm:text-[12px] font-medium" style={{ color: "var(--color-fg)" }}>
                 Creator report metrics
               </span>
               {/* Ours: the old picker's shortcuts. */}
-              <div className="flex items-center gap-2" title={EXTRA_LABEL}>
-                <button type="button" className={linkBtn} style={{ color: "var(--color-accent)" }} onClick={() => onChange(DEFAULT_COLS())}>
+              <div className="flex items-center gap-1" title={EXTRA_LABEL}>
+                <button type="button" className={linkBtn} style={{ color: "var(--color-accent)" }} onClick={() => change([...DEFAULT_KEYS])}>
                   Default
                 </button>
                 <button type="button" className={linkBtn} style={{ color: "var(--color-accent)" }}
-                  onClick={() => onChange(new Set(STAT_COLS.map((c) => c.key)))}>
+                  onClick={() => change([...keys, ...hidden.map((c) => c.key)])}>
                   All
                 </button>
-                <button type="button" className={linkBtn} style={{ color: "var(--color-fg-dim)" }} onClick={() => onChange(new Set())}>
+                <button type="button" className={linkBtn} style={{ color: "var(--color-fg-dim)" }} onClick={() => change([])}>
                   None
+                </button>
+                <button type="button" aria-label="Close" className="sm:hidden p-1.5" style={{ color: "var(--color-fg-dim)" }}
+                  onClick={() => setOpen(false)}>
+                  <X size={16} aria-hidden />
                 </button>
               </div>
             </div>
-            <div style={{ borderTop: "1px solid var(--color-border)", marginBottom: 2 }} />
-            {STAT_COLS.map((c) => (
-              <label
-                key={c.key}
-                title={c.extra ? EXTRA_LABEL : c.v ? undefined : "not wired"}
-                className="flex items-center gap-2 text-[12px] px-2 py-1.5 rounded cursor-pointer"
-                style={{ color: c.v ? "var(--color-fg)" : "var(--color-fg-dim)" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={visible.has(c.key)}
-                  onChange={() => toggle(c.key)}
-                  style={{ accentColor: "var(--color-accent)" }}
-                />
-                <span style={{ flex: 1 }}>{c.title}</span>
-              </label>
-            ))}
+            <div style={{ borderTop: "1px solid var(--color-border)" }} />
+            <div className="overflow-y-auto overscroll-contain min-h-0">
+              <div className={sub} style={{ color: "var(--color-fg-dim)" }}>Shown · {shown.length}</div>
+              <ul aria-label="Shown columns">
+                {shown.map((c, i) => (
+                  <li key={c.key} className={row}>
+                    {label(c)}
+                    <button type="button" aria-label={`Move ${c.title} up`} disabled={i === 0} className={arrow}
+                      onClick={() => change(moveCol(keys, c.key, -1))}>
+                      <ChevronUp size={16} aria-hidden />
+                    </button>
+                    <button type="button" aria-label={`Move ${c.title} down`} disabled={i === shown.length - 1} className={arrow}
+                      onClick={() => change(moveCol(keys, c.key, 1))}>
+                      <ChevronDown size={16} aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {hidden.length > 0 && (
+                <>
+                  <div className={sub} style={{ color: "var(--color-fg-dim)" }}>Hidden · {hidden.length}</div>
+                  <ul aria-label="Hidden columns">
+                    {hidden.map((c) => <li key={c.key} className={row}>{label(c)}</li>)}
+                  </ul>
+                </>
+              )}
+            </div>
           </div>
-        </PopoverBox>
+        </div>
       )}
     </div>
   );
@@ -411,10 +453,10 @@ export function UtcChip() {
 const dateInputStyle: React.CSSProperties = {
   border: "1px solid var(--color-border)",
   borderRadius: 6,
-  padding: "4px 6px",
+  padding: "4px 28px 4px 6px",
   fontSize: 12,
   color: "var(--color-fg)",
-  background: "var(--color-bg-elev-1)",
+  backgroundColor: "var(--color-bg-elev-1)",
   outline: "none",
 };
 
