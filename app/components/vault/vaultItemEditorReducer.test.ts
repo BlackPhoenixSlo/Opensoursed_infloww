@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildPatch, canSave, fieldsFromAi, initialEditorState, isDirty, parsePriceCents, vaultItemEditorReducer,
+  buildPatch, canSave, fieldsFromAi, initialEditorState, isDirty, jevPatch, parsePriceCents, vaultItemEditorReducer,
   type EditorAction, type EditorFields, type EditorState,
 } from "./vaultItemEditorReducer";
+import { aiValue, picksFromAi, unsetLabel, type JevKey } from "./jevPicks";
 
 const AI = {
   description: "old desc",
@@ -16,6 +17,7 @@ const F = fieldsFromAi(AI);
 const run = (actions: EditorAction[], from: EditorState = initialEditorState(F)): EditorState =>
   actions.reduce(vaultItemEditorReducer, from);
 const edit = (field: keyof EditorFields, value: string): EditorAction => ({ type: "edit", field, value });
+const pick = (key: JevKey, value: string | null): EditorAction => ({ type: "pick", key, value });
 /** Re-describe: the item's `_ai` comes back with new text. */
 const redescribed = fieldsFromAi({ ...AI, description: "new desc", tags: ["x", "y"] });
 
@@ -23,7 +25,6 @@ describe("fieldsFromAi", () => {
   it("reads the `_ai` projection into input strings", () => {
     expect(F).toEqual({
       desc: "old desc", tags: "a, b", tier: "suggestive", cap: "", script: "", price: "12.50",
-      breasts: "covered", vulva: "", anus: "",
     });
   });
   it("falls back to the video description, and blanks for an undescribed item", () => {
@@ -56,7 +57,8 @@ describe("buildPatch / isDirty", () => {
     ["tags", [edit("tags", "x")], { tags: "x" }],
     ["tier", [edit("tier", "explicit")], { explicitness_tier: "explicit" }],
     ["caption + script", [edit("cap", "c"), edit("script", "s")], { suggested_caption: "c", suggested_script: "s" }],
-    ["a flag", [edit("vulva", "bare")], { vulva_vis: "bare" }],
+    ["a Jev pick", [pick("crotch", "bare")], { jev: { crotch: "bare" } }],
+    ["a pick then back to the AI", [pick("lane", "$50"), pick("lane", null)], {}],
     ["price in dollars → cents", [edit("price", "20")], { suggested_price_cents: 2000 }],
     ["blank price clears it", [edit("price", "")], { suggested_price_cents: null }],
     ["garbage price is not sent", [edit("price", "abc")], {}],
@@ -148,5 +150,65 @@ describe("save", () => {
   it("a stray saveOk with nothing in flight is ignored", () => {
     const s = run([]);
     expect(vaultItemEditorReducer(s, { type: "saveOk", locked: ["x"] })).toBe(s);
+  });
+});
+
+describe("Jev picks", () => {
+  const stored = initialEditorState(F, { lane: "$50", watermark: "y" });
+
+  it.each<[string, EditorAction[], Record<string, unknown>]>([
+    ["nothing changed", [], {}],
+    ["a new pick", [pick("outfit", "nude")], { jev: { outfit: "nude" } }],
+    ["a stored pick changed", [pick("lane", "$100")], { jev: { lane: "$100" } }],
+    ["a stored pick cleared → null", [pick("watermark", null)], { jev: { watermark: null } }],
+    ["picked back to what is stored", [pick("lane", "free"), pick("lane", "$50")], {}],
+    ["with a field", [edit("desc", "mine"), pick("toy", "no_toy")], { description: "mine", jev: { toy: "no_toy" } }],
+  ])("%s", (_n, actions, patch) => {
+    const s = run(actions, stored);
+    expect(buildPatch(s)).toEqual(patch);
+    expect(isDirty(s)).toBe(Object.keys(patch).length > 0);
+  });
+
+  it("save moves the stored picks; the server's merge is then a no-op; picks lock nothing", () => {
+    let s = run([pick("lane", "$100"), pick("watermark", null), { type: "saveStart" }], stored);
+    expect(s.pendingJev).toEqual({ lane: "$100", watermark: null });
+    s = run([{ type: "saveOk", locked: [] }], s);
+    expect(s.jevBase).toEqual({ lane: "$100" });
+    expect(s.saved).toEqual(["jev"]);
+    expect(isDirty(s)).toBe(false);
+    expect(vaultItemEditorReducer(s, { type: "refresh", fields: F, picks: { lane: "$100" } })).toBe(s);
+  });
+
+  it("refresh: an untouched pick follows the item, a changed one keeps the change", () => {
+    const s = run([pick("lane", "free"), { type: "refresh", fields: F, picks: { lane: "$10", toy: "no_toy" } }], stored);
+    expect(s.jev).toEqual({ lane: "free", toy: "no_toy" });
+    expect(s.jevBase).toEqual({ lane: "$50", toy: "no_toy" });
+    expect(jevPatch(s)).toEqual({ lane: "free" });
+  });
+
+  it("saveFail keeps the picks to retry", () => {
+    const s = run([pick("lane", "$10"), { type: "saveStart" }, { type: "saveFail", msg: "400" }], stored);
+    expect(s.pendingJev).toBeNull();
+    expect(buildPatch(s)).toEqual({ jev: { lane: "$10" } });
+  });
+
+  it("picksFromAi keeps known keys and options only", () => {
+    expect(picksFromAi({ jev_picks: { lane: "$10", breasts: "covered", nope: "y", watermark: "n" } }))
+      .toEqual({ lane: "$10", watermark: "n" });
+    expect(picksFromAi({})).toEqual({});
+  });
+
+  it.each<[string, unknown, JevKey, string | null, string]>([
+    ["the reading", { lane5: "$50", state: { butt: "bare" } }, "butt", "bare", "AI: bare"],
+    ["the lane", { lane5: "$50" }, "lane", "$50", "auto: $50"],
+    ["a tag y/n", { tags: { watermark: "n" } }, "watermark", "n", "AI: no"],
+    ["a picked key: the AI's own answer", { lane5: "$100", op: ["lane"], ai: { lane: "free" } }, "lane", "free",
+      "auto: free"],
+    ["a manual blob reads nothing", { made: "manual", lane5: "$10" }, "lane", null, "auto"],
+    ["feet with nothing read", null, "wears_socks", null, "None"],
+    ["no blob", undefined, "outfit", null, "—"],
+  ])("aiValue / unsetLabel: %s", (_n, jev, key, ai, label) => {
+    expect(aiValue(jev, key)).toBe(ai);
+    expect(unsetLabel(key, ai)).toBe(label);
   });
 });

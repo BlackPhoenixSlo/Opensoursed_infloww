@@ -38,6 +38,8 @@ import vault_mirror
 import vault_of_folders  # duplicates list/hide, folder plan + publish, OF folder CRUD; routes included at their old spots below
 import relay_coalesce
 import vault_ingest  # has_live_mirror: the grid's own "is the mirror on" question
+import vault_jev_flags
+import vault_jev_manual  # the operator's Jev picks (`fields.jev`)
 import vault_jev_rules  # JEV_KEY: a clip's per-frame answers stay out of `_overlay`
 import vault_pack_picker
 import vault_runs
@@ -559,6 +561,20 @@ async def vault_poster(
         vault_frames.pick_poster(i))
 
 
+def _ai_fields_view(item: VaultItem) -> dict[str, Any] | None:
+    """`ai_fields_json` as the browser gets it (None: not a blob)."""
+    ai = load_json(item.ai_fields_json, None)
+    if not isinstance(ai, dict):
+        return None
+    jev = ai.get(vault_jev_rules.JEV_KEY)
+    if isinstance(jev, dict) and ("frames" in jev or "undo" in jev):
+        # a clip's per-frame Jev answers (~10 KB, read only by the rules) and the picks' undo record: never sent
+        ai = {**ai, vault_jev_rules.JEV_KEY: {k: v for k, v in jev.items() if k not in ("frames", "undo")}}
+    # `description`/`tags` are already served from their columns (which
+    # carry any operator override); don't shadow them with the raw AI value.
+    return {k: v for k, v in ai.items() if k not in ("description", "tags")}
+
+
 def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]:
     try:
         base = json.loads(item.raw_json) if item.raw_json else {"id": item.media_id, "type": item.kind}
@@ -584,18 +600,10 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
     # other 21 fields the model produced are invisible, which is exactly what
     # made the vault look like it had lost them. Projected read-only: edits
     # still go through the override+lock path on the real columns.
-    ai = load_json(item.ai_fields_json, None)
-    if isinstance(ai, dict):
-        jev = ai.get(vault_jev_rules.JEV_KEY)
-        if isinstance(jev, dict) and "frames" in jev:
-            # a clip's per-frame Jev answers (~10 KB, read only by the rules): never sent to the browser
-            ai = {**ai, vault_jev_rules.JEV_KEY: {k: v for k, v in jev.items() if k != "frames"}}
-        base["_ai"]["fields"] = {
-            k: v for k, v in ai.items()
-            # `description`/`tags` are already served from their columns (which
-            # carry any operator override); don't shadow them with the raw AI value.
-            if k not in ("description", "tags")
-        }
+    ai = _ai_fields_view(item)
+    if ai is not None:
+        base["_ai"]["fields"] = ai
+    base["_ai"]["jev_picks"] = vault_jev_manual.stored(item.operator_overrides_json)
     # Stable, signature-free cached-thumb URL (self-heals on miss). Frontend
     # prefers this over the expiring OF url so tiles never break.
     #
@@ -1325,6 +1333,9 @@ _EDITABLE_FIELDS = (
     # purely an operator choice, and the Composer prices an attachment set at the
     # MAX suggested price across the selection.
     "suggested_price_cents",
+    # The operator's Jev picks ({key: value | None}, `vault_jev_manual`): laid
+    # over the item's `_jev`, its flags + tier re-mapped from it.
+    "jev",
 )
 
 
@@ -1345,6 +1356,8 @@ def _item_edit_view(item: VaultItem, locked: list[str]) -> dict[str, Any]:
         "suggested_price_cents": effective_value(item, "suggested_price_cents"),
         "describe_status": item.describe_status,
         "locked_fields": locked,
+        "fields": _ai_fields_view(item),
+        "jev_picks": vault_jev_manual.stored(item.operator_overrides_json),
     }
 
 
@@ -1398,6 +1411,13 @@ def _edit_values(item: VaultItem, edits: dict[str, Any]) -> dict[str, Any]:
     exactly as sticky as a typed one. Raises 400 on a bad value."""
     overrides = load_json(item.operator_overrides_json, {}) or {}
     locked = set(load_json(item.locked_fields_json, []) or [])
+    edits = dict(edits)
+    jev_patch = None
+    if "jev" in edits:
+        try:
+            jev_patch = vault_jev_manual.check(edits.pop("jev"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail={"error": "bad_jev_pick", "field": str(e)})
     # compat-column projection per field (same-named legacy column).
     col_vals: dict[str, Any] = {}
     flag_edits: dict[str, Any] = {}
@@ -1449,9 +1469,53 @@ def _edit_values(item: VaultItem, edits: dict[str, Any]) -> dict[str, Any]:
                 merged[k] = v
         col_vals["ai_fields_json"] = json.dumps(merged, ensure_ascii=False,
                                                 default=str)
+    if jev_patch is not None:
+        _jev_edit(item, jev_patch, overrides, locked, col_vals,
+                  keep_tier=vault_jev_flags.TIER_COLUMN in edits)
     col_vals["operator_overrides_json"] = json.dumps(overrides, ensure_ascii=False)
     col_vals["locked_fields_json"] = json.dumps(sorted(locked))
     return col_vals
+
+
+def _jev_edit(item: VaultItem, patch: dict[str, Any], overrides: dict[str, Any], locked: set[str],
+              col_vals: dict[str, Any], *, keep_tier: bool = False) -> None:
+    """`_edit_values` for the Jev picks: stored in `overrides["_jev"]` (a cleared key removed), laid over the
+    `_jev` (`vault_jev_manual.overlay`), the flags + `explicitness_tier` re-mapped from it. A body / lane pick
+    is the operator's answer for what is bare, so it frees the vis flags they locked before (a lane also the
+    tier, unless this same edit sets the tier: `keep_tier`); otherwise the old lock would keep a flag the new
+    lane contradicts. Taking back a reading the picks alone made leaves the flags and the tier unknown."""
+    picks = vault_jev_manual.merged(vault_jev_manual.stored(overrides), patch)
+    if picks:
+        overrides[vault_jev_manual.PICKS_KEY] = picks
+    else:
+        overrides.pop(vault_jev_manual.PICKS_KEY, None)
+    unlock = [*vault_ai_brief.VIS_REGIONS] if any(k in patch for k in vault_jev_manual.BODY_PICKS) else []
+    if "lane" in patch and not keep_tier:
+        unlock.append(vault_jev_flags.TIER_COLUMN)
+    for k in unlock:
+        locked.discard(k)
+        overrides.pop(k, None)
+    fields = load_json(col_vals.get("ai_fields_json") or item.ai_fields_json, {}) or {}
+    key = vault_jev_rules.JEV_KEY
+    old = fields.get(key)
+    new = vault_jev_manual.overlay(old, picks, vault_jev_manual.kind_of(old, item.kind))
+    if new is None:
+        fields.pop(key, None)
+    else:
+        fields[key] = new
+    was = vault_jev_flags.reading(old)
+    retracted = (was is not None and vault_jev_flags.reading(new) is None and isinstance(old, dict)
+                 and old.get("made") == vault_jev_manual.MANUAL)
+    if retracted:
+        # the flags came from picks alone, now taken back: unknown again (the sweeps read the item)
+        for k in (*was, "_flags_v", "_flags_model"):
+            if k not in locked:
+                fields.pop(k, None)
+    fields = vault_jev_flags.apply(fields, fields.get(key), locked)
+    col_vals["ai_fields_json"] = json.dumps(fields, ensure_ascii=False, default=str)
+    if vault_jev_flags.TIER_COLUMN not in locked:
+        tier = None if retracted else item.explicitness_tier
+        col_vals[vault_jev_flags.TIER_COLUMN] = vault_jev_flags.column_tier(fields, tier, locked)
 
 
 def _import_edits(item: VaultItem, meta: dict[str, Any]) -> dict[str, Any]:

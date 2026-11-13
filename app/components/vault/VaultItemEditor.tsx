@@ -18,6 +18,19 @@ import {
   vaultItemEditorReducer,
   type EditorField,
 } from "@/components/vault/vaultItemEditorReducer";
+import {
+  aiValue,
+  JEV_CONTENT,
+  JEV_DETAILS,
+  JEV_FEET,
+  JEV_FOCUS,
+  JEV_OPTIONS,
+  optionLabel,
+  picksFromAi,
+  unsetLabel,
+  type JevKey,
+  type JevPicks,
+} from "@/components/vault/jevPicks";
 
 /** PATCH /admin/vault-ai/items/{id} — override + lock the operator-edited fields
  *  (contract §6c). `fields` carries only the changed keys so only those lock. */
@@ -32,11 +45,6 @@ async function saveVaultItem(
     { accountId },
   );
 }
-
-/** The three answers the flags pass gives per region. Must match
- *  `vault_ai_brief.VIS_STATES` — the server rejects anything else with a 400
- *  rather than storing a value no lane knows how to read. */
-const VIS_OPTIONS = ["bare", "covered", "not_in_frame"];
 
 // explicitness tiers the pricing bands key off (contract §1 bands_by_tier).
 const TIER_OPTIONS = ["safe", "suggestive", "explicit", "graphic", "unknown"];
@@ -220,6 +228,69 @@ function JevReading({ jev }: { jev: unknown }) {
   );
 }
 
+const JEV_LABEL: Partial<Record<JevKey, string>> = {
+  lane: "price lane", breasts_focus: "breasts focus", butt_focus: "butt focus", crotch_focus: "crotch focus", feet_focus: "feet focus",
+  feet_detail: "feet",
+};
+
+/** The operator's Jev answers (`jevPicks`): one select per key, unset = the AI's reading (shown in the blank
+ *  option). Content and Feet up front; the rest behind "Details". Only dispatches. */
+function JevPicker({ jev, picks, onPick }: { jev: unknown; picks: JevPicks; onPick: (k: JevKey, v: string | null) => void }) {
+  const [details, setDetails] = useState(false);
+  const one = (k: JevKey) => {
+    const unset = unsetLabel(k, aiValue(jev, k));
+    return (
+    <label key={k} className="min-w-0">
+      <span className="text-[10px] text-fg-dim">{JEV_LABEL[k] ?? words(k)}</span>
+      <select
+        aria-label={`Jev ${JEV_LABEL[k] ?? words(k)}`}
+        title={picks[k] !== undefined ? optionLabel(picks[k] as string) : unset}
+        value={picks[k] ?? ""}
+        onChange={(e) => onPick(k, e.target.value || null)}
+        className={cn(INPUT, "mt-0.5", picks[k] !== undefined && "border-accent/60")}
+      >
+        <option value="">{unset}</option>
+        {JEV_OPTIONS[k].map((v) => (
+          <option key={v} value={v}>
+            {optionLabel(v)}
+          </option>
+        ))}
+      </select>
+    </label>
+    );
+  };
+  const grid = (keys: readonly JevKey[]) => <div className="grid grid-cols-2 gap-2 mt-1">{keys.map(one)}</div>;
+  return (
+    <div data-testid="jev-picker">
+      <div className={LABEL}>What is on show</div>
+      <div className="text-[11px] text-fg-dim">
+        Decides the folder, the price and whether it can be mass-sent. Blank follows the AI.
+      </div>
+      {grid(JEV_CONTENT)}
+      <div className="text-[11px] text-fg-dim mt-2">Feet</div>
+      {grid(JEV_FEET)}
+      <button
+        type="button"
+        aria-expanded={details}
+        onClick={() => setDetails((v) => !v)}
+        className="mt-2 flex items-center gap-1.5 text-[11px] text-fg-dim hover:text-fg"
+      >
+        <span aria-hidden>{details ? "▾" : "▸"}</span>
+        Details
+      </button>
+      {details && (
+        <div className="space-y-2">
+          {grid(JEV_DETAILS)}
+          <div>
+            <div className="text-[11px] text-fg-dim mt-1">Focus</div>
+            {grid(JEV_FOCUS)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The comma list the reducer holds, as chips. */
 export const splitTags = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
 
@@ -315,9 +386,11 @@ export function VaultItemEditor({
   // Draft vs a per-field baseline, and the save — see `vaultItemEditorReducer`.
   // The open item's `_ai` can change under the editor (Re-describe, the merge
   // after a save): untouched fields follow it, edited ones keep the edit.
-  const [ed, dispatch] = useReducer(vaultItemEditorReducer, ai, (a) => initialEditorState(fieldsFromAi(a)));
+  const [ed, dispatch] = useReducer(vaultItemEditorReducer, ai, (a) =>
+    initialEditorState(fieldsFromAi(a), picksFromAi(a)));
   useEffect(() => {
-    dispatch({ type: "refresh", fields: fieldsFromAi((media._ai ?? {}) as Record<string, unknown>) });
+    const a = (media._ai ?? {}) as Record<string, unknown>;
+    dispatch({ type: "refresh", fields: fieldsFromAi(a), picks: picksFromAi(a) });
   }, [media._ai]);
   const { draft, saved, err, locked } = ed;
   const saving = ed.pending !== null;
@@ -419,39 +492,11 @@ export function VaultItemEditor({
           </div>
           {more && (
             <div className="space-y-3.5">
-              <div>
-                <div className={LABEL}>What is on show</div>
-                <div className="text-[11px] text-fg-dim">Decides the folder, the price and whether it can be mass-sent.</div>
-                <div className="flex gap-2 mt-1">
-                  {(
-                    [
-                      ["breasts", draft.breasts, set("breasts"), "breasts_vis"],
-                      ["vulva", draft.vulva, set("vulva"), "vulva_vis"],
-                      ["anus", draft.anus, set("anus"), "anus_vis"],
-                    ] as const
-                  ).map(([name, val, set, field]) => (
-                    <div key={name} className="flex-1 min-w-0">
-                      <div className="text-[10px] text-fg-dim">
-                        {name}
-                        {lockBadge(field)}
-                      </div>
-                      <select
-                        aria-label={name}
-                        value={VIS_OPTIONS.includes(val) ? val : ""}
-                        onChange={(e) => set(e.target.value)}
-                        className={cn(INPUT, "mt-0.5")}
-                      >
-                        <option value="">—</option>
-                        {VIS_OPTIONS.map((v) => (
-                          <option key={v} value={v}>
-                            {v === "not_in_frame" ? "not in frame" : v}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <JevPicker
+                jev={aiFields?._jev}
+                picks={ed.jev}
+                onPick={(key, value) => dispatch({ type: "pick", key, value })}
+              />
               <div>
                 <div className={LABEL}>Tier{lockBadge("explicitness_tier")}</div>
                 <select
@@ -509,7 +554,12 @@ export function VaultItemEditor({
           </div>
           <div className="mt-1 min-h-[14px] text-[11px]">
             {saved && !err ? (
-              <span className="text-ok">Saved — locked {saved.length} field{saved.length === 1 ? "" : "s"}</span>
+              <span className="text-ok">
+                {(() => {
+                  const n = saved.filter((k) => k !== "jev").length;   // the Jev picks lock nothing
+                  return n ? `Saved — locked ${n} field${n === 1 ? "" : "s"}` : "Saved";
+                })()}
+              </span>
             ) : err ? (
               <span className="text-err">{err}</span>
             ) : !dirty ? (

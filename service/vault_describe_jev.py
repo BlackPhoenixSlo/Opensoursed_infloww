@@ -88,8 +88,9 @@ def lane0(jev: Mapping[str, Any]) -> str:
 
 
 def feedable(jev: Any) -> bool:
-    """A `_jev` the describe may be fed: current (this VERSION, status ok) and carrying what `facts` reads."""
-    return (vault_jev_rules.current({vault_jev_rules.JEV_KEY: jev})
+    """A `_jev` the describe may be fed: a Jev reading (`ai_read`: this VERSION, status ok, not operator picks
+    alone) carrying what `facts` reads."""
+    return (vault_jev_rules.ai_read({vault_jev_rules.JEV_KEY: jev})
             and isinstance(jev.get("C"), dict) and all(isinstance(jev["C"].get(q), dict) for q in FACT_CHOICES)
             and isinstance(jev.get("P"), dict) and isinstance(jev.get("tags"), dict)
             and jev.get("lane") is not None)

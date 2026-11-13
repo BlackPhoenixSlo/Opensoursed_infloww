@@ -70,11 +70,11 @@ export function Section({ title, children }: { title?: string; children: ReactNo
   );
 }
 
-/** A labelled field: 14px label in `--if-fg-3`, 8px above its control, 30px after the field. */
+/** A labelled field: 14px label in `--if-fg-3` (`--if-fg-2` in light: #999 on white is too faint), 8px above its control, 30px after the field. */
 export function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: ReactNode }) {
   return (
     <div className="mb-[var(--if-field-gap)]">
-      <label htmlFor={htmlFor} className="block mb-[var(--if-label-gap)] text-[length:var(--if-fs)] text-[var(--if-fg-3)]">
+      <label htmlFor={htmlFor} className="block mb-[var(--if-label-gap)] text-[length:var(--if-fs)] text-[var(--if-fg-3)] [html[data-theme=light]_&]:text-[var(--if-fg-2)]">
         {label}
       </label>
       {children}

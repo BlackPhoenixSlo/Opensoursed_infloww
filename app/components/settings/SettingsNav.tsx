@@ -39,7 +39,7 @@ export default function SettingsNav() {
           "h-[var(--if-tab-h)] px-[var(--if-row-px)] gap-[var(--if-row-px)] text-[length:var(--if-fs-lg)]",
           active
             ? "bg-[var(--if-accent-bg)] text-[var(--if-accent)]"
-            : "text-[var(--if-fg-3)] hover:text-[var(--if-fg)]",
+            : "text-[var(--if-fg-3)] [html[data-theme=light]_&]:text-[var(--if-fg-2)] hover:text-[var(--if-fg)] [html[data-theme=light]_&]:hover:text-[var(--if-fg)]",
         )}
       >
         {Icon && <Icon aria-hidden strokeWidth={1.5} className="w-5 h-5 shrink-0" />}

@@ -251,6 +251,16 @@ def current(fields: dict[str, Any] | None) -> bool:
             and (j.get("kind") != "video" or (j.get("vv") == VIDEO_VERSION and isinstance(j.get("frames"), list))))
 
 
+MANUAL = "manual"   # `_jev["made"]`: a blob built from operator picks alone (`vault_jev_manual`), no Jev reading
+
+
+def ai_read(fields: dict[str, Any] | None) -> bool:
+    """`current` AND a real Jev reading under it. A blob built from operator picks alone (`made` MANUAL) is current
+    for every consumer (lane, flags, tier, pack picker) but not read: the sweeps / Describe still scan it (`_stamp`
+    re-lays the picks over the reading), and it neither feeds a describe nor is a duplicate's source."""
+    return current(fields) and (fields or {})[JEV_KEY].get("made") != MANUAL
+
+
 # ── Videos (jv-jev.py / jv-score.py, hr12 maxF) ─────────────────────
 
 TOP_K = 3

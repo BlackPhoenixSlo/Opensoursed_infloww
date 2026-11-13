@@ -27,6 +27,7 @@ from sqlalchemy.sql.elements import ColumnElement
 import vault_ai_brief
 import vault_describe_jev
 import vault_jev_flags
+import vault_jev_manual
 import vault_jev_rules
 from db.models import VaultItem
 from vault_of_folders_decide import parse_folder_ids
@@ -294,12 +295,16 @@ JEV_KEY = vault_jev_rules.JEV_KEY
 JEV_KINDS = vault_jev_rules.JEV_KINDS
 
 
-def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any]) -> Any:
+def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any],
+                 picks: Mapping[str, Any] | None = None) -> Any:
     """The `_jev` a duplicate should carry: the source's when it is a good
-    answer (`status == "ok"`), else the copy's own (or None: none at all)."""
+    answer (`status == "ok"`), under the copy's own operator picks
+    (`vault_jev_manual`; the source's `at` kept, so a copied describe still
+    matches it), else the copy's own (or None: none at all)."""
     src = src_ai.get(JEV_KEY)
     if isinstance(src, dict) and src.get("status") == "ok":
-        return src
+        # the source's own picks are not the copy's: a copy with none holds the source's AI reading
+        return vault_jev_manual.overlay(src, picks or {}, vault_jev_manual.kind_of(src))
     return own_ai.get(JEV_KEY)
 
 
@@ -449,7 +454,8 @@ def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
 
 
 def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
-                     locked: Collection[str], src_id: int) -> dict[str, Any]:
+                     locked: Collection[str], src_id: int,
+                     picks: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """`prev` (the copy's ai_fields) with its flags blob replaced by the
     source's, stamped `FLAGS_COPY_MARK`. Enrichment only, like a flags run;
     an operator-locked flag or garment stays the copy's own. A carried `_jev`
@@ -458,7 +464,7 @@ def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
     fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
         fields.pop(dead, None)  # superseded flag shapes
-    _put_jev(fields, jev_for_copy(src_ai, prev))
+    _put_jev(fields, jev_for_copy(src_ai, prev, picks))
     fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), locked)
     fields[FLAGS_COPY_MARK] = int(src_id)
     return fields
@@ -484,13 +490,15 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
     out = {k: v for k, v in src_ai.items() if k not in skip}
     out.update({k: prev_ai[k] for k in ROW_OWN_KEYS if k in prev_ai})
     carry_flags(out, prev_ai, exact=False)
-    _put_jev(out, jev_for_copy(src_ai, prev_ai))
+    _put_jev(out, jev_for_copy(src_ai, prev_ai, vault_jev_manual.stored(overrides)))
     if "_flags_v" in src_ai:
         carry_flags(out, src_ai, locked=locked, exact=True)
         # The flags came from `src_id` itself, which COPY_MARK names. The
         # source's own flags marker names some other item, so it must not
         # ride along (reuse is never transitive).
         out.pop(FLAGS_COPY_MARK, None)
+    # the copy's `_jev` (its own picks laid over the source's reading) decides its flags, as `build_flags_copy`
+    out = vault_jev_flags.apply(out, out.get(JEV_KEY), locked)
     out[COPY_MARK] = int(src_id)
     _apply_locked_fixes(out, overrides, locked, fixable)
     vals: dict[str, Any] = {
@@ -502,6 +510,9 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
         "frames_sampled": src.get("frames_sampled"),
     }
     _put_unlocked(vals, locked, {c: src.get(c) for c in _COPY_COLUMNS})
+    if vault_jev_flags.TIER_COLUMN not in locked:
+        vals[vault_jev_flags.TIER_COLUMN] = vault_jev_flags.column_tier(
+            out, vals.get(vault_jev_flags.TIER_COLUMN), locked)
     return vals
 
 
@@ -533,7 +544,8 @@ def reuse_state(rows: Iterable[tuple[int, str | None, Mapping[str, Any], str | N
     for mid, status, f, kind, locked, tier in rows:
         if flags:
             ok = flags_current(f, flags_version) and (
-                kind not in JEV_KINDS or vault_jev_flags.row_in_sync(f, locked, tier=tier))
+                kind not in JEV_KINDS or (vault_jev_rules.ai_read(dict(f))
+                                          and vault_jev_flags.row_in_sync(f, locked, tier=tier)))
             failed = "_flags_status" in f or (kind in JEV_KINDS and _jev_failed(f))
         else:
             ok = status == "described" and vault_describe_jev.reusable(f, kind)

@@ -16,7 +16,11 @@
  *     sent; the parent's merge (`refresh`) then shows the server's spelling.
  *   • `buildPatch` sends only edited fields. A price that parses to no number
  *     ("abc", "1.2.3") is not sent; blank clears it.
+ *   • The Jev picks (`jevPicks`) ride the same draft / base / pending rule per
+ *     key; `pick{value: null}` is "back to the AI's answer", sent as null.
  */
+
+import { JEV_KEYS, type JevKey, type JevPicks } from "@/components/vault/jevPicks";
 
 /** The editor's fields, as the inputs hold them. */
 export interface EditorFields {
@@ -26,9 +30,6 @@ export interface EditorFields {
   cap: string;
   script: string;
   price: string;
-  breasts: string;
-  vulva: string;
-  anus: string;
 }
 export type EditorField = keyof EditorFields;
 
@@ -40,9 +41,6 @@ export const WIRE_KEY: Record<EditorField, string> = {
   cap: "suggested_caption",
   script: "suggested_script",
   price: "suggested_price_cents",
-  breasts: "breasts_vis",
-  vulva: "vulva_vis",
-  anus: "anus_vis",
 };
 const FIELDS = Object.keys(WIRE_KEY) as EditorField[];
 
@@ -51,6 +49,11 @@ export interface EditorState {
   base: EditorFields;
   /** The edited fields a save sent, until it answers. */
   pending: Partial<EditorFields> | null;
+  /** The Jev picks as the popup shows them, and as stored. */
+  jev: JevPicks;
+  jevBase: JevPicks;
+  /** The pick changes a save sent (null clears), until it answers. */
+  pendingJev: JevPatch | null;
   /** Wire keys of the last successful save. */
   saved: string[] | null;
   err: string;
@@ -58,9 +61,13 @@ export interface EditorState {
   locked: ReadonlySet<string>;
 }
 
+/** `fields.jev` on the wire: the picks that changed, null = cleared. */
+export type JevPatch = Partial<Record<JevKey, string | null>>;
+
 export type EditorAction =
   | { type: "edit"; field: EditorField; value: string }
-  | { type: "refresh"; fields: EditorFields }
+  | { type: "pick"; key: JevKey; value: string | null }
+  | { type: "refresh"; fields: EditorFields; picks?: JevPicks }
   | { type: "saveStart" }
   | { type: "saveOk"; locked: readonly string[] }
   | { type: "saveFail"; msg: string };
@@ -75,18 +82,14 @@ export function fieldsFromAi(ai: Record<string, unknown>): EditorFields {
     cap: (ai.suggested_caption as string | undefined) ?? "",
     script: (ai.suggested_script as string | undefined) ?? "",
     price: typeof priceCents === "number" ? (priceCents / 100).toFixed(2) : "",
-    // The exposure flags. They decide the folder, the price band and whether
-    // an item may be mass-sent, so an operator who spots a wrong one while
-    // editing a caption should be able to fix it here rather than hunting for
-    // the review modal.
-    breasts: (ai.breasts_vis as string | undefined) ?? "",
-    vulva: (ai.vulva_vis as string | undefined) ?? "",
-    anus: (ai.anus_vis as string | undefined) ?? "",
   };
 }
 
-export function initialEditorState(fields: EditorFields): EditorState {
-  return { draft: fields, base: fields, pending: null, saved: null, err: "", locked: new Set() };
+export function initialEditorState(fields: EditorFields, picks: JevPicks = {}): EditorState {
+  return {
+    draft: fields, base: fields, pending: null, jev: picks, jevBase: picks, pendingJev: null,
+    saved: null, err: "", locked: new Set(),
+  };
 }
 
 /** Dollars as typed → cents on the wire; `undefined` = not a number, not sent. */
@@ -111,17 +114,37 @@ function sendable(state: EditorState): Partial<EditorFields> {
   return out;
 }
 
-/** The PATCH `fields` body: only edited fields, so only those lock. */
+/** The picks that differ from the stored ones (null: cleared back to the AI's answer). */
+export function jevPatch(state: EditorState): JevPatch {
+  const out: JevPatch = {};
+  for (const k of JEV_KEYS) {
+    if (state.jev[k] !== state.jevBase[k]) out[k] = state.jev[k] ?? null;
+  }
+  return out;
+}
+
+/** The PATCH `fields` body: only edited fields, so only those lock (the picks never lock a field). */
 export function buildPatch(state: EditorState): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const [f, v] of Object.entries(sendable(state)) as [EditorField, string][]) {
     patch[WIRE_KEY[f]] = f === "price" ? parsePriceCents(v) : v;
   }
+  const jev = jevPatch(state);
+  if (Object.keys(jev).length) patch.jev = jev;
   return patch;
 }
 
 export function isDirty(state: EditorState): boolean {
-  return Object.keys(sendable(state)).length > 0;
+  return Object.keys(sendable(state)).length > 0 || Object.keys(jevPatch(state)).length > 0;
+}
+
+function withPatch(picks: JevPicks, patch: JevPatch): JevPicks {
+  const out = { ...picks };
+  for (const [k, v] of Object.entries(patch) as [JevKey, string | null][]) {
+    if (v === null) delete out[k];
+    else out[k] = v;
+  }
+  return out;
 }
 
 export function canSave(state: EditorState): boolean {
@@ -132,6 +155,8 @@ export function vaultItemEditorReducer(state: EditorState, action: EditorAction)
   switch (action.type) {
     case "edit":
       return { ...state, draft: { ...state.draft, [action.field]: action.value } };
+    case "pick":
+      return { ...state, jev: withPatch(state.jev, { [action.key]: action.value }) };
     case "refresh": {
       const draft = { ...state.draft };
       const base = { ...state.base };
@@ -141,23 +166,39 @@ export function vaultItemEditorReducer(state: EditorState, action: EditorAction)
         draft[f] = base[f] = action.fields[f];
         moved = true;
       }
-      return moved ? { ...state, draft, base } : state;
+      let { jev, jevBase } = state;
+      if (action.picks) {
+        const follow: JevPatch = {};
+        for (const k of JEV_KEYS) {
+          if (state.jev[k] !== state.jevBase[k] || state.jevBase[k] === action.picks[k]) continue;
+          follow[k] = action.picks[k] ?? null;
+        }
+        if (Object.keys(follow).length) {
+          jev = withPatch(jev, follow);
+          jevBase = withPatch(jevBase, follow);
+          moved = true;
+        }
+      }
+      return moved ? { ...state, draft, base, jev, jevBase } : state;
     }
     case "saveStart":
       if (!canSave(state)) return state;
-      return { ...state, pending: sendable(state), saved: null, err: "" };
+      return { ...state, pending: sendable(state), pendingJev: jevPatch(state), saved: null, err: "" };
     case "saveOk": {
       if (!state.pending) return state;
       const sent = Object.keys(state.pending) as EditorField[];
+      const picked = Object.keys(state.pendingJev ?? {}).length > 0;
       return {
         ...state,
         base: { ...state.base, ...state.pending },
+        jevBase: withPatch(state.jevBase, state.pendingJev ?? {}),
         pending: null,
-        saved: sent.map((f) => WIRE_KEY[f]),
+        pendingJev: null,
+        saved: [...sent.map((f) => WIRE_KEY[f]), ...(picked ? ["jev"] : [])],
         locked: new Set(action.locked),
       };
     }
     case "saveFail":
-      return { ...state, pending: null, err: action.msg };
+      return { ...state, pending: null, pendingJev: null, err: action.msg };
   }
 }

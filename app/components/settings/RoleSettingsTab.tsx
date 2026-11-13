@@ -45,6 +45,7 @@ import PermissionEditor, { type PermissionRole } from "@/components/settings/Per
 import {
   allPages, assignedRole, isBuiltIn, withBuiltIns, type RolesBlob,
 } from "@/lib/roles";
+import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
 import { cn } from "@/lib/utils";
 
 const ENFORCE = "Enforce role permissions";
@@ -221,12 +222,12 @@ export default function RoleSettingsTab() {
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+        <Dialog.Overlay className={cn("fixed inset-0 z-40", IF_MODAL_MASK)} />
         <Dialog.Content
           aria-describedby={undefined}
-          className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[calc(var(--if-input-w)+40px)] max-w-[calc(100vw-32px)] px-5 pt-5 pb-px rounded-[var(--if-input-radius)] border border-[var(--if-line)] bg-[var(--if-bg)] outline-none"
+          className={cn("fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[calc(var(--if-input-w)+48px)] max-w-[calc(100vw-32px)] px-6 pt-[22px] pb-px", IF_MODAL_BOX)}
         >
-          <Dialog.Title className="mb-5 text-[length:var(--if-fs-lg)] font-[var(--if-fw-title)] text-[var(--if-fg)]">
+          <Dialog.Title className="mb-6 text-[16px] font-semibold text-fg">
             {modal?.role ? "Edit Role" : "Add Role"}
           </Dialog.Title>
           <RoleForm

@@ -25,6 +25,7 @@ import vault_ai_vision_decide as decide
 import vault_frames
 import vault_jev  # module attrs `run` / `preflight` / `nudenet_ready`, looked up per call
 import vault_jev_flags
+import vault_jev_manual
 import vault_jev_rules
 from db.engine import get_session
 from db.models import VaultItem
@@ -95,6 +96,15 @@ def held_blob(old: Any, n: int, detail: str, at: str, *, terminal: bool) -> dict
     return b
 
 
+def _picks(item: VaultItem, fields: dict[str, Any]) -> None:
+    """Lay the operator's Jev picks (`vault_jev_manual`) over the `_jev` just written, so a re-read keeps them."""
+    picks = vault_jev_manual.stored(item.operator_overrides_json)
+    if picks and JEV_KEY in fields:
+        j = vault_jev_manual.overlay(fields[JEV_KEY], picks, vault_jev_manual.kind_of(fields[JEV_KEY], item.kind))
+        if j is not None:
+            fields[JEV_KEY] = j
+
+
 async def _hold(account_id: str, media_id: int, n: int, detail: str, *, terminal: bool) -> None:
     """Stamp `held_blob`; the `explicitness_tier` column unknown (None) unless operator-locked or $100, until a
     retry reads the clip."""
@@ -105,6 +115,7 @@ async def _hold(account_id: str, media_id: int, n: int, detail: str, *, terminal
         fields = load_json(item.ai_fields_json, {}) or {}
         fields[JEV_KEY] = held_blob(fields.get(JEV_KEY), n, detail, datetime.utcnow().isoformat(),
                                     terminal=terminal)
+        _picks(item, fields)
         item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
         if fields[JEV_KEY].get("lane5") == "review" and vault_jev_flags.TIER_COLUMN not in _locked(item):
             item.explicitness_tier = None
@@ -116,6 +127,7 @@ async def _stamp(account_id: str, media_id: int, res: vault_jev.JevResult) -> No
         item = await s.get(VaultItem, (account_id, media_id))
         if item is not None:
             fields = vault_jev.merge(load_json(item.ai_fields_json, {}) or {}, res, datetime.utcnow())
+            _picks(item, fields)
             locked = _locked(item)
             fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), locked)
             item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
@@ -154,7 +166,7 @@ def _out(media_id: int, res: vault_jev.JevResult) -> dict[str, Any]:
 async def one(account_id: str, media_id: int, *,
               sweep: Sweep | None = None) -> dict[str, Any] | None:
     """Run the Jev pass on one photo or video and merge `_jev` (+ its flags) into its blob. None when there is
-    nothing to pay for (another kind, or already current — its flags re-stamped if they drifted); no TypeSafe or
+    nothing to pay for (another kind, or already AI-read, `vault_jev_rules.ai_read` — its flags re-stamped if they drifted); no TypeSafe or
     NudeNet call happens then. Readiness (NudeNet + key) is checked before the still / clip is fetched. Never
     raises for a model failure: `vault_jev.run` / `run_video` report it as the result's `status`, stamped on the
     row. A clip's frames: `vault_frames.collect_jev_video`; frames read after a brief source failure: `RETRY_MAX`.
@@ -164,7 +176,7 @@ async def one(account_id: str, media_id: int, *,
     if item is None or item.kind not in vault_jev_rules.JEV_KINDS:
         return None
     fields = load_json(item.ai_fields_json, {}) or {}
-    if vault_jev_rules.current(fields):
+    if vault_jev_rules.ai_read(fields):   # picks alone (no reading) still scan
         if not vault_jev_flags.row_in_sync(fields, item.locked_fields_json, tier=item.explicitness_tier):
             await _sync_flags(account_id, media_id)
         return None
@@ -231,7 +243,7 @@ async def clips_due(account_id: str) -> set[int]:
     async with get_session() as s:
         rows = (await s.execute(select(VaultItem.media_id, VaultItem.ai_fields_json).where(
             VaultItem.account_id == account_id, VaultItem.kind == "video"))).all()
-    return {m for m, f in rows if not vault_jev_rules.current(load_json(f, {}) or {})}
+    return {m for m, f in rows if not vault_jev_rules.ai_read(load_json(f, {}) or {})}
 
 
 def clip_lane(due: Collection[int], media_id: int,

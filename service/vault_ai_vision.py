@@ -39,6 +39,7 @@ import vault_describe_jev
 import vault_dupes  # module attr `reuse_groups`, looked up per call
 import vault_frames
 import vault_jev_flags
+import vault_jev_manual
 import vault_jev_pass  # module attrs `safe` / `plan`, looked up per call
 import vault_scripts
 import vault_sweep
@@ -48,7 +49,7 @@ from db.engine import get_session
 from db.models import VaultItem
 from jsonsafe import load_json
 from llm_client import LLMCapExceeded, LLMError
-from vault_jev_rules import JEV_KINDS
+from vault_jev_rules import JEV_KINDS, ai_read as jev_ai_read
 from vault_ai_vision_decide import (
     DescribeMode, _frames_for_duration, _parse_describe,
     COPY_MARK, FLAGS_COPY_MARK, JEV_KEY, ReusePlan, build_copy_update, build_describe_update,
@@ -332,7 +333,7 @@ async def _kind(account_id: str, media_id: int) -> str | None:
 async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
                         jev_sweep: vault_jev_pass.Sweep | None = None) -> dict[str, Any]:
     """The flags sweep's visit. A photo or clip: the Jev pass, which stamps its
-    flags (nothing to pay for when `_jev` is current: its flags are re-stamped
+    flags (nothing to pay for when `_jev` is AI-read (`ai_read`): its flags are re-stamped
     if they drifted). `force` never forces a paid Jev re-run. A Jev cap is that
     item's failure (`jev_capped`), not the sweep's stop (`capped`)."""
     kind = await _kind(account_id, media_id)
@@ -340,7 +341,7 @@ async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
         return {"media_id": media_id, "ok": False,
                 "status": "not_in_mirror" if kind is None else "not_flaggable"}
     jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep)
-    if jev is None:       # `_jev` already current: its flags re-stamped if they drifted, nothing paid
+    if jev is None:       # `_jev` already AI-read: its flags re-stamped if they drifted, nothing paid
         return {"media_id": media_id, "ok": True, "status": "flagged", "cost_millicents": 0}
     return vault_ai_vision_decide.with_jev(
         {"media_id": media_id, "ok": jev["ok"], "status": "flagged" if jev["ok"] else jev["status"],
@@ -459,12 +460,13 @@ async def _copy_flags(account_id: str, src_id: int, dst_id: int) -> dict[str, An
             return {"media_id": dst_id, "ok": False, "status": "not_in_mirror"}
         src_ai = load_json(src.ai_fields_json, {}) or {}
         if not flags_current(src_ai, _FLAGS_VERSION) or (
-                src.kind in JEV_KINDS and not vault_jev_flags.row_in_sync(
-                    src_ai, src.locked_fields_json, tier=src.explicitness_tier)):
+                src.kind in JEV_KINDS and not (jev_ai_read(src_ai) and vault_jev_flags.row_in_sync(
+                    src_ai, src.locked_fields_json, tier=src.explicitness_tier))):
             return {"media_id": dst_id, "ok": False, "status": "source_unflagged",
                     "detail": f"duplicate of {src_id}, which has no current flags"}
         dst_locked = set(load_json(dst.locked_fields_json, []) or [])
-        fields = build_flags_copy(load_json(dst.ai_fields_json, {}) or {}, src_ai, locked=dst_locked, src_id=src_id)
+        fields = build_flags_copy(load_json(dst.ai_fields_json, {}) or {}, src_ai, locked=dst_locked, src_id=src_id,
+                                  picks=vault_jev_manual.stored(dst.operator_overrides_json))
         dst.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
         dst.explicitness_tier = vault_jev_flags.column_tier(fields, dst.explicitness_tier, dst_locked)
         await s.commit()
@@ -550,7 +552,8 @@ async def _flags_todo(account_id: str, *, force: bool = False,
         f = load_json(r[3], {}) or {}
         if r[4] in JEV_KINDS:
             # A photo's / clip's flags are its `_jev`'s: work when either is missing / stale.
-            stale = not vault_jev_flags.row_in_sync(f, r[5], tier=r[6])
+            # Operator picks alone (no Jev reading yet) still need the scan.
+            stale = not vault_jev_flags.row_in_sync(f, r[5], tier=r[6]) or not jev_ai_read(f)
         else:
             # `flags_known`, not a key-presence test: a row carrying the superseded
             # boolean shape, or a region the model answered with something outside

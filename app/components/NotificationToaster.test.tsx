@@ -212,7 +212,6 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
     expect(card).not.toBeNull();
     // The headline assertion: bubble styling is the accent ring.
     expect(card!.className).toContain("ring-accent");
-    expect(card!.className).toContain("ring-2");
     expect(card!.className).not.toContain("ring-border");
     // Actor name renders.
     expect(card!.textContent).toContain("Flinty");

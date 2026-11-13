@@ -511,6 +511,30 @@ describe("the item popup", () => {
     );
   });
 
+  it("More info: the Jev picker shows the AI's answers; a pick and a detail go in the save as `jev`", async () => {
+    renderPanel();
+    click("tile 1");
+    click(/More info/);
+    const lane = screen.getByRole("combobox", { name: "Jev price lane" }) as HTMLSelectElement;
+    expect(lane.value).toBe("");
+    expect(lane.options[0].textContent).toBe("auto: $50");
+    expect((screen.getByRole("combobox", { name: "Jev butt" }) as HTMLSelectElement).options[0].textContent)
+      .toBe("AI: not visible");
+    expect(screen.queryByRole("combobox", { name: "Jev watermark" })).toBeNull();   // behind Details
+    expect(screen.queryByRole("combobox", { name: "vulva" })).toBeNull();          // the old vis selects are gone
+    fireEvent.change(lane, { target: { value: "$100" } });
+    click("Details");
+    fireEvent.change(screen.getByRole("combobox", { name: "Jev watermark" }), { target: { value: "y" } });
+    expect((screen.getByRole("combobox", { name: "Jev wears socks" }) as HTMLSelectElement).options[0].textContent)
+      .toBe("None");
+    click("Save & lock");
+    await flush();
+    expect(h.patch).toHaveBeenCalledWith(
+      "/admin/vault-ai/items/1", { account_id: AID, fields: { jev: { lane: "$100", watermark: "y" } } },
+      { accountId: AID },
+    );
+  });
+
   it("removing then re-adding the same hashtag is no edit", () => {
     renderPanel();
     click("tile 1");
