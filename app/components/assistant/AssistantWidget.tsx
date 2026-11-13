@@ -92,7 +92,8 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useTheme } from "@/hooks/useTheme";
 import { useDragPress } from "@/components/useDragPress";
-import { relay, type AccountMeta } from "@/lib/relay";
+import { relay, relayFile, type AccountMeta } from "@/lib/relay";
+import { saveBlob } from "@/lib/csv";
 import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { fanDeepLinkHref, isPopoutRoute, sessionGrantedPages } from "@/lib/nav";
@@ -109,6 +110,7 @@ import { AgentBridgeProvider, createAgentBridge } from "./agentBridge";
 import { AgentCursor } from "./AgentCursor";
 import { CARD, DoPill, DoThread, pillFor, type DoCallbacks } from "./DoMode";
 import { flowForHref, type DoDraft } from "./doFlows";
+import { exportRunBody } from "./doExport";
 import { editApplyBody, editResultsOf } from "./massEdit";
 import { doOfferOf, doRunReducer, draftFrom, initialDoRun, previousOf, type DoOffer, type DoRun } from "./doRunReducer";
 import { useDoRunner } from "./useDoRunner";
@@ -331,16 +333,35 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!editDraft || editDraft.flow !== "mass_edit" || !editDraft.slots || applied.current === editDraft) return;
     applied.current = editDraft;
-    const slots = editDraft.slots;
-    relay.post<unknown>("/admin/assistant/edit/apply", editApplyBody(editDraft.account_id, slots),
-      { accountId: editDraft.account_id, employeeId })
+    const { slots, account_id: acct } = editDraft;
+    relay.post<unknown>("/admin/assistant/edit/apply", editApplyBody(acct, slots), { accountId: acct, employeeId })
       .then((r) => doDispatch({ type: "applied", results: editResultsOf(r, slots) }))
       .catch((e: unknown) => doDispatch({ type: "fail", msg: e instanceof Error && e.message ? e.message : "The change didn't go through" }));
   }, [editDraft, employeeId]);
+  // A report_export run is one /admin/reports/run POST per start: keyed on the plan's client id + attempt (Try again
+  // is a new attempt of the same draft object, so an object-keyed dedupe would hang it; a server draft id may be null).
+  const exportRun = doRun.phase === "running" && doRun.draft.flow === "report_export" ? doRun : null;
+  const exportKey = exportRun ? `${exportRun.id}|${exportRun.attempt}` : null;
+  const downloaded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!exportRun || !exportKey || exportRun.draft.flow !== "report_export" || downloaded.current === exportKey) return;
+    downloaded.current = exportKey;
+    const slots = exportRun.draft.slots;
+    const body = exportRunBody(slots);
+    if (!slots || !body) { doDispatch({ type: "fail", msg: "Some names didn't match — fix them and ask again" }); return; }
+    relayFile("/admin/reports/run", { employeeId }, body)
+      .then(({ blob, name }) => {
+        const file = name || slots.filename;
+        saveBlob(file, blob);
+        doDispatch({ type: "downloaded", file });
+      })
+      .catch((e: unknown) => doDispatch({ type: "fail", msg: e instanceof Error && e.message ? e.message : "The report didn't build" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per (plan id, attempt), not per run object
+  }, [exportKey, employeeId]);
   const enterDo = useCallback(() => doDispatch({ type: "enter" }), []);
   const exitDo = useCallback(() => doDispatch({ type: "exit" }), []);
   const sendDo = useCallback(async (request: string) => {
-    if (!accountId) return;   // a model's page: the composer waits for one
+    if (accountId === undefined) return;   // focus still loading; General (null) drafts an export only
     const id = newThreadId();
     const previous = previousOf(doRun);
     const thread = previous && doThread.current ? doThread.current : (doThread.current = newThreadId());
@@ -348,7 +369,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     try {
       const r = await relay.post<DoDraft>(
         "/admin/assistant/draft",
-        { request, account_id: accountId, thread_id: thread, ...(previous ? { previous } : {}) },
+        { request, ...(accountId ? { account_id: accountId } : {}), thread_id: thread, ...(previous ? { previous } : {}) },
         { accountId, employeeId },
       );
       doDispatch({ type: "drafted", id, draft: draftFrom(r, accountId) });
@@ -682,8 +703,8 @@ export function AssistantPanel({
   // `settled` (assistantReducer) matches answers to turns by id, never by order.
   const doOn = doRun.phase !== "off";
   const doBusy = doRun.phase === "drafting" || doRun.phase === "running";
-  // Do-mode sets up one model's page: it needs a model, not General.
-  const canSend = draft.trim().length > 0 && (doOn ? !!accountId && !doBusy : accountId !== undefined);
+  // Do-mode sets up one model's page; in General (null) it can only export a report.
+  const canSend = draft.trim().length > 0 && accountId !== undefined && !(doOn && doBusy);
   const empty = shown.length === 0 && !doOn;
   const v = VARIANT[variant];
   useBodyScrollLock(v.lockPage);
@@ -892,8 +913,8 @@ export function AssistantPanel({
           ) : rosterLoaded && accounts.length === 0 && (
             <div className="px-1 text-[11px] leading-4 text-muted">{isUser ? text(NO_ACCOUNT_HINT) : NO_ACCOUNT_CHATTER}</div>
           )}
-          {doOn && accountId === null && accounts.length > 0 && (
-            <div className="px-1 text-[11px] leading-4 text-muted">Pick a model above — Do it for me sets up one model&apos;s page.</div>
+          {doOn && isUser && accountId === null && accounts.length > 0 && (
+            <div className="px-1 text-[11px] leading-4 text-muted">No model picked — I can export a report; pick a model above to set up its page.</div>
           )}
           <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
             <textarea

@@ -14,9 +14,11 @@ import userEvent from "@testing-library/user-event";
 
 // Hoisted with the vi.mock factories below — anything they close over has to
 // be, or it is still in its TDZ when the mocked module is first imported.
-const { relayPost, relayGet, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
+const { relayPost, relayGet, relayFile, saveBlob, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
   relayPost: vi.fn(),
   relayGet: vi.fn(),
+  relayFile: vi.fn(),
+  saveBlob: vi.fn(),
   nav: { pathname: "/", pushed: [] as string[] },
   scope: { accountId: "1001" as string | null },
   employee: { current: { id: 7 } as { id: number } | null },
@@ -43,8 +45,10 @@ vi.mock("@/lib/relay", () => {
   return {
     RelayError,
     relay: { post: (...a: unknown[]) => relayPost(...a), get: (...a: unknown[]) => relayGet(...a) },
+    relayFile: (...a: unknown[]) => relayFile(...a),
   };
 });
+vi.mock("@/lib/csv", async (orig) => ({ ...(await orig<object>()), saveBlob: (...a: unknown[]) => saveBlob(...a) }));
 
 vi.mock("next/navigation", () => {
   // The Do-it-for-me runner navigates with router.push: recorded like a link click.
@@ -104,6 +108,8 @@ async function ask(question: string) {
 beforeEach(() => {
   relayPost.mockReset();
   relayGet.mockReset();
+  relayFile.mockReset();
+  saveBlob.mockReset();
   // GET /admin/errors?since_hours=24 — the Status card's source.
   relayGet.mockResolvedValue({ count: 0, since_hours: 24, list: [] });
   nav.pathname = "/";
@@ -744,6 +750,79 @@ describe("AssistantWidget: Do it for me", () => {
       { account_id: "1001", rules: [{ id: 11, version: "v11" }, { id: 12, version: "v12" }], changes: { unsend_after_hours: 0 } },
       { accountId: "1001", employeeId: 7 },
     ]]);
+  });
+
+  it("General focus: an owner's export drafts with no account_id; Download builds the file, Try again re-runs it", async () => {
+    const RECIPE = { dataset: "sales", window: { from: "2026-02-01", to: "2026-02-28" }, creators: ["1002"], format: "xlsx" };
+    const EXPORT = {
+      recipe: RECIPE, format: "xlsx", window: { from: "2026-02-01", to: "2026-02-28", tz: "Europe/London" },
+      labels: { dataset: "Sales", about: "Creator earnings", creators: ["Blake2"], all_creators: 2, employees: null, kinds: [] },
+      columns: ["Creator", "Day", "Total"], filename: "sales_2026-02-01_2026-02-28.xlsx",
+    };
+    relayPost.mockResolvedValue(draft({ id: "e1", flow: "report_export", account_id: null, slots: EXPORT, assumptions: [], unresolved: [] }));
+    relayFile.mockRejectedValueOnce(new Error("a report is already running for your Agency"))
+      .mockResolvedValueOnce({ blob: new Blob(["x"]), name: "sales_2026-02-01_2026-02-28.xlsx" });
+    scope.accountId = null;
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "export last month's sales for Blake2 as excel");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(posts("/admin/assistant/draft")[0][1]).toEqual({ request: "export last month's sales for Blake2 as excel", thread_id: expect.any(String) });
+
+    const plan = await screen.findByTestId("do-export-plan");
+    expect(within(plan).getByText("Dates: 2026-02-01 – 2026-02-28 (Europe/London)")).toBeTruthy();
+    expect(within(plan).getByText("Creators: Blake2")).toBeTruthy();
+    expect(within(plan).getByText("Format: Excel (.xlsx)")).toBeTruthy();
+    await userEvent.click(within(plan).getByRole("button", { name: "Download" }));
+    expect(await screen.findByText("Couldn't build the file: a report is already running for your Agency.")).toBeTruthy();
+    expect(saveBlob).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Downloaded sales_2026-02-01_2026-02-28.xlsx")).toBeTruthy();
+    expect(relayFile.mock.calls).toEqual([
+      ["/admin/reports/run", { employeeId: 7 }, { recipe: RECIPE, format: "xlsx" }],
+      ["/admin/reports/run", { employeeId: 7 }, { recipe: RECIPE, format: "xlsx" }],
+    ]);
+    expect(saveBlob).toHaveBeenCalledWith("sales_2026-02-01_2026-02-28.xlsx", expect.any(Blob));
+  });
+
+  it("two exports whose server draft id is null each download (the key is the plan's client id)", async () => {
+    const RECIPE = { dataset: "sales", window: { from: "2026-02-01", to: "2026-02-28" }, creators: ["1002"], format: "csv" };
+    const EXPORT = {
+      recipe: RECIPE, format: "csv", window: { from: "2026-02-01", to: "2026-02-28", tz: "UTC" },
+      labels: { dataset: "Sales", about: "", creators: ["Blake2"], all_creators: 2, employees: null, kinds: [] },
+      columns: ["Creator", "Total"], filename: "sales.csv",
+    };
+    relayPost.mockResolvedValue(draft({ id: null, flow: "report_export", account_id: null, slots: EXPORT, assumptions: [], unresolved: [] }));
+    relayFile.mockResolvedValueOnce({ blob: new Blob(["x"]), name: "first.csv" })
+      .mockResolvedValueOnce({ blob: new Blob(["y"]), name: "second.csv" });
+    scope.accountId = null;
+    await openPanel();
+    await userEvent.click(doCard()!);
+    for (const file of ["first.csv", "second.csv"]) {
+      await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "export sales for Blake2");
+      await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+      await userEvent.click(within(await screen.findByTestId("do-export-plan")).getByRole("button", { name: "Download" }));
+      expect(await screen.findByText(`Downloaded ${file}`)).toBeTruthy();
+    }
+    expect(relayFile).toHaveBeenCalledTimes(2);
+    expect(saveBlob.mock.calls.map(([f]) => f)).toEqual(["first.csv", "second.csv"]);
+  });
+
+  it("an export with an unresolved name shows its card with Download off", async () => {
+    relayPost.mockResolvedValue(draft({
+      id: "e2", flow: "report_export", account_id: null, assumptions: [], unresolved: ["No Creator called \"Zed\" — name one of yours."],
+      slots: { recipe: null, format: "csv", window: { from: "2026-02-01", to: "2026-02-28", tz: "UTC" },
+        labels: { dataset: "Sales", about: "", creators: [], all_creators: 2, employees: null, kinds: [] }, columns: [], filename: "s.csv" },
+    }));
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "export Zed's sales");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    const plan = await screen.findByTestId("do-export-plan");
+    expect(within(plan).getByText("No Creator called \"Zed\" — name one of yours.")).toBeTruthy();
+    expect((within(plan).getByRole("button", { name: "Download" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(relayFile).not.toHaveBeenCalled();
   });
 
   // Spec D12: deterministic commands and live figure cards.

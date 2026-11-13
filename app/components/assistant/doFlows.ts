@@ -13,6 +13,7 @@
  *
  * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
  * `auto_story` (D13) fills the Auto Story page's own form (autoStoriesForm.ts): no "open" step — the page IS the form.
+ * `report_export` is no recipe either: Download POSTs the report recipe and saves the file (doExport.ts).
  */
 
 import type { RuleEditorAction } from "@/components/automations/ruleEditorForm";
@@ -22,11 +23,12 @@ import { blankRow, type Row } from "@/components/compose/premadeRows";
 import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
 import { DEFAULT_FORM as STORY_BLANK, type AutoStoriesAction } from "@/components/settings/autoStoriesForm";
 import type { AgentKind } from "./agentBridge";
+import type { ExportSlots } from "./doExport";
 import type { MassEditSlots } from "./massEdit";
 
 /** A flow the runner plays in a form (DO_FLOWS). */
 export type EditorFlowId = "mass_premade" | "auto_story";
-export type DoFlowId = EditorFlowId | "mass_edit";
+export type DoFlowId = EditorFlowId | "mass_edit" | "report_export";
 
 export interface FolderTiers {
   sfw: number;
@@ -77,7 +79,6 @@ export interface AutoStorySlots {
 
 interface DraftBase {
   id: string;
-  account_id: string;
   summary: string;
   assumptions: string[];
   unresolved: string[];
@@ -86,12 +87,14 @@ interface DraftBase {
   error: string | null;
 }
 
-/** POST /admin/assistant/draft's 200 (always 200). */
+/** POST /admin/assistant/draft's 200 (always 200). `account_id` null: asked in General (no model) — an export or
+ *  no draft. */
 export type DoDraft = DraftBase & (
-  | { flow: "mass_premade"; slots: MassPremadeSlots | null }
-  | { flow: "auto_story"; slots: AutoStorySlots | null }
-  | { flow: "mass_edit"; slots: MassEditSlots | null }
-  | { flow: null; slots: null }
+  | { flow: "mass_premade"; account_id: string; slots: MassPremadeSlots | null }
+  | { flow: "auto_story"; account_id: string; slots: AutoStorySlots | null }
+  | { flow: "mass_edit"; account_id: string; slots: MassEditSlots | null }
+  | { flow: "report_export"; account_id: string | null; slots: ExportSlots | null }
+  | { flow: null; account_id: string | null; slots: null }
 );
 
 /** `reveal`: click a disclosure open (only when `aria-expanded="false"`) so the next fields show. */
@@ -128,6 +131,8 @@ export interface DoFlow<S, A> {
 export interface BoundFlow {
   kind: AgentKind;
   title: string;
+  /** The draft's model: the run opens its page and form. */
+  accountId: string;
   route: (accountId: string) => string;
   steps: AgentStep[];
   planLines: string[];
@@ -359,17 +364,17 @@ export const DO_FLOWS: {
   },
 };
 
-function bind<S, A extends RuleEditorAction | AutoStoriesAction>(f: DoFlow<S, A>, slots: S): BoundFlow {
+function bind<S, A extends RuleEditorAction | AutoStoriesAction>(f: DoFlow<S, A>, slots: S, accountId: string): BoundFlow {
   return {
-    kind: f.kind, title: f.title, route: f.route, steps: f.toActions(slots), planLines: f.planLines(slots),
+    kind: f.kind, title: f.title, accountId, route: f.route, steps: f.toActions(slots), planLines: f.planLines(slots),
     savedSwitch: f.savedSwitch(slots), doneText: f.doneText,
   };
 }
 
 /** The runnable draft's flow, bound to its slots; null for a mass_edit draft (no form) or no slots. */
 export function boundFlow(d: DoDraft): BoundFlow | null {
-  if (d.flow === "mass_premade" && d.slots) return bind(DO_FLOWS.mass_premade, d.slots);
-  if (d.flow === "auto_story" && d.slots) return bind(DO_FLOWS.auto_story, d.slots);
+  if (d.flow === "mass_premade" && d.slots) return bind(DO_FLOWS.mass_premade, d.slots, d.account_id);
+  if (d.flow === "auto_story" && d.slots) return bind(DO_FLOWS.auto_story, d.slots, d.account_id);
   return null;
 }
 

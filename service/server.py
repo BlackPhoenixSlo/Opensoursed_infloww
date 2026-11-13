@@ -133,6 +133,7 @@ from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
+from report_recipe_api import router as _report_recipe_router  # noqa: E402
 from copilot_api import router as _copilot_router  # noqa: E402
 # Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
@@ -386,6 +387,7 @@ app.include_router(_account_config_router)
 # handler derives their role server-side.
 app.include_router(_assistant_router)
 app.include_router(_assistant_draft_router)
+app.include_router(_report_recipe_router)
 # Messages Pro's AI Copilot (POST /admin/copilot/{a}/{f}/suggest): reply
 # suggestions only, never a send. Chatters reach it through Messages Pro.
 app.include_router(_copilot_router)

@@ -10,6 +10,7 @@ import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { boundFlow, PLAN_NOTE, type DoDraft } from "./doFlows";
+import { exportPlanText, type ExportSlots } from "./doExport";
 import { canStart, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
@@ -25,7 +26,8 @@ const BTN_SOFT = cn(BTN, "border border-border-light bg-panel text-fg hover:bord
 export const DO_HINT =
   "Tell me what to set up — e.g. “auto mass to fans every hour, delete after 8h, SFW folder, 10 captions”. "
   + "I can set up a new Auto Mass or Auto Story (saved OFF — you turn it on) or change unsend, schedule, "
-  + "online-only, skip-recent-chats or turn off on your existing Auto Masses, here or on every model.";
+  + "online-only, skip-recent-chats or turn off on your existing Auto Masses, here or on every model. "
+  + "Owners can also export a report — e.g. “last month's sales per Creator as Excel”.";
 
 /** The plan card's text, pure (DoMode.test.ts): the flow's plain-words lines, the draft's assumptions and open
  *  questions, and the fixed note. */
@@ -127,7 +129,7 @@ function EditThread({ run, draft, slots, on, request }: {
       {run.phase === "running" && (
         <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">Changing the rules…</span></div>
       )}
-      {run.phase === "done" && <EditResults results={run.results ?? []} slots={slots} />}
+      {run.phase === "done" && <EditResults results={run.outcome.kind === "applied" ? run.outcome.results : []} slots={slots} />}
       {(run.phase === "aborted" || run.phase === "failed") && (
         <>
           <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
@@ -136,6 +138,58 @@ function EditThread({ run, draft, slots, on, request }: {
               : `${run.reason}.`}
           </div>
           <div className="flex flex-wrap gap-2">
+            <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/** The report_export plan card: what the file holds (no row count — that would cost a second run). */
+function ExportPlanCard({ draft, slots, children }: { draft: DoDraft; slots: ExportSlots; children?: ReactNode }) {
+  return (
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} data-testid="do-export-plan">
+      <div className="mb-2 text-[14px] font-semibold">Export</div>
+      <ul className="space-y-1">
+        {exportPlanText(slots).map((l) => <li key={l} className="break-words">{l}</li>)}
+      </ul>
+      <Notes assumptions={draft.assumptions} unresolved={draft.unresolved} />
+      {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/** The do-mode conversation for a report_export draft: plan card → Download → building → the saved file, or the
+ *  error and Try again (a new attempt). Download stays off while a name is unresolved (canStart). */
+function ExportThread({ run, draft, slots, on, request }: {
+  run: Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>; draft: DoDraft; slots: ExportSlots; on: DoCallbacks; request: ReactNode;
+}) {
+  return (
+    <>
+      {request}
+      {run.phase === "planned" ? (
+        <ExportPlanCard draft={draft} slots={slots}>
+          <button type="button" className={BTN_MAIN} onClick={on.start} disabled={!canStart(draft)}>Download</button>
+          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Cancel</button>
+        </ExportPlanCard>
+      ) : <ExportPlanCard draft={draft} slots={slots} />}
+      {run.phase === "running" && (
+        <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">Building the file…</span></div>
+      )}
+      {run.phase === "done" && (
+        <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-[13px] text-fg")} role="status">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok [html[data-theme=light]_&]:text-[#1a7f37]" aria-hidden />
+          <span className="break-words">Downloaded {run.outcome.kind === "downloaded" ? run.outcome.file : slots.filename}</span>
+        </div>
+      )}
+      {(run.phase === "aborted" || run.phase === "failed") && (
+        <>
+          <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
+            {run.phase === "failed" ? `Couldn't build the file: ${run.msg.trim().replace(/[.\s]*$/, ".")}` : `${run.reason}.`}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={BTN_MAIN} onClick={on.start}>Try again</button>
             <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
           </div>
         </>
@@ -187,6 +241,10 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
     return <>{request}<div className={cn(BUBBLE_BOT, "text-fg-dim")}>{run.msg}</div></>;
   }
   if (!draft) return null;
+  // An export with an unresolved name still shows its card (Download off), not the Q&A swap.
+  if (draft.flow === "report_export" && draft.slots && !draft.error) {
+    return <ExportThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
+  }
   if (!canStart(draft)) {
     // Not a flow the bot can do (or the draft failed): its sentence, and the Q&A swap.
     return (
@@ -257,9 +315,13 @@ export function pillFor(run: DoRun, expanded: DoRun | null): boolean {
 
 /** The pill's short outcome line once the run is over (DoMode.test.ts). */
 export function pillStatus(run: DoRun): string {
-  if (run.phase === "done") return run.results ? resultHeadline(run.results) : "Created OFF";
+  if (run.phase === "done") {
+    const o = run.outcome;
+    return o.kind === "applied" ? resultHeadline(o.results) : o.kind === "downloaded" ? "Downloaded" : "Created OFF";
+  }
   if (run.phase === "aborted") return "Stopped";
   if (run.phase === "failed") return "Couldn't finish";
+  if (run.phase === "running" && run.draft.flow === "report_export") return "Building the file…";
   return run.phase === "running" && run.saving ? "Saving…" : "Doing it…";
 }
 

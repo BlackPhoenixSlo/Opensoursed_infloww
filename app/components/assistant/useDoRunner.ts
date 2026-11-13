@@ -114,7 +114,7 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
 
     const execute = async () => {
       const steps = flow.steps;
-      const acct = runDraft.account_id;
+      const acct = flow.accountId;
       const late = (what: string) => (e: unknown) => { throw signal.aborted ? e : new Error(what); };
       if (bridge.hasEditor()) throw new Error("Close the open editor first — I won't fill over it.");
       setCursor({ x: window.innerWidth - 80, y: window.innerHeight - 140, label: "Opening the page…", clicks: 0 });

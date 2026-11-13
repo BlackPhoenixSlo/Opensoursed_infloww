@@ -118,6 +118,11 @@ Fable round 2 (after build): continue; gates = slop green + CAUGHT, structural O
   2026-11-12 (D13): the 15 `oth-auto_story-*` rows (were flow null) now expect `auto_story` (ids kept) + 16 hand rows
   (s01–s10 positives incl. es/sl, s11–s16 story-vs-mass / can't-do confusers), 1091 total. Live eval not run yet
   (owner-run).
+  2026-11-13 (ultra-mode ticket 02, `report_export`): every case now runs as the owner of `common.REPORT_CTX`
+  (Creators / Employees / today 2026-05-20 in the user block); +42 hand rows r01–r42 (4 datasets, presets and dates,
+  xlsx only when said, unique names / unresolved / ambiguous, kinds, top-N, General focus, es/sl/pt/de, 6 flow-null
+  confusers and refusals); `oth-stats_payouts-214` "export earnings to csv" now expects an export (id kept); 1133
+  total. Report keys `report_*`; truths cross-checked through the real `resolve_export` (venv). Live eval not run.
 
 ## Later (not pilot)
 

@@ -15,22 +15,38 @@
  *   • `reset` (Cancel) goes back to an empty do-mode composer; `exit` leaves do-mode.
  *   • A `mass_edit` draft (D11) has no steps: `start` goes straight to `saving` (the provider's one apply POST is out,
  *     so Stop doesn't apply) and `applied` lands its per-rule results on `done`.
+ *   • A `report_export` draft has no steps either: `start` (Download) goes straight to `saving` (the provider's one
+ *     /admin/reports/run POST), `downloaded` lands the file on `done`. `attempt` counts starts of one draft: Try again
+ *     from `failed` is attempt+1, so the provider's download effect (keyed on the plan's client `id` + attempt — a server
+ *     draft id may be null, so two exports would collide) fires again.
  */
 
+import { exportSlotsFrom } from "./doExport";
 import type { AutoStorySlots, DoDraft, MassPremadeSlots } from "./doFlows";
 import { editSlotsFrom, type EditResult } from "./massEdit";
 
-type Planned = { request: string; draft: DoDraft };
+/** `id`: the drafting request's client id — the plan's own identity (a server draft id may be null). */
+type Planned = { id: string; request: string; draft: DoDraft };
+
+/** What a finished run did: a rule saved OFF, a mass_edit's per-rule results, or an export's saved file. */
+export type DoOutcome =
+  | { kind: "saved" }
+  | { kind: "applied"; results: EditResult[] }
+  | { kind: "downloaded"; file: string };
+
+/** Flows with no steps: `start` goes straight to `saving` (one POST by the provider), and `saved` never ends them. */
+const DIRECT_FLOWS: ReadonlySet<DoDraft["flow"]> = new Set(["mass_edit", "report_export"]);
 
 export type DoRun =
   | { phase: "off" }
   | { phase: "idle" }
   | { phase: "drafting"; id: string; request: string }
   | ({ phase: "planned" } & Planned)
-  | ({ phase: "running"; step: number; instant: boolean; saving: boolean } & Planned)
-  | ({ phase: "done"; ruleSaved: true; results?: EditResult[] } & Planned)
+  | ({ phase: "running"; step: number; instant: boolean; saving: boolean; attempt: number } & Planned)
+  | ({ phase: "done"; outcome: DoOutcome } & Planned)
   | ({ phase: "aborted"; reason: string } & Planned)
-  | { phase: "failed"; request: string; draft: DoDraft | null; msg: string };
+  /** `attempt`: the failed run's (none for a failed draft). */
+  | { phase: "failed"; id: string; request: string; draft: DoDraft | null; msg: string; attempt?: number };
 
 export type DoAction =
   | { type: "enter" }
@@ -46,15 +62,18 @@ export type DoAction =
   | { type: "saved" }
   /** A mass_edit run's apply answered: one result per planned rule. */
   | { type: "applied"; results: EditResult[] }
+  /** A report_export run's file was saved. */
+  | { type: "downloaded"; file: string }
   /** `id`: a drafting request's failure (dropped when stale); none: the running run's. */
   | { type: "fail"; msg: string; id?: string }
   | { type: "reset" };
 
 export const initialDoRun: DoRun = { phase: "off" };
 
-/** The draft a run would act on: a flow, its slots, no error. */
+/** The draft a run would act on: a flow, its slots, no error; an export also every name resolved (a recipe). */
 export const canStart = (d: DoDraft | null | undefined): d is DoDraft & { slots: NonNullable<DoDraft["slots"]> } =>
-  !!d && d.flow !== null && d.slots !== null && !d.error;
+  !!d && d.flow !== null && d.slots !== null && !d.error
+  && (d.flow !== "report_export" || (d.unresolved.length === 0 && d.slots.recipe !== null));
 
 /** The plan a new request refines: the planned Auto mass draft's slots (a chat reply while planned), else none. An
  *  edit or Auto Story plan is never refined: a reply re-asks from scratch. */
@@ -71,31 +90,39 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
       if (s.phase === "off" || s.phase === "running" || s.phase === "drafting") return s;
       return { phase: "drafting", id: a.id, request: a.request };
     case "drafted":
-      return s.phase === "drafting" && s.id === a.id ? { phase: "planned", request: s.request, draft: a.draft } : s;
+      return s.phase === "drafting" && s.id === a.id ? { phase: "planned", id: s.id, request: s.request, draft: a.draft } : s;
     case "start":
     case "skipAnimation": {
       if (s.phase === "running") return a.type === "skipAnimation" && !s.instant ? { ...s, instant: true } : s;
       const runnable = s.phase === "planned" || s.phase === "aborted" || (s.phase === "failed" && s.draft !== null);
       if (!runnable || !canStart(s.draft)) return s;
-      const edit = s.draft.flow === "mass_edit";
-      return { phase: "running", request: s.request, draft: s.draft, step: 0, instant: edit || a.type === "skipAnimation", saving: edit };
+      const direct = DIRECT_FLOWS.has(s.draft.flow);
+      const attempt = s.phase === "failed" ? (s.attempt ?? 0) + 1 : 0;
+      return {
+        phase: "running", id: s.id, request: s.request, draft: s.draft, step: 0, instant: direct || a.type === "skipAnimation",
+        saving: direct, attempt,
+      };
     }
     case "step":
       return s.phase === "running" && s.step !== a.index ? { ...s, step: a.index } : s;
     case "saving":
       return s.phase === "running" && !s.saving ? { ...s, saving: true } : s;
     case "abort":
-      return s.phase === "running" && !s.saving ? { phase: "aborted", request: s.request, draft: s.draft, reason: a.reason } : s;
+      return s.phase === "running" && !s.saving ? { phase: "aborted", id: s.id, request: s.request, draft: s.draft, reason: a.reason } : s;
     case "saved":
-      return s.phase === "running" && s.draft.flow !== "mass_edit" ? { phase: "done", request: s.request, draft: s.draft, ruleSaved: true } : s;
+      return s.phase === "running" && !DIRECT_FLOWS.has(s.draft.flow)
+        ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "saved" } } : s;
     case "applied":
       return s.phase === "running" && s.draft.flow === "mass_edit"
-        ? { phase: "done", request: s.request, draft: s.draft, ruleSaved: true, results: a.results } : s;
+        ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "applied", results: a.results } } : s;
+    case "downloaded":
+      return s.phase === "running" && s.draft.flow === "report_export"
+        ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "downloaded", file: a.file } } : s;
     case "fail":
       if (a.id !== undefined) {
-        return s.phase === "drafting" && s.id === a.id ? { phase: "failed", request: s.request, draft: null, msg: a.msg } : s;
+        return s.phase === "drafting" && s.id === a.id ? { phase: "failed", id: s.id, request: s.request, draft: null, msg: a.msg } : s;
       }
-      return s.phase === "running" ? { phase: "failed", request: s.request, draft: s.draft, msg: a.msg } : s;
+      return s.phase === "running" ? { phase: "failed", id: s.id, request: s.request, draft: s.draft, msg: a.msg, attempt: s.attempt } : s;
     case "reset":
       return s.phase === "off" ? s : { phase: "idle" };
   }
@@ -103,23 +130,28 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
 
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
-/** The draft POST's 200, read defensively: a missing field never crashes the card, and a blank answer still reads. */
-export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string): DoDraft {
-  const flow = r?.flow === "mass_premade" || r?.flow === "mass_edit" || r?.flow === "auto_story" ? r.flow : null;
+/** The draft POST's 200, read defensively: a missing field never crashes the card, and a blank answer still reads.
+ *  `accountId` null: drafted in General (an export only — another flow with no model is no draft). */
+export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string | null): DoDraft {
+  const acct = typeof r?.account_id === "string" && r.account_id ? r.account_id : accountId;
+  const named = r?.flow === "mass_premade" || r?.flow === "mass_edit" || r?.flow === "auto_story" || r?.flow === "report_export"
+    ? r.flow : null;
+  const flow = named === "report_export" || acct ? named : null;
   const pair = flow === "mass_premade" ? { flow, slots: r?.slots ? r.slots as MassPremadeSlots : null }
     : flow === "auto_story" ? { flow, slots: r?.slots ? r.slots as AutoStorySlots : null }
     : flow === "mass_edit" ? { flow, slots: editSlotsFrom(r?.slots) }
+    : flow === "report_export" ? { flow, slots: exportSlotsFrom(r?.slots) }
     : { flow: null, slots: null };
   return {
     id: String(r?.id ?? ""),
     ...pair,
-    account_id: typeof r?.account_id === "string" && r.account_id ? r.account_id : accountId,
+    account_id: acct,
     summary: typeof r?.summary === "string" ? r.summary : "",
     assumptions: strs(r?.assumptions),
     unresolved: strs(r?.unresolved),
     answer: (typeof r?.answer === "string" ? r.answer : "").trim()
-      || (flow ? "" : "I can only set up an Auto Mass or Auto Story, or change an Auto Mass, for now — ask it as a question "
-        + "and I'll point you to the page."),
+      || (flow ? "" : "I can only set up an Auto Mass or Auto Story, change an Auto Mass, or export a report of your "
+        + "numbers, for now — ask it as a question and I'll point you to the page."),
     error: typeof r?.error === "string" ? r.error : null,
   } as DoDraft;
 }

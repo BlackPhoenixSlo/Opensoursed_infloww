@@ -54,6 +54,42 @@ async def per_fan_data(
     return {"rows": rows, "count": len(rows), "columns": list(_HEADER)}
 
 
+def fan_spend_scope(account_ids: list[str] | None, start: datetime, end: datetime) -> list[Any]:
+    """The tracked fan sales of the window (on these Creators; all when None)."""
+    T = Transaction
+    scope = [T.status.in_(TRACKED_STATUSES), T.fan_id.is_not(None), T.occurred_at >= start, T.occurred_at <= end]
+    if account_ids is not None:
+        scope.append(T.account_id.in_(account_ids))
+    return scope
+
+
+def fan_spend_q(account_ids: list[str] | None, start: datetime, end: datetime,
+                kinds: tuple[str, ...] | None = None) -> Any:
+    """Each fan's spend in the window per Creator: total, net (`net_or_80`),
+    tips, PPV and subscriptions; only the ledger `kinds` when given. Shared
+    by Fan reports' Top fans and the report recipe's `fan_spend`."""
+    T = Transaction
+
+    def _sum_if(cond: Any) -> Any:
+        return func.coalesce(func.sum(case((cond, T.amount_cents), else_=0)), 0)
+
+    where = fan_spend_scope(account_ids, start, end)
+    if kinds is not None:
+        where.append(T.kind.in_(kinds))
+    return (
+        select(
+            T.account_id, T.fan_id,
+            func.sum(T.amount_cents).label("total_cents"),
+            literal_column(tx_rollup.MEASURES["net_or_80_cents"][1]).label("net_or_80_cents"),
+            _sum_if(T.kind.in_(TIP_KINDS)).label("tips_cents"),
+            _sum_if(T.kind.in_(PPV_KINDS)).label("ppv_cents"),
+            _sum_if(T.kind.in_(("subscription", "rebill"))).label("subs_cents"),
+        )
+        .where(*where)
+        .group_by(T.account_id, T.fan_id)
+    )
+
+
 def new_subs_q(account_ids: list[str] | None, start: datetime, end: datetime) -> Any:
     """New subs in the window: each fan whose subscription began in it, by a
     subscription sale (pending too, so a sub that fires today shows at once;
@@ -133,25 +169,8 @@ async def fan_report(
     end = _parse_date(to, field="to", zone=zone) if to else datetime.utcnow()
 
     T = Transaction
-    scope = [T.status.in_(TRACKED_STATUSES), T.fan_id.is_not(None), T.occurred_at >= start, T.occurred_at <= end]
-    if account_ids is not None:
-        scope.append(T.account_id.in_(account_ids))
-
-    def _sum_if(cond: Any) -> Any:
-        return func.coalesce(func.sum(case((cond, T.amount_cents), else_=0)), 0)
-
-    spend_q = (
-        select(
-            T.account_id, T.fan_id,
-            func.sum(T.amount_cents).label("total_cents"),
-            literal_column(tx_rollup.MEASURES["net_or_80_cents"][1]).label("net_or_80_cents"),
-            _sum_if(T.kind.in_(TIP_KINDS)).label("tips_cents"),
-            _sum_if(T.kind.in_(PPV_KINDS)).label("ppv_cents"),
-            _sum_if(T.kind.in_(("subscription", "rebill"))).label("subs_cents"),
-        )
-        .where(*scope)
-        .group_by(T.account_id, T.fan_id)
-    )
+    scope = fan_spend_scope(account_ids, start, end)
+    spend_q = fan_spend_q(account_ids, start, end)
     # JSON consumes the aggregate twice in one statement; CSV keeps its original query.
     spend = (spend_q.subquery() if format == "csv" else
              spend_q.cte("fan_spend").prefix_with("MATERIALIZED", dialect="sqlite"))

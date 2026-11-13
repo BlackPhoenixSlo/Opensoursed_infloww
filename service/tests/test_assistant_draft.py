@@ -21,7 +21,7 @@ _harness.bootstrap()
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import date, datetime  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # read per call; a case flips it back
 
@@ -29,6 +29,7 @@ from fastapi import HTTPException  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 import assistant_draft  # noqa: E402
+import assistant_report  # noqa: E402
 import auth  # noqa: E402
 import llm_client  # noqa: E402
 
@@ -331,8 +332,22 @@ def case_massdmexclude_is_never_stored_and_always_explained():
 
 def case_the_fewshots_parse_as_the_schema_they_teach():
     shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
-    assert len(shots) == 9, len(shots)
-    parsed = [Intent.model_validate(json.loads(s)) for s in shots]
+    assert len(shots) == 12, len(shots)
+    every = [Intent.model_validate(json.loads(s)) for s in shots]
+    parsed, exports = every[:9], every[9:]                        # the 3 report_export shots come last
+    requests = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)[9:]
+    ctx = assistant_report.ReportCtx((("a1", "Luna"), ("a2", "Mia Rose")), ((1, "Anna"), (2, "Marco")),
+                                     "Europe/London", date(2026, 3, 14), "monday", frozenset())
+    got = [assistant_report.resolve_export(i.report, ctx, request=r) for i, r in zip(exports, requests)]
+    assert all(d is not None and not d.unresolved for d, _ in got), got
+    assert exports[0].report["creators"] == ["Mia"], "the shot must keep the request's words (F3)"
+    mia, chatters, top = (d.slots for d, _ in got)
+    assert (mia["recipe"]["creators"], mia["window"]["from"], mia["window"]["to"], mia["format"]) == (
+        ["a2"], "2026-02-01", "2026-02-28", "xlsx"), mia
+    assert (chatters["recipe"]["dataset"], chatters["recipe"]["kinds"], chatters["window"]["from"]) == (
+        "employee_sales", ["tip", "ppv"], "2026-03-09"), chatters
+    assert (top["recipe"]["sort"], top["recipe"]["limit"], top["recipe"]["window"]) == (
+        "total", 20, {"from": "2025-12-15", "to": "2026-03-14"}), top
     assert parsed[0].flow == "mass_premade" and len(parsed[0].captions.generated) == 10
     assert parsed[-1].flow is None and parsed[-6].every is None   # a mass with no timing is still one
     unsend, pause = parsed[-5], parsed[-4]                        # mass_edit: unsend off ≠ switch off
@@ -1194,6 +1209,352 @@ async def case_a_folder_named_like_mass_does_not_veto_a_story():
                                       refine=False, flow=assistant_draft.STORY_FLOW)
     assert assistant_draft.vetoed("auto story and a mass message every 4 hours",
                                   refine=False, flow=assistant_draft.STORY_FLOW)
+
+
+# ── report_export (ultra-mode ticket 02) ──────────────────────────────
+
+from assistant_draft import REPORT_FLOW  # noqa: E402
+from assistant_report import ReportCtx, resolve_export, resolve_name  # noqa: E402
+from db.models import Employee  # noqa: E402
+
+CREATORS = (("a1", "Luna"), ("a2", "Luna B"), ("a3", "Mia Rose"), ("a4", "Kim"))
+EMPLOYEES = ((1, "Anna"), (2, "Marco"), (3, "Marco Polo"))
+TODAY = date(2026, 11, 13)
+
+
+def _ctx(creators=CREATORS, employees=EMPLOYEES, shared=frozenset()) -> ReportCtx:
+    return ReportCtx(tuple(creators), tuple(employees), "Europe/London", TODAY, "monday", frozenset(shared))
+
+
+def _rx(report, *, request="export it", creators=CREATORS, employees=EMPLOYEES, shared=frozenset()):
+    return resolve_export(report, _ctx(creators, employees, shared), request=request)
+
+
+def _export(**over) -> dict:
+    return {"flow": REPORT_FLOW, "report": {"dataset": "sales", "window": {"preset": "last_7_days"},
+                                            "creators": [], "employees": [], "kinds": [], "format": "csv", **over},
+            "assumptions": [], "unresolved": []}
+
+
+def case_report_names_resolve_uniquely_or_stay_unresolved():
+    opts = list(CREATORS)
+    table = [("Luna", "a1", None),            # exact wins over containment ("Luna B")
+             ("luna b", "a2", None), ("mia", "a3", None), ("Mia Rose OF", "a3", None), ("a4", "a4", None),
+             ("lun", None, '"lun" could be Luna or Luna B — say which Creator.'),
+             ("Lunna", None, 'No Creator called "Lunna" — name one of yours.'),   # close spelling never resolves
+             ("Bob", None, 'No Creator called "Bob" — name one of yours.'),
+             ("", None, 'Which Creator is ""?')]
+    for want, key, problem in table:
+        assert resolve_name(want, opts, "Creator") == (key, problem), (want, resolve_name(want, opts, "Creator"))
+    dup = [("x1", "Kim"), ("x2", "Kim")]                   # two Creators with one nickname: never a guess
+    assert resolve_name("Kim", dup, "Creator")[0] is None
+
+
+def case_resolve_export_table():
+    d, why = _rx({"dataset": "sales", "window": None, "creators": []})
+    assert why is None and d.slots["recipe"]["creators"] == [] and d.unresolved == [], (d, why)   # all of them
+    assert assistant_report.WHEN_NOTE in d.assumptions, d.assumptions
+    assert d.slots["recipe"]["window"] == {"from": "2026-10-15", "to": "2026-11-13"}, d.slots     # fixed at draft
+    assert d.slots["window"] == {"from": "2026-10-15", "to": "2026-11-13", "tz": "Europe/London"}
+    assert d.slots["filename"] == "sales_2026-10-15_to_2026-11-13.csv" and d.slots["format"] == "csv"
+    assert d.slots["columns"] == ["Creator", "Gross ($)", "Net or 80% ($)", "Sales"], d.slots["columns"]
+    assert d.slots["labels"]["creators"] == [] and d.slots["labels"]["all_creators"] == 4
+    # Names: resolved → ids + labels; ambiguous → unresolved and NO recipe (Download off), never all Creators.
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia", "Kim"]})
+    assert (d.slots["recipe"]["creators"], d.slots["labels"]["creators"]) == (["a3", "a4"], ["Mia Rose", "Kim"])
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia", "lun"]})
+    assert d.slots["recipe"] is None and len(d.unresolved) == 1 and "Luna or Luna B" in d.unresolved[0], d
+    d, _ = _rx({"dataset": "employee_sales", "window": {"preset": "today"}, "employees": ["Marco"]})
+    assert d.slots["recipe"]["employees"] == [2] and d.slots["labels"]["employees"] == ["Marco"], d.slots
+    d, _ = _rx({"dataset": "chat_activity", "window": {"preset": "today"}, "employees": ["Marc"]})
+    assert d.slots["recipe"] is None and "Marco or Marco Polo" in d.unresolved[0], d
+    # Kinds as the model writes them; xlsx only when the request says so.
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "kinds": ["Tips", "PPVs"], "format": "xlsx"},
+               request="export tips and ppv to excel")
+    assert (d.slots["recipe"]["kinds"], d.slots["format"]) == (["tip", "ppv"], "xlsx"), d.slots
+    assert d.slots["labels"]["kinds"] == ["Tips", "PPV"] and d.slots["filename"].endswith(".xlsx")
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "format": "xlsx"}, request="export sales")
+    assert d.slots["format"] == "csv", d.slots
+    # Refusals: a restriction that does not parse never widens the report.
+    for report, needle in [
+        ({"dataset": "messages", "window": {"preset": "today"}}, "dataset: not available; nearest is chat_activity"),
+        ({"dataset": "sales", "window": {"preset": "today"}, "kinds": ["refunds"]}, "kinds: unknown kind refunds"),
+        ({"dataset": "sales", "window": {"preset": "today"}, "employees": ["Anna"]}, "employees: sales has no Employees"),
+        ({"dataset": "sales", "window": {"preset": "last_decade"}}, "window: unknown preset"),
+        ({"dataset": "sales", "window": {"from": "2026-11-01", "to": "2026-10-01"}}, "window: to is before from"),
+        ({"dataset": "employee_sales", "window": {"preset": "last_365_days"}}, "window: the window is 365 days"),
+        ({"dataset": "sales", "window": {"preset": "today"}, "group_by": ["planet"]}, "group_by: unknown key planet"),
+        ({"dataset": "chat_activity", "window": {"preset": "today"}, "kinds": ["tip"]}, "kinds: chat_activity has no kinds"),
+    ]:
+        d, why = _rx(report)
+        assert d is None and why and needle in why, (report, why)
+    assert _rx(None) == (None, assistant_report.NO_REPORT_ANSWER)
+    # Only sort / limit are dropped, each with a line why.
+    d, why = _rx({"dataset": "fan_spend", "window": {"preset": "today"}, "sort": "planet", "limit": 0})
+    assert why is None and d.slots["recipe"]["sort"] is None and d.slots["recipe"]["limit"] is None, (d, why)
+    assert any("couldn't sort by" in a for a in d.assumptions) and any("Every row" in a for a in d.assumptions)
+    # No Creators at all, or more than a report takes with none named: unresolved.
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, creators=())
+    assert d.slots["recipe"] is None and "no Creators" in d.unresolved[0], d.unresolved
+    many = tuple((f"c{i}", f"Creator {i}") for i in range(60))
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, creators=many)
+    assert d.slots["recipe"] is None and "at most 50" in d.unresolved[0], d.unresolved
+
+
+def case_a_malformed_restriction_refuses_and_never_widens():
+    base = {"dataset": "sales", "window": {"preset": "today"}}
+    for kinds in ("", False, 0, {}, "tip"):                 # F2: never read as "all kinds"
+        d, why = _rx({**base, "kinds": kinds})
+        assert d is None and why == "I can't make that report — kinds: a list of kinds.", (kinds, why)
+    for key, bad, needle in [("filters", {"minimum_spend": 1000}, "filters: unknown field"),
+                             ("window", {}, "window: give {preset} or {from, to}"),
+                             ("creators", "Mia", "creators: a list of Creator names"),
+                             ("creators", {}, "creators: a list of Creator names"),
+                             ("group_by", "", "group_by: a list of keys"),
+                             ("metrics", 0, "metrics: a list of metrics")]:
+        d, why = _rx({**base, key: bad})
+        assert d is None and why and needle in why, (key, bad, why)
+    d, why = _rx({**base, "employees": {}})
+    assert d is None and "employees: sales has no Employees" in why, why
+    for absent in ({}, {"kinds": None, "group_by": None, "metrics": None, "creators": None, "employees": None}):
+        d, why = _rx({**base, **absent})                     # absent / null = the dataset's default
+        assert why is None and d.slots["recipe"]["kinds"] == [] and d.slots["recipe"]["creators"] == [], (absent, why)
+    d, why = _rx({"dataset": "sales", "window": None})
+    assert why is None and assistant_report.WHEN_NOTE in d.assumptions, why
+
+
+def case_a_name_the_model_widened_stays_a_question():
+    two_mias = (("a1", "Mia Rose"), ("a2", "Mia Lux"), ("a3", "Luna"))
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
+               request="export today's sales for Mia", creators=two_mias)      # F3: "Mia" is two Creators
+    assert d.slots["recipe"] is None and d.unresolved == ['"Mia" could be Mia Rose or Mia Lux — say which Creator.'], d
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
+               request="export today's sales for mia rose", creators=two_mias)
+    assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
+    exact = (("a1", "Mia"), ("a2", "Mia Rose"))
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
+               request="export Mia's sales", creators=exact)
+    assert d.slots["recipe"] is None and "Mia or Mia Rose" in d.unresolved[0], d
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
+               request="export Mia's sales")                               # one Mia: resolves
+    assert d.slots["recipe"]["creators"] == ["a3"] and d.unresolved == [], d
+    # F20: a short name widens too — "Li" (2 letters), "李" (one character, a whole word of the name)
+    for short, rose, lux in (("Li", "Li Rose", "Li Lux"), ("李", "李 Rose", "李 Lux")):
+        two = (("a1", rose), ("a2", lux), ("a3", "Luna"))
+        d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": [rose]},
+                   request=f"export {short} sales today", creators=two)
+        assert d.slots["recipe"] is None and d.unresolved == [f'"{short}" could be {rose} or {lux} — say which '
+                                                              'Creator.'], d
+        d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": [rose]},
+                   request=f"export {short} sales today", creators=two[::2])  # one of them: resolves
+        assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
+               request="give me a report on her")                          # "a": no name's word, not a question
+    assert d.slots["recipe"]["creators"] == ["a3"] and d.unresolved == [], d
+
+
+def case_a_name_the_model_shortened_is_the_longer_one_or_a_question():
+    today = {"dataset": "sales", "window": {"preset": "today"}}
+    mias = (("a1", "Mia"), ("a2", "Mia Rose"), ("a3", "Luna"))
+    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia Rose's sales", creators=mias)   # F22
+    assert d.slots["recipe"]["creators"] == ["a2"] and d.unresolved == [], d
+    d, _ = _rx({"dataset": "employee_sales", "window": {"preset": "today"}, "employees": ["Anna"]},
+               request="export Anna Lee's sales", employees=((1, "Anna"), (2, "Anna Lee")))
+    assert d.slots["recipe"]["employees"] == [2] and d.unresolved == [], d
+    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia's sales", creators=mias)   # exact: no question
+    assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
+    d, _ = _rx({**today, "creators": ["Mia", "Mia Rose"]}, request="export Mia and Mia Rose", creators=mias)
+    assert d.slots["recipe"]["creators"] == ["a1", "a2"] and d.unresolved == [], d                # both named
+    d, _ = _rx({**today, "creators": ["Mia", "Rose"]}, request="export Mia, Rose",
+               creators=(*mias, ("a4", "Rose")))                                                  # a list, not "Mia Rose"
+    assert d.slots["recipe"]["creators"] == ["a1", "a4"] and d.unresolved == [], d
+    d, _ = _rx({**today, "creators": ["Lee"]}, request="export Anna Lee Kim",
+               creators=(("a1", "Lee"), ("a2", "Anna Lee"), ("a3", "Lee Kim")))                   # two longer: ask
+    assert d.slots["recipe"] is None and d.unresolved == ['"Lee" could be Lee or Anna Lee or Lee Kim — say which '
+                                                          'Creator.'], d
+    d, _ = _rx({**today, "creators": ["李"]}, request="导出李明的销售", creators=(("a1", "李"), ("a2", "李明")))
+    assert d.slots["recipe"]["creators"] == ["a2"] and d.unresolved == [], d
+
+
+def case_names_match_in_any_script_and_short_parts_never_widen():
+    opts = [(1, "Anna"), (2, "李"), (3, "Žana"), (4, "Zoë")]
+    assert resolve_name("Žan", opts, "Employee") == (3, None)          # not Anna (F4: "an" ⊂ "anna")
+    assert resolve_name("Zan", opts, "Employee") == (3, None)
+    assert resolve_name("李", opts, "Employee") == (2, None)
+    assert resolve_name("zoe", opts, "Employee") == (4, None)
+    assert resolve_name("Ž", opts, "Employee") == (None, 'No Employee called "Ž" — name one of yours.')
+    assert resolve_name("Ivan", [(1, "Anna")], "Employee")[0] is None
+
+
+def case_employee_sales_with_a_shared_creator_is_a_question():
+    d, why = _rx({"dataset": "employee_sales", "window": {"preset": "today"}}, shared={"a3"})
+    assert why is None and d.slots["recipe"] is None, (d, why)               # F15: Download off, never a 400
+    assert d.unresolved == ["Mia Rose is shared with another Agency — employee sales can't read it yet; "
+                            "name your other Creators."], d.unresolved
+    d, _ = _rx({"dataset": "employee_sales", "window": {"preset": "today"}, "creators": ["Luna"]}, shared={"a3"})
+    assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, shared={"a3"})   # sales reads shared ones
+    assert d.slots["recipe"] is not None and d.unresolved == [], d
+
+
+def case_the_card_labels_say_the_order_and_the_row_limit():
+    d, _ = _rx({"dataset": "fan_spend", "window": {"preset": "today"}, "metrics": ["tips"], "limit": 20})
+    assert (d.slots["labels"]["order"], d.slots["labels"]["limit"]) == ("Tips ($), high to low", 20), d.slots
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "group_by": ["day"]})
+    assert (d.slots["labels"]["order"], d.slots["labels"]["limit"]) == ("Day, oldest first", None), d.slots
+
+
+def case_a_report_draft_needs_a_report_word_and_is_never_a_refine():
+    v = assistant_draft.vetoed
+    for ok in ("export last month's sales per creator", "csv of my chatters' earnings", "download my top spenders",
+               "Excel with tips by day", "exportar ventas del mes", "izvozi prodajo"):
+        assert not v(ok, refine=False, flow=REPORT_FLOW), ok
+    for bad in ("how much did Mia make last month?", "who is my best chatter"):
+        assert v(bad, refine=False, flow=REPORT_FLOW), bad
+    assert v("export sales", refine=True, flow=REPORT_FLOW)
+
+
+def case_the_system_prompt_holds_the_catalogue_and_no_account_data():
+    sp = assistant_draft.system_prompt()
+    assert assistant_draft.rd.catalogue_text() in sp and "<<DATASETS>>" not in sp
+    assert sp == assistant_draft.system_prompt()
+    block = assistant_draft.user_block("export sales", lists=None, folders=[], existing=[], previous=None,
+                                       report=_ctx(), account=False)
+    assert block == ("CREATORS: Kim, Luna, Luna B, Mia Rose\n\nEMPLOYEES: Anna, Marco, Marco Polo\n\n"
+                     "TODAY: 2026-11-13 (Europe/London)\n\n<request>\nexport sales\n</request>"), block
+
+
+def case_no_creator_keeps_an_export_or_its_refusal_and_asks_for_a_creator_otherwise():
+    ad = assistant_draft
+
+    def general(intent: dict, request: str, report=None) -> ad.Outcome:
+        return ad.no_creator(ad.interpret(json.dumps(intent), request=request, lists=[], folders=[], existing=[],
+                                          report=report))
+    export = {"flow": "report_export", "report": {"dataset": "sales"}}
+    assert general(export, "export sales", _ctx()).flow == ad.REPORT_FLOW
+    refused = general({**export, "report": {"dataset": "weather"}}, "export the weather", _ctx())
+    assert refused.flow is None and refused.answer.startswith("I can't make that report"), refused
+    assert general(export, "export sales").error == "not_allowed"
+    # An edit with nothing usable still asks for a Creator (it was an account flow), not UNSUPPORTED.
+    assert general({"flow": "mass_edit"}, "edit my mass").answer == ad.PICK_CREATOR_ANSWER
+    assert general(_story(), "post a story every 4 hours").answer == ad.PICK_CREATOR_ANSWER
+    assert general({"flow": None}, "send a one-off mass").answer == ad.UNSUPPORTED_ANSWER
+    assert general({"flow": "auto_posts"}, "x").answer == ad.UNSUPPORTED_ANSWER
+    assert ad.no_creator(ad.interpret("not json", request="x", lists=[], folders=[], existing=[])).error == "bad_draft"
+
+
+OWNER ="u_export_owner"
+
+
+async def _seed_owner():
+    async with get_session() as s:
+        if await s.get(User, OWNER) is not None:
+            return
+        s.add(User(id=OWNER, username="export_owner", password="x", is_admin=False))
+        for aid, nick in (("acc_x_luna", "Luna"), ("acc_x_mia", "Mia Rose")):
+            s.add(Account(id=aid, nickname=nick))
+            s.add(UserAccount(user_id=OWNER, account_id=aid))
+        s.add(Employee(display_name="Anna", color="#cccccc", is_active=True, user_id=OWNER))
+
+
+def _as_owner():
+    return auth._request_user.set(auth.AuthedUser(OWNER, "export_owner", frozenset({"acc_x_luna", "acc_x_mia"})))
+
+
+async def case_an_owner_exports_from_general_focus():
+    await _seed_owner()
+    spy = _patch(_Spy(json.dumps(_export(creators=["Mia"]))))
+    token = _as_owner()
+    try:
+        out = await draft(DraftBody(request="export this week's sales for Mia"))
+    finally:
+        auth._request_user.reset(token)
+    kw = spy.calls[0]
+    assert kw["account_id"] is None and kw["user_id"] == OWNER, kw
+    user = kw["messages"][1]["content"]
+    assert "CREATORS: Luna, Mia Rose" in user and "EMPLOYEES: Anna" in user and "TODAY: " in user, user
+    assert "ACCOUNT LISTS" not in user, user
+    assert (out["flow"], out["error"], out["account_id"]) == (REPORT_FLOW, None, None), out
+    assert out["slots"]["recipe"]["creators"] == ["acc_x_mia"] and out["unresolved"] == [], out
+    assert out["slots"]["window"]["tz"] == "UTC" and out["answer"].startswith("Export sales for Mia Rose"), out
+    async with get_session() as ses:
+        row = await ses.get(AssistantTurn, out["id"])
+    assert (row.user_id, row.account_id) == (OWNER, None), vars(row)
+
+
+async def case_general_focus_is_a_report_only_and_owners_only():
+    await _seed_owner()
+    spy = _patch(_Spy(json.dumps(_pilot_intent())))
+    token = _as_owner()
+    try:
+        out = await draft(DraftBody(request=PILOT))
+    finally:
+        auth._request_user.reset(token)
+    assert (out["flow"], out["answer"]) == (None, assistant_draft.PICK_CREATOR_ANSWER), out
+    # A chatter (or the anonymous dev admin) with no Creator: a sentence, no completion.
+    spy = _patch(_Spy(json.dumps(_export())))
+    real = assistant_draft.get_request_chatter
+    assistant_draft.get_request_chatter = lambda: object()
+    try:
+        out = await draft(DraftBody(request="export sales"))
+    finally:
+        assistant_draft.get_request_chatter = real
+    assert (out["flow"], out["error"], out["answer"]) == (
+        None, "not_allowed", assistant_draft.EXPORT_NOT_ALLOWED_ANSWER), out
+    assert spy.calls == [], "a chatter bought a completion"
+    try:
+        await draft(DraftBody(request="export sales"))       # nobody signed in, no Creator
+    except HTTPException as e:
+        assert e.status_code == 401, e.status_code
+    else:
+        raise AssertionError("an anonymous General draft sailed through")
+    # On a Creator, a non-owner's export draft is refused after the call.
+    await _seed()
+    _patch(_Spy(json.dumps(_export())))
+    out = await _draft("export sales")
+    assert (out["flow"], out["answer"]) == (None, assistant_draft.EXPORT_NOT_ALLOWED_ANSWER), out
+
+
+async def case_an_owner_on_a_creator_exports_all_creators_and_a_report_is_never_refined():
+    await _seed_owner()
+    _patch(_Spy(json.dumps(_export())))
+    token = _as_owner()
+    try:
+        out = await draft(DraftBody(request="export sales", account_id="acc_x_luna"))
+        refined = await draft(DraftBody(request="export sales", account_id="acc_x_luna", previous={"name": "x"}))
+    finally:
+        auth._request_user.reset(token)
+    assert out["flow"] == REPORT_FLOW and out["slots"]["recipe"]["creators"] == [], out   # all, not the focused one
+    assert out["slots"]["labels"]["all_creators"] == 2, out["slots"]["labels"]
+    assert refined["flow"] is None, refined
+
+
+async def case_an_owner_keeps_the_account_gate_and_report_names_ride_only_report_asks():
+    await _seed_owner()
+    real = assistant_draft.opt_in_refusal
+
+    async def refuse(pages, account_id):
+        return "Your role does not allow it"
+    token = _as_owner()
+    try:
+        spy = _patch(_Spy(json.dumps(_pilot_intent())))
+        assistant_draft.opt_in_refusal = refuse
+        out = await draft(DraftBody(request=PILOT, account_id="acc_x_luna"))   # F7: no report word, no call
+        assert (out["error"], out["answer"]) == ("not_allowed", assistant_draft.NOT_ALLOWED_ANSWER), out
+        assert spy.calls == [], "a refused owner bought a completion"
+        spy = _patch(_Spy(json.dumps({"flow": None})))
+        out = await draft(DraftBody(request="export my auto mass rules", account_id="acc_x_luna"))
+        assert (out["error"], out["answer"]) == ("not_allowed", assistant_draft.NOT_ALLOWED_ANSWER), out
+        _patch(_Spy(json.dumps(_export())))
+        out = await draft(DraftBody(request="export sales", account_id="acc_x_luna"))
+        assert out["flow"] == REPORT_FLOW, out                                  # an export is not the account's gate
+        assistant_draft.opt_in_refusal = real
+        spy = _patch(_Spy(json.dumps(_pilot_intent())))
+        await draft(DraftBody(request=PILOT, account_id="acc_x_luna"))
+        assert "CREATORS:" not in spy.calls[0]["messages"][1]["content"]       # F13: a mass ask reads no names
+    finally:
+        assistant_draft.opt_in_refusal = real
+        auth._request_user.reset(token)
 
 
 _harness.run()

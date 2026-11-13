@@ -357,14 +357,15 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # Its Overview is the Creator Reports card, which reads revenue by day and by kind (ticket 20).
     "/analytics/creator-reports": ("Creator reports", (
         *_STATS_REPORT, "/admin/stats/revenue", "/admin/stats/per-model", "/admin/stats/referrals", "/admin/stats/xlsx",
+        "/admin/reports",  # the report recipe (report_recipe_api; its handler admits owners only, v1)
         "/api/of/v2/subscriptions/count",
         "/api/of/v2/subscriptions/subscribers", _SUBS_CHART, _ME)),
     "/analytics/employee-reports": ("Employee reports", (
-        *_STATS_REPORT, "/admin/stats/per-employee", "/admin/stats/chatting-stats", "/admin/stats/xlsx",
+        *_STATS_REPORT, "/admin/stats/per-employee", "/admin/stats/chatting-stats", "/admin/stats/xlsx", "/admin/reports",
         "/admin/stats/attribution-coverage", "/admin/stats/automation-runs",
         "/admin/stats/per-automation")),
     "/analytics/fan-reports": ("Fan reports", (
-        *_STATS_REPORT, "/admin/stats/per-fan-data", "/admin/stats/fan-report")),
+        *_STATS_REPORT, "/admin/stats/per-fan-data", "/admin/stats/fan-report", "/admin/reports")),
     "/analytics/message-dashboard": ("Message dashboard", (
         "/admin/customs", "/admin/tips-list", "/admin/top-tippers", "/admin/paid-messages",
         "/admin/messages", "/admin/fans", "/admin/saved-replies", *_PICKER, "/api/of/v2/posts",
@@ -590,7 +591,7 @@ ACTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "export": ("Export CSV", (
         "GET /admin/paid-messages?format=csv", "GET /admin/stats/sales-records?format=csv",
         "GET /admin/stats/fan-report?format=csv", "GET /admin/tips-list?format=csv",
-        "GET /admin/top-tippers?format=csv", "POST /admin/stats/xlsx")),
+        "GET /admin/top-tippers?format=csv", "POST /admin/stats/xlsx", "POST /admin/reports/run")),
     "withdraw": ("Request withdrawals", (
         "POST /api/of/v2/payouts/requests", "PATCH /api/of/v2/payouts/requests")),
     "delete-post": ("Delete posts", ("DELETE /api/of/v2/posts/*",)),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { ExportSlots } from "./doExport";
 import type { DoDraft, MassPremadeSlots } from "./doFlows";
 import { pillFor, pillStatus, planCardText } from "./DoMode";
 import {
@@ -25,10 +26,22 @@ const STORY: DoDraft = {
   slots: { folder: { id: 11, name: "Daytime", photos: 8 }, mode: "clock", times: ["09:00"], every_hours: 6, per_run: 1,
     hours_to_live: 6, max_runs: null },
 };
+const EXPORT_SLOTS: ExportSlots = {
+  recipe: { dataset: "sales", window: { from: "2026-02-01", to: "2026-02-28" }, creators: ["a2"] }, format: "xlsx",
+  window: { from: "2026-02-01", to: "2026-02-28", tz: "Europe/London" },
+  labels: { dataset: "Sales", about: "Creator earnings", creators: ["Mia Rose"], all_creators: 2, employees: null, kinds: [],
+    order: "Creator, A to Z", limit: null },
+  columns: ["Creator", "Day", "Total"], filename: "sales_2026-02-01_2026-02-28.xlsx",
+};
+const EXPORT: DoDraft = { ...DRAFT, id: "e1", account_id: null, flow: "report_export", slots: EXPORT_SLOTS, assumptions: [] };
+const UNRESOLVED_EXPORT: DoDraft = {
+  ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null }, unresolved: ["\"Mi\" could be Mia Rose or Mila — say which Creator."],
+};
+const exportRunning: DoRun = { phase: "running", id: "a", request: "r", draft: EXPORT, step: 0, instant: true, saving: true, attempt: 0 };
 const RESULTS = [{ id: 1, ok: true }, { id: 2, ok: false, reason: "changed since you saw it" }];
 const play = (actions: DoAction[], from: DoRun = initialDoRun) => actions.reduce(doRunReducer, from);
-const planned: DoRun = { phase: "planned", request: "r", draft: DRAFT };
-const running: DoRun = { phase: "running", request: "r", draft: DRAFT, step: 0, instant: false, saving: false };
+const planned: DoRun = { phase: "planned", id: "a", request: "r", draft: DRAFT };
+const running: DoRun = { phase: "running", id: "a", request: "r", draft: DRAFT, step: 0, instant: false, saving: false, attempt: 0 };
 const saving: DoRun = { ...running, saving: true };
 
 describe("doRunReducer", () => {
@@ -44,21 +57,21 @@ describe("doRunReducer", () => {
     ["start runs a plan", planned, [{ type: "start" }], running],
     ["skipAnimation starts instantly", planned, [{ type: "skipAnimation" }], { ...running, instant: true }],
     ["skipAnimation mid-run", running, [{ type: "step", index: 3 }, { type: "skipAnimation" }], { ...running, step: 3, instant: true }],
-    ["a flow:null draft never starts", { phase: "planned", request: "r", draft: NULL_FLOW }, [{ type: "start" }],
-      { phase: "planned", request: "r", draft: NULL_FLOW }],
-    ["a draft with an error never starts", { phase: "planned", request: "r", draft: { ...DRAFT, error: "provider" } }, [{ type: "start" }],
-      { phase: "planned", request: "r", draft: { ...DRAFT, error: "provider" } }],
-    ["Stop → aborted", running, [{ type: "abort", reason: "Stopped" }], { phase: "aborted", request: "r", draft: DRAFT, reason: "Stopped" }],
-    ["saved → done", running, [{ type: "saved" }], { phase: "done", request: "r", draft: DRAFT, ruleSaved: true }],
+    ["a flow:null draft never starts", { phase: "planned", id: "a", request: "r", draft: NULL_FLOW }, [{ type: "start" }],
+      { phase: "planned", id: "a", request: "r", draft: NULL_FLOW }],
+    ["a draft with an error never starts", { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }, [{ type: "start" }],
+      { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }],
+    ["Stop → aborted", running, [{ type: "abort", reason: "Stopped" }], { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }],
+    ["saved → done", running, [{ type: "saved" }], { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } }],
     ["a run's fail keeps the draft", running, [{ type: "fail", msg: "Add text to enable Create." }],
-      { phase: "failed", request: "r", draft: DRAFT, msg: "Add text to enable Create." }],
+      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Add text to enable Create.", attempt: 0 }],
     ["a drafting fail (its id) → failed with no draft", { phase: "drafting", id: "a", request: "r" },
-      [{ type: "fail", id: "a", msg: "down" }], { phase: "failed", request: "r", draft: null, msg: "down" }],
+      [{ type: "fail", id: "a", msg: "down" }], { phase: "failed", id: "a", request: "r", draft: null, msg: "down" }],
     ["a stale runner's saved/abort after Stop is a no-op",
-      { phase: "aborted", request: "r", draft: DRAFT, reason: "Stopped" },
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" },
       [{ type: "saved" }, { type: "abort", reason: "again" }, { type: "fail", msg: "late" }, { type: "step", index: 4 }],
-      { phase: "aborted", request: "r", draft: DRAFT, reason: "Stopped" }],
-    ["Do it again from aborted", { phase: "aborted", request: "r", draft: DRAFT, reason: "Stopped" }, [{ type: "start" }], running],
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }],
+    ["Do it again from aborted", { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }, [{ type: "start" }], running],
     ["Cancel → idle", planned, [{ type: "reset" }], { phase: "idle" }],
     ["no new draft while running", running, [{ type: "draft", id: "z", request: "q" }], running],
     ["exit → off", running, [{ type: "exit" }], initialDoRun],
@@ -67,19 +80,42 @@ describe("doRunReducer", () => {
       [{ type: "abort", reason: "Stopped" }, { type: "abort", reason: "Stopped with Esc" }], saving],
     ["saved lands after an abort mid-request", running,
       [{ type: "saving" }, { type: "abort", reason: "Stopped" }, { type: "saved" }],
-      { phase: "done", request: "r", draft: DRAFT, ruleSaved: true }],
+      { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } }],
     ["a failed save after an abort mid-request still says so", saving,
       [{ type: "abort", reason: "Stopped" }, { type: "fail", msg: "Network" }],
-      { phase: "failed", request: "r", draft: DRAFT, msg: "Network" }],
+      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Network", attempt: 0 }],
     ["saving outside a run is a no-op", planned, [{ type: "saving" }], planned],
-    ["an edit plan starts straight into saving (no steps, no Stop)", { phase: "planned", request: "r", draft: EDIT },
+    ["an edit plan starts straight into saving (no steps, no Stop)", { phase: "planned", id: "a", request: "r", draft: EDIT },
       [{ type: "start" }, { type: "abort", reason: "Stopped" }],
-      { phase: "running", request: "r", draft: EDIT, step: 0, instant: true, saving: true }],
-    ["applied → done with the results", { phase: "planned", request: "r", draft: EDIT },
+      { phase: "running", id: "a", request: "r", draft: EDIT, step: 0, instant: true, saving: true, attempt: 0 }],
+    ["applied → done with the results", { phase: "planned", id: "a", request: "r", draft: EDIT },
       [{ type: "start" }, { type: "applied", results: RESULTS }],
-      { phase: "done", request: "r", draft: EDIT, ruleSaved: true, results: RESULTS }],
+      { phase: "done", id: "a", request: "r", draft: EDIT, outcome: { kind: "applied", results: RESULTS } }],
     ["a stray saved never ends an edit run; applied never ends a create run", running,
       [{ type: "applied", results: RESULTS }], running],
+    ["Download starts an export straight into saving (no steps, no Stop)", { phase: "planned", id: "a", request: "r", draft: EXPORT },
+      [{ type: "start" }, { type: "abort", reason: "Stopped" }], exportRunning],
+    ["downloaded → done with the file", exportRunning, [{ type: "downloaded", file: "x.xlsx" }],
+      { phase: "done", id: "a", request: "r", draft: EXPORT, outcome: { kind: "downloaded", file: "x.xlsx" } }],
+    ["saved / applied never end an export; downloaded never ends a create run", exportRunning,
+      [{ type: "saved" }, { type: "applied", results: RESULTS }], exportRunning],
+    ["downloaded outside an export run is a no-op", running, [{ type: "downloaded", file: "x.csv" }], running],
+    ["an export's fail keeps the attempt", exportRunning, [{ type: "fail", msg: "429" }],
+      { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "429", attempt: 0 }],
+    ["Try again is the next attempt of the same draft", exportRunning,
+      [{ type: "fail", msg: "429" }, { type: "start" }, { type: "fail", msg: "429" }, { type: "start" }],
+      { ...exportRunning, attempt: 2 }],
+    ["a new plan starts back at attempt 0", { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "x", attempt: 3 },
+      [{ type: "draft", id: "n", request: "q" }, { type: "drafted", id: "n", draft: EXPORT }, { type: "start" }], { ...exportRunning, id: "n", request: "q" }],
+    // F21: a server draft id may be null — two exports of one id keep their own plan ids, so the download key differs
+    ["a second export with the same server id runs as its own plan", { phase: "done", id: "a", request: "r", draft: { ...EXPORT, id: "" },
+      outcome: { kind: "downloaded", file: "x.xlsx" } },
+      [{ type: "draft", id: "b", request: "q" }, { type: "drafted", id: "b", draft: { ...EXPORT, id: "" } }, { type: "start" }],
+      { ...exportRunning, id: "b", request: "q", draft: { ...EXPORT, id: "" } }],
+    ["an export with an unresolved name never downloads", { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT },
+      [{ type: "start" }, { type: "skipAnimation" }], { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT }],
+    ["an export whose recipe is missing never downloads", { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } },
+      [{ type: "start" }], { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } }],
   ])("%s", (_, from, actions, to) => {
     expect(play(actions, from)).toEqual(to);
   });
@@ -88,7 +124,7 @@ describe("doRunReducer", () => {
     expect(previousOf(planned)).toBe(SLOTS);
     expect(previousOf(running)).toBeNull();
     expect(previousOf({ phase: "idle" })).toBeNull();
-    expect(previousOf({ phase: "planned", request: "r", draft: EDIT })).toBeNull();   // an edit plan is never refined
+    expect(previousOf({ phase: "planned", id: "a", request: "r", draft: EDIT })).toBeNull();   // an edit plan is never refined
   });
 });
 
@@ -105,6 +141,17 @@ describe("draftFrom", () => {
   });
   it("keeps an auto_story draft", () => {
     expect(draftFrom(STORY, "x")).toEqual(STORY);
+  });
+  it("keeps a report_export draft; drafted in General its account is null", () => {
+    expect(draftFrom(EXPORT, null)).toEqual(EXPORT);
+    expect(draftFrom({ ...EXPORT, account_id: "" }, null).account_id).toBeNull();
+    expect(draftFrom({ ...EXPORT, slots: "junk" } as never, null).slots).toBeNull();
+  });
+  it("an account flow with no model is no draft", () => {
+    expect(draftFrom({ ...DRAFT, account_id: null }, null)).toMatchObject({ flow: null, account_id: null, slots: null });
+  });
+  it("the no-flow fallback names the export", () => {
+    expect(draftFrom({ flow: null }, null).answer).toContain("export a report");
   });
   it("keeps a mass_edit draft, its slots read defensively", () => {
     expect(draftFrom(EDIT, "x")).toEqual(EDIT);
@@ -130,10 +177,10 @@ describe("doOfferOf", () => {
 });
 
 describe("phone pill", () => {
-  const done: DoRun = { phase: "done", request: "r", draft: DRAFT, ruleSaved: true };
-  const aborted: DoRun = { phase: "aborted", request: "r", draft: DRAFT, reason: "Stopped" };
-  const runFailed: DoRun = { phase: "failed", request: "r", draft: DRAFT, msg: "x" };
-  const draftFailed: DoRun = { phase: "failed", request: "r", draft: null, msg: "x" };
+  const done: DoRun = { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } };
+  const aborted: DoRun = { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" };
+  const runFailed: DoRun = { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "x" };
+  const draftFailed: DoRun = { phase: "failed", id: "a", request: "r", draft: null, msg: "x" };
   it.each<[string, DoRun, DoRun | null, boolean, string]>([
     ["running", running, null, true, "Doing it…"],
     ["saving", saving, null, true, "Saving…"],
@@ -143,6 +190,10 @@ describe("phone pill", () => {
     ["a run's fail", runFailed, null, true, "Couldn't finish"],
     ["a failed draft never ran → the sheet", draftFailed, null, false, "Couldn't finish"],
     ["planned → the sheet", planned, null, false, "Doing it…"],
+    ["an export building", exportRunning, null, true, "Building the file…"],
+    ["edits applied", { phase: "done", id: "a", request: "r", draft: EDIT, outcome: { kind: "applied", results: RESULTS } }, null, true,
+      "Changed 1 of 2 rules"],
+    ["an export done", { phase: "done", id: "a", request: "r", draft: EXPORT, outcome: { kind: "downloaded", file: "x.csv" } }, null, true, "Downloaded"],
   ])("%s", (_, run, expanded, pill, status) => {
     expect(pillFor(run, expanded)).toBe(pill);
     expect(pillStatus(run)).toBe(status);

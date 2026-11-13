@@ -60,6 +60,9 @@ Golden refresh (2026-11-12, bio vault avatar): adds POST /admin/bio-pages/{pid}/
 Golden refresh (2026-11-12, bio vault background): adds POST /admin/bio-pages/{pid}/links/{lid}/background/vault
 (bio_pages/admin.background_from_vault) after the background upload row; no existing row moves; inspected, intentional.
 
+Golden refresh (2026-11-13, ultra report recipe): adds POST /admin/reports/run and GET /admin/reports/catalogue
+(report_recipe_api); no existing row moves; inspected, intentional.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

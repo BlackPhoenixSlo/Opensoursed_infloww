@@ -6,7 +6,7 @@ asker wants in plain words; this turns it into the SLOTS of one form (today only
 real editor and saves through its own Save (switched off). Nothing here writes a
 rule.
 
-  POST /admin/assistant/draft  {request, account_id, thread_id?, previous?}
+  POST /admin/assistant/draft  {request, account_id?, thread_id?, previous?}
        → 200 {id, flow, account_id, summary, slots, assumptions, unresolved, answer, error}
   GET  /admin/assistant/do-caps?account_id=  → {account_id, can_do}
   POST /admin/assistant/edit/apply  {account_id, rules:[{id, version}], changes}
@@ -18,6 +18,12 @@ would touch (here, or every model the session owns with scope "all") with their
 before→after; the apply route re-applies the change spec to each FRESH row the
 session owns (version-checked), never a client payload, and never turns a rule
 on. Pure + DB pieces in assistant_edit.py.
+
+`report_export` (ultra-mode ticket 02, docs/plans/ultra-mode/issues/02-do-mode-export.md):
+a report file of the Agency's numbers, owners only; resolved in
+assistant_report.py (`report_ctx`, `resolve_export`). The browser downloads it
+from POST /admin/reports/run. With no `account_id` (General focus) only this
+flow may come back.
 
 `auto_story` (spec D13): a NEW Auto Story rule (`auto_stories`, one per
 account) the browser fills on /growth/auto-story and saves switched off, like
@@ -94,9 +100,12 @@ from sqlalchemy import select
 import assistant_api
 import assistant_edit
 import llm_client
-from auth import assert_account_owned
+import report_recipe_decide as rd
+from assistant_report import (EXPORT_NOT_ALLOWED_ANSWER, REPORT_WORD, ReportCtx, export_summary, report_ctx,
+                              report_lines, resolve_export)
+from auth import assert_account_owned, get_request_user
 from automations._common import resolve_model_and_fallback
-from chatters import allowed_folder_ids_for_chatter
+from chatters import allowed_folder_ids_for_chatter, get_request_chatter
 from db.engine import get_session
 from db.models import Account, AutomationRule, VaultItem
 from jsonsafe import load_json
@@ -114,7 +123,8 @@ FLOW = "mass_premade"
 EDIT_FLOW = assistant_edit.EDIT_FLOW   # bulk edit of existing Auto mass rules (spec D11)
 STORY_FLOW = "auto_story"             # a new Auto Story rule (spec D13)
 STORY_KIND = "auto_stories"           # its automation_rules kind (one per account)
-FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW)
+REPORT_FLOW = "report_export"         # a report file of the Agency's numbers (ultra-mode ticket 02)
+FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW, REPORT_FLOW)
 MAX_REQUEST_CHARS = assistant_api.MAX_QUESTION_CHARS
 MAX_PREVIOUS_CHARS = 8000            # a prior draft's slots, serialized
 MIN_INTERVAL_MIN, MAX_INTERVAL_MIN = 5, 168 * 60
@@ -136,8 +146,8 @@ TIERS = ("sfw", "suggestive", "explicit", "hardcore")   # vault_ai_brief.EXPLICI
 MASS_EXCLUDE_NOTE = "Your mass-exclude list (MASSdmEXCLUDE) is always skipped."
 NO_FLAGS_NOTE = "No folder has AI flags yet — pick one in the form."
 NO_SFW_NOTE = "No folder looks SFW from its AI flags — pick one in the form."
-UNSUPPORTED_ANSWER = ("I can only set up a new Auto mass or Auto Story, or change settings on your Auto masses, "
-                      "so far. "
+UNSUPPORTED_ANSWER = ("I can only set up a new Auto mass or Auto Story, change settings on your Auto masses, "
+                      "or export a report of your numbers, so far. "
                       "Ask me how to do this instead and I'll show you where it lives.")
 # flow null on a request that names a mass (one-time, or an existing rule): say what would work, so the user can
 # re-ask here instead of bouncing through Q&A, whose answer links Auto mass and offers "Do it for me" again.
@@ -166,10 +176,13 @@ def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
     """A `mass_edit` draft is only vetoed for another feature named with no
     mass word; editing an existing rule is what it is for (spec D11). An
     `auto_story` draft needs a story word and no mass word, is never an edit
-    of the existing rule, and never a refine (a refine is of an Auto mass plan)."""
+    of the existing rule, and never a refine (a refine is of an Auto mass plan).
+    A `report_export` draft needs a report word and is never a refine."""
     if flow == STORY_FLOW:
         return (refine or not _STORY_WORD.search(request) or bool(_ANY_MASS.search(request))
                 or (bool(_EDIT_VERB.search(request)) and bool(_STORY_EXISTING.search(request))))
+    if flow == REPORT_FLOW:     # never a refine (a refine is of an Auto mass plan); needs a report word
+        return refine or not REPORT_WORD.search(request)
     if refine:
         return False
     other = bool(_OTHER_FEATURE.search(request)) and not _ANY_MASS.search(request)
@@ -186,6 +199,8 @@ STORY_NOT_ALLOWED_ANSWER = ("Your role can't create Auto Story rules on this acc
 # One Auto Story per account: the agent never makes a second one, nor edits the one there (D13).
 STORY_EXISTS_ANSWER = ("Auto Story is already set up for {model} — open it to edit: My Automations → Auto Story. "
                        "I only set up a new one.")
+# report_export (ultra-mode ticket 02): with no Creator in focus only a report.
+PICK_CREATOR_ANSWER = ("Pick a Creator above first — without one I can only export a report of your numbers.")
 
 
 # ── The prompt's fixed head (byte-stable) ─────────────────────────────
@@ -202,6 +217,8 @@ The forms you can fill:
   price, photo count, or turning them off.
 - "auto_story" (Auto Story): a NEW schedule that posts photos from a vault
   folder as stories, at set times each day or every few hours.
+- "report_export": a report file (CSV, or Excel) of the Agency's numbers
+  from one of the DATASETS below, for the user to download.
 Anything else — another automation, turning a rule on, deleting or running a
 rule, editing an existing rule's captions, folder or audience, a question, a
 one-off message — is {"flow": null, ...} with every other field empty.
@@ -212,7 +229,7 @@ with these rules, and never output anything but the JSON below.
 
 Output schema (for "mass_premade" and null every key always present):
 {
-  "flow": "mass_premade" | "mass_edit" | "auto_story" | null,
+  "flow": "mass_premade" | "mass_edit" | "auto_story" | "report_export" | null,
   "name": string | null,            // short rule name, ≤40 chars, not one of EXISTING AUTO MASS RULES
   "every": {"value": number, "unit": "minutes" | "hours"} | null,   // how often; null if not said
   "delete_after": boolean,          // asked to delete / unsend each mass afterwards
@@ -250,6 +267,22 @@ For "auto_story" the keys are "flow", "folder", "every", "times", "per_run",
   "per_run": integer | null         // stories posted each time
   "hours_to_live": number | null    // delete each story after N hours; 0 = keep them
   "max_runs": integer | null        // stop after N runs; null = run forever
+For "report_export" the keys are "flow", "report", "assumptions", "unresolved":
+  "report": {"dataset": string,    // a name from DATASETS
+    "window": {"preset": string} | {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"} | null,
+    "creators": [string],           // Creators the request names, in its words; [] = all
+    "employees": [string],          // Employees the request names, in its words; [] = all
+    "kinds": [string],              // the dataset's kinds the request names; [] = all
+    "group_by": [string] | null,    // the dataset's group_by keys; null = its default
+    "metrics": [string] | null,     // the dataset's metrics; null = its default
+    "sort": string | null,          // a group_by key or metric to sort by
+    "limit": integer | null,        // at most N rows ("top 20")
+    "format": "csv" | "xlsx"}
+  presets: today, yesterday, this_week, this_month, last_7_days,
+  last_30_days, last_90_days, last_365_days. Other dates are {"from", "to"},
+  worked out from TODAY ("last month" = the whole previous calendar month).
+DATASETS (a report reads only these):
+<<DATASETS>>
 
 Rules:
 - audience names: "everyone" for everyone / all fans and following; "fans" for
@@ -297,11 +330,20 @@ Rules:
   one-time story, turning Auto Story on, changing or deleting the existing
   one = flow null; a mass that mentions a story is a mass. A clock time ("at
   9pm", "at 8") goes in times; no clock time: times [] and "every" as above.
+- flow "report_export" = a request to export / download / get a report,
+  file, sheet or table of numbers ("export last month's sales per creator",
+  "csv of my chatters' earnings this week"). format "xlsx" ONLY when the
+  request says Excel, xlsx or spreadsheet; else "csv". Data no DATASET holds:
+  dataset = the request's own word for it. A Creator or Employee: write the
+  name as the request says it, never a fuller one from CREATORS or EMPLOYEES.
+  No time said: window null. A question about the numbers ("how much did Mia make?")
+  is flow null.
 - A "PREVIOUS DRAFT" block means the user is changing that draft: flow stays
   "mass_premade", start from it, apply only what the request changes, and
   return the whole result. Its captions go in "provided" and count stays their
   number unless the request asks for more or fewer captions.
-- Never invent a list, a folder or a time the request did not ask for."""
+- Never invent a list, a folder or a time the request did not ask for.""".replace(
+    "<<DATASETS>>", rd.catalogue_text())     # once, at import: sorted, no account data
 
 _FEWSHOTS = """\
 Examples:
@@ -332,7 +374,19 @@ REQUEST: post a safe story every 4 hours, keep them up, stop after 30 times
 JSON: {"flow": "auto_story", "folder": {"want": "sfw", "name": null}, "every": {"value": 4, "unit": "hours"}, "times": [], "per_run": null, "hours_to_live": 0, "max_runs": 30, "assumptions": [], "unresolved": []}
 
 REQUEST: turn on auto reply for new fans and delete my old auto mass
-JSON: {"flow": null, "name": null, "every": null, "delete_after": false, "unsend_after_hours": null, "online_only": null, "audience": {"include": [], "exclude": []}, "folder": {"want": "none", "name": null}, "captions": {"count": 0, "provided": [], "generated": []}, "keep_skip_recent": true, "assumptions": [], "unresolved": []}"""
+JSON: {"flow": null, "name": null, "every": null, "delete_after": false, "unsend_after_hours": null, "online_only": null, "audience": {"include": [], "exclude": []}, "folder": {"want": "none", "name": null}, "captions": {"count": 0, "provided": [], "generated": []}, "keep_skip_recent": true, "assumptions": [], "unresolved": []}
+
+CREATORS: Luna, Mia Rose
+TODAY: 2026-03-14 (Europe/London)
+REQUEST: export last month's sales for Mia by day as an excel file
+JSON: {"flow": "report_export", "report": {"dataset": "sales", "window": {"from": "2026-02-01", "to": "2026-02-28"}, "creators": ["Mia"], "employees": [], "kinds": [], "group_by": ["creator", "day"], "metrics": null, "sort": null, "limit": null, "format": "xlsx"}, "assumptions": [], "unresolved": []}
+
+EMPLOYEES: Anna, Marco
+REQUEST: csv of what each chatter made from tips and ppv this week
+JSON: {"flow": "report_export", "report": {"dataset": "employee_sales", "window": {"preset": "this_week"}, "creators": [], "employees": [], "kinds": ["tip", "ppv"], "group_by": ["employee"], "metrics": null, "sort": null, "limit": null, "format": "csv"}, "assumptions": [], "unresolved": []}
+
+REQUEST: download my top 20 spenders of the last 90 days
+JSON: {"flow": "report_export", "report": {"dataset": "fan_spend", "window": {"preset": "last_90_days"}, "creators": [], "employees": [], "kinds": [], "group_by": null, "metrics": null, "sort": "total", "limit": 20, "format": "csv"}, "assumptions": [], "unresolved": []}"""
 
 
 def system_prompt() -> str:
@@ -388,6 +442,7 @@ class Intent(BaseModel):
     per_run: float | None = Field(None, allow_inf_nan=False)
     hours_to_live: float | None = Field(None, allow_inf_nan=False)
     max_runs: float | None = Field(None, allow_inf_nan=False)
+    report: dict[str, Any] | None = None           # flow "report_export" only; assistant_report.resolve_export
     assumptions: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
 
@@ -1053,11 +1108,14 @@ class Outcome:
     error: str | None = None
     flow: str | None = None
     draft: Draft | None = None
+    asked: str | None = None        # the flow the model drafted, after the veto (`no_creator`)
 
 
 def interpret(text: str, *, request: str, lists: list[dict] | None,
-              folders: list[FolderStat], existing: list[str], refine: bool = False) -> Outcome:
-    """Parse → validate → resolve. Pure; the route and the eval seam share it."""
+              folders: list[FolderStat], existing: list[str], refine: bool = False,
+              report: ReportCtx | None = None) -> Outcome:
+    """Parse → validate → resolve. Pure; the route and the eval seam share it.
+    `report`: the owner's export context (None = may not export)."""
     try:
         intent = Intent.model_validate(parse_json_object(text))
     except (ValueError, ValidationError):          # JSONDecodeError is a ValueError
@@ -1065,6 +1123,30 @@ def interpret(text: str, *, request: str, lists: list[dict] | None,
     if intent.flow in FLOWS and vetoed(request, refine=refine, flow=intent.flow):
         log.info("assistant_draft: %s draft vetoed (another feature / an existing rule)", intent.flow)
         intent = intent.model_copy(update={"flow": None})
+    o = _resolved(intent, request=request, lists=lists, folders=folders, existing=existing, refine=refine,
+                  report=report)
+    return replace(o, asked=intent.flow)
+
+
+def no_creator(o: Outcome) -> Outcome:
+    """No Creator in focus (General): only an export, its refusal, or an error
+    comes back; another flow asks for a Creator, anything else is UNSUPPORTED."""
+    if o.error is not None or o.asked == REPORT_FLOW:
+        return o
+    return Outcome(PICK_CREATOR_ANSWER if o.asked in FLOWS else UNSUPPORTED_ANSWER)
+
+
+def _resolved(intent: Intent, *, request: str, lists: list[dict] | None, folders: list[FolderStat],
+              existing: list[str], refine: bool, report: ReportCtx | None) -> Outcome:
+    if intent.flow == REPORT_FLOW:
+        if report is None:
+            return Outcome(EXPORT_NOT_ALLOWED_ANSWER, error="not_allowed")
+        x, refusal = resolve_export(intent.report, report, request=request,
+                                    assumptions=_clean_notes(intent.assumptions),
+                                    unresolved=_clean_notes(intent.unresolved))
+        if x is None:
+            return Outcome(refusal)
+        return Outcome(export_summary(x.slots), flow=REPORT_FLOW, draft=Draft(x.slots, x.assumptions, x.unresolved, {}))
     if intent.flow == EDIT_FLOW:
         d = resolve_edit(intent, request=request, refine=refine)
         if d is not None:
@@ -1250,14 +1332,21 @@ def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
 
 
 def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderStat],
-               existing: list[str], previous: dict | None) -> str:
-    """Everything per-request — the cached system prompt never sees it."""
-    custom = sorted({nm for _, nm in _custom_lists(lists or []).values()}, key=str.lower)
-    parts = ["ACCOUNT LISTS: " + (
-        "(could not be read)" if lists is None else (", ".join(custom[:200]) or "(none)"))]
-    fl = [f"{f.name} ({f.photos} photos)" for f in folders if not f.builtin][:150]
-    parts.append("VAULT FOLDERS: " + (", ".join(fl) or "(none)"))
-    parts.append("EXISTING AUTO MASS RULES: " + (", ".join(sorted(existing)[:100]) or "(none)"))
+               existing: list[str], previous: dict | None, report: ReportCtx | None = None,
+               account: bool = True) -> str:
+    """Everything per-request — the cached system prompt never sees it. No
+    Creator in focus (`account` False): no account lines. An owner (`report`):
+    the Agency's Creators, Employees and today, for an export."""
+    parts = []
+    if account:
+        custom = sorted({nm for _, nm in _custom_lists(lists or []).values()}, key=str.lower)
+        parts.append("ACCOUNT LISTS: " + (
+            "(could not be read)" if lists is None else (", ".join(custom[:200]) or "(none)")))
+        fl = [f"{f.name} ({f.photos} photos)" for f in folders if not f.builtin][:150]
+        parts.append("VAULT FOLDERS: " + (", ".join(fl) or "(none)"))
+        parts.append("EXISTING AUTO MASS RULES: " + (", ".join(sorted(existing)[:100]) or "(none)"))
+    if report is not None:
+        parts += report_lines(report)
     if previous:
         parts.append("PREVIOUS DRAFT: " + json.dumps(previous_for_prompt(previous, lists),
                                                      ensure_ascii=False, sort_keys=True))
@@ -1278,8 +1367,9 @@ async def _may_create(kind: str, account_id: str) -> bool:
 
 
 async def can_do(account_id: str) -> bool:
-    """Any do-mode flow for this session: Auto mass or Auto Story. Each flow is
-    re-checked after the draft (`_mass_gate`, `_story_gate`)."""
+    """Any account do-mode flow for this session: Auto mass or Auto Story. Each
+    flow is re-checked after the draft (`_gate`). An owner's export is not
+    gated here (`assistant_report.report_ctx`)."""
     return (await _may_create(OPT_IN_KINDS[FLOW], account_id)
             or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id))
 
@@ -1300,7 +1390,7 @@ async def has_key(account_id: str) -> bool:
 
 class DraftBody(BaseModel):
     request: str = Field(..., max_length=MAX_REQUEST_CHARS)
-    account_id: str = Field(..., min_length=1)
+    account_id: str | None = Field(None, min_length=1)   # none = no Creator in focus: a report only
     thread_id: str | None = Field(None, min_length=1, max_length=64)
     previous: dict[str, Any] | None = None   # a prior response's `slots` (refine)
 
@@ -1330,11 +1420,15 @@ def _out_of(account_id: str | None, row_id: int | None, o: Outcome) -> dict[str,
 @router.post("/admin/assistant/draft")
 async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
     started = time.monotonic()
-    assert_account_owned(body.account_id)          # /ask's gate (401 / 403)
+    aid = body.account_id
+    if aid is None:                                # no Creator in focus: a report only
+        if get_request_user() is None and get_request_chatter() is None:
+            raise HTTPException(status_code=401, detail="sign in required")
+    else:
+        assert_account_owned(aid)                  # /ask's gate (401 / 403)
     request = body.request.strip()
     if not request:                                # no model call, no turn row
-        return _out(body.account_id, row_id=None, answer="Tell me what to set up.",
-                    error="empty_request")
+        return _out(aid, row_id=None, answer="Tell me what to set up.", error="empty_request")
     role = assistant_api._asker_role()
     thread_id = body.thread_id or assistant_api._new_thread_id()
     # A mass_edit plan is never refined (the widget sends none); a stray one is ignored.
@@ -1342,48 +1436,71 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
 
     async def record(reply: assistant_api.Reply) -> int | None:
         return await assistant_api._record_turn(
-            question=request, reply=reply, role=role, account_id=body.account_id,
+            question=request, reply=reply, role=role, account_id=aid,
             thread_id=thread_id, started=started)
 
-    if not await can_do(body.account_id):
-        reply = assistant_api.Reply(NOT_ALLOWED_ANSWER, model="", provider="", error="not_allowed")
-        return _out(body.account_id, row_id=await record(reply), answer=reply.answer,
-                    error=reply.error)
+    # The owner's export context only when an export can come back (General focus, or a report word —
+    # `vetoed` drops an export draft without one): 3–4 reads and the name lines stay off other drafts.
+    report = await report_ctx() if aid is None or REPORT_WORD.search(request) else None
+    allowed = aid is not None and await can_do(aid)
+    if report is None and not allowed:              # nothing this caller may draft here: no model call
+        refusal = EXPORT_NOT_ALLOWED_ANSWER if aid is None else NOT_ALLOWED_ANSWER
+        reply = assistant_api.Reply(refusal, model="", provider="", error="not_allowed")
+        return _out(aid, row_id=await record(reply), answer=reply.answer, error=reply.error)
+    if aid is None:
+        lists, folders, existing = [], [], []
+        # Manual-only like /ask with no account: the purpose default, billed to the asking Agency.
+        model, fallback = await resolve_model_and_fallback("", PURPOSE)
+        user_id = assistant_api._asker_ids()[0]
+    else:
+        lists, folders, existing = await asyncio.gather(_read_lists(aid), _read_folders(aid), _existing_names(aid))
+        model, fallback = await resolve_model_and_fallback(aid, PURPOSE)
+        user_id = None
+    block = user_block(request, lists=lists, folders=folders, existing=existing, previous=previous,
+                       report=report, account=aid is not None)
 
-    lists, folders, existing = await asyncio.gather(
-        _read_lists(body.account_id), _read_folders(body.account_id),
-        _existing_names(body.account_id))
-    model, fallback = await resolve_model_and_fallback(body.account_id, PURPOSE)
-    reply = await assistant_api._complete(
-        model, user_block(request, lists=lists, folders=folders, existing=existing,
-                          previous=previous),
-        account_id=body.account_id, fallback=fallback, purpose=PURPOSE,
-        system=system_prompt(), response_format=response_format_for(model))
+    async def complete() -> assistant_api.Reply:
+        return await assistant_api._complete(
+            model, block, account_id=aid, user_id=user_id, fallback=fallback, purpose=PURPOSE,
+            system=system_prompt(), response_format=response_format_for(model))
+
+    def read(r: assistant_api.Reply) -> Outcome:
+        return interpret(r.answer, request=request, lists=lists, folders=folders, existing=existing,
+                         refine=bool(previous), report=report)
+
+    reply = await complete()
     if reply.error is not None:
-        return _out(body.account_id, row_id=await record(reply), answer=reply.answer,
-                    error=reply.error)
-
-    o = interpret(reply.answer, request=request, lists=lists, folders=folders, existing=existing,
-                          refine=bool(previous))
+        return _out(aid, row_id=await record(reply), answer=reply.answer, error=reply.error)
+    o = read(reply)
     if o.error == "bad_draft":   # one retry on the same model (Fable round 3: never a bigger model on null)
         log.warning("assistant_draft: unparseable draft from %s: %.300s", reply.model, reply.answer)
-        again = await assistant_api._complete(
-            model, user_block(request, lists=lists, folders=folders, existing=existing,
-                              previous=previous),
-            account_id=body.account_id, fallback=fallback, purpose=PURPOSE,
-            system=system_prompt(), response_format=response_format_for(model))
+        again = await complete()
         if again.error is None:
             reply = again
-            o = interpret(reply.answer, request=request, lists=lists, folders=folders, existing=existing,
-                          refine=bool(previous))
-    if o.flow in (FLOW, EDIT_FLOW) and not await _may_create(OPT_IN_KINDS[FLOW], body.account_id):
-        o = Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
-    if o.flow == EDIT_FLOW and o.draft is not None:
-        o = await _with_rules(body.account_id, o)
-    if o.flow == STORY_FLOW:
-        o = await _story_gate(body.account_id, o)
+            o = read(reply)
+    o = await _gate(aid, o, allowed)
     reply = replace(reply, answer=o.answer, error=o.error)
-    return _out_of(body.account_id, await record(reply), o)
+    return _out_of(aid, await record(reply), o)
+
+
+async def _gate(aid: str | None, o: Outcome, allowed: bool) -> Outcome:
+    """The checks after the draft (an export's are `report_ctx` and
+    `/admin/reports/run`): no Creator in focus = `no_creator`; no do-mode flow
+    here (`can_do`) = NOT_ALLOWED whatever came back; then each flow's own
+    opt-in, an edit's rules, a story's one-per-account."""
+    if o.flow == REPORT_FLOW:
+        return o
+    if aid is None:
+        return no_creator(o)
+    if not allowed:
+        return Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
+    if o.flow in (FLOW, EDIT_FLOW) and not await _may_create(OPT_IN_KINDS[FLOW], aid):
+        return Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
+    if o.flow == EDIT_FLOW and o.draft is not None:
+        return await _with_rules(aid, o)
+    if o.flow == STORY_FLOW:
+        return await _story_gate(aid, o)
+    return o
 
 
 async def _story_gate(account_id: str, o: Outcome) -> Outcome:
@@ -1462,10 +1579,14 @@ class EvalContext:
     """The account reads `draft` makes, held in memory for `draft_for_eval`.
     `lists`: OF lists as `/lists` returns them ([{"id": 501, "name": "VIP"}],
     None = the read failed); `folders`: FolderStat with per-tier photo counts;
-    `existing_names`: the account's Auto mass rule names."""
+    `existing_names`: the account's Auto mass rule names. `report`: an
+    owner's export context (None = a chatter: no export); `account` False =
+    no Creator in focus (a report only)."""
     lists: list[dict] | None = None
     folders: tuple[FolderStat, ...] | list[FolderStat] = ()
     existing_names: tuple[str, ...] | list[str] = ()
+    report: ReportCtx | None = None
+    account: bool = True
 
 
 def _usage(model: str, result: Any | None) -> dict[str, Any]:
@@ -1495,7 +1616,7 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
             messages=[{"role": "system", "content": system_prompt()},
                       {"role": "user", "content": user_block(
                           request, lists=lists, folders=folders, existing=existing,
-                          previous=previous)}],
+                          previous=previous, report=ctx.report, account=ctx.account)}],
             **({"response_format": rf} if rf else {}))
     except LLMCapExceeded as e:
         o = Outcome(str(e), error="cap")
@@ -1508,7 +1629,8 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
             o = Outcome("The AI came back empty — try asking again.", error="empty_answer")
         else:
             o = interpret(result.content, request=request, lists=lists, folders=folders,
-                          existing=existing, refine=bool(previous))
+                          existing=existing, refine=bool(previous), report=ctx.report)
+            o = o if ctx.account else no_creator(o)     # the route's `_gate` with no account_id
     return _out_of(None, None, o), _usage(model, result)
 
 

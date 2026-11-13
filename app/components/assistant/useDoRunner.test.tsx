@@ -45,7 +45,7 @@ const probe: { run: DoRun; send: (a: DoAction) => void } = { run: { phase: "off"
 
 function Harness() {
   const [bridge] = useState(createAgentBridge);
-  const [run, dispatch] = useReducer(doRunReducer, { phase: "planned", request: "r", draft: DRAFT });
+  const [run, dispatch] = useReducer(doRunReducer, { phase: "planned", id: "a", request: "r", draft: DRAFT });
   useDoRunner({ run, dispatch, bridge, navigate: () => {} });
   useEffect(() => { probe.run = run; probe.send = dispatch; });
   return <AgentBridgeProvider bridge={bridge}><ReadyMadePanel only="mass_premade" /></AgentBridgeProvider>;
