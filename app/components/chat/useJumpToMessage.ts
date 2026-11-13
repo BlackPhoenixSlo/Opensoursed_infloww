@@ -13,7 +13,7 @@ import { anchorNext } from "./jumpAnchor";
 export function useJumpToMessage({ accountId, fanId, handle, loadOlder, onJump }: {
   accountId: string;
   fanId: FanId;
-  handle: Pick<ReturnType<typeof useChatMessages>, "data" | "isLoading" | "hasOlder" | "isLoadingOlder">;
+  handle: Pick<ReturnType<typeof useChatMessages>, "data" | "isLoading" | "hasOlder" | "isLoadingOlder" | "olderFailed">;
   loadOlder: () => Promise<unknown>;
   /** A jump happened (ChatSurface closes its search). */
   onJump: () => void;
@@ -57,7 +57,9 @@ export function useJumpToMessage({ accountId, fanId, handle, loadOlder, onJump }
       loading: handle.isLoading,
       found: rows.some((m) => String(m.id) === target),
       pages: anchorPagesRef.current,
-      hasOlder: handle.hasOlder,
+      // A failed older page stops the anchor (it waits, it doesn't re-fire
+      // into the failure); the thread's Retry button is the way on.
+      hasOlder: handle.hasOlder && !handle.olderFailed,
       loadingOlder: handle.isLoadingOlder,
     });
     if (step === "jump") {
@@ -75,9 +77,10 @@ export function useJumpToMessage({ accountId, fanId, handle, loadOlder, onJump }
       return;
     }
     anchorPagesRef.current += 1;
-    void loadOlder();
+    // A failure sets olderFailed (above stops the anchor); never unhandled.
+    void loadOlder().catch(() => {});
   }, [accountId, fanId, handle.data, handle.isLoading, handle.hasOlder,
-      handle.isLoadingOlder]);   // eslint-disable-line react-hooks/exhaustive-deps
+      handle.isLoadingOlder, handle.olderFailed]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   return { highlightId, jumpToMessage };
 }

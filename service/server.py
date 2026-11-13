@@ -66,7 +66,7 @@ import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
-from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy  # noqa: E402
+from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, READ_TIMING, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy, timing_add  # noqa: E402
 from of_rich_text import MARKUP_MAX  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
@@ -2492,6 +2492,7 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
     try:
         waited += _lane_acquire(total, account_id, "total")
         total_held = True
+        timing_add("lane_wait_s", waited)
         _lane_entered(account_id, priority, waited, release_bg is not None)
         entered = True
         yield
@@ -2567,6 +2568,7 @@ def _proxy(call, *, client: OFClient | None = None):
             if _current_priority() != "background":
                 token = INTERACTIVE_READ.set(True)
         with _priority_lane(aid):
+            t_call = _time_mod.monotonic()
             try:
                 return call()
             except OFSessionRetired as e:
@@ -2575,6 +2577,8 @@ def _proxy(call, *, client: OFClient | None = None):
                     raise
                 log.info("client evicted mid-read account=%s: re-run on the current client", aid)
                 return call()
+            finally:
+                timing_add("call_s", _time_mod.monotonic() - t_call)
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
     except OFSessionRetired as e:  # before OFDeniedError (its base)
@@ -2635,6 +2639,83 @@ def _proxy(call, *, client: OFClient | None = None):
         if token is not None:
             INTERACTIVE_READ.reset(token)
         _proxy_clients.reset(loaded_token)
+
+
+@contextlib.contextmanager
+def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
+    """One `of_read_timing` INFO line per timed OF passthrough read (logging only):
+
+        of_read_timing route=<messages|chats|users_list|chat> account=<aid> chat=<id|->
+          prio=<user|background> status=<http status> of_calls=<n> lane_wait_ms=<n>
+          signed_wait_ms=<n> of_ms=<n> post_ms=<n> total_ms=<n>
+
+    lane_wait_ms: `_priority_lane`'s `waited`; background: incl. the loop admission
+    `_bg_admission_route` already paid before the route ran (peeked off the lease, not
+    consumed: the lane stats keep their own), which total_ms then also starts from;
+    signed_wait_ms: `OFClient._signed_slot`'s wait; of_ms: time in `_proxy`'s call minus
+    the signed wait (OF upstream, x-hash warm-up and proxy retries); post_ms: local work
+    after OF answered (`_timing_post_start` to the end: media dims stamp, the users/list
+    overlay, the /chats row stamps). of_calls=0: served from the relay cache or a
+    coalesced flight another request led (its numbers are on the leader's line).
+    The counters ride `of_client.READ_TIMING`; nothing here raises."""
+    t: dict[str, Any] = {"_t0": _time_mod.monotonic(), "_task": None, "_admit_s": 0.0}
+    try:
+        t["_task"] = asyncio.current_task()
+        lease = _bg_lease.get()
+        if lease is not None and not lease.closed:
+            t["_admit_s"] = float(lease.waited)
+            t["_t0"] -= t["_admit_s"]
+    except Exception:  # noqa: BLE001 — a timing line must never fail a read
+        pass
+    token = READ_TIMING.set(t)
+    status: Any = 200
+    try:
+        yield t
+    except HTTPException as e:
+        status = e.status_code
+        raise
+    except BaseException:
+        status = "error"
+        raise
+    finally:
+        READ_TIMING.reset(token)
+        try:
+            end = _time_mod.monotonic()
+            ms = lambda s: int(round(s * 1000))  # noqa: E731
+            post0 = t.get("_post_t0")
+            log.info(
+                "of_read_timing route=%s account=%s chat=%s prio=%s status=%s of_calls=%d "
+                "lane_wait_ms=%d signed_wait_ms=%d of_ms=%d post_ms=%d total_ms=%d",
+                route, aid or "-", chat_id if chat_id is not None else "-", _current_priority(),
+                # Borrowed, the lease's wait is in lane_wait_s already; unborrowed, only here.
+                status, int(t.get("of_calls", 0)), ms(max(t.get("lane_wait_s", 0.0), t["_admit_s"])),
+                ms(t.get("signed_wait_s", 0.0)),
+                ms(max(0.0, t.get("call_s", 0.0) - t.get("signed_wait_s", 0.0))),
+                ms(end - post0) if post0 is not None else 0, ms(end - t["_t0"]),
+            )
+        except Exception:  # noqa: BLE001 — a timing line must never fail a read
+            pass
+
+
+def _timing_post_start() -> None:
+    """Mark where the timed read's local post-OF work starts (see `_of_read_timing`)."""
+    t = READ_TIMING.get()
+    if t is not None:
+        t["_post_t0"] = _time_mod.monotonic()
+
+
+def _timing_detach_foreign() -> None:
+    """In a fetcher a stale-while-revalidate refresh may run: when this task is not
+    the timed request's own, stop timing here, so the background refresh's OF
+    call is not booked on a request that was already answered from cache."""
+    t = READ_TIMING.get()
+    if t is None:
+        return
+    try:
+        if asyncio.current_task() is not t.get("_task"):
+            READ_TIMING.set(None)
+    except RuntimeError:
+        READ_TIMING.set(None)
 
 
 def _account_ttl(namespace: str, ttl_seconds: float):
@@ -3154,6 +3235,7 @@ async def list_chats(
         and _is_plain_view(filter, list_id, q)
     )
     async def _fetch():
+        _timing_detach_foreign()  # the SWR refresh runs this off the request's task
         def _read():
             value = _assemble_chats_page(
                 _get_client(), limit=limit, offset=offset, order=order,
@@ -3181,20 +3263,22 @@ async def list_chats(
                     name=f"reconcile-chats-{aid}",
                 )
         return value
-    resp = await relay_cache.get_or_fetch(
-        "list_chats", aid, (limit, offset, order, filter, list_id, q),
-        ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
-        stale_while_revalidate=_LIST_CHATS_SWR,
-    )
-    # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
-    # window the roster badge folds its counts from — drop the cached fold so
-    # the next badge poll re-folds from these fresh rows (pure RAM, no OF read).
-    # Without this, the one button users press when badge≠list leaves the badge
-    # serving pre-refresh counts for up to its own TTL: the symptom survives its
-    # own remedy.
-    if refresh and offset == 0 and _is_plain_view(filter, list_id, q):
-        relay_cache.invalidate("roster_count", aid)
-    return await _annotate_chat_rows(aid, resp)
+    with _of_read_timing("chats", aid):
+        resp = await relay_cache.get_or_fetch(
+            "list_chats", aid, (limit, offset, order, filter, list_id, q),
+            ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
+            stale_while_revalidate=_LIST_CHATS_SWR,
+        )
+        _timing_post_start()
+        # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
+        # window the roster badge folds its counts from — drop the cached fold so
+        # the next badge poll re-folds from these fresh rows (pure RAM, no OF read).
+        # Without this, the one button users press when badge≠list leaves the badge
+        # serving pre-refresh counts for up to its own TTL: the symptom survives its
+        # own remedy.
+        if refresh and offset == 0 and _is_plain_view(filter, list_id, q):
+            relay_cache.invalidate("roster_count", aid)
+        return await _annotate_chat_rows(aid, resp)
 
 
 async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
@@ -3343,59 +3427,62 @@ async def get_messages(
     # per-message WS invalidator, so head MUST go through to OF every
     # time. Coalescing still applies on both paths.
     aid = _current_aid()
-    coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order)
-    async def _fetch():
-        return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
-            _proxy, lambda: _get_client().get_messages(
-                chat_id, limit=limit, order=order, before_id=before_id,
-            ),
-        ))
-    if before_id is None:
-        # Head page: skip cache entirely. New inbound DMs arrive via the
-        # WS pump + SSE; caching the head would mask them for ~TTL.
-        payload = await _fetch()
-        if isinstance(payload, dict) and aid:
-            # A reply sent from OF web / app has no event of its own.
-            relay_hooks.fire_thread_head(aid, chat_id, payload.get("list"))
-    else:
-        # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
-        # on an old message when a fan pays — so cap the cache at 5min (not
-        # 10) to bound how long a just-paid PPV lingers as "locked". Still
-        # plenty to coalesce a scroll-burst; `bypass=refresh` forces fresh.
-        payload = await relay_cache.get_or_fetch(
-            "get_messages_tail", aid, (chat_id, before_id, limit),
-            ttl_seconds=300.0, fetcher=_fetch, bypass=refresh,
-        )
-    # Media render-stability (18_chat_render_stability §1.1): surface
-    # width/height at each media item's top level so the client sizes the
-    # skeleton without parsing OF's nested files, and persist those dims into
-    # message_media (the primary dims source). Best-effort — a media hiccup
-    # must never break loading the chat. Idempotent, so a cache hit re-running
-    # it is harmless.
-    #
-    # The two halves are deliberately split. Stamping is what the RESPONSE
-    # needs, so it stays awaited. Persisting is a write transaction on the one
-    # shared SQLite writer, and nothing in this response reads it back — it
-    # only feeds a LATER request — so it rides a fire-and-forget task, the same
-    # shape `reconcile_chats_from_of` uses in `list_chats` above. Paying for it
-    # inline meant every chat open and every 30s/2min poll queued behind the
-    # writer. Both halves are handed the SAME list object: stamp mutates it,
-    # persist reads it.
-    if isinstance(payload, dict) and aid:
-        of_rows = payload.get("list") or []
-        try:
-            await stamp_rest_media_dims(str(aid), int(chat_id), of_rows)
-        except Exception:  # noqa: BLE001
-            log.debug("stamp_rest_media_dims failed for chat %s", chat_id, exc_info=True)
-        if of_rows:
-            # `persist_rest_media_dims` swallows its own exceptions — in a bare
-            # create_task an escaping error would only ever surface as an
-            # unretrieved-task warning.
-            asyncio.create_task(
-                persist_rest_media_dims(str(aid), int(chat_id), of_rows),
-                name=f"media-dims-{aid}-{chat_id}",
+    with _of_read_timing("messages", aid, chat_id):
+        coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order)
+        async def _fetch():
+            return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
+                _proxy, lambda: _get_client().get_messages(
+                    chat_id, limit=limit, order=order, before_id=before_id,
+                ),
+            ))
+        if before_id is None:
+            # Head page: skip cache entirely. New inbound DMs arrive via the
+            # WS pump + SSE; caching the head would mask them for ~TTL.
+            payload = await _fetch()
+            _timing_post_start()
+            if isinstance(payload, dict) and aid:
+                # A reply sent from OF web / app has no event of its own.
+                relay_hooks.fire_thread_head(aid, chat_id, payload.get("list"))
+        else:
+            # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
+            # on an old message when a fan pays — so cap the cache at 5min (not
+            # 10) to bound how long a just-paid PPV lingers as "locked". Still
+            # plenty to coalesce a scroll-burst; `bypass=refresh` forces fresh.
+            payload = await relay_cache.get_or_fetch(
+                "get_messages_tail", aid, (chat_id, before_id, limit),
+                ttl_seconds=300.0, fetcher=_fetch, bypass=refresh,
             )
-    return payload
+            _timing_post_start()
+        # Media render-stability (18_chat_render_stability §1.1): surface
+        # width/height at each media item's top level so the client sizes the
+        # skeleton without parsing OF's nested files, and persist those dims into
+        # message_media (the primary dims source). Best-effort — a media hiccup
+        # must never break loading the chat. Idempotent, so a cache hit re-running
+        # it is harmless.
+        #
+        # The two halves are deliberately split. Stamping is what the RESPONSE
+        # needs, so it stays awaited. Persisting is a write transaction on the one
+        # shared SQLite writer, and nothing in this response reads it back — it
+        # only feeds a LATER request — so it rides a fire-and-forget task, the same
+        # shape `reconcile_chats_from_of` uses in `list_chats` above. Paying for it
+        # inline meant every chat open and every 30s/2min poll queued behind the
+        # writer. Both halves are handed the SAME list object: stamp mutates it,
+        # persist reads it.
+        if isinstance(payload, dict) and aid:
+            of_rows = payload.get("list") or []
+            try:
+                await stamp_rest_media_dims(str(aid), int(chat_id), of_rows)
+            except Exception:  # noqa: BLE001
+                log.debug("stamp_rest_media_dims failed for chat %s", chat_id, exc_info=True)
+            if of_rows:
+                # `persist_rest_media_dims` swallows its own exceptions — in a bare
+                # create_task an escaping error would only ever surface as an
+                # unretrieved-task warning.
+                asyncio.create_task(
+                    persist_rest_media_dims(str(aid), int(chat_id), of_rows),
+                    name=f"media-dims-{aid}-{chat_id}",
+                )
+        return payload
 
 
 @app.get("/api/of/v2/chats/{chat_id}/pinned")
@@ -3499,6 +3586,7 @@ async def list_users(
         # A page's own background name fill (X-Priority: background, e.g. 8 batches at once) is
         # user-triggered: never paced, only OF's 429 retried once (of_pacing); a person's read is not.
         resp = await (of_pacing.retry_429(aid, _read) if background else _read())
+        _timing_post_start()  # the leader's line: its context rode into this task
         if isinstance(resp, list):
             resp = {}
         # Overlay runs INSIDE the fetcher so coalesced waiters see the
@@ -3510,7 +3598,8 @@ async def list_users(
             log.exception("custom_nickname stitch failed for /users/list")
         return resp
 
-    return await relay_coalesce.coalesce(key, _fetch)
+    with _of_read_timing("users_list", aid):
+        return await relay_coalesce.coalesce(key, _fetch)
 
 
 class _OverlayLocal(NamedTuple):
@@ -3815,7 +3904,7 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
     # drop, preview text). The WS echo of our own send also busts these, but it
     # can lag the response or be missed outright (pump down) — bust here so the
     # sender's own next list/badge read reflects the reply immediately.
-    _bust_chat_list_and_badges(account_id)
+    _bust_chat_list_and_badges(account_id, fan_id)
 
 
 # ── Dashboard / init ───────────────────────────────────────────
@@ -4561,10 +4650,45 @@ def of_promotions():
 
 # ── Chat extras ────────────────────────────────────────────────
 
+# Chat detail's readers: the money rail (useMoneyRailFeed: up to 12 fans per account,
+# background, react-query staleTime 60 s, per tab and per Employee) for lastMessage +
+# lastReadMessageId, and the OF mirror's chat header (mute state). 30 s: half the
+# rail's own staleTime, so a cached body adds at most 30 s to a read receipt the rail
+# already shows up to 60 s late, and the rail takes a NEWER lastMessage from the inbox
+# row anyway (replyStateOf). Long enough to share one OF read across tabs, Employees
+# and remounts. Our own changes drop the entry: a send, mark read/unread, delete,
+# restrict (`_bust_chat_list_and_badges`), mute/unmute, and an inbound DM (the WS
+# pump, event_transcoder).
+_GET_CHAT_TTL = 30.0
+
+
 @app.get("/api/of/v2/chats/{chat_id}")
-def of_get_chat(chat_id: int):
-    """Full chat detail. Richer than the per-item shape from /chats."""
-    return _proxy(lambda: _get_client().get_chat(chat_id))
+async def of_get_chat(chat_id: int):
+    """Full chat detail. Richer than the per-item shape from /chats.
+    Cached `_GET_CHAT_TTL` per (account, chat) and coalesced, like chat_folders."""
+    aid = _current_aid()
+
+    async def _fetch():
+        return await relay_coalesce.coalesce(("get_chat", aid, chat_id), lambda: asyncio.to_thread(
+            _proxy, lambda: _get_client().get_chat(chat_id),
+        ))
+
+    with _of_read_timing("chat", aid, chat_id):
+        return await relay_cache.get_or_fetch(
+            "get_chat", aid, (chat_id,), ttl_seconds=_GET_CHAT_TTL, fetcher=_fetch,
+        )
+
+
+def _bust_chat_detail(aid: str | None, chat_id: int | None = None) -> None:
+    """Drop cached chat detail (`of_get_chat`): one chat, or every chat of the
+    account (`aid` None: the request's). Never raises: a miss costs one stale
+    TTL, a raise would fail a write OF already took."""
+    try:
+        aid = aid or _current_aid()
+        match = None if chat_id is None else (lambda ex, c=int(chat_id): ex == (c,))
+        relay_cache.invalidate("get_chat", aid, match=match)
+    except Exception:  # noqa: BLE001
+        log.debug("get_chat invalidation skipped", exc_info=True)
 
 @app.get("/api/of/v2/messages/queue")
 def of_scheduled_messages(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
@@ -4811,6 +4935,7 @@ async def of_unsend_message(request: Request, message_id: int):
         await mark_unsent(_resolve_account_id(request), message_id, fan_id=with_user_id)
     except Exception as e:
         log.warning("unsend mirror flip failed message_id=%s: %s", message_id, e)
+    _bust_chat_detail(None, with_user_id)  # lastMessage may be the unsent one; no fan -> whole account
     return resp
 
 class _WithUserBody(BaseModel):
@@ -4838,6 +4963,7 @@ def of_unpin_all_messages(chat_id: int):
     """OF web's pinned page "Unpin all messages": DELETE /chats/{id}/messages/pin."""
     result = _proxy_message_write(lambda: _get_client().unpin_all_messages(chat_id))
     _bust_chat_list_cache()  # the chat drops off the list's Pinned tab
+    _bust_chat_detail(None, chat_id)  # countPinnedMessages rides the detail
     return result
 
 @app.post("/api/of/v2/messages/{message_id}/like")
@@ -4854,11 +4980,15 @@ def of_pin_message(message_id: int, user_id: int):
     """Pin a message inside a chat. Path mirrors OF's wire shape
     (`/messages/{msg}/pin/user/{chat_partner}`) — the shorter `/pin` form
     didn't reliably pin to the chat's visible pinned list."""
-    return _proxy_message_write(lambda: _get_client().pin_message(message_id, user_id))
+    result = _proxy_message_write(lambda: _get_client().pin_message(message_id, user_id))
+    _bust_chat_detail(None, user_id)  # countPinnedMessages rides the detail
+    return result
 
 @app.delete("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
 def of_unpin_message(message_id: int, user_id: int):
-    return _proxy_message_write(lambda: _get_client().unpin_message(message_id, user_id))
+    result = _proxy_message_write(lambda: _get_client().unpin_message(message_id, user_id))
+    _bust_chat_detail(None, user_id)
+    return result
 
 # Chat-level actions (VERIFIED LIVE) — mark read/unread, mute, hide.
 # Static path BEFORE dynamic /chats/{chat_id}/... to avoid `chat_id="mark-as-read"`
@@ -4883,13 +5013,15 @@ async def _set_local_unread(account_id: str, *, fan_id: int | None, value: int) 
         log.warning("_set_local_unread(%s, fan=%s) failed — best-effort", account_id, fan_id,
                     exc_info=True)
 
-def _bust_chat_list_and_badges(aid: str) -> None:
+def _bust_chat_list_and_badges(aid: str, chat_id: int | None = None) -> None:
     """Drop the account's cached chat window AND its roster badge counts, after
     any OF write that changes the cached chat window or roster-badge counts.
     A WS-driven bust may lag the response or never come, and without this
-    both would serve the pre-write snapshot for their TTL."""
+    both would serve the pre-write snapshot for their TTL. Also the chat's
+    cached detail (`chat_id`; None: every chat of the account)."""
     relay_cache.invalidate("list_chats", aid)
     relay_cache.invalidate("roster_count", aid)
+    _bust_chat_detail(aid, chat_id)
 
 @app.post("/api/of/v2/chats/mark-as-read")
 async def of_mark_all_chats_read():
@@ -4920,7 +5052,7 @@ async def of_mark_chat_read(chat_id: int):
     aid = _current_aid()
     await _set_local_unread(aid, fan_id=chat_id, value=0)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
-    _bust_chat_list_and_badges(aid)
+    _bust_chat_list_and_badges(aid, chat_id)
     return result
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
@@ -4929,7 +5061,7 @@ async def of_mark_chat_unread(chat_id: int):
     aid = _current_aid()
     await _set_local_unread(aid, fan_id=chat_id, value=1)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_unread(chat_id))
-    _bust_chat_list_and_badges(aid)
+    _bust_chat_list_and_badges(aid, chat_id)
     return result
 
 @app.post("/api/of/v2/chats/{chat_id}/mute")
@@ -4937,12 +5069,14 @@ async def of_mute_chat(chat_id: int):
     """Mute notifications for a chat."""
     r = await asyncio.to_thread(_proxy, lambda: _get_client().mute_chat(chat_id))
     relay_hooks.fire_mute(chat_id, True)
+    _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/mute")
 async def of_unmute_chat(chat_id: int):
     r = await asyncio.to_thread(_proxy, lambda: _get_client().unmute_chat(chat_id))
     relay_hooks.fire_mute(chat_id, False)
+    _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     return r
 
 @app.post("/api/of/v2/chats/{chat_id}/hide")
@@ -4970,7 +5104,7 @@ async def of_delete_chat(chat_id: int):
     chat list and the roster badge so the row and its count go on the next read."""
     aid = _current_aid()
     r = await _paced_of_write(aid, lambda: _get_client().delete_chat(chat_id))
-    _bust_chat_list_and_badges(aid)
+    _bust_chat_list_and_badges(aid, chat_id)
     return r
 
 
@@ -5116,7 +5250,7 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
     # The counts derive from the cached window + this registry — drop both
     # folds so the next badge/list read reflects the exclusion (and the hidden
     # row's disappearance) immediately.
-    _bust_chat_list_and_badges(account_id)
+    _bust_chat_list_and_badges(account_id, user_id)
     return {"ok": True, "restricted": True, "acked": acked, "hidden": hidden, "of": result}
 
 @app.delete("/api/of/v2/users/{user_id}/restrict")
@@ -5137,7 +5271,7 @@ async def of_unrestrict_user(user_id: int, request: Request, unhide: bool = Quer
         except Exception:
             log.warning("unrestrict unhide-chat failed (account=%s fan=%s)",
                         account_id, user_id, exc_info=True)
-    _bust_chat_list_and_badges(account_id)
+    _bust_chat_list_and_badges(account_id, user_id)
     return {"ok": True, "restricted": False, "of": result}
 
 @app.get("/api/of/v2/stories")

@@ -189,9 +189,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const img = new Image();
                 img.src = link.backgroundImage;
                 img.onload = function () {
-                    const ratio = img.naturalWidth / img.naturalHeight;
-                    // Apply aspect ratio to the card so it fits the image perfectly
-                    card.style.aspectRatio = `${ratio} / 1`;
+                    // Card fits the image minus a bottom strip, so OnlyFans' bottom-right watermark is cropped off
+                    // (the card's background sits at the top; see .link-card.has-bg-image)
+                    card.style.aspectRatio = bannerAspectRatio(img.naturalWidth, img.naturalHeight);
                 };
             }
 
@@ -221,6 +221,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             linksContainer.appendChild(card);
         });
+    }
+
+    // OnlyFans burns "OnlyFans.com/<user>" into the bottom-right of vault media. Crop a strip of WATERMARK_CROP x width
+    // off the bottom (never more than a third of the height) by making the card that much shorter than the image.
+    const WATERMARK_CROP = 0.09;
+    function bannerAspectRatio(w, h) {
+        const shown = Math.max(h - w * WATERMARK_CROP, h * 2 / 3);
+        return `${w} / ${shown}`;
     }
 
     // Mode: the Link's own if recognised, else the Profile's default if recognised, else Escape Mode.

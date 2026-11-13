@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  afterRender, AT_BOTTOM_PX, atBottom, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, mayLoadOlder,
-  onScrollDecision, touchReleases, type AfterRender, type Point, type Scroll,
+  afterRender, AT_BOTTOM_PX, atBottom, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, MAX_FILL_PAGES, mayLoadOlder,
+  onScrollDecision, SENTINEL_MARGIN_PX, touchReleases, type AfterRender, type Point, type Scroll,
 } from "./threadPin";
 
 describe("threadPin constants", () => {
-  it("keeps the 80px bottom band and the 5s backstop", () => {
+  it("keeps the 80px bottom band, the 5s backstop, the 200px sentinel margin and 4 fill pages", () => {
     expect(AT_BOTTOM_PX).toBe(80);
     expect(AUTO_PIN_BACKSTOP_MS).toBe(5000);
+    expect(SENTINEL_MARGIN_PX).toBe(200);
+    expect(MAX_FILL_PAGES).toBe(4);
   });
 });
 
@@ -91,13 +93,23 @@ describe("onScrollDecision", () => {
 });
 
 describe("mayLoadOlder", () => {
-  const go = { pending: false, intersecting: true, hasOlder: true, loadingOlder: false };
+  const go = {
+    pending: false, headSettled: false, fills: 0, intersecting: true, hasOlder: true, loadingOlder: false, failed: false,
+  };
   it.each<[string, Partial<typeof go>, boolean]>([
     ["sentinel in view, older pages, idle", {}, true],
-    ["first load still pinning", { pending: true }, false],
     ["sentinel out of view", { intersecting: false }, false],
     ["no older pages", { hasOlder: false }, false],
     ["a page already loading", { loadingOlder: true }, false],
+    ["the last page failed: only Retry loads", { failed: true }, false],
+    ["after the release the fill cap is moot", { fills: MAX_FILL_PAGES + 5 }, true],
+    ["pinned, head not settled (a seed's first paint)", { pending: true }, false],
+    ["pinned, head settled: a short chat fills", { pending: true, headSettled: true }, true],
+    ["pinned, the last fill under the cap", { pending: true, headSettled: true, fills: MAX_FILL_PAGES - 1 }, true],
+    ["pinned, fill cap reached", { pending: true, headSettled: true, fills: MAX_FILL_PAGES }, false],
+    ["pinned, settled, but the sentinel is out of view (a long head)", { pending: true, headSettled: true, intersecting: false }, false],
+    ["pinned, settled, but a page is loading", { pending: true, headSettled: true, loadingOlder: true }, false],
+    ["pinned, settled, but the last page failed", { pending: true, headSettled: true, failed: true }, false],
   ])("%s", (_, over, out) => {
     expect(mayLoadOlder({ ...go, ...over })).toBe(out);
   });

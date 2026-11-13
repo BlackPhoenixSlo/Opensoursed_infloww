@@ -679,6 +679,7 @@ export function ChatSurface({
           ownerUserId={ownerUserId}
           hasOlder={handle.hasOlder}
           loadingOlder={handle.isLoadingOlder}
+          olderFailed={handle.olderFailed}
           onLoadOlder={() => loadOlderSeeded()}
           onPick={jumpToMessage}
           onClose={() => setSearchOpen(false)}
@@ -707,7 +708,10 @@ export function ChatSurface({
         error={handle.error as Error | null}
         hasOlder={handle.hasOlder}
         loadingOlder={handle.isLoadingOlder}
-        onLoadOlder={() => loadOlderSeeded()}
+        olderFailed={handle.olderFailed}
+        headSettled={handle.headSettled}
+        // A failure is the pager's Retry state (handle.olderFailed), not an unhandled rejection.
+        onLoadOlder={() => { void loadOlderSeeded().catch(() => {}); }}
         onRetry={sender.retry}
         onDiscard={sender.cancelOptimistic}
         onCancelScheduled={(jobId) => {

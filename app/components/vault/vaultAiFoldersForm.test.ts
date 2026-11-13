@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   aiFoldersFormReducer, buildPayload, canSubmit, changesLine, confirmLabel, INITIAL_FORM, KEEP_CHOICES, keepLabel,
-  topicGroups, topicsUsable,
+  topicsUsable,
   type Action, type AiFoldersForm, type PlanChanges,
 } from "./vaultAiFoldersForm";
 
@@ -12,28 +12,31 @@ const changes = (over: Partial<PlanChanges> = {}): PlanChanges =>
 
 describe("aiFoldersFormReducer", () => {
   it.each<[string, Action[], AiFoldersForm]>([
-    ["defaults: 2 shoots, no solo, mirror on", [], { keep: 2, solo: false, mirrorToOf: true, topics: [] }],
-    ["keep 0 stays 0 (lanes only)", [{ type: "keep", keep: 0 }], { keep: 0, solo: false, mirrorToOf: true, topics: [] }],
-    ["keep 20 is allowed", [{ type: "keep", keep: 20 }], { keep: 20, solo: false, mirrorToOf: true, topics: [] }],
-    ["keep clamps to 0..20", [{ type: "keep", keep: 99 }], { keep: 20, solo: false, mirrorToOf: true, topics: [] }],
-    ["keep NaN reads as 0", [{ type: "keep", keep: Number("x") }], { keep: 0, solo: false, mirrorToOf: true, topics: [] }],
+    ["defaults: 10 shoots, no solo, mirror on", [], { keep: 10, solo: false, mirrorToOf: true, topics: [], split: true }],
+    ["keep 0 stays 0 (lanes only)", [{ type: "keep", keep: 0 }], { keep: 0, solo: false, mirrorToOf: true, topics: [], split: true }],
+    ["keep 20 is allowed", [{ type: "keep", keep: 20 }], { keep: 20, solo: false, mirrorToOf: true, topics: [], split: true }],
+    ["keep clamps to 0..20", [{ type: "keep", keep: 99 }], { keep: 20, solo: false, mirrorToOf: true, topics: [], split: true }],
+    ["keep NaN reads as 0", [{ type: "keep", keep: Number("x") }], { keep: 0, solo: false, mirrorToOf: true, topics: [], split: true }],
     ["solo and mirror toggle independently", [{ type: "solo", on: true }, { type: "mirror", on: false }],
-      { keep: 2, solo: true, mirrorToOf: false, topics: [] }],
+      { keep: 10, solo: true, mirrorToOf: false, topics: [], split: true }],
   ])("%s", (_name, actions, want) => {
     expect(run(actions)).toEqual(want);
   });
 
   it("a no-op action keeps the same state object", () => {
-    expect(aiFoldersFormReducer(INITIAL_FORM, { type: "keep", keep: 2 })).toBe(INITIAL_FORM);
+    expect(aiFoldersFormReducer(INITIAL_FORM, { type: "keep", keep: 10 })).toBe(INITIAL_FORM);
     expect(aiFoldersFormReducer(INITIAL_FORM, { type: "solo", on: false })).toBe(INITIAL_FORM);
     expect(aiFoldersFormReducer(INITIAL_FORM, { type: "mirror", on: true })).toBe(INITIAL_FORM);
+    expect(aiFoldersFormReducer(INITIAL_FORM, { type: "split", on: true })).toBe(INITIAL_FORM);
   });
 
   it("buildPayload is exactly the preview's options", () => {
     expect(buildPayload(run([{ type: "keep", keep: 0 }, { type: "solo", on: true }])))
-      .toEqual({ keep: 0, solo: true, mirrorToOf: true, topics: [] });
+      .toEqual({ keep: 0, solo: true, mirrorToOf: true, topics: [], split: true });
     expect(buildPayload(run([{ type: "topic", slug: "spread", on: true }, { type: "topic", slug: "bikini", on: true }])))
-      .toEqual({ keep: 2, solo: false, mirrorToOf: true, topics: ["bikini", "spread"] });
+      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini", "spread"], split: true });
+    expect(buildPayload(run([{ type: "split", on: false }, { type: "topic", slug: "bikini", on: true }])))
+      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false });
   });
 });
 
@@ -55,8 +58,10 @@ describe("topics", () => {
   });
 
   it("topic actions leave the other options alone", () => {
-    const from = run([{ type: "keep", keep: 5 }, { type: "solo", on: true }, { type: "mirror", on: false }]);
-    expect(run([{ type: "topicsAll", slugs: ALL }], from)).toMatchObject({ keep: 5, solo: true, mirrorToOf: false });
+    const from = run([{ type: "keep", keep: 5 }, { type: "solo", on: true }, { type: "mirror", on: false },
+      { type: "split", on: false }]);
+    expect(run([{ type: "topicsAll", slugs: ALL }], from))
+      .toMatchObject({ keep: 5, solo: true, mirrorToOf: false, split: false });
   });
 
   it("a no-op topic action keeps the same state object", () => {
@@ -65,15 +70,6 @@ describe("topics", () => {
     const one = run([{ type: "topic", slug: "bikini", on: true }]);
     expect(aiFoldersFormReducer(one, { type: "topic", slug: "bikini", on: true })).toBe(one);
     expect(aiFoldersFormReducer(one, { type: "topicsAll", slugs: ["bikini"] })).toBe(one);
-  });
-
-  it("topicGroups: feet apart, the rest (no group = topics) in order", () => {
-    const cat = [{ slug: "spread" }, { slug: "feet", group: "feet" }, { slug: "bikini", group: "topics" }];
-    expect(topicGroups(cat)).toEqual({
-      topics: [{ slug: "spread" }, { slug: "bikini", group: "topics" }],
-      feet: [{ slug: "feet", group: "feet" }],
-    });
-    expect(topicGroups([])).toEqual({ topics: [], feet: [] });
   });
 
   it.each<[string, Parameters<typeof topicsUsable>[0], boolean]>([

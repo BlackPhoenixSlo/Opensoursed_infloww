@@ -209,9 +209,163 @@ describe("useChatMessages merge-on-poll", () => {
   });
 });
 
+// The load-older pager (olderPager.ts) as the hook drives it: bounded requests,
+// a Retry state instead of a hot loop, sticky exhaustion.
+describe("useChatMessages load-older pager", () => {
+  const olderUrls = () => relayGet.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("before_id="));
+  const mount = (fanId = FAN) => renderHook(
+    ({ f }: { f: number }) => useChatMessages({ accountId: ACCT, fanId: f }), { wrapper, initialProps: { f: fanId } },
+  );
+
+  it("a hung older page is aborted at 15 s: the pager shows Retry, and Retry loads", async () => {
+    let stall = true;
+    relayGet.mockImplementation((url: string, _ctx: unknown, signal?: AbortSignal) => {
+      if (!url.includes("before_id=")) return Promise.resolve(resp([msg(11), msg(10)], true));
+      if (stall) return new Promise((_r, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+      return Promise.resolve(resp([msg(9)], true));
+    });
+    const { result } = mount();
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    vi.useFakeTimers();
+    try {
+      let p!: Promise<unknown>;
+      act(() => { p = result.current.loadOlder(); });
+      expect(result.current.isLoadingOlder).toBe(true);
+      const signal = relayGet.mock.calls.at(-1)?.[2] as AbortSignal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      await act(async () => { vi.advanceTimersByTime(14_999); });
+      expect(result.current.isLoadingOlder).toBe(true);
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await expect(p).rejects.toMatchObject({ name: "TimeoutError" });
+      });
+      expect(signal.aborted).toBe(true);
+      expect(result.current.isLoadingOlder).toBe(false);
+      expect(result.current.olderFailed).toBe(true);
+      expect(result.current.hasOlder).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    stall = false;
+    await act(async () => { await result.current.loadOlder(); });
+    expect(result.current.olderFailed).toBe(false);
+    expect(ids(result.current.data)).toEqual(["9", "10", "11"]);
+  });
+
+  it.each<[string, () => Promise<OFMessagesResp>]>([
+    ["a 502", () => Promise.reject(Object.assign(new Error("502"), { status: 502 }))],
+    ["an empty page that still says hasMore", () => Promise.resolve(resp([], true))],
+    ["a page that does not get below the cursor", () => Promise.resolve(resp([msg(11), msg(10)], true))],
+  ])("%s leaves the pager in Retry, not loading or idle (no auto re-fire)", async (_name, older) => {
+    relayGet.mockImplementation((url: string) =>
+      url.includes("before_id=") ? older() : Promise.resolve(resp([msg(11), msg(10)], true)));
+    const { result } = mount();
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    await act(async () => { await result.current.loadOlder().catch(() => {}); });
+    expect(result.current).toMatchObject({ olderFailed: true, isLoadingOlder: false, hasOlder: true });
+    expect(olderUrls()).toHaveLength(1);
+  });
+
+  it("an exhausted chat stays exhausted across a head poll that says hasMore", async () => {
+    relayGet.mockImplementation((url: string) => Promise.resolve(
+      url.includes("before_id=") ? resp([msg(9)], false) : resp([msg(11), msg(10)], true),
+    ));
+    const { result } = mount();
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    await act(async () => { await result.current.loadOlder(); });
+    expect(result.current.hasOlder).toBe(false);
+    await act(async () => { await result.current.refetch(); }); // the poll: head says hasMore
+    expect(result.current.hasOlder).toBe(false);
+    await act(async () => { await result.current.loadOlder(); });
+    expect(olderUrls()).toHaveLength(1); // exhausted: no second OF call
+  });
+
+  it("a chat switch aborts the old chat's older page and leaves the new chat idle", async () => {
+    const B = 44;
+    const signals: AbortSignal[] = [];
+    relayGet.mockImplementation((url: string, _ctx: unknown, signal?: AbortSignal) => {
+      if (!url.includes("before_id=")) return Promise.resolve(resp([msg(11), msg(10)], true));
+      signals.push(signal!);
+      return new Promise((_r, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+    });
+    const { result, rerender } = mount();
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    let p!: Promise<{ added: number; hasMore: boolean }>;
+    act(() => { p = result.current.loadOlder(); });
+    rerender({ f: B });
+    await expect(p).resolves.toEqual({ added: 0, hasMore: false });
+    expect(signals[0].aborted).toBe(true);
+    expect(result.current).toMatchObject({ isLoadingOlder: false, olderFailed: false, hasOlder: true });
+  });
+
+  it("unmount aborts the older page in flight", async () => {
+    const signals: AbortSignal[] = [];
+    relayGet.mockImplementation((url: string, _ctx: unknown, signal?: AbortSignal) => {
+      if (!url.includes("before_id=")) return Promise.resolve(resp([msg(11), msg(10)], true));
+      signals.push(signal!);
+      return new Promise(() => {});
+    });
+    const { result, unmount } = mount();
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    act(() => { void result.current.loadOlder(); });
+    unmount();
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it("a mount riding a prefetch whose head page said nothing older starts exhausted (no OF read to learn it)", async () => {
+    const F = 45;
+    relayGet.mockResolvedValue(resp([msg(2), msg(1)], false));
+    await prefetchChatMessages(client, ACCT, F, { staleTime: 60_000 });
+    const { result } = renderHook(
+      () => useChatMessages({ accountId: ACCT, fanId: F, prefetchWindowMs: 60_000 }), { wrapper },
+    );
+    expect(result.current.hasOlder).toBe(false);
+    await act(async () => { await result.current.loadOlder(); });
+    expect(relayGet).toHaveBeenCalledTimes(1); // the prefetch alone
+  });
+});
+
 // mergeOlderPage keeps oldest→newest order even when a load-older page lands
 // INSIDE a gap (cached rows exist both older and newer than it) — the blind
 // prepend it replaced assumed every fetched-older row predated the whole cache.
+describe("useChatMessages headSettled (the cursor is fetch-derived)", () => {
+  it("a fresh cached thread this mount never read is not settled: its cursor would be the cache minimum", async () => {
+    client.setQueryData(KEY, [msg(1), msg(2)], { updatedAt: Date.now() });
+    const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(relayGet).not.toHaveBeenCalled();
+    expect(result.current.dataUpdatedAt).toBeGreaterThan(0);
+    expect(result.current.headSettled).toBe(false);
+  });
+
+  it("this mount's own head read settles it, and a chat switch unsettles it until the new chat's read", async () => {
+    let release: () => void = () => {};
+    relayGet.mockResolvedValueOnce(resp([msg(5), msg(4)], true));
+    const { result, rerender } = renderHook(
+      ({ fan }: { fan: number }) => useChatMessages({ accountId: ACCT, fanId: fan }),
+      { wrapper, initialProps: { fan: FAN } },
+    );
+    expect(result.current.headSettled).toBe(false);
+    await waitFor(() => expect(result.current.headSettled).toBe(true));
+    relayGet.mockImplementationOnce(() => new Promise((r) => { release = () => r(resp([msg(9)], true)); }));
+    rerender({ fan: FAN + 1 });
+    expect(result.current.headSettled).toBe(false);
+    release();
+    await waitFor(() => expect(result.current.headSettled).toBe(true));
+  });
+
+  it("a mount riding a prefetched head page in the cache is settled without a read of its own", async () => {
+    relayGet.mockResolvedValue(resp([msg(101), msg(100)], true));
+    await prefetchChatMessages(client, ACCT, FAN, { staleTime: 60_000 });
+    relayGet.mockClear();
+    const { result } = renderHook(
+      () => useChatMessages({ accountId: ACCT, fanId: FAN, prefetchWindowMs: 60_000 }), { wrapper },
+    );
+    expect(result.current.headSettled).toBe(true);
+    expect(relayGet).not.toHaveBeenCalled();
+  });
+});
+
 describe("prefetchChatMessages", () => {
   it("opening the chat mid-prefetch cancels the background read and refetches on the user lane", async () => {
     const signals: (AbortSignal | undefined)[] = [];

@@ -4,7 +4,9 @@
 vault_pack_picker.triage writes it). Each item is planted in one class, so the candidate set, ranking and prefill
 have an exact oracle written here, never read off the service.
 
-PRECISION ONLY (vault_pack_picker): a candidate is a Jev photo that sees the feet at score >= .6. Nothing else.
+PRECISION ONLY (vault_pack_picker): a candidate is a Jev photo that sees the feet at score >= .6. Below the gate, a
+Jev photo that sees the feet at score >= .3 (FEET_POSSIBLE_MIN) is POSSIBLE: queued after every candidate, `possible`
+true, never preselected, `suggested` its rung without the gate (tier + covering). Below .3: no candidate. Nothing else.
 
   keepers = the candidates (Jev photos, `_jev.status` ok, feet seen, score >= .6)        suggested   tier
     measured   weak describe (legs in pantyhose), Jev feet_subject 0.95, stockings, free  tease       0
@@ -14,12 +16,16 @@ PRECISION ONLY (vault_pack_picker): a candidate is a Jev photo that sees the fee
     jev_review Jev lane5 review, socks                                                     -           None  (free guard)
     jev_soles  no feet word anywhere (outside the LIKE set); Jev soles + bare             nude        0   (Jev finds it)
   PRESELECTED (arrive ticked): the keepers with a suggestion (measured, jev_free, jev_paid, jev_soles).
+  possible (seen, .3 <= score < the gate; after the candidates, unticked)              suggested   tier
+    jev_maybe  Jev feet_subject 0.55 (< FEET_PRESELECT_SCORE .6), socks, lane5 free, body "n"  tease       0
+    jev_floor  Jev feet_subject 0.30 (== FEET_POSSIBLE_MIN), socks, lane5 free, body "n"       tease       0
+  below the floor (seen, score < .3): not candidates (BELOW_FLOOR)
+    jev_low      Jev feet_subject 0.29, socks, lane5 free, body "n"
+    measured_no  tagged feet / primary_folder feet, but Jev feet_subject 0.05, other shoes
   not candidates
     tease / bare / ten / fifty / raw_nude / raw_socks / raw_bare   feet photos by every describe word and flag, but
                Jev has not classified them (no `_jev`): they wait for Jev
-    jev_maybe  Jev feet_subject 0.55 (< FEET_PRESELECT_SCORE .6), socks, lane5 free, body "n"
     jev_video  a CLIP: Jev max frame feet .95 socks free, feet words (no videos in feet)
-    measured_no  tagged feet / primary_folder feet, but Jev feet_subject 0.05
     jev_absent   body_focus feet + "on her feet", but Jev: feet not in the picture
     bystander lingerie pose, feet one of four body_focus parts
     mention   "standing on her feet" in the description only
@@ -36,7 +42,8 @@ Sizes: SIZES `vault_feet_items` (items per Creator), merged on import.
 
 `seed(w, creator, n)` -> (and `w.data["vault_feet"]`) {"account_id", "classes": {cls: [media ids]},
 "keepers": [ids], "unknown_tier": [keeper ids with an unknown Jev tier (JEV_UNSAFE)], "expect": {id: {"suggested",
-"tier"}}, "preselect": {id: rung} (PRESELECT keepers, pre-filed ones included), "filed": {id: rung},
+"tier"}}, "preselect": {id: rung} (PRESELECT keepers, pre-filed ones included), "possible": {id: {"suggested",
+"tier"}} (POSSIBLE rows), "below_floor": [ids of BELOW_FLOOR rows], "filed": {id: rung},
 "free_unsafe": [the jev_unsure id on feet-tease], "free_safe": [the jev_free id on feet-tease], "pre_rule": [the
 tease + jev_video ids on feet-nude], "like_set": [ids the pre-change query matched, by media_id]}. Randomness only
 from `w.rng("vault_feet")`; media ids shuffled across classes so media_id order is the base rate."""
@@ -55,10 +62,14 @@ MIX = (("tease", 0.04), ("bare", 0.04), ("ten", 0.025), ("fifty", 0.025), ("raw_
        ("raw_bare", 0.015), ("measured", 0.015), ("jev_free", 0.015), ("jev_paid", 0.015),
        ("jev_unsure", 0.015), ("jev_review", 0.015), ("jev_soles", 0.015), ("jev_maybe", 0.015),
        ("jev_video", 0.015), ("bystander", 0.13), ("mention", 0.09), ("ambiguous", 0.05), ("measured_no", 0.015),
-       ("jev_absent", 0.015), ("filler", 0.445))
+       ("jev_absent", 0.015), ("jev_floor", 0.015), ("jev_low", 0.015), ("filler", 0.415))
 # The candidates (confident Jev photos) and their (suggested, tier): written from the spec, not the service.
 KEEPERS = {"measured": ("tease", 0), "jev_free": ("tease", 0), "jev_paid": ("nude-body", 50),
            "jev_unsure": (None, None), "jev_review": (None, None), "jev_soles": ("nude", 0)}
+# Jev photos that see the feet at .3 <= score < the gate: POSSIBLE, (suggested, tier) without the gate. From the spec.
+POSSIBLE = {"jev_maybe": ("tease", 0), "jev_floor": ("tease", 0)}
+# Jev photos that see the feet below FEET_POSSIBLE_MIN (.3): no candidate at all (unless filed).
+BELOW_FLOOR = ("jev_low", "measured_no")
 # Feet by every describe word / flag, no `_jev`: no candidate until Jev classifies them.
 NO_JEV = ("tease", "bare", "ten", "fifty", "raw_nude", "raw_socks", "raw_bare")
 VIDEO = ("jev_video",)
@@ -163,6 +174,12 @@ def _fields(cls: str, k: int) -> dict:
                  clothing_items=["grey socks", "joggers"], clothing_state="fully_clothed", explicitness="safe",
                  description=f"Curled up on the sofa in grey socks ({k})", _jev=_jev(0.55))
         flags = {**_COVERED, "over_breasts": "grey hoodie", "over_vulva": "grey joggers"}
+    elif cls in ("jev_floor", "jev_low"):   # at / just below FEET_POSSIBLE_MIN
+        f.update(primary_folder="legs", body_focus=["legs", "feet"], tags=["legs", "socks"],
+                 clothing_items=["white socks", "shorts"], clothing_state="fully_clothed", explicitness="safe",
+                 description=f"Sitting on the rug in white socks ({k})",
+                 _jev=_jev(0.30 if cls == "jev_floor" else 0.29))
+        flags = {**_COVERED, "over_breasts": "white tee", "over_vulva": "grey shorts"}
     elif cls == "jev_video":
         f.update(primary_folder="feet", body_focus=["feet"], tags=["feet", "socks", "video"],
                  clothing_items=["white socks"], clothing_state="fully_clothed", explicitness="suggestive",
@@ -228,7 +245,8 @@ def seed(w: World, creator: dict, n: int) -> dict:
     ids = sorted(rng.sample(range(2_500_000_000, 4_200_000_000), n))
     t0 = w.now - timedelta(days=60)
     out: dict = {"account_id": aid, "classes": {c: [] for c in names}, "keepers": [], "unknown_tier": [], "expect": {}, "filed": {},
-                 "free_unsafe": [], "free_safe": [], "pre_rule": [], "like_set": [], "preselect": {}}
+                 "free_unsafe": [], "free_safe": [], "pre_rule": [], "like_set": [], "preselect": {},
+                 "possible": {}, "below_floor": []}
     rows = []
     for k, (mid, cls) in enumerate(zip(ids, classes)):
         fields = _fields(cls, k)
@@ -259,6 +277,11 @@ def seed(w: World, creator: dict, n: int) -> dict:
                 out["preselect"][mid] = rung
             if rng.random() < FILED_P:
                 out["filed"][mid] = FILED_FOLDER.removeprefix("feet-")
+        elif cls in POSSIBLE:   # never pre-filed: no rng draw, so every other pick is unchanged
+            rung, tier = POSSIBLE[cls]
+            out["possible"][mid] = {"suggested": rung, "tier": tier}
+        elif cls in BELOW_FLOOR:
+            out["below_floor"].append(mid)
     # After the loop (no rng draw): the first unfiled of each class, so every other pick is unchanged.
     for cls, key in (("jev_unsure", "free_unsafe"), ("jev_free", "free_safe")):
         mid = next((m for m in out["classes"][cls] if m not in out["filed"]), None)

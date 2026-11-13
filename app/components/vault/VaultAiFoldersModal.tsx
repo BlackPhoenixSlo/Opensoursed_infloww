@@ -25,9 +25,12 @@
  * duplicating them, and a folder the operator made by hand is never touched.
  *
  * TOPIC FOLDERS (Jev) are opt-in: a checklist of topics (`service/vault_topic_folders.py`), none ticked by
- * default. Each ticked topic adds one folder per price (`AI-bikini free`, `AI-bikini $10`, …) cut from the photos'
- * Jev answers; a free one never holds anything Jev saw bare. Unticking a topic retires its folders on the next
- * build (the preview's retire line names them). Disabled until Jev is on and has read some photos.
+ * default. Each ticked topic adds one folder per price (`AI-bikini free`, `AI-bikini $10`, …; explicit topics
+ * $50 / $100 / $150, never free) cut from the photos' and clips' Jev answers; a free one never holds anything Jev
+ * saw bare, nor a clip Jev wants reviewed. "Split topics by price" off makes one `AI-<topic>` folder each instead.
+ * Unticking a topic (or flipping the split) retires the folders it no longer makes on the next build (the preview's
+ * retire line names them). Disabled until Jev is on and has read some items. No feet topic: feet live in the vault's
+ * Feet pack only (VaultPackPickerModal).
  *
  * Before Confirm the plan's `changes` says what it does to the AI- folders already there (create / keep / retire);
  * retiring one bound to an OnlyFans list unlinks that list, so the button says so. Options live in
@@ -63,7 +66,6 @@ import {
   INITIAL_FORM,
   KEEP_CHOICES,
   keepLabel,
-  topicGroups,
   topicsUsable,
 } from "@/components/vault/vaultAiFoldersForm";
 
@@ -110,6 +112,11 @@ function FolderCard({
                 whole lane is a real answer, and so is one that is a third of it. */}
             {folder.solo && ` · ${folder.size} of ${folder.solo_of} in the lane`}
           </p>
+          {isScript && !!folder.health?.length && (
+            <p data-testid="script-health" className="text-[12px] text-muted mt-0.5">
+              {folder.health.join(" · ")}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {Object.entries(folder.tiers).map(([tier, n]) => (
@@ -148,7 +155,7 @@ function FolderCard({
               )}
             </div>
             <figcaption className="mt-0.5 text-[12px] text-muted truncate">
-              {it.closes ? "closes" : it.clothing_state}
+              {it.borrowed ? "borrowed" : it.closes ? "closes" : it.clothing_state}
             </figcaption>
           </figure>
         ))}
@@ -176,9 +183,9 @@ export default function VaultAiFoldersModal({
 }) {
   const qc = useQueryClient();
   const [form, dispatch] = useReducer(aiFoldersFormReducer, INITIAL_FORM);
-  const { keep, solo, mirrorToOf, topics } = form;
+  const { keep, solo, mirrorToOf, topics, split } = form;
 
-  const plan = useAiFolderPlan(accountId, { keep, solo, topics }, true);
+  const plan = useAiFolderPlan(accountId, { keep, solo, topics, split }, true);
   // The topic checklist (+ Jev coverage) does not depend on the options, so it stays drawn while a toggle re-plans.
   const [lastTopics, setLastTopics] = useState<Pick<AiFolderPlan, "topic_catalogue" | "jev"> | null>(null);
   useEffect(() => {
@@ -188,7 +195,6 @@ export default function VaultAiFoldersModal({
     setLastTopics((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
   }, [plan.data]);
   const catalogue = plan.data?.topic_catalogue ?? lastTopics?.topic_catalogue ?? [];
-  const groups = topicGroups(catalogue);
   const jev = plan.data?.jev ?? lastTopics?.jev;
   const topicsOn = topicsUsable(jev);
 
@@ -356,6 +362,46 @@ export default function VaultAiFoldersModal({
         </div>
       )}
 
+      <section className="mt-4 rounded-md border border-border px-3 py-2.5" data-testid="ai-folders-topics">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-[14px] font-semibold">Topic folders (Jev)</span>
+          {jev && (
+            <span className="text-[12px] text-muted tabular-nums">
+              {jev.with_jev} of {jev.items} items have Jev data
+            </span>
+          )}
+          <span className="ml-auto flex flex-wrap items-center gap-2">
+            <span title="Off: one AI-<topic> folder per ticked topic, free and paid together, instead of one per price.">
+              <IfSwitch
+                checked={split}
+                onChange={(on) => { dispatch({ type: "split", on }); optionChanged(); }}
+                disabled={busy}
+                label="Split topics by price"
+              />
+            </span>
+            <IfButton
+              onClick={() => { dispatch({ type: "topicsAll", slugs: catalogue.map((t) => t.slug) }); optionChanged(); }}
+              disabled={busy || !topicsOn || catalogue.length === 0}
+            >
+              Select all
+            </IfButton>
+            <IfButton
+              onClick={() => { dispatch({ type: "topicsNone" }); optionChanged(); }}
+              disabled={busy || topics.length === 0}
+            >
+              None
+            </IfButton>
+          </span>
+        </div>
+        <IfHelp>
+          {topicsOn
+            ? `${split ? "One folder per ticked topic and price" : "One folder per ticked topic (price split off)"} (free / $10 / $50 / $100; explicit topics $50 / $100 / $150, never free), from Jev's answers on photos and clips. Free never holds anything Jev saw bare; photos Jev is unsure about go nowhere, clips it wants reviewed only to their paid price.`
+            : "Needs Jev classification: check the stills, then come back."}
+        </IfHelp>
+        <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+          {catalogue.map(topicRow)}
+        </div>
+      </section>
       <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-3">
         <div>
           <IfLabel htmlFor="ai-folders-keep">Keep as scripts</IfLabel>
@@ -398,50 +444,6 @@ export default function VaultAiFoldersModal({
           />
         </span>
       </div>
-      <section className="mt-4 rounded-md border border-border px-3 py-2.5" data-testid="ai-folders-topics">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="text-[14px] font-semibold">Topic folders (Jev)</span>
-          {jev && (
-            <span className="text-[12px] text-muted tabular-nums">
-              {jev.with_jev} of {jev.photos} photos have Jev data
-            </span>
-          )}
-          <span className="ml-auto flex gap-2">
-            <IfButton
-              onClick={() => { dispatch({ type: "topicsAll", slugs: groups.topics.map((t) => t.slug) }); optionChanged(); }}
-              disabled={busy || !topicsOn || groups.topics.length === 0}
-            >
-              Select all
-            </IfButton>
-            <IfButton
-              onClick={() => { dispatch({ type: "topicsNone" }); optionChanged(); }}
-              disabled={busy || topics.length === 0}
-            >
-              None
-            </IfButton>
-          </span>
-        </div>
-        <IfHelp>
-          {topicsOn
-            ? "One folder per ticked topic and price (free / $10 / $50 / $100), from Jev's answers. Free never holds anything Jev saw bare; photos Jev is unsure about go nowhere."
-            : "Needs Jev classification: check the stills, then come back."}
-        </IfHelp>
-        <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
-          {groups.topics.map(topicRow)}
-        </div>
-        {groups.feet.length > 0 && (
-          <div className="mt-3 border-t border-border pt-2" data-testid="ai-folders-feet">
-            <span className="text-[13px] font-semibold">Feet</span>
-            <IfHelp>
-              Three folders, AI-feet tease / nude / nude-body, from the same Jev feet score and rung the Feet pack
-              preselects. Tease never holds anything Jev saw bare. Off unless ticked.
-            </IfHelp>
-            <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
-              {groups.feet.map(topicRow)}
-            </div>
-          </div>
-        )}
-      </section>
       {(plan.isFetching || s) && (
         <IfHelp className="mt-3">
           {plan.isFetching && "planning… "}

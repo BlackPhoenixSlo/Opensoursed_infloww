@@ -424,7 +424,8 @@ h1 {
 /* CSS for Link Background Images (Banners) */
 .link-card.has-bg-image {
     background-size: cover;
-    background-position: center;
+    /* Top-anchored: script.js shortens the card so the bottom strip (OnlyFans' watermark) falls outside it */
+    background-position: center top;
     background-repeat: no-repeat;
 
     /* Fallback aspect ratio (2.5:1) until JS loads the image */

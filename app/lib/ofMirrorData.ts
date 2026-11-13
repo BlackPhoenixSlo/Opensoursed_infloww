@@ -452,7 +452,9 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
 
   // The thread's older messages, as OF's: near the top of the thread, the page before its oldest (before_id); checked
   // again once each page is drawn, so a thread shorter than its box keeps loading. keepThreadScroll holds the view.
-  const { hasOlder, isLoadingOlder, loadOlder } = thread;
+  // After a failed page (`olderFailed`) only a scroll asks again: no check on
+  // attach, so the failure can't re-fire itself each time loading settles.
+  const { hasOlder, isLoadingOlder, loadOlder, olderFailed } = thread;
   const olderNext = parts.includes("thread") && !isPinnedPage && !!chat && !!accountId && hasOlder && !isLoadingOlder;
   useEffect(() => {
     const frame = frameRef.current;
@@ -466,7 +468,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       doc?.removeEventListener("scroll", check, true);
       doc = frame.contentDocument;
       doc?.addEventListener("scroll", check, true);
-      check();
+      if (!olderFailed) check();
     };
     if (frame.contentDocument?.readyState === "complete") attach();
     frame.addEventListener("load", attach);
@@ -474,7 +476,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       frame.removeEventListener("load", attach);
       doc?.removeEventListener("scroll", check, true);
     };
-  }, [frameRef, src, olderNext, loadOlder, data]);
+  }, [frameRef, src, olderNext, olderFailed, loadOlder, data]);
 
   // The Gallery's next page, as OF's grid: near the end of whatever scrolls it (its column, or the page on a phone).
   const galleryNext = isGallery && !!gallery.hasNextPage && !gallery.isFetchingNextPage && !gallery.isPlaceholderData && !gallery.isFetchNextPageError && !galleryStalled(gallery.data?.pages ?? []);

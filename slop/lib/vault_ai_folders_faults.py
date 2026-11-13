@@ -12,6 +12,7 @@ NO_DUPES = "ai_folders_no_duplicate_in_folder"
 COLOURLESS = "ai_folders_colourless_set"
 PREVIEW = "ai_folders_preview_counts"
 PREVIEW_SHOWN = "ai_folders_preview_counts_shown"
+SCRIPTS_CAPPED = "scripts_capped_named"
 
 
 def _dupe_collapse_off() -> None:
@@ -22,6 +23,16 @@ def _dupe_collapse_off() -> None:
     if not hasattr(vs, "collapse_dupes"):
         raise RuntimeError("slop fault: vault_scripts.collapse_dupes is gone; update lib/vault_ai_folders_faults.py")
     vs.collapse_dupes = lambda rows, groups: (list(rows), [])
+
+
+def _script_cap_off() -> None:
+    """Scripts are the whole shoot again (the pre-v2 behaviour): `cap_ladder` keeps every item and leaves nothing
+    over, so the big bedroom part plans as all of it and has no overflow closer to lend."""
+    import vault_scripts as vs
+
+    if not hasattr(vs, "cap_ladder"):
+        raise RuntimeError("slop fault: vault_scripts.cap_ladder is gone; update lib/vault_ai_folders_faults.py")
+    vs.cap_ladder = lambda items: (list(items), [])
 
 
 def _guess_unflagged() -> None:
@@ -57,4 +68,6 @@ def register(Fault) -> dict:
         )),
         # --fault=ai-folders-guess-unflagged: unflagged paid stills guessed into the $10 lane (server).
         "ai-folders-guess-unflagged": Fault(_guess_unflagged, (PLAN, PAID_ONLY)),
+        # --fault=ai-folders-script-cap-off: scripts uncapped, the whole shoot (server, vault_scripts.cap_ladder).
+        "ai-folders-script-cap-off": Fault(_script_cap_off, (SCRIPTS_CAPPED,)),
     }

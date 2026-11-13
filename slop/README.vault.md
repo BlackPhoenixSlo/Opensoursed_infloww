@@ -45,13 +45,13 @@ oracles, bypasses).
 | `seed/vault_flags_partial.py` | A described vault the flags pass reached only part of (planted $10 / $50 / unflagged classes). |
 | `lib/vault_ai_folders_faults.py` | Build AI folders' check names and faults (below). |
 | `scenarios/2026-11-10-vault-ai-folders-partial-flags.py` | Build AI folders on a partly flagged vault. |
-| `seed/vault_feet.py` | A described, flagged vault for the feet pack picker (precision only: keepers = the Jev photos >= .6, incl. free-but-unsure / review / soles-only; out: no-Jev feet photos, half-sure .55, not-in-picture, measured-no, a Jev feet clip, bystander / mention / ambiguous; the PRESELECT oracle, some keepers + a no-Jev photo + a clip pre-filed). |
+| `seed/vault_feet.py` | A described, flagged vault for the feet pack picker (precision only: keepers = the Jev photos >= .6, incl. free-but-unsure / review / soles-only; out: no-Jev feet photos, half-sure .55 / .30 possible, .29 below the floor, not-in-picture, measured-no, a Jev feet clip, bystander / mention / ambiguous; the PRESELECT oracle, some keepers + a no-Jev photo + a clip pre-filed). |
 | `lib/vault_feet_picker_faults.py` | The feet pack picker's check names and faults (below). |
 | `scenarios/2026-11-11-vault-feet-picker.py` | Feet pack picker: ranked, prefilled, keyboard, phone, Jev ranking + Jev free guard, Jev preselect + "File N preselected". |
 | `seed/vault_tag_chips.py` | A tagged vault: feet / lace planted across the column, ai tags and primary_folder, plus decoys, removed and malformed rows; the AND match and facet oracle. |
 | `lib/vault_tag_chips_faults.py` | The tag chips' check names and fault (below). |
 | `scenarios/2026-11-11-vault-tag-chips.py` | The grid's tag chips and Save as folder. |
-| `seed/vault_topic_folders.py` | A Jev-classified vault: one-topic hits at every (topic, price), guarded free-lane, wrong-price, review, stale / failed / no-Jev rows and a clip, feet rows for the AI-feet folders (each rung, the .6 gate, .59, free-but-unsure); Jev on for the Creator. |
+| `seed/vault_topic_folders.py` | A Jev-classified vault: one-topic hits at every (topic, price), guarded free-lane, wrong-price, review, stale / failed / no-Jev rows and a clip, Jev feet rows (in no topic folder); Jev on for the Creator. |
 | `lib/vault_topic_folders_faults.py` | Topic folders' check names and faults (below). |
 | `scenarios/2026-11-12-vault-topic-folders.py` | Build AI folders' opt-in Topic folders (Jev). |
 
@@ -228,8 +228,8 @@ oracles, bypasses).
   (default, client; create_enabled), `ai-folders-guess-unflagged` (server; plan + paid_only). Bypasses: vault by
   SQL (no OF / LLM), "Also create on OnlyFans" switched off, collector off.
 - `2026-11-11-vault-feet-picker` (UI): `agency_inbox` + `seed/vault_feet` (`vault_feet_items` 300 / 2,000 /
-  12,000), full images written into the still store. Precision only: the queue is the Jev photos >= .6, nothing
-  else. Checks: `feet_ranked_above_like_baseline` (queue set == unfiled keepers; precision@N vs the old LIKE /
+  12,000), full images written into the still store. Precision only: the queue is the Jev photos >= .6, then
+  the possible ones (.3 <= score < .6, unticked); below .3 nothing. Checks: `feet_ranked_above_like_baseline` (queue set == unfiled keepers; precision@N vs the old LIKE /
   media_id order; pre-filed incl. pre-rule clip back on their rung), `feet_prefill_matches_flags` (priced from
   `_jev` alone), `feet_no_free_prefill_without_tier` (unknown Jev tier / not free-safe never on the free rung),
   `feet_jev_selects_and_ranks` (Jev soles-only rows in; no-Jev, .55, not-in-picture, measured-no rows and clips
@@ -239,24 +239,24 @@ oracles, bypasses).
   1, Save; POST + DB members), `feet_phone_layout_tap_save` (390px: 2 columns, 44px taps, no overflow; tap +
   Save; DB), `feet_preselect_confirm` (API `preselect` == the seeded Jev keepers with a prefill; fresh desktop:
   exactly those ticked, untick one, "File N preselected", one POST of the rest, DB; screenshots
-  `feet-preselect-trigger` / `-settled`; --no-ui: API flags only), `feet_candidates_p95` (budget). Faults:
+  `feet-preselect-trigger` / `-settled`; --no-ui: API flags only), `feet_possible_floor` (.29 / .05 seen rows out,
+  .30 possible), `feet_candidates_p95` (budget). Faults:
   `feet-rank-like-only` (default, server, every Jev score 1: below-gate rows queued; ranked + prefill + jev rank +
   preselect), `feet-free-prefill-unknown-tier` (server, unknown Jev tier picked from covering; no-free + prefill +
   preselect), `feet-jev-free-guard-off` (server; jev free guard + prefill), `feet-preselect-threshold-low`
-  (server, Jev gate 0.3; preselect + prefill + ranked + jev rank), `feet-keys-enter-ignores-suggestion` (client;
+  (server, Jev gate 0.3; preselect + prefill + ranked + jev rank), `feet-possible-floor-off` (server, no .3
+  floor; floor + ranked + prefill), `feet-keys-enter-ignores-suggestion` (client;
   keys). Bypasses: vault by SQL (no OF / LLM), collector off, Publish not pressed.
 
 - `2026-11-12-vault-topic-folders` (UI): `agency_inbox` + `seed/vault_topic_folders` (`vault_topic_items` 150 / 600 /
   2,000), thumbs written into the still store. Plan stage (also --no-ui): folder-plan without topics, all 18,
-  bikini + spread, feet only, unknown slug (GET + POST 422). Desktop 1440x900: Build AI folders, coverage line, nothing ticked,
+  bikini + spread, unknown slug `nope` / `feet` (GET + POST 422; no feet topic: the Feet pack only). Desktop 1440x900: Build AI folders, coverage line, nothing ticked,
   tick bikini + spread, screenshot `topic-folders-trigger`, mirror off, Create, settled on Rebuild
   (`topic-folders-settled`); --no-ui: the same POST. Then untick spread (bikini-only plan + apply). Checks:
   `topic_folders_off_by_default`, `topic_folders_unknown_422`, `topic_folders_plan_exact`, `topic_folders_free_guard`
   (plan + DB), `topic_folders_apply_equals_preview` (DB), `topic_folders_ticked_from_ui`,
-  `topic_folders_untick_retires` (DB), `topic_feet_folders` (AI-feet tease / nude / nude-body == the planted feet
-  rows, .6 in / .59 out, tease holds nothing bare or unsure, catalogue group + count). Faults:
-  `vault-topics-free-guard-off` (default, server; free_guard), `ai-feet-tease-free-guard-off` (server, lane5 free
-  trusted by `jev_tier` and `free_ok`; feet folders). Bypasses:
+  `topic_folders_untick_retires` (DB); Jev feet photos land in no topic folder (plan_exact). Faults:
+  `vault-topics-free-guard-off` (default, server; free_guard). Bypasses:
   vault + Jev answers by SQL (no OF / TypeSafe / NudeNet / LLM), Jev switched on by SQL, mirror off, collector off.
 
 - `2026-11-11-vault-tag-chips` (UI): `agency_inbox` + `seed/vault_tag_chips` (`vault_tag_items` 80 / 2,000 /

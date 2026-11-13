@@ -28,6 +28,10 @@ export interface ChatSearchProps {
   ownerUserId: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
+  /** The last older page failed (or timed out): auto-fill stops and a Retry
+   *  shows; nothing re-fires into the failure on its own. */
+  olderFailed?: boolean;
+  /** Rejects when the page fails or times out (15s). */
   onLoadOlder: () => Promise<{ added: number; hasMore: boolean }> | void;
   onPick: (messageId: number) => void;
   onClose: () => void;
@@ -39,7 +43,7 @@ const AUTO_FILL_COUNT = 3;    // how many top hits we auto-page back to preview
 export function ChatSearch(props: ChatSearchProps) {
   const {
     accountId, fanId, messages, ownerUserId,
-    hasOlder, loadingOlder, onLoadOlder, onPick, onClose,
+    hasOlder, loadingOlder, olderFailed = false, onLoadOlder, onPick, onClose,
   } = props;
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -134,7 +138,7 @@ export function ChatSearch(props: ChatSearchProps) {
   // so it runs exactly once per result set even though byId changes each
   // time a page lands.
   useEffect(() => {
-    if (!debounced || ids.length === 0 || !hasOlder) return;
+    if (!debounced || ids.length === 0 || !hasOlder || olderFailed) return;
     const top = ids.slice(0, AUTO_FILL_COUNT);
     const key = `${debounced}|${top.join(",")}`;
     if (autoFillKeyRef.current === key) return;
@@ -148,25 +152,39 @@ export function ChatSearch(props: ChatSearchProps) {
     let cancelled = false;
     setAutoFilling(true);
     (async () => {
-      for (let i = 0; i < MAX_PAGES_TO_LOAD && !cancelled; i++) {
-        // We can't rely on `byId` here — closure has a stale snapshot. Read
-        // the DOM (Bubble stamps `data-msg-id` on each bubble) so we can
-        // bail out the moment every target id is rendered.
-        const allLoaded = top.every((id) =>
-          document.querySelector(`[data-msg-id="${CSS.escape(String(id))}"]`),
-        );
-        if (allLoaded) break;
-        const res = await onLoadOlder();
-        const ok = res && typeof res === "object" && "added" in res ? res : null;
-        if (!ok || ok.added === 0 || !ok.hasMore) break;
+      try {
+        for (let i = 0; i < MAX_PAGES_TO_LOAD && !cancelled; i++) {
+          // We can't rely on `byId` here — closure has a stale snapshot. Read
+          // the DOM (Bubble stamps `data-msg-id` on each bubble) so we can
+          // bail out the moment every target id is rendered.
+          const allLoaded = top.every((id) =>
+            document.querySelector(`[data-msg-id="${CSS.escape(String(id))}"]`),
+          );
+          if (allLoaded) break;
+          const res = await onLoadOlder();
+          const ok = res && typeof res === "object" && "added" in res ? res : null;
+          if (!ok || ok.added === 0 || !ok.hasMore) break;
+        }
+      } catch {
+        // A failed / timed-out page: stop; `olderFailed` shows the Retry.
+      } finally {
+        if (!cancelled) setAutoFilling(false);
       }
-      if (!cancelled) setAutoFilling(false);
     })();
-    return () => { cancelled = true; };
+    // A cancelled run never clears its own flag, and the re-run may return
+    // early (olderFailed / exhausted), so clear it here.
+    return () => { cancelled = true; setAutoFilling(false); };
     // We intentionally don't depend on byId — the DOM check inside the
     // loop handles "did the previous page bring our targets in?" itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, ids, hasOlder]);
+  }, [debounced, ids, hasOlder, olderFailed]);
+
+  /** The failed state's Retry: one manual page, then auto-fill may run again. */
+  function retryOlder() {
+    autoFillKeyRef.current = "";
+    setError(null);
+    void Promise.resolve(onLoadOlder()).catch(() => {});
+  }
 
   async function handlePick(id: number) {
     // If the bubble's already on screen, just jump.
@@ -199,6 +217,9 @@ export function ChatSearch(props: ChatSearchProps) {
         if (el) break;
       }
       onPick(id);
+    } catch {
+      // A failed / timed-out page: stay put, say so; Retry is beside it.
+      setError("Couldn’t load older messages to reach that match.");
     } finally {
       setJumpingId(null);
     }
@@ -237,6 +258,14 @@ export function ChatSearch(props: ChatSearchProps) {
       </div>
       {error && (
         <div className={cn(O.note, "text-err")}>{error}</div>
+      )}
+      {olderFailed && hasOlder && (
+        <div className={cn(O.note, "text-err")}>
+          Couldn’t load older messages ·{" "}
+          <button type="button" onClick={retryOlder} disabled={loadingOlder} className="underline disabled:opacity-60">
+            Retry
+          </button>
+        </div>
       )}
       {debounced && !searching && (
         <div className={cn(O.small, "text-fg-dim")}>

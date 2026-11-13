@@ -1,6 +1,6 @@
 /**
- * "Build AI folders" options: how many shoots stay script folders, the solo cut, the OnlyFans mirror and the ticked
- * Jev topic folders. All of them go into ONE apply payload and must match the preview the operator saw (the server re-derives the plan and retires
+ * "Build AI folders" options: how many shoots stay script folders, the solo cut, the OnlyFans mirror, the ticked
+ * Jev topic folders and whether they split by price. All of them go into ONE apply payload and must match the preview the operator saw (the server re-derives the plan and retires
  * what it no longer makes), so they live in one pure reducer; VaultAiFoldersModal only dispatches.
  *
  * `confirmLabel` / `changesLine` turn the plan's `changes` (what Confirm does to the AI- folders already there) into
@@ -17,18 +17,21 @@ export interface AiFoldersForm {
   /** Ticked topic slugs (`service/vault_topic_folders.py`), sorted so the preview's query key and the apply body
    *  never differ by order. None by default: the build is unchanged until the operator opts in. */
   topics: string[];
+  /** Topic folders split by price (`AI-bikini free`, `AI-bikini $10`, …); off = one `AI-<topic>` folder each. */
+  split: boolean;
 }
 
 export type Action =
   | { type: "keep"; keep: number }
   | { type: "solo"; on: boolean }
   | { type: "mirror"; on: boolean }
+  | { type: "split"; on: boolean }
   | { type: "topic"; slug: string; on: boolean }
   /** "Select all": every topic the plan offered (`slugs` = its catalogue). */
   | { type: "topicsAll"; slugs: readonly string[] }
   | { type: "topicsNone" };
 
-export const INITIAL_FORM: AiFoldersForm = { keep: 2, solo: false, mirrorToOf: true, topics: [] };
+export const INITIAL_FORM: AiFoldersForm = { keep: 10, solo: false, mirrorToOf: true, topics: [], split: true };
 
 function withTopics(state: AiFoldersForm, next: Iterable<string>): AiFoldersForm {
   const topics = [...new Set(next)].sort();
@@ -46,6 +49,8 @@ export function aiFoldersFormReducer(state: AiFoldersForm, action: Action): AiFo
       return action.on === state.solo ? state : { ...state, solo: action.on };
     case "mirror":
       return action.on === state.mirrorToOf ? state : { ...state, mirrorToOf: action.on };
+    case "split":
+      return action.on === state.split ? state : { ...state, split: action.on };
     case "topic":
       return withTopics(state, action.on ? [...state.topics, action.slug]
         : state.topics.filter((t) => t !== action.slug));
@@ -58,21 +63,12 @@ export function aiFoldersFormReducer(state: AiFoldersForm, action: Action): AiFo
 
 /** The apply call's options: exactly the preview's. */
 export function buildPayload(form: AiFoldersForm): {
-  keep: number; solo: boolean; mirrorToOf: boolean; topics: string[];
+  keep: number; solo: boolean; mirrorToOf: boolean; topics: string[]; split: boolean;
 } {
-  return { keep: form.keep, solo: form.solo, mirrorToOf: form.mirrorToOf, topics: form.topics };
+  return { keep: form.keep, solo: form.solo, mirrorToOf: form.mirrorToOf, topics: form.topics, split: form.split };
 }
 
-/** The catalogue split for display: the general topics, and the "Feet" group (one slug whose folders are the feet
- *  pack's rungs). "Select all" only reaches the general topics; feet stays an explicit tick. */
-export function topicGroups<T extends { group?: string }>(catalogue: readonly T[]): { topics: T[]; feet: T[] } {
-  return {
-    topics: catalogue.filter((t) => (t.group ?? "topics") !== "feet"),
-    feet: catalogue.filter((t) => t.group === "feet"),
-  };
-}
-
-/** Topic checkboxes are live only when Jev is on for the account AND some photo carries its answers. */
+/** Topic checkboxes are live only when Jev is on for the account AND some item carries its answers. */
 export function topicsUsable(jev: { enabled: boolean; with_jev: number } | null | undefined): boolean {
   return !!jev && jev.enabled && jev.with_jev > 0;
 }

@@ -50,19 +50,25 @@ Cases:
       $10 / free only with every body answer "n"); no usable `_jev` -> None.
   case_jev_likelihood_table            — pure: feet_subject clamped (junk 0),
       soles / toes boost by noisy-OR, not-in-picture damp.
-  case_candidates_ranked_and_prefilled — route: only confident Jev photos (seen,
-      score >= .6: .59 out), likely-first, each with suggested + tier + score;
+  case_candidates_ranked_and_prefilled — route: confident Jev photos (seen,
+      score >= .6) likely-first, then the possible ones (.3 <= score < .6, .59:
+      unticked, `possible`), each with suggested + tier + score;
       no-Jev words, failed Jev, unseen, videos out; `limit` cuts the unfiled
       queue only; filed items (a video, a no-Jev photo) always come back after
       it; a capped scan is deterministic.
   case_jev_free_ok_table               — pure: a Jev row may ride free only at
       lane5 free with breasts / crotch / penetration all "n"; no usable _jev -> None.
-  case_jev_pick_preselect_table        — pure: `jev_pick` (preselect + AI-feet
-      membership): score >= FEET_PRESELECT_SCORE (.59 no, .6 yes), feet seen,
+  case_jev_pick_preselect_table        — pure: `jev_pick` (the preselect):
+      score >= FEET_PRESELECT_SCORE (.59 no, .6 yes), feet seen,
       known tier, rung from tier + feet_detail, never tease for an unsafe body.
   case_candidates_jev_selects_and_ranks — route: a Jev-only feet photo (no word
-      says feet) is found; Jev-says-no, failed Jev, malformed JSON and .55 are
-      not; an unsafe confident row comes back unpicked, never free.
+      says feet) is found; Jev-unseen, failed Jev and malformed JSON are not; .55
+      and .3 (seen) come back possible, after the confident ones; .29 and .05
+      (seen) are below FEET_POSSIBLE_MIN: out, unless filed; an unsafe
+      confident row comes back unpicked, never free.
+  case_possible_table                  — pure: `possible` = a seen Jev photo at
+      FEET_POSSIBLE_MIN (.3) <= score < the gate (.29 out, .3 in; never a clip / unseen / failed / confident one); `jev_rung` its
+      suggestion without the gate, never free for an unsafe body, unknown tier None.
   case_triage_refuses_unsafe_free      — route: 400 not_free_safe for a Jev row
       that is not free-safe on the free rung, nothing written; paid rung / safe
       Jev / non-Jev rows on it are filed.
@@ -724,7 +730,7 @@ def case_jev_likelihood_table():
 
 
 def case_jev_pick_preselect_table():
-    """`jev_pick`: the rung a Jev row arrives preselected on (pack picker + AI-feet folders), else None."""
+    """`jev_pick`: the rung a Jev row arrives preselected on in the pack picker, else None."""
     feet = vault_pack_picker.category("feet")
     rows = [
         ("score .6, socks, free", _jev_blob(feet_subject=0.6), "tease"),
@@ -750,6 +756,43 @@ def case_jev_pick_preselect_table():
     for name, j, want in rows:
         got = vault_pack_picker.jev_pick(feet, j)
         assert got == want, f"{name}: jev_pick={got!r}, want {want!r}"
+
+
+def case_possible_table():
+    """`possible`: a seen Jev photo at FEET_POSSIBLE_MIN <= score < FEET_PRESELECT_SCORE; `jev_rung` its suggestion
+    (no gate)."""
+    feet = vault_pack_picker.category("feet")
+    pv = lambda j: vault_pack_picker.possible(feet, {"_jev": j}) is not None  # noqa: E731
+    assert vault_pack_picker.FEET_POSSIBLE_MIN == 0.3
+    rows = [
+        ("score .59", _jev_blob(feet_subject=0.59), True),
+        ("score .3: at the floor", _jev_blob(feet_subject=0.3), True),
+        ("score .29: below the floor", _jev_blob(feet_subject=0.29), False),
+        ("score .05, seen", _jev_blob(feet_subject=0.05), False),
+        ("score .2 + soles 1.0 boosted over the floor", _jev_blob(feet_subject=0.2, soles=1.0), True),
+        ("score .6: confident, not possible", _jev_blob(feet_subject=0.6), False),
+        ("unseen", _jev_blob(feet_subject=0.3, seen="n"), False),
+        ("failed", {**_jev_blob(feet_subject=0.3), "status": "error"}, False),
+        ("a clip", _video_jev(feet_subject=0.3), False),
+    ]
+    for name, j, want in rows:
+        assert pv(j) is want, f"{name}: possible={pv(j)!r}, want {want!r}"
+    assert vault_pack_picker.possible(feet, None) is None and vault_pack_picker.possible(feet, {}) is None
+    rung = lambda j: vault_pack_picker.jev_rung(feet, j)  # noqa: E731
+    rungs = [
+        ("socks, free, .3", _jev_blob(feet_subject=0.3), "tease"),
+        ("bare, free, .3", _jev_blob(feet_subject=0.3, detail="bare"), "nude"),
+        ("$50 body, .3", _jev_blob(lane5="$50", feet_subject=0.3), "nude-body"),
+        ("free, breasts unsure: unknown tier, never free", _jev_blob(feet_subject=0.3, breasts_bare="unsure"), None),
+        ("review: unknown tier", _jev_blob(lane5="review", feet_subject=0.3), None),
+        ("not in picture", _jev_blob(feet_subject=0.3, detail="not_in_picture"), None),
+    ]
+    for name, j, want in rungs:
+        assert rung(j) == want, f"{name}: jev_rung={rung(j)!r}, want {want!r}"
+        # The gate is the only difference: below it jev_pick says None, at it the same rung.
+        assert vault_pack_picker.jev_pick(feet, j) is None
+        assert vault_pack_picker.jev_pick(feet, {**j, "feet_subject": 0.9,
+                                                 "P": {**j["P"], "feet_focus": 0.9}}) == want, name
 
 
 def case_jev_free_ok_table():
@@ -779,7 +822,7 @@ async def case_candidates_jev_selects_and_ranks():
         # Jev only: no LIKE word anywhere, Jev sees soles to the camera.
         401: {"description": "legs up on the bed", "body_focus": ["legs"],
               "_jev": _jev_blob(feet_subject=0.8, detail="bare", soles=0.9)},
-        # Every qwen signal says feet, Jev says they are a bystander: no candidate.
+        # Every qwen signal says feet, Jev sees them but scores them a bystander (.05): below the floor, out.
         402: {"description": "close up of her soles", "primary_folder": "feet", "body_focus": ["feet"],
               "_jev": _jev_blob(feet_subject=0.05, detail="other_shoes")},
         # The describe says feet, Jev says not in the picture and not the subject: dropped.
@@ -794,8 +837,11 @@ async def case_candidates_jev_selects_and_ranks():
               "_jev": {**_jev_blob(feet_subject=0.01), "status": "error"}},
         # Malformed JSON never breaks the read.
         406: None,
-        # Jev free-safe feet at .55: below FEET_PRESELECT_SCORE -> no candidate.
+        # Jev free-safe feet at .55: below FEET_PRESELECT_SCORE -> possible, unticked.
         407: {"description": "legs on the sofa", "_jev": _jev_blob(feet_subject=0.55)},
+        # At FEET_POSSIBLE_MIN (.3): possible, last; just below it (.29): out.
+        408: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.3)},
+        409: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.29)},
     }
     for mid, fields in seeds.items():
         await _seed_item(_JEV, mid, fields=fields)
@@ -807,8 +853,19 @@ async def case_candidates_jev_selects_and_ranks():
     assert r.status_code == 200, r.text
     by = {x["media_id"]: x for x in r.json()["candidates"]}
     order = [x["media_id"] for x in r.json()["candidates"]]
-    # Precision only: the confident Jev photos and nothing else (no low Jev score, no qwen, no failed Jev).
-    assert order == [404, 401], order
+    # The confident Jev photos, then the possible ones by score; no unseen, no qwen, no failed Jev, none < .3.
+    assert order == [404, 401, 407, 408], order
+    for m in (404, 401):
+        assert by[m]["possible"] is False, by[m]
+    assert (by[407]["possible"], by[407]["preselect"], by[407]["suggested"], by[407]["score"]) == \
+        (True, False, "tease", 0.55), by[407]
+    assert (by[408]["possible"], by[408]["preselect"], by[408]["suggested"], by[408]["score"]) == \
+        (True, False, "tease", 0.3), by[408]
+    # Below the floor is no candidate, but a filed one always comes back (so it can be unfiled).
+    assert _triage(c, [{"media_id": 409, "rung": "tease"}], aid=_JEV).status_code == 200
+    back = c.get("/admin/vault-ai/pack-candidates", params={"account_id": _JEV, "category": "feet"}).json()
+    assert {x["media_id"]: x["rung"] for x in back["candidates"]}.get(409) == "tease", back["candidates"]
+    assert _triage(c, [{"media_id": 409, "rung": "reject"}], aid=_JEV).status_code == 200
     assert (by[401]["suggested"], by[401]["tier"], by[401]["free_ok"], by[401]["jev"]) == ("nude", 0, True, True)
     assert by[401]["preselect"] is True, by[401]
     # Confident but the body is unknown: comes back unpicked, never free.
@@ -946,7 +1003,7 @@ async def case_candidates_ranked_and_prefilled():
         # .5 + soles to the camera -> .65: in, on the bare rung.
         303: ({"description": "legs up", "_jev": _jev_blob(feet_subject=0.5, soles=1.0, detail="bare")},
               None, "photo"),
-        # .59: out (precision only, no lower-scored suggestion).
+        # .59: possible (after the confident ones, unticked, suggested without the gate).
         304: ({"description": "feet on the sofa", "_jev": _jev_blob(feet_subject=0.59)}, "feet", "photo"),
         # Every word says feet, no Jev yet: out, it waits for Jev.
         305: ({"description": "close up of her soles", "primary_folder": "feet", "body_focus": ["feet"],
@@ -970,24 +1027,29 @@ async def case_candidates_ranked_and_prefilled():
 
     body = get()
     order = [x["media_id"] for x in body["candidates"]]
-    assert order == [301, 308, 302, 303], order
+    assert order == [301, 308, 302, 303, 304], order
     by = {x["media_id"]: x for x in body["candidates"]}
     assert (by[301]["suggested"], by[301]["tier"], by[301]["preselect"]) == ("tease", 0, True), by[301]
     assert (by[302]["suggested"], by[302]["tier"], by[302]["preselect"]) == ("nude-body", 10, True), by[302]
     assert (by[303]["suggested"], by[303]["score"]) == ("nude", 0.65), by[303]
     assert (by[308]["suggested"], by[308]["preselect"], by[308]["free_ok"]) == (None, False, False), by[308]
+    assert (by[304]["suggested"], by[304]["preselect"], by[304]["possible"], by[304]["score"]) == \
+        ("tease", False, True, 0.59), by[304]
     assert all(x["jev"] and x["kind"] == "photo" for x in body["candidates"]), body["candidates"]
-    scores = [x["score"] for x in body["candidates"]]
-    assert scores == sorted(scores, reverse=True) and min(scores) >= vault_pack_picker.FEET_PRESELECT_SCORE, scores
+    sure = [x["score"] for x in body["candidates"] if not x["possible"]]
+    maybe = [x["score"] for x in body["candidates"] if x["possible"]]
+    assert sure == sorted(sure, reverse=True) and min(sure) >= vault_pack_picker.FEET_PRESELECT_SCORE, sure
+    assert maybe == sorted(maybe, reverse=True) and max(maybe) < vault_pack_picker.FEET_PRESELECT_SCORE, maybe
 
-    # A capped scan is deterministic: the newest (highest) ids, every call (304 is scanned, then gated out).
+    # A capped scan is deterministic: the newest (highest) Jev-seen photo ids, every call (308 confident, 304
+    # possible; 307 unseen and the clip never reach the scan).
     real_cap = vault_pack_picker._SCAN_CAP
     vault_pack_picker._SCAN_CAP = 2
     try:
         capped = [sorted(x["media_id"] for x in get()["candidates"]) for _ in range(3)]
     finally:
         vault_pack_picker._SCAN_CAP = real_cap
-    assert capped == [[308]] * 3, capped
+    assert capped == [[304, 308]] * 3, capped
 
     # File the top one: it leaves the queue's limit and comes back after it. Items filed before the
     # precision rule (a no-Jev photo, a below-gate photo, a clip) come back too, never in the queue.
@@ -1042,6 +1104,7 @@ _harness.run(
     case_candidates_ranked_and_prefilled,
     case_jev_free_ok_table,
     case_jev_pick_preselect_table,
+    case_possible_table,
     case_candidates_jev_selects_and_ranks,
     case_triage_refuses_unsafe_free,
     case_video_never_feet,

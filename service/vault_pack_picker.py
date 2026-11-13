@@ -20,14 +20,20 @@ lot of half-assed ones", "drop videos from feet"). A candidate is a PHOTO the
 Jev v8 pass answered (`_jev.status == "ok"`, `jev_ok`) that sees the part
 (`jev_seen`) at a score (`jev_likelihood`) >= `FEET_PRESELECT_SCORE` (.6:
 precision 1.0 on the owner's hand-picked set, anything lower .33-.87;
-.scratch/jev-vault-bench/feet-eval). Nothing else is proposed: no lower-scored
-suggestions, no describe-word (qwen / LIKE) candidates (a photo Jev has not
-classified yet waits for it), no videos (`triage` refuses one on any rung:
-`PhotosOnly`). Each arrives PRESELECTED on the rung its Jev tier + covering
-answer pick (`jev_pick`) when that rung is known and safe, so the operator
-unticks what is wrong and files the rest in one click. The same rows make the
-opt-in AI-feet folders. Items already filed always come back, whatever they
-are, so a rung view can still unfile them. Nothing here talks to OnlyFans.
+.scratch/jev-vault-bench/feet-eval). Each arrives PRESELECTED on the rung its
+Jev tier + covering answer pick (`jev_pick`) when that rung is known and safe,
+so the operator unticks what is wrong and files the rest in one click. After
+them come the POSSIBLE ones (owner 2026-11-13): Jev photos that see the part at
+`FEET_POSSIBLE_MIN` (.3) <= score < the gate (`possible`), unticked, `suggested`
+from the same tier + covering rule without the gate (`jev_rung`), for the
+operator to check; never preselected. With no confident photo left the queue is
+only these. Feet live here only: Build AI folders has no feet topic (owner
+2026-11-13, `vault_topic_folders`). Nothing else: no describe-word
+(qwen / LIKE) candidates (a photo Jev has not classified yet waits for it), no
+videos (`triage` refuses one on any rung: `PhotosOnly`). Items already filed
+always come back, whatever they are, so a rung view can still unfile them. The
+pack reads the vault itself, never the AI- folders (it works before they are
+built). Nothing here talks to OnlyFans.
 
 THE FREE RUNG is guarded hard: `jev_tier` is 0 only for lane5 "free" with
 breasts / crotch / penetration all "n"; `triage` refuses (`NotFreeSafe`) a
@@ -315,11 +321,16 @@ def price_tier(fields: dict[str, Any] | None) -> int | None:
 # sweep mirrors) of Jev-seen photos. Bounds a pathological vault, no more.
 _SCAN_CAP = 20_000
 
-# The candidate gate (and so the prefill + preselect: the tile arrives ticked, the operator only confirms; the
-# AI-feet folders take the same rows, `vault_topic_folders`). Measured on the owner's hand-picked feet set (Jev v8
+# The candidate gate (and so the prefill + preselect: the tile arrives ticked, the operator only confirms). Measured on the owner's hand-picked feet set (Jev v8
 # eval 2026-11-12, .scratch/jev-vault-bench/feet-eval): score >= .6 -> precision 1.0, recall .29; anything lower
-# .33-.87. Below it a photo is no candidate at all (owner: a small set of good photos, not a lot of half-assed ones).
+# .33-.87. Below it a photo is never preselected (owner: a small set of good photos, not a lot of half-assed ones),
+# only shown as `possible`, unticked.
 FEET_PRESELECT_SCORE = 0.6
+
+# The `possible` floor: below it a photo is no candidate at all (unless filed). Measured 2026-11-13 on an AE account
+# with 0 photos >= .6: the owner labelled the top 10 (.31-.50): 7 real feet, 1 clear FP (hand on vulva read as toe).
+# Read at call time (a slop fault patches it).
+FEET_POSSIBLE_MIN = 0.3
 
 
 def confident(cat: Category, fields: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -331,17 +342,14 @@ def confident(cat: Category, fields: dict[str, Any] | None) -> dict[str, Any] | 
     return j
 
 
-def jev_pick(cat: Category, j: dict[str, Any]) -> str | None:
-    """The rung a confident Jev photo (`confident`) arrives PRESELECTED on, else None (the operator decides).
+def jev_rung(cat: Category, j: dict[str, Any]) -> str | None:
+    """The rung a Jev photo's tier + covering answer give, WITHOUT the confidence gate (a `possible` candidate's
+    `suggested`; `jev_pick` adds the gate).
 
     Her body on show at any price tier is the top rung whatever is on her feet: the cheapest rung rides free as
     the preview, so a priced body never lands there. 🚨 An UNKNOWN tier (`jev_tier` None: "review", an unsure
     body) is never picked: a body Jev half-saw would ride the free preview. A known tier 0 reads Jev's covering
-    answer (`jev_detail`): bare -> the middle rung, covered -> the cheapest, not in the picture -> None.
-    The one definition both the pack picker's `suggested` / `preselect` and the AI-feet folders
-    (`vault_topic_folders`) use."""
-    if confident(cat, {JEV_KEY: j}) is None:
-        return None
+    answer (`jev_detail`): bare -> the middle rung, covered -> the cheapest, not in the picture -> None."""
     tier = jev_tier(j)
     if tier is None:
         return None
@@ -351,6 +359,27 @@ def jev_pick(cat: Category, j: dict[str, Any]) -> str | None:
     if detail in (None, "not_in_picture"):
         return None
     return cat.rungs[1] if detail == "bare" else cat.rungs[0]
+
+
+def jev_pick(cat: Category, j: dict[str, Any]) -> str | None:
+    """The rung a confident Jev photo (`confident`) arrives PRESELECTED on (`jev_rung`), else None (the operator
+    decides): the pack picker's `suggested` / `preselect`."""
+    if confident(cat, {JEV_KEY: j}) is None:
+        return None
+    return jev_rung(cat, j)
+
+
+def possible(cat: Category, fields: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The row's `_jev` when it is a POSSIBLE candidate: a Jev photo that sees the part (`jev_seen`) at
+    `FEET_POSSIBLE_MIN` <= score < `FEET_PRESELECT_SCORE` (not `confident`), else None. Shown unticked for the
+    operator to check, never preselected."""
+    j = jev_ok(fields)
+    if j is None or not jev_seen(cat, j):
+        return None
+    score = jev_likelihood(cat, j)
+    if score >= FEET_PRESELECT_SCORE or score < FEET_POSSIBLE_MIN:
+        return None
+    return j
 
 
 async def _folders_by_name(s, account_id: str, cat: Category) -> dict[str, VaultFolder]:
@@ -409,12 +438,14 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
     (chatters.allowed_folder_ids_for_chatter): a restricted chatter's OF folders —
     only candidates in them; None = the whole vault.
 
-    The queue (unfiled) is the `confident` photos only: Jev answered it, sees the
+    The queue (unfiled) is the `confident` photos: Jev answered it, sees the
     part (`_jev.tags`, read in SQL with the photo kind, so a feet photo whose
-    describe never says "feet" is found) and scores it >= `FEET_PRESELECT_SCORE`.
-    Python then scores and sorts (`jev_likelihood` needs the whole blob). `limit`
+    describe never says "feet" is found) and scores it >= `FEET_PRESELECT_SCORE`;
+    then the `possible` ones (seen, `FEET_POSSIBLE_MIN` <= score < the gate:
+    `possible` true, `preselect` false, `suggested` = `jev_rung`), by score. Python scores and sorts
+    (`jev_likelihood` needs the whole blob). `limit`
     caps that queue; items already on a rung always come back, after it, whatever
-    they are (a video, a photo Jev never saw, a score below the gate), so the rung
+    they are (a video, a photo Jev never saw, a score below the floor), so the rung
     views still show them and they can be unfiled; they never take a queue slot.
     `suggested` and `preselect` are `jev_pick`: the tile arrives ticked on it, for
     the operator's one-click "File N preselected" (a `triage`). `free_ok` tells the
@@ -468,25 +499,29 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
         mid = int(media_id)
         fields = vault_ai_brief.load_fields(raw)
         j = confident(cat, fields) if kind == "photo" else None
-        if j is None and mid not in filed:
-            continue  # not a confident Jev photo: no suggestion, it waits for Jev (or is not feet)
+        maybe = possible(cat, fields) if kind == "photo" and j is None else None
+        if j is None and maybe is None and mid not in filed:
+            continue  # not a Jev photo that sees the part: no suggestion, it waits for Jev (or is not feet)
         ok = free_ok(fields)
-        rung = jev_pick(cat, j) if j is not None else None
+        seen = j if j is not None else maybe
+        rung = jev_pick(cat, j) if j is not None else jev_rung(cat, maybe) if maybe is not None else None
         rows.append({
             "media_id": mid,
             "kind": kind,
             "rung": filed.get(mid),
             "suggested": rung,
             "tier": price_tier(fields),
-            "score": round(jev_likelihood(cat, j), 3) if j is not None else 0.0,
+            "score": round(jev_likelihood(cat, seen), 3) if seen is not None else 0.0,
             "jev": jev_ok(fields) is not None,
-            "preselect": rung is not None,
+            "preselect": j is not None and rung is not None,
+            "possible": maybe is not None,
             "free_ok": ok,
             "unsafe_on_free": filed.get(mid) == cat.free_rung and ok is False,
             "description": str(fields.get("description") or "")[:400],
         })
+    # Confident first (most likely first), then the possible ones by score.
     queue = sorted((r for r in rows if not r["rung"]),
-                   key=lambda r: (-r["score"], r["media_id"]))
+                   key=lambda r: (r["possible"], -r["score"], r["media_id"]))
     on_rungs = sorted((r for r in rows if r["rung"]),
                       key=lambda r: (cat.rungs.index(r["rung"]), r["media_id"]))
     return {

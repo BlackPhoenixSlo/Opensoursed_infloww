@@ -329,8 +329,8 @@ def case_reserved_matches_v2():
 
 def case_assets_pinned():
     # Re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions.
-    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "6d5e606e7833c780d731dc006a6da66a",
-            "style.css": "a7e76c39b7a97666c7033bf38a11560a"}
+    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "26c339326dc50c1bf5b5089ae9fc7ffa",
+            "style.css": "0041cb8ccdc014aa798e0103f9ac0bca"}
     for name, md5 in pins.items():
         assert hashlib.md5((assets.PUBLIC / name).read_bytes()).hexdigest() == md5, name
     stub = (assets.PUBLIC / "landing.html").read_text()

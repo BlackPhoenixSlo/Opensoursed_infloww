@@ -63,6 +63,22 @@ OUTBOUND_TEXT_GUARD: ContextVar[Callable[[str], str] | None] = ContextVar(
 # so does everything with no request (ingest scans, automations).
 INTERACTIVE_READ: ContextVar[bool] = ContextVar("of_interactive_read", default=False)
 
+# One timed relay read's counters (server._of_read_timing sets the dict; its log line
+# reads it). `_signed_slot` adds its wait and a call count; server._proxy the lane
+# wait and the call's time. None: not timed. asyncio.to_thread copies the context,
+# so the worker thread fills the route's own dict. Logging only, never raises.
+READ_TIMING: ContextVar[dict | None] = ContextVar("of_read_timing", default=None)
+
+
+def timing_add(key: str, seconds: float) -> None:
+    """Add `seconds` to the current timed read's `key` (no timed read: nothing)."""
+    try:
+        t = READ_TIMING.get()
+        if t is not None:
+            t[key] = t.get(key, 0.0) + seconds
+    except Exception:  # noqa: BLE001 — a timing line must never fail a read
+        pass
+
 
 class RetryPolicy(NamedTuple):
     """How `_proxy_retry` treats a refused proxy: `tries` attempts with pauses
@@ -483,7 +499,8 @@ class _Transport:
         every proxy retry. Not FIFO: a waiter past SIGNED_WAIT_S gets "busy". A
         waiter re-checks retirement every 0.25 s, so evict refuses it at once."""
         slots = self._signed_slots
-        deadline = time.monotonic() + self.SIGNED_WAIT_S
+        t0 = time.monotonic()
+        deadline = t0 + self.SIGNED_WAIT_S
         while True:
             if self._signed_retired:
                 raise OFSessionRetired()
@@ -491,7 +508,10 @@ class _Transport:
             if slots is None or slots.acquire(timeout=max(0.0, min(left, 0.25))):
                 break
             if left <= 0.25:
+                timing_add("signed_wait_s", time.monotonic() - t0)
                 raise OFSignedPoolBusy()
+        timing_add("signed_wait_s", time.monotonic() - t0)
+        timing_add("of_calls", 1)
         try:
             if self._signed_retired:
                 raise OFSessionRetired()

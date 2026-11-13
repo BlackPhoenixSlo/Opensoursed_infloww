@@ -116,9 +116,10 @@ async def list_duplicates(
 @plan_router.get("/admin/vault-ai/folder-plan")
 async def get_folder_plan(
     account_id: str = Query(...),
-    keep: int = Query(2, ge=0, le=20),
+    keep: int = Query(vault_scripts.DEFAULT_KEEP_SCRIPTS, ge=0, le=20),
     solo: bool = Query(False),
     topics: str = Query(""),
+    split: bool = Query(True),
 ) -> dict[str, Any]:
     """PREVIEW the folders the pipeline would create. Read-only, free, instant —
     no LLM, no OF traffic, nothing written. This is what the vault button shows
@@ -131,12 +132,13 @@ async def get_folder_plan(
 
     `topics` — comma-separated topic slugs (`vault_topic_folders.SLUGS`) to add as Jev topic folders; an
     unknown slug is a 422. `topic_catalogue` + `jev` always come back, so the checklist shows every topic's
-    size and the Jev coverage whatever is ticked."""
+    size and the Jev coverage whatever is ticked. `split` (default on) makes one topic folder per price; off, one
+    per topic (`AI-<name>`)."""
     assert_account_owned(account_id)
     from vault_ai_api import assert_owner_scope
     await assert_owner_scope(account_id)
     picked = _topics_or_422(topics)
-    return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=picked)
+    return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=picked, split=split)
 
 
 def _topics_or_422(raw: Any) -> list[str]:
@@ -489,7 +491,8 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     IS, and `apply_ai_folders` retires generated folders the current plan no
     longer makes — so applying without it after previewing with it would create
     the lanes and retire every `-solo` folder in the same call. `topics` likewise (a list of slugs; unknown
-    → 422): previewed topic folders not posted back would be retired.
+    → 422): previewed topic folders not posted back would be retired. `split` likewise (absent → on): the other
+    naming's topic folders are retired.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
@@ -498,14 +501,15 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     if not payload.get("confirm"):
         raise HTTPException(status_code=400, detail={"error": "confirm_required"})
     # 0 = lanes only, a real choice: `or 2` used to turn it into 2. Same range
-    # as the preview's (0..20); absent → 2.
+    # as the preview's (0..20); absent → the default.
     try:
-        keep = parse_threshold(payload.get("keep"), 2, 20)
+        keep = parse_threshold(payload.get("keep"), vault_scripts.DEFAULT_KEEP_SCRIPTS, 20)
     except ValueError:
         raise HTTPException(status_code=400, detail={"error": "bad_keep"}) from None
     solo = bool(payload.get("solo"))
     topics = _topics_or_422(payload.get("topics"))
-    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=topics)
+    split = bool(payload.get("split", True))
+    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=topics, split=split)
     result = await vault_scripts.apply_ai_folders(account_id, plan)
 
     if payload.get("mirror_to_of"):

@@ -65,6 +65,11 @@ export interface MessageListProps {
   error?: Error | null;
   hasOlder: boolean;
   loadingOlder: boolean;
+  /** The last older page failed, timed out or made no progress: the button
+   *  reads Retry and the top sentinel stops auto-loading. */
+  olderFailed?: boolean;
+  /** The load-older cursor is fetch-derived: the sentinel may load while the first load still pins. */
+  headSettled?: boolean;
   onLoadOlder: () => void;
   onRetry: (tempId: number) => void;
   /** Drop a failed optimistic send (its "discard" control). */
@@ -117,7 +122,7 @@ export interface MessageListProps {
 export function MessageList(props: MessageListProps) {
   const {
     messages, ownerUserId, accountId, fanId, isLoading, isError, error,
-    hasOlder, loadingOlder, onLoadOlder, onRetry, onDiscard, onCancelScheduled,
+    hasOlder, loadingOlder, olderFailed = false, headSettled = false, onLoadOlder, onRetry, onDiscard, onCancelScheduled,
     onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSaveAsScript,
     highlightId, lastReadByPeerId,
     attribution, currentEmployeeName, fanAvatar, creatorAvatar,
@@ -136,7 +141,7 @@ export function MessageList(props: MessageListProps) {
   useTranslations(translatableTexts, translateOn, accountId);
 
   const { containerRef, topSentinelRef, showJumpLatest, autoPinActive, jumpToLatest, jumpToMessage } =
-    useThreadPin({ messages, hasOlder, loadingOlder, onLoadOlder });
+    useThreadPin({ messages, hasOlder, loadingOlder, olderFailed, headSettled, onLoadOlder });
 
   // Eager-set: the two media tiles (most recent inbound + most recent
   // outbound) that fetch immediately on chat open. Everything else
@@ -336,9 +341,9 @@ export function MessageList(props: MessageListProps) {
               "text-fg-dim hover:text-fg hover:bg-bg-elev-1 transition-colors",
               loadingOlder && "opacity-60 cursor-wait",
             )}
-            title="Load older messages"
+            title={olderFailed ? "Retry loading older messages" : "Load older messages"}
           >
-            {loadingOlder ? "Loading older…" : "↑ Load older messages"}
+            {loadingOlder ? "Loading older…" : olderFailed ? "Couldn’t load older messages · Retry" : "↑ Load older messages"}
           </button>
         </div>
       ) : messages.length > 0 ? (

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 /** Extra candidates for one test (appended after the three base tiles). */
-const extra = vi.hoisted(() => ({ candidates: [] as Record<string, unknown>[], none: false }));
+const extra = vi.hoisted(() => ({ candidates: [] as Record<string, unknown>[], none: false, only: false }));
 
 vi.mock("@/hooks/useVaultCache", () => ({
   mirrorFullSrc: (a: string, m: number) => `/img/${a}/${m}`,
@@ -25,7 +25,7 @@ vi.mock("@/hooks/useVaultCache", () => ({
         { rung: "nude", name: "feet-nude", folder_id: 12, count: 1, of_list_id: null },
         { rung: "nude-body", name: "feet-body", folder_id: null, count: 0, of_list_id: null },
       ],
-      candidates: extra.none ? [] : [
+      candidates: extra.none ? [] : extra.only ? extra.candidates : [
         { media_id: 1, kind: "photo", rung: null, suggested: null, tier: null, score: 0.3, description: "one" },
         { media_id: 2, kind: "photo", rung: null, suggested: "nude-body", tier: 10, score: 0.9, description: "two" },
         { media_id: 3, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.8, description: "three" },
@@ -46,7 +46,7 @@ const publish = publishFolderToOf as unknown as Mock;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); extra.candidates = []; extra.none = false; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); extra.candidates = []; extra.none = false; extra.only = false; });
 
 function mount() {
   const onClose = vi.fn();
@@ -191,10 +191,10 @@ describe("VaultPackPickerModal Jev free guard", () => {
 });
 
 describe("VaultPackPickerModal empty", () => {
-  it("no confident photos: says Jev checks new photos automatically", () => {
+  it("no candidates: says Jev checks new photos automatically", () => {
     extra.none = true;
     mount();
-    expect(screen.getByText("No confident feet photos yet: Jev checks new photos automatically.")).toBeInTheDocument();
+    expect(screen.getByText("No feet photos from Jev yet: it checks new photos automatically.")).toBeInTheDocument();
   });
 });
 
@@ -226,6 +226,56 @@ describe("VaultPackPickerModal preselect", () => {
     expect(save).toHaveBeenCalledWith("acc-1", "feet", [
       { media_id: 2, rung: "nude-body" }, { media_id: 6, rung: "tease" }, { media_id: 7, rung: "nude" },
     ]);
+  });
+
+  it("possible tiles are labelled and arrive unticked; ticking one files it on its suggestion", async () => {
+    save.mockResolvedValue({ category: "feet", saved: 2, rejected: 0, folders: [] });
+    extra.candidates = [
+      { media_id: 6, kind: "photo", rung: null, suggested: "tease", tier: 0, score: 0.7, description: "six",
+        jev: true, free_ok: true, preselect: true, possible: false },
+      { media_id: 9, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.4, description: "nine",
+        jev: true, free_ok: true, preselect: false, possible: true },
+    ];
+    mount();
+    const label = document.querySelector(`[data-pack-possible="9"]`);
+    expect(label).toHaveTextContent("possible");
+    expect(document.querySelector(`[data-pack-possible="6"]`)).toBeNull();
+    expect(tick(9)).not.toBeChecked();
+    expect(btn("File 1 preselected")).not.toBeDisabled();
+    fireEvent.click(tick(9)!);
+    fireEvent.click(btn("File 2 preselected"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save).toHaveBeenCalledWith("acc-1", "feet", [{ media_id: 6, rung: "tease" }, { media_id: 9, rung: "nude" }]);
+  });
+
+  it("a possible-only queue says so on undecided, never as preselected", () => {
+    extra.only = true;
+    extra.candidates = [
+      { media_id: 9, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.4, description: "nine",
+        jev: true, free_ok: true, preselect: false, possible: true },
+    ];
+    mount();
+    expect(screen.getByTestId("pack-fallback-notice")).toHaveTextContent(
+      "No unfiled confident feet photos — showing Jev's likelier guesses (score ≥ .3), unticked: check each. " +
+        "Rejects are not remembered.",
+    );
+    expect(tick(9)).not.toBeChecked();
+    fireEvent.click(tick(9)!);
+    expect(tick(9)!.closest("label")).toHaveAttribute("title", 'Ticked by you: "File preselected" puts it on nude');
+    expect(screen.queryByText(/Jev sure/)).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "all" }));
+    expect(screen.queryByTestId("pack-fallback-notice")).toBeNull();
+  });
+
+  it("a confident one in the queue: no fallback notice", () => {
+    extra.candidates = [
+      { media_id: 6, kind: "photo", rung: null, suggested: "tease", tier: 0, score: 0.7, description: "six",
+        jev: true, free_ok: true, preselect: true, possible: false },
+      { media_id: 9, kind: "photo", rung: null, suggested: "nude", tier: 0, score: 0.4, description: "nine",
+        jev: true, free_ok: true, preselect: false, possible: true },
+    ];
+    mount();
+    expect(screen.queryByTestId("pack-fallback-notice")).toBeNull();
   });
 
   it("no preselect in the queue: no File button", () => {

@@ -8,7 +8,8 @@
  * Jev's answer). A suggestion is never a verdict: only a press (a rung, Enter, a tap) puts it in `draft`, and only
  * `draft` is saved (`buildPayload`).
  *
- * PRESELECT. Every unfiled tile is a confident Jev photo (feet score >= .6); one the server marks `preselect` (a known,
+ * PRESELECT. An unfiled tile is a confident Jev photo (feet score >= .6) or, after them, a `possible` one (.3 <= score
+ * < .6, never preselected: it arrives unticked on its suggestion; `possibleOnly` when nothing confident is left); one the server marks `preselect` (a known,
  * safe rung) arrives TICKED on its suggestion; `ticks` holds only the operator's untick / retick overrides. "File N preselected" (`buildFilePayload`) files every
  * ticked tile on its suggestion plus the unsaved draft (a rung pressed on a tile is a draft verdict and wins), in one
  * triage. A tick is never a verdict either: Save still sends only `draft`.
@@ -119,9 +120,9 @@ export function tickable(item: PackCandidate, state: PickerState, rungs: string[
   );
 }
 
-/** Ticked: tickable, and the operator's override or else the server's `preselect`. */
+/** Ticked: tickable, and the operator's override or else the server's `preselect` (never for a `possible` one). */
 export function isTicked(item: PackCandidate, state: PickerState, rungs: string[]): boolean {
-  return tickable(item, state, rungs) && (state.ticks[item.media_id] ?? !!item.preselect);
+  return tickable(item, state, rungs) && (state.ticks[item.media_id] ?? (!!item.preselect && !item.possible));
 }
 
 /** The ticked tiles' verdicts: each on its suggestion. */
@@ -147,6 +148,12 @@ export function buildFilePayload(
 export function canPress(item: PackCandidate, rung: string, rungs: string[], draft: PickerState["draft"]): boolean {
   const shown = shownRung(item, draft);
   return canFile(item, rung, rungs) || (shown.rung === rung && !shown.suggested);
+}
+
+/** The unfiled queue is only `possible` tiles (no unfiled confident photo left): the modal says so on "undecided". */
+export function possibleOnly(all: PackCandidate[]): boolean {
+  const queue = all.filter((c) => c.rung === null);
+  return queue.length > 0 && queue.every((c) => c.possible);
 }
 
 /** The tiles the current view shows, in the server's order (most likely first). */

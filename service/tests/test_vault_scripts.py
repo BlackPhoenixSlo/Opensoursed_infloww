@@ -157,7 +157,8 @@ Cases:
       an operator folder NAMED like a generated one ("AI-x") is not reused or
       wiped; the generated folder is made beside it.
   case_two_shoots_with_one_name_keep_their_own_items:
-      one outfit shot weeks apart plans as "<n>" (earlier) and "<n> 2", each
+      one outfit shot on Jul 1 a year apart (names carry `<Mon D>`) plans as
+      "<n>" (earlier) and "<n> 2", each
       folder holds only its own shoot, and a re-run reuses the same pair.
   case_same_name_suffix_follows_start_not_rank:
       the later shoot outranking the earlier does not move the bare name — a
@@ -188,6 +189,32 @@ Cases:
       the plan's `changes` (create / keep / retire / retire_on_of) equal what
       the apply then does, by the same match.
 
+  case_one_upload_second_splits_by_room:
+      one upload second, three rooms → one script per room; Jev's setting
+      beats the describe's; no room / 'other' joins the nearest part in time
+      (tie → biggest); a room too small is no script. Name carries room + date.
+  case_a_big_shoot_is_capped_to_a_sendable_ladder:
+      30 items → 3 openers / 4 middle / 3 closers, varied, clip closers, send
+      order kept; overflow listed; health "capped from 30".
+  case_burst_frames_collapse_inside_a_rung:
+      stored hashes at NEAR_DUPE_THRESHOLD drop burst frames on the same rung
+      (not re-uploads, not another rung, never an unhashed item); the frame
+      with a Jev reading is kept.
+  case_reveal_breaks_a_tie_inside_a_rung:
+      inside one rung the barer item sends later (flags or Jev); media id last.
+  case_a_skipped_rung_ranks_below_a_full_ladder:
+      rank by opener + middle + closer present and skipped rungs: {1,2,3} >
+      {1,2} > {1,3} > a missing band; no closer still last.
+  case_a_script_with_no_closer_borrows_one:
+      one closer borrowed from outside every kept script — same colour before
+      same room, clip first — appended last, `borrowed`, health says so; none
+      to borrow → "no closer".
+  case_script_names_and_health:
+      `AI-<colour garment> · <room> · <Mon D>`, capped; health phrase table.
+  case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names:
+      the old `AI-<outfit>` script folder is retired by the first v2 build; a
+      rerun reuses the new one.
+
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_scripts.py
 Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
@@ -216,6 +243,11 @@ from datetime import datetime, timedelta  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 import vault_scripts  # noqa: E402
+
+# The grouping / order cases below pin behaviour on 3-8 item fixtures; the
+# owner size floor (10 pieces, 2 clips) has its own cases, which pass it in.
+vault_scripts.MIN_SCRIPT_ITEMS = 3
+vault_scripts.MIN_SCRIPT_VIDEOS = 0
 from db.engine import get_session  # noqa: E402
 from db.models import (Account, VaultFolder,
                        VaultFolderItem, VaultItem)  # noqa: E402
@@ -1018,6 +1050,25 @@ def case_mixed_media_scripts_rank_first() -> None:
     assert scripts[0]["mixed"] is True and scripts[1]["mixed"] is False
 
 
+def case_a_shoot_that_closes_outranks_a_bigger_one_that_cannot() -> None:
+    """No closer → below every shoot with one, whatever its size or media mix;
+    then ladder completeness, then paid depth (capped), then mixed, then size."""
+    def shoot(name, *, closes, rungs, paid, mixed, size):
+        return {"name": name, "closes_on_own": closes, "rungs": list(range(rungs)),
+                "tiers": {"suggestive": size - paid, "explicit": paid},
+                "mixed": mixed, "size": size}
+    big_dead = shoot("big", closes=0, rungs=3, paid=20, mixed=True, size=90)
+    small_closer = shoot("small", closes=1, rungs=2, paid=2, mixed=False, size=6)
+    deep = shoot("deep", closes=1, rungs=2, paid=9, mixed=False, size=12)
+    deeper_capped = shoot("capped", closes=1, rungs=2, paid=40, mixed=False, size=45)
+    mixed_cap = shoot("mixedcap", closes=1, rungs=2, paid=10, mixed=True, size=20)
+    wide = shoot("wide", closes=1, rungs=3, paid=1, mixed=False, size=5)
+    got = sorted([big_dead, small_closer, deep, deeper_capped, mixed_cap, wide],
+                 key=vault_scripts.shoot_rank_key)
+    assert [s["name"] for s in got] == ["wide", "mixedcap", "capped", "deep", "small", "big"], \
+        [s["name"] for s in got]
+
+
 class _FakeOF:
     """Records the OF vault-list calls. `fail_on` makes that folder name raise,
     so partial-failure handling is observable."""
@@ -1342,10 +1393,11 @@ def case_apply_leaves_an_operators_ai_named_folder_alone() -> None:
     assert asyncio.run(_count_folders(aid)) == res["folders"] + 1
 
 
-def _split_shoot_seed(aid: str, *, later_bigger: bool = False) -> None:
+def _split_shoot_seed(aid: str, *, later_bigger: bool = False, later: float = 30240.0) -> None:
     """One black lace set shot twice, three weeks apart (801-803, 804-806).
-    `later_bigger` adds 807 so the LATER shoot outranks the earlier."""
-    later = 30240.0
+    `later_bigger` adds 807 so the LATER shoot outranks the earlier. `later`
+    (minutes) moves the second shoot — `_A_YEAR_ON` puts it on Jul 1 again, so
+    the two get ONE name (it carries the month and day) and the suffix decides."""
     rows = [
         (801, 0.0, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
         (802, 0.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
@@ -1361,6 +1413,10 @@ def _split_shoot_seed(aid: str, *, later_bigger: bool = False) -> None:
     asyncio.run(_seed(aid, rows))
 
 
+# 365 days on: a different shoot, the same `<Mon D>` in its name.
+_A_YEAR_ON = 365 * 24 * 60.0
+
+
 def _scripts(plan: dict) -> dict[str, set[int]]:
     """Script folder name → its media ids."""
     return {f["name"]: {int(i["media_id"]) for i in f["items"]}
@@ -1368,11 +1424,12 @@ def _scripts(plan: dict) -> dict[str, set[int]]:
 
 
 def case_two_shoots_with_one_name_keep_their_own_items() -> None:
-    """One outfit shot weeks apart is two shoots with one name. The plan names
-    them "<n>" (earlier) and "<n> 2", each folder holds only its own shoot,
-    and a re-run reuses the same pair."""
+    """One outfit shot on Jul 1 two years running is two shoots with one name
+    (the name carries the month and day). The plan names them "<n>" (earlier) and
+    "<n> 2", each folder holds only its own shoot, and a re-run reuses the
+    same pair."""
     aid = _next_account()
-    _split_shoot_seed(aid)
+    _split_shoot_seed(aid, later=_A_YEAR_ON)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
     names = [f["name"] for f in plan["folders"]]
     assert len(names) == len(set(names)), f"plan repeats a name: {names}"
@@ -1399,7 +1456,7 @@ def case_same_name_suffix_follows_start_not_rank() -> None:
     to the shoot that STARTED first. Rank-order suffixing would swap the two
     folders' contents whenever their rank flipped."""
     aid = _next_account()
-    _split_shoot_seed(aid, later_bigger=True)
+    _split_shoot_seed(aid, later_bigger=True, later=_A_YEAR_ON)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
     first = plan["folders"][0]
     assert 807 in {i["media_id"] for i in first["items"]}, "later shoot not ranked first"
@@ -1414,7 +1471,7 @@ def case_mirror_keeps_two_same_named_shoots_apart() -> None:
     """The mirror joins created folders back to plan specs by name. Each OF
     list must get only its own shoot's media, and none may be pushed empty."""
     aid = _next_account()
-    _split_shoot_seed(aid)
+    _split_shoot_seed(aid, later=_A_YEAR_ON)
     fake = _FakeOF()
     res = asyncio.run(_apply_with_of(aid, fake, keep=2))
     assert res["of_failed"] == 0, res
@@ -1740,7 +1797,9 @@ def case_disputed_item_never_opens_a_script() -> None:
     assert len(scripts) == 1, scripts
     ids = [r["media_id"] for r in scripts[0]["items"]]
     assert 2103 not in ids, f"a disputed free-tier still is in a script: {ids}"
-    assert set(ids) == {2101, 2102, 2104, 2105} and ids[0] == 2101, ids
+    # 2104's pussy is covered, so the script sends it as suggestive (owner rule,
+    # `earns_paid_rung`) — a free rung, and a disputed item is never free.
+    assert set(ids) == {2101, 2102, 2105} and ids[0] == 2101, ids
 
 
 # ── PR-A: dupes, colourless sets, keep 0, retire counts ─────────────
@@ -1834,7 +1893,8 @@ def case_a_colourless_set_keys_on_garment_and_setting() -> None:
         (2203, 0.2, {**_outfit([], ["fingering"], "explicit", "fully_nude"), **bra}, "video"),
     ]))
     scripts = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
-    assert [s["name"] for s in scripts] == ["AI-lingerie bedroom"], scripts
+    assert [s["name"] for s in scripts] == ["AI-lingerie · bedroom · Jul 1"], \
+        "the room is named once, not twice"
     assert [r["media_id"] for r in scripts[0]["items"]] == [2201, 2202, 2203]
 
 
@@ -1897,7 +1957,387 @@ def case_preview_counts_what_confirm_will_create_keep_and_retire() -> None:
     assert res["retired"] == ch["retired"], (res["retired"], ch["retired"])
 
 
+# ── Scripts v2: room split, sendable cap, near-dupes, reveal, borrow, health ──
+
+def _jev_photo(setting: str = "", **extra) -> dict:
+    """A current photo `_jev` (`vault_jev_rules.current`) carrying only what a
+    case reads: the `setting` tag and any region answers in `extra`."""
+    import vault_jev_rules
+    return {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": "free", "state": {},
+            "kind": "photo", "tags": {"setting": setting} if setting else {}, **extra}
+
+
+def _bra(tier: str, acts: list[str], clothing: str = "lingerie_on", *, room: str = "",
+         jev_room: str = "") -> dict:
+    """One black-lace-bra item; `room` = the describe's setting, `jev_room` = Jev's."""
+    out = _outfit(["black lace bra"], acts, tier, clothing)
+    if room:
+        out["setting"] = room
+    if jev_room:
+        out["_jev"] = _jev_photo(jev_room)
+    return out
+
+
+def case_one_upload_second_splits_by_room() -> None:
+    """Live AE: created_at is OF's upload time, so a whole day sits in one
+    second and the 48h gap never cuts — one script held 93 items from three
+    rooms. Each room is its own script; Jev's setting beats the describe's; an
+    item with no room (or 'other') joins the part nearest it in time, a tie →
+    the biggest part; a room too small to be a script is dropped."""
+    aid = _next_account()
+    asyncio.run(_seed(aid, [
+        (3001, 0.0, _bra("sfw", ["posing"], "dressed", room="bedroom"), "photo"),
+        (3002, 0.0, _bra("suggestive", ["tease"], room="bedroom"), "photo"),
+        (3003, 0.0, _bra("explicit", ["fingering"], "fully_nude", room="bedroom"), "video"),
+        (3004, 0.0, _bra("suggestive", ["posing"], room="bedroom"), "photo"),
+        # describe says bedroom, Jev says bathroom: Jev wins
+        (3011, 30.0, _bra("sfw", ["posing"], "dressed", room="bedroom", jev_room="bathroom"), "photo"),
+        (3012, 30.0, _bra("suggestive", ["tease"], jev_room="bathroom"), "photo"),
+        (3013, 31.0, _bra("explicit", ["fingering"], "fully_nude", room="other"), "video"),
+        (3021, 0.0, _bra("suggestive", ["tease"]), "photo"),               # tie → bedroom (4 > 2)
+        (3031, 200.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "video"),
+    ]))
+    scripts = {s["name"]: s for s in asyncio.run(vault_scripts.collect_outfit_scripts(aid))}
+    assert set(scripts) == {"AI-black lingerie · bedroom · Jul 1",
+                            "AI-black lingerie · bathroom · Jul 1"}, list(scripts)
+    ids = {n: {r["media_id"] for r in s["items"]} for n, s in scripts.items()}
+    assert ids["AI-black lingerie · bedroom · Jul 1"] == {3001, 3002, 3003, 3004, 3021}, ids
+    assert ids["AI-black lingerie · bathroom · Jul 1"] == {3011, 3012, 3013}, ids
+    assert scripts["AI-black lingerie · bathroom · Jul 1"]["room"] == "bathroom"
+
+    rows = [{"media_id": m, "created_at": datetime(2026, 7, 1), "fields": {}} for m in (1, 2)]
+    assert vault_scripts.split_by_room(rows) == [("", rows)], "no room anywhere: one part"
+
+
+def _ladder_seed(aid: str, base: int = 3100) -> None:
+    """One bedroom shoot of 30: 8 sfw openers (two not dressed), 12 suggestive
+    build-up, 10 explicit closers (5 stills, 5 clips)."""
+    rows = []
+    for i in range(8):
+        rows.append((base + i, 0.0, _bra("sfw", ["posing"], "dressed" if i < 6 else "lingerie_on",
+                                         room="bedroom"), "photo"))
+    for i in range(12):
+        rows.append((base + 20 + i, 0.0, _bra("suggestive", ["tease"], room="bedroom"),
+                     "photo" if i % 3 else "video"))
+    for i in range(10):
+        rows.append((base + 40 + i, 0.0, _bra("explicit", ["fingering"], "fully_nude", room="bedroom"),
+                     "video" if i % 2 else "photo"))
+    asyncio.run(_seed(aid, rows))
+
+
+def case_a_big_shoot_is_capped_to_a_sendable_ladder() -> None:
+    """A script is what one fan is walked through in a night: at most
+    SCRIPT_OPENERS / SCRIPT_MIDDLE / SCRIPT_CLOSERS, varied, closers clips
+    first, still in send order. The rest stays out (still in the vault and the
+    lanes) and the health line says how big it was."""
+    aid = _next_account()
+    _ladder_seed(aid)
+    (s,) = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
+    cap = (vault_scripts.SCRIPT_OPENERS, vault_scripts.SCRIPT_MIDDLE, vault_scripts.SCRIPT_CLOSERS)
+    assert cap == (3, 4, 3), cap
+    assert s["bands"] == {"opener": 3, "middle": 4, "closer": 3}, s["bands"]
+    assert s["size"] == 10 and len(s["overflow"]) == 20 and s["capped_from"] == 30, s["size"]
+    items = s["items"]
+    closers = [r for r in items if r["why"]["closes"]]
+    assert all(r["kind"] == "video" for r in closers), "closers prefer clips"
+    openers = [r for r in items if r["why"]["rung"] == 0]
+    assert len({r["why"]["clothing_state"] for r in openers}) == 2, "openers are varied"
+    middle = [r for r in items if r["why"]["rung"] == 1]
+    assert {r["kind"] for r in middle} == {"photo", "video"}, "middle is varied"
+    keys = [vault_scripts.send_sort_key(r["fields"], media_id=r["media_id"]) for r in items]
+    assert keys == sorted(keys), "the cap keeps send order"
+    assert [r["manual_order"] for r in items] == list(range(1, 11))
+    assert "capped from 30" in s["health"], s["health"]
+
+    small = [{"media_id": i, "kind": "photo", "why": {"rung": i % 2, "closes": False,
+              "clothing_state": "", "payoff_acts": []}} for i in range(5)]
+    assert vault_scripts.cap_ladder(small) == (small, []), "a small script is not cut"
+
+
+def case_burst_frames_collapse_inside_a_rung() -> None:
+    """Burst frames of one pose sit too far apart for the Duplicates screen
+    (threshold 2) but are one beat to a fan. Inside one rung of one script, a
+    near-identical frame (stored hashes, NEAR_DUPE_THRESHOLD) is dropped; the
+    one with a Jev reading is kept; another rung's look-alike is not touched;
+    an unhashed item is never dropped. No hashing, no new call."""
+    import vault_dupes
+    aid = _next_account()
+    asyncio.run(_seed(aid, [
+        (3201, 0.0, _bra("sfw", ["posing"], "dressed"), "photo"),
+        (3202, 0.0, _bra("suggestive", ["tease"]), "photo"),
+        (3203, 0.0, {**_bra("suggestive", ["tease"]), "_jev": _jev_photo()}, "photo"),
+        (3204, 0.0, _bra("suggestive", ["tease"]), "photo"),
+        (3205, 0.0, _bra("explicit", ["fingering"], "fully_nude"), "photo"),
+        (3206, 0.0, _bra("suggestive", ["tease"]), "photo"),          # unhashed
+    ]))
+    far = (1 << 64) - 1
+    asyncio.run(_hash(aid, {3201: vault_dupes.pack_hash("1" * 32, far, far),
+                            3202: vault_dupes.pack_hash("2" * 32, 0b1111, 0b1111),
+                            3203: vault_dupes.pack_hash("3" * 32, 0, 0),
+                            3204: vault_dupes.pack_hash("4" * 32, 0b11110000, 0),
+                            3205: vault_dupes.pack_hash("5" * 32, 0b111 << 40, 0b111 << 40)}))
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    assert plan["dupes_collapsed"] == [], "control: none of these is a re-upload"
+    (s,) = [f for f in plan["folders"] if f["source"] == "script"]
+    got = [r["media_id"] for r in s["items"]]
+    assert 3203 in got and 3202 not in got and 3204 not in got, got
+    assert 3205 in got and 3206 in got, got
+    assert "2 near-duplicates dropped" in s["health"], s["health"]
+
+
+def case_reveal_breaks_a_tie_inside_a_rung() -> None:
+    """Same rung, same act, same clothing: the one showing more sends later —
+    not whichever has the smaller media id. Media id stays the last tiebreak."""
+    base = _bra("explicit", ["posing"], "fully_nude")
+    covered = {**base, **_flags(breasts="covered", vulva="covered", over_breasts="hand",
+                                over_vulva="hand")}
+    breasts = {**base, **_flags(breasts="bare", vulva="covered", over_vulva="hand")}
+    both = {**base, **_flags(breasts="bare", vulva="bare")}
+    jev_breasts = {**base, "_jev": _jev_photo(breasts_bare="y")}
+    key = vault_scripts.send_sort_key
+    order = sorted([(both, 1), (breasts, 2), (covered, 3)], key=lambda p: key(p[0], media_id=p[1]))
+    assert [m for _, m in order] == [3, 2, 1], order
+    assert key(jev_breasts, media_id=1) > key(base, media_id=2), "Jev's bare answer counts"
+    assert key(base, media_id=1) < key(base, media_id=2), "media id is the last tiebreak"
+    # Flags answered "covered" beat Jev's "bare": Jev only fills an unanswered region.
+    clash = {**covered, "_jev": _jev_photo(breasts_bare="y")}
+    assert vault_scripts.reveal_strength(clash) == 0, "flags pass outranks Jev"
+    assert vault_scripts.reveal_strength(jev_breasts) == 1, "Jev fills an unflagged region"
+
+
+def case_explicit_needs_her_pussy_on_show_or_an_act() -> None:
+    """Owner rule: a bare butt in a thong labelled 'explicit' is suggestive in
+    a script. Explicit / hardcore needs the vulva bare (flags, else Jev) or an
+    act in frame."""
+    butt = {**_bra("explicit", ["posing"], "fully_nude"),
+            **_flags(vulva="covered", breasts="bare", over_vulva="thong")}
+    bare = {**_bra("explicit", ["posing"], "fully_nude"), **_flags(vulva="bare")}
+    act = {**_bra("hardcore", ["fingering"], "fully_nude"), **_flags(vulva="covered")}
+    jev_only = {**_bra("explicit", ["posing"], "fully_nude"),
+                "_jev": _jev_photo(crotch_bare="y")}
+    jev_overruled = {**butt, "_jev": _jev_photo(crotch_bare="y")}
+    e = vault_scripts.earns_paid_rung
+    assert not e(butt) and e(bare) and e(act) and e(jev_only), "rule"
+    assert not e(jev_overruled), "flags answer beats Jev"
+    why = vault_scripts._with_script_why({"fields": butt, "media_id": 1})["why"]
+    assert why["tier"] == "suggestive" and why["labelled"] == "explicit", why
+
+
+def _big_shoot(aid: str, base: int, *, videos: int) -> list[tuple]:
+    """12 black-lace items over one evening: 4 suggestive, 4 explicit with her
+    pussy out, 4 fingering closers; the first `videos` closers are clips."""
+    rows = []
+    for i in range(12):
+        tier, acts, clothing, extra = (
+            ("suggestive", ["tease"], "lingerie_on", {}) if i < 4 else
+            ("explicit", ["posing"], "fully_nude", _flags(vulva="bare")) if i < 8 else
+            ("explicit", ["fingering"], "fully_nude", _flags(vulva="bare")))
+        kind = "video" if i >= 8 and i - 8 < videos else "photo"
+        rows.append((base + i, i * 0.01, {**_bra(tier, acts, clothing), **extra}, kind))
+    return rows
+
+
+def case_a_script_is_ten_pieces_with_two_clips() -> None:
+    """Owner rule: under 10 pieces or under 2 clips is not a script."""
+    for videos, want in ((2, 1), (1, 0)):
+        aid = _next_account()
+        asyncio.run(_seed(aid, _big_shoot(aid, 3200, videos=videos)))
+        got = asyncio.run(vault_scripts.collect_outfit_scripts(aid, min_items=10, min_videos=2))
+        assert len(got) == want, (videos, got)
+        if got:
+            sc = got[0]
+            assert sc["size"] == 10 and sc["kinds"].get("video", 0) >= 2, sc
+    aid = _next_account()
+    full = _big_shoot(aid, 3300, videos=4)
+    nine = full[:7] + full[8:10]  # 9 pieces, 2 clips: only the piece count is short
+    asyncio.run(_seed(aid, nine))
+    assert asyncio.run(vault_scripts.collect_outfit_scripts(aid, min_items=10, min_videos=2)) == []
+
+
+def case_a_thin_band_is_filled_to_ten() -> None:
+    """One opener, three closers: the cap's band quotas leave room, filled from
+    the left-over middle so the script still reaches SCRIPT_SIZE."""
+    def it(mid, kind, rung, closes):
+        return {"media_id": mid, "kind": kind, "score": 0,
+                "why": {"rung": rung, "closes": closes, "clothing_state": "nude",
+                        "payoff_acts": ["fingering"] if closes else []}}
+    items = ([it(0, "photo", 0, False)] + [it(10 + i, "photo", 1, False) for i in range(8)]
+             + [it(30 + i, "video", 2, True) for i in range(3)])
+    kept, left = vault_scripts.cap_ladder(items, min_videos=0)
+    assert len(kept) == vault_scripts.SCRIPT_SIZE == 10 and len(left) == 2, (kept, left)
+
+
+def case_too_few_clips_swaps_a_photo_for_a_left_out_clip() -> None:
+    """3 openers, 4 middle, 3 closers fill the cap with ONE clip (variety picks
+    one per band); the second clip, cut, takes a kept middle photo's place."""
+    def it(mid, kind, rung, closes):
+        return {"media_id": mid, "kind": kind, "score": 0,
+                "why": {"rung": rung, "closes": closes, "clothing_state": "nude",
+                        "payoff_acts": ["fingering"] if closes else []}}
+    items = ([it(i, "photo", 0, False) for i in range(3)]
+             + [it(10 + i, "photo", 1, False) for i in range(4)]
+             + [it(20, "video", 1, False), it(21, "video", 1, False)]
+             + [it(30 + i, "photo", 2, True) for i in range(3)])
+    one, _ = vault_scripts.cap_ladder(items, min_videos=0)
+    assert sum(r["kind"] == "video" for r in one) == 1, "fixture: cap keeps one clip"
+    kept, _ = vault_scripts.cap_ladder(items, min_videos=2)
+    assert len(kept) == 10 and {20, 21} <= {r["media_id"] for r in kept}, kept
+    assert all(r["media_id"] in {r["media_id"] for r in kept} for r in items[-3:]), "closers kept"
+
+
+def case_a_room_too_small_falls_back_to_the_whole_shoot() -> None:
+    """Rooms split a shoot only when a room fills a script by itself."""
+    aid = _next_account()
+    rows = _big_shoot(aid, 3400, videos=2)
+    rows = [(m, t, {**f, "setting": "bedroom" if i % 2 else "bathroom"}, k)
+            for i, (m, t, f, k) in enumerate(rows)]
+    asyncio.run(_seed(aid, rows))
+    [sc] = asyncio.run(vault_scripts.collect_outfit_scripts(aid, min_items=10, min_videos=2))
+    assert sc["room"] == "" and sc["size"] == 10, sc
+
+
+def case_unrated_items_stay_in_their_script() -> None:
+    """An item with no explicitness rung is in no lane, so the shoot script is
+    its only home: it rides after the ladder, outside the cap, and the health
+    line says so."""
+    aid = _next_account()
+    asyncio.run(_seed(aid, [
+        (3101, 0.0, _bra("sfw", ["posing"], "dressed")),
+        (3102, 0.1, _bra("suggestive", ["tease"])),
+        (3103, 0.2, _bra("explicit", ["fingering"], "fully_nude")),
+        (3104, 0.3, _bra("", ["posing"])),
+    ]))
+    [sc] = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
+    ids = [r["media_id"] for r in sc["items"]]
+    assert ids == [3101, 3102, 3103, 3104], ids
+    assert sc["size"] == 3 and sc["unplaced"] == 1, sc
+    assert None not in sc["rungs"], sc["rungs"]
+    assert "1 unrated at end" in sc["health"], sc["health"]
+
+
+def case_a_skipped_rung_ranks_below_a_full_ladder() -> None:
+    """Rank by ladder completeness, not rung count: opener + middle + closer
+    present beats a missing band; {1, 3} ranks below {1, 2, 3} AND below
+    {1, 2}. Having a closer still comes first."""
+    def shoot(name, rungs, bands, closes=1):
+        return {"name": name, "closes_on_own": closes, "rungs": rungs,
+                "bands": dict(zip(("opener", "middle", "closer"), bands)),
+                "tiers": {"explicit": 2}, "mixed": True, "size": 9}
+    got = sorted([
+        shoot("skip", [1, 3], (1, 1, 1)),
+        shoot("dead", [0, 1, 2, 3], (1, 1, 0), closes=0),
+        shoot("two", [1, 2], (1, 1, 1)),
+        shoot("full", [1, 2, 3], (1, 1, 1)),
+        shoot("no-middle", [1, 2, 3], (1, 0, 1)),
+    ], key=vault_scripts.shoot_rank_key)
+    assert [s["name"] for s in got] == ["full", "two", "skip", "no-middle", "dead"], \
+        [s["name"] for s in got]
+
+
+def case_a_script_with_no_closer_borrows_one() -> None:
+    """A bathroom part with nothing that closes would be cut dead. It borrows
+    ONE closer from outside every kept script — the same colour beats the same
+    room, a clip beats a still — appended last and marked `borrowed`. An item
+    in another kept script is never taken."""
+    aid = _next_account()
+    _ladder_seed(aid)                                              # bedroom: overflow closers
+    asyncio.run(_seed_more(aid, [
+        (3301, 60.0, _bra("sfw", ["posing"], "dressed", room="bathroom"), "photo"),
+        (3302, 60.0, _bra("suggestive", ["tease"], room="bathroom"), "photo"),
+        (3303, 60.0, _bra("suggestive", ["posing"], room="bathroom"), "video"),
+        # same room, other colour: a worse match than the bedroom's black clips
+        (3304, 60.0, {**_outfit(["red silk robe"], ["fingering"], "explicit", "fully_nude"),
+                      "setting": "bathroom"}, "video"),
+    ]))
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=10))
+    scripts = {f["room"]: f for f in plan["folders"] if f["source"] == "script"}
+    bath, bed = scripts["bathroom"], scripts["bedroom"]
+    last = bath["items"][-1]
+    assert last.get("borrowed") is True and last["closes"] and last["kind"] == "video", last
+    assert last["media_id"] in range(3140, 3150), "same colour first"
+    assert last["media_id"] not in {r["media_id"] for r in bed["items"]}
+    assert sum(1 for r in bath["items"] if r.get("borrowed")) == 1
+    assert [r["manual_order"] for r in bath["items"]] == list(range(1, len(bath["items"]) + 1))
+    assert bath["closes_on_own"] == 1 and bath["health"][0] == "borrowed closer", bath["health"]
+    assert not any(r.get("borrowed") for r in bed["items"])
+
+    lone = _next_account()
+    asyncio.run(_seed(lone, [
+        (3401, 0.0, _bra("sfw", ["posing"], "dressed"), "photo"),
+        (3402, 0.0, _bra("suggestive", ["tease"]), "photo"),
+        (3403, 0.0, _bra("suggestive", ["posing"]), "photo"),
+    ]))
+    (s,) = [f for f in asyncio.run(vault_scripts.plan_ai_folders(lone, keep=1))["folders"]
+            if f["source"] == "script"]
+    assert s["health"][0] == "no closer" and not any(r.get("borrowed") for r in s["items"]), s
+
+
+def case_script_names_and_health() -> None:
+    """`AI-<colour garment> · <room> · <Mon D>`, no counts, capped at the
+    folder-name max; health lists what to know, worst first, [] when clean."""
+    name = vault_scripts.script_name
+    assert name("black lingerie_set", "bedroom", datetime(2026, 11, 3)) == \
+        "AI-black lingerie · bedroom · Nov 3"
+    assert name("black lingerie_set", "living_room", datetime(2026, 11, 3)) == \
+        "AI-black lingerie · living room · Nov 3"
+    assert name("black lingerie_set", "", None) == "AI-black lingerie"
+    assert len(name("x" * 300, "bedroom", datetime(2026, 1, 1))) == vault_scripts._FOLDER_NAME_MAX
+
+    health = vault_scripts.script_health
+    def s(**kw):
+        return {"closes_on_own": 1, "kinds": {"photo": 1, "video": 1}, "rungs": [0, 1, 2], **kw}
+    for want, shoot in (
+        ([], s()),
+        (["no closer"], s(closes_on_own=0)),
+        (["borrowed closer"], s(borrowed=9)),
+        (["photos only", "suggestive → explicit"], s(kinds={"photo": 4}, rungs=[1, 2])),
+        (["clips only", "suggestive, hardcore"], s(kinds={"video": 4}, rungs=[1, 3])),
+        (["capped from 50", "1 near-duplicate dropped"], s(capped_from=50, near_dupes=[7])),
+    ):
+        assert health(shoot) == want, (want, health(shoot))
+
+
+def case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names() -> None:
+    """The v2 names differ from the old `AI-<outfit>` ones: the first build
+    retires the old-named script folder (made by this module) and creates the
+    new; the next build reuses it rather than creating again."""
+    aid = _next_account()
+    _plan_seed(aid)
+
+    async def _old_name():
+        async with get_session() as s:
+            s.add(VaultFolder(account_id=aid, name="AI-pink lingerie",
+                              created_by="vault_ai_script"))
+            await s.commit()
+    asyncio.run(_old_name())
+
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    (script,) = [f for f in plan["folders"] if f["source"] == "script"]
+    assert script["name"] == "AI-pink lingerie · Jul 1", script["name"]
+    first = asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
+    assert [r["name"] for r in first["retired"]] == ["AI-pink lingerie"], first["retired"]
+
+    again = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    assert all(f["change"] == "keep" for f in again["folders"]), again["changes"]
+    second = asyncio.run(vault_scripts.apply_ai_folders(aid, again))
+    assert second["new"] == 0 and second["retired"] == [], second
+
+
 _harness.run(
+    case_one_upload_second_splits_by_room,
+    case_a_big_shoot_is_capped_to_a_sendable_ladder,
+    case_burst_frames_collapse_inside_a_rung,
+    case_reveal_breaks_a_tie_inside_a_rung,
+    case_unrated_items_stay_in_their_script,
+    case_explicit_needs_her_pussy_on_show_or_an_act,
+    case_a_script_is_ten_pieces_with_two_clips,
+    case_too_few_clips_swaps_a_photo_for_a_left_out_clip,
+    case_a_thin_band_is_filled_to_ten,
+    case_a_room_too_small_falls_back_to_the_whole_shoot,
+    case_a_skipped_rung_ranks_below_a_full_ladder,
+    case_a_script_with_no_closer_borrows_one,
+    case_script_names_and_health,
+    case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names,
     case_a_duplicate_set_is_one_item_in_every_folder,
     case_collapse_keeps_the_original_unless_it_has_no_reading,
     case_a_colourless_set_keys_on_garment_and_setting,
@@ -1942,6 +2382,7 @@ _harness.run(
     case_same_colour_far_apart_is_two_shoots,
     case_one_rung_group_is_a_set_not_a_script,
     case_mixed_media_scripts_rank_first,
+    case_a_shoot_that_closes_outranks_a_bigger_one_that_cannot,
     case_plan_previews_without_creating_anything,
     case_apply_does_not_touch_of_unless_asked,
     case_mirror_creates_of_lists_and_binds_them,

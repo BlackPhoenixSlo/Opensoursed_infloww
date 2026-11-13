@@ -4,28 +4,28 @@
  * stills only inform (the server leaves them out of safe explicit, $10 and $50), never block; zero folders does. The vault hooks are faked at the module; every name is fake.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
-const plan = vi.hoisted(() => ({ flagsReady: true, noFolders: false, retireOnOf: 0, jevOn: true }));
+const plan = vi.hoisted(() => ({ flagsReady: true, noFolders: false, retireOnOf: 0, jevOn: true,
+  planOpts: [] as unknown[], scripts: [] as unknown[] }));
 vi.mock("@/hooks/useVaultCache", () => ({
   mirrorThumbSrc: () => "",
   applyAiFolders: vi.fn(),
   runVaultFlags: vi.fn(),
   useVaultFlagsStatus: () => ({ data: undefined, dataUpdatedAt: 0 }),
-  useAiFolderPlan: () => ({
+  useAiFolderPlan: (_acc: string, opts: unknown) => { plan.planOpts.push(opts); return {
     isLoading: false, isError: false, isFetching: false, refetch: () => {},
     data: {
       account_id: "acc-1", keep: 2, solo: false, shoots_found: 1, solo_coverage: null,
       folders: plan.noFolders ? [] : [{ name: "AI-tease 10", source: "lane", purpose: "tease", size: 0, kinds: {},
-        tiers: {}, closes_on_own: 0, items: [], solo: false }],
+        tiers: {}, closes_on_own: 0, items: [], solo: false }, ...plan.scripts],
       summary: { folders: plan.noFolders ? 0 : 1, scripts: 0, lanes: 1, topics: 0, solo_cuts: 0, unique_media: 0,
         memberships: 0 },
       topics: [],
-      jev: { enabled: plan.jevOn, photos: 10, with_jev: plan.jevOn ? 7 : 0 },
+      jev: { enabled: plan.jevOn, items: 10, with_jev: plan.jevOn ? 7 : 0 },
       topic_catalogue: [
         { slug: "spread", name: "spread", description: "legs spread", price: "split", count: 3 },
         { slug: "bikini", name: "bikini", description: "in swimwear", price: "split", count: 2 },
-        { slug: "feet", name: "feet", description: "feet the subject", price: "rung", count: 4, group: "feet" },
       ],
       flags: { stills: 10, flagged: plan.flagsReady ? 10 : 4, missing: plan.flagsReady ? 0 : 6, ready: plan.flagsReady },
       changes: {
@@ -34,7 +34,7 @@ vi.mock("@/hooks/useVaultCache", () => ({
           { folder_id: 8, name: "AI-old local", of_list_id: null }] : [],
       },
     },
-  }),
+  }; },
 }));
 
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
@@ -46,7 +46,7 @@ const runFlags = vi.mocked(runVaultFlags);
 const RESULT = { folders: 1, new: 1, reused: 0, items: 3, of_mirrored: 1, of_failed: 0, created: [] };
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); plan.flagsReady = true; plan.noFolders = false; plan.retireOnOf = 0;
-  plan.jevOn = true; });
+  plan.jevOn = true; plan.planOpts = []; plan.scripts = []; });
 
 describe("VaultAiFoldersModal", () => {
   it("a failed build says why, an option change keeps it; a landed build shows until an option changes", async () => {
@@ -69,8 +69,8 @@ describe("VaultAiFoldersModal", () => {
     expect(screen.queryByText(/Created 1 new/)).toBeNull();
     expect(screen.getByRole("button", { name: "Create 1 folders" })).toBeInTheDocument();
     expect(apply.mock.calls).toEqual([
-      ["acc-1", { keep: 2, solo: false, mirrorToOf: true, topics: [] }],
-      ["acc-1", { keep: 2, solo: true, mirrorToOf: true, topics: [] }],
+      ["acc-1", { keep: 10, solo: false, mirrorToOf: true, topics: [], split: true }],
+      ["acc-1", { keep: 10, solo: true, mirrorToOf: true, topics: [], split: true }],
     ]);
   });
 
@@ -85,6 +85,27 @@ describe("VaultAiFoldersModal", () => {
     expect(await screen.findByText(/Created 1 new/)).toBeInTheDocument();
   });
 
+  it("a script card shows its health line and marks the borrowed closer; a clean one shows none", () => {
+    const item = (media_id: number, extra: object = {}) => ({ media_id, kind: "photo", manual_order: media_id,
+      score: null, tier: "suggestive", closes: false, clothing_state: "lingerie_on", ...extra });
+    plan.scripts = [
+      { name: "AI-black lingerie · bathroom · Nov 3", source: "script", purpose: "one shoot", size: 3,
+        kinds: { photo: 2, video: 1 }, tiers: {}, closes_on_own: 1, solo: false, solo_of: null, change: "new",
+        room: "bathroom", health: ["borrowed closer", "sfw → suggestive"],
+        items: [item(1), item(2), item(3, { kind: "video", closes: true, borrowed: true })] },
+      { name: "AI-black lingerie · bedroom · Nov 3", source: "script", purpose: "one shoot", size: 1,
+        kinds: { video: 1 }, tiers: {}, closes_on_own: 1, solo: false, solo_of: null, change: "new",
+        room: "bedroom", health: [], items: [item(4, { closes: true })] },
+    ];
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    const health = screen.getAllByTestId("script-health");
+    expect(health).toHaveLength(1);
+    expect(health[0]).toHaveTextContent("borrowed closer · sfw → suggestive");
+    expect(health[0]).toHaveClass("text-muted");
+    expect(screen.getByText("borrowed")).toBeInTheDocument();
+    expect(screen.getByText("closes")).toBeInTheDocument();
+  });
+
   it("keep offers 0 (lanes only) to 20 and sends 0 as 0", async () => {
     apply.mockResolvedValueOnce(RESULT);
     renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
@@ -92,38 +113,40 @@ describe("VaultAiFoldersModal", () => {
     expect(select.querySelectorAll("option")).toHaveLength(21);
     fireEvent.change(select, { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
-    await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1", { keep: 0, solo: false, mirrorToOf: true, topics: [] }));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1", { keep: 0, solo: false, mirrorToOf: true, topics: [], split: true }));
   });
 
   it("topic folders: none ticked by default; ticked ones (Select all / None) go in the build", async () => {
     apply.mockResolvedValueOnce(RESULT);
     renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
-    expect(screen.getByText("7 of 10 photos have Jev data")).toBeInTheDocument();
+    expect(screen.getByText("7 of 10 items have Jev data")).toBeInTheDocument();
     const bikini = screen.getByRole("checkbox", { name: /bikini/ });
     expect(bikini).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Select all" }));
     expect(screen.getByRole("checkbox", { name: /spread/ })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /^feet/ })).not.toBeChecked();   // feet is its own opt-in
+    expect(screen.queryByRole("checkbox", { name: /feet/ })).toBeNull();   // feet: the Feet pack only
+    expect(screen.queryByTestId("ai-folders-feet")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "None" }));
     expect(bikini).not.toBeChecked();
     fireEvent.click(bikini);
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1",
-      { keep: 2, solo: false, mirrorToOf: true, topics: ["bikini"] }));
+      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: true }));
   });
 
-  it("feet is its own group, off by default; ticking it sends the feet slug", async () => {
+  it("split by price is on by default; switching it off re-plans and builds unsplit", async () => {
     apply.mockResolvedValueOnce(RESULT);
     renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
-    const group = screen.getByTestId("ai-folders-feet");
-    expect(group).toHaveTextContent("Feet");
-    expect(group).toHaveTextContent("AI-feet tease / nude / nude-body");
-    const feet = within(group).getByRole("checkbox", { name: /^feet/ });
-    expect(feet).not.toBeChecked();
-    fireEvent.click(feet);
+    const sw = screen.getByRole("switch", { name: "Split topics by price" });
+    expect(sw).toBeChecked();
+    expect(plan.planOpts.at(-1)).toMatchObject({ split: true });
+    fireEvent.click(sw);
+    expect(sw).not.toBeChecked();
+    expect(plan.planOpts.at(-1)).toMatchObject({ split: false });
+    fireEvent.click(screen.getByRole("checkbox", { name: /bikini/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1",
-      { keep: 2, solo: false, mirrorToOf: true, topics: ["feet"] }));
+      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false }));
   });
 
   it("topic folders without Jev data: the hint shows and the boxes are disabled", () => {

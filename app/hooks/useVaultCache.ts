@@ -67,10 +67,13 @@ export interface PackCandidate {
   suggested: string | null;
   /** Her body's price tier from Jev: 100 inserted, 50 labia visible, 10 topless, 0 none; null unknown / no Jev. */
   tier: number | null;
-  /** How likely the category is the subject, 0..1 (unfiled: >= .6); the list comes most likely first. */
+  /** How likely the category is the subject, 0..1 (confident: >= .6, possible: .3 to .6); most likely first. */
   score: number;
   /** A Jev v8 photo (`_jev`): every unfiled candidate; false only for a row filed before the precision rule. */
   jev?: boolean;
+  /** Jev sees the part but scores it .3 <= score < the preselect gate: shown unticked after the confident ones,
+   *  `suggested` from the same tier + covering rule without the gate. Check it before filing. */
+  possible?: boolean;
   /** May ride the free (cheapest) rung: false = Jev says her body may be on show (the server refuses it there);
    *  null = no Jev answer, the operator decides. */
   free_ok?: boolean | null;
@@ -333,6 +336,8 @@ export interface AiFolderItem {
   tier: string;
   closes: boolean;
   clothing_state: string;
+  /** Scripts only: a closer borrowed from outside the shoot (it had none of its own). */
+  borrowed?: boolean;
 }
 
 export interface AiFolder {
@@ -346,6 +351,10 @@ export interface AiFolder {
   items: AiFolderItem[];
   outfit?: string;
   mixed?: boolean;
+  /** Scripts only: the room the part was shot in ('' when unknown), and what to know before sending it
+   *  ("no closer", "borrowed closer", "photos only", "rungs 1–2", "capped from 50"…); [] when clean. */
+  room?: string;
+  health?: string[];
   lane?: string;
   /** A `-solo` cut of the lane it is named after — same lane, minus everyone
    *  else. Every folder carries this, so nothing has to test for its presence;
@@ -355,21 +364,20 @@ export interface AiFolder {
   solo_of: number | null;
   /** What Confirm does with it: make a new folder, or refresh the generated one of this name. */
   change: "new" | "keep";
-  /** Topic folders only: the topic slug and its price split ("free" | "$10" | "$50" | "$100"). */
+  /** Topic folders only: the topic slug and its price split ("free" | "$10" | "$50" | "$100", explicit topics
+   *  "$50" | "$100" | "$150"); null when the plan was built with `split` off (one folder per topic). */
   topic?: string;
-  price?: string;
+  price?: string | null;
 }
 
-/** One opt-in Jev topic (`service/vault_topic_folders.py`) and how many photos it holds across its price splits,
- *  ticked or not. `price`: "split" (free/$10/$50/$100), "paid" (never free), "free" (free only). */
+/** One opt-in Jev topic (`service/vault_topic_folders.py`) and how many items (photos + clips) it holds across its
+ *  price splits, ticked or not. `price`: "split" (free/$10/$50/$100), "explicit" ($50/$100/$150, never free),
+ *  "free" (free only). */
 export interface AiFolderTopic {
   slug: string;
   name: string;
   description: string;
-  /** "rung": one folder per feet rung (AI-feet tease / nude / nude-body), not per price. */
-  price: "split" | "paid" | "free" | "rung";
-  /** The checklist group: "topics", or "feet" (its own group). */
-  group?: string;
+  price: "split" | "explicit" | "free";
   count: number;
 }
 
@@ -379,12 +387,14 @@ export interface AiFolderPlan {
   solo: boolean;
   /** The topic slugs this plan was built with (catalogue order). */
   topics: string[];
+  /** Topic folders split by price (false = one `AI-<topic>` folder each). */
+  split: boolean;
   shoots_found: number;
   folders: AiFolder[];
   /** Every topic, ticked or not, with its size. */
   topic_catalogue: AiFolderTopic[];
-  /** Jev on for the account, and how many of the planned photos carry a current Jev answer. */
-  jev: { enabled: boolean; photos: number; with_jev: number };
+  /** Jev on for the account, and how many of the planned items (photos + clips) carry a current Jev answer. */
+  jev: { enabled: boolean; items: number; with_jev: number };
   /** What Confirm does to the AI- folders already there, by the same match the apply makes. `keep` counts folders
    *  (not the shoot count above); `retire_on_of` = retired ones bound to an OF list (unlinked, never deleted on OF). */
   changes: PlanChanges;
@@ -471,6 +481,8 @@ export interface FolderPlanOptions {
   solo?: boolean;
   /** Jev topic slugs to add as topic folders (none = no topic folders). */
   topics?: string[];
+  /** Split topic folders by price (default true); false = one `AI-<topic>` folder each. */
+  split?: boolean;
 }
 
 /** Preview the folders the pipeline would create. Read-only — creates nothing.
@@ -479,17 +491,17 @@ export interface FolderPlanOptions {
  *  IS, and the SAME options have to reach `applyAiFolders` (see there). */
 export function useAiFolderPlan(
   accountId: string | null,
-  { keep = 2, solo = false, topics = [] }: FolderPlanOptions = {},
+  { keep = 2, solo = false, topics = [], split = true }: FolderPlanOptions = {},
   enabled = false,
 ) {
   const topicsParam = topics.join(",");
   return useQuery<AiFolderPlan>({
-    queryKey: ["vault-ai-folder-plan", accountId, keep, solo, topicsParam],
+    queryKey: ["vault-ai-folder-plan", accountId, keep, solo, topicsParam, split],
     enabled: !!accountId && enabled,
     queryFn: () =>
       relay.get(
         `/admin/vault-ai/folder-plan?account_id=${encodeURIComponent(accountId!)}&keep=${keep}` +
-          `&solo=${solo ? "true" : "false"}` +
+          `&solo=${solo ? "true" : "false"}&split=${split ? "true" : "false"}` +
           (topicsParam ? `&topics=${encodeURIComponent(topicsParam)}` : ""),
       ),
     staleTime: 30_000,
@@ -528,12 +540,12 @@ export interface ApplyAiFoldersResult {
  *  lanes and delete every `-solo` folder in the same call. */
 export async function applyAiFolders(
   accountId: string,
-  { keep = 2, solo = false, mirrorToOf = false, topics = [] }:
+  { keep = 2, solo = false, mirrorToOf = false, topics = [], split = true }:
     FolderPlanOptions & { mirrorToOf?: boolean } = {},
 ): Promise<ApplyAiFoldersResult> {
   return relay.post(
     `/admin/vault-ai/folder-plan/apply`,
-    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo, topics },
+    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo, topics, split },
     { accountId },
   );
 }

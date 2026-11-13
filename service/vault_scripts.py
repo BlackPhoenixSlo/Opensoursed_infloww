@@ -11,7 +11,7 @@ data we have: no LLM call, no OF traffic, instant re-run.
 
 This module scores each item on that ladder (`escalation_score`), orders items
 for sending (`send_sort_key`),
-groups shoots by outfit (`collect_outfit_scripts`) and cuts purpose lanes
+groups shoots by outfit and room into capped ladders (`collect_outfit_scripts`) and cuts purpose lanes
 (`collect_purpose_folders`). `plan_ai_folders` turns both into a folder
 proposal and `apply_ai_folders` writes it as internal `AI-` folders.
 
@@ -35,9 +35,10 @@ from db.models import VaultFolder, VaultFolderItem, VaultItem
 
 log = logging.getLogger("of-relay.vault_scripts")
 
-# A group smaller than this is not a shoot. Two items are a pair, and a folder
-# per pair is worse than no folder.
-MIN_SCRIPT_ITEMS = 3
+# Owner rule 2026-11-13: a script is a night's ladder — at least 10 pieces, at
+# least 2 of them clips. A shoot that cannot fill that is not proposed.
+MIN_SCRIPT_ITEMS = 10
+MIN_SCRIPT_VIDEOS = 2
 
 
 # ── The ladder ──────────────────────────────────────────────────────
@@ -274,12 +275,15 @@ async def _grouping_rows(account_id: str) -> tuple[list[dict[str, Any]], list[in
 #     up the next send; one WITH a payoff can close on its own. Within a rung,
 #     tease first and close last. This is the axis the old single score could
 #     not express at all: a nude tease and a nude fingering clip both scored 60.
-#  3. reveal tension — dressed → lingerie → mid-strip → fully_nude. Chronological
+#  3. reveal tension — dressed → lingerie → mid-strip → fully_nude (Jev's
+#     clothing-state `outfit` when the describe gave none). Chronological
 #     within the strip, which is also how it was filmed. Note this is ORDER, not
 #     value: `vault_ai_brief` correctly ranks the "almost" states as the highest
 #     VALUE to sell, but they still come before full nudity in a night.
 #  4. the act ladder — fine-grain within all of the above.
-#  5. media id — a stable tie-break, so equal keys never reorder between runs.
+#  5. reveal — how many regions are bare (flags pass, else Jev), so a burst of
+#     same-state frames still walks covered → bare.
+#  6. media id — a stable last tie-break, so equal keys never reorder between runs.
 #
 # Anything we cannot place lands last, never in the opening slot.
 
@@ -290,6 +294,35 @@ _CLOTHING_PROGRESS: dict[str, int] = {
 
 _UNKNOWN = 99
 
+# Jev `outfit` is a clothing STATE, not an outfit (it changes within a shoot, so
+# it is never a grouping key). On `_CLOTHING_PROGRESS`'s scale it stands in for
+# a missing describe `clothing_state`.
+_JEV_OUTFIT_PROGRESS: dict[str, int] = {
+    "everyday_clothes": 0, "sheet_or_towel": 1, "swimwear": 1,
+    "lingerie_or_bodysuit": 1, "topless_with_bottoms": 3, "nude": 5,
+}
+
+# (flags-pass region, Jev bare answer) — the regions `reveal_strength` counts.
+_REVEAL_REGIONS = (("breasts_vis", "breasts_bare"), ("vulva_vis", "crotch_bare"),
+                   ("anus_vis", None))
+
+
+def _jev_tag(fields: dict[str, Any], q: str) -> str:
+    """Jev's answer to choice question `q` on a current `_jev`, else ''."""
+    jev = vault_topic_folders.jev_of(fields)
+    return _norm(vault_topic_folders._tag(jev, q)) if jev else ""
+
+
+def reveal_strength(fields: dict[str, Any]) -> int:
+    """How many regions (breasts / vulva / anus) are bare, 0-3: the flags pass,
+    else Jev's bare answers. Orders items the rung, payoff, clothing and act
+    axes leave tied — a topless frame after a covered one — instead of upload
+    id."""
+    jev = vault_topic_folders.jev_of(fields) or {}
+    return sum(1 for flag, jkey in _REVEAL_REGIONS
+               if (vault_ai_brief.is_bare(fields, flag) if vault_ai_brief.vis(fields, flag)
+                   else bool(jkey and jev.get(jkey) == "y")))
+
 
 def send_sort_key(fields: dict[str, Any], *, media_id: int = 0) -> tuple[int, ...]:
     """Sort key placing an item in SEND order — tease first, payoff last."""
@@ -297,10 +330,12 @@ def send_sort_key(fields: dict[str, Any], *, media_id: int = 0) -> tuple[int, ..
 
     rung = sell["rung"] if sell["rung"] is not None else _UNKNOWN
     closes = 1 if sell["stands_alone"] else 0
-    clothing = _CLOTHING_PROGRESS.get(
-        _norm(fields.get("clothing_state")), _UNKNOWN)
+    clothing = _CLOTHING_PROGRESS.get(_norm(fields.get("clothing_state")))
+    if clothing is None:
+        clothing = _JEV_OUTFIT_PROGRESS.get(_jev_tag(fields, "outfit"), _UNKNOWN)
     act = escalation_score(fields)
-    return (rung, closes, clothing, act if act is not None else _UNKNOWN, media_id)
+    return (rung, closes, clothing, act if act is not None else _UNKNOWN,
+            reveal_strength(fields), media_id)
 
 
 def send_order_reason(fields: dict[str, Any]) -> dict[str, Any]:
@@ -381,11 +416,16 @@ _GARMENT_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("hosiery", ("stockings", "fishnet", "tights", "socks")),
 )
 
+_GARMENT_CLASS_NAMES = frozenset(name for name, _ in _GARMENT_CLASSES)
+
 # Two different shoots in the same colour must not merge just because the colour
 # matches. 48h keeps a shoot whose stills and clips went up on consecutive
 # nights together (the graded vault's pink set spans 26 hours) while separating a black
 # set shot a week later.
 DEFAULT_OUTFIT_WINDOW_HOURS = 48
+
+# How many top shoots stay as their own script folder when the caller does not say.
+DEFAULT_KEEP_SCRIPTS = 10
 
 
 def short_outfit(outfit: str) -> str:
@@ -460,6 +500,40 @@ def _with_why(r: dict[str, Any]) -> dict[str, Any]:
     return {**r, "why": send_order_reason(r.get("fields") or {})}
 
 
+_SUGGESTIVE = vault_ai_brief.EXPLICITNESS_LADDER.index("suggestive")
+_EXPLICIT = vault_ai_brief.EXPLICITNESS_LADDER.index("explicit")
+
+
+def earns_paid_rung(fields: dict[str, Any]) -> bool:
+    """Owner rule 2026-11-13: explicit / hardcore in a script means her pussy is
+    on show (flags pass; Jev only where the flags left it unanswered) or a real
+    act is in frame. Live AE: 114 of 160 'explicit' items were a covered or
+    out-of-frame crotch — a bare butt in a thong — and both passes agreed."""
+    if vault_ai_brief.vis(fields, "vulva_vis"):
+        bare = vault_ai_brief.is_bare(fields, "vulva_vis")
+    else:
+        bare = (vault_topic_folders.jev_of(fields) or {}).get("crotch_bare") == "y"
+    return (bare or vault_ai_brief.genital_act_claimed(fields)
+            or vault_ai_brief.sellability(fields)["stands_alone"])
+
+
+def _with_script_why(r: dict[str, Any]) -> dict[str, Any]:
+    """`_with_why`, with an unearned explicit / hardcore rung (`earns_paid_rung`)
+    sent as suggestive. Scripts only; the price lanes keep their own rules."""
+    out = _with_why(r)
+    why = out["why"]
+    if why["rung"] is not None and why["rung"] >= _EXPLICIT \
+            and not earns_paid_rung(r.get("fields") or {}):
+        out["why"] = {**why, "rung": _SUGGESTIVE, "tier": "suggestive",
+                      "labelled": why["tier"]}
+    return out
+
+
+def _script_sort_key(r: dict[str, Any]) -> tuple[int, ...]:
+    """`send_sort_key` with the script rung (`_with_script_why`) in front."""
+    return (r["why"]["rung"], *send_sort_key(r["fields"], media_id=r["media_id"])[1:])
+
+
 def _ordered_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`rows` in order, each stamped with its 1-based `manual_order`."""
     return [{**r, "manual_order": i + 1} for i, r in enumerate(rows)]
@@ -476,24 +550,308 @@ def _tally(items: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int],
     return kinds, tiers, sum(1 for r in items if r["why"]["closes"])
 
 
+# Sendable-ladder sizes: a script folder is what an operator walks ONE fan
+# through in a night, not the whole shoot. Live AE 2026-11-13: one script held
+# 93 items. Per band, at most:
+SCRIPT_OPENERS = 3    # non-closers on the script's lowest rung — the free hook
+SCRIPT_MIDDLE = 4     # the build-up above it
+SCRIPT_CLOSERS = 3    # items that close a sale on their own
+SCRIPT_SIZE = SCRIPT_OPENERS + SCRIPT_MIDDLE + SCRIPT_CLOSERS
+
+# Burst frames of one pose are near-identical: looser than the Duplicates
+# screen's re-upload match (`vault_dupes.DEFAULT_THRESHOLD`, 2) — the "similar"
+# band's top — and only ever applied inside one rung of one script.
+NEAR_DUPE_THRESHOLD = 5
+
+
+def item_room(fields: dict[str, Any]) -> str:
+    """Where it was shot: Jev's `setting` on a current `_jev`, else the
+    describe's `setting`. '' when neither names a place ('other' does not)."""
+    room = _jev_tag(fields, "setting") or _norm(fields.get("setting"))
+    return "" if room in _NO_SETTING else room
+
+
+def split_by_room(items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """[(room, items)] — one part per room. An item with no room joins the part
+    holding the item nearest it in created_at (a tie → the largest part, by its
+    roomed items). No room anywhere: one part, room ''. Item order is kept."""
+    roomed: dict[str, list[dict[str, Any]]] = {}
+    for r in items:
+        room = item_room(r.get("fields") or {})
+        if room:
+            roomed.setdefault(room, []).append(r)
+    if not roomed:
+        return [("", list(items))]
+    sizes = {room: len(rs) for room, rs in roomed.items()}
+
+    def _gap(a: dict[str, Any], b: dict[str, Any]) -> float:
+        if a["created_at"] is None or b["created_at"] is None:
+            return 0.0
+        return abs((a["created_at"] - b["created_at"]).total_seconds())
+
+    home: dict[int, str] = {}
+    for r in items:
+        room = item_room(r.get("fields") or {})
+        if not room:
+            room = min(roomed, key=lambda k: (min(_gap(r, x) for x in roomed[k]), -sizes[k], k))
+        home[r["media_id"]] = room
+    return [(room, [r for r in items if home[r["media_id"]] == room]) for room in sorted(roomed)]
+
+
+async def _fingerprints(account_id: str) -> dict[int, dict[str, Any]]:
+    """Stored thumb hashes by media id (`vault_dupes.load_fingerprints`, no
+    hashing). Any failure logs and returns {} — no near-dupe collapse."""
+    try:
+        items, _ = await vault_dupes.load_fingerprints(account_id)
+    except Exception:  # noqa: BLE001
+        log.exception("fingerprint load failed account=%s — no near-dupe collapse", account_id)
+        return {}
+    return {int(fp["media_id"]): fp for fp in items}
+
+
+def _near(a: dict[str, Any] | None, b: dict[str, Any] | None, threshold: int) -> bool:
+    """Same kind, within `threshold` on dhash AND ahash (clips: duration ±1s too),
+    as `vault_dupes.cluster` compares."""
+    if not a or not b or a["kind"] != b["kind"]:
+        return False
+    if a["kind"] == "video" and abs((a.get("duration") or 0) - (b.get("duration") or 0)) > \
+            vault_dupes._VIDEO_DUR_TOLERANCE_S:
+        return False
+    if a["md5"] == b["md5"]:
+        return True
+    return (vault_dupes.hamming(a["dhash"], b["dhash"]) <= threshold
+            and vault_dupes.hamming(a["ahash"], b["ahash"]) <= threshold)
+
+
+def collapse_near_dupes(items: list[dict[str, Any]], prints: dict[int, dict[str, Any]],
+                        threshold: int = NEAR_DUPE_THRESHOLD,
+                        ) -> tuple[list[dict[str, Any]], list[int]]:
+    """`items` (send order, enriched) minus burst frames near-identical to a kept
+    item on the same rung, + the dropped ids. Items with a current Jev reading
+    are kept first; then send order. Unhashed items are never dropped."""
+    order = sorted(range(len(items)), key=lambda i: (
+        vault_topic_folders.jev_of(items[i].get("fields")) is None, i))
+    kept: list[int] = []
+    dropped: list[int] = []
+    for i in order:
+        r = items[i]
+        fp = prints.get(r["media_id"])
+        if fp is not None and any(
+                items[j]["why"]["rung"] == r["why"]["rung"]
+                and _near(fp, prints.get(items[j]["media_id"]), threshold) for j in kept):
+            dropped.append(r["media_id"])
+            continue
+        kept.append(i)
+    return [items[i] for i in sorted(kept)], sorted(dropped)
+
+
+def ladder_bands(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """{opener, middle, closer}: closers close on their own; openers are the
+    other items on the lowest rung; middle is the rest. Order kept."""
+    closers = [r for r in items if r["why"]["closes"]]
+    rest = [r for r in items if not r["why"]["closes"]]
+    low = min((r["why"]["rung"] for r in rest), default=None)
+    return {"opener": [r for r in rest if r["why"]["rung"] == low],
+            "middle": [r for r in rest if r["why"]["rung"] != low],
+            "closer": closers}
+
+
+def _traits(r: dict[str, Any], *, kind: bool = True) -> set[tuple[str, Any]]:
+    why = r["why"]
+    out = {("rung", why["rung"]), ("clothing", why["clothing_state"]),
+           ("acts", tuple(why["payoff_acts"]))}
+    if kind:
+        out.add(("kind", r["kind"]))
+    return out
+
+
+def _pick_varied(pool: list[dict[str, Any]], k: int, *, kind: bool = True) -> list[dict[str, Any]]:
+    """Up to `k` of `pool` (best first), each the least like those already
+    picked (rung / clothing / payoff acts / kind); ties go to the better one."""
+    pool = list(pool)
+    chosen: list[dict[str, Any]] = []
+    seen: set[tuple[str, Any]] = set()
+    while pool and len(chosen) < k:
+        i = min(range(len(pool)), key=lambda i: (len(_traits(pool[i], kind=kind) & seen), i))
+        r = pool.pop(i)
+        chosen.append(r)
+        seen |= _traits(r, kind=kind)
+    return chosen
+
+
+def cap_ladder(items: list[dict[str, Any]], *, min_videos: int | None = None
+               ) -> tuple[list[dict[str, Any]], list[int]]:
+    """`items` (send order) cut to a sendable ladder — at most SCRIPT_OPENERS /
+    SCRIPT_MIDDLE / SCRIPT_CLOSERS per band, varied; closers prefer clips, then
+    the bigger payoff — in send order, + the overflow ids (not in the script)."""
+    bands = ladder_bands(items)
+    pos = {r["media_id"]: i for i, r in enumerate(items)}
+    closers = sorted(bands["closer"], key=lambda r: (
+        r["kind"] != "video", -(r.get("score") or 0), pos[r["media_id"]]))
+    keep = {r["media_id"] for r in (
+        _pick_varied(bands["opener"], SCRIPT_OPENERS)
+        + _pick_varied(bands["middle"], SCRIPT_MIDDLE)
+        + _pick_varied(closers, SCRIPT_CLOSERS, kind=False))}
+    # A thin band leaves room: fill to SCRIPT_SIZE from what is left, varied.
+    left = [r for r in items if r["media_id"] not in keep]
+    keep |= {r["media_id"] for r in _pick_varied(left, SCRIPT_SIZE - len(keep))}
+    # Too few clips: swap the latest-sent kept photo of a band for that band's
+    # best left-out clip, until MIN_SCRIPT_VIDEOS or no swap is left.
+    band_of = {r["media_id"]: b for b, rs in bands.items() for r in rs}
+    want = MIN_SCRIPT_VIDEOS if min_videos is None else min_videos
+    while sum(1 for r in items if r["media_id"] in keep and r["kind"] == "video") < want:
+        swap = next(((v, p) for v in items if v["kind"] == "video" and v["media_id"] not in keep
+                     for p in reversed(items) if p["kind"] == "photo" and p["media_id"] in keep
+                     and band_of[p["media_id"]] == band_of[v["media_id"]]), None)
+        if swap is None:
+            swap = next(((v, p) for v in items if v["kind"] == "video" and v["media_id"] not in keep
+                         for p in reversed(items) if p["kind"] == "photo" and p["media_id"] in keep
+                         and not p["why"]["closes"]), None)
+        if swap is None:
+            break
+        keep.discard(swap[1]["media_id"])
+        keep.add(swap[0]["media_id"])
+    return ([r for r in items if r["media_id"] in keep],
+            [r["media_id"] for r in items if r["media_id"] not in keep])
+
+
+def _band_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {k: len(v) for k, v in ladder_bands(items).items()}
+
+
+# The plan's `rungs` indices, as an operator reads them.
+_RUNG_WORDS = ("sfw", "suggestive", "explicit", "hardcore")
+
+
+def _rung_word(r: int) -> str:
+    return _RUNG_WORDS[r] if 0 <= r < len(_RUNG_WORDS) else f"rung {r}"
+
+
+def _rungs_label(rungs: list[int]) -> str:
+    """`suggestive → explicit` (contiguous) or `suggestive, hardcore` (a rung skipped)."""
+    if len(rungs) > 1 and rungs[-1] - rungs[0] + 1 == len(rungs):
+        return f"{_rung_word(rungs[0])} → {_rung_word(rungs[-1])}"
+    return ", ".join(_rung_word(r) for r in rungs)
+
+
+def _ladder_full(rungs: list[int]) -> bool:
+    """Three or more rungs, none skipped."""
+    return len(rungs) >= 3 and rungs[-1] - rungs[0] + 1 == len(rungs)
+
+
+def script_health(s: dict[str, Any]) -> list[str]:
+    """What an operator should know before sending this script — short phrases,
+    worst first; [] when it is a clean full ladder."""
+    out: list[str] = []
+    if s.get("borrowed"):
+        out.append("borrowed closer")
+    elif not s["closes_on_own"]:
+        out.append("no closer")
+    kinds = s["kinds"]
+    if set(kinds) == {"photo"}:
+        out.append("photos only")
+    elif set(kinds) == {"video"}:
+        out.append("clips only")
+    if not _ladder_full(s["rungs"]):
+        out.append(_rungs_label(s["rungs"]))
+    if s.get("capped_from"):
+        out.append(f"capped from {s['capped_from']}")
+    if s.get("near_dupes"):
+        n = len(s["near_dupes"])
+        out.append(f"{n} near-duplicate{'s' if n != 1 else ''} dropped")
+    if s.get("unplaced"):
+        out.append(f"{s['unplaced']} unrated at end")
+    return out
+
+
+def script_name(outfit: str, room: str, started: datetime | None) -> str:
+    """`AI-<colour garment> · <room> · <Mon D>` (the part's start date). No
+    counts: they would rename the folder on every rebuild."""
+    shown_room = room.replace("_", " ")
+    head = outfit.split(" ", 1)[0]
+    # A colourless key is "<garment class> <describe setting>"; the room part
+    # already names the place, so show the garment alone.
+    label = short_outfit(head if head in _GARMENT_CLASS_NAMES else outfit)
+    date = f"{started:%b} {started.day}" if started else ""
+    return ai_folder_name(" · ".join(p for p in (label, shown_room, date) if p))
+
+
+def _shoot(outfit: str, room: str, part: list[dict[str, Any]], prints: dict[int, dict[str, Any]],
+           *, min_items: int, require_escalation: bool,
+           min_videos: int) -> dict[str, Any] | None:
+    """One room's part of an outfit segment as a script, or None when it is not
+    one (too small, one rung). Placed items are near-dupe collapsed and capped;
+    rung-less (unknown explicitness) rows ride after the ladder uncapped —
+    lanes skip them too, so dropping them here would file them nowhere."""
+    placed = sorted((r for r in part if r["why"]["rung"] is not None), key=_script_sort_key)
+    unplaced = sorted((r for r in part if r["why"]["rung"] is None),
+                      key=lambda r: r["media_id"])
+    deduped, near = collapse_near_dupes(placed, prints)
+    if len(deduped) < min_items:
+        return None
+    if require_escalation and len({r["why"]["rung"] for r in deduped}) < 2:
+        return None
+    ladder, overflow = cap_ladder(deduped, min_videos=min_videos)
+    if len(ladder) < min_items or sum(1 for r in ladder if r["kind"] == "video") < min_videos:
+        return None
+    dated = [r["created_at"] for r in part if r["created_at"]]
+    started = min(dated) if dated else None
+    # Kinds / tiers describe the folder as filed (tail included); `size`,
+    # `rungs` and `bands` describe the ladder.
+    kinds, tiers, closes = _tally(ladder + unplaced)
+    shoot = {
+        "outfit": outfit, "room": room,
+        "colour": outfit_colour(part[0].get("fields") or {}),
+        "name": script_name(outfit, room, started),
+        "size": len(ladder), "kinds": kinds, "tiers": tiers,
+        "rungs": sorted({r["why"]["rung"] for r in ladder}),
+        "bands": _band_counts(ladder),
+        "mixed": len(kinds) > 1,
+        "closes_on_own": closes,
+        "started_at": started,
+        "ended_at": max(dated) if dated else None,
+        "capped_from": len(deduped) if overflow else None,
+        "overflow": overflow, "near_dupes": near,
+        "borrowed": None, "unplaced": len(unplaced),
+        "items": _ordered_items(ladder + unplaced),
+    }
+    shoot["health"] = script_health(shoot)
+    return shoot
+
+
 async def collect_outfit_scripts(
     account_id: str, *, window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
-    min_items: int = MIN_SCRIPT_ITEMS, require_escalation: bool = True,
+    min_items: int | None = None, require_escalation: bool = True,
+    min_videos: int | None = None,
     rows: list[dict[str, Any]] | None = None,
+    prints: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Shoots, recovered by outfit. Read-only.
+    """Shoots, recovered by outfit, then room. Read-only.
 
     `rows` — the pool, as `_grouping_rows` returns it; loaded when omitted.
+    `prints` — stored thumb hashes by media id (`_fingerprints`); loaded when
+    omitted.
 
-    `require_escalation` drops groups that sit on ONE explicitness rung — a run
+    An outfit is split where it goes quiet for `window_hours`, then by room
+    (`split_by_room`): created_at is OF's upload time, and a bulk upload puts a
+    whole day's shoots inside one second, so the gap alone never cuts them.
+    Each part drops burst near-duplicates (`collapse_near_dupes`) and is capped
+    to a sendable ladder (`cap_ladder`); what is cut is still in the vault and
+    in the lanes.
+
+    `require_escalation` drops parts that sit on ONE explicitness rung — a run
     of eight equally-suggestive stills in the same bra is a set, not a script,
     because there is nowhere to walk a fan to.
 
-    Ranked best-first: a mix of stills AND clips, spanning the most rungs, is
-    what an operator can actually build a night out of.
+    Ranked best-first by `shoot_rank_key`.
     """
+    # Resolved per call, not bound at import, so the constants stay the one knob.
+    min_items = MIN_SCRIPT_ITEMS if min_items is None else min_items
+    min_videos = MIN_SCRIPT_VIDEOS if min_videos is None else min_videos
     if rows is None:
         rows, _ = await _grouping_rows(account_id)
+    if prints is None:
+        prints = await _fingerprints(account_id)
     window = window_hours * 3600
 
     by_outfit: dict[str, list[dict[str, Any]]] = {}
@@ -520,34 +878,97 @@ async def collect_outfit_scripts(
         for seg in segments:
             # A script opens on its free rungs; a disputed item is never sent
             # free, so it does not join a shoot unless it is priced (paid).
-            enriched = [r for r in map(_with_why, seg) if not _unpriced_dispute(r)]
-            if len(enriched) < min_items:
-                continue
-            rungs = {r["why"]["rung"] for r in enriched if r["why"]["rung"] is not None}
-            if require_escalation and len(rungs) < 2:
-                continue
+            enriched = [r for r in map(_with_script_why, seg) if not _unpriced_dispute(r)]
+            kw = dict(min_items=min_items, require_escalation=require_escalation,
+                      min_videos=min_videos)
+            parts = [s for room, part in split_by_room(enriched)
+                     if (s := _shoot(outfit, room, part, prints, **kw)) is not None]
+            # No room fills a script on its own: the whole shoot, unsplit.
+            if not parts and (whole := _shoot(outfit, "", enriched, prints, **kw)):
+                parts = [whole]
+            out.extend(parts)
 
-            placed = [r for r in enriched if r["why"]["rung"] is not None]
-            unplaced = [r for r in enriched if r["why"]["rung"] is None]
-            placed.sort(key=lambda r: send_sort_key(r["fields"], media_id=r["media_id"]))
-            ordered = placed + unplaced
-
-            kinds, tiers, closes = _tally(ordered)
-            out.append({
-                "outfit": outfit,
-                "name": ai_folder_name(short_outfit(outfit)),
-                "size": len(ordered), "kinds": kinds, "tiers": tiers,
-                "rungs": sorted(rungs),
-                "mixed": len(kinds) > 1,
-                "closes_on_own": closes,
-                "started_at": min(r["created_at"] for r in seg if r["created_at"]),
-                "ended_at": max(r["created_at"] for r in seg if r["created_at"]),
-                "items": _ordered_items(ordered),
-            })
-
-    # Mixed media first, then widest escalation, then biggest.
-    out.sort(key=lambda s: (not s["mixed"], -len(s["rungs"]), -s["size"]))
+    out.sort(key=shoot_rank_key)
     return out
+
+
+# A shoot's paid depth stops counting past this many explicit/hardcore items: a
+# 50-item set is not five times the script a 10-item one is.
+_PAID_DEPTH_CAP = 10
+
+
+def ladder_completeness(s: dict[str, Any]) -> tuple[int, int]:
+    """(bands present of opener / middle / closer, rungs held minus rungs
+    skipped) — {1, 3} scores below {1, 2} and {1, 2, 3}."""
+    bands = s.get("bands") or {}
+    present = sum(1 for b in ("opener", "middle", "closer") if bands.get(b))
+    rungs = sorted(s["rungs"])
+    skipped = (rungs[-1] - rungs[0] + 1 - len(rungs)) if rungs else 0
+    return present, len(rungs) - skipped
+
+
+def shoot_rank_key(s: dict[str, Any]) -> tuple:
+    """Best script first. A shoot with nothing that closes on its own cannot land
+    a sale, so it ranks below every one that can, whatever its size or media mix
+    (live AE 2026-11-13: 5 of the old top 10 had no closer). Then the most
+    complete ladder (`ladder_completeness`), then the deepest paid end
+    (explicit + hardcore, capped), then stills AND clips, then biggest."""
+    tiers = s.get("tiers") or {}
+    paid = min(_PAID_DEPTH_CAP, tiers.get("explicit", 0) + tiers.get("hardcore", 0))
+    bands, rungs = ladder_completeness(s)
+    return (s["closes_on_own"] == 0, -bands, -rungs, -paid, not s["mixed"], -s["size"])
+
+
+def _span_gap(r: dict[str, Any], s: dict[str, Any]) -> float:
+    """Seconds from `r`'s upload to shoot `s`'s span (0 inside it)."""
+    at, lo, hi = r["created_at"], s["started_at"], s["ended_at"]
+    if at is None or lo is None or hi is None:
+        return float("inf")
+    if lo <= at <= hi:
+        return 0.0
+    return min(abs((at - lo).total_seconds()), abs((at - hi).total_seconds()))
+
+
+def borrow_closers(kept: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
+    """Each kept script with no closer of its own borrows ONE closing item from
+    outside every kept script: same outfit colour first, else same room; then
+    a clip; then nearest in created_at. On the script's top rung or above, so it
+    still sends last. Appended last, marked `borrowed`; counts, rungs and health
+    recomputed. In rank order, so the best script borrows first. Mutates `kept`."""
+    taken = {r["media_id"] for s in kept for r in s["items"]}
+    pool = [r for r in map(_with_script_why, rows)
+            if r["why"]["closes"] and r["why"]["rung"] is not None
+            and not _unpriced_dispute(r) and r["media_id"] not in taken]
+    for s in kept:
+        if s["closes_on_own"] or not s["items"]:
+            continue
+        top = max(s["rungs"])
+
+        def _match(r: dict[str, Any]) -> int | None:
+            fields = r.get("fields") or {}
+            if s["colour"] and outfit_colour(fields) == s["colour"]:
+                return 0
+            if s["room"] and item_room(fields) == s["room"]:
+                return 1
+            return None
+
+        cands = [(m, r) for r in pool if r["media_id"] not in taken
+                 and r["why"]["rung"] >= top and (m := _match(r)) is not None]
+        if not cands:
+            continue
+        _, pick = min(cands, key=lambda c: (c[0], c[1]["kind"] != "video",
+                                            _span_gap(c[1], s), c[1]["media_id"]))
+        taken.add(pick["media_id"])
+        ladder = [r for r in s["items"] if r["why"]["rung"] is not None]
+        tail = [r for r in s["items"] if r["why"]["rung"] is None]
+        ladder.append({**pick, "borrowed": True})
+        items = ladder + tail
+        kinds, tiers, closes = _tally(items)
+        s.update(items=_ordered_items(items), size=len(ladder), kinds=kinds, tiers=tiers,
+                 closes_on_own=closes, mixed=len(kinds) > 1,
+                 rungs=sorted({r["why"]["rung"] for r in ladder}),
+                 bands=_band_counts(ladder), borrowed=pick["media_id"])
+        s["health"] = script_health(s)
 
 
 # ── Purpose folders (what a weak shoot is still good for) ───────────
@@ -1058,11 +1479,12 @@ async def collect_purpose_folders(
     return out
 
 
-def collect_topic_folders(rows: list[dict[str, Any]], topics: Iterable[str]) -> list[dict[str, Any]]:
-    """One folder per ticked topic and price split (`vault_topic_folders`), in send order. Photos with a
-    current `_jev` only; additive — an item in a lane or script may also be here. Read-only."""
+def collect_topic_folders(rows: list[dict[str, Any]], topics: Iterable[str], *,
+                          split: bool = True) -> list[dict[str, Any]]:
+    """One folder per ticked topic and price split (`vault_topic_folders`), in send order; `split` False: one per
+    topic (`AI-<name>`, price None), the union of its splits. Photos and clips with a current `_jev`; additive — an item in a lane or script may also be here. Read-only."""
     out: list[dict[str, Any]] = []
-    for (slug, price), picked in vault_topic_folders.assign(rows, topics).items():
+    for (slug, price), picked in vault_topic_folders.assign(rows, topics, by_price=split).items():
         topic = vault_topic_folders.BY_SLUG[slug]
         picked = sorted((_with_why(r) for r in picked),
                         key=lambda r: send_sort_key(r["fields"], media_id=r["media_id"]))
@@ -1070,7 +1492,7 @@ def collect_topic_folders(rows: list[dict[str, Any]], topics: Iterable[str]) -> 
         out.append({
             "topic": slug, "price": price,
             "name": ai_folder_name(vault_topic_folders.folder_name(topic, price)),
-            "purpose": f"{topic.description} — {price}",
+            "purpose": topic.description if price is None else f"{topic.description} — {price}",
             "kinds": kinds, "tiers": tiers, "closes_on_own": closes,
             "items": _ordered_items(picked),
         })
@@ -1143,11 +1565,12 @@ async def solo_coverage(account_id: str) -> dict[str, Any]:
 
 
 async def plan_ai_folders(
-    account_id: str, *, keep: int = 2,
+    account_id: str, *, keep: int = DEFAULT_KEEP_SCRIPTS,
     window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
-    min_items: int = MIN_SCRIPT_ITEMS,
+    min_items: int | None = None,
     solo: bool = False,
     topics: Iterable[str] = (),
+    split: bool = True,
 ) -> dict[str, Any]:
     """Every folder the pipeline proposes, scripts and lanes together.
 
@@ -1160,14 +1583,17 @@ async def plan_ai_folders(
     `solo` adds a `-solo` cut of each lane (see `collect_purpose_folders`).
 
     `topics` (slugs, `vault_topic_folders.SLUGS`; validate with `parse_topics`) adds one folder per ticked
-    topic and price, cut from the photos' Jev v8 answers (`collect_topic_folders`). None ticked = no topic
-    folders, and any built earlier are retired like every other AI- folder the plan no longer makes.
+    topic and price, cut from the photos' and clips' Jev v8 answers (`collect_topic_folders`). None ticked = no
+    topic folders, and any built earlier are retired like every other AI- folder the plan no longer makes.
+    `split` False makes one folder per topic (`AI-<name>`) instead; the split-named ones are then retired the same
+    way.
     """
     topics = vault_topic_folders.parse_topics(topics)
     # Loaded and dupe-collapsed ONCE, for shoots, lanes and topics alike.
     rows, dupes_dropped = await _grouping_rows(account_id)
     shoots = await collect_outfit_scripts(
-        account_id, window_hours=window_hours, min_items=min_items, rows=rows)
+        account_id, window_hours=window_hours, min_items=min_items, rows=rows,
+        prints=await _fingerprints(account_id))
     settled_unlaned: list[int] = []
     lanes = await collect_purpose_folders(account_id, solo=solo, unlaned=settled_unlaned,
                                           rows=rows)
@@ -1187,16 +1613,18 @@ async def plan_ai_folders(
                 {"media_id": r["media_id"], "kind": r["kind"],
                  "manual_order": r["manual_order"], "score": r.get("score"),
                  "tier": r["why"]["tier"], "closes": r["why"]["closes"],
-                 "clothing_state": r["why"]["clothing_state"]}
+                 "clothing_state": r["why"]["clothing_state"],
+                 **({"borrowed": True} if r.get("borrowed") else {})}
                 for r in items
             ],
             **extra,
         }
 
     kept = shoots[:max(0, keep)]
+    borrow_closers(kept, rows)
     folders = [
         _folder(s, "script", f"one shoot — {s['outfit']}",
-                outfit=s["outfit"], mixed=s["mixed"])
+                outfit=s["outfit"], mixed=s["mixed"], room=s["room"], health=s["health"])
         for s in kept
     ] + [
         _folder(f, "lane", f["purpose"], lane=f["lane"],
@@ -1204,11 +1632,12 @@ async def plan_ai_folders(
         for f in lanes
     ] + [
         _folder(f, "topic", f["purpose"], topic=f["topic"], price=f["price"])
-        for f in collect_topic_folders(rows, topics)
+        for f in collect_topic_folders(rows, topics, split=split)
     ]
 
     # Names unique across the plan: apply and the OF mirror both join on name.
-    # One outfit shot weeks apart is two shoots with one name; the suffix goes
+    # Names carry the room and `<Mon D>`, so a clash is rare (one outfit, one
+    # room, the same date a year apart); the suffix goes
     # by when each STARTED, not by rank, so a re-rank never swaps two folders'
     # contents on a re-run. Lanes come after and only move on a clash.
     by_start = sorted(range(len(kept)), key=lambda i: (
@@ -1247,7 +1676,7 @@ async def plan_ai_folders(
     # Only when asked: it is a second full read of the vault, and it answers a
     # question nobody has posed unless the box is ticked.
     solo_cov = await solo_coverage(account_id) if solo else None
-    # Topic folders read Jev only: whether it is on for the account, how many photos carry it, and every
+    # Topic folders read Jev only: whether it is on for the account, how many photos + clips carry it, and every
     # topic's size (ticked or not — the checklist shows them all).
     jev = {"enabled": True,  # Jev v8 is the default for every photo (#511)
            **vault_topic_folders.coverage(rows)}
@@ -1257,6 +1686,7 @@ async def plan_ai_folders(
         "keep": keep,
         "solo": solo,
         "topics": topics,
+        "split": split,
         "shoots_found": len(shoots),
         "flags": coverage,
         "solo_coverage": solo_cov,

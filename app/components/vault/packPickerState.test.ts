@@ -14,6 +14,7 @@ import {
   isTicked,
   keyAction,
   pickerReducer,
+  possibleOnly,
   rungTally,
   shownRung,
   tickedVerdicts,
@@ -179,7 +180,8 @@ describe("canFile", () => {
 describe("preselect", () => {
   // P1/P2 Jev preselected (P2 a safe tease), Q a suggestion below the gate (not preselected), N no suggestion,
   // U preselected but its suggestion is the free rung and Jev says not free-safe (server never does this), S saved,
-  // V a preselected video (server never does this either).
+  // V a preselected video (server never does this either), M a possible one (below the gate, flagged preselect by
+  // mistake: still never ticked by itself).
   const P1 = item(11, { suggested: "nude", preselect: true, jev: true, free_ok: true });
   const P2 = item(12, { suggested: "tease", preselect: true, jev: true, free_ok: true });
   const Q = item(13, { suggested: "nude", preselect: false });
@@ -187,7 +189,8 @@ describe("preselect", () => {
   const U = item(15, { suggested: "tease", preselect: true, jev: true, free_ok: false });
   const S = item(16, { rung: "nude", suggested: "nude", preselect: true });
   const V = item(17, { kind: "video", suggested: "nude", preselect: true });
-  const LIST = [P1, P2, Q, N, U, S, V];
+  const M = item(18, { suggested: "nude", preselect: true, possible: true, jev: true, free_ok: true });
+  const LIST = [P1, P2, Q, N, U, S, V, M];
   const ticked = (s: PickerState) => LIST.filter((c) => isTicked(c, s, RUNGS)).map((c) => c.media_id);
 
   it.each<[string, PickerState, number[]]>([
@@ -200,6 +203,7 @@ describe("preselect", () => {
     ["a video is never ticked (photos only)", st({ ticks: { 17: true } }), [11, 12]],
     ["a pressed rung (draft) replaces the tick", st({ draft: { 11: "nude-body" } }), [12]],
     ["a draft reject replaces the tick", st({ draft: { 12: null } }), [11]],
+    ["a possible one only by the operator's tick", st({ ticks: { 18: true } }), [11, 12, 18]],
   ])("isTicked %s", (_n, s, want) => {
     expect(ticked(s)).toEqual(want);
   });
@@ -230,6 +234,22 @@ describe("preselect", () => {
 
   it("Save still sends only the draft, never a tick", () => {
     expect(buildPayload(initialPickerState)).toEqual([]);
+  });
+});
+
+describe("possibleOnly", () => {
+  const C = item(1, { preselect: true });
+  const M = item(2, { possible: true });
+  const FILED = item(3, { rung: "nude" });
+  it.each<[string, PackCandidate[], boolean]>([
+    ["empty", [], false],
+    ["a confident one left", [C, M], false],
+    ["possible ones only", [M, item(4, { possible: true })], true],
+    ["possible ones plus filed ones", [M, FILED], true],
+    ["filed only (nothing queued)", [FILED], false],
+    ["a filed possible one does not count", [C, item(5, { rung: "tease", possible: true })], false],
+  ])("%s", (_n, all, want) => {
+    expect(possibleOnly(all)).toBe(want);
   });
 });
 

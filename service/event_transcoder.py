@@ -283,6 +283,9 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         # for the multi-device case; the blast claim was never true, and it is
         # why a list blast has no per-fan row anywhere (plans/blast-splice §0.2).
         aid_out = str(account_id)
+        # Chat detail (server.of_get_chat): the echo names no recipient, so drop
+        # the account's details. Not debounced: a 30s TTL entry is cheap to refill.
+        relay_cache.invalidate("get_chat", aid_out)
         now_mono = time.monotonic()
         if now_mono - _last_out_bust.get(aid_out, 0.0) >= _OUT_BUST_DEBOUNCE_S:
             _last_out_bust[aid_out] = now_mono
@@ -307,6 +310,11 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # (of_writer.write returns once its batch has) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.
     relay_cache.patch("list_chats", aid_s, _inbox_patcher(fan_id, m))
+    # The fan's chat detail (server.of_get_chat: lastMessage moved) — that chat only.
+    try:
+        relay_cache.invalidate("get_chat", aid_s, match=lambda ex, c=int(fan_id): ex == (c,))
+    except (TypeError, ValueError):
+        pass
     # A tip rides on an inbound chat_message (isTip, $ in tipAmount), so this
     # is the tip lane as well as the DM lane. Deliberately NOT gated on
     # `is_tip`: a plain DM is not a notifications-feed row, but the browser

@@ -3,24 +3,27 @@
 is enabled with an info note ("N of M stills not checked yet — they're left out of the $10/$50 folders until
 checked"), and the created $10 / $50 folders hold flagged stills only. Set gathering (PR-A): a duplicate set is one
 item in every folder, a shoot described without a colour still groups (garment + setting), and the preview says what
-Confirm creates / keeps / retires before it runs, the button naming any OF-linked folder it would retire.
+Confirm creates / keeps / retires before it runs, the button naming any OF-linked folder it would retire. Scripts v2:
+a shoot uploaded in one second splits by room, each part capped to a sendable ladder, named `AI-<outfit> · <room> ·
+<Mon D>`, with a health line; a part with no closer borrows one.
 
 World: `agency_inbox`; Creator 0's vault by SQL (seed/vault_flags_partial.py, `vault_ai_items` 60 / 400 / 2,000):
 photos planted as flagged $10 / flagged $50 / unflagged "$10 by describe" / unflagged "$50 by describe" / soft
 (half flagged), plus flagged explicit videos. Then seed/vault_ai_sets.py: re-upload copies of some soft stills and
-videos (same fields, same stored content_hash as the original), one colourless shoot (bra + thong, bedroom: sfw still,
-suggestive still, explicit clip), and an earlier build's generated folders `AI-stories` (kept) and `AI-old lane`
-bound to an OF list (retired). Each item's 300px thumb is a small PNG in the run's still store
+videos (same fields, same stored content_hash as the original), one colourless shoot (bra + thong, bedroom: 3 sfw stills,
+4 suggestive, 3 explicit; 3 clips), one big black-lace shoot in one upload second (bedroom 26: sfw / suggestive /
+explicit closers; bathroom 10: no closer), and an earlier build's generated folders `AI-stories` (kept) and `AI-old
+lane` bound to an OF list (retired). Each item's 300px thumb is a small PNG in the run's still store
 (lib/vault_collect_relay.py's dirs; a copy draws its original's picture), so the modal draws pictures.
 
 Stages:
-  plan  (also --no-ui) GET /admin/vault-ai/folder-plan (keep 2) by the owner.
+  plan  (also --no-ui) GET /admin/vault-ai/folder-plan (keep 10, the UI default) by the owner.
   phone (UI) 390x844 touch Chromium: Vault Pro on the Creator (last pick, localStorage), Extras: the drawer opens and
         "Build AI folders" is offered (every Extras tool shows at every width); screenshot `ai-folders-phone-drawer`.
   desktop (UI) 1440x900: the same, the preview's "Confirm will create C · keep K · retire R" line and the Create
         button read, screenshot `ai-folders-trigger` (preview counts on screen); "Also create on OnlyFans" switched
         off; Create; settles on Rebuild with the re-planned counts, screenshot `ai-folders-settled`. --no-ui: the
-        same apply through POST /admin/vault-ai/folder-plan/apply {confirm, keep 2, solo false, mirror_to_of false}.
+        same apply through POST /admin/vault-ai/folder-plan/apply {confirm, keep 10, solo false, mirror_to_of false}.
 
 Checks (lib/vault_ai_folders_faults.py names):
   ai_folders_plan_partial_flags       the plan's flags == SQL (stills, flagged, missing, ready false); lane tease_10
@@ -30,15 +33,20 @@ Checks (lib/vault_ai_folders_faults.py names):
                                       "Create N folders" is enabled.
   ai_folders_phone_offered            phone: the Extras drawer is open (its cached count shows) and shows
                                       "Build AI folders".
-  ai_folders_created_from_ui          one apply POST from the click (mirror_to_of false, keep 2, solo false), 200,
+  ai_folders_created_from_ui          one apply POST from the click (mirror_to_of false, keep 10, solo false), 200,
                                       the modal settles on Rebuild.
   ai_folders_paid_flagged_only        DB: AI-tease 10 / AI-tease 50 (created_by vault_ai_script, live) members ==
                                       the flagged $10 / $50 stills; no unflagged still in either; each unflagged
                                       paid still in AI-explicit 1:1.
   ai_folders_no_duplicate_in_folder   plan AND DB: no seeded copy in any folder, every copied original still in one;
                                       the plan's dupes_collapsed == the copies.
-  ai_folders_colourless_set           plan AND DB: the one script is `AI-lingerie bedroom` == the colourless shoot,
+  ai_folders_colourless_set           plan AND DB: script `AI-lingerie · bedroom · <Mon D>` == the colourless shoot,
                                       in send order (sfw, suggestive, explicit).
+  scripts_capped_named                plan AND DB: the big shoot is two scripts, `AI-black lingerie · bedroom · <Mon D>`
+                                      (<= 10 items, all bedroom, health "capped from N") and `… · bathroom · <Mon D>`
+                                      (its own 10 + ONE item `borrowed` last, a bedroom closer the bedroom script left
+                                      out; health "borrowed closer"); every script has a `health` list; DB order ==
+                                      the plan's.
   ai_folders_preview_counts           plan: changes == {create: folders-1, keep 1, retire 1, retire_on_of 1},
                                       retired == [AI-old lane], AI-stories "keep"; DB after apply: AI-old lane
                                       soft-deleted, AI-stories the same live row.
@@ -53,7 +61,7 @@ No volume: --users and --scale only resize the vault.
 Break-it-once: ai-folders-dupe-collapse-off (default; server: every copy planned again: ai_folders_no_duplicate_in_folder),
 --fault=ai-folders-create-blocked-on-flags (client: Create disabled while any still is unflagged:
 create_enabled_partial_flags), --fault=ai-folders-guess-unflagged (server: unflagged paid stills guessed into $10:
-the plan and paid-only checks).
+the plan and paid-only checks), --fault=ai-folders-script-cap-off (server: scripts uncapped: scripts_capped_named).
 """
 from __future__ import annotations
 
@@ -64,7 +72,7 @@ from slop.actors import ui
 from slop.lib.hold import recorded
 from slop.lib.img_relay import picture_bytes
 from slop.lib.vault_ai_folders_faults import (COLOURLESS, CREATE_ENABLED, CREATED, PHONE_OFFERED, NO_DUPES,
-                                              PAID_ONLY, PLAN, PREVIEW, PREVIEW_SHOWN)
+                                              PAID_ONLY, PLAN, PREVIEW, PREVIEW_SHOWN, SCRIPTS_CAPPED)
 from slop.lib.vault_collect_relay import stills_dir
 from slop.lib.vault_ui import TOURS_SEEN
 from slop.seed import vault_ai_sets, vault_flags_partial
@@ -140,6 +148,9 @@ async def run(ctx):
         (thumbs / f"{copy}.jpg").write_bytes(picture_bytes(f"{cls_of[orig]}/{orig}"))
     for mid in truth["colourless"]:
         (thumbs / f"{mid}.jpg").write_bytes(picture_bytes(f"colourless/{mid}"))
+    for room in ("bedroom", "bathroom"):
+        for mid in truth["big_shoot"][room]:
+            (thumbs / f"{mid}.jpg").write_bytes(picture_bytes(f"big-{room}/{mid}"))
     ten, fifty = set(truth["ten"]), set(truth["fifty"])
     raw = set(truth["ten_raw"]) | set(truth["fifty_raw"])
     ctx.note(f"Creator {aid}: {truth['stills']} stills ({truth['flagged']} flagged), {len(truth['videos'])} videos; "
@@ -147,7 +158,7 @@ async def run(ctx):
              f"colourless shoot {truth['colourless']}")
 
     # ── plan ──
-    r = await ctx.owner.get(f"/admin/vault-ai/folder-plan?account_id={aid}&keep=2")
+    r = await ctx.owner.get(f"/admin/vault-ai/folder-plan?account_id={aid}&keep=10")
     plan = r.json() if r.status_code == 200 else {}
     folders = plan.get("folders") or []
     lanes = {f.get("lane"): {it["media_id"] for it in f.get("items") or []} for f in folders}
@@ -168,6 +179,7 @@ async def run(ctx):
     plan_members = {f["name"]: [it["media_id"] for it in f.get("items") or []] for f in folders}
     plan_scripts = {f["name"]: [it["media_id"] for it in f.get("items") or []]
                     for f in folders if f.get("source") == "script"}
+    script_specs = {f["name"]: f for f in folders if f.get("source") == "script"}
     changes = plan.get("changes") or {}
     want_changes = {"create": len(folders) - 1, "keep": 1, "retire": 1, "retire_on_of": 1}
     stories_change = next((f.get("change") for f in folders if f["name"] == "AI-stories"), None)
@@ -214,7 +226,7 @@ async def run(ctx):
         body = (applied[0]["body"] or {}) if applied else {}
         ctx.check(CREATED, "error" not in desk and len(applied) == 1 and applied[0]["status"] == 200
                   and body.get("confirm") is True and body.get("mirror_to_of") is False
-                  and int(body.get("keep") or 0) == 2 and not body.get("solo") and "settled_shot" in desk,
+                  and int(body.get("keep") or 0) == 10 and not body.get("solo") and "settled_shot" in desk,
                   posts=applied, ui={k: v for k, v in desk.items() if not k.endswith("_shot")},
                   shots=[desk.get("trigger_shot"), desk.get("settled_shot")])
         want_line = (want_changes["create"], want_changes["keep"], want_changes["retire"])
@@ -225,7 +237,7 @@ async def run(ctx):
                   settled_line=desk.get("settled_line"), folders=len(folders),
                   shots=[desk.get("trigger_shot"), desk.get("settled_shot")])
     else:
-        r = await ctx.owner.post(APPLY, json={"account_id": aid, "confirm": True, "keep": 2, "solo": False,
+        r = await ctx.owner.post(APPLY, json={"account_id": aid, "confirm": True, "keep": 10, "solo": False,
                                               "mirror_to_of": False})
         applied = [{"status": r.status_code, "body": None}]
         for name in (CREATE_ENABLED, PHONE_OFFERED, CREATED, PREVIEW_SHOWN):
@@ -267,10 +279,27 @@ async def run(ctx):
               originals_missing=sorted(originals - db_placed)[:5],
               dupes_collapsed=len(plan.get("dupes_collapsed") or []))
 
-    shoot = truth["colourless"]
-    ctx.check(COLOURLESS, plan_scripts == {vault_ai_sets.COLOURLESS_NAME: shoot}
-              and ordered.get(vault_ai_sets.COLOURLESS_NAME) == shoot,
-              plan_scripts=plan_scripts, db=ordered.get(vault_ai_sets.COLOURLESS_NAME), want=shoot)
+    shoot, cl_name = truth["colourless"], truth["colourless_name"]
+    ctx.check(COLOURLESS, plan_scripts.get(cl_name) == shoot and ordered.get(cl_name) == shoot,
+              script=cl_name, plan_scripts=sorted(plan_scripts), plan=plan_scripts.get(cl_name),
+              db=ordered.get(cl_name), want=shoot)
+
+    big = truth["big_shoot"]
+    bed_ids, bath_ids = set(big["bedroom"]), set(big["bathroom"])
+    bed, bath = script_specs.get(big["names"]["bedroom"]) or {}, script_specs.get(big["names"]["bathroom"]) or {}
+    bed_items, bath_items = bed.get("items") or [], bath.get("items") or []
+    bed_got, bath_got = [it["media_id"] for it in bed_items], [it["media_id"] for it in bath_items]
+    lent = [it for it in bath_items if it.get("borrowed")]
+    ctx.check(SCRIPTS_CAPPED, bool(applied) and 3 <= len(bed_got) <= 10 and set(bed_got) <= bed_ids
+              and any(h.startswith("capped from ") for h in bed.get("health") or [])
+              and len(lent) == 1 and bath_items[-1:] == lent and lent[0]["media_id"] in bed_ids - set(bed_got)
+              and lent[0].get("closes") is True and set(bath_got[:-1]) <= bath_ids
+              and "borrowed closer" in (bath.get("health") or [])
+              and all(isinstance(f.get("health"), list) for f in script_specs.values())
+              and ordered.get(big["names"]["bedroom"]) == bed_got and ordered.get(big["names"]["bathroom"]) == bath_got,
+              names=big["names"], scripts=sorted(script_specs), bedroom=bed_got, bedroom_health=bed.get("health"),
+              bathroom=bath_got, bathroom_health=bath.get("health"), borrowed=[it["media_id"] for it in lent],
+              db_bedroom=ordered.get(big["names"]["bedroom"]), db_bathroom=ordered.get(big["names"]["bathroom"]))
 
     got_changes = {k: changes.get(k) for k in want_changes}
     retired_names = [x.get("name") for x in changes.get("retired") or []]

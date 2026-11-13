@@ -11,16 +11,28 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import type { OFMessage } from "@/lib/relay";
 import {
-  afterRender, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, mayLoadOlder, onScrollDecision, PIN_POLL_MS,
-  touchReleases, type Point, type Scroll,
+  afterRender, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, mayLoadOlder, onScrollDecision,
+  PIN_POLL_MS, SENTINEL_MARGIN_PX, touchReleases, type Point, type Scroll,
 } from "./threadPin";
 
-export function useThreadPin({ messages, hasOlder, loadingOlder, onLoadOlder }: {
+export function useThreadPin({
+  messages, hasOlder, loadingOlder, olderFailed = false, headSettled = false, onLoadOlder,
+}: {
   messages: OFMessage[];
   hasOlder: boolean;
   loadingOlder: boolean;
+  /** The last older page failed: the sentinel stops auto-loading. */
+  olderFailed?: boolean;
+  /** The load-older cursor is fetch-derived (useChatMessages): the sentinel
+   *  may load while the first load still pins (mayLoadOlder). */
+  headSettled?: boolean;
   onLoadOlder: () => void;
 }) {
+  // The latest onLoadOlder, so the sentinel's observer neither depends on its
+  // identity (an inline arrow is a new one every parent render) nor calls a
+  // stale one.
+  const onLoadOlderRef = useRef(onLoadOlder);
+  useLayoutEffect(() => { onLoadOlderRef.current = onLoadOlder; });
   const containerRef = useRef<HTMLDivElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const lastLenRef = useRef(0);
@@ -88,12 +100,16 @@ export function useThreadPin({ messages, hasOlder, loadingOlder, onLoadOlder }: 
       const pinBottom = () => { c.scrollTop = c.scrollHeight; };
       pinBottom();
       requestAnimationFrame(pinBottom);
-      // Hard backstop: release the auto-pin after 5s regardless of user
-      // interaction, so a chat with media that never settles can't keep
-      // yanking the view forever. 5s (was 2s) covers the common case of
-      // 4-5 image thumbs loading sequentially on a cold tab — fix #11.
-      const t = setTimeout(releasePin, AUTO_PIN_BACKSTOP_MS);
-      return () => clearTimeout(t);
+      return;
+    }
+    // Still pinning (a fill page landed): to the bottom now, not at the next
+    // poll tick. The sentinel's observer is re-created later in this same
+    // commit; left at the old scrollTop for that tick, it saw the sentinel
+    // the new page had just pushed out and loaded one page too many.
+    if (firstLoadPendingRef.current) {
+      programmaticScrollRef.current = true;
+      c.scrollTop = c.scrollHeight;
+      return;
     }
     // Older page came in at the top: `anchor` keeps the previously-visible
     // message in view by the height delta.
@@ -117,6 +133,21 @@ export function useThreadPin({ messages, hasOlder, loadingOlder, onLoadOlder }: 
   //      Triggers an extra RAF pin so the visual snap happens the same
   //      frame the image paints, not at the next 16ms tick.
   const hasMessages = messages.length > 0;
+
+  // Hard backstop: release the auto-pin 5s after the first non-empty paint
+  // regardless of user interaction, so a chat with media that never settles
+  // can't keep yanking the view forever (5s, was 2s: 4-5 image thumbs loading
+  // sequentially on a cold tab — fix #11). Its own lifetime, armed once per
+  // chat: it used to live in the [messages] effect, whose cleanup cleared it
+  // on the next message change (the seed, then OF's head page) and nothing
+  // re-armed it, so the pin — and with it the sentinel's auto-load — held
+  // until a gesture.
+  useEffect(() => {
+    if (!hasMessages || !firstLoadPendingRef.current) return;
+    const t = setTimeout(releasePin, AUTO_PIN_BACKSTOP_MS);
+    return () => clearTimeout(t);
+  }, [hasMessages, releasePin]);
+
   useEffect(() => {
     if (!hasMessages) return;
     const c = containerRef.current;
@@ -209,22 +240,34 @@ export function useThreadPin({ messages, hasOlder, loadingOlder, onLoadOlder }: 
 
   // Auto-load older when the top sentinel scrolls into view. Same pattern
   // as ChatList's infinite scroll, just inverted (top instead of bottom).
-  // mayLoadOlder ignores intersections while `firstLoadPendingRef` is true.
+  // While `firstLoadPendingRef` holds, mayLoadOlder waits for OF's head
+  // (`headSettled`) and caps the loads (`fillsRef`), so a chat too short to
+  // push the sentinel out fills itself at once instead of after the backstop.
+  // An observer reports its target's state once on observe(), so re-creating
+  // it re-evaluates a sentinel that is still in view: `autoPinActive` is a dep
+  // so the pin's release does that (a short chat with no scrollbar never
+  // scrolls the sentinel in again), as do the head settling (`headSettled`),
+  // a page settling (`loadingOlder`) and the sentinel mounting with the first
+  // rows (`hasMessages`).
+  const fillsRef = useRef(0);
   useEffect(() => {
     const el = topSentinelRef.current;
-    if (!el || !hasOlder) return;
+    if (!el || !hasOlder || olderFailed) return;
     const io = new IntersectionObserver(
       (entries) => {
-        if (mayLoadOlder({
-          pending: firstLoadPendingRef.current, intersecting: entries.some((e) => e.isIntersecting),
-          hasOlder, loadingOlder,
-        })) onLoadOlder();
+        const pending = firstLoadPendingRef.current;
+        if (!mayLoadOlder({
+          pending, headSettled, fills: fillsRef.current, intersecting: entries.some((e) => e.isIntersecting),
+          hasOlder, loadingOlder, failed: olderFailed,
+        })) return;
+        if (pending) fillsRef.current += 1;
+        onLoadOlderRef.current();
       },
-      { root: containerRef.current, rootMargin: "200px 0px 0px 0px" },
+      { root: containerRef.current, rootMargin: `${SENTINEL_MARGIN_PX}px 0px 0px 0px` },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [hasOlder, loadingOlder, onLoadOlder]);
+  }, [hasOlder, loadingOlder, olderFailed, autoPinActive, hasMessages, headSettled]);
 
   /** The "↓ Latest" button's click: a smooth scroll to the bottom. */
   const jumpToLatest = () => {

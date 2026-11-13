@@ -10,6 +10,10 @@ export const AT_BOTTOM_PX = 80;
 export const AUTO_PIN_BACKSTOP_MS = 5000;
 /** The first load's re-pin poll period (60Hz). */
 export const PIN_POLL_MS = 16;
+/** The top sentinel's observer fires this far above the viewport (its rootMargin). */
+export const SENTINEL_MARGIN_PX = 200;
+/** At most this many older pages load while the first load still pins (OF serves ~2 rows a page). */
+export const MAX_FILL_PAGES = 4;
 
 /** A scroll container's geometry, as read off the element. */
 export interface Scroll { scrollHeight: number; scrollTop: number; clientHeight: number }
@@ -75,14 +79,26 @@ export function onScrollDecision({ programmatic, pending, distance }: {
   return { release: pending && distance > AT_BOTTOM_PX, showJump };
 }
 
-/** The top sentinel's IntersectionObserver loads an older page: never while
- *  the first load is still pinning (the sentinel is trivially visible on the
- *  first paint), nor while a page is already loading. */
-export function mayLoadOlder({ pending, intersecting, hasOlder, loadingOlder }: {
+/** The top sentinel's IntersectionObserver loads an older page. Not while
+ *  a page is already loading, nor after the last page failed (`failed`: only
+ *  the Retry button loads then, no hot loop). While the first load is still
+ *  pinning (`pending`) only once OF's head page has settled (`headSettled`:
+ *  before that the sentinel is trivially visible on a seed's first paint and
+ *  the cursor isn't OF's), and at most MAX_FILL_PAGES times (`fills`): a
+ *  3-row chat that leaves the sentinel in view fills itself at once instead
+ *  of sitting out the 5s backstop, and rows that render no height can't walk
+ *  the whole history. */
+export function mayLoadOlder({
+  pending, headSettled = false, fills = 0, intersecting, hasOlder, loadingOlder, failed = false,
+}: {
   pending: boolean;
+  headSettled?: boolean;
+  fills?: number;
   intersecting: boolean;
   hasOlder: boolean;
   loadingOlder: boolean;
+  failed?: boolean;
 }): boolean {
-  return !pending && intersecting && hasOlder && !loadingOlder;
+  if (!intersecting || !hasOlder || loadingOlder || failed) return false;
+  return !pending || (headSettled && fills < MAX_FILL_PAGES);
 }

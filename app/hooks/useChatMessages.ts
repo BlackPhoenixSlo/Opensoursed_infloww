@@ -34,6 +34,11 @@ import { eventBus } from "@/lib/events";
 import { appendMsg, dropMsg, failMsg, reconcileMsg, toUtcIso } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
+import {
+  canLoadOlder, hasOlder as pagerHasOlder, initialOlderPager, isLoadingOlder as pagerLoading, OLDER_TIMEOUT_MS,
+  olderFailed as pagerFailed, olderPagerReducer, type OlderPager, type OlderPagerAction,
+} from "./olderPager";
+
 // 30 matches OF's own chat-list page size — enough that most chats need
 // at most one or two scroll-up fetches before reaching the start.
 const PAGE_SIZE = 30;
@@ -110,6 +115,10 @@ function oldestFetchedId(page: OFMessage[]): number | null {
  *  has nothing to test. The cost is re-reading cached pages; the other way
  *  round the cost is a permanently unreachable hole. */
 const headOldest = new Map<string, number>();
+/** The same head page's `hasMore`, by the same key: a mount riding a prefetch
+ *  that said "nothing older" starts its pager exhausted instead of spending
+ *  one OF read to learn it again. */
+const headMore = new Map<string, boolean>();
 
 /** A thread's newest page, oldest-first: OF returns newest-first, and the UI
  *  scrolls oldest→newest top-to-bottom (the way humans read a thread). */
@@ -126,6 +135,7 @@ async function fetchHeadPage(
   const list = (resp.list || []).slice().reverse();
   const oldest = oldestFetchedId(list);
   if (oldest != null) headOldest.set(`${accountId}:${fanId}`, oldest);
+  headMore.set(`${accountId}:${fanId}`, !!resp.hasMore);
   return { list, hasMore: !!resp.hasMore };
 }
 
@@ -189,31 +199,54 @@ export function useChatMessages({
     oldestCursorRef.current =
       oldestCursorRef.current == null ? n : Math.min(oldestCursorRef.current, n);
   }, []);
-  // Reflects OF's `hasMore` flag from the most recent page. Default to
-  // true so the auto-loader fires at least once; the first fetch will
-  // settle it to the real value.
-  const [hasMore, setHasMore] = useState(true);
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
-  // Re-entrancy guard for the scroll-to-top trigger.
-  const inflightRef = useRef(false);
+  // The chat (`accountId:fanId`) whose head page THIS mount has read, so its
+  // cursor is fetch-derived: `headSettled`. State, not a ref, so the read
+  // re-renders. A fresh cached thread a mount never fetches stays unsettled.
+  const [ownHead, setOwnHead] = useState<string | null>(null);
+  const queryKey = ["messages", accountId, fanId] as const;
+
+  // The load-older pager (olderPager.ts): idle / loading / error / exhausted.
+  // Mirrored in a ref so loadOlder's re-entrancy check reads the state the
+  // last dispatch left, not the last render's (two scroll triggers in one
+  // tick must not both start a page).
+  const startPager = (): OlderPager => {
+    const key = `${accountId}:${fanId}`;
+    const head = ridesPrefetch ? headOldest.get(key) : undefined;
+    const cached = qc.getQueryData<OFMessage[]>(queryKey) || [];
+    return initialOlderPager(
+      headMore.get(key) === false && head != null && cached.some((m) => Number(m.id) === head),
+    );
+  };
+  const [pager, setPager] = useState<OlderPager>(startPager);
+  const pagerRef = useRef(pager);
+  const dispatchPager = useCallback((action: OlderPagerAction) => {
+    const next = olderPagerReducer(pagerRef.current, action);
+    if (next === pagerRef.current) return;
+    pagerRef.current = next;
+    setPager(next);
+  }, []);
+  const olderSeqRef = useRef(0);
+  const olderAbortRef = useRef<AbortController | null>(null);
 
   // One hook instance can show chat after chat (the OF mirror's frame keeps it
-  // mounted while ?chat= changes): the cursor, OF's hasMore and the in-flight
-  // guard belong to ONE chat, so a new chat starts them fresh. Reset during
-  // render (not in an effect), so the first render of the new chat already
-  // reads hasMore=true and no stale cursor can reach its first loadOlder.
-  // chatRef lets a page that resolves after the switch tell it is stale.
+  // mounted while ?chat= changes): the cursor and the pager belong to ONE
+  // chat, so a new chat starts them fresh. Reset during render (not in an
+  // effect), so the first render of the new chat already reads its own pager
+  // and no stale cursor can reach its first loadOlder. chatRef lets a page
+  // that resolves after the switch tell it is stale.
   const chatKey = `${accountId ?? ""}:${fanId ?? ""}`;
   const chatRef = useRef(chatKey);
   if (chatRef.current !== chatKey) {
     chatRef.current = chatKey;
     oldestCursorRef.current = null;
-    inflightRef.current = false;
-    if (!hasMore) setHasMore(true);
-    if (isLoadingOlder) setIsLoadingOlder(false);
+    if (ownHead !== null) setOwnHead(null);
+    const fresh = startPager();
+    pagerRef.current = fresh;
+    if (pager !== fresh) setPager(fresh);
   }
-
-  const queryKey = ["messages", accountId, fanId] as const;
+  // The chat's older page in flight is cancelled when the chat changes or the
+  // hook unmounts: it frees the relay slot, and its answer is stale anyway.
+  useEffect(() => () => { olderAbortRef.current?.abort(); }, [chatKey]);
 
   const query = useQuery<OFMessage[]>({
     queryKey,
@@ -244,7 +277,10 @@ export function useChatMessages({
         const { list, hasMore: more } = await fetchHeadPage(accountId, fanId, { signal });
         if (chatRef.current === `${accountId}:${fanId}`) {
           lowerCursor(list);
-          setHasMore(more);
+          if (oldestCursorRef.current != null) setOwnHead(chatRef.current);
+          // A head poll can only say "nothing older"; it never reopens a
+          // pager the tail already exhausted (olderPager.ts).
+          dispatchPager({ type: "head", hasMore: more });
         }
         perfDelivered(opId, "chat.messages", {
           count: list.length, hasMore: more, phase: "initial",
@@ -337,17 +373,25 @@ export function useChatMessages({
     return oldest == null ? null : Number(oldest);
   }, [qc, queryKey, accountId, fanId, ridesPrefetch]);
 
-  /** Load one older page using cursor pagination. Idempotent — overlapping
-   *  calls are dropped via inflightRef so the scroll observer can fire
-   *  freely without producing duplicate requests. */
+  /** Load one older page using cursor pagination. Idempotent — a call while
+   *  a page is in flight, or once the chat is exhausted, is dropped, so the
+   *  scroll observer can fire freely without producing duplicate requests.
+   *  Bounded: aborted past OLDER_TIMEOUT_MS (the pager then shows Retry), on
+   *  a chat switch and on unmount. A failure or timeout rejects; a page that
+   *  makes no progress resolves with `hasMore: false` so paging loops stop. */
   const loadOlder = useCallback(async (): Promise<{ added: number; hasMore: boolean }> => {
     if (!accountId || fanId == null) return { added: 0, hasMore: false };
-    if (inflightRef.current) return { added: 0, hasMore };
+    if (!canLoadOlder(pagerRef.current)) return { added: 0, hasMore: pagerHasOlder(pagerRef.current) };
     const oldest = olderCursor();
     if (oldest == null) return { added: 0, hasMore: false };
 
-    inflightRef.current = true;
-    setIsLoadingOlder(true);
+    const seq = ++olderSeqRef.current;
+    dispatchPager({ type: "start", seq });
+    const ctrl = new AbortController();
+    olderAbortRef.current = ctrl;
+    const timer = setTimeout(
+      () => ctrl.abort(new DOMException("older page timed out", "TimeoutError")), OLDER_TIMEOUT_MS,
+    );
     const startedFor = chatRef.current;
     const opId = perfOpId("chat.messages");
     perfLog(opId, "chat.messages", "requested", {
@@ -357,31 +401,40 @@ export function useChatMessages({
       const resp = await relay.get<OFMessagesResp>(
         `/api/of/v2/chats/${fanId}/messages?limit=${PAGE_SIZE}&order=desc&before_id=${oldest}`,
         { accountId },
+        ctrl.signal,
       );
       const older = (resp.list || []).slice().reverse();
       // The chat changed while this page was on its way: it is the old chat's, keep it off the new one's cursor.
-      if (chatRef.current !== startedFor) return { added: 0, hasMore };
+      if (chatRef.current !== startedFor) return { added: 0, hasMore: false };
+      const more = !!resp.hasMore;
+      // Progress = the page reached below the cursor it was asked with. An
+      // empty or repeated page that still says hasMore would otherwise
+      // re-fire the auto-loader on the same cursor forever.
+      const low = oldestFetchedId(older);
+      const progressed = low != null && low < oldest;
       lowerCursor(older);
-      setHasMore(!!resp.hasMore);
+      dispatchPager({ type: "page", seq, hasMore: more, progressed });
       perfDelivered(opId, "chat.messages", {
-        count: older.length, hasMore: !!resp.hasMore, phase: "older",
+        count: older.length, hasMore: more, progressed, phase: "older",
       });
-      if (older.length === 0) return { added: 0, hasMore: !!resp.hasMore };
+      if (older.length === 0) return { added: 0, hasMore: more && progressed };
 
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) =>
         mergeOlderPage(prev, older),
       );
-      return { added: older.length, hasMore: !!resp.hasMore };
+      return { added: older.length, hasMore: more && progressed };
     } catch (err) {
-      perfError(opId, "chat.messages", { message: (err as Error)?.message, phase: "older" });
+      const timedOut = (ctrl.signal.reason as Error | undefined)?.name === "TimeoutError";
+      dispatchPager({ type: "fail", seq });
+      perfError(opId, "chat.messages", { message: (err as Error)?.message, phase: "older", timedOut });
+      // Cancelled by a chat switch or unmount: nothing failed, nothing to page.
+      if (ctrl.signal.aborted && !timedOut) return { added: 0, hasMore: false };
       throw err;
     } finally {
-      if (chatRef.current === startedFor) {
-        inflightRef.current = false;
-        setIsLoadingOlder(false);
-      }
+      clearTimeout(timer);
+      if (olderAbortRef.current === ctrl) olderAbortRef.current = null;
     }
-  }, [accountId, fanId, qc, queryKey, hasMore, lowerCursor, olderCursor]);
+  }, [accountId, fanId, qc, queryKey, lowerCursor, olderCursor, dispatchPager]);
 
   /** Force-refresh the top page. Mutates in place — Query handles the
    *  setQueryData internally via refetch. */
@@ -424,12 +477,22 @@ export function useChatMessages({
     [qc, queryKey],
   );
 
+  const prefetchHead = ridesPrefetch ? headOldest.get(`${accountId}:${fanId}`) : undefined;
   return {
     ...query,
     loadOlder,
     olderCursor,
-    hasOlder: hasMore,
-    isLoadingOlder,
+    hasOlder: pagerHasOlder(pager),
+    isLoadingOlder: pagerLoading(pager),
+    /** The last older page failed, timed out or made no progress: auto-load
+     *  is paused and the button reads Retry (an explicit loadOlder retries). */
+    olderFailed: pagerFailed(pager),
+    /** olderCursor's cursor is fetch-derived, never the cache minimum (which
+     *  can sit below a gap, see the header): this mount read the head page,
+     *  or it rides a prefetch whose head page is in the cache. Only then may
+     *  the sentinel load while the first load still pins (mayLoadOlder). */
+    headSettled: ownHead === chatKey
+      || (prefetchHead != null && (query.data ?? []).some((m) => Number(m.id) === prefetchHead)),
     refresh,
     appendLocal,
     reconcileLocal,

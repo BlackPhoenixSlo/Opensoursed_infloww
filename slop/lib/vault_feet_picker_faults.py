@@ -11,6 +11,7 @@ PHONE = "feet_phone_layout_tap_save"
 JEV_RANK = "feet_jev_selects_and_ranks"
 JEV_FREE_GUARD = "feet_jev_free_guard"
 PRESELECT = "feet_preselect_confirm"
+POSSIBLE_FLOOR = "feet_possible_floor"
 
 
 def _need(vp, *names: str) -> None:
@@ -68,6 +69,15 @@ def _preselect_threshold_low() -> None:
     vp.FEET_PRESELECT_SCORE = 0.3
 
 
+def _possible_floor_off() -> None:
+    """No `possible` floor (pre-2026-11-13): every Jev photo that sees feet below the gate is queued as possible,
+    the .29 and .05 bystanders too (`FEET_POSSIBLE_MIN` 0; read at call time)."""
+    import vault_pack_picker as vp
+
+    _need(vp, "FEET_POSSIBLE_MIN", "possible")
+    vp.FEET_POSSIBLE_MIN = 0.0
+
+
 def register(Fault) -> dict:
     return {
         # slop/run 2026-11-11-vault-feet-picker --break (the scenario's FAULT). Server. Below-gate Jev rows in the
@@ -84,6 +94,9 @@ def register(Fault) -> dict:
         # candidates (ranked, jev rank), preselected (preselect check: API flags, ticked tiles, the File POST) and
         # prefilled (prefill).
         "feet-preselect-threshold-low": Fault(_preselect_threshold_low, (PRESELECT, PREFILL, RANKED, JEV_RANK)),
+        # --fault=feet-possible-floor-off: no .3 floor (server): the seeded below-floor rows (.29, .05) come back
+        # as possible (floor; ranked: possible set; prefill: stray suggestion).
+        "feet-possible-floor-off": Fault(_possible_floor_off, (POSSIBLE_FLOOR, RANKED, PREFILL)),
         # --fault=feet-keys-enter-ignores-suggestion: app/components/vault/packPickerState.ts, Enter only moves on
         # (never takes the suggestion). Client; `next dev` serves the module unminified.
         "feet-keys-enter-ignores-suggestion": Fault(None, (KEYS,), browser=(

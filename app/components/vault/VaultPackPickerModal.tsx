@@ -3,7 +3,8 @@
 /**
  * VaultPackPickerModal — one button, every candidate, one Save.
  *
- * The operator opens it, sees the photos Jev is confident are feet photos,
+ * The operator opens it, sees the photos Jev is confident are feet photos
+ * (then the possible ones, unticked),
  * files each one on a rung (or rejects it), and presses Save. That writes the
  * rung folders and their membership. Publishing them to her real OnlyFans
  * vault is a separate, explicit button per rung.
@@ -13,9 +14,12 @@
  * 68 items the operator hand-picked; `body_focus` says "feet" whenever feet are
  * merely VISIBLE). Jev v8 can, but not perfectly, so the operator confirms.
  *
- * PRECISION ONLY (vault_pack_picker.confident / jev_pick). The grid holds only
+ * CONFIDENT FIRST (vault_pack_picker.confident / jev_pick). The grid holds
  * Jev-classified photos with feet score >= .6 (measured precision 1.0), most
- * likely first: no lower-scored suggestions, no word-search candidates (a photo
+ * likely first, then the POSSIBLE ones (Jev sees feet, scores them .3-.6:
+ * `possible`, labelled "possible", never ticked, `rung?` from the same tier +
+ * covering rule; check them first). With no unfiled confident photo left the
+ * "undecided" view says so (`pack-fallback-notice`, packPickerState.possibleOnly). No word-search candidates (a photo
  * Jev has not classified yet waits for it), no videos (photos only: a clip
  * filed before the rule shows on its rung and can only be unfiled; the server
  * refuses one on any rung, `feet_photos_only`; a rung's publish skips one,
@@ -30,7 +34,8 @@
  * and publishing tease skips it (`skipped_unsafe`).
  *
  * PRESELECTED. A tile whose rung is known and safe (`preselect`) arrives TICKED
- * on it; an unsure body arrives unticked with no suggestion. "File N
+ * on it; an unsure body arrives unticked with no suggestion, a possible one
+ * unticked on its suggestion (tick it to file it). "File N
  * preselected" files every ticked tile on its rung (plus any unsaved verdict)
  * in one triage, so the operator only unticks what is wrong.
  *
@@ -68,6 +73,7 @@ import {
   isTicked,
   keyAction,
   pickerReducer,
+  possibleOnly,
   rungTally,
   shownRung,
   tickable,
@@ -238,6 +244,19 @@ function Tile({
               Jev
             </span>
           )}
+          {item.possible && (
+            <span
+              data-pack-possible={item.media_id}
+              className="rounded bg-warn/80 px-1"
+              title={
+                ticked
+                  ? "Possible: Jev is less sure feet are the subject. Ticked by you."
+                  : "Possible: Jev sees feet but is less sure they are the subject. Not ticked; check it first."
+              }
+            >
+              possible
+            </span>
+          )}
           {item.unsafe_on_free && (
             <span
               className="flex items-center gap-0.5 rounded bg-err/80 px-1"
@@ -263,12 +282,18 @@ function Tile({
         {ticked !== null && rung && (
           <label
             className="absolute bottom-1 left-1 flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded bg-black/70 sm:min-h-0 sm:min-w-0 sm:px-1 sm:py-0.5"
-            title={ticked ? `Preselected: "File preselected" puts it on ${rung}` : `Tick to file it on ${rung}`}
+            title={
+              !ticked
+                ? `Tick to file it on ${rung}`
+                : item.possible
+                  ? `Ticked by you: "File preselected" puts it on ${rung}`
+                  : `Preselected: "File preselected" puts it on ${rung}`
+            }
           >
             <input
               type="checkbox"
               data-pack-tick={item.media_id}
-              aria-label={`preselect on ${rung}`}
+              aria-label={item.possible ? `possible: tick to file on ${rung}` : `preselect on ${rung}`}
               className="accent-accent h-4 w-4"
               checked={ticked}
               onChange={(e) => onTick(item.media_id, e.target.checked)}
@@ -368,6 +393,8 @@ export default function VaultPackPickerModal({
   /** Ticked tiles (packPickerState.isTicked): what "File N preselected" files on their suggested rungs. */
   const tickedN = useMemo(() => tickedVerdicts(candidates, pick, rungs).length, [candidates, pick, rungs]);
   const anyPreselect = useMemo(() => candidates.some((c) => c.preselect), [candidates]);
+  const anyPossible = useMemo(() => candidates.some((c) => c.possible), [candidates]);
+  const onlyPossible = useMemo(() => possibleOnly(candidates), [candidates]);
   /** Rungs that exist and have something in them — the only ones publishable. */
   const stocked = shelf.filter((f) => f.folder_id && f.count);
   const allPublished = stocked.length > 0 && stocked.every((f) => f.of_list_id);
@@ -551,7 +578,7 @@ export default function VaultPackPickerModal({
           <IfButton onClick={onClose} disabled={!!dirty} title={dirty ? "Save or discard first" : undefined}>
             Done
           </IfButton>
-          {anyPreselect && (
+          {(anyPreselect || anyPossible) && (
             <IfButton
               variant="primary"
               onClick={fileTicked}
@@ -587,8 +614,15 @@ export default function VaultPackPickerModal({
       <p className="mt-2 hidden text-[12px] text-muted sm:block">
         Keys: {rungs.map((r, i) => `${i + 1} ${r === "nude-body" ? "body" : r}`).join(" · ")} · x reject · Enter
         confirm the suggestion · ←→ / j k move
-        {anyPreselect && " · ticked tiles (Jev sure it is feet) go on their rung with File preselected"}
+        {anyPreselect && " · preselected tiles (Jev sure it is feet) arrive ticked and go on their rung with File preselected"}
+        {anyPossible && " · \"possible\" tiles (Jev less sure) come last, never preselected: check each, tick or file it"}
       </p>
+      {onlyPossible && filter === "undecided" && (
+        <p data-testid="pack-fallback-notice" className="mt-2 text-[12px] text-warn">
+          No unfiled confident feet photos — showing Jev&apos;s likelier guesses (score ≥ .3), unticked: check each.
+          Rejects are not remembered.
+        </p>
+      )}
 
       {/* The shelf, always — publishing must not be reachable only in the
           moment after a save. */}
@@ -626,7 +660,7 @@ export default function VaultPackPickerModal({
         {data && shown.length === 0 && (
           <p className="p-6 text-center text-muted">
             {data.candidates.length === 0
-              ? `No confident ${category} photos yet: Jev checks new photos automatically.`
+              ? `No ${category} photos from Jev yet: it checks new photos automatically.`
               : filter === "undecided"
                 ? "Nothing left undecided. Switch to a rung to review what you filed."
                 : "Nothing here."}
