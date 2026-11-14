@@ -562,6 +562,21 @@ describe("replyLine: how many Writers fell before the one that answered", () => 
   });
 });
 
+describe("replyLine: the sext scene tail", () => {
+  const head = "Route chat · Heat 1 · Row otherwise · Writer euryale-v2.3 · 0 fell before";
+  it.each<[string, Partial<TurnResponse>, string]>([
+    ["no scene, no price", {}, ""],
+    ["scene only", { scene: { n: 3, stage: "building", heat: 3 } }, " · scene building · 3"],
+    ["Jev moved the price", { scene: { n: 4, stage: "peak", heat: 4 }, price: { list_cents: 5000, jev_cents: 3500, error: null } },
+      " · scene peak · 4 · price Jev $35 (list $50)"],
+    ["Jev kept the list price", { price: { list_cents: 5000, jev_cents: 5000, error: null } }, ""],
+    ["Jev failed", { price: { list_cents: 1000, jev_cents: null, error: "GateError: deadline" } }, " · price Jev failed (list $10)"],
+    ["cents", { price: { list_cents: 1000, jev_cents: 1250, error: null } }, " · price Jev $12.50 (list $10)"],
+  ])("%s", (_n, over, tail) => {
+    expect(replyLine(reply({ attempts: [{ writer: "euryale-v2.3", outcome: "ok", ms: 100 }], ...over }))).toBe(head + tail);
+  });
+});
+
 describe("buildSettlePayload", () => {
   it.each<[UiSide, number, "bought" | "declined", string]>([
     ["L", 7, "bought", "checkpoint"],

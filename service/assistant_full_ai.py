@@ -24,7 +24,7 @@ from llm_models import MODELS
 # `folders` / `draft_questions` are 03b's keys (spec 03c lists their labels).
 LABELS: dict[str, str] = {
     "reply_speed": "Reply speed", "style": "Human style", "text_style": "Human style", "gifs": "GIFs",
-    "sell_on": "Selling", "sext_on": "Sexting", "writers": "Writers (in order)",
+    "sell_on": "Selling", "sext_on": "Sexting", "sext_scene": "Sext scene", "writers": "Writers (in order)",
     "writer_timeout_s": "Writer timeout (s)", "floor_on": "Reply checks", "info_fields": "Facts to learn",
     "folders": "Content folders", "draft_questions": "Draft questions",
 }

@@ -14,7 +14,8 @@ table. The rows, in order (D42-D44, Opus a-c, R9, 03b ticket 47):
   tease, or a Pending tease -> sell_now ·
   tease_price (price) / tease_decline (declines_buying, price not) -> tease ·
   offer_moment (DRAFT) -> sell_now ·
-  sexual_now -> sext · otherwise -> chat.
+  scene_offer (sext scene) -> sell_now ·
+  sexual_now, or scene_on (sext scene) -> sext · otherwise -> chat.
 
 Route flags (R10): an off flag drops its rows (sell flag: haggle, sell,
 tease_*, offer_moment; sext flag: sexual_now) and the walk goes on, so a later
@@ -31,6 +32,15 @@ DRAFT gate (ticket 47): counter_offer and offer_moment count only with
 false whatever the config says). A DRAFT id that fired and did not count is
 dropped by its id at its row's place, and routing goes on as without it.
 Test Mode's fired set carries them (`fired(answers, mode)`, ticket 47 B2).
+
+Sext scene (`scene`: test Mode and config `sext_scene`, owner 2026-11-14): the sext row
+also matches on `scene_on` alone (row `scene_on`); row `scene_offer` -> sell_now needs
+`scene_offer` and (`sexual_now` or `scene_on`), the sell flag, and a drop names nothing
+(as offer_moment). Without `scene` both ids are ignored, not recorded: they are never
+asked then (`_router_jev._questions(mode, scene)`), so the table is the old one.
+ADR-0032 named exception (owner-ordered "some save states for few messages"): the saved
+scene state (`full_ai_scene`) feeds Jev's state (`scene`, `purchases`) and the Writer's
+stage/heat floor only; it never enters this table, which stays pure over Jev's answers.
 
 `arm_of(account_id, fan_id)` is the Fan's Arm, a pure salted hash (ADR-0035):
 every Decision row carries it with `SALT_VER`; Shadow writes no Enrolment.
@@ -71,6 +81,7 @@ class Facts:
     sext_on: bool = True
     open_offer: bool = False    # a priced Offer with no outcome (test fold, 03b)
     draft_on: bool = False      # DRAFT ids count: test Mode and config draft_questions
+    scene: bool = False         # sext scene ids count: test Mode and config sext_scene
 
 
 @dataclass(frozen=True)
@@ -104,13 +115,17 @@ def decide_turn(facts: Facts) -> Decision:
     sell = "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease
     tease = "tease_price" if "price" in f else "tease_decline" if "declines_buying" in f else ""
     haggle = "counter_offer" in f and (facts.open_offer or facts.pending_tease)
+    scene_on = facts.scene and "scene_on" in f
+    scene_offer = facts.scene and "scene_offer" in f and ("sexual_now" in f or scene_on)
+    sext_row = "sexual_now" if "sexual_now" in f or not scene_on else "scene_on"
     # (row, its DRAFT id, Route, its flag, matched, the chat row this names as the first
     # naming drop; None names nothing)
     flagged = (("haggle", "counter_offer", "sell_now", facts.sell_on, haggle, "sell_off"),
                ("sell", None, "sell_now", facts.sell_on, bool(sell), "sell_off"),
                (tease, None, "tease", facts.sell_on, bool(tease), "tease_off"),
                ("offer_moment", "offer_moment", "sell_now", facts.sell_on, "offer_moment" in f, None),
-               ("sexual_now", None, "sext", facts.sext_on, "sexual_now" in f, "sext_off"))
+               ("scene_offer", None, "sell_now", facts.sell_on, scene_offer, None),
+               (sext_row, None, "sext", facts.sext_on, "sexual_now" in f or scene_on, "sext_off"))
     dropped: list[str] = []
     end = "otherwise"
     for row, draft, route, on, match, off_row in flagged:

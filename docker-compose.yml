@@ -197,6 +197,9 @@ services:
       # only) and the bio service's health URL for the editor's "serving" flag: the
       # bio service on this compose network (deploy/bio/README.md).
       BIO_PUBLIC_URL: "${BIO_PUBLIC_URL:-}"
+      # Optional short base shown next to the long address (e.g. https://ofl.ink/s, a
+      # Traefik redirect to BIO_PUBLIC_URL; deploy/bio/README.md "Short address").
+      BIO_SHORT_URL: "${BIO_SHORT_URL:-}"
       BIO_HEALTH_URL: "${BIO_HEALTH_URL:-http://openinflowwww-bio:8788/internal/healthz}"
       # Custom redirect links' "Bot check before redirect" (service/tracking_links_api.py,
       # Cloudflare Turnstile). Both unset = the option is off and a gated link is a plain 302.

@@ -4,7 +4,7 @@ handler / impersonated writes 403), tenancy (another owner's ids 404 on every ro
 diff PATCH, links (order, cap, stock icons), atomic reorder, image uploads (size, format, EXIF, alpha, frame 0,
 resize, fresh names), deletes (rows, cascades, files), 30-day stats and no destination/geo in any log line; create
 with a Creator (OnlyFans name + an "OnlyFans" link from the cached users_me), the vault avatar (photo only, owned
-page) and the request-derived public base when BIO_PUBLIC_URL is unset.
+page), the request-derived public base when BIO_PUBLIC_URL is unset and `short_url` from BIO_SHORT_URL.
 The public side is read through bio_pages.app over ASGI on the same temp DB and files dir.
 
 Run: ./venv/bin/python service/tests/test_bio_admin_api.py   (exit 0 = green)
@@ -21,6 +21,7 @@ FILES = Path(tempfile.mkdtemp(prefix="bio_admin_files_"))
 os.environ["BIO_FILES_DIR"] = str(FILES)
 os.environ["BIO_PUBLIC_URL"] = "https://ofl.test/"
 os.environ.pop("BIO_HEALTH_URL", None)
+os.environ.pop("BIO_SHORT_URL", None)
 
 _harness.bootstrap()
 
@@ -708,6 +709,18 @@ def case_public_base_from_request_when_unset():
     finally:
         os.environ["BIO_PUBLIC_URL"] = saved
     assert owner.get(BASE, headers={"x-forwarded-host": "app.test"}).json()["public_base"] == "https://ofl.test"
+
+
+def case_short_url_from_env():
+    pid = create(owner, "short_page")["profile"]["id"]
+    assert owner.get(f"{BASE}/{pid}").json()["profile"]["short_url"] is None
+    os.environ["BIO_SHORT_URL"] = "https://short.test/s/"
+    try:
+        prof = owner.get(f"{BASE}/{pid}").json()["profile"]
+        assert prof["short_url"] == "https://short.test/s/short_page", prof
+        assert prof["public_url"] == "https://ofl.test/short_page", prof
+    finally:
+        os.environ.pop("BIO_SHORT_URL")
 
 
 def case_no_destination_or_geo_in_logs():

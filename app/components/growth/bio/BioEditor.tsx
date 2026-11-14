@@ -125,7 +125,16 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
         <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start lg:gap-6">
           <div className={cn("min-w-0 space-y-4", view === "preview" && "max-lg:hidden")}>
             <IfCard title="Address">
-              <PageAddress className="mt-2" url={profile.public_url} path={`/${profile.username}`} />
+              {profile.short_url ? (
+                <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 text-[13px]">
+                  <dt className="text-fg-dim">Short</dt>
+                  <dd data-short-address><PageAddress url={profile.short_url} path={`/${profile.username}`} /></dd>
+                  <dt className="text-fg-dim">Long</dt>
+                  <dd data-long-address><PageAddress url={profile.public_url} path={`/${profile.username}`} /></dd>
+                </dl>
+              ) : (
+                <PageAddress className="mt-2" url={profile.public_url} path={`/${profile.username}`} />
+              )}
               {(!profile.public_url || serving === false) && (
                 <IfHelp role="note">
                   Not public here yet: {profile.public_url ? "the bio page server isn't answering" : "this server has no public bio address"},

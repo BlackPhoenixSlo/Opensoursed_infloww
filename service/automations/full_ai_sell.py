@@ -285,6 +285,11 @@ async def shoots_for(account_id: str, pool: list[dict[str, Any]],
         account_id, rows=pool, prints=prints, min_items=1, min_videos=0, require_escalation=False)
 
 
+# The sext scene's content level (Router Choice `offer_level`, config `sext_scene`) as a lane
+# target; "any" (its default) keeps `target_cents`.
+LEVEL_CENTS = {"soft": 1000, "nude": 5000, "explicit": 10000}
+
+
 def target_cents(intensity: int) -> int:
     """The heat target lane: intensity 1-2 -> $10, 3 -> $50, 4 -> $100."""
     return 1000 if intensity <= 2 else 5000 if intensity == 3 else 10000
@@ -353,7 +358,7 @@ def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: As
 
 
 def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
-         seed: str, free: bool = False) -> Pick | Refusal:
+         seed: str, free: bool = False, target: int | None = None) -> Pick | Refusal:
     """One Pick from `pool` (`pool()`'s rows, the sell step having handled its Refusal) for `ask`,
     by a seeded draw (`seed_for`). Pure.
 
@@ -362,7 +367,8 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     target (`target_cents`), else the subject's lowest; one row of it is drawn. A clip is sold
     alone. A photo is sold with up to 3 more matching photos of its shoot (one of `shoots`,
     priced at or under it) and at most one free preview: a free-lane photo of that shoot passing
-    `free_ok`. The price is the highest list price among the locked items.
+    `free_ok`. The price is the highest list price among the locked items. `target` (cents, the
+    sext scene's `offer_level` lane, `LEVEL_CENTS`) replaces the heat target when given.
 
     `free=True` (the make_right free item): one item, price 0, the lowest matching lane; the
     caller passes the pool minus every media already sent to him. No match -> the lowest-lane
@@ -395,7 +401,8 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     if not cands:
         return Refusal("no_priced_items")
     lanes = sorted({r["list_cents"] for r in cands})
-    lane = next((c for c in lanes if c >= target_cents(ask.intensity)), lanes[0])
+    goal = target_cents(ask.intensity) if target is None else target
+    lane = next((c for c in lanes if c >= goal), lanes[0])
     anchor = _draw([r for r in cands if r["list_cents"] == lane], rng)
     if anchor["kind"] == "video":
         return _offer([anchor], [], ask, free=False)

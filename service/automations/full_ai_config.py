@@ -44,6 +44,9 @@ DEFAULTS: dict[str, Any] = {
     "gifs": False,
     "sell_on": False,           # settable since 03b; off by default
     "sext_on": True,
+    # Test Mode only: the Jev-run sext scene (scene questions, saved scene state, scene Writer
+    # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (10-control limit).
+    "sext_scene": True,
     "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
     "draft_questions": False,   # 03b: DRAFT Router questions count (test Mode only, ticket 47)
     "writers": ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash"],
@@ -72,7 +75,7 @@ WRITER_PROVIDERS: frozenset[str] = frozenset({"nanogpt", "openrouter", "zai", "d
 # A folder ref (03b): an internal vault folder `vf:<vault_folders.id>` or an OF list `of:<id>`.
 FOLDER_REF = re.compile(r"(vf|of):[0-9]+")
 _FOLDER_KEYS = ("include", "exclude")
-_BOOLS = ("gifs", "sext_on", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
+_BOOLS = ("gifs", "sext_on", "sext_scene", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
           "describe_fan_photos")
 
 

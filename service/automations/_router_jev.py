@@ -21,13 +21,15 @@ shape: the probe's.
 
   - `QUESTIONS`, `THRESHOLDS`, `INTENSITY`, `STATE_VERSION`,
     `QUESTION_VERSION` (`question_version()`).
-  - Test Mode only (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`),
-    `TEST_NOULS` (DRAFT `counter_offer`, `offer_moment`), `DRAFT`, `TEST_THRESHOLDS`,
-    `question_version("test")`, `_questions("test")`; Shadow's request and
+  - Test Mode only (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`; with config
+    `sext_scene` also `scene_stage`, `offer_level`), `TEST_NOULS` (DRAFT `counter_offer`,
+    `offer_moment`; with `sext_scene` also `scene_on`, `scene_offer`: the `SCENE` set, which
+    reads the `SCENE_STATE_KEYS` `full_ai_test.fetch` adds), `DRAFT`, `TEST_THRESHOLDS`,
+    `question_version("test")`, `_questions("test", scene)`; Shadow's request and
     digest are unchanged (spec 03b story 66).
   - `fired(answers, mode="shadow")`: the ids at or above their threshold.
   - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
-    anything / any.
+    `CHOICE_DEFAULT`; `choice_or_none` the same with None for the default.
   - `line_text(m)`: one stored message as a person reads it (`MEDIA_ONLY`,
     `GIF_ONLY` with no text).
   - `thread`, `her_last_line`, `last_purchase`, `pending_offer`: the rest of
@@ -205,9 +207,37 @@ TEST_CHOICES: dict[str, dict[str, Any]] = {
             "any": "He does not say, or either is fine",
         },
     },
+    # Sext scene (config `sext_scene`, owner 2026-11-14), docs/prompts NEW-133.
+    "scene_stage": {
+        "instructions": "They are sexting. How far along is it, counting `thread` and "
+                        "`fan_new_messages` together? `scene` says how far it had got before his "
+                        "new messages; it does not go backwards unless he clearly starts over.",
+        "criteria": {
+            "opening": "It only just turned sexual: first dirty lines, nothing described yet",
+            "building": "They describe what they do to each other or to themselves, and it is "
+                        "getting more explicit",
+            "peak": "He is close to finishing: he says he is stroking, about to cum, cannot hold "
+                    "it, or begs her",
+            "after": "He says he came or finished, or thanks her for it",
+            "none": "They are not sexting",
+        },
+    },
+    "offer_level": {
+        "instructions": "If she sends him a piece of her content to buy now, how explicit should "
+                        "it be? Go by how turned on he is in `fan_new_messages`, what he asks for, "
+                        "and what he already bought in `purchases`: one step further than the last "
+                        "thing he bought, never the same level again.",
+        "criteria": {
+            "soft": "Teasing: lingerie, topless, or naked with her pussy hidden",
+            "nude": "Fully naked with her pussy showing",
+            "explicit": "Touching herself inside, using a toy, or sex",
+        },
+    },
 }
-# `choice_of`'s answer on a tie at the top, an unoffered top label or no answer.
-CHOICE_DEFAULT = {"asks_subject": "anything", "asks_format": "any"}
+# `choice_of`'s answer on a tie at the top, an unoffered top label or no answer. `offer_level`'s
+# "any" is a default only, never an offered label (the Sell executor's heat path).
+CHOICE_DEFAULT = {"asks_subject": "anything", "asks_format": "any", "scene_stage": "building",
+                  "offer_level": "any"}
 
 # DRAFT Nouls (haggle, unasked offer): asked and kept in test Mode, read by
 # nothing until ticket 47, and then only in a `draft_questions` window.
@@ -224,6 +254,23 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "and nothing shows he is upset or cannot pay",
         "He is upset or complaining, says he cannot pay, asks something serious, or the chat is "
         "only small talk so far"),
+    # Sext scene (config `sext_scene`): gated by that flag, not by `draft_questions` (not DRAFT).
+    "scene_on": _q(
+        "Is a sexual chat between her and the fan going on right now, counting `thread` and "
+        "`fan_new_messages` together?",
+        "The last lines of `thread` are sexting between them and in `fan_new_messages` he stays in "
+        "it: he reacts to it, enjoys it, answers her, asks for more, or says he just came, even "
+        "when his own words are short or not sexual by themselves",
+        "The last lines of `thread` are not sexual, or in `fan_new_messages` he changes the subject, "
+        "says he has to go, is upset, or asks something serious"),
+    "scene_offer": _q(
+        "They are sexting. Is this a good moment for her to send him a locked photo or video as the "
+        "next step of it?",
+        "He is turned on and into it, they have been sexting for a few messages or he just bought "
+        "and wants more, and no locked message of hers is waiting unbought in `thread`",
+        "The sexting only just started, he just said no to buying or cannot pay, a locked message "
+        "of hers in `thread` is still not bought, she offered him something in her last message, "
+        "or he just came"),
 }
 
 # Asked and stored, never read by the Route table before the owner OKs them.
@@ -231,7 +278,15 @@ DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
 # The DRAFT Nouls' thresholds, read only by `fired(answers, "test")`; the Route table
 # counts them only when `draft_on` (ticket 47). ASSUMPTION: 0.7 is unprobed (no measurement
 # exists; THRESHOLDS' usual value, rung 3); overturned by a measured threshold.
-TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7}
+# ASSUMPTION: `scene_on` / `scene_offer` at 0.7 are unprobed too (same rung). Overturned by a
+# measured threshold.
+TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7,
+                                     "scene_on": 0.7, "scene_offer": 0.7}
+# The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked only in test Mode with
+# config `sext_scene` (`_questions(mode, scene)`); off, the request is the pre-scene one. They
+# read two state keys only `full_ai_test.fetch` adds with the flag (`SCENE_STATE_KEYS`).
+SCENE = frozenset({"scene_on", "scene_offer", "scene_stage", "offer_level"})
+SCENE_STATE_KEYS = ("purchases", "scene")
 
 
 def question_version(mode: str = "shadow") -> str:
@@ -246,7 +301,8 @@ def question_version(mode: str = "shadow") -> str:
         "purchase_days": PURCHASE_DAYS, "purchase_kinds": sorted(PURCHASE_KINDS)}
     if mode == "test":
         d |= {"test_choices": TEST_CHOICES, "test_nouls": TEST_NOULS,
-              "test_thresholds": TEST_THRESHOLDS, "draft": sorted(DRAFT)}
+              "test_thresholds": TEST_THRESHOLDS, "draft": sorted(DRAFT),
+              "scene": sorted(SCENE), "scene_state_keys": list(SCENE_STATE_KEYS)}
     return hashlib.sha256(json.dumps(
         d, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
@@ -281,12 +337,18 @@ def choice_of(choices: dict[str, dict[str, float]], qid: str) -> str:
     """A test-Mode Choice's answer from `choices` (Choice id -> label -> probability, as
     Jev gave it): the label with the highest probability; a tie at the top, a top label
     the Choice never offered, or no answer is `CHOICE_DEFAULT` (anything / any). Pure."""
-    probs = choices.get(qid) or {}
+    return choice_or_none(choices, qid) or CHOICE_DEFAULT[qid]
+
+
+def choice_or_none(choices: dict[str, dict[str, float]] | None, qid: str) -> str | None:
+    """`choice_of` without its default: None on a tie at the top, an unoffered top label or no
+    answer (the scene fold keeps its saved stage then). Pure."""
+    probs = (choices or {}).get(qid) or {}
     top = max(probs.values(), default=None)
     best = [k for k, p in probs.items() if p == top]
     if len(best) == 1 and best[0] in TEST_CHOICES[qid]["criteria"]:
         return best[0]
-    return CHOICE_DEFAULT[qid]
+    return None
 
 
 # How a message with no text reads. His media DM and every word below but
@@ -437,24 +499,29 @@ def _client(key: str) -> Any:
     return _jev.client(key, MODEL, TIMEOUT_S, MAX_RETRIES)
 
 
-def _questions(mode: str = "shadow") -> dict[str, Any]:
+def _test_ids(src: dict[str, Any], scene: bool) -> list[str]:
+    return [qid for qid in src if scene or qid not in SCENE]
+
+
+def _questions(mode: str = "shadow", scene: bool = False) -> dict[str, Any]:
     """The request's questions: every `QUESTIONS` Noul and the `intensity` Score; in
     test Mode also the `TEST_NOULS` and the `TEST_CHOICES` (built as `_info_jev`'s
-    Choice), after them. Pure."""
+    Choice), after them, the `SCENE` ones only with `scene` (config `sext_scene`). Pure."""
     from typesafe_sdk import Choice, Noul, Score
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
                          for qid, v in QUESTIONS.items()}
     q["intensity"] = Score(instructions=INTENSITY["instructions"], criteria=INTENSITY["criteria"])
     if mode == "test":
-        q |= {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
-              for qid, v in TEST_NOULS.items()}
-        q |= {qid: Choice(instructions=v["instructions"], criteria=v["criteria"])
-              for qid, v in TEST_CHOICES.items()}
+        q |= {qid: Noul(instructions=TEST_NOULS[qid]["instructions"], criteria=TEST_NOULS[qid]["criteria"])
+              for qid in _test_ids(TEST_NOULS, scene)}
+        q |= {qid: Choice(instructions=TEST_CHOICES[qid]["instructions"],
+                          criteria=TEST_CHOICES[qid]["criteria"])
+              for qid in _test_ids(TEST_CHOICES, scene)}
     return q
 
 
 async def ask(st: dict[str, Any], account_id: str | None = None,
-              mode: str = "shadow") -> Answers:
+              mode: str = "shadow", scene: bool = False) -> Answers:
     """Ask every Router question and the `intensity` Score over `st` in one
     request (`_questions(mode)`), on `account_id`'s TypeSafe key. Raises
     `GateError` on any failure; in test Mode a missing or out-of-range
@@ -470,12 +537,13 @@ async def ask(st: dict[str, Any], account_id: str | None = None,
         # ASSUMPTION: Jev wall time is the request alone (SDK retries included),
         # not the key read before it. Overturned if p95 should include the DB.
         t0 = time.perf_counter()
-        res = await _client(key).system_one(st, _questions(mode), model=MODEL)
+        res = await _client(key).system_one(st, _questions(mode, scene), model=MODEL)
         ms = int((time.perf_counter() - t0) * 1000)
-        nouls = [*QUESTIONS, *(TEST_NOULS if mode == "test" else ())]
+        test = mode == "test"
+        nouls = [*QUESTIONS, *(_test_ids(TEST_NOULS, scene) if test else ())]
         answers = {qid: float(res.nouls[qid].noul) for qid in nouls}
         choices = ({qid: {str(k): float(v) for k, v in res.choices[qid].probabilities.items()}
-                    for qid in TEST_CHOICES} if mode == "test" else {})
+                    for qid in _test_ids(TEST_CHOICES, scene)} if test else {})
         bad = [q for q, p in answers.items() if not 0.0 <= p <= 1.0]   # NaN fails too
         if bad:
             raise GateError(f"answer out of range: {bad}")

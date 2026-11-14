@@ -136,6 +136,15 @@ Verify:
 - After each box ships: append a `bio_counter_loss` line to that sweep's WATCH.md (CLAUDE.md "Post-deploy
   watch"). The bio container name derives from the relay name (`<relay minus -relay>-bio`).
 
+## Short address (optional)
+
+`BIO_SHORT_URL` (e.g. `https://ofl.ink/s`) makes the editor show `<BIO_SHORT_URL>/<username>` as "Short" next to the
+long address. The short host only redirects: a Traefik file router (public: `/root/traefik-dynamic/ofl-short.yml`,
+router `ofl-short`, `Host(ofl.ink|www.ofl.ink|v2.ofl.ink) && PathPrefix(/s/)`, priority 1000 over `oflink`, a
+`redirectRegex` middleware `^https?://[^/]+/s/(.*)$` → `https://bio.inflowwww.com/${1}`, 302, service
+`noop@internal`). Every other ofl.ink path stays on oflinkv2. Recreate the relay after setting the key. Rollback:
+`rm /root/traefik-dynamic/ofl-short.yml` and unset the key.
+
 ## Every deploy
 
 - When the relay image is rebuilt or the bio block/env changes, run `docker compose up -d --no-build

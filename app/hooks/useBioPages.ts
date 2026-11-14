@@ -55,6 +55,8 @@ export interface BioProfile {
   verified: boolean;
   custom_domain: BioDomain | null;
   public_url: string | null;
+  /** The short address that redirects to the page (BIO_SHORT_URL), null when this server has none. */
+  short_url?: string | null;
   created_at: string;
   updated_at: string;
 }

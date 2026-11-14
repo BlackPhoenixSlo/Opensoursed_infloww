@@ -10,7 +10,7 @@ vault send, lease, DM rate or OF call: Test chat is off-site by design.
   session_key(pair, side)      "<pair>-L" (checkpoint) | "<pair>-R" (draft)
   test_thread(rows)            pure: the session's rows as plain message rows; a PPV bubble is her
                                priced row (price, media count, paid flag, purchase time) (03b)
-  owned_of / sent_media_of / bought_of / open_offer_of / offer_line / pending_offer_text
+  owned_of / sent_media_of / bought_of / purchases_of / open_offer_of / offer_line / pending_offer_text
                                pure session folds (03b): what he owns, was sent, bought; the open
                                Offer and its Pending offer line (a Pending tease's text first)
   pending_tease_of(rows, now, ttl_s=900)   pure: the Pending tease row (newest sent row a test
@@ -51,6 +51,7 @@ from sqlalchemy.exc import IntegrityError
 from automations import _router_jev as router
 from automations.full_ai_chat import build_state, cut_runs
 from automations.full_ai_photo import KEY as PHOTOS_KEY
+from automations.full_ai_scene import scene_words
 from automations.full_ai_sell import Pick, Teased
 from db.engine import get_session
 from db.models import AiDecision
@@ -185,6 +186,28 @@ def bought_of(rows) -> list[SimpleNamespace]:
                   key=lambda b: b.occurred_at)
 
 
+def _money(cents: int) -> str:
+    return f"${cents // 100}" if cents % 100 == 0 else f"${cents / 100:.2f}"
+
+
+def purchases_of(rows) -> list[str]:
+    """The sext scene's `purchases` Jev state (config `sext_scene`): every settled priced Offer
+    (bought or declined), oldest first, in words with its anchor description (`offer_item_ref`
+    `desc`, written by `send` with the flag; none on older rows)."""
+    out = []
+    for r in _offers(rows):
+        if r.outcome not in ("bought", "declined") or not r.offer_price_cents:
+            continue
+        item = _loads(r.offer_item_ref)
+        n, kind = len(_media(r, "locked")), item.get("format") or "item"
+        what = f"{n} {kind}{'s' if n != 1 else ''}"
+        price = _money(r.offer_price_cents)
+        line = (f"bought {what} for {price} (lane {item.get('lane')})" if r.outcome == "bought"
+                else f"said no to {what} at {price}")
+        out.append(f"{line}: {item['desc']}" if item.get("desc") else line)
+    return out
+
+
 def open_offer_of(rows):
     """The newest priced Offer with no outcome, else None. Never open again: an Offer a haggle row
     re-offered (ticket 47; its row id is the haggle row's item ref `over`, written by `send`), same
@@ -270,7 +293,9 @@ def session_row(r: AiDecision) -> dict:
             "parts": reply.get("parts") or [], "route": r.route, "heat": r.heat,
             "route_row": r.route_row, "writer": r.writer_model, "attempts": reply.get("attempts") or [],
             "wait_s": reply.get("wait_s"), "status": r.status, "fan_info": reply.get("fan_info") or {},
-            "offer": offer_of(r), "created_at": iso_z(r.created_at), **caption}
+            "offer": offer_of(r), "created_at": iso_z(r.created_at), **caption,
+            # sext scene (config `sext_scene`): the saved scene and the price Jev, when set
+            **{k: reply[k] for k in ("scene", "price") if reply.get(k)}}
 
 
 async def fetch(account: str, pair: str, side: str, text: str, config: dict, photo: dict | None = None):
@@ -293,6 +318,9 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
     on = bool(config[PHOTOS_KEY])
     st, _ = build_state(turn, thread_rows, bought, offer, pending=pending_offer_text(rows, now), photos=on)
     fold = _loads(rows[-1].reply_json) if rows else {}
+    scene = fold.get("scene") or None
+    if config.get("sext_scene"):        # test Mode only (this module); never in build_state / Shadow
+        st = {**st, "purchases": purchases_of(rows), "scene": scene_words(scene)}
     session = session_key(pair, side)
     return TurnFacts(
         account_id=str(account), fan_id=test_fan_id(pair), mode=MODE,
@@ -301,7 +329,7 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
         asked=dict(fold.get("asked") or {}), config=config, side=side,
         typo_state=dict(fold.get("typo_state") or {}), owned=owned_of(rows), spent=spent,
         sent=sent_media_of(rows), tease=teased_of(pending_tease_of(rows, now)),
-        offer_piece=teased_of(open_offer),
+        offer_piece=teased_of(open_offer), scene=scene,
         photo={**photo, "text": text, "read": bool(on and photo.get("desc"))} if photo else None)
 
 
@@ -318,12 +346,14 @@ def hold(config: dict, anchor_key: str) -> float:
     return round(_SPEEDS[config["reply_speed"]](random.Random(seed)), 1)
 
 
-def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None) -> None:
+def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None,
+         desc: str | None = None) -> None:
     """Her bubbles onto the row about to be recorded; the row's `mode='test'` marks it a test row.
     A `pick` (`full_ai_sell.Pick`) lands on the row's Offer columns (0120): price, list, media,
     item ref with its kind by Route (ADR-0034: tease -> `tease`, price NULL; make_right -> `free`,
     price 0; else `offer`); `over` (a haggle row: the open Offer's row id it re-offers, ticket 47)
-    joins the item ref, so `open_offer_of` never opens that Offer again;
+    joins the item ref, so `open_offer_of` never opens that Offer again; `desc` (the sext scene:
+    the anchor's description, <= 120 chars) joins it for `purchases_of`;
     `offer_message_id`, `outcome`, `outcome_at`, `join_src` stay NULL (no send, no settle yet).
     Unless a tease, it rides the last bubble as `ppv: {ref, price_cents, media, previews}`.
     One call, one Pick: at most one Offer per row. A make_right row never carries a priced Offer
@@ -346,7 +376,8 @@ def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | N
             offer_media_json=json.dumps({"locked": list(pick.media), "previews": list(pick.previews)}),
             offer_item_ref=json.dumps({"ref": pick.ref, "subject": pick.subject, "format": pick.format,
                                        "lane": pick.lane, "kind": kind,
-                                       **({"over": over} if over is not None else {})}))
+                                       **({"over": over} if over is not None else {}),
+                                       **({"desc": desc[:120]} if desc else {})}))
     row["status"] = "sent"
 
 

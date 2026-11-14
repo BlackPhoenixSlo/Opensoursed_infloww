@@ -75,6 +75,10 @@ export interface TurnResponse {
   caption?: CaptionPath | null;
   /** His photo as this side read it; absent without one. */
   photo?: FanPhoto | null;
+  /** Sext scene (config `sext_scene`): the saved scene after this Turn; absent off a scene. */
+  scene?: { n: number; stage: string; heat: number } | null;
+  /** Sext scene: the price Jev on a fresh priced sell (`jev_cents` null when it failed: `error`). */
+  price?: { list_cents: number; jev_cents: number | null; error: string | null } | null;
 }
 
 /** POST /admin/full-ai/test/photo's answer, sent back with each side's Turn; `read` (on a recorded Turn only): that
@@ -461,7 +465,18 @@ export function replyLine(r: TurnResponse): string {
   const fell = r.attempts.filter((a) => !a.rewrite && a.outcome !== "ok");
   const why = fell.length ? ` (${outcomesLine(fell)})` : "";
   const cap = !r.caption ? "" : r.caption.writer === "caption" ? ` · Caption ${r.caption.model}` : ` · Caption chat (${r.caption.outcome})`;
-  return `${head} · Writer ${r.writer} · ${fell.length} fell before${why}${cap}`;
+  return `${head} · Writer ${r.writer} · ${fell.length} fell before${why}${cap}${sceneTail(r)}`;
+}
+
+const usd = (c: number) => `$${c % 100 ? (c / 100).toFixed(2) : c / 100}`;
+
+/** The sext scene's tail: ` · scene building · 3`, and ` · price Jev $35 (list $50)` when Jev moved the price. */
+function sceneTail(r: TurnResponse): string {
+  const s = r.scene ? ` · scene ${r.scene.stage} · ${r.scene.n}` : "";
+  const p = r.price;
+  const px = p && p.jev_cents != null && p.jev_cents !== p.list_cents ? ` · price Jev ${usd(p.jev_cents)} (list ${usd(p.list_cents)})`
+    : p?.error ? ` · price Jev failed (list ${usd(p.list_cents)})` : "";
+  return s + px;
 }
 
 /** The text in place of her bubbles on a Turn with none; null when she answered. */

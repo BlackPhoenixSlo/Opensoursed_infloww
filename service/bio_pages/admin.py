@@ -25,7 +25,8 @@ Audit: link create, the vault picks (the Toolbox write tools' routes) and the pa
 page's stored Creator for the audit row (`_audit_as`), whatever X-Account-Id / ?account_id= the caller sent.
 
 Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
-X-Forwarded-Host/Proto when a proxy set them) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
+X-Forwarded-Host/Proto when a proxy set them), BIO_SHORT_URL (optional short base whose `/<username>` redirects to
+the page, e.g. https://ofl.ink/s; the editor's `short_url`, unset → null) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
 `serving`; unset → false).
 """
 from __future__ import annotations
@@ -130,6 +131,11 @@ def _public_url(username: str, domain: dict | None) -> str | None:
     return f"{base}/{username}" if base else None
 
 
+def _short_url(username: str) -> str | None:
+    base = (os.environ.get("BIO_SHORT_URL") or "").rstrip("/")
+    return f"{base}/{username}" if base else None
+
+
 def _file_url(collection: str, rid: str, name: str) -> str:
     return f"{FILE_PREFIX}/{collection}/{rid}/{name}" if name else ""
 
@@ -222,6 +228,7 @@ async def _page(s, owner: str, pid: str) -> dict[str, Any]:
                         "background_url": _file_url("profiles", p.id, p.background_image),
                         "account_id": p.account_id, "mode": p.mode, "verified": bool(p.verified),
                         "custom_domain": domain, "public_url": _public_url(p.username, domain),
+                        "short_url": _short_url(p.username),
                         "created_at": _iso(p.created_at), "updated_at": _iso(p.updated_at)},
             "links": [_link_out(lk) for lk in links]}
 

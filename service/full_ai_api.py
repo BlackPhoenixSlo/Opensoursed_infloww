@@ -231,6 +231,7 @@ async def full_ai_test_turn(body: TestTurn):
            "offer": res.offer}          # 03b: Offer / tease Pick / Free item; null otherwise, on a Refusal or a drop
     if res.caption is not None:     # `caption_writer` "caption" on a PPV Turn: who wrote the caption
         out["caption"] = res.caption
+    out.update({k: v for k, v in (("scene", res.scene), ("price", res.price)) if v})   # sext scene
     if facts.photo is not None:
         out["photo"] = facts.photo     # his photo as this side read it
     return out

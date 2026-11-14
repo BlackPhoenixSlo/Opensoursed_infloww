@@ -52,6 +52,15 @@ Router's constants (`_router_jev`), pure, plain assert.
   case_shadow_equals_the_pre_47_table  draft_on false: a frozen copy of the
                               pre-ticket-47 `decide_turn` over every fired set
                               of the 11 Phase 01 ids × every other fact
+  case_scene_questions        sext scene: the 4 SCENE ids asked only with
+                              `scene` (Nouls / Choices, not DRAFT); test digest
+                              left its pre-scene value and moves with their
+                              wording; Shadow's never; choice_or_none / defaults
+  case_scene_rows             scene_on alone -> sext row `scene_on`; scene_offer
+                              needs a scene + sell_on, after offer_moment, drop
+                              names nothing; sext off drops scene_on
+  case_scene_off_is_the_old_table  `scene` false: every fired set with the scene
+                              ids decides as without them (ignored, not dropped)
 
 Run: ./venv/bin/python service/tests/test_full_ai_decide.py  (exit 0 = pass)
 """
@@ -74,9 +83,11 @@ THRESHOLDS = {"promo": .7, "says_under_18": .7, "complains_now": .5, "asks_if_ai
               "stop": .6, "price": .7, "wants_content": .7, "declines_buying": .5,
               "says_yes_to_offer": .7, "sexual_now": .7, "gif_fits": .6}
 # The DRAFT test-Mode Nouls' thresholds (ticket 47 phase B; ASSUMPTION: unprobed .7).
-TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7}
+TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7, "scene_on": .7, "scene_offer": .7}
 # `question_version("test")` before ticket 47 phase B put `TEST_THRESHOLDS` in it.
 PRE_47B_TEST_VERSION = "4e30e9162a1e"
+# `question_version("test")` before the sext scene (origin/main c847cb09f).
+PRE_SCENE_TEST_VERSION = "8878043c1f4f"
 
 
 def _quiet(**over: float) -> dict[str, float]:
@@ -660,6 +671,97 @@ def case_shadow_equals_the_pre_47_table():
     # Today's caller (full_ai_turn._route) passes no new keyword: draft_on and open_offer default off.
     assert (fd.Facts(frozenset(), 0.0, False, False, True).draft_on,
             fd.Facts(frozenset(), 0.0, False, False, True).open_offer) == (False, False)
+
+
+# ── Sext scene (config `sext_scene`, owner 2026-11-14) ─────────────────
+
+SCENE_IDS = {"scene_on": "Noul", "scene_offer": "Noul", "scene_stage": "Choice", "offer_level": "Choice"}
+
+
+def case_scene_questions():
+    """The SCENE ids join test Mode's request only with `scene`; never DRAFT; the test digest
+    moved off its pre-scene value and moves with their wording; Shadow's never."""
+    assert rj.SCENE == frozenset(SCENE_IDS) and not rj.SCENE & rj.DRAFT
+    off, on = rj._questions("test"), rj._questions("test", scene=True)
+    assert set(on) - set(off) == set(SCENE_IDS), sorted(set(on) - set(off))
+    assert {q: type(on[q]).__name__ for q in SCENE_IDS} == SCENE_IDS
+    assert list(on["scene_stage"].criteria) == ["opening", "building", "peak", "after", "none"]
+    assert list(on["offer_level"].criteria) == ["soft", "nude", "explicit"]
+    assert list(rj._questions("shadow", scene=True)) == [*IDS, "intensity"]
+    assert rj.CHOICE_DEFAULT["scene_stage"] == "building" and rj.CHOICE_DEFAULT["offer_level"] == "any"
+    base = rj.question_version("test")
+    assert base != PRE_SCENE_TEST_VERSION, base
+    real = rj.TEST_NOULS
+    rj.TEST_NOULS = {**real, "scene_on": {**real["scene_on"], "instructions": "x"}}
+    try:
+        assert rj.question_version("test") != base
+        assert rj.question_version() == "b3202b420ab0"
+    finally:
+        rj.TEST_NOULS = real
+    real_keys = rj.SCENE_STATE_KEYS
+    rj.SCENE_STATE_KEYS = ("purchases",)
+    try:
+        assert rj.question_version("test") != base
+    finally:
+        rj.SCENE_STATE_KEYS = real_keys
+    rows = [   # (choices, qid, choice_of, choice_or_none)
+        ({"scene_stage": {"peak": .8, "building": .2}}, "scene_stage", "peak", "peak"),
+        ({"scene_stage": {"peak": .5, "building": .5}}, "scene_stage", "building", None),
+        ({}, "scene_stage", "building", None),
+        (None, "scene_stage", "building", None),
+        ({"offer_level": {"nude": .6, "soft": .4}}, "offer_level", "nude", "nude"),
+        ({"offer_level": {"any": .9}}, "offer_level", "any", None),     # "any" is never offered
+        ({}, "offer_level", "any", None),
+    ]
+    for choices, qid, want, want_none in rows:
+        assert rj.choice_of(choices or {}, qid) == want, (choices, qid)
+        assert rj.choice_or_none(choices, qid) == want_none, (choices, qid)
+    # test Mode fires them at .7; Shadow never reads them.
+    q = _quiet(scene_on=.7, scene_offer=.69)
+    assert rj.fired(q, "test") == frozenset({"scene_on"}) and rj.fired(q) == frozenset()
+
+
+def case_scene_rows():
+    """Worked rows with `scene` on (every flag on unless named)."""
+    on, nosell, nosext = {"scene": True}, {"scene": True, "sell_on": False}, {"scene": True, "sext_on": False}
+    rows = [
+        (({"scene_on"}, on), ("sext", "scene_on", ())),
+        (({"scene_on", "sexual_now"}, on), ("sext", "sexual_now", ())),
+        (({"scene_on"}, nosext), ("chat", "sext_off", ("scene_on",))),
+        (({"scene_offer"}, on), ("chat", "otherwise", ())),                 # no scene: nothing
+        (({"scene_offer", "scene_on"}, on), ("sell_now", "scene_offer", ())),
+        (({"scene_offer", "sexual_now"}, on), ("sell_now", "scene_offer", ())),
+        (({"scene_offer", "scene_on"}, nosell), ("sext", "scene_on", ("scene_offer",))),
+        (({"scene_offer", "scene_on"}, {**nosell, "sext_on": False}),
+         ("chat", "sext_off", ("scene_offer", "scene_on"))),
+        (({"scene_offer", "scene_on", "wants_content"}, on), ("sell_now", "sell", ())),
+        (({"scene_offer", "scene_on", "price"}, on), ("tease", "tease_price", ())),
+        (({"scene_offer", "scene_on", "offer_moment"}, {**on, "draft_on": True}),
+         ("sell_now", "offer_moment", ())),
+        (({"scene_offer", "scene_on", "stop"}, on), ("chat", "stop", ())),
+    ]
+    for (fired, flags), want in rows:
+        d = fd.decide_turn(_facts(fired, 2.0, **flags))
+        assert (d.route, d.row, d.dropped) == want, (sorted(fired), flags, d)
+
+
+def case_scene_off_is_the_old_table():
+    """`scene` false (Shadow, live, flag off): the scene ids are ignored, not recorded — every
+    fired set decides exactly as without them."""
+    from itertools import product
+    ids = ("wants_content", "price", "sexual_now", "offer_moment", "counter_offer")
+    n = 0
+    for bits in product((False, True), repeat=len(ids) + 6):
+        base = frozenset(q for q, b in zip(ids, bits) if b)
+        so, sf, sell_on, sext_on, draft_on, oo = bits[len(ids):]
+        extra = {q for q, b in (("scene_on", so), ("scene_offer", sf)) if b}
+        kw = dict(sell_on=sell_on, sext_on=sext_on, draft_on=draft_on, open_offer=oo)
+        with_ids = fd.decide_turn(_facts(base | extra, 2.0, **kw))
+        without = fd.decide_turn(_facts(base, 2.0, **kw))
+        assert (with_ids.route, with_ids.row, with_ids.dropped) == \
+            (without.route, without.row, without.dropped), (sorted(base | extra), kw)
+        n += 1
+    assert n == 2 ** 11, n
 
 
 _harness.run()

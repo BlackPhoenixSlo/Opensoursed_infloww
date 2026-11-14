@@ -23,6 +23,12 @@ import llm_client
 import webhook_dispatch as wd
 from automation_executor import run_once
 from automations import _router_jev as rj
+from automations import full_ai_config
+
+# The sext scene (config `sext_scene`, default on) changes test-Mode Turns. The suites written
+# before it pin the flag-off behaviour (= the old one) through this one switch; the scene suites
+# turn it on in the config they pass or store (test_full_ai_scene*.py).
+full_ai_config.DEFAULTS["sext_scene"] = False
 from db.engine import get_session
 from db.models import Account, AccountAiConfig, AiDecision, AutomationRule, AutomationRun, Message
 
@@ -32,7 +38,9 @@ KIND = "full_ai_chat"
 NOULS = {"promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
          "wants_content", "declines_buying", "says_yes_to_offer", "sexual_now", "gif_fits"}
 QUIET = dict.fromkeys(NOULS, 0.05)
-QUIET_TEST = {**QUIET, **dict.fromkeys(rj.TEST_NOULS, 0.05)}   # a quiet test-Mode `answers` (03b)
+# A quiet test-Mode `answers` (03b), sext scene off; `QUIET_SCENE` with config `sext_scene` on.
+QUIET_TEST = {**QUIET, **dict.fromkeys((q for q in rj.TEST_NOULS if q not in rj.SCENE), 0.05)}
+QUIET_SCENE = {**QUIET, **dict.fromkeys(rj.TEST_NOULS, 0.05)}
 T0 = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
 
 

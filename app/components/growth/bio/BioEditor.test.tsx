@@ -142,6 +142,24 @@ describe("BioEditor", () => {
     expect(relayDelete).toHaveBeenCalledWith("/admin/bio-pages/p1/background");
   });
 
+  it("shows the short and the long address, each with its own Copy, when the server has a short base", async () => {
+    page.profile = { ...page.profile, custom_domain: null, short_url: "https://short.test/s/alice" };
+    renderWithProviders(<BioEditor profileId="p1" />);
+    await screen.findByText("https://short.test/s/alice");
+    const short = within(document.querySelector("[data-short-address]") as HTMLElement);
+    const long = within(document.querySelector("[data-long-address]") as HTMLElement);
+    expect(short.getByText("https://short.test/s/alice")).toBeTruthy();
+    expect(short.getByRole("button", { name: "Copy" }).getAttribute("title")).toBe("https://short.test/s/alice");
+    expect(long.getByText("https://bio.test/alice")).toBeTruthy();
+    expect(long.getByRole("button", { name: "Copy" }).getAttribute("title")).toBe("https://bio.test/alice");
+  });
+
+  it("shows only the long address without a short base", async () => {
+    renderWithProviders(<BioEditor profileId="p1" />);
+    expect(await screen.findByText("https://bio.test/alice")).toBeTruthy();
+    expect(document.querySelector("[data-short-address]")).toBeNull();
+  });
+
   it("says an unknown page doesn't exist", async () => {
     relayGet.mockImplementation(() => Promise.reject(new RelayError(404, { detail: "Not Found" })));
     renderWithProviders(<BioEditor profileId="p1" />);
