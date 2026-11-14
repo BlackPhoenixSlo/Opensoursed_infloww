@@ -18,6 +18,8 @@ export const LABELS: Record<string, string> = {
   zai: "Z.ai (GLM) API key",
   anthropic: "Anthropic (Claude) API key",
   typesafe: "TypeSafe (Jev) API key",
+  nanogpt: "NanoGPT API key",
+  openrouter: "OpenRouter API key",
 };
 
 /** A DeepSeek key is `sk-` + 32 hex and nothing else on this list looks like
@@ -50,4 +52,6 @@ export const HELP: Record<string, string> = {
   zai: "Chat replies only — GLM models. Not used for vault or photo describes. z.ai.",
   anthropic: "Help assistant answers (Claude Opus). console.anthropic.com.",
   typesafe: "Vault Jev (reading vault items). Blank = this server's key, if it has one. console.typesafe.ai.",
+  nanogpt: "Full AI Chat's first Writer (Euryale v2.3). nano-gpt.com.",
+  openrouter: "Full AI Chat's second Writer (Hermes 4 405B). openrouter.ai.",
 };

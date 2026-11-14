@@ -4,14 +4,19 @@ owner_tokens; docs/plans/ultra-mode/issues/03-owner-tokens.md, build-log F3).
 A token is for an MCP client, not a browser, so it reaches an ALLOWLIST and nothing else:
 the routes of the Toolbox's non-send tools (`toolbox_decide.TOOLS`; send tools run only from
 an owner-approved plan), the report-file download pair and `POST /admin/mcp`. Matched on
-(method, route template) of the route Starlette dispatches the request to (`route_template`,
-the same first-FULL-match walk over `app.routes` as Starlette's router), never on a path
-prefix: a new route is closed to tokens until it is listed here.
+(method, route template) of the route Starlette dispatches the request to (`matched`, the
+same first-FULL-match walk over `app.routes` as Starlette's router; auth walks it once and
+hands template + path params to both checks), never on a path prefix: a new route is closed
+to tokens until it is listed here.
 
   StripCookieIdentities  pure ASGI, outside every hook: a bearer request loses its Cookie and
                          X-Employee-Id headers before any Request object exists, so no later
                          reader (chatter middleware, share gate, audit, attribution) sees them
   allowed                the allowlist check (auth.session_middleware answers 403 otherwise)
+  write_refusal          a write tool's route takes an untyped body wider than the tool's
+                         schema: a bearer's raw request must equal the one the tool builds from
+                         the same args (`toolbox_decide.route_refusal`), else 403 (build-log
+                         step 3 MUST)
   resolve                token → its owner, or None (unknown, revoked, expired, minted before
                          "Log out other sessions"); last_used_at bumped at most every 5 min
 
@@ -19,6 +24,7 @@ auth.session_middleware owns the ContextVars and calls these; this module never 
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Iterable, NamedTuple
@@ -35,6 +41,7 @@ from db.models import OwnerToken, User
 log = logging.getLogger(__name__)
 
 REFUSED = "not allowed with an access token: it reaches only the MCP tools and report downloads"
+WRITE_REFUSED = "not allowed with an access token: a write must be one its MCP tool could have sent"
 
 MCP_PATH = "/admin/mcp"
 
@@ -51,23 +58,42 @@ STRIPPED = (b"cookie", b"x-employee-id")
 
 def allowlist() -> frozenset[tuple[str, str]]:
     """(method, route template) pairs a token may call. Read per request from `td.token_tools()`
-    (a dozen tuples), so the list cannot drift from the Toolbox. toolbox.call makes no
-    pre-read request of its own yet; one added later goes here."""
+    (a few dozen tuples), so the list cannot drift from the Toolbox: each tool's route, nothing else."""
     return frozenset((t.method, t.path) for t in td.token_tools()) | EXTRA
 
 
-def route_template(scope: dict[str, Any], routes: Iterable[Any]) -> str | None:
-    """The template of the route Starlette's router dispatches `scope` to: the first FULL
-    match (path and method), as Router.app walks them. None when only a 405/404 would answer."""
+def matched(scope: dict[str, Any], routes: Iterable[Any]) -> tuple[str | None, dict[str, Any]]:
+    """(template, path params) of the route Starlette's router dispatches `scope` to: the first
+    FULL match (path and method), as Router.app walks them. (None, {}) when only a 405/404
+    would answer."""
     for route in routes:
-        match, _ = route.matches(scope)
+        match, child = route.matches(scope)
         if match is Match.FULL:
-            return getattr(route, "path", None)
-    return None
+            return getattr(route, "path", None), dict(child.get("path_params") or {})
+    return None, {}
 
 
-def allowed(scope: dict[str, Any], routes: Iterable[Any]) -> bool:
-    return (scope["method"], route_template(scope, routes)) in allowlist()
+def allowed(method: str, template: str | None) -> bool:
+    return (method, template) in allowlist()
+
+
+async def write_refusal(request: Any, template: str | None, params: dict[str, Any]) -> str | None:
+    """Why a bearer's request to a write tool's route (`matched`'s template + path params) is
+    wider than the tool, or None (also for every non-write route). Reads the body: the hook
+    chain's Request caches it for the app."""
+    tool = td.write_tool(request.scope["method"], template)
+    if tool is None:
+        return None
+    items = request.query_params.multi_items()
+    accounts = request.headers.getlist("x-account-id")
+    if len({k for k, _ in items}) != len(items) or len(accounts) > 1:
+        return "a parameter is repeated"
+    raw = await request.body()
+    try:
+        body = json.loads(raw) if raw.strip() else {}
+    except (ValueError, RecursionError):  # RecursionError: nested past the decoder's depth → refused, not a 500
+        return "the body must be a JSON object"
+    return td.route_refusal(tool, request.scope["path"], params, dict(items), accounts[0] if accounts else None, body)
 
 
 class StripCookieIdentities:

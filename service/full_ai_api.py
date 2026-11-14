@@ -9,6 +9,11 @@ Shadow Decision rows of today (`ai_decisions`, automations/full_ai_chat.py).
       of today in the Agency's report zone (`stats._report_zone`; UTC without
       one). A row is Jev-failed when its `jev_error` is set.
 
+  POST /admin/full-ai/prepare-content {account_id}      → {run_id, steps, started_at, finished_at}
+  GET  /admin/full-ai/prepare-content/status?account_id= → the same shape (full_ai_prepare)
+      the owner's press only; a running run is returned as is. Chatters are refused
+      before the handler (`chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`).
+
 Guards: the account's owner (`assert_account_owned`); the page's role grant
 is the middleware's (permissions.PAGE_MAP["/full-ai-chatter"]). The page's
 switch rides the shared rule routes (`full_ai_chat` in OPT_IN_KINDS).
@@ -18,15 +23,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, get_args
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 from sqlalchemy import and_, func, select
 
+import full_ai_prepare
 from auth import assert_account_owned
 from automations.full_ai_chat import MODE
 from automations.full_ai_decide import Route
 from db.engine import get_session
 from db.models import AiDecision, Fan
 from isotime import iso_z
+from vault_ai_api import assert_owner_scope
 
 ROUTES: tuple[str, ...] = get_args(Route)
 ROWS = 50
@@ -70,3 +77,21 @@ async def full_ai_today(account_id: str = Query(...)) -> dict[str, Any]:
             "row": d.route_row, "jev_ms": d.jev_ms, "jev_failed": d.jev_error is not None,
         } for d, display, username in rows],
     }
+
+
+async def _prepare_guard(account_id: str) -> None:
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+
+
+@router.post("/admin/full-ai/prepare-content")
+async def prepare_content_start(payload: dict = Body(...)) -> dict[str, Any]:
+    account_id = str(payload.get("account_id") or "")
+    await _prepare_guard(account_id)
+    return await full_ai_prepare.start(account_id)
+
+
+@router.get("/admin/full-ai/prepare-content/status")
+async def prepare_content_status(account_id: str = Query(...)) -> dict[str, Any]:
+    await _prepare_guard(account_id)
+    return full_ai_prepare.view(account_id)

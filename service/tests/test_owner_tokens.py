@@ -3,8 +3,9 @@
 
 Cases:
   case_pure_mint_digest_verdict — `ifw_` token, sha256 digest, hint, verdict table.
-  case_allowlist                — token_auth.allowlist() = the Toolbox's non-send routes + report files
-                                  + /admin/mcp, each a real (method, route template) in server.app.routes.
+  case_allowlist                — token_auth.allowlist() = a literal list (the Toolbox's non-send routes +
+                                  the report download + /admin/mcp), each a real (method, route template) in
+                                  server.app.routes; a send tool's route is never on it.
   case_api_create_list_revoke   — /admin/owner-tokens: plaintext once, days 30|90|365
                                   (default 90), own rows only, revoke.
   case_bearer_resolves          — a bearer alone signs the owner in (allowlisted route); last_used_at set.
@@ -143,8 +144,15 @@ def case_pure_mint_digest_verdict() -> None:
 
 
 def case_allowlist() -> None:
-    want = {(t.method, t.path) for t in td.TOOLS if t.effect != "send"} | {
-        ("POST", "/admin/reports/files"), ("GET", "/admin/reports/files/{file_id}"), ("POST", "/admin/mcp")}
+    want = {  # literal: a route a token newly reaches shows up here as a reviewed diff
+        ("GET", "/admin/accounts"), ("GET", "/admin/automation-kinds"), ("GET", "/admin/automation-rules"),
+        ("GET", "/admin/bio-pages"), ("POST", "/admin/bio-pages"), ("GET", "/admin/bio-pages/{pid}"),
+        ("POST", "/admin/bio-pages/{pid}/avatar/vault"), ("POST", "/admin/bio-pages/{pid}/links"),
+        ("POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault"), ("POST", "/admin/mcp"),
+        ("GET", "/admin/reports/catalogue"), ("POST", "/admin/reports/files"), ("GET", "/admin/reports/files/{file_id}"),
+        ("POST", "/admin/reports/run"), ("GET", "/admin/stats/per-model"), ("GET", "/admin/vault-ai/describe-all/status"),
+        ("GET", "/admin/vault-ai/items"), ("GET", "/admin/vault-ai/of-folders"), ("POST", "/admin/vault-ai/of-folders"),
+        ("POST", "/admin/vault-ai/of-folders/{list_id}/add")}
     assert token_auth.allowlist() == want, token_auth.allowlist() ^ want
     real = {(m, r.path) for r in server.app.routes for m in getattr(r, "methods", None) or ()}
     assert want <= real, want - real

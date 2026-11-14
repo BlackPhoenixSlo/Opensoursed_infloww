@@ -788,6 +788,7 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/sensitive-words/",
     "/admin/roster",       # forced subscriber-roster crawl (ADR 0024 trigger seam) — owner-only
     "/admin/bio-pages",    # Growth > Tracking links > Bio pages: the owner's bio pages editor — owner-only
+    "/admin/full-ai/prepare-content",  # Full AI prepare content: paid describe, the owner's press only (03b)
 )
 
 

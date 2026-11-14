@@ -506,13 +506,19 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
         keep = parse_threshold(payload.get("keep"), vault_scripts.DEFAULT_KEEP_SCRIPTS, 20)
     except ValueError:
         raise HTTPException(status_code=400, detail={"error": "bad_keep"}) from None
-    solo = bool(payload.get("solo"))
-    topics = _topics_or_422(payload.get("topics"))
-    split = bool(payload.get("split", True))
+    return {"account_id": account_id, **await build_ai_folders(
+        account_id, keep=keep, solo=bool(payload.get("solo")), topics=_topics_or_422(payload.get("topics")),
+        split=bool(payload.get("split", True)), mirror_to_of=bool(payload.get("mirror_to_of")))}
+
+
+async def build_ai_folders(account_id: str, *, keep: int, solo: bool, topics: list[str], split: bool,
+                           mirror_to_of: bool) -> dict[str, Any]:
+    """The apply's body (plan → internal AI- folders → optional OF mirror → cache drop),
+    shared with prepare content (full_ai_prepare), which never mirrors."""
     plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=topics, split=split)
     result = await vault_scripts.apply_ai_folders(account_id, plan)
 
-    if payload.get("mirror_to_of"):
+    if mirror_to_of:
         result["created"] = await _mirror_ai_folders_to_of(
             account_id, result["created"], plan)
         result["of_mirrored"] = sum(1 for c in result["created"] if c.get("of_list_id"))
@@ -522,7 +528,7 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
         await vault_cache.invalidate(account_id)
     except Exception:  # noqa: BLE001
         pass
-    return {"account_id": account_id, **result, "summary": plan["summary"]}
+    return {**result, "summary": plan["summary"]}
 
 
 @of_router.post("/admin/vault-ai/duplicates/hide")

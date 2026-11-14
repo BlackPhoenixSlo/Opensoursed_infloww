@@ -226,13 +226,25 @@ def case_send_tools_absent() -> None:
         td.TOOLS = saved
 
 
+def _a_page() -> str:
+    """A bio page of Agency A (no Creator: no OnlyFans read), made by A's own cookie."""
+    r = A.post("/admin/bio-pages", json={"username": f"a_page_{len(_PAGES)}", "display_name": "A"})
+    assert r.status_code == 201, r.text
+    _PAGES.append(r.json()["profile"]["id"])
+    return _PAGES[-1]
+
+
+_PAGES: list[str] = []
+
+
 def case_open_url_every_result() -> None:
     args = {"creators_list": {}, "stats_per_model": {"account_id": CA}, "vault_search": {"account_id": CA},
             "of_folders_list": {"account_id": CA}, "describe_all_status": {"account_id": CA},
             "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
             "report_catalogue": {}, "report_run": {"recipe": {"dataset": "sales", "window": WEEK}},
-            "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}}
-    assert set(args) == {t.name for t in td.TOOLS}, set(args) ^ {t.name for t in td.TOOLS}
+            "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}, "bio_page_get": {"pid": _a_page()}}
+    reads = {t.name for t in td.TOOLS if t.effect == "read"}  # writes: test_toolbox_writes.py
+    assert set(args) == reads, set(args) ^ reads
     fwd = {**HA, "X-Forwarded-Host": "app.example.com", "X-Forwarded-Proto": "https"}
     for name, a in args.items():
         res = _tool(name, a, fwd)

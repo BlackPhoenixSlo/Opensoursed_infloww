@@ -4,8 +4,9 @@ Every handler starts with `owner_context` (no session 401, chatter 403, owner â†
 `owner_user_id`, links go through their owned profile. A foreign or unknown id is 404 (employee_groups precedent);
 a malformed path id is 404 before any query. Bodies: JSON objects checked by the pure `decide.check_profile` /
 `decide.check_link` (422 `{"detail": {"field", "msg"}}`). Every write under `/{pid}` answers the whole page `P`
-(`_page`) and bumps the profile's `updated_at`; that bump is each write transaction's first statement, so the
-SQLite write lock is taken before any read (no read-then-write upgrade) and it doubles as the ownership check.
+(`_page`; link create adds the new link as `link`) and bumps the profile's `updated_at`; that bump is each write
+transaction's first statement, so the SQLite write lock is taken before any read (no read-then-write upgrade) and it
+doubles as the ownership check.
 
 Uploads: multipart `file`, 20 MB cap, decoded and re-encoded to WebP off the event loop (bio_pages/images.py, at most
 two at a time); a new random file name per upload (the bio app serves files immutable). Files are written before the
@@ -19,6 +20,8 @@ Vault avatar: `POST /{pid}/avatar/vault {media_id}` takes a photo of the page's 
 mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload;
 `POST /{pid}/links/{lid}/background/vault` the same for a link's background. Setting a Creator later (PATCH) adds the
 "OnlyFans" link first when the page has no onlyfans.com link yet.
+Audit: link create and both vault picks (the Toolbox write tools' routes) name the page's stored Creator for the
+audit row (`_audit_as`), whatever X-Account-Id / ?account_id= the caller sent.
 
 Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset â†’ `<request origin>/p`, the origin read from
 X-Forwarded-Host/Proto when a proxy set them) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
@@ -44,6 +47,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.datastructures import UploadFile
 
+from audit_log import AUDIT_ACCOUNT
 from bio_pages import decide, files, images
 from bio_pages.assets import PUBLIC
 from db.engine import get_session
@@ -223,6 +227,12 @@ async def _page(s, owner: str, pid: str) -> dict[str, Any]:
 async def _answer(owner: str, pid: str) -> dict[str, Any]:
     async with get_session() as s:
         return await _page(s, owner, pid)
+
+
+def _audit_as(request: Request, page: dict[str, Any]) -> dict[str, Any]:
+    """The audit row names the page's stored Creator, never the caller's X-Account-Id (audit_log.AUDIT_ACCOUNT)."""
+    setattr(request.state, AUDIT_ACCOUNT, page["profile"]["account_id"])
+    return page
 
 
 def _stock_data(stem: str) -> bytes:
@@ -556,7 +566,8 @@ async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
     _id_or_404(pid)
     aid, mid, data = await _vault_image(owner, pid, request, images.AVATAR_SIDE)
     log.info("bio admin: avatar from vault: page=%s account=%s media=%s", pid, aid, mid)
-    return await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar", data)
+    return _audit_as(request, await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar",
+                                              data))
 
 
 @router.delete("/{pid}/avatar")
@@ -591,7 +602,8 @@ async def create_link(pid: str, request: Request) -> dict[str, Any]:
                               sort_order=(top if top is not None else -1) + 1, created_at=now, updated_at=now,
                               **body))
                 await s.flush()
-                return await _page(s, owner, pid)
+                page = await _page(s, owner, pid)
+                return _audit_as(request, {**page, "link": next(lk for lk in page["links"] if lk["id"] == lid)})
         except IntegrityError:
             raise HTTPException(409, "Creator or link id is no longer available.") from None
 
@@ -676,7 +688,8 @@ async def background_from_vault(pid: str, lid: str, request: Request) -> dict[st
     await _require(owner, pid, lid)
     aid, mid, data = await _vault_image(owner, pid, request, images.BACKGROUND_SIDE)
     log.info("bio admin: background from vault: page=%s link=%s account=%s media=%s", pid, lid, aid, mid)
-    return await _set_file(owner, pid, BioLink, BioLink.background_image, "links", lid, "backgroundImage", data)
+    return _audit_as(request, await _set_file(owner, pid, BioLink, BioLink.background_image, "links", lid,
+                                              "backgroundImage", data))
 
 
 @router.delete("/{pid}/links/{lid}/background")

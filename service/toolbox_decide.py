@@ -15,6 +15,16 @@ through the full HTTP stack with the caller's own credential; everything here is
                   non-2xx → {error:{status,detail}}; untrusted text wrapped {"data_only": …}
   open_url        the app page the result opens in (`Open`), on the public app base
   as_mcp / as_openai / as_anthropic   the tool's schema in each client's shape
+  route_refusal   a bearer's RAW request to a write tool's route must be one that tool could
+                  have built (token_auth gates it): the token allowlist grants a whole route,
+                  and these routes take untyped bodies wider than the tool's schema
+
+Write tools (`effect="write"`, step 3; their args + checks live in toolbox_writes): `check`,
+where the route can answer 2xx without doing all that was asked (it swallows a sub-failure, or
+drops / rewrites a field), compares its answer with the args; a mismatch is an error result,
+never success. A route that echoes the args or fails loudly needs none. A tool on a resource id
+(a bio page) takes no `account_id` and sends no Creator: its route audits the resource's stored
+one (audit_log.AUDIT_ACCOUNT).
 
 Send tools (`effect="send"`) carry OF-bound model text: `model_text` names those arg paths and
 `text_kind` the chain stages (docs/plans/ultra-mode/issues/13-send-chain.md); `toolbox.call`
@@ -25,9 +35,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
+
+import toolbox_writes as tw
+from toolbox_args import CREATOR as _CREATOR, Args
 
 Effect = Literal["read", "write", "send"]
 METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
@@ -40,22 +53,23 @@ _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?")
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
 
-class Args(BaseModel):
-    """Base of every tool's args: unknown keys are refused, never dropped."""
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-
 @dataclass(frozen=True)
 class Open:
     """The app page a result opens in. `path` may hold `{name}` placeholders, each filled from
     `fields` (name → "args.<key>" or "result.<key>", explicit: routes name ids differently).
-    `by` = (args key, ((value, path), …)): a page per value of one arg, `path` the default."""
+    `by` = (args key, ((value, path), …)): a page per value of one arg, `path` the default.
+    A placeholder with no value (an error result: no id came back) → no page."""
     path: str
     fields: tuple[tuple[str, str], ...] = ()
     by: tuple[str, tuple[tuple[str, str], ...]] | None = None
 
     def paths(self) -> tuple[str, ...]:
         return (self.path, *(p for _, p in (self.by[1] if self.by else ())))
+
+
+# (validated args, the route's 2xx answer) → None when the answer shows what was asked, else why
+# not (the tool result is then an error).
+Check = Callable[[Mapping[str, Any], Any], "str | None"]
 
 
 @dataclass(frozen=True)
@@ -75,7 +89,7 @@ class Tool:
     description: str
     method: str
     path: str
-    args: type[Args]
+    args: type[Args]  # unknown keys refused
     effect: Effect
     long: bool = False
     untrusted: bool = False
@@ -86,12 +100,13 @@ class Tool:
     text_kind: Literal["mass", "post"] | None = None
     # Constant params the tool always sends (not in the schema), e.g. report_run's format=json.
     fixed: tuple[tuple[str, Any], ...] = ()
+    # Write tools: the echo check (module doc); `replaces`: overwrites (and deletes) what was there
+    # before, e.g. an image file → MCP destructiveHint.
+    check: Check | None = None
+    replaces: bool = False
 
 
 # ── v1 read tools ───────────────────────────────────────────────────────────
-
-_CREATOR = "The Creator's id (an id from creators_list)."
-
 
 class NoArgs(Args):
     pass
@@ -134,6 +149,8 @@ class ReportFileArgs(Args):
     format: Literal["csv", "xlsx"] = Field("csv", description="File format.")
 
 
+_BIO_OPEN = Open("/growth/bio-pages/{profile_id}", fields=(("profile_id", "args.pid"),))
+
 _REPORT_OPEN = Open("/analytics/creator-reports", by=("recipe.dataset", (
     ("employee_sales", "/analytics/employee-reports"),
     ("chat_activity", "/analytics/message-dashboard"),
@@ -170,6 +187,9 @@ TOOLS: tuple[Tool, ...] = (
     Tool("bio_pages_list", "List the Agency's bio (link-in-bio) pages: id, Creator, public URL, links, "
          "30-day views and clicks.",
          "GET", "/admin/bio-pages", NoArgs, "read", open=Open("/growth/bio-pages"), shape=Shape(rows="profiles")),
+    Tool("bio_page_get", "One bio page: its Creator, public URL, avatar and links (ids, titles, destinations, icons, "
+         "18+ and tracking flags, background images).",
+         "GET", "/admin/bio-pages/{pid}", tw.BioPageArgs, "read", open=_BIO_OPEN, shape=Shape(rows="links")),
     Tool("report_catalogue", "The report datasets a recipe may name, their group-bys, metrics, kinds and "
          "window presets. Read before report_run; a report it does not list is not available.",
          "GET", "/admin/reports/catalogue", NoArgs, "read", open=Open("/analytics/creator-reports")),
@@ -181,6 +201,30 @@ TOOLS: tuple[Tool, ...] = (
          "valid 15 minutes for the same access token (Authorization: Bearer).",
          "POST", "/admin/reports/files", ReportFileArgs, "read", open=_REPORT_OPEN,
          shape=Shape(urls=("download_url",))),
+    # Writes. Folder tools act on the Creator's OnlyFans vault over her own session (OF scopes the
+    # folder id to her), so they take account_id; bio page tools send none (the route audits the page's).
+    Tool("of_folder_create", "Create a folder in one Creator's OnlyFans vault, optionally with vault media in "
+         "it. Returns the new folder's id. Not idempotent: each call makes a new folder, so never repeat a "
+         "call that may have worked.",
+         "POST", "/admin/vault-ai/of-folders", tw.FolderCreateArgs, "write", open=_VAULT, check=tw.check_folder_create),
+    Tool("of_folder_add", "Add vault media to one of a Creator's existing OnlyFans vault folders.",
+         "POST", "/admin/vault-ai/of-folders/{list_id}/add", tw.FolderAddArgs, "write", open=_VAULT),
+    Tool("bio_page_create", "Create a bio (link-in-bio) page. Given a Creator, it starts with a link to her "
+         "OnlyFans. Returns the page with its id and links.",
+         "POST", "/admin/bio-pages", tw.BioPageCreateArgs, "write", check=tw.check_bio_page_create,
+         open=Open("/growth/bio-pages/{profile_id}", fields=(("profile_id", "result.profile.id"),)),
+         shape=Shape(rows="links")),
+    Tool("bio_avatar_from_vault", "Set a bio page's avatar to a photo from its Creator's vault.",
+         "POST", "/admin/bio-pages/{pid}/avatar/vault", tw.BioVaultImageArgs, "write", open=_BIO_OPEN,
+         shape=Shape(rows="links"), replaces=True),
+    Tool("bio_link_add", "Add a link (button) to the end of a bio page. Returns the new link as `link` "
+         "(its id is the lid for bio_link_bg_from_vault) and the page.",
+         "POST", "/admin/bio-pages/{pid}/links", tw.BioLinkAddArgs, "write", open=_BIO_OPEN,
+         check=tw.check_bio_link_add, shape=Shape(rows="links")),
+    Tool("bio_link_bg_from_vault", "Set a bio page link's background image to a photo from the page's Creator's "
+         "vault.",
+         "POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault", tw.BioLinkBgArgs, "write", open=_BIO_OPEN,
+         shape=Shape(rows="links"), replaces=True),
 )
 
 # What an owner access token (MCP) may call: every tool but send-class ones, which run
@@ -225,12 +269,9 @@ def build_request(tool: Tool, args: Mapping[str, Any]) -> Request:
     sends the rest as query, a write as a JSON body. `account_id` is also the X-Account-Id
     header and `?account_id=` (the isolation middleware scans query and path only)."""
     rest = {**dict(tool.fixed), **{k: v for k, v in args.items() if v is not None}}
-    path = tool.path
+    path = _fill(tool.path, rest)
     for name in _PLACEHOLDER.findall(tool.path):
-        value = str(rest.pop(name))
-        if not value or "/" in value or value in (".", ".."):
-            raise ArgsError({name: "not a valid id"})
-        path = path.replace("{" + name + "}", value)
+        rest.pop(name)
     headers: dict[str, str] = {}
     query: dict[str, Any] = {}
     aid = rest.get("account_id")
@@ -240,6 +281,45 @@ def build_request(tool: Tool, args: Mapping[str, Any]) -> Request:
     if tool.method in ("GET", "DELETE"):
         return Request(tool.method, path, {**rest, **query}, None, headers)
     return Request(tool.method, path, query, rest, headers)
+
+
+def _fill(template: str, values: Mapping[str, Any]) -> str:
+    path = template
+    for name in _PLACEHOLDER.findall(template):
+        value = str(values.get(name) if values.get(name) is not None else "")
+        if not value or "/" in value or value in (".", ".."):
+            raise ArgsError({name: "not a valid id"})
+        path = path.replace("{" + name + "}", value)
+    return path
+
+
+def write_tool(method: str, template: str) -> Tool | None:
+    return next((t for t in TOOLS if t.effect == "write" and (t.method, t.path) == (method, template)), None)
+
+
+def _canon(v: Any) -> str:
+    return json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def route_refusal(tool: Tool, path: str, path_params: Mapping[str, Any], query: Mapping[str, Any],
+                  header_account: str | None, body: Any) -> str | None:
+    """Why a bearer's raw request to `tool`'s route is not one the tool could have built, or None.
+    One source of truth, `build_request`: the body + path params are validated as the tool's args
+    and rebuilt; the raw path, query, X-Account-Id and body must equal the rebuilt request exactly
+    (JSON-typed: 1 is not true, defaults sent). So a tool with no account_id arg (a bio page tool:
+    its route audits the page's stored Creator) refuses any header or query Creator."""
+    if not isinstance(body, Mapping):
+        return "the body must be a JSON object"
+    try:
+        want = build_request(tool, validate_args(tool, {**body, **path_params}))
+    except ArgsError as e:
+        return f"not what {tool.name} takes: {e}"
+    sent = Request(tool.method, path, dict(query), dict(body),
+                   {} if header_account is None else {"X-Account-Id": header_account})
+    for label, part in (("path", "path"), ("query", "query"), ("X-Account-Id", "headers"), ("body", "json")):
+        if _canon(getattr(sent, part)) != _canon(getattr(want, part)):
+            return f"its {label} is not what {tool.name} sends (want {_canon(getattr(want, part))[:300]})"
+    return None
 
 
 # ── results ─────────────────────────────────────────────────────────────────
@@ -369,35 +449,38 @@ def open_url(base: str | None, op: Open | None, args: Mapping[str, Any], result:
 # ── client schemas ──────────────────────────────────────────────────────────
 
 def _clean(node: Any) -> Any:
-    """Pydantic's schema without titles, with `X | None` collapsed to X (optional = not required)."""
+    """Pydantic's schema without titles, with `X | None` collapsed to X (optional = not required).
+    A property NAMED title (bio_link_add's) is a property, not a schema title: kept."""
     if isinstance(node, dict):
         any_of = node.get("anyOf")
         if isinstance(any_of, list) and len(any_of) == 2 and {"type": "null"} in any_of:
             other = next(a for a in any_of if a != {"type": "null"})
             node = {**{k: v for k, v in node.items() if k != "anyOf"}, **other}
-        return {k: _clean(v) for k, v in node.items() if k != "title"}
+        return {k: ({n: _clean(s) for n, s in v.items()} if k == "properties" and isinstance(v, dict) else _clean(v))
+                for k, v in node.items() if k != "title"}
     if isinstance(node, list):
         return [_clean(x) for x in node]
     return node
 
 
-def args_schema(args: type[Args]) -> dict[str, Any]:
+def args_schema(args: type[BaseModel]) -> dict[str, Any]:
     schema = _clean(args.model_json_schema(by_alias=True))
     schema.setdefault("properties", {})
     schema["additionalProperties"] = False
     return schema
 
 
-def mcp_schema(name: str, description: str, args: type[Args], effect: Effect) -> dict[str, Any]:
+def mcp_schema(name: str, description: str, args: type[BaseModel], effect: Effect,
+               replaces: bool = False) -> dict[str, Any]:
     """An MCP tools/list entry from its parts alone: a Tool's (`as_mcp`), or a tool with no
     route behind it (mcp_api's builtins)."""
     return {"name": name, "description": description, "inputSchema": args_schema(args),
-            "annotations": {"readOnlyHint": effect == "read", "destructiveHint": effect == "send",
+            "annotations": {"readOnlyHint": effect == "read", "destructiveHint": effect == "send" or replaces,
                             "openWorldHint": effect == "send"}}
 
 
 def as_mcp(tool: Tool) -> dict[str, Any]:
-    return mcp_schema(tool.name, tool.description, tool.args, tool.effect)
+    return mcp_schema(tool.name, tool.description, tool.args, tool.effect, tool.replaces)
 
 
 def as_openai(tool: Tool) -> dict[str, Any]:

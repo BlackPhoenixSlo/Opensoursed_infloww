@@ -54,6 +54,11 @@ PROVIDERS: dict[str, LLMProvider] = {
     # 2026-11-07). `x-api-key` header; same key resolution as every provider.
     "anthropic": LLMProvider("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY",
                              wire="anthropic"),
+    # Full AI Chat Writers (phase 03a), both OpenAI-compatible.
+    # ASSUMPTION (evidence blocked): base URLs from D54/D60 research notes, not
+    # probed (no network in the build run). Ticket 40's first real call confirms.
+    "nanogpt": LLMProvider("nanogpt", "https://nano-gpt.com/api/v1", "NANOGPT_API_KEY"),
+    "openrouter": LLMProvider("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
 }
 
 

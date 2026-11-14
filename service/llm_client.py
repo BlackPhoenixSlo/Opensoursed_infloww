@@ -1018,6 +1018,8 @@ async def chat(
     temperature: float = 0.7,
     reasoning_effort: str = "",
     user_id: str | None = None,
+    timeout_s: float | None = None,
+    max_attempts: int | None = None,
 ) -> LLMResult:
     """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra, Z.ai or Anthropic) with full cost + audit.
 
@@ -1056,6 +1058,11 @@ async def chat(
                          (`effort_choices`), not per provider. Passing one to a
                          model that has none is an error, not a no-op. See
                          `effort_options` / `_resolve_effort`.
+        timeout_s:       OPTIONAL per-request timeout; None keeps
+                         `_REQUEST_TIMEOUT_S`. Full AI Writers pass a short one.
+        max_attempts:    OPTIONAL attempt count; None keeps `_LLM_MAX_ATTEMPTS`.
+                         A Writer passes 1 so a 429 or stall reaches the next
+                         Writer at once. Neither kwarg touches the request body.
 
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
@@ -1063,6 +1070,9 @@ async def chat(
     """
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
+    if max_attempts is not None and max_attempts < 1:
+        # Zero attempts would reserve the cap and write a row, then send nothing.
+        raise LLMConfigError(f"max_attempts must be >= 1, got {max_attempts}")
     mdl, prov = _resolve(model)
     native = prov.wire == "anthropic"
     if (response_format or {}).get("type") == "json_object" and not mdl.json_object_ok:
@@ -1138,7 +1148,8 @@ async def chat(
     }
 
     data, latency_ms = await _fire(url, headers, body, call_id=call_id, hold=hold,
-                                   model=model, purpose=purpose)
+                                   model=model, purpose=purpose,
+                                   timeout_s=timeout_s, max_attempts=max_attempts)
     if native:
         data = llm_anthropic.to_openai_response(data)
     return await _finalize_ok(data, latency_ms, call_id=call_id, hold=hold,
@@ -1234,18 +1245,23 @@ async def _give_up(call_id: int | None, hold: _Hold, body: dict, msg: str,
 
 
 async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
-                hold: _Hold, model: str, purpose: str) -> tuple[dict, int]:
+                hold: _Hold, model: str, purpose: str,
+                timeout_s: float | None = None,
+                max_attempts: int | None = None) -> tuple[dict, int]:
     """POST with retries; on a terminal failure also finalizes the error row,
-    refunds `hold` and raises LLMKeyError / LLMHTTPError."""
+    refunds `hold` and raises LLMKeyError / LLMHTTPError. `timeout_s` /
+    `max_attempts` None = the module defaults, read at call time."""
     provider = hold.provider
+    tries = _LLM_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    timeout = _REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     # ── 4. Fire (retry transient faults; see _LLM_MAX_ATTEMPTS) ─────────
     # The reservation + audit row are made ONCE, by the caller. Only the network
     # round trip repeats; a permanent failure finalizes and releases exactly
     # once, below, when llm_attempt_outcome stops retrying.
-    for attempt in range(_LLM_MAX_ATTEMPTS):
+    for attempt in range(tries):
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, json=body)
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             resp.raise_for_status()
@@ -1253,7 +1269,7 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
         except httpx.HTTPStatusError as e:
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             status = e.response.status_code
-            outcome = llm_attempt_outcome(status, attempt, _LLM_MAX_ATTEMPTS)
+            outcome = llm_attempt_outcome(status, attempt, tries)
             # e.response.text is the provider's error body (not our prompt) → safe to keep.
             snippet = (e.response.text or "")[:500]
             if isinstance(outcome, KeyErr):
@@ -1265,7 +1281,7 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
             if isinstance(outcome, Retry):
                 log.warning("llm_client: %s HTTP %s — retry %d/%d model=%s purpose=%s",
                             provider, status, attempt + 1,
-                            _LLM_MAX_ATTEMPTS, model, purpose)
+                            tries, model, purpose)
                 await asyncio.sleep(outcome.pause_s)
                 continue
             await _give_up(call_id, hold, body, msg, latency_ms)
@@ -1279,12 +1295,12 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
             # httpx.RequestError = timeout / connection / transport, all transient.
             # ValueError = resp.json() on a non-JSON body; a re-fire may get a clean one.
             latency_ms = int(round((time.monotonic() - t0) * 1000))
-            outcome = llm_attempt_outcome(type(e).__name__, attempt, _LLM_MAX_ATTEMPTS)
+            outcome = llm_attempt_outcome(type(e).__name__, attempt, tries)
             msg = f"{provider} request error: {type(e).__name__}: {e}"
             if isinstance(outcome, Retry):
                 log.warning("llm_client: %s %s — retry %d/%d model=%s purpose=%s latency=%dms",
                             provider, type(e).__name__, attempt + 1,
-                            _LLM_MAX_ATTEMPTS, model, purpose, latency_ms)
+                            tries, model, purpose, latency_ms)
                 await asyncio.sleep(outcome.pause_s)
                 continue
             await _give_up(call_id, hold, body, msg, latency_ms)

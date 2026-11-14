@@ -298,6 +298,27 @@ MODELS: dict[str, LLMModel] = {
         output_per_1k_cents=0.05, sends_temperature=False, json_object_ok=False,
         reasoning_body=_body(thinking={"type": "disabled"}),
     ),
+    # Full AI Chat Writers (phase 03a): first and second in the default chain.
+    # Prices per D54 / D60 (per 1M ÷ 10). Cached input billed at the full input
+    # rate: no published hit rate, and erring high only tightens the cap.
+    # ASSUMPTION: no reasoning body (Euryale is a non-reasoning Llama 3.3
+    # fine-tune; Hermes 4 reasons only when asked). Overturned if ticket 40's
+    # first real call shows reasoning tokens on either.
+    # ASSUMPTION: json_object_ok=False on both: neither host documents
+    # response_format=json_object for these models, and the Brain dropdown /
+    # model_fits would otherwise offer them on the JSON lanes (gen_info,
+    # welcome_chatter_for_info, copilot). Overturned if a real call shows the
+    # host honours json_object for the model.
+    "euryale-v2.3": LLMModel(
+        "euryale-v2.3", "nanogpt", api_model="Sao10K/L3.3-70B-Euryale-v2.3",
+        input_per_1k_cents=0.0493, input_cache_hit_per_1k_cents=0.0493,
+        output_per_1k_cents=0.0493, json_object_ok=False,  # D54: $0.493/M in and out
+    ),
+    "hermes-4-405b": LLMModel(
+        "hermes-4-405b", "openrouter", api_model="nousresearch/hermes-4-405b",
+        input_per_1k_cents=0.1, input_cache_hit_per_1k_cents=0.1,
+        output_per_1k_cents=0.3, json_object_ok=False,  # D60: $1/M in, $3/M out
+    ),
 }
 
 # The pin must be offerable. A model that defaults to an effort it does not

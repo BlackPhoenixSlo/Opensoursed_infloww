@@ -5,18 +5,17 @@
  * `_persona.compose_persona`: Get to know fans and Auto-reply). One block, shown on both pages, with its own Save
  * ("Save model info"): it PUTs the STORED brain back with only `model_notes` changed (the PUT replaces the brain).
  * The box mounts only once the stored brain is in hand, so a failed read is never saved back; its Save waits while any
- * brain PUT or re-read is out (`useAccountConfigBusy`), so it never lands on a stale copy.
+ * brain PUT or re-read is out (`useAccountConfigBusy`), so it never lands on a stale copy. Form state: `personaDraft.ts`.
  */
 
-import { useState } from "react";
+import { useReducer } from "react";
 
 import { FormBlock } from "@/components/automations/automationPage";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { IfTextArea, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { useAccountConfig, useAccountConfigBusy, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 
-/** account_config_api / _persona.MODEL_NOTES_MAX. */
-const NOTES_MAX = 1000;
+import { buildPayload, initPersonaDraft, MODEL_NOTES_MAX as NOTES_MAX, personaDraftReducer } from "./personaDraft";
 
 /** A form block's fields while its read runs: a label bar over an input-sized bar, twice. */
 export function FormSkeleton() {
@@ -46,7 +45,9 @@ function ModelInfoForm({ accountId, resp }: { accountId: string; resp: AccountCo
   // Any brain PUT or re-read out (this Save's or the page's model Save): `resp` may be stale, a PUT now could undo it.
   const busy = useAccountConfigBusy(accountId);
   // Empty → the prewritten template; its lines left blank never reach a prompt.
-  const [text, setText] = useState(resp.config.model_notes || resp.model_notes_template || "");
+  const [draft, dispatch] = useReducer(personaDraftReducer,
+    resp.config.model_notes || resp.model_notes_template || "", initPersonaDraft);
+  const text = draft.text;
 
   return (
     <>
@@ -59,7 +60,7 @@ function ModelInfoForm({ accountId, resp }: { accountId: string; resp: AccountCo
         value={text}
         onChange={(e) => {
           if (saveM.isSuccess || saveM.isError) saveM.reset();
-          setText(e.target.value);
+          dispatch({ type: "edit", text: e.target.value });
         }}
         rows={7}
         maxLength={NOTES_MAX}
@@ -68,7 +69,7 @@ function ModelInfoForm({ accountId, resp }: { accountId: string; resp: AccountCo
         save={saveVerdict(saveM)}
         label="Save model info"
         disabled={busy}
-        onSave={() => saveM.mutate({ ...resp.config, model_notes: text })}
+        onSave={() => saveM.mutate(buildPayload(resp.config, draft), { onSuccess: () => dispatch({ type: "saved", text }) })}
       >
         <span className="text-[12px] text-muted tabular-nums">{text.length}/{NOTES_MAX}</span>
       </SaveRow>

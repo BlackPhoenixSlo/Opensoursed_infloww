@@ -746,8 +746,8 @@ async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: dateti
 
 async def _token_request(request: Request, call_next, token: str):
     """An owner access token's request (token_auth): it wins outright, never a
-    cookie fallback. A bad token → 401; a route off the token allowlist → 403
-    JSON; else signed in as its owner, clamped to the owner's own Agency
+    cookie fallback. A bad token → 401; a route off the token allowlist, or a
+    write wider than its tool (token_auth.write_refusal) → 403 JSON; else signed in as its owner, clamped to the owner's own Agency
     (is_admin False, so master gates refuse it)."""
     # token_auth.StripCookieIdentities (an outer ASGI layer, server.py) dropped
     # every cookie identity and X-Employee-Id before any Request was built.
@@ -760,8 +760,12 @@ async def _token_request(request: Request, call_next, token: str):
             "invalid, expired or revoked access token", status_code=401,
             headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
         )
-    if not token_auth.allowed(request.scope, request.app.routes):
+    template, params = token_auth.matched(request.scope, request.app.routes)
+    if not token_auth.allowed(request.method, template):
         return JSONResponse({"detail": token_auth.REFUSED}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+    if why := await token_auth.write_refusal(request, template, params):
+        return JSONResponse({"detail": f"{token_auth.WRITE_REFUSED}: {why}"}, status_code=403,
                             headers={"Cache-Control": "no-store"})
     _request_user.set(AuthedUser(owner.user_id, owner.username, owner.account_ids, is_admin=False))
     _request_token.set((owner.token_id, owner.token_name))

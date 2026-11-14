@@ -1142,4 +1142,47 @@ async def case_typesafe_shared_account_bills_only_a_sole_keyed_owner():
             "two keyed owners: picked one instead of the house key"
 
 
+# ── Full AI Chat Writer hosts (phase 03a): NanoGPT + OpenRouter ───────────
+
+_WRITER_HOSTS = ("nanogpt", "openrouter")
+
+
+async def case_seed_the_writer_hosts_owner():
+    _UI["writers"] = await _seed_user("agency_writers", password="secretpw")
+    st = await tenant_keys.status(_UI["writers"])
+    for p in _WRITER_HOSTS:
+        assert st[p] == {"set": False, "hint": ""}, (p, st.get(p))
+
+
+def case_writer_hosts_store_by_put_and_never_read_back():
+    client = _harness.make_client()
+    r = client.post("/auth/login",
+                    json={"username": "agency_writers", "password": "secretpw"})
+    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
+
+    before = client.get("/admin/my-llm-keys")
+    assert before.status_code == 200
+    for p in _WRITER_HOSTS:
+        assert before.json()["providers"][p] == {"set": False, "hint": ""}, before.json()
+
+    raw = {"nanogpt": "ng-writer-key-1234", "openrouter": "or-writer-key-5678"}
+    r = client.put("/admin/my-llm-keys", json=raw)
+    assert r.status_code == 200, f"save failed: {r.status_code} {r.text}"
+    provs = r.json()["providers"]
+    assert provs["nanogpt"] == {"set": True, "hint": "••••1234"}, provs["nanogpt"]
+    assert provs["openrouter"] == {"set": True, "hint": "••••5678"}, provs["openrouter"]
+
+    got = client.get("/admin/my-llm-keys")
+    assert got.status_code == 200
+    assert got.json()["providers"]["nanogpt"]["hint"] == "••••1234"
+    assert got.json()["providers"]["openrouter"]["hint"] == "••••5678"
+    for v in raw.values():
+        assert v not in r.text, "the PUT response echoed a raw key"
+        assert v not in got.text, "the status read returned a raw key"
+
+    for p, v in raw.items():
+        stored = asyncio.run(tenant_keys.get_key(_UI["writers"], p))
+        assert stored == v, f"{p} not stored"
+
+
 _harness.run()

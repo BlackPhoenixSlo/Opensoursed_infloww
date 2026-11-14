@@ -57,6 +57,11 @@ _AUDIT_SKIP_PREFIXES = (
 # of an Employee's activity (clock_api._auto_clock_out).
 BACKGROUND_WRITES = (("POST", "/admin/perflog/"), ("POST", "/admin/errors"))
 
+# `request.state` attribute a route sets to the Creator its write belongs to
+# (the resource's stored one); the audit row's account_id then ignores the
+# caller's X-Account-Id / ?account_id=. Hooks and route share the scope's state.
+AUDIT_ACCOUNT = "audit_account_id"
+
 
 def audit_action(method: str, path: str) -> str:
     """The generic audit row's `actions.action`: "METHOD path"."""
@@ -130,10 +135,16 @@ async def audit_middleware(request: Request, call_next):
             emp_id: int | None = None
             if emp_id_raw and emp_id_raw.isdigit():
                 emp_id = int(emp_id_raw)
-            account_id = (
-                request.headers.get("x-account-id")
-                or request.query_params.get("account_id")
-            )
+            # A route that acts on a resource with its own stored Creator (a bio
+            # page) names that Creator on request.state: it wins over whatever
+            # the caller put in the header or query (None = the resource has none).
+            if hasattr(request.state, AUDIT_ACCOUNT):
+                account_id = getattr(request.state, AUDIT_ACCOUNT)
+            else:
+                account_id = (
+                    request.headers.get("x-account-id")
+                    or request.query_params.get("account_id")
+                )
             user = get_request_user()
             # Chatter principal: the X-Employee-Id header is meaningless
             # (the chatter doesn't pick from /admin/employees and we want

@@ -137,13 +137,25 @@ def case_identity_isolated_both_ways() -> None:
     assert j["inner"]["error"]["status"] == 401 and j["after"] == "agency_b_owner", j
 
 
+def _a_page() -> str:
+    """A bio page of Agency A (no Creator: no OnlyFans read), made by A's own cookie."""
+    r = A.post("/admin/bio-pages", json={"username": f"a_page_{len(_PAGES)}", "display_name": "A"})
+    assert r.status_code == 201, r.text
+    _PAGES.append(r.json()["profile"]["id"])
+    return _PAGES[-1]
+
+
+_PAGES: list[str] = []
+
+
 def case_every_tool_runs_as_owner() -> None:
     args = {"creators_list": {}, "stats_per_model": {"account_id": CA}, "vault_search": {"account_id": CA},
             "of_folders_list": {"account_id": CA}, "describe_all_status": {"account_id": CA},
             "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
             "report_catalogue": {}, "report_run": {"recipe": {"dataset": "sales", "window": WEEK}},
-            "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}}
-    assert set(args) == set(BY_NAME), set(BY_NAME) ^ set(args)
+            "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}, "bio_page_get": {"pid": _a_page()}}
+    reads = {n for n, t in BY_NAME.items() if t.effect == "read"}  # writes: test_toolbox_writes.py
+    assert set(args) == reads, reads ^ set(args)
     for name, a in args.items():
         out = _call(name, a)
         assert "error" not in out, (name, out)

@@ -669,11 +669,10 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
 
     # One sweep per account. Without this, a click on a button that appears to
     # have failed re-runs the whole vault alongside the run already going.
-    if account_id in _flags_running:
+    if not claim_flags(account_id):
         return {"account_id": account_id, "status": "running",
                 "candidates": len(todo), "already": True,
                 "prompt_version": _FLAGS_VERSION}
-    _flags_running.add(account_id)
     asyncio.create_task(_run_flags_all(account_id, todo, force=force))
     return {"account_id": account_id, "status": "running",
             "candidates": len(todo), "already": False,
@@ -984,6 +983,15 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
     finally:
         _describe_running.discard(account_id)
         # keep last progress snapshot for the status endpoint to report "done"
+
+
+def claim_flags(account_id: str) -> bool:
+    """Claim the account's ONE flags sweep (no await: check→add is atomic); False when
+    one already runs. `_run_flags_all` releases it in its finally."""
+    if account_id in _flags_running:
+        return False
+    _flags_running.add(account_id)
+    return True
 
 
 async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:

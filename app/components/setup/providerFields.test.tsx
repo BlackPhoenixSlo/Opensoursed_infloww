@@ -51,3 +51,19 @@ describe("typesafe provider copy", () => {
     expect(HELP.typesafe).toMatch(/server's key/);
   });
 });
+
+describe("Full AI Chat Writer host copy", () => {
+  it("labels NanoGPT and names its Writer and site", () => {
+    expect(LABELS.nanogpt).toMatch(/NanoGPT/);
+    expect(HELP.nanogpt).toMatch(/Full AI Chat/);
+    expect(HELP.nanogpt).toMatch(/Euryale/);
+    expect(HELP.nanogpt).toMatch(/nano-gpt\.com/);
+  });
+
+  it("labels OpenRouter and names its Writer and site", () => {
+    expect(LABELS.openrouter).toMatch(/OpenRouter/);
+    expect(HELP.openrouter).toMatch(/Full AI Chat/);
+    expect(HELP.openrouter).toMatch(/Hermes/);
+    expect(HELP.openrouter).toMatch(/openrouter\.ai/);
+  });
+});

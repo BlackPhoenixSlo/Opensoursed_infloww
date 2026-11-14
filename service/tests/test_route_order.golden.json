@@ -327,6 +327,8 @@
   ["POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault", "background_from_vault"],
   ["DELETE", "/admin/bio-pages/{pid}/links/{lid}/background", "remove_background"],
   ["GET", "/admin/full-ai/today", "full_ai_today"],
+  ["POST", "/admin/full-ai/prepare-content", "prepare_content_start"],
+  ["GET", "/admin/full-ai/prepare-content/status", "prepare_content_status"],
   ["GET", "/admin/secrets", "admin_secrets_status"],
   ["PUT", "/admin/secrets", "admin_secrets_set"],
   ["GET", "/livez", "livez"],

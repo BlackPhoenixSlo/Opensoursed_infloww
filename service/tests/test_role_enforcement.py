@@ -350,6 +350,26 @@ def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_pa
         _reset()
 
 
+def case_full_ai_prepare_content_is_owner_only_and_account_checked():
+    # Paid describe is the owner's press only (03b story 18): a chatter is refused even with the page ticked.
+    start, status = "/admin/full-ai/prepare-content", f"/admin/full-ai/prepare-content/status?account_id={IDS['creator_a']}"
+    body = {"account_id": IDS["creator_a"]}
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        for r in (CHATTER_A.post(start, json=body), CHATTER_A.get(status)):
+            assert r.status_code == 403 and "owner-only endpoint" in r.text, (r.status_code, r.text)
+        _reset()
+        for r in (CHATTER_A.post(start, json=body), CHATTER_A.get(status)):
+            assert r.status_code == 403 and "owner-only endpoint" in r.text, (r.status_code, r.text)
+        # Another owner's Creator: 403 before anything starts (no POST as the owner here: it would run the chain).
+        for r in (OWNER_B.post(start, json=body), OWNER_B.get(status)):
+            assert r.status_code == 403, (r.status_code, r.text)
+        r = OWNER_A.get(status)
+        assert r.status_code == 200 and r.json()["run_id"] is None, r.text
+    finally:
+        _reset()
+
+
 def case_funnel_writes_are_auto_funnels_and_the_list_stays_open():
     new = {"name": "Fixture opt-in funnel", "opening_message": "hey"}
     denied = {"detail": "Your role does not allow Auto Funnel"}

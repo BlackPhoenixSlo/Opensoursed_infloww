@@ -346,6 +346,15 @@ async def _run_collect(account_id: str, run_id: int) -> None:
 async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
     """Kick off a full-vault mirror sweep in the background."""
     assert_account_owned(account_id)
+    run_id = await claim_collect(account_id)
+    asyncio.create_task(_run_collect(account_id, run_id))
+    return {"account_id": account_id, "run_id": run_id, "status": "running"}
+
+
+async def claim_collect(account_id: str) -> int:
+    """The Collect button's setup, shared with prepare content (full_ai_prepare): claim
+    `manual_running` (409 when held), drop the OF listing cache, open the run row.
+    The caller runs `_run_collect(account_id, run_id)`, which releases the claim."""
     if account_id in vault_runs.manual_running:
         raise HTTPException(status_code=409, detail={"error": "collect_already_running"})
     vault_runs.manual_running.add(account_id)
@@ -361,9 +370,7 @@ async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
         run = VaultCacheRun(account_id=account_id, status="running", phase="media")
         s.add(run)
         await s.commit()
-        run_id = run.id
-    asyncio.create_task(_run_collect(account_id, run_id))
-    return {"account_id": account_id, "run_id": run_id, "status": "running"}
+        return run.id
 
 
 def _run_status(row: VaultCacheRun, account_id: str) -> str:

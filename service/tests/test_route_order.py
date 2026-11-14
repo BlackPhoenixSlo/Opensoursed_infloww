@@ -80,6 +80,10 @@ the owner-tokens rows; include_in_schema=False, so the OpenAPI sha1 is unchanged
 Golden refresh (2026-11-14, merge main 713774458 into ultra step 2): main's golden (Full AI routes) plus this
 branch's seven rows above, regenerated; diff vs main's golden = those rows + the sha only.
 
+Golden refresh (2026-11-14, Full AI Prepare content): adds POST /admin/full-ai/prepare-content and GET
+/admin/full-ai/prepare-content/status (full_ai_api) after the full-ai today row; no existing row moves; inspected,
+intentional. Diff vs main's golden (a340051a9) = those two rows + the sha.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

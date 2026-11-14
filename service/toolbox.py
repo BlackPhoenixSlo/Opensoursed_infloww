@@ -22,6 +22,9 @@ Measured by the step-2 spike (.scratch/ultra-s2/spike/RESULT.md):
 Results never raise: a refused tool, bad args or a non-2xx answer come back as
 `{"error": {"status", "detail"}, "open_url"}`. `effect="send"` is refused until the plan
 executor runs approved plan steps (ticket 13).
+
+A 2xx write whose answer fails the tool's `check` (args silently dropped) is a 502 error result,
+never success.
 """
 from __future__ import annotations
 
@@ -103,6 +106,13 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds) -> dict[str, A
     except td.ArgsError as e:
         return {**td.error(422, {"detail": "invalid arguments", "errors": e.errors}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
+    status, body = await _isolated(req, creds)
+    url = td.open_url(base, t.open, parsed, body)
+    if t.check is not None and 200 <= status < 300 and (why := t.check(parsed, body)):
+        return {**td.error(502, {"detail": why}), "open_url": url}
+    return {**td.shape_result(t, status, body, base=base), "open_url": url}
+
+
+async def _isolated(req: td.Request, creds: Creds) -> tuple[int, Any]:
     # An empty Context: the inner request neither sees nor sets the caller's identity.
-    status, body = await asyncio.create_task(_send(req, creds), context=contextvars.Context())
-    return {**td.shape_result(t, status, body, base=base), "open_url": td.open_url(base, t.open, parsed, body)}
+    return await asyncio.create_task(_send(req, creds), context=contextvars.Context())
