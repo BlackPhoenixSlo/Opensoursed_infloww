@@ -83,7 +83,8 @@ THRESHOLDS = {"promo": .7, "says_under_18": .7, "complains_now": .5, "asks_if_ai
               "stop": .6, "price": .7, "wants_content": .7, "declines_buying": .5,
               "says_yes_to_offer": .7, "sexual_now": .7, "gif_fits": .6}
 # The DRAFT test-Mode Nouls' thresholds (ticket 47 phase B; ASSUMPTION: unprobed .7).
-TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7, "scene_on": .7, "scene_offer": .7}
+TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7, "scene_on": .7, "scene_offer": .7,
+                   "wants_content": .65}   # 03d Ask cut-off: test Mode only, Shadow keeps .7
 # `question_version("test")` before ticket 47 phase B put `TEST_THRESHOLDS` in it.
 PRE_47B_TEST_VERSION = "4e30e9162a1e"
 # `question_version("test")` before the sext scene (origin/main c847cb09f).
@@ -104,7 +105,12 @@ def case_constants_pinned():
         (rj.THRESHOLDS, THRESHOLDS, "THRESHOLDS"),
         (set(rj.THRESHOLDS), set(rj.QUESTIONS), "one threshold per question"),
         (rj.TEST_THRESHOLDS, TEST_THRESHOLDS, "TEST_THRESHOLDS"),
-        (set(rj.TEST_THRESHOLDS), set(rj.TEST_NOULS), "one test threshold per DRAFT Noul"),
+        # 03d: every test id is a `TEST_NOULS` or `QUESTIONS` id; a `QUESTIONS` one can only
+        # lower its Shadow cut-off (the union in `fired`).
+        (set(rj.TEST_THRESHOLDS) <= set(rj.TEST_NOULS) | set(rj.QUESTIONS), True, "test ids known"),
+        (set(rj.TEST_NOULS) <= set(rj.TEST_THRESHOLDS), True, "one test threshold per test Noul"),
+        (all(t <= rj.THRESHOLDS[q] for q, t in rj.TEST_THRESHOLDS.items() if q in rj.THRESHOLDS),
+         True, "a test cut-off only lowers Shadow's"),
         (len(rj.INTENSITY["criteria"]), 5, "intensity levels"),
         (rj.STATE_VERSION, 1, "STATE_VERSION"),
         (rj.PURCHASE_DAYS, 7, "PURCHASE_DAYS"),
@@ -145,7 +151,7 @@ def case_fired_at_the_edge():
         assert rj.fired(_quiet(**{q: round(t - .01, 2)})) == frozenset(), (q, "just under")
     assert rj.fired(_quiet()) == frozenset()
     quiet = _quiet(**dict.fromkeys(TEST_THRESHOLDS, 0.0))
-    for q, t in TEST_THRESHOLDS.items():
+    for q, t in ((q, TEST_THRESHOLDS[q]) for q in rj.TEST_NOULS):   # test-only ids
         at, under = {**quiet, q: t}, {**quiet, q: round(t - .01, 2)}
         assert rj.fired(at, "test") == frozenset({q}), (q, "test, at threshold")
         assert rj.fired(under, "test") == frozenset(), (q, "test, just under")
@@ -162,6 +168,17 @@ def case_fired_at_the_edge():
         except KeyError:
             continue
         raise AssertionError(mode)
+
+
+def case_ask_cut_off():
+    """03d: `wants_content` in [.65, .70) fires in test Mode only; .70 in both; .649 in neither."""
+    for p, test, shadow in ((.649, False, False), (.65, True, False), (.69, True, False),
+                            (.70, True, True)):
+        q = _quiet(wants_content=p)
+        assert ("wants_content" in rj.fired(q, "test")) is test, (p, "test")
+        assert ("wants_content" in rj.fired(q)) is shadow, (p, "shadow")
+        assert ("wants_content" in rj.fired(q, "shadow")) is shadow, (p, "shadow")
+    assert rj.question_version() == "b3202b420ab0"
 
 
 def _facts(fired=(), intensity=0.0, *, pending_offer=False, pending_tease=False, jev_ok=True,

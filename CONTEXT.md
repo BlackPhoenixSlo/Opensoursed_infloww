@@ -442,6 +442,18 @@ _Avoid_: brain, classifier, gate (the FM off-script gate, ADR-0026, or a Capacit
 One of the fixed questions in the Router's one Jev request: the yes/no Nouls with their thresholds, the `intensity` Score and the `asks_subject` and `asks_format` Choices. The Choices and the DRAFT Nouls `counter_offer` and `offer_moment` are asked in test Mode only until the owner OKs their wording; Shadow's request and `question_version` stay Phase 01's. Their wording and thresholds are data in one module, and each Decision row records their `question_version` (test rows the test Mode's).
 _Avoid_: Noul (TypeSafe's yes/no answer type, which `intensity` and the Choices are not), signal, check, rule
 
+**Ask cut-off**:
+The probability at or above which the Router question `wants_content` counts as his ask for content: 0.7 in Shadow mode, 0.65 in test Mode (owner 2026-11-14).
+_Avoid_: threshold on its own (every yes/no Router question has one), ask gate, sell threshold
+
+**Sitting**:
+One stretch of a Fan's chat with no gap of more than 120 minutes between consecutive lines; in a Test chat it is normally the whole session.
+_Avoid_: session (the Test chat's, which a Sitting usually equals; or an **Owner session**), conversation, visit
+
+**Spacing**:
+The test Mode rule that she offers an Unasked piece only after at least 3 of his lines since her last Piece, and at most 3 Unasked pieces in a Sitting; an ask always overrides it. It is wording in the unasked-offer Router questions that Jev applies, never a cap in code (ADR-0032). The owner's rule (2026-11-14) is Jev wording, not a code cap, so ADR-0032's "no per-Fan offer limit" still holds.
+_Avoid_: cooldown, offer cap, rate limit, pacing (a paced Turn's `wake_at`, see **Wake**)
+
 **Route**:
 What one Turn does: chat, sext, sell_now, tease, make_right, ai_dare or no_send. A tease (on price or a decline, which never blocks selling) teases now so his next Turn sells; with selling off it is chat.
 _Avoid_: action (the FM off-script gate's per-reason action, ADR-0026), intent, Mode, Lane
@@ -510,8 +522,34 @@ The pure pool, price, pick and Claim audit code (`full_ai_sell.py`) that turns a
 _Avoid_: Seller (the fetch diet's always-fast automation), resolver
 
 **Pick**:
-The Sell executor's media for one Offer or Free item: one clip, or up to four photos from one shoot plus at most one free preview, none of them Owned media.
-_Avoid_: bundle, pack
+The Sell executor's media for one Offer or Free item: one clip, or one photo or a Bundle, plus at most one free preview, none of them Owned media.
+_Avoid_: pack
+ASSUMPTION: this entry was written by an earlier spec run (Phase 01, #574), so "up to four photos from one shoot" is updated for the Bundle; overturned if a human wrote it, then it stands and the Bundle entry carries the change alone.
+
+**Bundle**:
+Two to five photos sold together as one Offer at one price: photos of one shoot, filled up to three with other photos matching his ask when the shoot has too few (owner 2026-11-14: "3-5 sell better sometimes"). A video always sells alone.
+_Avoid_: pack, set, album, shoot (the vault's grouping a Bundle starts from)
+ASSUMPTION: the owner's line means photos per Offer, said right after a one-photo $45 Offer; overturned if he meant Pieces per Sitting.
+
+**Piece**:
+An Offer as Spacing counts it: a Decision row of the Sitting that carried an Offer, whatever its Offer outcome. A Free item or a free preview is not a Piece.
+_Avoid_: PPV on its own (the message kind), item, media, sale (the purchase)
+
+**Unasked piece**:
+A Piece he did not ask for: the Route table sold it because the moment fit (`offer_moment` or `scene_offer`), not because of an ask (`wants_content`, a yes to an offer, a Pending tease or a haggle).
+_Avoid_: upsell, push, cold offer
+
+**Nearest piece**:
+In test Mode, the Offer she sells when nothing in the vault matches his ask: the closest Pick (same subject, then same format, then anything), whose caption never passes it off as what he asked for.
+_Avoid_: substitute, fallback, no_match (the Refusal it replaces)
+
+**Price Jev**:
+In test Mode with the sext scene on, a second Jev request on a fresh priced Pick: one Score that sets the Offer's price on a fixed ladder. A failure keeps the vault's list price; a haggle keeps its clamp.
+_Avoid_: pricing model, price engine, Router question (it is not one)
+
+**Price signals**:
+The facts about the Fan that the Price Jev reads besides the Offer itself: whether he asked for this Piece, whether he has bought before, and his Heat.
+_Avoid_: price rules, price factors, buyer tier
 
 **Owned media**:
 Media a Fan has bought, by any join source, or received as a Free item. It is never offered to him again; unbought media may be re-offered (owner D13).

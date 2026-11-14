@@ -13,6 +13,10 @@
                             v1 without `folders` reads all, unknown key still refused
   case_draft_questions_table (ticket 47) `draft_questions` a bool, default false; a stored v1
                             without it reads false on every side
+  case_sell_spacing_table   (03d ticket 59) `sell_spacing` a bool, default true, labelled "Spacing",
+                            in CONFIG_KEYS; a stored v1 without it reads true
+  case_sell_bundle_table    (03d ticket 61) `sell_bundle` shoot|fill, default fill, a stored v1
+                            without it reads fill, labelled "Photo bundle" on the page
   case_transitions_and_stale_rev put_draft / save / rollback, StaleRev on a rev mismatch,
                             Invalid on a bad draft, nothing to save, nothing to roll back to
   case_config_api_round_trip GET defaults, PUT 422 / 409 / 200, save, roll back twice = identity;
@@ -210,6 +214,38 @@ def case_draft_questions_table():
     # A draft PUT stores it per side.
     s = put_draft(None, {**DEFAULTS, "draft_questions": True}, 0)
     assert (s["draft"]["draft_questions"], s["checkpoint"]["draft_questions"]) == (True, False), s
+
+
+def case_sell_spacing_table():
+    """(03d ticket 59) `sell_spacing`: Spacing's JSON-only switch, a bool, on by default."""
+    import assistant_full_ai
+    assert DEFAULTS["sell_spacing"] is True, DEFAULTS
+    for ok in (True, False):
+        assert validate({**DEFAULTS, "sell_spacing": ok}) == [], ok
+    for bad in ("yes", 1, 0, None, "true"):
+        assert validate({**DEFAULTS, "sell_spacing": bad}) == ["sell_spacing: must be true or false"], bad
+    assert assistant_full_ai.label("sell_spacing") == "Spacing"
+    assert "sell_spacing" in assistant_full_ai.CONFIG_KEYS
+    # Stored v1 from before 03d (no `sell_spacing`): every side reads the default.
+    pre = {k: v for k, v in DEFAULTS.items() if k != "sell_spacing"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "sell_on": True}, "rev": 2})
+    assert got["checkpoint"]["sell_spacing"] is got["previous"]["sell_spacing"] is True, got
+    assert got["draft"]["sell_spacing"] is True and got["draft"]["sell_on"] is True, got["draft"]
+
+
+def case_sell_bundle_table():
+    """(03d ticket 61) `sell_bundle`: "shoot" (today's Pick) or "fill" (up to 5, filled to 3), default fill."""
+    import assistant_full_ai
+    assert DEFAULTS["sell_bundle"] == "fill", DEFAULTS
+    for ok in ("shoot", "fill"):
+        assert validate({**DEFAULTS, "sell_bundle": ok}) == [], ok
+    for bad in ("always", "", None, True, "Fill"):
+        assert validate({**DEFAULTS, "sell_bundle": bad}) == ["sell_bundle: must be one of shoot, fill"], bad
+    assert "sell_bundle" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("sell_bundle") == "Photo bundle"
+    pre = {k: v for k, v in DEFAULTS.items() if k != "sell_bundle"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 2})
+    assert got["checkpoint"]["sell_bundle"] == got["previous"]["sell_bundle"] == got["draft"]["sell_bundle"] == "fill", got
 
 
 # ── Transitions ───────────────────────────────────────────────────────

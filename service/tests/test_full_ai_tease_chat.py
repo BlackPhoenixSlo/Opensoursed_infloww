@@ -269,7 +269,7 @@ def case_free_item_after_buy():
     a PPV of 0 on the last bubble), the FREE item line, no spend line; S4: her "FREE" passes.
     Then it is Owned: his next content ask sells the other photo, never the Free item."""
     pair = "f-buy"
-    with _sell_draft(), _vault(FREE_VAULT):
+    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):     # one-photo Buy: 303 stays unseen
         sold = _buy(pair)
         got, fw, (gift,), _ = _turn(_body(pair, "this is a scam", n=2), f"ok:{SORRY}",
                                     (_hot(complains_now=0.9), 1.0))
@@ -336,7 +336,7 @@ def case_settle_refuses_tease_and_free():
     """spec 03b story 59: settle on a tease row or a Free item row -> 422 `not_a_priced_offer`,
     nothing written."""
     pair = "f-settle"
-    with _sell_draft(), _vault(FREE_VAULT):
+    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):     # one-photo Buy: 303 stays unseen
         _buy(pair)
         free, _, _, _ = _turn(_body(pair, "this is a scam", n=2), f"ok:{SORRY}", (_hot(complains_now=0.9), 1.0))
         tease, _, _, _ = _turn(_body(pair, HOW_MUCH, n=3), f"ok:{TEASE_TEXT}", (_hot(price=0.9), 1.0))

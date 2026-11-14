@@ -16,6 +16,7 @@ vault send, lease, DM rate or OF call: Test chat is off-site by design.
   pending_tease_of(rows, now, ttl_s=900)   pure: the Pending tease row (newest sent row a test
                                tease, at most 15 min old, no outcome since), else None (03b)
   teased_of(row)               pure: a tease row's Pick as `TurnFacts.tease` holds it (03b)
+  spacing_of(rows, now)        pure: the Spacing counts of the Sitting (03d, `sell_spacing`)
   session_rows(account, pair, side=None) / session_row(row)   the session read and its row shape
   fetch(account, pair, side, text, config, photo=None) -> TurnFacts
                                `photo`: his attached image as the photo route described it once
@@ -192,12 +193,14 @@ def _money(cents: int) -> str:
 
 def purchases_of(rows) -> list[str]:
     """The sext scene's `purchases` Jev state (config `sext_scene`): every settled priced Offer
-    (bought or declined), oldest first, in words with its anchor description (`offer_item_ref`
-    `desc`, written by `send` with the flag; none on older rows)."""
+    (bought or declined), in words with its anchor description (`offer_item_ref` `desc`, written by
+    `send` with the flag; none on older rows). Ordered by `outcome_at`, row order breaking ties
+    (03d): an older Offer stays settleable after a newer one, so the last line is his newest
+    purchase, as `bought_of` reads it."""
     out = []
-    for r in _offers(rows):
-        if r.outcome not in ("bought", "declined") or not r.offer_price_cents:
-            continue
+    settled = [r for r in _offers(rows)
+               if r.outcome in ("bought", "declined") and r.offer_price_cents]
+    for r in sorted(settled, key=lambda r: r.outcome_at):
         item = _loads(r.offer_item_ref)
         n, kind = len(_media(r, "locked")), item.get("format") or "item"
         what = f"{n} {kind}{'s' if n != 1 else ''}"
@@ -206,6 +209,33 @@ def purchases_of(rows) -> list[str]:
                 else f"said no to {what} at {price}")
         out.append(f"{line}: {item['desc']}" if item.get("desc") else line)
     return out
+
+
+# A Sitting ends at a gap of more than this between two rows, `now` included (spec 03d › Contracts).
+SITTING_GAP_S = 120 * 60
+UNASKED_ROWS = ("offer_moment", "scene_offer")
+
+
+def spacing_of(rows, now: datetime) -> dict:
+    """Spacing (03d, config `sell_spacing`): the three `router.SPACING_STATE_KEYS` from the session's
+    rows (oldest first) and `now` (his line). The Sitting is the rows after the last gap of more
+    than `SITTING_GAP_S` between consecutive points, `now` the last point. A Piece is a Sitting row
+    with an item ref and a price above 0 (not a Free item, a tease row or a failed / dropped row);
+    Unasked when its `route_row` is an `UNASKED_ROWS` one. His lines since the last Piece are the
+    "in" lines of `test_thread` after it (one per row: a carried line once, a photo one line) plus
+    this Turn's; with no Piece in the Sitting, "no piece yet". Pure."""
+    points = [r.created_at for r in rows] + [now]
+    start = next((i for i in range(len(rows), 0, -1)
+                  if (points[i] - points[i - 1]).total_seconds() > SITTING_GAP_S), 0)
+    sitting = rows[start:]
+    priced = {id(r) for r in _offers(sitting) if r.offer_price_cents > 0}
+    pieces = [i for i, r in enumerate(sitting) if id(r) in priced]
+    lines: int | str = "no piece yet"
+    if pieces:
+        after = sitting[pieces[-1] + 1:]
+        lines = sum(m.direction == "in" for m in test_thread(after)) + 1
+    unasked = sum(sitting[i].route_row in UNASKED_ROWS for i in pieces)
+    return dict(zip(router.SPACING_STATE_KEYS, (lines, len(pieces), unasked)))
 
 
 def open_offer_of(rows):
@@ -321,6 +351,8 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
     scene = fold.get("scene") or None
     if config.get("sext_scene"):        # test Mode only (this module); never in build_state / Shadow
         st = {**st, "purchases": purchases_of(rows), "scene": scene_words(scene)}
+    if config.get("sell_spacing"):      # 03d Spacing: test Mode only, never in build_state / Shadow
+        st = {**st, **spacing_of(rows, now)}
     session = session_key(pair, side)
     return TurnFacts(
         account_id=str(account), fan_id=test_fan_id(pair), mode=MODE,

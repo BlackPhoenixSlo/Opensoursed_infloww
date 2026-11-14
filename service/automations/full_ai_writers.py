@@ -2,6 +2,7 @@
 
   messages_for(route, row, heat, facts, pick, *, persona, hot, plain, scene, gif_ok)  pure: the Route's chat messages
   scene_flag / is_hot / scene_turn / scene_of / gif_offered   pure: the sext scene's switches (`sext_scene`)
+  spacing_flag                                              pure: Spacing's switch (`sell_spacing`, test Mode)
   lead_flag / lead_line / lead_examples                     pure: lead-in asks (`lead_in`, test Mode)
   write(decision, facts, *, deadline) -> WriteResult       the Writer chain through llm_client.chat
   floor(text, lang, offer_ref=None) -> str | None          pure: the code floor's reject reason
@@ -568,6 +569,17 @@ def nearest_flag(facts) -> bool:
 def scene_flag(facts) -> bool:
     """Config `sext_scene` counts: test Mode only (Shadow / live never)."""
     return getattr(facts, "mode", None) == "test" and bool(facts.config.get("sext_scene"))
+
+
+def spacing_flag(facts) -> bool:
+    """Config `sell_spacing` counts (03d Spacing wording): test Mode only (Shadow / live never)."""
+    return getattr(facts, "mode", None) == "test" and bool(facts.config.get("sell_spacing"))
+
+
+def bundle_of(facts) -> str:
+    """Config `sell_bundle` ("shoot" | "fill", phase 03d Bundle): test Mode only; Shadow / live
+    "shoot" (today's Pick)."""
+    return facts.config.get("sell_bundle", "shoot") if getattr(facts, "mode", None) == "test" else "shoot"
 
 
 def is_hot(fired, facts) -> bool:

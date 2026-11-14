@@ -11,6 +11,11 @@
                            the $50 lane; the price Jev's error keeps the list price, recorded
   case_flag_off_asks_none  the same Turn with `sext_scene` off: no scene question, no price Jev,
                            no scene on the row
+  case_price_he_asked      03d: a `sell` row -> `he_asked` "yes" in the price Jev's state and in
+                           `reply_json.price`; an `offer_moment` row (draft questions on) -> "no"
+  case_price_bought_before 03d: "no" before any Buy; two Offers ($20 then $50), the $50 bought
+                           first and the $20 second -> next Turn "yes", `purchases` ends with $20
+  case_haggle_no_price_jev 03d: a haggle row never calls the price Jev
 
 Run: ./venv/bin/python service/tests/test_full_ai_scene_chat.py  (exit 0 = pass)
 """
@@ -58,8 +63,8 @@ def _price(fake):
 
 
 @contextlib.contextmanager
-def _draft(scene: bool):
-    _put_draft({**DEFAULTS, "sell_on": True, "sext_scene": scene})
+def _draft(scene: bool, **extra):
+    _put_draft({**DEFAULTS, "sell_on": True, "sext_scene": scene, **extra})
     try:
         yield
     finally:
@@ -152,6 +157,58 @@ def case_flag_off_asks_none():
     assert pf.calls == [] and "scene" not in rp and "price" not in rp and "level" not in rp, rp
     assert wr.SEXT_SCENE not in _system(fw)
     assert "desc" not in json.loads(row.offer_item_ref), row.offer_item_ref
+
+
+def _signals(fake):
+    (call,) = fake.calls
+    return call["state"]["he_asked"], call["state"]["bought_before"]
+
+
+def case_price_he_asked():
+    with _draft(True, draft_questions=True), _vault({101: "$10", 202: "$50", 303: "$100"}):
+        _, _, _, pf = _turn("pa-sell", 1, "send me pics", {"wants_content": .9}, {},
+                               "ok:i have something", FakePriceJev(1.0))
+        row = _rows("pa-sell")[0]
+        assert row.route_row == "sell" and _signals(pf) == ("yes", "no"), (row.route_row, pf.calls)
+        rp = _reply(row)["price"]
+        assert (rp["he_asked"], rp["bought_before"], rp["jev_cents"]) == ("yes", "no", 2000), rp
+        _, _, _, pf = _turn("pa-moment", 1, "u look so good today", {"offer_moment": .9}, {},
+                               "ok:wanna see more?", FakePriceJev(1.0))
+        row = _rows("pa-moment")[0]
+        assert row.route_row == "offer_moment" and _signals(pf) == ("no", "no"), (row.route_row, pf.calls)
+        rp = _reply(row)["price"]
+        assert (rp["he_asked"], rp["bought_before"]) == ("no", "no"), rp
+
+
+def case_price_bought_before():
+    pair = "pb-order"
+    with _draft(True, draft_questions=True), _vault({101: "$10", 202: "$50", 303: "$100"}):
+        # two different pieces (Jev's `offer_level`: the $10 lane, then the $100 lane), priced $20 then $50
+        _, _, _, pf1 = _turn(pair, 1, "send me pics", {"wants_content": .9}, {"offer_level": "soft"},
+                             "ok:here", FakePriceJev(1.0))
+        _, _, _, pf2 = _turn(pair, 2, "more pls", {"wants_content": .9}, {"offer_level": "explicit"},
+                             "ok:here", FakePriceJev(3.0))
+        r1, r2 = _rows(pair)
+        assert (r1.offer_price_cents, r2.offer_price_cents) == (2000, 5000), (r1.offer_price_cents, r2.offer_price_cents)
+        assert _signals(pf1)[1] == "no" and _signals(pf2)[1] == "no", (pf1.calls, pf2.calls)
+        _settle(pair, r2.id, "bought")
+        _settle(pair, r1.id, "bought")
+        _, _, _, pf3 = _turn(pair, 3, "send me another", {"wants_content": .9}, {}, "ok:here", FakePriceJev(4.0))
+        assert _signals(pf3) == ("yes", "yes"), pf3.calls
+        buys = pf3.calls[0]["state"]["purchases"]
+        assert len(buys) == 2 and buys[-1].startswith("bought ") and " for $20 " in buys[-1], buys
+        assert " for $50 " in buys[0], buys
+        assert _reply(_rows(pair)[2])["price"]["bought_before"] == "yes"
+
+
+def case_haggle_no_price_jev():
+    pair = "ph-haggle"
+    with _draft(True, draft_questions=True), _vault({101: "$10", 202: "$50", 303: "$100"}):
+        _turn(pair, 1, "send me pics", {"wants_content": .9}, {}, "ok:here", FakePriceJev(3.0))
+        _, _, _, pf = _turn(pair, 2, "$20?", {"counter_offer": .9}, {}, "ok:deal babe", FakePriceJev())
+        row = _rows(pair)[1]
+    assert row.route_row == "haggle" and row.offer_price_cents, (row.route_row, row.offer_price_cents)
+    assert pf.calls == [] and "price" not in _reply(row), (pf.calls, _reply(row).get("price"))
 
 
 _harness.run()

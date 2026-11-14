@@ -4,8 +4,9 @@ Not a stream (`_info_jev`'s shape). With config `sext_scene` on a sell_now Turn 
 Pick (not a `haggle` row: its clamp stays), `full_ai_turn._price` asks Jev ONE Score `price` over
 the Offer's contents, its list price, his heat, the saved scene and his purchases; the Pick then
 carries Jev's price (`cents_of`) as both price and list (owner 2026-11-14: "Jev picks the price
-from full info"). No other code rule: only MIN_CENTS..MAX_CENTS clamp it. Any failure keeps the
-vault's list price (`GateError`, the caller records why). Wording: new, DRAFT docs/prompts NEW-134;
+from full info"). 03d: the state carries the Price signals `he_asked` and `bought_before`. No
+other code rule: only MIN_CENTS..MAX_CENTS clamp it. Any failure keeps the vault's list price
+(`GateError`, the caller records why). Wording: new, DRAFT docs/prompts NEW-134 (03d rewrite);
 not probed yet. `PRICE_VERSION` (`price_version()`) goes on the row.
 
   - `PRICE`, `PRICE_LADDER_CENTS`, `PRICE_VERSION`.
@@ -30,24 +31,28 @@ from automations.full_ai_sell import MAX_CENTS, MIN_CENTS, Pick
 MODEL = "jev-1.14.0"
 TIMEOUT_S = 10.0
 MAX_RETRIES = 1
-STATE_KEYS = ("fan_new_messages", "thread", "heat", "scene", "purchases", "offer")
+STATE_KEYS = ("fan_new_messages", "thread", "heat", "he_asked", "bought_before", "scene", "purchases", "offer")
 
 PRICE = {
     "instructions": (
-        "What price should she put on `offer` for this fan right now? Weigh what it holds (how "
-        "many photos or videos, how long, how explicit `shows` is), its usual price "
-        "`list_price`, how turned on he is (`heat`, `fan_new_messages`), and `purchases`: after "
-        "he bought, the next piece can cost more than the last one he paid for; after he said "
-        "no, or when he has never bought, stay lower. Never price a small or soft set like a "
-        "big explicit one."),
+        "What price should she put on `offer` for this fan right now? Start from who he is. "
+        "`bought_before` no: he has never paid her, and a first buy happens at $15 to $35; go to "
+        "$50 only when `heat` is 3 or 4 of 4 and `offer` is nude or explicit. `bought_before` yes: "
+        "the next piece costs about one and a half times the last price he paid in `purchases`, "
+        "never more than double it and never under one and a quarter times it; for a fan who keeps buying that lands at "
+        "$50 to $75. If the newest line of `purchases` is a no, go under the price he refused. "
+        "`he_asked` yes: he asked to see this, so take the higher of two prices that fit; no: she "
+        "offers it without being asked, so take the lower. Then fit it to what `offer` holds (how "
+        "many photos or videos, how long, how explicit `shows` is, its usual price `list_price`): "
+        "never price a small or soft set like a big explicit one."),
     "criteria": [
-        "$10: one or two soft or teasing photos, his first buy, or he just said no to a higher price",
-        "$20: a few soft or topless photos for a fan who is warm or has bought once",
-        "$35: a fully nude set or a short clip for a turned-on fan, or a soft set for a fan who keeps buying",
-        "$50: explicit photos or an explicit clip for a fan who is very turned on or has bought before",
-        "$75: several explicit photos or a longer explicit video for a fan who already paid $25 or more",
-        "$100: her most explicit content (toys, touching herself, sex) for a fan deep in it who already paid $50 or more",
-        "$150: a long, most explicit video for a fan who already paid $100 or more",
+        "$10: only one or two soft photos for a fan who is barely warm, or he just said no to a higher price",
+        "$20: he has never bought and is warm, flirty or turned on, for soft or topless photos; or he last paid $10",
+        "$35: he has never bought and is turned on, for nude or explicit content; or he last paid about $20",
+        "$50: he has never bought, is very turned on (heat 3 or 4 of 4) and it is explicit; or he last paid $25 to $35",
+        "$75: he last paid $40 to $55, for several explicit photos or a longer explicit video",
+        "$100: he last paid $60 to $75, for her most explicit content (toys, touching herself, sex)",
+        "$150: he last paid $80 or more, for a long, most explicit video",
     ],
 }
 PRICE_LADDER_CENTS = (1000, 2000, 3500, 5000, 7500, 10000, 15000)   # one per criterion, same order
@@ -100,11 +105,15 @@ def offer_state(pick: Pick) -> dict[str, Any]:
             "level": pick.lane, "list_price": _dollars(pick.list_cents)}
 
 
-def state(router_state: dict, heat: int, scene: str, purchases: list[str], pick: Pick) -> dict[str, Any]:
-    """His Turn and the thread as the Router reads them, the folded heat, the saved scene and
-    purchases in words, and the Offer."""
+def state(router_state: dict, heat: int, scene: str, purchases: list[str], pick: Pick, *,
+          he_asked: bool, bought_before: bool) -> dict[str, Any]:
+    """His Turn and the thread as the Router reads them, the folded heat, the Price signals (03d:
+    he asked for this Piece, he bought before; "yes"/"no"), the saved scene and purchases in words,
+    and the Offer."""
     return {"fan_new_messages": router_state.get("fan_new_messages"),
-            "thread": router_state.get("thread"), "heat": f"{int(heat)} of 4", "scene": scene,
+            "thread": router_state.get("thread"), "heat": f"{int(heat)} of 4",
+            "he_asked": "yes" if he_asked else "no", "bought_before": "yes" if bought_before else "no",
+            "scene": scene,
             "purchases": list(purchases), "offer": offer_state(pick)}
 
 

@@ -20,6 +20,7 @@ import inspect  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 from sqlalchemy import delete, func, select, text  # noqa: E402
 
@@ -33,7 +34,7 @@ import of_client  # noqa: E402
 import ownership  # noqa: E402
 import tenant_keys  # noqa: E402
 import vault_jev_rules  # noqa: E402
-from automations import full_ai_sell, full_ai_test  # noqa: E402
+from automations import _price_jev, full_ai_sell, full_ai_test  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -199,9 +200,10 @@ def _put_draft(draft: dict) -> int:
 
 
 @contextlib.contextmanager
-def _sell_draft():
-    """A's draft side sells (put through the config API); the checkpoint keeps DEFAULTS (sell off)."""
-    _put_draft({**DEFAULTS, "sell_on": True})
+def _sell_draft(**cfg):
+    """A's draft side sells (put through the config API), `cfg` over it; the checkpoint keeps
+    DEFAULTS (sell off)."""
+    _put_draft({**DEFAULTS, "sell_on": True, **cfg})
     try:
         yield
     finally:
@@ -215,21 +217,22 @@ DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none
            "people_count": 1, "partner_visible": False, "description": "a mirror selfie in jeans"}
 
 
-def _jev(lane5: str) -> dict:
+def _jev(lane5: str, tags: dict | None = None) -> dict:
     return {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane5, "state": {}, "kind": "photo",
-            "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {}}
+            "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": dict(tags or {})}
 
 
 @contextlib.contextmanager
-def _vault(items: dict[int, str]):
-    """A's vault for the block: media id -> Jev lane (`review` = unpriced), then removed."""
+def _vault(items: dict[int, str], *, tags: dict | None = None):
+    """A's vault for the block: media id -> Jev lane (`review` = unpriced), then removed; `tags`
+    are every item's Jev tags (03d: toy photos for the Bundle)."""
     async def add():
         async with get_session() as s:
             for mid, lane in items.items():
                 s.add(VaultItem(account_id=A, media_id=mid, kind="photo",
                                 created_at=T0 + timedelta(days=mid), tags="[]",
                                 describe_status="described", of_folder_ids="[]",
-                                ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane)})))
+                                ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, tags)})))
 
     async def drop():
         async with get_session() as s:
@@ -239,6 +242,27 @@ def _vault(items: dict[int, str]):
         yield
     finally:
         _db(drop)
+
+
+class FakePriceJev:
+    """`_price_jev._client` faked (03d): one `price` score per call, each call's state recorded."""
+
+    def __init__(self, score):
+        self.score, self.calls = score, []
+
+    async def system_one(self, state, questions, model=None):
+        self.calls.append(state)
+        return SimpleNamespace(scores={"price": SimpleNamespace(score=self.score, probabilities={1: .5, 2: .5})})
+
+
+@contextlib.contextmanager
+def _price(fake):
+    real = _price_jev._client
+    _price_jev._client = lambda key: fake
+    try:
+        yield fake
+    finally:
+        _price_jev._client = real
 
 
 PRICED = {101: "$10", 202: "$50"}

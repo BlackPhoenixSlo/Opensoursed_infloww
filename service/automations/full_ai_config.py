@@ -66,7 +66,14 @@ DEFAULTS: dict[str, Any] = {
     # caption as today; "note" = the Writer also plays his ask out as a story from what the piece shows (NEW-140).
     # JSON-only switch (10-control limit).
     "sell_nearest": "note",
+    # Test Mode only (phase 03d Bundle): a fresh photo Offer holds up to 5 photos of its shoot and,
+    # under 3, fills to 3 with other photos matching his ask ("fill"); "shoot" = shoot mates only,
+    # up to 4 photos (today's Pick). JSON-only switch.
+    "sell_bundle": "fill",
     "describe_fan_photos": False,   # read his photo (inbound_describe, DeepInfra); JSON-only switch
+    # Test Mode only (03d): Spacing, the unasked-offer questions read the Sitting's counts
+    # (`full_ai_test.spacing_of`). JSON-only switch.
+    "sell_spacing": True,
 }
 
 
@@ -77,6 +84,7 @@ LEGACY_KEYS: tuple[str, ...] = ("text_style",)         # accepted on a write, ne
 INFO_QUESTIONS: tuple[str, ...] = ("pick", "list")
 CAPTION_WRITERS: tuple[str, ...] = ("chat", "caption")    # full_ai_caption
 SELL_NEAREST: tuple[str, ...] = ("off", "plain", "note")   # full_ai_sell.pick(nearest=)
+SELL_BUNDLE: tuple[str, ...] = ("shoot", "fill")           # full_ai_sell.pick(bundle=)
 MAX_WRITERS = 4
 WRITER_TIMEOUT_S = (5, 60)
 # The Writer hosts (D54, D60): a Writer is a known model on one of them.
@@ -85,7 +93,7 @@ WRITER_PROVIDERS: frozenset[str] = frozenset({"nanogpt", "openrouter", "zai", "d
 FOLDER_REF = re.compile(r"(vf|of):[0-9]+")
 _FOLDER_KEYS = ("include", "exclude")
 _BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
-          "describe_fan_photos")
+          "describe_fan_photos", "sell_spacing")
 
 
 class StaleRev(Exception):
@@ -174,6 +182,8 @@ def validate(cfg: Any) -> list[str]:
         bad("caption_writer", f"must be one of {', '.join(CAPTION_WRITERS)}")
     if c["sell_nearest"] not in SELL_NEAREST:
         bad("sell_nearest", f"must be one of {', '.join(SELL_NEAREST)}")
+    if c["sell_bundle"] not in SELL_BUNDLE:
+        bad("sell_bundle", f"must be one of {', '.join(SELL_BUNDLE)}")
     for k in _BOOLS:
         if not isinstance(c[k], bool):
             bad(k, "must be true or false")

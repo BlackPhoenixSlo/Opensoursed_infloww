@@ -25,7 +25,8 @@ shape: the probe's.
     `sext_scene` also `scene_stage`, `offer_level`), `TEST_NOULS` (DRAFT `counter_offer`,
     `offer_moment`; with `sext_scene` also `scene_on`, `scene_offer`: the `SCENE` set, which
     reads the `SCENE_STATE_KEYS` `full_ai_test.fetch` adds), `DRAFT`, `TEST_THRESHOLDS`,
-    `question_version("test")`, `_questions("test", scene)`; Shadow's request and
+    `question_version("test")`, `_questions("test", scene, spacing)` (03d `TEST_SPACING`,
+    `SPACING_STATE_KEYS`, config `sell_spacing`); Shadow's request and
     digest are unchanged (spec 03b story 66).
   - `fired(answers, mode="shadow")`: the ids at or above their threshold.
   - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
@@ -280,13 +281,46 @@ DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
 # exists; THRESHOLDS' usual value, rung 3); overturned by a measured threshold.
 # ASSUMPTION: `scene_on` / `scene_offer` at 0.7 are unprobed too (same rung). Overturned by a
 # measured threshold.
+# Ask cut-off (03d, owner 2026-11-14): `wants_content` at 0.65 in test Mode; `fired`'s union can
+# only lower Shadow's 0.7, which stays.
 TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7,
-                                     "scene_on": 0.7, "scene_offer": 0.7}
+                                     "scene_on": 0.7, "scene_offer": 0.7, "wants_content": 0.65}
 # The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked only in test Mode with
 # config `sext_scene` (`_questions(mode, scene)`); off, the request is the pre-scene one. They
 # read two state keys only `full_ai_test.fetch` adds with the flag (`SCENE_STATE_KEYS`).
 SCENE = frozenset({"scene_on", "scene_offer", "scene_stage", "offer_level"})
 SCENE_STATE_KEYS = ("purchases", "scene")
+
+# Spacing (03d, config `sell_spacing`, owner 2026-11-14): with the flag, `offer_moment` and
+# `scene_offer` take this wording, which reads the three `SPACING_STATE_KEYS` `full_ai_test.fetch`
+# adds (`spacing_of`). Jev applies the rule (ADR 0032); an ask never reads them. docs/prompts
+# NEW-142 / NEW-143.
+TEST_SPACING: dict[str, dict[str, Any]] = {
+    "offer_moment": _q(
+        "Would this be a good moment for her to offer him some of her content to buy, even "
+        "though he did not ask for it?",
+        "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, "
+        "nothing shows he is upset or cannot pay, and she has room to offer: "
+        "`his_lines_since_last_piece` is 3 or more or says no piece yet, and "
+        "`unasked_pieces_this_sitting` is under 3",
+        "He is upset or complaining, says he cannot pay, asks something serious, the chat is only "
+        "small talk so far, he has sent fewer than 3 lines since her last piece "
+        "(`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not "
+        "ask for (`unasked_pieces_this_sitting` is 3 or more)"),
+    "scene_offer": _q(
+        "They are sexting. Is this a good moment for her to send him a locked photo or video as the "
+        "next step of it?",
+        "He is turned on and into it, they have been sexting for a few messages or he bought and "
+        "still wants more, no locked message of hers is waiting unbought in `thread`, "
+        "`his_lines_since_last_piece` is 3 or more or says no piece yet, and "
+        "`unasked_pieces_this_sitting` is under 3",
+        "The sexting only just started, he just said no to buying or cannot pay, a locked message "
+        "of hers in `thread` is still not bought, she offered him something in her last message, "
+        "he just came, he has sent fewer than 3 lines since her last piece "
+        "(`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not "
+        "ask for (`unasked_pieces_this_sitting` is 3 or more)"),
+}
+SPACING_STATE_KEYS = ("his_lines_since_last_piece", "pieces_this_sitting", "unasked_pieces_this_sitting")
 
 
 def question_version(mode: str = "shadow") -> str:
@@ -294,7 +328,7 @@ def question_version(mode: str = "shadow") -> str:
     thresholds and levels, and the state's shape (`STATE_VERSION`, the
     `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads). For any
     Mode but `test` exactly Phase 01's digest; `test` adds `TEST_CHOICES`,
-    `TEST_NOULS`, `TEST_THRESHOLDS` and `DRAFT` (what test rows record)."""
+    `TEST_NOULS`, `TEST_THRESHOLDS`, `DRAFT`, the scene and Spacing sets (what test rows record)."""
     d: dict[str, Any] = {
         "model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
         "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
@@ -302,7 +336,8 @@ def question_version(mode: str = "shadow") -> str:
     if mode == "test":
         d |= {"test_choices": TEST_CHOICES, "test_nouls": TEST_NOULS,
               "test_thresholds": TEST_THRESHOLDS, "draft": sorted(DRAFT),
-              "scene": sorted(SCENE), "scene_state_keys": list(SCENE_STATE_KEYS)}
+              "scene": sorted(SCENE), "scene_state_keys": list(SCENE_STATE_KEYS),
+              "test_spacing": TEST_SPACING, "spacing_state_keys": list(SPACING_STATE_KEYS)}
     return hashlib.sha256(json.dumps(
         d, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
@@ -503,16 +538,18 @@ def _test_ids(src: dict[str, Any], scene: bool) -> list[str]:
     return [qid for qid in src if scene or qid not in SCENE]
 
 
-def _questions(mode: str = "shadow", scene: bool = False) -> dict[str, Any]:
+def _questions(mode: str = "shadow", scene: bool = False, spacing: bool = False) -> dict[str, Any]:
     """The request's questions: every `QUESTIONS` Noul and the `intensity` Score; in
     test Mode also the `TEST_NOULS` and the `TEST_CHOICES` (built as `_info_jev`'s
-    Choice), after them, the `SCENE` ones only with `scene` (config `sext_scene`). Pure."""
+    Choice), after them, the `SCENE` ones only with `scene` (config `sext_scene`); with
+    `spacing` (config `sell_spacing`) a `TEST_SPACING` id takes that wording, same place. Pure."""
     from typesafe_sdk import Choice, Noul, Score
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
                          for qid, v in QUESTIONS.items()}
     q["intensity"] = Score(instructions=INTENSITY["instructions"], criteria=INTENSITY["criteria"])
     if mode == "test":
-        q |= {qid: Noul(instructions=TEST_NOULS[qid]["instructions"], criteria=TEST_NOULS[qid]["criteria"])
+        src = {**TEST_NOULS, **TEST_SPACING} if spacing else TEST_NOULS
+        q |= {qid: Noul(instructions=src[qid]["instructions"], criteria=src[qid]["criteria"])
               for qid in _test_ids(TEST_NOULS, scene)}
         q |= {qid: Choice(instructions=TEST_CHOICES[qid]["instructions"],
                           criteria=TEST_CHOICES[qid]["criteria"])
@@ -521,7 +558,7 @@ def _questions(mode: str = "shadow", scene: bool = False) -> dict[str, Any]:
 
 
 async def ask(st: dict[str, Any], account_id: str | None = None,
-              mode: str = "shadow", scene: bool = False) -> Answers:
+              mode: str = "shadow", scene: bool = False, spacing: bool = False) -> Answers:
     """Ask every Router question and the `intensity` Score over `st` in one
     request (`_questions(mode)`), on `account_id`'s TypeSafe key. Raises
     `GateError` on any failure; in test Mode a missing or out-of-range
@@ -537,7 +574,7 @@ async def ask(st: dict[str, Any], account_id: str | None = None,
         # ASSUMPTION: Jev wall time is the request alone (SDK retries included),
         # not the key read before it. Overturned if p95 should include the DB.
         t0 = time.perf_counter()
-        res = await _client(key).system_one(st, _questions(mode, scene), model=MODEL)
+        res = await _client(key).system_one(st, _questions(mode, scene, spacing), model=MODEL)
         ms = int((time.perf_counter() - t0) * 1000)
         test = mode == "test"
         nouls = [*QUESTIONS, *(_test_ids(TEST_NOULS, scene) if test else ())]

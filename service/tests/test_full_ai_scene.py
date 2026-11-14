@@ -12,7 +12,9 @@
   case_level_lane                `offer_level` target -> lane; None -> the heat path
   case_cents_of_table            the price ladder interpolated, nearest $5, clamped
   case_offer_state               the price Jev's `offer` from a Pick
-  case_purchases_of              settled priced Offers in words, oldest first
+  case_price_signals_state       03d: `he_asked` / `bought_before` "yes"/"no" after `heat`
+  case_price_version_moves       03d: the price version moves with PRICE or STATE_KEYS
+  case_purchases_of              settled priced Offers in words, by purchase time (`outcome_at`)
   case_haggle_never_above_quote  `_haggled` after a Jev price ends at or under that quote
 
 Run: ./venv/bin/python service/tests/test_full_ai_scene.py  (exit 0 = pass)
@@ -222,15 +224,43 @@ def case_offer_state():
                                                   "items": [{"seconds": 95}], "descriptions": ["toy clip", ""]})
     assert pj.offer_state(vid) == {"photos": 0, "videos": 1, "video_seconds": [95], "free_previews": 1,
                                    "shows": ["toy clip"], "level": "$50", "list_price": "$50"}
-    st = pj.state({"fan_new_messages": ["a"], "thread": ["b"], "x": 1}, 3, "none", ["bought 1"], PICK)
+    st = pj.state({"fan_new_messages": ["a"], "thread": ["b"], "x": 1}, 3, "none", ["bought 1"], PICK,
+                  he_asked=True, bought_before=False)
     assert list(st) == list(pj.STATE_KEYS) and st["heat"] == "3 of 4" and "x" not in st
 
 
+def case_price_signals_state():
+    """03d spec › Interfaces (P): the key order, and the two signals in words."""
+    assert pj.STATE_KEYS == ("fan_new_messages", "thread", "heat", "he_asked", "bought_before",
+                             "scene", "purchases", "offer")
+    for asked, before in ((True, True), (True, False), (False, True), (False, False)):
+        st = pj.state({"fan_new_messages": ["a"], "thread": []}, 2, "none", [], PICK,
+                      he_asked=asked, bought_before=before)
+        assert st["he_asked"] == ("yes" if asked else "no"), st
+        assert st["bought_before"] == ("yes" if before else "no"), st
+
+
+def case_price_version_moves():
+    """The price version moves with the wording or the key list; 03d moved it off 9718d06e3's."""
+    assert pj.PRICE_VERSION == pj.price_version() != "049c1d6b771b"
+    base = pj.price_version()
+    real_p, real_k = pj.PRICE, pj.STATE_KEYS
+    try:
+        pj.PRICE = {**real_p, "instructions": real_p["instructions"] + " x"}
+        assert pj.price_version() != base
+        pj.PRICE, pj.STATE_KEYS = real_p, tuple(k for k in real_k if k != "he_asked")
+        assert pj.price_version() != base
+    finally:
+        pj.PRICE, pj.STATE_KEYS = real_p, real_k
+    assert pj.price_version() == base
+
+
 def case_purchases_of():
-    def r(rid, price, outcome, n, fmt, lane, desc=None):
+    def r(rid, price, outcome, n, fmt, lane, desc=None, at=None):
         ref = {"ref": rid, "format": fmt, "lane": lane, "kind": "offer", **({"desc": desc} if desc else {})}
         return SimpleNamespace(id=rid, offer_item_ref=json.dumps(ref), offer_price_cents=price,
-                               outcome=outcome, offer_media_json=json.dumps({"locked": list(range(n))}))
+                               outcome=outcome, outcome_at=at if at is not None else (rid if outcome else None),
+                               offer_media_json=json.dumps({"locked": list(range(n))}))
     rows = [r(1, 1000, "bought", 2, "photo", "$10", "topless on the bed"),
             r(2, 5000, "declined", 1, "video", "$50", "toy clip"),
             r(3, 0, "bought", 1, "photo", "free"),                      # a Free item: not priced
@@ -240,6 +270,11 @@ def case_purchases_of():
                                      "said no to 1 video at $50: toy clip",
                                      "bought 1 photo for $20 (lane $10)"]
     assert ft.purchases_of([]) == []
+    # 03d: by purchase time, not Offer order: $20 offered first, $50 second, the $50 bought first.
+    late = [r(1, 2000, "bought", 1, "photo", "$10", at=20), r(2, 5000, "bought", 1, "photo", "$50", at=10)]
+    assert ft.purchases_of(late) == ["bought 1 photo for $50 (lane $50)", "bought 1 photo for $20 (lane $10)"]
+    tie = [r(1, 2000, "bought", 1, "photo", "$10", at=5), r(2, 5000, "declined", 1, "photo", "$50", at=5)]
+    assert ft.purchases_of(tie) == ["bought 1 photo for $20 (lane $10)", "said no to 1 photo at $50"]
 
 
 def case_haggle_never_above_quote():

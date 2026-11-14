@@ -61,8 +61,9 @@ from automations.full_ai_sell import Pick, Refusal, Teased
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
-    PURPOSE, _outcome, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, was_cents_of, write,
+    PURPOSE, _outcome, bundle_of, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, was_cents_of, write,
 )
+from automations.full_ai_writers import spacing_flag
 from automations.full_ai_config import merged, turn_bound_s
 from automations.welcome_chatter_for_info import _HISTORY_TAIL, _REPLY_MAX_CHARS
 from db.engine import get_session
@@ -158,7 +159,8 @@ def sender_for(mode: str) -> Callable | None:
 async def _route(facts: TurnFacts) -> tuple[Decision, dict, str | None, int | None, str | None]:
     """Router Jev and the Route table: (decision, jev_json, router model, Jev ms, Jev error)."""
     try:
-        jev = await router.ask(facts.state, facts.account_id, mode=facts.mode, scene=scene_flag(facts))
+        jev = await router.ask(facts.state, facts.account_id, mode=facts.mode, scene=scene_flag(facts),
+                               spacing=spacing_flag(facts))
         fired, intensity, error = router.fired(jev.answers, facts.mode), jev.intensity, None
         answers, score, model, ms = jev.answers, {"score": jev.intensity, "p": jev.intensity_p}, jev.model, jev.ms
         choices = jev.choices
@@ -334,7 +336,9 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     (`LEVEL_CENTS`; "any" keeps the heat target), recorded as `reply["level"]`.
     Nearest piece (config `sell_nearest` "plain" / "note", `nearest_flag`): a fresh sell_now Pick
     (no haggle, tease piece or Free item) whose ask nothing matches sells the nearest piece
-    (`pick(nearest=True)`), recorded as `reply["nearest"]` = {asked_subject, asked_format, step}."""
+    (`pick(nearest=True)`), recorded as `reply["nearest"]` = {asked_subject, asked_format, step}.
+    Bundle (config `sell_bundle`, `bundle_of`, 03d): the same fresh Pick passes `bundle="fill"` (up to
+    5 photos, filled to 3); everything else keeps `"shoot"`, today's Pick."""
     reply = {} if reply is None else reply
     aid = facts.account_id
     heat = max(1, min(4, int(facts.scene_now["heat"] if facts.scene_now else d.heat)))
@@ -374,10 +378,11 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
             if haggle:
                 pool = [r for r in pool if r["list_cents"] <= teased.list_cents]
             shoots = await full_ai_sell.shoots_for(aid, pool, prints)
+            fresh = d.route == "sell_now" and not (haggle or teased)
             got = full_ai_sell.pick(pool, shoots, ask, free=free, target=level_target,
                                     seed=full_ai_sell.seed_for(aid, str(facts.fan_id), facts.anchor_key),
-                                    nearest=(nearest_flag(facts) and d.route == "sell_now"
-                                             and not (haggle or teased)))
+                                    nearest=nearest_flag(facts) and fresh,
+                                    bundle=bundle_of(facts) if fresh else "shoot")
             if isinstance(got, Pick) and "asked" in got.facts:
                 reply["nearest"] = {"asked_subject": ask.subject, "asked_format": ask.format,
                                     "step": got.facts["nearest"]}
@@ -389,18 +394,22 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
         facts.pick = Refusal("inventory_unknown")
 
 
-async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int) -> None:
+async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, row: str) -> None:
     """The price Jev (`_price_jev`, config `sext_scene`) on a fresh priced sell_now Pick: Jev's price
     becomes the Pick's price and list (what a later haggle and the WAS price measure against), the
     vault's list kept in `facts["vault_list_cents"]`. Any failure keeps the list price; never fails
-    the Turn. Sets `reply["price"]` = {list_cents, jev_cents, score, p, ms, error, version}."""
+    the Turn. Sets `reply["price"]` = {list_cents, jev_cents, score, p, ms, error, version, he_asked,
+    bought_before}. Price signals (03d): the rows reaching here are sell, offer_moment and
+    scene_offer, so `row == "sell"` is he asked; he bought before once any Offer was bought."""
     p = facts.pick
-    out: dict[str, Any] = {"list_cents": p.list_cents, "jev_cents": None, "score": None, "p": None,
-                           "ms": None, "error": None, "version": _price_jev.PRICE_VERSION}
-    reply["price"] = out
     heat = facts.scene_now["heat"] if facts.scene_now else heat
     st = _price_jev.state(facts.state, heat, scene_words(facts.scene_now),
-                          facts.state.get("purchases") or [], p)
+                          facts.state.get("purchases") or [], p,
+                          he_asked=row == "sell", bought_before=bool(facts.spent))
+    out: dict[str, Any] = {"list_cents": p.list_cents, "jev_cents": None, "score": None, "p": None,
+                           "ms": None, "error": None, "version": _price_jev.PRICE_VERSION,
+                           "he_asked": st["he_asked"], "bought_before": st["bought_before"]}
+    reply["price"] = out
     try:
         got = await _price_jev.ask(st, facts.account_id, timeout_s=deadline - time.monotonic())
     except router.GateError as e:
@@ -602,7 +611,7 @@ async def run_turn(facts: TurnFacts) -> TurnResult:
             if isinstance(facts.pick, Refusal):
                 reply["refusal"] = facts.pick.reason
             elif scene_flag(facts) and d.route == "sell_now" and d.row != "haggle" and facts.pick.price_cents:
-                await _price(facts, reply, deadline, d.heat)
+                await _price(facts, reply, deadline, d.heat, d.row)
         pick = facts.pick if isinstance(facts.pick, Pick) else None
         caption = await _caption(d, facts, reply, pick, deadline) if _ppv_turn(d, facts) else None
         caption_typos = dict(reply["typo_state"])

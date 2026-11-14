@@ -376,7 +376,7 @@ def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]]
 
 def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
          seed: str, free: bool = False, target: int | None = None,
-         nearest: bool = False) -> Pick | Refusal:
+         nearest: bool = False, bundle: str = "shoot") -> Pick | Refusal:
     """One Pick from `pool` (`pool()`'s rows, the sell step having handled its Refusal) for `ask`,
     by a seeded draw (`seed_for`). Pure.
 
@@ -405,7 +405,17 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     no match relaxes (`_nearest`) instead of Refusal("no_match"), then the same lane / shoot /
     preview logic runs on the relaxed rows (nothing priced there is still no_priced_items). The
     Pick's `facts["asked"]` = {subject, format} records his ask and `facts["nearest"]` the step;
-    an exact match records neither. Ignored with `free`."""
+    an exact match records neither. Ignored with `free`.
+
+    `bundle="fill"` (config `sell_bundle`, a fresh test-Mode sell_now photo Pick only, phase 03d
+    Bundle): up to 4 shoot mates (5 photos at most); under 3 photos, it fills to 3 with other
+    matching priced photos at or under the anchor's price (sorted by media id, shuffled after the
+    mates), never Owned and never two of a dupe group (both already out of `pool`). Subject
+    "anything" (the generic "send me pics", the common ask) fills only from the anchor's own price
+    lane, so the set stays one level (owner proof 2026-11-14: both generic Offers held 1 photo).
+    "shoot" (the default) is the path above, rng sequence unchanged.
+    ASSUMPTION (spec 03d): near-dupe `prints` are not checked.
+    Ignored with `free`."""
     rng = random.Random(seed)
     if free:
         unseen = [r for r in pool if r["list_cents"] > 0 or _free_safe(r)]
@@ -442,7 +452,15 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
              and r["kind"] == "photo" and r["list_cents"] <= anchor["list_cents"]]
     mates.sort(key=lambda r: r["media_id"])
     rng.shuffle(mates)
-    locked = [anchor, *mates[:3]]
+    locked = [anchor, *mates[:4 if bundle == "fill" else 3]]
+    if bundle == "fill" and len(locked) < 3:
+        have = {r["media_id"] for r in locked}
+        same_lane = (subject or ask.subject) == "anything"      # no subject to hold a mix together
+        fill = sorted((r for r in cands if r["kind"] == "photo" and r["media_id"] not in have
+                       and (r["list_cents"] == anchor["list_cents"] if same_lane
+                            else r["list_cents"] <= anchor["list_cents"])), key=lambda r: r["media_id"])
+        rng.shuffle(fill)
+        locked += fill[:3 - len(locked)]
     preview = next((by_id[m] for m in in_shoot if m in by_id and by_id[m]["kind"] == "photo"
                     and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])), None)
     return _missed(_offer(locked, [preview] if preview else [], ask, free=False, subject=subject), miss)
