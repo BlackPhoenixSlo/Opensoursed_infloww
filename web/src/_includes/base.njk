@@ -52,8 +52,8 @@
     <link rel="icon" type="image/svg+xml" href="{{ '/favicon.svg' | url }}" />
     <link rel="apple-touch-icon" href="{{ '/apple-touch-icon.png' | url }}" />
     <link rel="alternate" type="application/rss+xml" title="{{ site.name }} blog" href="{{ '/feed.xml' | url }}" />
-    <link rel="stylesheet" href="{{ '/assets/main.css' | url }}" />
-    <script src="{{ '/assets/main.js' | url }}" defer></script>
+    <link rel="stylesheet" href="{{ '/assets/main.css' | url }}?v={{ assetVersion }}" />
+    <script src="{{ '/assets/main.js' | url }}?v={{ assetVersion }}" defer></script>
   </head>
   <body>
     {% include "sprite.njk" %}

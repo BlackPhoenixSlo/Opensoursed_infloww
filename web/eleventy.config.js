@@ -1,5 +1,6 @@
 // Eleventy builds src/ into dist/. The Tailwind CLI writes dist/assets/main.css
 // first (see package.json), so Eleventy only renders HTML and copies files.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { HtmlBasePlugin } from "@11ty/eleventy";
 
@@ -78,6 +79,19 @@ export default function (eleventyConfig) {
   // public/img/README.md documents the screenshots; it is not part of the site.
   eleventyConfig.addPassthroughCopy({ public: "/" }, { filter: (path) => !path.endsWith("img/README.md") });
   eleventyConfig.addPassthroughCopy({ "src/main.js": "assets/main.js" });
+  // The host caches /assets/* for a week, so base.njk appends ?v=<hash of both files>: a deploy that
+  // changes them changes the URL (else old CSS lingers, e.g. the #demo iframe fell back to 150px).
+  eleventyConfig.addGlobalData("assetVersion", () => {
+    const hash = createHash("sha256");
+    for (const file of ["./dist/assets/main.css", "./src/main.js"]) {
+      try {
+        hash.update(readFileSync(new URL(file, import.meta.url)));
+      } catch {
+        hash.update(String(Date.now()));
+      }
+    }
+    return hash.digest("hex").slice(0, 10);
+  });
   // `eleventy --serve` reloads when Tailwind rewrites the stylesheet.
   eleventyConfig.setServerOptions({ watch: ["dist/assets/*.css"] });
 
