@@ -1,4 +1,4 @@
-{#- Their nav, our pages: Pricing · Download · Resources (dropdown) · Help, then Live demo (their "Book a demo", but it is a running app) + the primary CTA.
+{#- Their nav, our pages: Pricing · Download · MCP · Resources (dropdown) · Help, then Live demo (their "Book a demo", but it is a running app) + the primary CTA.
     No JS: the Resources dropdown and the mobile menu are native <details>; the mobile menu lists Resources inline.
     main.js only adds closing on Escape, an outside click, or focus leaving the menu. -#}
 {%- set resourcesNav = [
@@ -32,6 +32,7 @@
       <ul class="flex items-center">
         <li><a class="nav-link" href="{{ '/pricing/' | url }}"{{ current('/pricing/', page.url) }}>Pricing</a></li>
         <li><a class="nav-link" href="{{ '/download/' | url }}"{{ current('/download/', page.url) }}>Download</a></li>
+        <li><a class="nav-link" href="{{ '/mcp/' | url }}"{{ current('/mcp/', page.url) }}>MCP</a></li>
         <li>
           <details class="group relative">
             <summary class="nav-link cursor-pointer gap-1">
@@ -65,6 +66,7 @@
         <ul class="wrap py-3">
           <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/pricing/' | url }}"{{ current('/pricing/', page.url) }}>Pricing</a></li>
           <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/download/' | url }}"{{ current('/download/', page.url) }}>Download</a></li>
+          <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/mcp/' | url }}"{{ current('/mcp/', page.url) }}>MCP</a></li>
           <li class="mt-2">
             <p id="mobile-resources" class="text-sm font-medium text-muted">Resources</p>
             <ul aria-labelledby="mobile-resources" class="border-l border-line pl-4">

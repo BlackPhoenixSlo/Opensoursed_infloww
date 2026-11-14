@@ -1,0 +1,75 @@
+---
+layout: page.njk
+title: "MCP"
+description: "Connect Claude Code, or any MCP client, to your Inflowwww agency: read stats and reports, organise the vault, edit bio pages, and prepare sends you approve in the browser."
+---
+<p><strong>Inflowwww has a built-in MCP server. Point an AI client at it and it can work in your agency with the same tools the app uses.</strong></p>
+<p>
+  The address is <code>{{ site.appUrl }}/admin/mcp</code>. If you run your own copy, use your own app address with
+  <code>/admin/mcp</code> at the end. Owners only: employee logins get no access.
+</p>
+
+<h2 id="connect">Connect in three steps</h2>
+<ol>
+  <li>
+    In the app, open <strong>Settings → AI keys → Access tokens</strong> and create a token. It starts with
+    <code>ifw_</code> and is shown once.
+  </li>
+  <li>
+    Add the server to your client. The token goes in the client's config, never into the chat. For Claude Code:
+  </li>
+</ol>
+<pre class="overflow-x-auto whitespace-pre"><code>claude mcp add --transport http inflowwww {{ site.appUrl }}/admin/mcp \
+  --header "Authorization: Bearer ifw_YOUR_TOKEN"</code></pre>
+<ol start="3">
+  <li>In Claude Code, run <code>/mcp</code>. It lists <code>inflowwww</code> as connected, with its tools.</li>
+</ol>
+<p>A client that only speaks stdio can go through <code>mcp-remote</code>:</p>
+<pre class="overflow-x-auto whitespace-pre"><code>npx mcp-remote {{ site.appUrl }}/admin/mcp --header "Authorization: Bearer ifw_YOUR_TOKEN"</code></pre>
+
+<h2 id="no-token">No token yet</h2>
+<p>Add the server without the header. Three tools work with no token at all:</p>
+<ul>
+  <li><code>register_account</code>: makes a new agency from a username, a password and an agency name, and answers with a token.</li>
+  <li><code>login</code>: signs an owner in with username and password (plus <code>code</code> if two-factor is on) and answers with a token.</li>
+  <li><code>connect_account</code>: answers with the sign-up and log-in links, if you would rather do it in the browser.</li>
+</ul>
+<p>
+  Then add the server again with the token in the header. Each <code>register_account</code> or <code>login</code> call
+  makes a new token; revoke old ones on the Access tokens card.
+</p>
+
+<h2 id="what-it-can-do">What it can do</h2>
+<ul>
+  <li><strong>Read</strong>: creators, stats, vault search, folders, automation rules, bio pages, reports.</li>
+  <li><strong>Reports</strong>: run a report, or get the whole file as a download link that lasts 15 minutes.</li>
+  <li><strong>Organise</strong>: make and fill OnlyFans folders, create and edit bio pages.</li>
+  <li>
+    <strong>Send</strong>: never on its own. The client proposes a plan with the exact text and audience, you open the
+    link and press OK in your browser, and only then does the mass message or post go out.
+  </li>
+</ul>
+<p>Every result carries an <code>open_url</code>: the app page that shows the same thing.</p>
+
+<h2 id="try">Things to ask</h2>
+<ul>
+  <li>"How did last week go for each creator? Put it in a table."</li>
+  <li>"Run the monthly report and save the file to my desktop."</li>
+  <li>"Make a folder called Halloween and add the ten newest photos that fit."</li>
+  <li>"Draft a mass message for fans who spent over $50, and give me the link to approve it."</li>
+</ul>
+
+<h2 id="limits">What it cannot do</h2>
+<ul>
+  <li>Send anything without your OK in the browser.</li>
+  <li>Take OnlyFans logins. Those are pasted in the app, on the logins page that <code>connect_account</code> links to.</li>
+  <li>Change keys, passwords, team members or sharing. A token only reaches this server's tools and its report files.</li>
+  <li>Run from a web page: the server refuses browser requests.</li>
+</ul>
+<p>Revoking the token on the Access tokens card cuts the client off on its next call.</p>
+
+<h2 id="more">More</h2>
+<p>
+  The same steps live in the repository:
+  <a href="{{ site.repo }}/blob/main/docs/runbooks/mcp-connect.md">docs/runbooks/mcp-connect.md</a>.
+</p>
