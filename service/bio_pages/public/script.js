@@ -138,11 +138,14 @@ document.addEventListener('DOMContentLoaded', () => {
         profileContainer.bio.textContent = profile.bio;
         profileContainer.avatar.src = profile.avatarUrl;
 
-        // Backdrop, the avatar blurred: style.css body::before on desktop, #igOverlay::before at every width.
-        if (profile.avatarUrl) {
+        // Backdrop: the page's background picture, dimmed at every width (body.has-backdrop); else the avatar
+        // blurred: style.css body::before on desktop. #igOverlay::before shows it at every width.
+        const backdrop = profile.backgroundUrl || profile.avatarUrl;
+        if (backdrop) {
             document.documentElement.style.setProperty('--backdrop-url',
-                'url("' + profile.avatarUrl.replace(/["\\]/g, '\\$&') + '")');
+                'url("' + backdrop.replace(/["\\]/g, '\\$&') + '")');
         }
+        if (profile.backgroundUrl) document.body.classList.add('has-backdrop');
 
         // User Request: Avatar as Page Icon (Favicon)
         let link = document.querySelector("link[rel~='icon']");

@@ -16,7 +16,8 @@ Run started 2026-11-13. Invocation: `/spec-auto` "Build Ultra mode + MCP … one
 | 1 | Report recipe + Do-mode export | ultra/s1-report-export | #571 (+#572 strip patch, #573 watch check) | 98b6c5341 | AE 86550c8a1, public c78dfad84, demo; landing n/a |
 | 2 | Owner tokens + Toolbox read tools + /admin/mcp | ultra/s2-tokens-toolbox-mcp | #578 | 9789b4cef | AE 3f5fe8b84, public c64a4da3d, demo (2026-11-14) |
 | 3 | Toolbox write tools (OF folders, bio pages) + bearer write gate | ultra/step3-write-tools | #593 | d1e75031f | AE 34b8dd3f5, public 6168282b4 (2026-11-14); demo skipped (its check red on #595's unclassified route) |
-| 4 | Send chain + mass_send/post_create + ultra_plans executor + plan page | ultra/step4-send-chain-plans | | | |
+| 4 | Send chain + mass_send/post_create + ultra_plans executor + plan page | ultra/step4-send-chain-plans | #602 | 30bb19322 | public 013a39228 · AE fc3b37ed5 · demo |
+| 5 | In-app Ultra: planning loop, judge + pick, rule tools, not_nude, bio background, Ultra panel | ultra/step5-in-app | #605 | (squash, see git log) | (see final report) |
 
 ## Step 1 notes
 
@@ -63,6 +64,22 @@ Run started 2026-11-13. Invocation: `/spec-auto` "Build Ultra mode + MCP … one
 - rwl round 2 R2: the mass route reports `_user_ids_kept` {asked, kept} (additive); a send step with fewer fans than approved carries a plain note (page + plan_status); Ultra sends `require_recipients`, so nobody left → 422, step failed, nothing sent.
 - Proof (measured, offline demo stack 2026-11-14, launcher outside service/): MCP propose → browser OK → 1 mass + 1 post, text byte-equal to card; refusals (off-platform, $ref in send, bearer OK 403, wrong sha 409); mass 500 → uncertain, post skipped, 1 call; cancel → OK 409; audit 1 row per inner write/send, none for /admin/mcp or /admin/ultra/plans*; ultra_done notification. Known: mass and post in one plan run back to back (no write gap between sends on one Creator) → revisit in step 5.
 - Not in step 4 (F4): automation-rule send tools, judge steps, long/needs_you steps, in-app planning loop.
+
+## Step 5 notes (slice A: in-app planning loop)
+
+- Built: `llm_client.chat(tools, tool_choice)` (DeepSeek only; others → LLMConfigError), `LLMResult.tool_calls`, `cap_state(user_id=)`; `ultra_plan_decide.py` (pure: prompt NEW-124, tools = READ + `submit_plan`, caps 25 turns / 100¢, 12 kB result cut); `ultra_plan.py` (loop); `POST /admin/ultra/plans {request}` (owner cookie only; demo LOCKED). No migration: a `planning` row's plan_json holds `planning:{turns,max_turns,last_tool,error?}`.
+- DEVIATION: `submit_plan` resets `created_at`, so the 10 min OK window starts at `awaiting_ok`, not at request.
+- DEVIATION: a reply with no tool call gets one nudge; 2 in a row → failed. tool_choice left auto.
+- Cancel is cooperative (guarded progress write each turn); an in-flight read may finish after cancel.
+- Not in slice A: judge steps / pick cards (B), UI (C).
+- rwl5 B1: a judge's candidates come only from earlier `vault_search` steps on one literal account_id; any step using its picks carries that account_id (PlanError names step + field).
+- rwl5 M1: `auto_mass.media_folder_id` / `auto_story.folder_id` may be `$<earlier of_folder_create>.id` (same account_id), the only send ref besides judge media; card "folder created in step X (name)"; `resolved` + may_send cover the made id.
+- rwl5 M2: `bio_page_background.media_id` may be `$<judge>.ids.0` when that judge has pick_n 1; the page's Creator must be the judge's (checked at run time, step failed before the call otherwise).
+- rwl5 M3: a send's omitted defaults are written into the stored plan (sha, card, request agree); rule_body keeps 0 (`hours_to_live: 0` = the app never deletes; OF expires the story).
+- rwl5 M4: auto_mass / auto_story are a plan's last steps (only other rule steps after them): a rule goes live at once, later steps could wait or be cancelled.
+- rwl5 M5-M10: ud.resolve / ud.started; one llm_failure + MODEL + spend cap (ultra_plan_decide); plan-step schema once (service/ultra_schema.py); card + owner texts in service/ultra_card.py; vault_jev_rules.current_sql beside current().
+- rwl5 m1-m3: ≤8 tool calls run per planner reply; a judge error fails the step (never uncertain); a cancel during the judge call drops its picks (no needs_you, no notification).
+- rwl5 m15: the bio service never runs init_db and starts beside the relay on deploy, so it reads a page without bio_profiles.background_image as backdrop-less until the relay adds it (was a 503 per view).
 
 ## Fable consults
 

@@ -16,6 +16,8 @@ one-shot Writer call.
      line only on rows `sell_off` / `tease_off`; sext at Heat with her Model
      info; ai_dare two beats in order; make_right the apology frames, no free
      item; the cat-sticker block only with `gifs` on; no_send builds nothing.
+  5. `style_flags` per `style` layer: one layer off turns its switch off alone; an old
+     `text_style` side reads girl = all on, formal = all off; typos never reach the prompt.
 
 Offline: the transport is stubbed, no provider is called.
 
@@ -266,6 +268,15 @@ def case_floor_reads_the_reply_without_its_sticker_marker():
     ]
     for text, gifs, want in table:
         assert reject(text, "en", gifs) == want, (text, gifs, reject(text, "en", gifs), want)
+    # With an offer expected (a Pick's ref) a marker-only reply is no answer: the next Writer is tried.
+    offer_table = [
+        ("STICKER: kiss", True, 4242, "no_letters"),
+        ("[STICKER: kiss]", True, 4242, "no_letters"),
+        ("STICKER: kiss", True, None, None),
+        ("its $50 babe\nSTICKER: kiss", True, 4242, None),
+    ]
+    for text, gifs, ref, want in offer_table:
+        assert reject(text, "en", gifs, ref) == want, (text, ref, reject(text, "en", gifs, ref), want)
 
 
 # ── messages_for per Route (ticket 34), pure ──────────────────────────────
@@ -273,6 +284,7 @@ from pathlib import Path  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 from automations import cat_stickers  # noqa: E402
+from automations import _voice  # noqa: E402
 from automations import full_ai_writers as wr  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 
@@ -291,7 +303,7 @@ def _msg_row(direction, text, mid):
 def _turn(text="hey you", *, fan_info=None, **cfg):
     return SimpleNamespace(
         account_id="acct_msgs", anchor_key="test:s:1", config={**DEFAULTS, **cfg},
-        fan_info=dict(fan_info or {}), next_question=None, spent=[],
+        fan_info=dict(fan_info or {}), next_question=None, spent=[], offer_piece=None,
         cut_rows=[_msg_row("out", "hii", 1), _msg_row("in", text, 2)])
 
 
@@ -377,7 +389,7 @@ def case_route_prompts_replay():
 # ── sell_now (03b, ticket 42), pure ───────────────────────────────────────
 import re  # noqa: E402
 
-from automations.full_ai_sell import Pick, Refusal  # noqa: E402
+from automations.full_ai_sell import Pick, Refusal, Teased  # noqa: E402
 
 _PICK = Pick(ref=4242, media=(4242,), previews=(), price_cents=5000, list_cents=5000,
              subject="anything", format="video", lane="$50",
@@ -396,19 +408,26 @@ def case_sell_now_constants_are_their_old_text():
     old = ((_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
            + (_DOCS / "old" / "core-modules.md").read_text(encoding="utf-8"))
     # OLD-CORE-33 is quoted as source: join its implicit string concatenations.
-    old = old.replace('"\n                         f"', "").replace('"\n                f"', "")
+    old = (old.replace('"\n                         f"', "").replace('"\n                f"', "")
+           .replace('"\n                "', ""))
     for c in (wr.CONTENT_ASK, wr.CLOSE_BY_ID, wr.INTRO_BY_ID, wr.ITEM_LINE, wr.TERMS,
               wr.NO_CUSTOMS, wr.FILMING_MORE, wr.CONTRACT_OFFER):
         for frag in _fragments(c):
             assert frag in old, (c, frag)
-    for c in (wr.MANIFEST, wr.PRICE_BLOCK):            # multi-line: line by line
+    for c in (wr.MANIFEST, wr.PRICE_BLOCK, wr.WAS_PRICE_BLOCK):    # multi-line: line by line
         for line in c.split("\n"):
             for frag in _fragments(line):
                 assert frag in old, (c, frag)
+    # Ticket 47: OLD-AIC-05, OLD-AIC-08's step 4 (the catalog spells its leading newline `\n`).
+    for c in (wr.ESCALATION, wr.SELL_STEP.removeprefix("\n")):
+        for frag in _fragments(c):
+            assert frag in old, (c, frag)
+    assert wr.SELL_STEP.startswith("\n4. ") and "\\n4. THEN SELL HIM" in old
 
 
-def _sell_system(pick, *, row="sell"):
+def _sell_system(pick, *, row="sell", offer_piece=None):
     t = _turn("send me pics")
+    t.offer_piece = offer_piece
     return wr.messages_for("sell_now", row, 3, t, pick)[0]["content"]
 
 
@@ -429,6 +448,33 @@ def case_sell_now_with_a_pick_is_the_content_ask_sell_prompt():
                            subject="anything", format="photo", lane="$10", facts={"items": [{}]}))
     assert "- [id 7] photo — 3 photos:  — $10 to unlock" in s3, s3
     assert wr.PRICE_BLOCK.format(px="$10") in s3
+
+
+def case_haggle_offer_moment_and_hot_sell_prompts():
+    """Ticket 47: the haggle row's price block is OLD-CORE-33's `was_cents` form when it re-offers
+    the open Offer's own piece under that Offer's list (`was_cents_of`; plain at list, on a re-pick,
+    with no open Offer, and on any other row); offer_moment's beat is OLD-AIC-05; `hot`
+    (sexual_now fired) makes any sell row's beat OLD-AIC-08 + step 4, no Heat line."""
+    quote = Pick(ref=4242, media=(4242,), previews=(), price_cents=3400, list_cents=5000,
+                 subject="anything", format="photo", lane="$50", facts={"items": [{}]})
+    offer = Teased("anything", "photo", (4242,), (), 5000)
+    was = wr.WAS_PRICE_BLOCK.format(was="$50", px="$34")
+    haggle = _sell_system(quote, row="haggle", offer_piece=offer)
+    assert was in haggle and wr.PRICE_BLOCK.format(px="$34") not in haggle, haggle
+    assert "— $34 to unlock" in haggle and wr.CONTENT_ASK.format(close=wr.CLOSE_BY_ID) in haggle
+    at_list = _sell_system(_PICK, row="haggle", offer_piece=Teased("anything", "video", (4242,), (), 5000))
+    assert wr.PRICE_BLOCK.format(px="$50") in at_list and "already saw" not in at_list
+    other = Teased("anything", "photo", (7,), (), 5000)
+    for kw in (dict(row="sell", offer_piece=offer), dict(row="haggle"), dict(row="haggle", offer_piece=other)):
+        assert "already saw" not in _sell_system(quote, **kw), kw
+    moment = _sell_system(_PICK, row="offer_moment")
+    assert wr.ESCALATION.format(close=wr.CLOSE_BY_ID) in moment and wr.CONTENT_ASK[:20] not in moment
+    step = wr.SEXT_HOT + wr.SELL_STEP.format(close=wr.CLOSE_BY_ID, example=_voice.HER.sell_caption_example)
+    for row in ("sell", "haggle", "offer_moment"):
+        hot = wr.messages_for("sell_now", row, 3, _turn("fuck me"), quote, hot=True)[0]["content"]
+        assert step in hot and wr.SEXT_HEAT.format(heat=3) not in hot, row
+        assert wr.ESCALATION[:20] not in hot and wr.CONTENT_ASK[:20] not in hot, row
+    assert wr.sell_beat("sell", False) == wr.CONTENT_ASK.format(close=wr.CLOSE_BY_ID)
 
 
 def case_sell_now_refusal_is_chat_with_its_need_line():
@@ -467,6 +513,109 @@ def case_floor_offer_ref_table():
         assert floor(text, "en", ref) == want, (text, ref, floor(text, "en", ref), want)
     assert strip_offer("its yours babe\n>>OFFER 4242") == "its yours babe"
     assert strip_offer("its yours\n\n>>OFFER 4242\n\nSTICKER: wink") == "its yours\n\nSTICKER: wink"
+
+
+# ── tease and make_right with a Free item (03b, ticket 46), pure ─────────────
+
+_FREE = Pick(ref=77, media=(77, 78), previews=(), price_cents=0, list_cents=1000,
+             subject="feet", format="photo", lane="$10", facts={"kinds": {"photo": 2}, "items": [{}],
+                                                                 "description": "soles up on white sheets"})
+
+
+def case_tease_and_free_constants_are_their_catalog_text():
+    """The FREE terms and the goal head are old text (OLD-AIC-12, OLD-CORE-24); the tease goal line
+    is its NEW-123 catalog entry, marked DRAFT there."""
+    old = ((_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
+           + (_DOCS / "old" / "core-modules.md").read_text(encoding="utf-8"))
+    assert wr.FREE_TERMS in old and wr.GOAL_HEAD.strip() in old
+    new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
+    entry = new[new.index("### NEW-123"):]
+    entry = entry[:entry.index("\n#", 1)]                    # up to the next heading
+    assert wr.TEASE_GOAL.strip() in entry and "DRAFT" in entry
+
+
+def case_tease_with_a_pick_describes_it_without_a_price():
+    for row in ("tease_price", "tease_decline"):
+        sys_ = wr.messages_for("tease", row, 2, _turn("how much?"), _PICK)[0]["content"]
+        goal = (wr.GOAL_HEAD + wr.TEASE_GOAL
+                + "- [id 4242] video 1:35 — untitled: her in a red bikini by the pool")
+        assert goal + "\n" in sys_, sys_                         # the item line, no terms after it
+        # The offers slot stays empty (ASSUMPTION: OLD-AIC-17's "never pitch a piece" fights the goal).
+        assert wr.SELF_BAN + wr.READ_ALL in sys_ and sys_.endswith(wr.CONTRACT), row
+        for absent in ("$", "to unlock", "THE PRICE", "SELLING RULES", ">>OFFER", "FREE",
+                       wr.NO_SELL_OFFERS, wr.SELL_OFF_LINE, wr.INTRO_BY_ID, wr.KNOW_ENOUGH, wr.ASK_HEAD):
+            assert absent not in sys_, (row, absent)
+    # A tease Refusal is chat plus its need-line, like sell_now's (spec 03b › Refusal).
+    for reason, line in (("no_match", wr.FILMING_MORE), ("inventory_unknown", None)):
+        sys_ = wr.messages_for("tease", "tease_price", 2, _turn("how much?"), Refusal(reason))[0]["content"]
+        assert wr.TEASE_GOAL not in sys_ and sys_.endswith(f"{line}\n\n{wr.CONTRACT}" if line else wr.CONTRACT)
+    # No Pick: the 03a tease (chat) prompt, byte for byte.
+    t = _turn("how much?")
+    assert wr.TEASE_GOAL not in wr.messages_for("tease", "tease_price", 2, t, None)[0]["content"]
+
+
+def case_make_right_with_a_free_item():
+    sys_ = wr.messages_for("make_right", "complains_now", 2, _turn("this is a scam", fan_info={"real_name": "Tom"}),
+                           _FREE)[0]["content"]
+    item = "- [id 77] photo — 2 photos: soles up on white sheets — FREE — just send it when the moment fits"
+    assert wr.MAKE_RIGHT_HEAD in sys_ and item in sys_, sys_
+    for frame in wr.APOLOGY_FRAMES:
+        assert frame.replace("{name}", "Tom") in sys_, frame
+    assert sys_.index(wr.MAKE_RIGHT_HEAD) < sys_.index(item)
+    for absent in (wr.MAKE_RIGHT_TAIL, "SELLING RULES", "THE PRICE", ">>OFFER", "to unlock", "$",
+                   wr.NO_SELL_OFFERS, wr.INTRO_BY_ID):
+        assert absent not in sys_, absent
+    assert wr.SELF_BAN + wr.READ_ALL in sys_ and sys_.endswith(wr.CONTRACT)
+    # A priced Pick on make_right is never labelled FREE: the apology-only prompt.
+    t = _turn("this is a scam")
+    assert wr.messages_for("make_right", "complains_now", 2, t, _PICK) == wr.messages_for(
+        "make_right", "complains_now", 2, t, None)
+
+
+def case_spend_line_only_without_a_pick():
+    """The spend line (OLD-AIC-22) joins the facts block on every Turn but one carrying a Pick
+    (rwl fa3 S3: the price check allows no other amount); with no purchase there is none."""
+    spent = [SimpleNamespace(kind="ppv_message", amount_cents=1000, occurred_at=None)]
+    line = wr.spend_line(spent)
+    assert line and line.startswith("he's spent: unlocked 1 PPV ($10 total, biggest $10)"), line
+    rows = [
+        # (route, pick, spent, has the line)
+        ("sell_now", _PICK, spent, False),
+        ("sell_now", Refusal("all_owned"), spent, True),
+        ("chat", None, spent, True),
+        ("chat", _PICK, spent, True),           # a Pick handed to another Route is ignored
+        ("sext", None, spent, True),
+        ("tease", _PICK, spent, False),         # a teased or free item is a Pick too (ticket 46)
+        ("tease", None, spent, True),
+        ("make_right", _FREE, spent, False),
+        ("make_right", _PICK, spent, True),     # a priced Pick there is ignored
+        ("sell_now", _PICK, [], False),
+        ("chat", None, [], False),
+    ]
+    for route, pick, sp, want in rows:
+        t = _turn("send me pics")
+        t.spent = sp
+        row = {"sell_now": "sell", "tease": "tease_price", "make_right": "complains_now"}.get(route, "otherwise")
+        user = wr.messages_for(route, row, 3, t, pick)[1]["content"]
+        assert (f"- {line}" in user) is want, (route, pick, bool(sp), user)
+
+
+_FLAG_OF = {"texting": "style_on", "nonnative": "nonnative_on", "spacing": "spacing_on", "typos": "typo_on",
+            "painful": "painful_on"}
+
+
+def case_style_flags_one_switch_per_layer():
+    on = dict.fromkeys(_FLAG_OF.values(), True)
+    assert wr.style_flags(DEFAULTS) == on and list(DEFAULTS["style"]) == list(_FLAG_OF)
+    for layer, flag in _FLAG_OF.items():
+        got = wr.style_flags({**DEFAULTS, "style": {**DEFAULTS["style"], layer: False}})
+        assert got == {**on, flag: False}, (layer, got)
+    assert wr.style_flags({"text_style": "girl"}) == on
+    assert wr.style_flags({"text_style": "formal"}) == dict.fromkeys(_FLAG_OF.values(), False)
+    # Typos are a post-pass on her bubbles: the Writer prompt is the all-on one.
+    typo_off = {**DEFAULTS["style"], "typos": False}
+    for route in _ROUTES:
+        assert _system(route, style=typo_off) == _system(route), route
 
 
 _harness.run()

@@ -103,7 +103,7 @@ async def _harvest(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
         if e.status_code == 409:
             return _step("harvest", "busy", "a vault collect is already running")
         raise
-    await vault_ai_api._run_collect(account_id, run_id)
+    await vault_ai_api._run_collect(account_id, run_id, pause_every=0)   # nobody to ask: never pauses
     async with get_session() as s:
         run = await s.get(VaultCacheRun, run_id)
     counts = {"seen": run.total_seen or 0, "pages": run.pages_done or 0}
@@ -117,14 +117,21 @@ async def _budget_sentence(account_id: str) -> str:
 
 
 async def _sweep_failure(account_id: str, prog: dict[str, Any] | None) -> str | None:
-    """The sweep's recorded stop, or None when it ran through: a cap or key stop reads
-    the budget sentence, an abort its recorded error."""
+    """The sweep's recorded stop, or None when it ran through clean: a key error or a stop
+    (`vault_sweep.SweepStop` / breaker) reads its own message + fix, a cap the budget sentence, an abort its recorded error, any failed item "<failed> of <done> items
+    failed: <first error>" (the step vocabulary has no partial: a run with failures is not done)."""
     if prog is None:
         return "the sweep stopped before recording progress (see the relay log)"
-    if prog.get("key_error") or prog.get("capped"):
+    for k in ("key_error", "stop"):   # the relay's own sentences: what is wrong + the fix
+        if isinstance(prog.get(k), dict):
+            return f"{prog[k]['message']} {prog[k]['fix']}"
+    if prog.get("capped"):
         return await _budget_sentence(account_id) or prog.get("error") or "the sweep stopped early"
     if prog.get("aborted"):
         return prog.get("error") or "the sweep stopped early"
+    if prog.get("failed"):
+        why = f": {prog['error']}" if prog.get("error") else ""
+        return f"{prog['failed']} of {prog.get('done', prog['failed'])} items failed{why}"
     return None
 
 

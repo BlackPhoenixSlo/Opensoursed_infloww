@@ -3,22 +3,22 @@
 import type { SavedReply } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 
-/** A saved reply's media as a row of small thumbnails (first 6, then "+N"). */
+type StripMedia = { id: number; type?: string; files?: SavedReply["media"][number]["files"] };
+
+/** A saved reply's media as a row of small thumbnails (first 6, then "+N"). `thumbSrc` replaces the OF-url thumb
+ *  (`files`, through `proxyImage`) with another source, e.g. the local vault mirror (`mirrorThumbSrc`). */
 export function MediaStrip({
-  media, accountId,
+  media, accountId, thumbSrc,
 }: {
-  media: Array<{ id: number; type?: string; files?: SavedReply["media"][number]["files"] }>;
+  media: StripMedia[];
   accountId: string | null;
+  thumbSrc?: (m: StripMedia) => string | null;
 }) {
   return (
     <div className="flex items-center gap-1.5 mt-2 flex-wrap">
       {media.slice(0, 6).map((m) => {
-        const rawThumb =
-          m.files?.thumb?.url ||
-          m.files?.squarePreview?.url ||
-          m.files?.preview?.url ||
-          null;
-        const thumb = proxyImage(rawThumb, accountId);
+        const thumb = thumbSrc ? thumbSrc(m) : proxyImage(
+          m.files?.thumb?.url || m.files?.squarePreview?.url || m.files?.preview?.url || null, accountId);
         return (
           <div key={m.id} className="w-10 h-10 rounded border border-border overflow-hidden bg-bg-elev-1">
             {thumb ? (

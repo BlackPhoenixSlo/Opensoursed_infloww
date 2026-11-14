@@ -11,13 +11,16 @@ from typing import Literal
 from bio_pages.decide import HostKind
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, TimeoutError
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, ProgrammingError, TimeoutError
 
 from db.engine import engine, get_session
 
 log = logging.getLogger("of-relay.bio")
 EventKind = Literal["view", "click"]
-_PROFILE_COLS = "id, username, display_name, bio, avatar, mode, verified"
+_PROFILE_COLS = "id, username, display_name, bio, avatar, background_image, mode, verified"
+# A deploy recreates this service and the relay together; only the relay's init_db adds columns. Until it has added
+# bio_profiles.background_image (migration 0122) a page reads as having none, instead of a 503.
+_PROFILE_COLS_PRE_0122 = _PROFILE_COLS.replace("background_image", "'' AS background_image")
 _PUBLIC_LINK_COLS = ("id, profile_id, link_id, title, default_tracking_code, mode, icon, background_image, "
                      "is_adult, tracking, bot_check")
 _LINK_COLS = _PUBLIC_LINK_COLS + ", destination, geo"
@@ -39,7 +42,14 @@ def _link(row) -> dict:
 
 
 async def _profile_row(s, username: str):
-    return (await s.execute(text(f"SELECT {_PROFILE_COLS} FROM bio_profiles WHERE username = :u"),
+    try:
+        return (await s.execute(text(f"SELECT {_PROFILE_COLS} FROM bio_profiles WHERE username = :u"),
+                                {"u": username})).first()
+    except (OperationalError, ProgrammingError) as e:
+        if "background_image" not in str(e.orig):
+            raise
+        await s.rollback()
+    return (await s.execute(text(f"SELECT {_PROFILE_COLS_PRE_0122} FROM bio_profiles WHERE username = :u"),
                             {"u": username})).first()
 
 

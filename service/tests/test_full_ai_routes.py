@@ -186,9 +186,9 @@ async def _decision(aid: str, fan: int, key: str, at: datetime, *, route: str = 
 
 async def case_today_read_counts_by_route_in_the_report_zone():
     """One DM through the inbound path, plus rows either side of the report
-    zone's midnight: the read counts today's shadow rows per Route, every
+    zone's midnight: the read counts today's shadow and test rows per Route, every
     Route present (zeros too, in Route order), Jev failures apart, newest
-    first, at most 50, each with its Fan's name. The run emits
+    first, at most 50, each with its Fan's name (a test row none, `test` true). The run emits
     `rule_run_finished` with its kind, which refetches the page's read."""
     aid, fan = "fa_today", 76
     q = await events.subscribe("all", accounts=frozenset({aid}))
@@ -222,15 +222,16 @@ async def case_today_read_counts_by_route_in_the_report_zone():
         stats._report_zone = real  # type: ignore[assignment]
     assert got["since"] == since.isoformat() + "Z", got["since"]
     assert list(got["counts"]) == ["chat", "sext", "sell_now", "tease", "make_right", "ai_dare", "no_send"]
-    want = {"chat": 1, "sext": 1, "sell_now": 0, "tease": 1, "make_right": 0, "ai_dare": 0, "no_send": 0}
+    want = {"chat": 1, "sext": 1, "sell_now": 1, "tease": 1, "make_right": 0, "ai_dare": 0, "no_send": 0}
     assert (live.route, live.route_row) == ("sext", "sexual_now"), (live.route, live.route_row)
     assert got["counts"] == want and got["jev_failed"] == 1, got
     rows = sorted(got["rows"], key=lambda r: r["created_at"], reverse=True)
-    assert got["rows"] == rows and len(rows) == 3, got["rows"]
+    assert got["rows"] == rows and len(rows) == 4, got["rows"]
+    assert [(x["route"], x["fan_name"]) for x in rows if x["test"]] == [("sell_now", None)], rows
     r = next(r for r in rows if r["id"] == live.id)
     assert r == {"id": live.id, "created_at": r["created_at"], "fan_id": str(fan), "fan_name": "Garrett",
                  "route": "sext", "heat": live.heat, "row": "sexual_now", "jev_ms": live.jev_ms,
-                 "jev_failed": False}, r
+                 "jev_failed": False, "test": False}, r
     assert [x["jev_failed"] for x in rows if x["jev_ms"] is None] == [True], rows
     # No report zone: UTC midnight. At most 50 rows, newest first.
     for i in range(55):
@@ -261,10 +262,11 @@ async def case_today_read_refuses_a_creator_not_owned():
         raise AssertionError("no session was served")
 
 
-async def case_today_read_ignores_test_rows():
+async def case_today_read_counts_test_rows():
     """Test chat rows (mode test, a negative Fan id, every Route, one Jev-failed) written after
-    today's Shadow rows: the today read's counts, Jev failures and newest rows are unchanged
-    (spec 03a story 56)."""
+    today's Shadow rows: each Route's count and Jev failures go up by the test rows, which list
+    first (newest) marked `test` with no Fan name; the Shadow rows are unchanged (owner
+    2026-11-14, replacing spec 03a story 56's "test rows never count")."""
     aid, fan = "fa_today_test_rows", 81
     await _seed(aid, rule=True, gate=False)
     now = datetime.utcnow()
@@ -276,7 +278,12 @@ async def case_today_read_ignores_test_rows():
                         error="jev down" if i == 0 else None)
     after = await _today(aid)
     assert before["counts"]["chat"] == 2 and before["counts"]["sext"] == 1 and len(before["rows"]) == 3, before
-    assert after == before, (before, after)
+    assert after["counts"] == {r: n + 1 for r, n in before["counts"].items()}, (before, after)
+    assert after["jev_failed"] == before["jev_failed"] + 1, after
+    test = [x for x in after["rows"] if x["test"]]
+    assert [x["route"] for x in test] == list(reversed(full_ai_api.ROUTES)), test
+    assert {x["fan_name"] for x in test} == {None} and [x["jev_failed"] for x in test][-1] is True, test
+    assert [x for x in after["rows"] if not x["test"]] == before["rows"], (before, after)
 
 
 _harness.run()

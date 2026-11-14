@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { APPLIED_LINE, STALE_LINE, applyBody, diffLine, resultLine, slotsFrom, type ConfigStatus } from "./fullAiConfigEdit";
+import { APPLIED_LINE, STALE_LINE, applyBody, diffLine, fmtValue, resultLine, slotsFrom, type ConfigStatus } from "./fullAiConfigEdit";
+
+describe("fmtValue: style (the Human style diff row)", () => {
+  const ON = { texting: true, nonnative: true, spacing: true, typos: true, painful: true };
+  it.each<[unknown, string]>([
+    [ON, "on"],
+    [{ texting: false, nonnative: false, spacing: false, typos: false, painful: false }, "off"],
+    [{ ...ON, typos: false }, "typos off"],
+    [null, "—"],
+  ])("%j → %s", (v, want) => {
+    expect(fmtValue("style", v)).toBe(want);
+  });
+  it("Human style row line", () => {
+    expect(diffLine({ field: "style", label: "Human style", before: ON, after: { ...ON, typos: false } }))
+      .toBe("Human style: on → typos off");
+  });
+});
 
 const GOOD = {
   rev: 4,

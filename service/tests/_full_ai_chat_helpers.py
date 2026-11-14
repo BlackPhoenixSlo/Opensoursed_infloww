@@ -89,12 +89,12 @@ _db(_seed_world)
 # ── Invariants ────────────────────────────────────────────────────────
 
 # Every send path at each binding a sender looks it up by (test_full_ai_shadow.py `_SEND_PATHS`),
-# plus the DM rate test skips and the Sell executor's ownership stamp (03b).
+# plus the DM rate test skips, the Sell executor's ownership stamp (03b) and the pooled OF client lookup.
 _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
                (of_client.OFClient, "_http_call"), (of_client.OFClient, "_proxy_retry"),
                (fan_lease, "acquire_fan_lease"), (fan_lease, "start_fan_cooldown"),
                (ax, "acquire_fan_lease"), (ax, "start_fan_cooldown"), (dm_rate, "turn"),
-               (ownership, "stamp_media_owned"))
+               (ownership, "stamp_media_owned"), (client_pool, "get"))
 _SNAPSHOT = ("messages", "transactions", "vault_sends", "content_offers", "fan_lease", "fans")
 
 
@@ -166,8 +166,10 @@ def _reply(row: AiDecision) -> dict:
     return json.loads(row.reply_json)
 
 
-def _direct(raw: str, fid: int, his: str, *, girl: bool) -> list[dict]:
-    """The shared chain called directly with the context `run_turn` must build for a first Turn."""
+def _direct(raw: str, fid: int, his: str, *, girl: bool, typos: bool | None = None) -> list[dict]:
+    """The shared chain called directly with the context `run_turn` must build for a first Turn
+    (`typos` None = as `girl`: every layer together)."""
+    typos = girl if typos is None else typos
     async def go():
         t, _ = await finalize_draft(raw, account_id=A, fan_id=fid, purpose="full_ai_writer")
         mb = STYLE_MAX_BUBBLES if girl else 2
@@ -176,7 +178,7 @@ def _direct(raw: str, fid: int, his: str, *, girl: bool) -> list[dict]:
             recent_out=[], allow_empty=False, banned_words=[], banned_mode="mask",
             nonnative_on=girl, spacing_on=girl, name_protect=[]))
         parts = shaped.parts
-        if girl:
+        if typos:
             parts = await _typos.apply_typo_throttle(A, fid, parts, random.Random(f"{fid}:{t}"),
                                                      protect=list(NONNATIVE_OUTPUTS), max_bubbles=mb,
                                                      state={})

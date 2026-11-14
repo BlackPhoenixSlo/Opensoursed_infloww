@@ -77,6 +77,9 @@ export function FormBlock({ title, children, className }: { title: ReactNode; ch
   );
 }
 
+/** A settings row's box (SwitchRow, and rows built beside it). */
+export const ROW = "rounded-lg border border-border px-4";
+
 /** A 56px row: the label (and a 12px hint under it) left, the switch right; the switch is named by `label`.
  *  `children` show under the row (a switch's own fields). */
 export function SwitchRow({ label, hint, checked, onChange, disabled, loading, children }: {
@@ -90,7 +93,7 @@ export function SwitchRow({ label, hint, checked, onChange, disabled, loading, c
   children?: ReactNode;
 }) {
   return (
-    <div className={cn("rounded-lg border border-border px-4", disabled && "opacity-50")}>
+    <div className={cn(ROW, disabled && "opacity-50")}>
       <div className="flex min-h-14 items-center justify-between gap-4 py-2">
         <div className="min-w-0">
           <div className="text-[14px] text-fg">{label}</div>

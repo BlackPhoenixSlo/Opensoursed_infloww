@@ -23,6 +23,7 @@ a real LLM.
   case_held_guard_is_busy               a running Collect → harvest `busy`, chain stops
   case_cap_mid_sweep_fails_describe     the cap trips during the sweep → the same budget sentence
   case_no_key_refuses_flags             described, unflagged, no vision key → failed, no Jev call (flags_all's rule)
+  case_all_items_failed_fails_describe  every vision call errors → describe `failed` "2 of 2 items failed", not done
   case_turn_path_never_imports_prepare  import isolation (no-send scan)
 
 Run: ./venv/bin/python service/tests/test_full_ai_prepare.py   (exit 0 = pass)
@@ -105,7 +106,7 @@ class FakeOF:
     def vault_media(self, *, limit, offset, type="all", list_id=None, sort="desc",
                     field="recent", query=None, before_publish_date=None):
         self.calls.append(("media", offset, sort))
-        if sort == "asc" and offset == self.fail_at_offset:
+        if offset == self.fail_at_offset:
             raise RuntimeError("OF 500 mid-walk (fake)")
         ids = list(range(1, self.n + 1))
         if sort == "desc":
@@ -296,8 +297,8 @@ async def case_first_click_runs_missing_steps():
     run = await _settle(aid)
     assert _states(run) == [("harvest", "done"), ("describe", "done"), ("folders", "done")], run
     assert run["run_id"] == started["run_id"] and run["started_at"], run
-    # harvest walked the fake vault, desc then asc
-    assert of.calls[0] == ("media", 0, "desc") and ("media", 0, "asc") in of.calls, of.calls
+    # harvest walked the fake vault: folder list, then the newest page (OF: no more)
+    assert of.calls[:2] == [("lists", 0), ("media", 0, "desc")], of.calls
     assert run["steps"][0]["counts"]["seen"] == 3, run["steps"][0]
     # describe + Jev ran on all three, then folders applied once
     assert sorted(_jevved) == [1, 2, 3] and len(_described) == 3, (_jevved, _described)
@@ -466,6 +467,37 @@ async def case_no_key_refuses_flags():
     assert run["steps"][2]["state"] == "done", run["steps"][2]
 
 
+async def case_all_items_failed_fails_describe():
+    """Every vision call errors: the sweep runs through recording each item failed, so describe is
+    `failed` with the count, never a green `done`; folders still runs (as on a cap)."""
+    aid = await _account()
+    await _seed_vault(aid, [1, 2])
+    _CLIENTS[aid] = FakeOF(aid, 2)
+    _reset_spies()
+
+    async def refuse(**kw):
+        raise llm_client.LLMError("provider 500 (fake)")
+
+    llm_client.chat = refuse
+    try:
+        await full_ai_api.prepare_content_start({"account_id": aid})
+        run = await _settle(aid)
+    finally:
+        llm_client.chat = _vision
+    step = run["steps"][1]
+    assert step["state"] == "failed", step
+    assert step["counts"] == {"described": 0, "failed": 2, "total": 2}, step
+    assert step["detail"].startswith("2 of 2 items failed"), step
+    assert run["steps"][2]["state"] == "done", run["steps"][2]
+    # The pure rule: any failed item fails the step; a clean run is None.
+    assert await prep._sweep_failure(aid, {"done": 3, "failed": 1, "total": 3, "error": "x"}) == "1 of 3 items failed: x"
+    assert await prep._sweep_failure(aid, {"done": 3, "failed": 0, "total": 3}) is None
+    # A stop reads the relay's own sentences (what is wrong + the fix), ahead of the failed count.
+    stop = {"message": "Stopped: 25 items in a row failed.", "fix": "First error: 401. Fix it, then press again."}
+    assert await prep._sweep_failure(aid, {"done": 25, "failed": 25, "total": 99, "stop": stop}) == \
+        "Stopped: 25 items in a row failed. First error: 401. Fix it, then press again."
+
+
 # ── Import isolation (no-send scan) ──────────────────────────────────
 
 # The Turn path, the Sell executor and the Writer/LLM modules that exist today.
@@ -534,6 +566,7 @@ CASES = [
     case_held_guard_is_busy,
     case_cap_mid_sweep_fails_describe,
     case_no_key_refuses_flags,
+    case_all_items_failed_fails_describe,
     case_turn_path_never_imports_prepare,
 ]
 

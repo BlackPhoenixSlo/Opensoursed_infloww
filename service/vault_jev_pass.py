@@ -50,12 +50,13 @@ class Sweep:
     rest of the sweep skips Jev (no still / clip fetch, no reserve); those items wait for the next sweep. `warned`:
     the sweep already logged a refusal (`no_key` / `no_nudenet`): one line a sweep, not one an item."""
 
-    __slots__ = ("capped", "failed_in_row", "warned")
+    __slots__ = ("capped", "failed_in_row", "warned", "last_error")
 
     def __init__(self) -> None:
         self.capped = False
         self.failed_in_row = 0
         self.warned = False
+        self.last_error = ""   # the last failed call's detail (the `jev_down` stop names it)
 
     @property
     def down(self) -> bool:
@@ -70,8 +71,29 @@ class Sweep:
             self.capped = True
         elif res.get("call_failed"):
             self.failed_in_row += 1
+            self.last_error = str(res.get("detail") or "")[:200]
         elif res.get("ok"):
             self.failed_in_row = 0
+
+
+async def fatal(account_id: str, res: dict[str, Any] | None, sweep: Sweep | None) -> None:
+    """Raise when `safe`'s result means no item can be read: a key status (`vault_jev.KEY_ERROR_KIND`) is an
+    `LLMKeyError` everywhere (a single item's route answers 424); inside a sweep (`sweep` given) NudeNet missing or
+    Jev down is a `vault_sweep.SweepStop`. Called right after `safe` (which never raises), so the row is stamped
+    and the proxy-health log line written first. Else returns."""
+    import vault_sweep
+    status = (res or {}).get("status")
+    if status in vault_jev.KEY_ERROR_KIND:
+        raise await vault_jev.key_error(account_id, status)
+    if sweep is None:
+        return
+    if status == "no_nudenet":
+        raise vault_sweep.SweepStop("Stopped: the NudeNet model is not installed on this server, so Jev can't read "
+                                    "photos.", "Ask the server admin to set NUDENET_640M_PATH, then press again.")
+    if status == "jev_down":
+        why = f" Last error: {sweep.last_error}." if sweep.last_error else ""
+        raise vault_sweep.SweepStop(f"Stopped: Jev (TypeSafe) failed {sweep.failed_in_row} calls in a row.{why}",
+                                    "Try again later; if it keeps failing, check the TypeSafe key in Settings › AI keys.")
 
 
 def _locked(item: VaultItem) -> set[str]:

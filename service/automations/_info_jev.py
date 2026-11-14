@@ -19,6 +19,11 @@ NEW-115; not probed yet.
   - `extract(facts, fields, *, timeout_s)`: the fired fields' new values; raises
     `llm_client.LLMError` or `ExtractError("unparsable")`.
   - `question_line(field, fan_info)`: wcfi's verbatim ask line for a `missing` field.
+  - `info_questions: "list"` (DRAFT; default "pick" is the Choice above): no Choice; the Writer
+    gets wcfi's whole still-need list. `still_needed(config, fan_info, asked)`,
+    `ask_list(config, fan_info, asked, history, rng)` -> `AskList` (wcfi's ask/breather call) and
+    `mark_asked(asked, al)` port wcfi's rules; that mode's `asked` holds wcfi's keys (name, age,
+    location, ...) as counts, `asked_marks` reads them as wcfi's "k" / "k:2" set.
 
 The key is `_router_jev`'s (`tenant_keys.typesafe_key_for`). `_client` is the tests' fake seam.
 """
@@ -35,7 +40,8 @@ from automations import _jev
 from automations._router_jev import GateError, line_text
 from automations._textutil import nonempty
 from automations.welcome_chatter_for_info import (
-    _EXTRACT_FIELDS, _extract_messages, _load_persona, _questions_still_needed,
+    _EXTRACT_FIELDS, _extract_messages, _load_persona, _primary_ask_target, _questions_still_needed,
+    _recent_ask_pattern,
 )
 
 MODEL = "jev-1.14.0"
@@ -206,3 +212,79 @@ def question_line(field: str, fan_info: dict) -> str:
                         **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
     lines = dict(_questions_still_needed(f, set()))
     return next(lines[k] for k in _LINE_KEYS[field] if k in lines)
+
+
+# ── `info_questions: "list"` (DRAFT): wcfi's whole still-need list, no Choice ─────────────────
+# wcfi's question keys -> the info fields that gate them (any one in `info_fields` lists the key).
+# `recent_events` is no info field: never listed.
+_KEY_FIELDS = {"name": ("real_name",), "age": ("his_age",),
+               "location": ("home_country", "home_city"), "country_from_city": ("home_country",),
+               "city": ("home_city",), "job": ("occupation",), "hobbies": ("hobbies",),
+               "recent_events": (), "boobs_ass": ("fetishes",)}
+
+
+class AskList(NamedTuple):
+    keys: list[str]                 # wcfi's still-needed keys in its order, `info_fields` only
+    lines: list[str]                # their verbatim lines
+    ask: bool                       # wcfi's ask-vs-breather call this Turn
+
+    @property
+    def presented(self) -> list[str]:
+        """What wcfi's `_build_messages` returns as presented: every key on an ask, else none."""
+        return self.keys if self.ask else []
+
+
+def asked_marks(asked: dict) -> set[str]:
+    """The list-mode `asked` fold (wcfi key -> times marked) as wcfi's `questions_asked` set:
+    `_mark_question_asked` marks "k" first, "k:2" on any later mark. Pure."""
+    return {k for k, n in asked.items() if n >= 1} | {f"{k}:2" for k, n in asked.items() if n >= 2}
+
+
+def still_needed(config: dict, fan_info: dict, asked: dict) -> list[tuple[str, str]]:
+    """wcfi's `_questions_still_needed` over the fold and the list-mode marks, keeping only keys an
+    `info_fields` field gates (its order, poke-later reorder included). Pure."""
+    f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
+                        **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
+    on = set(config["info_fields"])
+    return [(k, line) for k, line in _questions_still_needed(f, asked_marks(asked))
+            if on.intersection(_KEY_FIELDS[k])]
+
+
+def ask_list(config: dict, fan_info: dict, asked: dict, history: list[tuple[str, str]],
+             rng) -> AskList:
+    """wcfi's `_build_messages` ask decision over `history` ((direction, text), oldest first, its
+    `_HISTORY_TAIL`): never 3 asks in a row, never a question back right after his, never two
+    breathers in a row, a low-effort line leans breather, else the tapered dice. Pure given `rng`."""
+    needed = still_needed(config, fan_info, asked)
+    keys, lines = [k for k, _ in needed], [line for _, line in needed]
+    fan_run: list[str] = []
+    for d, b in reversed(history):
+        if d == "in" and b:
+            fan_run.append(b)
+        elif fan_run:
+            break
+    fan_last_text = " ".join(reversed(fan_run))
+    fan_just_asked = "?" in fan_last_text
+    fan_low_effort = len(fan_last_text.split()) <= 3 and not fan_just_asked
+    ask_streak, last_breather = _recent_ask_pattern(history)
+    breather_p = 0.55 if len(keys) <= 2 else 0.33
+    ask = bool(lines)
+    if ask:
+        if ask_streak >= 3:
+            ask = False
+        elif fan_just_asked:
+            ask = False
+        elif last_breather:
+            ask = True
+        elif fan_low_effort:
+            ask = rng.random() >= 0.6
+        else:
+            ask = rng.random() >= breather_p
+    return AskList(keys, lines, ask)
+
+
+def mark_asked(asked: dict, al: AskList) -> dict:
+    """The fold after a list-mode ask went out: wcfi marks one key, `_primary_ask_target`
+    (the highest-priority presented key, not the reordered front). Pure."""
+    target = _primary_ask_target(al.presented)
+    return {**asked, target: int(asked.get(target, 0)) + 1} if target else asked

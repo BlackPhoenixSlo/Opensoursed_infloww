@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildTurnPayload, canEdit, canRollback, canSave, canSend, configLine, initTestChat, keepMineSave, sendBlock, testChatReducer,
-  type ConfigBody, type FullAiConfig, type TestChatAction, type TestChatState, type TurnResponse, type UiSide, sessionTurns,
+  buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, configLine, humanStyle,
+  humanStylePatch, initTestChat, keepMineSave, layersOff, MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, styleLayers,
+  testChatReducer, typosPatch, writerPatch, type FanPhoto, type HumanStyle, type PpvLine, type StyleLayers,
+  type ConfigBody, type FullAiConfig, type Offer, type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide,
+  sessionTurns,
 } from "./fullAiTestChat";
 
 const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
@@ -176,17 +179,18 @@ const ready = () => run(initTestChat("p1"), loaded(), typed("hey"));
 describe("config: draft edits gate Send", () => {
   it("editDraft sets dirty; canSend is false until draftSaved", () => {
     const s = run(ready(), edit());
-    expect([s.dirty, s.draft, canSend(s), sendBlock(s)]).toEqual([true, gifsOn, false, "Save draft first"]);
+    expect([s.dirty, s.draft, canSend(s), sendBlock(s)]).toEqual([true, gifsOn, false, "Draft not stored — fix it or Reload"]);
     const saved = run(s, { type: "saveDraft" }, stored());
     expect([saved.dirty, saved.savingDraft, saved.rev, canSend(saved), sendBlock(saved)]).toEqual([false, false, 4, true, null]);
   });
   it("canSend is false while savingDraft", () => {
     const s = run(ready(), edit(), { type: "saveDraft" });
-    expect([s.savingDraft, canSend(s), sendBlock(s)]).toEqual([true, false, "Save draft first"]);
+    expect([s.savingDraft, canSend(s), sendBlock(s)]).toEqual([true, false, "Storing draft…"]);
   });
   it("configFailed keeps dirty and sets errors", () => {
     const s = run(ready(), edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: must be true or false"] });
     expect([s.dirty, s.savingDraft, s.errors, canSend(s)]).toEqual([true, false, ["gifs: must be true or false"], false]);
+    expect(sendBlock(s)).toBe("Draft not stored — fix it or Reload");
   });
   it("draftSaved takes the stored draft and its rev", () => {
     const s = run(ready(), edit(), { type: "saveDraft" }, stored({ ...gifsOn, floor_on: true }, 9));
@@ -362,9 +366,274 @@ describe("keepMine / takeTheirs", () => {
 
 describe("configLine (a window header's config)", () => {
   it.each<[string, FullAiConfig, string]>([
-    ["checkpoint", CP, "Reply 0-2 min · Human style on · GIFs off"],
-    ["slower, formal, GIFs on", { ...CP, reply_speed: "0-15-60", text_style: "formal", gifs: true }, "Reply 0-15-60 · Human style off · GIFs on"],
+    ["checkpoint", CP, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
+    ["slower, formal, GIFs on", { ...CP, reply_speed: "0-15-60", text_style: "formal", gifs: true }, "Reply 0-15-60 · Human style off · GIFs on · Caption chat"],
+    ["layers all on", { reply_speed: "0-2m", style: ON }, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
+    ["typos off", { reply_speed: "0-2m", style: { ...ON, typos: false }, gifs: true }, "Reply 0-2 min · Human style mixed · Typos off · GIFs on · Caption chat"],
+    ["spacing off, typos on", { style: { ...ON, spacing: false } }, "Reply 0-2 min · Human style mixed · GIFs off · Caption chat"],
+    ["all off: no Typos chip", { style: OFF }, "Reply 0-2 min · Human style off · GIFs off · Caption chat"],
+    ["separate caption", { ...CP, caption_writer: "caption" }, "Reply 0-2 min · Human style on · GIFs off · Caption caption"],
   ])("%s", (_n, cfg, want) => {
     expect(configLine(cfg)).toBe(want);
+  });
+});
+
+// ── Style layers, Typos, Writer (the settings column's pure edits) ─────────────────────────────────────────────────
+const ON: StyleLayers = { texting: true, nonnative: true, spacing: true, typos: true, painful: true };
+const OFF: StyleLayers = { texting: false, nonnative: false, spacing: false, typos: false, painful: false };
+
+describe("styleLayers / humanStyle (the server's read: text_style wins, then style; neither = all on)", () => {
+  it.each<[string, FullAiConfig | null, StyleLayers, HumanStyle, string]>([
+    ["no config", null, ON, "on", ""],
+    ["no style key", { gifs: true }, ON, "on", ""],
+    ["all on", { style: ON }, ON, "on", ""],
+    ["all off", { style: OFF }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
+    ["typos off", { style: { ...ON, typos: false } }, { ...ON, typos: false }, "mixed", "typos"],
+    ["two off", { style: { ...ON, spacing: false, typos: false } }, { ...ON, spacing: false, typos: false }, "mixed", "spacing, typos"],
+    ["legacy formal", { text_style: "formal" }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
+    ["legacy formal wins over style", { text_style: "formal", style: ON }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
+    ["legacy casual", { ...CP }, ON, "on", ""],
+    ["an unknown text_style falls to style", { text_style: "boy", style: { ...ON, typos: false } }, { ...ON, typos: false }, "mixed", "typos"],
+    ["a missing layer reads off", { style: { texting: true } }, { ...OFF, texting: true }, "mixed", "non-native, spacing, typos, painful texting"],
+  ])("%s", (_n, cfg, layers, hs, off) => {
+    expect([styleLayers(cfg), humanStyle(cfg), layersOff(cfg)]).toEqual([layers, hs, off]);
+  });
+});
+
+describe("humanStylePatch / typosPatch", () => {
+  it.each<[string, FullAiConfig | null, Partial<FullAiConfig>, StyleLayers]>([
+    ["master on from mixed", { style: { ...ON, typos: false } }, humanStylePatch(true), ON],
+    ["master off from on", { style: ON }, humanStylePatch(false), OFF],
+    ["typos off keeps the other layers", { style: { ...ON, spacing: false } }, typosPatch({ style: { ...ON, spacing: false } }, false), { ...ON, spacing: false, typos: false }],
+    ["typos on from all off", { style: OFF }, typosPatch({ style: OFF }, true), { ...OFF, typos: true }],
+    ["typos off on a legacy draft", { ...CP }, typosPatch({ ...CP }, false), { ...ON, typos: false }],
+    ["master off on a legacy draft", { ...CP }, humanStylePatch(false), OFF],
+  ])("%s", (_n, cfg, patch, want) => {
+    const next = { ...cfg, ...patch };
+    expect([next.style, styleLayers(next)]).toEqual([want, want]);
+    expect(JSON.parse(JSON.stringify(patch))).toEqual({ style: want });
+  });
+});
+
+describe("writerPatch (picked model first, the rest keep their order)", () => {
+  const W = ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash"];
+  it.each<[string, string[] | undefined, string, string[]]>([
+    ["a fallback moves to the front", W, "glm-5.3-flash", ["glm-5.3-flash", "euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"]],
+    ["the current Writer: unchanged", W, "euryale-v2.3", W],
+    ["a new model on a full list drops the last", W, "deepseek-v4-pro", ["deepseek-v4-pro", "euryale-v2.3", "hermes-4-405b", "glm-5.3-flash"]],
+    ["a new model on a short list joins it", ["hermes-4-405b"], "euryale-v2.3", ["euryale-v2.3", "hermes-4-405b"]],
+    ["no writers yet", undefined, "euryale-v2.3", ["euryale-v2.3"]],
+  ])("%s", (_n, writers, model, want) => {
+    expect(writerPatch(writers ? { writers } : {}, model)).toEqual({ writers: want });
+  });
+});
+
+describe("replyLine (who wrote the PPV caption)", () => {
+  const head = "Route sell_now · Heat 2 · Row sell · Writer euryale-v2.3 · 0 fell before";
+  const cap = (writer: "caption" | "chat", outcome: string) =>
+    ({ writer, model: writer === "caption" ? "hermes-4-405b" : null, outcome, ms: 800, attempts: [] });
+  it.each<[string, Partial<TurnResponse>, string]>([
+    ["no caption key (default chat)", {}, head],
+    ["the caption call wrote it", { caption: cap("caption", "ok") }, `${head} · Caption hermes-4-405b`],
+    ["fell back to the chat Writer", { caption: cap("chat", "failed") }, `${head} · Caption chat (failed)`],
+  ])("%s", (_n, over, want) => {
+    expect(replyLine(reply({ route: "sell_now", heat: 2, route_row: "sell", ...over }))).toBe(want);
+  });
+});
+
+// ── Settle (ticket 49): Buy / Decline on a priced PPV bubble ───────────────────────────────────────────────────────
+const offer = (price_cents: number | null, over: Partial<Offer> = {}): Offer => ({
+  kind: "offer", ref: 11, price_cents, list_cents: price_cents, media: [11, 12], previews: [13], refusal: null, ...over,
+});
+/** Both sides answered Turn 1 with skip-wait: L a reply with `lOffer`, R with `rOffer`. */
+const offered = (lOffer: Offer | null = offer(1500), rOffer: Offer | null = offer(2000)) => run(
+  initTestChat("p1", true), ...say("send me pics"),
+  result("L", 1, { row_id: 7, offer: lOffer }), result("R", 1, { row_id: 8, offer: rOffer }),
+);
+const settle = (side: UiSide, rowId: number, outcome: "bought" | "declined" = "bought"): TestChatAction =>
+  ({ type: "settle", side, rowId, outcome });
+const settled = (side: UiSide, rowId: number, outcome: "bought" | "declined" = "bought", pair = "p1"): TestChatAction =>
+  ({ type: "settled", pair, side, rowId, outcome });
+const failed = (side: UiSide, rowId: number, pair = "p1"): TestChatAction =>
+  ({ type: "settleFailed", pair, side, rowId, error: "relay 503" });
+const turnOf = (s: TestChatState, side: UiSide) => s.sides[side].turns[0];
+
+describe("settle → settled / settleFailed", () => {
+  it("settle marks only that turn in flight; settled shows the outcome and clears it", () => {
+    const s = run(offered(), settle("R", 8));
+    expect(turnOf(s, "R").settle).toEqual({ kind: "pending", outcome: "bought" });
+    expect(turnOf(s, "L")).toEqual(turnOf(offered(), "L"));
+    const done = run(s, settled("R", 8));
+    expect(turnOf(done, "R").settle).toEqual({ kind: "done", outcome: "bought" });
+  });
+  it.each<["bought" | "declined"]>([["bought"], ["declined"]])("settled %s lands that outcome", (outcome) => {
+    expect(turnOf(run(offered(), settle("L", 7, outcome), settled("L", 7, outcome)), "L").settle).toEqual({ kind: "done", outcome });
+  });
+  it("settleFailed restores the bubble (Buy / Decline again) and keeps the error", () => {
+    const s = run(offered(), settle("L", 7), failed("L", 7));
+    expect(turnOf(s, "L").settle).toEqual({ kind: "failed", error: "relay 503" });
+    expect(canSettle(turnOf(s, "L"))).toBe(true);
+  });
+  it("a second settle while one is in flight or after it settled is a no-op", () => {
+    const flying = run(offered(), settle("L", 7));
+    expect(testChatReducer(flying, settle("L", 7, "declined"))).toBe(flying);
+    const done = run(flying, settled("L", 7));
+    expect(testChatReducer(done, settle("L", 7, "declined"))).toBe(done);
+  });
+  it.each<[string, TestChatAction]>([
+    ["settled for an old pair", settled("L", 7, "bought", "p0")],
+    ["settleFailed for an old pair", failed("L", 7, "p0")],
+    ["settle of an unknown row", settle("L", 99)],
+    ["settle of a free item", settle("R", 8)],
+  ])("%s is ignored", (_n, action) => {
+    const s0 = run(offered(offer(1500), offer(0)), settle("L", 7));
+    expect(testChatReducer(s0, action)).toBe(s0);
+  });
+  it("a session reload keeps a settled outcome (its rows carry none)", () => {
+    const s = run(offered(), settle("R", 8), settled("R", 8));
+    const turns = s.sides.R.turns.map((t) => ({ n: t.n, text: t.text, result: t.result }));
+    const next = run(s, { type: "sessionLoaded", pair: "p1", side: "R", turns });
+    expect(turnOf(next, "R").settle).toEqual({ kind: "done", outcome: "bought" });
+  });
+  it("a late settled after New chat is ignored", () => {
+    const s = run(offered(), settle("L", 7), { type: "newChat", pair: "p2" }, settled("L", 7));
+    expect(s.sides.L.turns).toEqual([]);
+  });
+});
+
+describe("canSettle: a priced Offer, no outcome, no settle in flight", () => {
+  const turn = (o: Offer | null, extra: Partial<Turn> = {}): Turn => ({ n: 1, text: "x", result: reply({ offer: o }), ...extra });
+  it.each<[string, Turn, boolean]>([
+    ["priced, unsettled", turn(offer(1500)), true],
+    ["free item (price 0)", turn(offer(0)), false],
+    ["tease (no price)", turn(offer(null)), false],
+    ["no Offer", turn(null), false],
+    ["no offer key (03a answer)", { n: 1, text: "x", result: reply() }, false],
+    ["bought", turn(offer(1500), { settle: { kind: "done", outcome: "bought" } }), false],
+    ["declined", turn(offer(1500), { settle: { kind: "done", outcome: "declined" } }), false],
+    ["settle in flight", turn(offer(1500), { settle: { kind: "pending", outcome: "bought" } }), false],
+    ["failed settle (restored)", turn(offer(1500), { settle: { kind: "failed", error: "relay 503" } }), true],
+  ])("%s → %s", (_n, t, want) => expect(canSettle(t)).toBe(want));
+});
+
+describe("ppvLine: how a PPV bubble stands", () => {
+  const turn = (o: Offer | null, settle?: Turn["settle"]): Turn => ({ n: 1, text: "x", result: reply({ offer: o }), settle });
+  it.each<[string, Turn, PpvLine | null]>([
+    ["priced, unsettled → the price", turn(offer(1500)), { kind: "price", dollars: 15 }],
+    ["settle in flight → still the price", turn(offer(1500), { kind: "pending", outcome: "bought" }), { kind: "price", dollars: 15 }],
+    ["failed settle → the price", turn(offer(1500), { kind: "failed", error: "x" }), { kind: "price", dollars: 15 }],
+    ["bought → paid", turn(offer(1500), { kind: "done", outcome: "bought" }), { kind: "settled", dollars: 15, paid: true }],
+    ["declined → not paid", turn(offer(999), { kind: "done", outcome: "declined" }), { kind: "settled", dollars: 9.99, paid: false }],
+    ["free item → Free", turn(offer(0)), { kind: "free" }],
+    ["tease (no price) → nothing", turn(offer(null)), null],
+    ["no Offer → nothing", turn(null), null],
+  ])("%s", (_n, t, want) => expect(ppvLine(t)).toEqual(want));
+});
+
+describe("replyLine: how many Writers fell before the one that answered", () => {
+  const a = (writer: string, outcome: string, rewrite?: boolean) => ({ writer, outcome, ms: 100, ...(rewrite ? { rewrite } : {}) });
+  it.each<[string, TurnResponse["attempts"], number]>([
+    ["first Writer answered", [a("euryale-v2.3", "ok")], 0],
+    ["one fell", [a("euryale-v2.3", "http_503"), a("hermes-4-405b", "ok")], 1],
+    ["Claim audit rewrite by the same Writer: none fell", [a("euryale-v2.3", "ok"), a("euryale-v2.3", "ok", true)], 0],
+    ["one fell, then a rewrite with its own failure", [a("euryale-v2.3", "http_503"), a("hermes-4-405b", "ok"),
+      a("hermes-4-405b", "timeout", true), a("glm-5.3-flash", "ok", true)], 1],
+  ])("%s → %s", (_n, attempts, fell) => {
+    expect(replyLine(reply({ attempts }))).toBe(`Route chat · Heat 1 · Row otherwise · Writer euryale-v2.3 · ${fell} fell before`);
+  });
+});
+
+describe("buildSettlePayload", () => {
+  it.each<[UiSide, number, "bought" | "declined", string]>([
+    ["L", 7, "bought", "checkpoint"],
+    ["R", 8, "declined", "draft"],
+  ])("%s row %s %s → side %s, with account_id", (ui, rowId, outcome, side) => {
+    expect(buildSettlePayload(offered(), ui, rowId, outcome, "acct1"))
+      .toEqual({ account_id: "acct1", pair: "p1", side, row_id: rowId, outcome });
+  });
+});
+
+describe("canSend with a settle in flight", () => {
+  it("is unchanged: a typed line still sends", () => {
+    const s = run(offered(), settle("L", 7), typed("more"));
+    expect(canSend(s)).toBe(true);
+    expect(canSend(run(offered(), typed("more")))).toBe(true);
+    expect(run(s, { type: "send" }).sides.L.pending?.n).toBe(2);
+  });
+});
+
+describe("his photo (attach → described once → both sides' Turns)", () => {
+  const IMG = "data:image/png;base64,AAAA";
+  const PHOTO: FanPhoto = { desc: "a guy in a hoodie", thumb: "data:image/jpeg;base64,BBBB", outcome: "described", model: "qwen3-vl-30b", ms: 900 };
+  const attach: TestChatAction = { type: "attach", image: IMG };
+  const described: TestChatAction = { type: "photoDescribed", pair: "p1", photo: PHOTO };
+
+  it.each<[string, TestChatAction[], boolean]>([
+    ["image attached, no text", [attach], true],
+    ["image attached, then removed", [attach, { type: "detach" }], false],
+    ["photo request out", [attach, { type: "send" }], false],
+    ["photo described: both sides in flight", [attach, { type: "send" }, described], false],
+    ["photo failed: back in the composer", [attach, { type: "send" }, { type: "photoFailed", pair: "p1", error: "x" }], true],
+  ])("canSend: %s → %s", (_n, actions, want) => {
+    expect(canSend(run(initTestChat("p1"), ...actions))).toBe(want);
+  });
+
+  it("Send owes the photo request first (his line and image), not the Turns; the composer clears", () => {
+    const s = run(initTestChat("p1"), attach, ...say(" rate me "));
+    expect(s.describing).toEqual({ text: "rate me", image: IMG });
+    expect([s.sides.L.pending, s.sides.R.pending, s.text, s.photo]).toEqual([null, null, "", null]);
+  });
+
+  it("photoDescribed owes both sides Turn 1 carrying the one description; the payload sends it", () => {
+    const s = run(initTestChat("p1"), attach, { type: "send" }, described);
+    expect(s.describing).toBeNull();
+    expect(s.sides.L.pending).toEqual({ n: 1, text: "", photo: PHOTO, inFlight: true, error: null });
+    expect(buildTurnPayload(s, "L")).toEqual({ pair: "p1", side: "checkpoint", n: 1, text: "", photo: PHOTO });
+    expect(buildTurnPayload(s, "R")).toEqual({ pair: "p1", side: "draft", n: 1, text: "", photo: PHOTO });
+  });
+
+  it("a Turn keeps the photo as its side read it (the answer's photo wins)", () => {
+    const read = { ...PHOTO, read: false };
+    const s = run(initTestChat("p1"), { type: "toggleSkip" }, attach, { type: "send" }, described,
+      result("L", 1, { photo: read }));
+    expect(s.sides.L.turns[0].photo).toEqual(read);
+  });
+
+  it("photoFailed puts his line and image back with the message; a line typed meanwhile stays after it", () => {
+    const s = run(initTestChat("p1"), attach, ...say("rate me"), typed("pls"),
+      { type: "photoFailed", pair: "p1", error: "relay 424" });
+    expect([s.describing, s.text, s.photo, s.photoError]).toEqual([null, "rate me pls", IMG, "relay 424"]);
+    expect(run(s, typed("x")).photoError).toBeNull();
+  });
+
+  it.each<[string, TestChatAction]>([
+    ["photoDescribed", { type: "photoDescribed", pair: "old", photo: PHOTO }],
+    ["photoFailed", { type: "photoFailed", pair: "old", error: "x" }],
+  ])("%s for an old pair is ignored", (_n, a) => {
+    const s = run(initTestChat("p1"), attach, { type: "send" });
+    expect(testChatReducer(s, a)).toBe(s);
+  });
+
+  it("attach / detach are ignored while the photo request is out; newChat drops it all", () => {
+    const s = run(initTestChat("p1"), attach, { type: "send" });
+    expect(testChatReducer(s, { type: "attach", image: "data:image/png;base64,CC" })).toBe(s);
+    expect(testChatReducer(s, { type: "detach" })).toBe(s);
+    const n = testChatReducer(s, { type: "newChat", pair: "p2" });
+    expect([n.describing, n.photo, n.photoError]).toEqual([null, null, null]);
+  });
+
+  it("sessionTurns keeps a row's photo on its Turn", () => {
+    const row = { ...reply(), side: "checkpoint" as const, n: 1, text: "", wait_s: 3, created_at: "2026-11-14T00:00:00Z",
+      photo: { ...PHOTO, read: true } };
+    delete (row as Partial<TurnResponse>).dropped;
+    expect(sessionTurns({ rows: [row] }, "checkpoint")[0].photo).toEqual({ ...PHOTO, read: true });
+  });
+
+  it.each<[string, FanPhoto, string]>([
+    ["read", { ...PHOTO, read: true }, "a guy in a hoodie"],
+    ["key off", { ...PHOTO, read: false }, MEDIA_ONLY],
+    ["no description", { ...PHOTO, desc: null, read: true }, MEDIA_ONLY],
+  ])("photoCaption: %s", (_n, p, want) => {
+    expect(photoCaption(p)).toBe(want);
   });
 });

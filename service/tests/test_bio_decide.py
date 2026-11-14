@@ -265,7 +265,8 @@ def case_public_profile_shape():
               "destination": "x", "geo": None}]
     got = d.to_json(d.public_profile(profile, links)).decode()
     want = ('{"profile":{"id":"ppppppppppppppp","username":"alice","displayName":"Alice","bio":"hi",'
-            '"avatarUrl":"/api/files/profiles/ppppppppppppppp/a.webp","verified":true,"mode":"escape_ig"},'
+            '"avatarUrl":"/api/files/profiles/ppppppppppppppp/a.webp","backgroundUrl":"","verified":true,'
+            '"mode":"escape_ig"},'
             '"links":[{"id":"kkkkkkkkkkkk","title":"T","isAdult":false,"tracking":true,"default_tracknumber":"55",'
             '"mode":"direct","icon":"","backgroundImage":"/api/files/links/lllllllllllllll/b.webp"},'
             '{"id":"jjjjjjjjjjjj","title":"U","isAdult":true,"tracking":false,"mode":"escape_ig",'
@@ -278,6 +279,8 @@ def case_public_profile_shape():
     assert gated["turnstileSiteKey"] == "SITE"
     assert gated["links"][0]["botCheck"] is True and "botCheck" not in gated["links"][1]
     assert gated["profile"]["avatarUrl"] == "/p/api/files/profiles/ppppppppppppppp/a.webp"
+    assert d.public_profile({**profile, "background_image": "g.webp"}, links, None, "/p")["profile"][
+        "backgroundUrl"] == "/p/api/files/profiles/ppppppppppppppp/g.webp"
     assert gated["links"][1]["icon"] == "/p/api/files/links/mmmmmmmmmmmmmmm/i.webp"
     links[0]["bot_check"] = 0
     assert "turnstileSiteKey" not in d.public_profile(profile, links, "SITE"), "no gated Link: no site key"
@@ -329,8 +332,8 @@ def case_reserved_matches_v2():
 
 def case_assets_pinned():
     # Re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions.
-    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "26c339326dc50c1bf5b5089ae9fc7ffa",
-            "style.css": "0041cb8ccdc014aa798e0103f9ac0bca"}
+    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "fa31e2e787cd4f0c536e9a8ce4a80271",
+            "style.css": "29d2294e4395b02c9ad9589f93a0bbef"}
     for name, md5 in pins.items():
         assert hashlib.md5((assets.PUBLIC / name).read_bytes()).hexdigest() == md5, name
     stub = (assets.PUBLIC / "landing.html").read_text()

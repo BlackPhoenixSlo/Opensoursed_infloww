@@ -551,3 +551,31 @@ h1 {
         z-index: 1;
     }
 }
+
+/* The page's own background picture (profile backgroundUrl; script.js adds body.has-backdrop): full-bleed at every
+   width, unblurred, under a dark scrim so the links stay legible. Without one the page is as above. */
+body.has-backdrop::before,
+body.has-backdrop::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+}
+
+body.has-backdrop::before {
+    background-image: var(--backdrop-url);
+    background-size: cover;
+    background-position: center;
+    filter: none;
+    transform: none;
+}
+
+body.has-backdrop::after {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+body.has-backdrop .container {
+    position: relative;
+    z-index: 1;
+}

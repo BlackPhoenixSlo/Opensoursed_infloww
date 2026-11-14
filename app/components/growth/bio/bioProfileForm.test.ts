@@ -7,7 +7,7 @@ import {
 } from "@/components/growth/bio/bioProfileForm";
 
 const PROFILE: BioProfile = {
-  id: "p".repeat(15), username: "alice", display_name: "Alice", bio: "hi", avatar: "", avatar_url: "",
+  id: "p".repeat(15), username: "alice", display_name: "Alice", bio: "hi", avatar: "", avatar_url: "", background_url: "",
   account_id: "1000001", mode: "direct", verified: false, custom_domain: null, public_url: null,
   created_at: "", updated_at: "",
 };

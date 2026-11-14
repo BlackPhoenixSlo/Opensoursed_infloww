@@ -4,7 +4,8 @@
  * The bio editor's live preview: the public page drawn in React from `previewModel` (the draft, not the saved page),
  * its markup and look after `public/script.js` renderProfile/renderLinks and `style.css` (black page, 100px avatar, the verified badge,
  * #1C1C1E cards; a background card at 2.5:1 until its image loads, then the image's natural ratio, with its text at the
- * foot and the icon top-left). Never an iframe: the real
+ * foot and the icon top-left; the page's own background picture cover-fit under a 55% black scrim, like
+ * body.has-backdrop). Never an iframe: the real
  * page counts a view on load and shows only what is saved. The look is approximated; "Open" shows the real page.
  */
 import { Lock } from "lucide-react";
@@ -46,8 +47,11 @@ export function BioPreview({ model, className }: { model: PreviewModel; classNam
       className={cn(
         "mx-auto w-full max-w-[390px] overflow-hidden rounded-[28px] border border-[#333] bg-black text-white",
         "lg:h-[760px]",
+        model.backgroundUrl && "bg-cover bg-center",
         className,
-      )}>
+      )}
+      style={model.backgroundUrl ? { backgroundImage: `linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url("${model.backgroundUrl}")` }
+        : undefined}>
       <div className="h-full overflow-y-auto overscroll-contain"
         style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}>
         <div className="flex flex-col items-center p-5">

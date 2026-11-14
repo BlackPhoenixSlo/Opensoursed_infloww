@@ -18,10 +18,11 @@ Create with a Creator: an empty display name takes the Creator's OnlyFans name, 
 Both read the Creator's cached `users_me` (the app's own `of-me` read fills it), so at most one OnlyFans call.
 Vault avatar: `POST /{pid}/avatar/vault {media_id}` takes a photo of the page's Creator through vault_stills (disk,
 mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload;
-`POST /{pid}/links/{lid}/background/vault` the same for a link's background. Setting a Creator later (PATCH) adds the
+`POST /{pid}/links/{lid}/background/vault` the same for a link's background, `/{pid}/background(/vault)` for the
+page's backdrop (BACKGROUND_SIDE). Setting a Creator later (PATCH) adds the
 "OnlyFans" link first when the page has no onlyfans.com link yet.
-Audit: link create and both vault picks (the Toolbox write tools' routes) name the page's stored Creator for the
-audit row (`_audit_as`), whatever X-Account-Id / ?account_id= the caller sent.
+Audit: link create, the vault picks (the Toolbox write tools' routes) and the page background upload name the
+page's stored Creator for the audit row (`_audit_as`), whatever X-Account-Id / ?account_id= the caller sent.
 
 Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
 X-Forwarded-Host/Proto when a proxy set them) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
@@ -218,6 +219,7 @@ async def _page(s, owner: str, pid: str) -> dict[str, Any]:
                              .order_by(BioLink.sort_order, BioLink.id))).scalars().all()
     return {"profile": {"id": p.id, "username": p.username, "display_name": p.display_name, "bio": p.bio,
                         "avatar": p.avatar, "avatar_url": _file_url("profiles", p.id, p.avatar),
+                        "background_url": _file_url("profiles", p.id, p.background_image),
                         "account_id": p.account_id, "mode": p.mode, "verified": bool(p.verified),
                         "custom_domain": domain, "public_url": _public_url(p.username, domain),
                         "created_at": _iso(p.created_at), "updated_at": _iso(p.updated_at)},
@@ -268,7 +270,8 @@ async def list_pages() -> dict[str, Any]:
         dom = doms.get(p.id)
         v, c = stats.get(p.id, (0, 0))
         out.append({"id": p.id, "username": p.username, "display_name": p.display_name,
-                    "avatar_url": _file_url("profiles", p.id, p.avatar), "account_id": p.account_id,
+                    "avatar_url": _file_url("profiles", p.id, p.avatar),
+                    "background_url": _file_url("profiles", p.id, p.background_image), "account_id": p.account_id,
                     "mode": p.mode, "verified": bool(p.verified), "link_count": n, "custom_domain": dom,
                     "public_url": _public_url(p.username, dom), "views_30d": int(v or 0), "clicks_30d": int(c or 0),
                     "updated_at": _iso(p.updated_at)})
@@ -575,6 +578,35 @@ async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
 async def remove_avatar(pid: str) -> dict[str, Any]:
     owner = await _owner()
     return await _set_file(owner, _id_or_404(pid), BioProfile, BioProfile.avatar, "profiles", pid, "avatar", None)
+
+
+@router.post("/{pid}/background")
+@_safe_write
+async def upload_page_background(pid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    await _require(owner, pid)
+    return _audit_as(request, await _set_file(owner, pid, BioProfile, BioProfile.background_image, "profiles", pid,
+                                              "background", await _encode(request, images.BACKGROUND_SIDE)))
+
+
+@router.post("/{pid}/background/vault")
+@_safe_write
+async def page_background_from_vault(pid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    aid, mid, data = await _vault_image(owner, pid, request, images.BACKGROUND_SIDE)
+    log.info("bio admin: background from vault: page=%s account=%s media=%s", pid, aid, mid)
+    return _audit_as(request, await _set_file(owner, pid, BioProfile, BioProfile.background_image, "profiles", pid,
+                                              "background", data))
+
+
+@router.delete("/{pid}/background")
+@_safe_write
+async def remove_page_background(pid: str) -> dict[str, Any]:
+    owner = await _owner()
+    return await _set_file(owner, _id_or_404(pid), BioProfile, BioProfile.background_image, "profiles", pid,
+                           "background", None)
 
 
 # ── links ────────────────────────────────────────────────────────────

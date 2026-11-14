@@ -102,6 +102,16 @@ golden without it); no row moves.
 Golden refresh (2026-11-14, full-ai 03b ticket 44): adds POST /admin/full-ai/test/settle (full_ai_api, fake
 Buy/Decline in the Test chat) after the Test chat rows; diff = that one row + the sha.
 
+Golden refresh (2026-11-14, full-ai 03b ticket 49): adds GET /admin/vault-ai/internal-folders (vault_ai_api,
+the Content folders picker) among the vault-ai rows; diff vs main's golden = that one row + the sha.
+
+Golden refresh (2026-11-14, ultra step 5 rwl5 m7): the page backdrop routes /admin/bio-pages/{pid}/background(/vault)
+get their own names (upload_page_background, page_background_from_vault, remove_page_background; the link routes
+keep theirs); diff = those three names + the sha; inspected, intentional.
+
+Golden refresh (2026-11-14, full-ai folder prices): adds GET + POST /admin/vault-ai/folder-prices (vault_ai_api,
+an agency's price per vault folder) right after /admin/vault-ai/internal-folders; diff = those two rows + the sha.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

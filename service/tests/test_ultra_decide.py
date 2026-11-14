@@ -45,6 +45,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from typing import get_args  # noqa: E402
 
 import toolbox_sends  # noqa: E402
+import ultra_card as uc  # noqa: E402
 import ultra_decide as ud  # noqa: E402
 
 CA = "1000001"
@@ -142,10 +143,11 @@ def case_substitute() -> None:
     spaced = ud.validate_plan(_plan(READ, {"id": "f", "tool": "of_folder_create",
                                            "args": {"account_id": CA, "name": " $pick.id"}}), OWNED).steps[1]
     assert "refs" not in spaced and ud.substitute(spaced, results)["name"] == " $pick.id"
-    # A send step is never filled, even with a (hand-made) refs entry.
-    send = {**SEND, "args": {**SEND["args"], "text": "$folder.id"},
-            "refs": [{"at": ["text"], "step": "folder", "path": "id"}]}
-    assert ud.substitute(send, results)["text"] == "$folder.id"
+    # A send fills its recorded refs only (validation records judge media / a rule's made folder, nothing else).
+    send = {**SEND, "args": {**SEND["args"], "media_files": "$judge.ids"},
+            "refs": [{"at": ["media_files"], "step": "judge", "path": "ids"}]}
+    filled = ud.substitute(send, {**results, "judge": {"ids": [5, 6]}})
+    assert filled["media_files"] == [5, 6] and filled["text"] == SEND["args"]["text"], filled
     for bad, path in (("$pick.data_only.list.5.id", "data_only.list.5.id"), ("$folder.name", "name"),
                       ("$later.id", "id")):
         sid = bad[1:].split(".")[0]
@@ -180,8 +182,9 @@ def case_states() -> None:
     assert ud.expired("awaiting_ok", t0, t0 + ud.OK_TTL + timedelta(seconds=1))
     assert not ud.expired("running", t0, t0 + timedelta(days=1))
     assert ud.OK_TTL_TEXT == "10 minutes"
-    assert set(get_args(ud.PlanStatus)) == ud.FINAL | {"awaiting_ok", "running"}
-    assert set(get_args(ud.StepState)) == {"pending", "started", "done", "failed", "uncertain", "skipped"}
+    assert set(get_args(ud.PlanStatus)) == ud.FINAL | ud.LIVE | {"awaiting_ok"}
+    assert not ud.FINAL & ud.LIVE and ud.RUN_LIVE < ud.LIVE and "awaiting_ok" not in ud.LIVE
+    assert set(get_args(ud.StepState)) == {"pending", "started", "needs_you", "done", "failed", "uncertain", "skipped"}
     states = [{"id": "a", "state": "done"}, {"id": "b", "state": "started"}, {"id": "c", "state": "pending"}]
     ended = [{"id": "f", "state": "failed", "error": "x"}, {"id": "u", "state": "uncertain"},
              {"id": "s", "state": "skipped"}]
@@ -265,7 +268,7 @@ def case_may_send() -> None:
 
 def case_card_and_report() -> None:
     plan = ud.validate_plan(_plan(READ, WRITE, SEND), OWNED)
-    cards = ud.card(plan, {CA: "Ava"})
+    cards = uc.card(plan, {CA: "Ava"})
     mass = cards[2]
     rows = dict(map(tuple, mass["rows"]))
     assert mass["effect"] == "send" and mass["text"] == LONG, mass
@@ -276,15 +279,15 @@ def case_card_and_report() -> None:
     assert write["media_ids"] == "from step pick", write  # a one-item list of references: no JSON brackets
     assert [c["title"] for c in cards] == ["Vault Search", "OF Folder Create", "Mass message"], cards
     two = {**WRITE, "args": {**WRITE["args"], "media_ids": ["$pick.data_only.list.0.id", "$pick.data_only.list.1.id"]}}
-    rows2 = dict(map(tuple, ud.card(ud.validate_plan(_plan(READ, two), OWNED), {})[1]["rows"]))
+    rows2 = dict(map(tuple, uc.card(ud.validate_plan(_plan(READ, two), OWNED), {})[1]["rows"]))
     assert rows2["media_ids"] == "2 from step pick", rows2
     mixed = {**WRITE, "args": {**WRITE["args"], "media_ids": [9301, "$pick.data_only.list.0.id"]}}
-    rows3 = dict(map(tuple, ud.card(ud.validate_plan(_plan(READ, mixed), OWNED), {})[1]["rows"]))
+    rows3 = dict(map(tuple, uc.card(ud.validate_plan(_plan(READ, mixed), OWNED), {})[1]["rows"]))
     assert rows3["media_ids"] == '[9301, "from step pick"]', rows3  # a literal beside a reference: listed as is
     assert dict(map(tuple, cards[0]["rows"]))["query"] == "halloween"  # arg labels stay the arg names
     bare = toolbox_sends.card_rows("post", {"account_id": CA, "text": "hi"})
     assert dict(map(tuple, bare))["Media"] == "none", bare
-    to = lambda ids: ud.card(ud.validate_plan(_plan({**SEND, "args": {**SEND["args"], "user_ids": ids}}),  # noqa: E731
+    to = lambda ids: uc.card(ud.validate_plan(_plan({**SEND, "args": {**SEND["args"], "user_ids": ids}}),  # noqa: E731
                                               OWNED), {})[0]["rows"]
     assert to([111, 222]) != to([333, 444])
     assert dict(map(tuple, to([111, 222])))["Audience"] == "lists fans + 2 fan(s) by id: 111, 222"
@@ -298,7 +301,7 @@ def case_card_and_report() -> None:
     states = [{"id": "pick", "state": "done", "open_url": "/growth/vault-pro"},
               {"id": "folder", "state": "done", "open_url": "/growth/vault-pro"},
               {"id": "mass", "state": "uncertain", "error": "no answer"}]
-    line = ud.report_text(plan.summary, "failed", states)
+    line = uc.report_text(plan.summary, "failed", states)
     assert line == "Ultra plan failed: Halloween mass (2 of 3 steps done; mass uncertain)", line
 
 

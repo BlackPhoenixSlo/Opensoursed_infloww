@@ -76,6 +76,10 @@
  * answer linking a flow's page offers the swap ("Do it for me" chip). Offered
  * per the server's do-caps (doOfferOf). A plan and its refinements share one
  * thread id of their own, never the Q&A conversation's.
+ *
+ * ULTRA MODE (owners only, ticked per browser): the panel becomes UltraPanel
+ * (components/ultra) in the same frame — black/red, the request goes to an
+ * Ultra plan instead of Q&A or Do. Unticked, nothing here changes.
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
@@ -117,6 +121,7 @@ import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
 import { canOpenChats, commandLinks, confirmation, prepass, type PrepassHit } from "./prepass";
 import { ThreadList } from "./ThreadList";
+import { UltraPanel, UltraToggle, useUltraMode } from "@/components/ultra/UltraPanel";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
 } from "./launcherDockReducer";
@@ -695,6 +700,7 @@ export function AssistantPanel({
     doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
   } = useAssistant();
   const answer = useLazyModule(answerText);
+  const [ultra, setUltra] = useUltraMode(isUser);
   const [draft, setDraft] = useState("");
   const [listOpen, setListOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -725,6 +731,13 @@ export function AssistantPanel({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [shown]);
+
+  if (ultra) {
+    return (
+      <UltraPanel frame={v.frame} column={column} composerPad={v.composerPad} inputText={v.inputText}
+        onClose={onClose} onOff={() => setUltra(false)} />
+    );
+  }
 
   const send = () => {
     if (!canSend) return;
@@ -950,6 +963,7 @@ export function AssistantPanel({
               <ArrowUp className="h-4 w-4" aria-hidden />
             </button>
           </div>
+          {isUser && <UltraToggle checked={false} onChange={setUltra} className="self-end px-1 text-muted" />}
         </div>
       </div>
 

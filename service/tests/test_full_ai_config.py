@@ -6,6 +6,9 @@
   case_validate_table       (ticket 37) every refusal the spec names, one key changed each row;
                             DEFAULTS passes
   case_merged_fills_a_later_key  a stored side missing a later key takes it from DEFAULTS
+  case_style_layers_table   `style`: five bools, exactly those keys; the legacy `text_style` on a write
+                            sets all five and is never stored; a stored side with only `text_style`
+                            reads girl = all on, formal = all off on every side; one layer stored alone
   case_folders_table        (ticket 43) `folders` refs validated by name, default all, a stored
                             v1 without `folders` reads all, unknown key still refused
   case_draft_questions_table (ticket 47) `draft_questions` a bool, default false; a stored v1
@@ -31,12 +34,15 @@ from sqlalchemy import text  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 from automations.full_ai_config import (  # noqa: E402
-    DEFAULTS, WRITER_PROVIDERS, Invalid, StaleRev, merged, put_draft, rollback, save, turn_bound_s,
-    validate,
+    DEFAULTS, STYLE_LAYERS, WRITER_PROVIDERS, Invalid, StaleRev, merged, put_draft, rollback, save,
+    style_layers, turn_bound_s, validate,
 )
 from db.engine import get_session  # noqa: E402
 from db.models import AutomationRule  # noqa: E402
 from llm_models import MODELS  # noqa: E402
+
+# Every Writer-provider model (the page's Writer select), sorted.
+WRITER_MODELS = sorted(m for m, v in MODELS.items() if v.provider in WRITER_PROVIDERS)
 
 
 def case_turn_bound_s_table():
@@ -76,9 +82,10 @@ def case_validate_table():
         ({"reply_by_webhook": "yes"}, "reply_by_webhook"),
         ({"typing_sign": 1}, "typing_sign"),
         ({"typing_notification": None}, "typing_notification"),
+        ({"caption_writer": "llm"}, "caption_writer"),
         ({"gifs": 0}, "gifs"),
         ({"reply_speed": "fast"}, "reply_speed"),
-        ({"text_style": "boy"}, "text_style"),
+        ({"text_style": "boy"}, "Human style"),                              # the label, never the wire value
         ({"version": 2}, "version"),
         ({"info_fields": ["shoe_size"]}, "info_fields"),
     ]
@@ -92,18 +99,60 @@ def case_validate_table():
         assert validate({**DEFAULTS, **ok}) == [], (ok, validate({**DEFAULTS, **ok}))
 
 
+ON, OFF = dict.fromkeys(STYLE_LAYERS, True), dict.fromkeys(STYLE_LAYERS, False)
+FORMAL = {**DEFAULTS, "style": OFF}                  # the stored shape of the old `text_style: "formal"`
+FORMAL_IN = {**DEFAULTS, "text_style": "formal"}     # a write in the old shape (Do mode's alias)
+
+
 def case_merged_fills_a_later_key():
-    old = {k: v for k, v in DEFAULTS.items() if k != "typing_notification"}
-    got = merged({"checkpoint": {**old, "gifs": True}, "previous": old,
+    # A stored side from before `style` and `typing_notification`: `text_style` only.
+    old = {k: v for k, v in DEFAULTS.items() if k not in ("typing_notification", "style")}
+    got = merged({"checkpoint": {**old, "text_style": "girl", "gifs": True}, "previous": {**old, "text_style": "girl"},
                   "draft": {**old, "text_style": "formal"}, "rev": 4})
     assert got["checkpoint"] == {**DEFAULTS, "gifs": True}, got["checkpoint"]
     assert got["previous"] == DEFAULTS, got["previous"]
-    assert got["draft"] == {**DEFAULTS, "text_style": "formal"}, got["draft"]
+    assert got["draft"] == FORMAL, got["draft"]
     assert got["rev"] == 4
     assert merged(None) == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0}
     # A stored v1 config from before 03b (no `sell_on`) reads selling off.
     pre = {k: v for k, v in DEFAULTS.items() if k != "sell_on"}
     assert merged({"checkpoint": pre, "draft": pre, "rev": 1})["draft"]["sell_on"] is False
+
+
+def case_style_layers_table():
+    """`style` is the stored truth of the five human-texting layers; `text_style` survives as the
+    write alias / old stored shape (girl = all on, formal = all off)."""
+    assert DEFAULTS["style"] == ON and "text_style" not in DEFAULTS, DEFAULTS
+    for ok in ({**ON, "typos": False}, OFF, {**OFF, "spacing": True}):
+        assert validate({**DEFAULTS, "style": ok}) == [], ok
+    for bad in ({**ON, "typos": 1}, {k: v for k, v in ON.items() if k != "painful"}, {**ON, "emoji": True},
+                [], None, "girl", {**ON, "typos": None}):
+        errs = validate({**DEFAULTS, "style": bad})
+        assert len(errs) == 1 and errs[0].startswith("style: want exactly texting, nonnative, spacing, typos, painful"), (bad, errs)
+    assert validate({**DEFAULTS, "text_style": "girl"}) == validate(FORMAL_IN) == []
+    # The read: an alias wins over `style`; neither = off (the old `text_style != "girl"`).
+    rows = [({"style": {**ON, "typos": False}}, {**ON, "typos": False}),
+            ({"text_style": "girl"}, ON), ({"text_style": "formal"}, OFF),
+            ({"text_style": "formal", "style": ON}, OFF), ({"text_style": "girl", "style": OFF}, ON),
+            ({}, OFF), ({"style": {"typos": True}}, {**OFF, "typos": True})]
+    for cfg, want in rows:
+        assert style_layers(cfg) == want, (cfg, style_layers(cfg))
+    # A write: one layer off is stored as given; the alias becomes `style` and is never stored.
+    s = put_draft(None, {**DEFAULTS, "style": {**ON, "typos": False}}, 0)
+    assert s["draft"] == {**DEFAULTS, "style": {**ON, "typos": False}} and s["checkpoint"] == DEFAULTS, s
+    s = put_draft(s, {**s["draft"], "text_style": "formal"}, 1)
+    assert s["draft"] == FORMAL and "text_style" not in s["draft"], s["draft"]
+    s = put_draft(s, {**s["draft"], "text_style": "girl"}, 2)
+    assert s["draft"] == DEFAULTS, s["draft"]
+    # Every side of an old stored blob (text_style only) reads as before; save / roll back keep the layers.
+    old = {k: v for k, v in DEFAULTS.items() if k != "style"}
+    got = merged({"checkpoint": {**old, "text_style": "formal"}, "previous": {**old, "text_style": "girl"},
+                  "draft": {**old, "text_style": "formal", "gifs": True}, "rev": 9})
+    assert (got["checkpoint"]["style"], got["previous"]["style"], got["draft"]["style"]) == (OFF, ON, OFF), got
+    typo_off = put_draft(got, {**DEFAULTS, "style": {**ON, "typos": False}}, 9)
+    saved = save(typo_off, 10)
+    assert saved["checkpoint"]["style"] == {**ON, "typos": False} and saved["previous"]["style"] == OFF, saved
+    assert rollback(saved, 11)["checkpoint"]["style"] == OFF
 
 
 def case_folders_table():
@@ -174,12 +223,14 @@ def _raises(exc, fn, *a):
 
 
 def case_transitions_and_stale_rev():
-    formal = {**DEFAULTS, "text_style": "formal"}
-    s1 = put_draft(None, formal, 0)
+    formal = FORMAL
+    s1 = put_draft(None, FORMAL_IN, 0)
     assert s1 == {"checkpoint": DEFAULTS, "previous": None, "draft": formal, "rev": 1}, s1
     # A partial draft is stored filled from DEFAULTS.
     assert put_draft(None, {"gifs": True}, 0)["draft"] == {**DEFAULTS, "gifs": True}
     assert _raises(StaleRev, put_draft, s1, DEFAULTS, 0).rev == 1
+    # A stale rev answers before field errors (rwl fa3 N2): 409, not 422.
+    assert _raises(StaleRev, put_draft, s1, {**DEFAULTS, "sell_on": "yes"}, 0).rev == 1
     assert _raises(Invalid, put_draft, s1, {**DEFAULTS, "sell_on": "yes"}, 1).errors == [
         "sell_on: must be true or false"]
     # 03b: selling is settable on the draft alone; the checkpoint keeps its own (off) value.
@@ -239,8 +290,8 @@ def case_config_api_round_trip():
     got = OWNER_A.get(CONFIG, params={"account_id": A})
     assert got.status_code == 200, got.text
     assert got.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0,
-                          "errors": []}, got.json()
-    formal = {**DEFAULTS, "text_style": "formal"}
+                          "errors": [], "writer_models": WRITER_MODELS}, got.json()
+    formal = FORMAL_IN
     bad = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**formal, "fans_list": []},
                                                "rev": 0})
     assert bad.status_code == 422 and bad.json() == {"errors": ["fans_list: unknown key"]}, bad.text
@@ -248,8 +299,9 @@ def case_config_api_round_trip():
     assert stale.status_code == 409 and stale.json()["rev"] == 0, stale.text
     ok = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 0})
     assert ok.status_code == 200, ok.text
+    formal = FORMAL                                 # stored as the layers
     assert ok.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": formal, "rev": 1,
-                         "errors": []}, ok.json()
+                         "errors": [], "writer_models": WRITER_MODELS}, ok.json()
     # The same request again is stale: someone (this tab) stored meanwhile.
     again = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 0})
     assert again.status_code == 409 and again.json()["rev"] == 1, again.text
@@ -257,7 +309,7 @@ def case_config_api_round_trip():
     assert saved.status_code == 200, saved.text
     after_save = saved.json()
     assert after_save == {"checkpoint": formal, "previous": DEFAULTS, "draft": formal, "rev": 2,
-                          "errors": []}, after_save
+                          "errors": [], "writer_models": WRITER_MODELS}, after_save
     assert _rule_row() == rule
     assert OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 1}).status_code == 409
     nothing = OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 2})

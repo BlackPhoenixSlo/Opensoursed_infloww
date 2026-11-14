@@ -14,10 +14,14 @@ equal before and after, no `automation_runs` row, every send path patched to rai
   case_parts_equal_the_shared_chain      girl / formal parts = a direct finalize_draft + shape_parts
                                          (+ typo throttle) with the matching context, and differ;
                                          the account-wide style switches (set against each side) unread
+  case_typos_off_skips_only_the_typo_pass  `style.typos` off on the draft: its parts = the girl chain
+                                         without the typo throttle, the checkpoint's keep it, no typo state
   case_echo_is_failed                    a reply shape_parts drops as echo: failed, dropped_reason echo
   case_typo_state_is_the_sessions        no Fan read or written; the state lands in reply_json
   case_wait_s_is_drawn_not_slept         in "0-2m", same per session:n, the handler under 1 s
   case_double_post_and_skipped_n_409     one row then 409; n = count + 2: 409, no row
+  case_concurrent_duplicate_turn_one_run the same n again while the first runs: waits, then 409 once
+                                         the row exists; one run_turn / Jev / Writer call, one row
   case_session_reads_both_sides_in_order both sides' rows by id; the next Turn reads the exchange
   case_cross_account                     A's pair reads empty under B; 403 for a non-owner, no row
   case_no_send_test_import_scan          the test modules name no send path (the settle and its route too)
@@ -36,8 +40,10 @@ from _full_ai_chat_helpers import (
     _body, _chain_post, _Clock, _db, _direct, _guarded, _post, _reply, _rows, _SlowJev, _store_config,
 )
 import ast
+import asyncio
 import contextlib
 import json
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,7 +51,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from _full_ai_fixtures import QUIET, QUIET_TEST, FakeJev, FakeWriterHTTP, _fake_jev
-from automations import _info_jev, full_ai_test, full_ai_turn, full_ai_writers
+from automations import _info_jev, _router_jev, full_ai_chat, full_ai_sell, full_ai_test, full_ai_turn, full_ai_writers
 from automations._outbound import finalize_draft
 from automations._style_flags import STYLE_AUTOMATIONS, nonnative_flag_key, spacing_flag_key, typo_flag_key
 from automations.full_ai_config import DEFAULTS, turn_bound_s
@@ -144,6 +150,25 @@ def case_parts_equal_the_shared_chain():
     assert [(_reply(x)["side"], _reply(x)["config_rev"]) for x in rows] == [("checkpoint", 3), ("draft", 3)]
 
 
+def case_typos_off_skips_only_the_typo_pass():
+    pair, his = "p-typos-off", "so what are you up to"
+    raw = "omg hii. i was literally just thinking about u. what are u up to tonight? tell me everything"
+    _store_config(A, {"draft": {**DEFAULTS, "style": {**DEFAULTS["style"], "typos": False}}, "rev": 5})
+    try:
+        ck, *_ = _post(OWNER_A, _body(pair, text=his), f"ok:{raw}")
+        dr, *_ = _post(OWNER_A, _body(pair, text=his, side="draft"), f"ok:{raw}")
+    finally:
+        _store_config(A, {})
+    fid = full_ai_test.test_fan_id(pair)
+    c, d = ck.json(), dr.json()
+    assert c["parts"] == _direct(raw, fid, his, girl=True), c["parts"]
+    assert d["parts"] == _direct(raw, fid, his, girl=True, typos=False), d["parts"]
+    assert c["parts"] != d["parts"], (c["parts"], d["parts"])      # this raw draws a typo on the girl chain
+    ck_row, dr_row = _rows(A, pair)
+    assert _reply(dr_row)["typo_state"] == {} and _reply(ck_row)["typo_state"] != {}, (
+        _reply(ck_row)["typo_state"], _reply(dr_row)["typo_state"])
+
+
 def case_echo_is_failed():
     pair, his = "p-echo", "what are you doing right now babe"
     r, fw, *_ = _post(OWNER_A, _body(pair, text=his), f"ok:{his}")
@@ -210,6 +235,48 @@ def case_double_post_and_skipped_n_409():
     assert [x.id for x in _rows(A, pair)] == [first.json()["row_id"]]
 
 
+def case_concurrent_duplicate_turn_one_run():
+    """Turn n posted again while the first is still running (double click, client retry): the
+    second makes no paid call, waits for the first, then is 409 with the row stored (so the client's
+    session reload recovers the reply); one `run_turn`, one Jev call, one Writer call."""
+    pair = "p-twice-at-once"
+    body = _body(pair)
+    real, calls, out = full_ai_turn.run_turn, [], {}
+    entered, release = threading.Event(), threading.Event()
+
+    async def held(facts):
+        calls.append(facts.anchor_key)
+        if len(calls) == 1:                 # the first Turn waits until the duplicate is answered
+            entered.set()
+            for _ in range(500):
+                if release.is_set():
+                    break
+                await asyncio.sleep(0.01)
+        return await real(facts)
+
+    fw, fj = FakeWriterHTTP({NANO: "ok:hey u"}), FakeJev((QUIET, 1.0), (QUIET, 1.0))
+    full_ai_turn.run_turn = held
+    try:
+        with _guarded(), fw.on(), _fake_jev(fj):
+            t = threading.Thread(target=lambda: out.setdefault("first", OWNER_A.post(TURN, json=body)))
+            t.start()
+            assert entered.wait(5), "the first Turn never reached run_turn"
+            threading.Timer(0.5, release.set).start()   # the duplicate is in flight before release
+            second = OWNER_A.post(TURN, json=body)
+            rows_at_409 = [x.id for x in _rows(A, pair)]
+            t.join(10)
+    finally:
+        release.set()
+        full_ai_turn.run_turn = real
+    first = out["first"]
+    assert len(calls) == 1, ("the duplicate ran the Turn too", calls)
+    assert (len(fj.calls), len(fw.requests)) == (1, 1), (len(fj.calls), len(fw.requests))
+    assert first.status_code == 200 and first.json()["status"] == "sent", first.text
+    assert second.status_code == 409 and second.json() == {"row_id": None}, second.text
+    assert rows_at_409 == [first.json()["row_id"]], rows_at_409   # the 409 came after the row
+    assert [x.id for x in _rows(A, pair)] == [first.json()["row_id"]]
+
+
 def case_session_reads_both_sides_in_order():
     pair = "p-both"
     a1, *_ = _post(OWNER_A, _body(pair, text="hey there"), "ok:heyy")
@@ -245,7 +312,7 @@ def case_cross_account():
 
 # ── No-send ───────────────────────────────────────────────────────────
 
-_TEST_MODULES = (full_ai_test, full_ai_writers, full_ai_turn, _info_jev)
+_TEST_MODULES = (full_ai_test, full_ai_writers, full_ai_turn, _info_jev, full_ai_sell, _router_jev, full_ai_chat)
 _BANNED_MODULES = {"of_client", "automation_executor", "fan_lease", "dm_rate", "of_sends", "of_write"}
 _BANNED_NAMES = {"_make_client", "send_message", "acquire_fan_lease", "start_fan_cooldown"}
 
@@ -327,7 +394,7 @@ def case_three_turns_each_side_its_own_thread():
 
 
 def case_test_thread_equals_the_db_thread():
-    """Two test rows (his line, her bubbles; a GIF part has no line) and the same exchange as
+    """Two test rows (his line, her bubbles; a GIF part is a GIF-only line) and the same exchange as
     stored messages: the Turn after them reads the same Jev state on both paths, built by the
     real Router thread (`_router_jev.thread`, `_ppv`, `_bought`) with no `ppv` note."""
     from automations import _router_jev as router
@@ -341,7 +408,9 @@ def case_test_thread_equals_the_db_thread():
                  [{"gif": "g1", "tag": "wave"}, {"text": "same lol"}]))]
     lines = full_ai_test.test_thread(rows)
     assert [(m.direction, m.body) for m in lines] == [
-        ("in", "hey you"), ("out", "heyy"), ("out", "how r u"), ("in", "good, you?"), ("out", "same lol")]
+        ("in", "hey you"), ("out", "heyy"), ("out", "how r u"), ("in", "good, you?"), ("out", ""),
+        ("out", "same lol")]
+    assert router.line_text(lines[4]) == router.GIF_ONLY, lines[4]
     fan = 7_360
     anchor_id = len(lines) + 1
 
@@ -349,7 +418,7 @@ def case_test_thread_equals_the_db_thread():
         async with get_session() as s:
             for m in lines:
                 s.add(Message(account_id=A, fan_id=fan, message_id=m.message_id, direction=m.direction,
-                              body=m.body, created_at=m.created_at))
+                              body=m.body, created_at=m.created_at, raw_json=m.raw_json))
             s.add(Message(account_id=A, fan_id=fan, message_id=anchor_id, direction="in",
                           body="what are you up to", created_at=t0))
         try:
@@ -357,12 +426,13 @@ def case_test_thread_equals_the_db_thread():
         finally:
             async with get_session() as s:
                 await s.execute(Message.__table__.delete().where(Message.fan_id == fan))
-    ((anchor, db_st, db_offer),) = _db(db_state)
+    ((anchor, db_st, db_offer, _photo),) = _db(db_state)
     turn = [full_ai_test._line("in", "what are you up to", t0, anchor_id)]
     st, has_offer = full_ai_chat.build_state(turn, lines, None, None)
     assert (st, has_offer) == (db_st, db_offer), (st, db_st)
     thread = router.thread(lines, t0)
-    assert thread == st["thread"] and len(thread) == 5, thread
+    assert thread == st["thread"] and len(thread) == 6, thread
+    assert thread[4]["text"] == router.GIF_ONLY, thread
     assert all("ppv" not in e for e in thread), thread
 
 

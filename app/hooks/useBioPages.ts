@@ -48,6 +48,8 @@ export interface BioProfile {
   bio: string;
   avatar: string;
   avatar_url: string;
+  /** The page backdrop's file URL; "" = none. */
+  background_url: string;
   account_id: string | null;
   mode: string;
   verified: boolean;
@@ -171,6 +173,17 @@ export const useBioAvatar = (pid: string) =>
 export const useBioAvatarFromVault = (pid: string) =>
   usePageWrite(pid, (m: { id: number; type: string }) =>
     relay.post<BioPage>(`${pagePath(pid)}/avatar/vault`, { media_id: m.id, type: m.type }));
+
+/** A file uploads the page's background; `null` removes it. */
+export const useBioBackground = (pid: string) =>
+  usePageWrite(pid, (file: File | null) => file
+    ? relay.uploadFile<BioPage>(`${pagePath(pid)}/background`, file)
+    : relay.delete<BioPage>(`${pagePath(pid)}/background`));
+
+/** A photo of the page's Creator's vault as the page's background (photo only, like the avatar). */
+export const useBioBackgroundFromVault = (pid: string) =>
+  usePageWrite(pid, (m: { id: number; type: string }) =>
+    relay.post<BioPage>(`${pagePath(pid)}/background/vault`, { media_id: m.id, type: m.type }));
 
 export const useCreateBioLink = (pid: string) =>
   usePageWrite(pid, (body: LinkBody) => relay.post<BioPage>(`${pagePath(pid)}/links`, body));

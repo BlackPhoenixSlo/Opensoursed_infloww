@@ -56,7 +56,7 @@ beforeEach(() => {
   push.mockReset();
   page = {
     profile: {
-      id: "p1", username: "alice", display_name: "Alice", bio: "", avatar: "", avatar_url: "", account_id: null,
+      id: "p1", username: "alice", display_name: "Alice", bio: "", avatar: "", avatar_url: "", background_url: "", account_id: null,
       mode: "escape_ig", verified: false, custom_domain: { domain: "alice.example", status: "live" },
       public_url: "https://bio.test/alice", created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z",
     },
@@ -121,6 +121,25 @@ describe("BioEditor", () => {
     fireEvent.click(dialog.getByRole("button", { name: "Save link" }));
     await waitFor(() => expect(relayUpload).toHaveBeenCalledWith(
       "/admin/bio-pages/p1/links/mine/background", file));
+  });
+
+  it("uploads the page background, then removes it", async () => {
+    const relayDelete = relay.delete as unknown as Mock;
+    renderWithProviders(<BioEditor profileId="p1" />);
+    const row = within((await screen.findByRole("button", { name: "Upload background" })).closest("[data-bio-background]") as HTMLElement);
+    expect(row.queryByRole("button", { name: "Remove" })).toBeNull();
+    const file = new File(["image"], "bg.png", { type: "image/png" });
+    relayUpload.mockResolvedValueOnce({ ...page, profile: { ...page.profile, background_url: "/f/bg.webp" } });
+    fireEvent.change(row.getByLabelText("Background image"), { target: { files: [file] } });
+    await waitFor(() => expect(row.getByRole("button", { name: "Change background" })).toBeTruthy());
+    expect(relayUpload).toHaveBeenCalledWith("/admin/bio-pages/p1/background", file);
+    const shown = () => (screen.getByRole("region", { name: "Preview" }) as HTMLElement).style.backgroundImage;
+    expect(shown()).toContain('url("/f/bg.webp")');
+    relayDelete.mockResolvedValueOnce(page);
+    fireEvent.click(row.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(row.getByRole("button", { name: "Upload background" })).toBeTruthy());
+    expect(shown()).toBe("");
+    expect(relayDelete).toHaveBeenCalledWith("/admin/bio-pages/p1/background");
   });
 
   it("says an unknown page doesn't exist", async () => {

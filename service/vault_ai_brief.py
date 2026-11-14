@@ -601,3 +601,145 @@ def sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
     }
 
 
+
+
+# ── Ported verbatim from old fastt vault_ai_brief.py:425-561 (OLD-OTH-29) for Full AI Chat's caption
+# call (`automations/full_ai_caption`): the fact block and the selling brief its user message carries.
+
+def item_facts(fields: dict[str, Any], *, description: str = "",
+               duration_seconds: int | None = None, kind: str = "") -> str:
+    """The compact fact block handed to the copy/seller LLM.
+
+    Ordered by selling value, not by schema order: what happens (in sequence)
+    first, then the reveal state, then the concrete props that make copy sound
+    like a memory instead of a template.
+    """
+    s = sellability(fields, duration_seconds=duration_seconds)
+    lines: list[str] = []
+
+    if description.strip():
+        lines.append(f"WHAT IT IS: {description.strip()}")
+
+    beats = _clean(fields.get("beats"))
+    if beats:
+        lines.append("SEQUENCE (in order — beat 1 is how it opens, the last beat "
+                     "is the payoff):")
+        lines += [f"  {i}. {b}" for i, b in enumerate(beats, 1)]
+
+    def add(label: str, value: str) -> None:
+        if value:
+            lines.append(f"{label}: {value}")
+
+    add("ACTS", ", ".join(_clean(fields.get("acts"))))
+    add("PENETRATION", s["penetration"] + (
+        f" ({_scalar(fields, 'insertion_depth')})" if _scalar(fields, "insertion_depth") else ""))
+    cl = _scalar(fields, "clothing_state")
+    if cl:
+        add("CLOTHING", f"{cl}" + (f" — {s['reveal']}" if s["reveal"] else ""))
+    add("WEARING", ", ".join(_clean(fields.get("clothing_items"))))
+    add("TOYS", ", ".join(_clean(fields.get("toys"))))
+    add("POSITION", _scalar(fields, "position"))
+    add("SETTING", _scalar(fields, "setting"))
+    add("SHOT", _scalar(fields, "camera"))
+
+    who = []
+    if s["solo"] is True:
+        who.append("SOLO — she is alone")
+    elif s["solo"] is False:
+        who.append("PARTNER PRESENT — do NOT write this as solo")
+    if fields.get("face_visible") is True:
+        who.append("her face is visible (you may promise eye contact)")
+    elif fields.get("face_visible") is False:
+        who.append("her face is NOT visible (do not promise eye contact)")
+    if who:
+        lines.append("WHO: " + "; ".join(who))
+
+    tier = s["tier"]
+    rung = f" (rung {s['rung'] + 1} of {len(EXPLICITNESS_LADDER)})" if s["rung"] is not None else ""
+    lines.append(f"HEAT: {tier}{rung}; "
+                 + ("CLOSES ON ITS OWN — payoff: " + ", ".join(s["payoff_acts"])
+                    if s["stands_alone"] else
+                    "BUILD-UP ONLY — no payoff act, so it teases the next send"))
+    if s["seconds"]:
+        lines.append(f"LENGTH: {s['seconds']}s")
+    if kind:
+        lines.append(f"TYPE: {kind}")
+
+    conf = fields.get("confidence")
+    if isinstance(conf, int) and conf < 70:
+        lines.append(f"⚠ LOW CONFIDENCE ({conf}) — the vision pass was unsure. "
+                     "Stay general; do not promise specific details.")
+    return "\n".join(lines)
+
+
+# ── The instruction block ───────────────────────────────────────────
+#
+# This is the "what is all this FOR" briefing. It is deliberately about HOW TO
+# USE the facts, not about tone — the caller's own voice/style rules still own
+# tone. Every field named here is one the describe pass really writes.
+SELLING_BRIEF = """\
+HOW TO USE THE FACTS ABOVE
+
+You are selling ONE piece of a creator's own content to a fan in DMs. The facts
+block is what a vision model actually saw in the media — it is ground truth.
+Everything you write must be true against it.
+
+THE HARD RULE
+  Never promise something the facts don't list. If PENETRATION is absent, she is
+  not penetrated. If it says BUILD-UP ONLY, do not imply she finishes. If PARTNER
+  PRESENT appears, never frame it as solo. Selling a thing that isn't in the
+  media is what produces refunds and chargebacks — a vaguer line that is TRUE
+  outsells a specific line that is false.
+
+FINDING THE SELLABLE MOMENT
+  SEQUENCE is the clip's actual progression. The sellable moment is almost never
+  beat 1 — it is the beat where the state CHANGES (she pulls something aside, the
+  toy goes in, she stops posing and starts doing). Find that beat and build the
+  copy around it. The beats are also the honest source for "what happens next",
+  which is the only tease that survives the fan actually watching.
+
+  REVERSE ORDER — read the beats BACKWARD when the payoff is the better hook.
+  Lead with the last beat's result, then withhold how she got there:
+  "…by the end my [X] was [state]. want to see how I got there?" This works when
+  the final beat is stronger than the opening one. Keep the forward order when
+  the build-up is the appeal (a slow strip sells the anticipation, not the end).
+  Either way the FACTS stay the same — you are choosing a narration order, not
+  inventing a different clip.
+
+CLOTHING is the tension axis
+  pulled_aside / pulled_down are the highest-value states: still covered, not
+  covering anything. Name the garment (WEARING) — the specific detail is what
+  makes it read as a real memory instead of a template. When CLOTHING is
+  fully_nude there is no reveal left to promise, so sell the ACT instead.
+
+STANDS ALONE vs BUILD-UP
+  "CLOSES ON ITS OWN" = this can be the ask by itself; write copy that lands a
+  purchase now. "BUILD-UP ONLY" = this is a rung; write copy that makes the NEXT
+  send inevitable, and do not over-promise a finish it does not contain.
+
+HEAT is the ladder position
+  sfw → suggestive → explicit → hardcore. Going UP across a night is escalation;
+  each send should read one notch hotter than the last. Going DOWN is also a
+  real move: for a fan who already bought the top rung, a lower-rung piece is
+  sold as intimacy ("just me, no show") rather than as more.
+
+CONCRETENESS THAT SELLS
+  POSITION, SETTING, SHOT and TOYS are what stop copy sounding generic. A
+  closeup promises detail; a mirror or pov shot promises "you're there"; a named
+  toy is proof it's real. Use one or two, not all of them — a list is inventory,
+  not seduction.
+
+SOLO PIECES
+  When WHO says SOLO, the strongest frame is that it was made alone and
+  privately — "I was thinking about you" is available to you, and it is the
+  highest-converting solo frame precisely because it is about HIM, not the media.
+  That frame is a lie for partner content, so it is off the table there.
+"""
+
+
+def copy_brief(fields: dict[str, Any], *, description: str = "",
+               duration_seconds: int | None = None, kind: str = "") -> str:
+    """Facts + instructions — the full user-message body for a copy call."""
+    facts = item_facts(fields, description=description,
+                       duration_seconds=duration_seconds, kind=kind)
+    return f"{facts}\n\n{SELLING_BRIEF}"

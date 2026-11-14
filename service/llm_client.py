@@ -217,10 +217,12 @@ def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
 # copy per caller (and never re-composed in the browser).
 KEY_FIX_URL = "/settings/ai-keys"
 _PROVIDER_LABELS = {"deepseek": "DeepSeek", "deepinfra": "DeepInfra",
-                    "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)"}
+                    "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)",
+                    "typesafe": "TypeSafe (Jev)"}
 _FEATURE_LABELS = {
     "describe_media": "Vault describe", "describe_flags": "Vault describe",
     "describe_inbound_image": "Photo describe",
+    "full_ai_test_photo": "Full AI test photo",
     "customs_brief": "Customs brief",
     "help_assistant": "The help assistant",
     "help_assistant_do": "The help assistant",
@@ -229,6 +231,7 @@ _FEATURE_LABELS = {
     "welcome_chatter_for_info": "Get to know fans", "followup": "Follow-ups",
     "gen_info": "Gen-Info",
     "full_ai_persona": "Full AI persona draft",
+    "ultra_plan": "Ultra planning", "ultra_judge": "Ultra AI pick",
 }
 
 
@@ -263,6 +266,20 @@ def key_error_payload(exc: "LLMKeyError", *, feature: str = "") -> dict[str, Any
             "message": message, "fix": fix}
 
 
+def failure(exc: BaseException, *, capped_text: str, provider_text: str) -> tuple[bool, str] | None:
+    """An llm_client error → (capped: the daily AI cap refused it, the text a user reads); None: any other
+    error. The caller's wording: `capped_text` (the cap), `provider_text` (any other provider error); a key
+    error reads key_error_payload's message + fix."""
+    if isinstance(exc, LLMCapExceeded):
+        return True, capped_text
+    if isinstance(exc, LLMKeyError):  # before LLMHTTPError: it is one
+        p = key_error_payload(exc)
+        return False, f"{p['message']} {p['fix']}"
+    if isinstance(exc, LLMHTTPError):
+        return False, provider_text
+    return None
+
+
 # ── Result ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -282,6 +299,9 @@ class LLMResult:
     # Tokens WRITTEN to the provider cache (Anthropic; billed 1.25x input).
     # Logged + returned, not a grok_calls column (cost_cents already holds it).
     cache_write_tokens: int | None = None
+    # `chat(tools=…)` only: the assistant's function calls, OpenAI shape
+    # [{id, type: "function", function: {name, arguments: <JSON str>}}]; content may then be "".
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -535,10 +555,13 @@ async def llm_key_available(account_id: str, provider: str,
 _IMAGE_TOKENS = 1200
 
 
-def _estimate_input_tokens(messages: list[dict]) -> int:
-    chars = 0
+def _estimate_input_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
+    # Tool schemas and an assistant's tool_calls travel as input too.
+    chars = len(json.dumps(tools, default=str)) if tools else 0
     image_tokens = 0
     for m in messages:
+        if m.get("tool_calls"):
+            chars += len(json.dumps(m["tool_calls"], default=str))
         c = m.get("content", "")
         if isinstance(c, str):
             chars += len(c)
@@ -671,7 +694,7 @@ async def _get_cap_cents(account_id: str | None) -> int:
 
 
 async def cap_state(account_id: str | None, provider: str,
-                    model: str | None = None) -> dict[str, Any]:
+                    model: str | None = None, *, user_id: str | None = None) -> dict[str, Any]:
     """Today's spend against the per-(account, provider) daily cap. Read-only.
 
     The cap is ENFORCED in `_reserve`, per call, which is the only place it can
@@ -696,18 +719,20 @@ async def cap_state(account_id: str | None, provider: str,
     with a reservation already refused today (`flagged`) and less than twice
     that left, which covers the prompt's input. A cap raised since leaves
     plenty left, so it is not judged spent.
+
+    `user_id` reads the agency rollup instead (see `_ledger`).
     """
     day = datetime.utcnow().strftime("%Y-%m-%d")
     cap_mc = int(await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT)
+    table, col, key = _ledger(account_id, user_id)
     async with get_session() as s:
         row = (await s.execute(
-            select(GrokDailyCost.cost_cents, GrokDailyCost.is_capped).where(
-                GrokDailyCost.day == day,
+            select(table.cost_cents, table.is_capped).where(
+                table.day == day,
                 # `== None` renders as `= NULL` and matches nothing, so the
                 # house-account row has to be addressed with IS NULL.
-                GrokDailyCost.account_id.is_(None) if account_id is None
-                else GrokDailyCost.account_id == account_id,
-                GrokDailyCost.provider == provider,
+                col.is_(None) if key is None else col == key,
+                table.provider == provider,
             )
         )).first()
     spent_mc = int(row[0] or 0) if row else 0
@@ -1021,6 +1046,8 @@ async def chat(
     user_id: str | None = None,
     timeout_s: float | None = None,
     max_attempts: int | None = None,
+    tools: list[dict] | None = None,
+    tool_choice: str | dict | None = None,
 ) -> LLMResult:
     """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra, Z.ai or Anthropic) with full cost + audit.
 
@@ -1064,6 +1091,11 @@ async def chat(
         max_attempts:    OPTIONAL attempt count; None keeps `_LLM_MAX_ATTEMPTS`.
                          A Writer passes 1 so a 429 or stall reaches the next
                          Writer at once. Neither kwarg touches the request body.
+        tools / tool_choice: OPTIONAL function calling, OpenAI shape, DeepSeek
+                         only (Ultra planning). `messages` may then carry an
+                         assistant `tool_calls` and `role: "tool"` answers; the
+                         result's `tool_calls` holds the model's calls (content
+                         may be ""). Other providers → LLMConfigError.
 
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
@@ -1082,6 +1114,9 @@ async def chat(
     if native and response_format is not None:
         raise LLMConfigError(f"model {mdl.id!r}: response_format is not translated "
                              "to the native Messages API")
+    if (tools is not None or tool_choice is not None) and prov.name != "deepseek":
+        raise LLMConfigError(f"model {mdl.id!r}: tool calls are DeepSeek only "
+                             "(the Anthropic adapter is deferred)")
     # Before the cap reservation and the audit row, exactly where the old
     # combined _resolve raised: a call with no usable credential must cost
     # neither a cap slot nor a grok_calls row. Same for an effort string the
@@ -1106,6 +1141,10 @@ async def chat(
         body["temperature"] = temperature
     if response_format is not None:
         body["response_format"] = response_format
+    if tools is not None:
+        body["tools"] = tools
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
     # The reasoning mode, stated explicitly and never by omission — the model
     # registry holds the exact body keys, so there is nothing to branch on here.
     #
@@ -1132,8 +1171,8 @@ async def chat(
             raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
 
     # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
-    hold = await _reserve_call(model, messages, account_id=account_id,
-                               user_id=user_id, provider=prov.name, now=now)  # raises LLMCapExceeded
+    hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
+                               provider=prov.name, now=now, tools=tools)  # raises LLMCapExceeded
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
@@ -1187,8 +1226,9 @@ class _Hold:
 
 
 async def _reserve_call(model: str, messages: list[dict], *, account_id: str | None,
-                        user_id: str | None, provider: str, now: datetime) -> _Hold:
-    est_in = _estimate_input_tokens(messages)
+                        user_id: str | None, provider: str, now: datetime,
+                        tools: list[dict] | None = None) -> _Hold:
+    est_in = _estimate_input_tokens(messages, tools)
     hold = _Hold(now, account_id, user_id, provider, _reserve_millicents(model, est_in))
     cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
     await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
@@ -1320,6 +1360,10 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     raw_content = message.get("content") or ""
     reasoning_content = message.get("reasoning_content")  # DeepSeek thinking
     content = _clean_content(raw_content)
+    tool_calls = [{"id": c.get("id") or "", "type": "function",
+                   "function": {"name": (c.get("function") or {}).get("name") or "",
+                                "arguments": (c.get("function") or {}).get("arguments") or "{}"}}
+                  for c in (message.get("tool_calls") or []) if isinstance(c, dict)]
 
     usage = data.get("usage") or {}
     tokens_in = usage.get("prompt_tokens")
@@ -1350,7 +1394,7 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
         # NULL, never the content) and that has long since run. Everything we
         # actually use from it — usage counts, finish_reason, fingerprint — is
         # denormalized into columns right here.
-        response_text=(content or "")[:_RESP_TEXT_CAP],
+        response_text=(content or (json.dumps(tool_calls) if tool_calls else ""))[:_RESP_TEXT_CAP],
         latency_ms=latency_ms,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
@@ -1383,4 +1427,5 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
         latency_ms=latency_ms,
         raw=data,
         cache_write_tokens=cache_write_tokens,
+        tool_calls=tool_calls,
     )

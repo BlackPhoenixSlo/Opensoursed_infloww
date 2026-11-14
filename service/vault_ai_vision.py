@@ -35,6 +35,7 @@ import llm_client
 import vault_ai_brief
 import vault_ai_fix
 import vault_ai_vision_decide  # module attr `with_jev`, looked up per call
+import vault_cache
 import vault_describe_jev
 import vault_dupes  # module attr `reuse_groups`, looked up per call
 import vault_frames
@@ -54,7 +55,8 @@ from vault_ai_vision_decide import (
     DescribeMode, _frames_for_duration, _parse_describe,
     COPY_MARK, FLAGS_COPY_MARK, JEV_KEY, ReusePlan, build_copy_update, build_describe_update,
     build_flags_copy, describe_answer, describe_selection, flags_current,
-    live_describable, next_attempt, priority_order, prompt_variant, reuse_plan, reuse_state,
+    live_describable, next_attempt, priority_order, prompt_variant, rail_folder_ids, reuse_plan,
+    reuse_state,
 )
 
 # Same logger name as before the split, so log routing/filters are unchanged.
@@ -341,6 +343,7 @@ async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
         return {"media_id": media_id, "ok": False,
                 "status": "not_in_mirror" if kind is None else "not_flaggable"}
     jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep)
+    await vault_jev_pass.fatal(account_id, jev, jev_sweep)   # a key / server cause: stop + tell the owner
     if jev is None:       # `_jev` already AI-read: its flags re-stamped if they drifted, nothing paid
         return {"media_id": media_id, "ok": True, "status": "flagged", "cost_millicents": 0}
     return vault_ai_vision_decide.with_jev(
@@ -494,7 +497,7 @@ async def _lead(account_id: str, mid: int, call, followers: list[int], copy,
     every item a cap cuts off."""
     try:
         res = await call
-    except llm_client.LLMKeyError:
+    except (llm_client.LLMKeyError, vault_sweep.SweepStop):
         raise  # stops the sweep; its riders go uncounted like a cap's
     except Exception as e:  # noqa: BLE001 — counted here so the riders are too
         log.exception("visit raised media=%s account=%s", mid, account_id)
@@ -530,6 +533,23 @@ _flags_progress: dict[str, dict[str, Any]] = {}
 _FLAGS_CONCURRENCY = 4
 
 
+async def _rail_order(account_id: str) -> list[int]:
+    """The OF folder rail's order (`rail_folder_ids`), read from the cached
+    /vault/lists pages `vault_collect.hot_folders` writes — never an OF call.
+    No / expired cache → [] (`priority_order` then ranks folders by newest item)."""
+    from vault_collect import LISTS_MAX_PAGES, LISTS_PAGE  # lazy: vault_collect pulls the executor
+    pages = []
+    for i in range(LISTS_MAX_PAGES):
+        page = await vault_cache.get(account_id, vault_cache.vault_lists_cache_key(
+            view="main", limit=LISTS_PAGE, offset=i * LISTS_PAGE))
+        if not isinstance(page, dict):
+            break
+        pages.append(page)
+        if not page.get("hasMore") or not page.get("list"):
+            break
+    return rail_folder_ids(pages)
+
+
 async def _flags_todo(account_id: str, *, force: bool = False,
                       only: set[int] | None = None, limit: int = 0) -> list[int]:
     """Which items still need flags, in `priority_order` — the describe sweep's
@@ -547,7 +567,8 @@ async def _flags_todo(account_id: str, *, force: bool = False,
     by_id = {int(r[0]): r for r in rows}
 
     todo = []
-    for mid in priority_order((r[0], r[1], r[2]) for r in rows):
+    for mid in priority_order(((r[0], r[1], r[2]) for r in rows),
+                              await _rail_order(account_id)):
         r = by_id[mid]
         f = load_json(r[3], {}) or {}
         if r[4] in JEV_KINDS:
@@ -646,11 +667,17 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
 
     if only:
         done, failed, cost = 0, 0, 0
+        stop = None
         jev_sweep = vault_jev_pass.Sweep()
         for mid in todo:
             # Jev only where `_jev` is missing / stale (else its flags re-stamped
             # if they drifted) — never a paid Jev re-run per probe.
-            res = await _jev_and_flag(account_id, mid, force=True, jev_sweep=jev_sweep)
+            try:
+                res = await _jev_and_flag(account_id, mid, force=True, jev_sweep=jev_sweep)
+            except vault_sweep.SweepStop as e:   # a key error stays a 424 (server handler)
+                failed += 1
+                stop = e.payload()
+                break
             if res.get("ok"):
                 done += 1
                 cost += int(res.get("cost_millicents") or 0)
@@ -660,7 +687,7 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
                     break
         return {"account_id": account_id, "candidates": len(todo),
                 "flagged": done, "failed": failed, "cost_millicents": cost,
-                "prompt_version": _FLAGS_VERSION,
+                "prompt_version": _FLAGS_VERSION, "stop": stop,
                 # A sweep that stopped early leaves the vault at MIXED versions,
                 # which is the state that has repeatedly been mistaken for a
                 # finished one. Say so in the result rather than leaving a caller
@@ -857,6 +884,7 @@ async def _describe_and_flag(account_id: str, media_id: int, *,
     call, so patches bite."""
     kind = await _kind(account_id, media_id)
     jev = await vault_jev_pass.safe(account_id, media_id, sweep=jev_sweep) if kind in JEV_KINDS else None
+    await vault_jev_pass.fatal(account_id, jev, jev_sweep)   # a key / server cause: stop + tell the owner
     res = await _describe_one(account_id, media_id, jev_res=jev, **describe_kw)
     return vault_ai_vision_decide.with_jev(res, jev)
 
@@ -918,9 +946,10 @@ _DESCRIBE_CONCURRENCY = 8
 
 async def _run_describe_all(account_id: str, mode: DescribeMode,
                             prompt_version: str = "v2",
-                            model: str = "qwen3-vl-30b") -> None:
+                            model: str = "qwen3-vl-30b", limit: int = 0) -> None:
     """Background describe sweep over the rows `describe_selection(mode)` picks
-    (the modes are documented there)."""
+    (the modes are documented there); `limit` > 0 walks only the first `limit`
+    of them in priority order."""
     try:
         async with get_session() as s:
             # The SAME clause the plan counts with, so the number on the button
@@ -930,10 +959,13 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
             rows = (await s.execute(
                 select(VaultItem.media_id, VaultItem.created_at, VaultItem.of_folder_ids)
                 .where(live_describable(account_id)))).all()
-        # `priority_order`, the same walk as `_flags_todo`. This sweep has no
-        # limit, so order only decides what finishes early — but it CAN end
-        # early: the cap trips or the relay restarts, and both cut the tail.
-        ids = [m for m in priority_order(rows) if m in walked]
+        # `priority_order`, the same walk as `_flags_todo`. Order decides what
+        # `limit` keeps, and what finishes early when the cap trips or the relay
+        # restarts — all three cut the tail.
+        ids = [m for m in priority_order(rows, await _rail_order(account_id)) if m in walked]
+        if limit > 0:
+            ids = ids[:limit]
+            walked = set(ids)   # past the limit is not this sweep's: its copies get refreshed
         plan, index = await _reuse(account_id, ids, flags=False)
         settled = await _copy_up_front(account_id, plan, _copy_describe)
         jev_sweep = vault_jev_pass.Sweep()
@@ -1042,12 +1074,16 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     restage = bool(payload.get("restage"))
     mode: DescribeMode = "force" if force else ("restage" if restage else "undescribed")
     prompt_version = prompt_variant(payload.get("prompt_version"))
+    try:   # 0 / absent / junk = no limit
+        limit = max(int(payload.get("limit") or 0), 0)
+    except (TypeError, ValueError):
+        limit = 0
     asyncio.create_task(_run_describe_all(account_id, mode,
                                           prompt_version=prompt_version,
-                                          model=model))
+                                          model=model, limit=limit))
     return {"account_id": account_id, "status": "running",
             "prompt_version": prompt_version, "model": model,
-            "force": force, "restage": restage}
+            "force": force, "restage": restage, "limit": limit}
 
 
 @describe_router.get("/admin/vault-ai/describe-all/plan")

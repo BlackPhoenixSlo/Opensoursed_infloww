@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * The bio editor's Profile card: the avatar (uploads on pick, or a photo from the saved Creator's vault; Remove),
- * display name, the address (read-only), bio, default Mode, the Verified badge and the Creator, under one Save. State:
- * `bioProfileForm.ts`, held by BioEditor (the preview draws the draft); this card only dispatches (the vault
- * picker's open flag is its one local boolean).
+ * The bio editor's Profile card: the avatar and the page background (each uploads on pick, or a photo from the saved
+ * Creator's vault; Remove), display name, the address (read-only), bio, default Mode, the Verified badge and the
+ * Creator, under one Save. State: `bioProfileForm.ts`, held by BioEditor (the preview draws the draft); this card only
+ * dispatches (which image the vault picker is open for is its one local state).
  */
 import { useId, useRef, useState, type Dispatch } from "react";
 
@@ -14,7 +14,8 @@ import {
 import { useAccounts } from "@/hooks/useAccounts";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import {
-  BIO_MODES, bioFailure, useBioAvatar, useBioAvatarFromVault, usePatchBioPage, type BioMode, type BioPage,
+  BIO_MODES, bioFailure, useBioAvatar, useBioAvatarFromVault, useBioBackground, useBioBackgroundFromVault,
+  usePatchBioPage, type BioMode, type BioPage,
 } from "@/hooks/useBioPages";
 import { IMAGE_ACCEPT, MAX_DISPLAY_NAME, MAX_BIO, chars } from "@/components/growth/bio/bioRules";
 import {
@@ -33,13 +34,20 @@ export function BioProfileCard({ page, form, dispatch }: {
   const patch = usePatchBioPage(pid);
   const avatar = useBioAvatar(pid);
   const fromVault = useBioAvatarFromVault(pid);
-  const [vaultOpen, setVaultOpen] = useState(false);
+  const background = useBioBackground(pid);
+  const bgFromVault = useBioBackgroundFromVault(pid);
+  const [vaultFor, setVaultFor] = useState<"avatar" | "background" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const bgFileRef = useRef<HTMLInputElement>(null);
   // The saved Creator: the relay reads the vault of the page's stored account, not the unsaved draft's.
   const vaultAccount = page.profile.account_id || null;
   const avatarBusy = avatar.isPending || fromVault.isPending;
   const avatarError = avatar.error ? bioFailure(avatar.error, "Upload failed").msg
     : fromVault.error ? bioFailure(fromVault.error, "Vault pick failed").msg : null;
+  const bgUrl = page.profile.background_url;
+  const bgBusy = background.isPending || bgFromVault.isPending;
+  const bgError = background.error ? bioFailure(background.error, "Upload failed").msg
+    : bgFromVault.error ? bioFailure(bgFromVault.error, "Vault pick failed").msg : null;
   const d = form.draft;
   const dirty = isDirty(form);
 
@@ -75,7 +83,7 @@ export function BioProfileCard({ page, form, dispatch }: {
               {avatarBusy ? "Uploading…" : page.profile.avatar ? "Change avatar" : "Upload avatar"}
             </IfButton>
             {vaultAccount && (
-              <IfButton onClick={() => setVaultOpen(true)} disabled={avatarBusy}>Pick from vault</IfButton>
+              <IfButton onClick={() => setVaultFor("avatar")} disabled={avatarBusy}>Pick from vault</IfButton>
             )}
             {page.profile.avatar && (
               <IfButton variant="link" onClick={() => { fromVault.reset(); avatar.mutate(null); }} disabled={avatarBusy}>Remove</IfButton>
@@ -83,16 +91,50 @@ export function BioProfileCard({ page, form, dispatch }: {
           </div>
           {avatarError && <p role="alert" className="w-full text-[12px] text-err">{avatarError}</p>}
         </div>
-        {vaultAccount && vaultOpen && (
-          <VaultPicker open onClose={() => setVaultOpen(false)} accountId={vaultAccount} fanId={null}
+        <div className="flex flex-wrap items-center gap-4" data-bio-background>
+          <span aria-hidden className="h-16 w-16 shrink-0 rounded-md bg-bg-elev-2 bg-cover bg-center"
+            style={bgUrl ? { backgroundImage: `url("${bgUrl}")` } : undefined} />
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={bgFileRef} type="file" accept={IMAGE_ACCEPT} className="hidden" aria-label="Background image"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) {
+                  bgFromVault.reset();
+                  background.mutate(file);
+                }
+              }} />
+            <IfButton onClick={() => bgFileRef.current?.click()} disabled={bgBusy}>
+              {bgBusy ? "Uploading…" : bgUrl ? "Change background" : "Upload background"}
+            </IfButton>
+            {vaultAccount && (
+              <IfButton onClick={() => setVaultFor("background")} disabled={bgBusy}>Pick from vault</IfButton>
+            )}
+            {bgUrl && (
+              <IfButton variant="link" onClick={() => { bgFromVault.reset(); background.mutate(null); }} disabled={bgBusy}>
+                Remove
+              </IfButton>
+            )}
+          </div>
+          <IfHelp className="w-full">The page&rsquo;s backdrop behind the profile and links.</IfHelp>
+          {bgError && <p role="alert" className="w-full text-[12px] text-err">{bgError}</p>}
+        </div>
+        {vaultAccount && vaultFor && (
+          <VaultPicker open onClose={() => setVaultFor(null)} accountId={vaultAccount} fanId={null}
             initialSelectedIds={[]}
             onConfirm={(picked) => {
-              setVaultOpen(false);
-              // One avatar: the first photo picked (a lone video goes through, for the relay's "photo" refusal).
+              const target = vaultFor;
+              setVaultFor(null);
+              // One image: the first photo picked (a lone video goes through, for the relay's "photo" refusal).
               const m = picked.find((p) => p.type === "photo") ?? picked[0];
               if (!m) return;
-              avatar.reset();
-              fromVault.mutate({ id: m.id, type: m.type });
+              if (target === "avatar") {
+                avatar.reset();
+                fromVault.mutate({ id: m.id, type: m.type });
+              } else {
+                background.reset();
+                bgFromVault.mutate({ id: m.id, type: m.type });
+              }
             }} />
         )}
 

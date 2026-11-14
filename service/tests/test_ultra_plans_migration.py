@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ultra-plans migration (0121) matches create_all on temp SQLite, is idempotent, downgrades, and is the one head."""
+"""Ultra-plans migration (0121) matches create_all on temp SQLite, is idempotent, downgrades, and stays on the one head's line."""
 from __future__ import annotations
 
 import _harness  # MUST be first: temp DB env guard
@@ -45,7 +45,9 @@ def _alembic(url: str, fn, rev: str) -> None:
 
 
 def case_single_head():
-    assert ScriptDirectory.from_config(_cfg()).get_heads() == [REV]
+    script = ScriptDirectory.from_config(_cfg())
+    heads = script.get_heads()  # later revisions chain after REV; still one head, REV on its line
+    assert len(heads) == 1 and REV in {r.revision for r in script.iterate_revisions(heads[0], PREV)}, heads
 
 
 def case_upgrade_and_downgrade():

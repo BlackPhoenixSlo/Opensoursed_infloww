@@ -5,12 +5,15 @@ into the `vault_items` mirror, so afterward the grid + search are served LOCALLY
 (instant, including never-before-typed queries) instead of round-tripping OF.
 
   POST /admin/vault-ai/collect?account_id=            → start a sweep, returns {run_id}
+  POST /admin/vault-ai/collect/continue?account_id=   → a paused sweep walks on (409 if none)
+  POST /admin/vault-ai/collect/stop?account_id=       → a paused sweep stops, warms, ends done
   GET  /admin/vault-ai/collect/status?account_id=     → latest run progress
   GET  /admin/vault-ai/cache/summary?account_id=      → {count, last_run}
   GET  /admin/vault-ai/items?account_id=&...           → read from the mirror (local search)
 
-The sweep takes the newest 100, the folders' first pages, then walks sort=asc (stable
-order), downloading each page's stills as it lands (`_run_collect`); it preserves every AI / operator
+The sweep walks OF in the describe sweep's priority order (rail folders whole, newest,
+oldest; `vault_collect_plan`), pausing every COLLECT_PAUSE_EVERY new items for the
+operator, downloading each page's stills as it lands (`_run_collect`); it preserves every AI / operator
 field on conflict — only the mirror bookkeeping (raw_json, urls, last_seen_run_id)
 is refreshed. Describe (Qwen3-VL) and folder-membership passes layer on top later.
 """
@@ -24,12 +27,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, literal, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_ai_vision  # flags + describe passes; routes included at their old spots below
+import vault_ai_vision_decide  # rail_folder_ids: the folder rail's order
 import vault_collect  # preempt: the Collect button stops the background walk of its account first
+import vault_collect_plan  # which OF page the Collect asks next
 # The permanent, signature-free picture stores (thumbs / full previews / DRM poster
 # frames), including the whole route body behind the three serve endpoints below.
 # This module keeps the SWEEP that fills them.
@@ -46,6 +51,7 @@ import vault_runs
 import vault_stills
 import vault_harvest_terms  # which words the OF-search harvest asks
 import vault_tags  # the grid's tag chips: tag_match / facets SQL
+import vault_folder_prices  # the agency's per-folder prices (Full AI sell)
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
 # module reaches them through it.
@@ -243,9 +249,10 @@ class _Sweep:
         self.warmed |= fresh
         _warm_progress.pop(aid, None)   # back to the row's phase between batches
 
-    async def page(self, items: list) -> None:
-        """One All page (desc or asc): upsert, warm, report progress."""
-        written, _ = await vault_runs.upsert_page(self.account_id, items, self.run_id)
+    async def page(self, items: list, folder_id: int | None = None) -> None:
+        """One page (All desc / asc, or a folder's): upsert, warm, report progress."""
+        written, _ = await vault_runs.upsert_page(self.account_id, items, self.run_id,
+                                                  folder_id=folder_id)
         await self.batch(written)
         self.pages += 1
         await self.progress()
@@ -256,16 +263,61 @@ class _Sweep:
                                     upserted=n, phase="media")
 
 
-async def _run_collect(account_id: str, run_id: int) -> None:
-    """Background sweep, the useful items first, each page's stills downloaded as soon
-    as it is upserted:
-      1. the newest 100 (one desc page)
-      2. the folder list + page 0 of each dropdown folder (`vault_collect.hot_folders`,
-         also refilling the picker's cache the start just invalidated)
-      3. the oldest 100 (asc page 0)
-      4. the rest of the asc walk (offset 100 → end, _MAX_PAGES asc pages at most;
-         only an uncapped one is a full walk, `vault_runs.full_walk_done`)
-    then the video storyboards, newest first."""
+COLLECT_PAUSE_EVERY = 2000      # new items between the button's "continue collecting?" asks
+COLLECT_PAUSE_TIMEOUT_S = 1800  # an ask nobody answers stops the walk (manual_running is not held forever)
+
+
+class _Gate:
+    """One paused Collect waiting for the operator (`/collect/continue`, `/collect/stop`)."""
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.decision: str | None = None
+
+
+_paused: dict[str, _Gate] = {}   # account → its paused Collect (in memory, like manual_running)
+
+
+async def _ask_to_continue(account_id: str, run_id: int, sweep: _Sweep) -> str:
+    """Pause the walk ("paused" row with its totals) until the operator answers:
+    "continue", "stop", or "timeout" after COLLECT_PAUSE_TIMEOUT_S."""
+    gate = _paused[account_id] = _Gate()
+    try:
+        n = len(sweep.seen)
+        await vault_runs.update_run(run_id, status="paused", phase="paused",
+                                    pages_done=sweep.pages, total_seen=n, upserted=n)
+        try:
+            await asyncio.wait_for(gate.event.wait(), COLLECT_PAUSE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return "timeout"
+        return gate.decision or "stop"
+    finally:
+        _paused.pop(account_id, None)
+
+
+def _stopped_error(n: int, answer: str) -> str:
+    """A paused walk that did not go on: done, never a full walk (it carries an error)."""
+    if answer == "timeout":
+        return (f"stopped at {n} items: no answer to continue collecting "
+                f"in {round(COLLECT_PAUSE_TIMEOUT_S / 60)} min")
+    return f"stopped by operator at {n} items"
+
+
+async def _run_collect(account_id: str, run_id: int, *, pause_every: int | None = None) -> None:
+    """Background sweep in the describe sweep's priority order (`vault_collect_plan`),
+    each page's stills downloaded as soon as it is upserted: the folder list
+    (`vault_collect.folder_list`, also refilling the picker's cache the start just
+    invalidated), then rounds of {the next 10 rail folders, each paged whole → the
+    next 5 newest pages → the next oldest page} until All is walked (the two cursors
+    met or one hit the end; only that is a full walk, `vault_runs.full_walk_done`)
+    or capped at _MAX_PAGES All pages, and every folder is paged; then the video
+    storyboards, newest first.
+
+    Every `pause_every` new items (default COLLECT_PAUSE_EVERY; 0 = never: prepare
+    content's harvest) it pauses and asks the operator; stop (or no answer within
+    COLLECT_PAUSE_TIMEOUT_S) skips the rest of the walk, still warms the storyboards
+    and ends done with `_stopped_error`."""
+    every = COLLECT_PAUSE_EVERY if pause_every is None else pause_every
     try:
         # The button wins over the background collector: it stops its walk of
         # this account (cursor kept) before this one starts paging.
@@ -274,32 +326,49 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         call = _paced_call()
         sweep = _Sweep(client, account_id, run_id)
 
-        resp = await call(client.vault_media, limit=_PAGE, offset=0, type="all", sort="desc")
-        await sweep.page((resp or {}).get("list") or [])
-
         try:
-            await vault_collect.hot_folders(account_id, client, call, run_id=run_id,
-                                            on_page=sweep.batch)
+            folders = vault_ai_vision_decide.rail_folder_ids(
+                [{"list": await vault_collect.folder_list(account_id, client, call)}])
         except Exception as e:  # noqa: BLE001 — the folders are a head start, not the walk
-            log.warning("vault_collect: folder pass failed account=%s run=%s: %s",
+            log.warning("vault_collect: folder list failed account=%s run=%s: %s",
                         account_id, run_id, e)
-        await sweep.progress()
-
-        offset = 0
-        walk_pages = 0
-        more = True
-        while walk_pages < _MAX_PAGES:
-            resp = await call(client.vault_media, limit=_PAGE, offset=offset,
-                              type="all", sort="asc")
-            items = (resp or {}).get("list") or []
-            if not items:
-                break
-            await sweep.page(items)
-            walk_pages += 1
-            offset += _PAGE
-            more = bool((resp or {}).get("hasMore"))
-            if not more:
-                break
+            folders = []
+        plan = vault_collect_plan.CollectPlan(folders, max_pages=_MAX_PAGES, page=_PAGE)
+        since = 0          # len(sweep.seen) at the start / the last continue
+        stopped = None
+        while (step := plan.next()) is not None:
+            if step.kind == "folder":
+                try:
+                    t0 = datetime.utcnow()
+                    resp = await call(client.vault_media, limit=_PAGE, offset=step.offset,
+                                      type="all", list_id=step.list_id, sort="desc",
+                                      field="recent", query=None, before_publish_date=None)
+                    if step.offset == 0:   # the picker's page 0 of this folder, as hot_folders did
+                        await vault_collect.cache_picker_head(account_id, step.list_id, resp, t0)
+                    items = (resp or {}).get("list") or []
+                    if items:
+                        await sweep.page(items, folder_id=step.list_id)
+                except Exception as e:  # noqa: BLE001 — one bad folder (OF or a warm) must not cost the walk
+                    log.warning("vault_collect: folder %s page failed account=%s run=%s: %s",
+                                step.list_id, account_id, run_id, e)
+                    plan.skip_folder()
+                    continue
+            else:
+                resp = await call(client.vault_media, limit=_PAGE, offset=step.offset,
+                                  type="all", sort=step.kind)
+                items = (resp or {}).get("list") or []
+                if items:
+                    await sweep.page(items)
+            plan.feed(step, [m.get("id") for m in items if isinstance(m, dict)],
+                      bool((resp or {}).get("hasMore")))
+            if every > 0 and len(sweep.seen) - since >= every and plan.next() is not None:
+                answer = await _ask_to_continue(account_id, run_id, sweep)
+                if answer != "continue":
+                    stopped = _stopped_error(len(sweep.seen), answer)
+                    log.info("vault_collect %s account=%s run=%s", stopped, account_id, run_id)
+                    break
+                since = len(sweep.seen)
+                await vault_runs.update_run(run_id, status="running", phase="media")
 
         # ── Storyboard-warming phase (incremental) ──────────────────
         # Extract + cache 12 frames for every video whose storyboard isn't
@@ -307,7 +376,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         # so search + the grid are usable while this (slower) phase runs.
         # Re-collect only warms NEW videos — warm_one_sync short-circuits cached ones.
         videos = sorted(sweep.videos.values(), key=lambda v: v[0], reverse=True)
-        await vault_runs.update_run(run_id, phase="warming")
+        await vault_runs.update_run(run_id, status="running", phase="warming")   # also out of "paused" on a stop
         warmed = 0
         _warm_progress[account_id] = {"phase": "warming", "warmed": 0, "warm_total": len(videos)}
         for _, vurl, vdur in videos:
@@ -322,12 +391,12 @@ async def _run_collect(account_id: str, run_id: int) -> None:
             await asyncio.sleep(0.02)   # light pacing between mp4 downloads
         _warm_progress.pop(account_id, None)
 
-        # Stopped by the page cap with OF still saying hasMore: done, but not a
-        # whole-vault walk (`vault_runs.full_walk_done`).
-        capped = vault_runs.capped_error(_MAX_PAGES) if more and walk_pages >= _MAX_PAGES else None
+        # Stopped by the operator, or by the page cap with All not walked: done,
+        # but not a whole-vault walk (`vault_runs.full_walk_done`).
+        error = stopped or (vault_runs.capped_error(_MAX_PAGES) if plan.capped else None)
         total = len(sweep.seen)
         await vault_runs.update_run(run_id, status="done", phase="done", pages_done=sweep.pages,
-                                    total_seen=total, upserted=total, error=capped,
+                                    total_seen=total, upserted=total, error=error,
                                     finished_at=datetime.utcnow())
         log.info("vault_collect done account=%s run=%s items=%s", account_id, run_id, total)
     except Exception as e:  # noqa: BLE001
@@ -349,6 +418,30 @@ async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
     run_id = await claim_collect(account_id)
     asyncio.create_task(_run_collect(account_id, run_id))
     return {"account_id": account_id, "run_id": run_id, "status": "running"}
+
+
+def _answer_pause(account_id: str, decision: str) -> dict[str, Any]:
+    gate = _paused.get(account_id)
+    if gate is None or gate.decision is not None:
+        raise HTTPException(status_code=409, detail={"error": "collect_not_paused"})
+    gate.decision = decision
+    gate.event.set()
+    return {"account_id": account_id, "status": decision}
+
+
+@router.post("/admin/vault-ai/collect/continue")
+async def continue_collect(account_id: str = Query(...)) -> dict[str, Any]:
+    """A paused Collect (every COLLECT_PAUSE_EVERY new items) walks on. 409 when none is paused."""
+    assert_account_owned(account_id)
+    return _answer_pause(account_id, "continue")
+
+
+@router.post("/admin/vault-ai/collect/stop")
+async def stop_collect(account_id: str = Query(...)) -> dict[str, Any]:
+    """A paused Collect stops walking OF, warms what it has and ends done (not a full walk).
+    409 when none is paused."""
+    assert_account_owned(account_id)
+    return _answer_pause(account_id, "stop")
 
 
 async def claim_collect(account_id: str) -> int:
@@ -386,8 +479,10 @@ def _run_status(row: VaultCacheRun, account_id: str) -> str:
     so a row claiming to run for an account nobody is running IS orphaned — the
     process that owned it is gone. Read, never written: the stored row stays the
     honest record of what the task last wrote, and a reconciliation pass that
-    could itself be interrupted is machinery this does not need."""
-    if row.status == "running" and account_id not in vault_runs.manual_running:
+    could itself be interrupted is machinery this does not need. A live "paused" run
+    (waiting on the operator) holds manual_running too, so only an orphaned one reads
+    "interrupted"."""
+    if row.status in ("running", "paused") and account_id not in vault_runs.manual_running:
         return "interrupted"
     return row.status
 
@@ -650,6 +745,16 @@ def _listing_where(type: str | None, query: str | None, tags: list[str]) -> list
     return out
 
 
+def _not_nude():
+    """SQL: Jev's current reading (`vault_jev_rules.current_sql`) says nothing is bare (lane5 "free") and no toy.
+    No reading, an old one or `review` is not "not nude" (absence ≠ safe; docs/plans/ultra-mode/issues/09)."""
+    ai = func.coalesce(VaultItem.ai_fields_json, "")
+    ai_ok = case((func.json_valid(ai), ai), else_=literal("{}"))
+    j = lambda path: func.json_extract(ai_ok, f"$._jev.{path}")  # noqa: E731
+    return (vault_jev_rules.current_sql(VaultItem.ai_fields_json) & (j("lane5") == "free")
+            & (func.coalesce(j("tags.toy_any"), "") != "y"))
+
+
 @router.get("/admin/vault-ai/items")
 async def local_items(
     account_id: str = Query(...),
@@ -659,6 +764,7 @@ async def local_items(
     internal_folder_id: int | None = Query(None),
     of_folder_id: int | None = Query(None),
     tags: list[str] | None = Query(None),
+    not_nude: bool = Query(False),
     limit: int = Query(500, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
@@ -667,7 +773,8 @@ async def local_items(
     (instant). `internal_folder_id` filters to an internal folder and orders by
     its per-folder manual_order: 0 first, 1,2,3… from front, then unpinned by
     date, then …-3,-2,-1 (so -1 is dead last). `tags` (repeatable): only items
-    carrying every one of them (`vault_tags.tag_match`, the grid's tag chips)."""
+    carrying every one of them (`vault_tags.tag_match`, the grid's tag chips). `not_nude`: only
+    media Jev currently reads as nothing bare, no toy (`_not_nude`)."""
     assert_account_owned(account_id)
     # Chatter folder limits, same rule as /api/of/v2/vault/media: a restricted
     # chatter gets only an allowed OF folder; All, internal folders and other
@@ -676,7 +783,7 @@ async def local_items(
     if allowed is not None and (internal_folder_id is not None or of_folder_id is None
                                 or of_folder_id not in allowed):
         return dict(_SOFT_DENY, list=[])
-    where = _listing_where(type, query, vault_tags.parse_tags(tags))
+    where = _listing_where(type, query, vault_tags.parse_tags(tags)) + ([_not_nude()] if not_nude else [])
 
     def _apply_common(st):
         return st.where(*where) if where else st
@@ -913,6 +1020,73 @@ async def list_of_folders_from_mirror(account_id: str = Query(...)) -> dict[str,
 
 
 # ── Internal folders (our own, zero OF writes) ──────────────────────
+
+
+@router.get("/admin/vault-ai/internal-folders")
+async def list_internal_folders(account_id: str = Query(...)) -> dict[str, Any]:
+    """The live internal folders, name-sorted, with counts of their unremoved items (Full AI Chat's Content
+    folders picker, `vf:<id>`). A restricted chatter's allowed list names OF lists, so it
+    sees none."""
+    assert_account_owned(account_id)
+    if await allowed_folder_ids_for_chatter(account_id) is not None:
+        return {"list": []}
+    items = (select(VaultFolderItem.folder_id, func.count().label("n"))
+             .join(VaultItem, (VaultItem.account_id == VaultFolderItem.account_id)
+                   & (VaultItem.media_id == VaultFolderItem.media_id))
+             .where(VaultFolderItem.account_id == account_id, VaultItem.removed_at.is_(None))
+             .group_by(VaultFolderItem.folder_id).subquery())
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultFolder.id, VaultFolder.name, func.coalesce(items.c.n, 0))
+            .outerjoin(items, items.c.folder_id == VaultFolder.id)
+            .where(VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None))
+            .order_by(func.lower(VaultFolder.name), VaultFolder.id))).all()
+    return {"list": [{"id": i, "name": n, "items": int(c)} for i, n, c in rows]}
+
+
+# ── Folder prices (Full AI sell; our DB only, zero OF writes) ───────
+
+
+@router.get("/admin/vault-ai/folder-prices")
+async def list_folder_prices(account_id: str = Query(...)) -> dict[str, Any]:
+    """The account's priced folders, `{"list": [{"ref", "price_cents"}]}` sorted by ref (`vf:<id>` /
+    `of:<id>`, `vault_folder_prices`). Owner scope: a folder-limited chatter is refused (403)."""
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+    prices = await vault_folder_prices.load(account_id)
+    return {"list": [{"ref": r, "price_cents": c} for r, c in sorted(prices.items())]}
+
+
+@router.post("/admin/vault-ai/folder-prices")
+async def set_folder_price(payload: dict = Body(...)) -> dict[str, Any]:
+    """Set (`price_cents` in [$10, $200], whole cents) or clear (`price_cents: null`) one folder's price.
+    `ref` is `vf:<id>` (a live internal folder of this account, else 404) or `of:<OF list id>`. Owner
+    scope as the folder plan (403 for a folder-limited chatter). Writes our DB only, never OF. 400s:
+    account_id_required, bad_ref, bad_price (with min / max)."""
+    account_id = str(payload.get("account_id") or "")
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+    ref = vault_folder_prices.parse_ref(payload.get("ref"))
+    if ref is None:
+        raise HTTPException(status_code=400, detail={"error": "bad_ref"})
+    raw = payload.get("price_cents")
+    cents = None if raw is None else vault_folder_prices.parse_cents(raw)
+    if raw is not None and cents is None:
+        raise HTTPException(status_code=400, detail={
+            "error": "bad_price", "min": vault_folder_prices.MIN_CENTS, "max": vault_folder_prices.MAX_CENTS})
+    if ref.startswith("vf:"):
+        async with get_session() as s:
+            live = (await s.execute(select(VaultFolder.id).where(
+                VaultFolder.account_id == account_id, VaultFolder.id == int(ref[3:]),
+                VaultFolder.deleted_at.is_(None)))).first()
+        if live is None:
+            raise HTTPException(status_code=404, detail="not_found")
+    await vault_folder_prices.put(account_id, ref, cents)
+    return {"account_id": account_id, "ref": ref, "price_cents": cents}
 
 
 def _int_or_none(v: Any) -> int | None:

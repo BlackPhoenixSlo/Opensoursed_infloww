@@ -311,8 +311,9 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     fireEvent.click(more);
     const items =within(screen.getByRole("menu")).getAllByRole("menuitem").map((el) => el.textContent);
     expectInCapture("growth-vault-pro#34", "Rename / Delete");
-    // Plus ours, last: Download folder, always listed; off (titled why) where this browser can't save (#20).
-    expect(items).toEqual(["Rename", "Delete", "Download folder"]);
+    // Plus ours: Set price (Full AI Chat's folder price; listed once the folder-prices read answers, so not for a
+    // chatter it refuses), and last Download folder, always listed; off (titled why) where this browser can't save (#20).
+    expect(items).toEqual(["Rename", "Set price", "Delete", "Download folder"]);
     const dl = within(screen.getByRole("menu")).getByRole("menuitem", { name: "Download folder" });
     expect(dl).toBeDisabled();
     expect(dl).toHaveAttribute("title", DOWNLOAD_OFF);

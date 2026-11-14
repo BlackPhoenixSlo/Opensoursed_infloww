@@ -39,7 +39,13 @@ A `visit` that raises is a failure like any other — it does not end the sweep.
 The ONE exception is `llm_client.LLMKeyError`: the key is missing or the
 provider rejected it, so every remaining item would fail the same way and cost
 a call to learn it. That stops the sweep like `capped`, and the payload the
-owner is shown rides in the snapshot as `key_error`.
+owner is shown rides in the snapshot as `key_error`. Its sibling is `SweepStop`
+(a server-side cause no retry fixes: NudeNet missing, Jev down), published as
+`stop: {message, fix}`. And a BREAKER: `BREAK_AFTER` failures in a row with no
+success between (item-intrinsic statuses, `NEUTRAL`, neither count nor reset)
+stop the sweep with the streak's first error — the next every-item-fails cause
+nobody typed yet (11-14: a wrong TypeSafe key failed 5336/5336 in silence).
+The drawer prints both; `finished_at` dates the last pass so it can say when.
 The reason it is counted rather than propagated is that the alternative was
 measured and it was terrible: the item that raises writes no row, so it reads as
 never-attempted forever, and the 49 other items in its chunk are abandoned
@@ -57,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, NamedTuple
@@ -68,6 +75,23 @@ log = logging.getLogger("of-relay.vault_sweep")
 # Items dispatched per `gather`. Bounded so a 2,000-item vault doesn't spawn
 # 2,000 tasks at once; the semaphore bounds how many actually RUN.
 CHUNK = 50
+# Failures in a row (no success between) that stop a sweep: every item is failing the same way.
+BREAK_AFTER = 25
+# Statuses about the ITEM itself (a DRM clip, a deleted file, a kind the pass skips): neither a failure that
+# counts toward the breaker nor a success that resets it — a vault can open with 25 DRM clips.
+NEUTRAL = frozenset({"blocked_drm", "gone", "not_in_mirror", "not_flaggable"})
+
+
+class SweepStop(Exception):
+    """A cause no retry fixes and that is not an API key (NudeNet missing, Jev down): the sweep stops and
+    publishes `stop` = `payload()`. `message` says what is wrong, `fix` what to do; no ids, no keys."""
+
+    def __init__(self, message: str, fix: str) -> None:
+        super().__init__(message)
+        self.message, self.fix = message, fix
+
+    def payload(self) -> dict[str, str]:
+        return {"message": self.message, "fix": self.fix}
 
 
 class SweepResult(NamedTuple):
@@ -82,6 +106,7 @@ class SweepResult(NamedTuple):
     cost_millicents: int
     error: str         # the first `detail` a failure carried
     key_error: dict | None = None  # key_error_payload of the key error that stopped it
+    stop: dict | None = None       # SweepStop.payload() / the breaker's, when that stopped it
 
 
 async def run(
@@ -113,6 +138,9 @@ async def run(
     capped = False
     first_error = ""
     key_error: dict | None = None
+    stop: dict | None = None
+    streak = 0            # failures in a row (the breaker)
+    streak_error = ""     # the streak's first detail
 
     def _count(r: dict[str, Any]) -> None:
         nonlocal done, failed, cost, jev_cost, first_error
@@ -130,7 +158,7 @@ async def run(
     def _publish() -> None:
         into[key] = {"total": total, "done": done, "failed": failed,
                      "capped": capped, "cost_millicents": cost,
-                     "error": first_error, "key_error": key_error}
+                     "error": first_error, "key_error": key_error, "stop": stop}
         if jev_cost:  # the Jev v8 pass's share (vault_jev), on its own cap row
             into[key]["jev_cost_millicents"] = jev_cost
 
@@ -138,9 +166,9 @@ async def run(
     sem = asyncio.Semaphore(concurrency)
 
     async def _one(mid: int) -> None:
-        nonlocal done, failed, cost, capped, first_error, key_error
+        nonlocal done, failed, cost, capped, first_error, key_error, stop, streak, streak_error
         async with (hold(mid) if hold else nullcontext()), sem, gate():  # hold first, then per-sweep + global
-            if capped or key_error:
+            if capped or key_error or stop:
                 return
             try:
                 res = await visit(mid)
@@ -153,18 +181,35 @@ async def run(
                 done += 1
                 _publish()
                 return
+            except SweepStop as e:  # the server, not the item — stop
+                stop = e.payload()
+                first_error = first_error or e.message
+                log.warning("%s: stopped: %s", label, e.message)
+                failed += 1
+                done += 1
+                _publish()
+                return
             except Exception as e:  # noqa: BLE001 — one bad item costs ONE item
                 log.exception("%s: item raised media=%s", label, mid)
                 res = {"ok": False, "status": "error",
                        "detail": f"{type(e).__name__}: {e}"[:200]}
             if res.get("status") == "capped":
                 capped = True
+            if res.get("ok"):
+                streak, streak_error = 0, ""
+            elif res.get("status") not in NEUTRAL:
+                streak += 1
+                streak_error = streak_error or str(res.get("detail") or res.get("status") or "")[:200]
+                if streak >= BREAK_AFTER and not stop:
+                    stop = {"message": f"Stopped: {streak} items in a row failed.",
+                            "fix": f"First error: {streak_error or 'unknown'}. Fix it, then press again."}
+                    log.warning("%s: stopped by the breaker after %s failures: %s", label, streak, streak_error)
             for r in (res, *(res.get("extra") or ())):
                 _count(r)
             _publish()
 
     for i in range(0, len(ids), CHUNK):
-        if capped or key_error:
+        if capped or key_error or stop:
             break
         # `return_exceptions` is the backstop behind `_one`'s own guard: a bare
         # gather re-raises the first failure the instant it happens and abandons
@@ -172,4 +217,6 @@ async def run(
         # to reach the caller.
         await asyncio.gather(*(_one(m) for m in ids[i:i + CHUNK]),
                              return_exceptions=True)
-    return SweepResult(total, done, failed, capped, cost, first_error, key_error)
+    _publish()
+    into[key]["finished_at"] = datetime.now(timezone.utc).isoformat()
+    return SweepResult(total, done, failed, capped, cost, first_error, key_error, stop)

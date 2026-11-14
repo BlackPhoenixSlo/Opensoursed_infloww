@@ -16,6 +16,7 @@ _harness.bootstrap()
 from datetime import datetime  # noqa: E402
 
 import vault_ai_api as api  # noqa: E402
+import vault_runs  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, VaultCacheRun  # noqa: E402
 
@@ -46,4 +47,16 @@ async def case_status_reports_the_store_being_warmed():
     assert run["phase"] == "thumbs", run
 
 
-_harness.run(case_status_reports_the_store_being_warmed)
+def case_paused_reads_paused_only_while_live():
+    """A paused Collect waiting on the operator holds manual_running: "paused". The
+    same row after a restart (nobody holds it) is "interrupted", like a running one."""
+    row = VaultCacheRun(account_id=AID, status="paused", phase="paused")
+    vault_runs.manual_running.add(AID)
+    try:
+        assert api._run_status(row, AID) == "paused"
+    finally:
+        vault_runs.manual_running.discard(AID)
+    assert api._run_status(row, AID) == "interrupted"
+
+
+_harness.run(case_status_reports_the_store_being_warmed, case_paused_reads_paused_only_while_live)

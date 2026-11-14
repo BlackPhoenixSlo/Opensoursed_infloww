@@ -26,6 +26,7 @@ from sqlalchemy import delete, func, select, text  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 from _full_ai_fixtures import QUIET, FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
 import automation_executor as ax  # noqa: E402
+import client_pool  # noqa: E402
 import dm_rate  # noqa: E402
 import fan_lease  # noqa: E402
 import of_client  # noqa: E402
@@ -86,7 +87,7 @@ _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
                (of_client.OFClient, "_http_call"), (of_client.OFClient, "_proxy_retry"),
                (fan_lease, "acquire_fan_lease"), (fan_lease, "start_fan_cooldown"),
                (ax, "acquire_fan_lease"), (ax, "start_fan_cooldown"), (dm_rate, "turn"),
-               (ownership, "stamp_media_owned"))
+               (ownership, "stamp_media_owned"), (client_pool, "get"))
 _SNAPSHOT = ("messages", "transactions", "vault_sends", "content_offers", "fan_lease", "fans")
 
 

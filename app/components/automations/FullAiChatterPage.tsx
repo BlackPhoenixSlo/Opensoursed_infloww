@@ -2,7 +2,8 @@
 
 /**
  * My AI Chatter > Full AI Chat (ours; owner only in the sidebar, same /full-ai-chatter address). A settings column
- * (`FullAiSettings`: on/off, LLM keys, reply speed, text like a girl, GIFs; Save / Roll back / JSON over the draft
+ * (`FullAiSettings`: on/off, LLM keys, reply speed, Human style, GIFs, Sell, Content folders, Prepare content; Save /
+ * Roll back / JSON over the draft
  * config) with the persona editor (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) under it;
  * beside it (above it on a phone: the column comes first) the owner's Test chat (`FullAiTestChat`: two windows,
  * checkpoint and draft, one composer; nothing reaches a Fan). Below, Full AI Chat in Shadow
@@ -13,7 +14,8 @@
  * server creates the rule from its catalog the first time). Only the owner may write it (permissions.OPT_IN_KINDS).
  * The Test chat and the config share one reducer (`fullAiTestChat.ts`), held here through `useFullAiTestChat` (the
  * turns; its `config` = `useFullAiConfig`, the config reads and writes). Below, today's rows (`useFullAiToday`): counts
- * per Route in the Route table's order plus Jev failures, then the newest rows.
+ * per Route in the Route table's order plus Jev failures, then the newest rows; Test chat Turns count too and list as
+ * "Test chat".
  */
 
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
@@ -74,7 +76,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
               </p>
               {rulesQ.isLoadingError && (
                 <p className="text-[12px] text-err">
-                  Couldn&apos;t read this creator&apos;s automations, so this can&apos;t say whether Full AI Chat is on.
+                  Couldn&apos;t read this Creator&apos;s automations, so this can&apos;t say whether Full AI Chat is on.
                 </p>
               )}
               {switchKind.isError && (
@@ -83,7 +85,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
                 </p>
               )}
             </div>
-            <FullAiSettings state={chat.state} cfg={chat.config} power={power} />
+            <FullAiSettings state={chat.state} cfg={chat.config} power={power} accountId={accountId} />
           </FormBlock>
           <ModelInfoBlock accountId={accountId} draftFromImages saveNote={PERSONA_NOTE} />
         </aside>
@@ -92,7 +94,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
             <p className="text-[12px] text-muted">
               Type as a fan. Checkpoint answers with the saved config, Draft with your draft. Nothing is sent on OnlyFans.
             </p>
-            <FullAiTestChat chat={chat} />
+            <FullAiTestChat chat={chat} accountId={accountId} />
           </FormBlock>
 
           <FormBlock title="Today">
@@ -130,7 +132,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
                     {today.rows.map((r) => (
                       <tr key={r.id} className={IF_TABLE.row} data-testid="full-ai-row">
                         <td className={CELL}>{new Date(r.created_at).toLocaleTimeString()}</td>
-                        <td className={CELL}>{r.fan_name ?? `Fan ${r.fan_id}`}</td>
+                        <td className={CELL}>{r.test ? "Test chat" : r.fan_name ?? `Fan ${r.fan_id}`}</td>
                         <td className={CELL}>{ROUTE_LABEL[r.route]}</td>
                         <td className={cn(CELL, "tabular-nums")}>{r.heat}</td>
                         <td className={cn(CELL, "text-fg-dim")}>{r.row}</td>

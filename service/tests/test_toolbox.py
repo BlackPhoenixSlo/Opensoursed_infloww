@@ -9,6 +9,9 @@ Cases:
   case_every_tool_runs_as_owner    — each v1 read tool answers 200 for A's own Creator, open_url set.
   case_cross_agency_refused        — A's token never reads Creator B: by id per tool (403/400), by name in a
                                      recipe (400), and the list tools leave it out; an unknown id is refused.
+  case_not_nude                    — vault_search not_nude: only a current Jev "free" reading without a toy
+  case_current_sql                 — vault_jev_rules.current_sql agrees with current() row by row
+                                     (photo, or a clip with its frames); no / old / failed / review / toy out.
   case_args_refused                — unknown key, missing id, limit over 30: 422 per field, no request.
   case_send_refused                — an effect="send" tool: 403, no request sent.
   case_shaping_limits              — 50 rows / reports 200, 500-char strings, ~24k cap (halving, then 413),
@@ -30,8 +33,11 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
+import json  # noqa: E402
 import os  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
+
+from sqlalchemy import select  # noqa: E402
 
 from fastapi import Request  # noqa: E402
 
@@ -43,8 +49,9 @@ import report_files  # noqa: E402
 import server  # noqa: E402
 import toolbox  # noqa: E402
 import toolbox_decide as td  # noqa: E402
+import vault_jev_rules  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Transaction  # noqa: E402
+from db.models import Transaction, VaultItem  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 CA, CB = IDS["creator_a"], IDS["creator_b"]
@@ -145,7 +152,7 @@ _PAGES: list[str] = []
 def case_every_tool_runs_as_owner() -> None:
     args = {"creators_list": {}, "stats_per_model": {"account_id": CA}, "vault_search": {"account_id": CA},
             "of_folders_list": {"account_id": CA}, "describe_all_status": {"account_id": CA},
-            "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
+            "describe_all_plan": {"account_id": CA}, "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
             "report_catalogue": {}, "report_run": {"recipe": {"dataset": "sales", "window": WEEK}},
             "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}, "bio_page_get": {"pid": _a_page()}}
     reads = {n for n, t in BY_NAME.items() if t.effect == "read"}  # writes: test_toolbox_writes.py
@@ -162,7 +169,7 @@ def case_every_tool_runs_as_owner() -> None:
 
 def case_cross_agency_refused() -> None:
     for name in ("stats_per_model", "vault_search", "of_folders_list", "describe_all_status",
-                 "automation_rules_list"):
+                 "describe_all_plan", "automation_rules_list"):
         for aid in (CB, "1999999"):
             out = _call(name, {"account_id": aid})
             assert _status(out) in (403, 404), (name, aid, out)
@@ -177,6 +184,65 @@ def case_cross_agency_refused() -> None:
     # and the other way: B's token never sees A
     assert _status(_call("vault_search", {"account_id": CA}, CREDS_B)) == 403
     assert [c["id"] for c in _call("creators_list", {}, CREDS_B)["accounts"]] == [CB]
+
+
+def _jev(lane5="free", **kw):
+    return {"_jev": {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane5, "state": {},
+                     "tags": {"toy_any": "n"}, **kw}}
+
+
+def case_not_nude() -> None:
+    clip = {"kind": "video", "vv": vault_jev_rules.VIDEO_VERSION, "frames": []}
+    rows = {  # media id → (kind, ai_fields_json, not nude?)
+        8801: ("photo", _jev(), True),
+        8802: ("video", _jev(**clip), True),
+        8803: ("photo", _jev("$10"), False),
+        8804: ("photo", _jev("review"), False),
+        8805: ("photo", _jev(tags={"toy_any": "y"}), False),
+        8806: ("photo", _jev(v="v7"), False),
+        8807: ("photo", _jev(status="failed"), False),
+        8808: ("video", _jev(kind="video", vv="old", frames=[]), False),
+        8809: ("photo", {"description": "x"}, False),
+        8810: ("photo", None, False),
+    }
+
+    async def seed() -> None:
+        now = datetime.utcnow()
+        async with get_session() as s:
+            for mid, (kind, ai, _) in rows.items():
+                s.add(VaultItem(account_id=CA, media_id=mid, kind=kind, raw_json=json.dumps({"id": mid}),
+                                created_at=now, updated_at=now, last_seen_run_id=1, search_text="nudetest",
+                                tags="[]", of_folder_ids="[]", ai_fields_json=json.dumps(ai) if ai else None))
+    asyncio.run(seed())
+    got = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest", "not_nude": True})["data_only"]["list"]}
+    assert got == {m for m, (_, _, ok) in rows.items() if ok}, got
+    every = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest"})["data_only"]["list"]}
+    assert every == set(rows), every
+
+
+def case_current_sql() -> None:
+    """vault_jev_rules.current (Python) and current_sql (the listing's SQL) agree, row by row."""
+    clip = {"kind": "video", "vv": vault_jev_rules.VIDEO_VERSION, "frames": []}
+    blobs = [_jev(), _jev("$10"), _jev(**clip), _jev(v="v7"), _jev(status="failed"), _jev(kind="video"),
+             _jev(kind="video", vv="old", frames=[]), _jev(kind="video", vv=vault_jev_rules.VIDEO_VERSION),
+             _jev(state=None), _jev(state=[]), {"_jev": {k: v for k, v in _jev()["_jev"].items() if k != "lane5"}},
+             {"_jev": "ok"}, {"description": "_jev"}, None, "{not json \"_jev\""]
+    rows = {8820 + i: b for i, b in enumerate(blobs)}
+
+    async def run() -> set[int]:
+        now = datetime.utcnow()
+        async with get_session() as s:
+            for mid, b in rows.items():
+                s.add(VaultItem(account_id=CA, media_id=mid, kind="photo", raw_json="{}", created_at=now,
+                                updated_at=now, last_seen_run_id=1, search_text="jevcur", tags="[]",
+                                of_folder_ids="[]", ai_fields_json=b if isinstance(b, str) or b is None
+                                else json.dumps(b)))
+        async with get_session() as s:
+            return set((await s.execute(select(VaultItem.media_id).where(
+                VaultItem.media_id.in_(rows), vault_jev_rules.current_sql(VaultItem.ai_fields_json)))).scalars())
+    want = {m for m, b in rows.items() if isinstance(b, dict) and vault_jev_rules.current(b)}
+    assert want == {8820, 8821, 8822}, want
+    assert asyncio.run(run()) == want
 
 
 def _spy_send():

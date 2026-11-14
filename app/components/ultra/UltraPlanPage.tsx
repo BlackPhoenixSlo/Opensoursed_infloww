@@ -4,22 +4,22 @@
  * UltraPlanPage — `/ultra/plans/[id]`, the page an MCP client's `propose_plan` links (its open_url; ultra tickets
  * 06 + 13). The owner reads every step as the server drew it (a send: Creator, audience, price, media count and its
  * FULL text), presses the one OK, which posts the hash of exactly that plan (POST /admin/ultra/plans/{id}/ok), then
- * the page re-reads it every 2 s while it runs, with Cancel. When it ends: each step's state and link, and a plain
- * statement for uncertain / interrupted / expired. State lives in `ultraRunReducer` (this only dispatches).
+ * the page re-reads it every 2 s while it runs, with Cancel; a `needs_you` judge shows its pick card (PickCard,
+ * "Send these" posts exactly pick_n). When it ends: each step's state and link, and a plain
+ * statement for uncertain / interrupted / expired. State lives in `ultraRunReducer` (this only dispatches); I/O in `useUltraPlan`.
  *
  * Signed out, AuthGate's in-place sign-in comes back here (`signInReturn`). A chatter or another owner gets the
  * Relay's 403 / 404 as a line, never the plan.
  */
-import { useCallback, useEffect, useReducer } from "react";
+import { useReducer } from "react";
 
 import { EmptyState, IfButton, IfBody, InflowwPageHeader } from "@/components/ui/infloww";
-import { errText } from "@/lib/errText";
-import { relay, RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
-import { PlanStepCard } from "./PlanStepCard";
+import { PlanSteps } from "./PlanSteps";
+import { useUltraPlan } from "./useUltraPlan";
 import {
-  canApprove, canCancel, cancelLabel, INITIAL_RUN, okLabel, okPayload, pollMs, showOk, statusNote, ultraRunReducer,
-  type PlanView,
+  canApprove, canCancel, canPick, cancelLabel, INITIAL_RUN, okLabel, pickLabel, showOk, showPick, statusNote,
+  ultraRunReducer,
 } from "./ultraRunReducer";
 
 // The sticky bar's height (border 1 + pt/pb 12 each + h-9 buttons, gap-2 between when stacked) plus the phone
@@ -29,36 +29,7 @@ const BAR_PAD_ONE = "pb-[calc(61px+env(safe-area-inset-bottom))]";
 
 export default function UltraPlanPage({ planId }: { planId: string }) {
   const [state, dispatch] = useReducer(ultraRunReducer, INITIAL_RUN);
-  const path = `/admin/ultra/plans/${encodeURIComponent(planId)}`;
-
-  const read = useCallback(async () => {
-    try {
-      dispatch({ type: "loaded", plan: await relay.get<PlanView>(path) });
-    } catch (e) {
-      dispatch({ type: "loadFailed", status: e instanceof RelayError ? e.status : 0, message: errText(e) });
-    }
-  }, [path]);
-
-  useEffect(() => { void read(); }, [read]);
-
-  const every = pollMs(state);
-  useEffect(() => {
-    if (every === null) return;
-    const t = window.setInterval(() => { void read(); }, every);
-    return () => window.clearInterval(t);
-  }, [every, read]);
-
-  async function act(kind: "ok" | "cancel") {
-    const body = kind === "ok" ? okPayload(state) : null;
-    if (kind === "ok" ? body === null : !canCancel(state)) return;
-    dispatch({ type: "act", kind });
-    try {
-      dispatch({ type: "acted", plan: await relay.post<PlanView>(`${path}/${kind}`, body ?? undefined) });
-    } catch (e) {
-      dispatch({ type: "actFailed", message: errText(e) });
-      void read();
-    }
-  }
+  const { read, act } = useUltraPlan(planId, state, dispatch);
 
   const plan = state.plan;
   const bar = canApprove(state) || canCancel(state) || state.busy;
@@ -80,18 +51,20 @@ export default function UltraPlanPage({ planId }: { planId: string }) {
                 <p className="mt-1 text-[13px] text-warn">Could not refresh: {state.loadError}. Trying again.</p>
               )}
             </div>
-            <ol className={cn("flex flex-col gap-3", bar && (showOk(state) ? BAR_PAD_TWO : BAR_PAD_ONE))}>
-              {plan.card.map((card, i) => (
-                <PlanStepCard key={card.id} card={card} index={i}
-                  step={plan.step_states.find((s) => s.id === card.id)} />
-              ))}
-            </ol>
+            <PlanSteps state={state} dispatch={dispatch}
+              className={cn(bar && (showOk(state) || showPick(state) ? BAR_PAD_TWO : BAR_PAD_ONE))} />
             {bar && (
               <div className="sticky bottom-0 -mx-3 flex flex-col gap-2 border-t border-border bg-bg px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:mx-0 sm:flex-row sm:justify-end sm:px-0">
                 {showOk(state) && (
                   <IfButton variant="primary" size="lg" className="w-full sm:w-auto"
                     disabled={!canApprove(state)} onClick={() => void act("ok")}>
                     {okLabel(state)}
+                  </IfButton>
+                )}
+                {showPick(state) && (
+                  <IfButton variant="primary" size="lg" className="w-full sm:w-auto"
+                    disabled={!canPick(state)} onClick={() => void act("pick")}>
+                    {pickLabel(state)}
                   </IfButton>
                 )}
                 <IfButton size="lg" className="w-full sm:w-auto" disabled={!canCancel(state)}

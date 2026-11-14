@@ -147,10 +147,12 @@ def case_allowlist() -> None:
     want = {  # literal: a route a token newly reaches shows up here as a reviewed diff
         ("GET", "/admin/accounts"), ("GET", "/admin/automation-kinds"), ("GET", "/admin/automation-rules"),
         ("GET", "/admin/bio-pages"), ("POST", "/admin/bio-pages"), ("GET", "/admin/bio-pages/{pid}"),
-        ("POST", "/admin/bio-pages/{pid}/avatar/vault"), ("POST", "/admin/bio-pages/{pid}/links"),
+        ("POST", "/admin/bio-pages/{pid}/avatar/vault"), ("POST", "/admin/bio-pages/{pid}/background/vault"),
+        ("POST", "/admin/bio-pages/{pid}/links"),
         ("POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault"), ("POST", "/admin/mcp"),
         ("GET", "/admin/reports/catalogue"), ("POST", "/admin/reports/files"), ("GET", "/admin/reports/files/{file_id}"),
-        ("POST", "/admin/reports/run"), ("GET", "/admin/stats/per-model"), ("GET", "/admin/vault-ai/describe-all/status"),
+        ("POST", "/admin/reports/run"), ("GET", "/admin/stats/per-model"), ("GET", "/admin/vault-ai/describe-all/plan"),
+        ("GET", "/admin/vault-ai/describe-all/status"),
         ("GET", "/admin/vault-ai/items"), ("GET", "/admin/vault-ai/of-folders"), ("POST", "/admin/vault-ai/of-folders"),
         ("POST", "/admin/vault-ai/of-folders/{list_id}/add")}
     assert token_auth.allowlist() == want, token_auth.allowlist() ^ want

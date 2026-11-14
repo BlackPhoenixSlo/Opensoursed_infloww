@@ -2,8 +2,12 @@
 """
 Vision sweeps: walk order + one call per duplicate set.
 
-  case_priority_order_table:      newest 100 → OF folders → oldest 100 → rest;
-                                  overlaps keep their best rank, no repeats.
+  case_priority_order_table:      fixed rounds: next `fold` folders (newest
+                                  first) → next `top` newest → next `bottom`
+                                  oldest; first rank wins, no repeats.
+  case_priority_folder_rank:      rail order first, then uncached folders by
+                                  newest item; no cache → all by newest item.
+  case_rail_folder_ids_table:     custom + hasMedia only, page order, deduped.
   case_reuse_plan_table:          copy from a done member, else the best-ranked
                                   walked member (good before failed) leads.
   case_reuse_groups_are_the_dupe_sets:
@@ -35,6 +39,10 @@ Vision sweeps: walk order + one call per duplicate set.
                                   `_flags_copied_from`, both current.
   case_sweep_walks_priority_order: describe-all and `_flags_todo` walk
                                   `priority_order`, not created_at desc.
+  case_sweep_reads_cached_rail:   the folder rank comes from the cached
+                                  /vault/lists pages; no cache → newest item.
+  case_describe_all_limit:        `limit` walks the first N in priority order;
+                                  the POST passes it (0 / junk = no limit).
 
 Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_describe_priority.py
 """
@@ -48,6 +56,7 @@ import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
+import asyncio  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import random  # noqa: E402
@@ -70,35 +79,79 @@ T0 = datetime(2026, 1, 1)
 
 # ── Pure tables ──────────────────────────────────────────────────────
 
+def _prow(mid, day, folders=None):
+    return (mid, T0 + timedelta(days=day) if day is not None else None,
+            json.dumps(folders) if folders is not None else None)
+
+
 def case_priority_order_table() -> None:
-    def row(mid, day, folders=None):
-        return (mid, T0 + timedelta(days=day), json.dumps(folders) if folders is not None else None)
-
-    # 10 items, day == media_id; head=2 so the four ranks are visible.
-    rows = [row(i, i) for i in range(1, 11)]
-    rows[4] = row(5, 5, [77])     # mid-age, in a folder
-    rows[9] = row(10, 10, [77])   # newest AND in a folder → rank 1 only
-    rows[0] = row(1, 1, [])       # '[]' is no folder
-    rows[1] = row(2, 2, None)     # NULL is no folder
-    got = d.priority_order(rows, head=2)
-    assert got == [10, 9, 5, 1, 2, 8, 7, 6, 4, 3], got
-    assert len(got) == len(set(got)) == 10
-
-    # Oldest-in-folder: rank 2 (folder) beats rank 3 (oldest).
-    rows2 = [row(1, 1, [5]), row(2, 2), row(3, 3), row(4, 4)]
-    assert d.priority_order(rows2, head=1) == [4, 1, 3, 2], d.priority_order(rows2, head=1)
-    # Bad folder JSON reads as no folder; same-time ties break on media_id desc.
-    rows3 = [(1, T0, "not json"), (2, T0, None), (3, T0, '["x"]')]
-    assert d.priority_order(rows3, head=1) == [3, 1, 2], d.priority_order(rows3, head=1)
-    # Fewer items than the head: plain newest first.
-    assert d.priority_order([row(1, 1), row(2, 2)]) == [2, 1]
+    # No folders, top=3 / bottom=2: the same round over and over.
+    rows = [_prow(i, i) for i in range(1, 31)]
+    got = d.priority_order(rows, top=3, bottom=2)
+    want = [30, 29, 28, 1, 2, 27, 26, 25, 3, 4, 24, 23, 22, 5, 6, 21, 20, 19, 7, 8,
+            18, 17, 16, 9, 10, 15, 14, 13, 11, 12]
+    assert got == want, got
+    # Folders lead their round, each newest first; an item already taken
+    # (newest AND in a folder) keeps its first rank; '[]' / NULL / bad JSON = no folder.
+    rows = [_prow(1, 1, []), _prow(2, 2), (3, T0 + timedelta(days=3), "not json"),
+            _prow(4, 4, [7]), _prow(5, 5), _prow(6, 6, [7, 8]), _prow(7, 7), _prow(8, 8, [9])]
+    # folders by newest item: 9 (8), 7 (6), 8 (6)
+    got = d.priority_order(rows, fold=1, top=1, bottom=1)
+    assert got == [8, 7, 1, 6, 4, 5, 2, 3], got
+    assert len(got) == len(set(got)) == 8
+    # fold=2: two folders before the first newest pull.
+    assert d.priority_order(rows, fold=2, top=1, bottom=1) == [8, 6, 4, 7, 1, 5, 2, 3]
+    # top=0: folders + oldest only, until the folders run out.
+    assert d.priority_order(rows, fold=1, top=0, bottom=1) == [8, 1, 6, 4, 2, 3, 5, 7]
+    # top=bottom=0: folders, then the rest newest first (no endless loop).
+    assert d.priority_order(rows, fold=1, top=0, bottom=0) == [8, 6, 4, 7, 5, 3, 2, 1]
+    # Same-time ties break on media_id desc; NULL created_at is oldest.
+    assert d.priority_order([(1, T0, None), (2, T0, None), (3, None, None)],
+                            top=1, bottom=1) == [2, 3, 1]
+    assert d.priority_order([_prow(1, 1), _prow(2, 2)]) == [2, 1]
     assert d.priority_order([]) == []
-    # The default head is 100.
-    many = [row(i, i) for i in range(1, 301)]
+    # The defaults: fold 10, top 500, bottom 100.
+    assert (d.PRIORITY_FOLD, d.PRIORITY_TOP, d.PRIORITY_BOTTOM) == (10, 500, 100)
+    many = [_prow(i, i) for i in range(1, 2001)]
     got = d.priority_order(many)
-    assert got[:100] == list(range(300, 200, -1))
-    assert got[100:200] == list(range(1, 101))
-    assert got[200:] == list(range(200, 100, -1))
+    assert got[:500] == list(range(2000, 1500, -1))
+    assert got[500:600] == list(range(1, 101))
+    assert got[600:1100] == list(range(1500, 1000, -1))
+    assert got[1100:1200] == list(range(101, 201))
+    assert sorted(got) == list(range(1, 2001))
+    folders = [_prow(i, i, [1000 + i]) for i in range(1, 26)] + [_prow(i, i) for i in range(26, 1000)]
+    got = d.priority_order(folders)
+    assert got[:10] == list(range(25, 15, -1)), got[:10]      # 10 folders, newest item first
+    assert got[10:510] == list(range(999, 499, -1))
+    assert got[510:525] == list(range(1, 16))                  # oldest, incl. folders not reached yet
+
+
+def case_priority_folder_rank() -> None:
+    # 20 items, day == id; folder 100 = {20, 5, 3}, 200 = {12}, 300 = {18}, 400 = {7}.
+    fol = {20: [100], 5: [100], 3: [100], 12: [200], 18: [300], 7: [400]}
+    rows = [_prow(i, i, fol.get(i)) for i in range(1, 21)]
+    kw = {"fold": 1, "top": 1, "bottom": 1}
+    # Rail: 200, 100, then 999 (no item here → dropped); 300 / 400 uncached → by newest item.
+    got = d.priority_order(rows, [200, 100, 999, 200], **kw)
+    assert got == [12, 20, 1, 5, 3, 19, 2, 18, 17, 4, 7, 16, 6, 15, 8, 14, 9, 13, 10, 11], got
+    # No cache: every folder by its newest item (100, 300, 200, 400).
+    got = d.priority_order(rows, **kw)
+    assert got == [20, 5, 3, 19, 1, 18, 17, 2, 12, 16, 4, 7, 15, 6, 14, 8, 13, 9, 11, 10], got
+    assert d.priority_order(rows, [], **kw) == got
+
+
+def case_rail_folder_ids_table() -> None:
+    def f(i, type_="custom", media=True):
+        return {"id": i, "type": type_, "hasMedia": media}
+    pages = [
+        {"list": [f(None), f(3), {"type": "messages", "id": 9, "hasMedia": True},
+                  f(4, media=False), f(5), "junk", f("x")], "hasMore": True},
+        None,
+        {"list": [f(5), f("6")]},
+        {},
+    ]
+    assert d.rail_folder_ids(pages) == [3, 5, 6]
+    assert d.rail_folder_ids([]) == []
 
 
 def case_reuse_plan_table() -> None:
@@ -447,6 +500,26 @@ async def case_raising_leader_still_counts_its_riders() -> None:
     assert "RuntimeError" in prog["error"], prog
 
 
+class _NoStop:
+    """A walk-order test's visits all fail cheaply (and this box has no NudeNet): neither the breaker nor Jev's
+    server stop (`vault_jev_pass.fatal`) is under test here — test_vault_jev / test_vault_sweep_stop own them."""
+
+    def __enter__(self):
+        import vault_jev_pass
+        import vault_sweep
+        self._o = (vault_sweep.BREAK_AFTER, vault_jev_pass.fatal)
+
+        async def _quiet(*_a, **_k):
+            return None
+        vault_sweep.BREAK_AFTER, vault_jev_pass.fatal = 10**9, _quiet
+        return self
+
+    def __exit__(self, *_e):
+        import vault_jev_pass
+        import vault_sweep
+        vault_sweep.BREAK_AFTER, vault_jev_pass.fatal = self._o
+
+
 async def case_up_front_copies_survive_a_cap() -> None:
     # 1 is described; 2 is its re-upload; 3 is unrelated and trips the cap.
     aid = await _world([(1, 1, 170, 270), (2, 3, 170, 270), (3, 5, 171, 271)])
@@ -465,7 +538,8 @@ async def case_up_front_copies_survive_a_cap() -> None:
         return {"media_id": mid, "ok": False, "status": "capped", "detail": "cap"}
     vault_ai_vision._describe_one = _capped
     try:
-        await vault_ai_vision._run_describe_all(aid, "undescribed")
+        with _NoStop():
+            await vault_ai_vision._run_describe_all(aid, "undescribed")
     finally:
         vault_ai_vision._describe_one = o
     assert seen == [3], seen
@@ -526,15 +600,93 @@ async def case_sweep_walks_priority_order() -> None:
     o_conc = vault_ai_vision._DESCRIBE_CONCURRENCY
     vault_ai_vision._DESCRIBE_CONCURRENCY = 1  # serial, so arrival order == walk order
     try:
-        await vault_ai_vision._run_describe_all(aid, "undescribed")
+        with _NoStop():
+            await vault_ai_vision._run_describe_all(aid, "undescribed")
     finally:
         vault_ai_vision._describe_one = o
         vault_ai_vision._DESCRIBE_CONCURRENCY = o_conc
-    want = list(range(120, 20, -1)) + [3] + list(range(1, 3)) + list(range(4, 21))
-    assert seen == want, seen[:5] + ["…"] + seen[98:105]
+    want = [3] + list(range(120, 3, -1)) + [2, 1]   # folder, then the top 500 = the rest
+    assert seen == want, seen[:5] + ["…"] + seen[-5:]
     # the Jev pass ahead of each describe stamped every clip's flags; the flags walk is the same order
     assert await vault_ai_vision._flags_todo(aid) == []
     assert await vault_ai_vision._flags_todo(aid, force=True) == want
+
+
+
+async def _spy_walk(aid: str, **kw) -> list[int]:
+    """The describe sweep's walk, serial, every visit a cheap refusal."""
+    seen: list[int] = []
+    o, o_conc = vault_ai_vision._describe_one, vault_ai_vision._DESCRIBE_CONCURRENCY
+
+    async def _spy(_aid, mid, **_k):
+        seen.append(int(mid))
+        return {"media_id": mid, "ok": False, "status": "error", "detail": "spy"}
+    vault_ai_vision._describe_one = _spy
+    vault_ai_vision._DESCRIBE_CONCURRENCY = 1
+    try:
+        with _NoStop():
+            await vault_ai_vision._run_describe_all(aid, "undescribed", **kw)
+    finally:
+        vault_ai_vision._describe_one = o
+        vault_ai_vision._DESCRIBE_CONCURRENCY = o_conc
+    return seen
+
+
+async def case_sweep_reads_cached_rail() -> None:
+    import vault_cache
+    from vault_collect import LISTS_PAGE
+    # 5 items; folder 10 = {1}, folder 20 = {2}. Without a cache 20 ranks first (newer item).
+    items = [(i, i, 3000 + i, 4000 + i) for i in range(1, 6)]
+    cols = {1: {"of_folder_ids": "[10]"}, 2: {"of_folder_ids": "[20]"}}
+    aid = await _world(items, cols)
+    assert await vault_ai_vision._rail_order(aid) == []
+    rows = [(i, T0 + timedelta(days=i), cols.get(i, {}).get("of_folder_ids")) for i in range(1, 6)]
+    assert d.priority_order(rows)[:2] == [2, 1]
+    # The rail (two cached pages) says 10 before 20.
+    key = lambda off: vault_cache.vault_lists_cache_key(view="main", limit=LISTS_PAGE, offset=off)
+    now = datetime.utcnow()
+    await vault_cache.put(aid, key(0), {"list": [{"id": 10, "type": "custom", "hasMedia": True}],
+                                        "hasMore": True}, started_at=now)
+    await vault_cache.put(aid, key(LISTS_PAGE), {"list": [{"id": 20, "type": "custom", "hasMedia": True}],
+                                                 "hasMore": False}, started_at=now)
+    assert await vault_ai_vision._rail_order(aid) == [10, 20]
+    seen = await _spy_walk(aid)
+    assert seen == d.priority_order(rows, [10, 20]) and seen[:2] == [1, 2], seen
+    assert await vault_ai_vision._flags_todo(aid, force=True) == seen
+
+
+async def case_describe_all_limit() -> None:
+    items = [(i, i, 5000 + i, 6000 + i) for i in range(1, 31)]
+    aid = await _world(items, {7: {"of_folder_ids": "[42]"}})
+    full = await _spy_walk(aid)
+    assert len(full) == 30 and full[0] == 7
+    capped = await _spy_walk(aid, limit=5)
+    assert capped == full[:5], (capped, full[:5])
+    assert vault_ai_vision._describe_progress[aid]["total"] == 5, vault_ai_vision._describe_progress[aid]
+    assert await _spy_walk(aid, limit=0) == full
+    assert await _spy_walk(aid, limit=99) == full
+
+    # The POST hands `limit` to the sweep; 0 / absent / junk / negative = no limit.
+    got: list[int] = []
+    o_run, o_budget = vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget
+
+    async def _run(_aid, *_a, limit=0, **_k):
+        got.append(limit)
+
+    async def _budget(*_a, **_k):
+        return {"key_missing": False, "capped": False}
+    vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget = _run, _budget
+    try:
+        for raw, want in ((2000, 2000), ("5", 5), (None, 0), ("x", 0), (-3, 0)):
+            body = {"account_id": aid} if raw is None else {"account_id": aid, "limit": raw}
+            r = await vault_ai_vision.describe_all(body)
+            assert r["limit"] == want, (raw, r)
+            await asyncio.sleep(0)
+            assert got[-1] == want, (raw, got)
+            vault_ai_vision._describe_running.discard(aid)
+    finally:
+        vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget = o_run, o_budget
+        vault_ai_vision._describe_running.discard(aid)
 
 
 _harness.run()

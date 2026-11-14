@@ -24,7 +24,9 @@ const view = (over: Partial<PlanView> = {}): PlanView => ({
 const gets: string[] = [];
 const posts: [string, unknown][] = [];
 let getImpl: () => Promise<PlanView> = async () => view();
-let postImpl: () => Promise<PlanView> = async () => view({ status: "running" });
+/** The default POST answers running, and the plan reads running from then on (as the Relay would). */
+const toRunning = async () => { const v = view({ status: "running" }); getImpl = async () => v; return v; };
+let postImpl: () => Promise<PlanView> = toRunning;
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()),
   relay: {
@@ -38,7 +40,7 @@ afterEach(() => {
   gets.length = 0;
   posts.length = 0;
   getImpl = async () => view();
-  postImpl = async () => view({ status: "running" });
+  postImpl = toRunning;
 });
 
 describe("UltraPlanPage", () => {
@@ -73,8 +75,18 @@ describe("UltraPlanPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "OK, run 2 steps" }));
     await vi.waitFor(() => expect(document.querySelector("[data-plan-status]")?.getAttribute("data-plan-status")).toBe("running"));
     expect(posts).toEqual([["/admin/ultra/plans/p1/ok", { sha256: "b".repeat(64) }]]);
+    await vi.waitFor(() => expect(gets).toEqual(["/admin/ultra/plans/p1", "/admin/ultra/plans/p1"]));
     expect(screen.queryByRole("button", { name: /^OK/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Cancel the rest" })).toBeEnabled();
+  });
+
+  it.each([
+    ["mass_send", "Sends to fans"], ["post_create", "Posts to the feed"],
+    ["auto_mass", "Turns on a recurring rule"], ["auto_story", "Turns on a recurring rule"],
+  ])("a %s step is labelled %s", async (tool, label) => {
+    getImpl = async () => view({ card: [{ ...view().card[1], tool }] });
+    render(<UltraPlanPage planId="p1" />);
+    expect(await screen.findByText(label)).toBeInTheDocument();
   });
 
   it("a refused OK shows the Relay's words", async () => {
@@ -116,5 +128,29 @@ describe("UltraPlanPage", () => {
     await vi.waitFor(() => expect(document.querySelector("[data-plan-status]")?.getAttribute("data-plan-status")).toBe("running"));
     expect(document.querySelector("ol")?.className).toContain("pb-[calc(61px+env(safe-area-inset-bottom))]");
     expect(document.querySelector("ol")?.className).not.toContain("105px");
+  });
+
+  it("a judge waiting on the owner: pick card, Send these only at exactly pick_n, posts the ids", async () => {
+    const candidates = [31, 32, 33].map((id) => ({ id, type: "photo", thumb: `/t/${id}`, description: `set ${id}` }));
+    const judge = { id: "pick", tool: "judge", effect: "judge" as const, title: "AI pick", rows: [["Question", "best one"]] as [string, string][] };
+    getImpl = async () => view({
+      status: "needs_you", card: [judge, ...view().card],
+      step_states: [{ id: "pick", state: "needs_you", question: "Which one?", pick_n: 1, candidates, picks: [32] },
+        { id: "folder", state: "pending" }, { id: "mass", state: "pending" }],
+    });
+    render(<UltraPlanPage planId="p1" />);
+    await screen.findByRole("region", { name: "Pick 1" });
+    expect(document.querySelector('[data-step="pick"]')).toHaveTextContent("AI picks");
+    expect(screen.queryByRole("button", { name: /^OK/ })).toBeNull();
+    const send = screen.getByRole("button", { name: "Send these" });
+    expect(send).toBeEnabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "set 33" }));
+    expect(send).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "set 32 (AI pick)" }));
+    expect(document.querySelector("[data-pick-count]")?.textContent)
+      .toBe("Tick exactly 1: 1 of 1 ticked. The AI’s picks start ticked.");
+    fireEvent.click(send);
+    await vi.waitFor(() => expect(posts).toContainEqual(["/admin/ultra/plans/p1/pick", { step: "pick", ids: [33] }]));
+    await vi.waitFor(() => expect(gets).toHaveLength(2));  // read again at once, not after the poll
   });
 });

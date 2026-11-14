@@ -6,6 +6,10 @@ import { fmtPrice } from "@/lib/format";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
+/** The PPV box's colours (palette vars with app fallbacks), shared by the Messages bubble and Full AI's test bubble. */
+export const PPV_BORDER = "border-[var(--inf-ppv-border,var(--color-border))]";
+export const PPV_FILL = "bg-[var(--inf-ppv,var(--color-accent))]";
+
 function dollars(price: number): string {
   return fmtPrice(Math.round(price * 100));
 }

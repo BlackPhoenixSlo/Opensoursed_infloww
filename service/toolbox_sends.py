@@ -3,7 +3,8 @@
 Send tools run only from an owner-approved Ultra plan (`toolbox.call(..., plan_step=...)`, that step `started` in the DB); never in
 MCP tools/list nor on the token allowlist. Each schema is narrower than its route's body: only the fields the
 plan card shows (Creator, audience, price, media, text). The text arg is `model_text`: `propose_plan` runs it
-through send_chain before the plan is stored, and the executor sends it byte-for-byte.
+through send_chain before the plan is stored, and the executor sends it byte-for-byte. auto_mass / auto_story
+make a switched-on automation rule instead (mass_premade / auto_stories from a vault folder).
 """
 from __future__ import annotations
 
@@ -67,6 +68,55 @@ class PostCreateArgs(_Paid):
     expire_days: int | None = Field(None, ge=1, description="Delete the post after this many days.")
 
 
+# Automation-rule sends: an ON rule from a vault folder, over POST /admin/automation-rules (`rule_body`); the
+# rule fires on the next executor tick, then every `every_hours`, until switched off.
+_FOLDER = "Vault folder id to pull random photos from (of_folders_list)."
+_EVERY = "Hours between runs; the first runs within a minute of the OK. Runs until switched off."
+
+
+class _Rule(Args):
+    account_id: str = Field(description=_CREATOR)
+    every_hours: int = Field(ge=1, le=720, description=_EVERY)
+
+
+class AutoMassArgs(_Rule):
+    text: _Text = Field(description=_TEXT)
+    media_folder_id: int = Field(ge=1, description=_FOLDER)
+    media_count: int = Field(1, ge=1, le=MAX_MEDIA, description="Photos per mass, picked at random each run.")
+    price: float = Field(0, ge=0, description="Price in dollars; 0 = free. A paid one locks the photos.")
+    user_lists: list[_ListRef] = Field(min_length=1, max_length=20, description=MassSendArgs.model_fields[
+        "user_lists"].description)
+    excluded_user_lists: list[_ListRef] = Field(default_factory=list, max_length=20,
+                                                description="OnlyFans list ids whose fans are left out.")
+    online_only: bool = Field(False, description="Only fans online when it runs.")
+    unsend_after_hours: int | None = Field(None, ge=1, le=720, description="Unsend each mass after this many hours.")
+
+
+class AutoStoryArgs(_Rule):
+    folder_id: int = Field(ge=1, description=_FOLDER)
+    per_run: int = Field(1, ge=1, le=10, description="Stories posted per run.")
+    hours_to_live: int = Field(24, ge=0, le=720, description="Delete each story after this many hours (0 = keep).")
+
+
+RULE_KIND = {"auto_mass": "mass_premade", "auto_story": "auto_stories"}
+FOLDER_ARG = {"auto_mass": "media_folder_id", "auto_story": "folder_id"}  # an OF vault folder (of_folder_create)
+
+
+def rule_body(kind: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    """The validated args → create_rule's body: one ON rule of `RULE_KIND[kind]` on an interval."""
+    knobs = {k: v for k, v in args.items()  # an unset knob (None / [] / False) is left out; 0 is a value
+             if k not in ("account_id", "every_hours") and v is not None and v is not False and v != []}
+    payload = {"messages": [knobs]} if kind == "auto_mass" else knobs
+    return {"account_id": args["account_id"], "kind": RULE_KIND[kind], "every_seconds": args["every_hours"] * 3600,
+            "payload": payload, "is_enabled": True}
+
+
+def check_rule(args: Mapping[str, Any], body: Any) -> str | None:
+    if isinstance(body, Mapping) and body.get("id") is not None and body.get("is_enabled") is True:
+        return None
+    return "the app answered with no switched-on rule; it may have been made; do not retry; open open_url to check"
+
+
 def _no_id(what: str) -> str:
     return f"OnlyFans answered with no {what} id; it may have gone out; do not retry; open open_url to check"
 
@@ -90,7 +140,7 @@ def kept_note(body: Any) -> str | None:
     return f"sent to {kept} of {asked} fans by id: {asked - kept} skipped (opted out or already queued)"
 
 
-# ── the plan card's send rows (ultra_decide.card) ───────────────────────────
+# ── the plan card's send rows (ultra_card.card) ───────────────────────────
 
 SHOW_IDS = 10  # ids a card row lists before "+N more"
 
@@ -117,13 +167,35 @@ def _audience(args: Mapping[str, Any]) -> str:
     return out
 
 
-def card_rows(kind: str, args: Mapping[str, Any]) -> list[list[str]]:
-    """A send step's card rows after its Creator (`kind`: the tool's text_kind, "mass" | "post"): audience with
-    the fan ids, price, media ids, schedule, free previews, expiry. Literal args only (a send has no reference)."""
+def _rule_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any]) -> list[list[str]]:
+    folder = shown.get(FOLDER_ARG[kind]) or f"vault folder {args[FOLDER_ARG[kind]]}"
+    when = ["When", f"within a minute of the OK, then every {args['every_hours']} h until switched off"]
+    if kind == "auto_story":
+        ttl = args.get("hours_to_live")
+        return [["Audience", "her stories (every subscriber)"],
+                ["Media", f"{args.get('per_run', 1)} random photo(s) per run from {folder}"],
+                when, ["Deleted after", f"{ttl} h" if ttl else "not deleted by the app (OnlyFans expires stories "
+                                                               "on its own)"]]
+    aud = _audience(args) + (", online now only" if args.get("online_only") else "")
+    return [["Audience", aud], ["Price", _money(args.get("price", 0))],
+            ["Media", f"{args.get('media_count', 1)} random photo(s) per run from {folder}"],
+            when, ["Unsend after", f"{args['unsend_after_hours']} h" if args.get("unsend_after_hours") else "never"]]
+
+
+def card_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any] | None = None) -> list[list[str]]:
+    """A send step's card rows after its Creator (`kind`: the tool's text_kind): audience with the fan ids,
+    price, media ids, schedule, free previews, expiry; a rule's folder, interval and unsend / delete. Literal
+    args; `shown`: arg name → what the card shows for a reference in it (ultra_card): media_files → rows in place
+    of the Media row (a judge's picks), a rule's FOLDER_ARG → its words (a folder an earlier step makes)."""
+    shown = shown or {}
+    return _rule_rows(kind, args, shown) if kind in RULE_KIND else _send_rows(kind, args, shown)
+
+
+def _send_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any]) -> list[list[str]]:
     media = args.get("media_files") or []
     rows = [["Audience", _audience(args) if kind == "mass" else "her feed (every subscriber)"],
             ["Price", _money(args.get("price", 0))],
-            ["Media", f"{len(media)}: {_ids(media)}" if media else "none"],
+            *(shown.get("media_files") or [["Media", f"{len(media)}: {_ids(media)}" if media else "none"]]),
             ["When", str(args.get("scheduled_date") or args.get("posted_at") or "now")]]
     if args.get("previews"):
         rows.append(["Free previews", f"{len(args['previews'])}: {_ids(args['previews'])}"])

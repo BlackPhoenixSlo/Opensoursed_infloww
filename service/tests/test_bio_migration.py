@@ -16,12 +16,13 @@ from db.models import Base  # noqa: E402
 
 BIO = {"bio_profiles", "bio_links", "bio_custom_domains", "bio_spare_domains", "bio_daily"}
 MIGRATIONS = Path(__file__).resolve().parents[1] / "db/migrations"
+LATER = {"background_image"}  # bio_profiles column of 0122 (test_bio_background_migration.py)
 
 
 def _shape(path):
     con = sqlite3.connect(path)
     try:
-        return {t: (tuple(r[1] for r in con.execute(f"PRAGMA table_info({t})")),
+        return {t: (tuple(r[1] for r in con.execute(f"PRAGMA table_info({t})") if r[1] not in LATER),
                     tuple(sorted(r[1] for r in con.execute(f"PRAGMA index_list({t})")))) for t in BIO}
     finally:
         con.close()

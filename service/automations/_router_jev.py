@@ -22,10 +22,10 @@ shape: the probe's.
   - `QUESTIONS`, `THRESHOLDS`, `INTENSITY`, `STATE_VERSION`,
     `QUESTION_VERSION` (`question_version()`).
   - Test Mode only (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`),
-    `TEST_NOULS` (DRAFT `counter_offer`, `offer_moment`), `DRAFT`,
+    `TEST_NOULS` (DRAFT `counter_offer`, `offer_moment`), `DRAFT`, `TEST_THRESHOLDS`,
     `question_version("test")`, `_questions("test")`; Shadow's request and
     digest are unchanged (spec 03b story 66).
-  - `fired(answers)`: the ids at or above their threshold.
+  - `fired(answers, mode="shadow")`: the ids at or above their threshold.
   - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
     anything / any.
   - `line_text(m)`: one stored message as a person reads it (`MEDIA_ONLY`,
@@ -37,8 +37,8 @@ shape: the probe's.
     `Answers`, or `GateError` on any failure (no key, no SDK, timeout, HTTP
     error, a missing or out-of-range answer or Score). A failed call is an
     error, never a "no". In test Mode `Answers.answers` also holds the
-    `TEST_NOULS` P(yes) (no threshold, so `fired` never reads them before
-    ticket 47, like `gif_fits`) and `Answers.choices` the `TEST_CHOICES`
+    `TEST_NOULS` P(yes) (`fired(answers, "test")` adds them at their
+    `TEST_THRESHOLDS`, Shadow never) and `Answers.choices` the `TEST_CHOICES`
     probabilities (the Sell executor reads them through `choice_of`);
     Shadow's `choices` is `{}`.
 
@@ -228,6 +228,10 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
 
 # Asked and stored, never read by the Route table before the owner OKs them.
 DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
+# The DRAFT Nouls' thresholds, read only by `fired(answers, "test")`; the Route table
+# counts them only when `draft_on` (ticket 47). ASSUMPTION: 0.7 is unprobed (no measurement
+# exists; THRESHOLDS' usual value, rung 3); overturned by a measured threshold.
+TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7}
 
 
 def question_version(mode: str = "shadow") -> str:
@@ -235,13 +239,14 @@ def question_version(mode: str = "shadow") -> str:
     thresholds and levels, and the state's shape (`STATE_VERSION`, the
     `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads). For any
     Mode but `test` exactly Phase 01's digest; `test` adds `TEST_CHOICES`,
-    `TEST_NOULS` and `DRAFT` (what test rows record)."""
+    `TEST_NOULS`, `TEST_THRESHOLDS` and `DRAFT` (what test rows record)."""
     d: dict[str, Any] = {
         "model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
         "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
         "purchase_days": PURCHASE_DAYS, "purchase_kinds": sorted(PURCHASE_KINDS)}
     if mode == "test":
-        d |= {"test_choices": TEST_CHOICES, "test_nouls": TEST_NOULS, "draft": sorted(DRAFT)}
+        d |= {"test_choices": TEST_CHOICES, "test_nouls": TEST_NOULS,
+              "test_thresholds": TEST_THRESHOLDS, "draft": sorted(DRAFT)}
     return hashlib.sha256(json.dumps(
         d, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
@@ -263,9 +268,13 @@ class Answers(NamedTuple):
     choices: dict[str, dict[str, float]]   # test Mode: `TEST_CHOICES` id -> label -> P; Shadow {}
 
 
-def fired(answers: dict[str, float]) -> frozenset[str]:
-    """The question ids at or above their threshold."""
-    return frozenset(q for q, t in THRESHOLDS.items() if answers[q] >= t)
+def fired(answers: dict[str, float], mode: str = "shadow") -> frozenset[str]:
+    """The question ids at or above their threshold. Shadow (any Mode but `test`) walks
+    `THRESHOLDS` only; `test` also adds each `TEST_THRESHOLDS` id present in `answers`."""
+    ids = {q for q, t in THRESHOLDS.items() if answers[q] >= t}
+    if mode == "test":
+        ids |= {q for q, t in TEST_THRESHOLDS.items() if q in answers and answers[q] >= t}
+    return frozenset(ids)
 
 
 def choice_of(choices: dict[str, dict[str, float]], qid: str) -> str:
@@ -300,13 +309,27 @@ def _giphy(raw_json: str | None) -> bool:
 
 def line_text(m: Message) -> str:
     """A stored message as a person reads it (OF bodies are HTML), untruncated
-    (probe.py `text`); with no text, `MEDIA_ONLY` (hers `HER_MEDIA`) or `GIF_ONLY`."""
+    (probe.py `text`); with no text, `MEDIA_ONLY` (hers `HER_MEDIA`) or `GIF_ONLY`.
+    His photo read for this Turn (`read_photos`) adds Auto-reply's tag `[he sent: <desc>]`
+    (`_bubbles._history_text`), alone when he wrote nothing."""
     t = _jev.text(m.body)
+    desc = getattr(m, "photo_read", None)
+    if desc:
+        tag = f"[he sent: {desc}]"
+        return f"{t} {tag}" if t else tag
     if t:
         return t
     if m.media_count:
         return HER_MEDIA if m.direction == "out" else MEDIA_ONLY
     return GIF_ONLY if _giphy(m.raw_json) else ""
+
+
+def read_photos(rows: list, on: bool) -> None:
+    """Switch the photo tag for this Turn's rows: his described media reads `[he sent: …]` in
+    `line_text` only when the side's `describe_fan_photos` is on (off: every line as before)."""
+    for m in rows:
+        m.photo_read = (getattr(m, "image_desc", None) or None) if on and m.direction == "in" \
+            and m.media_count else None
 
 
 def _when(minutes: float) -> str:

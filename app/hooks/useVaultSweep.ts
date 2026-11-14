@@ -38,6 +38,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 
+import { fmtAgo } from "@/lib/format";
 import { announceApiKeyError, relay, type ApiKeyErrorPayload } from "@/lib/relay";
 
 /** The sweeps that share the `{running, progress}` contract. This is also the
@@ -70,7 +71,15 @@ export interface SweepProgress {
   /** The sweep STOPPED on the API key (missing or rejected) — the relay's
    *  payload, shown as the key toast when the sweep settles. */
   key_error?: ApiKeyErrorPayload | null;
+  /** The sweep STOPPED on a server-side cause no retry fixes (NudeNet missing, Jev down) or its breaker (many
+   *  items in a row failed) — the relay's `{message, fix}` (`vault_sweep.SweepStop`). */
+  stop?: { message: string; fix: string } | null;
+  /** When the pass ended (ISO, UTC); dates the finished-with-failures note. */
+  finished_at?: string;
 }
+
+/** A sweep-end note's age limit: past it the snapshot describes a run nobody remembers. */
+export const FAILED_NOTE_MAX_MS = 24 * 3600 * 1000;
 
 export interface SweepStatus {
   running: boolean;
@@ -270,31 +279,42 @@ export function describeSweepText(
   return { label, title };
 }
 
-/** What to say about a sweep that STOPPED SHORT, or null if there is nothing to
+/** What to say about how the last sweep ENDED, or null if there is nothing to
  *  say. Read only when `busy` is false — while it runs, the button's own label
  *  carries the progress.
  *
- *  ONLY `aborted` qualifies, and the reason is the snapshot's lifetime. The
- *  server keeps `progress` forever after a sweep exits, deliberately, so a UI
- *  arriving late still learns how the last pass ended — but `aborted` is the one
- *  key it clears at every start. Anything else surfaced here would still be on
- *  screen three days later with no timestamp, describing a run nobody remembers:
- *  a permanent amber banner is not information. Failures during a run belong to
- *  the button's tooltip, where `describeSweepText` already puts them.
+ *  A stop (`key_error`, `stop`) or a death (`aborted`) always (`warn`): those keys
+ *  are rewritten at every start. A pass that finished with failures too, but only
+ *  while its `finished_at` is under FAILED_NOTE_MAX_MS old and saying when — the
+ *  server keeps `progress` until a restart, and an undated banner would describe a
+ *  run nobody remembers (11-14: 5336/5336 failed and the drawer said nothing).
+ *  `warn` when nothing succeeded, else `info`.
  *
  *  `left` is honest for every sweep because `done` counts items VISITED — see
  *  `service/vault_sweep.py`, which owns that definition for all of them. */
 export function sweepAbortedNote(
   progress: SweepProgress | null,
-): { text: string; detail: string } | null {
-  // A key stop is cleared at every start too (the snapshot is rewritten), and
-  // stays true until someone fixes the key — the relay's own sentences.
-  if (progress?.key_error) return { text: progress.key_error.message, detail: progress.key_error.fix };
-  if (!progress?.aborted) return null;
-  const left = Math.max(0, (progress.total || 0) - (progress.done || 0));
+  now: number = Date.now(),
+): { text: string; detail: string; tone: "warn" | "info" } | null {
+  // The relay's own sentences, stop first.
+  const stop = progress?.key_error ?? progress?.stop;
+  if (stop) return { text: stop.message, detail: stop.fix, tone: "warn" };
+  if (!progress) return null;
+  if (progress.aborted) {
+    const left = Math.max(0, (progress.total || 0) - (progress.done || 0));
+    return {
+      text: `Stopped early — ${left} left. Press again to resume.`,
+      detail: progress.error || "The sweep ended before it finished.",
+      tone: "warn",
+    };
+  }
+  const failed = progress.failed || 0;
+  const at = progress.finished_at ? Date.parse(progress.finished_at) : NaN;
+  if (!failed || !Number.isFinite(at) || now - at > FAILED_NOTE_MAX_MS) return null;
   return {
-    text: `Stopped early — ${left} left. Press again to resume.`,
-    detail: progress.error || "The sweep ended before it finished.",
+    text: `Last run ${fmtAgo(progress.finished_at) ?? ""}: ${failed} of ${progress.total} failed.`,
+    detail: progress.error ? `First error: ${progress.error}` : "No error was recorded.",
+    tone: failed >= (progress.done || 0) ? "warn" : "info",
   };
 }
 

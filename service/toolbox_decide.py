@@ -30,6 +30,7 @@ Send tools (`effect="send"`, step 4; args + checks in toolbox_sends) carry OF-bo
 `model_text` names those arg paths and `text_kind` the chain stages (send_chain; issues/13). Never
 on the token allowlist nor in MCP tools/list; `toolbox.call` runs one only for a plan step (the
 Ultra executor). A send's `check` failing means "may have gone out" (the executor's uncertain).
+auto_mass / auto_story make a switched-on automation rule (`body`: flat args → the rule route's body).
 """
 from __future__ import annotations
 
@@ -97,11 +98,14 @@ class Tool:
     untrusted: bool = False
     shape: Shape = field(default_factory=Shape)
     open: Open | None = None
-    # Frozen in step 2 (ticket 13): arg paths carrying OF-bound model text, and its chain stages.
+    # Frozen in step 2 (ticket 13): arg paths carrying OF-bound model text, and its chain stages; text_kind also
+    # picks a send's card rows (auto_story carries no text).
     model_text: tuple[str, ...] = ()
-    text_kind: Literal["mass", "post"] | None = None
+    text_kind: Literal["mass", "post", "auto_mass", "auto_story"] | None = None
     # Constant params the tool always sends (not in the schema), e.g. report_run's format=json.
     fixed: tuple[tuple[str, Any], ...] = ()
+    # A route body shaped unlike the args (an automation rule's nested payload): validated args → body.
+    body: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     # Write tools: the echo check (module doc); `replaces`: overwrites (and deletes) what was there
     # before, e.g. an image file → MCP destructiveHint.
     check: Check | None = None
@@ -132,6 +136,8 @@ class VaultSearchArgs(Args):
     query: str = Field("", description="Words to find in the media's AI description, tags or OF search terms.")
     type: Literal["all", "photo", "video", "gif", "audio"] = Field("all", description="Media type.")
     tags: list[str] = Field(default_factory=list, description="Only media carrying every one of these tags.")
+    not_nude: bool = Field(False, description="Only media the AI currently reads as nothing bare and no toy "
+                                              "(unread media left out).")
     limit: int = Field(30, ge=1, le=30, description="At most this many items (≤30).")
 
 
@@ -176,11 +182,14 @@ TOOLS: tuple[Tool, ...] = (
          "GET", "/admin/vault-ai/items", VaultSearchArgs, "read", untrusted=True, open=_VAULT,
          shape=Shape(rows="list", max_rows=30, keep=(
              "id", "type", "createdAt", "duration", "_ai.description", "_ai.video_description", "_ai.tags",
-             "_ai.explicitness_tier", "_ai.story_suitable", "_ai.describe_status"))),
+             "_ai.explicitness_tier", "_ai.story_suitable", "_ai.describe_status", "_thumb"))),
     Tool("of_folders_list", "List one Creator's OnlyFans vault folders with media counts.",
          "GET", "/admin/vault-ai/of-folders", CreatorArgs, "read", open=_VAULT, shape=Shape(rows="list")),
     Tool("describe_all_status", "Whether the AI describe pass over one Creator's vault is running, and its progress.",
          "GET", "/admin/vault-ai/describe-all/status", CreatorArgs, "read", open=_VAULT),
+    Tool("describe_all_plan", "How many of one Creator's vault media are not AI-described yet (so not found by "
+         "vault_search), with the describe budget. Starting a describe is the owner's, in Vault Pro.",
+         "GET", "/admin/vault-ai/describe-all/plan", CreatorArgs, "read", open=_VAULT),
     Tool("automation_kinds", "The automation kinds a rule can have, with what each one's payload takes.",
          "GET", "/admin/automation-kinds", NoArgs, "read", open=Open("/growth/auto-mass"),
          shape=Shape(rows="kinds", max_rows=200)),
@@ -188,11 +197,11 @@ TOOLS: tuple[Tool, ...] = (
          "last run and next due.",
          "GET", "/admin/automation-rules", RulesArgs, "read", open=Open("/growth/auto-mass"),
          shape=Shape(rows="rules")),
-    Tool("bio_pages_list", "List the Agency's bio (link-in-bio) pages: id, Creator, public URL, links, "
-         "30-day views and clicks.",
+    Tool("bio_pages_list", "List the Agency's bio (link-in-bio) pages: id, Creator, public URL, background "
+         "picture (empty: none), links, 30-day views and clicks.",
          "GET", "/admin/bio-pages", NoArgs, "read", open=Open("/growth/bio-pages"), shape=Shape(rows="profiles")),
-    Tool("bio_page_get", "One bio page: its Creator, public URL, avatar and links (ids, titles, destinations, icons, "
-         "18+ and tracking flags, background images).",
+    Tool("bio_page_get", "One bio page: its Creator, public URL, avatar, background picture and links (ids, titles, "
+         "destinations, icons, 18+ and tracking flags, background images).",
          "GET", "/admin/bio-pages/{pid}", tw.BioPageArgs, "read", open=_BIO_OPEN, shape=Shape(rows="links")),
     Tool("report_catalogue", "The report datasets a recipe may name, their group-bys, metrics, kinds and "
          "window presets. Read before report_run; a report it does not list is not available.",
@@ -221,6 +230,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool("bio_avatar_from_vault", "Set a bio page's avatar to a photo from its Creator's vault.",
          "POST", "/admin/bio-pages/{pid}/avatar/vault", tw.BioVaultImageArgs, "write", open=_BIO_OPEN,
          shape=Shape(rows="links"), replaces=True),
+    Tool("bio_page_background", "Set a bio page's background picture (behind the whole page, every screen size) to "
+         "a photo from its Creator's vault.",
+         "POST", "/admin/bio-pages/{pid}/background/vault", tw.BioVaultImageArgs, "write", open=_BIO_OPEN,
+         shape=Shape(rows="links"), replaces=True),
     Tool("bio_link_add", "Add a link (button) to the end of a bio page. Returns the new link as `link` "
          "(its id is the lid for bio_link_bg_from_vault) and the page.",
          "POST", "/admin/bio-pages/{pid}/links", tw.BioLinkAddArgs, "write", open=_BIO_OPEN,
@@ -239,6 +252,18 @@ TOOLS: tuple[Tool, ...] = (
          "vault media. Only inside propose_plan; the owner approves it in the browser.",
          "POST", "/api/of/v2/posts", ts.PostCreateArgs, "send", open=Open("/of-manager/home"),
          model_text=("text",), text_kind="post", check=ts.check_post_create, title="Post"),
+    Tool("auto_mass", "Make a switched-on Auto mass: a mass message from one Creator, with random photos from a "
+         "vault folder, now and then every N hours until switched off. Only inside propose_plan; the owner approves "
+         "it in the browser.",
+         "POST", "/admin/automation-rules", ts.AutoMassArgs, "send", open=Open("/growth/auto-mass"),
+         model_text=("text",), text_kind="auto_mass", check=ts.check_rule,
+         body=lambda a: ts.rule_body("auto_mass", a), title="Auto mass"),
+    Tool("auto_story", "Make a switched-on Auto story: random photos from a vault folder posted as one Creator's "
+         "stories, now and then every N hours until switched off. Only inside propose_plan; the owner approves it "
+         "in the browser.",
+         "POST", "/admin/automation-rules", ts.AutoStoryArgs, "send", open=Open("/growth/auto-story"),
+         text_kind="auto_story", check=ts.check_rule, body=lambda a: ts.rule_body("auto_story", a),
+         title="Auto story"),
 )
 
 # What an owner access token (MCP) may call: every tool but send-class ones, which run
@@ -294,7 +319,7 @@ def build_request(tool: Tool, args: Mapping[str, Any]) -> Request:
         query["account_id"] = str(aid)
     if tool.method in ("GET", "DELETE"):
         return Request(tool.method, path, {**rest, **query}, None, headers)
-    return Request(tool.method, path, query, rest, headers)
+    return Request(tool.method, path, query, tool.body(rest) if tool.body else rest, headers)
 
 
 def _fill(template: str, values: Mapping[str, Any]) -> str:

@@ -30,7 +30,7 @@ DRAFT gate (ticket 47): counter_offer and offer_moment count only with
 `draft_on` (test Mode and config `draft_questions`; Shadow and live pass
 false whatever the config says). A DRAFT id that fired and did not count is
 dropped by its id at its row's place, and routing goes on as without it.
-The fired set carries them once the Router gives them a threshold (phase B).
+Test Mode's fired set carries them (`fired(answers, mode)`, ticket 47 B2).
 
 `arm_of(account_id, fan_id)` is the Fan's Arm, a pure salted hash (ADR-0035):
 every Decision row carries it with `SALT_VER`; Shadow writes no Enrolment.

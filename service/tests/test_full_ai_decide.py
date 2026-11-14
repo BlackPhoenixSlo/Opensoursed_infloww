@@ -9,7 +9,8 @@ Router's constants (`_router_jev`), pure, plain assert.
                               PURCHASE_DAYS, PURCHASE_KINDS each move the
                               digest; PURCHASE_KINDS order does not
   case_fired_at_the_edge     `fired`: at its threshold a question fires, just
-                              under it does not
+                              under it does not; test Mode adds TEST_THRESHOLDS
+                              ids (skipped when absent), Shadow never reads them
   case_otherwise_is_chat      no row holds → chat, row `otherwise`, the fired
                               set kept
   case_rows_at_the_edge       every Route table row at its threshold fires,
@@ -38,7 +39,8 @@ Router's constants (`_router_jev`), pure, plain assert.
                               adds asks_subject / asks_format (Choices) and the
                               DRAFT Nouls counter_offer / offer_moment; DRAFT set
   case_question_version_by_mode  Shadow's digest is the pre-03b literal; test
-                              Mode's moves with DRAFT, a Choice option, a wording
+                              Mode's moves with DRAFT, a Choice option, a wording,
+                              a TEST_THRESHOLDS value (and left its pre-47B value)
   case_choice_of              argmax; a tie or a missing answer → anything / any
   case_sell_rows_every_combination  (ticket 47) haggle / offer_moment over every
                               fired set × draft_on × sell_on × open Offer ×
@@ -71,6 +73,10 @@ IDS = ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
 THRESHOLDS = {"promo": .7, "says_under_18": .7, "complains_now": .5, "asks_if_ai": .7,
               "stop": .6, "price": .7, "wants_content": .7, "declines_buying": .5,
               "says_yes_to_offer": .7, "sexual_now": .7, "gif_fits": .6}
+# The DRAFT test-Mode Nouls' thresholds (ticket 47 phase B; ASSUMPTION: unprobed .7).
+TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7}
+# `question_version("test")` before ticket 47 phase B put `TEST_THRESHOLDS` in it.
+PRE_47B_TEST_VERSION = "4e30e9162a1e"
 
 
 def _quiet(**over: float) -> dict[str, float]:
@@ -86,6 +92,8 @@ def case_constants_pinned():
         (tuple(rj.QUESTIONS), IDS, "question ids, in order"),
         (rj.THRESHOLDS, THRESHOLDS, "THRESHOLDS"),
         (set(rj.THRESHOLDS), set(rj.QUESTIONS), "one threshold per question"),
+        (rj.TEST_THRESHOLDS, TEST_THRESHOLDS, "TEST_THRESHOLDS"),
+        (set(rj.TEST_THRESHOLDS), set(rj.TEST_NOULS), "one test threshold per DRAFT Noul"),
         (len(rj.INTENSITY["criteria"]), 5, "intensity levels"),
         (rj.STATE_VERSION, 1, "STATE_VERSION"),
         (rj.PURCHASE_DAYS, 7, "PURCHASE_DAYS"),
@@ -125,6 +133,24 @@ def case_fired_at_the_edge():
         assert rj.fired(_quiet(**{q: t})) == frozenset({q}), (q, "at threshold")
         assert rj.fired(_quiet(**{q: round(t - .01, 2)})) == frozenset(), (q, "just under")
     assert rj.fired(_quiet()) == frozenset()
+    quiet = _quiet(**dict.fromkeys(TEST_THRESHOLDS, 0.0))
+    for q, t in TEST_THRESHOLDS.items():
+        at, under = {**quiet, q: t}, {**quiet, q: round(t - .01, 2)}
+        assert rj.fired(at, "test") == frozenset({q}), (q, "test, at threshold")
+        assert rj.fired(under, "test") == frozenset(), (q, "test, just under")
+        assert rj.fired({**quiet, q: 1.0}) == rj.fired({**quiet, q: 1.0}, "shadow") == frozenset(), q
+    both = {**quiet, "counter_offer": .9, "offer_moment": .7, "price": .7}
+    assert rj.fired(both, "test") == frozenset({"counter_offer", "offer_moment", "price"})
+    assert rj.fired(both) == frozenset({"price"})
+    # A test id absent from `answers` is not fired; a missing Shadow id still raises.
+    assert rj.fired(_quiet(price=.8), "test") == frozenset({"price"})
+    assert rj.fired(_quiet(offer_moment=.8), "test") == frozenset({"offer_moment"})
+    for mode in ("shadow", "test"):
+        try:
+            rj.fired({k: v for k, v in quiet.items() if k != "price"}, mode)
+        except KeyError:
+            continue
+        raise AssertionError(mode)
 
 
 def _facts(fired=(), intensity=0.0, *, pending_offer=False, pending_tease=False, jev_ok=True,
@@ -446,8 +472,9 @@ def case_question_version_by_mode():
     assert rj.question_version() == rj.question_version("shadow") == "b3202b420ab0"
     base = rj.question_version("test")
     assert base != rj.QUESTION_VERSION, base
+    assert base != PRE_47B_TEST_VERSION, base
     real_draft, real_choices = rj.DRAFT, rj.TEST_CHOICES
-    real_nouls = rj.TEST_NOULS
+    real_nouls, real_thresholds = rj.TEST_NOULS, rj.TEST_THRESHOLDS
     fmt = real_choices["asks_format"]
     for label, name, other in (
             ("drop a DRAFT member", "DRAFT", real_draft - {"offer_moment"}),
@@ -456,13 +483,14 @@ def case_question_version_by_mode():
              {**real_choices, "asks_format": {**fmt, "criteria": {
                  k: v for k, v in fmt["criteria"].items() if k != "video"}}}),
             ("reword a DRAFT Noul", "TEST_NOULS",
-             {**real_nouls, "counter_offer": {**real_nouls["counter_offer"], "instructions": "x"}})):
+             {**real_nouls, "counter_offer": {**real_nouls["counter_offer"], "instructions": "x"}}),
+            ("move a test threshold", "TEST_THRESHOLDS", {**real_thresholds, "offer_moment": .6})):
         setattr(rj, name, other)
         try:
             moved, shadow = rj.question_version("test"), rj.question_version()
         finally:
             setattr(rj, name, {"DRAFT": real_draft, "TEST_CHOICES": real_choices,
-                               "TEST_NOULS": real_nouls}[name])
+                               "TEST_NOULS": real_nouls, "TEST_THRESHOLDS": real_thresholds}[name])
         assert moved != base, label
         assert shadow == "b3202b420ab0", label
     assert rj.question_version("test") == base

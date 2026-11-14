@@ -9,7 +9,8 @@ gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
   selection         live_describable (the base every vision sweep walks) and
                     describe_selection — the ONE predicate both the describe-all
                     sweep and its plan count read, so the two cannot drift.
-  order             priority_order — the ONE walk order of both sweeps.
+  order             priority_order — the ONE walk order of both sweeps;
+                    rail_folder_ids — its folder rank from the cached OF rail.
   reuse             reuse_plan, build_copy_update, build_flags_copy — one
                     vision answer shared across a duplicate set.
 """
@@ -367,40 +368,92 @@ def _put_unlocked(vals: dict[str, Any], locked: Collection[str],
 
 # ── Walk order ──────────────────────────────────────────────────────
 
-PRIORITY_HEAD = 100
+PRIORITY_FOLD = 10     # each round: the next `fold` folders,
+PRIORITY_TOP = 500     # then the next `top` newest,
+PRIORITY_BOTTOM = 100  # then the next `bottom` oldest
+
+
+def rail_folder_ids(pages: Iterable[Mapping[str, Any] | None]) -> list[int]:
+    """The OF folder rail's order, from cached /vault/lists pages (in offset
+    order): custom folders that have media — the ones `vault_collect.hot_folders`
+    pages. Bad / missing pages and ids are skipped; each id once."""
+    out: list[int] = []
+    for page in pages:
+        for f in (page or {}).get("list") or []:
+            if not isinstance(f, Mapping) or f.get("type") != "custom" or not f.get("hasMedia"):
+                continue
+            try:
+                fid = int(f["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if fid not in out:
+                out.append(fid)
+    return out
 
 
 def priority_order(rows: Iterable[tuple[int, datetime | None, str | None]],
-                   head: int = PRIORITY_HEAD) -> list[int]:
+                   folder_rank: Sequence[int] = (), *,
+                   fold: int = PRIORITY_FOLD, top: int = PRIORITY_TOP,
+                   bottom: int = PRIORITY_BOTTOM) -> list[int]:
     """The order every vision sweep walks a vault, over (media_id, created_at,
     of_folder_ids) rows — the account's WHOLE live describable set, so a rank is
     a property of the item, not of what one sweep still has to do (a capped run
-    must not promote items 101-200 over the folders on the next press).
+    must not promote the next newest over the folders on the next press).
 
-      1. the newest `head` (created_at desc, media_id desc)
-      2. anything in an OF folder (`of_folder_ids` non-empty), newest first
-      3. the oldest `head` (created_at asc)
-      4. the rest, newest first
+    One fixed round, repeated until every item is taken:
+      a. the next `fold` folders by rank, each one's items newest first
+      b. the next `top` newest not yet taken
+      c. the next `bottom` oldest not yet taken
+
+    Folder rank: `folder_rank` (the OF rail's order, `rail_folder_ids`) first,
+    then folders seen on items but not in it, by their newest item desc; folders
+    with no item here are dropped. Newest = created_at desc, media_id desc.
 
     Order decides what a cap or a restart cuts off, so the tail is what nobody
-    is sending. Each id appears once, at its best rank."""
-    rows = list(rows)
-    newest = sorted(rows, key=lambda r: (r[1] is not None, r[1] or datetime.min,
-                                         int(r[0])), reverse=True)
+    is sending. Each id appears once, at its first rank."""
+    newest = sorted(list(rows), key=lambda r: (r[1] is not None, r[1] or datetime.min,
+                                               int(r[0])), reverse=True)
+    by_folder: dict[int, list[int]] = {}
+    for r in newest:   # newest first, so each folder's list is too
+        for fid in parse_folder_ids(r[2]):
+            items = by_folder.setdefault(fid, [])
+            if not items or items[-1] != int(r[0]):
+                items.append(int(r[0]))
+    ranked = [f for f in dict.fromkeys(int(f) for f in folder_rank) if f in by_folder]
+    cached = set(ranked)
+    ranked += [f for f in by_folder if f not in cached]   # dict order = newest item desc
+    ids = [int(r[0]) for r in newest]
     out: list[int] = []
     seen: set[int] = set()
 
-    def take(seq: Iterable[tuple]) -> None:
-        for r in seq:
-            mid = int(r[0])
-            if mid not in seen:
-                seen.add(mid)
-                out.append(mid)
+    def take(mid: int) -> bool:
+        if mid in seen:
+            return False
+        seen.add(mid)
+        out.append(mid)
+        return True
 
-    take(newest[:head])
-    take(r for r in newest if parse_folder_ids(r[2]))
-    take(reversed(newest[-head:] if head else []))
-    take(newest)
+    lo, hi = 0, len(ids) - 1   # next newest / next oldest candidate
+    k = 1
+    while len(out) < len(ids):
+        if fold > 0:
+            for f in ranked[(k - 1) * fold:k * fold]:
+                for mid in by_folder[f]:
+                    take(mid)
+        if top <= 0 and bottom <= 0:
+            if fold <= 0 or k * fold >= len(ranked):
+                for mid in ids:
+                    take(mid)
+        else:
+            n = 0
+            while n < top and lo < len(ids):
+                n += take(ids[lo])
+                lo += 1
+            n = 0
+            while n < bottom and hi >= 0:
+                n += take(ids[hi])
+                hi -= 1
+        k += 1
     return out
 
 

@@ -9,7 +9,9 @@ const link = (id: string, over: Partial<BioLink> = {}): BioLink => ({
   icon_url: "", background_image: "", background_url: "", is_adult: false, mode: "", tracking: false,
   default_tracking_code: "", geo: null, sort_order: 0, updated_at: "", ...over,
 });
-const PROFILE: PreviewProfile = { displayName: "Alice", bio: "", verified: false, mode: "direct", avatarUrl: "" };
+const PROFILE: PreviewProfile = {
+  displayName: "Alice", bio: "", verified: false, mode: "direct", avatarUrl: "", backgroundUrl: "",
+};
 const form = (actions: Action[]) => actions.reduce(bioLinkReducer, INITIAL_LINK);
 
 describe("previewModel mode", () => {
@@ -21,6 +23,12 @@ describe("previewModel mode", () => {
   ])("link %j on profile %j → %j", (linkMode, profileMode, want) => {
     const m = previewModel({ ...PROFILE, mode: profileMode }, [link("a", { mode: linkMode })]);
     expect(m.links[0].mode).toBe(want);
+  });
+});
+
+describe("previewModel page background", () => {
+  it.each<[string, string]>([["", ""], ["/f/bg.webp", "/f/bg.webp"]])("profile background %j → %j", (url, want) => {
+    expect(previewModel({ ...PROFILE, backgroundUrl: url }, []).backgroundUrl).toBe(want);
   });
 });
 

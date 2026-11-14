@@ -2,31 +2,40 @@
 
 /**
  * One step of an Ultra plan as the server's card draws it (service/ultra_decide.py `card`): its title, what kind of
- * step it is, its rows (a send: Creator, audience, price, media count, when; a write or read: every arg) and a
- * send's FULL text exactly as it will go out. Once it ran: its state, the error, the note (fewer fans than
- * approved), the id it made (a send's OnlyFans id) and a link to where it landed.
+ * step it is, its rows (a send: Creator, audience, price, media count, when; a judge: question, candidates, picks;
+ * a write or read: every arg) and a send's FULL text exactly as it will go out. Once it ran: its state, the error,
+ * the note (fewer fans than approved), the id it made (a send's OnlyFans id) or a judge's picks, and a link to
+ * where it landed. `data-step-num` / `data-state` let a container (the Ultra panel) style the number and a running
+ * step's progress line.
  */
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { STEP_LABEL, type PlanCard, type StepStatus } from "./ultraRunReducer";
 
-const EFFECT_LABEL: Record<PlanCard["effect"], string> = { send: "Sends to fans", write: "Changes", read: "Reads" };
+const EFFECT_LABEL: Record<PlanCard["effect"], string> = {
+  send: "Sends to fans", write: "Changes", read: "Reads", judge: "AI picks",
+};
+/** Send tools that do not message fans now (service/toolbox_sends.py: post_create, RULE_KIND). */
+const TOOL_LABEL: Record<string, string> = {
+  post_create: "Posts to the feed", auto_mass: "Turns on a recurring rule", auto_story: "Turns on a recurring rule",
+};
 const STATE_TONE: Record<StepStatus["state"], string> = {
-  pending: "text-fg-dim", started: "text-accent", done: "text-ok", failed: "text-err",
+  pending: "text-fg-dim", started: "text-accent", needs_you: "text-accent", done: "text-ok", failed: "text-err",
   uncertain: "text-warn", skipped: "text-fg-dim",
 };
 
 export function PlanStepCard({ card, step, index }: { card: PlanCard; step: StepStatus | undefined; index: number }) {
   const state = step?.state ?? "pending";
+  const ids = step?.result?.ids;
   return (
     <li data-step={card.id} data-state={state}
-      className={cn("rounded-[12px] bg-bg-elev-1 px-4 py-4 sm:px-6",
+      className={cn("relative rounded-[12px] bg-bg-elev-1 px-4 py-4 sm:px-6",
         card.effect === "send" && "ring-1 ring-accent/40")}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 className="text-[15px] font-medium text-fg">
-          {index + 1}. {card.title}
-          <span className="ml-2 text-[12px] font-normal text-fg-dim">{EFFECT_LABEL[card.effect]}</span>
+        <h3 className="min-w-0 break-words text-[15px] font-medium text-fg">
+          <span data-step-num>{index + 1}.</span> {card.title}
+          <span className="ml-2 text-[12px] font-normal text-fg-dim">{TOOL_LABEL[card.tool] ?? EFFECT_LABEL[card.effect]}</span>
         </h3>
         <span className={cn("text-[13px] font-medium", STATE_TONE[state])}>{STEP_LABEL[state]}</span>
       </div>
@@ -48,9 +57,14 @@ export function PlanStepCard({ card, step, index }: { card: PlanCard; step: Step
       )}
       {step?.error && <p className="mt-2 break-words text-[13px] text-err">{step.error}</p>}
       {step?.note && <p data-step-note className="mt-2 break-words text-[13px] text-warn">{step.note}</p>}
-      {step?.result && (
+      {step?.result?.id !== undefined && (
         <p className="mt-2 break-words text-[13px] text-fg-dim">
-          {card.effect === "send" ? "OnlyFans id" : "Id"}: <span className="text-fg">{step.result.id}</span>
+          {card.tool.startsWith("auto_") ? "Rule id" : card.effect === "send" ? "OnlyFans id" : "Id"}: <span className="text-fg">{step.result.id}</span>
+        </p>
+      )}
+      {ids && (
+        <p data-step-picks className="mt-2 break-words text-[13px] text-fg-dim">
+          Picked {step?.picked_by === "owner" ? "by you" : "by the AI"}: <span className="text-fg">{ids.join(", ")}</span>
         </p>
       )}
       {step?.open_url && state !== "pending" && state !== "skipped" && (

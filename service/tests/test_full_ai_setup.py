@@ -493,7 +493,7 @@ def case_no_name():
     assert r.status_code == 200, r.text
     body = r.json()
     assert _lines(body["text"])["Name"] == "" and body["name"] == "", body
-    assert body["notes"] == ["No OF name stored; type her name."], body
+    assert body["notes"] == ["No OF name stored; type the Creator's name."], body
     accounts.upsert_account(AID, name="Kay")
 
 

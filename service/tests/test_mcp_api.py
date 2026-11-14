@@ -223,7 +223,7 @@ def case_send_tools_absent() -> None:
     finally:
         td.TOOLS = saved
     names = [t["name"] for t in _rpc("tools/list")["result"]["tools"]]
-    for real in ("mass_send", "post_create"):  # the registry's own send tools
+    for real in ("mass_send", "post_create", "auto_mass", "auto_story"):  # the registry's own send tools
         assert real in {t.name for t in td.TOOLS} and real not in names, names
         args = {"account_id": CA, "text": "hi", "user_lists": ["fans"]}
         assert _rpc("tools/call", {"name": real, "arguments": args})["error"]["code"] == -32602
@@ -243,7 +243,8 @@ _PAGES: list[str] = []
 def case_open_url_every_result() -> None:
     args = {"creators_list": {}, "stats_per_model": {"account_id": CA}, "vault_search": {"account_id": CA},
             "of_folders_list": {"account_id": CA}, "describe_all_status": {"account_id": CA},
-            "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
+            "describe_all_plan": {"account_id": CA}, "automation_kinds": {},
+            "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
             "report_catalogue": {}, "report_run": {"recipe": {"dataset": "sales", "window": WEEK}},
             "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}, "bio_page_get": {"pid": _a_page()}}
     reads = {t.name for t in td.TOOLS if t.effect == "read"}  # writes: test_toolbox_writes.py

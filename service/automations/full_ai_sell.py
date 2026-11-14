@@ -1,7 +1,7 @@
 """automations/full_ai_sell.py — Full AI Chat's Sell executor (spec 03b, ticket 10 r3).
 
 The sell step runs `load_rows` -> `pool` -> `shoots_for` -> `pick` and gets one
-Pick or a Refusal. Pure apart from the async `load_rows` (DB reads) and
+Pick or a Refusal (`same_piece` first on a Pending tease's sell). Pure apart from the async `load_rows` (DB reads) and
 `shoots_for` (a coroutine doing no I/O when given rows and prints). No network,
 no LLM, no OF client, send, lease or cooldown: it joins Shadow's strict no-send
 scan (test_full_ai_shadow.py). There is no offer cap.
@@ -16,6 +16,18 @@ current Jev blob prices by its lane ($10 / $50 / $100; a review lane has no
 price, checked before `lane_of` reads a review clip's `read_lane5`); without
 one, the shelf price ($50 / $10; 0 is no price, never free). An explicit act
 moves the lane up the owner's ladder ($50 / $100 / $150). Clamped to $10-$200.
+
+Folder prices (`vault_folder_prices`): an agency's price on a folder (`vf:` or `of:` ref).
+`load_rows` gives each row `folder_cents`, the highest price among its folders' (None: no priced
+folder), and `list_price_cents` lists the item at it instead of its lane price, with no explicit
+bump (the agency's number is the number). Unpriced items are unchanged; `pick`'s heat targeting,
+the haggle clamp, `price_ok` and the owned / dupe rules read `list_cents` as before.
+ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices (never sold
+under any price an agency set on it). Overturned if the owner wants the lowest or a folder order.
+ASSUMPTION: a Jev "review" item (and a disputed free-tier one, `_unpriced_dispute`) stays not for
+sale in a priced folder; any other item there sells at the folder price, a free-lane or unpriced
+one (no Jev blob, shelf 0) too. Overturned if a folder price may lift a review, or free items
+must stay previews.
 
 The Claim audit (ticket 45), pure, on a sell Turn's final text after the shared chain:
 `claim_ok(text, pick)` (counts, kinds and subject words against the Pick, old `pack_claim.py`'s
@@ -39,6 +51,7 @@ from sqlalchemy import select
 
 import vault_ai_brief
 import vault_dupes
+import vault_folder_prices
 import vault_pack_picker
 import vault_scripts
 import vault_topic_folders as vtf
@@ -124,9 +137,11 @@ def clamp_cents(cents: int) -> int:
     return max(MIN_CENTS, min(MAX_CENTS, int(cents)))
 
 
-def list_price_cents(jev: dict[str, Any] | None, fields: dict[str, Any], kind: str) -> int | None:
+def list_price_cents(jev: dict[str, Any] | None, fields: dict[str, Any], kind: str,
+                     folder_cents: int | None = None) -> int | None:
     """The item's list price in cents, or None (not for sale). `jev` is its current Jev blob
-    (`vault_topic_folders.jev_of(fields)`), None without one.
+    (`vault_topic_folders.jev_of(fields)`), None without one. `folder_cents` (its highest folder
+    price, module docstring) replaces the lane price, a review item still None.
 
     ASSUMPTION: the Jev "free" lane prices 0, an item kept in the pool only as a preview or a
     free item, never a locked paid one (ticket 10 r3: "free" -> preview/gift only); 0 is not
@@ -135,6 +150,9 @@ def list_price_cents(jev: dict[str, Any] | None, fields: dict[str, Any], kind: s
     if jev is not None:
         if jev.get("lane5") == "review":
             return None
+    if folder_cents is not None:
+        return clamp_cents(folder_cents)
+    if jev is not None:
         lane = vtf.lane_of(jev)
     else:
         lane = {50: "$50", 10: "$10"}.get(vault_scripts.shelf_price(fields, kind))
@@ -170,7 +188,8 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
     Pack categories of its folders, e.g. feet); the dupe groups, read straight from
     `vault_dupes.find_duplicates` (an error there would drop the dupe expansion of Owned media);
     and the near-dupe `prints` (`vault_scripts._fingerprints`, `{}` on its own error: only
-    near-dupe collapse inside a shoot is lost). Any error in rows, refs or dupe groups ->
+    near-dupe collapse inside a shoot is lost); each row's `folder_cents` (its highest folder price, None:
+    none). Any error in rows, refs, folder prices or dupe groups ->
     Refusal("inventory_unknown").
 
     ASSUMPTION: a deleted folder (`deleted_at` set) gives no ref, so a choice naming it matches
@@ -194,14 +213,18 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
             refs.setdefault(int(mid), set()).add(f"vf:{fid}")
             if (cat := vault_pack_picker.pack_rung_category(name)) is not None:
                 packs.setdefault(int(mid), set()).add(cat.name)
+        prices = await vault_folder_prices.load(account_id)
         res = await vault_dupes.find_duplicates(account_id, rehash=False)
         groups = [[int(m["media_id"]) for m in (c["original"], *c["dupes"])] for c in res["clusters"]]
     except Exception:  # noqa: BLE001 — fail closed, never an un-expanded owned set
         log.exception("sell inventory unreadable account=%s", account_id)
         return Refusal("inventory_unknown")
     prints = await vault_scripts._fingerprints(account_id)
-    out = [{**r, "refs": refs.get(r["media_id"], set()), "packs": packs.get(r["media_id"], set())}
-           for r in rows]
+    out = []
+    for r in rows:
+        rr = refs.get(r["media_id"], set())
+        out.append({**r, "refs": rr, "packs": packs.get(r["media_id"], set()),
+                    "folder_cents": vault_folder_prices.highest(rr, prices)})
     return out, groups, prints
 
 
@@ -239,7 +262,7 @@ def pool(rows: list[dict[str, Any]], dupe_groups: list[list[int]], owned: Iterab
     priced = []
     for r in map(vault_scripts._with_script_why, chosen):
         fields = r.get("fields") or {}
-        cents = list_price_cents(vtf.jev_of(fields), fields, r["kind"])
+        cents = list_price_cents(vtf.jev_of(fields), fields, r["kind"], r.get("folder_cents"))
         if cents is not None and not vault_scripts._unpriced_dispute(r):
             priced.append({**r, "list_cents": cents})
     if not priced:
@@ -268,7 +291,8 @@ def target_cents(intensity: int) -> int:
 
 
 def _lane(cents: int) -> str:
-    return next((lane for lane, c in _LANE_CENTS.items() if c == cents), f"${cents // 100}")
+    """The lane name, or a folder price as money ("$25", "$24.99")."""
+    return next((lane for lane, c in _LANE_CENTS.items() if c == cents), None) or _money(cents)
 
 
 def _matches(row: dict[str, Any], ask: Ask) -> bool:
@@ -303,7 +327,13 @@ def _facts(locked: list[dict[str, Any]]) -> dict[str, Any]:
                                                  duration_seconds=r.get("duration_seconds"))
                       for r in locked],
             # the anchor's describe text: the Writer's item line (03b, full_ai_writers.item_line)
-            "description": str((locked[0].get("fields") or {}).get("description") or "")}
+            "description": str((locked[0].get("fields") or {}).get("description") or ""),
+            # the separate caption call's one media (`full_ai_caption`): the first described locked
+            # item, as old `_ppv_caption._first_described` took a pack's hero; None when none is
+            "hero": next(({"media_id": r["media_id"], "kind": r["kind"],
+                           "seconds": r.get("duration_seconds"), "fields": r.get("fields") or {}}
+                          for r in locked
+                          if str((r.get("fields") or {}).get("description") or "").strip()), None)}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
@@ -477,13 +507,22 @@ def _amount_re(signs: str, words: str) -> re.Pattern:
 _AMOUNT = _amount_re("$€£", "dollars?|bucks?|usd|euros?")
 
 
+_FREE = re.compile(r"\bfree\b", re.I)
+
+
 def price_ok(text: str, price_cents: int | None) -> bool:
     """Every price the text names ($25, 25$, $25.00, 25 bucks / dollars, € / £ too) equals
-    `price_cents`; with None or 0 (a tease, a Free item) no price may be named. Pure.
+    `price_cents`; with None or 0 (a tease, a Free item) no price may be named. A priced PPV is
+    never called free (rwl fa3 S4). Pure.
     ASSUMPTION: a spelled-out amount ("twenty bucks") is not read. Overturned if Writers spell
-    prices out."""
+    prices out.
+    ASSUMPTION: any whole word "free" fails a priced PPV, "feel free" and an honest "free preview"
+    too (a fail costs one rewrite, then the fallback caption). Overturned by a measured false-fail
+    rate on real Writer captions."""
     named = {round(float(a or b) * 100) for a, b in _AMOUNT.findall(text)}
-    return not named if not price_cents else named <= {price_cents}
+    if not price_cents:
+        return not named
+    return named <= {price_cents} and not _FREE.search(text)
 
 
 # His named amount (ticket 47): the dollar spellings only (spec › Interfaces `quoted_cents`).
@@ -535,3 +574,32 @@ def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str
     Overturned if the owner wants a flirt line beside it (old `ppv_send._FALLBACK_CAPTION`)."""
     phrase = _media_phrase(pick.facts["kinds"])
     return f"{phrase}, {_money(pick.price_cents)} to unlock" if kind == "offer" else phrase
+
+
+@dataclass(frozen=True)
+class Teased:
+    """A piece a later Turn sells again, read off its row: a Pending tease's (ticket 46) or the
+    open Offer's a haggle re-offers (ticket 47). The subject and format it asks for again, the
+    media `same_piece` re-offers, the row's list price (`offer_list_cents`, the haggle's clamp
+    base; every Offer and tease row records it) and its row id (the haggle row's `over`)."""
+    subject: str
+    format: str
+    locked: tuple[int, ...]
+    previews: tuple[int, ...]
+    list_cents: int
+    row_id: int | None = None
+
+
+def same_piece(pool: list[dict[str, Any]], locked: Iterable[int], previews: Iterable[int],
+               ask: Ask) -> Pick | None:
+    """A Pending tease's piece re-validated against the current `pool` (`pool()`'s rows): every
+    locked id still sellable and priced -> the same piece as a priced Pick at today's list prices,
+    with those of its previews still free-safe in the pool; else None (the caller re-picks the
+    same subject and format, ticket 07 r3). `ask` carries the teased subject. Pure."""
+    by_id = {r["media_id"]: r for r in pool}
+    locked = list(locked)
+    if not locked or any(m not in by_id or by_id[m]["list_cents"] <= 0 for m in locked):
+        return None
+    keep = [by_id[m] for m in previews
+            if m in by_id and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])]
+    return _offer([by_id[m] for m in locked], keep, ask, free=False)

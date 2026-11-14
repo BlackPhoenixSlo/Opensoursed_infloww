@@ -5,7 +5,7 @@
  * (`docs/infloww-layouts/growth-vault-pro.md`, #15 to #37; ticket 36).
  *
  * A 208px column: a 48px header row (the folder sort and its popover, search, add category), then "All media" and one
- * row per folder with its counts and its Rename / Delete menu. The header turns into the search box or the Customize
+ * row per folder with its counts, its price chip and its Rename / Set price / Delete menu. The header turns into the search box or the Customize
  * order bar while either is on. Every write goes to the same Vault routes as before (`useVaultCache`); the parent
  * owns the folder list and the selected folder, and is told to refresh after a write.
  */
@@ -20,11 +20,15 @@ import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Me
 import { EmptyState, IfButton, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
 import { type DlGate } from "@/components/vault/vaultDownloadReducer";
+import {
+  buildPayload, canSave, folderPriceReducer, formatPrice, initForm,
+} from "@/components/vault/folderPriceForm";
 import { applyCustomOrder, customizeReducer } from "@/components/vault/vaultFolderOrder";
 import {
   FOLDER_ORDERS, FOLDER_SORTS, loadFolderSort, type FolderSortState,
 } from "@/components/vault/vaultFolderSort";
 import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
+import { setFolderPrice, useFolderPrices } from "@/hooks/useFolderPrices";
 import { vaultListsKey } from "@/hooks/useVaultMedia";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { type FanId } from "@/lib/fanId";
@@ -161,6 +165,77 @@ function FolderNameModal({ folder, onSave, onCancel }: {
   );
 }
 
+/** Ours: "Set price" (an agency's price on the folder, `of:<id>`). Full AI Chat's sell executor lists the folder's
+ *  items at it (the highest when an item is in several priced folders). Dollars, $10 to $200; Clear drops it. Our DB
+ *  only, never written to OnlyFans. Form logic: `folderPriceForm.ts`. */
+function FolderPriceModal({ folder, current, onSave, onCancel }: {
+  folder: VaultList;
+  current: number | null;
+  onSave: (body: ReturnType<typeof buildPayload>) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const accountId = useVaultAccountId();
+  const [form, dispatch] = useReducer(folderPriceReducer, current, initForm);
+  const ref = `of:${folder.id}`;
+  async function write(body: ReturnType<typeof buildPayload>) {
+    dispatch({ type: "saving" });
+    try {
+      await onSave(body);
+    } catch {
+      dispatch({ type: "failed", error: "Couldn't save the price. Try again." });
+    }
+  }
+  return (
+    <RailModal
+      title="Set price"
+      onCancel={onCancel}
+      confirm={
+        <>
+          {current != null && (
+            <IfButton disabled={form.busy} onClick={() => write(buildPayload(accountId, ref, null))}>Clear</IfButton>
+          )}
+          <IfButton
+            variant="primary"
+            disabled={!canSave(form, current)}
+            onClick={() => write(buildPayload(accountId, ref, form))}
+          >
+            Save
+          </IfButton>
+        </>
+      }
+    >
+      <p className="text-sm text-fg-dim">
+        Full AI Chat sells the items in <span className="font-medium text-fg">{folder.name}</span> at this price.
+      </p>
+      <label className="block space-y-2">
+        <span className="block text-sm font-medium">Price (USD, $10 to $200)</span>
+        <input
+          value={form.text}
+          onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
+          placeholder="25"
+          inputMode="decimal"
+          maxLength={8}
+          autoFocus
+          className="w-full h-8 px-[11px] rounded-md text-base md:text-sm bg-bg border border-border hover:border-accent focus:border-accent outline-none"
+        />
+      </label>
+      {form.error && <p className="text-sm text-err">{form.error}</p>}
+    </RailModal>
+  );
+}
+
+/** A priced folder's chip: its price. */
+function PriceChip({ cents }: { cents: number }) {
+  return (
+    <span
+      title="Full AI Chat sells this folder at this price"
+      className="shrink-0 rounded-full bg-accent/10 px-1.5 text-[11px] font-medium leading-[18px] text-accent"
+    >
+      {formatPrice(cents)}
+    </span>
+  );
+}
+
 /** "Delete category" (#37). It removes the folder only. The bundle's option to also remove the folder's media from
  *  the vault (shown only for a folder with media, index.9f50f370.js @6836258) is Not wired: a permanent media wipe
  *  from one box is left to the owner (see the recheck record). */
@@ -247,6 +322,10 @@ export default function VaultFolderRail({
   // The open rail modal: a new folder (`folder: null`), a rename, or a delete.
   const [nameModal, setNameModal] = useState<{ folder: VaultList | null } | null>(null);
   const [deleteModal, setDeleteModal] = useState<VaultList | null>(null);
+  const [priceModal, setPriceModal] = useState<VaultList | null>(null);
+  // `of:<id>` -> cents; undefined while unread or refused (a folder-limited chatter): no chip, no "Set price".
+  const prices = useFolderPrices(accountId).data;
+  const priceOf = (f: VaultList): number | null => prices?.[`of:${f.id}`] ?? null;
   async function onSaveFolderName(name: string) {
     const f = nameModal?.folder;
     if (f) await renameOfFolder(accountId, f.id, name).catch(() => {});
@@ -299,6 +378,7 @@ export default function VaultFolderRail({
   /** A folder's Rename / Delete / Download folder: its rail row's menu, and on a phone the picked folder's. */
   const rowMenuItems = (f: VaultList) => [
     { label: "Rename", onClick: () => setNameModal({ folder: f }) },
+    ...(prices ? [{ label: priceOf(f) == null ? "Set price" : "Edit price", onClick: () => setPriceModal(f) }] : []),
     { label: "Delete", onClick: () => setDeleteModal(f) },
     { label: downloadFolderGate.desktopOnly ? "Download folder (desktop only)"
         : downloadQueues ? "Add folder to queue" : "Download folder",
@@ -331,7 +411,9 @@ export default function VaultFolderRail({
           >
             <option value="">All media{allCounts ? ` · ${countsText(allCounts)}` : ""}</option>
             {folders.map((f) => (
-              <option key={f.id} value={String(f.id)}>{f.name} · {countsText(f)}</option>
+              <option key={f.id} value={String(f.id)}>
+                {f.name}{priceOf(f) != null ? ` · ${formatPrice(priceOf(f)!)}` : ""} · {countsText(f)}
+              </option>
             ))}
           </IfNativeSelect>
           {pickedFolder && (
@@ -546,8 +628,11 @@ export default function VaultFolderRail({
 
                   <div className="flex items-center justify-between">
                     {/* #29: 14px, weight 500, at most 145px with an ellipsis; the full name on hover. */}
-                    <div className="text-sm font-medium truncate max-w-[145px]" title={f.name}>
-                      {f.name}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <div className="text-sm font-medium truncate max-w-[145px]" title={f.name}>
+                        {f.name}
+                      </div>
+                      {priceOf(f) != null && <PriceChip cents={priceOf(f)!} />}
                     </div>
                     {customizeOrder ? (
                       <span className="text-fg-dim select-none text-base leading-none">⣿</span>
@@ -575,6 +660,18 @@ export default function VaultFolderRail({
           folder={nameModal.folder}
           onSave={onSaveFolderName}
           onCancel={() => setNameModal(null)}
+        />
+      )}
+      {priceModal && (
+        <FolderPriceModal
+          key={priceModal.id}
+          folder={priceModal}
+          current={priceOf(priceModal)}
+          onSave={async (body) => {
+            await setFolderPrice(qc, body);
+            setPriceModal(null);
+          }}
+          onCancel={() => setPriceModal(null)}
         />
       )}
       {deleteModal && (

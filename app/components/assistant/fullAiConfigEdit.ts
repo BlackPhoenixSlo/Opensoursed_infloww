@@ -6,8 +6,7 @@
  * (fullAiConfigEdit.test.ts).
  */
 
-import type { FullAiConfig } from "@/components/automations/fullAiTestChat";
-import { CASUAL_STYLE } from "@/hooks/useFullAiConfig";
+import { humanStyle, layersOff, type FullAiConfig } from "@/components/automations/fullAiTestChat";
 
 /** One changed key (assistant_full_ai.diffs); `label` falls back to the key on the server. */
 export interface ConfigDiff { field: string; label: string; before: unknown; after: unknown }
@@ -44,7 +43,11 @@ export function slotsFrom(raw: unknown): FullAiConfigSlots | null {
 
 /** A value in plain words: "on", "off", "euryale-v2.3, hermes-4-405b". */
 export function fmtValue(field: string, v: unknown): string {
-  if (field === "text_style") return v === CASUAL_STYLE ? "on" : "off";
+  if (field === "style" && isObj(v)) {
+    const cfg = { style: v };
+    const hs = humanStyle(cfg);
+    return hs === "mixed" ? `${layersOff(cfg)} off` : hs;
+  }
   if (typeof v === "boolean") return v ? "on" : "off";
   if (v === null || v === undefined) return "—";
   if (Array.isArray(v)) return v.length ? v.map(String).join(", ") : "none";

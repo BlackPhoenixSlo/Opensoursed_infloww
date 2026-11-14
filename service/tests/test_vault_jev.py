@@ -592,8 +592,10 @@ async def case_describe_runs_jev_first():
 
 
 async def case_describe_skips_photo_jev_cannot_read():
-    """No TypeSafe key / no NudeNet / a failed Jev: the photo is skipped with Jev's status — no describe call,
-    no qwen flags, describe_status untouched (retried next sweep), never a v2 describe."""
+    """No NudeNet on one item's route: the photo is skipped with Jev's status — no describe call, no qwen flags,
+    describe_status untouched, never a v2 describe. Inside a sweep it STOPS it (`SweepStop`, no item can be read).
+    No TypeSafe key: an LLMKeyError("missing") everywhere (the sweep's `key_error`; the route's 424). 11-14."""
+    import vault_sweep
     g = _golden_with("resp")
     o_chat = llm_client.chat
 
@@ -601,20 +603,60 @@ async def case_describe_skips_photo_jev_cannot_read():
         raise AssertionError("a photo Jev could not read reached qwen")
     llm_client.chat = _no
     try:
-        for seams, want in (((g["rec"], g["nn"]), {"key": ""}), ((g["rec"], None), {})):
-            aid = await _seed(fields={"description": "old"})
-            with _Seams(*seams, **want), _Collect(_jpeg(576, 1024)):
-                res = await vault_ai_vision._describe_and_flag(aid, 7001)
-            status = "no_key" if want else "no_nudenet"
-            assert not res["ok"] and res["status"] == status and res["jev_status"] == status, res
+        aid = await _seed(fields={"description": "old"})
+        with _Seams(g["rec"], g["nn"], key=""), _Collect(_jpeg(576, 1024)):
+            try:
+                await vault_ai_vision._describe_and_flag(aid, 7001)
+                raise AssertionError("no key was skipped as one photo")
+            except llm_client.LLMKeyError as e:
+                assert e.kind == "missing" and e.provider == "typesafe", (e.kind, e.provider)
+        aid = await _seed(fields={"description": "old"})
+        with _Seams(g["rec"], None), _Collect(_jpeg(576, 1024)):
+            res = await vault_ai_vision._describe_and_flag(aid, 7001)
+            assert not res["ok"] and res["status"] == "no_nudenet" == res["jev_status"], res
             assert "jev_skip" not in res and "skipped" in res["detail"], res
-            async with get_session() as s:
-                row = await s.get(VaultItem, (aid, 7001))
-            f = json.loads(row.ai_fields_json)
-            assert row.describe_status is None and f["description"] == "old" and "_describe" not in f, f
-            assert f["_jev"]["status"] == status and "_flags_v" not in f, f
+            try:
+                await vault_ai_vision._describe_and_flag(aid, 7001, jev_sweep=vault_jev_pass.Sweep())
+                raise AssertionError("a sweep without NudeNet went on")
+            except vault_sweep.SweepStop as e:
+                assert "NudeNet" in e.message and "NUDENET_640M_PATH" in e.fix, e.payload()
+        async with get_session() as s:
+            row = await s.get(VaultItem, (aid, 7001))
+        f = json.loads(row.ai_fields_json)
+        assert row.describe_status is None and f["description"] == "old" and "_describe" not in f, f
+        assert f["_jev"]["status"] == "no_nudenet" and "_flags_v" not in f, f
     finally:
         llm_client.chat = o_chat
+
+
+async def case_describe_stops_on_rejected_typesafe_key():
+    """TypeSafe 401/403 (a wrong key, e.g. a LangSmith key pasted as TypeSafe, 11-14) / 402: not a per-photo skip but
+    an LLMKeyError — the describe sweep stops at the first photo with `key_error`, the drawer's sentence."""
+    from contextlib import nullcontext
+    from typesafe_sdk import TypeSafeAPIError, TypeSafeAuthenticationError
+    import vault_sweep
+    g = _golden_with("resp")
+    for status, err, kind in ((401, TypeSafeAuthenticationError, "invalid"), (403, TypeSafeAPIError, "invalid"),
+                              (402, TypeSafeAPIError, "no_credit")):
+        aid = await _seed(mids=(7001, 7002, 7003), fields={"description": "old"})
+        with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
+            async def _refused(**k):
+                sm.client.calls.append(k)
+                raise err(status, {"detail": "nope"}, {})
+            sm.client.system_one = _refused
+            try:
+                await vault_ai_vision._describe_and_flag(aid, 7001)
+                raise AssertionError("a refused key was skipped as one photo")
+            except llm_client.LLMKeyError as e:
+                assert e.kind == kind and e.provider == "typesafe", (e.kind, e.provider)
+            into: dict = {}
+            c = await vault_sweep.run([7001, 7002, 7003], lambda m: vault_ai_vision._describe_and_flag(aid, m),
+                                      concurrency=1, gate=nullcontext, into=into, key=aid, label="t")
+        ke = into[aid]["key_error"]
+        assert c.done == 1 and ke["error"] == f"api_key_{kind}" and "TypeSafe (Jev)" in ke["message"], (c, ke)
+        assert "Settings › AI keys" in ke["fix"], ke
+        f = await _fields(aid, 7001)
+        assert f["_jev"]["status"] == f"key_{kind}" and f["description"] == "old", f
 
 
 async def case_flags_sweep_from_jev_never_qwen():
@@ -1236,7 +1278,10 @@ async def case_jev_outage_stops_jev_for_the_sweep():
     prog = vault_ai_vision._flags_progress[aid]
     assert len(calls) == vault_jev_pass.DOWN_AFTER and col.clip_calls == vault_jev_pass.DOWN_AFTER, \
         (len(calls), col.clip_calls)
-    assert prog["done"] == len(clips) and prog["failed"] == len(clips) and prog["capped"] is False, prog
+    # the item after the outage is `jev_down`: the sweep STOPS there and says why (no silent skip of the rest)
+    n = vault_jev_pass.DOWN_AFTER + 1
+    assert prog["done"] == n and prog["failed"] == n and prog["capped"] is False, prog
+    assert "3 calls in a row" in prog["stop"]["message"] and "ConnectError: down" in prog["stop"]["message"], prog
     assert admission.JEV_VIDEO.busy == 0
 
 

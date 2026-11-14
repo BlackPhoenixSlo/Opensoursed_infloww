@@ -2,7 +2,8 @@
  * What the bio editor's live preview draws (BioPreview): the profile as edited and the links as saved, with the link
  * open in the dialog drawn as edited (in its place, or last when new). The public page's rules (`script.js` renderLinks,
  * `decide.public_profile`): a link's mode is its own if recognised, else the profile's, else Escape; the subtitle is
- * "Exclusive Content" behind the 18+ gate, else "Social Media"; the icon shows only on a background image.
+ * "Exclusive Content" behind the 18+ gate, else "Social Media"; the icon shows only on a background image; the page's
+ * own background picture (`backgroundUrl`) fills the page under a dark scrim.
  * `trackingUrl` is a tracking code's address on the page.
  */
 import { isBioMode, stockIconUrl, type BioLink, type BioMode } from "@/hooks/useBioPages";
@@ -35,11 +36,15 @@ export interface PreviewModel {
   bio: string;
   verified: boolean;
   avatarUrl: string;
+  /** The page's own background picture ("" = none: the plain black page). */
+  backgroundUrl: string;
   mode: BioMode;
   links: PreviewLink[];
 }
 
-export interface PreviewProfile { displayName: string; bio: string; verified: boolean; mode: string; avatarUrl: string }
+export interface PreviewProfile {
+  displayName: string; bio: string; verified: boolean; mode: string; avatarUrl: string; backgroundUrl: string;
+}
 
 const known = isBioMode;
 
@@ -68,7 +73,8 @@ export function previewModel(profile: PreviewProfile, links: readonly BioLink[],
     else views.push(linkDraft);
   }
   return {
-    displayName: profile.displayName, bio: profile.bio, verified: profile.verified, avatarUrl: profile.avatarUrl, mode,
+    displayName: profile.displayName, bio: profile.bio, verified: profile.verified, avatarUrl: profile.avatarUrl,
+    backgroundUrl: profile.backgroundUrl, mode,
     links: views.map((v) => ({
       key: v.id ?? "new",
       title: v.title,

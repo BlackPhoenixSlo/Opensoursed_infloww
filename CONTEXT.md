@@ -467,7 +467,7 @@ How sexual a Writer may be on a Turn, 1 to 4: the Fan's own `intensity` level (h
 _Avoid_: intensity (the Router question that measures him), intensity cap, spice
 
 **Pending tease**:
-The one piece of Router state: a fully landed tease from Full AI Chat that he answered within 15 minutes, with no other outbound and no purchase since, so his reply becomes a sell. It is derived from Decision rows, never stored (ADR-0034); the tease Route makes one once selling is on, so Shadow never has one.
+The one piece of Router state: a fully landed tease from Full AI Chat that he answered within 15 minutes, with no other outbound and no purchase since, so his reply becomes a sell. It is derived from Decision rows, never stored (ADR-0034); the tease Route makes one once selling is on, so Shadow never has one. In the Test chat its one source is `full_ai_test.pending_tease_of` over the session's test rows: the newest row is a sent tease carrying its Pick, at most 900 s before his reply, with no Offer outcome since; its text goes first in the Pending offer.
 _Avoid_: router state, pending sell, open offer, Pending offer (the Jev field carrying its text)
 
 **Pending offer**:

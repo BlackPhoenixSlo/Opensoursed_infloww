@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * useFullAiToday — one Creator's Shadow Decision rows of today (GET /admin/full-ai/today,
+ * useFullAiToday — one Creator's Shadow and Test chat Decision rows of today (GET /admin/full-ai/today,
  * service/full_ai_api.py): counts per Route, Jev failures, and the 50 newest rows. A finished `full_ai_chat` run
- * (`rule_run_finished`, useAccountStateEvents) refetches it; the poll is the safety net, 30 s while SSE is down.
+ * (`rule_run_finished`, useAccountStateEvents) or a Test chat Turn (useFullAiTestChat) refetches it; the poll is the
+ * safety net, 30 s while SSE is down.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -26,6 +27,8 @@ export interface FullAiRow {
   row: string;
   jev_ms: number | null;
   jev_failed: boolean;
+  /** A Test chat Turn (no Fan: the page shows "Test chat"). */
+  test?: boolean;
 }
 
 export interface FullAiToday {
@@ -35,9 +38,11 @@ export interface FullAiToday {
   rows: FullAiRow[];
 }
 
+export const fullAiTodayKey = (accountId: string) => ["full-ai-today", accountId] as const;
+
 export function useFullAiToday(accountId: string) {
   return useQuery<FullAiToday>({
-    queryKey: ["full-ai-today", accountId],
+    queryKey: fullAiTodayKey(accountId),
     queryFn: () => relay.get<FullAiToday>(
       `/admin/full-ai/today?account_id=${encodeURIComponent(accountId)}`,
       { accountId, priority: "background" },

@@ -175,13 +175,37 @@ describe("label maths", () => {
     expect(note?.detail).toContain("OF read blew up");
   });
 
-  it("stays quiet about a pass that FINISHED, however many items failed", () => {
-    // The server keeps its progress snapshot forever and only clears `aborted`
-    // at the next start. Surfacing anything else would put a permanent amber
-    // banner on the page describing a run from three days ago.
+  it("stays quiet about an UNDATED or clean finish (snapshot outlives the run)", () => {
     expect(sweepAbortedNote({ total: 500, done: 500, failed: 7, error: "boom" })).toBeNull();
-    expect(sweepAbortedNote({ total: 500, done: 500 })).toBeNull();
+    expect(sweepAbortedNote({ total: 500, done: 500, finished_at: new Date().toISOString() })).toBeNull();
     expect(sweepAbortedNote(null)).toBeNull();
+  });
+
+  it("prints a STOP with the relay's own sentences (11-14: bad key, 5336/5336 failed silently)", () => {
+    const note = sweepAbortedNote({
+      total: 5336, done: 25, failed: 25,
+      stop: { message: "Stopped: 25 items in a row failed.", fix: "First error: 401. Fix it, then press again." },
+    });
+    expect(note).toEqual({ text: "Stopped: 25 items in a row failed.", detail: "First error: 401. Fix it, then press again.", tone: "warn" });
+    const key = sweepAbortedNote({ total: 9, done: 1, key_error: { error: "api_key_invalid", feature: "describe_media", provider: "typesafe", fix_url: "/settings", message: "Key rejected", fix: "Paste a new one" } });
+    expect(key?.text).toBe("Key rejected");
+  });
+
+  it.each<[string, number, number, number, "warn" | "info" | null]>([
+    ["all failed, 1 h ago → warn", 500, 500, 3600e3, "warn"],
+    ["some failed → info", 500, 7, 60e3, "info"],
+    ["older than 24 h → quiet", 500, 500, 25 * 3600e3, null],
+  ])("finished with failures: %s", (_n, done, failed, age, tone) => {
+    const now = Date.parse("2026-11-14T12:00:00Z");
+    const note = sweepAbortedNote(
+      { total: 500, done, failed, error: "TypeSafeAuthenticationError", finished_at: new Date(now - age).toISOString() },
+      now,
+    );
+    expect(note?.tone ?? null).toBe(tone);
+    if (tone) {
+      expect(note?.text).toContain(`${failed} of 500 failed`);
+      expect(note?.detail).toBe("First error: TypeSafeAuthenticationError");
+    }
   });
 
   it.each<[string, Parameters<typeof harvestSweepLabel>[0], string]>([

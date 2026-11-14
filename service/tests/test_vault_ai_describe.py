@@ -262,6 +262,22 @@ async def case_prompt_version_selects_variant() -> None:
     assert v2_row["_prompt_version"] == "v2", v2_row
 
 
+class _NoJevStop:
+    """A candidate-selection case: this box has no NudeNet, and a sweep stops on that (`vault_jev_pass.fatal`,
+    test_vault_jev's); which items get visited is what's pinned here."""
+
+    def __enter__(self):
+        self._o = vault_jev_pass.fatal
+
+        async def _quiet(*_a, **_k):
+            return None
+        vault_jev_pass.fatal = _quiet
+        return self
+
+    def __exit__(self, *_e):
+        vault_jev_pass.fatal = self._o
+
+
 async def case_restage_selects_only_stale_rows() -> None:
     """The re-scan sweep picks up rows from the OTHER prompt version (and rows
     that predate the stamp, and photos whose describe was not Jev-fed), and
@@ -290,7 +306,8 @@ async def case_restage_selects_only_stale_rows() -> None:
     orig = vault_ai_vision._describe_one
     vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_vision._run_describe_all(aid, "restage", prompt_version="v2")
+        with _NoJevStop():
+            await vault_ai_vision._run_describe_all(aid, "restage", prompt_version="v2")
     finally:
         vault_ai_vision._describe_one = orig
     assert sorted(described) == [90, 92, 93], described
@@ -544,7 +561,8 @@ async def case_describe_all_attempts_every_undescribed_item() -> None:
     orig = vault_ai_vision._describe_one
     vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_vision._run_describe_all(aid, "undescribed", prompt_version="v2")
+        with _NoJevStop():
+            await vault_ai_vision._run_describe_all(aid, "undescribed", prompt_version="v2")
         assert sorted(seen) == [10, 11], (
             f"the button skipped work it counted: {seen}")
         # …and it is still the count the UI showed: `described` stays untouched.
@@ -631,7 +649,8 @@ async def case_audio_is_never_a_describe_candidate() -> None:
     orig = vault_ai_vision._describe_one
     vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
+        with _NoJevStop():
+            await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
     finally:
         vault_ai_vision._describe_one = orig
     assert seen == [80], f"audio must not be swept, got {seen}"

@@ -9,7 +9,8 @@ Cases:
   case_folder_tools              — of_folder_create / of_folder_add over MCP: OF called for Creator A only, the
                                    echo in the result, open_url; audit rows carry Creator A, "token mcp" and
                                    A's owner Employee; no /admin/mcp row.
-  case_bio_tools                 — bio_page_create / bio_link_add / bio_avatar_from_vault / bio_link_bg_from_vault
+  case_bio_tools                 — bio_page_create / bio_link_add / bio_avatar_from_vault / bio_link_bg_from_vault /
+                                   bio_page_background
                                    over MCP: the page changes as asked, open_url = the page; the bound writes are
                                    audited as the page's stored Creator; a page with no Creator still takes a link.
   case_page_without_of_link_is_error — bio_page_create for a Creator whose OnlyFans profile is unreadable: the page
@@ -81,7 +82,7 @@ A = fx.login_owner("agency_a_owner")
 B = fx.login_owner("agency_b_owner")
 ANON = _harness.make_client()
 WRITES = ("of_folder_create", "of_folder_add", "bio_page_create", "bio_avatar_from_vault", "bio_link_add",
-          "bio_link_bg_from_vault")
+          "bio_link_bg_from_vault", "bio_page_background")
 BY_NAME = {t.name: t for t in td.TOOLS}
 PHOTO_A, PHOTO_A2, PHOTO_B = 9001, 9002, 9101
 
@@ -229,7 +230,8 @@ def case_listed_as_writes() -> None:
         assert name in listed, (name, sorted(listed))
         ann = listed[name]["annotations"]
         assert ann["readOnlyHint"] is False, (name, ann)
-        assert ann["destructiveHint"] is (name in ("bio_avatar_from_vault", "bio_link_bg_from_vault")), (name, ann)
+        assert ann["destructiveHint"] is (name in ("bio_avatar_from_vault", "bio_link_bg_from_vault",
+                                                   "bio_page_background")), (name, ann)
         assert BY_NAME[name].effect == "write", name
     assert listed["creators_list"]["annotations"]["readOnlyHint"] is True
 
@@ -276,9 +278,11 @@ def case_bio_tools() -> None:
     res = _tool("bio_link_bg_from_vault", {"pid": pid, "lid": lk["id"], "media_id": PHOTO_A})
     assert res["isError"] is False, res
     assert next(x for x in res["links"] if x["id"] == lk["id"])["background_image"].startswith("backgroundImage_")
+    res = _tool("bio_page_background", {"pid": pid, "media_id": PHOTO_A})
+    assert res["isError"] is False and f"/profiles/{pid}/background_" in res["profile"]["background_url"], res
     new = [(a, aid, via, uid) for _, a, aid, via, uid in _actions(since)]
     for action in ("POST /admin/bio-pages", f"POST /admin/bio-pages/{pid}/links",
-                   f"POST /admin/bio-pages/{pid}/avatar/vault",
+                   f"POST /admin/bio-pages/{pid}/avatar/vault", f"POST /admin/bio-pages/{pid}/background/vault",
                    f"POST /admin/bio-pages/{pid}/links/{lk['id']}/background/vault"):
         assert (action, CA, "token mcp", OWNER_A) in new, (action, new)  # the page's stored Creator
     # A page with no Creator: no Creator to bind, the link still lands; audit says no Creator.
@@ -317,7 +321,8 @@ def case_resource_tools_audit_its_creator() -> None:
     pid, lid = page["profile"]["id"], page["links"][0]["id"]
     sample = {"bio_avatar_from_vault": {"pid": pid, "media_id": PHOTO_A},
               "bio_link_add": {"pid": pid, "title": "Drift", "destination": "https://drift.test/"},
-              "bio_link_bg_from_vault": {"pid": pid, "lid": lid, "media_id": PHOTO_A}}
+              "bio_link_bg_from_vault": {"pid": pid, "lid": lid, "media_id": PHOTO_A},
+              "bio_page_background": {"pid": pid, "media_id": PHOTO_A}}
     tools = [t.name for t in td.TOOLS if t.effect == "write" and "account_id" not in t.args.model_fields]
     assert sorted(tools) == sorted(sample), tools
     for name in tools:
@@ -436,6 +441,7 @@ def case_cross_agency_refused() -> None:
         ("bio_link_add", {"pid": b_pid, "title": "Mine now", "destination": "https://a.test/"}),
         ("bio_avatar_from_vault", {"pid": b_pid, "media_id": PHOTO_B}),
         ("bio_link_bg_from_vault", {"pid": b_pid, "lid": b_lid, "media_id": PHOTO_B}),
+        ("bio_page_background", {"pid": b_pid, "media_id": PHOTO_B}),
     ):
         res = _tool(name, args)
         assert res["isError"] is True and res["error"]["status"] in (403, 404), (name, res)

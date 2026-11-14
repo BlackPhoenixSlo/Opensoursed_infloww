@@ -3,7 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 
 const h = vi.hoisted(() => ({
   describeMedia: vi.fn(), addToOfFolder: vi.fn(), createOfFolder: vi.fn(),
-  startCollect: vi.fn(), fetchCollectStatus: vi.fn(),
+  startCollect: vi.fn(), fetchCollectStatus: vi.fn(), answerCollect: vi.fn(),
 }));
 vi.mock("@/hooks/useVaultCache", async (orig) => ({
   ...(await orig<typeof import("@/hooks/useVaultCache")>()),
@@ -12,18 +12,46 @@ vi.mock("@/hooks/useVaultCache", async (orig) => ({
   createOfFolder: h.createOfFolder,
   startCollect: h.startCollect,
   fetchCollectStatus: h.fetchCollectStatus,
+  answerCollect: h.answerCollect,
 }));
 
 import {
   addSelectedToFolder,
+  cappedCount,
   collectHasNews,
   describeOne,
   describeSelected,
   newFolderWithSelection,
   onCollect,
+  onCollectAnswer,
+  onDescribeAll,
+  parseDescribeLimit,
   type ManageDeps,
   type Tile,
 } from "./vaultManageActions";
+
+describe("describe Max", () => {
+  it.each([
+    [null, 2000], ["", 0], ["  ", 0], ["0", 0], ["-4", 0], ["abc", 0], ["500", 500], ["12.9", 12],
+  ] as const)("parseDescribeLimit(%j) = %s", (raw, want) => {
+    expect(parseDescribeLimit(raw)).toBe(want);
+  });
+  it.each([[300, 0, 300], [300, 2000, 300], [5000, 2000, 2000], [0, 10, 0]])(
+    "cappedCount(%s, %s) = %s", (n, limit, want) => {
+      expect(cappedCount(n, limit)).toBe(want);
+    });
+  it("onDescribeAll posts the limit; 0 posts none", async () => {
+    const start = vi.fn(async () => {});
+    const base = { capReason: "", refetchPlan: vi.fn(), describeSweep: { busy: false, start }, capped: false,
+      plan: undefined, promptVersion: "v2" as const };
+    await onDescribeAll("new", { ...base, limit: 2000 });
+    await onDescribeAll("new", { ...base, limit: 0 });
+    expect(start.mock.calls).toEqual([
+      [{ force: false, restage: false, prompt_version: "v2", limit: 2000 }],
+      [{ force: false, restage: false, prompt_version: "v2" }],
+    ]);
+  });
+});
 
 /** A busy line backed by a plain variable, like the panel's ref; `seen` is every value it was set to. */
 function deps(selected: number[] = [1, 2]) {
@@ -91,6 +119,22 @@ describe("onCollect", () => {
       vi.useRealTimers();
     }
   });
+});
+
+// The paused Collect's prompt: one call to the answer's endpoint, then the summary (polled while held) is re-read;
+// a 409 (already answered) is swallowed and still re-reads it.
+describe("onCollectAnswer", () => {
+  it.each<["continue" | "stop", boolean]>([["continue", true], ["stop", true], ["continue", false]])(
+    "%s (endpoint ok: %s)", async (answer, ok) => {
+      h.answerCollect.mockReset();
+      if (ok) h.answerCollect.mockResolvedValue({ status: answer });
+      else h.answerCollect.mockRejectedValue(new Error("409 collect_not_paused"));
+      const qc = new QueryClient();
+      const inv = vi.spyOn(qc, "invalidateQueries");
+      await onCollectAnswer(answer, { accountId: "a1", qc });
+      expect(h.answerCollect.mock.calls).toEqual([["a1", answer]]);
+      expect(inv).toHaveBeenCalledWith({ queryKey: ["vault-cache-summary", "a1"] });
+    });
 });
 
 /** A describe that answers only when told to, so two calls can overlap. */

@@ -95,7 +95,7 @@ from automations import _jev  # noqa: E402
 from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_chat as runner  # noqa: E402
 from automations import full_ai_decide  # noqa: E402
-from automations import full_ai_sell  # noqa: E402
+from automations import full_ai_photo, full_ai_sell  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AiDecision, AutomationRule, Message, ScheduledJob, Transaction  # noqa: E402
 
@@ -763,7 +763,8 @@ async def case_build_state_plain_rows_match_db():
         for m in rows:
             s.add(Message(account_id=aid, fan_id=fan, **vars(m)))
         s.add(Transaction(account_id=aid, fan_id=fan, **vars(tx)))
-    ((anchor, db_st, db_offer),) = await runner._read(aid, fan, 8005)
+    ((anchor, db_st, db_offer, photo),) = await runner._read(aid, fan, 8005)
+    assert photo is None, photo        # describe_fan_photos off: no record
     assert anchor.message_id == 8005, anchor
     st, has_offer = runner.build_state(rows[3:], rows[:3], tx, rows[2])
     assert (st, has_offer) == (db_st, db_offer), (st, has_offer, db_st, db_offer)
@@ -853,7 +854,7 @@ async def case_last_purchase():
 
 # ── No-send ───────────────────────────────────────────────────────────
 
-_SHADOW = (runner, rj, full_ai_decide, _jev, full_ai_sell)
+_SHADOW = (runner, rj, full_ai_decide, _jev, full_ai_sell, full_ai_photo)
 _BANNED_MODULES = {"of_client", "automations._outbound", "automation_executor", "fan_lease"}
 _BANNED_NAMES = {"_make_client", "send_message", "acquire_fan_lease", "start_fan_cooldown"}
 

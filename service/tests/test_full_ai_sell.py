@@ -27,11 +27,20 @@
   case_pick_free               price 0, lowest lane, sent media (caller-removed)
                                excluded; no match (sent or Owned) -> the
                                lowest-lane unseen item, subject "anything"
+  case_same_piece_table        (ticket 46) the teased set at today's list price,
+                               free_ok previews kept; a locked id gone, unpriced
+                               or free lane -> None (the caller re-picks)
   case_pick_refusals           no_match, no_priced_items
   case_load_rows_refs_and_dupes  seeded vault: vf: / of: refs (int or string
                                ids), packs, groups
   case_load_rows_fails_closed  dupe lookup / bad refs / rows error ->
                                inventory_unknown
+  case_folder_price_*          an agency's folder price lists the item (no
+                               explicit bump), review stays out, unpriced
+                               unchanged; highest of several; heat targets with
+                               $25 / $70; haggle floor from a custom list
+  case_load_rows_folder_cents  vf: + of: prices -> highest per row; deleted
+                               folder / other account ignored; error -> refusal
   case_claim_ok_table          counts, kinds, plurals, subject words vs the
                                Pick (ticket 45); a price or a time is no count
   case_price_ok_table          any price named = the PPV price; None / 0 (a
@@ -60,6 +69,7 @@ from unittest.mock import patch  # noqa: E402
 
 import vault_ai_brief  # noqa: E402
 import vault_dupes  # noqa: E402
+import vault_folder_prices  # noqa: E402
 import vault_jev_rules  # noqa: E402
 import vault_scripts  # noqa: E402
 import vault_topic_folders  # noqa: E402
@@ -441,6 +451,34 @@ def case_pick_free():
     assert got.media == (13,) and got.subject == "anything" and got.price_cents == 0, got
 
 
+def case_same_piece_table():
+    """Ticket 46: a Pending tease's piece re-validated against today's pool."""
+    ask = fs.Ask("tits", "photo", 2)
+    photos = [_tits(1, "$10", fields=WHITE, minutes=1), _tits(2, "$50", fields=WHITE, minutes=2)]
+    preview = _row(7, _with_jev(WHITE, _jev("free")), minutes=7)                  # free-safe
+    bare = _row(8, _with_jev(WHITE, _jev("free", breasts="y")), minutes=8)       # fails free_ok
+    pooled = fs.pool([*photos, preview, bare], [], set(), ALL, ask)
+    got = fs.same_piece(pooled, (1, 2), (7, 8), ask)
+    assert isinstance(got, fs.Pick), got
+    assert (got.media, got.previews, got.ref) == ((1, 2), (7,), 1), "same set; free_ok previews kept"
+    assert got.price_cents == got.list_cents == 5000, "today's list: the highest locked"
+    assert got.subject == "tits" and got.format == "photo", got
+    repriced = fs.pool([_tits(1, "$50", fields=WHITE, minutes=1), _tits(2, "$50", fields=WHITE, minutes=2)],
+                       [], set(), ALL, ask)
+    assert fs.same_piece(repriced, (1,), (), ask).price_cents == 5000, "a teased $10 sells at today's $50"
+    rows = [
+        # (pool, locked, previews, why)
+        (pooled, (), (), "nothing locked"),
+        ([r for r in pooled if r["media_id"] != 2], (1, 2), (7,), "a companion gone: re-pick, never the rest"),
+        (pooled, (1, 7), (), "a locked id now free lane"),
+        (pooled, (99,), (), "not in the pool (removed / owned)"),
+    ]
+    for pool_, locked, previews, why in rows:
+        assert fs.same_piece(pool_, locked, previews, ask) is None, why
+    got = fs.same_piece([r for r in pooled if r["media_id"] != 7], (1, 2), (7,), ask)
+    assert got.media == (1, 2) and got.previews == (), "a preview gone: the piece sells without it"
+
+
 def case_pick_refusals():
     tits = [_tits(1, "$10")]
     assert _pick(tits, fs.Ask("feet", "photo", 1)) == fs.Refusal("no_match"), "no feet in the pool"
@@ -519,6 +557,104 @@ async def case_load_rows_fails_closed():
         assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "rows unreadable"
 
 
+# ── Folder prices (an agency's price per folder, `vault_folder_prices`) ──
+
+def _priced(row, cents):
+    """`row` as `load_rows` gives it when its folders carry a price (`folder_cents`)."""
+    return {**row, "folder_cents": cents}
+
+
+def case_folder_price_list_table():
+    explicit = {"acts": ["fingering"]}
+    rows = [
+        # (fields, kind, folder cents, expected, why)
+        (_with_jev({}, _jev("$10")), "photo", 2500, 2500, "folder price replaces the $10 lane"),
+        (_with_jev({}, _jev("$100")), "photo", 2500, 2500, "a folder price under the lane wins too"),
+        (_with_jev(explicit, _jev("$10")), "photo", 2500, 2500, "no explicit bump on a folder price"),
+        (_with_jev({}, _jev("free")), "photo", 3000, 3000, "a free-lane item in a priced folder is sold"),
+        (_with_jev({}, _jev("review")), "photo", 9000, None, "review stays not for sale"),
+        (_with_jev({}, _jev("review", kind="video", read_lane5="$50")), "video", 9000, None, "review clip too"),
+        (SHELF_0, "photo", 4000, 4000, "no blob, shelf 0: the folder price"),
+        (_with_jev({}, _jev("$50")), "photo", None, 5000, "no folder price: lane unchanged"),
+        (_with_jev({}, _jev("$10")), "photo", 99999, 20000, "clamped to $200"),
+    ]
+    for fields, kind, folder, want, why in rows:
+        got = fs.list_price_cents(vault_topic_folders.jev_of(fields), fields, kind, folder)
+        assert got == want, (why, got)
+    assert (fs.MIN_CENTS, fs.MAX_CENTS) == (vault_folder_prices.MIN_CENTS, vault_folder_prices.MAX_CENTS)
+
+
+def case_folder_price_pool():
+    rows = [_priced(_row(1, _with_jev(DRESSED, _jev("$10")), refs={"vf:1"}), 2500),
+            _priced(_row(2, _with_jev(DRESSED, _jev("review")), refs={"vf:1"}), 2500),
+            _priced(_row(3, _with_jev(DRESSED, _jev("$50"))), None),
+            _row(4, _with_jev(DRESSED, _jev("$100")))]          # no folder_cents key at all
+    got = fs.pool(rows, [], set(), ALL, TITS)
+    assert {r["media_id"]: r["list_cents"] for r in got} == {1: 2500, 3: 5000, 4: 10000}, \
+        "override; review out; unpriced and key-less rows unchanged"
+    owned = fs.pool(rows, [[1, 4]], {4}, ALL, TITS)
+    assert _ids(owned) == {3}, "owned / dupe rules unchanged on a priced item"
+    only = fs.pool(rows, [], set(), {"include": [], "exclude": ["vf:1"]}, TITS)
+    assert _ids(only) == {3, 4}, "folder filter unchanged"
+
+
+def case_folder_price_highest_of_several():
+    prices = {"vf:1": 2500, "of:7": 7000, "vf:9": 1500}
+    for refs, want in (({"vf:1", "of:7"}, 7000), ({"vf:1", "vf:9"}, 2500), ({"vf:2"}, None), (set(), None)):
+        assert vault_folder_prices.highest(refs, prices) == want, refs
+
+
+def case_folder_price_pick_heat_targets():
+    every = [_priced(_tits(1, "$10"), 2500), _priced(_tits(2, "$10"), 7000), _priced(_tits(3, "$100"), 12000)]
+    low = [_priced(_tits(1, "$10"), 2500), _priced(_tits(2, "$10"), 7000)]
+    above = [_priced(_tits(2, "$10"), 7000), _priced(_tits(3, "$10"), 12000)]
+    rows = [
+        # (rows, intensity, expected list cents, why) — targets $10 / $50 / $100, lowest at or above, else lowest
+        (every, 1, 2500, "heat 1: $25 is the lowest at or above $10"),
+        (every, 3, 7000, "heat 3: $70 is the lowest at or above $50"),
+        (every, 4, 12000, "heat 4: $120 is the lowest at or above $100"),
+        (low, 4, 2500, "nothing at or above $100: the lowest"),
+        (above, 1, 7000, "heat 1: lowest above $10"),
+    ]
+    for rws, heat, want, why in rows:
+        got = _pick(rws, fs.Ask("tits", "photo", heat))
+        assert isinstance(got, fs.Pick), (why, got)
+        assert (got.list_cents, got.price_cents) == (want, want), (why, got)
+    odd = _pick([_priced(_tits(1, "$10"), 2499)], fs.Ask("tits", "photo", 1))
+    assert odd.lane == "$24.99" and odd.price_cents == 2499, odd
+    assert _pick(low, fs.Ask("tits", "photo", 1)).lane == "$25"
+
+
+def case_folder_price_haggle_floor():
+    for list_cents, asked, want in ((7000, None, 4700), (7000, 3000, 4700), (7000, 6000, 6000),
+                                    (2500, None, 1700), (2499, None, 1700), (2500, 9000, 2500)):
+        assert fs.clamp_quote(list_cents, asked) == want, (list_cents, asked, fs.clamp_quote(list_cents, asked))
+
+
+async def case_load_rows_folder_cents():
+    aid = "sell-load-prices"
+    ids = await _seed_vault(aid, [(401, '["7"]', False), (402, None, False), (403, None, False), (404, None, False)],
+                            [("cheap", False, [401, 402]), ("gone", True, [403])])
+    await _seed_vault("sell-load-prices-other", [], [])
+    await vault_folder_prices.put(aid, f"vf:{ids['cheap']}", 2500)
+    await vault_folder_prices.put(aid, "of:7", 7000)
+    await vault_folder_prices.put(aid, f"vf:{ids['gone']}", 9000)
+    await vault_folder_prices.put("sell-load-prices-other", "of:7", 15000)
+    with patch.object(vault_dupes, "find_duplicates", _clusters):
+        rows, _groups, _prints = await fs.load_rows(aid)
+    by_id = {r["media_id"]: r["folder_cents"] for r in rows}
+    assert by_id == {401: 7000, 402: 2500, 403: None, 404: None}, \
+        "highest of vf + of; a deleted folder's price and another account's ignored"
+    pooled = fs.pool(rows, [], set(), ALL, TITS)
+    assert {r["media_id"]: r["list_cents"] for r in pooled} == {401: 7000, 402: 2500, 403: 1000, 404: 1000}
+    await vault_folder_prices.put(aid, "of:7", None)
+    with patch.object(vault_dupes, "find_duplicates", _clusters):
+        rows, _g, _p = await fs.load_rows(aid)
+    assert {r["media_id"]: r["folder_cents"] for r in rows}[401] == 2500, "cleared OF price"
+    with patch.object(vault_folder_prices, "load", _boom), patch.object(vault_dupes, "find_duplicates", _clusters):
+        assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "prices unreadable: fail closed"
+
+
 # ── Claim audit + fallback caption (ticket 45) ───────────────────────
 
 CLIP, SET4, MIX = {"video": 1}, {"photo": 4}, {"photo": 2, "video": 1}
@@ -580,6 +716,13 @@ def case_price_ok_table():
         ("4 pics for u", None, True, "no price named"),
         ("$0", 0, False, "free: no money talk"),
         ("just for u", 0, True, "free, nothing named"),
+        ("this one's free for u babe", 5000, False, "free on a priced PPV (rwl fa3 S4)"),
+        ("FREE for u today", 5000, False, "free, any case"),
+        ("free? no babe, $50 to unlock", 5000, False, "any free claim on a priced PPV"),
+        ("feel free to unlock it", 5000, False, "the word alone fails: no reading of intent"),
+        ("freestyle vid for u, $50", 5000, True, "free only as a word"),
+        ("this one's free for u babe", 0, True, "a Free item may say free"),
+        ("free for u", None, True, "a tease names no price, free is fine"),
     ]
     for text, cents, want, why in rows:
         assert fs.price_ok(text, cents) is want, (why, text)

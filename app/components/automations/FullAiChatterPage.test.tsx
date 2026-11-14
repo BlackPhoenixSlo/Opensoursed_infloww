@@ -1,5 +1,5 @@
 /**
- * Full AI Chat: the settings column (five controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the on/off switch over kind `full_ai_chat` (Shadow / Off) through the server's kind switch,
+ * Full AI Chat: the settings column (ten controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the on/off switch over kind `full_ai_chat` (Shadow / Off) through the server's kind switch,
  * and today's Shadow Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -49,6 +49,8 @@ const TODAY = {
       row: "tease_price", jev_ms: 412, jev_failed: false },
     { id: 1, created_at: "2026-11-13T10:00:00Z", fan_id: "78", fan_name: null, route: "chat", heat: 1,
       row: "jev_failed", jev_ms: null, jev_failed: true },
+    { id: 0, created_at: "2026-11-13T09:55:00Z", fan_id: "-1", fan_name: null, route: "sext", heat: 2,
+      row: "sexual_now", jev_ms: 300, jev_failed: false, test: true },
   ],
 };
 
@@ -56,12 +58,14 @@ const TEMPLATE = "Name: \nAge: \nFrom: \nPersonality: \nLikes: \nWon't do (hard 
 const CONFIG = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], ...over });
+const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
 /** The reads every mount answers: the Full AI config, the account config (Model info) and the LLM keys status. */
 const baseGet = (p: string): unknown => {
   if (p.startsWith("/admin/full-ai/config")) return configBody();
   if (p.startsWith("/admin/account-config")) {
     return { account_id: "acc-a", config: { persona: "", model_notes: null }, model_notes_template: TEMPLATE };
   }
+  if (p.startsWith("/admin/full-ai/prepare-content/status")) return PREPARE_IDLE;
   if (p.startsWith("/admin/my-llm-keys")) {
     return { providers: { nanogpt: { set: true, hint: "••••n4n0" }, openrouter: { set: false, hint: "" } } };
   }
@@ -125,14 +129,16 @@ describe("Full AI Chat page", () => {
     expect(relayGet.mock.calls.some((c) => String(c[0]) === "/admin/full-ai/today?account_id=acc-a")).toBe(true);
   });
 
-  it("shows the newest rows: Fan, Route, Heat, row and Jev latency or Jev failed", async () => {
+  it("shows the newest rows: Fan, Route, Heat, row and Jev latency or Jev failed; a Test chat Turn reads 'Test chat'", async () => {
     mount([rule(true)]);
     const rows = await screen.findAllByTestId("full-ai-row");
-    expect(rows.length).toBe(2);
+    expect(rows.length).toBe(3);
     const first = within(rows[0]).getAllByRole("cell").map((td) => td.textContent);
     expect(first.slice(1)).toEqual(["Garrett", "Tease", "3", "tease_price", "412 ms"]);
     const second = within(rows[1]).getAllByRole("cell").map((td) => td.textContent);
     expect(second.slice(1)).toEqual(["Fan 78", "Chat", "1", "jev_failed", "Jev failed"]);
+    const third = within(rows[2]).getAllByRole("cell").map((td) => td.textContent);
+    expect(third.slice(1)).toEqual(["Test chat", "Sext", "2", "sexual_now", "300 ms"]);
   });
 
   it("shows the house no-Creator state and reads nothing with no live Creator", async () => {
@@ -391,10 +397,16 @@ const btn = (name: string) => screen.getByRole("button", { name }) as HTMLButton
 /** The page with the config read answering `config` (a function: called per read), writes answered by `put` / `post`. */
 const mountSettings = (
   config: unknown = configBody(),
-  { put, post }: { put?: (b: Record<string, unknown>) => unknown; post?: (path: string, b: Record<string, unknown>) => unknown } = {},
+  { put, post, get }: {
+    put?: (b: Record<string, unknown>) => unknown; post?: (path: string, b: Record<string, unknown>) => unknown;
+    /** Extra GET answers; `undefined` falls through to the defaults. */
+    get?: (path: string) => unknown;
+  } = {},
 ) => {
   relayGet.mockImplementation((path: string) => {
     const p = String(path);
+    const extra = get?.(p);
+    if (extra !== undefined) return Promise.resolve(extra);
     if (p.startsWith("/admin/automation-rules")) return Promise.resolve({ rules: [] });
     if (p.startsWith("/admin/full-ai/today")) return Promise.resolve(TODAY);
     if (p.startsWith("/admin/full-ai/config")) return typeof config === "function" ? config() : Promise.resolve(config);
@@ -413,18 +425,25 @@ const loadedConfig = async () => waitFor(() => expect(settings().getByRole("swit
 describe("Full AI Chat page › Settings", () => {
   beforeEach(() => { relayPut.mockReset(); });
 
-  it("holds five controls: on/off, LLM keys, reply speed, text like a girl, GIFs; the config is read for this Creator", async () => {
+  it("holds ten controls: on/off, LLM keys, reply speed, Human style, Typos, Writer, GIFs, Sell, Content folders, Prepare content; the config is read for this Creator", async () => {
     mountSettings();
     await loadedConfig();
-    const items = settings().getAllByRole("listitem");
-    expect(items.length).toBe(5);
+    // Top-level items only: Prepare content's step list nests its own.
+    const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
+    expect(items.length).toBe(10);
     expect(within(items[0]).getByRole("switch", { name: "Full AI Chat" })).toBeTruthy();
     expect(within(items[1]).getByText("LLM keys")).toBeTruthy();
     const speed = within(items[2]).getByRole("radiogroup", { name: "Reply speed" });
     expect(within(speed).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
       .toEqual([["0-2 min", "true"], ["0-15-60", "false"]]);
     expect(within(items[3]).getByRole("switch", { name: "Human style" }).getAttribute("aria-checked")).toBe("true");
-    expect(within(items[4]).getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
+    expect(within(items[4]).getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("true");
+    expect((within(items[5]).getByRole("combobox", { name: "Writer" }) as HTMLSelectElement).value).toBe("euryale-v2.3");
+    expect(within(items[6]).getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
+    expect(within(items[7]).getByRole("switch", { name: "Sell" }).getAttribute("aria-checked")).toBe("false");
+    expect(within(items[8]).getByText("Content folders")).toBeTruthy();
+    expect(within(items[8]).getByText("All")).toBeTruthy();
+    expect(within(items[9]).getByRole("button", { name: "Prepare content" })).toBeTruthy();
     expect(relayGet.mock.calls.some((c) => String(c[0]) === "/admin/full-ai/config?account_id=acc-a")).toBe(true);
   });
 
@@ -437,7 +456,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(keys.getByRole("link", { name: "Open keys form" }).getAttribute("href")).toBe("/settings/ai-keys");
   });
 
-  it("a control stores the draft at once; Send waits ('Save draft first') until it is stored", async () => {
+  it("a control stores the draft at once; Send waits ('Storing draft…') until it is stored", async () => {
     let store: (v: unknown) => void = () => {};
     mountSettings(configBody(), { put: () => new Promise((r) => { store = r; }) });
     await loadedConfig();
@@ -447,24 +466,48 @@ describe("Full AI Chat page › Settings", () => {
     expect(putCalls().length).toBe(1);
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
     expect(sendBtn().disabled).toBe(true);
-    expect(screen.getByText("Save draft first")).toBeTruthy();
+    expect(screen.getAllByText("Storing draft…").length).toBe(2);   // the settings column's status and Send's block
     await act(async () => { store(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
-    expect(screen.queryByText("Save draft first")).toBeNull();
+    expect(screen.queryByText("Storing draft…")).toBeNull();
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
     await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: "Reply speed" })).getByRole("radio", { name: "0-15-60" })); });
     await waitFor(() => expect(putCalls().length).toBe(2));
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true, reply_speed: "0-15-60" }, rev: 4 });
   });
 
+  it("Typos off stores the five layers with typos off; Human style reads mixed and the Test chat line says Typos off", async () => {
+    mountSettings();
+    await loadedConfig();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Typos" })); });
+    const style = { texting: true, nonnative: true, spacing: true, typos: false, painful: true };
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, text_style: undefined, style }, rev: 3 });
+    await waitFor(() => expect(settings().getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("false"));
+    expect(settings().getByRole("switch", { name: "Human style" }).getAttribute("aria-checked")).toBe("true");
+    expect(settings().getByText("Mixed: typos off. Tap for all off.")).toBeTruthy();
+    expect(win("Draft").getByText("Reply 0-2 min · Human style mixed · Typos off · GIFs off · Caption chat")).toBeTruthy();
+  });
+
+  it("Writer: picking a model puts it first and keeps the rest in order", async () => {
+    mountSettings(configBody({ draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b"] },
+      writer_models: ["deepseek-v4-flash", "euryale-v2.3", "hermes-4-405b"] }));
+    await loadedConfig();
+    const sel = settings().getByRole("combobox", { name: "Writer" }) as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toEqual(["euryale-v2.3", "deepseek-v4-flash", "hermes-4-405b"]);
+    expect(settings().getByText("Then: hermes-4-405b")).toBeTruthy();
+    await act(async () => { fireEvent.change(sel, { target: { value: "deepseek-v4-flash" } }); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, writers: ["deepseek-v4-flash", "euryale-v2.3", "hermes-4-405b"] }, rev: 3 });
+  });
+
   it("a refused draft shows its field errors and keeps Send waiting", async () => {
-    mountSettings(configBody(), { put: () => { throw new RelayError(422, { errors: ["text_style: must be one of girl, formal"] }); } });
+    mountSettings(configBody(), { put: () => { throw new RelayError(422, { errors: ["Human style: must be on or off"] }); } });
     await loadedConfig();
     fireEvent.change(composer(), { target: { value: "hey" } });
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Human style" })); });
-    expect(await screen.findByText("text_style: must be one of girl, formal")).toBeTruthy();
+    expect(await screen.findByText("Human style: must be on or off")).toBeTruthy();
     expect(sendBtn().disabled).toBe(true);
-    expect(screen.getByText("Save draft first")).toBeTruthy();
+    expect(screen.getByText("Draft not stored — fix it or Reload")).toBeTruthy();
   });
 
   it("Save makes the draft the checkpoint, then Roll back swaps back; each disabled with nothing to do", async () => {
@@ -546,7 +589,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(sendBtn().disabled).toBe(true);
     await act(async () => { fireEvent.click(btn("Reload")); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
-    expect(screen.queryByText("Save draft first")).toBeNull();
+    expect(screen.queryByText("Draft not stored — fix it or Reload")).toBeNull();
     fireEvent.click(btn("JSON"));
     expect(JSON.parse((await screen.findByRole("textbox", { name: "Raw JSON" }) as HTMLTextAreaElement).value)).toEqual(CONFIG);
   });
@@ -580,11 +623,11 @@ describe("Full AI Chat page › applied draft", () => {
   it("with no unsaved edit, the settings column and the Draft window header adopt it; the next draft write uses its rev", async () => {
     const apply = mountApplied();
     await loadedConfig();
-    expect(win("Draft").getByText("Reply 0-2 min · Human style on · GIFs off")).toBeTruthy();
+    expect(win("Draft").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     await apply();
     await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
-    expect(win("Draft").getByText("Reply 0-15-60 · Human style on · GIFs off")).toBeTruthy();
-    expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs off")).toBeTruthy();
+    expect(win("Draft").getByText("Reply 0-15-60 · Human style on · GIFs off · Caption chat")).toBeTruthy();
+    expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     expect(bar()).toBeNull();
     fireEvent.change(composer(), { target: { value: "hey" } });
     expect(sendBtn().disabled).toBe(false);
@@ -604,6 +647,7 @@ describe("Full AI Chat page › applied draft", () => {
     expect(speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.change(composer(), { target: { value: "hey" } });
     expect([sendBtn().disabled, btn("Save").disabled]).toEqual([true, true]);
+    expect([settings().getByRole("switch", { name: "Sell" }).hasAttribute("disabled"), btn("Choose").disabled]).toEqual([true, true]);
     expect(screen.getByText("Keep mine or Take theirs first")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Take theirs")); });
     expect(bar()).toBeNull();
@@ -643,5 +687,134 @@ describe("Full AI Chat page › applied draft", () => {
     expect(reads()).toBe(before + 1);
     expect(bar()).toBeNull();
     expect(speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+// ── Selling (ticket 49) ──────────────────────────────────────────────────────────────────────────────────────────
+describe("Full AI Chat page › Selling settings", () => {
+  beforeEach(() => { relayPut.mockReset(); });
+  const FOLDERS = { include: [], exclude: ["of:9"] };
+  /** mountSettings with the folder reads and Prepare content's status answering too. */
+  const mountSell = (opts: Parameters<typeof mountSettings>[1] = {}, prepare: () => unknown = () => PREPARE_IDLE) =>
+    mountSettings(configBody({ draft: { ...CONFIG, folders: FOLDERS } }), { ...opts, get: (p) => {
+      if (p.startsWith("/admin/vault-ai/internal-folders")) return { list: [{ id: 4, name: "AI-lingerie", items: 12 }] };
+      if (p.startsWith("/admin/vault-ai/of-folders")) return { list: [{ id: 7, name: "Beach", mediaCount: 30, builtin: false }] };
+      if (p.startsWith("/admin/full-ai/prepare-content/status")) return prepare();
+      return undefined;
+    } });
+
+  it("Sell stores sell_on in the draft at once", async () => {
+    mountSell();
+    await loadedConfig();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, folders: FOLDERS, sell_on: true }, rev: 3 });
+  });
+
+  it("Content folders: All by default; nothing ticked refuses Save; a picked folder stores include with the stored exclude", async () => {
+    mountSell();
+    await loadedConfig();
+    await act(async () => { fireEvent.click(btn("Choose")); });
+    const dialog = within(await screen.findByRole("dialog", { name: "Content folders" }));
+    expect(await dialog.findByRole("checkbox", { name: /AI-lingerie/ })).toBeTruthy();
+    expect(dialog.getByRole("checkbox", { name: /Beach/ })).toBeTruthy();
+    const all = dialog.getByRole("checkbox", { name: /All/ }) as HTMLInputElement;
+    expect(all.checked).toBe(true);
+    fireEvent.click(all);
+    expect((dialog.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(dialog.getByText("pick at least one folder, or All")).toBeTruthy();
+    fireEvent.click(dialog.getByRole("checkbox", { name: /AI-lingerie/ }));
+    await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Save" })); });
+    expect(putCalls()[0][1]).toEqual({
+      account_id: "acc-a", draft: { ...CONFIG, folders: { include: ["vf:4"], exclude: ["of:9"] } }, rev: 3,
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(settings().getByText("1 picked")).toBeTruthy());
+  });
+
+  it("Prepare content starts only on the click and lists each step with its state and counts", async () => {
+    const skipped = (name: string, detail: string) => ({ name, state: "skipped", detail, counts: {} });
+    mountSell({ post: (path) => (path === "/admin/full-ai/prepare-content" ? {
+      run_id: "r1", started_at: "2026-11-14T03:00:00Z", finished_at: "2026-11-14T03:00:01Z",
+      steps: [skipped("harvest", "already harvested"), skipped("describe", "every item described and flagged"),
+        { name: "folders", state: "done", detail: "", counts: { folders: 3, items: 40 } }],
+    } : answer()) });
+    await loadedConfig();
+    await waitFor(() => expect(relayGet.mock.calls.some((c) => String(c[0]).startsWith("/admin/full-ai/prepare-content/status"))).toBe(true));
+    expect(postsTo("/admin/full-ai/prepare-content").length).toBe(0);
+    await act(async () => { fireEvent.click(btn("Prepare content")); });
+    expect(postsTo("/admin/full-ai/prepare-content")[0][1]).toEqual({ account_id: "acc-a" });
+    expect((await screen.findByTestId("prepare-harvest")).textContent).toBe("Harvest skippedalready harvested");
+    expect(screen.getByTestId("prepare-describe").textContent).toBe("Describe skippedevery item described and flagged");
+    expect(screen.getByTestId("prepare-folders").textContent).toBe("Folders done · folders 3 · items 40");
+  });
+
+  it("Prepare content polls the status every 2 s while it runs, then stops", async () => {
+    let reads = 0;
+    const run = (finished: boolean) => ({ run_id: "r1", started_at: "x", finished_at: finished ? "y" : null,
+      steps: [{ name: "harvest", state: finished ? "done" : "running", detail: "", counts: { seen: 100, pages: 1 } }] });
+    mountSell({}, () => run(++reads > 1));
+    await loadedConfig();
+    expect((await screen.findByTestId("prepare-harvest")).textContent).toBe("Harvest running · seen 100 · pages 1");
+    expect(btn("Preparing…").disabled).toBe(true);
+    await waitFor(() => expect(screen.getByTestId("prepare-harvest").textContent).toBe("Harvest done · seen 100 · pages 1"),
+      { timeout: 5_000 });
+    expect(postsTo("/admin/full-ai/prepare-content").length).toBe(0);
+  });
+});
+
+describe("Full AI Chat page › PPV bubble", () => {
+  const offer = (price_cents: number) => ({ kind: "offer", ref: 21, price_cents, list_cents: price_cents, media: [21, 22], previews: [23], refusal: null });
+  const ppvAnswer = (row_id: number, price_cents: number) => answer({
+    row_id, route: "sell_now", offer: offer(price_cents),
+    parts: [{ text: "u want this?", ppv: { ref: 21, price_cents, media: [21, 22], previews: [23] } }],
+  });
+  const settleCalls = () => postsTo("/admin/full-ai/test/settle");
+  /** Checkpoint answers a $15 Offer (row 31), Draft a free item (row 32); the settle route answers `settle`. */
+  const mountPpv = async (settle: (b: Record<string, unknown>) => unknown = (b) => ({ row_id: b.row_id, outcome: b.outcome })) => {
+    mountChat({ checkpoint: () => ppvAnswer(31, 1500), draft: () => ppvAnswer(32, 0) });
+    const inner = relayPost.getMockImplementation()!;
+    relayPost.mockImplementation((path: string, b: Body & Record<string, unknown>) => {
+      if (String(path) !== "/admin/full-ai/test/settle") return inner(path, b);
+      try { return Promise.resolve(settle(b)); } catch (e) { return Promise.reject(e); }
+    });
+    await screen.findByRole("region", { name: "Checkpoint" });
+    skipWait();
+    await say("send me pics");
+    await win("Checkpoint").findByTestId("ppv");
+  };
+
+  it("shows the Pick's mirror thumbnails and the price; Buy / Decline only on the priced unsettled bubble", async () => {
+    await mountPpv();
+    const cp = within(win("Checkpoint").getByTestId("ppv"));
+    expect([...win("Checkpoint").getByTestId("ppv").querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual([21, 22, 23].map(
+      (id) => `/admin/vault-ai/thumb?account_id=acc-a&media_id=${id}`));
+    expect(cp.getByText("$15")).toBeTruthy();
+    expect(win("Checkpoint").getByRole("button", { name: "Buy" })).toBeTruthy();
+    expect(win("Checkpoint").getByRole("button", { name: "Decline" })).toBeTruthy();
+    const draft = await win("Draft").findByTestId("ppv");
+    expect(within(draft).getByText("Free")).toBeTruthy();
+    expect(win("Draft").queryByRole("button", { name: "Buy" })).toBeNull();
+    expect(win("Draft").queryByRole("button", { name: "Decline" })).toBeNull();
+  });
+
+  it("Buy settles that row (checkpoint side, with account_id) and the bubble reads '$15 · paid'", async () => {
+    await mountPpv();
+    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Buy" })); });
+    expect(settleCalls().length).toBe(1);
+    const body = settleCalls()[0][1] as Record<string, unknown>;
+    expect(body).toEqual({ account_id: "acc-a", pair: (turnCalls()[0][1] as Body).pair, side: "checkpoint", row_id: 31, outcome: "bought" });
+    await waitFor(() => expect(win("Checkpoint").getByTestId("ppv").textContent).toContain("$15 · paid"));
+    expect(win("Checkpoint").queryByRole("button", { name: "Buy" })).toBeNull();
+  });
+
+  it("Decline reads '$15 · not paid'; a 409 lands the stored outcome; a failed settle restores the buttons", async () => {
+    await mountPpv(() => { throw new RelayError(409, { detail: "already_settled", outcome: "declined" }); });
+    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Buy" })); });
+    await waitFor(() => expect(win("Checkpoint").getByTestId("ppv").textContent).toContain("$15 · not paid"));
+    cleanup();
+    await mountPpv(() => { throw new RelayError(503, {}, "relay 503"); });
+    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Decline" })); });
+    expect(await win("Checkpoint").findByText("relay 503")).toBeTruthy();
+    expect((win("Checkpoint").getByRole("button", { name: "Buy" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

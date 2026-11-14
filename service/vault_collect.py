@@ -51,9 +51,11 @@ request drops when that walk starts, but returns if hot pages are preempted
 (in memory: a restart falls back to STALE_S).
 Dead-session / OTP / deactivated accounts are not
 candidates. Every OF call runs inside an of_pacing walk (the Creator's shared
-pacer, one retry on OF's 429). vault_ai_api's Collect reuses only (a)-(b)
-(`hot_folders`, with its own call pacing); the rest is its own (it also warms full
-images, posters and storyboards, and sleeps 0.15 s between OF calls).
+pacer, one retry on OF's 429). vault_ai_api's Collect reuses only (a) (`folder_list`,
+with its own call pacing: no GAP_S, no preempt check, it IS the preempter) and the
+picker's folder page-0 cache (`cache_picker_head`); the rest is its own
+(vault_collect_plan's walk; it also warms full images, posters and storyboards, and
+sleeps 0.15 s between OF calls).
 
 Env knobs (read at import):
   VAULT_COLLECT_ENABLED=1             0 = never registered
@@ -329,13 +331,9 @@ async def _media_page(aid: str, client: Any, call: OfCall, *, list_id: int | Non
     return written
 
 
-async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None = None,
-                      on_page: Callable[[list], Awaitable[None]] | None = None) -> int:
-    """Hot pass steps (a)-(b): the folder list, then page 0 of every dropdown folder,
-    each cached under the picker route's key and upserted. Shared with the manual
-    Collect (vault_ai_api), which passes its own `call` (no GAP_S, no preempt check:
-    it IS the preempter), its `run_id` and an `on_page` that warms each page's
-    stills. Returns rows upserted."""
+async def folder_list(aid: str, client: Any, call: OfCall) -> list[dict]:
+    """Hot pass step (a): the folder list, paged exactly as the picker asks, each page
+    cached under the picker route's key. Also the manual Collect's first step."""
     folders: list[dict] = []
     offset = 0
     for _ in range(LISTS_MAX_PAGES):
@@ -349,6 +347,28 @@ async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None
         if not (resp or {}).get("hasMore") or not rows:
             break
         offset += LISTS_PAGE
+    return folders
+
+
+async def cache_picker_head(aid: str, list_id: int | None, resp: Any,
+                            started_at: datetime) -> None:
+    """A desc page fetched at offset 0 with a bigger limit (the manual Collect's 100)
+    cached as the picker's page 0 for `list_id`: its first PICKER_PAGE items, hasMore
+    when it held more (or OF said so) — what /api/of/v2/vault/media would answer."""
+    rows = (resp or {}).get("list") or []
+    head = {**(resp or {}), "list": rows[:PICKER_PAGE],
+            "hasMore": len(rows) > PICKER_PAGE or bool((resp or {}).get("hasMore"))}
+    key = vault_cache.vault_media_cache_key(type="all", list_id=list_id, offset=0,
+                                            limit=PICKER_PAGE, sort="desc", field="recent",
+                                            q_norm="")
+    await vault_cache.put(aid, key, head, started_at=started_at)
+
+
+async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None = None,
+                      on_page: Callable[[list], Awaitable[None]] | None = None) -> int:
+    """Hot pass steps (a)-(b): the folder list, then page 0 of every dropdown folder,
+    each cached under the picker route's key and upserted. Returns rows upserted."""
+    folders = await folder_list(aid, client, call)
     n = 0
     for f in folders:  # the picker's dropdown: custom folders that have media
         if f.get("type") == "custom" and f.get("hasMedia") and f.get("id") is not None:

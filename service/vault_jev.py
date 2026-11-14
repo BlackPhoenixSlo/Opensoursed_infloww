@@ -408,12 +408,35 @@ def cost_millicents(tokens_in: int) -> int:
 
 class JevResult(TypedDict, total=False):
     ok: bool
-    status: str        # ok | no_nudenet | no_key | capped | error
+    status: str        # ok | no_nudenet | no_key | key_invalid | key_no_credit | capped | error
     call_failed: bool  # an `error` from the model / NudeNet call itself (not the item's image): outage evidence
     blob: dict[str, Any]
     detail: str
     cost_millicents: int
     tok: int
+
+
+# TypeSafe answers about the KEY, not the photo (401/403 rejected, 402 out of credit): no retry fixes them.
+_KEY_HTTP = {401: "key_invalid", 403: "key_invalid", 402: "key_no_credit"}
+# A Jev status that means the key (none, refused, out of credit) → its LLMKeyError kind. A sweep stops on it
+# (`key_error`, vault_sweep) and the drawer says which key to fix; before, every photo was skipped as "no Jev
+# reading" and the sweep ended in silence (11-14: a LangSmith key pasted as the TypeSafe key, 5336/5336 failed).
+# Raised by `vault_jev_pass.fatal`.
+KEY_ERROR_KIND = {"no_key": "missing", "key_invalid": "invalid", "key_no_credit": "no_credit"}
+
+
+def _failed(e: BaseException) -> str:
+    """The status of a failed TypeSafe/NudeNet call: a key status when TypeSafe refused the key, else `error`."""
+    from typesafe_sdk import TypeSafeAPIError
+    return _KEY_HTTP.get(e.status, "error") if isinstance(e, TypeSafeAPIError) else "error"
+
+
+async def key_error(account_id: str, status: str) -> Exception:
+    """The `LLMKeyError` for a `KEY_ERROR_KIND` status on `account_id` (`house`: no agency owns it)."""
+    from llm_client import LLMKeyError
+    from tenant_keys import owners_of
+    return LLMKeyError(KEY_ERROR_KIND[status], PROVIDER, "describe_media", house=not await owners_of(account_id),
+                       detail=f"jev {status} account={account_id}")
 
 
 async def preflight(account_id: str | None = None) -> JevResult | None:
@@ -478,7 +501,7 @@ async def run(account_id: str, data: bytes) -> JevResult:
         await hold.done(actual, tokens_in=tok, ok=False, error=f"{type(e).__name__}: {e}"[:300],
                         latency_ms=int((time.monotonic() - t0) * 1000))
         log.warning("vault_jev failed account=%s passes=%s: %s", account_id, passes, type(e).__name__)
-        return JevResult(ok=False, status="error", detail=f"{type(e).__name__}: {e}"[:300],
+        return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
                          cost_millicents=actual, tok=tok, call_failed=True)
     actual = cost_millicents(tok)
     await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),
@@ -594,7 +617,7 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
         await hold.done(actual, tokens_in=tok, ok=False, error=f"{type(e).__name__}: {e}"[:300],
                         latency_ms=int((time.monotonic() - t0) * 1000))
         log.warning("vault_jev video failed account=%s frames=%s: %s", account_id, len(frames), type(e).__name__)
-        return JevResult(ok=False, status="error", detail=f"{type(e).__name__}: {e}"[:300],
+        return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
                          cost_millicents=actual, tok=tok, call_failed=True)
     passes = [p for p in ORDER if any(p in f for f in packs)]
     for f, d, s in zip(packs, ds, scores):

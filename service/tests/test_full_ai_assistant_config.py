@@ -64,6 +64,15 @@ def case_propose_table():
         assert p.after == {**p.before, **patch}, p.after
         assert full_ai_config.validate(p.after) == [], p.after
     assert af.label("not_a_key") == "not_a_key" and af.label("text_style") == "Human style"
+    # The prompt's legacy `text_style` lands as the stored `style` layers (one "Human style" row).
+    on, off = DEFAULTS["style"], dict.fromkeys(DEFAULTS["style"], False)
+    p = af.propose(full_ai_config.merged(copy.deepcopy(SEED)), af.ConfigPatch(set={"text_style": "formal"}))
+    assert isinstance(p, af.Proposal) and "text_style" not in p.after and p.after["style"] == off, p
+    assert [(d["field"], d["label"], d["before"], d["after"]) for d in p.diffs] == [("style", "Human style", on, off)]
+    assert isinstance(af.propose(full_ai_config.merged(copy.deepcopy(SEED)),
+                                 af.ConfigPatch(set={"text_style": "girl"})), af.Refusal)       # already all on
+    r = af.propose(full_ai_config.merged(copy.deepcopy(SEED)), af.ConfigPatch(set={"text_style": "boy"}))
+    assert isinstance(r, af.Refusal) and "Human style" in r.text, r
 
 
 def case_folders_patch_keeps_the_stored_exclude():

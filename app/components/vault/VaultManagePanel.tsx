@@ -37,6 +37,7 @@ import {
   describeSelected,
   newFolderWithSelection,
   onCollect,
+  onCollectAnswer,
   onDescribeAll,
   setOrder,
   type ManageDeps,
@@ -391,10 +392,12 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           accountId={accountId}
           onClose={onCloseExtras}
           isCollecting={isCollecting}
+          collectPaused={run?.status === "paused"}
           totalSeen={run?.total_seen ?? null}
           cachedCount={cachedCount}
           onCollect={() => onCollect({ accountId, qc, refreshAll, isCollecting })}
-          onDescribeAll={(mode) => onDescribeAll(mode, { ...deps, describeSweep, capped, plan: plan.data, promptVersion })}
+          onCollectAnswer={(answer) => void onCollectAnswer(answer, { accountId, qc })}
+          onDescribeAll={(mode, limit) => onDescribeAll(mode, { ...deps, describeSweep, capped, plan: plan.data, promptVersion, limit })}
           describeSweep={describeSweep}
           describeText={describeText}
           describeStopped={describeStopped}

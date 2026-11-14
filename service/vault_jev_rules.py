@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import case, func, literal
+
 # The stored blob's version: the question set + rules + settle mode it was made with.
 VERSION = "v8+nn.10"
 # Where the blob lives in `ai_fields_json` (the one definition; every vault module reads it from here).
@@ -249,6 +251,19 @@ def current(fields: dict[str, Any] | None) -> bool:
     return (isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
             and isinstance(j.get("state"), dict)
             and (j.get("kind") != "video" or (j.get("vv") == VIDEO_VERSION and isinstance(j.get("frames"), list))))
+
+
+def current_sql(col: Any) -> Any:
+    """`current` as a SQL predicate (SQLAlchemy, SQLite JSON1) over an ai_fields JSON text column: the same rules,
+    so a listing filter and the Python check agree (tests/test_toolbox case_current_sql)."""
+    ai = func.coalesce(col, "")
+    ok = case((func.json_valid(ai), ai), else_=literal("{}"))
+    j = lambda path: func.json_extract(ok, f"$.{JEV_KEY}.{path}")  # noqa: E731
+    kind = lambda path: func.json_type(ok, f"$.{JEV_KEY}{path}")  # noqa: E731
+    video = func.coalesce(j("kind"), "") == "video"
+    return ((func.instr(ai, f'"{JEV_KEY}"') > 0) & (kind("") == "object") & (j("v") == VERSION)
+            & (j("status") == "ok") & kind(".lane5").isnot(None) & (kind(".state") == "object")
+            & (~video | ((j("vv") == VIDEO_VERSION) & (kind(".frames") == "array"))))
 
 
 MANUAL = "manual"   # `_jev["made"]`: a blob built from operator picks alone (`vault_jev_manual`), no Jev reading

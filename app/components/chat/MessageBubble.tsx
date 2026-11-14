@@ -17,7 +17,7 @@ import { useTranslations } from "@/hooks/useTranslations";
 import { scriptDraftHasContent } from "@/lib/messageScripts";
 import { BubbleStatusRow, BubbleTimeRow, timeRowShows } from "@/components/chat/BubbleMeta";
 import { BubbleActions } from "@/components/chat/BubbleActions";
-import { PpvStatusLine } from "@/components/chat/PpvStatus";
+import { PPV_BORDER, PPV_FILL, PpvStatusLine } from "@/components/chat/PpvStatus";
 import { MP } from "@/lib/messagesPro";
 import { ofPlainText } from "@/lib/ofRichText";
 import { MediaStrip } from "./MessageMedia";
@@ -218,10 +218,10 @@ export function Bubble({
             // Geometry: a PPV message is the Clone's `.ppv-mini` box (ML10),
             // with no tail; any other message is a bubble with its tail.
             isPPV
-              ? cn("flex flex-col border-[var(--inf-ppv-border,var(--color-border))]", MP.messageList.ppv)
+              ? cn("flex flex-col", PPV_BORDER, MP.messageList.ppv)
               : cn(MP.messageList.bubble, side === "right" ? MP.messageList.bubbleTailOut : MP.messageList.bubbleTailIn),
             side === "right"
-              ? cn(isPPV ? "bg-[var(--inf-ppv,var(--color-accent))]" : "bg-accent", "text-white")
+              ? cn(isPPV ? PPV_FILL : "bg-accent", "text-white")
               : "bg-[var(--inf-bubble-in,var(--color-bg-elev-1))] text-fg",
             // Fan tip ("I sent you a $X.XX tip") — paint the bubble blue so
             // incoming money stands out at a glance, on either side.

@@ -4,7 +4,7 @@
  *  (ADR-0003) — the full download (whole vault / open folder), the mirror collect, the describe sweep and its
  *  prompt, the keyword harvest, the duplicates, pack, AI-folder and disagreement reviews and the flags review. */
 
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { Download, X } from "lucide-react";
 
@@ -14,6 +14,17 @@ import { type useDescribePlan } from "@/hooks/useVaultCache";
 import { harvestSweepLabel, type VaultSweep } from "@/hooks/useVaultSweep";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
+
+import { cappedCount, DESCRIBE_LIMIT_DEFAULT, DESCRIBE_LIMIT_KEY, parseDescribeLimit } from "./vaultManageActions";
+
+/** The stored "Max" text; never set → the default. */
+function readLimitText(): string {
+  try {
+    return window.localStorage.getItem(DESCRIBE_LIMIT_KEY) ?? String(DESCRIBE_LIMIT_DEFAULT);
+  } catch {
+    return String(DESCRIBE_LIMIT_DEFAULT);
+  }
+}
 
 /** The modals the drawer's tools open. */
 export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "flagsReview";
@@ -53,9 +64,11 @@ export default function VaultExtrasTools({
   accountId,
   onClose,
   isCollecting,
+  collectPaused = false,
   totalSeen,
   cachedCount,
   onCollect,
+  onCollectAnswer,
   onDescribeAll,
   describeSweep,
   describeText,
@@ -73,14 +86,19 @@ export default function VaultExtrasTools({
   accountId: string;
   onClose: () => void;
   isCollecting: boolean;
+  /** The Collect is waiting on "continue collecting?" (it asks every 2000 new items; `last_run.status`). */
+  collectPaused?: boolean;
   /** null for a restricted chatter: the count is whole-vault. */
   totalSeen: number | null;
   cachedCount: number;
   onCollect: () => void;
-  onDescribeAll: (mode: "new" | "restage" | "force") => void;
+  /** The paused prompt's buttons (`onCollectAnswer` in vaultManageActions). */
+  onCollectAnswer?: (answer: "continue" | "stop") => void;
+  /** `limit`: the "Max" input (0 = all). */
+  onDescribeAll: (mode: "new" | "restage" | "force", limit: number) => void;
   describeSweep: VaultSweep;
   describeText: { label: string; title: string };
-  describeStopped: { text: string; detail: string } | null;
+  describeStopped: { text: string; detail: string; tone: "warn" | "info" } | null;
   harvestSweep: VaultSweep;
   /** The describe plan's data (`useDescribePlan`). */
   plan: ReturnType<typeof useDescribePlan>["data"];
@@ -95,11 +113,28 @@ export default function VaultExtrasTools({
    *  as its title (`downloadGate`, the folder still loading). `onStart` starts the page's one download. */
   download: { label: string; reason: string; onStart: () => void };
 }) {
+  // The describe sweep's cap: one value per browser; empty / 0 = all.
+  const [limitText, setLimitText] = useState(readLimitText);
+  const limit = parseDescribeLimit(limitText);
+  const onLimit = (v: string) => {
+    setLimitText(v);
+    try {
+      window.localStorage.setItem(DESCRIBE_LIMIT_KEY, v);
+    } catch {
+      /* private mode: this session only */
+    }
+  };
+  const capNote = (n: number) =>
+    limit > 0 && n > limit ? ` — describes the ${limit} highest-priority items (Max), not all ${n}` : "";
   return (
     <ExtrasDrawer onClose={onClose}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-fg-dim">
-          {isCollecting ? (
+          {isCollecting && collectPaused ? (
+            <>
+              <span className="text-warn">●</span> collect paused{totalSeen != null && ` ${totalSeen}`}
+            </>
+          ) : isCollecting ? (
             <>
               <span className="text-warn">●</span> collecting…{totalSeen != null && ` ${totalSeen}`}
             </>
@@ -129,11 +164,28 @@ export default function VaultExtrasTools({
             disabled={isCollecting}
             className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
           >
-            {isCollecting ? "Collecting…" : cachedCount > 0 ? "Re-collect" : "Collect all"}
+            {isCollecting ? (collectPaused ? "Paused" : "Collecting…") : cachedCount > 0 ? "Re-collect" : "Collect all"}
           </button>
+          <label
+            className="inline-flex items-center gap-1 text-xs text-fg-dim"
+            title="Max items one Describe all / Re-scan describes, most-sent first (top folders, newest, oldest). Empty or 0 = all."
+          >
+            Max
+            <input
+              type="number"
+              min={0}
+              step={100}
+              inputMode="numeric"
+              aria-label="Max items to describe"
+              placeholder="all"
+              value={limitText}
+              onChange={(e) => onLimit(e.target.value)}
+              className="w-16 px-1.5 py-1 rounded border border-border bg-transparent text-sm text-fg"
+            />
+          </label>
           <button
             type="button"
-            onClick={() => onDescribeAll("new")}
+            onClick={() => onDescribeAll("new", limit)}
             disabled={describeSweep.busy || cachedCount === 0 || capped}
             className={cn(
               "px-3 py-1.5 rounded-lg text-sm border disabled:opacity-50",
@@ -146,24 +198,24 @@ export default function VaultExtrasTools({
                 ? describeText.title
                 : capped
                   ? capReason
-                  : "Describe every un-described item (background)"
+                  : `Describe every un-described item (background)${capNote(plan?.undescribed ?? 0)}`
             }
           >
             {describeSweep.busy
               ? `Describing ${describeText.label}`
               : capped
                 ? "Daily AI cap reached"
-                : `Describe all${plan?.undescribed ? ` (${plan.undescribed})` : ""}`}
+                : `Describe all${plan?.undescribed ? ` (${cappedCount(plan.undescribed, limit)})` : ""}`}
           </button>
           {!!plan?.restage && !describeSweep.busy && !capped && (
             <button
               type="button"
-              onClick={() => onDescribeAll("restage")}
+              onClick={() => onDescribeAll("restage", limit)}
               disabled={cachedCount === 0}
               className="px-3 py-1.5 rounded-lg text-sm border border-warn/50 bg-warn/10 text-warn hover:bg-warn/20 disabled:opacity-50"
-              title="Re-describe items that were described with the OTHER prompt version. Resumable — already-current rows are skipped."
+              title={`Re-describe items that were described with the OTHER prompt version. Resumable — already-current rows are skipped.${capNote(plan.restage)}`}
             >
-              Re-scan old ({plan.restage})
+              Re-scan old ({cappedCount(plan.restage, limit)})
             </button>
           )}
           <button
@@ -206,6 +258,34 @@ export default function VaultExtrasTools({
           </button>
       </div>
 
+      {/* The Collect asks every 2000 new items; unanswered for 30 min it stops on its own (vault_ai_api). */}
+      {isCollecting && collectPaused && onCollectAnswer && (
+        <div
+          data-testid="vault-collect-paused"
+          className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+        >
+          <p className="text-xs text-warn">
+            {totalSeen != null ? `Collected ${totalSeen}` : "Collect paused"} · continue collecting?
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onCollectAnswer("continue")}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-accent/60 text-accent hover:bg-accent/20"
+            >
+              Continue
+            </button>
+            <button
+              type="button"
+              onClick={() => onCollectAnswer("stop")}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-border text-fg-dim hover:text-fg"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* A describe pass that DIED rather than finished. Only meaningful once it
           stops — while it runs the button carries the count — and it survives a
           reload, because the snapshot lives on the server. */}
@@ -217,9 +297,15 @@ export default function VaultExtrasTools({
         </p>
       )}
       {!describeSweep.busy && describeStopped && (
-        <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+        <div
+          role="status"
+          className={cn(
+            "rounded-lg border px-3 py-2 text-xs",
+            describeStopped.tone === "warn" ? "border-warn/40 bg-warn/10 text-warn" : "border-border bg-bg-elev-1 text-fg-dim",
+          )}
+        >
           {describeStopped.text}
-          <span className="block text-warn/70 mt-0.5">{describeStopped.detail}</span>
+          <span className="block opacity-70 mt-0.5 break-words">{describeStopped.detail}</span>
         </div>
       )}
 

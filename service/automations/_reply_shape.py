@@ -4,7 +4,8 @@ welcome_chatter_for_info (wcfi) and autoreply: one generated reply (already thro
 
 Stages, in the order both engines ran them inline:
   1. split (`split_for_bubbles`, seeded `split:{seed_id}:{raw}`) + OF word restriction
-     + per-bubble char cap, at most `max_bubbles`
+     + per-bubble char cap, at most `max_bubbles` (`force_single`: every unit casually joined
+     into one bubble, nothing dropped — Full AI's separate PPV caption)
   2. echo drop: a bubble that parrots his last line (`_looks_like_echo`) — wcfi only
   3. lead-reaction dedupe vs our recent outbound (`_dedupe_lead_reaction`) — style on
   4. empty -> drop ("empty" or "echo"), unless `allow_empty` (wcfi: a sticker rides alone)
@@ -51,6 +52,7 @@ class ShapeCtx:
     nonnative_on: bool
     spacing_on: bool
     name_protect: Sequence[str]  # names the non-native pass must not touch
+    force_single: bool = False   # one bubble, every unit joined (Full AI caption); the one default
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -68,7 +70,8 @@ def shape_parts(raw: str, ctx: ShapeCtx) -> Shaped:
             return _language.apply_word_restriction(p, ctx.lang)
     parts = [restrict(p)[:ctx.max_chars]
              for p in split_for_bubbles(raw, ctx.max_bubbles,
-                                        rng=random.Random(f"split:{ctx.seed_id}:{raw}"))
+                                        rng=random.Random(f"split:{ctx.seed_id}:{raw}"),
+                                        force_single=ctx.force_single)
              if p.strip()][:ctx.max_bubbles]
     reason: Literal["empty", "echo"] = "empty"
     if ctx.echo_of is not None:

@@ -299,6 +299,7 @@ def public_profile(profile: Mapping, links: Sequence[Mapping], site_key: str | N
         out_links.append(item)
     out = {"profile": {"id": profile["id"], "username": profile["username"], "displayName": profile["display_name"],
                        "bio": profile["bio"], "avatarUrl": _file_url("profiles", profile, "avatar", prefix),
+                       "backgroundUrl": _file_url("profiles", profile, "background_image", prefix),
                        "verified": bool(profile["verified"]), "mode": pmode},
            "links": out_links}
     if any(item.get("botCheck") for item in out_links):

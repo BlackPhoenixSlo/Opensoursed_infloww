@@ -16,7 +16,10 @@ retry redoes only the Turns still without a row), carrying the Fan's Arm
 too, route chat at Heat 1 (row `jev_failed`) with the error, never a no_send,
 and the catch-up goes on. Those rows are all it writes. Cutting runs into
 Turns (`cut_runs`) and mapping read rows to the Jev state (`build_state`) are
-pure, apart from the SQL that reads them.
+pure, apart from the SQL that reads them. With the checkpoint's
+`describe_fan_photos` on, his photos read `[he sent: …]` from descriptions
+already cached (`full_ai_photo`; Shadow describes none: no OF client) and the
+row records `photo`.
 
 It has no send path by construction: it imports no OF client, no outbound
 helper, no executor and no lease module, and names no client factory, send,
@@ -32,9 +35,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from automation_registry import register
 from automations import _router_jev as router
+from automations import full_ai_photo
+from automations.full_ai_config import merged
 from automations.full_ai_decide import SALT_VER, Facts, arm_of, decide_turn
 from db.engine import get_session
-from db.models import AiDecision, Message, Transaction
+from db.models import AccountAiConfig, AiDecision, Message, Transaction
 
 log = logging.getLogger("of-relay.automation.full_ai_chat")
 
@@ -105,25 +110,33 @@ def cut_runs(rows, cut) -> list[tuple[tuple | None, list]]:
     return runs
 
 
-def build_state(turn: list, thread_rows: list, bought, offer) -> tuple[dict, bool]:
+def build_state(turn: list, thread_rows: list, bought, offer, *,
+                pending: str | None = None, photos: bool = False) -> tuple[dict, bool]:
     """The Jev state of one Turn and whether it has a Pending offer, from rows
     already read: his run `turn`, the lines before it `thread_rows` (oldest
     first), his last purchase `bought` (a `PURCHASE_KINDS` row or None) and the
-    Pending offer `offer` (or None). Pure: attribute reads only, so rows from
-    any source with `Message`/`Transaction`'s fields work."""
+    Pending offer `offer` (or None). `pending`, when given, is the state's
+    `pending_offer` as already stated (test: `full_ai_test.pending_offer_text`,
+    a Pending tease first); else it is `offer`'s line. Pure: attribute reads
+    only, so rows from any source with `Message`/`Transaction`'s fields work.
+    `photos` (the side's `describe_fan_photos`) switches the `[he sent: …]` tag
+    on these rows (`router.read_photos`); the Writer reads the same rows."""
     # ASSUMPTION: paid flags are read as of decide time, as the probe's sampler
     # did (sampler.py:68); overturned if catch-up rows show it.
     # ASSUMPTION: the probe's clock: every age (each line's `when`, his last
     # purchase) is from his Turn's first message, as probe.py measured it
     # (sampler `t0`). Overturned if rows show long Turns misread as "minutes before".
+    router.read_photos([*turn, *thread_rows], photos)
     t0 = turn[0].created_at
     return router.state(
         [router.line_text(m) for m in turn],
         router.thread(thread_rows, t0), router.her_last_line(thread_rows),
-        router.last_purchase(bought, t0), router.pending_offer(offer)), offer is not None
+        router.last_purchase(bought, t0),
+        router.pending_offer(offer) if pending is None else pending), offer is not None
 
 
-async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message]) -> tuple[dict, bool]:
+async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message],
+                 photos: bool = False) -> tuple[dict, bool]:
     """The Jev state of one Turn and whether it has a Pending offer
     (`build_state`), read in session `s`: the `THREAD_LINES` lines at or before
     `cut` (her outbound that opened the run, None for none), the Pending offer
@@ -153,13 +166,24 @@ async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message]) -> t
                Transaction.kind.in_(router.PURCHASE_KINDS),
                Transaction.occurred_at <= turn[-1].created_at)
         .order_by(Transaction.occurred_at.desc(), Transaction.id.desc()).limit(1))).scalar_one_or_none()
-    return build_state(turn, thread_rows, bought, offer)
+    return build_state(turn, thread_rows, bought, offer, photos=photos)
 
 
-async def _read(account_id: str, fan_id: int, anchor_id: int) -> list[tuple[Message, dict, bool]] | None:
+async def _photos_on(account_id: str) -> bool:
+    """The checkpoint's `describe_fan_photos` (Shadow reads no other config: route flags all on)."""
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, str(account_id))
+    raw = row.full_ai_config_json if row is not None else None
+    return bool(merged(json.loads(raw) if raw else {})["checkpoint"][full_ai_photo.KEY])
+
+
+async def _read(account_id: str, fan_id: int, anchor_id: int, photos: bool = False
+                ) -> list[tuple[Message, dict, bool, dict | None]] | None:
     """The catch-up's one read session: every undecided Turn of the Fan from
     the run holding the payload anchor forward, oldest first, each as its
-    Anchor, Jev state and whether it has a Pending offer. None when the payload anchor is not in `messages`."""
+    Anchor, Jev state, whether it has a Pending offer and its photo record
+    (`full_ai_photo.describe_turn` with no client: cached only; None with
+    `photos` off). None when the payload anchor is not in `messages`."""
     async with get_session() as s:
         first = await s.get(Message, (str(account_id), int(fan_id), int(anchor_id)))
         if first is None:
@@ -175,12 +199,13 @@ async def _read(account_id: str, fan_id: int, anchor_id: int) -> list[tuple[Mess
                 AiDecision.account_id == str(account_id), AiDecision.fan_id == int(fan_id),
                 AiDecision.mode == MODE,
                 AiDecision.trigger_key.in_([str(t[-1].message_id) for _, t in runs])))).scalars())
-        return [(t[-1], *await _state(s, str(account_id), int(fan_id), c, t))
+        return [(t[-1], *await _state(s, str(account_id), int(fan_id), c, t, photos),
+                 await full_ai_photo.describe_turn(str(account_id), t, None) if photos else None)
                 for c, t in runs if str(t[-1].message_id) not in decided]
 
 
 async def _record(account_id: str, fan_id: int, anchor: Message, st: dict, has_offer: bool,
-                  jev: router.Answers | str) -> tuple[int | None, str, str, int | None]:
+                  jev: router.Answers | str, photo: dict | None = None) -> tuple[int | None, str, str, int | None]:
     """INSERT the Turn's Decision row from Jev's answers, or from the error text
     of a failed call. Returns (row id or None, Route, row, Jev ms)."""
     if isinstance(jev, str):
@@ -195,6 +220,8 @@ async def _record(account_id: str, fan_id: int, anchor: Message, st: dict, has_o
     d = decide_turn(Facts(fired=fired, intensity=intensity, pending_offer=has_offer,
                           pending_tease=False, jev_ok=error is None))
     jev_json = {"answers": answers, "intensity": score, "fired": sorted(fired), "state": st}
+    if photo is not None:
+        jev_json["photo"] = photo
     async with get_session() as s:
         row_id = (await s.execute(
             sqlite_insert(AiDecision).values(
@@ -223,17 +250,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     fan_id = int(payload["only_fan_ids"][0])
     recorded, duplicate, rows = 0, 0, []
     try:
-        turns = await _read(account_id, fan_id, int(payload["anchor"]))
+        turns = await _read(account_id, fan_id, int(payload["anchor"]), await _photos_on(account_id))
         if turns is None:
             return {"skipped": "anchor_missing"}
         if not turns:
             return {"skipped": "duplicate_turn"}
-        for anchor, st, has_offer in turns:
+        for anchor, st, has_offer, photo in turns:
             try:
                 jev: router.Answers | str = await router.ask(st, account_id)   # no DB connection held
             except router.GateError as e:                   # never a "no": chat, Heat 1
                 jev = str(e) or type(e).__name__
-            row_id, route, row, ms = await _record(account_id, fan_id, anchor, st, has_offer, jev)
+            row_id, route, row, ms = await _record(account_id, fan_id, anchor, st, has_offer, jev, photo)
             if row_id is None:
                 duplicate += 1
                 continue

@@ -1,6 +1,6 @@
 """automations/full_ai_writers.py — Full AI Chat's Writers: per-Route prompt assembly and the Writer call.
 
-  messages_for(route, row, heat, facts, pick, *, persona)  pure: the Route's chat messages
+  messages_for(route, row, heat, facts, pick, *, persona, hot)  pure: the Route's chat messages
   write(decision, facts, *, deadline) -> WriteResult       the Writer chain through llm_client.chat
   floor(text, lang, offer_ref=None) -> str | None          pure: the code floor's reject reason
   strip_offer(text) -> str                                 pure: every whole `>>OFFER <ref>` line out
@@ -20,8 +20,13 @@ ai_dare OLD-AIC-01 then OLD-AIC-07 joined by NEW glue into one reply; make_right
 OLD-AIC-17's place. sell_now with a Pick (03b, NEW-116) is the old content-ask reply: OLD-AIC-11's
 intro in the offers slot, OLD-AIC-04 with `_CLOSE_BY_ID` as the beat, the OLD-AIC-12 block (one item
 line + SELLING RULES) and OLD-CORE-33's plain price block in OLD-AIC-18's `{sell_section}`, and the
-contract with its `>>OFFER` exception; with a Refusal it is chat plus the need-line in that slot
-(OLD-AIC-12's "filming more soon" sentence; none on inventory_unknown). With `config.gifs` on, the cat-sticker block (NEW-32) and OLD-AIC-18's sticker
+contract with its `>>OFFER` exception (ticket 47: row offer_moment's beat is OLD-AIC-05, a sell
+while `sexual_now` fired gets OLD-AIC-08 with its step 4, and a haggle row's price block is
+OLD-CORE-33's `was_cents` form); with a Refusal it is chat plus the need-line in that slot
+(OLD-AIC-12's "filming more soon" sentence; none on inventory_unknown). A tease with a Pick (ticket 46) puts
+OLD-CORE-24's goal head, the DRAFT tease goal line (NEW-123) and the item line without terms in the
+goal slot; make_right with a Free item swaps the apology-only tail for the item line with OLD-AIC-12's
+FREE terms. With `config.gifs` on, the cat-sticker block (NEW-32) and OLD-AIC-18's sticker
 exception join the prompt. no_send builds no messages.
 `write` walks the side's `config.writers` chain, each Writer once; `floor` is the code floor that
 sends a broken reply to the next Writer.
@@ -47,7 +52,8 @@ from automations._prompt_rules import (
     BIO_CONSISTENCY_GUARDRAIL, NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF,
 )
 from automations._router_jev import line_text
-from automations.full_ai_sell import Pick, Refusal, _money
+from automations.full_ai_config import style_layers
+from automations.full_ai_sell import Pick, Refusal, Teased, _money
 from automations.names import resolve_fan_name
 from automations.welcome_chatter_for_info import (
     _BREATHER_VARIANTS, _HISTORY_TAIL, _REPLY_TEMPERATURE, _STYLE_VARIANTS, _good_examples,
@@ -96,7 +102,7 @@ STICKER_EXCEPTION = " A final STICKER: <tag> line is ALSO allowed (stripped — 
 # tease_off (spec 03a ASSUMPTION wording, D59; pending the owner's OK).
 SELL_OFF_LINE = ("you're not selling in chat right now — if he asks to see something, tell him "
                  "warmly it's on your page and in your mass messages.")
-# OLD-AIC-08 BASE, verbatim (ai_chatter.py:6416-6435; no sell step: selling is off in 03a).
+# OLD-AIC-08 BASE, verbatim (ai_chatter.py:6416-6435); its sell step is SELL_STEP (ticket 47).
 SEXT_HOT = ("THE THREAD IS HOT — a live sexual scene RIGHT NOW. The one way to throw it away is a "
             "get-to-know question (job, day, city, age) — never. Run the scene:\n"
             "1. STAY IN IT — present tense, first person, dirty, SHORT.\n"
@@ -129,8 +135,10 @@ APOLOGY_FRAMES = (
     "aw {name} i'm sorry that one missed 🙈 that's on me for not reading you better — let me make "
     "it up to you",
 )
-# NEW-112 (ticket 34): the make_right glue over the frames, apology only (the free item is 03b).
-MAKE_RIGHT_HEAD = ("YOUR GOAL THIS MESSAGE:\n- START FROM THIS (rewrite it in your own voice, keep "
+# OLD-CORE-24's goal head (_openers.py:383-388), also the tease's (ticket 46).
+GOAL_HEAD = "YOUR GOAL THIS MESSAGE:\n"
+# NEW-112 (ticket 34): the make_right glue over the frames, apology only (a Free item: ticket 46).
+MAKE_RIGHT_HEAD = (GOAL_HEAD + "- START FROM THIS (rewrite it in your own voice, keep "
                    "the apology) — the one line below that fits what he is unhappy about:\n")
 MAKE_RIGHT_TAIL = "- The apology only: no offer, no price and nothing free this time."
 
@@ -143,7 +151,8 @@ INTRO_BY_ID = ("you DO have real content you can send or sell when the moment is
                "YOU CAN ACTUALLY SEND HIM below.")
 # OLD-AIC-12 (ai_chatter.py:2899-3058): the item line, its terms, the block (`sell_customs` off:
 # `_no_customs` = "never customs, ", no customs rule) and the need-line sentence it ends on.
-ITEM_LINE = "- [id {iid}] {kind}{dur} — {label}: {description} — {terms}"
+ITEM_HEAD = "- [id {iid}] {kind}{dur} — {label}: {description}"     # a tease's: no terms (ticket 46)
+ITEM_LINE = ITEM_HEAD + " — {terms}"
 TERMS = "${dollars} to unlock"
 NO_CUSTOMS = "never customs, "
 FILMING_MORE = "If he wants more, you're filming more soon — never promise specifics."
@@ -164,11 +173,37 @@ MANIFEST = ("CONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed �
 # OLD-CORE-33 plain form (_ppv_caption.py:253-254), `px` as `_money` renders it.
 PRICE_BLOCK = ("THE PRICE\nIt unlocks at {px}. You may name it or not, but if you name a price it "
                "must be exactly {px}.")
+# OLD-CORE-33 `was_cents` form (_ppv_caption.py:247-251), the old discount resend: a haggle row's
+# block when the quote is under the list (ticket 47). `was` = the list, `px` = the quote.
+WAS_PRICE_BLOCK = ("THE PRICE\nHe already saw this piece at {was} and did not buy. It is {px} now "
+                   "because you cut it for him. You may name {px}; if you name a price it must be "
+                   "exactly {px}. Never beg and never apologise for the first price.")
+# OLD-AIC-05 (ai_chatter.py:6341-6346), the offer_moment row's beat (ticket 47).
+ESCALATION = ("HE'S CLEARLY INTO IT RIGHT NOW — the moment to SELL, not tease. Match his heat in one "
+              "short line, then close it: {close}")
+# OLD-AIC-08's step 4, appended to SEXT_HOT on a sell Turn while `sexual_now` fired (ticket 47);
+# `example` = the lane's `sell_caption_example`. Cut: its last sentence ("If he hasn't described
+# anything yet, do step 2 first and sell on the next message.") — the Pick rides this Turn whatever
+# the Writer writes, so a "sell later" reply would put the PPV on a question (rwl fa3, ticket 47).
+SELL_STEP = ("\n4. THEN SELL HIM WHAT HE JUST DESCRIBED. {close} Write it matched to HIS OWN WORDS, as "
+             "the NEXT LINE OF THIS SCENE — never as a product. {example} — not 'check out my new "
+             "video'.")
 # OLD-AIC-18's OUTPUT_CONTRACT when the sell surface has the marker.
 CONTRACT_OFFER = (CONTRACT + " ONE exception: the final >>OFFER line when you pitch a piece "
                   "(stripped — he never sees it).")
 # Refusal -> need-line in the sell slot (spec 03b › Contracts, ticket 10 r3); inventory_unknown: none.
 _NEED_LINES = {"no_match": FILMING_MORE, "all_owned": FILMING_MORE, "no_priced_items": FILMING_MORE}
+
+# 03b tease (ticket 46). NEW-123, DRAFT (pending the owner's OK): the tease goal line over the
+# Pick's OLD-AIC-12 item line without terms (no price, no `>>OFFER`; his next reply sells it).
+TEASE_GOAL = ("- Tease this piece from its description only — make him want it. Name no price and "
+              "don't send it yet: it comes with your next message.\n")
+# OLD-AIC-12's free terms, verbatim (ai_chatter.py:2930-2939), on a make_right Free item's line.
+FREE_TERMS = "FREE — just send it when the moment fits"
+# NEW-126, DRAFT (pending the owner's OK): `caption_writer` "caption" — the chat bubbles before a
+# PPV whose caption the separate call writes (`full_ai_caption`): no item, price or `>>OFFER`.
+CAPTION_APART = ("- A piece goes to him right after this message, with its own caption — lead into "
+                 "it warmly. Don't describe it and name no price.\n")
 
 # The Fan fields the prompt reads (`_good_examples`, `resolve_fan_name`, the facts block). A test
 # Fan has no `fans` row: these come from the session's `fan_info` fold, the rest read None.
@@ -198,7 +233,15 @@ def _filled(v) -> bool:
 def _need_block(facts, fan_just_asked: bool, rng: random.Random) -> str:
     """OLD-AIC-10's tiers in their order: nothing missing -> know enough; the info Jev's pick
     (`facts.next_question`) -> the ask head + wcfi's line for it; he asked -> answer; else a
-    breather."""
+    breather. With `info_questions: "list"` on chat (`facts.ask_list`) wcfi's own tiers: nothing
+    left to ask -> know enough; its ask call -> the ask head + every still-need line; he asked ->
+    answer; else a breather."""
+    if (al := getattr(facts, "ask_list", None)) is not None:
+        if not al.lines:
+            return KNOW_ENOUGH
+        if al.ask:
+            return ASK_HEAD + "\n".join(al.lines)
+        return FAN_ASKED if fan_just_asked else rng.choice(_BREATHER_VARIANTS)
     if not info_missing(facts.config, facts.fan_info):
         return KNOW_ENOUGH
     if facts.next_question:                     # a `missing` field (`full_ai_turn._info`): wcfi has its line
@@ -221,7 +264,7 @@ def _chat_system(persona: str, need_block: str, call_him: str, style: str, good:
     stickers = f"\n\n{sticker_block}" if sticker_block else ""
     return (
         f"{persona}\n\n"
-        + ROLE + SELF_BAN + f"{offers} " + READ_ALL
+        + ROLE + SELF_BAN + (f"{offers} " if offers else "") + READ_ALL
         + f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{need_block}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
@@ -276,10 +319,11 @@ def _chat_user(f: SimpleNamespace, rows: list, spent: list) -> str:
 
 
 def style_flags(config: dict) -> dict[str, bool]:
-    """The side's `text_style` as the reply chain's style switches: girl = every human-texting
-    layer on (the old engines' opt-ins), formal = all off."""
-    on = config.get("text_style") == "girl"
-    return {"style_on": on, "nonnative_on": on, "spacing_on": on, "typo_on": on, "painful_on": on}
+    """The side's `style` layers (`full_ai_config.style_layers`; an old `text_style` side: girl =
+    every layer on, formal = all off) as the reply chain's style switches."""
+    s = style_layers(config)
+    return {"style_on": s["texting"], "nonnative_on": s["nonnative"], "spacing_on": s["spacing"],
+            "typo_on": s["typos"], "painful_on": s["painful"]}
 
 
 def _his_first_name(f: SimpleNamespace, v: _voice.VoiceBlocks) -> str:
@@ -290,8 +334,14 @@ def _his_first_name(f: SimpleNamespace, v: _voice.VoiceBlocks) -> str:
     return first if first.isalpha() and 2 <= len(first) <= 20 else v.fan_address
 
 
-def _beat(route: str, heat: int, f: SimpleNamespace) -> str | None:
-    """The Route's beat in OLD-AIC-18's goal slot; None keeps the chat goal (`_need_block`)."""
+def _beat(route: str, heat: int, f: SimpleNamespace, item: Pick | None) -> str | None:
+    """The Route's beat in OLD-AIC-18's goal slot; None keeps the chat goal (`_need_block`).
+    `item` is the Pick the prompt carries (`_carries_item`). A tease with one: OLD-CORE-24's head,
+    the DRAFT tease goal line and the item line without terms. make_right with a Free item: the
+    frames, then the item line with OLD-AIC-12's FREE terms in place of the apology-only tail (no
+    SELLING RULES)."""
+    if route == "tease" and item:
+        return GOAL_HEAD + TEASE_GOAL + item_line(item, None)
     if route == "sext":
         return f"{SEXT_HOT}\n{SEXT_HEAT.format(heat=heat)}"
     if route == "ai_dare":
@@ -299,13 +349,20 @@ def _beat(route: str, heat: int, f: SimpleNamespace) -> str | None:
     if route == "make_right":
         name = _his_first_name(f, _voice.HER)
         return (MAKE_RIGHT_HEAD + "".join(f"  - {x.replace('{name}', name)}\n" for x in APOLOGY_FRAMES)
-                + MAKE_RIGHT_TAIL)
+                + (item_line(item, FREE_TERMS) if item else MAKE_RIGHT_TAIL))
     return None
 
 
-def item_line(pick: Pick, terms: str) -> str:
+def _carries_item(route: str, pick: Pick | Refusal | None) -> bool:
+    """A tease with a Pick, or make_right with a Free item (a Pick at price 0; a priced Pick there
+    is ignored, as on every non-selling Route)."""
+    return isinstance(pick, Pick) and (route == "tease" or (route == "make_right" and pick.price_cents == 0))
+
+
+def item_line(pick: Pick, terms: str | None) -> str:
     """OLD-AIC-12's item line for the Pick: its `ref` as the id, the anchor's kind and length
-    (` m:ss` on a clip), the label and the anchor's describe text (`pick.facts["description"]`).
+    (` m:ss` on a clip), the label and the anchor's describe text (`pick.facts["description"]`);
+    `terms` None drops the ` — {terms}` tail (a tease names no price).
 
     ASSUMPTION: the vault has no item label, so the label is OLD-AIC-12's own fallback
     'untitled', or "<n> photos" for a photo set (the count is true; the Writer must not invent
@@ -315,25 +372,58 @@ def item_line(pick: Pick, terms: str) -> str:
     secs = items[0].get("seconds") if items else None
     dur = f" {secs // 60}:{secs % 60:02d}" if pick.format == "video" and secs else ""
     label = f"{len(pick.media)} photos" if len(pick.media) > 1 else "untitled"
-    return ITEM_LINE.format(iid=pick.ref, kind=pick.format, dur=dur, label=label,
-                            description=str(facts.get("description") or "").strip(), terms=terms)
+    line = ITEM_HEAD if terms is None else ITEM_LINE
+    return line.format(iid=pick.ref, kind=pick.format, dur=dur, label=label,
+                       description=str(facts.get("description") or "").strip(), terms=terms)
 
 
-def sell_section(pick: Pick) -> str:
-    """The sell_now `{sell_section}`: the OLD-AIC-12 block with the one item line, then the
-    OLD-CORE-33 plain price block at the Pick's price."""
+def sell_section(pick: Pick, was_cents: int | None) -> str:
+    """The sell_now `{sell_section}`: the OLD-AIC-12 block with the one item line, then
+    OLD-CORE-33's price block at the Pick's price: its `was_cents` form when `was_cents` (the price
+    he already saw this piece at, `was_cents_of`) is over the price, as the old code used it only
+    when `was > price`; else the plain form."""
     line = item_line(pick, TERMS.format(dollars=pick.price_cents // 100))
-    return (MANIFEST.format(no_customs=NO_CUSTOMS, items=line) + "\n\n"
-            + PRICE_BLOCK.format(px=_money(pick.price_cents)))
+    px = _money(pick.price_cents)
+    price = (WAS_PRICE_BLOCK.format(was=_money(was_cents), px=px)
+             if was_cents and was_cents > pick.price_cents else PRICE_BLOCK.format(px=px))
+    return MANIFEST.format(no_customs=NO_CUSTOMS, items=line) + "\n\n" + price
+
+
+def was_cents_of(row: str, pick: Pick, offer_piece: Teased | None) -> int | None:
+    """The price he already saw `pick` at: on a haggle row re-offering the open Offer's own piece
+    (`offer_piece`, `TurnFacts.offer_piece`; same locked media), that Offer's list; else None. A
+    Pending tease named no price and a re-pick is a piece he never saw, so neither has one."""
+    if row != "haggle" or offer_piece is None or tuple(sorted(pick.media)) != offer_piece.locked:
+        return None
+    return offer_piece.list_cents
+
+
+def sell_beat(row: str, hot: bool) -> str:
+    """The sell_now beat in OLD-AIC-18's goal slot: OLD-AIC-04 (rows sell, haggle) or OLD-AIC-05
+    (offer_moment), each closing with `_CLOSE_BY_ID`; while `sexual_now` fired (`hot`, any sell row)
+    OLD-AIC-08 with its step 4 instead.
+    ASSUMPTION: `hot` also needs the side's `sext_on` (`write`): with sexting off no sell Turn gets
+    the sext scene prompt. Overturned if the owner wants step 4 whatever `sext_on` says.
+    ASSUMPTION: the hot sell beat carries no NEW-114 Heat line (old OLD-AIC-08 had none; the Heat
+    line is the sext Route's). Overturned if the owner wants it on hot sells too."""
+    if hot:
+        return SEXT_HOT + SELL_STEP.format(close=CLOSE_BY_ID, example=_voice.HER.sell_caption_example)
+    return (ESCALATION if row == "offer_moment" else CONTENT_ASK).format(close=CLOSE_BY_ID)
 
 
 def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | None, *,
-                 persona: str = PERSONA_FALLBACK) -> list[dict]:
+                 persona: str = PERSONA_FALLBACK, hot: bool = False, plain: bool = False) -> list[dict]:
     """The Route's Writer messages; [] for no_send (no Writer call). Pure; the style and breather
     draws are seeded per Turn (`facts.anchor_key`), so a replay builds the same prompt. `pick` is
     the sell step's result (03b): on sell_now a Pick makes the content-ask sell prompt (its item's
-    describe text from `pick.facts["description"]`), a Refusal chat plus its need-line; ignored on
-    every other Route."""
+    describe text from `pick.facts["description"]`), a Refusal chat plus its need-line; on tease a
+    Pick makes the priceless tease (`_beat`), a Refusal chat plus its need-line; on make_right a
+    Free item (price 0) joins the apology; ignored on every other Route. On sell_now the beat is
+    `sell_beat(row, hot)` (`hot`: `sexual_now` fired on a `sext_on` side) and the price block
+    `sell_section(pick, was_cents_of(row, pick, facts.offer_piece))`. `plain` (the separate
+    caption wrote the PPV's line, `config.caption_writer` "caption"): a sell_now Pick or Free item
+    gets no item line, price block or marker — the DRAFT `CAPTION_APART` goal (under OLD-AIC-08's
+    scene while `hot`, under the apology frames on make_right) and OLD-AIC-17's `NO_SELL_OFFERS`."""
     if route == "no_send":
         return []
     rows = facts.cut_rows
@@ -349,14 +439,27 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
             break
     f = _fan(facts.fan_info)
     selling = route == "sell_now" and isinstance(pick, Pick)
-    if selling:
-        need = CONTENT_ASK.format(close=CLOSE_BY_ID)
-        sell_block, offers = sell_section(pick), INTRO_BY_ID
+    apart = plain and (selling or (route == "make_right" and _carries_item(route, pick)))
+    if apart:
+        if route == "make_right":
+            name = _his_first_name(f, _voice.HER)
+            need = (MAKE_RIGHT_HEAD + "".join(f"  - {x.replace('{name}', name)}\n" for x in APOLOGY_FRAMES)
+                    + CAPTION_APART)
+        else:
+            need = f"{SEXT_HOT}\n{CAPTION_APART}" if hot else GOAL_HEAD + CAPTION_APART
+        sell_block, offers, selling = "", NO_SELL_OFFERS, False
+    elif selling:
+        need = sell_beat(row, hot)
+        sell_block, offers = sell_section(pick, was_cents_of(row, pick, facts.offer_piece)), INTRO_BY_ID
     else:
-        need = _beat(route, heat, f) or _need_block(facts, "?" in " ".join(fan_run), rng)
-        refused = route == "sell_now" and isinstance(pick, Refusal)
+        item = pick if _carries_item(route, pick) else None
+        need = _beat(route, heat, f, item) or _need_block(facts, "?" in " ".join(fan_run), rng)
+        refused = route in ("sell_now", "tease") and isinstance(pick, Refusal)
         sell_block = _NEED_LINES.get(pick.reason, "") if refused else ""
-        offers = SELL_OFF_LINE if row in ("sell_off", "tease_off") else NO_SELL_OFFERS
+        # ASSUMPTION (ticket 46): a tease / Free item leaves the offers slot empty — OLD-AIC-17's
+        # "never … pitch a piece yourself" fights its goal, and `_INTRO_BY_ID` points at a manifest
+        # these prompts don't carry.
+        offers = "" if item else SELL_OFF_LINE if row in ("sell_off", "tease_off") else NO_SELL_OFFERS
     durable = _filled(f.real_name) or _filled(f.custom_nickname)
     name = resolve_fan_name(f)
     call_him = CALL_HIM.format(name=name.split("/")[0][:40]) if durable and name else ""
@@ -366,7 +469,10 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
                           sell_block=sell_block, marker=selling,
                           # GIFs on: the pack offered every Turn (no roll), her lane.
                           sticker_block=cat_stickers.prompt_block("allow", _voice.VOICE_HER) if facts.config.get("gifs") else "")
-    return [{"role": "system", "content": system}, {"role": "user", "content": _chat_user(f, rows, facts.spent)}]
+    # No spend line beside a Pick (sold, teased or free): its amounts would fail the price check
+    # (rwl fa3 S3).
+    spent = [] if apart or selling or _carries_item(route, pick) else facts.spent
+    return [{"role": "system", "content": system}, {"role": "user", "content": _chat_user(f, rows, spent)}]
 
 
 # The code floor (research 11 › §6): a reply holding prompt or protocol text, junk script or no
@@ -408,14 +514,16 @@ def floor(text: str, lang: str, offer_ref: int | None = None) -> str | None:
     return None
 
 
-def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None) -> str | None:
+def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
+           item: bool = False) -> str | None:
     """The floor on what the fan would read. Sticker markers go first (the Turn strips them
     before the chain anyway), so `[STICKER: kiss]` is not a `bracket` reject. A reply that is
-    only a marker passes with GIFs on and a known tag (the gif is the reply); otherwise it
-    has no words left and the next Writer is tried."""
+    only a marker passes with GIFs on and a known tag (the gif is the reply) when it carries no
+    item (no offer expected, `offer_ref` None, and no tease / Free item, `item` False); otherwise
+    it has no words left and the next Writer is tried."""
     body, tag = cat_stickers.parse_marker(text)
     if not body:
-        return None if gifs and tag else "no_letters"
+        return None if gifs and tag and offer_ref is None and not item else "no_letters"
     return floor(body, lang, offer_ref)
 
 
@@ -432,7 +540,8 @@ def _outcome(e: llm_client.LLMError) -> str:
     return f"http_{status}" if status is not None else "timeout"
 
 
-async def write(decision, facts, *, deadline: float, writers: list[str] | None = None) -> WriteResult:
+async def write(decision, facts, *, deadline: float, writers: list[str] | None = None,
+                plain: bool = False) -> WriteResult:
     """Build the Route's messages once (her persona read as wcfi reads it), then walk the side's
     `writers` in order, one attempt each within `writer_timeout_s` capped at the time left before
     `deadline` (the Turn's `time.monotonic()` instant, set by `run_turn`). The next Writer runs
@@ -441,12 +550,16 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     `timeout`. `floor_reason` is the first floor reject's reason. `facts.pick` (03b's sell
     step) reaches `messages_for`, and the answering text has its `>>OFFER` line stripped
     (`strip_offer`, floor on or off). `writers` replaces the side's list (the Claim audit's one
-    rewrite passes the Writer that answered, ticket 45)."""
+    rewrite passes the Writer that answered, ticket 45). `plain`: the chat bubbles beside a separate
+    caption (`messages_for`), so no `>>OFFER` line is expected (any rejects `offer_ref`)."""
     cfg = facts.config
     pick = facts.pick
-    offer_ref = pick.ref if decision.route == "sell_now" and isinstance(pick, Pick) else None
+    selling = decision.route == "sell_now" and isinstance(pick, Pick)
+    offer_ref = pick.ref if selling and not plain else None
+    item = _carries_item(decision.route, pick) or selling and plain   # no sticker-only reply (S2)
     msgs = messages_for(decision.route, decision.row, decision.heat, facts, pick,
-                        persona=await _load_persona(facts.account_id))
+                        persona=await _load_persona(facts.account_id),
+                        hot="sexual_now" in decision.fired and bool(cfg["sext_on"]), plain=plain)
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
     res = WriteResult(None, None)
     for writer in writers or cfg["writers"]:
@@ -460,7 +573,8 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
                                       account_id=facts.account_id, temperature=_REPLY_TEMPERATURE,
                                       timeout_s=timeout, max_attempts=1)
             text = (r.content or "").strip()
-            reason = reject(text, lang, bool(cfg.get("gifs")), offer_ref) if text and cfg["floor_on"] else None
+            reason = (reject(text, lang, bool(cfg.get("gifs")), offer_ref, item=item)
+                      if text and cfg["floor_on"] else None)
             outcome = "empty" if not text else f"floor:{reason}" if reason else "ok"
         except llm_client.LLMError as e:
             outcome = _outcome(e)

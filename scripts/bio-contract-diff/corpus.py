@@ -11,9 +11,9 @@ from __future__ import annotations
 ASSET_SHA256 = {
     "index.html": ("09cffdaf12cf606398d4d6ddb1e96e7cc94a6843364f76a626014a9adcae8464",
                    "96b81351b6a3b6fd77d24acc94cdbed87a94e11e6e70d25cab63df29d894307d"),
-    "script.js": ("15402682595f7b199c26209cbe931902a8e9c0c97be82c6e7eed27df2d028f6c",
+    "script.js": ("2846f763a1518a965d1282f3f693efa369ebfea613859e1b3981fdbc6d5e09fd",
                   "34aa2a993971ce1ada0fce6a901e83b5147983df886219b305a7ef0b6bd82433"),
-    "style.css": ("a48004d8b1dde8df01bf53e7d60c2d3c0e39de075d2f46ed4fbefb4352f61470",
+    "style.css": ("91b10cd54fabefc73867534c0bcb9dc72330b860e02e074cd0a9a42d2fdae821",
                   "28714ba9316b1952e44ad7adae2a7738245011b13ffe790ac179da81182f99c4"),
 }
 

@@ -1,0 +1,85 @@
+/* The help bot's Ultra look (docs/plans/ultra-mode/issues/08): scoped to the panel, dark in both app themes.
+ * The --color-* overrides make the shared cards (PlanStepCard, PickCard) read on the near-black panel. */
+.panel {
+  --ultra-bg: #0b0b0d;
+  --ultra-red: #e11d2e;
+  --ultra-glow: rgb(225 29 46 / 35%);
+  --color-bg: #050506;
+  --color-panel: var(--ultra-bg);
+  --color-bg-elev-1: #16161a;
+  --color-bg-elev-2: #202026;
+  --color-fg: #ededee;
+  --color-fg-dim: #a9a9b0;
+  --color-muted: #8b8b93;
+  --color-border: #2a2a31;
+  --color-border-light: #3b3b44;
+  /* Red for rings and links; a lighter red for text on near-black. */
+  --color-accent: #ff4d5a;
+  --color-accent-hover: #ff7079;
+  color-scheme: dark;
+  background: var(--ultra-bg);
+  color: var(--color-fg);
+  border: 1px solid var(--ultra-red);
+  box-shadow: 0 0 24px var(--ultra-glow), 0 8px 40px rgb(0 0 0 / 50%);
+}
+
+.title {
+  color: var(--ultra-red);
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.14em;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--ultra-red);
+  box-shadow: 0 0 8px var(--ultra-glow);
+  animation: ultraPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes ultraPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.8); }
+}
+
+/* Numbered steps, red numbers; a running step gets a thin red progress line along its bottom edge. */
+.steps :global([data-step-num]) { color: var(--ultra-red); }
+.steps :global(li[data-state="started"]) { overflow: hidden; }
+.steps :global(li[data-state="started"])::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 40%;
+  background: var(--ultra-red);
+  animation: ultraSweep 1.6s ease-in-out infinite;
+}
+
+@keyframes ultraSweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.ok {
+  background: var(--ultra-red);
+  color: #ffffff;
+}
+.ok:hover:not(:disabled) { background: #c81425; }
+
+.ghost {
+  border: 1px solid var(--color-border-light);
+  color: var(--color-fg);
+}
+.ghost:hover:not(:disabled) { border-color: var(--ultra-red); }
+
+.composer { border: 1px solid var(--color-border); }
+.composer:focus-within { border-color: var(--ultra-red); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dot { animation: none; }
+  .steps :global(li[data-state="started"])::after { animation: none; width: 100%; transform: none; }
+}

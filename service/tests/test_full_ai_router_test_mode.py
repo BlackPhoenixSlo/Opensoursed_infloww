@@ -9,6 +9,8 @@ _harness temp DB.
   case_shadow_request_golden   the recorded Jev request (state + questions + model,
                                serialized) equals the golden bytes, and the row's
                                `question_version` is the pre-03b `QUESTION_VERSION`
+  case_golden_file_pinned      the golden file's sha256 is the one captured at 10481c760
+                               (ticket 47 phase B: nobody regenerated it)
 
 The golden (`test_full_ai_router_test_mode.shadow_request.golden.json`) was captured from
 the unchanged Router module at 10481c760, before ticket 43 edited `_router_jev.py`. Never
@@ -23,19 +25,20 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 _harness.bootstrap()
 
+import hashlib  # noqa: E402
 import json  # noqa: E402
 from datetime import timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from _full_ai_fixtures import KIND, QUIET, T0, FakeJev, _dm, _fake_jev, _msg, _rows, _seed  # noqa: E402
 from automation_executor import run_once  # noqa: E402
-from automations import _router_jev as rj  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Transaction  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_full_ai_router_test_mode.shadow_request.golden.json")
 # `_router_jev.QUESTION_VERSION` at 10481c760 (Phase 01 + `gif_fits`), before ticket 43.
 PRE_03B_QUESTION_VERSION = "b3202b420ab0"
+GOLDEN_SHA256 = "c83e5dc592bd3d5cb04d5418256f056f354cc5936f1425217833e994aa1dba31"
 
 
 def _request_bytes(call: dict) -> bytes:
@@ -76,6 +79,10 @@ async def case_shadow_request_golden():
     (r,) = await _rows("fa_golden")
     assert r.mode == "shadow", r.mode
     assert r.question_version == PRE_03B_QUESTION_VERSION, r.question_version
+
+
+async def case_golden_file_pinned():
+    assert hashlib.sha256(GOLDEN.read_bytes()).hexdigest() == GOLDEN_SHA256
 
 
 _harness.run()

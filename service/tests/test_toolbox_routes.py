@@ -10,6 +10,7 @@ Cases:
                              write tool only, which then must carry a `check` (its echo test).
                              `account_id` may be no body field: build_request binds it as X-Account-Id +
                              `?account_id=`, which the isolation middleware and `_resolve_account_id` read.
+                             A tool with a `body` builder is checked on the body it builds from BODY_SAMPLES.
   case_paths_full_match    — a sample request to each tool's path is dispatched to exactly that route +
                              method by the token gate's own first-FULL-match walk, and is on the token
                              allowlist.
@@ -17,8 +18,9 @@ Cases:
   case_schema_rules        — names unique + [a-z0-9_]{1,64}; descriptions set; args forbid unknown keys;
                              each client schema is a closed object with no $ref / $defs and no top-level
                              oneOf / anyOf / allOf; GET implies effect "read".
-  case_send_text_declared  — send tools exist (mass_send, post_create); each declares `model_text` (each a
-                             str arg) and a `text_kind`, and its required string args are all model_text.
+  case_send_text_declared  — send tools exist (mass_send, post_create, auto_mass, auto_story); each declares a
+                             `text_kind` and `model_text` (each a str arg; none only for auto_story), and its
+                             required string args are all model_text.
   case_open_pages_exist    — each Open path (and per-value path) is an `app/app/**/page.tsx` (a `[x]` segment
                              takes any one segment, a trailing `[[...x]]` zero or more: /of-manager/home).
 
@@ -73,6 +75,11 @@ def _args(tool: td.Tool) -> dict[str, bool]:
     return {f.alias or n: f.is_required() for n, f in tool.args.model_fields.items()}
 
 
+BODY_SAMPLES = {"auto_mass": {"account_id": "1", "every_hours": 24, "text": "hi", "media_folder_id": 7,
+                              "user_lists": ["fans"]},
+                "auto_story": {"account_id": "1", "every_hours": 24, "folder_id": 7}}
+
+
 def case_routes_exist() -> None:
     for t in td.TOOLS:
         _route(t)
@@ -82,6 +89,8 @@ def case_args_match_route() -> None:
     for t in td.TOOLS:
         params = _route_params(t, _route(t))
         args, fixed = _args(t), dict(t.fixed)
+        if t.body is not None:
+            args = {k: True for k in td.build_request(t, td.validate_args(t, BODY_SAMPLES[t.name])).json}
         for name in (*(a for a in args if a != "account_id" or "account_id" in params), *fixed):
             assert name in params, f"{t.name}: arg {name!r} is not a param of {t.method} {t.path} ({sorted(params)})"
         for name, required in params.items():
@@ -134,12 +143,13 @@ def case_schema_rules() -> None:
 
 def case_send_text_declared() -> None:
     sends = {t.name for t in td.TOOLS if t.effect == "send"}
-    assert {"mass_send", "post_create"} <= sends, sends
+    assert {"mass_send", "post_create", "auto_mass", "auto_story"} <= sends, sends
     for t in td.TOOLS:
         if t.effect != "send":
             assert not t.model_text and t.text_kind is None, t.name
             continue
-        assert t.model_text and t.text_kind in ("mass", "post"), f"{t.name}: send text undeclared"
+        assert t.text_kind in ("mass", "post", "auto_mass", "auto_story"), f"{t.name}: send kind undeclared"
+        assert t.model_text or t.text_kind == "auto_story", f"{t.name}: send text undeclared"
         fields = t.args.model_fields
         for path in t.model_text:
             assert path in fields and fields[path].annotation is str, (t.name, path, "not a str arg")

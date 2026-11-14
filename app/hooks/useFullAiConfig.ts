@@ -10,7 +10,7 @@
  *                                            then `draftSaved` with the stored draft and rev
  *   POST /admin/full-ai/config/save | rollback {account_id, rev}   `commit`, then `saved` / `rolledBack`
  *
- * Every write answers the GET shape. A field error is 422 `{errors: ["<key>: <why>"]}` → `configFailed`; a stale rev is
+ * Every write answers the GET shape. A field error is 422 `{errors: ["<key or page label>: <why>"]}` → `configFailed`; a stale rev is
  * 409 → `stale` (the page asks for a reload instead of overwriting). Both read through `RelayError.body`. Reload (a fresh
  * GET → `loaded`) is also the way back from a refused edit or a failed read: it drops the unstored edit. Keep mine PUTs
  * the page's draft on the applied rev (`keepMineSave`); Take theirs only dispatches.
@@ -32,10 +32,6 @@ function failed(e: unknown): TestChatAction {
   const errors = e instanceof RelayError ? (e.body as { errors?: unknown } | null)?.errors : undefined;
   return { type: "configFailed", errors: Array.isArray(errors) ? errors.map(String) : [errText(e, "Request failed")] };
 }
-
-/** The server's `text_style` wire value for the casual house style (`full_ai_config.TEXT_STYLES`).
- *  Named here because the role-copy guard bans the word in component source. */
-export const CASUAL_STYLE = "girl";
 
 /** One account's Full AI config query key: Do mode's full_ai_config apply invalidates it on 200 (spec 03c), and the
  *  page's config read below refetches. */
@@ -133,7 +129,9 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
 
   const save = useCallback(() => void commit("save"), [commit]);
   const rollback = useCallback(() => void commit("rollback"), [commit]);
-  return { edit, putDraft, save, rollback, reload, keepMine, takeTheirs };
+  /** The Writer select's options (the GET's `writer_models`; empty until it answers). */
+  const writerModels = data?.writer_models ?? [];
+  return { edit, putDraft, save, rollback, reload, keepMine, takeTheirs, writerModels };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

@@ -14,7 +14,8 @@ path plus `ownership.stamp_media_owned` patched to raise and never hit.
   case_left_sell_off_right_ppv      same line: checkpoint sell-off line, draft a PPV
   case_one_pick_per_turn            every Route reachable (chat, sext, ai_dare, make_right, no_send,
                                     sell_now, R10 rows): `full_ai_sell.pick` called ≤ 1 per Turn,
-                                    only on sell_now; ≤ 1 PPV part
+                                    only on sell_now and tease (ticket 46; make_right here has no
+                                    Buy); ≤ 1 PPV part, none on a tease
   case_refusals                     empty vault no_match, all unpriced no_priced_items (both the
                                     "filming more soon" need-line), rows read raising
                                     inventory_unknown, the pool raising the same (plain chat): no PPV,
@@ -33,7 +34,7 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 from _full_ai_sell_helpers import (  # noqa: E402
-    A, NANO, OPENROUTER, PRICED, PICS, _body, _db, _hot, _no_offer, _picks, _post, _ppvs,
+    NANO, OPENROUTER, PRICED, _body, _db, _hot, _no_offer, _picks, _post, _ppvs,
     _reply, _rows, _sell_draft, _system, _vault,
 )
 import json  # noqa: E402
@@ -101,8 +102,9 @@ def case_left_sell_off_right_ppv():
 
 
 def case_one_pick_per_turn():
-    """Every Route reachable through the Test chat: a Pick only on sell_now, never more than one
-    per Turn, never more than one PPV part."""
+    """Every Route reachable through the Test chat: a Pick only on sell_now and tease (make_right
+    here has no Buy, so no Free item), never more than one per Turn, never more than one PPV part,
+    none on a tease (its Pick on the row, priceless)."""
     cases = [
         ("chat", QUIET, "draft"),
         ("sext", _hot(sexual_now=0.9), "draft"),
@@ -124,13 +126,15 @@ def case_one_pick_per_turn():
             got = r.json()
             seen.add(got["route"])
             assert len(picks) <= 1, (tag, picks)
-            assert (len(picks) == 1) is (got["route"] == "sell_now"), (tag, got["route"], picks)
-            assert len(_ppvs(got["parts"])) <= 1, (tag, got["parts"])
+            assert (len(picks) == 1) is (got["route"] in ("sell_now", "tease")), (tag, got["route"], picks)
+            assert len(_ppvs(got["parts"])) <= (got["route"] == "sell_now"), (tag, got["parts"])
             (row,) = _rows(pair)
-            if got["route"] != "sell_now":
+            if got["route"] == "tease":
+                assert (got["offer"]["kind"], got["offer"]["price_cents"]) == ("tease", None), (tag, got)
+            elif got["route"] != "sell_now":
                 _no_offer(row)
-                assert got["offer"] is None, (tag, got)    # null off sell_now
-    assert {"chat", "sext", "ai_dare", "make_right", "no_send", "sell_now"} <= seen, seen
+                assert got["offer"] is None, (tag, got)    # null off sell_now / tease
+    assert {"chat", "sext", "ai_dare", "make_right", "no_send", "sell_now", "tease"} <= seen, seen
 
 
 def case_refusals():

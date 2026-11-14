@@ -184,6 +184,8 @@ ROUTES = [("GET", BASE), ("POST", BASE), ("GET", f"{BASE}/stock/onlyicon.webp"),
           ("GET", f"{BASE}/{B_PID}"), ("PATCH", f"{BASE}/{B_PID}"), ("DELETE", f"{BASE}/{B_PID}"),
           ("POST", f"{BASE}/{B_PID}/avatar"), ("DELETE", f"{BASE}/{B_PID}/avatar"),
           ("POST", f"{BASE}/{B_PID}/avatar/vault"),
+          ("POST", f"{BASE}/{B_PID}/background"), ("DELETE", f"{BASE}/{B_PID}/background"),
+          ("POST", f"{BASE}/{B_PID}/background/vault"),
           ("POST", f"{BASE}/{B_PID}/links"), ("PUT", f"{BASE}/{B_PID}/links/order"),
           ("PATCH", f"{BASE}/{B_PID}/links/{B_LID}"), ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}"),
           ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background"),
@@ -479,6 +481,23 @@ def case_uploads():
     page = upload(owner, bg, gif.getvalue(), "a.gif").json()
     im = served(page["links"][0]["background_url"])
     assert im.size == (720, 1080) and im.convert("RGB").getpixel((10, 10))[0] > 200, (im.size,)
+    # the page's own background: 1080 max side, in the public JSON, removable
+    pbg = f"{BASE}/{pid}/background"
+    assert public_json("upload_page").json()["profile"]["backgroundUrl"] == ""
+    page = upload(owner, pbg, img("PNG", (3000, 1500))).json()
+    pbg_name = page["profile"]["background_url"].rsplit("/", 1)[1]
+    assert pbg_name.startswith("background_") and served(page["profile"]["background_url"]).size == (1080, 540)
+    assert public_json("upload_page").json()["profile"]["backgroundUrl"] == f"/api/files/profiles/{pid}/{pbg_name}"
+    assert page["profile"]["avatar_url"].rsplit("/", 1)[1] == name2, "the avatar stays"
+    # the upload is audited as the page's stored Creator (no X-Account-Id sent)
+    owner.patch(f"{BASE}/{pid}", json={"account_id": IDS["creator_a"]}).raise_for_status()
+    assert upload(owner, pbg, img("PNG", (3000, 1500))).status_code == 200
+    assert sql("SELECT account_id FROM actions ORDER BY id DESC LIMIT 1") == [(IDS["creator_a"],)]
+    owner.patch(f"{BASE}/{pid}", json={"account_id": None}).raise_for_status()
+    pbg_name = owner.get(f"{BASE}/{pid}").json()["profile"]["background_url"].rsplit("/", 1)[1]
+    page = owner.delete(pbg).json()
+    assert page["profile"]["background_url"] == "" and not (FILES / "profiles" / pid / pbg_name).exists()
+    assert (FILES / "profiles" / pid / name2).exists()
     # removes
     page = owner.delete(av).json()
     assert page["profile"]["avatar"] == "" and not (FILES / "profiles" / pid / name2).exists()
@@ -658,6 +677,14 @@ def case_vault_avatar_photo_only_and_owned():
         assert served(lk["background_url"]).size[0] > 512, lk
         assert owner.post(burl, json={"media_id": 9002}).status_code == 415
         assert owner.post(f"{BASE}/{bare}/links/{lid}/background/vault", json={"media_id": 9001}).status_code == 404
+        # the page's background from the vault: photo only, 1080 max side, the page's own Creator
+        purl = f"{BASE}/{pid}/background/vault"
+        r = owner.post(purl, json={"media_id": 9001})
+        assert r.status_code == 200, r.text
+        assert served(r.json()["profile"]["background_url"]).size == (1080, 810), r.json()["profile"]
+        assert owner.post(purl, json={"media_id": 9002}).status_code == 415
+        assert owner.post(f"{BASE}/{bare}/background/vault", json={"media_id": 9001}).status_code == 409
+        assert other.post(purl, json={"media_id": 9001}).status_code == 404
         assert other.post(burl, json={"media_id": 9001}).status_code == 404
     finally:
         vault_stills.IMAGE_DIR = real_dir

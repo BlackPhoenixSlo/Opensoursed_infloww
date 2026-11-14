@@ -8,11 +8,20 @@ page carries OF's own error and the partial rows already read.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, NamedTuple
 
+import of_pacing
 from of_client import OFAPIError, OFClient
 
 log = logging.getLogger(__name__)
+
+# A 429 mid-page: OF asks "Please allow 1 seconds". Wait that (when this short) and
+# re-read the same offset once, instead of failing the whole page: a failed page
+# was re-asked by the UI every few seconds, each ask tripping OF's limit again
+# (public prod 2026-11-14: one Creator's offset=100 page failed 143x in 12 h).
+IN_PAGE_RETRY_MAX_S = 2.0
+_sleep = time.sleep  # tests swap it
 
 
 class ChatsPage(NamedTuple):
@@ -25,6 +34,32 @@ class ChatsPage(NamedTuple):
     partial: bool
     # The 429 that cut the page short, for a caller that serves it as OF's error.
     throttled: OFAPIError | None
+
+
+def _read_429_once(
+    read: Any, *, rows_so_far: int, offset: int, may_retry: bool,
+) -> tuple[dict[str, Any] | None, OFAPIError | None]:
+    """One upstream read. (value, None) on success. A 429 with rows already read:
+    (value, the 429) after one short wait-and-retry worked, (None, the 429) when it
+    did not or was not allowed. Anything else raises (a 429 before any row too)."""
+    try:
+        return read(), None
+    except OFAPIError as e:
+        status = e.response.status_code if e.response is not None else None
+        if not (rows_so_far and status == 429):
+            raise
+        err = e
+    wait = of_pacing.retry_after(err)
+    if not may_retry or wait is None or wait > IN_PAGE_RETRY_MAX_S:
+        return None, err
+    log.info("assemble_chats_page: OF 429 at offset=%s — retry once in %.1fs", offset, wait)
+    _sleep(wait)
+    try:
+        return read(), err
+    except OFAPIError as e:
+        if e.response is None or e.response.status_code != 429:
+            raise
+        return None, e
 
 
 def assemble_chats_page(
@@ -50,14 +85,15 @@ def assemble_chats_page(
     page is full; dedupe fans that shift ranks between page reads.
 
     An OF 429 before any row raises; after some, the page stops there,
-    `partial`. No sleep-and-retry — the caller holds a lane slot for the whole
-    call."""
+    `partial`. One short wait-and-retry first (IN_PAGE_RETRY_MAX_S): the caller
+    holds a lane slot for the whole call, so never a long one."""
     rows: list[dict[str, Any]] = []
     seen: set[Any] = set()
     cur = int(offset)
     has_more = True
     partial = False
     throttled: OFAPIError | None = None
+    retried = False
     # Hard cap on upstream reads: ~3 for a 25-row page at OF's 10-row cap, with
     # slack for rank churn. If OF ever serves repeating pages with hasMore=true,
     # this bounds the loop instead of wedging the per-account lane + per-key
@@ -65,19 +101,20 @@ def assemble_chats_page(
     for _ in range((limit // 10) + 3):
         if len(rows) >= limit or not has_more:
             break
-        try:
-            r = client.list_chats(
+        r, err = _read_429_once(
+            lambda: client.list_chats(
                 limit=max(1, limit - len(rows)), offset=cur, order=order,
                 filter=filter, list_id=list_id, query=q,
-            )
-        except OFAPIError as e:
-            status = e.response.status_code if e.response is not None else None
-            if not (rows and status == 429):
-                raise
-            log.warning("assemble_chats_page: OF 429 at offset=%s — returning %d rows",
-                        cur, len(rows))
-            partial, throttled = True, e
-            break
+            ),
+            rows_so_far=len(rows), offset=cur, may_retry=not retried,
+        )
+        if err is not None:
+            retried = True
+            if r is None:
+                log.warning("assemble_chats_page: OF 429 at offset=%s — returning %d rows",
+                            cur, len(rows))
+                partial, throttled = True, err
+                break
         page = r.get("list") or r.get("chats") or []
         # OF's hasMore is authoritative and must be read BEFORE the empty-page
         # break: an empty read past end-of-history (or a zero-match filter /

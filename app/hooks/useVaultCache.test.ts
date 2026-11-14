@@ -19,7 +19,9 @@ vi.mock("@/lib/rqPersister", async (orig) => {
 });
 
 import { loadFolderSort, saveFolderSort } from "@/components/vault/vaultFolderSort";
-import { hideDuplicates, invalidateVaultGrid, mirrorItemsKey, sortOfFolders, useOfSearch } from "@/hooks/useVaultCache";
+import {
+  describeAllBody, hideDuplicates, invalidateVaultGrid, mirrorItemsKey, sortOfFolders, useOfSearch,
+} from "@/hooks/useVaultCache";
 
 const AID = "1000001";
 
@@ -144,4 +146,17 @@ describe("useOfSearch", () => {
       expect(result.current).toBe(false);
       expect(h.post).not.toHaveBeenCalled();
     });
+});
+
+describe("describeAllBody", () => {
+  it.each([
+    [undefined, undefined],
+    [0, undefined],
+    [-5, undefined],
+    [2000, 2000],
+    [12.7, 12],
+  ])("limit %s -> %s", (limit, want) => {
+    expect(describeAllBody({ restage: true, limit })).toEqual(
+      { force: false, restage: true, prompt_version: "v2", ...(want ? { limit: want } : {}) });
+  });
 });

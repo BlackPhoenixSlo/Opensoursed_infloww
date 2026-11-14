@@ -6,6 +6,7 @@
  *   summary  → GET  /admin/vault-ai/cache/summary   {count, running, complete, last_run}
  *   collect  → POST /admin/vault-ai/collect          starts a sweep
  *   status   → GET  /admin/vault-ai/collect/status   progress (polled while running)
+ *   answer   → POST /admin/vault-ai/collect/{continue,stop}  a paused sweep (every 2000 new items)
  *   items    → GET  /admin/vault-ai/items            read the mirror (instant local search)
  *
  * The mirror read returns the SAME {list, hasMore} shape as /api/of/v2/vault/media
@@ -265,12 +266,15 @@ export function describeAllBody(opts: {
   restage?: boolean;
   promptVersion?: PromptVersion;
   model?: string;
+  /** Describe only the first N items in the server's priority order; 0 / absent = all. */
+  limit?: number;
 }): Record<string, unknown> {
   return {
     force: !!opts.force,
     restage: !!opts.restage,
     prompt_version: opts.promptVersion ?? "v2",
     ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.limit && opts.limit > 0 ? { limit: Math.floor(opts.limit) } : {}),
   };
 }
 
@@ -723,6 +727,16 @@ export function useVaultCacheSummary(accountId: string | null) {
 export async function startCollect(accountId: string): Promise<{ run_id: number }> {
   return relay.post<{ run_id: number }>(
     `/admin/vault-ai/collect?account_id=${encodeURIComponent(accountId)}`,
+    undefined,
+    { accountId },
+  );
+}
+
+/** A paused Collect (it asks every 2000 new items; `last_run.status === "paused"`) walks on or stops.
+ *  409 when nothing is paused (already answered). */
+export async function answerCollect(accountId: string, answer: "continue" | "stop"): Promise<{ status: string }> {
+  return relay.post<{ status: string }>(
+    `/admin/vault-ai/collect/${answer}?account_id=${encodeURIComponent(accountId)}`,
     undefined,
     { accountId },
   );

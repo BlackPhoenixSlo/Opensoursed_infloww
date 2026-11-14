@@ -78,7 +78,7 @@ _PUNCT = re.compile(r"[^\w\s]")
 WONT_DO = MODEL_NOTES_LABELS[-1]   # "Won't do (hard limits)"
 _WONT_DO_LINE = re.compile(r"^[ \t]*" + re.escape(WONT_DO).replace("'", "['’]") + r"[ \t]*:(.*)$", re.I | re.M)
 _AGE_DIGITS = re.compile(r"\d{1,3}")
-NO_NAME_NOTE = "No OF name stored; type her name."
+NO_NAME_NOTE = "No OF name stored; type the Creator's name."
 
 
 @dataclass

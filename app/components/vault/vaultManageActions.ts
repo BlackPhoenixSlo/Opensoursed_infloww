@@ -6,6 +6,7 @@ import { type QueryClient } from "@tanstack/react-query";
 import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 import {
   addToOfFolder,
+  answerCollect,
   cacheSummaryKey,
   type CollectRun,
   createOfFolder,
@@ -76,6 +77,33 @@ export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refres
   }
 }
 
+/** The paused Collect's prompt: walk on or stop, then re-read the summary (it is polled while the run holds the
+ *  account, paused included). A 409 means it was already answered (another tab, a double press): nothing to say. */
+export async function onCollectAnswer(answer: "continue" | "stop", d: Pick<ManageDeps, "accountId" | "qc">) {
+  try {
+    await answerCollect(d.accountId, answer);
+  } catch {
+    /* already answered */
+  }
+  d.qc.invalidateQueries({ queryKey: cacheSummaryKey(d.accountId) });
+}
+
+/** The describe sweep's "Max" input: one value per browser (localStorage). */
+export const DESCRIBE_LIMIT_KEY = "vaultDescribeLimit";
+export const DESCRIBE_LIMIT_DEFAULT = 2000;
+
+/** The stored "Max" text as a limit: never set → the default; empty / 0 / junk → 0 (all). */
+export function parseDescribeLimit(raw: string | null): number {
+  if (raw == null) return DESCRIBE_LIMIT_DEFAULT;
+  const n = Math.floor(Number(raw.trim()));
+  return raw.trim() && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** How many of `n` items a sweep capped at `limit` describes (0 = all). */
+export function cappedCount(n: number, limit: number): number {
+  return limit > 0 ? Math.min(n, limit) : n;
+}
+
 export async function onDescribeAll(
   mode: "new" | "restage" | "force",
   d: Pick<ManageDeps, "capReason" | "refetchPlan"> & {
@@ -83,9 +111,11 @@ export async function onDescribeAll(
     capped: boolean;
     plan: { total?: number; restage?: number } | undefined;
     promptVersion: "v1" | "v2";
+    /** The "Max" input (`parseDescribeLimit`); 0 = all. */
+    limit: number;
   },
 ) {
-  const { describeSweep, capped, capReason, promptVersion } = d;
+  const { describeSweep, capped, capReason, promptVersion, limit } = d;
   if (describeSweep.busy) return;
   if (capped) {
     // Reachable with a plan up to 30s stale (its staleTime) — the button is
@@ -95,7 +125,7 @@ export async function onDescribeAll(
     return;
   }
   if (mode !== "new") {
-    const n = mode === "force" ? (d.plan?.total ?? 0) : (d.plan?.restage ?? 0);
+    const n = cappedCount(mode === "force" ? (d.plan?.total ?? 0) : (d.plan?.restage ?? 0), limit);
     // Cents per item, MEASURED 2026-08-05 on 18 real stills at DeepInfra's
     // live rates — not the bake-off's original figures. Those were taken when
     // A sent 3 frames and B sent 9; the duration ladder now applies to BOTH,
@@ -116,6 +146,7 @@ export async function onDescribeAll(
     force: mode === "force",
     restage: mode === "restage",
     promptVersion,
+    limit,
   }));
 }
 

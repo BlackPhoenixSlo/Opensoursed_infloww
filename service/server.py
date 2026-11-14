@@ -152,7 +152,7 @@ from link_share_api import router as _link_share_router  # noqa: E402
 from bio_pages.admin import router as _bio_admin_router  # noqa: E402
 from owner_tokens_api import router as _owner_tokens_router  # noqa: E402
 import mcp_api  # noqa: E402  # hosted MCP server, POST /admin/mcp (bearer or no-credential surface)
-import ultra_api  # noqa: E402  # Ultra plans: GET /admin/ultra/plans/{id}, POST …/ok, …/cancel
+import ultra_api  # noqa: E402  # Ultra plans: POST /admin/ultra/plans, GET …/{id}, POST …/ok, …/cancel
 from full_ai_api import router as _full_ai_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
     router as _tenant_keys_router,
@@ -335,6 +335,7 @@ _http_hooks.add(_write_telemetry.label_request_writes)
 _http_hooks.add(of_call_counter.label_request_calls)
 
 import llm_client as _llm_client  # noqa: E402  (the key-error handler below)
+import vault_sweep as _vault_sweep  # noqa: E402  (the sweep-stop handler below)
 
 
 # Fansly writes we haven't wired raise FanslyAPIError. _proxy() only maps
@@ -365,6 +366,12 @@ async def _llm_key_error_handler(request, exc):  # noqa: ANN001
                 request.url.path, exc.kind, exc.provider, exc.purpose)
     return JSONResponse(status_code=424,
                         content={"detail": _llm_client.key_error_payload(exc)})
+
+# A sweep's stop (vault_sweep.SweepStop) that escaped its sweep: the same 424 and {message, fix} shape.
+@app.exception_handler(_vault_sweep.SweepStop)
+async def _sweep_stop_handler(request, exc):  # noqa: ANN001
+    log.warning("sweep stop path=%s: %s", request.url.path, exc.message)
+    return JSONResponse(status_code=424, content={"detail": {"error": "stopped", **exc.payload()}})
 
 # A refused report recipe (field errors, or another run of the Agency in flight): 400/429
 # {detail, errors} from every report route (report_recipe_api).

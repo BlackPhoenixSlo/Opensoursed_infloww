@@ -20,10 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from automations import full_ai_config
 from llm_models import MODELS
 
-# Plan-card labels; a key with none shows its own name (`label`). text_style reads like the page's switch.
+# Plan-card labels; a key with none shows its own name (`label`). style / text_style read like the page's switch.
 # `folders` / `draft_questions` are 03b's keys (spec 03c lists their labels).
 LABELS: dict[str, str] = {
-    "reply_speed": "Reply speed", "text_style": "Human style", "gifs": "GIFs",
+    "reply_speed": "Reply speed", "style": "Human style", "text_style": "Human style", "gifs": "GIFs",
     "sell_on": "Selling", "sext_on": "Sexting", "writers": "Writers (in order)",
     "writer_timeout_s": "Writer timeout (s)", "floor_on": "Reply checks", "info_fields": "Facts to learn",
     "folders": "Content folders", "draft_questions": "Draft questions",
@@ -82,6 +82,8 @@ def propose(cur: dict, patch: ConfigPatch) -> Proposal | Refusal:
     if isinstance(f, dict) and "exclude" not in f and isinstance(base.get("folders"), dict) \
             and "exclude" in base["folders"]:
         after["folders"] = {**f, "exclude": base["folders"]["exclude"]}
+    # Do mode's prompt names the legacy `text_style`: shown and applied as the stored `style` layers.
+    after = full_ai_config.side(after)
     if after == base:
         return Refusal("no_change", "That's already how the draft is set — nothing to change.")
     if errs := full_ai_config.validate(after):
@@ -130,7 +132,7 @@ def _stem(w: str) -> str:
 
 
 def build_config_word() -> re.Pattern[str]:
-    alts = [re.escape(k) for k in CONFIG_KEYS] + [_stem(w) for w in config_vocab()] + [r"full\s*ai"]
+    alts = [re.escape(k) for k in CONFIG_KEYS + full_ai_config.LEGACY_KEYS] + [_stem(w) for w in config_vocab()] + [r"full\s*ai"]
     return re.compile(r"\b(?:" + "|".join(sorted(alts, key=len, reverse=True)) + r")\b", re.I)
 
 

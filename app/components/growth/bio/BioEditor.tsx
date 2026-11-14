@@ -106,7 +106,7 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
 
   const draft = pform.draft;
   const model = previewModel(
-    { ...draft, avatarUrl: profile.avatar_url },
+    { ...draft, avatarUrl: profile.avatar_url, backgroundUrl: profile.background_url },
     page.links,
     draftLinkView(lform, bgUrl),
   );

@@ -15,8 +15,9 @@ Pure (the session folds and the PPV thread mapping):
                                        `_ppv` note: "he bought it" / "he has not bought it"
 Via the API:
   case_buy_then_same_ask               Buy → same ask → another Pick (Jev thread shows the unlock,
-                                       `last_purchase` set, the Writer's spend line); Buy that one
-                                       too → `all_owned` with the "filming more soon" line
+                                       `last_purchase` set, no spend line beside a Pick); Buy that
+                                       one too → `all_owned` with the "filming more soon" line and
+                                       the Writer's spend line
   case_decline_reoffers                Decline → `pending_offer` "none", the same item picked again
   case_settle_refusals                 second settle 409; chat row 422; Free item row 422; another
                                        session's row 404; another owner's account 403; an older
@@ -112,20 +113,27 @@ def case_folds_table():
     assert [(b.kind, b.amount_cents, b.occurred_at) for b in t.bought_of(rows)] == [
         ("ppv_message", 1000, rows[1].outcome_at)], t.bought_of(rows)
     assert t.open_offer_of(rows) is rows[4], t.open_offer_of(rows)
-    assert t.pending_offer_text(rows) == "locked $50 message: u will love it", t.pending_offer_text(rows)
+    assert t.pending_offer_text(rows, T0) == "locked $50 message: u will love it", t.pending_offer_text(rows, T0)
     # Bought or declined only (the open one settled, the Free item unpriced): "none".
     settled = rows[:4] + [_row(5, 5, rows[4].created_at, "x", json.loads(rows[4].reply_json)["parts"],
                                price=5000, media=[41], ref=404, outcome="declined", outcome_at=T0)]
-    assert t.open_offer_of(settled) is None and t.pending_offer_text(settled) == "none"
+    assert t.open_offer_of(settled) is None and t.pending_offer_text(settled, T0) == "none"
     assert t.owned_of(settled) == {11, 12, 31}, t.owned_of(settled)           # a decline owns nothing
     # An older unsettled Offer under a newer settled one is still the open Offer.
     older = rows[:3] + [_row(3, 3, rows[2].created_at, "more", json.loads(rows[2].reply_json)["parts"],
                              price=2000, media=[21], ref=202)] + settled[4:]
-    assert t.open_offer_of(older).id == 3 and t.pending_offer_text(older) == "locked $20 message: this one"
+    assert t.open_offer_of(older).id == 3 and t.pending_offer_text(older, T0) == "locked $20 message: this one"
     # No rows, chat only: nothing.
     for rs in ([], rows[:1]):
         assert (t.owned_of(rs), t.sent_media_of(rs), t.bought_of(rs), t.open_offer_of(rs),
-                t.pending_offer_text(rs)) == (set(), set(), [], None, "none"), rs
+                t.pending_offer_text(rs, T0)) == (set(), set(), [], None, "none"), rs
+    # Her gif is an outbound line, read as the GIF-only marker (rwl fa3 S5): alone or after text.
+    gif = {"gif": "g1", "tag": "laugh"}
+    for parts, want in (([gif], [("in", "hi cutie"), ("out", router.GIF_ONLY)]),
+                        ([{"text": "haha"}, gif], [("in", "hi cutie"), ("out", "haha"), ("out", router.GIF_ONLY)])):
+        lines = t.test_thread([_row(6, 1, T0, "hi cutie", parts)])
+        assert [(m.direction, router.line_text(m)) for m in lines] == want, (parts, lines)
+        assert not any(m.price_cents for m in lines), lines
 
 
 def case_test_thread_ppv_equals_the_db():
@@ -160,12 +168,12 @@ def case_test_thread_ppv_equals_the_db():
             async with get_session() as s:
                 await s.execute(Message.__table__.delete().where(Message.fan_id == fan))
                 await s.execute(Transaction.__table__.delete().where(Transaction.fan_id == fan))
-    ((_anchor, db_st, db_offer),) = _db(db_state)
+    ((_anchor, db_st, db_offer, _photo),) = _db(db_state)
     turn = [full_ai_test._line("in", "what are you up to", T0, anchor_id)]
     st, has_offer = full_ai_chat.build_state(turn, lines[-router.THREAD_LINES:], bought,
                                              full_ai_test.offer_line(full_ai_test.open_offer_of(rows)))
     assert (st, has_offer) == (db_st, db_offer), (st, db_st)
-    assert st["pending_offer"] == full_ai_test.pending_offer_text(rows), st
+    assert st["pending_offer"] == full_ai_test.pending_offer_text(rows, T0), st
     assert st["last_purchase"] != "none in the last 7 days", st
     assert [e.get("ppv") for e in st["thread"] if e.get("ppv")] == notes, st["thread"]
 
@@ -194,10 +202,8 @@ def case_buy_then_same_ask():
     assert any(e.get("ppv") == f"locked ${price} message, he bought it" for e in st["thread"]), st["thread"]
     assert st["last_purchase"].startswith(f"he bought a locked message for ${price}, "), st
     assert st["pending_offer"] == "none", st
-    # The Writer saw OLD-AIC-22's spend line in the facts block.
-    spend = (f"- he's spent: unlocked 1 PPV (${price} total, biggest ${price}) — talk like you remember it, "
-             "never like he's never paid.")
-    assert spend in _user(fw2), _user(fw2)
+    # A Turn carrying a Pick has no spend line (rwl fa3 S3: the price check allows no other amount).
+    assert "he's spent" not in _user(fw2), _user(fw2)
     # Buy the second one too: nothing left → all_owned, the "filming more soon" line, no PPV.
     with _sell_draft(), _vault(vault):
         assert _settle(pair, r2.json()["row_id"], "bought").status_code == 200

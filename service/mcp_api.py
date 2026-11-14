@@ -39,6 +39,7 @@ import toolbox
 import toolbox_decide as td
 import ultra_decide as ud
 import ultra_run
+import ultra_schema as us
 from brand import BRAND_NAME
 from toolbox_args import Args
 
@@ -128,26 +129,22 @@ def _send_tool_lines() -> str:
 PROPOSE_DESCRIPTION = (
     "Propose a plan: steps the owner checks on one card and approves with one OK in the browser; nothing "
     f"runs before that, and the OK expires after {ud.OK_TTL_TEXT}. Each step is {{id, tool, args}}: any "
-    "tool listed here, or a send tool below; every arg pinned. A send step's args are all literal: read first (e.g. "
-    "vault_search), then propose the literal ids. In any other step an arg may be \"$<earlier step id>.<path>\" "
-    "to use an earlier step's result (e.g. \"$folder.id\"), never in account_id. A send's text goes through "
+    "tool listed here, or a send tool below; every arg pinned. A send step's args are all literal, except the "
+    "references named here: read first (e.g. vault_search), then propose the literal ids. In any other step an "
+    "arg may be \"$<earlier step id>.<path>\" to use an earlier step's result (e.g. \"$folder.id\"), never in "
+    "account_id. A judge step {id, question, candidates, pick_n, confirm} (no tool) has the AI pick pick_n media "
+    "from \"$<vault_search step>.data_only.list\" (all on one account_id) when the plan runs; a send's media_files "
+    "may be \"$<judge step>.ids\", with pick_n 1 bio_page_background's media_id \"$<judge step>.ids.0\"; a step "
+    "using the picks has the vault_search steps' account_id; confirm: true waits for the owner's pick in the "
+    f"browser. {ud.RULES_LAST}; their folder (media_folder_id / folder_id) may be "
+    "\"$<earlier of_folder_create step>.id\" with the same account_id. A send's text goes through "
     "the send chain now: narration, off-platform talk or a banned word refuses the plan (fix the text, "
     "propose again); the returned steps are exactly what will be sent. Give open_url to the "
     "user, then call plan_status. " + _send_tool_lines())
 STATUS_DESCRIPTION = ("A proposed plan's status and each step's state, error, open_url link and, once done, "
-                      "result.id: the id it made (a mass message's or post's OnlyFans id) and any note (a mass "
+                      "result.id: the id it made (a mass message's or post's OnlyFans id, an automation rule's "
+                      "id) and any note (a mass "
                       "that went to fewer fans than approved).")
-
-
-class _PlanStep(Args):
-    id: str = Field(description="Step id: 1-32 of a-z 0-9 _, starting with a letter; unique in the plan.")
-    tool: str = Field(description="A tool name: one listed here, or mass_send / post_create.")
-    args: dict[str, Any] = Field(default_factory=dict, description="The tool's args.")
-
-
-class ProposePlanArgs(Args):
-    summary: str = Field(min_length=1, max_length=ud.MAX_SUMMARY, description="One line: what the plan does.")
-    steps: list[_PlanStep] = Field(min_length=1, max_length=ud.MAX_STEPS, description="The steps, run in order.")
 
 
 class PlanStatusArgs(Args):
@@ -158,12 +155,12 @@ def _plan_url(creds: toolbox.Creds, plan_id: str) -> str:
     return (creds.public_base() or "") + ud.plan_path(plan_id)
 
 
-async def _propose(creds: toolbox.Creds, args: ProposePlanArgs) -> dict[str, Any]:
+async def _propose(creds: toolbox.Creds, args: us.PlanArgs) -> dict[str, Any]:
     user = auth.get_request_user()
     if user is None:
         return td.error(401, NEEDS_TOKEN)
     try:
-        stored = await ultra_run.propose(args.model_dump(), user.id, user.account_ids, "mcp")
+        stored = await ultra_run.propose(args.model_dump(exclude_unset=True), user.id, user.account_ids, "mcp")
     except ud.PlanError as e:
         return td.error(422, {"detail": "plan refused; nothing was stored", "errors": e.errors})
     return {**stored, "open_url": _plan_url(creds, stored["plan_id"]),
@@ -181,7 +178,7 @@ async def _status(creds: toolbox.Creds, args: PlanStatusArgs) -> dict[str, Any]:
 
 BUILTINS: dict[str, Builtin] = {b.name: b for b in (
     Builtin("connect_account", CONNECT_DESCRIPTION, td.NoArgs, _connect),
-    Builtin("propose_plan", PROPOSE_DESCRIPTION, ProposePlanArgs, _propose, token=True, effect="write"),
+    Builtin("propose_plan", PROPOSE_DESCRIPTION, us.PlanArgs, _propose, token=True, effect="write"),
     Builtin("plan_status", STATUS_DESCRIPTION, PlanStatusArgs, _status, token=True),
 )}
 

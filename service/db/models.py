@@ -1021,6 +1021,20 @@ class VaultFolderItem(Base):
     __table_args__ = (Index("ix_vault_folder_items_folder", "account_id", "folder_id"),)
 
 
+class VaultFolderPrice(Base):
+    """An agency's price on one vault folder: `folder_ref` = `vf:<vault_folders.id>` (internal) or
+    `of:<OF list id>`, the refs Full AI's sell executor reads (`full_ai_sell.load_rows`). No row = no
+    custom price. Our DB only, never written to OF. Migration 0123_vault_folder_prices."""
+    __tablename__ = "vault_folder_prices"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    folder_ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = _ts_now()
+
+
 class VaultOfQueryLog(Base):
     """Which OF vault-search queries we've already harvested (so we don't re-hit
     OF every keystroke). TTL'd; on a fresh hit the terms already live in each
@@ -3839,6 +3853,8 @@ class BioProfile(Base):
     display_name: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     bio: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     avatar: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
+    # the page's backdrop picture (a file under profiles/<id>, '' = none); migration 0122_bio_profile_background
+    background_image: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     mode: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     v1_key: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
