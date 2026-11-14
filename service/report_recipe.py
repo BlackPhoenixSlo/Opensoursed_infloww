@@ -1,5 +1,5 @@
 """service/report_recipe.py — runs a report recipe (`report_recipe_decide`)
-for one Agency: `run(ctx, recipe, fmt)`.
+for one Agency: `run(ctx, recipe)` (json) or `build_file(ctx, recipe, fmt)`.
 
 Scoping is structural (docs/plans/ultra-mode/issues/01-report-recipe.md):
 `ctx` comes from `owner_context`, never from the recipe; the Creators are
@@ -19,7 +19,6 @@ from datetime import date, datetime
 from typing import Any, AsyncIterator, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from fastapi.responses import Response
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -268,19 +267,29 @@ def _note_rows(t: Table) -> list[list[Any]]:
     return [[f"# {n}"] + [""] * (len(t.columns) - 1) for n in t.notes]
 
 
-async def run(ctx: AgencyContext, recipe: Any, fmt: str = "json", *, now: datetime | None = None) -> Any:
-    """The recipe's report as a csv or xlsx download, or json
-    `{columns, rows (at most 200), row_count, truncated, window{from,to,tz}, notes}`;
-    `fmt` is one of rd.FORMATS (the route's body type enforces it)."""
+@dataclass(frozen=True)
+class ReportFile:
+    """A built report file: what the download route answers and report_files holds."""
+    filename: str
+    media_type: str
+    body: bytes
+
+
+async def _guarded_table(ctx: AgencyContext, recipe: Any, now: datetime | None) -> Table:
+    """`table`, one run at a time per Agency (429 RecipeError while another is in flight)."""
     if ctx.agency_user_id in _running:
         raise RecipeError({"run": "a report is already running for your Agency; try again when it ends"}, 429)
     _running.add(ctx.agency_user_id)
     try:
-        t = await table(ctx, recipe, now=now)
+        return await table(ctx, recipe, now=now)
     finally:
         _running.discard(ctx.agency_user_id)
+
+
+async def build_file(ctx: AgencyContext, recipe: Any, fmt: str, *, now: datetime | None = None) -> ReportFile:
+    """The recipe's report as a csv or xlsx file (`fmt`; the route's body type enforces it)."""
+    t = await _guarded_table(ctx, recipe, now)
     name = rd.filename(t.dataset, t.frm, t.to, fmt)
-    headers = {"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"}
     if fmt == "csv":
         # The rows are in memory already; a POST's StreamingResponse trips the
         # middleware stack (it listens for a disconnect on a consumed body).
@@ -290,13 +299,18 @@ async def run(ctx: AgencyContext, recipe: Any, fmt: str = "json", *, now: dateti
             buf = io.StringIO()
             csv.writer(buf).writerows(_note_rows(t))
             body += buf.getvalue().encode("utf-8")
-        return Response(body, media_type="text/csv", headers=headers)
-    if fmt == "xlsx":
-        cap = csv_export.CSV_MAX_ROWS
-        rows = [[_cell(v) for v in r] for r in t.rows[:cap]]
-        if len(t.rows) > cap:
-            rows.append([csv_export.TRUNCATED_LINE] + [""] * (len(t.columns) - 1))
-        return Response(xlsx_io.write_xlsx([t.columns, *rows, *_note_rows(t)], "Report"), media_type=XLSX_TYPE, headers=headers)
+        return ReportFile(name, "text/csv", body)
+    cap = csv_export.CSV_MAX_ROWS
+    rows = [[_cell(v) for v in r] for r in t.rows[:cap]]
+    if len(t.rows) > cap:
+        rows.append([csv_export.TRUNCATED_LINE] + [""] * (len(t.columns) - 1))
+    return ReportFile(name, XLSX_TYPE, xlsx_io.write_xlsx([t.columns, *rows, *_note_rows(t)], "Report"))
+
+
+async def run(ctx: AgencyContext, recipe: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    """The recipe's report as json `{columns, rows (at most 200), row_count, truncated,
+    window{from,to,tz}, notes}`; files: `build_file`."""
+    t = await _guarded_table(ctx, recipe, now)
     return {"columns": t.columns, "rows": t.rows[:rd.JSON_MAX_ROWS], "row_count": len(t.rows),
             "truncated": len(t.rows) > rd.JSON_MAX_ROWS,
             "window": {"from": t.frm.isoformat(), "to": t.to.isoformat(), "tz": t.tz}, "notes": t.notes}

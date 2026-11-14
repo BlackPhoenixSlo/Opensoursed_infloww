@@ -270,8 +270,8 @@ async def _imminent_pending_job(
     replying must each get their own job. The window spans our response delay so
     two quick replies from the SAME fan don't double-queue.
 
-    Returns the LATEST-due match. Callers only want the boolean and take
-    `_has_imminent_pending_job` below."""
+    Returns the LATEST-due match. W7 callers only want the boolean and take
+    `_has_imminent_pending_job` below; the full_ai hook reads the payload."""
     soon = datetime.utcnow() + timedelta(seconds=within_s)
     async with _reader(s) as s:
         rows = (
@@ -491,10 +491,41 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
     return deferred
 
 
+# The window for a pending full_ai_chat job, whenever it is due: ours are due
+# now, or JOB_RETRY_BACKOFF_S out after a failed attempt.
+# ASSUMPTION: a day's window covers every pending job (rung 5); overturned if a
+# producer ever queues one further out.
+_FULL_AI_PENDING_S = 86400.0
+
+
+async def _full_ai_hook(account_id: str, fan_id: int, message_id: int) -> None:
+    """Full AI Chat in Shadow mode sees every inbound DM of a Creator whose
+    `full_ai_chat` rule is on: one one-Fan job anchored on this DM, beside (not
+    instead of) W7's dispatch, whatever its gate or `_classify` say. The job only
+    decides and records (ADR-0033). A pending job whose catch-up decides this
+    DM's Turn too (`full_ai_chat.decides`) makes it only wake. Own try: a
+    failure here never costs W7's reply. Never raises."""
+    try:
+        rule_id = await ax.enabled_rule_id(account_id, "full_ai_chat")
+        if rule_id is None:
+            return
+        from automations import full_ai_chat   # lazy: the automations package imports widely
+        hit = await _imminent_pending_job(account_id, "full_ai_chat", fan_id, _FULL_AI_PENDING_S)
+        if hit is not None and await full_ai_chat.decides(account_id, fan_id, hit[1], message_id):
+            ax.wake_supervisor()
+            return
+        await ax.enqueue_job(account_id, "full_ai_chat", payload={
+            "only_fan_ids": [int(fan_id)], "anchor": int(message_id), "_rule_id": rule_id})
+        ax.wake_supervisor()
+    except Exception:
+        log.warning("full_ai_hook_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
+
+
 @write_telemetry.labelled("webhook_dispatch")
 async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> None:
     """React to one inbound fan DM: enqueue + wake the owning sweep so the bot
-    replies in seconds instead of at the next tick. Never raises."""
+    replies in seconds instead of at the next tick; then Full AI's hook, even
+    when W7's dispatch failed. Never raises."""
     try:
         if _global_kill_switch():
             return
@@ -502,7 +533,14 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         # reads the pending jobs only after the first one's insert (_fan_serial).
         # Taken before the read session so a waiter holds no pool connection.
         async with _fan_serial(account_id, fan_id):
-            deferred = await _dispatch_inbound(account_id, fan_id, message_id)
+            try:
+                deferred = await _dispatch_inbound(account_id, fan_id, message_id)
+            except Exception:   # a W7 failure must not mute Full AI's hook below
+                log.warning(
+                    "w7_dispatch_failed account=%s fan=%s", account_id, fan_id, exc_info=True
+                )
+                deferred = False
+            await _full_ai_hook(account_id, fan_id, message_id)   # own try inside
             # His reply to a deferred chat: its backfill, AFTER the reply plan's write
             # (never ahead of the reply), under the shared claim. Never raises.
             if deferred:

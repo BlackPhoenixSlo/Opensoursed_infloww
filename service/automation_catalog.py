@@ -321,6 +321,18 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "fan_id", "type": "int", "min": 1, "hint": "the fan to nudge (set by the detector)"},
         ],
     },
+    "full_ai_chat": {
+        # Driven from its own page (Full AI Chatter), never the rules editor.
+        # Its jobs come from W7's full_ai hook, one per inbound DM; the rule is
+        # the on/off switch. ASSUMPTION: the bare interval job does nothing, so
+        # the longest cadence writes the fewest no-op runs (spec, rung 4).
+        "label": "Full AI Chat", "recurring": False, "surface": "internal",
+        "cadence_default_s": 86400,
+        "summary": "Shadow mode: on every inbound DM, ask Jev the Router questions and record "
+                   "one Decision row (ai_decisions). Sends nothing.",
+        "example": "internal · one job per inbound DM, anchored on it",
+        "knobs": [],
+    },
     "mass_premade": {
         "label": "Premade mass (send / resend / unsend)", "recurring": False, "surface": "ready_made",
         "summary": "Send ready-made broadcasts on a timer — resend later and/or auto-unsend.",

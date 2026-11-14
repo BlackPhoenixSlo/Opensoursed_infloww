@@ -36,11 +36,14 @@ from pathlib import Path
 log = logging.getLogger("of-relay.auth")
 
 from fastapi import APIRouter, Body, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 import events
+import owner_tokens
+import token_auth
 from account_security import TwoFactorChallenge, password_sign_in
 from agency_scope import agency_account_ids
 from db.engine import get_session
@@ -105,6 +108,26 @@ class AuthedUser:
         # a separate column — gated explicitly via `is_admin`.
         self.account_ids = account_ids
         self.is_admin = is_admin
+
+
+# Set (to `(token_id, name)`) when an owner access token signed this request in
+# (`_token_request`); None for a cookie or no session. Reset per request by
+# `session_middleware`, so an inherited context never tags a cookie request.
+_request_token: ContextVar["tuple[int, str] | None"] = ContextVar(
+    "chatterly_request_token", default=None
+)
+
+
+def get_request_token() -> "tuple[int, str] | None":
+    """`(token_id, name)` of the owner access token behind this request, or None."""
+    return _request_token.get()
+
+
+def request_via() -> str | None:
+    """The `actions.via` stamp for this request: "token <name>" when an owner
+    access token signed it in, else None (a browser session)."""
+    tok = _request_token.get()
+    return f"token {tok[1]}" if tok else None
 
 
 def get_request_user() -> AuthedUser | None:
@@ -721,6 +744,30 @@ async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: dateti
     return False
 
 
+async def _token_request(request: Request, call_next, token: str):
+    """An owner access token's request (token_auth): it wins outright, never a
+    cookie fallback. A bad token → 401; a route off the token allowlist → 403
+    JSON; else signed in as its owner, clamped to the owner's own Agency
+    (is_admin False, so master gates refuse it)."""
+    # token_auth.StripCookieIdentities (an outer ASGI layer, server.py) dropped
+    # every cookie identity and X-Employee-Id before any Request was built.
+    # Fail closed if it is not installed rather than mix a token with a cookie.
+    if any(h.decode() in request.headers for h in token_auth.STRIPPED):
+        raise RuntimeError("bearer request still carries a cookie: token_auth.StripCookieIdentities missing")
+    owner = await token_auth.resolve(token)
+    if owner is None:
+        return Response(
+            "invalid, expired or revoked access token", status_code=401,
+            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
+        )
+    if not token_auth.allowed(request.scope, request.app.routes):
+        return JSONResponse({"detail": token_auth.REFUSED}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+    _request_user.set(AuthedUser(owner.user_id, owner.username, owner.account_ids, is_admin=False))
+    _request_token.set((owner.token_id, owner.token_name))
+    return await call_next(request)
+
+
 async def session_middleware(request: Request, call_next):
     """Read the session cookie, load the user + their account_ids, stash
     on the ContextVar, then call the route. Idle-too-long users get their
@@ -731,6 +778,10 @@ async def session_middleware(request: Request, call_next):
     requests reach this layer. /auth/* endpoints are exempt from the
     share-token gate via the existing allowlist below.
     """
+    _request_token.set(None)
+    token = owner_tokens.bearer(request.headers.get("authorization"))
+    if token is not None:
+        return await _token_request(request, call_next, token)
     clears = await _resolve_session(request)
 
     # Impersonation is READ-ONLY. Any mutation while a valid impersonate
@@ -877,7 +928,10 @@ def require_master() -> AuthedUser:
 def _assert_admin_password(supplied: str) -> None:
     """Founder-gate. 503 if the relay never had the env var configured,
     403 if the caller's password doesn't match. Centralised so every
-    founder-only endpoint reads the same."""
+    founder-only endpoint reads the same. An owner access token never
+    passes it: the founder secret is for a person at a browser."""
+    if _request_token.get() is not None:
+        raise HTTPException(status_code=403, detail="not allowed with an access token")
     expected = _read_admin_password()
     if not expected:
         raise HTTPException(

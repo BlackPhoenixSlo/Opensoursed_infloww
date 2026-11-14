@@ -830,6 +830,7 @@ async def list_audit(
                     "target_id": a.target_id,
                     "payload": _safe_loads(a.payload_json),
                     "at": a.at.isoformat() if a.at else None,
+                    "via": a.via,  # "token <name>": an owner access token did it
                 }
                 for a in rows
             ],

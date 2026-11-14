@@ -146,6 +146,8 @@ OPT_IN_KINDS: dict[str, str] = {
     "autoreply": "/growth/auto-reply",
     "reply_mass_funnel": "/growth/auto-funnel",
     "gen_info": "/growth/gen-info",
+    # Not in OPT_IN_PAGES, so no stored role grants it: every chatter is refused the switch.
+    "full_ai_chat": "/full-ai-chatter",
 }
 
 
@@ -447,8 +449,10 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "/growth/get-to-know-fans": ("Get to know fans", ("/admin/account-config",)),
     # The gen_info switch (its rule) and the one-shot old-fans enqueue (process_old_fans).
     "/growth/gen-info": ("Gen-Info", ("/admin/automation", "/admin/automation-rules")),
-    # A coming-soon page: no Relay route of its own.
-    "/full-ai-chatter": ("Full AI Chatter", ()),
+    # Today's Shadow Decision rows (full_ai_api) and the full_ai_chat switch on the shared rule routes.
+    # That kind's writes stay owner-only (OPT_IN_KINDS: this page is not in OPT_IN_PAGES), but like
+    # Gen-Info's, a role ticking this page opens the rule routes, so other kinds' rule writes too.
+    "/full-ai-chatter": ("Full AI Chatter", ("/admin/full-ai", "/admin/automation-rules")),
     "/creators": ("Manage creators", (
         "/admin/accounts/active", "/admin/automation", "/admin/reload-session")),
     # Its proxy routes are owner-only (`_CHATTER_BLOCKED_ADMIN_PREFIXES`).
@@ -480,6 +484,8 @@ UNMAPPED: dict[str, str] = {
     "/admin/shifts/clock-out": "the top bar's clock",
     "/admin/shifts/clock-status": "the top bar's clock", "/admin/shifts/clock-heartbeat": "the top bar's clock",
     "/admin/assistant": "the shell's assistant widget",
+    "/admin/mcp": "the hosted MCP endpoint (mcp_api): owner token or no credential, never a session;"
+                  " each tool's inner read is checked as its own route",
     "/admin/ai-key-status": "the AI-key notice on every automation page (key presence only)",
     "/admin/errors": "client error reports from every page",
     "/admin/perflog": "client timing reports from every page",

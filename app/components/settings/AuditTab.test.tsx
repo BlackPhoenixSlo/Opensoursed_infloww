@@ -33,6 +33,18 @@ describe("AuditTab", () => {
     expect(screen.getByText("POST /admin/zzz")).toBeInTheDocument();
   });
 
+  it("says which access token made a row; a browser row says nothing", async () => {
+    get.mockResolvedValue({ limit: 50, offset: 0, actions: [
+      { id: 2, employee_id: null, account_id: null, action: "POST /admin/zzz", label: null,
+        target_type: null, target_id: null, payload: null, at: "2026-10-20T10:00:00", via: "token claude desktop" },
+      { id: 1, employee_id: null, account_id: null, action: "POST /admin/yyy", label: null,
+        target_type: null, target_id: null, payload: null, at: "2026-10-20T09:00:00", via: null },
+    ] });
+    renderWithProviders(<AuditTab />);
+    expect(await screen.findByText("via token claude desktop")).toBeInTheDocument();
+    expect(screen.getAllByText(/^via /)).toHaveLength(1);
+  });
+
   it("sends the picked days as from/to bounds", async () => {
     get.mockResolvedValue({ limit: 50, offset: 0, actions: [] });
     renderWithProviders(<AuditTab />);

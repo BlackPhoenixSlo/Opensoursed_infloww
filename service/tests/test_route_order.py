@@ -59,9 +59,26 @@ Golden refresh (2026-11-12, bio vault avatar): adds POST /admin/bio-pages/{pid}/
 (bio_pages/admin.avatar_from_vault) after the avatar upload row; no existing row moves; inspected, intentional.
 Golden refresh (2026-11-12, bio vault background): adds POST /admin/bio-pages/{pid}/links/{lid}/background/vault
 (bio_pages/admin.background_from_vault) after the background upload row; no existing row moves; inspected, intentional.
+Golden refresh (2026-11-13, Full AI Chatter page): adds GET /admin/full-ai/today (full_ai_api.full_ai_today)
+after the bio-pages rows; no existing row moves; inspected, intentional. After merging main 98b6c5341
+(sha green there at 1dfb85f1…) the sha is refreshed to include this route.
 
 Golden refresh (2026-11-13, ultra report recipe): adds POST /admin/reports/run and GET /admin/reports/catalogue
 (report_recipe_api); no existing row moves; inspected, intentional.
+
+Golden refresh (2026-11-14, ultra owner tokens): adds GET/POST /admin/owner-tokens and DELETE
+/admin/owner-tokens/{token_id} (owner_tokens_api) after the tenant llm-keys rows; OpenAPI diff = those three
+paths + schema OwnerTokenCreateBody only (measured: sha1 with them removed == the prior golden); no row moves.
+
+Golden refresh (2026-11-14, ultra toolbox report_file): adds POST /admin/reports/files and GET
+/admin/reports/files/{file_id} (report_recipe_api) after the report catalogue row; OpenAPI diff = those two paths +
+schema FileBody only (measured: sha1 with them removed == the prior golden); no row moves.
+
+Golden refresh (2026-11-14, ultra MCP server): adds POST /admin/mcp and DELETE,GET /admin/mcp (mcp_api) after
+the owner-tokens rows; include_in_schema=False, so the OpenAPI sha1 is unchanged (measured); no row moves.
+
+Golden refresh (2026-11-14, merge main 713774458 into ultra step 2): main's golden (Full AI routes) plus this
+branch's seven rows above, regenerated; diff vs main's golden = those rows + the sha only.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

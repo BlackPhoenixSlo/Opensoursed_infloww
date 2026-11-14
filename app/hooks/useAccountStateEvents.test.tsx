@@ -77,6 +77,13 @@ describe("useAccountStateEvents", () => {
     ]);
   });
 
+  it("refetches the Full AI Chatter read when a full_ai_chat run finishes", () => {
+    const { keys } = mount();
+    emit("rule_run_finished", { __account_id: "7", rule_run_finished: { kind: "full_ai_chat", status: "ok" } });
+    act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+    expect(keys()).toEqual([["automation-rules", "7"], ["stats", "automation-runs"], ["full-ai-today", "7"]]);
+  });
+
   it("refetches the reports and dashboard on a sale, then once more per window, never the Sales records list", () => {
     const { spy } = mount();
     const sale = (fan: number) => ({ __account_id: "7", transaction_recorded: { fan_id: fan, kind: "tip" } });

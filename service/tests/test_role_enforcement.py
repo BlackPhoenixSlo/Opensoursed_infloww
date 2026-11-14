@@ -323,6 +323,33 @@ def case_the_gen_info_switch_needs_the_gen_info_page():
         _reset()
 
 
+def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_page():
+    # full_ai_chat maps to /full-ai-chatter (OPT_IN_KINDS), a page outside OPT_IN_PAGES: no role grants its switch.
+    body = {"account_id": IDS["creator_a"], "kind": "full_ai_chat", "enable": False}
+    denied = {"detail": "Your role does not allow Full AI Chatter"}
+    today = f"/admin/full-ai/today?account_id={IDS['creator_a']}"
+    try:
+        _reset()
+        r = CHATTER_A.post("/admin/automation-rules/switch", json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        r = CHATTER_A.post("/admin/automation-rules/switch", json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        # The page's own read opens with the page ticked.
+        r = CHATTER_A.get(today)
+        assert r.status_code == 200, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
+        r = CHATTER_A.post("/admin/automation-rules/switch", json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        r = CHATTER_A.get(today)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        # The owner is never checked.
+        assert OWNER_A.post("/admin/automation-rules/switch", json=body).status_code == 200
+        assert OWNER_A.get(today).status_code == 200
+    finally:
+        _reset()
+
+
 def case_funnel_writes_are_auto_funnels_and_the_list_stays_open():
     new = {"name": "Fixture opt-in funnel", "opening_message": "hey"}
     denied = {"detail": "Your role does not allow Auto Funnel"}

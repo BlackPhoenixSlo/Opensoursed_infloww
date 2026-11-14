@@ -37,6 +37,7 @@ const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> 
     byAccount("automation-rules", aid),
     ["stats", "automation-runs"],
     ...(b.kind === "scheduled_send" ? [byAccount("scheduled-sends", aid)] : []),
+    ...(b.kind === "full_ai_chat" ? [byAccount("full-ai-today", aid)] : []),
     ...(b.status === "error" ? [["app-errors", "recent"]] : []),
   ],
 };
@@ -72,7 +73,7 @@ function throttle(fn: () => void, ms: number) {
  *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
   ["scheduled-sends"], ["automation-rules"], ["stats", "automation-runs"],
-  ["app-errors", "recent"], ["roster-counts"],
+  ["app-errors", "recent"], ["roster-counts"], ["full-ai-today"],
 ];
 
 export function useAccountStateEvents(): void {

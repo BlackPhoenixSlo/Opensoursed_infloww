@@ -7,7 +7,7 @@
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
  * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
  * Auto Story, Auto Funnel, Gen-Info), the "My AI Chatter" group
- * (Auto-reply, Get to know fans, the "Full AI Chatter" coming-soon page).
+ * (Auto-reply, Get to know fans, the "Full AI Chatter" Shadow page).
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).

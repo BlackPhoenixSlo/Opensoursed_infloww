@@ -15,7 +15,7 @@ from datetime import datetime
 from fastapi import Request
 
 import notifications_api
-from auth import get_request_user
+from auth import get_request_user, request_via
 from db.engine import get_session
 from db.models import Action, Employee
 
@@ -40,6 +40,9 @@ _AUDIT_SKIP_PREFIXES = (
     # The served Browserbase login (remote_login_api): its start body carries
     # the OnlyFans PASSWORD, which must never be written to the actions table.
     "/admin/login",
+    # The MCP host route (mcp_api): its body may carry tool args with nested secrets, which
+    # `_safe_snapshot` does not redact; each tool's own inner request is the audited write.
+    "/admin/mcp",
     "/push",             # a browser's push subscription sync, on every page load
     "/t/",               # public tracking-link verify: an anonymous fan's click, counted on its own row
 )
@@ -229,6 +232,7 @@ async def _write_action(
             target_id=target_id,
             payload_json=payload_json,
             at=datetime.utcnow(),
+            via=request_via(),  # "token <name>" for an owner access token, else NULL
         ))
 
 

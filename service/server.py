@@ -66,6 +66,8 @@ import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
+import owner_tokens as _owner_tokens  # noqa: E402  # `Bearer ifw_…` parse, for the share-token gate
+import token_auth as _token_auth  # noqa: E402  # owner-token cookie strip (ASGI) + route allowlist
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, READ_TIMING, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy, timing_add  # noqa: E402
 from of_rich_text import MARKUP_MAX  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
@@ -134,6 +136,8 @@ from account_config_api import router as _account_config_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
 from report_recipe_api import router as _report_recipe_router  # noqa: E402
+import report_recipe as _report_recipe  # noqa: E402
+import report_recipe_api as _report_recipe_api  # noqa: E402
 from copilot_api import router as _copilot_router  # noqa: E402
 # Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
@@ -146,6 +150,9 @@ from link_metrics import router as _link_metrics_router  # noqa: E402
 from promotions_api import router as _promotions_router  # noqa: E402
 from link_share_api import router as _link_share_router  # noqa: E402
 from bio_pages.admin import router as _bio_admin_router  # noqa: E402
+from owner_tokens_api import router as _owner_tokens_router  # noqa: E402
+import mcp_api  # noqa: E402  # hosted MCP server, POST /admin/mcp (bearer or no-credential surface)
+from full_ai_api import router as _full_ai_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
     router as _tenant_keys_router,
     admin_router as _tenant_keys_admin_router,
@@ -283,6 +290,10 @@ app.add_middleware(
 # it, as each hook's own layer was.
 _http_hooks = HookChain()
 app.add_middleware(BaseHTTPMiddleware, dispatch=_http_hooks.dispatch)
+# Outside the hook chain, so before any hook builds a Request: an owner access token's
+# request (`Bearer ifw_…`) loses its Cookie and X-Employee-Id headers here, and no hook
+# (share gate, chatter session, audit) ever sees a cookie identity beside a token.
+app.add_middleware(_token_auth.StripCookieIdentities)
 
 
 class _DbBusy503:
@@ -354,6 +365,10 @@ async def _llm_key_error_handler(request, exc):  # noqa: ANN001
     return JSONResponse(status_code=424,
                         content={"detail": _llm_client.key_error_payload(exc)})
 
+# A refused report recipe (field errors, or another run of the Agency in flight): 400/429
+# {detail, errors} from every report route (report_recipe_api).
+app.add_exception_handler(_report_recipe.RecipeError, _report_recipe_api.refused)
+
 # Phase A: employees CRUD + audit log routes (read-only browse + admin).
 # Middleware registered below so every mutating call gets logged.
 app.include_router(_employees_router)
@@ -395,6 +410,8 @@ app.include_router(_copilot_router)
 # session-gated by them: the signed-in owner is the only row it can touch.
 app.include_router(_tenant_keys_router)
 app.include_router(_tenant_keys_admin_router)
+app.include_router(_owner_tokens_router)
+app.include_router(mcp_api.router)
 app.include_router(_ai_key_status_router)
 # Settings → System (/admin/system/*): the master's read-only automation status
 # + run log. Master-only by a router dependency; chatter-blocked by prefix.
@@ -449,6 +466,8 @@ app.include_router(_promotions_router)
 app.include_router(_link_share_router)
 # Bio pages owner editor API (the public bio app is its own process, bio_pages/app.py).
 app.include_router(_bio_admin_router)
+# The Full AI Chatter page's read of today's Shadow Decision rows.
+app.include_router(_full_ai_router)
 
 # ── The one no-auth allowlist ───────────────────────────────────────
 #
@@ -549,6 +568,11 @@ async def _account_isolation_middleware(request: Request, call_next):
         # routes someone remembered to wrap, and /admin/accounts is one of the
         # ~50 nobody did.
         if _allow_anonymous_account_access():
+            return await call_next(request)
+        # The MCP endpoint's no-credential surface (mcp_api): initialize, tools/list and
+        # connect_account (a register/log-in link) only; it names no account and every data
+        # tool there answers that link. Exact path, and only for a request with no principal.
+        if path == mcp_api.PATH:
             return await call_next(request)
         return Response("sign in required", status_code=401)
 
@@ -732,6 +756,11 @@ async def _share_token_gate(request: Request, call_next):
         return await call_next(request)
     if request.url.path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
+    # The MCP endpoint, exactly POST: an MCP client holds no share token. Its no-credential
+    # surface is initialize / tools/list / connect_account (a sign-up link); mcp_api still
+    # refuses an Origin or a cookie, and a token still meets the session middleware.
+    if request.method == "POST" and request.url.path == mcp_api.PATH:
+        return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
     # Anyone carrying a friend-auth OR chatter session cookie has already
@@ -739,6 +768,10 @@ async def _share_token_gate(request: Request, call_next):
     # redundant for them. (The session middlewares validate the HMAC +
     # DB row downstream.)
     if request.cookies.get(_AUTH_COOKIE_NAME) or request.cookies.get(_CHATTER_COOKIE_NAME):
+        return await call_next(request)
+    # An owner access token (`Bearer ifw_…`) is checked by the session
+    # middleware downstream, which 401s a bad one and never falls back.
+    if _owner_tokens.bearer(request.headers.get("authorization")):
         return await call_next(request)
     if request.query_params.get("t") == share_token:
         resp = await call_next(request)

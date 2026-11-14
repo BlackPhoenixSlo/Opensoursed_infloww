@@ -245,6 +245,9 @@ class Action(Base):
     target_id: Mapped[str | None] = mapped_column(String)
     payload_json: Mapped[str | None] = mapped_column(Text)
     at: Mapped[datetime] = _ts_now()
+    # "token <name>" when an owner access token made the request (owner_tokens),
+    # NULL for a browser session. Migration 0118_owner_tokens.
+    via: Mapped[str | None] = mapped_column(String)
 
     __table_args__ = (
         Index("ix_actions_employee_at", "employee_id", "at"),
@@ -2730,6 +2733,29 @@ class UserAccount(Base):
     created_at: Mapped[datetime] = _ts_now()
 
 
+class OwnerToken(Base):
+    """An owner access token (owner_tokens.py, Settings → AI keys → Access
+    tokens): `Authorization: Bearer ifw_…` signs a non-browser caller (an MCP
+    client) in as `user_id`, clamped to its own Agency (auth._resolve_session).
+    Only the token's sha256 is stored; `hint` is "ifw_…" + its last four.
+    Refused once `revoked_at` is set, at `expires_at`, or when it predates the
+    owner's `sessions_valid_after`. `last_used_at` is bumped at most every 5
+    minutes. Migration 0118_owner_tokens."""
+    __tablename__ = "owner_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    hint: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = _ts_now()
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class UserLlmKey(Base):
     """One agency's LLM provider key. THE tenancy boundary for model spend.
 
@@ -3881,3 +3907,53 @@ class BioDaily(Base):
     clicks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"), default=0)
 
     __table_args__ = (Index("ix_bio_daily_profile_day", "profile_id", "day"),)
+
+
+# ── Full AI Chat: the Decision ledger (ADR-0034) ─────────────────────
+
+class AiDecision(Base):
+    """One Decision row: one Turn of one Fan in one Mode, what the Router read
+    and answered (`jev_json`), its Route and Heat. Append-only: a later Turn
+    writes its own row and never updates this one. Phase 01 writes Shadow rows
+    only (`status` planned, nothing sent; ADR-0033). The send, offer and outcome
+    columns land, nullable, with the Phase that first writes them."""
+    __tablename__ = "ai_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)            # shadow | test | live
+    trigger_kind: Mapped[str] = mapped_column(String, nullable=False)    # inbound | wake | test
+    trigger_key: Mapped[str] = mapped_column(String, nullable=False)     # inbound: str(Anchor id)
+    parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("ai_decisions.id"))
+    anchor_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    anchor_created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    arm: Mapped[str | None] = mapped_column(String)                      # treatment | holdout
+    salt_ver: Mapped[int | None] = mapped_column(Integer)
+    route: Mapped[str] = mapped_column(String, nullable=False)
+    heat: Mapped[int] = mapped_column(Integer, nullable=False)
+    route_row: Mapped[str] = mapped_column(String, nullable=False)       # the Route table row that matched
+    question_version: Mapped[str] = mapped_column(String, nullable=False)
+    router_model: Mapped[str | None] = mapped_column(String)             # the model Jev reported
+    writer_model: Mapped[str | None] = mapped_column(String)             # NULL in Shadow (no reply)
+    jev_json: Mapped[str | None] = mapped_column(Text)                   # {answers, intensity, fired, state}
+    jev_ms: Mapped[int | None] = mapped_column(Integer)
+    jev_error: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, nullable=False)          # Shadow: planned
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        # The Turn key: one row per Turn and Mode, enforced by the DB (the
+        # runner's INSERT ... ON CONFLICT DO NOTHING).
+        # ASSUMPTION: a named unique INDEX, not a table UniqueConstraint, so
+        # SQLite keeps the name `uq_ai_decisions_turn` (a constraint becomes an
+        # anonymous sqlite_autoindex) and init_db's index catch-up can add it by
+        # name (rung 4). Overturned if a Postgres box needs it as a constraint.
+        Index("uq_ai_decisions_turn", "account_id", "fan_id", "mode", "trigger_key", unique=True),
+        Index("ix_ai_decisions_fan_time", "account_id", "fan_id", "created_at"),
+        # The Full AI Chatter page's today read (full_ai_api): one Creator's rows of one Mode since a time.
+        Index("ix_ai_decisions_acct_mode_time", "account_id", "mode", "created_at"),
+    )

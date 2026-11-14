@@ -1,5 +1,5 @@
 ---
-kinds: [apply_profiles, auto_follow, auto_posts, auto_stories, autoreply, birthday_message, customs_watch, expired_message, expiry_message, gen_info, mass_premade, nudge_online, nudge_online_fire, priority_mass, process_old_fans, promo_reactivate, purchase_followup, reply_mass_funnel, resubscribe_message, s4s_check, s4s_post, scheduled_send, scrape_chats, send_followup, send_mass_message, send_welcome, smart_list_sync, unsend_messages, welcome_chatter_for_info]
+kinds: [apply_profiles, auto_follow, auto_posts, auto_stories, autoreply, birthday_message, customs_watch, expired_message, expiry_message, full_ai_chat, gen_info, mass_premade, nudge_online, nudge_online_fire, priority_mass, process_old_fans, promo_reactivate, purchase_followup, reply_mass_funnel, resubscribe_message, s4s_check, s4s_post, scheduled_send, scrape_chats, send_followup, send_mass_message, send_welcome, smart_list_sync, unsend_messages, welcome_chatter_for_info]
 verified: 2026-10-21
 ---
 
@@ -36,7 +36,8 @@ The sidebar, top to bottom:
 - **My Automations** — Auto Mass, Auto Post, Auto Story, Auto Funnel and
   Gen-Info.
 - **My AI Chatter** — Auto-reply, Get to know fans and Full AI
-  Chatter (a fully autonomous AI chatter, coming soon; owner only).
+  Chatter (owner only: a "Full AI Chat" switch per creator, Off or Shadow; in
+  Shadow it records what the AI would do with each fan DM and sends nothing).
 - **Creators** — Manage creators (connecting and watching OnlyFans accounts)
   and Custom proxy.
 - **Employees** — Manage employees (logins, roles, access) and Shift schedule.

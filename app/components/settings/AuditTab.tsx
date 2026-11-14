@@ -154,7 +154,10 @@ function AuditRow({ a, emp, account }: { a: AuditAction; emp: Employee | null; a
         onClick={() => hasPayload && setOpen((v) => !v)}
       >
         <td className={cn(TABLE_CELL, "hidden sm:table-cell text-[var(--if-fg-2)]")}>{fmtDateTime(a.at)}</td>
-        <td className={cn(TABLE_CELL, "hidden sm:table-cell")}>{who}</td>
+        <td className={cn(TABLE_CELL, "hidden sm:table-cell")}>
+          {who}
+          {a.via && <span className="ml-1.5 text-[var(--if-fg-3)]">via {a.via}</span>}
+        </td>
         <td className={cn(TABLE_CELL, "whitespace-normal py-2")}>
           {a.label && <span className="mr-2">{a.label}</span>}
           <code className={a.label ? "text-[10px] text-[var(--if-fg-3)]" : "text-xs"}>{a.action}</code>

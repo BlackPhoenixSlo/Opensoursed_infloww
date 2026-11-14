@@ -55,7 +55,7 @@ The multi-Creator chat workspace: the Window header and the Fan tabs strip above
 _Avoid_: inbox, chat page
 
 **Window header**:
-Messages Pro's own top row, holding Home, All Models and the Creator tabs, and at its right end the "Notif" (Buys & tips rail) switch, then SFW last (`app/components/chat/WindowHeader.tsx`). Online Fans and Notifications are Fan List buttons, not Window header buttons. The look-and-feel plan's "Creator tabs row" is this row, and its "language, pop-out already live there" is stale: those are unowned Compare rows, never built.
+Messages Pro's own top row, holding Home, All Models and the Creator tabs, and at its right end the "Notif" (Buys & tips rail) switch, then SFW last (`app/components/chat/WindowHeader.tsx`). The look-and-feel plan's "Creator tabs row" is this row, and its "language, pop-out already live there" is stale: those are unowned Compare rows, never built.
 _Avoid_: top bar (that is the app shell's), top strip, window chrome, Creator tabs row
 
 **Top bar**:
@@ -105,7 +105,6 @@ _Avoid_: fan list (collides with Fan List), smart list (Infloww's Growth feature
 - **Fan List buttons** (Online Fans, Notifications; not Window header buttons): `app/components/chat/FanListButtons.tsx`
 - **Notifications panel** (ours; Infloww has none): `app/components/chat/FanListButtons.tsx`
 - **Notifications badge** (Infloww's plain unread count): `docs/messages-pro-parity.md`
-- **Notifications toggle** (retired; the Buys & tips switch took its place): `docs/screenshots/messages-pro-compare.md`, row FL11
 - **Split Inbox**, **Split Inbox group** (avoid: lanes): ADR-0004
 
 ### Thread
@@ -241,7 +240,7 @@ The rule, chosen per revenue kind in Sales Settings, that decides which Employee
 _Avoid_: attribution lanes (`/admin/lanes` is concurrency), credit, commission
 
 - **Role enforcement** (avoid: RBAC): ADR-0012
-- **AI translation** (not the `/admin/translate` route, which is Google's free keyless gtx endpoint; its prompt is stored but not used): `docs/spec/phase-04-apply-stored-settings.md`
+- **AI translation** (not the `/admin/translate` route, which is Google's free keyless gtx endpoint): `docs/spec/phase-04-apply-stored-settings.md`
 - **Referral balance** (per Creator, not per Agency): `docs/spec/settings-tabs/phase-05-billing-balance-about.md`
 
 ### Shifts and time tracking
@@ -392,3 +391,172 @@ One of a slop run's startup, seeding, execution and teardown, each timed on its 
 _Avoid_: stage (a load step a scenario sets as `ctx.rec.stage`), step
 
 - **Machine gate** (`~/.slop/gate.py`: slots, load and thread admission across every checkout), **`--changed` pick**, **CAUGHT / NOT CAUGHT / INCONCLUSIVE**, **run folder**: `slop/README.md`
+
+### Full AI Chat
+
+**Full AI Chat**:
+The per-Creator automation (rule and kind `full_ai_chat`) that answers a Fan's every Turn through the Router and a Writer, merging auto convo and AI-chatter selling into one Lane; the welcome engine only hands Fans to it. Its page is titled "Full AI Chatter" (`app/app/full-ai-chatter/page.tsx`).
+_Avoid_: AI chatter (the retired fastt engine it re-implements; see **AI Copilot**), Full AI Chatter (the page title only), auto convo, full_ai (a code prefix)
+
+**Lane**:
+An automation that writes to one Fan 1:1 and competes for his next reply: a funnel walk (`reply_mass_funnel`), Get to know fans (`welcome_chatter_for_info`), Auto-reply, or Full AI Chat. The Full AI Chatter page already calls them "AI lanes".
+_Avoid_: Split Inbox group, `/admin/lanes` (concurrency), priority lane, engine
+
+**Lane ownership**:
+Which one Lane, or none, may reply to a Fan at an Evaluation point, decided by the pure `who_owns` precedence (ADR-0036). It decides who replies, never whether to sell.
+_Avoid_: owner on its own (the Agency's, as in **Owner session**), ownership on its own (`ownership.py`'s bought media), engine_active
+
+**Human yield**:
+The Lane ownership rule that no Lane replies to a Fan for a while (default 1 h) after a human's 1:1 outbound; an outbound of unknown sender counts as human. OF-app yield feeds it from a live one-Fan read just before a send.
+_Avoid_: takeover, human window, pause
+
+**Top spend limit**:
+The lifetime spend at or above which Full AI Chat stops replying to a Fan and leaves him to humans; with the per-Creator exclude list, the only exit from Full AI Chat besides its switches (owner D8).
+_Avoid_: whale gate, whale cap
+
+**Stand-down**:
+The other Lanes skipping a Treatment fan whom Full AI Chat owns in live Mode: W7's `_classify`, Get to know fans (at decide and before each bubble) and Auto-reply. Holdout fans and Shadow mode stand nothing down, and funnel code never changes (ADR-0036).
+_Avoid_: yield (that is **Human yield**), disable, mute
+
+- **Welcome handoff** (the welcome engine passing a Fan to the Lane that owns him; per Creator today, per Fan once Full AI Chat goes live): `service/automations/welcome_turn.py`
+
+### Full AI Chat routing
+
+**Jev**:
+TypeSafe's System One model, pinned at `jev-1.14.0`, which answers typed questions with calibrated probabilities. In Full AI Chat it answers the Router questions and never writes fan text; the FM off-script gate asks it too (ADR-0026).
+_Avoid_: TypeSafe (the vendor and its SDK), the router (Jev answers, the Route table decides), classifier, judge
+
+**Turn**:
+A run of consecutive messages from one Fan, decided once by the Router and recorded as one Decision row.
+_Avoid_: DM (one message), message, exchange, welcome turn (`welcome_turn.py`'s)
+
+**Anchor**:
+The fan message whose arrival triggered a Turn: its id is the Decision row's `trigger_key`, and a fan message newer than it at Last-look aborts the Turn.
+_Avoid_: trigger_key (the row's key, which a Wake or Test chat Turn has without an Anchor), cursor
+
+**Router**:
+Full AI Chat's per-Turn decision: one Jev request answering every Router question, then the Route table. A failed request makes the Turn chat at Heat 1 with no Offer (ADR-0032).
+_Avoid_: brain, classifier, gate (the FM off-script gate, ADR-0026, or a Capacity campaign **Gate**)
+
+**Router question**:
+One of the fixed questions in the Router's one Jev request: the yes/no Nouls with their thresholds, the `intensity` Score and the `asks_subject` and `asks_format` Choices. Their wording and thresholds are data in one module, and each Decision row records their `question_version`.
+_Avoid_: Noul (TypeSafe's yes/no answer type, which `intensity` and the Choices are not), signal, check, rule
+
+**Route**:
+What one Turn does: chat, sext, sell_now, tease, make_right, ai_dare or no_send. A tease (on price or a decline, which never blocks selling) teases now so his next Turn sells; with selling off it is chat.
+_Avoid_: action (the FM off-script gate's per-reason action, ADR-0026), intent, Mode, Lane
+
+**Route table**:
+The pure first-match map from Router question answers and the Pending tease to a Route (`full_ai_decide.decide_turn`), holding no rule beyond them (ADR-0032).
+_Avoid_: decide table (`_fm_relevance`'s, ADR-0026), decision table, router rules
+
+**Evaluation point**:
+A moment the Router decides afresh and asks Jev again: inbound dispatch, each bubble's Last-look and a Wake's resume. No answer carries over between them (ADR-0032).
+_Avoid_: checkpoint, tick, re-check
+
+**Last-look**:
+The Evaluation point just before each bubble goes out: reload the facts, confirm Lane ownership, confirm no fan message is newer than the Anchor and ask Jev again; any miss aborts the bubble and re-routes.
+_Avoid_: pre-send check, final check, `finalize_draft` (`_outbound`'s text filter)
+
+**Wake**:
+A paced Turn resuming at its `wake_at`: an Evaluation point that also re-runs Lane ownership, recorded as a Decision row whose parent is the paced row. A Wake never parents a Wake.
+_Avoid_: retry, follow-up, resume job
+
+**Heat**:
+How sexual a Writer may be on a Turn, 1 to 4: the Fan's own `intensity` level (his Score rounded, a tie up) plus one, at most 4, so never below him; 1 when the Router's request failed.
+_Avoid_: intensity (the Router question that measures him), intensity cap, spice
+
+**Pending tease**:
+The one piece of Router state: a fully landed tease from Full AI Chat that he answered within 15 minutes, with no other outbound and no purchase since, so his reply becomes a sell. It is derived from Decision rows, never stored (ADR-0034); the tease Route makes one once selling is on, so Shadow never has one.
+_Avoid_: router state, pending sell, open offer, Pending offer (the Jev field carrying its text)
+
+**Pending offer**:
+The Router's `pending_offer` field, read by `says_yes_to_offer`: the Pending tease's text, or in Shadow mode her newest priced unbought outbound from any Lane, else "none".
+_Avoid_: open offer, Unconfirmed offer, Offer
+
+**AI dare**:
+The ai_dare Route's reply when he asks whether she is a bot: the old two-beat dare, a breezy joke then "send me one and I'll rate it", and a rating out of 10 with two or three specifics for the pic he sends. Never a flat denial.
+_Avoid_: AI denial, "are you AI" answer
+
+**Make-it-right**:
+The make_right Route on a Turn where he complains about something he paid for: an apology plus a Free item matched to what he wants, never an Offer on that Turn. The next Turn routes as usual, so an Offer may follow at once.
+_Avoid_: complaint route, refund, repair, sell block
+
+**Writer**:
+The model that writes a Turn's fan-facing text, captions included: Hermes-4-405b or Euryale v2.3 (L3.3-70B; host open, D38), 50/50 by Fan hash, on the old fastt prompts verbatim (`docs/prompts/`). Each Decision row records its Router model, and its Writer once it writes a reply (a Shadow row has none).
+_Avoid_: gen model, sexting model, generator, caption LLM
+
+### Full AI Chat selling
+
+**Offer**:
+A PPV a Decision row plans or sends at a price above 0, chosen by the Sell executor; at most one per Turn. A Free item rides the same row at price 0 and is not an Offer.
+_Avoid_: PPV on its own (the message kind), sale (the purchase), pitch
+ASSUMPTION: the price-0 Free item is kept out of "Offer", though the ledger ticket calls the gift "a price-0 offer"; overturned if the specs need one word for both.
+
+**Unconfirmed offer**:
+An Offer whose send outcome is unknown (its send marker reads UNCONFIRMED). It counts as sent and blocks the next Offer to that Fan until settled.
+_Avoid_: Pending offer, failed send, open offer
+
+**Send-correctness rules**:
+The only behaviour Full AI Chat hard-codes: at most one Offer per Turn, an Unconfirmed offer blocks the next, and nothing is sent twice (ADR-0032).
+_Avoid_: brakes (the older word, which also covered the dropped complaint and decline stamps), safeguards, caps, may_sell
+
+**Sell executor**:
+The pure pool, price, pick and Claim audit code (`full_ai_sell.py`) that turns a sell_now or make_right Route into one Pick from the Creator's vault, or into a refusal that falls back to chat.
+_Avoid_: Seller (the fetch diet's always-fast automation), resolver
+
+**Pick**:
+The Sell executor's media for one Offer or Free item: one clip, or up to four photos from one shoot plus at most one free preview, none of them Owned media.
+_Avoid_: bundle, pack
+
+**Owned media**:
+Media a Fan has bought, by any join source, or received as a Free item. It is never offered to him again; unbought media may be re-offered (owner D13).
+_Avoid_: seen media (also counts sent but unbought; the Free item's pool excludes it), was_purchased (`vault_sends`')
+
+**Free item**:
+The one unseen vault item, price 0 and matched to what he wants, that a Make-it-right Turn sends. It is uncapped (ADR-0032) and becomes Owned media.
+_Avoid_: gift, freebie, preview (the free photo beside an Offer), Free previews (the PPV row's)
+
+**Claim audit**:
+The check that a sell or Free item bubble's exact final text claims only what its Pick holds (count, kind, and subject words by a strict lexicon). A failure regenerates once, then sends a fallback caption built only from the Pick's counts and kinds.
+_Avoid_: caption check, pack_claim (the old fastt check), word filter (`_wordfilter`)
+
+### Full AI Chat ledger and rollout
+
+**Decision ledger**:
+The append-only `ai_decisions` table: one Decision row per Turn and Mode, never updated by a later Turn, and the owner of the Offer→purchase join (ADR-0034).
+_Avoid_: ledger on its own (the transaction ingest's), offer ledger, decision log
+
+**Decision row**:
+One `ai_decisions` row: a Turn's Mode, Jev answers, `question_version`, Route, Router model, any Writer, any Offer or Free item, and its outcome.
+_Avoid_: ledger row, shadow row (only a Decision row in Shadow mode), AI decision, log line
+ASSUMPTION: "Decision row" over the plan's "ledger row" and the rollout ticket's "shadow row"; overturned if the specs keep "ledger row".
+
+**Mode**:
+How a Full AI Chat Turn runs, recorded on its Decision row: shadow (decide and record, send nothing), test (the owner's Test chat) or live (sends). Off is the `full_ai_chat` rule disabled, not a Mode.
+_Avoid_: Rollout stage, status
+
+**Shadow mode**:
+The Mode in which the Router decides and records on real traffic through a runner with no send path, no fan lease, no cooldown and no OF call, so no Fan sees anything (ADR-0033).
+_Avoid_: Shadow relay and Shadow slice (the Capacity campaign's), shadow test
+
+**Test chat**:
+The owner chatting as a Fan with Full AI Chat on the Full AI Chatter page (Mode test): no OF call, waits skippable, rows deleted after 7 days.
+_Avoid_: sandbox, playground, helper chat (the page's settings assistant)
+
+**Enrolment**:
+A Fan's one `ai_enrolments` row, written at his first eligible inbound in live mode with selling on, on a Full AI Chat Creator (Shadow and the selling-off stage enrol no one, R8), and fixing his Arm for good (ADR-0035).
+_Avoid_: enrollment (OF list enrollment, a **Functional demand**), assignment
+
+**Arm**:
+A Fan's side of the fixed Fan-hash split, on every Decision row and fixed for good by his Enrolment: treatment (about 80 %; Full AI Chat owns him) or holdout (about 20 %; today's Lanes, unchanged). A Treatment fan or Holdout fan is a Fan in that Arm.
+_Avoid_: control group, slice (the **Shadow slice** is a systemd slice), bucket, cohort
+
+**Revenue per enrolled fan**:
+Net revenue from every source over 14 days per Enrolment, treatment Arm against holdout Arm: Full AI Chat's win measure (ADR-0035).
+_Avoid_: **Total spend** (the Fan List's per-Fan figure), buy rate (a per-Route reading of router quality), conversion rate, LTV
+
+**Rollout stage**:
+One of S0 (offline replay) to S6 (sext) through which a Creator's Full AI Chat moves; only the owner flips one forward, after its checks pass.
+_Avoid_: **Stage** (a Capacity campaign ladder step), phase (a plan's PR slice), **Gate** (the Capacity campaign's G1–G13)
+ASSUMPTION: named "Rollout stage" so the Capacity campaign's Stage keeps one meaning; overturned if the specs say S0–S6 only.

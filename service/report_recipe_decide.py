@@ -1,7 +1,7 @@
 """service/report_recipe_decide.py — the report recipe's pure half (no DB, no
 I/O): the dataset CATALOGUE, the per-dataset kind maps, `parse_recipe` (one
 error per field, so a model can repair its own recipe), `resolve_window`,
-`clamp_creators`, `shape` and `filename`. `report_recipe.run` executes a
+`clamp_creators`, `shape` and `filename`. `report_recipe.run`/`build_file` execute a
 parsed recipe; the help bot's Do mode renders `catalogue_text` into its
 prompt (docs/plans/ultra-mode/issues/01-report-recipe.md).
 

@@ -250,8 +250,10 @@ def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
     ], names
     layers = server.app.user_middleware
     assert [m.cls.__name__ for m in layers] == [
-        "_CutShortStreams", "RequestLog", "_DbBusy503", "BaseHTTPMiddleware", "GZipMiddleware"], layers
-    assert layers[3].kwargs["dispatch"] == server._http_hooks.dispatch
+        "_CutShortStreams", "RequestLog", "_DbBusy503",
+        "StripCookieIdentities",  # token_auth: a bearer request reaches every hook with no cookie
+        "BaseHTTPMiddleware", "GZipMiddleware"], layers
+    assert layers[4].kwargs["dispatch"] == server._http_hooks.dispatch
 
 
 def case_queued_background_read_checks_the_current_role_when_admitted():

@@ -892,6 +892,7 @@ async def case_every_live_kind_is_classified_for_absence():
         "apply_profiles": "writes nicknames and notes, sends no DM",
         "auto_follow": "a follow notification, never a DM",
         "customs_watch": "marks a tip as owed work; a human sends the custom",
+        "full_ai_chat": "Shadow mode records Decision rows, sends nothing (ADR-0033)",
         "auto_posts": "a feed post, not a message to one fan",
         "auto_stories": "a story, not a message to one fan",
         "gen_info": "builds fan profiles, sends nothing",

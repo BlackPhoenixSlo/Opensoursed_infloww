@@ -409,6 +409,8 @@ export interface AuditAction {
   target_id: string | null;
   payload: unknown;
   at: string | null;
+  /** "token <name>" when an owner access token made the request; null/absent for a browser session. */
+  via?: string | null;
 }
 
 /** Fan insights › Profile › Salary frequency: the values the server accepts. */
