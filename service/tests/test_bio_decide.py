@@ -463,4 +463,20 @@ def case_new_id():
     assert d.RECORD_ID.fullmatch(files.new_id(15)) and d.LINK_ID.fullmatch(files.new_id(12))
 
 
+def case_page_meta():
+    assert d.page_meta(None, "https://bio.test") == d.TITLE_DEFAULT
+    prof = {"id": "p1", "username": "jack", "display_name": 'Kaka <b>"x"', "bio": " hi\n there ", "avatar": "a.webp"}
+    m = d.page_meta(prof, "https://bio.test")
+    assert "<title>Kaka &lt;b&gt;&quot;x&quot;</title>" in m and "<b>" not in m
+    assert '<meta property="og:url" content="https://bio.test/jack">' in m
+    assert '<meta property="og:description" content="hi there">' in m
+    assert '<meta property="og:image" content="https://bio.test/api/files/profiles/p1/a.webp">' in m
+    m2 = d.page_meta({**prof, "avatar": "", "bio": "", "display_name": ""}, "https://app.test", "/p")
+    assert "<title>jack</title>" in m2 and "og:image" not in m2 and "og:description" not in m2
+    assert 'content="https://app.test/p/jack"' in m2
+    page = d.render_index(assets.INDEX.read_text(encoding="utf-8"), True)
+    assert "Linkme Clone" not in page and page.count(d.TITLE_DEFAULT) == 1
+    assert "<title>jack</title>" in d.with_meta(page, m2) and d.TITLE_DEFAULT not in d.with_meta(page, m2)
+
+
 _harness.run()

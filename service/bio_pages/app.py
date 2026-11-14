@@ -200,6 +200,25 @@ def _landing(status: int) -> Response:
     return _r(status, LANDING, {"content-type": HTML, "cache-control": MR})
 
 
+async def _meta_profile(req: dict | None) -> dict | None:
+    """The Profile a page names, for its preview tags; a DB hiccup only costs the tags, never the page."""
+    if not req or not req.get("username"):
+        return None
+    try:
+        return await store.profile_at(req["username"])
+    except OperationalError:
+        return None
+
+
+def _origin(q: _Req) -> str:
+    """scheme://host the visitor used: X-Forwarded-Host/Proto from a trusted proxy (path mode via Next), else Host."""
+    trusted = trusted_peer(q.request)
+    host = (q.hdr("x-forwarded-host") if trusted else None) or q.hdr("host") or ""
+    host = host.split(",")[0].strip()
+    proto = ((q.hdr("x-forwarded-proto") if trusted else None) or "https").split(",")[0].strip()
+    return f"{proto if proto in ('http', 'https') else 'https'}://{host}"
+
+
 async def _page(q: _Req) -> Response:
     key = assets.public_key(q.path)
     if key in ASSETS:
@@ -212,7 +231,8 @@ async def _page(q: _Req) -> Response:
     req = decide.resolve_profile_request(kind, custom, q.url_path if prefix else q.full_path, prefix)
     if req is not None and req["username"] == "" and req["trackingCode"] is None:
         return _landing(200)
-    page = decide.bootstrap_page(PREFIXED_INDEX_HTML if prefix else INDEX_HTML, req, prefix).encode("utf-8")
+    page = decide.bootstrap_page(PREFIXED_INDEX_HTML if prefix else INDEX_HTML, req, prefix)
+    page = decide.with_meta(page, decide.page_meta(await _meta_profile(req), _origin(q), prefix)).encode("utf-8")
     return _r(200, page, {"content-type": HTML, "cache-control": MR})
 
 

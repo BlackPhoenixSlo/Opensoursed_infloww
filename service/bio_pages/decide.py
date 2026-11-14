@@ -7,6 +7,7 @@ non-ASCII digits and letters, and its `$` allows a trailing newline, where JS's 
 from __future__ import annotations
 
 import ipaddress
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -249,6 +250,36 @@ def parse_bootstrap(page: bytes):
 _ROOT_ATTR = re.compile(r'\b(href|src)="/(?!/)')
 
 
+TITLE_V2 = "<title>Linkme Clone</title>"
+TITLE_DEFAULT = "<title>Bio</title>"
+
+
+def page_meta(profile: Mapping | None, origin: str, prefix: str = "") -> str:
+    """<title> + Open Graph tags for a Profile's page (link previews in chats/socials); no Profile → the plain title.
+    `origin` is scheme://host the visitor used; the avatar is the preview image when set."""
+    if not profile:
+        return TITLE_DEFAULT
+    name = profile.get("display_name") or profile.get("username") or "Bio"
+    esc = lambda s: html.escape(str(s), quote=True)
+    desc = " ".join((profile.get("bio") or "").split())[:200]
+    url = f"{origin}{prefix}/{profile['username']}"
+    tags = [f"<title>{esc(name)}</title>", f'<meta property="og:title" content="{esc(name)}">',
+            f'<meta property="og:type" content="profile">', f'<meta property="og:url" content="{esc(url)}">',
+            f'<meta name="twitter:title" content="{esc(name)}">']
+    if desc:
+        tags += [f'<meta name="description" content="{esc(desc)}">', f'<meta property="og:description" content="{esc(desc)}">']
+    avatar = _file_url("profiles", profile, "avatar", prefix)
+    if avatar:
+        tags += [f'<meta property="og:image" content="{esc(origin + avatar)}">',
+                 '<meta name="twitter:card" content="summary">']
+    return "\n    ".join(tags)
+
+
+def with_meta(page_html: str, meta: str) -> str:
+    """Swap the rendered default <title> for page_meta's block."""
+    return page_html.replace(TITLE_DEFAULT, meta, 1)
+
+
 def render_index(index_html: str, escape_tap: bool, prefix: str = "") -> str:
     """Render the process-wide flag on the Escape Overlay card; with a path prefix (parse_path_prefix), lead every
     root-relative href/src with it and name it on <body data-base> for script.js's own URLs."""
@@ -256,6 +287,7 @@ def render_index(index_html: str, escape_tap: bool, prefix: str = "") -> str:
     if index_html.count(needle) != 1:
         raise ValueError("igCard anchor missing or duplicated")
     out = index_html.replace(needle, f'<a id="igCard" class="ig-card" data-escape-tap="{int(escape_tap)}">', 1)
+    out = out.replace(TITLE_V2, TITLE_DEFAULT, 1)
     if not prefix:
         return out
     if out.count("<body>") != 1:
