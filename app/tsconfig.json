@@ -48,7 +48,9 @@
     ".next/slop-prod/types/**/*.ts",
     ".next/slop-prod/dev/types/**/*.ts",
     ".next/demo/types/**/*.ts",
-    ".next/demo/dev/types/**/*.ts"
+    ".next/demo/dev/types/**/*.ts",
+    ".next/fa-owner-test/types/**/*.ts",
+    ".next/fa-owner-test/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

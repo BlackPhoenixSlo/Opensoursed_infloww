@@ -678,6 +678,8 @@ LEAD = "The woman sits on a bed in lace lingerie, legs apart, toy beside her."
 NUDE = "The woman is nude on the bed, a bodysuit with cutouts exposing her nipples."
 PUSSY2 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE])
 # the owner's 2026-11-14 bubble: 2 locked photos + 1 free preview = 3 thumbnails
+VULVA_CLIP = _cpick({"video": 1}, price=11000, subject="anything",
+                    description="A woman lies on a bed, fully nude. She strokes her exposed vulva")
 SHOWN3 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE],
                 previews={"photo": 1})
 CLIP_PREVIEW = _cpick(CLIP, previews={"photo": 1})
@@ -715,6 +717,8 @@ def case_claim_ok_table():
         ("me naked on my bed with my toy, $100 to unlock", PUSSY2, True, "the second locked item is nude"),
         ("my pussy and tits out for u, $100", PUSSY2, True, "the second locked item shows nipples"),
         ("a little vid of me playing", PUSSY2, False, "a vid on a photo-only Pick"),
+        ("my pussy needs u rn, cum with me", VULVA_CLIP, True, "the describer says vulva, she says pussy"),
+        ("my ass up for u", VULVA_CLIP, False, "nothing describes her butt"),
         ("3 pics", PUSSY2, False, "3 over 2"),
         ("3 pics for u, $100", SHOWN3, True, "the bubble shows 3: 2 locked + the free preview"),
         ("2 pics for u, $100", SHOWN3, True, "the locked count still passes"),

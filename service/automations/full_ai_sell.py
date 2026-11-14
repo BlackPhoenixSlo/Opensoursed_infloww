@@ -470,6 +470,16 @@ _SUBJECT_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
 }.items()}
 
 
+# The describe text's own words for a subject (it writes "vulva", never "pussy"): a locked item
+# described with one allows that subject's words in her text. Measured 2026-11-14: "my pussy" over
+# a clip described "strokes her exposed vulva" false-failed and the scene line became the fallback.
+_DESCRIBE_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
+    "pussy": ("vulva", "vagina", "labia", "genitals"), "butt": ("buttocks",),
+    "tits": ("breast", "nipple", "topless"), "nude": ("unclothed", "undressed"),
+    "toy": ("toys", "dildos"), "masturbation": ("masturbates", "masturbate", "fingering"),
+}.items()}
+
+
 def _words(text: str) -> list[str]:
     return re.findall(r"[a-z]+", text.lower())
 
@@ -478,7 +488,8 @@ def claim_ok(text: str, pick: Pick) -> bool:
     """The text claims only what the Pick holds: a video word needs a clip and a photo word a
     photo; a count before one ("5 videos", "four pics") equals that kind's count; a plural
     needs more than one; a subject word is the Pick's subject's or named by the describe text of
-    any of its locked items (`facts["descriptions"]`). A price or a time before a noun is no count,
+    any of its locked items (`facts["descriptions"]`, in the subject's words or the describer's:
+    `_DESCRIBE_WORDS`). A price or a time before a noun is no count,
     nor is "a"/"an" ("a pic" over 2 photos is over-delivery; "a vid" still needs a clip). Pure.
     ASSUMPTION: the per-subject word lists (`_SUBJECT_WORDS`) and the uncounted words
     (`_NOT_A_COUNT`) are this repo's; old `pack_claim` audited a caption it assembled itself, so it
@@ -515,8 +526,8 @@ def claim_ok(text: str, pick: Pick) -> bool:
             return False
     desc = set(_words(" ".join(pick.facts.get("descriptions", [pick.facts["description"]]))))
     allowed = set(_SUBJECT_WORDS.get(pick.subject, ()))
-    for words in _SUBJECT_WORDS.values():
-        if desc & words:
+    for subject, words in _SUBJECT_WORDS.items():
+        if desc & (words | _DESCRIBE_WORDS.get(subject, frozenset())):
             allowed |= words
     named = set(_words(low)) & frozenset().union(*_SUBJECT_WORDS.values())
     return named <= allowed

@@ -209,17 +209,15 @@ SEXT_SCENE = (
     "5. At most one question, and only after you gave him something. Never two messages in a "
     "row ending on a question, never the same question twice.")
 # The saved scene's stage (`full_ai_scene`), the line under SEXT_SCENE.
+# No example lines: measured 2026-11-14 on euryale-v2.3 / hermes-4-405b, she sent them word for word.
 SCENE_STAGE = {
     "opening": "WHERE THE SCENE IS: just starting. Pull him in: say what you have on (or don't) "
-               "and the first thing you'd do to him if he were here. The idea, never these "
-               "words: 'im in bed in just a tshirt rn.. thinking about ur hands under it'",
+               "and the first thing you'd do to him if he were here.",
     "building": "WHERE THE SCENE IS: building. Clothes come off, hands go where he says. Tell "
                 "him what you're doing to yourself for him right now and what you want him to "
-                "do next — tell him to touch himself for you. The idea, never these words: "
-                "'sliding my fingers in while i read that.. stroke it slow for me'",
+                "do next — tell him to touch himself for you.",
     "peak": "WHERE THE SCENE IS: he's close. No questions now. Your shortest, dirtiest lines: "
-            "you're about to cum, tell him to cum for you. The idea, never these words: "
-            "'fuck im so close.. cum with me baby'",
+            "you're about to cum, tell him to cum for you.",
     "after": "WHERE THE SCENE IS: he just finished. Come down with him: one warm, breathless "
              "line about how good that was and what he does to you. No question, nothing to "
              "sell, no new subject in this message.",
@@ -231,7 +229,7 @@ SCENE_SELL = ("\nTHIS MESSAGE SENDS HIM A LOCKED PIECE. {close} Write it as the 
 # `_chat_system` on a scene Turn: NO_NARRATION_RULE -> SCENE_NARRATION, SELF_BAN -> SCENE_SELF,
 # EXPLICIT_EARLY dropped.
 SCENE_NARRATION = ("- No *asterisk actions* and no story about yourself in third person — say "
-                   "what you're doing as a text to him ('im touching myself rn'), sooner send "
+                   "what you're doing as a text to him, in your own words, sooner send "
                    "nothing.\n")
 SCENE_SELF = "Use what you've learned about him; "
 # Refusal -> need-line in the sell slot (spec 03b › Contracts, ticket 10 r3); inventory_unknown: none.
