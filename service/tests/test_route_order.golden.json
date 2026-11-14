@@ -1,4 +1,4 @@
-{"openapi_sha1": "79d6996cb9f822165faf7735237ae6bb34edc8ca",
+{"openapi_sha1": "96ccd6160e66348a54d8d8b1533f34b81890543c",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -336,6 +336,9 @@
   ["GET", "/admin/bio-pages/{pid}", "get_page"],
   ["PATCH", "/admin/bio-pages/{pid}", "patch_page"],
   ["DELETE", "/admin/bio-pages/{pid}", "delete_page"],
+  ["PUT", "/admin/bio-pages/{pid}/domain", "set_domain"],
+  ["DELETE", "/admin/bio-pages/{pid}/domain", "remove_domain"],
+  ["POST", "/admin/bio-pages/{pid}/domain/check", "check_domain"],
   ["POST", "/admin/bio-pages/{pid}/avatar", "upload_avatar"],
   ["POST", "/admin/bio-pages/{pid}/avatar/vault", "avatar_from_vault"],
   ["DELETE", "/admin/bio-pages/{pid}/avatar", "remove_avatar"],
