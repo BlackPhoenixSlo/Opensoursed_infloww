@@ -102,6 +102,16 @@ def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> d
             "rebill": 0,
             "custom": 0,
         },
+        # OF's net per bucket (same keys); with no net yet a row adds 0 here
+        # too, as in total_net_revenue_cents.
+        "net_revenue_by_kind": {
+            "ppv": 0,
+            "post": 0,
+            "tip": 0,
+            "subscription": 0,
+            "rebill": 0,
+            "custom": 0,
+        },
         "total_revenue_cents": 0,
         # OF's own post-fee figure, summed from transactions.net_cents.
         # `net_missing_count` > 0 means some rows have no net yet (a
@@ -182,6 +192,7 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
             row["revenue_by_kind"][bucket] += amount
             row["total_revenue_cents"] += amount
             row["total_net_revenue_cents"] += int(r.net_cents or 0)
+            row["net_revenue_by_kind"][bucket] += int(r.net_cents or 0)
             row["net_missing_count"] += int(r.net_missing or 0)
             # PPV conversions: every tracked PPV sale in the window (a
             # re-purchase is a separate sale), the attribution view's rows.
@@ -201,6 +212,7 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
     for c in top:
         row = _ensure(c["account_id"])
         row["revenue_by_kind"][_kind_bucket(c["kind"])] += c["gross_cents"]
+        row["net_revenue_by_kind"][_kind_bucket(c["kind"])] += c["net_cents"]
         row["total_revenue_cents"] += c["gross_cents"]
         row["total_net_revenue_cents"] += c["net_cents"]
 
@@ -271,6 +283,7 @@ async def per_model(
     Per-model fields:
       • account_id / display_name
       • revenue_by_kind   — {ppv, tip, subscription, rebill, custom}
+      • net_revenue_by_kind — the same buckets in OF's net
       • total_revenue_cents
       • messages_sent     — an Employee's own sends, no mass or automated ones
                              (`msg_stats.chatter_sends`)

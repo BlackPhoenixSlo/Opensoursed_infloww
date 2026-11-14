@@ -23,8 +23,8 @@ of_client.subscribers_chart); the shape check (of_stats_parse.points) drops a
 series that does not.
 Rung 4. Overturned by a live capture of either.
 
-Each fetch re-reads the last `_DAYS` days, so a missed day heals on the next
-run, and writes only complete days (before today, UTC): a day OF is still
+Each fetch re-reads the last `_DAYS` days (`_SUBS_DAYS` for the two subscriber
+charts, Fan reports' default window), so a missed day heals on the next run, and writes only complete days (before today, UTC): a day OF is still
 counting is never stored. A series whose points are not one per consecutive
 day (a reply in another shape, or bucketed by week) is not stored at all.
 
@@ -97,6 +97,7 @@ from db.models import Account, OfEarningsDaily, OfStatsDaily, SubscriberSnapshot
 log = logging.getLogger("of-relay.of_stats_daily")
 
 _DAYS = 7                 # complete days each fetch re-reads
+_SUBS_DAYS = 30           # the subscriber charts' re-read: OF's own "Last 30 days" charts them daily
 _TICK_S = 3600            # how often the loop looks for a Creator due a fetch
 _CALL_PAUSE_S = 2.0       # between two OF reads, and between two Creators
 _RETRY_AFTER_S = 6 * 3600 # between two fetches for a day not yet stored
@@ -135,10 +136,12 @@ def _unchanged_since(key: tuple, version: int) -> bool:
     return not any(v > version and _hits(key, a, f, l) for v, a, f, l in _earnings_writes)
 
 
-def fetch_blocking(client, first: date, last: date, *, pause_s: float = _CALL_PAUSE_S) -> dict[str, dict[str, int]]:
-    """The three charts over [first, last] as {series: {day: count}}, without the
-    series that answered in an unexpected shape. Blocking: run in a thread.
-    Raises what the client raises (a dead session, a proxy outage)."""
+def fetch_blocking(client, first: date, last: date, *, pause_s: float = _CALL_PAUSE_S,
+                   subs_first: date | None = None) -> dict[str, dict[str, int]]:
+    """The three charts over [first, last] (the subscriber two from `subs_first`
+    when given) as {series: {day: count}}, without the series that answered in an
+    unexpected shape. Blocking: run in a thread. Raises what the client raises
+    (a dead session, a proxy outage)."""
     # UNVERIFIED: which zone OF reads startDate / endDate in, and cuts its
     # points' days in. They are sent as UTC days, and each point is stored
     # under the date OF stamps on it.
@@ -149,10 +152,12 @@ def fetch_blocking(client, first: date, last: date, *, pause_s: float = _CALL_PA
     pts = of_stats_parse.points(chart.get("visitors") if isinstance(chart, dict) else None, first, last)
     if pts is not None:
         out["visitors"] = pts
+    s_first = subs_first or first
+    s_start = f"{s_first.isoformat()} 00:00:00"
     for col, by in (("new_subs", "new"), ("renewals", "renew")):
         time.sleep(pause_s)
-        reply = client.subscribers_chart(start=start, end=end, by=by)
-        pts = of_stats_parse.points(reply.get("subscribes") if isinstance(reply, dict) else None, first, last)
+        reply = client.subscribers_chart(start=s_start, end=end, by=by)
+        pts = of_stats_parse.points(reply.get("subscribes") if isinstance(reply, dict) else None, s_first, last)
         if pts is not None:
             out[col] = pts
     for col in SERIES:
@@ -270,7 +275,8 @@ async def snapshot(account_id: str, client, *, now: datetime | None = None,
     now = now or datetime.utcnow()
     last = now.date() - timedelta(days=1)
     first = last - timedelta(days=_DAYS - 1)
-    cols = await asyncio.to_thread(fetch_blocking, client, first, last, pause_s=pause_s)
+    cols = await asyncio.to_thread(fetch_blocking, client, first, last, pause_s=pause_s,
+                                   subs_first=last - timedelta(days=_SUBS_DAYS - 1))
     n = await _upsert(account_id, cols, now) if cols else 0
     await asyncio.sleep(pause_s)
     if (earned := await asyncio.to_thread(fetch_earnings_blocking, client, first, last)) is not None:

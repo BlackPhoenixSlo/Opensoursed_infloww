@@ -1307,9 +1307,10 @@ describe("StatsReport Creator reports Show net earnings", () => {
   const shape = (rows: Row[], net: boolean): unknown[] => rows.map(({ net_cents, net_missing_count, by_kind, ...r }) => ({
     ...r, ...(net ? { net_cents, net_missing_count } : {}), ...(by_kind ? { by_kind: shape(by_kind, net) } : {}),
   }));
-  // Creator A's gross is $250 (CREATOR_A); OF's net total for it is $200.
+  // Creator A's gross is $250 (CREATOR_A); OF's net total for it is $200: Subscriptions $120, Tips $24, Messages $48.
   const NET_A = { ...CREATOR_A, total_net_revenue_cents: 20000, net_missing_count: 1, pending_revenue_cents: 500,
-    ltv_cents: 1000, arpu_cents: 300 };
+    ltv_cents: 1000, arpu_cents: 300,
+    net_revenue_by_kind: { ...ZERO_KINDS, subscription: 8000, rebill: 4000, tip: 2400, ppv: 4800, post: 800 } };
   const revenue = () => fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
     .filter((u) => u.pathname === "/admin/stats/revenue")
@@ -1347,19 +1348,12 @@ describe("StatsReport Creator reports Show net earnings", () => {
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription53.57%$120");
 
-    // Creator statistics: Total is the per-model read's net total; the per-kind money columns have no net read.
+    // Creator statistics: Total is the per-model read's net total, the per-kind columns its net by kind.
     await waitFor(() => expect(tableRows(table())[0].slice(0, 7))
-      .toEqual(["Creator A", "-", "-", "-", "60.00%", "$200", "100.00%"]));
-    for (const name of ["Total subscription earnings", "Tips", "Message", "New subscriber LTV"]) {
-      const cell = within(table()).getByRole("button", { name: `Creator A ${name}` });
-      expect(cell).toBeDisabled();
-      expect(cell).toHaveAttribute("title", "not wired");
-    }
+      .toEqual(["Creator A", "$120", "$24", "$48", "60.00%", "$200", "100.00%"]));
+    expect(tableRows(table())[0][12]).toBe("$18"); // New subscriber LTV: ($48 + $24) / 4 new subscribers
     expect(within(section("Creator statistics")).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$200");
-    const message = within(within(section("Creator statistics")).getByRole("group", { name: "Message earnings" }))
-      .getByRole("button", { name: "Message earnings" });
-    expect(message).toBeDisabled();
-    expect(message).toHaveAttribute("title", "not wired");
+    expect(within(section("Creator statistics")).getByRole("group", { name: "Message earnings" })).toHaveTextContent("$48");
     // Ours, from Custom metrics: Pending revenue, LTV and ARPU have no net read either.
     fireEvent.click(within(section("Creator statistics")).getByRole("button", { name: "Custom metrics" }));
     const metrics = screen.getByRole("group", { name: "Creator report metrics" });
@@ -1431,9 +1425,9 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(within(ledger).getByText("OnlyFans' net is gross less its fee; VAT is not deducted.")).toBeInTheDocument();
 
     await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200"));
-    // The Export pop-up starts at the page's Net, with the Custom metrics pick: the money with no net read is empty.
+    // The Export pop-up starts at the page's Net, with the Custom metrics pick: each money column in net.
     await exportFrom(section("Creator statistics"));
-    expect(await csv.blob!.text()).toBe(`${CSV_HEADER}\nCreator A,,,,60,200,100,,,,4,,,,50,,,,3m 05s,40,120,30`);
+    expect(await csv.blob!.text()).toBe(`${CSV_HEADER}\nCreator A,120,24,48,60,200,100,,,,4,,18,,50,,,,3m 05s,40,120,30`);
   });
 
   it("exports all data fields with a net read, and each Creator's net by day from one read per Creator", async () => {
@@ -1448,7 +1442,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(lines[0]).toBe("Total");
     const head = lines[1].split(",");
     expect(head).toEqual(expect.arrayContaining(["Creator", "Total earnings", "Avg hourly earnings", "PPV conversions"]));
-    expect(head).not.toContain("Tips");
+    expect(head).toContain("Tips");
     expect(head).not.toContain("OF ranking");
     expect(lines.slice(3, 5)).toEqual(["", "By day"]);
     expect(lines[5]).toBe("Creator,Day,Total earnings (excl. referrals),Subscription,Tips,Posts,Messages,Other,Chargebacks");

@@ -29,7 +29,8 @@ import tx_rollup
 from attribution_backfill import PPV_KINDS, TIP_KINDS, TRACKED_STATUSES
 from auth import clamp_account_filter
 from db.engine import get_session
-from db.models import Fan, LinkClaimer, LinkMeta, PromoCampaign, SubscriberSnapshot, Transaction, TrialLinkMirror
+from db.models import (Fan, LinkClaimer, LinkMeta, OfStatsDaily, PromoCampaign, SubscriberSnapshot, Transaction,
+                       TrialLinkMirror)
 from stats_window import parse_date as _parse_date, scope_ids, stats_guard
 
 router = APIRouter(dependencies=[Depends(stats_guard)])
@@ -153,7 +154,9 @@ async def fan_report(
       growth    per day of the report zone: `new_fans`, the fans whose
                 subscription began (a subscription sale or the roster's
                 `subscribe_at`, each fan once, on his first day; per-model's
-                new subs), and `renewed_fans`, the fans with a rebill.
+                new subs), and `renewed_fans`, the fans with a rebill; per
+                Creator and day each raised to OF's own count when larger
+                (`of_stats_daily` new_subs / renewals, UTC days).
 
     `format=csv` streams the whole top_fans ranking instead, `limit` aside,
     under the shared CSV cap (csv_export.CSV_MAX_ROWS).
@@ -265,18 +268,45 @@ async def fan_report(
             at = at.replace(tzinfo=timezone.utc).astimezone(zone)
         return at.date().isoformat()
 
-    growth: dict[str, dict[str, Any]] = {}
+    per: dict[tuple[str, str], dict[str, int]] = {}  # (account_id, day) -> counts
 
-    def _bump(day: str, key: str) -> None:
-        growth.setdefault(day, {"day": day, "new_fans": 0, "renewed_fans": 0})[key] += 1
+    def _bump(aid: str, day: str, key: str) -> None:
+        per.setdefault((aid, day), {"new_fans": 0, "renewed_fans": 0})[key] += 1
 
     for r in new_rows:
-        _bump(_day(r.at), "new_fans")
+        _bump(r.account_id, _day(r.at), "new_fans")
     # A fan billed twice in a day (a re-sub after a chargeback) renewed once.
-    for day, _aid, _fid in {(_day(r.occurred_at), r.account_id, r.fan_id) for r in renew_rows}:
-        _bump(day, "renewed_fans")
+    for day, aid, _fid in {(_day(r.occurred_at), r.account_id, r.fan_id) for r in renew_rows}:
+        _bump(aid, day, "renewed_fans")
+    # OF's own daily counts (of_stats_daily) fill what we never see: free and trial subs leave no sale and
+    # the roster is only crawled under a lifecycle Trigger. Per Creator and day the larger of the two, as
+    # the earnings top-ups; OF's days are UTC days, taken as the report day of the same date.
+    for aid, day, of_new, of_renew in await _of_growth(account_ids, start, end):
+        c = per.setdefault((aid, day), {"new_fans": 0, "renewed_fans": 0})
+        c["new_fans"] = max(c["new_fans"], of_new or 0)
+        c["renewed_fans"] = max(c["renewed_fans"], of_renew or 0)
+
+    growth: dict[str, dict[str, Any]] = {}
+    for (_aid, day), c in per.items():
+        g = growth.setdefault(day, {"day": day, "new_fans": 0, "renewed_fans": 0})
+        g["new_fans"] += c["new_fans"]
+        g["renewed_fans"] += c["renewed_fans"]
 
     return {"top_fans": top, "traffic": traffic, "growth": sorted(growth.values(), key=lambda g: g["day"])}
+
+
+async def _of_growth(account_ids: list[str] | None, start: datetime, end: datetime) -> list[Any]:
+    """(account_id, day, new_subs, renewals) of OF's stored Statistics days the window names."""
+    from of_stats_daily import window_days
+    lo, hi = window_days(start, end)
+    D = OfStatsDaily
+    q = (select(D.account_id, D.day, D.new_subs, D.renewals)
+         .where(D.day >= lo.isoformat(), D.day <= hi.isoformat(),
+                or_(D.new_subs.is_not(None), D.renewals.is_not(None))))
+    if account_ids is not None:
+        q = q.where(D.account_id.in_(account_ids))
+    async with get_session() as s:
+        return list((await s.execute(q)).all())
 
 
 async def _link_names(s, rows: list[Any]) -> list[dict[str, Any]]:

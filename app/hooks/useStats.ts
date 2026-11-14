@@ -275,9 +275,10 @@ export interface PerModelRow {
    *  on each chip when > 0. */
   pending_by_kind: PerModelRevenueByKind;
   total_revenue_cents: number;
-  /** OnlyFans' own post-fee net over the same rows (`transactions.net_cents`); VAT is not deducted. There is no
-   *  net by kind. `net_missing_count` counts the rows with no net figure yet, which the net total leaves out. */
+  /** OnlyFans' own post-fee net over the same rows (`transactions.net_cents`); VAT is not deducted.
+   *  `net_revenue_by_kind` splits it by bucket (optional: an older relay leaves it out). `net_missing_count` counts the rows with no net figure yet, which the net total leaves out. */
   total_net_revenue_cents: number;
+  net_revenue_by_kind?: PerModelRevenueByKind;
   net_missing_count: number;
   /** Sum of amount_cents where status='loading' in the window. Always
    *  present (zero is a valid value). Renders as a dim sub-line under

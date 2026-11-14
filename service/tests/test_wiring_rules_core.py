@@ -50,6 +50,9 @@ ACC_A = IDS["creator_a"]
 ACC_B = IDS["creator_b"]
 
 OWNER_A = fx.login_owner("agency_a_owner")
+# Switching an AI kind (gen_info, reply_mass_funnel) on needs a key.
+import tenant_keys  # noqa: E402
+asyncio.run(tenant_keys.set_keys(IDS["agency_a_owner"], {"deepseek": "sk-test-a"}))
 OWNER_B = fx.login_owner("agency_b_owner")
 CHATTER_A = fx.login_chatter("chatter_a")
 CHATTER_B = fx.login_chatter("chatter_b")

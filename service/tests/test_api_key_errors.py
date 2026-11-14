@@ -450,6 +450,37 @@ def case_the_notice_reports_a_stored_key_error():
     assert body["notices"][0]["feature"] == "Auto Funnel", body
 
 
+async def case_resaving_the_key_clears_the_stored_key_error():
+    # Owner pastes a new key after the failed run: the new key hasn't failed,
+    # so the notice must clear now, not after the next (daily) run.
+    await tenant_keys.set_keys(_ISO["a2"], {"deepseek": "sk-alpha2-new"})
+    c = _login("keyerr_agency_alpha2", "alpha2-pw")
+    r = c.get("/admin/ai-key-status",
+              params={"account_id": "keyerr_alpha2_keyed", "kinds": "reply_mass_funnel"})
+    assert r.status_code == 200, (r.status_code, r.text)
+    body = r.json()
+    assert body["notices"] == [], body
+    assert body["items"][0]["last_key_error"] is None, body
+
+
+def case_no_key_cannot_switch_an_ai_automation_on():
+    c = _login("keyerr_agency_alpha", "alpha-pw")
+    on = {"account_id": "keyerr_alpha_nokey", "kind": "gen_info", "enable": True}
+    r = c.post("/admin/automation-rules/switch", json=on)
+    assert r.status_code == 424, (r.status_code, r.text)
+    assert r.json()["detail"]["error"] == "api_key_missing", r.text
+    r = c.post("/admin/automation-rules", json={
+        "account_id": "keyerr_alpha_nokey", "kind": "autoreply", "is_enabled": True})
+    assert r.status_code == 424, (r.status_code, r.text)
+    # Off always works; a keyed agency switches on.
+    r = c.post("/admin/automation-rules/switch", json={**on, "enable": False})
+    assert r.status_code == 200, (r.status_code, r.text)
+    c2 = _login("keyerr_agency_bravo", "bravo-pw")
+    r = c2.post("/admin/automation-rules/switch",
+                json={"account_id": "keyerr_bravo_acct", "kind": "gen_info", "enable": True})
+    assert r.status_code == 200, (r.status_code, r.text)
+
+
 def case_one_agency_cannot_read_anothers_key_status():
     c = _login("keyerr_agency_bravo", "bravo-pw")
     r = c.get("/admin/ai-key-status",

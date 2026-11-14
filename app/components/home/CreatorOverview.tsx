@@ -78,8 +78,10 @@ export default function CreatorOverview({
   const cbShown = ready && !isWait(chargebacksView);
   /* #101: the Creator statistics cards; "-" until the per-model read answers with a Creator in the selection. */
   const statsView = viewOf([perModel], visibleCreators.length > 0);
-  const messageEarnings = visibleCreators.reduce((a, m) => a + (m.revenue_by_kind?.ppv ?? 0), 0);
-  // With net on, a Creator's total is the per-model read's net total; it has no net by kind.
+  // With net on, OnlyFans' net per bucket; an older relay has none, so the card is Not wired then.
+  const netByKind = visibleCreators.every((m) => m.net_revenue_by_kind);
+  const messageEarnings = visibleCreators.reduce(
+    (a, m) => a + ((net ? m.net_revenue_by_kind?.ppv : m.revenue_by_kind?.ppv) ?? 0), 0);
   const totalEarningsAcrossCreators =
     visibleCreators.reduce((a, m) => a + (net ? m.total_net_revenue_cents : m.total_revenue_cents), 0);
   const refundedGross = visibleCreators.reduce((a, m) => a + (m.refunded_cents ?? 0), 0);
@@ -253,7 +255,7 @@ export default function CreatorOverview({
         <StatCard label="Creators" tip={STAT_TIPS.creators}
           value={statsView === "ready" ? visibleCreators.length.toLocaleString("en-US") : "-"} />
         <StatCard label="Message earnings" tip={STAT_TIPS.message}
-          value={net ? null : statsView === "ready" ? fmtDollars(messageEarnings) : "-"} />
+          value={net && !netByKind ? null : statsView === "ready" ? fmtDollars(messageEarnings) : "-"} />
         <StatCard label="Total earnings" tip={STAT_TIPS.total}
           value={statsView === "ready" ? fmtDollars(totalEarningsAcrossCreators) : "-"} />
         <StatCard label="Refunded" tip={STAT_TIPS.refunded}

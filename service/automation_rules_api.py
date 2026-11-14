@@ -482,6 +482,11 @@ async def ensure_kind_rule(
                 keep.steps_json = json.dumps(steps)
         return "parked" if running else "unchanged"
 
+    # Off→on needs a usable AI key (saving an already-running one never blocks).
+    if not any(r.is_enabled for r in rules):
+        from tenant_keys_api import require_llm_key
+        await require_llm_key(str(account_id), kind)
+
     if not rules:
         s.add(_new_row(True))
         return "created"
@@ -627,6 +632,9 @@ async def create_rule(body: RuleCreate = Body(...)) -> dict[str, Any]:
     payload = _validate_payload_for_kind(kind, body.payload)
     quiet = _validate_quiet_hours(body.quiet_hours)
     name = (body.name or "").strip() or kind
+    if body.is_enabled:
+        from tenant_keys_api import require_llm_key
+        await require_llm_key(body.account_id, kind)
 
     async with get_session() as s:
         rule = AutomationRule(
@@ -678,6 +686,9 @@ async def update_rule(rule_id: int, body: RulePatch = Body(...)) -> dict[str, An
         if body.quiet_hours is not None:   # [0,0] clears, [s,e] sets
             quiet = _validate_quiet_hours(body.quiet_hours)
             rule.quiet_hours_json = json.dumps(quiet) if quiet else None
+        if body.is_enabled and not rule.is_enabled:
+            from tenant_keys_api import require_llm_key
+            await require_llm_key(rule.account_id, canonical_kind(rule.kind))
         if body.is_enabled is not None:
             rule.is_enabled = bool(body.is_enabled)
             if not rule.is_enabled:

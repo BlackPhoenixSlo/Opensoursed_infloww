@@ -104,9 +104,10 @@ def case_the_fetch_reads_three_charts_and_stores_each_day():
     c = _fake()
     n = asyncio.run(osd.snapshot(A1, c, now=NOW, pause_s=0))
     rng = {"startDate": "2026-09-26 00:00:00", "endDate": "2026-10-02 23:59:59"}
+    subs = {**rng, "startDate": "2026-09-03 00:00:00"}  # the subscriber charts re-read 30 days
     assert c.sent == [("/users/me/profile/stats", {**rng, "limit": 10}),
-                      ("/subscriptions/subscribers/chart", {**rng, "by": "new"}),
-                      ("/subscriptions/subscribers/chart", {**rng, "by": "renew"}),
+                      ("/subscriptions/subscribers/chart", {**subs, "by": "new"}),
+                      ("/subscriptions/subscribers/chart", {**subs, "by": "renew"}),
                       ("/earnings/chart", {**rng, "withTotal": "true", **EARN_FILTER})], c.sent
     # The fixture: visitors 0 on 10-01 and 3 on 10-02; subscribes 0 on 10-01 (both tabs answer it).
     assert n == 2, n

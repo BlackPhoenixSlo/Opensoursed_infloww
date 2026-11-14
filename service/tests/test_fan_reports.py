@@ -10,7 +10,7 @@
           subscribe_at, else first sighting, then id), named by the trial mirror and the promotion's campaign (through
           link_meta.campaign_id); the rest as no link.
   growth  new fans per report-zone day (a subscription sale or the roster's subscribe_at, each fan once) and
-          renewed fans (a rebill).
+          renewed fans (a rebill), each per Creator and day raised to OF's own stored count when larger.
   scope   another Agency's Creator is 403.
 
 Seeded straight into the temp DB; no network.
@@ -32,7 +32,7 @@ import csv_export  # noqa: E402
 from _clock_fixtures import IDS  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, Fan, LinkClaimer, LinkMeta, PromoCampaign, SubscriberSnapshot, Transaction, TrialLinkMirror,
+    Account, Fan, LinkClaimer, LinkMeta, OfStatsDaily, PromoCampaign, SubscriberSnapshot, Transaction, TrialLinkMirror,
     UserAccount,
 )
 from stats_fans import FAN_REPORT_FIELDS  # noqa: E402
@@ -72,6 +72,7 @@ def _get(path: str, status: int = 200):
 
 C1, C2, C3, C4, C5 = (_creator("5600001"), _creator("5600002"), _creator("5600003"), _creator("5600004"),
                       _creator("5600005"))
+C6 = _creator("5600016")
 MARCH = "from=2026-03-01&to=2026-03-31"
 
 
@@ -185,6 +186,21 @@ def case_growth_counts_new_and_renewed_fans_per_report_zone_day():
             [("2026-03-05", 2, 0), ("2026-03-06", 1, 1)], growth
     finally:
         OWNER_A.put("/admin/settings/preferences", json={})
+
+
+def case_growth_takes_ofs_daily_counts_when_larger():
+    # A free Creator: OF counts 155 new subs on the 12th and we saw one; no sale, no roster otherwise.
+    _add(SubscriberSnapshot(account_id=C6, fan_id=1, subscribe_at=datetime(2026, 3, 12, 10, 0),
+                            seen_at=datetime(2026, 3, 20)),
+         SubscriberSnapshot(account_id=C6, fan_id=2, subscribe_at=datetime(2026, 3, 13, 10, 0),
+                            seen_at=datetime(2026, 3, 20)),
+         OfStatsDaily(account_id=C6, day="2026-03-12", new_subs=155, renewals=3),
+         OfStatsDaily(account_id=C6, day="2026-03-13", new_subs=0, renewals=None),
+         OfStatsDaily(account_id=C6, day="2026-03-14", visitors=40),          # no subscriber reading: no row
+         OfStatsDaily(account_id=C6, day="2026-04-02", new_subs=9))           # outside the window
+    growth = _get(f"/admin/stats/fan-report?account_id={C6}&from=2026-03-01&to=2026-03-31").json()["growth"]
+    assert growth == [{"day": "2026-03-12", "new_fans": 155, "renewed_fans": 3},
+                      {"day": "2026-03-13", "new_fans": 1, "renewed_fans": 0}], growth
 
 
 def case_another_agencys_creator_is_refused():

@@ -7,7 +7,8 @@
  *   filters      the page's range box (`range`), "Shown by" (Day / Week / Month; Hour is ruled out, the read is
  *                daily) and Gross / Net earnings.
  *   New fans     a line chart per "Shown by" bucket: All (new + renewed), Renews, New subscribers; the daily
- *                `growth` rows summed client-side, in the report time zone the relay buckets them in.
+ *                `growth` rows summed client-side, in the report time zone the relay buckets them in; per Creator
+ *                and day the relay takes OF's own count (of_stats_daily) when larger, so free subs show.
  *   Total fans   Not wired: nothing stores the subscriber count per day (the route's docstring).
  *   Traffic      the window's spend by the free trial link or promotion each spender claimed; gross only.
  *   Top fans     each fan's spend in the window ranked by the picked metric; "Download report" is the same

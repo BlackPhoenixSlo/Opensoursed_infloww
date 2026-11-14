@@ -146,14 +146,12 @@ describe("PermissionEditor", () => {
 
   it("lists the Dashboard's cards under it, a stored false unticked, usable only while the Dashboard is ticked (5.12)", () => {
     const onSave = vi.fn();
-    // A role saved while the Per-model KPIs card was listed keeps its stored false: the card left the Dashboard (#374)
-    // and the editor no longer lists it, but never rewrites it.
     const role = { ...ROLE, permissions: { "/": true, "/#card-earnings": false, "/#card-per-model": false } };
     renderWithProviders(<PermissionEditor role={role} onSave={onSave} onBack={vi.fn()} canSave />);
     const rows = screen.getAllByRole("checkbox", { name: /^Dashboard: / });
     expect(rows.map((c) => c.getAttribute("aria-label")))
       .toEqual(pageCards("/").map(([, label]) => `Dashboard: ${label} card`));
-    expect(screen.queryByRole("checkbox", { name: "Dashboard: Per-model KPIs card" })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Dashboard: Per-model KPIs card" })).not.toBeChecked();
     const earnings = screen.getByRole("checkbox", { name: "Dashboard: Creator earnings overview card" });
     const sales = screen.getByRole("checkbox", { name: "Dashboard: Employee sales card" });
     expect(earnings).not.toBeChecked();

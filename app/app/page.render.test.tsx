@@ -38,6 +38,11 @@ vi.mock("@/contexts/ChatterContext", async (orig) => {
   return { ...(await orig<typeof import("@/contexts/ChatterContext")>()), useChatter: value, useOptionalChatter: value };
 });
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null, clear: vi.fn() }) }));
+vi.mock("@/components/stats/PerModelKpiGrid", () => ({
+  default: ({ from, to }: { from: string | null; to: string | null }) => (
+    <div data-testid="per-model-kpis-stub" data-from={from ?? ""} data-to={to ?? ""} />
+  ),
+}));
 
 import HomePage from "@/app/page";
 import { DASHBOARD_HEADER, type DashboardControl } from "@/components/home/dashboardControls";
@@ -784,11 +789,28 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith("/admin/shifts/timesheet"))).toBe(false);
   });
 
-  it("ends with Worked hours and does not read the removed KPI block", async () => {
+  it("puts only the Per-model KPIs cards under the extras label, last on the page after Worked hours", async () => {
     await mountHome();
-    expect(cell("scheduled-hours").nextElementSibling).toBeNull();
-    expect(screen.queryByRole("region", { name: EXTRA_LABEL })).toBeNull();
-    expect(calls().some(({ url }) => url.pathname === "/admin/stats/per-model")).toBe(false);
+    const [extra, ...more] = screen.getAllByRole("region", { name: EXTRA_LABEL });
+    expect(more).toHaveLength(0);
+    expect(within(extra).getByRole("heading", { name: EXTRA_LABEL })).toHaveAttribute("title", EXTRA_LABEL);
+    expect(cell("scheduled-hours").nextElementSibling).toBe(cell("per-model"));
+    expect(cell("per-model")).toBe(extra.parentElement);
+    expect(cell("per-model")).toHaveClass("md:col-span-2");
+    expect(cell("per-model").nextElementSibling).toBeNull();
+    const kpis = await within(extra).findByTestId("per-model-kpis-stub");
+    expect([kpis.dataset.from, kpis.dataset.to]).toEqual(lastWindow());
+  });
+
+  it("reads the Per-model KPIs over the header's period when a tab is picked", async () => {
+    await mountHome();
+    await screen.findByTestId("per-model-kpis-stub");
+    fireEvent.click(tab("This month"));
+    const [from, to] = periodWindow("month", HONOLULU, "sunday");
+    await waitFor(() => {
+      const kpis = screen.getByTestId("per-model-kpis-stub");
+      expect([kpis.dataset.from, kpis.dataset.to]).toEqual([from, to]);
+    });
   });
 
   it("shows no developer strip and no status card", async () => {
@@ -947,7 +969,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
 
 describe("Home: the static card set and per-card permissions", () => {
   const shownCards = () => Array.from(screen.getByTestId("dashboard-grid").children, (c) => (c as HTMLElement).dataset.card);
-  const DEFAULT = ["earnings", "my-shifts", "employee-sales", "scheduled-hours"];
+  const DEFAULT = ["earnings", "my-shifts", "employee-sales", "scheduled-hours", "per-model"];
 
   it("draws the old Dashboard's card set in its order, with no Customize", async () => {
     await mountHome();
@@ -961,7 +983,7 @@ describe("Home: the static card set and per-card permissions", () => {
       enforced: true, pages: ["/"], scope: "self", denied_cards: ["/#card-earnings", "/#card-employee-sales"] } });
     renderWithProviders(<HomePage />);
     // The owner-only cards (Current clocked-in employees, Worked hours) take no cell for a chatter either.
-    await waitFor(() => expect(shownCards()).toEqual(["my-shifts"]));
+    await waitFor(() => expect(shownCards()).toEqual(["my-shifts", "per-model"]));
     // #20: the sole card takes the full width, not the 240px left column.
     const cell = document.querySelector<HTMLElement>('[data-card="my-shifts"]')!;
     expect(cell).toHaveClass("md:col-span-2");

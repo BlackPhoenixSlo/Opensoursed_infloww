@@ -1,8 +1,8 @@
 /**
  * A document load of a screen with a bundle (lib/screenBundle.ts) starts that bundle with the auth probe (AuthGate),
- * so it is the screen's first relay call, not its third wave. Only Messages Pro's inbox boots so: the Dashboard draws
- * no card that reads a bundle since the Per-model cards left it (#374), so a guess there would prefetch per-Creator
- * OnlyFans reads nothing renders. An old saved Dashboard entry cookie (`chatterly_entry`) is ignored.
+ * so it is the screen's first relay call, not its third wave. Only Messages Pro's inbox boots so; the Dashboard does
+ * not (its Per-model cards read the bundle after the Applied settings answer). An old saved Dashboard entry cookie
+ * (`chatterly_entry`) is ignored.
  *
  * One guess (`bootScreen`), from the cookies, for both halves: the server's for the HTML's inline boot
  * (lib/inlineBoot.server.ts) and AuthGate's start: whether the saved inbox scope is one Creator (`SCOPE_COOKIE`:

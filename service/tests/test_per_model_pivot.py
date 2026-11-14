@@ -45,7 +45,7 @@ def _sum(aid, kind, status, gross, net=None, net_missing=0, sales=1):
 NO_READS = dict(acct_rows=[], r_sums=[], top=[], r_new=[], r_act=[], r_msg=[], r_reply=[], r_pending=[],
                 r_spend=[], r_of={}, active_subs_source="unavailable", engagement=False)
 ROW_KEYS = {
-    "account_id", "display_name", "revenue_by_kind", "pending_by_kind", "total_revenue_cents",
+    "account_id", "display_name", "revenue_by_kind", "pending_by_kind", "net_revenue_by_kind", "total_revenue_cents",
     "total_net_revenue_cents", "net_missing_count", "messages_sent", "ppv_conversions", "new_subs_count",
     "active_subs_count", "ltv_cents", "arpu_cents", "pending_revenue_cents", "pending_clears_by", "refunded_cents",
     "refunded_net_cents", "spenders_count", "avg_spend_per_spender_cents", "avg_spend_per_transaction_cents",
@@ -111,6 +111,7 @@ def case_net_summed_and_net_missing_flagged():
     assert row["total_revenue_cents"] == 1500, row
     assert row["total_net_revenue_cents"] == 800, row
     assert row["net_missing_count"] == 2, row
+    assert row["net_revenue_by_kind"]["tip"] == 800, row
 
 
 def case_kinds_bucket_and_ppv_conversions_count_ppv_sales():
@@ -134,6 +135,8 @@ def case_of_top_up_adds_to_revenue_and_net_only():
     a, b = one(rows, A), one(rows, B)
     assert a["total_revenue_cents"] == 1350 and a["total_net_revenue_cents"] == 1080, a
     assert a["revenue_by_kind"]["tip"] == 300 and a["revenue_by_kind"]["post"] == 50, a
+    assert a["net_revenue_by_kind"] == {"ppv": 800, "post": 40, "tip": 240, "subscription": 0, "rebill": 0,
+                                        "custom": 0}, a
     assert a["pending_revenue_cents"] == 1000 and a["ppv_conversions"] == 4 and a["refunded_cents"] == 0, a
     # A Creator OF alone names still gets a row (display_name unknown).
     assert b["display_name"] is None and b["revenue_by_kind"]["subscription"] == 900, b
@@ -148,11 +151,13 @@ def case_zero_traffic_creator_listed_every_field_zero_or_null():
     assert set(b) == ROW_KEYS, set(b) ^ ROW_KEYS
     assert b["revenue_by_kind"] == dict.fromkeys(BUCKETS, 0), b
     assert b["pending_by_kind"] == dict.fromkeys(BUCKETS, 0), b
+    assert b["net_revenue_by_kind"] == dict.fromkeys(BUCKETS, 0), b
     assert b["display_name"] == "b", b
     nulls = {"ltv_cents", "arpu_cents", "active_subs_count", "pending_clears_by", "avg_spend_per_spender_cents",
              "avg_spend_per_transaction_cents", "of_visitors", "of_renewals", "of_new_sub_conversion_pct",
              "of_renew_on", "of_renew_on_pct"}
-    for k in ROW_KEYS - {"account_id", "display_name", "revenue_by_kind", "pending_by_kind"}:
+    for k in ROW_KEYS - {"account_id", "display_name", "revenue_by_kind", "pending_by_kind",
+                              "net_revenue_by_kind"}:
         assert b[k] == (None if k in nulls else 0), (k, b[k])
         assert b[k] is None or type(b[k]) is int, (k, b[k])
 

@@ -196,26 +196,63 @@ _KIND_PURPOSE = {
 }
 
 
-async def _last_key_error(account_id: str, kind: str) -> dict | None:
+async def _last_key_error(account_id: str, kind: str, owners: list[str]) -> dict | None:
     """The `key_error` the kind's LATEST finished run carried, or None. The
-    latest only: a run after the key was fixed carries none, which clears it."""
+    latest only: a run after the key was fixed carries none, which clears it.
+    A rejected/out-of-credit key the owner has since re-saved is cleared too —
+    the new key hasn't failed yet, so the notice must not wait a day's run."""
     import json as _json
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from db.engine import get_session
-    from db.models import AutomationRun
+    from db.models import AutomationRun, UserLlmKey
     async with get_session() as s:
-        raw = await s.scalar(
-            select(AutomationRun.stats_json)
+        row = (await s.execute(
+            select(AutomationRun.stats_json, AutomationRun.started_at)
             .where(AutomationRun.account_id == account_id,
                    AutomationRun.kind == kind,
                    AutomationRun.stats_json.isnot(None))
             .order_by(AutomationRun.started_at.desc(), AutomationRun.id.desc())
-            .limit(1))
-    try:
-        ke = (_json.loads(raw) or {}).get("key_error") if raw else None
-    except ValueError:
-        return None
-    return ke if isinstance(ke, dict) and str(ke.get("error", "")).startswith("api_key_") else None
+            .limit(1))).first()
+        if not row:
+            return None
+        raw, started_at = row
+        try:
+            ke = _json.loads(raw) or {}
+        except ValueError:
+            return None
+        ke = ke.get("key_error") if isinstance(ke, dict) else None
+        if not (isinstance(ke, dict) and str(ke.get("error", "")).startswith("api_key_")):
+            return None
+        if owners and ke.get("provider") and started_at is not None:
+            saved = await s.scalar(
+                select(func.max(UserLlmKey.updated_at))
+                .where(UserLlmKey.user_id.in_(owners),
+                       UserLlmKey.provider == ke["provider"],
+                       UserLlmKey.api_key != ""))
+            if saved is not None and saved > started_at:
+                return None
+    return ke
+
+
+async def _kind_provider(account_id: str, kind: str, purpose: str) -> str:
+    import llm_client
+    from automations._common import resolve_model
+    return ("deepinfra" if kind == "describe_media" else
+            llm_client.MODELS[await resolve_model(account_id, purpose)].provider)
+
+
+async def require_llm_key(account_id: str, kind: str) -> None:
+    """Refuse switching an AI automation ON while it has no usable key: raises
+    `LLMKeyError("missing")` → the app-wide 424 + "add a key" toast. Kinds that
+    call no LLM pass. Live presence only (a rejected key is the run's notice)."""
+    import llm_client
+    purpose = _KIND_PURPOSE.get(kind)
+    if not purpose:
+        return
+    provider = await _kind_provider(account_id, kind, purpose)
+    if not await llm_client.llm_key_available(account_id, provider, purpose):
+        house = not await tenant_keys.owners_of(account_id)
+        raise llm_client.LLMKeyError("missing", provider, purpose, house=house)
 
 
 @status_router.get("/admin/ai-key-status")
@@ -227,19 +264,18 @@ async def ai_key_status(account_id: str = Query(..., min_length=1),
     may ask for any rule kind and get nothing for the ones without an LLM."""
     from auth import assert_account_owned
     import llm_client
-    from automations._common import resolve_model
     assert_account_owned(account_id)
-    house = not await tenant_keys.owners_of(account_id)
+    owners = await tenant_keys.owners_of(account_id)
+    house = not owners
     items: list[dict[str, Any]] = []
     groups: dict[tuple[str, str], list[str]] = {}
     for kind in dict.fromkeys(k.strip() for k in kinds.split(",")):
         purpose = _KIND_PURPOSE.get(kind)
         if not purpose:
             continue
-        provider = ("deepinfra" if kind == "describe_media" else
-                    llm_client.MODELS[await resolve_model(account_id, purpose)].provider)
+        provider = await _kind_provider(account_id, kind, purpose)
         available = await llm_client.llm_key_available(account_id, provider, purpose)
-        last = await _last_key_error(account_id, kind)
+        last = await _last_key_error(account_id, kind, owners)
         items.append({"kind": kind, "provider": provider, "available": available,
                       "last_key_error": last})
         # Live presence wins; a stored "missing" is stale once a key exists.

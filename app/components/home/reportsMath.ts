@@ -132,22 +132,34 @@ export interface StatCol {
    *  gives net only as a per-Creator total), so it is Not wired then; any other column keeps `v`. */
   netV?: (m: PerModelRow, c: ColCtx) => number | null;
 }
+type Kind = keyof PerModelRow["revenue_by_kind"];
+/** A bucket's gross, or its OnlyFans net; net is null (a "-") from an older relay with no net by kind. */
+const kindOf = (k: Kind) => (m: PerModelRow) => m.revenue_by_kind?.[k] ?? 0;
+const netKindOf = (k: Kind) => (m: PerModelRow) => (m.net_revenue_by_kind ? m.net_revenue_by_kind[k] ?? 0 : null);
 const subsOf = (m: PerModelRow) => (m.revenue_by_kind?.subscription ?? 0) + (m.revenue_by_kind?.rebill ?? 0);
+const netSubsOf = (m: PerModelRow) => {
+  const n = m.net_revenue_by_kind;
+  return n ? (n.subscription ?? 0) + (n.rebill ?? 0) : null;
+};
 /** Messages and tips, the numerator of #117 and #133 (the bundle's column descriptions, index.9f50f370.js near
  *  @13245838). The per-model read files stream tips and PPVs under tips and messages. */
 const engagedOf = (m: PerModelRow) => (m.revenue_by_kind?.ppv ?? 0) + (m.revenue_by_kind?.tip ?? 0);
+const netEngagedOf = (m: PerModelRow) => {
+  const n = m.net_revenue_by_kind;
+  return n ? (n.ppv ?? 0) + (n.tip ?? 0) : null;
+};
 /** #112 to #146: every column after "Creator" (#111, always shown), in the capture's order, then ours (the capture's
  *  Streams left out: stream sales have no channel here). The ones without `v` need OF
  *  statistics (ranking, following, guest / user visitors, total and expired fans, subscription length) or
  *  earnings per fan no relay read carries. */
 export const STAT_COLS: readonly StatCol[] = [
-  { key: "totalSubscriptionsEarnings", title: "Total subscription earnings", width: 270, show: true, fmt: "usd", v: subsOf },
-  { key: "subscriptionsEarnings", title: "Subscription earnings", width: 240, show: false, fmt: "usd", v: (m) => m.revenue_by_kind?.subscription ?? 0 },
-  { key: "recurringSubscriptionEarnings", title: "Recurring subscription earnings", width: 305, show: false, fmt: "usd", v: (m) => m.revenue_by_kind?.rebill ?? 0 },
-  { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: (m) => m.revenue_by_kind?.tip ?? 0 },
-  { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: (m) => m.revenue_by_kind?.ppv ?? 0 },
+  { key: "totalSubscriptionsEarnings", title: "Total subscription earnings", width: 270, show: true, fmt: "usd", v: subsOf, netV: netSubsOf },
+  { key: "subscriptionsEarnings", title: "Subscription earnings", width: 240, show: false, fmt: "usd", v: kindOf("subscription"), netV: netKindOf("subscription") },
+  { key: "recurringSubscriptionEarnings", title: "Recurring subscription earnings", width: 305, show: false, fmt: "usd", v: kindOf("rebill"), netV: netKindOf("rebill") },
+  { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: kindOf("tip"), netV: netKindOf("tip") },
+  { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: kindOf("ppv"), netV: netKindOf("ppv") },
   { key: "engagementEarningsRatio", title: "Engagement earnings ratio", width: 280, show: true, fmt: "pct", v: (m) => (subsOf(m) > 0 ? (100 * engagedOf(m)) / subsOf(m) : null) },
-  { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: (m) => m.revenue_by_kind?.post ?? 0 },
+  { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: kindOf("post"), netV: netKindOf("post") },
   { key: "totalEarnings", title: "Total earnings", width: 240, show: true, fmt: "usd", v: (m) => m.total_revenue_cents, netV: (m) => m.total_net_revenue_cents },
   { key: "avgHourlyEarnings", title: "Avg hourly earnings", width: 220, show: false, fmt: "usd", avg: true, v: (m, c) => (c.hours > 0 ? m.total_revenue_cents / c.hours : null),
     netV: (m, c) => (c.hours > 0 ? m.total_net_revenue_cents / c.hours : null) },
@@ -165,7 +177,8 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "userProfileVisitors", title: "User profile visitors", width: 285, show: false, utc: true },
   { key: "newSubscribers", title: "New subscribers", width: 270, show: true, utc: true, fmt: "int", v: (m) => m.new_subs_count },
   { key: "subscriberRenewals", title: "Subscriber renewals", width: 300, show: true, utc: true, fmt: "int", v: (m) => m.of_renewals },
-  { key: "newSubscribersLtv", title: "New subscriber LTV", width: 300, show: true, fmt: "usd", avg: true, v: (m) => (m.new_subs_count > 0 ? engagedOf(m) / m.new_subs_count : null) },
+  { key: "newSubscribersLtv", title: "New subscriber LTV", width: 300, show: true, fmt: "usd", avg: true, v: (m) => (m.new_subs_count > 0 ? engagedOf(m) / m.new_subs_count : null),
+    netV: (m) => { const n = netEngagedOf(m); return n !== null && m.new_subs_count > 0 ? n / m.new_subs_count : null; } },
   { key: "newSubscriberConversion", title: "New subscriber conversion", width: 340, show: true, utc: true, fmt: "pct", v: (m) => m.of_new_sub_conversion_pct },
   { key: "activeFans", title: "Active fans", width: 230, show: true, utc: true, fmt: "int", v: (m) => m.active_subs_count },
   { key: "changeInExpiredFanCount", title: "Change in expired fan count", width: 345, show: false, utc: true },

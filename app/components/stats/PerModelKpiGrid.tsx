@@ -31,7 +31,7 @@
 import { Badge, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { fmtCents, fmtDateShort, fmtInt, fmtPrice } from "@/lib/format";
-import { proxyImage } from "@/lib/mediaUrl";
+import { AccountAvatarPicture, type AvatarHealth } from "@/components/ui/AccountAvatarPicture";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useScreen } from "@/lib/screenBundle";
 import type { AccountMeta } from "@/lib/relay";
@@ -143,10 +143,13 @@ export default function PerModelKpiGrid({ from, to }: Props) {
           q.isFetching && q.isPlaceholderData && "opacity-60",
         )}
       >
-        {models.map((m) => (
-          <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to}
-            of={ofReadState(accountsQ.data?.accounts?.find((a) => a.id === m.account_id), accountsQ)} />
-        ))}
+        {models.map((m) => {
+          const account = accountsQ.data?.accounts?.find((a) => a.id === m.account_id);
+          return (
+            <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to}
+              color={account?.color} of={ofReadState(account, accountsQ)} />
+          );
+        })}
       </div>
       <MetricsLegend />
     </section>
@@ -169,17 +172,15 @@ function MetricsLegend() {
   );
 }
 
-function SkeletonModelCard({ account }: { account: { id: string; nickname?: string | null } | null }) {
-  const initial = account?.nickname?.trim()?.[0]?.toUpperCase() ?? "?";
+function SkeletonModelCard({ account }: { account: AccountMeta | null }) {
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-start gap-3">
-        <div
-          aria-hidden
-          className="w-10 h-10 rounded-full bg-bg-elev-1 border border-border grid place-items-center text-sm font-medium text-fg-dim shrink-0"
-        >
-          {initial}
-        </div>
+        {account ? (
+          <ModelAvatar account={account} health={NO_READ} />
+        ) : (
+          <div aria-hidden className="w-10 h-10 rounded-full bg-bg-elev-1 border border-border shrink-0" />
+        )}
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-fg truncate">
             {account?.nickname || account?.id || "—"}
@@ -205,9 +206,9 @@ function SkeletonModelCard({ account }: { account: { id: string; nickname?: stri
   );
 }
 
-function ModelCard({ m, activeUnavail, from, to, of }: {
+function ModelCard({ m, activeUnavail, from, to, of, color }: {
   m: PerModelRow; activeUnavail: boolean; from: string | null; to: string | null;
-  of: ReturnType<typeof ofReadState>;
+  of: ReturnType<typeof ofReadState>; color?: string | null;
 }) {
   const kinds = m.revenue_by_kind;
   const pending = m.pending_by_kind;
@@ -247,17 +248,14 @@ function ModelCard({ m, activeUnavail, from, to, of }: {
   // total fans is the right per-fan denominator for both.
   const arpuCents =
     totalFans && totalFans > 0 ? Math.round(m.total_revenue_cents / totalFans) : null;
-  const avatarSrc = proxyImage(
-    p?.avatarThumbs?.c144 || p?.avatarThumbs?.c50 || p?.avatar || null,
-    m.account_id,
-  );
   const headline = p?.name || p?.username || m.display_name || m.account_id;
   const handle = p?.username ? `@${p.username}` : null;
 
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-start gap-3">
-        <ModelAvatar src={avatarSrc} alt={headline} />
+        <ModelAvatar account={{ id: m.account_id, nickname: headline, color }}
+          health={ofId ? { profile: p ?? null, settled: !profile.isPending } : NO_READ} />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-fg truncate flex items-center gap-2">
             <span className="truncate">{headline}</span>
@@ -368,35 +366,16 @@ function ModelCard({ m, activeUnavail, from, to, of }: {
   );
 }
 
-function ModelAvatar({ src, alt }: { src: string; alt: string }) {
-  // 40px circle; falls back to an initial-letter chip when the OF /me
-  // call hasn't resolved (or failed). `proxyImage` returns "" when src
-  // is empty so the <img> never tries to load a bogus URL.
-  const initial = alt && alt.trim() ? alt.trim()[0]?.toUpperCase() : "?";
-  if (!src) {
-    return (
-      <div
-        aria-hidden
-        className="w-10 h-10 rounded-full bg-bg-elev-1 border border-border grid place-items-center text-sm font-medium text-fg-dim shrink-0"
-      >
-        {initial}
-      </div>
-    );
-  }
+/** No OF read of its own (not a live session, or still loading): a logo another screen already cached, else the
+ *  Creator's coloured initial. */
+const NO_READ: AvatarHealth = { profile: null, settled: false };
+
+/** The Creator's logo in a 40px circle: the shared roster picture (OF avatar, else the coloured initial). */
+function ModelAvatar({ account, health }: { account: Pick<AccountMeta, "id" | "nickname" | "color">; health: AvatarHealth }) {
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={src}
-      alt={alt}
-      className="w-10 h-10 rounded-full object-cover shrink-0 bg-bg-elev-1"
-      loading="lazy"
-      onError={(e) => {
-        // OF avatar URLs are signed and rotate. If a stale cache hit
-        // 403s, drop the broken image so the layout doesn't get a
-        // browser-default "missing" glyph.
-        (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-      }}
-    />
+    <span data-model-avatar className="w-10 h-10 rounded-full overflow-hidden shrink-0 bg-bg-elev-1">
+      <AccountAvatarPicture account={account} letters={1} initialClassName="text-sm font-medium" health={health} />
+    </span>
   );
 }
 

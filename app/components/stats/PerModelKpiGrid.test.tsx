@@ -27,7 +27,7 @@ const row = (id: string, cents: number) => ({
 });
 const ACCOUNTS: AccountMeta[] = [
   { id: "live", has_session: true, is_active: true, proxy_down: false },
-  { id: "nosession", has_session: false, is_active: true, proxy_down: false },
+  { id: "nosession", has_session: false, is_active: true, proxy_down: false, color: "#ff0088" },
   { id: "dead", has_session: true, session_dead_at: "2026-10-28T09:00:00Z", is_active: true, proxy_down: false },
 ];
 
@@ -42,7 +42,8 @@ beforeEach(() => {
       return jsonRes({ per_model: [row("live", 1200), row("nosession", 3400), row("dead", 5600), row("gone", 780)] });
     }
     if (u.pathname === "/admin/accounts") return accounts();
-    if (u.pathname === "/api/of/v2/users/me") return jsonRes({ id: "live", name: "Live One", username: "liveone", subscribePrice: 0 });
+    if (u.pathname === "/api/of/v2/users/me") return jsonRes({ id: "live", name: "Live One", username: "liveone", subscribePrice: 0,
+      avatarThumbs: { c50: "https://public.onlyfans.com/files/live-c50.jpg" } });
     if (u.pathname === "/api/of/v2/subscriptions/count/all") return jsonRes({ subscribers: { active: 42, all: 50, expired: 8 } });
     if (u.pathname === "/api/of/v2/subscriptions/subscribers/chart") return jsonRes({ subscribers: 7 });
     return jsonRes({ detail: "unmocked" }, 404);
@@ -86,6 +87,21 @@ describe("PerModelKpiGrid on a Creator with no live OnlyFans session", () => {
     // In the ledger but not in the accounts read: no account on this host (prod's 404 Unknown account_id).
     expect(within(card("gone")).getByText("Not connected")).toBeInTheDocument();
     expect(within(card("live")).queryByText(/connected/i)).toBeNull();
+  });
+
+  it("shows the live Creator's OF logo and the others' coloured initial, with no OF read for the others", async () => {
+    renderWithProviders(<PerModelKpiGrid from="2026-10-26T07:00:00.000Z" to="2026-11-02T07:59:59.999Z" />);
+    await screen.findByText("Live One");
+    const logo = await waitFor(() => {
+      const img = card("live").querySelector<HTMLImageElement>("[data-model-avatar] img");
+      expect(img).not.toBeNull();
+      return img!;
+    });
+    expect(logo.getAttribute("src")).toContain("live-c50.jpg");
+    const initial = card("nosession").querySelector<HTMLElement>("[data-model-avatar] > span")!;
+    expect(initial).toHaveTextContent("C");
+    expect(initial).toHaveStyle({ background: "#ff0088" });
+    expect(new Set(ofReads().map(([, id]) => id))).toEqual(new Set(["live"]));
   });
 
   it("sends no OF read before the accounts read answers", async () => {

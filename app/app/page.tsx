@@ -6,7 +6,8 @@
  * ticket 00's Infloww cards (page-parity ticket 01):
  *   • the KPI header (`DashboardHeader`): the "Creator earnings overview" card, the full width
  *   • "Scheduled shifts" (owners) / "My shifts" (chatters) on the left (#65, #67) across the two rows of the right column: "Employee sales" and "Worked hours"
- * Creator reports remain in Analytics.
+ *   • then one "Inflowwww extra" card at the bottom: the Per-model KPIs (creator) cards (`PerModelKpiGrid`).
+ * The rest of Creator reports remains in Analytics.
  * The layout is static (lib/dashboardCards.ts). The period tabs sit over the grid, so a session whose role hides the
  * earnings card keeps them. A card the session's role hides, or an owner-only one for a chatter (`useCardAllowed`),
  * is not drawn.
@@ -21,11 +22,13 @@ import DashboardHeader, {
   DashboardPeriodProvider, DashboardPeriodTabs, EmployeeSalesCard, useDashboardPeriod, WHITE,
 } from "@/components/home/DashboardHeader";
 import { MyShiftsCard } from "@/components/home/ShiftCards";
+import PerModelKpiGrid from "@/components/stats/PerModelKpiGrid";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { EmptyState, IfCard } from "@/components/ui/infloww";
 import { useUser } from "@/contexts/UserContext";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { cardKey, cardSpan, DASHBOARD_CARDS, type DashboardCardId } from "@/lib/dashboardCards";
+import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { useTimesheet } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +50,7 @@ const CARDS: Record<DashboardCardId, () => ReactNode> = {
   "my-shifts": () => <DashboardShifts />,
   "employee-sales": () => <EmployeeSalesCard />,
   "scheduled-hours": () => <WorkedHours />,
+  "per-model": () => <PerModelExtra />,
 };
 
 /** Worked hours is owner-only; its Timesheet read refuses a chatter. */
@@ -140,5 +144,19 @@ function WorkedHours() {
         )}
       </div>
     </IfCard>
+  );
+}
+
+/** The "Inflowwww extra" card: its label over the Per-model KPIs cards, read over the header's period once the
+ *  Applied settings have answered (no read with the browser's days first). */
+function PerModelExtra() {
+  const { from, to, ready } = useDashboardPeriod();
+  return (
+    <section aria-labelledby="dash-extra-title" className="flex flex-col gap-4">
+      <h2 id="dash-extra-title" title={EXTRA_LABEL} className="text-[16px] font-medium text-fg-dim">
+        {EXTRA_LABEL}
+      </h2>
+      {ready ? <PerModelKpiGrid from={from} to={to} /> : null}
+    </section>
   );
 }
