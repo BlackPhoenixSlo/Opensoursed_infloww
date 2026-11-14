@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * One bio page's editor (/growth/bio-pages/<id>): the address and custom domain (read-only), the Profile,
+ * One bio page's editor (/growth/bio-pages/<id>): the address, its custom domain (BioDomainSection), the Profile,
  * Links and Tracking URLs cards, Delete, and the live preview, sticky beside the cards from lg up and behind an
  * "Edit | Preview" switch below it. The Profile and link-dialog reducers live here, so the preview draws both drafts.
  */
@@ -25,6 +25,7 @@ import { BioLinksCard } from "@/components/growth/bio/BioLinksCard";
 import { BioLinkDialog } from "@/components/growth/bio/BioLinkDialog";
 import { BioTrackingUrls } from "@/components/growth/bio/BioTrackingUrls";
 import { BioPreview } from "@/components/growth/bio/BioPreview";
+import { BioDomainSection } from "@/components/growth/bio/BioDomainSection";
 import { cn } from "@/lib/utils";
 
 type View = "edit" | "preview";
@@ -110,7 +111,6 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
     page.links,
     draftLinkView(lform, bgUrl),
   );
-  const dom = profile.custom_domain;
   const deleteCopy = `Deletes /${profile.username}, its ${page.links.length} links, its custom domain and all its stats. The address stops working at once.`;
 
   return (
@@ -141,12 +141,8 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
                   so visitors can&rsquo;t open this address. You can still edit the page.
                 </IfHelp>
               )}
-              <div className="mt-3 flex flex-wrap items-baseline gap-x-2 text-[13px]">
-                <span className="text-fg-dim">Custom domain:</span>
-                <span className="text-fg" data-custom-domain>{dom ? `${dom.domain} · ${dom.status}` : "None"}</span>
-              </div>
-              <IfHelp>Custom domains are set up outside this editor for now.</IfHelp>
             </IfCard>
+            <BioDomainSection profile={profile} />
             <BioProfileCard page={page} form={pform} dispatch={pdispatch} />
             <BioLinksCard page={page} onAdd={() => ldispatch({ type: "open_new" })}
               onEdit={(link) => ldispatch({ type: "open_edit", link })} />

@@ -579,10 +579,9 @@ async def _account_isolation_middleware(request: Request, call_next):
         # ~50 nobody did.
         if _allow_anonymous_account_access():
             return await call_next(request)
-        # The MCP endpoint's no-credential surface (mcp_api): initialize, tools/list and
-        # connect_account (a register/log-in link) only; it names no account and every data
-        # tool there answers that link. Exact path, and only for a request with no principal.
-        if path == mcp_api.PATH:
+        # The MCP endpoint's no-credential surface (mcp_api.anonymous_surface): it names no
+        # account and every data tool there answers the connect link. Only with no principal.
+        if mcp_api.anonymous_surface(request.method, path):
             return await call_next(request)
         return Response("sign in required", status_code=401)
 
@@ -766,10 +765,9 @@ async def _share_token_gate(request: Request, call_next):
         return await call_next(request)
     if request.url.path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
-    # The MCP endpoint, exactly POST: an MCP client holds no share token. Its no-credential
-    # surface is initialize / tools/list / connect_account (a sign-up link); mcp_api still
-    # refuses an Origin or a cookie, and a token still meets the session middleware.
-    if request.method == "POST" and request.url.path == mcp_api.PATH:
+    # The MCP endpoint (mcp_api.anonymous_surface): an MCP client holds no share token. mcp_api
+    # still refuses an Origin or a cookie, and a token still meets the session middleware.
+    if mcp_api.anonymous_surface(request.method, request.url.path):
         return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)

@@ -841,6 +841,7 @@ async def chatter_session_middleware(request: Request, call_next):
     Resetting would hide the chatter from the audit middleware's
     post-block — the whole reason for setting it in the first place.
     """
+    _request_chatter.set(None)  # never the previous request's on this connection (auth.session_middleware)
     cookie = request.cookies.get(COOKIE_NAME)
     expired = False
     if cookie:

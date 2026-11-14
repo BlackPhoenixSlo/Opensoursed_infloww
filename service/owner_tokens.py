@@ -2,9 +2,9 @@
 
 An owner access token signs a non-browser caller (an MCP client) in as one
 Agency owner: `Authorization: Bearer ifw_…`. Opaque, not a JWT: the session
-middleware looks its sha256 up per request (auth._resolve_session), so revoke,
-expiry and "Log out other sessions" (`sessions_valid_after`) bite on the next
-call, as they do for cookies. Only the digest is stored; the plaintext is shown
+middleware looks its sha256 up per request (auth._token_request →
+token_auth.resolve), so revoke, expiry and "Log out other sessions"
+(`sessions_valid_after`) bite on the next call, as they do for cookies. Only the digest is stored; the plaintext is shown
 once, at mint (owner_tokens_api). Ticket: docs/plans/ultra-mode/issues/03-owner-tokens.md.
 
 `ifw_` + `secrets.token_urlsafe(32)` (43 chars, 256 bits) is what the leak gate

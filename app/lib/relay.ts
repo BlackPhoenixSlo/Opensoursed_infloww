@@ -369,10 +369,11 @@ export const relay = {
   uploadForm<T = unknown>(path: string, form: FormData, ctx?: RelayContext): Promise<T> {
     return request<T>(path, { method: "POST", body: form }, ctx);
   },
-  post<T = unknown>(path: string, body?: unknown, ctx?: RelayContext): Promise<T> {
+  post<T = unknown>(path: string, body?: unknown, ctx?: RelayContext, signal?: AbortSignal): Promise<T> {
     return request<T>(path, {
       method: "POST",
       body: body == null ? undefined : JSON.stringify(body),
+      signal,
     }, ctx);
   },
   patch<T = unknown>(path: string, body?: unknown, ctx?: RelayContext): Promise<T> {

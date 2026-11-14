@@ -16,6 +16,9 @@ Cases:
   case_login                 — an owner → a token; a wrong password 401; an employee → refused, no token row.
   case_login_throttled       — the app's sign-in throttle holds through MCP: NAME_CAPACITY wrong passwords for
                                one username from one address → the next call 429, even with the right password.
+  case_register_throttled    — the sign-up throttle holds through MCP and the raw route: REGISTER_CAPACITY
+                               registers (409s count) from one address → the next 429, no user made; a 400
+                               spends none.
   case_login_2fa             — 2FA on: no code → asks for it; a bad code → refused; the right code → a token.
   case_secret_never_echoed   — passwords and codes appear in no result, no log record and no audit row;
                                a 422 names fields only.
@@ -166,6 +169,23 @@ def case_login_throttled() -> None:
         for pw in ("wrong-pw-throttle", fx.PASSWORD):
             err, out = _tool("login", {"username": "agency_a_owner", "password": pw})
             assert err is True and out["error"]["status"] == 429 and "token" not in out, out
+    finally:
+        login_throttle.reset()
+
+
+def case_register_throttled() -> None:
+    login_throttle.reset()
+    try:
+        for _ in range(login_throttle.REGISTER_CAPACITY):  # probing a taken name spends the address's tokens
+            err, out = _tool("register_account", {"username": "agency_a_owner", "password": "pw-probe-1"})
+            assert err is True and out["error"]["status"] == 409, out
+        err, out = _tool("register_account", {"username": "a@b.example", "password": "pw-probe-2"})
+        assert err is True and out["error"]["status"] == 400, out  # validation answers first, spends none
+        err, out = _tool("register_account", {"username": "mcp_throttled", "password": "pw-probe-3"})
+        assert err is True and out["error"]["status"] == 429 and "token" not in out, out
+        r = ANON.post("/auth/register", json={"username": "mcp_throttled", "password": "pw-probe-3"})
+        assert r.status_code == 429 and r.headers["retry-after"], (r.status_code, r.text)
+        assert asyncio.run(_user_id("mcp_throttled")) is None
     finally:
         login_throttle.reset()
 

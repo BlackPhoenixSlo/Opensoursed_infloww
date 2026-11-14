@@ -42,6 +42,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 import events
+import login_throttle
 import owner_tokens
 import token_auth
 from account_security import TwoFactorChallenge, password_sign_in
@@ -533,10 +534,13 @@ def _utc(dt: datetime) -> datetime:
 
 
 @router.post("/register", response_model=AuthResp)
-async def register(response: Response, body: RegisterBody = Body(...)) -> AuthResp:
+async def register(request: Request, response: Response, body: RegisterBody = Body(...)) -> AuthResp:
+    # 400 bad username/password, then 429 past the sign-up throttle (login_throttle.take_register,
+    # per client address; MCP register_account too), 409 username taken.
     username = _normalize_username(body.username)
     _validate_username(username)
     _validate_password(body.password)
+    login_throttle.take_register(request)
 
     new_id = uuid.uuid4().hex
     async with get_session() as s:
@@ -782,6 +786,11 @@ async def session_middleware(request: Request, call_next):
     requests reach this layer. /auth/* endpoints are exempt from the
     share-token gate via the existing allowlist below.
     """
+    # Every identity starts empty: under the plain asyncio loop a keep-alive connection that
+    # paused reading (a large body) re-arms its reader inside the request task, so the NEXT
+    # request on that connection would inherit this one's ContextVars (test_request_identity_reset).
+    _request_user.set(None)
+    _impersonation.set(None)
     _request_token.set(None)
     token = owner_tokens.bearer(request.headers.get("authorization"))
     if token is not None:

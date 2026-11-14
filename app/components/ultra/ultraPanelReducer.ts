@@ -4,14 +4,16 @@
  * that plan's run state (ultraRunReducer, wrapped as `run`). Pure; the panel only dispatches. `canSubmit` /
  * `requestBody` gate the composer; a 404 on the open plan drops it (back to the composer). A request holding an
  * OnlyFans login (email:password, lib/loginPaste) is refused before it leaves the browser, the draft cleared: logins go
- * through the Connect card (LOGINS_PAGE), never the planner (ultra ticket 11; the relay refuses it too, its one 400 on
- * the start). Both set `loginRefused`, the panel's link to that card.
+ * through the Connect card (LOGINS_PAGE), never the planner (ultra ticket 11; the relay refuses it too: a 400 with
+ * RELAY_LOGIN_REFUSED). Both set `loginRefused`, the panel's link to that card; any other refusal keeps the draft.
  */
 import { holdsLogin } from "@/lib/loginPaste";
-import { FINAL, INITIAL_RUN, ultraRunReducer, type Action as RunAction, type PlanView, type UltraRun } from "./ultraRunReducer";
+import { INITIAL_RUN, isFinal, ultraRunReducer, type Action as RunAction, type PlanView, type UltraRun } from "./ultraRunReducer";
 
 /** service/ultra_plan_decide.MAX_REQUEST: the route's pydantic max_length (422 past it). */
 export const MAX_REQUEST = 4000;
+/** service/ultra_api.py LOGIN_REFUSED: the start's 400 when the request held an OnlyFans login. */
+export const RELAY_LOGIN_REFUSED = "paste logins in the Connect card";
 
 export interface UltraPanel {
   /** The stored plan id has been read (persisting before that would wipe it). */
@@ -26,13 +28,16 @@ export interface UltraPanel {
 }
 
 export type PanelAction =
-  | { type: "hydrate"; planId: string | null }
+  /** `starting`: a start sent by an earlier (closed) panel is still out (ultraStart.pendingStart). */
+  | { type: "hydrate"; planId: string | null; starting?: boolean }
   | { type: "draft"; text: string }
   | { type: "start" }
   | { type: "started"; plan: PlanView }
-  | { type: "startFailed"; message: string; loginRefused?: boolean }
+  /** `status`: the relay's HTTP status (0: no answer). */
+  | { type: "startFailed"; status: number; message: string }
   | { type: "reset" }
-  | { type: "run"; action: RunAction };
+  /** `planId`: the plan the action is for (useUltraPlan tags each read / act answer with it). */
+  | { type: "run"; planId: string; action: RunAction };
 
 export const INITIAL_PANEL: UltraPanel = {
   hydrated: false, draft: "", planId: null, starting: false, startError: null, loginRefused: false, run: INITIAL_RUN,
@@ -41,7 +46,8 @@ export const INITIAL_PANEL: UltraPanel = {
 export function ultraPanelReducer(s: UltraPanel, a: PanelAction): UltraPanel {
   switch (a.type) {
     case "hydrate":
-      return s.hydrated ? s : { ...s, hydrated: true, planId: a.planId, run: INITIAL_RUN };
+      return s.hydrated ? s
+        : { ...s, hydrated: true, planId: a.planId, starting: !a.planId && !!a.starting, run: INITIAL_RUN };
     case "draft":
       return { ...s, draft: a.text.slice(0, MAX_REQUEST) };
     case "start":
@@ -53,14 +59,14 @@ export function ultraPanelReducer(s: UltraPanel, a: PanelAction): UltraPanel {
       return { ...s, starting: false, draft: "", loginRefused: false, planId: a.plan.id,
         run: ultraRunReducer(INITIAL_RUN, { type: "loaded", plan: a.plan }) };
     case "startFailed":
-      return a.loginRefused
+      return a.status === 400 && a.message.includes(RELAY_LOGIN_REFUSED)
         ? { ...s, starting: false, draft: "", startError: null, loginRefused: true }
         : { ...s, starting: false, startError: a.message };
     case "reset":
       return { ...s, planId: null, starting: false, startError: null, loginRefused: false, run: INITIAL_RUN };
     case "run": {
-      // A late answer for a plan no longer open is dropped.
-      if (!s.planId || ("plan" in a.action && a.action.plan.id !== s.planId)) return s;
+      // A late answer (or error) for a plan no longer open is dropped.
+      if (!s.planId || a.planId !== s.planId || ("plan" in a.action && a.action.plan.id !== s.planId)) return s;
       const run = ultraRunReducer(s.run, a.action);
       return run.load === "missing" ? { ...s, planId: null, run: INITIAL_RUN } : { ...s, run };
     }
@@ -75,7 +81,7 @@ export const requestBody = (s: UltraPanel): { request: string } | null =>
   canSubmit(s) && !holdsLogin(s.draft) ? { request: s.draft.trim() } : null;
 
 /** The open plan ended: its report shows, with "New request". */
-export const isOver = (s: UltraPanel): boolean => !!s.run.plan && FINAL.has(s.run.plan.status);
+export const isOver = (s: UltraPanel): boolean => !!s.run.plan && isFinal(s.run.plan.status);
 
 /** The header dot pulses while the plan runs. */
 export const isRunning = (s: UltraPanel): boolean => s.run.plan?.status === "running";

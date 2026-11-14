@@ -4,7 +4,8 @@ audit_log.audit_decision — table tests over which finished request the audit
 middleware logs to `actions`, and under which `actions.action`:
 
   case_table:        normal writes, the app's BACKGROUND_WRITES (audited like
-                     any write), each skip prefix, reads, non-2xx answers.
+                     any write), each skip prefix, the exact skip paths
+                     (/admin/mcp, not /admin/mcp-x), reads, non-2xx answers.
   case_skip_seam:    the middleware's prefixes are read through employees,
                      where slop/lib/relay.py extends them.
   case_reexports:    employees still exports what its importers use.
@@ -43,6 +44,9 @@ TABLE = [
     ("POST", "/admin/shifts/clock-heartbeat", 200, None),
     ("POST", "/admin/shifts/clock-in", 200, "POST /admin/shifts/clock-in"),
     ("POST", "/__slop/of-ws-frame", 200, "POST /__slop/of-ws-frame"),  # default prefixes only
+    ("POST", "/admin/mcp", 200, None),              # _AUDIT_SKIP_PATHS: exact
+    ("POST", "/admin/mcp-x", 200, "POST /admin/mcp-x"),
+    ("POST", "/admin/mcp/x", 200, "POST /admin/mcp/x"),
 ]
 
 

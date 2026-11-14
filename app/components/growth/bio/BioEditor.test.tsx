@@ -1,7 +1,8 @@
 /**
  * The bio editor over a mocked relay, through the controls the slop UI leg drives: a Display name edit + Save sends
  * only the change and the preview follows the draft; "Add link" sends the dialog's body and the new card shows; "Move
- * up" sends every id in the new order; the custom domain is read-only; an unknown page says so.
+ * up" sends every id in the new order; the custom domain can't be added without BIO_SERVER_IP, else Add domain → DNS
+ * records → Check now walks its status → Remove domain; an unknown page says so.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -41,6 +42,7 @@ import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
+const relayDelete = relay.delete as unknown as Mock;
 const relayPatch = relay.patch as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
 const relayUpload = relay.uploadFile as unknown as Mock;
@@ -78,7 +80,7 @@ describe("BioEditor", () => {
     renderWithProviders(<BioEditor profileId="p1" />);
     const name = await screen.findByLabelText(/Display name/);
     await waitFor(() => expect((name as HTMLInputElement).value).toBe("Alice"));
-    expect(document.querySelector("[data-custom-domain]")?.textContent).toBe("alice.example · live");
+    expect(document.querySelector("[data-domain-live]")?.textContent).toMatch(/^alice\.example is live/);
     fireEvent.change(name, { target: { value: "Alice B" } });
     expect(preview().getByRole("heading", { name: "Alice B" })).toBeTruthy();
     relayPatch.mockResolvedValueOnce({ ...page, profile: { ...page.profile, display_name: "Alice B" } });
@@ -124,7 +126,6 @@ describe("BioEditor", () => {
   });
 
   it("uploads the page background, then removes it", async () => {
-    const relayDelete = relay.delete as unknown as Mock;
     renderWithProviders(<BioEditor profileId="p1" />);
     const row = within((await screen.findByRole("button", { name: "Upload background" })).closest("[data-bio-background]") as HTMLElement);
     expect(row.queryByRole("button", { name: "Remove" })).toBeNull();
@@ -158,6 +159,58 @@ describe("BioEditor", () => {
     renderWithProviders(<BioEditor profileId="p1" />);
     expect(await screen.findByText("https://bio.test/alice")).toBeTruthy();
     expect(document.querySelector("[data-short-address]")).toBeNull();
+  });
+
+  it("adds a custom domain, shows its records, Check now walks its status, Remove domain says so", async () => {
+    page.profile = { ...page.profile, custom_domain: null, domain_server_ip: "203.0.113.7",
+      home_url: "https://bio.test/alice" };
+    renderWithProviders(<BioEditor profileId="p1" />);
+    const input = await screen.findByLabelText("Domain");
+    expect(await screen.findByText(/forward to bio\.test\/alice\?/)).toBeTruthy();
+    fireEvent.change(input, { target: { value: "https://links.example.com/" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add domain" }));
+    expect(await screen.findByText("Enter the domain alone, like alice.com: no https://, no slash, no spaces.")).toBeTruthy();
+    expect(relayPut).not.toHaveBeenCalled();
+    const pending = { domain: "links.example.com", status: "pending", checked: null, records: [
+      { type: "A", name: "links", value: "203.0.113.7" },
+      { type: "TXT", name: "_oflink.links", value: "oflink-verify=tok123" }] };
+    relayPut.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: pending } });
+    fireEvent.change(input, { target: { value: " Links.Example.com " } });
+    fireEvent.click(screen.getByRole("button", { name: "Add domain" }));
+    await waitFor(() => expect(document.querySelector("[data-domain-status]")?.textContent).toBe("Waiting for DNS"));
+    expect(relayPut).toHaveBeenCalledWith("/admin/bio-pages/p1/domain", { domain: "links.example.com" });
+    expect(screen.getByRole("heading", { name: "Point links.example.com here" })).toBeTruthy();
+    const rows = [...document.querySelectorAll("[data-dns-record]")].map((r) => r.textContent);
+    expect(rows).toEqual(["AlinksCopy203.0.113.7Copy", "TXT_oflink.linksCopyoflink-verify=tok123Copy"]);
+    expect(screen.getByText(/Delete any other A or AAAA record for this name/)).toBeTruthy();
+    relayPost.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: pending },
+      check: { status: "pending", problems: ["No A record for links.example.com yet.", "Delete the AAAA record ::1."] } });
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(document.querySelector("[data-domain-problem]")?.textContent)
+      .toBe("Not yet: No A record for links.example.com yet. Delete the AAAA record ::1."));
+    expect(relayPost).toHaveBeenCalledWith("/admin/bio-pages/p1/domain/check", {});
+    relayPost.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: { ...pending, status: "pending_cert" } },
+      check: { status: "pending_cert", problems: ["DNS is set. Getting the certificate: check again in a minute or two."] } });
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(document.querySelector("[data-domain-status]")?.textContent).toBe("Getting certificate"));
+    expect(document.querySelector("[data-domain-problem]")?.textContent).toMatch(/Getting the certificate/);
+    relayPost.mockResolvedValueOnce({ ...page, profile: { ...page.profile, public_url: "https://links.example.com/",
+      custom_domain: { ...pending, status: "live" } }, check: { status: "live", problems: [] } });
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(document.querySelector("[data-domain-status]")?.textContent).toBe("Live"));
+    expect(screen.getByRole("heading", { name: "links.example.com is live" })).toBeTruthy();
+    expect(screen.getByText(/bio\.test\/alice keeps working too/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open" }).getAttribute("href")).toBe("https://links.example.com/");
+    expect(document.querySelector("[data-dns-records]")).toBeNull();
+    expect(document.querySelector("[data-domain-problem]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check now" })).toBeNull();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    relayDelete.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove domain" }));
+    await waitFor(() => expect(document.querySelector("[data-domain-said]")?.textContent).toBe("links.example.com is removed."));
+    expect(confirm).toHaveBeenCalledWith("Remove links.example.com?\nVisitors on it will stop seeing this Profile.");
+    expect(relayDelete).toHaveBeenCalledWith("/admin/bio-pages/p1/domain");
+    expect(screen.getByLabelText("Domain")).toBeTruthy();
   });
 
   it("says an unknown page doesn't exist", async () => {

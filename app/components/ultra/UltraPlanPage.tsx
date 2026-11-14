@@ -17,10 +17,7 @@ import { EmptyState, IfButton, IfBody, InflowwPageHeader } from "@/components/ui
 import { cn } from "@/lib/utils";
 import { PlanSteps } from "./PlanSteps";
 import { useUltraPlan } from "./useUltraPlan";
-import {
-  canApprove, canCancel, canPick, cancelLabel, INITIAL_RUN, okLabel, pickLabel, showOk, showPick, statusNote,
-  ultraRunReducer,
-} from "./ultraRunReducer";
+import { INITIAL_RUN, planActions, refreshNote, statusNote, ultraRunReducer } from "./ultraRunReducer";
 
 // The sticky bar's height (border 1 + pt/pb 12 each + h-9 buttons, gap-2 between when stacked) plus the phone
 // safe-area, so the last step can scroll clear of it: stacked on a phone, one row from `sm`.
@@ -32,7 +29,8 @@ export default function UltraPlanPage({ planId }: { planId: string }) {
   const { read, act } = useUltraPlan(planId, state, dispatch);
 
   const plan = state.plan;
-  const bar = canApprove(state) || canCancel(state) || state.busy;
+  const actions = planActions(state);
+  const refresh = refreshNote(state);
   return (
     <div className="min-w-0">
       <InflowwPageHeader title="Ultra plan" />
@@ -47,30 +45,23 @@ export default function UltraPlanPage({ planId }: { planId: string }) {
             <div>
               <h2 className="break-words text-[18px] font-medium text-fg">{plan.summary}</h2>
               <p role="status" className="mt-1 text-[14px] text-fg-dim">{statusNote(plan)}</p>
-              {state.loadError && (
-                <p className="mt-1 text-[13px] text-warn">Could not refresh: {state.loadError}. Trying again.</p>
+              {refresh && (
+                <p className="mt-1 break-words text-[13px] text-warn">
+                  {refresh.text}
+                  {refresh.retry && <> <button type="button" className="underline" onClick={() => void read()}>Try again</button></>}
+                </p>
               )}
             </div>
             <PlanSteps state={state} dispatch={dispatch}
-              className={cn(bar && (showOk(state) || showPick(state) ? BAR_PAD_TWO : BAR_PAD_ONE))} />
-            {bar && (
+              className={cn(actions.length > 1 ? BAR_PAD_TWO : actions.length === 1 && BAR_PAD_ONE)} />
+            {actions.length > 0 && (
               <div className="sticky bottom-0 -mx-3 flex flex-col gap-2 border-t border-border bg-bg px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:mx-0 sm:flex-row sm:justify-end sm:px-0">
-                {showOk(state) && (
-                  <IfButton variant="primary" size="lg" className="w-full sm:w-auto"
-                    disabled={!canApprove(state)} onClick={() => void act("ok")}>
-                    {okLabel(state)}
+                {actions.map((b) => (
+                  <IfButton key={b.kind} variant={b.primary ? "primary" : "default"} size="lg" className="w-full sm:w-auto"
+                    disabled={!b.enabled} onClick={() => void act(b.kind)}>
+                    {b.label}
                   </IfButton>
-                )}
-                {showPick(state) && (
-                  <IfButton variant="primary" size="lg" className="w-full sm:w-auto"
-                    disabled={!canPick(state)} onClick={() => void act("pick")}>
-                    {pickLabel(state)}
-                  </IfButton>
-                )}
-                <IfButton size="lg" className="w-full sm:w-auto" disabled={!canCancel(state)}
-                  onClick={() => void act("cancel")}>
-                  {cancelLabel(state)}
-                </IfButton>
+                ))}
               </div>
             )}
             {state.actionError && <p role="alert" className="text-[13px] text-err">{state.actionError}</p>}

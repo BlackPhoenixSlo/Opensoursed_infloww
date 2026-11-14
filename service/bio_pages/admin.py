@@ -26,8 +26,16 @@ page's stored Creator for the audit row (`_audit_as`), whatever X-Account-Id / ?
 
 Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
 X-Forwarded-Host/Proto when a proxy set them), BIO_SHORT_URL (optional short base whose `/<username>` redirects to
-the page, e.g. https://ofl.ink/s; the editor's `short_url`, unset → null) and BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
-`serving`; unset → false).
+the page, e.g. https://ofl.ink/s; the editor's `short_url`, unset → null), BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
+`serving`; unset → false), BIO_SERVER_IP (the box's public IPv4 a custom domain's A record must name; unset → custom
+domains can't be set or checked, only removed) and BIO_SERVER_IPV6 (optional: the one AAAA a custom domain may have).
+
+Custom domain (`PUT /{pid}/domain {domain}`, `DELETE /{pid}/domain`, `POST /{pid}/domain/check`): one per page (a
+new one replaces it, the same one keeps its row and token), at most domains.MAX_PER_OWNER per account, never this
+service's own hosts. Several pages may hold the same `pending` domain (nobody can squat one); only one row per domain
+may be `pending_cert` / `live` (checked under the write lock, and the live index). The check reads DNS and probes
+HTTPS outside any transaction (bio_pages/domains.py), at most once per page every CHECK_GAP_S. Sentences, records and the
+check's `{status, problems}` are ofl.ink v2's (~/oflinkv2/app/server.js, the domain-check route), plus `pending_cert`.
 """
 from __future__ import annotations
 
@@ -50,10 +58,10 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.datastructures import UploadFile
 
 from audit_log import AUDIT_ACCOUNT
-from bio_pages import decide, files, images
+from bio_pages import decide, domains, files, images
 from bio_pages.assets import PUBLIC
 from db.engine import get_session
-from db.models import BioCustomDomain, BioDaily, BioLink, BioProfile, VaultItem
+from db.models import BioCustomDomain, BioDaily, BioLink, BioProfile, BioSpareDomain, VaultItem
 from employees import json_object, owner_context
 
 log = logging.getLogger("of-relay.bio-admin")
@@ -218,9 +226,12 @@ async def _page(s, owner: str, pid: str) -> dict[str, Any]:
          ).scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "no such bio page")
-    dom = (await s.execute(select(BioCustomDomain.domain, BioCustomDomain.status)
+    dom = (await s.execute(select(BioCustomDomain.domain, BioCustomDomain.status, BioCustomDomain.token,
+                                  BioCustomDomain.checked)
                            .where(BioCustomDomain.profile_id == pid))).first()
-    domain = {"domain": dom.domain, "status": dom.status} if dom else None
+    domain = {"domain": dom.domain, "status": dom.status, "checked": _iso(dom.checked),
+              "records": domains.records_for(dom.domain, dom.token, domains.server_ip(), domains.server_ipv6())
+              } if dom else None
     links = (await s.execute(select(BioLink).where(BioLink.profile_id == pid)
                              .order_by(BioLink.sort_order, BioLink.id))).scalars().all()
     return {"profile": {"id": p.id, "username": p.username, "display_name": p.display_name, "bio": p.bio,
@@ -228,7 +239,8 @@ async def _page(s, owner: str, pid: str) -> dict[str, Any]:
                         "background_url": _file_url("profiles", p.id, p.background_image),
                         "account_id": p.account_id, "mode": p.mode, "verified": bool(p.verified),
                         "custom_domain": domain, "public_url": _public_url(p.username, domain),
-                        "short_url": _short_url(p.username),
+                        "short_url": _short_url(p.username), "home_url": _public_url(p.username, None),
+                        "domain_server_ip": domains.server_ip(),
                         "created_at": _iso(p.created_at), "updated_at": _iso(p.updated_at)},
             "links": [_link_out(lk) for lk in links]}
 
@@ -435,6 +447,135 @@ async def delete_page(pid: str) -> Response:
     for lid in link_ids:
         await files.discard("links", lid)
     return Response(status_code=204)
+
+
+# ── custom domain ────────────────────────────────────────────────────
+
+CHECK_GAP_S = 10
+_VERIFIED = ("pending_cert", "live")
+_DOMAINS_OFF = domains.OFF_MSG
+
+
+async def _own_hosts(s) -> set[str]:
+    """This box's own hosts (public/short bases, the request's host, BIO_PRIMARY_HOSTS, the spare domains): never a
+    custom domain, nor anything under one."""
+    hosts = {domains.host_of(os.environ.get(k)) for k in ("BIO_PUBLIC_URL", "BIO_SHORT_URL")}
+    hosts.add(domains.host_of(_REQUEST_BASE.get()))
+    hosts |= set(decide.parse_primary_hosts(os.environ.get("BIO_PRIMARY_HOSTS")))
+    hosts |= set((await s.execute(select(BioSpareDomain.domain))).scalars())
+    return {h for h in hosts if h}
+
+
+def _own_msg(domain: str) -> str:
+    return f"{domain} is one of ofl.ink's own addresses. Use a domain you own."
+
+
+def _in_use(domain: str) -> str:
+    return f"Another Profile already uses {domain}."
+
+
+def _example(username: str) -> str:
+    """v2's exampleOf: the username as a .com (underscores are not allowed in a hostname)."""
+    return f"{username.replace('_', '') or 'yourname'}.com"
+
+
+async def _taken(s, domain: str, pid: str) -> bool:
+    """Another page's row holds `domain` past `pending`."""
+    return (await s.execute(select(BioCustomDomain.id).where(
+        BioCustomDomain.domain == domain, BioCustomDomain.profile_id != pid,
+        BioCustomDomain.status.in_(_VERIFIED)))).first() is not None
+
+
+@router.put("/{pid}/domain")
+@_safe_write
+async def set_domain(pid: str, request: Request) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    raw = (await json_object(request, 422)).get("domain")
+    domain = domains.normalize(raw) if isinstance(raw, str) else ""
+    if not domain:
+        raise HTTPException(422, {"field": "domain", "msg": "Enter a domain."})
+    if domains.server_ip() is None:
+        raise HTTPException(409, _DOMAINS_OFF)
+    async with get_session() as s:
+        await _lock_own(s, owner, pid)
+        if not domains.valid(domain):
+            username = (await s.execute(select(BioProfile.username).where(BioProfile.id == pid))).scalar_one()
+            raise HTTPException(422, {"field": "domain", "msg": f"Enter the domain alone, like {_example(username)}: "
+                                                                "no https://, no slash, no spaces."})
+        if domains.own_host(domain, await _own_hosts(s)):
+            raise HTTPException(422, {"field": "domain", "msg": _own_msg(domain)})
+        cur = (await s.execute(select(BioCustomDomain).where(BioCustomDomain.profile_id == pid))).scalar_one_or_none()
+        if cur is not None and cur.domain == domain:
+            return await _page(s, owner, pid)  # same domain: its row, token and status stay
+        if await _taken(s, domain, pid):
+            raise HTTPException(409, {"field": "domain", "msg": _in_use(domain)})
+        n = (await s.execute(select(func.count()).select_from(BioCustomDomain).join(
+            BioProfile, BioProfile.id == BioCustomDomain.profile_id).where(
+            BioProfile.owner_user_id == owner, BioCustomDomain.profile_id != pid))).scalar_one()
+        if n >= domains.MAX_PER_OWNER:
+            raise HTTPException(409, f"An account holds at most {domains.MAX_PER_OWNER} custom domains.")
+        if cur is not None:
+            await s.execute(delete(BioCustomDomain).where(BioCustomDomain.id == cur.id))
+        s.add(BioCustomDomain(id=files.new_id(15), profile_id=pid, domain=domain, status="pending",
+                              token=files.new_id(32)))  # v2's token form: 32 lowercase letters or digits
+        await s.flush()
+        log.info("bio admin: custom domain set: page=%s", pid)
+        return await _page(s, owner, pid)
+
+
+@router.delete("/{pid}/domain")
+@_safe_write
+async def remove_domain(pid: str) -> dict[str, Any]:
+    owner = await _owner()
+    _id_or_404(pid)
+    async with get_session() as s:
+        await _lock_own(s, owner, pid)
+        await s.execute(delete(BioCustomDomain).where(BioCustomDomain.profile_id == pid))
+        log.info("bio admin: custom domain removed: page=%s", pid)
+        return await _page(s, owner, pid)
+
+
+@router.post("/{pid}/domain/check")
+@_safe_write
+async def check_domain(pid: str) -> dict[str, Any]:
+    """DNS, then the HTTPS probe; the row's next status is written only if it is still the row that was checked."""
+    owner = await _owner()
+    _id_or_404(pid)
+    async with get_session() as s:
+        cur = (await s.execute(select(BioCustomDomain.id, BioCustomDomain.domain, BioCustomDomain.token,
+                                      BioCustomDomain.status, BioCustomDomain.checked)
+                               .join(BioProfile, BioProfile.id == BioCustomDomain.profile_id)
+                               .where(*_own_profile(owner, pid)))).first()
+        if cur is None:
+            if (await s.execute(select(BioProfile.id).where(*_own_profile(owner, pid)))).first() is None:
+                raise HTTPException(404, "no such bio page")
+            raise HTTPException(409, "This page has no custom domain.")
+        own = cur.status != "live" and domains.own_host(cur.domain, await _own_hosts(s))
+    ip = domains.server_ip()
+    if ip is None and cur.status != "live":
+        raise HTTPException(409, _DOMAINS_OFF)
+    if cur.status != "live" and cur.checked and (_now() - cur.checked).total_seconds() < CHECK_GAP_S:
+        raise HTTPException(429, "Too many checks. Wait a few seconds, then try again.")
+    if own:  # a spare domain added since it was saved
+        status, problems = "pending", [_own_msg(cur.domain)]
+    else:
+        status, problems = await domains.check(cur.domain, cur.token, cur.status, ip or "", domains.server_ipv6())
+    async with get_session() as s:
+        await _lock_own(s, owner, pid)
+        if (await s.execute(select(BioCustomDomain.id).where(BioCustomDomain.id == cur.id))).first() is None:
+            raise HTTPException(409, "The custom domain changed: reload.")
+        if status in _VERIFIED and status != cur.status and await _taken(s, cur.domain, pid):
+            status, problems = "pending", [_in_use(cur.domain)]  # v2: the live write's clash is a problem
+        try:
+            await s.execute(update(BioCustomDomain).where(BioCustomDomain.id == cur.id)
+                            .values(status=status, checked=_now()))
+            await s.flush()
+        except IntegrityError:
+            raise HTTPException(409, {"field": "domain", "msg": _in_use(cur.domain)}) from None
+        if status != cur.status:
+            log.info("bio admin: custom domain %s → %s: page=%s", cur.status, status, pid)
+        return {**await _page(s, owner, pid), "check": {"status": status, "problems": problems}}
 
 
 # ── uploads ──────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 /**
  * A `needs_you` judge's pick card (ultra ticket 06 owner amendment): its question, ≤6 candidate thumbnails (the
- * AI's words as alt / title), the AI's picks pre-ticked. The owner ticks exactly `pick_n`; the caller's "Send these"
+ * AI's words as alt / title and a 2-line caption, readable on a phone), the AI's picks pre-ticked. The owner ticks exactly `pick_n`; the caller's "Send these"
  * posts them (canPick / buildPickPayload). Presentation only: ticks come from ultraRunReducer's `picked`.
  */
 import { cn } from "@/lib/utils";
@@ -40,8 +40,15 @@ export function PickCard({ step, ticked, disabled, onTick }: {
                   ? <img src={c.thumb} alt={words} className="aspect-square w-full object-cover" loading="lazy" />
                   :<span className="grid aspect-square w-full place-items-center text-[12px] text-fg-dim">{c.type ?? "media"}</span>}
                 {ai.has(c.id) && (
-                  <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 text-[11px] text-white">AI</span>
+                  <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[11px] text-white">AI</span>
                 )}
+                {/* padding on the wrapper: inside the clamped box it would show a sliver of line 3 */}
+                <span className="block px-1.5 py-1">
+                  <span data-pick-caption
+                    className="line-clamp-2 max-h-[28px] overflow-hidden break-words text-[11px] leading-[14px] text-fg-dim">
+                    {words}
+                  </span>
+                </span>
               </label>
             </li>
           );

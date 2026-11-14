@@ -6,7 +6,7 @@
   submit    the same check for an in-app `planning` row (ultra_plan) → that row `awaiting_ok`.
   approve   the owner's OK (cookie, the sha256 the card showed) → `running` + the executor task.
   view      the owner's plan with its card and step states (each: state, error, open_url); an
-            `awaiting_ok` plan past ultra_decide.OK_TTL is `expired` here (nothing else reads it). A
+            `awaiting_ok` plan past ultra_decide.OK_TTL is `expired` here (a flip from awaiting_ok only). A
             `planning` row adds its progress (turns, last tool), never model text.
   cancel    `planning` → `cancelled` (the loop stops at its next turn);
             `awaiting_ok` → `cancelled` now (steps skipped); `running` → a flag the executor reads before each step; a
@@ -17,12 +17,13 @@
 
 The executor is an in-memory asyncio task holding the approving owner's Cookie (never stored). It runs the
 steps in order through `toolbox.call`, writing each step `started` BEFORE the call, so a crash or a lost
-answer leaves `uncertain`, never a silent resend. A send that may have gone out stops the run and is never
-retried; neither route takes an idempotency key, so that record is the guard. No DB session is held across
+answer leaves `uncertain`, never a silent resend. Each save lands only while the row is running / needs_you;
+a miss (ended elsewhere) stops the run before any further call. A send that may have gone out stops the run
+and is never retried; neither route takes an idempotency key, so that record is the guard. No DB session is held across
 a call (toolbox module doc). A judge step (ultra_judge) picks media ids with one model call (≤ the run's
 upd.MAX_SPEND_MC); `confirm` parks the run `needs_you` (one `ultra_needs_you` notification) on an in-memory
 Event until `pick` or `cancel`, no timeout. A send using its picks has them written into its `started` state
-(`resolved`) before the call (ultra_decide.may_send). The end files one `ultra_done` notification. A cancelled executor task (shutdown)
+(`resolved`) before the call (ultra_decide.may_send). A saved end files one `ultra_done` notification. A cancelled executor task (shutdown)
 saves `interrupted` (closed steps) and re-raises; no notification.
 """
 from __future__ import annotations
@@ -49,6 +50,7 @@ from db.models import Account, BioProfile, UltraPlan
 
 log = logging.getLogger("of-relay.ultra")
 
+OWNER_UNREAD = "could not read whose bio page this is; nothing was changed"
 STEP_TIMEOUT_S = 180.0  # one step's call; a send past it is uncertain (it may still finish)
 _TASKS: dict[str, asyncio.Task | None] = {}  # this process's runs; None = an OK flipping it to running
 _CANCEL: set[str] = set()
@@ -118,9 +120,11 @@ async def _row(plan_id: str, owner_user_id: str) -> UltraPlan | None:
         row = await s.get(UltraPlan, plan_id)
         if row is None or row.owner_user_id != owner_user_id:
             return None
-        if ud.expired(row.status, row.created_at, datetime.utcnow()):
-            row.status, row.finished_at = "expired", datetime.utcnow()
-            await s.flush()
+        if ud.expired(row.status, row.created_at, datetime.utcnow()):  # only from awaiting_ok: an OK may win
+            await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id, UltraPlan.status == "awaiting_ok")
+                            .values(status="expired", finished_at=datetime.utcnow())
+                            .execution_options(synchronize_session=False))
+            await s.refresh(row)
         s.expunge(row)
         return row
 
@@ -257,8 +261,8 @@ async def _judge(plan_id: str, owner_user_id: str, i: int, step: dict[str, Any],
         states[i] = uj.failed(sid, "no candidate list at " + ", ".join(
             f"${r['step']}.{r['path']}" for r in step["refs"]))
         return "failed", states, spent
-    states[i] = {"id": sid, "state": "started"}
-    await _save(plan_id, states)
+    await _save(plan_id, [*states[:i], {"id": sid, "state": "started"}, *states[i + 1:]])
+    states[i] = {"id": sid, "state": "started"}  # only once saved: a failed save leaves it pending (skipped)
     v = await ultra_judge.ask(step, cands, owner_user_id)
     spent += v.cost_mc
     if plan_id in _CANCEL:  # cancelled during the call: its picks are dropped, no needs_you, no notification
@@ -297,12 +301,21 @@ async def _owner(check: ud.OwnerCheck) -> str | None:
         return (await s.execute(select(table.account_id).where(table.id == str(check.ref)))).scalar()
 
 
+class _Lost(Exception):
+    """The row is no longer running / needs_you (something else ended it): the run stops, nothing more is called."""
+
+
 async def _save(plan_id: str, states: list[dict[str, Any]], status: ud.PlanStatus = "running") -> None:
+    """Write the run's states (and status) only while the row is still running / needs_you; else _Lost."""
     values: dict[str, Any] = {"step_states": json.dumps(states), "status": status}
     if status in ud.FINAL:
         values["finished_at"] = datetime.utcnow()
     async with get_session() as s:
-        await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id).values(**values))
+        won = (await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id,
+                                                       UltraPlan.status.in_(sorted(ud.RUN_LIVE)))
+                               .values(**values))).rowcount
+    if won != 1:
+        raise _Lost(f"plan {plan_id} is no longer running")
 
 
 async def _step(tool: td.Tool, args: dict[str, Any], creds: toolbox.Creds, key: str) -> dict[str, Any] | None:
@@ -336,18 +349,28 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
                 states[i] = ud.step_end(step["id"], tool.effect, td.error(422, f"no value for {e.args[0]}"))
                 status = "failed"
                 break
-            if (chk := ud.owner_check(step, args, by_id)) and await _owner(chk) != chk.want:
-                states[i] = ud.step_end(step["id"], tool.effect, td.error(409, chk.refused))
-                status = "failed"
-                break
-            states[i] = ud.started(step, args)
-            await _save(plan_id, states)
+            if chk := ud.owner_check(step, args, by_id):
+                try:
+                    why = None if await _owner(chk) == chk.want else td.error(409, chk.refused)
+                except Exception:
+                    log.exception("ultra plan %s: owner check failed", plan_id)
+                    why = td.error(503, OWNER_UNREAD)
+                if why:
+                    states[i] = ud.step_end(step["id"], tool.effect, why)
+                    status = "failed"
+                    break
+            start = ud.started(step, args)
+            await _save(plan_id, [*states[:i], start, *states[i + 1:]])
+            states[i] = start  # only once saved: a failed save leaves it pending (skipped), never uncertain
             result = await _step(tool, args, creds, f"{plan_id}:{step['id']}")
             states[i] = ud.step_end(step["id"], tool.effect, result, resolved=states[i].get("resolved"))
             if states[i]["state"] != "done":
                 status = "failed"
                 break
             results[step["id"]] = result
+    except _Lost:  # cancelled / interrupted elsewhere: its end is not ours to write
+        log.warning("ultra plan %s: no longer running; executor stops", plan_id)
+        status = "failed"
     except asyncio.CancelledError:  # not an Exception: the task was cancelled (shutdown) mid-run; never `done`
         log.warning("ultra plan %s: executor cancelled", plan_id)
         status = "interrupted"
@@ -356,15 +379,17 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
         log.exception("ultra plan %s: executor crashed", plan_id)
         status = "failed"
     finally:
-        states = ud.close(states)
+        states, saved = ud.close(states), False
         try:
             await asyncio.shield(_save(plan_id, states, status))  # a second cancel must not lose the end
-        except Exception:  # the row stays `running`: a cancel (no executor here) or the next start ends it
+            saved = True
+        except Exception:  # row left as is: a `running` one is ended by a cancel (no executor here) or the next start
             log.exception("ultra plan %s: could not save its end", plan_id)
         finally:
             _CANCEL.discard(plan_id)
             _TASKS.pop(plan_id, None)
-    await _notify(owner_user_id, plan_id, uc.report_text(plan.summary, status, states))
+    if saved:  # the notification says what the page shows: only a saved end
+        await _notify(owner_user_id, plan_id, uc.report_text(plan.summary, status, states))
 
 
 async def _notify(owner_user_id: str, plan_id: str, text: str, kind: str = "ultra_done", key: str = "") -> None:

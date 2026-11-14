@@ -14,23 +14,20 @@ import { ArrowUp, X } from "lucide-react";
 
 import { errText } from "@/lib/errText";
 import { LOGINS_PAGE } from "@/lib/loginPaste";
-import { relay, RelayError } from "@/lib/relay";
+import { RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { PlanSteps } from "./PlanSteps";
+import { beginStart, pendingStart, ULTRA_PLAN_KEY } from "./ultraStart";
 import { useUltraPlan } from "./useUltraPlan";
 import {
-  INITIAL_PANEL, isOver, isRunning, MAX_REQUEST, requestBody, canSubmit, ultraPanelReducer,
+  INITIAL_PANEL, isOver, type PanelAction, isRunning, MAX_REQUEST, requestBody, canSubmit, ultraPanelReducer,
 } from "./ultraPanelReducer";
-import {
-  canApprove, canCancel, canPick, cancelLabel, okLabel, pickLabel, showOk, showPick, statusNote,
-  type Action as RunAction, type PlanView,
-} from "./ultraRunReducer";
+import { planActions, refreshNote, statusNote, type Action as RunAction, type PlanView } from "./ultraRunReducer";
 import styles from "./UltraPanel.module.css";
 
 /** The Ultra tick, per browser. */
 export const ULTRA_KEY = "chatterly:assistant_ultra";
-/** The open plan's id, per browser: a reload resumes it until "New request". */
-export const ULTRA_PLAN_KEY = "chatterly:ultra_plan";
+export { ULTRA_PLAN_KEY } from "./ultraStart";
 
 /** The Ultra tick: stored per browser, on only for an owner (a chatter never sees it). */
 export function useUltraMode(isOwner: boolean): [boolean, (on: boolean) => void] {
@@ -61,6 +58,12 @@ export function UltraToggle({ checked, onChange, className }: {
   );
 }
 
+/** A start's answer into a panel (dropped by React if it has closed: the next one hydrates from storage). */
+function follow(p: Promise<PlanView>, send: (a: PanelAction) => void) {
+  p.then((plan) => send({ type: "started", plan }),
+    (e: unknown) => send({ type: "startFailed", status: e instanceof RelayError ? e.status : 0, message: errText(e) }));
+}
+
 const BTN = "h-10 min-w-[7.5rem] flex-1 rounded-full px-4 text-[14px] font-medium transition-colors disabled:opacity-40";
 
 export function UltraPanel({ frame, column, composerPad, inputText, onClose, onOff }: {
@@ -72,13 +75,16 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
   onOff: () => void;
 }) {
   const [s, send] = useReducer(ultraPanelReducer, INITIAL_PANEL);
-  const runDispatch = useCallback((action: RunAction) => send({ type: "run", action }), []);
+  const runDispatch = useCallback((action: RunAction, planId: string) => send({ type: "run", planId, action }), []);
   const { read, act } = useUltraPlan(s.planId, s.run, runDispatch);
 
   useEffect(() => {
     let id: string | null = null;
     try { id = window.localStorage.getItem(ULTRA_PLAN_KEY); } catch { /* safari private */ }
-    send({ type: "hydrate", planId: id || null });
+    // A start still out (sent by a panel closed since): shown as in flight, its answer followed here.
+    const p = pendingStart();
+    send({ type: "hydrate", planId: id || null, starting: !id && p !== null });
+    if (!id && p) follow(p, send);
   }, []);
   useEffect(() => {
     if (!s.hydrated) return;
@@ -88,21 +94,17 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
     } catch { /* quota */ }
   }, [s.hydrated, s.planId]);
 
-  async function start() {
+  function start() {
     const body = requestBody(s);
     send({ type: "start" }); // a login in the draft: refused here, never sent
-    if (!body) return;
-    try {
-      send({ type: "started", plan: await relay.post<PlanView>("/admin/ultra/plans", body) });
-    } catch (e) {
-      // The start's one 400 is the relay's login guard.
-      send({ type: "startFailed", message: errText(e), loginRefused: e instanceof RelayError && e.status === 400 });
-    }
+    if (body) follow(beginStart(body), send);  // beginStart stores the plan id before this hears it
   }
 
   const run = s.run;
   const plan = run.plan;
   const over = isOver(s);
+  const actions = planActions(run);
+  const refresh = refreshNote(run);
   return (
     <div data-assistant-ui data-ultra data-plan-status={plan?.status}
       className={cn(styles.panel, "flex flex-col overflow-hidden", frame)}>
@@ -128,6 +130,7 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
               the media.
             </p>
           )}
+          {s.starting && <p role="status" className="text-[14px] text-fg">Sending your request to the planner…</p>}
           {s.loginRefused && (
             <p role="alert" className="break-words text-[13px] text-err">
               OnlyFans logins never go to Ultra: <a href={LOGINS_PAGE} className="underline">paste logins in the Connect card</a>.
@@ -145,10 +148,13 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
             <>
               {plan.summary && <h2 className="break-words text-[16px] font-medium text-fg">{plan.summary}</h2>}
               <p role="status" className="break-words text-[13px] text-fg-dim">{statusNote(plan)}</p>
-              {run.loadError && (
-                <p className="text-[13px] text-warn">Could not refresh: {run.loadError}. Trying again.</p>
+              {refresh && (
+                <p className="break-words text-[13px] text-warn">
+                  {refresh.text}
+                  {refresh.retry && <> <button type="button" className="underline" onClick={() => void read()}>Try again</button></>}
+                </p>
               )}
-              <PlanSteps state={run} dispatch={runDispatch} className={styles.steps} />
+              <PlanSteps state={run} dispatch={(a) => runDispatch(a, plan.id)} className={styles.steps} />
               {run.actionError && <p role="alert" className="break-words text-[13px] text-err">{run.actionError}</p>}
             </>
           )}
@@ -159,36 +165,28 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
         <div className={cn("flex flex-col gap-2 px-4 pt-2.5 pb-4", composerPad, column)}>
           {!s.planId ? (
             <div className={cn(styles.composer, "flex items-end gap-2 rounded-3xl py-1.5 pl-4 pr-1.5")}>
-              <textarea value={s.draft} rows={1} maxLength={MAX_REQUEST}
+              <textarea value={s.draft} rows={1} maxLength={MAX_REQUEST} disabled={s.starting}
                 onChange={(e) => send({ type: "draft", text: e.target.value })}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    void start();
+                    start();
                   }
                 }}
                 placeholder="What should Ultra do?"
                 title="The AI plans it; you check the plan and OK once. Enter to send · Shift+Enter for a new line"
                 className={cn("min-w-0 max-h-28 flex-1 resize-none bg-transparent py-1.5 leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]", inputText)} />
-              <button type="button" onClick={() => void start()} disabled={!canSubmit(s)} aria-label="Plan it"
+              <button type="button" onClick={start} disabled={!canSubmit(s)} aria-label="Plan it"
                 title="Plan it" className={cn(styles.ok, "grid h-8 w-8 shrink-0 place-items-center rounded-full disabled:opacity-30")}>
                 <ArrowUp className="h-4 w-4" aria-hidden />
               </button>
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {showOk(run) && (
-                <button type="button" className={cn(BTN, styles.ok)} disabled={!canApprove(run)}
-                  onClick={() => void act("ok")}>{okLabel(run)}</button>
-              )}
-              {showPick(run) && (
-                <button type="button" className={cn(BTN, styles.ok)} disabled={!canPick(run)}
-                  onClick={() => void act("pick")}>{pickLabel(run)}</button>
-              )}
-              {(canCancel(run) || run.busy === "cancel") && (
-                <button type="button" className={cn(BTN, styles.ghost)} disabled={!canCancel(run)}
-                  onClick={() => void act("cancel")}>{cancelLabel(run)}</button>
-              )}
+              {actions.map((b) => (
+                <button key={b.kind} type="button" className={cn(BTN, b.primary ? styles.ok : styles.ghost)}
+                  disabled={!b.enabled} onClick={() => void act(b.kind)}>{b.label}</button>
+              ))}
               {(over || run.load === "error") && (
                 <button type="button" className={cn(BTN, styles.ghost)} onClick={() => send({ type: "reset" })}>
                   New request

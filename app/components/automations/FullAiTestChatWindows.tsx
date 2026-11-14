@@ -24,7 +24,7 @@ import { Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import {
-  canSend, canSettle, configLine, factsLine, writersLine, photoCaption, sendBlock, noReplyText, outcomesLine, ppvLine, replyLine,
+  canSend, canSettle, configLine, factsLine, writersLine, photoCaption, sendBlock, noReplyText, outcomesLine, writersFailed, ppvLine, replyLine,
   type Describing, type FanPhoto, type FullAiConfig, type Offer, type Outcome, type Part, type SideState, type Turn,
   type UiSide,
 } from "@/components/automations/fullAiTestChat";
@@ -207,7 +207,7 @@ function CreatorReply({ turn, accountId, onSettle }: { turn: Turn; accountId: st
             onSettle={onSettle} />
           : <HerPart key={i} part={part} />))
       )}
-      {result.status === "failed" && result.attempts.length > 0 && (
+      {writersFailed(result) && result.attempts.length > 0 && (
         <p className={cn(MP.ours.FullAiTestChatWindows.meta, "text-right text-err")}>{outcomesLine(result.attempts)}</p>
       )}
       <p data-testid="reply-line" className={cn(MP.ours.FullAiTestChatWindows.meta, "text-right text-muted")}>{replyLine(result)}</p>

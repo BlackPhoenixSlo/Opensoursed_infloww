@@ -6,13 +6,15 @@ JSON schema every LLM sees is generated from that model. `toolbox.call` runs a t
 through the full HTTP stack with the caller's own credential; everything here is pure:
 
   validate_args   args → the model's dump, or per-field errors (before any request is built)
+  args_model      args → the model instance, or per-field errors (validate_args and mcp_api builtins)
   build_request   args → (method, path, query, json body, headers); `account_id` binds the
                   Creator in the header + query (+ body for a POST) so the isolation
                   middleware, the route's own owner check and audit all see the same one
   shape_result    a route answer → the tool result: lists ≤50 rows (reports 200), strings ≤500
                   chars, ≤~24k chars, `row_count` + `truncated` (true when rows, a string or the
                   route's hasMore were cut; a non-list result carries it only then);
-                  non-2xx → {error:{status,detail}}; untrusted text wrapped {"data_only": …}
+                  non-2xx → {error:{status,detail}}; untrusted text wrapped {"data_only": …}; too
+                  large → 413, but a send's 2xx keeps SEND_KEEP + truncated (it went out)
   open_url        the app page the result opens in (`Open`), on the public app base
   as_mcp / as_openai / as_anthropic   the tool's schema in each client's shape
   route_refusal   a bearer's RAW request to a write tool's route must be one that tool could
@@ -28,8 +30,9 @@ one (audit_log.AUDIT_ACCOUNT).
 
 Send tools (`effect="send"`, step 4; args + checks in toolbox_sends) carry OF-bound model text:
 `model_text` names those arg paths and `text_kind` the chain stages (send_chain; issues/13). Never
-on the token allowlist nor in MCP tools/list; `toolbox.call` runs one only for a plan step (the
-Ultra executor). A send's `check` failing means "may have gone out" (the executor's uncertain).
+in MCP tools/list nor on the token allowlist: no token tool shares a send tool's route, and no two
+write tools share one (`route_clashes`, checked at import); `toolbox.call` runs one only for a plan
+step (the Ultra executor). A send's `check` failing means "may have gone out" (the executor's uncertain).
 auto_mass / auto_story make a switched-on automation rule (`body`: flat args → the rule route's body).
 """
 from __future__ import annotations
@@ -37,7 +40,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -52,6 +55,7 @@ MAX_ROWS = 50
 REPORT_ROWS = 200
 MAX_STR = 500
 MAX_CHARS = 24_000
+SEND_KEEP = ("id", "is_enabled", "_user_ids_kept")  # an oversize 2xx send answer keeps only these (its proof)
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?")
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -211,7 +215,7 @@ TOOLS: tuple[Tool, ...] = (
          "POST", "/admin/reports/run", ReportArgs, "read", untrusted=True, open=_REPORT_OPEN,
          shape=Shape(rows="rows", max_rows=REPORT_ROWS), fixed=(("format", "json"),)),
     Tool("report_file", "Build a report recipe's whole table as a CSV or Excel file; returns a download_url "
-         "valid 15 minutes for the same access token (Authorization: Bearer).",
+         "valid 15 minutes for the same owner: send any of their access tokens (Authorization: Bearer).",
          "POST", "/admin/reports/files", ReportFileArgs, "read", open=_REPORT_OPEN,
          shape=Shape(urls=("download_url",))),
     # Writes. Folder tools act on the Creator's OnlyFans vault over her own session (OF scopes the
@@ -272,6 +276,21 @@ def token_tools() -> list[Tool]:
     return [t for t in TOOLS if t.effect != "send"]
 
 
+def route_clashes(tools: tuple[Tool, ...]) -> list[str]:
+    """Why `tools` cannot back the token allowlist, or []. The allowlist grants whole routes, so a
+    token tool on a send tool's (method, path) would open that send route to a raw bearer request;
+    and `write_tool` must resolve a route to one write tool (its body check), so no two share one."""
+    send = {(t.method, t.path) for t in tools if t.effect == "send"}
+    out = [f"{t.name}: token tool on send route {t.method} {t.path}" for t in tools
+           if t.effect != "send" and (t.method, t.path) in send]
+    writes = [(t.method, t.path) for t in tools if t.effect == "write"]
+    return out + [f"two write tools on {m} {p}" for m, p in sorted({r for r in writes if writes.count(r) > 1})]
+
+
+if _clash := route_clashes(TOOLS):  # at import: a bad registry never serves a request
+    raise RuntimeError("toolbox_decide.TOOLS: " + "; ".join(_clash))
+
+
 # ── args ────────────────────────────────────────────────────────────────────
 
 class ArgsError(Exception):
@@ -282,16 +301,23 @@ class ArgsError(Exception):
         self.errors = errors
 
 
-def validate_args(tool: Tool, args: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The args as the route takes them (aliases, defaults filled), or ArgsError per field."""
+M = TypeVar("M", bound=BaseModel)
+
+
+def args_model(model: type[M], args: Mapping[str, Any] | None) -> M:
+    """`args` as `model`, or ArgsError per field (also mcp_api's builtins)."""
     if args is not None and not isinstance(args, Mapping):
         raise ArgsError({"args": "must be an object"})
     try:
-        model = tool.args.model_validate(dict(args or {}))
+        return model.model_validate(dict(args or {}))
     except ValidationError as e:
         raise ArgsError({".".join(str(p) for p in err["loc"]) or "args": err["msg"]
                          for err in e.errors()}) from None
-    return model.model_dump(by_alias=True)
+
+
+def validate_args(tool: Tool, args: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The args as the route takes them (aliases, defaults filled), or ArgsError per field."""
+    return args_model(tool.args, args).model_dump(by_alias=True)
 
 
 @dataclass(frozen=True)
@@ -439,6 +465,8 @@ def shape_result(tool: Tool, status: int, body: Any, *, base: str | None = None)
         data[sh.rows] = data[sh.rows][:len(data[sh.rows]) // 2]
         meta["truncated"] = True
     if _size(data) > MAX_CHARS:
+        if tool.effect == "send":  # it went out (2xx, check passed): never an error; keep what proves it
+            return {**{k: data[k] for k in SEND_KEEP if k in data}, "truncated": True}
         return error(413, "result too large for one tool call; narrow the request")
     if isinstance(rows, list):
         data.pop("row_count", None)

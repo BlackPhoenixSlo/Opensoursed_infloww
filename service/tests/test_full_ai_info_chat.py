@@ -15,6 +15,7 @@ Shared setup (seeded Agencies, owner clients, `_guarded`, `_post`, the Writer fa
                                      no ask, nothing counted
    case_info_options_and_asked       the Choice offers every missing info field + none, a field
                                      asked twice included; the state carries the asked counts
+   case_info_lead_in                 `lead_in`: lead head + line, SELF_GIVE, no fetishes ask, lead Jev wording
    case_info_stalled_extract         extract timeout / Jev failure: reply still written, fan_info
                                      unchanged, info_error set; extract capped by the Turn deadline,
                                      no time left skips the stage (`deadline`)
@@ -48,6 +49,7 @@ from automations.full_ai_config import DEFAULTS, turn_bound_s
 #                                     no ask, nothing counted
 #   case_info_options_and_asked       the Choice offers every missing info field + none, a field
 #                                     asked twice included; the state carries the asked counts
+#   case_info_lead_in                 `lead_in`: lead head + line, SELF_GIVE, no fetishes ask, lead Jev wording
 #   case_info_stalled_extract         extract timeout / Jev failure: reply still written, fan_info
 #                                     unchanged, info_error set; extract capped by the Turn deadline,
 #                                     no time left skips the stage (`deadline`)
@@ -91,7 +93,8 @@ def case_info_stated_age_folds():
     assert ex["body"]["response_format"] == {"type": "json_object"}, ex["body"]
     (row,) = _rows(A, pair)
     assert _reply(row)["fan_info"] == {"his_age": "31"} and _reply(row)["info_error"] is None, _reply(row)
-    assert json.loads(row.jev_json)["info_version"] == _info_jev.INFO_VERSION, row.jev_json
+    # `lead_in` on by default in test Mode: the lead wording's digest.
+    assert json.loads(row.jev_json)["info_version"] == _info_jev.INFO_VERSION_LEAD, row.jev_json
     # Turn 2 states nothing: no extract, the fold carries the age.
     got, fw, _ = _info_post(_body(pair, 2, "what are u up to"), FakeInfoJev())
     assert got["fan_info"] == {"his_age": "31"} and DEEPSEEK not in [x["host"] for x in fw.requests], got
@@ -107,7 +110,19 @@ def _system(fw: FakeWriterHTTP) -> str:
     return w["body"]["messages"][0]["content"]
 
 
+# `lead_in` off: the cases below pin today's ask (the lead form: `case_info_lead_in`).
+_LEAD_OFF = {**DEFAULTS, "lead_in": False}
+
+
 def case_info_pick_in_writer_system():
+    _store_config(A, {"checkpoint": _LEAD_OFF})
+    try:
+        _pick_in_writer_system()
+    finally:
+        _store_config(A, {})
+
+
+def _pick_in_writer_system():
     job = "- You DON'T know what he does for work. Ask what he does for a living."
     got, fw, _ = _info_post(_body("p-info-pick"), FakeInfoJev(({}, "occupation")))
     assert got["status"] == "sent", got
@@ -124,12 +139,12 @@ def case_info_pick_in_writer_system():
     assert got["fan_info"] == {"his_age": "31"} and full_ai_writers.ASK_HEAD not in _system(fw), _system(fw)
     assert _reply(_rows(A, "p-info-answered")[0])["asked"] == {}
     # Every info field known: no Choice asked, the know-enough tier.
-    _store_config(A, {"checkpoint": {**DEFAULTS, "info_fields": ["his_age"]}})
+    _store_config(A, {"checkpoint": {**_LEAD_OFF, "info_fields": ["his_age"]}})
     try:
         info = FakeInfoJev()
         _, fw, _ = _info_post(_body("p-info-answered", 2, "so what now"), info)
     finally:
-        _store_config(A, {})
+        _store_config(A, {"checkpoint": _LEAD_OFF})
     assert "next_question" not in info.calls[0]["questions"], info.calls[0]["questions"]
     assert full_ai_writers.KNOW_ENOUGH in _system(fw), _system(fw)
     # A sext Turn: Jev still gates what he stated, but no Choice, no ask line, nothing counted.
@@ -140,18 +155,26 @@ def case_info_pick_in_writer_system():
     assert full_ai_writers.ASK_HEAD not in _system(fw), _system(fw)
     assert _reply(_rows(A, "p-info-sext")[0])["asked"] == {}
     # A sticker-only reply: Jev picked a field but no text went out, so the ask is not counted.
-    _store_config(A, {"checkpoint": {**DEFAULTS, "gifs": True}})
+    _store_config(A, {"checkpoint": {**_LEAD_OFF, "gifs": True}})
     try:
         lone = f"ok:STICKER: {_GIF_TAG}"
         got, _, _ = _info_post(_body("p-info-gif"), FakeInfoJev(({}, "occupation")),
                                {NANO: lone, OPENROUTER: lone, ZAI: lone, DEEPSEEK: lone})
     finally:
-        _store_config(A, {})
+        _store_config(A, {"checkpoint": _LEAD_OFF})
     assert got["status"] == "sent" and [set(p) for p in got["parts"]] == [{"gif", "tag"}], got
     assert _reply(_rows(A, "p-info-gif")[0])["asked"] == {}, _reply(_rows(A, "p-info-gif")[0])
 
 
 def case_info_options_and_asked():
+    _store_config(A, {"checkpoint": _LEAD_OFF})
+    try:
+        _options_and_asked()
+    finally:
+        _store_config(A, {})
+
+
+def _options_and_asked():
     pair = "p-info-asked"
     for n, (stated, script) in enumerate(((
             {"real_name": 0.95}, {DEEPSEEK: _extract_says(real_name="Sam")}), ({}, None)), start=1):
@@ -169,6 +192,46 @@ def case_info_options_and_asked():
     assert call["state"]["asked"] == {f: (2 if f == "his_age" else 0) for f in missing}, call["state"]
     assert call["state"]["fan_new_messages"] == ["line 3"], call["state"]
     assert call["model"] == _info_jev.MODEL, call
+
+
+def case_info_lead_in():
+    """`lead_in` (default on, test Mode): Jev's pick reaches the Writer as LEAD_HEAD + its
+    LEAD_LINES line (counted in `asked`), SELF_GIVE for SELF_BAN, no "Ask what"; the Choice never
+    offers fetishes and carries the lead wording (`her_last_line` in the state, the lead digest); a
+    pick of fetishes fails the Choice (no ask, `asked` unchanged); every other fact known with
+    fetishes empty is know enough with no Choice."""
+    got, fw, _ = _info_post(_body("p-lead-pick"), FakeInfoJev(({}, "occupation")))
+    sys_ = _system(fw)
+    assert got["status"] == "sent", got
+    assert full_ai_writers.LEAD_HEAD + full_ai_writers.LEAD_LINES["job"] in sys_, sys_
+    assert full_ai_writers.ASK_HEAD not in sys_ and "Ask what" not in sys_, sys_
+    assert full_ai_writers.SELF_GIVE in sys_ and full_ai_writers.SELF_BAN not in sys_, sys_
+    (row,) = _rows(A, "p-lead-pick")
+    assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)
+    assert json.loads(row.jev_json)["info_version"] == _info_jev.INFO_VERSION_LEAD != _info_jev.INFO_VERSION
+    info = FakeInfoJev()
+    _info_post(_body("p-lead-offer"), info)
+    (call,) = info.calls
+    nq = call["questions"]["next_question"]
+    assert "fetishes" not in nq.criteria and "none" in nq.criteria, nq.criteria
+    assert nq.instructions == _info_jev.NEXT_QUESTION_LEAD["instructions"], nq.instructions
+    assert "her_last_line" in call["state"], call["state"]
+    # Jev picks fetishes anyway: not offered, so the Choice fails; the reply is still written.
+    got, fw, _ = _info_post(_body("p-lead-fet"), FakeInfoJev(({}, "fetishes")))
+    assert got["status"] == "sent", got
+    (row,) = _rows(A, "p-lead-fet")
+    assert _reply(row)["asked"] == {} and _reply(row)["info_error"].startswith("jev_failed"), _reply(row)
+    assert full_ai_writers.LEAD_HEAD not in _system(fw), _system(fw)
+    # Every fact but fetishes known: know enough, no Choice.
+    pair = "p-lead-enough"
+    known = dict(real_name="Sam", his_age="31", home_country="Spain", home_city="Madrid",
+                 hobbies="surfing", occupation="chef")
+    _info_post(_body(pair, 1, "hi"), FakeInfoJev(({k: 0.95 for k in known}, "none")),
+               {DEEPSEEK: _extract_says(**known)})
+    info = FakeInfoJev()
+    _, fw, _ = _info_post(_body(pair, 2, "so what now"), info)
+    assert "next_question" not in info.calls[0]["questions"], info.calls[0]["questions"]
+    assert full_ai_writers.KNOW_ENOUGH in _system(fw), _system(fw)
 
 
 class _StallExtract(FakeWriterHTTP):

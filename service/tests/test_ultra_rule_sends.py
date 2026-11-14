@@ -4,7 +4,8 @@ rule over POST /admin/automation-rules, only as a started step of a running plan
 
 Cases:
   case_body              — the flat args → create_rule's body (kind, every_seconds, nested payload, is_enabled
-                           true; unset knobs left out, 0 kept); bad args refused per field.
+                           true; unset knobs left out, 0 kept); bad args refused per field (a price finer than
+                           cents on any paid send: the card shows cents).
   case_card              — every pinned arg on the card (Creator, audience, price, folder, interval, unsend /
                            delete); the Auto mass text in full; an Auto story carries no text; hours_to_live
                            omitted / 0 / 24: stored args = card = request.
@@ -51,6 +52,7 @@ OWNED = frozenset({CA})
 MASS = {"account_id": CA, "every_hours": 24, "text": "new set just dropped", "media_folder_id": 77,
         "media_count": 2, "price": 9.5, "user_lists": ["fans", "following"], "excluded_user_lists": ["123"],
         "online_only": True, "unsend_after_hours": 6}
+PAID = {"account_id": CA, "text": "hi", "media_files": [5], "price": 9.99, "user_lists": ["fans"]}
 STORY = {"account_id": CA, "every_hours": 12, "folder_id": 88, "per_run": 2, "hours_to_live": 0}
 
 
@@ -80,6 +82,11 @@ def case_body() -> None:
                               ("auto_mass", {k: v for k, v in MASS.items() if k != "media_folder_id"}, "media_folder_id"),
                               ("auto_mass", {**MASS, "media_files": [1]}, "media_files"),
                               ("auto_mass", {**MASS, "text": ""}, "text"),
+                              ("auto_mass", {**MASS, "price": 9.999}, "price"),  # m4: card shows cents
+                              ("mass_send", {**PAID, "price": 9.995}, "price"),
+                              ("mass_send", {**PAID, "price": float("inf")}, "price"),
+                              ("post_create", {k: v for k, v in PAID.items() if k != "user_lists"} | {"price": 0.001},
+                               "price"),
                               ("auto_story", {**STORY, "folder_id": 0}, "folder_id"),
                               ("auto_story", {**STORY, "text": "hi"}, "text")]:
         try:
@@ -88,6 +95,8 @@ def case_body() -> None:
             assert field in e.errors, (tool, field, e.errors)
         else:
             raise AssertionError((tool, field, "accepted"))
+    for price in (9.99, 3.07, 199.1, 12):  # inside the $3-$200 band;  # whole cents pass (float noise ignored)
+        assert td.validate_args(ud.TOOLS["mass_send"], {**PAID, "price": price})["price"] == price
 
 
 def case_card() -> None:
@@ -95,14 +104,14 @@ def case_card() -> None:
                                   {"id": "s", "tool": "auto_story", "args": STORY}), OWNED)
     m, s = uc.card(plan, {CA: "Creator A"})
     assert (m["effect"], m["title"], m["text"]) == ("send", "Auto mass", "new set just dropped"), m
-    assert m["rows"] == [["Creator", "Creator A"], ["Audience", "lists fans, following, minus lists 123, online now only"],
+    assert m["rows"] == [["Creator", f"Creator A ({CA})"], ["Audience", "lists fans, following, minus lists 123, online now only"],
                          ["Price", "$9.50"], ["Media", "2 random photo(s) per run from vault folder 77"],
-                         ["When", "within a minute of the OK, then every 24 h until switched off"],
+                         ["When", "within a minute of this step starting, then every 24 h until switched off"],
                          ["Unsend after", "6 h"]], m["rows"]
     assert "text" not in s and s["title"] == "Auto story", s
-    assert s["rows"] == [["Creator", "Creator A"], ["Audience", "her stories (every subscriber)"],
+    assert s["rows"] == [["Creator", f"Creator A ({CA})"], ["Audience", "her stories (every subscriber)"],
                          ["Media", "2 random photo(s) per run from vault folder 88"],
-                         ["When", "within a minute of the OK, then every 12 h until switched off"],
+                         ["When", "within a minute of this step starting, then every 12 h until switched off"],
                          ["Deleted after", "not deleted by the app (OnlyFans expires stories on its own)"]], s["rows"]
     # M3: omitted / 0 / 24 → the stored args, the card and the request carry the same hours_to_live
     for given, want, words in [(None, 24, "24 h"), (0, 0, "not deleted"), (24, 24, "24 h")]:

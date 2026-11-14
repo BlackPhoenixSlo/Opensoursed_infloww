@@ -82,13 +82,16 @@ async def link_profile_id(row_id: str) -> str | None:
 
 
 async def resolve_host_row(name: str) -> tuple[HostKind, str | None]:
+    """A spare domain, else the Custom Domain's one Profile once DNS proved it (`pending_cert`: its certificate is
+    still being issued, which needs the host served; `live`). A `pending` one names nobody."""
     async with get_session() as s:
         row = (await s.execute(text(
             "SELECT k, username FROM ("
             " SELECT 0 AS k, NULL AS username FROM bio_spare_domains WHERE domain = :d"
             " UNION ALL"
-            " SELECT 1 AS k, p.username FROM bio_custom_domains c JOIN bio_profiles p ON p.id = c.profile_id"
-            " WHERE c.domain = :d AND c.status = 'live'"
+            " SELECT CASE c.status WHEN 'live' THEN 1 ELSE 2 END AS k, p.username FROM bio_custom_domains c"
+            " JOIN bio_profiles p ON p.id = c.profile_id"
+            " WHERE c.domain = :d AND c.status IN ('pending_cert', 'live')"
             ") ORDER BY k LIMIT 1"), {"d": name})).first()
     if row is None:
         return "unknown", None

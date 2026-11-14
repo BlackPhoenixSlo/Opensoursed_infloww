@@ -294,8 +294,8 @@ def session_row(r: AiDecision) -> dict:
             "route_row": r.route_row, "writer": r.writer_model, "attempts": reply.get("attempts") or [],
             "wait_s": reply.get("wait_s"), "status": r.status, "fan_info": reply.get("fan_info") or {},
             "offer": offer_of(r), "created_at": iso_z(r.created_at), **caption,
-            # sext scene (config `sext_scene`): the saved scene and the price Jev, when set
-            **{k: reply[k] for k in ("scene", "price") if reply.get(k)}}
+            # sext scene (config `sext_scene`): the saved scene and the price Jev; a chain drop's reason; when set
+            **{k: reply[k] for k in ("scene", "price", "dropped_reason") if reply.get(k)}}
 
 
 async def fetch(account: str, pair: str, side: str, text: str, config: dict, photo: dict | None = None):

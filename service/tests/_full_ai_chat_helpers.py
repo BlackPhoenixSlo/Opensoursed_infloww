@@ -174,7 +174,7 @@ def _direct(raw: str, fid: int, his: str, *, girl: bool, typos: bool | None = No
         t, _ = await finalize_draft(raw, account_id=A, fan_id=fid, purpose="full_ai_writer")
         mb = STYLE_MAX_BUBBLES if girl else 2
         shaped = _reply_shape.shape_parts(t, _reply_shape.ShapeCtx(
-            seed_id=fid, max_bubbles=mb, max_chars=600, lang=None, echo_of=his, style_on=girl,
+            seed_id=fid, max_bubbles=mb, max_chars=600, lang=None, echo_of=None, style_on=girl,
             recent_out=[], allow_empty=False, banned_words=[], banned_mode="mask",
             nonnative_on=girl, spacing_on=girl, name_protect=[]))
         parts = shaped.parts

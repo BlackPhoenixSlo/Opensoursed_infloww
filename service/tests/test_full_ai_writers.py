@@ -511,6 +511,17 @@ def case_floor_offer_ref_table():
     ]
     for text, ref, want in table:
         assert floor(text, "en", ref) == want, (text, ref, floor(text, "en", ref), want)
+    from automations.full_ai_writers import strip_labels
+    for raw, want in [
+        ("YOU: my fingers are sliding down\njust sent u something", "my fingers are sliding down\njust sent u something"),
+        ("YOU: hey\nYOU: miss u", "hey\nmiss u"),
+        ("FAN: omg yes\nYOU: mhm", "mhm"),
+        ("hey\n\nFAN: more\n\nok", "hey\n\nok"),
+        ("you: are trouble", "you: are trouble"),          # her own words, lower case
+        ("thank YOU: really", "thank YOU: really"),        # not at a line start
+        ("FAN: only his line", ""),
+    ]:
+        assert strip_labels(raw) == want, (raw, strip_labels(raw))
     assert strip_offer("its yours babe\n>>OFFER 4242") == "its yours babe"
     assert strip_offer("its yours\n\n>>OFFER 4242\n\nSTICKER: wink") == "its yours\n\nSTICKER: wink"
 

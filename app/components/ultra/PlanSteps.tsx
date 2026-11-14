@@ -18,7 +18,7 @@ export function PlanSteps({ state, dispatch, className }: {
     <ol className={cn("flex flex-col gap-3", className)}>
       {plan.card.flatMap((card, i) => {
         const step = plan.step_states.find((s) => s.id === card.id);
-        const row = <PlanStepCard key={card.id} card={card} index={i} step={step} />;
+        const row = <PlanStepCard key={card.id} card={card} index={i} step={step} finishedAt={plan.finished_at} />;
         if (step?.state !== "needs_you" || state.picked?.step !== step.id) return [row];
         return [row, (
           <li key={`${card.id}:pick`}>

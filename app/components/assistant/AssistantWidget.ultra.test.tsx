@@ -148,7 +148,7 @@ describe("Ultra mode in the help bot", () => {
     current = async () => running;  // the OK is read again at once
     fireEvent.click(button("OK, run 2 steps"));
     await waitFor(() => expect(screen.getByRole("img", { name: "Running" })).toBeInTheDocument());
-    expect(relayPost).toHaveBeenLastCalledWith("/admin/ultra/plans/p1/ok", { sha256: SHA });
+    expect(relayPost).toHaveBeenLastCalledWith("/admin/ultra/plans/p1/ok", { sha256: SHA }, undefined, expect.any(AbortSignal));
     expect(button("Cancel the rest")).toBeEnabled();
 
     current = async () => plan("done", { step_states: [
@@ -180,6 +180,7 @@ describe("Ultra mode in the help bot", () => {
     expect(within(card).getByText("Which 2 for the mass?")).toBeInTheDocument();
     expect(within(card).getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["pic 21", "pic 22", "pic 23"]);
     expect(within(card).getByRole("checkbox", { name: "pic 22 (AI pick)" })).toBeChecked();
+    expect([...card.querySelectorAll("[data-pick-caption]")].map((c) => c.textContent)).toEqual(["pic 21", "pic 22", "pic 23"]);
     expect(button("Send these")).toBeDisabled();
 
     fireEvent.click(within(card).getByRole("checkbox", { name: "pic 23" }));
@@ -191,7 +192,8 @@ describe("Ultra mode in the help bot", () => {
     relayPost.mockResolvedValueOnce(plan("running"));
     current = async () => plan("running");
     fireEvent.click(button("Send these"));
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/ultra/plans/p1/pick", { step: "pick", ids: [21, 23] }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/ultra/plans/p1/pick", { step: "pick", ids: [21, 23] }, undefined,
+      expect.any(AbortSignal)));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Pick 2" })).toBeNull());
   });
 
@@ -219,6 +221,63 @@ describe("Ultra mode in the help bot", () => {
     expect(button("Plan it")).toBeEnabled();
   });
 
+  it("the panel closed before the start answered: the plan id is kept, reopening resumes it", async () => {
+    window.localStorage.setItem(ULTRA_KEY, "1");
+    await openPanel();
+    let answer!: (p: PlanView) => void;
+    relayPost.mockReturnValueOnce(new Promise<PlanView>((res) => { answer = res; }));
+    current = async () => planning;
+    fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "mass the new set" } });
+    fireEvent.click(button("Plan it"));
+    fireEvent.click(screen.getByLabelText("Ultra mode"));          // Ultra off: the panel unmounts
+    expect(document.querySelector("[data-ultra]")).toBeNull();
+    await act(async () => { answer(planning); });
+    expect(window.localStorage.getItem(ULTRA_PLAN_KEY)).toBe("p1");
+    fireEvent.click(screen.getByLabelText("Ultra mode"));
+    await waitFor(() => expect(note()).toHaveTextContent("Planning… turn 2 of 25"));
+    expect(button("Stop planning")).toBeEnabled();
+  });
+
+  it("closed and reopened before the start answered: the reopened panel waits, then shows the plan (one POST)", async () => {
+    window.localStorage.setItem(ULTRA_KEY, "1");
+    await openPanel();
+    let answer!: (p: PlanView) => void;
+    relayPost.mockReturnValueOnce(new Promise<PlanView>((res) => { answer = res; }));
+    current = async () => planning;
+    fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "mass the new set" } });
+    fireEvent.click(button("Plan it"));
+    fireEvent.click(screen.getByLabelText("Ultra mode"));          // closed: the panel unmounts
+    fireEvent.click(screen.getByLabelText("Ultra mode"));          // reopened while the POST is still out
+    expect(button("Plan it")).toBeDisabled();
+    expect(screen.getByPlaceholderText("What should Ultra do?")).toBeDisabled();
+    expect(screen.getByText("Sending your request to the planner…")).toBeInTheDocument();
+    await act(async () => { answer(planning); });
+    await waitFor(() => expect(note()).toHaveTextContent("Planning… turn 2 of 25"));
+    expect(relayPost.mock.calls.filter(([p]) => p === "/admin/ultra/plans")).toHaveLength(1);
+    expect(window.localStorage.getItem(ULTRA_PLAN_KEY)).toBe("p1");
+  });
+
+  it("a 400 that is not the login guard reads as written; the draft stays", async () => {
+    window.localStorage.setItem(ULTRA_KEY, "1");
+    await openPanel();
+    relayPost.mockRejectedValueOnce(new RelayError(400, {}, "request is empty"));
+    fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "go" } });
+    fireEvent.click(button("Plan it"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("request is empty");
+    expect(screen.queryByRole("link", { name: /Connect card/ })).toBeNull();
+    expect(screen.getByPlaceholderText("What should Ultra do?")).toHaveValue("go");
+  });
+
+  it("the relay's login 400 links the Connect card and clears the draft", async () => {
+    window.localStorage.setItem(ULTRA_KEY, "1");
+    await openPanel();
+    relayPost.mockRejectedValueOnce(new RelayError(400, {}, "paste logins in the Connect card"));
+    fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "go" } });
+    fireEvent.click(button("Plan it"));
+    expect(await screen.findByRole("link", { name: "paste logins in the Connect card" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("What should Ultra do?")).toHaveValue("");
+  });
+
   it("a stale OK (409) shows the server's words and the re-read plan", async () => {
     window.localStorage.setItem(ULTRA_KEY, "1");
     window.localStorage.setItem(ULTRA_PLAN_KEY, "p1");
@@ -237,7 +296,7 @@ describe("Ultra mode in the help bot", () => {
     window.localStorage.setItem(ULTRA_PLAN_KEY, "p1");
     await openPanel();
     await screen.findByRole("button", { name: "OK, run 2 steps" });
-    expect(relayGet).toHaveBeenCalledWith("/admin/ultra/plans/p1");
+    expect(relayGet).toHaveBeenCalledWith("/admin/ultra/plans/p1", undefined, expect.any(AbortSignal));
     cleanup();
 
     current = async () => { throw new RelayError(404, {}, "plan not found"); };

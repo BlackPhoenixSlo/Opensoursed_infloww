@@ -145,6 +145,44 @@ router `ofl-short`, `Host(ofl.ink|www.ofl.ink|v2.ofl.ink) && PathPrefix(/s/)`, p
 `noop@internal`). Every other ofl.ink path stays on oflinkv2. Recreate the relay after setting the key. Rollback:
 `rm /root/traefik-dynamic/ofl-short.yml` and unset the key.
 
+## Custom domains (editor-driven)
+
+A page's own domain (`links.example.com` → that one page) is set in the editor's "Use your own domain" card (relay
+`PUT/DELETE /admin/bio-pages/{pid}/domain`, `POST …/domain/check`; `service/bio_pages/domains.py`), ofl.ink v2's
+flow and checks. Status: `pending` (saved; serves nothing) → `pending_cert` once the check (DNS over HTTPS, Cloudflare)
+sees TXT `_oflink.<domain>` = `oflink-verify=<token>` (v2's record, so a domain verified there keeps its TXT name), at
+least one A and every A = `BIO_SERVER_IP`, every AAAA = `BIO_SERVER_IPV6` (none is fine), and no CAA refusing
+letsencrypt.org → `live` once
+`https://<domain>/internal/healthz` answers 200 with a valid certificate. The bio service serves `pending_cert` and
+`live` hosts (the certificate's HTTP-01 challenge and the probe need it). Only one page may hold a domain past
+`pending`; an account holds at most 10.
+
+Install (per box, once; public box paths shown):
+
+1. `.env`: `BIO_SERVER_IP=<the box's public IPv4>` (the address its Traefik answers on; optional
+   `BIO_SERVER_IPV6` only if Traefik answers on v6 too), then recreate the relay
+   (`docker compose up -d --no-deps openinflowwww-relay`). Unset = the editor shows no domain form.
+2. Units (back up any old copies first):
+   ```bash
+   cp deploy/bio/bio-custom-domains.service deploy/bio/bio-custom-domains.timer /etc/systemd/system/
+   systemctl daemon-reload && systemctl enable --now bio-custom-domains.timer
+   ```
+   The service runs `deploy/bio/sync-custom-domains.py` (stdlib python3) every minute: it reads
+   `bio_custom_domains` read-only and writes `/root/traefik-dynamic/bio-custom-domains.yml` (one `websecure` router
+   with `certResolver: letsencrypt` per `pending_cert`/`live` domain, all to `http://127.0.0.1:8791`, the bio
+   service's host port; JSON, which Traefik reads as YAML). At most 5 new domains per run; no write when nothing
+   changed. Another box edits the unit's flags (`--db`, `--out`, `--upstream`, `--env-file`).
+3. Verify: `systemctl start bio-custom-domains.service; journalctl -u bio-custom-domains -n 5` (a `routers=` line on
+   the first write), `cat /root/traefik-dynamic/bio-custom-domains.yml` (`{}` with no domains), and
+   `docker logs traefik-traefik-1 --since 5m | grep -i error` clean.
+
+DNS drift: the timer re-resolves each routed domain's A record hourly; one that has not named `BIO_SERVER_IP` for
+24 h loses its router (logged `dropped_dns=`), and gets it back once it resolves here again. The row stays as it is
+(the timer never writes the DB); the owner checks or removes it in the editor.
+
+Rollback: `systemctl disable --now bio-custom-domains.timer`, `rm /root/traefik-dynamic/bio-custom-domains.yml`
+(Traefik drops the routers), unset `BIO_SERVER_IP` and recreate the relay. Rows stay in the DB.
+
 ## Every deploy
 
 - When the relay image is rebuilt or the bio block/env changes, run `docker compose up -d --no-build

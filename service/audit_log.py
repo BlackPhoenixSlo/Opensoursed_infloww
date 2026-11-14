@@ -40,14 +40,15 @@ _AUDIT_SKIP_PREFIXES = (
     # The served Browserbase login (remote_login_api): its start body carries
     # the OnlyFans PASSWORD, which must never be written to the actions table.
     "/admin/login",
-    # The MCP host route (mcp_api): its body may carry tool args with nested secrets, which
-    # `_safe_snapshot` does not redact; each tool's own inner request is the audited write.
-    "/admin/mcp",
     # Ultra plans (ultra_api): the OK echoes a hash and the run's own inner step requests are the audit.
     "/admin/ultra/plans",
     "/push",             # a browser's push subscription sync, on every page load
     "/t/",               # public tracking-link verify: an anonymous fan's click, counted on its own row
 )
+# Exact paths skipped (not prefixes: a new route under one stays audited). The MCP host route
+# (mcp_api.PATH): its body may carry tool args with nested secrets, which `_safe_snapshot` does
+# not redact; each tool's own inner request is the audited write.
+_AUDIT_SKIP_PATHS = frozenset({"/admin/mcp"})
 # Note: do NOT include "/" here — every absolute path starts with "/", so
 # `startswith("/")` would silently skip every endpoint. The root path is
 # handled by the static-UI mount which only serves GET anyway.
@@ -72,8 +73,9 @@ def audit_action(method: str, path: str) -> str:
 
 def audited(method: str, path: str, skip: tuple[str, ...]) -> bool:
     """Whether a request is a write the audit log records once it succeeds,
-    `skip` being the skip prefixes in force."""
-    return method in ("POST", "PATCH", "PUT", "DELETE") and not any(path.startswith(p) for p in skip)
+    `skip` being the skip prefixes in force (plus the exact `_AUDIT_SKIP_PATHS`)."""
+    return (method in ("POST", "PATCH", "PUT", "DELETE") and path not in _AUDIT_SKIP_PATHS
+            and not any(path.startswith(p) for p in skip))
 
 
 def audit_decision(method: str, path: str, status: int, *, should_audit: bool) -> str | None:

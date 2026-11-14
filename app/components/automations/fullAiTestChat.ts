@@ -79,6 +79,8 @@ export interface TurnResponse {
   scene?: { n: number; stage: string; heat: number } | null;
   /** Sext scene: the price Jev on a fresh priced sell (`jev_cents` null when it failed: `error`). */
   price?: { list_cents: number; jev_cents: number | null; error: string | null } | null;
+  /** Why the reply chain dropped her text on a `failed` Turn a Writer answered ("empty" | "banned"); absent otherwise. */
+  dropped_reason?: string | null;
 }
 
 /** POST /admin/full-ai/test/photo's answer, sent back with each side's Turn; `read` (on a recorded Turn only): that
@@ -486,10 +488,18 @@ export function noReplyText(r: TurnResponse): string | null {
       : r.route_row === "promo" ? "no reply (promo)" : `no reply (${r.route_row})`;
   }
   if (r.status === "failed") {
-    return r.attempts.every((a) => a.outcome !== "ok") ? "no reply: all writers failed" : "no reply: the reply chain dropped it";
+    if (writersFailed(r)) return "no reply: all writers failed";
+    return `no reply: the reply chain dropped it${r.dropped_reason ? ` (${DROP_WORDS[r.dropped_reason] ?? r.dropped_reason})` : ""}`;
   }
   return null;
 }
+
+/** `reply_json.dropped_reason` in plain words. */
+const DROP_WORDS: Record<string, string> = { empty: "nothing left to send", banned: "sensitive word", echo: "repeated his line" };
+
+/** A failed Turn no Writer answered: the Writers' outcomes are the reason. When one answered and the reply chain
+ *  dropped its text, an earlier Writer's "no_key" is not why, so the outcomes line stays out. */
+export const writersFailed = (r: TurnResponse) => r.status === "failed" && r.attempts.every((a) => a.outcome !== "ok");
 
 /** The reply speeds (`full_ai_config.REPLY_SPEEDS`) with their labels, and the one a config without the key runs on. */
 export const REPLY_SPEEDS = [{ value: "0-2m", label: "0-2 min" }, { value: "0-15-60", label: "0-15-60" }];

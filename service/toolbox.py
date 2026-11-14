@@ -48,6 +48,7 @@ from db.engine import get_session
 from db.models import UltraPlan
 
 SEND_REFUSED = "send tools run only from an owner-approved plan"
+UNSENDABLE = "not sendable: NaN/Infinity, a lone surrogate or a value too long"
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,11 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
     except td.ArgsError as e:
         return {**td.error(422, {"detail": "invalid arguments", "errors": e.errors}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
-    status, body = await _send(req, creds)
+    try:
+        status, body = await _send(req, creds)
+    except (ValueError, httpx.InvalidURL):  # httpx can't build it: NaN/Infinity, a lone surrogate, an over-long query
+        return {**td.error(422, {"detail": "invalid arguments", "errors": {"args": UNSENDABLE}}),
+                "open_url": td.open_url(base, t.open, raw_args, None)}
     url = td.open_url(base, t.open, parsed, body)
     if t.check is not None and 200 <= status < 300 and (why := t.check(parsed, body)):
         return {**td.error(502, {"detail": why}), "open_url": url}

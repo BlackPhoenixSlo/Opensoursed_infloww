@@ -21,7 +21,7 @@ path plus `ownership.stamp_media_owned` patched to raise and never hit.
                                     inventory_unknown, the pool raising the same (plain chat): no PPV,
                                     `offer` null
   case_leak_drops_the_ppv           a phone number: the deflection, no PPV, no Offer, offer_dropped leak
-  case_shape_drop_drops_the_ppv     an echo: failed, no PPV, no Offer, offer_dropped shape; every
+  case_shape_drop_drops_the_ppv     a chain drop: failed, no PPV, no Offer, offer_dropped shape; every
                                     Writer failing: failed, no offer_dropped
   case_offer_marker                 `>>OFFER <ref>` stripped from the parts; `>>OFFER 999` is
                                     floor:offer_ref and the next Writer answers
@@ -196,15 +196,15 @@ def case_leak_drops_the_ppv():
 
 def case_shape_drop_drops_the_ppv():
     pair, his = "p-shape", "send me some pics of you right now babe"
-    with _sell_draft(), _vault(PRICED):
-        r, _, picks = _post(_body(pair, his), f"ok:{his}")
+    with _sell_draft(), _vault(PRICED), ffx._shape_drop("banned"):
+        r, _, picks = _post(_body(pair, his), "ok:hii")
     got = r.json()
     assert len(picks) == 1, picks
     assert (got["status"], got["parts"], got["offer"]) == ("failed", [], None), got
     (row,) = _rows(pair)
     _no_offer(row)
     reply = _reply(row)
-    assert (reply["dropped_reason"], reply["offer_dropped"]) == ("echo", "shape"), reply
+    assert (reply["dropped_reason"], reply["offer_dropped"]) == ("banned", "shape"), reply
     # Every Writer failing is not a shape drop: failed, no PPV, no offer_dropped.
     with _sell_draft(), _vault(PRICED):
         r, _, picks = _post(_body("p-allfail"), {NANO: "503", OPENROUTER: "503"})

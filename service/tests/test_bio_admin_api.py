@@ -22,6 +22,8 @@ os.environ["BIO_FILES_DIR"] = str(FILES)
 os.environ["BIO_PUBLIC_URL"] = "https://ofl.test/"
 os.environ.pop("BIO_HEALTH_URL", None)
 os.environ.pop("BIO_SHORT_URL", None)
+os.environ["BIO_SERVER_IP"] = "203.0.113.7"
+os.environ.pop("BIO_PRIMARY_HOSTS", None)
 
 _harness.bootstrap()
 
@@ -40,6 +42,7 @@ import _agency_fixtures as fx  # noqa: E402
 from bio_pages import admin as bio_admin  # noqa: E402
 from bio_pages import app as bio_app  # noqa: E402
 from bio_pages import decide  # noqa: E402
+from bio_pages import domains  # noqa: E402
 from bio_pages import images  # noqa: E402
 from bio_pages.assets import PUBLIC  # noqa: E402
 
@@ -170,11 +173,14 @@ sql("INSERT INTO bio_links(id, profile_id, link_id, title, destination, backgrou
     "'bbbbbbbbbbk1', 'B link', 'https://b.test/x', 'backgroundImage_bbbbbbbbbb.webp')", B_LID, B_PID)
 (FILES / "links" / B_LID).mkdir(parents=True)
 (FILES / "links" / B_LID / "backgroundImage_bbbbbbbbbb.webp").write_bytes(img("WEBP"))
+sql("INSERT INTO bio_custom_domains(id, profile_id, domain, status, token) VALUES ('bcd', ?, 'bob.example', "
+    "'pending', 'btoken')", B_PID)
 
 
 def _b_snapshot():
     return (sql("SELECT * FROM bio_profiles WHERE id = ?", B_PID), sql("SELECT * FROM bio_links WHERE profile_id = ?",
                                                                       B_PID),
+            sql("SELECT * FROM bio_custom_domains WHERE profile_id = ?", B_PID),
             sorted(p.name for p in (FILES / "links" / B_LID).iterdir()))
 
 
@@ -191,7 +197,9 @@ ROUTES = [("GET", BASE), ("POST", BASE), ("GET", f"{BASE}/stock/onlyicon.webp"),
           ("PATCH", f"{BASE}/{B_PID}/links/{B_LID}"), ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}"),
           ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background"),
           ("POST", f"{BASE}/{B_PID}/links/{B_LID}/background/vault"),
-          ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}/background")]
+          ("DELETE", f"{BASE}/{B_PID}/links/{B_LID}/background"),
+          ("PUT", f"{BASE}/{B_PID}/domain"), ("DELETE", f"{BASE}/{B_PID}/domain"),
+          ("POST", f"{BASE}/{B_PID}/domain/check")]
 
 
 def case_auth():
@@ -238,7 +246,8 @@ def case_tenancy():
         if path.endswith(("/avatar", "/background")) and method == "POST":
             kw = {"files": {"file": ("x.png", png, "image/png")}}
         elif method in ("POST", "PATCH", "PUT"):
-            kw = {"json": {"ids": [B_LID]} if path.endswith("/order") else
+            kw = {"json": {"ids": [B_LID]} if path.endswith("/order") else {"domain": "hijack.example"}
+                  if path.endswith("/domain") else
                   ({"title": "x", "destination": "https://x"} if path.endswith("/links") else {"title": "hijack"}
                    if "/links/" in path else {"display_name": "hijack"})}
         r = owner.request(method, path, **kw)
@@ -721,6 +730,272 @@ def case_short_url_from_env():
         assert prof["public_url"] == "https://ofl.test/short_page", prof
     finally:
         os.environ.pop("BIO_SHORT_URL")
+
+
+# ── custom domain ────────────────────────────────────────────────────
+
+IP = "203.0.113.7"
+
+
+def case_domain_pure_tables():
+    for raw, want in ((" Shop.Example.COM ", "shop.example.com"), ("HTTPS://x.io/", "https://x.io/")):
+        assert domains.normalize(raw) == want, raw
+    for d, ok in (("", False), ("nodot", False), ("1.2.3.4", False), ("a_b.com", False), ("a..b.com", False),
+                  ("-a.com", False), ("a" * 64 + ".com", False), (("a" * 60 + ".") * 5 + "com", False),
+                  (("a" * 60 + ".") * 4 + "com", True), ("https://x.io/", False), ("x.io.", False),
+                  ("shop.example.com", True), ("xn--bcher-kva.example", True)):
+        assert domains.valid(d) == ok, d
+    own = {"app.test"}
+    for d, mine in (("ofl.ink", True), ("x.ofl.ink", True), ("inflowwww.com", True), ("app.inflowwww.com", True),
+                    ("app.test", True), ("x.app.test", True), ("myofl.ink", False), ("shop.example.com", False)):
+        assert domains.own_host(d, own) == mine, d
+    assert domains.host_of("https://Ofl.Test:8443/p") == "ofl.test" and domains.host_of(None) is None
+    assert domains._txt_value('"ab" "cd"') == "abcd" and domains._txt_value("plain") == "plain"
+    assert domains._caa_entry('0 issue "letsencrypt.org"') == ("issue", "letsencrypt.org")
+    # v2's relativeName and recordsFor
+    assert [domains.relative_name(d, pre) for d, pre in (("a.com", ""), ("a.com", "_oflink"), ("x.y.a.com", ""),
+                                                          ("x.a.com", "_oflink"))] == ["@", "_oflink", "x.y",
+                                                                                         "_oflink.x"]
+    assert domains.records_for("www.a.com", "t", IP, "2001:db8::1") == [
+        {"type": "A", "name": "www", "value": IP}, {"type": "AAAA", "name": "www", "value": "2001:db8::1"},
+        {"type": "TXT", "name": "_oflink.www", "value": "oflink-verify=t"}]
+    assert [r["type"] for r in domains.records_for("a.com", "t", IP, None)] == ["A", "TXT"]
+    # v2's checks (b)-(e), its sentences
+    v6 = "2001:db8::1"
+    proof = ("oflink-verify=tok",)
+    rows = [(domains.Dns((IP,), (), proof), None, []),
+            (domains.Dns((IP,), (v6,), proof), "2001:0db8:0:0:0:0:0:1", []),
+            (domains.Dns(), None, ["No TXT record _oflink.d.example yet.", "No A record for d.example yet."]),
+            (domains.Dns((IP,), (), ("tok",)), None,
+             ["The TXT record _oflink.d.example does not hold oflink-verify=tok yet."]),
+            (domains.Dns(("198.51.100.1",), (), proof), None, ["d.example points to 198.51.100.1, not 203.0.113.7."]),
+            (domains.Dns((IP, "198.51.100.1"), (), proof), None, ["Delete the A record 198.51.100.1."]),
+            (domains.Dns((IP,), (v6,), proof), None, ["Delete the AAAA record 2001:db8::1."]),
+            (domains.Dns((IP,), (v6, "2001:db8::2"), proof), v6, ["Delete the AAAA record 2001:db8::2."]),
+            (domains.Dns((IP,), (), proof, (("issue", "digicert.com"),)), None,
+             ["A CAA record for d.example does not allow letsencrypt.org. Add one that does, or delete it."]),
+            (domains.Dns((IP,), (), proof, (("issue", "letsencrypt.org; validationmethods=http-01"),
+                                             ("issue", "digicert.com"))), None, []),
+            (domains.Dns((IP,), (), proof, (("iodef", "mailto:x@y"),)), None, [])]
+    for dns, ipv6, want in rows:
+        assert domains.problems("d.example", "tok", IP, ipv6, dns) == want, (dns, ipv6)
+
+
+class _FakeNet:
+    """domains.lookup / probe over a table: {domain: Dns}, probe answers from `certs`; counts calls."""
+    def __init__(self):
+        self.dns: dict[str, domains.Dns | None] = {}
+        self.certs: set[str] = set()
+        self.calls = 0
+
+    def __enter__(self):
+        self.saved = domains.lookup, domains.probe
+
+        async def lookup(d):
+            self.calls += 1
+            got = self.dns.get(d)
+            if got is None:
+                raise domains.DnsUnavailable
+            return got
+
+        async def probe(d):
+            return d in self.certs
+        domains.lookup, domains.probe = lookup, probe
+        return self
+
+    def __exit__(self, *exc):
+        domains.lookup, domains.probe = self.saved
+
+
+def _unthrottle(pid):
+    sql("UPDATE bio_custom_domains SET checked = NULL WHERE profile_id = ?", pid)
+
+
+def check(client, pid):
+    _unthrottle(pid)
+    return client.post(f"{BASE}/{pid}/domain/check")
+
+
+def _tok(page):
+    """The token in the page's TXT record (`oflink-verify=<token>`)."""
+    txt = next(r for r in page["profile"]["custom_domain"]["records"] if r["type"] == "TXT")
+    return txt["value"].removeprefix("oflink-verify=")
+
+
+def case_domain_set_validation_and_replace():
+    pid = create(owner, "dom_set_x")["profile"]["id"]
+    page = owner.get(f"{BASE}/{pid}").json()["profile"]
+    assert page["domain_server_ip"] == IP and page["home_url"] == page["public_url"], page
+    sql("INSERT INTO bio_spare_domains(id, domain) VALUES ('spare1', 'spare.example')")
+    for bad, msg in ((None, "Enter a domain."), (123, "Enter a domain."), ("  ", "Enter a domain."),
+                     ("nodot", "Enter the domain alone, like domsetx.com: no https://, no slash, no spaces."),
+                     ("https://a.com/", "Enter the domain alone, like domsetx.com"), ("a.com.", "Enter the domain"),
+                     ("1.2.3.4", "Enter the domain"), ("a" * 250 + ".com", "Enter the domain"),
+                     ("ofl.ink", "ofl.ink is one of ofl.ink's own addresses. Use a domain you own."),
+                     ("x.inflowwww.com", "own addresses"), ("ofl.test", "own addresses"),
+                     ("spare.example", "spare.example is one of ofl.ink's own addresses"),
+                     ("www.spare.example", "own addresses")):
+        r = owner.put(f"{BASE}/{pid}/domain", json={"domain": bad})
+        assert r.status_code == 422 and r.json()["detail"]["field"] == "domain", (bad, r.status_code, r.text)
+        assert msg in r.json()["detail"]["msg"], (bad, r.json())
+    r = owner.put(f"{BASE}/{pid}/domain", json={"domain": "x.app.test"}, headers={"x-forwarded-host": "app.test"})
+    assert r.status_code == 422, "the request's own host and its subdomains are this service's"
+    assert sql("SELECT COUNT(*) FROM bio_custom_domains WHERE profile_id = ?", pid) == [(0,)]
+    page = owner.put(f"{BASE}/{pid}/domain", json={"domain": " Links.Example.COM "}).json()
+    d = page["profile"]["custom_domain"]
+    assert d["domain"] == "links.example.com" and d["status"] == "pending" and d["checked"] is None, d
+    tok = _tok(page)
+    assert len(tok) == 32 and tok.isalnum() and tok == tok.lower(), tok
+    assert d["records"] == [{"type": "A", "name": "links", "value": IP},
+                            {"type": "TXT", "name": "_oflink.links", "value": f"oflink-verify={tok}"}], d
+    assert "token" not in d
+    again = owner.put(f"{BASE}/{pid}/domain", json={"domain": "links.example.com"}).json()
+    assert _tok(again) == tok, "the same domain keeps its row and token"
+    os.environ["BIO_SERVER_IPV6"] = "2001:DB8::1"
+    try:
+        recs = owner.get(f"{BASE}/{pid}").json()["profile"]["custom_domain"]["records"]
+        assert recs[1] == {"type": "AAAA", "name": "links", "value": "2001:db8::1"}, recs
+    finally:
+        os.environ.pop("BIO_SERVER_IPV6")
+    new = owner.put(f"{BASE}/{pid}/domain", json={"domain": "other.example.com"}).json()
+    assert new["profile"]["custom_domain"]["domain"] == "other.example.com" and _tok(new) != tok
+    assert sql("SELECT domain FROM bio_custom_domains WHERE profile_id = ?", pid) == [("other.example.com",)]
+    r = owner.delete(f"{BASE}/{pid}/domain")
+    assert r.status_code == 200 and r.json()["profile"]["custom_domain"] is None
+    assert sql("SELECT COUNT(*) FROM bio_custom_domains WHERE profile_id = ?", pid) == [(0,)]
+    assert owner.delete(f"{BASE}/{pid}/domain").status_code == 200, "removing none is a no-op"
+    r = owner.post(f"{BASE}/{pid}/domain/check")
+    assert r.status_code == 409 and r.json()["detail"] == "This page has no custom domain.", r.text
+
+
+def case_domain_cap_per_account():
+    have = sql("SELECT COUNT(*) FROM bio_custom_domains c JOIN bio_profiles p ON p.id = c.profile_id "
+               "WHERE p.owner_user_id = ?", A)[0][0]
+    pids = []
+    for i in range(domains.MAX_PER_OWNER - have):
+        pid = create(owner, f"cap_{i}")["profile"]["id"]
+        assert owner.put(f"{BASE}/{pid}/domain", json={"domain": f"cap{i}.example"}).status_code == 200
+        pids.append(pid)
+    extra = create(owner, "cap_extra")["profile"]["id"]
+    r = owner.put(f"{BASE}/{extra}/domain", json={"domain": "cap-extra.example"})
+    assert r.status_code == 409 and "at most 10" in r.json()["detail"], r.text
+    assert owner.put(f"{BASE}/{pids[0]}/domain", json={"domain": "cap-swap.example"}).status_code == 200, \
+        "replacing a page's own domain is not a new one"
+    bpid = create(other, "cap_b")["profile"]["id"]
+    assert other.put(f"{BASE}/{bpid}/domain", json={"domain": "b-own.example"}).status_code == 200, \
+        "another account's cap is its own"
+    assert other.delete(f"{BASE}/{bpid}").status_code == 204
+    for pid in pids:
+        owner.delete(f"{BASE}/{pid}/domain")
+
+
+def _tls_ask(domain):
+    return bio_get(f"/internal/tls-ask?domain={domain}").status_code
+
+
+def _problems(body):
+    return " ".join(body["check"]["problems"])
+
+
+def case_domain_check_transitions_and_uniqueness():
+    pid = create(owner, "dom_check")["profile"]["id"]
+    rival = create(owner, "dom_rival")["profile"]["id"]
+    D = "shop.example"
+    tok = _tok(owner.put(f"{BASE}/{pid}/domain", json={"domain": D}).json())
+    rtok = _tok(owner.put(f"{BASE}/{rival}/domain", json={"domain": D}).json())
+    assert tok != rtok, "two pages may hold the same pending domain: nobody squats it"
+    assert _tls_ask(D) == 404, "pending names nobody"
+    proof, rproof = f"oflink-verify={tok}", f"oflink-verify={rtok}"
+    with _FakeNet() as net:
+        steps = [(None, "pending", "The DNS lookup for shop.example did not answer. Try again in a few minutes."),
+                 (domains.Dns(), "pending", "No TXT record _oflink.shop.example yet. No A record for shop.example yet."),
+                 (domains.Dns(("198.51.100.9",), (), (proof,)), "pending",
+                  "shop.example points to 198.51.100.9, not 203.0.113.7."),
+                 (domains.Dns((IP,), ("2001:db8::1",), (proof,)), "pending", "Delete the AAAA record 2001:db8::1."),
+                 (domains.Dns((IP,), (), ("nope",)), "pending",
+                  f"The TXT record _oflink.shop.example does not hold {proof} yet."),
+                 (domains.Dns((IP,), (), (proof, rproof)), "pending_cert", domains.CERT_MSG)]
+        for dns, status, msg in steps:
+            net.dns[D] = dns
+            r = check(owner, pid)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["profile"]["custom_domain"]["status"] == status, (dns, body["profile"]["custom_domain"])
+            assert body["check"]["status"] == status and _problems(body) == msg, (dns, body["check"])
+            assert body["profile"]["public_url"] != f"https://{D}/"
+        assert sql("SELECT checked IS NOT NULL FROM bio_custom_domains WHERE profile_id = ?", pid) == [(1,)]
+        r = owner.post(f"{BASE}/{pid}/domain/check")
+        assert r.status_code == 429, "a second check within CHECK_GAP_S"
+        # pending_cert: served by the bio app (the cert needs it), isolated to its Profile
+        assert _tls_ask(D) == 200
+        assert bio_get("/api/profiles/dom_check.json", host=D).status_code == 200
+        assert bio_get("/api/profiles/dom_rival.json", host=D).status_code == 404
+        # the rival proves the same DNS too: v2's "taken" problem, the rival stays pending
+        body = check(owner, rival).json()
+        assert body["check"] == {"status": "pending", "problems": ["Another Profile already uses shop.example."]}, body
+        assert sql("SELECT status FROM bio_custom_domains WHERE profile_id = ?", rival) == [("pending",)]
+        third = create(other, "dom_third")["profile"]["id"]
+        r = other.put(f"{BASE}/{third}/domain", json={"domain": D})
+        assert r.status_code == 409 and r.json()["detail"] == {
+            "field": "domain", "msg": "Another Profile already uses shop.example."}, r.text
+        # the certificate answers: live
+        net.certs.add(D)
+        body = check(owner, pid).json()
+        assert body["profile"]["custom_domain"]["status"] == "live" and body["check"]["problems"] == [], body
+        assert body["profile"]["public_url"] == f"https://{D}/" and body["profile"]["home_url"].endswith("/dom_check")
+        listed = next(p for p in owner.get(BASE).json()["profiles"] if p["id"] == pid)
+        assert listed["custom_domain"] == {"domain": D, "status": "live"}, listed
+        calls = net.calls
+        assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "live"
+        assert net.calls == calls, "a live domain's check reads no DNS"
+        # DNS broken while pending_cert sends it back to pending
+        sql("UPDATE bio_custom_domains SET status = 'pending_cert' WHERE profile_id = ?", pid)
+        net.dns[D] = domains.Dns()
+        assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "pending"
+        assert _tls_ask(D) == 404
+        net.dns[D] = None  # DNS unreadable: the status stays
+        sql("UPDATE bio_custom_domains SET status = 'pending_cert' WHERE profile_id = ?", pid)
+        assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "pending_cert"
+        # a spare domain added since it was saved: v2's own-address problem, no DNS read
+        sql("INSERT INTO bio_spare_domains(id, domain) VALUES ('spare2', 'example')")
+        calls = net.calls
+        body = check(owner, pid).json()
+        assert body["check"] == {"status": "pending", "problems": [
+            "shop.example is one of ofl.ink's own addresses. Use a domain you own."]} and net.calls == calls, body
+        sql("DELETE FROM bio_spare_domains WHERE id = 'spare2'")
+        # the row changed between the read and the write: refused, nothing written
+        net.dns[D] = domains.Dns((IP,), (), (proof,))
+        real = domains.check
+
+        async def swap(*a):
+            sql("DELETE FROM bio_custom_domains WHERE profile_id = ?", pid)
+            return "live", []
+        domains.check = swap
+        try:
+            r = check(owner, pid)
+        finally:
+            domains.check = real
+        assert r.status_code == 409 and sql("SELECT COUNT(*) FROM bio_custom_domains WHERE profile_id = ?", pid) == [
+            (0,)], r.text
+    for p in (rival,):
+        owner.delete(f"{BASE}/{p}/domain")
+    other.delete(f"{BASE}/{third}")
+
+
+def case_domain_off_without_server_ip():
+    pid = create(owner, "dom_off")["profile"]["id"]
+    assert owner.put(f"{BASE}/{pid}/domain", json={"domain": "off.example"}).status_code == 200
+    saved = os.environ.pop("BIO_SERVER_IP")
+    try:
+        os.environ["BIO_SERVER_IP"] = "not-an-ip"
+        page = owner.get(f"{BASE}/{pid}").json()
+        assert page["profile"]["domain_server_ip"] is None
+        r = owner.put(f"{BASE}/{pid}/domain", json={"domain": "off2.example"})
+        assert r.status_code == 409 and r.json()["detail"] == domains.OFF_MSG
+        assert owner.post(f"{BASE}/{pid}/domain/check").status_code == 409
+        assert owner.delete(f"{BASE}/{pid}/domain").json()["profile"]["custom_domain"] is None
+    finally:
+        os.environ["BIO_SERVER_IP"] = saved
 
 
 def case_no_destination_or_geo_in_logs():

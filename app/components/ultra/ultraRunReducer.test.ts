@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  actRequest, buildPickPayload, canApprove, canCancel, canPick, cancelLabel, INITIAL_RUN, okLabel, okPayload, okWindow,
-  pickLabel, pollMs, showOk, showPick, statusNote, ultraRunReducer, waitingStep,
+  actRequest, buildPickPayload, canApprove, canCancel, canPick, INITIAL_RUN, isFinal, okPayload, okWindow,
+  planActions, pollMs, refreshNote, statusNote, ultraRunReducer, waitingStep,
   type Action, type PlanStatus, type PlanView, type StepStatus, type UltraRun,
 } from "./ultraRunReducer";
 
@@ -60,8 +60,13 @@ describe("canApprove / canCancel / okPayload / pollMs", () => {
     ["expired", false, false, null],
   ])("%s", (status, approve, cancel, poll) => {
     const s = run([loaded(status)]);
-    expect([canApprove(s), canCancel(s), pollMs(s)]).toEqual([approve, cancel, poll]);
+    expect([canApprove(s), canCancel(s), pollMs(s), isFinal(status)]).toEqual([approve, cancel, poll, poll === null]);
     expect(okPayload(s)).toEqual(approve ? { sha256: "a".repeat(64) } : null);
+  });
+
+  it("a status this build does not know: not over, no Cancel, slow poll, no buttons, no crash", () => {
+    const s = run([loaded("rerouting" as PlanStatus)]);
+    expect([isFinal("rerouting" as PlanStatus), canCancel(s), pollMs(s), planActions(s)]).toEqual([false, false, 15000, []]);
   });
 
   it("nothing to press before the plan is read or while a press is in flight", () => {
@@ -71,23 +76,60 @@ describe("canApprove / canCancel / okPayload / pollMs", () => {
   });
 });
 
-describe("showOk / okLabel / cancelLabel", () => {
+describe("a refused read (401/403) stops polling until a read succeeds", () => {
+  it.each<[string, Action[], boolean, number | null]>([
+    ["502 on a re-poll: keeps polling", [loaded("running"), { type: "loadFailed", status: 502, message: "blip" }], false, 2000],
+    ["401 on a re-poll: stops", [loaded("running"), { type: "loadFailed", status: 401, message: "sign in" }], true, null],
+    ["403 on a re-poll: stops", [loaded("needs_you"), { type: "loadFailed", status: 403, message: "owners only" }], true, null],
+    ["Try again reads it: polls again", [loaded("running"), { type: "loadFailed", status: 401, message: "x" }, loaded("running")],
+      false, 2000],
+    ["403 on the first read: error, no poll", [{ type: "loadFailed", status: 403, message: "owners only" }], true, null],
+  ])("%s", (_name, actions, stopped, poll) => {
+    const s = run(actions);
+    expect([s.pollStopped, pollMs(s)]).toEqual([stopped, poll]);
+  });
+
+  it.each<[string, Action[], ReturnType<typeof refreshNote>]>([
+    ["no error", [loaded("running")], null],
+    ["502: trying again", [loaded("running"), { type: "loadFailed", status: 502, message: "blip" }],
+      { text: "Could not refresh: blip. Trying again.", retry: false }],
+    ["401: Try again button", [loaded("running"), { type: "loadFailed", status: 401, message: "sign in" }],
+      { text: "Could not refresh: sign in.", retry: true }],
+    ["first read failed: none (the error state shows it)", [{ type: "loadFailed", status: 500, message: "boom" }], null],
+  ])("refreshNote: %s", (_name, actions, want) => {
+    expect(refreshNote(run(actions))).toEqual(want);
+  });
+});
+
+describe("planActions: the buttons both surfaces draw", () => {
   const card = (id: string) => ({ id, tool: "mass_send", effect: "send" as const, title: "", rows: [] });
   const two: Action = { type: "loaded", plan: { ...plan("awaiting_ok"), card: [card("a"), card("b")] } };
   const one: Action = { type: "loaded", plan: { ...plan("awaiting_ok"), card: [card("a")] } };
-  it.each<[string, Action[], boolean, string, string]>([
-    ["awaiting, 2 steps", [two], true, "OK, run 2 steps", "Cancel plan"],
-    ["awaiting, 1 step", [one], true, "OK, run 1 step", "Cancel plan"],
-    ["OK in flight", [two, { type: "act", kind: "ok" }], true, "Starting…", "Cancel plan"],
-    ["cancel in flight: no OK", [two, { type: "act", kind: "cancel" }], false, "OK, run 2 steps", "Cancelling…"],
-    ["running: no OK, cancel the rest", [loaded("running")], false, "OK, run 0 steps", "Cancel the rest"],
-    ["planning: no OK, stop planning", [loaded("planning")], false, "OK, run 0 steps", "Stop planning"],
-    ["needs_you: no OK, cancel the rest", [loaded("needs_you")], false, "OK, run 0 steps", "Cancel the rest"],
-    ["done: no OK", [loaded("done")], false, "OK, run 0 steps", "Cancel plan"],
-    ["expired: no OK", [loaded("expired")], false, "OK, run 0 steps", "Cancel plan"],
-  ])("%s", (_name, actions, ok, okText, cancelText) => {
-    const s = run(actions);
-    expect([showOk(s), okLabel(s), cancelLabel(s)]).toEqual([ok, okText, cancelText]);
+  const cands = [11, 12].map((id) => ({ id, type: "photo", thumb: null, description: "" }));
+  const needs: Action = { type: "loaded", plan: plan("needs_you",
+    [{ id: "pick", state: "needs_you", pick_n: 1, candidates: cands, picks: [11] }]) };
+  const needsNone: Action = { type: "loaded", plan: plan("needs_you",
+    [{ id: "pick", state: "needs_you", pick_n: 1, candidates: cands, picks: [] }]) };
+  /** kind:label, with "!" when disabled and "*" when primary. */
+  const short = (s: UltraRun) => planActions(s).map((b) => `${b.kind}:${b.label}${b.primary ? "*" : ""}${b.enabled ? "" : "!"}`);
+  it.each<[string, Action[], string[]]>([
+    ["nothing read yet", [], []],
+    ["awaiting, 2 steps", [two], ["ok:OK, run 2 steps*", "cancel:Cancel plan"]],
+    ["awaiting, 1 step", [one], ["ok:OK, run 1 step*", "cancel:Cancel plan"]],
+    ["OK in flight: Starting…, no Cancel", [two, { type: "act", kind: "ok" }], ["ok:Starting…*!"]],
+    ["cancel in flight: no OK", [two, { type: "act", kind: "cancel" }], ["cancel:Cancelling…!"]],
+    ["planning: stop planning", [loaded("planning")], ["cancel:Stop planning"]],
+    ["running: cancel the rest", [loaded("running")], ["cancel:Cancel the rest"]],
+    ["needs_you, pick_n ticked", [needs], ["pick:Send these*", "cancel:Cancel the rest"]],
+    ["needs_you, too few ticked", [needsNone], ["pick:Send these*!", "cancel:Cancel the rest"]],
+    ["pick in flight: Sending…, no Cancel", [needs, { type: "act", kind: "pick" }], ["pick:Sending…*!"]],
+    ["pick answered running", [needs, { type: "act", kind: "pick" }, { type: "acted", plan: plan("running") }],
+      ["cancel:Cancel the rest"]],
+    ["done: none", [loaded("done")], []],
+    ["expired: none", [loaded("expired")], []],
+    ["failed: none", [loaded("failed")], []],
+  ])("%s", (_name, actions, want) => {
+    expect(short(run(actions))).toEqual(want);
   });
 });
 
@@ -99,6 +141,7 @@ describe("statusNote", () => {
       "Stopped: step folder failed. Nothing after it ran."],
     ["failed", [{ id: "mass", state: "uncertain" }, { id: "post", state: "skipped" }],
       "Stopped. Step mass got no clear answer and may or may not have gone out. Check OnlyFans before sending it again."],
+    ["failed", [{ id: "mass", state: "done" }], "Stopped: the run hit an error before the next step. Nothing after it ran."],
     ["interrupted", [{ id: "a", state: "done" }, { id: "b", state: "uncertain" }, { id: "c", state: "skipped" }],
       "The server restarted while this plan ran, so it stopped. Step b got no clear answer"],
     ["interrupted", [{ id: "a", state: "done" }, { id: "c", state: "skipped" }],
@@ -109,6 +152,14 @@ describe("statusNote", () => {
     ["capped", [{ id: "pick", state: "failed" }], "Stopped at the AI budget (step pick). Nothing after it ran."],
   ])("%s %#", (status, steps, words) => {
     expect(statusNote(plan(status, steps))).toContain(words);
+  });
+
+  it("an uncertain non-send write is not told to check OnlyFans", () => {
+    const card = (effect: "write" | "send") => [{ id: "folder", tool: "of_folder_create", effect, title: "", rows: [] }];
+    const steps: StepStatus[] = [{ id: "folder", state: "uncertain" }, { id: "mass", state: "skipped" }];
+    expect(statusNote({ ...plan("failed", steps), card: card("write") })).toBe(
+      "Stopped. Step folder got no clear answer and may or may not have finished. Check it before running it again. Nothing after it ran.");
+    expect(statusNote({ ...plan("failed", steps), card: card("send") })).toContain("Check OnlyFans before sending it again.");
   });
 
   it.each<[string, string, string | null]>([
@@ -172,17 +223,6 @@ describe("pick card: tick / canPick / buildPickPayload", () => {
     const s = run(actions);
     expect(s.picked?.ids ?? null).toEqual(ticked);
     expect([canPick(s), buildPickPayload(s)]).toEqual([can, payload]);
-  });
-
-  it.each<[string, Action[], boolean, string]>([
-    ["waiting: shown", [needs], true, "Send these"],
-    ["in flight: shown, sending", [needs, { type: "act", kind: "pick" }], true, "Sending…"],
-    ["answered running: gone", [needs, { type: "act", kind: "pick" }, { type: "acted", plan: plan("running") }], false,
-      "Send these"],
-    ["awaiting OK: gone", [loaded("awaiting_ok")], false, "Send these"],
-  ])("showPick / pickLabel: %s", (_name, actions, shown, label) => {
-    const s = run(actions);
-    expect([showPick(s), pickLabel(s)]).toEqual([shown, label]);
   });
 
   it.each<[string, "ok" | "cancel" | "pick", Action[], { body: object | undefined } | null]>([

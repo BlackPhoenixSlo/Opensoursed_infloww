@@ -23,7 +23,7 @@ import vault_ai_brief
 from automations import _language
 from automations.full_ai_sell import Pick, _money
 from automations.full_ai_writers import (
-    FREE_TERMS, PRICE_BLOCK, WAS_PRICE_BLOCK, WriteResult, _fan, _outcome, floor,
+    FREE_TERMS, PRICE_BLOCK, WAS_PRICE_BLOCK, WriteResult, _fan, _outcome, floor, nearest_line,
 )
 from automations.names import resolve_fan_name
 
@@ -130,13 +130,16 @@ def body_suffix(lines: list[str], price: str) -> str:
 
 def messages(facts, pick: Pick, was_cents: int | None) -> list[dict] | None:
     """The caption call's messages; None when no locked item is described (`pick.facts["hero"]`,
-    old `_copy_call`'s `no_description` stop, before any spend)."""
+    old `_copy_call`'s `no_description` stop, before any spend). A nearest piece on a
+    `sell_nearest` "note" side (`full_ai_writers.nearest_line`): NEAREST_NOTE under the media facts."""
     hero = (pick.facts or {}).get("hero")
     if not hero:
         return None
     fields = hero["fields"]
     user = vault_ai_brief.copy_brief(fields, description=str(fields.get("description") or ""),
                                      duration_seconds=hero.get("seconds"), kind=hero.get("kind") or "")
+    if note := nearest_line(facts, pick):
+        user = f"{user}\n\n{note}"
     return [{"role": "system", "content": system(style_for(facts.account_id, facts.fan_id, hero["media_id"]))},
             {"role": "user", "content": user + body_suffix(him_lines(facts.fan_info), price_block(pick, was_cents))}]
 

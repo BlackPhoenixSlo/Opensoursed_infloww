@@ -48,7 +48,7 @@ from datetime import datetime, timedelta
 
 import automation_executor as ax  # enqueue_job + _make_client
 from automation_registry import register
-from automations._pools import pick_media, pick_text
+from automations._pools import has_media_source, pick_media, pick_text
 
 log = logging.getLogger("of-relay.automation.mass_premade")
 
@@ -71,6 +71,13 @@ def _pos_float(raw: object) -> float | None:
     if isinstance(raw, (int, float)) and raw > 0:
         return float(raw)
     return None
+
+
+def _paid(raw: object) -> bool:
+    try:
+        return float(raw or 0) > 0  # a rule's price may be a number or its string
+    except (TypeError, ValueError):
+        return False
 
 
 @register("mass_premade")
@@ -128,6 +135,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if spec.get("media_folder_id") is not None else None
     )
     media = await asyncio.to_thread(pick_media, spec, client)
+    if not media and has_media_source(spec) and _paid(spec.get("price")):
+        # Fail closed: a paid mass whose photos could not be read (empty folder, failed read) would go out
+        # priced with nothing to lock. This fire is skipped, nothing sent; the rule fires again next interval.
+        log.warning("mass_premade: paid mass with no media (folder=%r) — not sent, draining rest",
+                    spec.get("media_folder_id"))
+        remaining = await _drip_rest(account_id, rest)
+        return {"status": "skipped", "reason": "paid_no_media", "remaining": remaining}
 
     from automations.send_mass_message import run as send_mass_run
     send_payload = {k: spec[k] for k in _SEND_KEYS if k in spec}

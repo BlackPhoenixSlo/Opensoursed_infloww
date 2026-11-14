@@ -21,7 +21,11 @@ export type StockIcon = (typeof STOCK_ICONS)[number];
 export const isBioMode = (mode: string): mode is BioMode => BIO_MODES.some((m) => m === mode);
 export const isStockIcon = (icon: string | null): icon is StockIcon => STOCK_ICONS.some((s) => s === icon);
 
-export interface BioDomain { domain: string; status: string }
+/** A page's custom domain. `status`: "pending" (waiting for DNS), "pending_cert" (getting the certificate), "live".
+ *  One page's own read adds the records to set (ofl.ink v2's: A, AAAA when the server has one, TXT
+ *  `_oflink` = `oflink-verify=<token>`, names relative to the zone) and the last check's time. */
+export interface BioDomainRecord { type: string; name: string; value: string }
+export interface BioDomain { domain: string; status: string; records?: BioDomainRecord[]; checked?: string | null }
 
 export interface BioListRow {
   id: string;
@@ -57,6 +61,10 @@ export interface BioProfile {
   public_url: string | null;
   /** The short address that redirects to the page (BIO_SHORT_URL), null when this server has none. */
   short_url?: string | null;
+  /** The IPv4 a custom domain's A record names (BIO_SERVER_IP); null when this server takes no custom domains. */
+  domain_server_ip?: string | null;
+  /** The page's own address, custom domain or not (the base's `/<username>`); null when this server has none. */
+  home_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -209,3 +217,24 @@ export const useBioLinkBackground = (pid: string) =>
   usePageWrite(pid, ({ lid, file }: { lid: string; file: File | null }) => file
     ? relay.uploadFile<BioPage>(`${linkPath(pid, lid)}/background`, file)
     : relay.delete<BioPage>(`${linkPath(pid, lid)}/background`));
+
+/** Set (or replace) the page's custom domain; the same domain keeps its token. */
+export const useSetBioDomain = (pid: string) =>
+  usePageWrite(pid, (domain: string) => relay.put<BioPage>(`${pagePath(pid)}/domain`, { domain }));
+
+export const useRemoveBioDomain = (pid: string) =>
+  usePageWrite(pid, () => relay.delete<BioPage>(`${pagePath(pid)}/domain`));
+
+/** Check DNS and the certificate now: answers `{status, problems}` (v2's check), the problems what is left to do;
+ *  the page (its domain's new status) goes to the cache like any page write. */
+export function useCheckBioDomain(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => relay.post<BioPage & { check: { status: string; problems: string[] } }>(`${pagePath(pid)}/domain/check`, {}),
+    onSuccess: ({ check: _check, ...P }) => {
+      qc.setQueryData([BIO_KEY, pid], P);
+      qc.invalidateQueries({ queryKey: [BIO_KEY], exact: true });
+    },
+    onError: () => qc.invalidateQueries({ queryKey: [BIO_KEY, pid], exact: true }),
+  });
+}

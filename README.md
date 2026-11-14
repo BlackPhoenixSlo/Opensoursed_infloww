@@ -84,6 +84,7 @@ The `docker cp` takes the writes the old container still held, if any.
 ## Surfaces
 
 - Web: the Next.js app in `app/`.
+- AI clients: a built-in MCP server at `/admin/mcp` (Claude Code and others). Setup: `docs/runbooks/mcp-connect.md`.
 - Phone: the same web app, which is responsive. There is no native app.
 - Desktop: an Electron shell in `desktop/` (`npm install && npm start`). It
   asks for your server URL on first launch and loads the web UI from there.

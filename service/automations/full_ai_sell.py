@@ -44,7 +44,7 @@ import json
 import logging
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Literal
 
 from sqlalchemy import select
@@ -357,8 +357,26 @@ def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: As
                 facts=_facts(locked, previews))
 
 
+def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]], str, str] | None:
+    """Config `sell_nearest` (test Mode): the first non-empty relaxed match for an ask nothing in
+    `pool` matches, in order (a) same subject, any format (step "format"); (b) any subject, same
+    format ("subject"); (c) anything ("any"). Returns (rows, the Pick's subject, step); the subject
+    is kept only in (a), else "anything" (the Pick never names what its media lacks). Pure."""
+    steps = (("format", Ask(ask.subject, "any", ask.intensity), ask.subject),
+             ("subject", Ask("anything", ask.format, ask.intensity), "anything"),
+             ("any", Ask("anything", "any", ask.intensity), "anything"))
+    for step, relaxed, subject in steps:
+        if relaxed == ask:
+            continue
+        rows = [r for r in pool if _matches(r, relaxed)]
+        if rows:
+            return rows, subject, step
+    return None
+
+
 def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
-         seed: str, free: bool = False, target: int | None = None) -> Pick | Refusal:
+         seed: str, free: bool = False, target: int | None = None,
+         nearest: bool = False) -> Pick | Refusal:
     """One Pick from `pool` (`pool()`'s rows, the sell step having handled its Refusal) for `ask`,
     by a seeded draw (`seed_for`). Pure.
 
@@ -381,7 +399,13 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     ASSUMPTION: free mode on an empty pool (everything already sent) -> Refusal("all_owned"), the
     nearest reason in the spec's set (he has seen it all). Overturned by a reason of its own.
     ASSUMPTION: the free fallback ("no match -> lowest-lane unseen item", ticket 10 r3) ignores
-    subject and format. Overturned if a gift must keep the asked format."""
+    subject and format. Overturned if a gift must keep the asked format.
+
+    `nearest=True` (config `sell_nearest` "plain" / "note", a fresh test-Mode sell_now Pick only):
+    no match relaxes (`_nearest`) instead of Refusal("no_match"), then the same lane / shoot /
+    preview logic runs on the relaxed rows (nothing priced there is still no_priced_items). The
+    Pick's `facts["asked"]` = {subject, format} records his ask and `facts["nearest"]` the step;
+    an exact match records neither. Ignored with `free`."""
     rng = random.Random(seed)
     if free:
         unseen = [r for r in pool if r["list_cents"] > 0 or _free_safe(r)]
@@ -395,6 +419,10 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
                       subject=subject)
 
     matching = [r for r in pool if _matches(r, ask)]
+    subject, miss = None, None
+    if not matching and nearest and (got := _nearest(pool, ask)) is not None:
+        matching, subject, step = got
+        miss = {"asked": {"subject": ask.subject, "format": ask.format}, "nearest": step}
     if not matching:
         return Refusal("no_match")
     cands = [r for r in matching if r["list_cents"] > 0]
@@ -405,7 +433,7 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     lane = next((c for c in lanes if c >= goal), lanes[0])
     anchor = _draw([r for r in cands if r["list_cents"] == lane], rng)
     if anchor["kind"] == "video":
-        return _offer([anchor], [], ask, free=False)
+        return _missed(_offer([anchor], [], ask, free=False, subject=subject), miss)
 
     shoot = next((s for s in shoots if anchor["media_id"] in {i["media_id"] for i in s["items"]}), None)
     in_shoot = [i["media_id"] for i in shoot["items"]] if shoot else []
@@ -417,7 +445,12 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     locked = [anchor, *mates[:3]]
     preview = next((by_id[m] for m in in_shoot if m in by_id and by_id[m]["kind"] == "photo"
                     and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])), None)
-    return _offer(locked, [preview] if preview else [], ask, free=False)
+    return _missed(_offer(locked, [preview] if preview else [], ask, free=False, subject=subject), miss)
+
+
+def _missed(p: Pick, miss: dict[str, Any] | None) -> Pick:
+    """A relaxed Pick with his ask and the relax step on its facts; an exact one untouched."""
+    return p if miss is None else replace(p, facts={**p.facts, **miss})
 
 
 # ── Claim audit (ticket 45) ───────────────────────────────────────────

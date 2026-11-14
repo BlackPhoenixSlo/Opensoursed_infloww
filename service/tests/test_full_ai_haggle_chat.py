@@ -376,7 +376,11 @@ def case_offer_moment_gated():
         assert (got["route"], got["route_row"], got["dropped"]) == want, (tag, got)
         assert got["offer"] is None and picks == [] and _ppvs(got["parts"]) == [], (tag, got)
         system = _system(fw)
-        assert w.SELL_OFF_LINE not in system and w.NO_SELL_OFFERS in system, (tag, system)
+        # Selling off in test Mode never promises a piece (NO_SELL_OFFERS only with selling on).
+        line = {"sell-off": w.SELL_OFF_LINE, "sell-off-hot": w.SELL_OFF_LINE,   # sext Route, no scene (sext_scene off here)
+                "draft-off": w.NO_SELL_OFFERS}[tag]
+        others = {w.SELL_OFF_LINE, w.SELL_OFF_SCENE, w.NO_SELL_OFFERS} - {line}
+        assert line in system and not any(o in system for o in others), (tag, system)
 
 
 if __name__ == "__main__":

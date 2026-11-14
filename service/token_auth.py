@@ -33,6 +33,7 @@ from sqlalchemy import select, update
 from starlette.routing import Match
 
 import owner_tokens
+import report_files
 import toolbox_decide as td
 from agency_scope import agency_account_ids
 from db.engine import get_session
@@ -47,7 +48,7 @@ MCP_PATH = "/admin/mcp"
 
 # Besides the tools' own routes: the report_file download, and the MCP endpoint itself.
 EXTRA: frozenset[tuple[str, str]] = frozenset({
-    ("GET", "/admin/reports/files/{file_id}"),
+    ("GET", report_files.ROUTE),
     ("POST", MCP_PATH),
 })
 

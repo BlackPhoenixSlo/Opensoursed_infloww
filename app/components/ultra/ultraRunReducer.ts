@@ -3,17 +3,35 @@
  * the plan as the Relay last answered (GET /admin/ultra/plans/{id}, service/ultra_run.py `view`), how its load
  * went, the one OK / Cancel / pick in flight and the owner's ticks on a `needs_you` pick card. A pure reducer (the
  * components only dispatch) plus `canApprove` / `canCancel` / `okPayload` (the OK posts the hash the owner was
- * shown), `actRequest` (what each action posts), `canPick` / `buildPickPayload` (exactly pick_n ticked), `showOk` / `okLabel` / `showPick` / `pickLabel` /
- * `cancelLabel`, `pollMs`
- * and `statusNote` / `STEP_LABEL`. Every word about a step comes from the server's card; nothing is recomposed here.
+ * shown), `actRequest` (what each action posts), `canPick` / `buildPickPayload` (exactly pick_n ticked), `planActions`
+ * (the buttons both surfaces draw), `pollMs` and `statusNote` / `STEP_LABEL`. Every word about a step comes from the server's card; nothing is recomposed here.
  */
 
 export type PlanStatus = "planning" | "awaiting_ok" | "running" | "needs_you" | "done" | "failed" | "cancelled"
   | "interrupted" | "expired" | "capped";
 export type StepState = "pending" | "started" | "needs_you" | "done" | "failed" | "uncertain" | "skipped";
 
-/** service/ultra_decide.py FINAL: nothing changes on the server any more. */
-export const FINAL: ReadonlySet<PlanStatus> = new Set(["done", "failed", "cancelled", "interrupted", "expired", "capped"]);
+/** Per status, in one place (a new status must say all three): `final` = service/ultra_decide.py FINAL (nothing
+ *  changes on the server any more), `cancellable` = the Relay takes a cancel, `pollMs` = re-read every so often while
+ *  something can still change (planning, a run's steps, an OK's expiry). */
+const STATUS: Record<PlanStatus, { final: boolean; cancellable: boolean; pollMs: number | null }> = {
+  planning: { final: false, cancellable: true, pollMs: 1500 },
+  awaiting_ok: { final: false, cancellable: true, pollMs: 15000 },
+  running: { final: false, cancellable: true, pollMs: 2000 },
+  needs_you: { final: false, cancellable: true, pollMs: 5000 },
+  done: { final: true, cancellable: false, pollMs: null },
+  failed: { final: true, cancellable: false, pollMs: null },
+  cancelled: { final: true, cancellable: false, pollMs: null },
+  interrupted: { final: true, cancellable: false, pollMs: null },
+  expired: { final: true, cancellable: false, pollMs: null },
+  capped: { final: true, cancellable: false, pollMs: null },
+};
+
+/** STATUS's row; a status this build does not know (a newer server) gets a forward-compatible default: not over,
+ *  no Cancel, re-read every 15 s until it turns into one it knows. */
+const statusRow = (status: PlanStatus) => STATUS[status] ?? { final: false, cancellable: false, pollMs: 15000 };
+
+export const isFinal = (status: PlanStatus): boolean => statusRow(status).final;
 
 export interface PlanCard {
   id: string;
@@ -70,22 +88,26 @@ export interface UltraRun {
   load: "loading" | "ready" | "missing" | "error";
   /** The last read's failure; a failed re-poll keeps the plan on screen. */
   loadError: string | null;
+  /** A read was refused (401/403: signed out, or not allowed): polling stops until a read succeeds (Try again). */
+  pollStopped: boolean;
   busy: "ok" | "cancel" | "pick" | null;
   actionError: string | null;
   /** The owner's ticks on the waiting judge's card (starts at the AI's picks); null when nothing waits. */
   picked: { step: string; ids: number[] } | null;
 }
 
+export type ActKind = "ok" | "cancel" | "pick";
+
 export type Action =
   | { type: "loaded"; plan: PlanView }
   | { type: "loadFailed"; status: number; message: string }
-  | { type: "act"; kind: "ok" | "cancel" | "pick" }
+  | { type: "act"; kind: ActKind }
   | { type: "acted"; plan: PlanView }
   | { type: "actFailed"; message: string }
   | { type: "tick"; id: number };
 
 export const INITIAL_RUN: UltraRun = {
-  plan: null, load: "loading", loadError: null, busy: null, actionError: null, picked: null,
+  plan: null, load: "loading", loadError: null, pollStopped: false, busy: null, actionError: null, picked: null,
 };
 
 /** The judge step waiting for the owner, if any. */
@@ -102,10 +124,13 @@ function withPlan(state: UltraRun, plan: PlanView): UltraRun {
 export function ultraRunReducer(state: UltraRun, action: Action): UltraRun {
   switch (action.type) {
     case "loaded":
-      return { ...withPlan(state, action.plan), load: "ready", loadError: null };
-    case "loadFailed":
+      return { ...withPlan(state, action.plan), load: "ready", loadError: null, pollStopped: false };
+    case "loadFailed": {
       if (action.status === 404) return { ...state, plan: null, load: "missing", loadError: null, picked: null };
-      return state.plan ? { ...state, loadError: action.message } : { ...state, load: "error", loadError: action.message };
+      const pollStopped = action.status === 401 || action.status === 403;
+      return state.plan ? { ...state, loadError: action.message, pollStopped }
+        : { ...state, load: "error", loadError: action.message, pollStopped };
+    }
     case "act":
       return state.busy ? state : { ...state, busy: action.kind, actionError: null };
     case "acted":
@@ -124,8 +149,7 @@ export function ultraRunReducer(state: UltraRun, action: Action): UltraRun {
 
 export const canApprove = (s: UltraRun): boolean => s.plan?.status === "awaiting_ok" && s.busy === null;
 
-const CANCELLABLE: ReadonlySet<PlanStatus> = new Set(["planning", "awaiting_ok", "running", "needs_you"]);
-export const canCancel = (s: UltraRun): boolean => !!s.plan && CANCELLABLE.has(s.plan.status) && s.busy === null;
+export const canCancel = (s: UltraRun): boolean => !!s.plan && statusRow(s.plan.status).cancellable && s.busy === null;
 
 /** Send these: the plan waits on this judge and exactly its pick_n are ticked. */
 export function canPick(s: UltraRun): boolean {
@@ -141,30 +165,44 @@ export function buildPickPayload(s: UltraRun): { step: string; ids: number[] } |
   return { step: s.picked!.step, ids: order.filter((id) => s.picked!.ids.includes(id)) };
 }
 
-/** The OK button only while the plan awaits it and no cancel is in flight (Cancel stays). */
-export const showOk = (s: UltraRun): boolean => s.plan?.status === "awaiting_ok" && s.busy !== "cancel";
-
-/** "Send these": while a judge waits on the owner, and while the pick is in flight. */
-export const showPick = (s: UltraRun): boolean => s.plan?.status === "needs_you" || s.busy === "pick";
-
-export const pickLabel = (s: UltraRun): string => (s.busy === "pick" ? "Sending…" : "Send these");
-
-export function okLabel(s: UltraRun): string {
-  if (s.busy === "ok") return "Starting…";
-  const n = s.plan?.card.length ?? 0;
-  return `OK, run ${n} step${n === 1 ? "" : "s"}`;
+export interface PlanAction {
+  kind: ActKind;
+  label: string;
+  enabled: boolean;
+  /** The red / primary button (OK, Send these); Cancel is the plain one. */
+  primary: boolean;
 }
 
-export function cancelLabel(s: UltraRun): string {
+function cancelLabel(s: UltraRun): string {
   if (s.busy === "cancel") return "Cancelling…";
   if (s.plan?.status === "planning") return "Stop planning";
   return s.plan?.status === "running" || s.plan?.status === "needs_you" ? "Cancel the rest" : "Cancel plan";
 }
 
+/** The buttons under a plan, in order (the panel and the plan page both draw exactly these): OK while the plan
+ *  awaits it and no cancel is in flight; "Send these" while a judge waits on the owner or the pick is in flight;
+ *  Cancel while the plan can be cancelled or the cancel is in flight (hidden while an OK / pick is in flight). */
+export function planActions(s: UltraRun): PlanAction[] {
+  const out: PlanAction[] = [];
+  const plan = s.plan;
+  const status = plan?.status;
+  if (plan?.status === "awaiting_ok" && s.busy !== "cancel") {
+    const n = plan.card.length;
+    out.push({ kind: "ok", label: s.busy === "ok" ? "Starting…" : `OK, run ${n} step${n === 1 ? "" : "s"}`,
+      enabled: canApprove(s), primary: true });
+  }
+  if (status === "needs_you" || s.busy === "pick") {
+    out.push({ kind: "pick", label: s.busy === "pick" ? "Sending…" : "Send these", enabled: canPick(s), primary: true });
+  }
+  if (canCancel(s) || s.busy === "cancel") {
+    out.push({ kind: "cancel", label: cancelLabel(s), enabled: canCancel(s), primary: false });
+  }
+  return out;
+}
+
 /** The OK's body: the hash of exactly the plan on screen (the Relay answers 409 if it is not the stored one). */
 export const okPayload = (s: UltraRun): { sha256: string } | null => (canApprove(s) ? { sha256: s.plan!.sha256 } : null);
 
-export type ActKind = Extract<Action, { type: "act" }>["kind"];
 
 /** Per action: its body now (undefined: none), or null when it may not post. */
 const ACT_BODY: Record<ActKind, (s: UltraRun) => object | null | undefined> = {
@@ -178,9 +216,17 @@ export function actRequest(kind: ActKind, s: UltraRun): { body: object | undefin
   return body === null ? null : { body };
 }
 
-const POLL: Partial<Record<PlanStatus, number>> = { planning: 1500, running: 2000, needs_you: 5000, awaiting_ok: 15000 };
-/** Re-read every so often while something can still change on the server: planning, a run's steps, an OK's expiry. */
-export const pollMs = (s: UltraRun): number | null => (s.plan && POLL[s.plan.status]) || null;
+/** The line when a re-poll failed (the plan stays on screen): its words, and `retry` = polling stopped (401/403), so
+ *  the owner gets a Try again button instead of "Trying again." */
+export function refreshNote(s: UltraRun): { text: string; retry: boolean } | null {
+  if (!s.plan || !s.loadError) return null;
+  return s.pollStopped
+    ? { text: `Could not refresh: ${s.loadError}.`, retry: true }
+    : { text: `Could not refresh: ${s.loadError}. Trying again.`, retry: false };
+}
+
+/** How often to re-read now (STATUS.pollMs); none once FINAL or after a refused read. */
+export const pollMs = (s: UltraRun): number | null => (s.plan && !s.pollStopped ? statusRow(s.plan.status).pollMs : null);
 
 export const STEP_LABEL: Record<StepState, string> = {
   pending: "Waiting",
@@ -193,6 +239,8 @@ export const STEP_LABEL: Record<StepState, string> = {
 };
 
 const UNCERTAIN = "may or may not have gone out. Check OnlyFans before sending it again.";
+/** A non-send write with no answer (ultra_decide.outcome) may still have finished. */
+const UNCERTAIN_WRITE = "may or may not have finished. Check it before running it again.";
 
 /** How long the OK stays open, from the server's own times (expires_at − created_at; ultra_decide.OK_TTL). */
 export function okWindow(plan: PlanView): string | null {
@@ -204,7 +252,10 @@ export function okWindow(plan: PlanView): string | null {
 export function statusNote(plan: PlanView): string {
   const ids = (st: StepState) => plan.step_states.filter((s) => s.state === st).map((s) => s.id);
   const uncertain = ids("uncertain");
-  const unsure = uncertain.length ? ` Step ${uncertain.join(", ")} got no clear answer and ${UNCERTAIN}` : "";
+  // The send wording unless the card says every uncertain step is a non-send (unknown → send: fail closed).
+  const sendish = uncertain.some((id) => plan.card.find((c) => c.id === id)?.effect !== "write");
+  const unsure = uncertain.length
+    ? ` Step ${uncertain.join(", ")} got no clear answer and ${sendish ? UNCERTAIN : UNCERTAIN_WRITE}` : "";
   const failed = ids("failed");
   const ttl = okWindow(plan);
   const p = plan.planning;
@@ -224,9 +275,9 @@ export function statusNote(plan: PlanView): string {
       return "Done: every step ran.";
     case "failed":
       if (noPlan) return `Planning stopped: ${p?.error ?? "no plan."}`;
-      return unsure
-        ? `Stopped.${unsure} Nothing after it ran.`
-        : `Stopped: step ${failed.join(", ")} failed. Nothing after it ran.`;
+      if (unsure) return `Stopped.${unsure} Nothing after it ran.`;
+      return failed.length ? `Stopped: step ${failed.join(", ")} failed. Nothing after it ran.`
+        : "Stopped: the run hit an error before the next step. Nothing after it ran.";
     case "capped":
       if (noPlan) return `Planning stopped: ${p?.error ?? "a cap was hit."}`;
       return `Stopped at the AI budget${failed.length ? ` (step ${failed.join(", ")})` : ""}. Nothing after it ran.`;

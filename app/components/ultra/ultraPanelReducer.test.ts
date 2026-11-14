@@ -15,7 +15,7 @@ const hydrated: PanelAction = { type: "hydrate", planId: null };
 const draft = (text: string): PanelAction => ({ type: "draft", text });
 const started = (id: string, status: PlanStatus = "planning"): PanelAction => ({ type: "started", plan: view(id, status) });
 const loaded = (id: string, status: PlanStatus): PanelAction =>
-  ({ type: "run", action: { type: "loaded", plan: view(id, status) } });
+  ({ type: "run", planId: id, action: { type: "loaded", plan: view(id, status) } });
 
 describe("composer: canSubmit / requestBody", () => {
   it.each<[string, PanelAction[], { request: string } | null]>([
@@ -25,7 +25,7 @@ describe("composer: canSubmit / requestBody", () => {
     ["trimmed request", [hydrated, draft("  mass the new set  ")], { request: "mass the new set" }],
     ["in flight", [hydrated, draft("go"), { type: "start" }], null],
     ["a plan is open", [{ type: "hydrate", planId: "p1" }, draft("go")], null],
-    ["refused: may retry, draft kept", [hydrated, draft("go"), { type: "start" }, { type: "startFailed", message: "cap" }],
+    ["refused: may retry, draft kept", [hydrated, draft("go"), { type: "start" }, { type: "startFailed", status: 429, message: "cap" }],
       { request: "go" }],
   ])("%s", (_name, actions, body) => {
     const s = run(actions);
@@ -60,10 +60,15 @@ describe("credential guard (ticket 11)", () => {
     }
   });
 
-  it("the relay's 400 (its login guard) maps to the same refusal, draft cleared", () => {
-    const s = run([hydrated, draft("log in x"), { type: "start" },
-      { type: "startFailed", message: "paste logins in the Connect card", loginRefused: true }]);
-    expect([s.starting, s.draft, s.startError, s.loginRefused]).toEqual([false, "", null, true]);
+  it.each<[string, number, string, boolean]>([
+    ["the relay's login 400: same refusal, draft cleared", 400, "paste logins in the Connect card", true],
+    ["another 400: its words, draft kept", 400, "request is empty", false],
+    ["the login words on another status: its words", 422, "paste logins in the Connect card", false],
+    ["no answer: its words", 0, "Failed to fetch", false],
+  ])("startFailed: %s", (_name, status, message, refused) => {
+    const s = run([hydrated, draft("log in x"), { type: "start" }, { type: "startFailed", status, message }]);
+    expect([s.starting, s.draft, s.startError, s.loginRefused])
+      .toEqual(refused ? [false, "", null, true] : [false, "log in x", message, false]);
   });
 
   it.each<[string, PanelAction]>([
@@ -87,12 +92,12 @@ describe("plan lifecycle", () => {
   });
 
   it("startFailed shows the server's words", () => {
-    const s = run([hydrated, draft("go"), { type: "start" }, { type: "startFailed", message: "Daily Ultra cap reached" }]);
+    const s = run([hydrated, draft("go"), { type: "start" }, { type: "startFailed", status: 429, message: "Daily Ultra cap reached" }]);
     expect([s.starting, s.startError, s.planId]).toEqual([false, "Daily Ultra cap reached", null]);
   });
 
   it("a start clears the old error", () => {
-    const s = run([hydrated, draft("go"), { type: "start" }, { type: "startFailed", message: "x" }, { type: "start" }]);
+    const s = run([hydrated, draft("go"), { type: "start" }, { type: "startFailed", status: 500, message: "x" }, { type: "start" }]);
     expect(s.startError).toBeNull();
   });
 
@@ -113,8 +118,20 @@ describe("plan lifecycle", () => {
 
   it("404 on the stored plan drops it", () => {
     const s = run([{ type: "hydrate", planId: "gone" },
-      { type: "run", action: { type: "loadFailed", status: 404, message: "plan not found" } }]);
+      { type: "run", planId: "gone", action: { type: "loadFailed", status: 404, message: "plan not found" } }]);
     expect([s.planId, s.run.plan]).toEqual([null, null]);
+  });
+
+  it.each<[string, PanelAction]>([
+    ["a late 404", { type: "run", planId: "p1", action: { type: "loadFailed", status: 404, message: "plan not found" } }],
+    ["a late read error", { type: "run", planId: "p1", action: { type: "loadFailed", status: 500, message: "boom" } }],
+    ["a late refused act", { type: "run", planId: "p1", action: { type: "actFailed", message: "plan expired" } }],
+    ["a late press", { type: "run", planId: "p1", action: { type: "act", kind: "cancel" } }],
+  ])("%s for the old plan never touches the new one", (_name, late) => {
+    const s = run([hydrated, draft("go"), { type: "start" }, started("p1"), { type: "reset" },
+      draft("again"), { type: "start" }, started("p2")]);
+    expect(ultraPanelReducer(s, late)).toBe(s);
+    expect(s.planId).toBe("p2");
   });
 });
 
@@ -142,6 +159,6 @@ describe("isOver / isRunning", () => {
 
 it("a non-404 read error keeps the plan (Try again)", () => {
   const s = run([{ type: "hydrate", planId: "p1" },
-    { type: "run", action: { type: "loadFailed", status: 500, message: "boom" } }]);
+    { type: "run", planId: "p1", action: { type: "loadFailed", status: 500, message: "boom" } }]);
   expect([s.planId, s.run.load, s.run.loadError]).toEqual(["p1", "error", "boom"]);
 });

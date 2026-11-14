@@ -18,7 +18,7 @@ What stays in each caller, in its own order, because it is not pure: the sticker
 
 Engine differences are ShapeCtx fields, all required (no defaults: a forgotten field is a
 TypeError, never a silently-off stage): autoreply passes `lang=None` (language-blind word
-restriction), `echo_of=None` (this engine has no echo pass), `allow_empty=False`.
+restriction), `echo_of=None` (this engine has no echo pass; Full AI Chat the same), `allow_empty=False`.
 
 `_looks_like_echo` is read as this module's attribute at call time (a slop fault patches
 `_reply_shape._looks_like_echo`).

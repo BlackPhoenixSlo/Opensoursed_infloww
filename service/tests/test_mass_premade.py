@@ -25,6 +25,9 @@ Cases:
       exactly 1 broadcast, the claimed job ends 'error' ("may have sent"), and
       a second run finds nothing to claim (no re-broadcast).
 
+  case_paid_empty_folder_not_sent:
+      a paid mass whose folder yields no photos → skipped paid_no_media, nothing sent; free still sends.
+
 Run: ./venv/bin/python service/tests/test_mass_premade.py  (exit 0 = pass)
 """
 from __future__ import annotations
@@ -270,6 +273,24 @@ async def case_failed_send_does_not_schedule_legs():
     assert await _jobs(aid, "unsend_messages") == []
 
 
+async def case_paid_empty_folder_not_sent():
+    """rwl cross-step M2: a paid mass whose folder yields no photos is skipped (never a priced text-only
+    mass); a free one with the same empty folder still goes out."""
+    aid = "acc_mp_paid_empty"
+    await _seed_account(aid)
+    fake = _use_fake()
+    fake.vault_media = lambda **kw: {"list": []}  # empty / unreadable folder
+    spec = {"text": "<p>pay</p>", "online_only": True, "media_folder_id": 5, "media_count": 3}
+    res = await run_once(aid, KIND, payload={"messages": [{**spec, "price": 10}]})
+    assert res["status"] == "skipped" and res["reason"] == "paid_no_media", res
+    assert fake.send_calls == [], fake.send_calls
+    res = await run_once(aid, KIND, payload={"messages": [{**spec, "price": "10"}]})
+    assert res["status"] == "skipped" and fake.send_calls == [], res
+    res = await run_once(aid, KIND, payload={"messages": [{**spec, "price": 0}]})
+    assert res["status"] == "ok" and len(fake.send_calls) == 1, res
+    assert fake.send_calls[0].get("media_files") in (None, []), fake.send_calls[0]
+
+
 _harness.run(
     case_send_and_schedule_unsend,
     case_resend_chain,
@@ -279,4 +300,5 @@ _harness.run(
     case_randomizer,
     case_enqueue_raises_after_broadcast_parks,
     case_failed_send_does_not_schedule_legs,
+    case_paid_empty_folder_not_sent,
 )

@@ -37,7 +37,12 @@ Cases:
   case_cancel_stale_read         — cancel read `awaiting_ok` but an OK flipped it first: the run is flagged (its
                                    next step skipped); already cancelled → 409, never a silent 200.
   case_end_save_fails            — the executor's final save raises: it still leaves _TASKS / _CANCEL; the row
-                                   stays `running` until a cancel (no executor here) marks it interrupted.
+                                   stays `running` until a cancel (no executor here) marks it interrupted; no
+                                   ultra_done notification.
+  case_row_ended_elsewhere_stops_run — the row leaves running mid-step: the next save misses, the run stops
+                                   (no step 2 call), the row is never written back to running; no notification.
+  case_expiry_never_over_running — a stale expiry read never turns a running row expired.
+  case_start_save_fails          — the `started` save raises: the step was never called → skipped, not uncertain.
   case_executor_crash            — the executor raises mid-step: the plan ends failed, the started step uncertain,
                                    the later step skipped (never left pending).
   case_executor_cancelled        — the executor task is cancelled mid-step: the plan is interrupted (never done),
@@ -213,6 +218,12 @@ def _states(v) -> list[str]:
     return [s["state"] for s in v["step_states"]]
 
 
+async def _done_notes(pid: str) -> int:
+    async with get_session() as s:
+        notes = (await s.execute(select(AgencyNotification).where(AgencyNotification.kind == "ultra_done"))).scalars()
+        return sum(json.loads(n.data_json or "{}").get("href") == f"/ultra/plans/{pid}" for n in notes)
+
+
 # ── cases ────────────────────────────────────────────────────────────
 
 async def case_propose_stores_post_chain() -> None:
@@ -241,6 +252,8 @@ async def case_propose_refusals() -> None:
             ([_mass(text="*smiles* new set")], ("mass", "text", "stage narration")),
             ([{"id": "x", "tool": "fan_dm", "args": {}}], ("x", "tool", "unknown tool")),
             ([_mass(price="free")], ("mass", "price", "")),
+            ([_mass(media_files=[PHOTO], price=99999)], ("mass", "price", "between $3 and $200")),
+            ([_mass(media_files=[PHOTO], price=1)], ("mass", "price", "between $3 and $200")),
             ([{"id": "folder", "tool": "of_folder_create",
                "args": {"account_id": CA, "name": "x", "media_ids": ["$later.id"]}}, _post("later")],
              ("folder", "media_ids.0", "does not run before")),
@@ -538,12 +551,70 @@ async def case_end_save_fails() -> None:
         assert pid not in ultra_run._TASKS and pid not in ultra_run._CANCEL
         v = (await _get(c, pid)).json()
         assert v["status"] == "running" and _states(v) == ["started"], v
+        assert await _done_notes(pid) == 0, "no 'done' notification for an end that was never saved (m7)"
         r = await c.post(f"/admin/ultra/plans/{pid}/cancel", headers=COOKIE_A)
         assert r.status_code == 200, r.text
         v = r.json()
         assert v["status"] == "interrupted" and _states(v) == ["uncertain"] and v["finished_at"], v
         assert (await c.post(f"/admin/ultra/plans/{pid}/cancel", headers=COOKIE_A)).status_code == 409
         assert pid not in ultra_run._CANCEL
+
+
+async def case_row_ended_elsewhere_stops_run() -> None:
+    """m1: the row leaves running while step 1 runs (ended elsewhere): the next per-step save misses, the run
+    stops before step 2's call and never writes the row back to running; no notification."""
+    OF.reset()
+    OF.post_sleep = 0.5
+    async with _client() as c:
+        pid = (await _propose(c, _post(), _mass()))["plan_id"]
+        assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
+        await asyncio.sleep(0.1)
+        async with get_session() as s:
+            await s.execute(update(UltraPlan).where(UltraPlan.id == pid).values(status="interrupted"))
+        for _ in range(200):
+            if pid not in ultra_run._TASKS:
+                break
+            await asyncio.sleep(0.05)
+        v = (await _get(c, pid)).json()
+    assert v["status"] == "interrupted" and [k for k, _ in OF.calls] == ["post"], (v, OF.calls)
+    assert await _done_notes(pid) == 0
+
+
+async def case_expiry_never_over_running() -> None:
+    """m1: a read that judged a plan expired while an OK flipped it to running writes nothing: it stays running."""
+    plan = {"summary": "raced", "steps": [_post("a")]}
+    async with get_session() as s:
+        s.add(UltraPlan(id="e" * 32, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
+                        plan_sha256=ud.digest(plan), status="running", created_at=datetime.utcnow() - timedelta(minutes=11),
+                        step_states=json.dumps([{"id": "a", "state": "started"}])))
+    real, ud.expired = ud.expired, lambda *_a: True  # the stale read: it saw awaiting_ok
+    try:
+        row = await ultra_run._row("e" * 32, OWNER_A)
+    finally:
+        ud.expired = real
+    assert row.status == "running" and row.finished_at is None, row.status
+    async with get_session() as s:
+        assert (await s.get(UltraPlan, "e" * 32)).status == "running"
+
+
+async def case_start_save_fails() -> None:
+    """m5: the save of a step's `started` raises: that step was never called, so it ends skipped (not uncertain)."""
+    OF.reset()
+    real = ultra_run._save
+
+    async def save(pid, states, status="running"):
+        if status == "running":
+            raise RuntimeError("db went away")
+        await real(pid, states, status)
+    async with _client() as c:
+        pid = (await _propose(c, _post(), _mass()))["plan_id"]
+        ultra_run._save = save
+        try:
+            assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
+            v = await _until_final(c, pid)
+        finally:
+            ultra_run._save = real
+    assert v["status"] == "failed" and _states(v) == ["skipped", "skipped"] and OF.calls == [], v
 
 
 async def case_executor_crash() -> None:

@@ -21,8 +21,6 @@ import secrets
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import update
-
 import llm_client
 import toolbox
 import toolbox_decide as td
@@ -60,12 +58,6 @@ async def start(request: str, owner_user_id: str, owned: frozenset[str], creds: 
     return pid
 
 
-async def _still_planning(plan_id: str, values: dict[str, Any]) -> bool:
-    async with get_session() as s:
-        return (await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id, UltraPlan.status == "planning")
-                                .values(**values))).rowcount == 1
-
-
 async def _read(name: str, raw_args: str, creds: toolbox.Creds) -> str:
     args = upd.parse_args(raw_args)
     if args is None:
@@ -100,7 +92,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
             if upd.capped(turns, spent):
                 status, error = "capped", TURNS_CAPPED if turns >= upd.MAX_TURNS else SPEND_CAPPED
                 break
-            if not await _still_planning(plan_id, {"plan_json": _body(upd.progress(turns, last))}):
+            if not await ultra_run._flip(plan_id, "planning", {"plan_json": _body(upd.progress(turns, last))}):
                 return  # cancelled (or recovered): the row's end is already written
             res = await llm_client.chat(model=upd.MODEL, messages=msgs, purpose=upd.PURPOSE, account_id=None,
                                         user_id=owner_user_id, tools=upd.TOOLS, temperature=0.2)
@@ -141,7 +133,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
     finally:
         _TASKS.pop(plan_id, None)
         try:  # guarded: a no-op once the plan landed or the row was cancelled
-            await asyncio.shield(_still_planning(plan_id, {
+            await asyncio.shield(ultra_run._flip(plan_id, "planning", {
                 "status": status, "finished_at": datetime.utcnow(),
                 "plan_json": _body(upd.progress(turns, last, error))}))
         except Exception:

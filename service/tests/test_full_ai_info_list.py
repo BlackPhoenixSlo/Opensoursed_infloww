@@ -36,7 +36,8 @@ from automations import full_ai_writers as wr
 from automations.full_ai_config import DEFAULTS, validate
 from automations.welcome_chatter_for_info import _BREATHER_VARIANTS
 
-LIST = {**DEFAULTS, "info_questions": "list"}
+# `lead_in` off: these cases pin wcfi's list as today (the lead form: `case_list_lead_in`).
+LIST = {**DEFAULTS, "info_questions": "list", "lead_in": False}
 NAME = "- You DON'T know his real name yet. Ask what his name is / what you should call him."
 AGE = "- You DON'T know his age yet. Find out how old he is."
 WHERE = "- You DON'T know where he lives. Ask where he's from."
@@ -214,6 +215,23 @@ def case_list_chat_turns():
         # OK_LINE ends on no "?": wcfi reads each of her Turns as a breather, so every Turn asks.
         assert all(json.loads(r.jev_json)["info"]["presented"] for r in rows)
         assert _reply(rows[-1])["asked"] == {"name": 2, "age": 2, "location": 2}, _reply(rows[-1])
+    finally:
+        _store_config(A, {})
+
+
+def case_list_lead_in():
+    """`lead_in` on in list mode: LEAD_HEAD over the LEAD_LINES lines, boobs_ass neither listed nor
+    marked."""
+    _store_config(A, {"checkpoint": {**DEFAULTS, "info_questions": "list"}})
+    try:
+        got, sys_ = _post("p-info-list-lead", 1, "hey you, how was your day", FakeInfoJev())
+        assert got["status"] == "sent", got
+        (row,) = _rows(A, "p-info-list-lead")
+        inf = json.loads(row.jev_json)["info"]
+        assert inf["still_needed"] == ["name", "age", "location", "job", "hobbies"], inf
+        want = "\n".join(wr.LEAD_LINES[k] for k in ("name", "age", "location", "job", "hobbies"))
+        assert wr.LEAD_HEAD + want in sys_ and INTO not in sys_ and wr.ASK_HEAD not in sys_, sys_
+        assert _reply(row)["asked"] == {"name": 1}, _reply(row)
     finally:
         _store_config(A, {})
 

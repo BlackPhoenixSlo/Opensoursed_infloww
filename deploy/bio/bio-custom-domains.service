@@ -1,0 +1,12 @@
+# Bio custom domains → /root/traefik-dynamic/bio-custom-domains.yml (deploy/bio/README.md "Custom domains").
+# Reads the relay DB read-only; writes only the route file and its state. Paths are the public box's
+# (/root/opensoursed_infloww); another box edits ExecStart's flags (sync-custom-domains.py --help).
+[Unit]
+Description=Bio custom domains: Traefik route file sync
+
+[Service]
+Type=oneshot
+Nice=10
+StateDirectory=bio-custom-domains
+TimeoutStartSec=120
+ExecStart=/usr/bin/python3 /root/opensoursed_infloww/deploy/bio/sync-custom-domains.py --db /root/opensoursed_infloww/service/data/chatterly.db --out /root/traefik-dynamic/bio-custom-domains.yml --upstream http://127.0.0.1:8791 --env-file /root/opensoursed_infloww/.env --state /var/lib/bio-custom-domains/state.json

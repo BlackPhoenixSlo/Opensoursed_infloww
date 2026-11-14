@@ -5,7 +5,7 @@ import {
   humanStylePatch, initTestChat, keepMineSave, layersOff, MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, styleLayers,
   testChatReducer, toggleWriterPatch, typosPatch, writerPatch, writersLine, type FanPhoto, type HumanStyle, type PpvLine, type StyleLayers,
   type ConfigBody, type FullAiConfig, type Offer, type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide,
-  sessionTurns,
+  sessionTurns, noReplyText, writersFailed,
 } from "./fullAiTestChat";
 
 const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
@@ -559,6 +559,24 @@ describe("replyLine: how many Writers fell before the one that answered", () => 
       "2 fell before (euryale-v2.3 no_key · hermes-4-405b no_key)"],
   ])("%s → %s", (_n, attempts, fell) => {
     expect(replyLine(reply({ attempts }))).toBe(`Route chat · Heat 1 · Row otherwise · Writer euryale-v2.3 · ${fell}`);
+  });
+});
+
+describe("noReplyText: a failed Turn names its real reason", () => {
+  const a = (writer: string, outcome: string) => ({ writer, outcome, ms: 100 });
+  const failed = (attempts: TurnResponse["attempts"], dropped_reason?: string) =>
+    reply({ status: "failed", parts: [], writer: null, attempts, ...(dropped_reason ? { dropped_reason } : {}) });
+  it.each<[string, TurnResponse, string, boolean]>([
+    ["no Writer answered", failed([a("euryale-v2.3", "no_key"), a("hermes-4-405b", "timeout")]), "no reply: all writers failed", true],
+    ["one answered, chain dropped it: the drop, not the earlier no_key",
+      failed([a("euryale-v2.3", "no_key"), a("hermes-4-405b", "ok")], "banned"), "no reply: the reply chain dropped it (sensitive word)", false],
+    ["empty drop", failed([a("euryale-v2.3", "ok")], "empty"), "no reply: the reply chain dropped it (nothing left to send)", false],
+    ["an old row's echo drop", failed([a("euryale-v2.3", "ok")], "echo"), "no reply: the reply chain dropped it (repeated his line)", false],
+    ["an unknown reason shows as is", failed([a("euryale-v2.3", "ok")], "new_reason"), "no reply: the reply chain dropped it (new_reason)", false],
+    ["no reason on the row", failed([a("euryale-v2.3", "ok")]), "no reply: the reply chain dropped it", false],
+  ])("%s", (_n, r, text, writers) => {
+    expect(noReplyText(r)).toBe(text);
+    expect(writersFailed(r)).toBe(writers);
   });
 });
 

@@ -250,3 +250,15 @@ async def _one_turn(aid: str, fan: int, verdict, *, offer: bool = False) -> tupl
 def _raw(nouls: dict, scores: dict) -> SimpleNamespace:
     return SimpleNamespace(model="jev-1.14.0", nouls={q: SimpleNamespace(noul=p) for q, p in nouls.items()},
                            scores=scores)
+
+
+@contextlib.contextmanager
+def _shape_drop(reason: str = "banned"):
+    """`shape_parts` drops every draft with `reason` (the reply chain's drop, e.g. a banned word)."""
+    from automations import _reply_shape
+    real = _reply_shape.shape_parts
+    _reply_shape.shape_parts = lambda raw, ctx: _reply_shape.Shaped(parts=[], dropped_reason=reason, banned_hits=[])
+    try:
+        yield
+    finally:
+        _reply_shape.shape_parts = real

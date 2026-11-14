@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
+from _full_ai_fixtures import _shape_drop  # noqa: E402
 from _full_ai_chat_helpers import A, OWNER_A, _GIF_TAG, _body, _db, _post, _reply, _rows, _store_config
 from sqlalchemy import func, select
 
@@ -68,7 +69,7 @@ def case_every_route_via_api():
     _set_model_notes(A, notes)
     try:
         cases = [
-            ("chat", _hot(), "chat", "otherwise", w.NO_SELL_OFFERS),
+            ("chat", _hot(), "chat", "otherwise", w.SELL_OFF_LINE),   # selling off: never a promise
             ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT),
             ("dare", _hot(asks_if_ai=0.9), "ai_dare", "asks_if_ai", w.DARE),
             ("mr", _hot(complains_now=0.9), "make_right", "complains_now", w.MAKE_RIGHT_HEAD),
@@ -130,8 +131,11 @@ def case_r10_via_api():
         assert r.status_code == 200 and got["status"] == "sent", r.text
         assert (got["route"], got["route_row"], got["dropped"]) == (route, row, dropped), (tag, got)
         system = _system_of(fw)
-        assert (w.SELL_OFF_LINE in system) is (row in ("sell_off", "tease_off")), tag
-        assert (w.NO_SELL_OFFERS in system) is (row not in ("sell_off", "tease_off")), tag
+        # Selling off in test Mode: no Turn promises a piece (NO_SELL_OFFERS never); a scene Turn
+        # gets SELL_OFF_SCENE, every other SELL_OFF_LINE.
+        scene = w.SEXT_SCENE in system
+        assert w.NO_SELL_OFFERS not in system, tag
+        assert (w.SELL_OFF_SCENE in system, w.SELL_OFF_LINE in system) == (scene, not scene), (tag, scene)
         (stored,) = _rows(A, pair)
         assert (stored.route, stored.route_row) == (route, row), tag
 
@@ -175,12 +179,13 @@ def case_gifs_on_carry_a_gif_part():
         assert got["status"] == "sent" and got["writer"] == "euryale-v2.3", got
         assert [set(p) for p in got["parts"]] == [{"gif", "tag"}], got["parts"]
         # A draft the chain drops stays failed: its sticker does not carry the Turn.
-        pair, his = "p-gif-echo", "what are you doing right now babe"
-        r, *_ = _post(OWNER_A, _body(pair, text=his), f"ok:{his}\nSTICKER: {_GIF_TAG}")
+        pair = "p-gif-drop"
+        with _shape_drop("banned"):
+            r, *_ = _post(OWNER_A, _body(pair), f"ok:hii\nSTICKER: {_GIF_TAG}")
         got = r.json()
         assert (got["status"], got["parts"], got["writer"]) == ("failed", [], None), got
         (row,) = _rows(A, pair)
-        assert _reply(row)["dropped_reason"] == "echo" and _reply(row)["parts"] == [], _reply(row)
+        assert _reply(row)["dropped_reason"] == "banned" and _reply(row)["parts"] == [], _reply(row)
     finally:
         _store_config(A, {})
     # GIFs off (DEFAULTS): no sticker block, the marker still stripped, no gif part.

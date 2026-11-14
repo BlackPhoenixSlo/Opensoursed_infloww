@@ -87,4 +87,40 @@ def case_backoff_read_at_call_time():
     assert llm_attempt_outcome(503, FIRST, N) == Retry(orig)
 
 
+def case_non_object_200_body_fails_cleanly():
+    """A 200 whose JSON is not an object ends as LLMHTTPError with the hold refunded, not an AttributeError."""
+    import asyncio
+
+    class _Resp:
+        def __init__(self, data): self.data = data
+        def raise_for_status(self): pass
+        def json(self): return self.data
+
+    class _Client:
+        def __init__(self, data): self.data = data
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return _Resp(self.data)
+
+    class _Hold:
+        provider, refunds = "deepseek", 0
+        async def refund(self): self.refunds += 1
+
+    orig = llm_client.httpx.AsyncClient
+    try:
+        for data in ("garbage", [1, 2], None, 7):
+            llm_client.httpx.AsyncClient = lambda *a, _d=data, **k: _Client(_d)
+            hold = _Hold()
+            try:
+                asyncio.run(llm_client._fire("http://x", {}, {}, call_id=None, hold=hold, model="m",
+                                             purpose="p", max_attempts=1))
+            except llm_client.LLMHTTPError as e:
+                assert "not an object" in str(e), e
+            else:
+                raise AssertionError(f"{data!r}: no error")
+            assert hold.refunds == 1, data
+    finally:
+        llm_client.httpx.AsyncClient = orig
+
+
 _harness.run()

@@ -42,7 +42,7 @@ def title(tool: td.Tool) -> str:
 
 def card(plan: ud.Plan, names: Mapping[str, str]) -> list[dict[str, Any]]:
     """One card per step: {id, tool, effect, title, rows:[[label, value]], text?}. A send (literal args only)
-    shows its Creator, audience with the fan ids, price, media ids, schedule and its FULL text; any other step
+    shows its Creator (nickname + account id), audience with every fan id, price, media ids, schedule and its FULL text; any other step
     shows every arg (labelled by its name), a reference as "from step <id>"."""
     out, by_id = [], {s["id"]: s for s in plan.steps}
     for s in plan.steps:
@@ -51,7 +51,8 @@ def card(plan: ud.Plan, names: Mapping[str, str]) -> list[dict[str, Any]]:
                         "rows": uj.card_rows(s)})
             continue
         t, a = ud.TOOLS[s["tool"]], s["args"] if ud.TOOLS[s["tool"]].effect == "send" else _shown(s)
-        creator = names.get(a.get("account_id"), a.get("account_id")) if a.get("account_id") else None
+        aid = a.get("account_id")  # nickname + id: two Creators may share a nickname
+        creator = (f"{names[aid]} ({aid})" if aid in names else aid) if aid else None
         rows: list[list[str]] = [["Creator", str(creator)]] if creator else []
         entry: dict[str, Any] = {"id": s["id"], "tool": t.name, "effect": t.effect, "title": title(t)}
         if t.effect == "send":

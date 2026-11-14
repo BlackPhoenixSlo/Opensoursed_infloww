@@ -20,8 +20,9 @@ Cases:
   case_client_address_passed       — the inner request sees the caller's address, not 127.0.0.1.
   case_report_file_scoped          — report_file: download for the creating user (token or cookie) only,
                                      404 to the other Agency, 401 without creds, 404 after 15 min.
-  case_report_file_caps            — per-user 10, global 50, 100 MB total: the caller's own oldest file
-                                     goes, never another user's (else Full, 429); one file over → 413.
+  case_report_file_refused_keeps_own — a put refused Full drops none of the caller's files; per-user bytes cap.
+  case_report_file_caps            — per-user 10 / 20 MB, global 50 / 100 MB: the caller's own oldest file
+                                     goes, never another user's (else Full, 429); one file over 20 MB → 413.
 
 Seeded straight into the temp DB; no network.
 
@@ -376,6 +377,30 @@ def case_report_file_scoped() -> None:
     assert x["filename"].endswith(".xlsx") and x["download_url"].startswith("/admin/reports/files/"), x
 
 
+def case_report_file_refused_keeps_own() -> None:
+    """A refused put drops nothing (preflight), and one user's bytes stop at MAX_BYTES_PER_USER."""
+    saved = dict(report_files._files)
+    report_files._files.clear()
+    real = (report_files.MAX_BYTES, report_files.MAX_BYTES_PER_USER)
+    report_files.MAX_BYTES, report_files.MAX_BYTES_PER_USER = 100, 60
+    try:
+        a = report_files.put("A", "a.csv", "text/csv", b"a" * 10)
+        b = report_files.put("B", "b.csv", "text/csv", b"b" * 60)
+        c = report_files.put("C", "c.csv", "text/csv", b"c" * 25)
+        try:  # 95 held; A's 20 fits only by evicting B or C: refused, A's own file kept
+            report_files.put("A", "a2.csv", "text/csv", b"a" * 20)
+            raise AssertionError("put past MAX_BYTES accepted")
+        except report_files.Full:
+            pass
+        assert all(report_files.get(f.id, f.user_id) is f for f in (a, b, c)), "a refused put dropped a file"
+        b2 = report_files.put("B", "b2.csv", "text/csv", b"b" * 5)  # B at its own cap: its oldest goes first
+        assert report_files.get(b.id, "B") is None and report_files.get(b2.id, "B") is b2
+    finally:
+        report_files.MAX_BYTES, report_files.MAX_BYTES_PER_USER = real
+        report_files._files.clear()
+        report_files._files.update(saved)
+
+
 def case_report_file_caps() -> None:
     saved = dict(report_files._files)
     report_files._files.clear()
@@ -399,20 +424,23 @@ def case_report_file_caps() -> None:
         assert report_files.get(mine1.id, "u1") is None and report_files.get(mine2.id, "u1") is mine2
         assert all(report_files.get(f.id, f.user_id) is f for f in others[1:])
         report_files._files.clear()
-        half = report_files.MAX_BYTES // 2 + 1
-        old = report_files.put("u2", "c.csv", "text/csv", b"x" * half)
-        try:  # over MAX_BYTES only by evicting u2's file: refused
-            report_files.put("u3", "c.csv", "text/csv", b"x" * half)
+        cap = report_files.MAX_BYTES_PER_USER
+        n_full = report_files.MAX_BYTES // cap
+        fillers = [report_files.put(f"w{i}", "c.csv", "text/csv", b"x" * cap) for i in range(n_full)]
+        try:  # over MAX_BYTES only by evicting another user's file: refused
+            report_files.put("u3", "c.csv", "text/csv", b"x")
             raise AssertionError("put past MAX_BYTES evicted another user's file")
         except report_files.Full:
             pass
-        new = report_files.put("u2", "c.csv", "text/csv", b"x" * half)
-        assert report_files.get(old.id, "u2") is None and report_files.get(new.id, "u2") is new
+        new = report_files.put("w0", "c.csv", "text/csv", b"x" * cap)  # its own oldest goes
+        assert report_files.get(fillers[0].id, "w0") is None and report_files.get(new.id, "w0") is new
+        assert all(report_files.get(f.id, f.user_id) is f for f in fillers[1:])
         try:
-            report_files.put("u4", "d.csv", "text/csv", b"x" * (report_files.MAX_BYTES + 1))
-            raise AssertionError("over MAX_BYTES accepted")
+            report_files.put("u4", "d.csv", "text/csv", b"x" * (cap + 1))
+            raise AssertionError("over MAX_BYTES_PER_USER accepted")
         except report_files.TooLarge:
             pass
+        report_files._files.clear()
         f = report_files.put("u5", "e.csv", "text/csv", b"z")
         assert len(f.id) >= 32 and report_files.get(f.id, "u6") is None and report_files.get(f.id, "u5") is f
     finally:

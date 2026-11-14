@@ -1306,7 +1306,10 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
                 resp = await client.post(url, headers=headers, json=body)
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             resp.raise_for_status()
-            return resp.json(), latency_ms
+            data = resp.json()
+            if not isinstance(data, dict):  # a 200 with "…" / [] / null: same handling as a non-JSON body
+                raise ValueError(f"response body is a JSON {type(data).__name__}, not an object")
+            return data, latency_ms
         except httpx.HTTPStatusError as e:
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             status = e.response.status_code

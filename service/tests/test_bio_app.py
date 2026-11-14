@@ -518,6 +518,31 @@ def case_tls_ask():
         store.resolve_host_row = real
 
 
+def case_pending_cert_is_served_and_isolated():
+    """`pending_cert` (DNS proved, certificate on its way) serves the host as its one Profile, like `live`;
+    `pending` names nobody."""
+    def status(s):
+        c = sqlite3.connect(_harness.DB_PATH)
+        c.execute("UPDATE bio_custom_domains SET status = ? WHERE id = 'c2'", (s,))
+        c.commit()
+        c.close()
+    b = {"host": "bob.test"}
+    try:
+        status("pending_cert")
+        assert call("GET", "/internal/tls-ask?domain=bob.test").status_code == 200
+        assert _block(call("GET", "/", **b).text)["username"] == "bob"
+        assert call("GET", "/api/profiles/bob.json", **b).status_code == 200
+        assert call("GET", "/api/profiles/alice.json", **b).status_code == 404
+        assert call("POST", "/v/alice", **b).status_code == 404
+        r = call("GET", f"/.netlify/functions/reveal?id={KEY}", host="bob.test", sec_fetch_site="same-origin")
+        assert r.status_code == 404, "Alice's Link is not Bob's domain's"
+        status("pending")
+        assert call("GET", "/internal/tls-ask?domain=bob.test").status_code == 404
+        assert call("GET", "/api/profiles/alice.json", **b).status_code == 200, "pending: not a custom host"
+    finally:
+        status("pending")
+
+
 def case_error_is_a_fixed_line():
     real = store.profile_with_links
 

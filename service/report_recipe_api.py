@@ -83,11 +83,11 @@ async def make_report_file(body: FileBody) -> Any:
         raise HTTPException(status_code=413, detail=str(e)) from None
     except report_files.Full as e:
         raise HTTPException(status_code=429, detail=str(e), headers={"Retry-After": "60"}) from None
-    return {"id": f.id, "download_url": f"/admin/reports/files/{f.id}", "filename": f.filename,
+    return {"id": f.id, "download_url": report_files.ROUTE.format(file_id=f.id), "filename": f.filename,
             "bytes": len(f.body), "expires_in_s": report_files.TTL_S}
 
 
-@router.get("/admin/reports/files/{file_id}")
+@router.get(report_files.ROUTE)
 async def get_report_file(file_id: str) -> Response:
     user = get_request_user()
     f = report_files.get(file_id, user.id) if user is not None else None

@@ -201,6 +201,11 @@ services:
       # Traefik redirect to BIO_PUBLIC_URL; deploy/bio/README.md "Short address").
       BIO_SHORT_URL: "${BIO_SHORT_URL:-}"
       BIO_HEALTH_URL: "${BIO_HEALTH_URL:-http://openinflowwww-bio:8788/internal/healthz}"
+      # The box's public IPv4 a bio page's custom domain must point its A record at
+      # (deploy/bio/README.md "Custom domains"). Unset = the editor can't add one.
+      BIO_SERVER_IP: "${BIO_SERVER_IP:-}"
+      # Optional: the one AAAA a custom domain may have (unset = it must have none).
+      BIO_SERVER_IPV6: "${BIO_SERVER_IPV6:-}"
       # Custom redirect links' "Bot check before redirect" (service/tracking_links_api.py,
       # Cloudflare Turnstile). Both unset = the option is off and a gated link is a plain 302.
       TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"

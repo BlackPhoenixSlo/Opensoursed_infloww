@@ -1436,6 +1436,26 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   and the same call is admitted for that Creator only; phone saves 7.50 → 750. Checks and the reads budget:
   `lib/ai_cap_faults.py` + the docstring. Fault `ai-cap-ui-sends-dollars-as-cents` (client: the box's dollars sent
   as cents; the DB and admit checks alone). Shots `ai-cap-trigger`, `ai-cap-settled` (+ `-phone`).
+- `2026-11-14-ultra-wild` (`OF_WIRE`, API only): hostile and nonsensical owner requests and planner outputs at
+  Ultra mode (`/admin/ultra/plans`). Leg A (default, no paid call): `lib/ultra_wild_relay.py` fakes the planner's
+  DeepSeek per request (`wild:<case>`): unknown/refused tools, bad args, bad send args (no audience, -5, 20k text,
+  $99999 + a foreign media id), missing/forward/circular refs, 12 calls in a reply, 60 steps, a never-ending
+  planner (25-turn cap), Agency B's ids (seeded by SQL), a vault-text prompt injection, non-JSON / empty / 500 /
+  30 s hang / bad tool JSON / non-object body; plus stale sha, OK races, 20 plans at once, a chatter and a
+  signed-out caller, item-12 weird requests, and one OK'd control send. Leg B (`SLOP_LIVE=1`, `DEEPSEEK_API_KEY`,
+  `--set live=1`): the real planner on ~25 wild requests, never OK'd, 30 model calls hard cap. Checks:
+  `lib/ultra_wild_faults.py` + the docstring (bypasses there). Fault `ultra-ok-ignores-sha` (relay: approve ignores
+  the posted sha; `stale_ok_refused` alone). Evidence `ultra-wild.json`, `ultra-wild-calls.jsonl`.
+
+- `2026-11-14-mcp-wild` (`OF_WIRE`, no UI, no LLM, volume): `POST /admin/mcp` under malformed, hostile and
+  concurrent calls. ~150 table cases (`lib/mcp_wild_cases.py`: protocol, auth, token scope, args, plans, report
+  files, sign-up/login with 2FA) then a weighted mix from (40, 60 s) clients at small; Agency B (real register, SQL
+  Creator/bio page/sales row with sentinels) is the cross-Agency target. Checks (`lib/mcp_wild_faults.py` +
+  docstring): `no_5xx`, `jsonrpc_errors_wellformed`, `no_send_ever`, `no_cross_agency`, `send_tools_never_listed`,
+  `anonymous_only_three_tools`, `revoked_token_dead`, `origin_refused`, `cookie_refused`, `token_scope_403`,
+  `employee_no_token`, `errors_are_plain`, `report_file_owner_only`, `no_stuck_plans`, `cases_answer_as_specified`.
+  Fault `mcp-anon-sees-token-builtins` (`anonymous_only_three_tools` alone). Evidence `mcp-wild.json` (every case
+  redacted: status, rpc code/message, tool outcome, ms; mix p50/p95 + status histogram).
 
 ## Fake servers: thread budget
 

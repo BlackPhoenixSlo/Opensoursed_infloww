@@ -11,16 +11,17 @@ ultra_judge_decide) picks media ids from one Creator's vault_search results; a s
 "$<judge>.ids.0" from a pick_n 1 judge: its page's Creator is checked at run time, owner_check). A rule send's
 folder (ts.FOLDER_ARG) may be "$<earlier of_folder_create step>.id" on its own account_id; no other send ref.
 
-  validate_plan   raw → Plan, or PlanError naming each bad step/field (unknown tool, args the tool's
-                  pydantic model refuses, bad / forward / self references, a reference in a send step,
-                  Creators not the owner's, a step after a rule send: RULES_LAST)
+  validate_plan   raw → Plan, or PlanError naming each bad step/field (a step's null keys dropped first;
+                  unknown tool, args the tool's pydantic model refuses, bad / forward / self references, a
+                  reference in a send step, Creators not the owner's, a step after a rule send: RULES_LAST)
   resolve         a recorded reference → its value in the earlier results (KeyError "$step.path": missing)
   substitute      a step's args with its recorded references filled from earlier results (KeyError: missing)
   started         a step's state just before its call (a send's filled refs as `resolved`, for may_send)
   owner_check     the row a step names whose Creator the executor reads before the call (PAGE_PICK's page)
   digest          sha256 over the canonical post-chain plan: what the owner's OK must echo
   plan_path       the app page of a plan (/ultra/plans/<id>): MCP open_url and the end notification's link
-  outcome         a step's call result → done | failed | uncertain (a send that may have gone out)
+  outcome         a step's call result → done | failed | uncertain (a send that may have gone out, a write with
+                  no answer)
   error_text      a failed call's error detail → one plain sentence ("OnlyFans answered 500: …"), capped
   step_end        a step's call result → its stored state {id, state, open_url, error?, result?, note?}
   may_send        whether a send call is a `started` step of a `running` plan, with that step's tool and args
@@ -225,6 +226,17 @@ def _check_step(raw: Any, seen: dict[str, dict[str, Any]],
     return ({**step, "refs": refs} if refs else step), errors
 
 
+def _normal(raw: Any) -> Any:
+    """A step as the schema lets a client send it (ultra_schema.PlanStep: every key optional, nullable): a key
+    set to null is left out, and a step with no tool drops an empty `args` (a judge). Nothing else changes."""
+    if not isinstance(raw, Mapping):
+        return raw
+    out = {k: v for k, v in raw.items() if v is not None}
+    if "tool" not in out and out.get("args") == {}:
+        del out["args"]
+    return out
+
+
 def validate_plan(raw: Any, owned: frozenset[str]) -> Plan:
     """`raw` as a Plan, or PlanError. `owned`: the owner's Creator ids (every step's account_id must be one)."""
     if not isinstance(raw, Mapping):
@@ -237,7 +249,7 @@ def validate_plan(raw: Any, owned: frozenset[str]) -> Plan:
         raise PlanError([*errors, _err("", "steps", f"a list of 1 to {MAX_STEPS} steps")])
     out, seen = [], {}
     for raw_step in steps:
-        step, errs = _check_step(raw_step, seen, owned)
+        step, errs = _check_step(_normal(raw_step), seen, owned)
         errors += errs
         if step is not None:
             out.append(step)
@@ -326,11 +338,14 @@ def digest(plan_json: Mapping[str, Any]) -> str:
 def outcome(effect: str, result: Mapping[str, Any] | None) -> StepState:
     """A step's call result (None = it raised, timed out or the connection dropped) → its end state.
     A send that may have reached OnlyFans (no answer, a 5xx, or a 2xx failing its echo check: 502) is
-    `uncertain`, never retried; a 4xx refused it. Any other tool's failure is `failed`."""
+    `uncertain`, never retried; a 4xx refused it. A write with no answer may still finish: `uncertain` too.
+    Any other failure is `failed`."""
     status = None if result is None else (result.get("error") or {}).get("status")
     if result is not None and status is None:
         return "done"
     if effect == "send" and (status is None or status >= 500):
+        return "uncertain"
+    if effect == "write" and result is None:
         return "uncertain"
     return "failed"
 

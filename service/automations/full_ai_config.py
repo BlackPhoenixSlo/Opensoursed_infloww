@@ -47,6 +47,9 @@ DEFAULTS: dict[str, Any] = {
     # Test Mode only: the Jev-run sext scene (scene questions, saved scene state, scene Writer
     # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (10-control limit).
     "sext_scene": True,
+    # Test Mode only: get-to-know asks led into, not asked straight (lead-in lines, few-shots, a
+    # beat of her own, the info Jev's lead wording; owner 2026-11-14). JSON-only switch.
+    "lead_in": True,
     "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
     "draft_questions": False,   # 03b: DRAFT Router questions count (test Mode only, ticket 47)
     "writers": ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash"],
@@ -58,6 +61,11 @@ DEFAULTS: dict[str, Any] = {
     "typing_sign": True,
     "typing_notification": True,
     "caption_writer": "chat",   # PPV caption: "chat" = the chat Writer's last bubble; "caption" = its own call
+    # Test Mode only: a sell ask nothing in the vault matches sells the nearest piece (same subject,
+    # then same format, then anything) instead of no PPV. "off" = no_match as before; "plain" = the
+    # caption as today; "note" = the Writer also plays his ask out as a story from what the piece shows (NEW-140).
+    # JSON-only switch (10-control limit).
+    "sell_nearest": "note",
     "describe_fan_photos": False,   # read his photo (inbound_describe, DeepInfra); JSON-only switch
 }
 
@@ -68,6 +76,7 @@ STYLE_LAYERS: tuple[str, ...] = tuple(DEFAULTS["style"])
 LEGACY_KEYS: tuple[str, ...] = ("text_style",)         # accepted on a write, never stored
 INFO_QUESTIONS: tuple[str, ...] = ("pick", "list")
 CAPTION_WRITERS: tuple[str, ...] = ("chat", "caption")    # full_ai_caption
+SELL_NEAREST: tuple[str, ...] = ("off", "plain", "note")   # full_ai_sell.pick(nearest=)
 MAX_WRITERS = 4
 WRITER_TIMEOUT_S = (5, 60)
 # The Writer hosts (D54, D60): a Writer is a known model on one of them.
@@ -75,7 +84,7 @@ WRITER_PROVIDERS: frozenset[str] = frozenset({"nanogpt", "openrouter", "zai", "d
 # A folder ref (03b): an internal vault folder `vf:<vault_folders.id>` or an OF list `of:<id>`.
 FOLDER_REF = re.compile(r"(vf|of):[0-9]+")
 _FOLDER_KEYS = ("include", "exclude")
-_BOOLS = ("gifs", "sext_on", "sext_scene", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
+_BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
           "describe_fan_photos")
 
 
@@ -163,6 +172,8 @@ def validate(cfg: Any) -> list[str]:
         bad("style", why)
     if c["caption_writer"] not in CAPTION_WRITERS:
         bad("caption_writer", f"must be one of {', '.join(CAPTION_WRITERS)}")
+    if c["sell_nearest"] not in SELL_NEAREST:
+        bad("sell_nearest", f"must be one of {', '.join(SELL_NEAREST)}")
     for k in _BOOLS:
         if not isinstance(c[k], bool):
             bad(k, "must be true or false")

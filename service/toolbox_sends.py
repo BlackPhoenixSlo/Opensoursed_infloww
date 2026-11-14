@@ -8,9 +8,10 @@ make a switched-on automation rule instead (mass_premade / auto_stories from a v
 """
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any, Mapping
 
-from pydantic import Field, StrictInt, StringConstraints, model_validator
+from pydantic import AfterValidator, Field, StrictInt, StringConstraints, field_validator, model_validator
 
 from toolbox_args import CREATOR as _CREATOR, Args
 
@@ -19,16 +20,33 @@ _ListRef = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 _Text = Annotated[str, StringConstraints(min_length=1, max_length=5000)]
 _ISO = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$"
 MAX_MEDIA = 50
+
+
+def _whole_cents(v: float) -> float:
+    """The card shows cents; a price with finer decimals would OK one figure and send another."""
+    if not math.isfinite(v) or abs(v * 100 - round(v * 100)) > 1e-6:
+        raise ValueError("price must be whole cents (e.g. 9.99)")
+    return v
+
+
+_Price = Annotated[float, AfterValidator(_whole_cents)]
 _TEXT = "The exact text OnlyFans shows. The plan stores it after the send chain; the owner approves it verbatim."
 _MEDIA = "Vault media ids to attach (ids from vault_search)."
-_PRICE = "Price in dollars; 0 = free. A paid one locks the media (previews stay free)."
+_PRICE = "Price in dollars; 0 = free, else $3-$200. A paid one locks the media (previews stay free)."
 _PREVIEWS = "Media ids (a subset of media_files) shown free on a paid one."
 
 
 class _Paid(Args):
     media_files: list[_MediaId] = Field(default_factory=list, max_length=MAX_MEDIA, description=_MEDIA)
-    price: float = Field(0, ge=0, description=_PRICE)
+    price: _Price = Field(0, ge=0, description=_PRICE)
     previews: list[_MediaId] = Field(default_factory=list, max_length=MAX_MEDIA, description=_PREVIEWS)
+
+    @field_validator("price")
+    @classmethod
+    def _price_band(cls, v: float) -> float:  # OnlyFans' own band; the same one the composer holds
+        if v and not 3 <= v <= 200:
+            raise ValueError("a price is 0 (free) or between $3 and $200")
+        return v
 
     @model_validator(mode="after")
     def _previews_in_media(self):
@@ -71,7 +89,7 @@ class PostCreateArgs(_Paid):
 # Automation-rule sends: an ON rule from a vault folder, over POST /admin/automation-rules (`rule_body`); the
 # rule fires on the next executor tick, then every `every_hours`, until switched off.
 _FOLDER = "Vault folder id to pull random photos from (of_folders_list)."
-_EVERY = "Hours between runs; the first runs within a minute of the OK. Runs until switched off."
+_EVERY = "Hours between runs; the first runs within a minute of this step starting. Runs until switched off."
 
 
 class _Rule(Args):
@@ -83,7 +101,7 @@ class AutoMassArgs(_Rule):
     text: _Text = Field(description=_TEXT)
     media_folder_id: int = Field(ge=1, description=_FOLDER)
     media_count: int = Field(1, ge=1, le=MAX_MEDIA, description="Photos per mass, picked at random each run.")
-    price: float = Field(0, ge=0, description="Price in dollars; 0 = free. A paid one locks the photos.")
+    price: _Price = Field(0, ge=0, description="Price in dollars; 0 = free. A paid one locks the photos.")
     user_lists: list[_ListRef] = Field(min_length=1, max_length=20, description=MassSendArgs.model_fields[
         "user_lists"].description)
     excluded_user_lists: list[_ListRef] = Field(default_factory=list, max_length=20,
@@ -142,9 +160,6 @@ def kept_note(body: Any) -> str | None:
 
 # ── the plan card's send rows (ultra_card.card) ───────────────────────────
 
-SHOW_IDS = 10  # ids a card row lists before "+N more"
-
-
 def _money(v: Any) -> str:
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return "free" if v == 0 else f"${v:,.2f}"
@@ -152,9 +167,9 @@ def _money(v: Any) -> str:
 
 
 def _ids(xs: list[Any]) -> str:
-    """A list of literal ids for the card: the first SHOW_IDS, then how many more."""
-    more = f" +{len(xs) - SHOW_IDS} more" if len(xs) > SHOW_IDS else ""
-    return ", ".join(map(str, xs[:SHOW_IDS])) + more
+    """Every literal id a send uses, for the card: the owner's OK covers exactly these (bounded by the args'
+    max_length: ≤1000 fan ids, ≤MAX_MEDIA media)."""
+    return ", ".join(map(str, xs))
 
 
 def _audience(args: Mapping[str, Any]) -> str:
@@ -169,7 +184,7 @@ def _audience(args: Mapping[str, Any]) -> str:
 
 def _rule_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any]) -> list[list[str]]:
     folder = shown.get(FOLDER_ARG[kind]) or f"vault folder {args[FOLDER_ARG[kind]]}"
-    when = ["When", f"within a minute of the OK, then every {args['every_hours']} h until switched off"]
+    when = ["When", f"within a minute of this step starting, then every {args['every_hours']} h until switched off"]
     if kind == "auto_story":
         ttl = args.get("hours_to_live")
         return [["Audience", "her stories (every subscriber)"],

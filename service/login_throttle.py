@@ -21,6 +21,11 @@ complete (`Attempt.succeeded`), never on a right password alone, so passing the
 password again buys no extra 2FA guesses.
 
 One username key for both principals, and the 2FA code step uses it too.
+
+Sign-up (`take_register`, POST /auth/register, also MCP register_account's in-process call as
+the caller's address): one bucket per client IP, REGISTER_CAPACITY refilling one per
+REGISTER_REFILL_S, taken once the username and password are valid. It bounds new owner rows and
+"username already taken" probing from one address.
 """
 
 from __future__ import annotations
@@ -41,6 +46,8 @@ USER_CAPACITY = 30
 USER_REFILL_S = 20.0  # 30 per 10 minutes
 IP_CAPACITY = 20
 IP_REFILL_S = 30.0
+REGISTER_CAPACITY = 20  # a slop world registers up to 10 Agencies from one address; 2x headroom
+REGISTER_REFILL_S = 180.0  # 20 per hour
 # Soft cap on tracked keys (token_bucket): past it only refilled buckets are
 # dropped, so a drained username or IP bucket is never forgotten however many
 # other keys a guesser writes; the store grows instead.
@@ -52,8 +59,8 @@ _buckets = Buckets(_MAX_KEYS)
 
 
 def _limits(key: tuple[str, ...]) -> tuple[int, float]:
-    return {"name": (NAME_CAPACITY, NAME_REFILL_S), "user": (USER_CAPACITY, USER_REFILL_S)}.get(
-        key[0], (IP_CAPACITY, IP_REFILL_S))
+    return {"name": (NAME_CAPACITY, NAME_REFILL_S), "user": (USER_CAPACITY, USER_REFILL_S),
+            "register": (REGISTER_CAPACITY, REGISTER_REFILL_S)}.get(key[0], (IP_CAPACITY, IP_REFILL_S))
 
 
 def _level(key: tuple[str, ...], now: float) -> float:
@@ -99,18 +106,30 @@ def take(request: Request, username: str) -> Attempt:
         wait = max(wait_s(lv, _limits(k)[1]) for k, lv in short)
         log.warning("sign-in throttled addr=%s key=%s buckets=%s retry_after=%ss", addr, ip,
                     ",".join(k[0] for k, _ in short), wait)
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "code": "too_many_attempts",
-                "message": f"Too many sign-in attempts. Try again in {_wait_words(wait)}.",
-                "retry_after": wait,
-            },
-            headers={"Retry-After": str(wait)},
-        )
+        raise _too_many("Too many sign-in attempts.", wait)
     for key, level in zip(keys, levels):
         _buckets.put(key, level - 1, now, *_limits(key))
     return Attempt(keys)
+
+
+def take_register(request: Request) -> None:
+    """One sign-up token for this client address, or 429."""
+    addr = client_addr.client_address(request)
+    key = ("register", bucket_key(addr))
+    wait = _buckets.take(key, *_limits(key), _clock())
+    if wait is not None:
+        log.warning("sign-up throttled addr=%s key=%s retry_after=%ss", addr, key[1], wait)
+        raise _too_many("Too many sign-ups from this address.", wait)
+
+
+def _too_many(what: str, wait: int) -> HTTPException:
+    """The 429 both throttles answer (the app and MCP read `code` / `retry_after`)."""
+    return HTTPException(
+        status_code=429,
+        detail={"code": "too_many_attempts", "message": f"{what} Try again in {_wait_words(wait)}.",
+                "retry_after": wait},
+        headers={"Retry-After": str(wait)},
+    )
 
 
 def _wait_words(seconds: int) -> str:

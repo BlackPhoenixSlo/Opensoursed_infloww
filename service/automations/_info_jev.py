@@ -18,7 +18,10 @@ NEW-115; not probed yet.
     failure (no key, no SDK, timeout, HTTP error, a missing or out-of-range answer).
   - `extract(facts, fields, *, timeout_s)`: the fired fields' new values; raises
     `llm_client.LLMError` or `ExtractError("unparsable")`.
-  - `question_line(field, fan_info)`: wcfi's verbatim ask line for a `missing` field.
+  - `question_line(field, fan_info)`: wcfi's verbatim ask line for a `missing` field;
+    `question_key` its wcfi key (the Writer's `LEAD_LINES` key with `lead_in`).
+  - `lead_in` (test Mode): `NEXT_QUESTION_LEAD` / `INFO_VERSION_LEAD`, and `askable` drops
+    `NEVER_LED` (fetishes) from what she goes for.
   - `info_questions: "list"` (DRAFT; default "pick" is the Choice above): no Choice; the Writer
     gets wcfi's whole still-need list. `still_needed(config, fan_info, asked)`,
     `ask_list(config, fan_info, asked, history, rng)` -> `AskList` (wcfi's ask/breather call) and
@@ -105,16 +108,31 @@ NEXT_QUESTION: dict[str, Any] = {
         "none": "Ask him nothing this message",
     },
 }
+# Config `lead_in` (test Mode, `full_ai_writers.lead_flag`; owner 2026-11-14): fewer asks, each
+# led into. DRAFT NEW-139; criteria unchanged. Off (and Shadow): NEXT_QUESTION, digest unmoved.
+NEXT_QUESTION_LEAD: dict[str, Any] = {
+    "instructions": (
+        "She is getting to know him in a flirty chat and wants it to feel like talking, not an "
+        "interview. Which ONE thing about him could she lead toward next, so it flows from what he "
+        "just said in `fan_new_messages`? `asked` says how many times she already went for each one: "
+        "a topic he dodged can wait. Pick none if he just asked her something, if `her_last_line` "
+        "already ends on a question, or if it would feel forced. Most messages need none."),
+    "criteria": NEXT_QUESTION["criteria"],
+}
+# With `lead_in` never asked (he still states it: `stated_fetishes`), so never waited for.
+NEVER_LED = ("fetishes",)
 
 
-def info_version() -> str:
+def info_version(lead: bool = False) -> str:
     """A short digest of what changes what Jev answers: model, wording, threshold, state keys."""
     return hashlib.sha256(json.dumps(
-        {"model": MODEL, "stated": STATED, "next_question": NEXT_QUESTION, "threshold": THRESHOLD,
-         "state_keys": STATE_KEYS}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+        {"model": MODEL, "stated": STATED, "next_question": NEXT_QUESTION_LEAD if lead else NEXT_QUESTION,
+         "threshold": THRESHOLD, "state_keys": STATE_KEYS},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 INFO_VERSION = info_version()
+INFO_VERSION_LEAD = info_version(lead=True)
 
 
 class ExtractError(Exception):
@@ -133,6 +151,11 @@ def missing(config: dict, fan_info: dict) -> list[str]:
     return [k for k in config["info_fields"] if not nonempty(fan_info.get(k))]
 
 
+def askable(config: dict, fan_info: dict, lead: bool) -> list[str]:
+    """`missing`, less `NEVER_LED` with `lead` (`lead_in`): what she may still go for. Pure."""
+    return [k for k in missing(config, fan_info) if not (lead and k in NEVER_LED)]
+
+
 def state(router_state: dict, asked: dict, offered: list[str]) -> dict[str, Any]:
     """His Turn and the thread as the Router reads them, and how often each offered field was
     asked."""
@@ -144,27 +167,29 @@ def _client(key: str) -> Any:
     return _jev.client(key, MODEL, TIMEOUT_S, MAX_RETRIES)
 
 
-def _questions(offered: list[str]) -> dict[str, Any]:
+def _questions(offered: list[str], lead: bool = False) -> dict[str, Any]:
     from typesafe_sdk import Choice, Noul
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
                          for qid, v in STATED.items()}
     if offered:                                 # nothing to offer: nothing to pick
-        crit = NEXT_QUESTION["criteria"]
-        q["next_question"] = Choice(instructions=NEXT_QUESTION["instructions"],
+        nq = NEXT_QUESTION_LEAD if lead else NEXT_QUESTION
+        crit = nq["criteria"]
+        q["next_question"] = Choice(instructions=nq["instructions"],
                                     criteria={k: crit[k] for k in [*offered, "none"]})
     return q
 
 
-async def ask(st: dict[str, Any], account_id: str, offered: list[str], *, timeout_s: float) -> Info:
+async def ask(st: dict[str, Any], account_id: str, offered: list[str], *, timeout_s: float,
+              lead: bool = False) -> Info:
     """Every `stated_*` Noul and the `next_question` Choice over `offered` + none (no Choice when
-    nothing is offered), in one request within `min(TIMEOUT_S, timeout_s)`. Raises `GateError` on
-    any failure."""
+    nothing is offered; `lead`: NEXT_QUESTION_LEAD's wording), in one request within
+    `min(TIMEOUT_S, timeout_s)`. Raises `GateError` on any failure."""
     from tenant_keys import typesafe_key_for
     try:
         key = await typesafe_key_for(account_id)
         if not key:
             raise GateError("no TypeSafe key (agency or TYPESAFE_API_KEY)")
-        res = await asyncio.wait_for(_client(key).system_one(st, _questions(offered), model=MODEL),
+        res = await asyncio.wait_for(_client(key).system_one(st, _questions(offered, lead), model=MODEL),
                                      min(TIMEOUT_S, timeout_s))
         stated = {qid.removeprefix("stated_"): float(res.nouls[qid].noul) for qid in STATED}
         bad = [f for f, p in stated.items() if not 0.0 <= p <= 1.0]
@@ -205,13 +230,22 @@ _LINE_KEYS = {"real_name": ("name",), "his_age": ("age",),
               "occupation": ("job",), "hobbies": ("hobbies",), "fetishes": ("boobs_ass",)}
 
 
+def _wcfi_lines(fan_info: dict) -> dict[str, str]:
+    f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
+                        **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
+    return dict(_questions_still_needed(f, set()))
+
+
+def question_key(field: str, fan_info: dict) -> str:
+    """wcfi's line key (`_LINE_KEYS`) for a `missing` field given the fold. Pure."""
+    lines = _wcfi_lines(fan_info)
+    return next(k for k in _LINE_KEYS[field] if k in lines)
+
+
 def question_line(field: str, fan_info: dict) -> str:
     """wcfi's verbatim ask line for a `missing` field given the fold (wcfi lists a line for every
     field `missing` returns: both read `nonempty`). Pure."""
-    f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
-                        **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
-    lines = dict(_questions_still_needed(f, set()))
-    return next(lines[k] for k in _LINE_KEYS[field] if k in lines)
+    return _wcfi_lines(fan_info)[question_key(field, fan_info)]
 
 
 # ── `info_questions: "list"` (DRAFT): wcfi's whole still-need list, no Choice ─────────────────

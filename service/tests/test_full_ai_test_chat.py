@@ -16,7 +16,7 @@ equal before and after, no `automation_runs` row, every send path patched to rai
                                          the account-wide style switches (set against each side) unread
   case_typos_off_skips_only_the_typo_pass  `style.typos` off on the draft: its parts = the girl chain
                                          without the typo throttle, the checkpoint's keep it, no typo state
-  case_echo_is_failed                    a reply shape_parts drops as echo: failed, dropped_reason echo
+  case_echo_is_sent                    her line repeating his is sent; a chain drop: failed + dropped_reason
   case_typo_state_is_the_sessions        no Fan read or written; the state lands in reply_json
   case_wait_s_is_drawn_not_slept         in "0-2m", same per session:n, the handler under 1 s
   case_double_post_and_skipped_n_409     one row then 409; n = count + 2: 409, no row
@@ -50,7 +50,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
-from _full_ai_fixtures import QUIET, QUIET_TEST, FakeJev, FakeWriterHTTP, _fake_jev
+from _full_ai_fixtures import QUIET, QUIET_TEST, FakeJev, FakeWriterHTTP, _fake_jev, _shape_drop
 from automations import _info_jev, _router_jev, full_ai_chat, full_ai_sell, full_ai_test, full_ai_turn, full_ai_writers
 from automations._outbound import finalize_draft
 from automations._style_flags import STYLE_AUTOMATIONS, nonnative_flag_key, spacing_flag_key, typo_flag_key
@@ -169,16 +169,27 @@ def case_typos_off_skips_only_the_typo_pass():
         _reply(ck_row)["typo_state"], _reply(dr_row)["typo_state"])
 
 
-def case_echo_is_failed():
-    pair, his = "p-echo", "what are you doing right now babe"
-    r, fw, *_ = _post(OWNER_A, _body(pair, text=his), f"ok:{his}")
+def case_echo_is_sent():
+    """No echo pass (owner 2026-11-14, "Happy halloween" got no reply): her line repeating his is
+    sent. A draft the chain does drop (a banned word): failed, the reason on the answer and the row."""
+    pair, his = "p-echo", "happy halloween"
+    r, fw, *_ = _post(OWNER_A, _body(pair, text=his), "ok:happy halloween to u too")
     got = r.json()
     assert r.status_code == 200, r.text
+    assert got["status"] == "sent" and got["parts"] and "dropped_reason" not in got, got
+    assert "halloween" in " ".join(p["text"] for p in got["parts"]), got["parts"]
+    (row,) = _rows(A, pair)
+    assert _reply(row)["dropped_reason"] is None, _reply(row)
+    pair = "p-drop"
+    with _shape_drop("banned"):
+        r, fw, *_ = _post(OWNER_A, _body(pair), "ok:hii")
+    got = r.json()
     assert (got["status"], got["parts"], got["writer"], got["wait_s"]) == ("failed", [], None, None), got
-    assert len(fw.requests) == 1, fw.requests
+    assert got["dropped_reason"] == "banned" and len(fw.requests) == 1, (got, fw.requests)
     (row,) = _rows(A, pair)
     assert row.status == "failed" and row.writer_model is None, (row.status, row.writer_model)
-    assert _reply(row)["dropped_reason"] == "echo", _reply(row)
+    assert _reply(row)["dropped_reason"] == "banned", _reply(row)
+    assert full_ai_test.session_row(row)["dropped_reason"] == "banned", full_ai_test.session_row(row)
 
 
 def case_typo_state_is_the_sessions():

@@ -125,7 +125,7 @@ FLAG_OFF_PROMPTS_SHA = "00570ca587295d9a7222dad2e8fe1be44a375476e9317e7e90aea279
 
 def case_flag_off_prompts_pinned():
     """Flag off: chat, sext, hot / cold / apart sell, a hot Refusal and offer_moment, GIFs off and
-    on, byte-identical to the builder before the sext scene."""
+    on, byte-identical to the builder before the sext scene (`lead_in` off too)."""
     cases = []
     for gifs in (False, True):
         for route, row, pick, hot, plain in (
@@ -133,8 +133,12 @@ def case_flag_off_prompts_pinned():
                 ("sell_now", "sell", PICK, True, False), ("sell_now", "sell", PICK, False, False),
                 ("sell_now", "sell", PICK, True, True), ("sell_now", "sell", Refusal("no_match"), True, False),
                 ("sell_now", "offer_moment", PICK, False, False)):
-            cases.append(wr.messages_for(route, row, 3, _turn(gifs=gifs, sext_scene=False), pick,
+            cases.append(wr.messages_for(route, row, 3, _turn(gifs=gifs, sext_scene=False, lead_in=False), pick,
                                          hot=hot, plain=plain))
+    # Selling off in test Mode puts SELL_OFF_LINE in NO_SELL_OFFERS' place (sell_nearest PR); put
+    # back, every prompt is byte-identical to the pinned builder.
+    cases = json.loads(json.dumps(cases).replace(json.dumps(wr.SELL_OFF_LINE)[1:-1],
+                                                 json.dumps(wr.NO_SELL_OFFERS)[1:-1]))
     got = hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest()
     assert got == FLAG_OFF_PROMPTS_SHA, got
 

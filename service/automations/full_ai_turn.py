@@ -61,7 +61,7 @@ from automations.full_ai_sell import Pick, Refusal, Teased
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
-    PURPOSE, _outcome, gif_offered, scene_flag, scene_of, scene_turn, style_flags, was_cents_of, write,
+    PURPOSE, _outcome, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, was_cents_of, write,
 )
 from automations.full_ai_config import merged, turn_bound_s
 from automations.welcome_chatter_for_info import _HISTORY_TAIL, _REPLY_MAX_CHARS
@@ -123,6 +123,7 @@ class TurnResult:
     caption: dict | None = None     # `reply_json.caption` (`caption_writer` "caption" on a PPV Turn)
     scene: dict | None = None       # `reply_json.scene` (config `sext_scene`): the saved scene
     price: dict | None = None       # `reply_json.price` (config `sext_scene`): the price Jev
+    dropped_reason: str | None = None   # why the reply chain dropped her text: empty | banned
 
 
 async def stored_config(account_id: str) -> dict:
@@ -184,8 +185,13 @@ async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -
     err = await _info_stage(facts, route, deadline, jev_json)
     if route == "chat" and facts.config["info_questions"] == "list":
         history = [(m.direction, router.line_text(m)) for m in facts.cut_rows[-_HISTORY_TAIL:]]
-        al = facts.ask_list = _info_jev.ask_list(facts.config, facts.fan_info, facts.asked, history,
-                                                 random.Random(f"full_ai:ask:{facts.anchor_key}"))
+        al = _info_jev.ask_list(facts.config, facts.fan_info, facts.asked, history,
+                                random.Random(f"full_ai:ask:{facts.anchor_key}"))
+        if lead_flag(facts):                    # boobs_ass is never led to: not listed, not marked
+            keep = [i for i, k in enumerate(al.keys) if k != "boobs_ass"]
+            al = _info_jev.AskList([al.keys[i] for i in keep], [al.lines[i] for i in keep],
+                                   al.ask and bool(keep))
+        facts.ask_list = al
         jev_json.setdefault("info", {}).update(info_questions="list", still_needed=al.keys,
                                                presented=al.presented)
     return err
@@ -197,16 +203,18 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     `min(writer_timeout_s, time left)`. Sets `facts.fan_info` (a new dict, newer values win) and
     `facts.next_question`: Jev's pick while it is still missing after the extract (so the pick is
     exactly what the Writer asks, and what `asked` counts). Returns `info_error` (None when all
-    ran)."""
-    jev_json["info_version"] = _info_jev.INFO_VERSION
+    ran). `lead_flag` (`lead_in`, test Mode): the lead wording (`INFO_VERSION_LEAD`) and fetishes
+    is never offered (`_info_jev.askable`): a pick of it fails the Choice (`jev_failed`, no ask)."""
+    lead = lead_flag(facts)
+    jev_json["info_version"] = _info_jev.INFO_VERSION_LEAD if lead else _info_jev.INFO_VERSION
     left = deadline - time.monotonic()
     if left <= 0:
         return "deadline"
     choice_on = route == "chat" and facts.config["info_questions"] == "pick"
-    offered = _info_jev.missing(facts.config, facts.fan_info) if choice_on else []
+    offered = _info_jev.askable(facts.config, facts.fan_info, lead) if choice_on else []
     st = _info_jev.state(facts.state, facts.asked, offered)
     try:
-        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left)
+        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left, lead=lead)
     except router.GateError as e:
         return f"jev_failed: {e}"[:300]
     jev_json["info"] = {"stated": info.stated, "pick": info.pick, "fired": info.fired,
@@ -249,10 +257,11 @@ async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = Fals
     name_protect = [n for n in (facts.fan_info.get(k) for k in
                                 ("real_name", "generated_nickname", "of_display_name")) if n]
     rows = facts.cut_rows
-    his = [router.line_text(m) for m in rows if m.direction == "in"]
+    # No echo pass (owner 2026-11-14): `_looks_like_echo` dropped natural answers that repeat his
+    # words ("happy halloween" -> "happy halloween to u too"), so he got no reply. wcfi keeps its own.
     shaped = _reply_shape.shape_parts(text, _reply_shape.ShapeCtx(
         seed_id=fid, max_bubbles=max_bubbles, max_chars=_REPLY_MAX_CHARS, lang=None,
-        echo_of=his[-1] if his else None, style_on=flags["style_on"],
+        echo_of=None, style_on=flags["style_on"],
         recent_out=[router.line_text(m) for m in rows if m.direction == "out"], allow_empty=False,
         banned_words=words, banned_mode=mode, nonnative_on=flags["nonnative_on"],
         spacing_on=flags["spacing_on"], name_protect=name_protect, force_single=single))
@@ -322,7 +331,10 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     broken Turn, as `load_rows` itself fails closed. Overturned if such errors should surface.
     Sext scene (config `sext_scene`): the ask's Heat is the saved scene's (`facts.scene_now`) and a
     fresh Pick (no haggle, tease piece or Free item) aims at Jev's `offer_level` lane
-    (`LEVEL_CENTS`; "any" keeps the heat target), recorded as `reply["level"]`."""
+    (`LEVEL_CENTS`; "any" keeps the heat target), recorded as `reply["level"]`.
+    Nearest piece (config `sell_nearest` "plain" / "note", `nearest_flag`): a fresh sell_now Pick
+    (no haggle, tease piece or Free item) whose ask nothing matches sells the nearest piece
+    (`pick(nearest=True)`), recorded as `reply["nearest"]` = {asked_subject, asked_format, step}."""
     reply = {} if reply is None else reply
     aid = facts.account_id
     heat = max(1, min(4, int(facts.scene_now["heat"] if facts.scene_now else d.heat)))
@@ -363,7 +375,12 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
                 pool = [r for r in pool if r["list_cents"] <= teased.list_cents]
             shoots = await full_ai_sell.shoots_for(aid, pool, prints)
             got = full_ai_sell.pick(pool, shoots, ask, free=free, target=level_target,
-                                    seed=full_ai_sell.seed_for(aid, str(facts.fan_id), facts.anchor_key))
+                                    seed=full_ai_sell.seed_for(aid, str(facts.fan_id), facts.anchor_key),
+                                    nearest=(nearest_flag(facts) and d.route == "sell_now"
+                                             and not (haggle or teased)))
+            if isinstance(got, Pick) and "asked" in got.facts:
+                reply["nearest"] = {"asked_subject": ask.subject, "asked_format": ask.format,
+                                    "step": got.facts["nearest"]}
         if haggle and isinstance(got, Pick):
             got = _haggled(got, teased, same is not None, facts.state["fan_new_messages"])
         facts.pick = got
@@ -625,4 +642,4 @@ async def run_turn(facts: TurnFacts) -> TurnResult:
     row_id = await full_ai_test.record(row)
     return TurnResult(row_id, d, reply["parts"], writer, reply["attempts"], reply["wait_s"],
                       row["status"], full_ai_test.offer_of(row), reply.get("caption"),
-                      reply.get("scene"), reply.get("price"))
+                      reply.get("scene"), reply.get("price"), reply.get("dropped_reason"))

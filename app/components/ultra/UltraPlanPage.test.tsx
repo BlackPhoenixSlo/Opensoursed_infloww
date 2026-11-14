@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import UltraPlanPage from "@/components/ultra/UltraPlanPage";
+import { ReportDownload } from "./ReportDownload";
 import { RelayError } from "@/lib/relay";
 import type { PlanView } from "./ultraRunReducer";
 
@@ -27,13 +28,16 @@ let getImpl: () => Promise<PlanView> = async () => view();
 /** The default POST answers running, and the plan reads running from then on (as the Relay would). */
 const toRunning = async () => { const v = view({ status: "running" }); getImpl = async () => v; return v; };
 let postImpl: () => Promise<PlanView> = toRunning;
+const { relayFile, saveBlob } = vi.hoisted(() => ({ relayFile: vi.fn(), saveBlob: vi.fn() }));
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()),
   relay: {
     get: (p: string) => { gets.push(p); return getImpl(); },
     post: (p: string, b: unknown) => { posts.push([p, b]); return postImpl(); },
   },
+  relayFile: (...a: unknown[]) => relayFile(...a),
 }));
+vi.mock("@/lib/csv", () => ({ saveBlob: (...a: unknown[]) => saveBlob(...a) }));
 
 afterEach(() => {
   cleanup();
@@ -41,6 +45,8 @@ afterEach(() => {
   posts.length = 0;
   getImpl = async () => view();
   postImpl = toRunning;
+  relayFile.mockReset();
+  saveBlob.mockReset();
 });
 
 describe("UltraPlanPage", () => {
@@ -96,6 +102,79 @@ describe("UltraPlanPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("plan expired");
   });
 
+  it("a done report file has a download link to the held file; a failed one has none", async () => {
+    const card = [
+      { id: "r1", tool: "report_file", effect: "read" as const, title: "Report File", rows: [["format", "csv"]] as [string, string][] },
+      { id: "r2", tool: "report_file", effect: "read" as const, title: "Report File", rows: [["format", "csv"]] as [string, string][] },
+    ];
+    getImpl = async () => view({ status: "done", card,
+      step_states: [{ id: "r1", state: "done", result: { id: "ab_c-1" } }, { id: "r2", state: "failed", error: "too large" }] });
+    render(<UltraPlanPage planId="p1" />);
+    const link = await screen.findByRole("link", { name: "Download file" });
+    expect(link).toHaveAttribute("href", "/admin/reports/files/ab_c-1");
+    expect(link).toHaveAttribute("download");
+    expect(document.querySelector('[data-step="r1"]')).not.toHaveTextContent("Id:");
+    expect(document.querySelector('[data-step="r2"] [data-step-download]')).toBeNull();
+  });
+
+  describe("report file download", () => {
+    const card = [{ id: "r1", tool: "report_file", effect: "read" as const, title: "Report File",
+      rows: [["format", "xlsx"]] as [string, string][] }];
+    const done = (finished_at: string | null) => view({ status: "done", card, finished_at,
+      step_states: [{ id: "r1", state: "done", result: { id: "f1" } }] });
+    const EXPIRED = "This link has expired (links last 15 minutes). Ask Ultra for the report again.";
+
+    it("fetches the held file and saves it under the relay's name (the server default otherwise)", async () => {
+      getImpl = async () => done(new Date().toISOString());
+      const blob = new Blob(["a,b"]);
+      relayFile.mockResolvedValueOnce({ blob, name: "Ava earnings.xlsx" }).mockResolvedValueOnce({ blob, name: null });
+      render(<UltraPlanPage planId="p1" />);
+      const link = await screen.findByRole("link", { name: "Download file" });
+      expect(screen.getByText("link lasts 15 minutes")).toBeInTheDocument();
+      fireEvent.click(link);
+      await vi.waitFor(() => expect(saveBlob).toHaveBeenCalledWith("Ava earnings.xlsx", blob));
+      expect(relayFile).toHaveBeenCalledWith("/admin/reports/files/f1");
+      fireEvent.click(link);
+      await vi.waitFor(() => expect(saveBlob).toHaveBeenLastCalledWith("report.xlsx", blob));
+    });
+
+    it("a 404 (link gone) shows the expired line instead of the link; nothing is saved", async () => {
+      getImpl = async () => done(new Date().toISOString());
+      relayFile.mockRejectedValueOnce(new RelayError(404, {}, "no such report file (links last 15 minutes)"));
+      render(<UltraPlanPage planId="p1" />);
+      fireEvent.click(await screen.findByRole("link", { name: "Download file" }));
+      expect(await screen.findByText(EXPIRED)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Download file" })).toBeNull();
+      expect(screen.queryByText("link lasts 15 minutes")).toBeNull();
+      expect(saveBlob).not.toHaveBeenCalled();
+    });
+
+    it("another refusal keeps the link and shows its words", async () => {
+      getImpl = async () => done(new Date().toISOString());
+      relayFile.mockRejectedValueOnce(new RelayError(500, {}, "relay down"));
+      render(<UltraPlanPage planId="p1" />);
+      fireEvent.click(await screen.findByRole("link", { name: "Download file" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("relay down");
+      expect(screen.getByRole("link", { name: "Download file" })).toBeInTheDocument();
+    });
+
+    it("finished_at arriving later (same card, no remount) flips it to the expired line", () => {
+      const { rerender } = render(<ReportDownload fileId="f1" finishedAt={null} fallbackName="report.csv" />);
+      expect(screen.getByRole("link", { name: "Download file" })).toBeInTheDocument();
+      rerender(<ReportDownload fileId="f1" finishedAt={new Date(Date.now() - 16 * 60_000).toISOString()} fallbackName="report.csv" />);
+      expect(screen.getByText(EXPIRED)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Download file" })).toBeNull();
+    });
+
+    it("15 minutes after the plan finished: the expired line, no link, no request", async () => {
+      getImpl = async () => done(new Date(Date.now() - 16 * 60_000).toISOString());
+      render(<UltraPlanPage planId="p1" />);
+      expect(await screen.findByText(EXPIRED)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Download file" })).toBeNull();
+      expect(relayFile).not.toHaveBeenCalled();
+    });
+  });
+
   it("a 404 is a plain line, no plan", async () => {
     getImpl = async () => { throw new RelayError(404, {}, "plan not found"); };
     render(<UltraPlanPage planId="p1" />);
@@ -144,6 +223,7 @@ describe("UltraPlanPage", () => {
     expect(screen.queryByRole("button", { name: /^OK/ })).toBeNull();
     const send = screen.getByRole("button", { name: "Send these" });
     expect(send).toBeEnabled();
+    expect(screen.getByText("set 31")).toHaveAttribute("data-pick-caption");  // the AI's words visible on touch
     fireEvent.click(screen.getByRole("checkbox", { name: "set 33" }));
     expect(send).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "set 32 (AI pick)" }));

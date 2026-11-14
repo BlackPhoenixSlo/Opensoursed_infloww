@@ -13,15 +13,17 @@ Who may call:
 - No credential at all → initialize, ping, tools/list and the anonymous `BUILTINS`: `connect_account`
   (the register / log-in links), `register_account` and `login` (ticket 05 owner amendment: the
   /auth/register or /auth/sign-in (+ /auth/2fa/login) route run in-process as the caller's address —
-  same validation, throttle and 2FA — then POST /admin/owner-tokens with that fresh session; the
-  answer is the token). Employee logins get none; a closed fleet shard (`_registration_closed`: env
-  only, MCP_SIGNUP_URL ≠ OI_ORIGIN) refuses register_account with the open shard's link. Any Toolbox tool or token builtin answers
-  the connect link as `isError`. The isolation middleware lets exactly this path through with no
-  principal (server.py). No OnlyFans login tool: logins are pasted on the Connect card (logins_url).
+  same validation, per-address throttle (login_throttle: sign-in and sign-up) and 2FA — then
+  POST /admin/owner-tokens with that fresh session; the answer is the token). Employee logins get
+  none; a closed fleet shard (`_registration_closed`: env only, MCP_SIGNUP_URL ≠ OI_ORIGIN) refuses
+  register_account with the open shard's link. Any Toolbox tool or token builtin answers the
+  connect link as `isError`. The isolation middleware and share gate let exactly this path
+  through with no principal (`anonymous_surface`). No OnlyFans login tool: logins are pasted on the
+  Connect card (logins_url).
 - A Cookie or any other Authorization → 401: this is not a browser endpoint.
 - Any `Origin` header → 403 (DNS rebinding; MCP clients send none).
 
-Audit: the path is audit-ineligible (employees._AUDIT_SKIP_PREFIXES); each tool's inner request is
+Audit: the path is audit-ineligible (audit_log._AUDIT_SKIP_PATHS, exact); each tool's inner request is
 audited as itself, `via="token <name>"`. No DB session is held across `toolbox.call`'s inner request
 (spike: an open one stalls it); the plan builtins open their own, with no inner request.
 """
@@ -37,7 +39,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 import auth
 import token_auth
@@ -53,6 +55,17 @@ from toolbox_args import Args
 router = APIRouter()
 
 PATH = token_auth.MCP_PATH
+OTHER_METHODS = ("GET", "DELETE")  # answered 405 (mcp_other)
+# Who serves a request with no principal (server.py: the isolation middleware and the share gate
+# both ask `anonymous_surface`): this exact path, POST plus the 405-only methods (an MCP client
+# probes GET for an SSE stream; a 401 there would send it into an OAuth flow). A new handler on
+# this path serves anonymous callers too: never one that names an account.
+ANON_METHODS = ("POST", *OTHER_METHODS)
+
+
+def anonymous_surface(method: str, path: str) -> bool:
+    return path == PATH and method in ANON_METHODS
+
 VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # newest first: the answer to an unknown one
 SERVER_VERSION = "1.0"
 NEXT = "/settings/ai-keys"  # where a new owner mints the access token (Access tokens card)
@@ -100,13 +113,24 @@ NEEDS_TOKEN = "this tool needs an access token; call connect_account for the lin
 MAX_BODY = 256 * 1024  # one JSON-RPC message; the endpoint answers anonymous callers too
 
 
+class _Json(JSONResponse):
+    """Every MCP answer: a lone UTF-16 surrogate echoed from the request (id, method, tool name; json.loads
+    accepts "\\ud800") has no utf-8 form, so such a body is sent \\u-escaped (the id still round-trips)."""
+
+    def render(self, content: Any) -> bytes:
+        try:
+            return super().render(content)
+        except UnicodeEncodeError:
+            return json.dumps(content, allow_nan=False, separators=(",", ":")).encode()
+
+
 def _rpc_error(code: int, message: str, rid: Any = None, status: int = 200, **headers: str) -> JSONResponse:
-    return JSONResponse({"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}},
-                        status_code=status, headers={"Cache-Control": "no-store", **headers})
+    return _Json({"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}},
+                 status_code=status, headers={"Cache-Control": "no-store", **headers})
 
 
 def _ok(rid: Any, result: dict[str, Any]) -> JSONResponse:
-    return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": result}, headers={"Cache-Control": "no-store"})
+    return _Json({"jsonrpc": "2.0", "id": rid, "result": result}, headers={"Cache-Control": "no-store"})
 
 
 def _origin(env: str) -> str:
@@ -349,16 +373,20 @@ BUILTINS: dict[str, Builtin] = {b.name: b for b in (
 )}
 
 
+# `_call` looks builtins up before td.TOOLS: a shared name would shadow a Toolbox tool.
+if _shared := sorted(set(BUILTINS) & {t.name for t in td.TOOLS}):
+    raise RuntimeError(f"mcp_api.BUILTINS shadow Toolbox tools: {_shared}")
+
+
 def _builtins(token: bool) -> list[Builtin]:
     return [b for b in BUILTINS.values() if b.token == token]
 
 
 async def _run_builtin(b: Builtin, args: dict[str, Any] | None, creds: toolbox.Creds) -> dict[str, Any]:
     try:
-        parsed = b.args.model_validate(args or {})
-    except ValidationError as e:
-        return td.error(422, {"detail": "invalid arguments",
-                              "errors": {".".join(map(str, x["loc"])) or "args": x["msg"] for x in e.errors()}})
+        parsed = td.args_model(b.args, args)
+    except td.ArgsError as e:
+        return td.error(422, {"detail": "invalid arguments", "errors": e.errors})
     return await b.run(creds, parsed)
 
 
@@ -443,18 +471,21 @@ async def mcp_post(request: Request) -> Response:
         return _rpc_error(-32600, f"request body over {MAX_BODY // 1024} KB", status=413)
     try:
         msg = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):  # RecursionError: nesting past the C stack
         return _rpc_error(-32700, "Parse error", status=400)
     if isinstance(msg, list):
         return _rpc_error(-32600, "batches are not supported", status=400)
-    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+    if not isinstance(msg, dict):
         return _rpc_error(-32600, "Invalid Request: not a JSON-RPC 2.0 object", status=400)
+    rid = msg.get("id") if _valid_id(msg.get("id")) else None  # JSON-RPC 2.0: echoed whenever readable
+    if msg.get("jsonrpc") != "2.0":
+        return _rpc_error(-32600, "Invalid Request: not a JSON-RPC 2.0 object", rid, status=400)
     if "method" not in msg:
-        if _valid_id(msg.get("id")) and ("result" in msg or "error" in msg):
+        if rid is not None and ("result" in msg or "error" in msg):
             return Response(status_code=202)  # a client's answer; we never ask, so nothing to match
-        return _rpc_error(-32600, "Invalid Request: no method", status=400)
+        return _rpc_error(-32600, "Invalid Request: no method", rid, status=400)
     if not isinstance(msg["method"], str):
-        return _rpc_error(-32600, "Invalid Request: method must be a string", status=400)
+        return _rpc_error(-32600, "Invalid Request: method must be a string", rid, status=400)
     if "id" not in msg:
         return Response(status_code=202)  # a notification (notifications/initialized, …)
     if not _valid_id(msg["id"]):
@@ -462,7 +493,7 @@ async def mcp_post(request: Request) -> Response:
     return await _dispatch(msg, token, toolbox.Creds.from_request(request))
 
 
-@router.api_route(PATH, methods=["GET", "DELETE"], include_in_schema=False)
+@router.api_route(PATH, methods=list(OTHER_METHODS), include_in_schema=False)
 async def mcp_other() -> Response:
     """No SSE stream and no sessions to end."""
     return Response("POST only (no SSE stream, no sessions)", status_code=405, headers={"Allow": "POST"})

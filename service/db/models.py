@@ -3900,8 +3900,9 @@ class BioLink(Base):
 
 
 class BioCustomDomain(Base):
-    """A Profile's own domain: `/` is that Profile once `live`; a `pending` one names nobody. One live row per
-    domain (the partial unique index), one row per Profile."""
+    """A Profile's own domain: `/` is that Profile once DNS proved it (`pending_cert`, then `live` once its HTTPS
+    answers; bio_pages/domains.py); a `pending` one names nobody. One live row per domain (the partial unique index;
+    the admin API also keeps `pending_cert` + `live` to one per domain under the write lock), one row per Profile."""
     __tablename__ = "bio_custom_domains"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -3909,7 +3910,7 @@ class BioCustomDomain(Base):
         String, ForeignKey("bio_profiles.id", ondelete="CASCADE"), nullable=False
     )
     domain: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False)  # 'pending' | 'live'
+    status: Mapped[str] = mapped_column(String, nullable=False)  # 'pending' | 'pending_cert' | 'live'
     token: Mapped[str] = mapped_column(String, nullable=False, server_default=text("''"), default="")
     checked: Mapped[datetime | None] = mapped_column(DateTime)
 

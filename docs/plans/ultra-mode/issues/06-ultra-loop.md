@@ -32,7 +32,7 @@ Server-side job (SSE progress) vs browser-driven loop like Do mode's runner. Pla
 
 **Credential**
 - The executor holds the approving owner's **Cookie** in memory (the OK request's; for MCP, the browser approval's), not a minted token (Fable; rung 5).
-- Logout or password change kills the cookie → the next step gets 401 → run `failed`. Every step re-checks.
+- Logout does not stop it: `/auth/logout` only clears the browser's cookies (sessions are stateless), so the held Cookie still works. **Cancel is the stop.** "Log out other sessions" or turning 2FA on/off (`account_security.revoke_sessions` → `sessions_valid_after`) revokes it → the next step gets 401 → run `failed`. Every step re-checks. (An owner has no password-change route.)
 
 **Cancel**
 - Cooperative flag, checked before each step.

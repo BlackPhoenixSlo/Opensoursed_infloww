@@ -13,6 +13,7 @@ Cases:
                              the next reply's submit lands.
   case_invalid_plan_fixed  — the chain refuses the first submit: its errors go back as the tool result; the
                              model fixes the text and the second submit lands.
+  case_null_keys_submit    — submit_plan whose step carries the optional judge keys as null → awaiting_ok.
   case_turn_cap            — a model that never submits: 25 calls, then capped (progress turns 25).
   case_spend_cap           — calls costing 60¢ each: capped after 2.
   case_daily_cap_refused   — the owner's agency rollup is at its cap: 429, no row, no model call.
@@ -234,6 +235,15 @@ async def case_invalid_plan_fixed() -> None:
     err = _tool_msgs(LLM.calls[1])[-1]
     assert "plan refused" in err and "offplatform" in err and '"step": "mass"' in err, err
     assert v["status"] == "awaiting_ok" and v["steps"][0]["args"]["text"] == _CHAINED, v
+
+
+async def case_null_keys_submit() -> None:
+    """rwl cross-step M3: submit_plan with the schema's optional keys as null lands (dropped before validation)."""
+    nulls = {"question": None, "candidates": None, "pick_n": None, "confirm": None}
+    LLM.reset(_res((upd.SUBMIT, {**_PLAN, "steps": [{**_MASS, **nulls}]})))
+    async with _client() as c:
+        v = await _settled(c, (await _start(c))["id"])
+    assert v["status"] == "awaiting_ok" and set(v["steps"][0]) == {"id", "tool", "args"}, v
 
 
 async def case_turn_cap() -> None:

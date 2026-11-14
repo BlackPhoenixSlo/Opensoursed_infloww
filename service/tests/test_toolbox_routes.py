@@ -14,6 +14,8 @@ Cases:
   case_paths_full_match    — a sample request to each tool's path is dispatched to exactly that route +
                              method by the token gate's own first-FULL-match walk, and is on the token
                              allowlist.
+  case_no_token_tool_on_a_send_route — `route_clashes` (also raised at import): no token tool on a send
+                             tool's route (the allowlist would open it), no two write tools on one route.
   case_checks_on_writes    — only a write or send tool carries a `check`; every send tool has one.
   case_schema_rules        — names unique + [a-z0-9_]{1,64}; descriptions set; args forbid unknown keys;
                              each client schema is a closed object with no $ref / $defs and no top-level
@@ -112,6 +114,15 @@ def case_paths_full_match() -> None:
         assert got == t.path, f"{t.name}: {t.method} {scope['path']} dispatches to {got}, not {t.path}"
         if t.effect != "send":
             assert (t.method, t.path) in allow, f"{t.name}: {t.method} {t.path} not on the token allowlist"
+
+
+def case_no_token_tool_on_a_send_route() -> None:
+    assert td.route_clashes(td.TOOLS) == []
+    rules = next(t for t in td.TOOLS if t.name == "auto_mass")  # POST /admin/automation-rules: a send route
+    read = td.Tool("zz_rules_read", "x", rules.method, rules.path, td.NoArgs, "read")
+    write = td.Tool("zz_folder_write", "x", "POST", "/admin/vault-ai/of-folders", td.NoArgs, "write")
+    assert any("zz_rules_read" in c for c in td.route_clashes(td.TOOLS + (read,)))  # would join the allowlist
+    assert any("two write tools" in c for c in td.route_clashes(td.TOOLS + (write,)))  # write_tool ambiguous
 
 
 def case_checks_on_writes() -> None:

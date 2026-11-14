@@ -15,7 +15,8 @@ Cases:
                            come back unchanged even when they read like references.
   case_digest            — sha256 over canonical JSON: key order does not matter, any change does.
   case_outcome           — done / failed / uncertain per effect: a send with no answer, a 5xx or an echo-check
-                           502 is uncertain; a send 4xx and every write failure are failed.
+                           502 is uncertain, a write with no answer too (m6); a send 4xx, a write's 4xx/5xx and
+                           a read's failure are failed.
   case_states            — expired after OK_TTL (awaiting_ok only), said as OK_TTL_TEXT; PlanStatus / StepState
                            are the Literal sets (FINAL inside PlanStatus); close: started → uncertain, pending → skipped,
                            ended states kept; recovered: running → interrupted with close's states; any other
@@ -24,13 +25,15 @@ Cases:
                            scalars only), a mass that kept fewer fan ids than approved a plain note (kept_note);
                            a failure / an uncertain send
                            carries the error as error_text's sentence (no answer: NO_ANSWER), clipped to MAX_ERROR.
+  case_oversize_send_done — a send's 2xx answer over the size cap: done with its id + truncated (a read: 413).
   case_error_text        — an error detail → one plain sentence: OF's {upstream_status, upstream_body} → "OnlyFans
                            answered 500: <OF's message>", a relay reason, invalid-args maps, FastAPI's list, a
                            string; never a raw dict; capped at MAX_ERROR.
   case_may_send          — a send passes only as the `started` step of a `running` plan with the step's tool and
                            exact args; any other status / state / step / tool / arg → refused.
-  case_card_and_report   — a send's card (rows from toolbox_sends.card_rows) shows Creator name, audience, price, media ids and the FULL text; two
-                           sends to different fan ids have different cards (ids listed, then "+N more"); a write
+  case_card_and_report   — a send's card (rows from toolbox_sends.card_rows) shows Creator name + id (two
+                           Creators sharing a nickname differ), audience, price, media ids and the FULL text; two
+                           sends to different fan ids have different cards (every id listed); a write
                            shows its args, a reference as "from step <id>" (a list of them "N from step <id>"),
                            no media reads "none"; titles: a send's own title, else the tool name in Title Case;
                            report_text counts from the step states.
@@ -170,8 +173,8 @@ def case_outcome() -> None:
     err = lambda st: {"error": {"status": st, "detail": "x"}}  # noqa: E731
     table = [("send", {"id": 1}, "done"), ("send", None, "uncertain"), ("send", err(502), "uncertain"),
              ("send", err(504), "uncertain"), ("send", err(500), "uncertain"), ("send", err(422), "failed"),
-             ("send", err(409), "failed"), ("write", None, "failed"), ("write", err(502), "failed"),
-             ("write", {"id": 1}, "done"), ("read", err(500), "failed")]
+             ("send", err(409), "failed"), ("write", None, "uncertain"), ("write", err(502), "failed"),
+             ("write", {"id": 1}, "done"), ("read", err(500), "failed"), ("read", None, "failed")]
     for effect, result, want in table:
         assert ud.outcome(effect, result) == want, (effect, result)
 
@@ -224,6 +227,20 @@ def case_step_end() -> None:
     assert ud.step_end("s", "send", err(502, up))["error"] == "OnlyFans answered 500: fake OF 500"
 
 
+def case_oversize_send_done() -> None:
+    """rwl cross-step M1: a send's 2xx too large to shape is still done with its id (never a synthetic 413)."""
+    import toolbox_decide as td
+    mass = ud.TOOLS["mass_send"]
+    body = {"id": 777, "_user_ids_kept": {"asked": 3, "kept": 2},
+            "media": [{"id": i, "src": "x" * 490, "thumb": "y" * 490} for i in range(50)]}
+    out = td.shape_result(mass, 200, body)
+    assert out == {"id": 777, "_user_ids_kept": {"asked": 3, "kept": 2}, "truncated": True}, out
+    end = ud.step_end("s", "send", {**out, "open_url": "/growth/smart-messages"})
+    assert end["state"] == "done" and end["result"] == {"id": 777} and "note" in end, end
+    read = td.Tool("r", "r", "GET", "/x", td.NoArgs, "read")
+    assert td.shape_result(read, 200, body)["error"]["status"] == 413  # a read still says narrow it
+
+
 def case_error_text() -> None:
     table = [
         ({"upstream_status": 500, "upstream_body": '{"error":"fake OF 500"}'}, "OnlyFans answered 500: fake OF 500"),
@@ -272,8 +289,12 @@ def case_card_and_report() -> None:
     mass = cards[2]
     rows = dict(map(tuple, mass["rows"]))
     assert mass["effect"] == "send" and mass["text"] == LONG, mass
-    assert rows == {"Creator": "Ava", "Audience": "lists fans", "Price": "$10.00", "Media": "1: 9301",
+    assert rows == {"Creator": f"Ava ({CA})", "Audience": "lists fans", "Price": "$10.00", "Media": "1: 9301",
                     "When": "now"}, rows
+    other = "1000002"  # m2: two Creators sharing a nickname get different cards
+    twin = lambda aid: uc.card(ud.validate_plan(_plan({**SEND, "args": {**SEND["args"], "account_id": aid}}),  # noqa: E731
+                                                OWNED | {other}), {CA: "Ava", other: "Ava"})[0]["rows"]
+    assert twin(CA) != twin(other) and dict(map(tuple, twin(other)))["Creator"] == f"Ava ({other})"
     write = dict(map(tuple, cards[1]["rows"]))
     assert write["name"] == "Halloween" and cards[1]["effect"] == "write", write
     assert write["media_ids"] == "from step pick", write  # a one-item list of references: no JSON brackets
@@ -292,7 +313,8 @@ def case_card_and_report() -> None:
     assert to([111, 222]) != to([333, 444])
     assert dict(map(tuple, to([111, 222])))["Audience"] == "lists fans + 2 fan(s) by id: 111, 222"
     many = dict(map(tuple, to(list(range(1, 13)))))["Audience"]
-    assert many.endswith("12 fan(s) by id: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 +2 more"), many
+    assert many.endswith("12 fan(s) by id: " + ", ".join(map(str, range(1, 13)))), many  # every id (M4)
+    assert to(list(range(1, 13))) != to([*range(1, 11), 99, 12])  # the 11th id changed → a different card
     post = toolbox_sends.card_rows("post", {**POST["args"], "previews": [9301], "expire_days": 3,
                                             "posted_at": "2026-11-15T18:00:00+00:00"})
     assert post == [["Audience", "her feed (every subscriber)"], ["Price", "$5.00"], ["Media", "1: 9301"],
