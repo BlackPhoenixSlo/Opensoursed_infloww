@@ -7,7 +7,7 @@
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
  * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
  * Auto Story, Auto Funnel, Gen-Info), the "My AI Chatter" group
- * (Auto-reply, Get to know fans, the "Full AI Chatter" Shadow page).
+ * (Auto-reply, Get to know fans, the "Full AI Chat" page).
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).
@@ -214,8 +214,8 @@ export const ONLYFANS_NAV: NavNode[] = [
       { label: "Auto-reply", href: "/growth/auto-reply" },
       // Its Model info is the account's, so a role grants it like any page (service/permissions.py PAGE_MAP).
       { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true },
-      // The fully autonomous chatter's coming-soon page. Owner-only: a product teaser, nothing a chatter operates.
-      { label: "Full AI Chatter", href: "/full-ai-chatter", chatterHidden: true, notOptIn: true },
+      // Full AI Chat: Shadow switch + the owner's Test chat. Owner-only: nothing a chatter operates.
+      { label: "Full AI Chat", href: "/full-ai-chatter", chatterHidden: true, notOptIn: true },
     ],
   },
 ];

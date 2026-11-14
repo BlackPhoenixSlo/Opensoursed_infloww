@@ -40,6 +40,11 @@ seam exactly like a real scheduled job.
   case_the_composer_reads_no_roster:
       the same through the Composer's POST /api/of/v2/messages/queue: only the
       Auto_Exclude sync's own read.
+  case_the_composer_reports_kept_ids_and_refuses_nobody_on_request:
+      the route's answer carries `_user_ids_kept` {asked, kept} (the caller's
+      fan ids left after the opt-out guard); with nobody left it still sends
+      for every caller, but `require_recipients` (Ultra) → 422, no OF call, no
+      mass_runs row.
 
 Run: ./venv/bin/python service/tests/test_send_mass.py  (exit 0 = pass)
 """
@@ -796,6 +801,55 @@ async def case_the_composer_reads_no_roster():
     assert run.status == "ok" and run.recipients_json is None, (run.status, run.recipients_json)
 
 
+async def case_the_composer_reports_kept_ids_and_refuses_nobody_on_request():
+    import audiences  # noqa: E402
+    import mass_queue_api  # noqa: E402
+    import server  # noqa: E402
+    from fastapi import HTTPException  # noqa: E402
+    aid = "acc_mass_composer_kept_ids"
+    await _seed_account(aid)
+    opened: list[int] = []
+
+    async def _open(_request, **kw):
+        opened.append(1)
+        return aid, None, None
+
+    async def _opted_out(_aid, _name):
+        return {8602}
+    fake = FakeListClient()
+    orig = (server._resolve_account_id, server._get_client, mass_queue_api._open_mass_run,
+            audiences.exclude_list_fan_ids)
+    server._resolve_account_id = lambda _req: aid
+    server._get_client = lambda *_a: fake
+    mass_queue_api._open_mass_run = _open
+    audiences.exclude_list_fan_ids = _opted_out
+    body = lambda ids, **kw: mass_queue_api._MassScheduleBody(text="hi", user_ids=ids, **kw)  # noqa: E731
+    try:
+        out = await mass_queue_api.of_send_or_schedule_mass(None, body([8601, 8602, 8601]))
+        assert out["_user_ids_kept"] == {"asked": 2, "kept": 1}, out
+        assert set(fake.sent[-1]["included_users"]) == {8601}, fake.sent  # (the route keeps duplicates as given)
+        # Without the flag every other caller sends as before, even with nobody left.
+        out = await mass_queue_api.of_send_or_schedule_mass(None, body([8602]))
+        assert out["_user_ids_kept"] == {"asked": 1, "kept": 0} and len(fake.sent) == 2, (out, fake.sent)
+        n_open = len(opened)
+        try:
+            await mass_queue_api.of_send_or_schedule_mass(None, body([8602], require_recipients=True))
+            raise AssertionError("nobody left + require_recipients must refuse")
+        except HTTPException as e:
+            assert e.status_code == 422 and "nobody left to send to" in e.detail, e.detail
+        assert len(fake.sent) == 2 and len(opened) == n_open, (fake.sent, opened)  # no OF call, no run minted
+        out = await mass_queue_api.of_send_or_schedule_mass(None, body([8602], require_recipients=True,
+                                                                       user_lists=["fans"]))
+        assert len(fake.sent) == 3 and out["_user_ids_kept"] == {"asked": 1, "kept": 0}, out  # a list still goes
+        fake._response = {"id": 770002}  # FakeClient answers one shared dict; a fresh one for this call
+        out = await mass_queue_api.of_send_or_schedule_mass(None, mass_queue_api._MassScheduleBody(
+            text="hi", user_lists=["fans"]))
+        assert "_user_ids_kept" not in out, out  # no fan ids asked: nothing to report
+    finally:
+        (server._resolve_account_id, server._get_client, mass_queue_api._open_mass_run,
+         audiences.exclude_list_fan_ids) = orig
+
+
 async def case_close_mass_run_skips_a_scheduled_send():
     """`mass_queue_api._close_mass_run` is the composer's + the legacy route's close step.
     An IMMEDIATE send records the body and the stamp; a SCHEDULED one records
@@ -1263,4 +1317,5 @@ _harness.run(
     case_dry_pending_ids_mirror_pending_send_fan_ids,
     case_a_refused_post_closes_its_minted_run,
     case_an_exclude_sync_the_proxy_refused_raises_for_the_proxy_wait,
+    case_the_composer_reports_kept_ids_and_refuses_nobody_on_request,
 )

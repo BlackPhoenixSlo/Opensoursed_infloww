@@ -64,13 +64,7 @@ A = fx.login_owner("agency_a_owner")
 B = fx.login_owner("agency_b_owner")
 
 
-def _mint(client) -> str:
-    r = client.post("/admin/owner-tokens", json={"name": "mcp"})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
-
-
-TOK_A, TOK_B = _mint(A), _mint(B)
+TOK_A, TOK_B = fx.mint_token(A), fx.mint_token(B)
 CREDS_A = toolbox.Creds(authorization=f"Bearer {TOK_A}")
 BY_NAME = {t.name: t for t in td.TOOLS}
 CREDS_B = toolbox.Creds(authorization=f"Bearer {TOK_B}")

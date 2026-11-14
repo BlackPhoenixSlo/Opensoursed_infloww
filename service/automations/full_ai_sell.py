@@ -16,12 +16,22 @@ current Jev blob prices by its lane ($10 / $50 / $100; a review lane has no
 price, checked before `lane_of` reads a review clip's `read_lane5`); without
 one, the shelf price ($50 / $10; 0 is no price, never free). An explicit act
 moves the lane up the owner's ladder ($50 / $100 / $150). Clamped to $10-$200.
+
+The Claim audit (ticket 45), pure, on a sell Turn's final text after the shared chain:
+`claim_ok(text, pick)` (counts, kinds and subject words against the Pick, old `pack_claim.py`'s
+lexicon), `price_ok(text, price_cents)` (every price named is the PPV price; None or 0 = none may
+be named) and `fallback_caption(pick, kind)` (counts + kinds, the price only for an `offer`).
+
+The haggle quote (ticket 47), pure: `quoted_cents(text)` (his one named dollar amount, not a tip)
+and `clamp_quote(list_cents, asked_cents)` (at least max($10, 67 % of list up to a dollar), at most
+list; no amount = that floor).
 """
 from __future__ import annotations
 
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
@@ -291,7 +301,9 @@ def _facts(locked: list[dict[str, Any]]) -> dict[str, Any]:
     return {"kinds": kinds,
             "items": [vault_ai_brief.sellability(r.get("fields") or {},
                                                  duration_seconds=r.get("duration_seconds"))
-                      for r in locked]}
+                      for r in locked],
+            # the anchor's describe text: the Writer's item line (03b, full_ai_writers.item_line)
+            "description": str((locked[0].get("fields") or {}).get("description") or "")}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
@@ -362,3 +374,164 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     preview = next((by_id[m] for m in in_shoot if m in by_id and by_id[m]["kind"] == "photo"
                     and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])), None)
     return _offer(locked, [preview] if preview else [], ask, free=False)
+
+
+# ── Claim audit (ticket 45) ───────────────────────────────────────────
+# Old `pack_claim.py:47-87`, verbatim: the media nouns and the moving / audio kinds.
+_MEDIA_NOUNS = frozenset({
+    "video", "videos", "vid", "vids", "clip", "clips",
+    "pic", "pics", "picture", "pictures", "photo", "photos", "image", "images",
+    "content", "stuff", "set", "sets", "media",
+})
+MOVING_KINDS = ("video", "gif")
+AUDIO_KINDS = ("audio",)
+# `_MEDIA_NOUNS` by the bucket each claims; content / stuff / set / sets / media claim none.
+_VID_NOUNS = frozenset(w for w in _MEDIA_NOUNS if w.startswith(("vid", "clip")))
+_PIC_NOUNS = frozenset(w for w in _MEDIA_NOUNS if w.startswith(("pic", "photo", "image")))
+_KIND_NOUNS = _VID_NOUNS | _PIC_NOUNS
+
+
+def _buckets(kinds: dict[str, int]) -> tuple[int, int, int]:
+    """(pics, vids, voice notes) of a Pick's `facts["kinds"]`, old `pack_claim._media_phrase`'s
+    buckets: moving kinds are vids, audio is a voice note, anything else a pic."""
+    vids = sum(n for k, n in kinds.items() if str(k).lower() in MOVING_KINDS)
+    auds = sum(n for k, n in kinds.items() if str(k).lower() in AUDIO_KINDS)
+    return sum(kinds.values()) - vids - auds, vids, auds
+
+
+def _media_phrase(kinds: dict[str, int]) -> str:
+    """`"6 pics + 1 vid"`, old `pack_claim._media_phrase`'s wording."""
+    pics, vids, auds = _buckets(kinds)
+    parts = [f"{n} {word}{'s' * (n > 1)}" for n, word in ((pics, "pic"), (vids, "vid"), (auds, "voice note")) if n]
+    return " + ".join(parts) if parts else "0 pics"
+
+
+_NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                 "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+# A word between a number and its noun that makes the number no count ("a 5 minute video",
+# "a few pics").
+_NOT_A_COUNT = frozenset({"sec", "secs", "second", "seconds", "min", "mins", "minute", "minutes",
+                          "hour", "hours", "few", "couple", "lot", "lots", "bunch", "ton", "tons",
+                          "handful", "pair"})
+# A token: a number glued to its currency ("$25", "25$": a price, never a count) or a word.
+_TOKEN = re.compile(r"[$€£]?\d+(?:[.,]\d+)?[$€£]?|[a-z]+")
+# Subject words per Ask subject: the Pick's subject, or one its describe text names, allows them.
+_SUBJECT_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
+    "feet": ("feet", "foot", "toes", "soles"), "butt": ("butt", "ass", "booty"),
+    "tits": ("tits", "titties", "boobs", "breasts", "nipples"), "pussy": ("pussy",),
+    "nude": ("nude", "nudes", "naked"), "lingerie": ("lingerie", "bodysuit"), "bikini": ("bikini",),
+    "shower": ("shower", "bath"), "toy": ("toy", "dildo", "vibrator"),
+    "masturbation": ("masturbating", "masturbation"), "blowjob": ("blowjob", "bj"),
+    "sex": ("sex", "sextape"),
+}.items()}
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z]+", text.lower())
+
+
+def claim_ok(text: str, pick: Pick) -> bool:
+    """The text claims only what the Pick holds: a video word needs a clip and a photo word a
+    photo; a count before one ("5 videos", "four pics", "a vid") equals that kind's count; a plural
+    needs more than one; a subject word is the Pick's subject's or named by its describe text.
+    A price or a time before a noun is no count. Pure.
+    ASSUMPTION: the per-subject word lists (`_SUBJECT_WORDS`) and the uncounted words
+    (`_NOT_A_COUNT`) are this repo's; old `pack_claim` audited a caption it assembled itself, so it
+    had no such check. Overturned by a measured false-fail on real Writer captions."""
+    low = text.lower()
+    pics, vids, _auds = _buckets(pick.facts["kinds"])
+    for w in _words(low):
+        have = vids if w in _VID_NOUNS else pics if w in _PIC_NOUNS else None
+        if have is not None and (have == 0 or (w.endswith("s") and have == 1)):
+            return False
+    toks = _TOKEN.findall(low)
+    for i, tok in enumerate(toks):
+        n = int(tok) if tok.isdigit() else _NUMBER_WORDS.get(tok)
+        nxt = toks[i + 1:i + 3]
+        if n is None or not nxt:
+            continue
+        if nxt[0] in _KIND_NOUNS:
+            noun = nxt[0]
+        elif (len(nxt) == 2 and nxt[1] in _KIND_NOUNS and nxt[0].isalpha()   # "5 hot videos"
+              and nxt[0] not in _NOT_A_COUNT and nxt[0] not in _NUMBER_WORDS):
+            noun = nxt[1]
+        else:
+            continue
+        if n != (vids if noun in _VID_NOUNS else pics):
+            return False
+    desc = set(_words(pick.facts["description"]))
+    allowed = set(_SUBJECT_WORDS.get(pick.subject, ()))
+    for words in _SUBJECT_WORDS.values():
+        if desc & words:
+            allowed |= words
+    named = set(_words(low)) & frozenset().union(*_SUBJECT_WORDS.values())
+    return named <= allowed
+
+
+def _amount_re(signs: str, words: str) -> re.Pattern:
+    """A named amount: a sign before or after the number, or a currency word after it."""
+    num = r"(\d+(?:\.\d{1,2})?)"
+    return re.compile(rf"[{signs}]\s?{num}|{num}\s?(?:[{signs}]|(?:{words})\b)", re.I)
+
+
+_AMOUNT = _amount_re("$€£", "dollars?|bucks?|usd|euros?")
+
+
+def price_ok(text: str, price_cents: int | None) -> bool:
+    """Every price the text names ($25, 25$, $25.00, 25 bucks / dollars, € / £ too) equals
+    `price_cents`; with None or 0 (a tease, a Free item) no price may be named. Pure.
+    ASSUMPTION: a spelled-out amount ("twenty bucks") is not read. Overturned if Writers spell
+    prices out."""
+    named = {round(float(a or b) * 100) for a, b in _AMOUNT.findall(text)}
+    return not named if not price_cents else named <= {price_cents}
+
+
+# His named amount (ticket 47): the dollar spellings only (spec › Interfaces `quoted_cents`).
+_QUOTE = _amount_re("$", "dollars?|bucks?|usd")
+
+
+def _next_to_tip(text: str, m: re.Match) -> bool:
+    near = _words(text[:m.start()])[-2:] + _words(text[m.end():])[:1]
+    return any(w.startswith("tip") for w in near)
+
+
+def quoted_cents(text: str) -> int | None:
+    """His one named amount in cents ("$50", "50$", "50 dollars", "50 bucks", "50 usd"), read
+    on a haggle row only (D32). Two amounts, an amount next to "tip", or none -> None. Pure.
+    ASSUMPTION: every amount counts toward "exactly one", a tip amount too ("$20 and a $5
+    tip" -> None), and "next to tip" is a tip word within two words before or one after
+    ("I'll tip you 20 bucks"). Overturned if the owner wants the non-tip amount read."""
+    found = list(_QUOTE.finditer(text))
+    if len(found) != 1 or _next_to_tip(text, found[0]):
+        return None
+    m = found[0]
+    return round(float(m.group(1) or m.group(2)) * 100)
+
+
+def _ceil_dollar(cents: int) -> int:
+    return -(-cents // 100) * 100
+
+
+def clamp_quote(list_cents: int, asked_cents: int | None) -> int:
+    """The haggle price: at least max($10, 67 % of list rounded up to a dollar), at most list,
+    whole dollars, always against the row's list price (never an earlier quote, so discounts
+    never compound); no amount -> the floor. Integer math (0.67 * 10000 drifts to $68). Pure."""
+    floor = max(MIN_CENTS, _ceil_dollar(-(-67 * list_cents // 100)))
+    if asked_cents is None:
+        return floor
+    return min(list_cents, max(floor, _ceil_dollar(asked_cents)))
+
+
+def _money(cents: int) -> str:
+    """OLD-CORE-33's `_money`: `$41` on whole dollars, else `$41.23` (full_ai_writers' price block too)."""
+    return f"${cents // 100}" if cents % 100 == 0 else f"${cents / 100:.2f}"
+
+
+def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str:
+    """The plain caption a twice-failed (or too late) audit sends instead: the Pick's counts and
+    kinds (`_media_phrase`), plus OLD-AIC-12's terms wording with the price only for an `offer`
+    ("1 vid, $25 to unlock"); a tease and a Free item name no money ("4 pics"). Pure.
+    ASSUMPTION: the bare clause, as old `pack_claim.compose_caption` sent with no voice line.
+    Overturned if the owner wants a flirt line beside it (old `ppv_send._FALLBACK_CAPTION`)."""
+    phrase = _media_phrase(pick.facts["kinds"])
+    return f"{phrase}, {_money(pick.price_cents)} to unlock" if kind == "offer" else phrase

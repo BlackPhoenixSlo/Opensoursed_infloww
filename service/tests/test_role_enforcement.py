@@ -33,7 +33,7 @@ import permissions  # noqa: E402
 import server  # noqa: E402
 from chatters import _CHATTER_BLOCKED_ADMIN_PREFIXES  # noqa: E402
 from db.engine import engine, get_session  # noqa: E402
-from db.models import Action, ChatterAccountAccess, Message, SavedReply, Transaction  # noqa: E402
+from db.models import Action, AiDecision, ChatterAccountAccess, Message, SavedReply, Transaction  # noqa: E402
 from sqlalchemy import delete, event, func, select, text  # noqa: E402
 
 IDS = fx.seed_two_agencies()
@@ -326,7 +326,7 @@ def case_the_gen_info_switch_needs_the_gen_info_page():
 def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_page():
     # full_ai_chat maps to /full-ai-chatter (OPT_IN_KINDS), a page outside OPT_IN_PAGES: no role grants its switch.
     body = {"account_id": IDS["creator_a"], "kind": "full_ai_chat", "enable": False}
-    denied = {"detail": "Your role does not allow Full AI Chatter"}
+    denied = {"detail": "Your role does not allow Full AI Chat"}
     today = f"/admin/full-ai/today?account_id={IDS['creator_a']}"
     try:
         _reset()
@@ -366,6 +366,92 @@ def case_full_ai_prepare_content_is_owner_only_and_account_checked():
             assert r.status_code == 403, (r.status_code, r.text)
         r = OWNER_A.get(status)
         assert r.status_code == 200 and r.json()["run_id"] is None, r.text
+    finally:
+        _reset()
+
+
+def case_the_full_ai_test_turn_is_owner_only_and_the_session_read_follows_the_page():
+    # The Test chat Turn spends the Creator's Writer budget: Full AI Chatter's opt-in kind, so no role
+    # grants it (phase 03a, ticket 32). The session read is the page's own read.
+    aid = IDS["creator_a"]
+    turn = {"account_id": aid, "pair": "role-pair", "side": "checkpoint", "n": 2, "text": "hey"}
+    session = f"/admin/full-ai/test/session?account_id={aid}&pair=role-pair"
+    denied = {"detail": "Your role does not allow Full AI Chat"}
+    try:
+        _reset()
+        r = CHATTER_A.post("/admin/full-ai/test/turn", json=turn)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        r = CHATTER_A.post("/admin/full-ai/test/turn", json=turn)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        r = CHATTER_A.get(session)
+        assert r.status_code == 200 and r.json() == {"rows": []}, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
+        r = CHATTER_A.get(session)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        # The owner is never checked: n=2 on an empty session is past the gate (409, before any call).
+        r = OWNER_A.post("/admin/full-ai/test/turn", json=turn)
+        assert r.status_code == 409 and r.json() == {"row_id": None}, r.text
+        assert OWNER_A.get(session).status_code == 200
+        assert _db(select(func.count()).select_from(AiDecision)) == 0
+    finally:
+        _reset()
+
+
+def case_the_full_ai_test_settle_is_owner_only():
+    # 03b story 18: a fake Buy / Decline is the owner's (ticket 44); a chatter is refused even with the
+    # page ticked. The owner passes the gate (an unknown row: 404, nothing written).
+    body = {"account_id": IDS["creator_a"], "pair": "role-pair", "side": "draft", "row_id": 424242,
+            "outcome": "bought"}
+    denied = {"detail": "Your role does not allow Full AI Chat"}
+    settle = "/admin/full-ai/test/settle"
+    try:
+        _reset()
+        r = CHATTER_A.post(settle, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        r = CHATTER_A.post(settle, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        r = OWNER_A.post(settle, json=body)
+        assert r.status_code == 404 and r.json() == {"detail": "not_this_session"}, r.text
+    finally:
+        _reset()
+
+
+def case_a_full_ai_config_put_carrying_sell_on_is_owner_only():
+    # 03b story 18: selling is the owner's switch; a chatter is refused a draft PUT carrying `sell_on`,
+    # even with the page ticked. The owner passes the gate (a stale rev: 409, nothing stored).
+    put = "/admin/full-ai/config/draft"
+    body = {"account_id": IDS["creator_a"], "draft": {"sell_on": True}, "rev": 99}
+    denied = {"detail": "Your role does not allow Full AI Chat"}
+    try:
+        _reset()
+        r = CHATTER_A.put(put, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        r = CHATTER_A.put(put, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        r = OWNER_A.put(put, json=body)
+        assert r.status_code == 409 and r.json()["rev"] == 0, r.text
+    finally:
+        _reset()
+
+
+def case_the_full_ai_persona_draft_is_owner_only_even_with_the_page_granted():
+    # Spec 03c story 17: setup spends the owner's key, so the draft route refuses every chatter.
+    draft = "/admin/full-ai/persona/draft"
+    body = {"account_id": IDS["creator_a"], "current_text": ""}
+    denied = {"detail": "Your role does not allow Full AI Chat"}
+    try:
+        _reset()
+        r = CHATTER_A.post(draft, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        r = CHATTER_A.post(draft, json=body)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        # The owner passes the gate; no described images here, so no LLM call.
+        r = OWNER_A.post(draft, json=body)
+        assert r.status_code == 200 and r.json()["need_describe"] is True, r.text
     finally:
         _reset()
 
@@ -1687,6 +1773,47 @@ def case_send_and_audit_resolve_one_chatter_employee_per_request():
     finally:
         server._resolve_account_id = resolve
         employees.resolve_chatter_employee_id = original
+        _reset()
+
+
+def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
+    # Phase 03a ticket 37: a config write changes Full AI Chat on the Creator, so no role grants it
+    # (the `full_ai_chat` opt-in gate, as the test turn); the config read is the page's own read.
+    aid = IDS["creator_a"]
+    get = f"/admin/full-ai/config?account_id={aid}"
+    writes = (("put", "/admin/full-ai/config/draft", {"account_id": aid, "draft": {}, "rev": 0}),
+              ("post", "/admin/full-ai/config/save", {"account_id": aid, "rev": 0}),
+              ("post", "/admin/full-ai/config/rollback", {"account_id": aid, "rev": 0}))
+    denied = {"detail": "Your role does not allow Full AI Chat"}
+
+    def write(client, how, path, body):
+        return getattr(client, how)(path, json=body)
+
+    try:
+        _reset()
+        for w in writes:
+            r = write(CHATTER_A, *w)
+            assert r.status_code == 403 and r.json() == denied, (w[1], r.text)
+        _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
+        for w in writes:
+            r = write(CHATTER_A, *w)
+            assert r.status_code == 403 and r.json() == denied, (w[1], r.text)
+        r = CHATTER_A.get(get)
+        assert r.status_code == 200 and r.json()["rev"] == 0, r.text
+        _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
+        r = CHATTER_A.get(get)
+        assert r.status_code == 403 and r.json() == denied, r.text
+        # Another owner's Creator: 403 on every config route.
+        assert OWNER_B.get(get).status_code == 403
+        for w in writes:
+            r = write(OWNER_B, *w)
+            assert r.status_code == 403, (w[1], r.status_code, r.text)
+        # Nothing above stored a thing; the owner is never checked (stale rev 0 after the PUT: 409).
+        assert OWNER_A.get(get).json()["rev"] == 0
+        put, save, rollback = (write(OWNER_A, *w) for w in writes)
+        assert put.status_code == 200 and put.json()["rev"] == 1, put.text
+        assert save.status_code == 409 and rollback.status_code == 409, (save.text, rollback.text)
+    finally:
         _reset()
 
 

@@ -19,6 +19,7 @@ what a written Decision row carries.
                                           midnight, shadow only, newest 50 rows with Fan name;
                                           the run emits rule_run_finished kind full_ai_chat
   case_today_read_refuses_a_creator_not_owned  403, and 401 with no session
+  case_today_read_ignores_test_rows       Test chat rows beside Shadow rows: counts and rows unchanged
 
 Run: ./venv/bin/python service/tests/test_full_ai_routes.py  (exit 0 = pass)
 """
@@ -258,6 +259,24 @@ async def case_today_read_refuses_a_creator_not_owned():
         assert e.status_code == 401, e.status_code
     else:
         raise AssertionError("no session was served")
+
+
+async def case_today_read_ignores_test_rows():
+    """Test chat rows (mode test, a negative Fan id, every Route, one Jev-failed) written after
+    today's Shadow rows: the today read's counts, Jev failures and newest rows are unchanged
+    (spec 03a story 56)."""
+    aid, fan = "fa_today_test_rows", 81
+    await _seed(aid, rule=True, gate=False)
+    now = datetime.utcnow()
+    for i, route in enumerate(("chat", "sext", "chat")):
+        await _decision(aid, fan, f"s{i}", now - timedelta(seconds=30 - i), route=route)
+    before = await _today(aid)
+    for i, route in enumerate(full_ai_api.ROUTES):
+        await _decision(aid, -fan, f"test:p-L:{i + 1}", now + timedelta(seconds=i), route=route, mode="test",
+                        error="jev down" if i == 0 else None)
+    after = await _today(aid)
+    assert before["counts"]["chat"] == 2 and before["counts"]["sext"] == 1 and len(before["rows"]) == 3, before
+    assert after == before, (before, after)
 
 
 _harness.run()

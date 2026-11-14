@@ -8,6 +8,7 @@ window, and asserts:
   • OLD rows are deleted, RECENT rows survive,
   • scheduled_jobs deletes ONLY terminal (done/error) rows — pending/running stay,
   • a window of 0 disables that table entirely,
+  • Full AI Chat's Test chat rows (`ai_decisions` mode test) age out after 7 days, Shadow rows never,
   • the returned per-table counts match.
 
 Run: ./venv/bin/python service/tests/test_audit_retention.py   (exit 0 = green)
@@ -24,7 +25,7 @@ from sqlalchemy import func, select  # noqa: E402
 import db_retention  # noqa: E402 — provides evict_audit_logs_once
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, Action, AutomationRun, GrokCall, ScheduledJob,
+    Account, Action, AiDecision, AutomationRun, GrokCall, ScheduledJob,
 )
 
 _OLD = datetime.utcnow() - timedelta(days=30)      # well past any window
@@ -101,7 +102,54 @@ async def case_zero_window_disables_a_table():
     assert res["automation_runs"] == 1, res   # the others still swept
 
 
+async def case_full_ai_test_rows_age_out_in_7_days_shadow_kept():
+    """Default window (7 days, spec 03a › Retention): an 8-day-old test row goes; a 6-day-old
+    test row and an 8-day-old Shadow row stay."""
+    aid, now = "acct_fa_retention", datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(AiDecision.__table__.delete())
+        s.add(Account(id=aid))
+        for key, mode, days in (("old-test", "test", 8), ("new-test", "test", 6), ("old-shadow", "shadow", 8)):
+            s.add(AiDecision(account_id=aid, fan_id=-7, mode=mode, trigger_kind=mode, trigger_key=key,
+                             route="chat", heat=1, route_row="otherwise", question_version="v",
+                             status="sent" if mode == "test" else "planned",
+                             created_at=now - timedelta(days=days)))
+        await s.commit()
+    res = await db_retention.evict_audit_logs_once()
+    assert res["ai_decisions"] == 1, res
+    async with get_session() as s:
+        left = sorted((await s.execute(select(AiDecision.trigger_key))).scalars())
+    assert left == ["new-test", "old-shadow"], left
+
+
+async def case_settled_test_offers_age_out_in_7_days_shadow_kept():
+    """03b (ticket 44): a test row carrying an Offer and a settled outcome ages out like any test
+    row; an 8-day-old Shadow row stays."""
+    aid, now = "acct_fa_retention_offer", datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(AiDecision.__table__.delete())
+        s.add(Account(id=aid))
+        for key, mode, outcome in (("old-bought", "test", "bought"), ("old-declined", "test", "declined"),
+                                   ("old-shadow", "shadow", None)):
+            s.add(AiDecision(account_id=aid, fan_id=-7, mode=mode, trigger_kind=mode, trigger_key=key,
+                             route="sell_now", heat=2, route_row="sell", question_version="v",
+                             status="sent" if mode == "test" else "planned", created_at=now - timedelta(days=8),
+                             offer_price_cents=1000 if outcome else None, offer_list_cents=1000 if outcome else None,
+                             offer_media_json='{"locked": [1], "previews": []}' if outcome else None,
+                             offer_item_ref='{"ref": 1, "kind": "offer"}' if outcome else None,
+                             outcome=outcome, outcome_at=now - timedelta(days=8) if outcome else None,
+                             join_src="test" if outcome else None))
+        await s.commit()
+    res = await db_retention.evict_audit_logs_once()
+    assert res["ai_decisions"] == 2, res
+    async with get_session() as s:
+        left = sorted((await s.execute(select(AiDecision.trigger_key))).scalars())
+    assert left == ["old-shadow"], left
+
+
 _harness.run(
     case_sweep_deletes_old_keeps_recent_and_terminal_only,
     case_zero_window_disables_a_table,
+    case_full_ai_test_rows_age_out_in_7_days_shadow_kept,
+    case_settled_test_offers_age_out_in_7_days_shadow_kept,
 )

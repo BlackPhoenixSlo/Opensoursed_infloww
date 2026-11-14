@@ -184,6 +184,15 @@ describe("typingFrames", () => {
   });
 });
 
+describe("full_ai_config", () => {
+  it("is no recipe: boundFlow binds nothing (Apply is one PUT)", () => {
+    const d: Parameters<typeof boundFlow>[0] = { id: "c1", account_id: "7", flow: "full_ai_config", summary: "", assumptions: [],
+      unresolved: [], answer: "", error: null, slots: { rev: 1, before: {}, after: { gifs: false }, diffs: [], account_name: "A" } };
+    expect(boundFlow(d)).toBeNull();
+    expect(Object.keys(DO_FLOWS)).not.toContain("full_ai_config");
+  });
+});
+
 describe("flowForHref", () => {
   it.each([
     ["/growth/auto-mass", "mass_premade"],

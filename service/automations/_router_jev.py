@@ -21,15 +21,26 @@ shape: the probe's.
 
   - `QUESTIONS`, `THRESHOLDS`, `INTENSITY`, `STATE_VERSION`,
     `QUESTION_VERSION` (`question_version()`).
+  - Test Mode only (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`),
+    `TEST_NOULS` (DRAFT `counter_offer`, `offer_moment`), `DRAFT`,
+    `question_version("test")`, `_questions("test")`; Shadow's request and
+    digest are unchanged (spec 03b story 66).
   - `fired(answers)`: the ids at or above their threshold.
+  - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
+    anything / any.
   - `line_text(m)`: one stored message as a person reads it (`MEDIA_ONLY`,
     `GIF_ONLY` with no text).
   - `thread`, `her_last_line`, `last_purchase`, `pending_offer`: the rest of
     the state in the probe's words, from stored rows (pure).
   - `state(...)`: the Jev state (spec › Contracts).
-  - `ask(state, account_id)`: one request; `Answers`, or `GateError` on any
-    failure (no key, no SDK, timeout, HTTP error, a missing or out-of-range
-    answer or Score). A failed call is an error, never a "no".
+  - `ask(state, account_id, mode="shadow")`: one request (`_questions(mode)`);
+    `Answers`, or `GateError` on any failure (no key, no SDK, timeout, HTTP
+    error, a missing or out-of-range answer or Score). A failed call is an
+    error, never a "no". In test Mode `Answers.answers` also holds the
+    `TEST_NOULS` P(yes) (no threshold, so `fired` never reads them before
+    ticket 47, like `gif_fits`) and `Answers.choices` the `TEST_CHOICES`
+    probabilities (the Sell executor reads them through `choice_of`);
+    Shadow's `choices` is `{}`.
 
 The key is the Creator's agency's own TypeSafe key, else the deployment's
 `TYPESAFE_API_KEY` (`tenant_keys.typesafe_key_for`); `TYPESAFE_BASE_URL` (the
@@ -157,15 +168,82 @@ INTENSITY: dict[str, Any] = {
     ],
 }
 
-def question_version() -> str:
+# ── Test Mode only (03b) ────────────────────────────────────────────────
+# Asked only in test Mode, in its one request: Shadow's request, `QUESTIONS`,
+# `THRESHOLDS` and `QUESTION_VERSION` stay Phase 01's until the owner OKs this
+# wording (adding it to Shadow / live is a 04a / 05 step). Wording is new (no old
+# question existed), docs/prompts NEW-118..121; not probed yet.
+
+# What he asks to see and in which format; the Sell executor's `Ask` options
+# (ticket 10 r3), in its order. ASSUMPTION: wording new (rung 5), overturned by
+# the owner's wording.
+TEST_CHOICES: dict[str, dict[str, Any]] = {
+    "asks_subject": {
+        "instructions": "In `fan_new_messages`, what does the fan ask to see of her? Pick anything "
+                        "if he names nothing specific.",
+        "criteria": {
+            "feet": "Her feet, toes or soles",
+            "butt": "Her butt or ass",
+            "tits": "Her tits, boobs or nipples",
+            "pussy": "Her pussy",
+            "nude": "Her fully naked",
+            "lingerie": "Her in lingerie or underwear",
+            "bikini": "Her in a bikini or swimwear",
+            "shower": "Her in the shower or bath",
+            "toy": "Her with a sex toy or dildo",
+            "masturbation": "Her touching herself or masturbating",
+            "blowjob": "Her giving a blowjob",
+            "sex": "Her having sex with someone",
+            "anything": "Nothing specific, or something not listed here",
+        },
+    },
+    "asks_format": {
+        "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+        "criteria": {
+            "photo": "A photo, pic or picture",
+            "video": "A video, clip or vid",
+            "any": "He does not say, or either is fine",
+        },
+    },
+}
+# `choice_of`'s answer on a tie at the top, an unoffered top label or no answer.
+CHOICE_DEFAULT = {"asks_subject": "anything", "asks_format": "any"}
+
+# DRAFT Nouls (haggle, unasked offer): asked and kept in test Mode, read by
+# nothing until ticket 47, and then only in a `draft_questions` window.
+TEST_NOULS: dict[str, dict[str, Any]] = {
+    "counter_offer": _q(
+        "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+        "He names a lower amount, asks for a discount or a deal, or says he would buy it for less",
+        "He accepts the price, says no without bargaining, only asks what it costs, or does not "
+        "mention the price"),
+    "offer_moment": _q(
+        "Would this be a good moment for her to offer him some of her content to buy, even "
+        "though he did not ask for it?",
+        "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, "
+        "and nothing shows he is upset or cannot pay",
+        "He is upset or complaining, says he cannot pay, asks something serious, or the chat is "
+        "only small talk so far"),
+}
+
+# Asked and stored, never read by the Route table before the owner OKs them.
+DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
+
+
+def question_version(mode: str = "shadow") -> str:
     """A short digest of what changes what Jev answers: the model, the wording,
     thresholds and levels, and the state's shape (`STATE_VERSION`, the
-    `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads)."""
+    `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads). For any
+    Mode but `test` exactly Phase 01's digest; `test` adds `TEST_CHOICES`,
+    `TEST_NOULS` and `DRAFT` (what test rows record)."""
+    d: dict[str, Any] = {
+        "model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
+        "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
+        "purchase_days": PURCHASE_DAYS, "purchase_kinds": sorted(PURCHASE_KINDS)}
+    if mode == "test":
+        d |= {"test_choices": TEST_CHOICES, "test_nouls": TEST_NOULS, "draft": sorted(DRAFT)}
     return hashlib.sha256(json.dumps(
-        {"model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
-         "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
-         "purchase_days": PURCHASE_DAYS, "purchase_kinds": sorted(PURCHASE_KINDS)},
-        sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+        d, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 QUESTION_VERSION = question_version()
@@ -177,16 +255,29 @@ class GateError(Exception):
 
 
 class Answers(NamedTuple):
-    answers: dict[str, float]       # question id -> P(yes), as Jev gave it
+    answers: dict[str, float]       # Noul id -> P(yes), as Jev gave it (+ `TEST_NOULS` in test Mode)
     intensity: float                # the Score, 0..4
     intensity_p: dict[str, float]   # level -> probability
     model: str | None               # the model id Jev reports
     ms: int                         # the call's wall time
+    choices: dict[str, dict[str, float]]   # test Mode: `TEST_CHOICES` id -> label -> P; Shadow {}
 
 
 def fired(answers: dict[str, float]) -> frozenset[str]:
     """The question ids at or above their threshold."""
     return frozenset(q for q, t in THRESHOLDS.items() if answers[q] >= t)
+
+
+def choice_of(choices: dict[str, dict[str, float]], qid: str) -> str:
+    """A test-Mode Choice's answer from `choices` (Choice id -> label -> probability, as
+    Jev gave it): the label with the highest probability; a tie at the top, a top label
+    the Choice never offered, or no answer is `CHOICE_DEFAULT` (anything / any). Pure."""
+    probs = choices.get(qid) or {}
+    top = max(probs.values(), default=None)
+    best = [k for k, p in probs.items() if p == top]
+    if len(best) == 1 and best[0] in TEST_CHOICES[qid]["criteria"]:
+        return best[0]
+    return CHOICE_DEFAULT[qid]
 
 
 # How a message with no text reads. His media DM and every word below but
@@ -323,17 +414,31 @@ def _client(key: str) -> Any:
     return _jev.client(key, MODEL, TIMEOUT_S, MAX_RETRIES)
 
 
-def _questions() -> dict[str, Any]:
-    from typesafe_sdk import Noul, Score
+def _questions(mode: str = "shadow") -> dict[str, Any]:
+    """The request's questions: every `QUESTIONS` Noul and the `intensity` Score; in
+    test Mode also the `TEST_NOULS` and the `TEST_CHOICES` (built as `_info_jev`'s
+    Choice), after them. Pure."""
+    from typesafe_sdk import Choice, Noul, Score
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
                          for qid, v in QUESTIONS.items()}
     q["intensity"] = Score(instructions=INTENSITY["instructions"], criteria=INTENSITY["criteria"])
+    if mode == "test":
+        q |= {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
+              for qid, v in TEST_NOULS.items()}
+        q |= {qid: Choice(instructions=v["instructions"], criteria=v["criteria"])
+              for qid, v in TEST_CHOICES.items()}
     return q
 
 
-async def ask(st: dict[str, Any], account_id: str | None = None) -> Answers:
+async def ask(st: dict[str, Any], account_id: str | None = None,
+              mode: str = "shadow") -> Answers:
     """Ask every Router question and the `intensity` Score over `st` in one
-    request, on `account_id`'s TypeSafe key. Raises `GateError` on any failure."""
+    request (`_questions(mode)`), on `account_id`'s TypeSafe key. Raises
+    `GateError` on any failure; in test Mode a missing or out-of-range
+    `TEST_NOULS` answer or a missing `TEST_CHOICES` answer is one too. A Choice's
+    probabilities are stored as Jev gave them: a top label it never offered is
+    not an error here (`choice_of` reads it as anything / any), so a Sell-subject
+    glitch never costs the Turn its Route."""
     from tenant_keys import typesafe_key_for
     try:
         key = await typesafe_key_for(account_id)   # DB reads: may raise
@@ -342,9 +447,12 @@ async def ask(st: dict[str, Any], account_id: str | None = None) -> Answers:
         # ASSUMPTION: Jev wall time is the request alone (SDK retries included),
         # not the key read before it. Overturned if p95 should include the DB.
         t0 = time.perf_counter()
-        res = await _client(key).system_one(st, _questions(), model=MODEL)
+        res = await _client(key).system_one(st, _questions(mode), model=MODEL)
         ms = int((time.perf_counter() - t0) * 1000)
-        answers = {qid: float(res.nouls[qid].noul) for qid in QUESTIONS}
+        nouls = [*QUESTIONS, *(TEST_NOULS if mode == "test" else ())]
+        answers = {qid: float(res.nouls[qid].noul) for qid in nouls}
+        choices = ({qid: {str(k): float(v) for k, v in res.choices[qid].probabilities.items()}
+                    for qid in TEST_CHOICES} if mode == "test" else {})
         bad = [q for q, p in answers.items() if not 0.0 <= p <= 1.0]   # NaN fails too
         if bad:
             raise GateError(f"answer out of range: {bad}")
@@ -357,4 +465,4 @@ async def ask(st: dict[str, Any], account_id: str | None = None) -> Answers:
         raise
     except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
         raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
-    return Answers(answers, intensity, p, getattr(res, "model", None), ms)
+    return Answers(answers, intensity, p, getattr(res, "model", None), ms, choices)

@@ -4,11 +4,11 @@ two-Agency bench, through the real app in-process with real minted owner tokens.
 
 Cases:
   case_handshake               — initialize (version echo / newest for an unknown one) → initialized 202 →
-                                 ping → tools/list (the Toolbox) → tools/call creators_list (A's own Creator).
+                                 ping → tools/list (the Toolbox + propose_plan / plan_status) → tools/call creators_list (A's own Creator).
   case_origin_refused          — any Origin → 403, even with a good token; no tool runs.
   case_auth_refused            — cookie-only, a bad ifw_ token, a foreign Bearer, Basic → 401.
   case_anonymous_surface       — no credential: initialize + tools/list = connect_account only; its links
-                                 (MCP_SIGNUP_URL, else this host); a data tool → isError with the link.
+                                 (MCP_SIGNUP_URL, else this host); a data tool or propose_plan → isError with the link.
   case_share_token_gate        — SHARE_TOKEN set: anonymous POST /admin/mcp still serves initialize / tools/list
                                  (connect_account only); a data tool, GET /admin/mcp and /admin/accounts stay refused.
   case_cross_agency_refused    — B's token never reads Creator A (403) and lists only B.
@@ -53,13 +53,7 @@ B = fx.login_owner("agency_b_owner")
 ANON = _harness.make_client()  # no cookie jar: every call below picks its own credential
 
 
-def _mint(client) -> str:
-    r = client.post("/admin/owner-tokens", json={"name": "mcp"})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
-
-
-TOK_A, TOK_B = _mint(A), _mint(B)
+TOK_A, TOK_B = fx.mint_token(A), fx.mint_token(B)
 HA = {"Authorization": f"Bearer {TOK_A}"}
 HB = {"Authorization": f"Bearer {TOK_B}"}
 WEEK = {"preset": "last_7_days"}
@@ -102,7 +96,8 @@ def case_handshake() -> None:
     assert r.status_code == 202 and r.content == b"", (r.status_code, r.text)
     assert _rpc("ping")["result"] == {}
     names = [t["name"] for t in _rpc("tools/list", headers={**HA, "MCP-Protocol-Version": "2025-06-18"})["result"]["tools"]]
-    assert names == [t.name for t in td.TOOLS], names
+    assert names == [t.name for t in td.token_tools()] + ["propose_plan", "plan_status"], names
+    assert not {"mass_send", "post_create", "connect_account"} & set(names), names
     res = _tool("creators_list")
     assert res["isError"] is False, res
     assert [c["id"] for c in res["structuredContent"]["accounts"]] == [CA], res
@@ -151,6 +146,9 @@ def case_anonymous_surface() -> None:
         s = out["structuredContent"]
         assert out["isError"] is True and s["error"]["status"] == 401, out
         assert s["open_url"] == s["register_url"] and "accounts" not in s, out
+    out = _tool("propose_plan", {"summary": "x", "steps": []}, headers={})  # a token builtin: the link
+    assert out["isError"] is True and out["structuredContent"]["error"]["status"] == 401, out
+    assert _rpc("tools/call", {"name": "mass_send", "arguments": {}}, {})["error"]["code"] == -32602
     assert _rpc("resources/list", headers={})["error"]["code"] == -32601
 
 
@@ -224,6 +222,11 @@ def case_send_tools_absent() -> None:
         assert _rpc("tools/call", {"name": "zz_send"})["error"]["code"] == -32602
     finally:
         td.TOOLS = saved
+    names = [t["name"] for t in _rpc("tools/list")["result"]["tools"]]
+    for real in ("mass_send", "post_create"):  # the registry's own send tools
+        assert real in {t.name for t in td.TOOLS} and real not in names, names
+        args = {"account_id": CA, "text": "hi", "user_lists": ["fans"]}
+        assert _rpc("tools/call", {"name": real, "arguments": args})["error"]["code"] == -32602
 
 
 def _a_page() -> str:

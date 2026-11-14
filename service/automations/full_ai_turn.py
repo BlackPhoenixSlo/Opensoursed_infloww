@@ -1,0 +1,372 @@
+"""automations/full_ai_turn.py — Full AI Chat's shared Turn pipeline, one for every Mode.
+
+  load_turn_facts(account, fan, anchor, mode, *, session=None, side=None) -> TurnFacts
+  sender_for(mode)       test: full_ai_test.send | shadow: None (records only) | live: 04a
+  run_turn(facts) -> TurnResult
+
+`run_turn`, in order: Router Jev (`_router_jev.ask`; a `GateError` is chat at Heat 1, row
+`jev_failed`) and `decide_turn` with the side's route flags; on a speaking Route the info stage
+(`_info_jev`: what he stated, the fired fields' extract, the next question; a failure sets
+`reply_json.info_error` and the reply is still written); the Route's Writer
+(`full_ai_writers.write`); the shared reply chain `finalize_draft` -> `shape_parts` ->
+`apply_typo_throttle` (docs/prompts/post-processing.md); then the Mode's sender and its record.
+On sell_now (only reachable with the side's `sell_on`) the Sell executor runs after the info stage
+and before the Writer, inside the same Turn deadline (03b, `_sell`): a Pick reaches the Writer and
+rides the last text bubble as its PPV (`full_ai_test.send`); a Refusal gives chat + its need-line
+(`reply_json.refusal`). A leak swap or a dropped turn sends no PPV (`reply_json.offer_dropped`
+`leak` | `shape`). One Pick per Turn at most. A text bubble set riding a Pick then passes the Claim
+audit + price check (`_claim_audit`, ticket 45): one rewrite through the same chain, then
+`full_ai_sell.fallback_caption` (`reply_json.caption_fallback`).
+`hold_with_typing` and the DM rate are the Mode's transport's to call, and test calls neither.
+A `STICKER: <tag>` line is always stripped from the Writer's text before the chain
+(`cat_stickers.parse_marker`); with `config.gifs` on, its tag becomes a `{gif, tag}` part after her
+text bubbles (or the whole reply), the giphy id from `cat_stickers.pick_gif`.
+
+Guard set, declared at the one `finalize_draft` call: no consistency check and
+`strip_emoji=strip_emoji_on`, the account-wide flag (autoreply's `(False, "flag")`, pinned in
+test_outbound.py). Every other style switch comes from the side's config (`text_style`), never
+from `_style_flags`, so a draft-only style change reaches only the draft window.
+
+Sends nothing itself: no direct import of an OF client, executor, lease, DM rate or OF write module
+(AST scan + runtime send traps in test_full_ai_test_chat.py; shared helpers load them transitively).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import random
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+import llm_client
+from automations import _info_jev, _reply_shape, _voice, cat_stickers
+from automations import _router_jev as router
+from automations import full_ai_sell, full_ai_test
+from automations._nonnative import NONNATIVE_OUTPUTS
+from automations._outbound import finalize_draft
+from automations._prompt_rules import STYLE_MAX_BUBBLES
+from automations._style_flags import load_strip_emojis
+from automations._typos import apply_typo_throttle
+from automations._wordfilter import load_banned_words
+from automations.full_ai_sell import Pick, Refusal
+from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
+from automations.full_ai_writers import PURPOSE, _outcome, style_flags, write
+from automations.full_ai_config import merged, turn_bound_s
+from automations.welcome_chatter_for_info import _REPLY_MAX_CHARS
+from db.engine import get_session
+from db.models import AccountAiConfig
+
+log = logging.getLogger(__name__)
+
+# Formal: two bubbles at most, autoreply's no-style split (autoreply.py `max_bubbles`).
+_FORMAL_MAX_BUBBLES = 2
+
+
+@dataclass
+class TurnFacts:
+    account_id: str
+    fan_id: int
+    mode: str                       # test | shadow | live
+    anchor_key: str                 # the row's trigger_key
+    state: dict                     # the Jev state (`_router_jev.state`)
+    cut_rows: list                  # the thread rows then his Turn, oldest first
+    bought: Any                     # his last purchase row, or None
+    offer: Any                      # the Pending offer row, or None
+    fan_info: dict                  # what he stated (the session fold in test)
+    asked: dict                     # field -> times asked
+    config: dict                    # the side's config (checkpoint or draft)
+    side: str | None                # "checkpoint" | "draft" in test, else None
+    typo_state: dict = field(default_factory=dict)   # the `*fix` throttle state (test fold)
+    config_rev: int = 0             # the stored config's rev the Turn ran on
+    next_question: str | None = None    # the info Jev's pick (`_info_jev`), set by `run_turn`
+    pick: Pick | Refusal | None = None  # the sell step's result on sell_now (03b), set by `run_turn`
+    owned: set[int] = field(default_factory=set)    # Owned media, raw ids (test: `full_ai_test.owned_of`)
+    spent: list = field(default_factory=list)       # his purchases, oldest first (`bought_of`): the spend line
+
+
+@dataclass
+class TurnResult:
+    row_id: int
+    decision: Decision
+    parts: list[dict]
+    writer: str | None
+    attempts: list[dict]
+    wait_s: float | None
+    status: str                     # sent | failed | no_send
+    offer: dict | None = None       # the Offer the row carries (`full_ai_test.offer_of`), else None
+
+
+async def stored_config(account_id: str) -> dict:
+    """The Creator's Full AI config through the pure merge: an empty store gives `DEFAULTS` on
+    both sides."""
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, str(account_id))
+    raw = row.full_ai_config_json if row is not None else None
+    return merged(json.loads(raw) if raw else {})
+
+
+async def load_turn_facts(account, fan, anchor, mode, *, session=None, side=None) -> TurnFacts:
+    """The Turn's facts. Test: `fan` is the pair, `anchor` his line, `side` the config side;
+    read off the session's own rows (`full_ai_test.fetch`) with that side of the stored config.
+    Shadow and live read the DB (`full_ai_chat._state`) from 04a; `session` is theirs."""
+    if mode == "test":
+        cfg = await stored_config(account)
+        facts = await full_ai_test.fetch(account, fan, side, anchor, cfg[side])
+        facts.config_rev = cfg["rev"]
+        return facts
+    raise NotImplementedError(f"load_turn_facts: mode {mode!r} lands with 04a")
+
+
+def sender_for(mode: str) -> Callable | None:
+    if mode == "test":
+        return full_ai_test.send
+    if mode == "shadow":
+        return None
+    raise NotImplementedError(f"sender_for: mode {mode!r} lands with 04a")
+
+
+async def _route(facts: TurnFacts) -> tuple[Decision, dict, str | None, int | None, str | None]:
+    """Router Jev and the Route table: (decision, jev_json, router model, Jev ms, Jev error)."""
+    try:
+        jev = await router.ask(facts.state, facts.account_id, mode=facts.mode)
+        fired, intensity, error = router.fired(jev.answers), jev.intensity, None
+        answers, score, model, ms = jev.answers, {"score": jev.intensity, "p": jev.intensity_p}, jev.model, jev.ms
+        choices = jev.choices
+    except router.GateError as e:                   # never a "no": chat, Heat 1
+        fired, intensity, error = frozenset(), 0.0, str(e) or type(e).__name__
+        answers, score, model, ms = None, None, None, None
+        choices = None
+    cfg = facts.config
+    d = decide_turn(Facts(fired=fired, intensity=intensity, pending_offer=facts.offer is not None,
+                          pending_tease=False, jev_ok=error is None,
+                          sell_on=bool(cfg["sell_on"]), sext_on=bool(cfg["sext_on"])))
+    jev_json = {"answers": answers, "intensity": score, "fired": sorted(fired), "state": facts.state,
+                "choices": choices}   # 03b: test Mode's Choices, read by `_sell` only
+    return d, jev_json, model, ms, error
+
+
+async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -> str | None:
+    """The info stage on a speaking Turn: Jev's `stated_*` (and, on chat, the `next_question`
+    Choice: only the chat Writer asks) within the time left, then the fired fields' extract within
+    `min(writer_timeout_s, time left)`. Sets `facts.fan_info` (a new dict, newer values win) and
+    `facts.next_question`: Jev's pick while it is still missing after the extract (so the pick is
+    exactly what the Writer asks, and what `asked` counts). Returns `info_error` (None when all
+    ran)."""
+    jev_json["info_version"] = _info_jev.INFO_VERSION
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return "deadline"
+    offered = _info_jev.missing(facts.config, facts.fan_info) if route == "chat" else []
+    st = _info_jev.state(facts.state, facts.asked, offered)
+    try:
+        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left)
+    except router.GateError as e:
+        return f"jev_failed: {e}"[:300]
+    jev_json["info"] = {"stated": info.stated, "pick": info.pick, "fired": info.fired,
+                        "asked": st["asked"]}
+    facts.next_question = info.pick
+    if not info.fired:
+        return None
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return "deadline"
+    try:
+        got = await _info_jev.extract(facts, info.fired,
+                                      timeout_s=min(float(facts.config["writer_timeout_s"]), left))
+    except llm_client.LLMError as e:
+        return f"extract:{_outcome(e)}"
+    except _info_jev.ExtractError as e:
+        return f"extract:{e}"
+    facts.fan_info = {**facts.fan_info, **got}
+    if info.pick not in _info_jev.missing(facts.config, facts.fan_info):
+        facts.next_question = None              # he just told her: nothing left to ask
+    return None
+
+
+async def _chain(raw: str, facts: TurnFacts, reply: dict) -> list[str]:
+    """The shared reply chain over the Writer's text; [] when it drops the draft
+    (`reply["dropped_reason"]` says why)."""
+    aid, fid = facts.account_id, facts.fan_id
+    strip_emoji_on = await load_strip_emojis(aid)   # the one account-wide style read
+    text, leak = await finalize_draft(raw, account_id=aid, fan_id=fid, purpose=PURPOSE,
+                                      strip_emoji=strip_emoji_on, v=_voice.HER)
+    reply["leak"] = leak
+    if not text:
+        reply["dropped_reason"] = "empty"
+        return []
+    flags = style_flags(facts.config)
+    max_bubbles = STYLE_MAX_BUBBLES if flags["style_on"] else _FORMAL_MAX_BUBBLES
+    words, mode = await load_banned_words(aid)
+    # autoreply's protected names (autoreply.py `name_protect`), from the session fold.
+    name_protect = [n for n in (facts.fan_info.get(k) for k in
+                                ("real_name", "generated_nickname", "of_display_name")) if n]
+    rows = facts.cut_rows
+    his = [router.line_text(m) for m in rows if m.direction == "in"]
+    shaped = _reply_shape.shape_parts(text, _reply_shape.ShapeCtx(
+        seed_id=fid, max_bubbles=max_bubbles, max_chars=_REPLY_MAX_CHARS, lang=None,
+        echo_of=his[-1] if his else None, style_on=flags["style_on"],
+        recent_out=[router.line_text(m) for m in rows if m.direction == "out"], allow_empty=False,
+        banned_words=words, banned_mode=mode, nonnative_on=flags["nonnative_on"],
+        spacing_on=flags["spacing_on"], name_protect=name_protect))
+    if shaped.dropped_reason is not None:
+        reply["dropped_reason"] = shaped.dropped_reason
+        return []
+    parts = shaped.parts
+    if flags["typo_on"]:
+        protect = name_protect + (list(NONNATIVE_OUTPUTS) if flags["nonnative_on"] else [])
+        parts = await apply_typo_throttle(aid, fid, parts, random.Random(f"{fid}:{text}"),
+                                          protect=protect, max_bubbles=max_bubbles,
+                                          state=reply["typo_state"])
+    return parts
+
+
+async def _sell(facts: TurnFacts, heat: int, choices: dict[str, dict[str, float]]) -> None:
+    """The Sell executor on a sell_now Turn: the vault (`load_rows`), the pool over the side's
+    `folders` (config; empty include = all, exclude wins), the shoots and one seeded Pick
+    (replayable per Turn). The ask is the Router's `asks_subject` / `asks_format` Choices
+    (`choice_of`: a tie, an unoffered label or none is anything / any) at the Turn's Heat. Sets
+    `facts.pick` (a Pick, or the Refusal whose need-line the Writer gets).
+
+    Owned media is `facts.owned` (the pool expands it through the dupe groups).
+    ASSUMPTION: an error past `load_rows` (the pool, shoots or the draw) is inventory_unknown, never a
+    broken Turn, as `load_rows` itself fails closed. Overturned if such errors should surface."""
+    aid = facts.account_id
+    ask = full_ai_sell.Ask(router.choice_of(choices, "asks_subject"),
+                           router.choice_of(choices, "asks_format"), max(1, min(4, int(heat))))
+    got = await full_ai_sell.load_rows(aid)
+    if isinstance(got, Refusal):
+        facts.pick = got
+        return
+    rows, groups, prints = got
+    try:
+        pool = full_ai_sell.pool(rows, groups, facts.owned, facts.config["folders"], ask)
+        if isinstance(pool, Refusal):
+            facts.pick = pool
+            return
+        shoots = await full_ai_sell.shoots_for(aid, pool, prints)
+        facts.pick = full_ai_sell.pick(pool, shoots, ask,
+                                       seed=full_ai_sell.seed_for(aid, str(facts.fan_id), facts.anchor_key))
+    except Exception:  # noqa: BLE001 — fail closed: chat, never a half-built offer
+        log.exception("full_ai sell step failed account=%s", aid)
+        facts.pick = Refusal("inventory_unknown")
+
+
+async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, parts: list[str],
+                       pick: Pick, deadline: float) -> list[str]:
+    """The Claim audit + price check on the chain's final text (ticket 45): pass -> `parts`; fail ->
+    one rewrite by the Writer that answered (same messages, `write` with `min(its own, remaining)`)
+    through the same chain, its attempts appended with `rewrite: true`; a second failure, or less
+    than one `writer_timeout_s` left before the Turn deadline -> `fallback_caption`. Sets
+    `reply["caption_fallback"]`. A caption not sent leaves no trace on the row: `leak` /
+    `dropped_reason` stay as the first chain set them, and `typo_state` is the state the shipped
+    text's chain left (the Turn's starting state for the fallback caption, which has no typos).
+    ASSUMPTION: the rewrite regenerates with the same messages (no correction note): story 32 says
+    "regenerated once" and no old claim-correction wording exists. Overturned if the owner wants
+    the house re-ask shape (old ai_chatter's assistant + user correction turn).
+    ASSUMPTION: "too little time" is less than one `writer_timeout_s` left (the ticket's deadline
+    case). Overturned if a shorter rewrite window should still be tried."""
+    kind = "free" if not pick.price_cents else "tease" if d.route == "tease" else "offer"
+    price = pick.price_cents if kind == "offer" else None
+
+    def ok(ps: list[str]) -> bool:
+        text = "\n".join(ps)
+        return full_ai_sell.claim_ok(text, pick) and full_ai_sell.price_ok(text, price)
+
+    reply["caption_fallback"] = False
+    if ok(parts):
+        return parts
+    if deadline - time.monotonic() >= float(facts.config["writer_timeout_s"]):
+        again = await write(d, facts, deadline=deadline, writers=[writer])
+        reply["attempts"] = reply["attempts"] + [{**a, "rewrite": True} for a in again.attempts]
+        if again.text is not None:
+            # A scratch reply: the rewrite's chain marks the row only if its text ships.
+            scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
+            text = cat_stickers.parse_marker(again.text)[0]     # the first reply's gif stays
+            redo = await _chain(text, facts, scratch) if text else []
+            if redo and not scratch["leak"] and ok(redo):
+                reply.update(scratch)
+                return redo
+    reply["typo_state"] = dict(facts.typo_state)
+    reply["caption_fallback"] = True
+    return [full_ai_sell.fallback_caption(pick, kind)]
+
+
+def _gif_part(raw: str, facts: TurnFacts) -> tuple[str, dict | None]:
+    """The Writer's text with every sticker marker stripped, and its `{gif, tag}` part when GIFs
+    are on and the tag has a gif (seeded per Turn, so a replay picks the same one)."""
+    text, tag = cat_stickers.parse_marker(raw)
+    if not facts.config.get("gifs"):
+        return text, None
+    # The shared no-same-reaction-twice rule; it bites once a sender records the gif
+    # (`mark_sent`, live 04a). Test records none, so a test session may repeat a tag.
+    tag = cat_stickers.keep_tag(facts.account_id, facts.fan_id, tag, has_text=bool(text))
+    if tag is None:
+        return text, None
+    gid = cat_stickers.pick_gif(tag, random.Random(f"gif:{facts.account_id}:{facts.fan_id}:{facts.anchor_key}"),
+                                account_id=facts.account_id, fan_id=facts.fan_id,
+                                voice=_voice.VOICE_HER)
+    return text, ({"gif": gid, "tag": tag} if gid else None)
+
+
+async def run_turn(facts: TurnFacts) -> TurnResult:
+    """Decide, write, shape and record one Turn. Raises `full_ai_test.Conflict` when the Turn
+    is not the session's next one or already has its row."""
+    t0 = time.perf_counter()
+    # One Turn deadline every LLM stage shares (spec › Contracts › One Turn bound). The Router
+    # runs first, so its own 10 s always fits the >= 30 s bound; later stages are capped by it.
+    deadline = time.monotonic() + turn_bound_s(facts.config)
+    d, jev_json, model, ms, error = await _route(facts)
+    reply: dict[str, Any] = {
+        "parts": [], "attempts": [], "floor_reason": None, "dropped_reason": None, "leak": [],
+        "side": facts.side, "config_rev": facts.config_rev, "wait_s": None, "turn_ms": None,
+        "fan_info": facts.fan_info, "asked": facts.asked, "typo_state": dict(facts.typo_state),
+        "info_error": None}
+    row: dict[str, Any] = {
+        "account_id": facts.account_id, "fan_id": facts.fan_id, "mode": facts.mode,
+        "trigger_kind": full_ai_test.TRIGGER_KIND, "trigger_key": facts.anchor_key,
+        "arm": arm_of(facts.account_id, facts.fan_id), "salt_ver": SALT_VER,
+        "route": d.route, "heat": d.heat, "route_row": d.row,
+        "question_version": router.question_version(facts.mode), "router_model": model, "writer_model": None,
+        "jev_json": jev_json, "jev_ms": ms, "jev_error": error, "status": "failed",
+        "reply_json": reply}
+    writer, parts = None, []
+    if d.route == "no_send":
+        row["status"] = "no_send"
+    else:
+        reply["info_error"] = await _info(facts, d.route, deadline, jev_json)
+        reply["fan_info"] = facts.fan_info
+        if d.route == "sell_now":
+            await _sell(facts, d.heat, jev_json["choices"])
+            if isinstance(facts.pick, Refusal):
+                reply["refusal"] = facts.pick.reason
+        res = await write(d, facts, deadline=deadline)
+        reply["attempts"], reply["floor_reason"] = res.attempts, res.floor_reason
+        gif = None
+        if res.text is not None:
+            text, gif = _gif_part(res.text, facts)
+            # A sticker-only reply skips the chain: the gif is the whole reply.
+            parts = await _chain(text, facts, reply) if text or gif is None else []
+        pick = facts.pick if isinstance(facts.pick, Pick) else None
+        if pick is not None and reply["leak"]:      # a guarded reply never carries a paid attachment
+            reply["offer_dropped"], pick = "leak", None
+        elif pick is not None and res.text is not None and not parts:
+            reply["offer_dropped"] = "shape"        # the reply chain dropped her text, or a lone gif
+        elif pick is not None and parts:            # her text must claim only what the PPV holds
+            parts = await _claim_audit(d, facts, reply, res.writer, parts, pick, deadline)
+        if parts or (gif and not text):            # a dropped draft fails, gif or not
+            writer = res.writer
+            row["writer_model"] = writer
+            reply["wait_s"] = full_ai_test.hold(facts.config, facts.anchor_key)
+            send = sender_for(facts.mode)
+            if send is not None:                    # shadow records only
+                send(row, parts, pick)
+                if gif:
+                    reply["parts"].append(gif)
+            if facts.next_question and parts:       # the ask went out in her text (not a lone gif)
+                reply["asked"] = {**facts.asked,
+                                  facts.next_question: facts.asked.get(facts.next_question, 0) + 1}
+    reply["turn_ms"] = int((time.perf_counter() - t0) * 1000)
+    row_id = await full_ai_test.record(row)
+    return TurnResult(row_id, d, reply["parts"], writer, reply["attempts"], reply["wait_s"],
+                      row["status"], full_ai_test.offer_of(row))

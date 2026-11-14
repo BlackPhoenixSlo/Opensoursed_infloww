@@ -518,4 +518,14 @@ export const OURS = {
     /** "Timeline": 10px, letter-spaced, 4px above the list. */
     timelineLabel: "mb-1 text-[10px] tracking-wide",
   },
+  FullAiTestChatWindows: {
+    /** A test chat bubble, the Fan's or the Creator's: at most 85% of the window. */
+    bubbleWidth: "max-w-[85%]",
+    /** The Creator's "no reply" line in place of the Creator's bubbles: 13px. */
+    noReply: "text-[13px]",
+    /** The failed-attempts line and the reply line under a reply: 11px. */
+    meta: "text-[11px]",
+    /** The typing dots: 4px apart. */
+    dots: "gap-1",
+  },
 } as const;

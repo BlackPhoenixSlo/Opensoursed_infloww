@@ -12,13 +12,17 @@ import vault_jev_rules as rules
 _GOLDEN = None
 
 
-def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
-    """A current, describe-feedable clip `_jev`: one golden pass-1-only frame of final lane `lane5`."""
+def _golden() -> list[dict]:
     global _GOLDEN
     if _GOLDEN is None:
         p = Path(__file__).parent / "fixtures" / "vault_jev" / "golden.json.gz"
         _GOLDEN = json.load(gzip.open(p, "rt"))["images"]
-    for g in _GOLDEN:
+    return _GOLDEN
+
+
+def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
+    """A current, describe-feedable clip `_jev`: one golden pass-1-only frame of final lane `lane5`."""
+    for g in _golden():
         d = rules.derive8({"resp": g["rec"]["resp"]})
         if (g["nn"] is not None and set(g["rec"]) == {"resp"} and g["expect"]["lane5"] == lane5
                 and not d["need2"] and not d["needL"]):
@@ -31,3 +35,15 @@ def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
              "nn": [nn.get(k, 0) for k in vault_jev._NN], "lane5": ds[0]["lane5"]}
     return rules.video_blob(ds, top, recs, [nn], frames=[frame], passes=["1"], tok=1000, px=[[1280, 720]],
                             at="2026-11-12T00:00:00", src="720", review=review, nbytes=1)
+
+
+def photo_jev(lane5: str = "free") -> dict:
+    """A current, describe-feedable photo `_jev` from a golden pass-1-only record of final lane `lane5`
+    (the photo twin of `video_jev`)."""
+    for g in _golden():
+        if g["nn"] is not None and set(g["rec"]) == {"resp"} and g["expect"]["lane5"] == lane5:
+            d = rules.final(g["rec"], g["nn"])
+            if d["lane5"] == lane5:
+                return rules.blob(d, g["nn"], passes=["1"], tok=1, px=[800, 1200], at="2026-11-12T00:00:00",
+                                  answers=g["rec"]["resp"]["answers"])
+    raise LookupError(lane5)

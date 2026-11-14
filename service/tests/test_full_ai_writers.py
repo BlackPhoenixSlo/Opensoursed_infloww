@@ -11,6 +11,11 @@ one-shot Writer call.
   3. Euryale v2.3 (NanoGPT) and Hermes 4 405B (OpenRouter) reach their hosts
      with the spec's wire ids and bill at the D54/D60 prices; neither takes
      the JSON lanes.
+  4. `messages_for` per Route (ticket 34), pure: each old constant is its
+     `docs/prompts/old` text, each new one its catalog entry; the sell-off
+     line only on rows `sell_off` / `tease_off`; sext at Heat with her Model
+     info; ai_dare two beats in order; make_right the apology frames, no free
+     item; the cat-sticker block only with `gifs` on; no_send builds nothing.
 
 Offline: the transport is stubbed, no provider is called.
 
@@ -215,6 +220,253 @@ async def case_zero_attempts_is_refused_before_anything_fires():
     except LLMConfigError:
         pass
     assert _OkClient.calls == 0, _OkClient.calls
+
+
+# ── 4. The code floor (ticket 33): a reply the next Writer must replace ──
+
+def case_floor_table():
+    """`floor(text, lang)`: each reject reason; CJK only on an English account;
+    normal text passes."""
+    from automations.full_ai_writers import floor
+    table = [
+        ("haha ok i see u, what r u up to tonight", "en", None),
+        ("hey <3 > that", "en", None),
+        ("look [photo set description: black lace]", "en", "bracket"),
+        ("so [id 101] is yours", "es", "bracket"),
+        ("framework: 1) tease him", "en", "framework"),
+        ("Framework: step one", "en", "framework"),
+        ("ok >> no pitch <", "en", "chevron"),
+        ("babe >>OFFER 105", "en", "chevron"),
+        ("ok babe 结果 later", "en", "cjk"),
+        ("かわいい", "en", "cjk"),
+        ("안녕 babe", "en", "cjk"),
+        ("hola guapo 结果", "es", None),
+        ("123 !!", "en", "no_letters"),
+        ("😘😘", "en", "no_letters"),
+        ("", "en", "no_letters"),
+    ]
+    for text, lang, want in table:
+        assert floor(text, lang) == want, (text, lang, floor(text, lang), want)
+
+
+def case_floor_reads_the_reply_without_its_sticker_marker():
+    """`reject`: a marker in any wrapper is not a `bracket` reject; a marker-only reply passes
+    only with GIFs on and a known tag; the body under a marker is still floored."""
+    from automations.full_ai_writers import reject
+    table = [
+        ("haha ok\n[STICKER: kiss]", True, None),
+        ("haha ok\n[STICKER: kiss]", False, None),
+        ("haha ok STICKER: [kiss]", True, None),
+        ("STICKER: kiss", True, None),
+        ("STICKER: kiss", False, "no_letters"),
+        ("STICKER: nosuchtagatall", True, "no_letters"),
+        ("look [photo set: black lace]\nSTICKER: kiss", True, "bracket"),
+        ("babe >>OFFER 105 STICKER: kiss", True, "chevron"),
+        ("haha ok i see u", False, None),
+    ]
+    for text, gifs, want in table:
+        assert reject(text, "en", gifs) == want, (text, gifs, reject(text, "en", gifs), want)
+
+
+# ── messages_for per Route (ticket 34), pure ──────────────────────────────
+from pathlib import Path  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from automations import cat_stickers  # noqa: E402
+from automations import full_ai_writers as wr  # noqa: E402
+from automations.full_ai_config import DEFAULTS  # noqa: E402
+
+_DOCS = Path(__file__).resolve().parents[2] / "docs" / "prompts"
+_ROUTES = ("chat", "sext", "ai_dare", "make_right")
+_ROWS = ("otherwise", "stop", "jev_failed", "sext_off", "sell_off", "tease_off", "sexual_now",
+         "asks_if_ai", "complains_now")
+
+
+def _msg_row(direction, text, mid):
+    return SimpleNamespace(direction=direction, body=text, created_at=None, message_id=mid,
+                           automation_kind=None, media_count=0, raw_json=None,
+                           price_cents=None, is_paid=False, purchased_at=None)
+
+
+def _turn(text="hey you", *, fan_info=None, **cfg):
+    return SimpleNamespace(
+        account_id="acct_msgs", anchor_key="test:s:1", config={**DEFAULTS, **cfg},
+        fan_info=dict(fan_info or {}), next_question=None, spent=[],
+        cut_rows=[_msg_row("out", "hii", 1), _msg_row("in", text, 2)])
+
+
+def _system(route, row="otherwise", heat=2, persona=wr.PERSONA_FALLBACK, **kw):
+    return wr.messages_for(route, row, heat, _turn(**kw), None, persona=persona)[0]["content"]
+
+
+def case_route_constants_are_their_catalog_text():
+    """Old constants: substrings of their `docs/prompts/old` text. New glue: substrings of
+    `docs/prompts/new/current-repo.md` (the apology frames ride in their NEW entry: the old
+    catalog leaves `make_right._APOLOGY_FRAMES` out of scope)."""
+    old = (_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
+    for c in (wr.BRUSH_OFF, wr.DARE, wr.SEXT_HOT, wr.NO_SELL_OFFERS, wr.STICKER_EXCEPTION.strip()):
+        assert c in old, c
+    new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
+    for c in (wr.SELL_OFF_LINE, wr.DARE_JOIN.strip(), wr.SEXT_HEAT, wr.MAKE_RIGHT_HEAD,
+              wr.MAKE_RIGHT_TAIL, *wr.APOLOGY_FRAMES):
+        assert c in new, c
+
+
+def case_sell_off_line_only_on_sell_off_and_tease_off():
+    for route in _ROUTES:
+        for row in _ROWS:
+            sys_ = _system(route, row)
+            off = row in ("sell_off", "tease_off")
+            assert (wr.SELL_OFF_LINE in sys_) is off, (route, row)
+            assert (wr.NO_SELL_OFFERS in sys_) is (not off), (route, row)
+
+
+def case_chat_keeps_the_chat_goal():
+    sys_ = _system("chat", info_fields=[])
+    assert wr.KNOW_ENOUGH in sys_
+    for c in (wr.SEXT_HOT, wr.BRUSH_OFF, wr.DARE, wr.MAKE_RIGHT_HEAD):
+        assert c not in sys_, c
+
+
+def case_sext_is_old_aic_08_at_heat_with_her_model_info():
+    model_info = "MODEL INFO (written by your team; it is true about you, never contradict it):"
+    persona = f"You are Mia.\n\n{model_info}\n- Likes: telling him what she'd do to him"
+    for heat in (1, 2, 3, 4):
+        sys_ = _system("sext", "sexual_now", heat, persona, info_fields=[])
+        assert wr.SEXT_HOT in sys_ and wr.SEXT_HEAT.format(heat=heat) in sys_, heat
+        assert sys_.startswith(persona), heat              # her Model info leads the prompt
+        assert wr.EXPLICIT_EARLY in sys_                    # verbatim until the owner's OK
+        assert wr.KNOW_ENOUGH not in sys_ and wr.FAN_ASKED not in sys_
+
+
+def case_ai_dare_is_one_reply_brush_off_then_dare():
+    sys_ = _system("ai_dare", "asks_if_ai")
+    i, j, k = sys_.index(wr.BRUSH_OFF), sys_.index(wr.DARE_JOIN), sys_.index(wr.DARE)
+    assert i < j < k, (i, j, k)
+    assert sys_.count(wr.DARE) == 1 and sys_.count(wr.BRUSH_OFF) == 1
+
+
+def case_make_right_is_the_apology_with_no_free_item():
+    sys_ = _system("make_right", "complains_now", fan_info={"real_name": "Tom"})
+    assert wr.MAKE_RIGHT_HEAD in sys_ and wr.MAKE_RIGHT_TAIL in sys_
+    for frame in wr.APOLOGY_FRAMES:
+        assert frame.replace("{name}", "Tom") in sys_, frame
+    assert "{name}" not in sys_
+    # No name he gave: her lane's fan address, as the old `_fan_first_name` fell back.
+    sys_ = _system("make_right", "complains_now")
+    assert wr.APOLOGY_FRAMES[0].replace("{name}", "babe") in sys_
+
+
+def case_sticker_block_only_with_gifs_on():
+    block = cat_stickers.prompt_block("allow")
+    for route in _ROUTES:
+        on, off = _system(route, gifs=True), _system(route, gifs=False)
+        assert block in on and on.endswith(wr.CONTRACT + wr.STICKER_EXCEPTION), route
+        assert "STICKER" not in off, route
+
+
+def case_no_send_builds_no_messages():
+    assert wr.messages_for("no_send", "promo", 2, _turn(), None) == []
+    assert wr.messages_for("no_send", "says_under_18", 2, _turn(), None) == []
+
+
+def case_route_prompts_replay():
+    for route in _ROUTES:
+        assert _system(route) == _system(route), route
+
+# ── sell_now (03b, ticket 42), pure ───────────────────────────────────────
+import re  # noqa: E402
+
+from automations.full_ai_sell import Pick, Refusal  # noqa: E402
+
+_PICK = Pick(ref=4242, media=(4242,), previews=(), price_cents=5000, list_cents=5000,
+             subject="anything", format="video", lane="$50",
+             facts={"kinds": {"video": 1}, "items": [{"seconds": 95}],
+                    "description": "her in a red bikini by the pool"})
+
+
+def _fragments(c: str) -> list[str]:
+    """A template's literal pieces between its `{slots}`."""
+    return [x for x in re.split(r"\{[^}]*\}", c) if x.strip()]
+
+
+def case_sell_now_constants_are_their_old_text():
+    """Each sell_now constant (NEW-116's pieces) is its `docs/prompts/old` text: every literal
+    piece between its slots is a substring (OLD-AIC-04/11/12/18, OLD-CORE-33)."""
+    old = ((_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
+           + (_DOCS / "old" / "core-modules.md").read_text(encoding="utf-8"))
+    # OLD-CORE-33 is quoted as source: join its implicit string concatenations.
+    old = old.replace('"\n                         f"', "").replace('"\n                f"', "")
+    for c in (wr.CONTENT_ASK, wr.CLOSE_BY_ID, wr.INTRO_BY_ID, wr.ITEM_LINE, wr.TERMS,
+              wr.NO_CUSTOMS, wr.FILMING_MORE, wr.CONTRACT_OFFER):
+        for frag in _fragments(c):
+            assert frag in old, (c, frag)
+    for c in (wr.MANIFEST, wr.PRICE_BLOCK):            # multi-line: line by line
+        for line in c.split("\n"):
+            for frag in _fragments(line):
+                assert frag in old, (c, frag)
+
+
+def _sell_system(pick, *, row="sell"):
+    t = _turn("send me pics")
+    return wr.messages_for("sell_now", row, 3, t, pick)[0]["content"]
+
+
+def case_sell_now_with_a_pick_is_the_content_ask_sell_prompt():
+    sys_ = _sell_system(_PICK)
+    line = "- [id 4242] video 1:35 — untitled: her in a red bikini by the pool — $50 to unlock"
+    beat = wr.CONTENT_ASK.format(close=wr.CLOSE_BY_ID)
+    block = wr.MANIFEST.format(no_customs=wr.NO_CUSTOMS, items=line)
+    price = wr.PRICE_BLOCK.format(px="$50")
+    for piece in (wr.INTRO_BY_ID, beat, block, price):
+        assert piece in sys_, piece
+    assert sys_.index(wr.INTRO_BY_ID) < sys_.index(beat) < sys_.index(block) < sys_.index(price)
+    assert sys_.endswith(f"{price}\n\n{wr.CONTRACT_OFFER}"), sys_[-400:]
+    assert wr.NO_SELL_OFFERS not in sys_ and wr.SELL_OFF_LINE not in sys_
+    assert wr.KNOW_ENOUGH not in sys_ and wr.ASK_HEAD not in sys_
+    # A photo set: the count as its label, no length; no describe text leaves the slot empty.
+    s3 = _sell_system(Pick(ref=7, media=(7, 8, 9), previews=(10,), price_cents=1000, list_cents=1000,
+                           subject="anything", format="photo", lane="$10", facts={"items": [{}]}))
+    assert "- [id 7] photo — 3 photos:  — $10 to unlock" in s3, s3
+    assert wr.PRICE_BLOCK.format(px="$10") in s3
+
+
+def case_sell_now_refusal_is_chat_with_its_need_line():
+    for reason, line in (("no_match", wr.FILMING_MORE), ("all_owned", wr.FILMING_MORE),
+                         ("no_priced_items", wr.FILMING_MORE), ("inventory_unknown", None)):
+        sys_ = _sell_system(Refusal(reason))
+        assert wr.NO_SELL_OFFERS in sys_ and wr.INTRO_BY_ID not in sys_, reason
+        assert "CONTENT YOU CAN ACTUALLY SEND HIM" not in sys_ and ">>OFFER" not in sys_, reason
+        if line:
+            assert sys_.endswith(f"{line}\n\n{wr.CONTRACT}"), (reason, sys_[-300:])
+        else:
+            assert wr.FILMING_MORE not in sys_ and sys_.endswith(wr.CONTRACT), reason
+    # A Pick handed to any other Route is ignored: the 03a prompt, byte for byte.
+    for route, row in (("chat", "otherwise"), ("sext", "sexual_now"), ("make_right", "complains_now")):
+        t = _turn()
+        assert wr.messages_for(route, row, 2, t, _PICK) == wr.messages_for(route, row, 2, t, None)
+
+
+def case_floor_offer_ref_table():
+    """`floor(text, lang, offer_ref)`: the Pick's whole marker line is stripped first, another
+    ref (or any, with no Pick) rejects, an inline `>>` stays a chevron, a missing marker is fine."""
+    from automations.full_ai_writers import floor, strip_offer
+    table = [
+        ("its $50 to unlock babe 😏\n>>OFFER 4242", 4242, None),
+        ("its $50 to unlock babe 😏\n>>OFFER 4242\nSTICKER: wink", 4242, None),
+        ("its $50 to unlock babe 😏", 4242, None),                     # no marker: fine
+        ("its $50 to unlock babe 😏\n>>OFFER 999", 4242, "offer_ref"),
+        ("its $50 babe\n>>OFFER 4242\n>>OFFER 999", 4242, "offer_ref"),
+        ("hey babe\n>>OFFER 105", None, "offer_ref"),                  # no Pick: any marker
+        ("babe >>OFFER 4242", 4242, "chevron"),                        # not a line of its own
+        ("ok >> no pitch\n>>OFFER 4242", 4242, "chevron"),
+        (">>OFFER 4242", 4242, "no_letters"),                          # nothing but the marker
+        ("so [id 4242] is yours\n>>OFFER 4242", 4242, "bracket"),
+    ]
+    for text, ref, want in table:
+        assert floor(text, "en", ref) == want, (text, ref, floor(text, "en", ref), want)
+    assert strip_offer("its yours babe\n>>OFFER 4242") == "its yours babe"
+    assert strip_offer("its yours\n\n>>OFFER 4242\n\nSTICKER: wink") == "its yours\n\nSTICKER: wink"
 
 
 _harness.run()

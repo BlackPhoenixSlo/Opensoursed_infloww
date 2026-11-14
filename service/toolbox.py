@@ -10,7 +10,7 @@ Measured by the step-2 spike (.scratch/ultra-s2/spike/RESULT.md):
   with no credential inherits the caller's user. In an empty context it is an honest 401.
 - The caller must hold no DB session across `call()`: an open write transaction stalls the
   inner request ~64 s and loses its write; an open read costs +2 s when the pool is busy.
-  `call()` itself opens none.
+  `call()` itself opens none across the request (a send's plan check is one short read before it).
 - `open_url` is built on the public app base (X-Forwarded-Host/Proto or APP_PUBLIC_URL),
   never on Host: behind Next, Host is the RELAY_URL host. The inner request carries the
   caller's Host and X-Forwarded-* unchanged, so a route that reads them (bio public URLs)
@@ -20,8 +20,10 @@ Measured by the step-2 spike (.scratch/ultra-s2/spike/RESULT.md):
   throttle bucket.
 
 Results never raise: a refused tool, bad args or a non-2xx answer come back as
-`{"error": {"status", "detail"}, "open_url"}`. `effect="send"` is refused until the plan
-executor runs approved plan steps (ticket 13).
+`{"error": {"status", "detail"}, "open_url"}`. `effect="send"` is refused unless `plan_step`
+("<plan id>:<step id>") is, in the DB, a `started` step of a `running` Ultra plan holding exactly
+this tool and these args (ultra_decide.may_send): only the Ultra executor (ultra_run) writes that
+state, just before its call (ticket 13).
 
 A 2xx write whose answer fails the tool's `check` (args silently dropped) is a 502 error result,
 never success.
@@ -30,15 +32,20 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 import httpx
 from fastapi import Request
+from sqlalchemy import select
 
 import client_addr
 import toolbox_decide as td
+import ultra_decide as ud
+from db.engine import get_session
+from db.models import UltraPlan
 
 SEND_REFUSED = "send tools run only from an owner-approved plan"
 
@@ -94,11 +101,13 @@ async def _send(req: td.Request, creds: Creds) -> tuple[int, Any]:
         return r.status_code, r.text
 
 
-async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds) -> dict[str, Any]:
-    """Run tool `t` with `args` as `creds`' owner; the shaped result, never a raise."""
+async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
+               plan_step: str | None = None) -> dict[str, Any]:
+    """Run tool `t` with `args` as `creds`' owner; the shaped result, never a raise. A send tool
+    needs `plan_step`, the approved plan step it runs, `started` in the DB (`_plan_send`)."""
     base = creds.public_base()
     raw_args = dict(args)
-    if t.effect == "send":
+    if t.effect == "send" and not await _plan_send(t, raw_args, plan_step):
         return {**td.error(403, SEND_REFUSED), "open_url": td.open_url(base, t.open, raw_args, None)}
     try:
         parsed = td.validate_args(t, args)
@@ -111,6 +120,18 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds) -> dict[str, A
     if t.check is not None and 200 <= status < 300 and (why := t.check(parsed, body)):
         return {**td.error(502, {"detail": why}), "open_url": url}
     return {**td.shape_result(t, status, body, base=base), "open_url": url}
+
+
+async def _plan_send(t: td.Tool, args: dict[str, Any], plan_step: str | None) -> bool:
+    """`plan_step` is a `started` step of a `running` plan with this tool and args (one short read)."""
+    pid, _, sid = (plan_step or "").partition(":")
+    if not pid or not sid:
+        return False
+    async with get_session() as s:
+        row = (await s.execute(select(UltraPlan.status, UltraPlan.plan_json, UltraPlan.step_states)
+                               .where(UltraPlan.id == pid))).first()
+    return row is not None and ud.may_send(json.loads(row.plan_json), row.status, json.loads(row.step_states),
+                                           sid, t.name, args)
 
 
 async def _isolated(req: td.Request, creds: Creds) -> tuple[int, Any]:

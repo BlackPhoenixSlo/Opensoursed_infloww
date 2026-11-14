@@ -152,6 +152,7 @@ from link_share_api import router as _link_share_router  # noqa: E402
 from bio_pages.admin import router as _bio_admin_router  # noqa: E402
 from owner_tokens_api import router as _owner_tokens_router  # noqa: E402
 import mcp_api  # noqa: E402  # hosted MCP server, POST /admin/mcp (bearer or no-credential surface)
+import ultra_api  # noqa: E402  # Ultra plans: GET /admin/ultra/plans/{id}, POST …/ok, …/cancel
 from full_ai_api import router as _full_ai_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
     router as _tenant_keys_router,
@@ -412,6 +413,8 @@ app.include_router(_tenant_keys_router)
 app.include_router(_tenant_keys_admin_router)
 app.include_router(_owner_tokens_router)
 app.include_router(mcp_api.router)
+# Ultra plan page (/admin/ultra/plans/*): owner cookie only, chatter-blocked by prefix, audit-ineligible.
+app.include_router(ultra_api.router)
 app.include_router(_ai_key_status_router)
 # Settings → System (/admin/system/*): the master's read-only automation status
 # + run log. Master-only by a router dependency; chatter-blocked by prefix.
@@ -1604,6 +1607,15 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.critical("BOOKMARKS PAGE MIGRATION FAILED: stored roles granting Collections are refused "
                      "Bookmarks; it retries on the next start", exc_info=True)
+
+    # Ultra plans a restart cut short: running → interrupted, started steps → uncertain (no resume).
+    try:
+        import ultra_run
+        n = await ultra_run.recover()
+        if n:
+            log.warning("ultra: %d running plan(s) marked interrupted", n)
+    except Exception:
+        log.exception("ultra plan recovery failed: running plans stay running until the next start")
 
     # TEST-MODE GUARD — db init above already ran (prod-critical at startup);
     # everything BELOW is the spawn/network section (persist worker, WS pumps,

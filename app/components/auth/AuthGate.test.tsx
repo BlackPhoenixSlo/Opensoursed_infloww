@@ -31,6 +31,9 @@ const mockPrefetch = vi.fn();
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()), prefetchScreenBundle: (s: unknown) => mockPrefetch(s),
 }));
+vi.mock("@/lib/twoFactor", async (orig) => ({
+  ...(await orig<typeof import("@/lib/twoFactor")>()), signIn: async () => "user",
+}));
 vi.mock("@/contexts/ChatterContext", () => ({
   useChatter: () => ({ ...mockChatter, login: vi.fn(), reprobe: mockReprobe }),
 }));
@@ -202,5 +205,28 @@ describe("AuthGate on a document load of Messages Pro: the inbox bundle with the
     if (saved != null) rememberScope(saved);
     render(<AuthGate signedIn><div>SHELL</div></AuthGate>);
     expect(mockPrefetch.mock.calls).toEqual(started ? [[{ kind: "inbox", cursor: 0 }]] : []);
+  });
+});
+
+describe("AuthGate signed out on an Ultra plan page (an MCP client's open_url)", () => {
+  it.each([
+    ["/ultra/plans/0123abcd", "/ultra/plans/0123abcd"],
+    ["/growth/vault-pro", "/"],  // any other page: Landing's default, the Dashboard
+  ])("the in-place sign-in on %s lands on %s", async (path, want) => {
+    mockPath = path;
+    mockUser = me({ user: null, boot: "settled" });
+    const realLocation = window.location;
+    const replace = vi.fn();
+    Object.defineProperty(window, "location", { configurable: true, value: { ...realLocation, replace } });
+    try {
+      render(<AuthGate><div>SHELL</div></AuthGate>);
+      expect(screen.queryByText("SHELL")).toBeNull();
+      fireEvent.change(document.querySelector('input[autocomplete="username"]')!, { target: { value: "ann" } });
+      fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: "secret-pw" } });
+      fireEvent.submit(document.querySelector("form")!);
+      await vi.waitFor(() => expect(replace).toHaveBeenCalledWith(want));
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: realLocation });
+    }
   });
 });

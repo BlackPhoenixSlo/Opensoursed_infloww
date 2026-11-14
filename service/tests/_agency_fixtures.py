@@ -128,6 +128,13 @@ def login_chatter(name: str):
     return _login("/chatter/login", name)
 
 
+def mint_token(client) -> str:
+    """A fresh owner access token (`ifw_…`) for the owner signed in on `client` (POST /admin/owner-tokens)."""
+    r = client.post("/admin/owner-tokens", json={"name": "mcp"})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
 def store_blob(user_id: str, tab: str, blob: dict) -> None:
     """Write a Settings blob straight into `user_settings`, bypassing the PUT
     and its schema: a value stored before Phase 4's validation existed. A

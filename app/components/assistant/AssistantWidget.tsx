@@ -325,7 +325,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // Only the focused model's answer counts (a stale one for another model reads as none).
   const doOffer = doOfferOf(capsOf && capsOf.accountId === accountId ? capsOf.body : null, isUser);
   const navigate = useCallback((href: string) => router.push(href), [router]);
-  const cursor = useDoRunner({ run: doRun, dispatch: doDispatch, bridge, navigate });
+  const cursor = useDoRunner({ run: doRun, dispatch: doDispatch, bridge, navigate, employeeId });
   // A mass_edit run (D11) is one apply POST, once per started draft; the server re-applies the change to the fresh
   // rules and answers per rule.
   const editDraft = doRun.phase === "running" && doRun.draft.flow === "mass_edit" ? doRun.draft : null;

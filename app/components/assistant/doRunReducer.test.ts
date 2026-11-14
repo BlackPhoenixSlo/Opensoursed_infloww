@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ExportSlots } from "./doExport";
 import type { DoDraft, MassPremadeSlots } from "./doFlows";
+import type { ConfigStatus } from "./fullAiConfigEdit";
 import { pillFor, pillStatus, planCardText } from "./DoMode";
 import {
   doOfferOf, doRunReducer, draftFrom, initialDoRun, isTakeover, NO_KEY_HINT, previousOf, type DoAction, type DoRun,
@@ -39,6 +40,16 @@ const UNRESOLVED_EXPORT: DoDraft = {
 };
 const exportRunning: DoRun = { phase: "running", id: "a", request: "r", draft: EXPORT, step: 0, instant: true, saving: true, attempt: 0 };
 const RESULTS = [{ id: 1, ok: true }, { id: 2, ok: false, reason: "changed since you saw it" }];
+const CONFIG_SLOTS = {
+  rev: 4, before: { reply_speed: "0-2m" }, after: { reply_speed: "0-15-60" }, account_name: "Model A",
+  diffs: [{ field: "reply_speed", label: "Reply speed", before: "0-2m", after: "0-15-60" }],
+};
+const CONFIG: DoDraft = { ...DRAFT, id: "c1", flow: "full_ai_config", slots: CONFIG_SLOTS, assumptions: [] };
+const configPlanned: DoRun = { phase: "planned", id: "a", request: "r", draft: CONFIG };
+const configRunning: DoRun = { phase: "running", id: "a", request: "r", draft: CONFIG, step: 0, instant: true, saving: true, attempt: 0 };
+const configDone = (status: ConfigStatus, line: string): DoRun => ({
+  phase: "done", id: "a", request: "r", draft: CONFIG, outcome: { kind: "config", status, line },
+});
 const play = (actions: DoAction[], from: DoRun = initialDoRun) => actions.reduce(doRunReducer, from);
 const planned: DoRun = { phase: "planned", id: "a", request: "r", draft: DRAFT };
 const running: DoRun = { phase: "running", id: "a", request: "r", draft: DRAFT, step: 0, instant: false, saving: false, attempt: 0 };
@@ -116,6 +127,21 @@ describe("doRunReducer", () => {
       [{ type: "start" }, { type: "skipAnimation" }], { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT }],
     ["an export whose recipe is missing never downloads", { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } },
       [{ type: "start" }], { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } }],
+    // full_ai_config (phase 03c): one PUT, its answer ends the run — 409 / 422 too (never failed, so no re-PUT)
+    ["start on a config plan → saving (the one PUT is out)", configPlanned, [{ type: "start" }], configRunning],
+    ["Stop never cancels a config apply", configRunning, [{ type: "abort", reason: "Stopped" }], configRunning],
+    ["configApplied 200 → done with the line and the Creator", configRunning,
+      [{ type: "configApplied", status: 200, line: "Draft updated." }], configDone(200, "Draft updated.")],
+    ["configApplied 409 → done, the line says why", configRunning,
+      [{ type: "configApplied", status: 409, line: "The draft changed since you saw it. Ask again." }],
+      configDone(409, "The draft changed since you saw it. Ask again.")],
+    ["configApplied 422 → done, the errors listed", configRunning,
+      [{ type: "configApplied", status: 422, line: "Not applied: gifs: bad" }], configDone(422, "Not applied: gifs: bad")],
+    ["saved / applied leave a config run unchanged", configRunning,
+      [{ type: "saved" }, { type: "applied", results: RESULTS }, { type: "downloaded", file: "x" }], configRunning],
+    ["configApplied outside a config run is a no-op", saving, [{ type: "configApplied", status: 200, line: "x" }], saving],
+    ["a config draft without slots never starts", { phase: "planned", id: "a", request: "r", draft: { ...CONFIG, slots: null } },
+      [{ type: "start" }], { phase: "planned", id: "a", request: "r", draft: { ...CONFIG, slots: null } }],
   ])("%s", (_, from, actions, to) => {
     expect(play(actions, from)).toEqual(to);
   });
@@ -125,6 +151,7 @@ describe("doRunReducer", () => {
     expect(previousOf(running)).toBeNull();
     expect(previousOf({ phase: "idle" })).toBeNull();
     expect(previousOf({ phase: "planned", id: "a", request: "r", draft: EDIT })).toBeNull();   // an edit plan is never refined
+    expect(previousOf(configPlanned)).toBeNull();                                            // nor a config plan
   });
 });
 
@@ -153,6 +180,12 @@ describe("draftFrom", () => {
   it("the no-flow fallback names the export", () => {
     expect(draftFrom({ flow: null }, null).answer).toContain("export a report");
   });
+  it("keeps a full_ai_config draft with an account, drops it without one", () => {
+    expect(draftFrom(CONFIG, "1001")).toEqual(CONFIG);
+    expect(draftFrom({ ...CONFIG, account_id: null }, null)).toMatchObject({ flow: null, slots: null, account_id: null });
+    expect(draftFrom({ ...CONFIG, slots: { ...CONFIG_SLOTS, rev: undefined } } as never, "1001").slots).toBeNull();
+  });
+
   it("keeps a mass_edit draft, its slots read defensively", () => {
     expect(draftFrom(EDIT, "x")).toEqual(EDIT);
     expect(draftFrom({ ...EDIT, slots: { rules: "junk" } } as never, "x").slots).toEqual(
@@ -194,6 +227,9 @@ describe("phone pill", () => {
     ["edits applied", { phase: "done", id: "a", request: "r", draft: EDIT, outcome: { kind: "applied", results: RESULTS } }, null, true,
       "Changed 1 of 2 rules"],
     ["an export done", { phase: "done", id: "a", request: "r", draft: EXPORT, outcome: { kind: "downloaded", file: "x.csv" } }, null, true, "Downloaded"],
+    ["a config applying", configRunning, null, true, "Updating the draft…"],
+    ["a config applied", configDone(200, "x"), null, true, "Draft updated"],
+    ["a config refused", configDone(409, "x"), null, true, "Not applied"],
   ])("%s", (_, run, expanded, pill, status) => {
     expect(pillFor(run, expanded)).toBe(pill);
     expect(pillStatus(run)).toBe(status);

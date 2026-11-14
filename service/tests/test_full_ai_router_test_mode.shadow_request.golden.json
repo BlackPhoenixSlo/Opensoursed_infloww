@@ -1,0 +1,136 @@
+{
+ "model": "jev-1.14.0",
+ "state": {
+  "fan_new_messages": [
+   "you there?",
+   "send me something hot"
+  ],
+  "thread": [
+   {
+    "from": "fan",
+    "text": "hey gorgeous",
+    "when": "within the last two hours"
+   },
+   {
+    "from": "her",
+    "text": "hi babe & welcome",
+    "when": "within the last two hours"
+   },
+   {
+    "from": "fan",
+    "text": "what are you up to",
+    "when": "within the last two hours"
+   },
+   {
+    "from": "her",
+    "text": "just for you 😈",
+    "when": "within the last two hours",
+    "ppv": "locked $15 message, he has not bought it"
+   }
+  ],
+  "her_last_line": "just for you 😈 (locked $15 message, he has not bought it)",
+  "last_purchase": "he tipped her $25, about 3 hours ago",
+  "pending_offer": "locked $15 message: just for you 😈"
+ },
+ "questions": {
+  "promo": {
+   "type": "noul",
+   "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+   "criteria": {
+    "true": "It promotes another creator, page, link or service, like a promo or spam bot",
+    "false": "He is talking to her about himself, about her, or about their chat"
+   }
+  },
+  "says_under_18": {
+   "type": "noul",
+   "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+   "criteria": {
+    "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet",
+    "false": "He says he is 18 or older, gives no age, or mentions the age of someone else"
+   }
+  },
+  "complains_now": {
+   "type": "noul",
+   "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+   "criteria": {
+    "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was",
+    "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for"
+   }
+  },
+  "asks_if_ai": {
+   "type": "noul",
+   "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+   "criteria": {
+    "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted",
+    "false": "He talks to her as the real person she is, even if he asks personal questions"
+   }
+  },
+  "stop": {
+   "type": "noul",
+   "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+   "criteria": {
+    "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while",
+    "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later"
+   }
+  },
+  "price": {
+   "type": "noul",
+   "instructions": "Does the fan ask about a price, or what something costs?",
+   "criteria": {
+    "true": "He asks how much, what it costs, the price, or what he would pay for something",
+    "false": "He says nothing about prices or paying"
+   }
+  },
+  "wants_content": {
+   "type": "noul",
+   "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now?",
+   "criteria": {
+    "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it",
+    "false": "He only compliments her, says what he would do to her, asks what kind of content she makes, or offers to send her his own pics"
+   }
+  },
+  "declines_buying": {
+   "type": "noul",
+   "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+   "criteria": {
+    "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay",
+    "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money"
+   }
+  },
+  "says_yes_to_offer": {
+   "type": "noul",
+   "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+   "criteria": {
+    "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it",
+    "false": "He turns it down, ignores it and talks about something else, or only asks what it is"
+   }
+  },
+  "sexual_now": {
+   "type": "noul",
+   "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+   "criteria": {
+    "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way",
+    "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question"
+   }
+  },
+  "gif_fits": {
+   "type": "noul",
+   "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+   "criteria": {
+    "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs",
+    "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs"
+   }
+  },
+  "intensity": {
+   "type": "score",
+   "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+   "criteria": [
+    "He writes about everyday things, with no flirting",
+    "He flirts or compliments her looks, with nothing sexual",
+    "He is suggestive: he hints at sex or teases without saying it outright",
+    "He talks explicitly about sex: what he wants to do with her or to see",
+    "He describes graphic sex acts in detail"
+   ]
+  }
+ }
+}

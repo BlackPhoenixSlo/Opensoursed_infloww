@@ -17,7 +17,8 @@
  * invite form there self-redirects to "/"). /share/* (a share link's public
  * report) renders <ShareReport> bare. All other routes: gate behind one of the two
  * principals; otherwise render <Landing> in place so the URL stays
- * stable and the post-login redirect target is whatever the user asked.
+ * stable. Its sign-in then goes to the Dashboard, except from an Ultra plan page
+ * (`SIGN_IN_RETURNS`): an MCP client's open_url, so the owner lands back on that plan.
  * If the user probe could not reach the relay at boot (and no chatter is
  * signed in), a retry screen instead of <Landing>. If the proxy in front of
  * the relay answered 403, or the probe has not answered for ME_SLOW_MS, the
@@ -50,6 +51,11 @@ import { bootScreen, cookieValue } from "@/lib/screenEntry";
 // static: a dead session or a banner puts it up client-side, at once.
 const ChatterLogin = dynamic(() => import("@/components/auth/ChatterLogin"));
 const ShareReport = dynamic(() => import("@/components/growth/ShareReport"));
+
+/** In-place sign-in that returns to the page asked for (else the Dashboard, Landing's default). */
+const SIGN_IN_RETURNS = ["/ultra/plans/"];
+export const signInReturn = (pathname: string | null): string | undefined =>
+  pathname && SIGN_IN_RETURNS.some((p) => pathname.startsWith(p)) ? pathname : undefined;
 
 const BANNER_TEXT: Record<AuthBanner, string> = {
   blocked: "Proxy blocked (403)",
@@ -117,7 +123,7 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
               </button>
             </div>
           )}
-          <Landing />
+          <Landing next={signInReturn(pathname)} />
         </>
       );
   }

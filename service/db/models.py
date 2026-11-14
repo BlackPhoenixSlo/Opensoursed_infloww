@@ -1484,6 +1484,9 @@ class AccountAiConfig(Base):
     # this. Kept separate from nudge_config_json to avoid the shallow-merge
     # collision in nudge_online._load_nudge_config.
     webhook_config_json: Mapped[str | None] = mapped_column(Text)
+    # Full AI Chat's settings JSON (automations/full_ai_config): {checkpoint, previous, draft, rev}.
+    # NULL = never saved: both sides read full_ai_config.DEFAULTS.
+    full_ai_config_json: Mapped[str | None] = mapped_column(Text)
     # Per-account config for the `autoreply` automation (keep-warm re-engagement
     # of quiet, low-spend known fans). JSON: {enabled, silence_min_minutes,
     # silence_max_minutes, max_nudges, min_gap_minutes, max_lifetime_spend_cents,
@@ -2756,6 +2759,28 @@ class OwnerToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class UltraPlan(Base):
+    """An Ultra plan (ultra_decide / ultra_run, docs/plans/ultra-mode/issues/06): pinned tool steps an
+    owner OKs once in the browser, then the relay runs them in order. `plan_json` = {summary, steps}
+    after the send chain; `plan_sha256` = what the OK must echo. `step_states` = JSON list, one
+    {id, state, result?, open_url?} per step; a step is `started` before its call, so a crash leaves
+    `uncertain`, never a silent resend. `source` ui|mcp. Migration 0121_ultra_plans."""
+    __tablename__ = "ultra_plans"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(8), nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    step_states: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _ts_now()
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class UserLlmKey(Base):
     """One agency's LLM provider key. THE tenancy boundary for model spend.
 
@@ -3915,8 +3940,9 @@ class AiDecision(Base):
     """One Decision row: one Turn of one Fan in one Mode, what the Router read
     and answered (`jev_json`), its Route and Heat. Append-only: a later Turn
     writes its own row and never updates this one. Phase 01 writes Shadow rows
-    only (`status` planned, nothing sent; ADR-0033). The send, offer and outcome
-    columns land, nullable, with the Phase that first writes them."""
+    only (`status` planned, nothing sent; ADR-0033). The offer and outcome
+    columns (0120) are written by the Test sender (03b); the send columns land,
+    nullable, with the Phase that first writes them."""
     __tablename__ = "ai_decisions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -3941,9 +3967,23 @@ class AiDecision(Base):
     jev_json: Mapped[str | None] = mapped_column(Text)                   # {answers, intensity, fired, state}
     jev_ms: Mapped[int | None] = mapped_column(Integer)
     jev_error: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String, nullable=False)          # Shadow: planned
+    status: Mapped[str] = mapped_column(String, nullable=False)          # Shadow: planned; test: sent | failed | no_send
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
+    # Test (and later live) rows: {parts, attempts, floor_reason, dropped_reason, leak, side,
+    # config_rev, wait_s, turn_ms, fan_info, asked, typo_state, info_error} + on sell_now (03b)
+    # `refusal` (a Refusal's reason) | `offer_dropped` (leak | shape). NULL on Shadow rows.
+    # After 0119's column, so create_all's column order equals the appended one.
+    reply_json: Mapped[str | None] = mapped_column(Text)
+    # The Offer on its row (0120, ADR-0034; NULL on Shadow and no-offer rows), last in 0120's order.
+    offer_price_cents: Mapped[int | None] = mapped_column(Integer)      # quoted; 0 = Free item; NULL on a tease
+    offer_list_cents: Mapped[int | None] = mapped_column(Integer)
+    offer_media_json: Mapped[str | None] = mapped_column(Text)          # {locked: [...], previews: [...]}
+    offer_item_ref: Mapped[str | None] = mapped_column(Text)            # {ref, subject, format, lane, kind}
+    offer_message_id: Mapped[int | None] = mapped_column(BigInteger)    # NULL in test; Phase 05 join key
+    outcome: Mapped[str | None] = mapped_column(String)                 # bought | declined
+    outcome_at: Mapped[datetime | None] = mapped_column(DateTime)
+    join_src: Mapped[str | None] = mapped_column(String)                # test (05 adds the live values)
 
     __table_args__ = (
         # The Turn key: one row per Turn and Mode, enforced by the DB (the
@@ -3956,4 +3996,8 @@ class AiDecision(Base):
         Index("ix_ai_decisions_fan_time", "account_id", "fan_id", "created_at"),
         # The Full AI Chatter page's today read (full_ai_api): one Creator's rows of one Mode since a time.
         Index("ix_ai_decisions_acct_mode_time", "account_id", "mode", "created_at"),
+        # One row per sent Offer message (the Phase 05 join key); NULL (every test row) never clashes.
+        Index("uq_ai_decisions_offer_message", "account_id", "offer_message_id", unique=True,
+              sqlite_where=text("offer_message_id IS NOT NULL"),
+              postgresql_where=text("offer_message_id IS NOT NULL")),
     )

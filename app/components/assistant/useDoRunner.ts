@@ -12,14 +12,24 @@
  * A `mass_edit` run is not played here: it has no form (the provider's apply POST does it, massEdit.ts).
  * A flow whose first step isn't "open" (auto_story: the page is the form) waits for the page's editor itself; one
  * showing a saved rule (not new) fails the run — the agent only sets up a new one.
+ * A `full_ai_config` run (phase 03c) isn't played either, but this hook sends it (spec 03c names it here, unlike
+ * mass_edit's provider POST): the Full AI page's own rev-checked draft PUT, once per started draft; 200 / 409 / 422
+ * each end the run with the card's line (`configApplied` — an answer, not a failure, so no retry re-PUTs), and a 200
+ * invalidates that account's `fullAiConfigKey` (the page's refetch on it is ticket 57's).
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+
+import { fullAiConfigKey } from "@/hooks/useFullAiConfig";
+import { relay, RelayError } from "@/lib/relay";
 
 import type { AgentBridge, EditorHandle, PanelHandle } from "./agentBridge";
 import type { CursorState } from "./AgentCursor";
 import { boundFlow, typingFrames, type AgentStep } from "./doFlows";
 import { canStart, isTakeover, type DoAction, type DoRun } from "./doRunReducer";
+import type { DoDraft } from "./doFlows";
+import { applyBody, resultLine } from "./fullAiConfigEdit";
 
 const OPEN_TIMEOUT_MS = 8000;
 const GLIDE_MS = 320;
@@ -52,12 +62,15 @@ const reducedMotion = () =>
 const enabledSwitch = (label: string) =>
   [...document.querySelectorAll<HTMLElement>('[role="switch"]')].find((el) => el.getAttribute("aria-label") === label) ?? null;
 
-export function useDoRunner({ run, dispatch, bridge, navigate }: {
+export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
   run: DoRun;
   dispatch: (a: DoAction) => void;
   bridge: AgentBridge;
   navigate: (href: string) => void;
+  /** The relay context's employee (a full_ai_config PUT). */
+  employeeId: number | null;
 }): CursorState | null {
+  const queryClient = useQueryClient();
   const [cursor, setCursor] = useState<CursorState | null>(null);
   const instantRef = useRef(false);
   const phaseRef = useRef(run.phase);
@@ -193,6 +206,23 @@ export function useDoRunner({ run, dispatch, bridge, navigate }: {
       window.removeEventListener("keydown", onInput, true);
     };
   }, [runDraft, bridge, dispatch]);
+
+  // A full_ai_config run: one draft PUT per started draft (the ref survives StrictMode's effect re-run).
+  const configDraft = run.phase === "running" && run.draft.flow === "full_ai_config" ? run.draft : null;
+  const configured = useRef<DoDraft | null>(null);
+  useEffect(() => {
+    if (!configDraft || configDraft.flow !== "full_ai_config" || !configDraft.slots || configured.current === configDraft) return;
+    configured.current = configDraft;
+    const { slots, account_id: acct } = configDraft;
+    relay.put<unknown>("/admin/full-ai/config/draft", applyBody(slots, acct), { accountId: acct, employeeId })
+      .then((r) => {
+        dispatch({ type: "configApplied", status: 200, line: resultLine(200, r) });
+        void queryClient.invalidateQueries({ queryKey: fullAiConfigKey(acct) });
+      })
+      .catch((e: unknown) => dispatch(e instanceof RelayError && (e.status === 409 || e.status === 422)
+        ? { type: "configApplied", status: e.status, line: resultLine(e.status, e.body) }
+        : { type: "fail", msg: e instanceof Error && e.message ? e.message : "The change didn't go through" }));
+  }, [configDraft, employeeId, dispatch, queryClient]);
 
   // The cursor shows while running; after Save it rests on the switch until the user's next press.
   useEffect(() => {

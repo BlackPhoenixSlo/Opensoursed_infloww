@@ -10,7 +10,7 @@
  * On submit Sign in posts once to /auth/sign-in (lib/twoFactor.ts `signIn`),
  * which checks owners then employees and sets the matching session cookie;
  * Register calls UserContext.register(). Then it goes to `?next=` if present,
- * else the Dashboard: Messages Pro is a window of its own, opened from the
+ * else the `next` prop (AuthGate's in-place form on an Ultra plan page), else the Dashboard: Messages Pro is a window of its own, opened from the
  * sidebar (ADR-0002), never the app's main page.
  *
  * Sign in wears the site's dark Inflowwww sign-in look (web/src/login.njk,
@@ -39,12 +39,12 @@ import { errText } from "@/lib/errText";
 
 type Mode = "login" | "register";
 
-export default function Landing() {
+export default function Landing({ next }: { next?: string } = {}) {
   const { register, clearUserLocally } = useUser();
   const router = useRouter();
   const sp = useSearchParams();
   const inApp = useInDesktopApp();
-  const nextHref = sp.get("next") || "/";
+  const nextHref = sp.get("next") || next || "/";
 
   const [mode, setMode] = useState<Mode>(sp.get("mode") === "register" ? "register" : "login");
   const prefilled = sp.get("username") ?? "";

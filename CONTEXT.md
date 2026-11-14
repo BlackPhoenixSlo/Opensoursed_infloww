@@ -395,11 +395,11 @@ _Avoid_: stage (a load step a scenario sets as `ctx.rec.stage`), step
 ### Full AI Chat
 
 **Full AI Chat**:
-The per-Creator automation (rule and kind `full_ai_chat`) that answers a Fan's every Turn through the Router and a Writer, merging auto convo and AI-chatter selling into one Lane; the welcome engine only hands Fans to it. Its page is titled "Full AI Chatter" (`app/app/full-ai-chatter/page.tsx`).
-_Avoid_: AI chatter (the retired fastt engine it re-implements; see **AI Copilot**), Full AI Chatter (the page title only), auto convo, full_ai (a code prefix)
+The per-Creator automation (rule and kind `full_ai_chat`) that answers a Fan's every Turn through the Router and a Writer, merging auto convo and AI-chatter selling into one Lane; the welcome engine only hands Fans to it. Its page is titled "Full AI Chat", at `/full-ai-chatter` (`app/app/full-ai-chatter/page.tsx`).
+_Avoid_: AI chatter (the retired fastt engine it re-implements; see **AI Copilot**), Full AI Chatter (the page's old title), auto convo, full_ai (a code prefix)
 
 **Lane**:
-An automation that writes to one Fan 1:1 and competes for his next reply: a funnel walk (`reply_mass_funnel`), Get to know fans (`welcome_chatter_for_info`), Auto-reply, or Full AI Chat. The Full AI Chatter page already calls them "AI lanes".
+An automation that writes to one Fan 1:1 and competes for his next reply: a funnel walk (`reply_mass_funnel`), Get to know fans (`welcome_chatter_for_info`), Auto-reply, or Full AI Chat. The Full AI Chat page already calls them "AI lanes".
 _Avoid_: Split Inbox group, `/admin/lanes` (concurrency), priority lane, engine
 
 **Lane ownership**:
@@ -439,7 +439,7 @@ Full AI Chat's per-Turn decision: one Jev request answering every Router questio
 _Avoid_: brain, classifier, gate (the FM off-script gate, ADR-0026, or a Capacity campaign **Gate**)
 
 **Router question**:
-One of the fixed questions in the Router's one Jev request: the yes/no Nouls with their thresholds, the `intensity` Score and the `asks_subject` and `asks_format` Choices. Their wording and thresholds are data in one module, and each Decision row records their `question_version`.
+One of the fixed questions in the Router's one Jev request: the yes/no Nouls with their thresholds, the `intensity` Score and the `asks_subject` and `asks_format` Choices. The Choices and the DRAFT Nouls `counter_offer` and `offer_moment` are asked in test Mode only until the owner OKs their wording; Shadow's request and `question_version` stay Phase 01's. Their wording and thresholds are data in one module, and each Decision row records their `question_version` (test rows the test Mode's).
 _Avoid_: Noul (TypeSafe's yes/no answer type, which `intensity` and the Choices are not), signal, check, rule
 
 **Route**:
@@ -471,7 +471,7 @@ The one piece of Router state: a fully landed tease from Full AI Chat that he an
 _Avoid_: router state, pending sell, open offer, Pending offer (the Jev field carrying its text)
 
 **Pending offer**:
-The Router's `pending_offer` field, read by `says_yes_to_offer`: the Pending tease's text, or in Shadow mode her newest priced unbought outbound from any Lane, else "none".
+The Router's `pending_offer` field, read by `says_yes_to_offer`: the Pending tease's text, or in Shadow mode her newest priced unbought outbound from any Lane, or in test Mode the session's newest Offer with no Offer outcome (its price and the caption it rode), else "none".
 _Avoid_: open offer, Unconfirmed offer, Offer
 
 **AI dare**:
@@ -483,7 +483,7 @@ The make_right Route on a Turn where he complains about something he paid for: a
 _Avoid_: complaint route, refund, repair, sell block
 
 **Writer**:
-The model that writes a Turn's fan-facing text, captions included: Hermes-4-405b or Euryale v2.3 (L3.3-70B; host open, D38), 50/50 by Fan hash, on the old fastt prompts verbatim (`docs/prompts/`). Each Decision row records its Router model, and its Writer once it writes a reply (a Shadow row has none).
+The model that writes a Turn's fan-facing text, captions included, on the old fastt prompts verbatim (`docs/prompts/`). Writers form a fallback chain, not a split (D54, D60): Euryale v2.3 on NanoGPT, then Hermes 4 405B on OpenRouter, GLM-5.3 on Z.ai and DeepSeek, in the order of the config's `writers` list; the next is tried only when the one before fails (HTTP error, 429, timeout, empty reply, code-floor reject, no key, or its provider's daily cap). Each Decision row records its Router model, and its Writer once it writes a reply (a Shadow row has none).
 _Avoid_: gen model, sexting model, generator, caption LLM
 
 ### Full AI Chat selling
@@ -496,6 +496,10 @@ ASSUMPTION: the price-0 Free item is kept out of "Offer", though the ledger tick
 **Unconfirmed offer**:
 An Offer whose send outcome is unknown (its send marker reads UNCONFIRMED). It counts as sent and blocks the next Offer to that Fan until settled.
 _Avoid_: Pending offer, failed send, open offer
+
+**Offer outcome**:
+Whether he bought or declined an Offer (`outcome` bought | declined, `outcome_at`), set once on its Decision row and never flipped, with `join_src` saying how it was known: `test` for the owner's fake Buy / Decline in the Test chat; Phase 05 adds the live sources. A bought Offer's locked media become Owned media.
+_Avoid_: settled flag, is_paid (the message's), purchase (the transaction)
 
 **Send-correctness rules**:
 The only behaviour Full AI Chat hard-codes: at most one Offer per Turn, an Unconfirmed offer blocks the next, and nothing is sent twice (ADR-0032).
@@ -541,8 +545,8 @@ The Mode in which the Router decides and records on real traffic through a runne
 _Avoid_: Shadow relay and Shadow slice (the Capacity campaign's), shadow test
 
 **Test chat**:
-The owner chatting as a Fan with Full AI Chat on the Full AI Chatter page (Mode test): no OF call, waits skippable, rows deleted after 7 days.
-_Avoid_: sandbox, playground, helper chat (the page's settings assistant)
+The owner chatting as a Fan with Full AI Chat on the Full AI Chat page (Mode test): no OF call, waits skippable, rows deleted after 7 days. Two sides answer the same Fan line: checkpoint (the saved config) and draft (the unsaved edit).
+_Avoid_: sandbox, playground, helper chat (the assistant's config tool), left/right or L/R (the sides are checkpoint and draft; L/R only in the page's code, never in requests or UI text)
 
 **Enrolment**:
 A Fan's one `ai_enrolments` row, written at his first eligible inbound in live mode with selling on, on a Full AI Chat Creator (Shadow and the selling-off stage enrol no one, R8), and fixing his Arm for good (ADR-0035).

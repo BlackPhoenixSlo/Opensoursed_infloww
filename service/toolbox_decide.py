@@ -26,9 +26,10 @@ never success. A route that echoes the args or fails loudly needs none. A tool o
 (a bio page) takes no `account_id` and sends no Creator: its route audits the resource's stored
 one (audit_log.AUDIT_ACCOUNT).
 
-Send tools (`effect="send"`) carry OF-bound model text: `model_text` names those arg paths and
-`text_kind` the chain stages (docs/plans/ultra-mode/issues/13-send-chain.md); `toolbox.call`
-refuses them until the plan executor (step 4).
+Send tools (`effect="send"`, step 4; args + checks in toolbox_sends) carry OF-bound model text:
+`model_text` names those arg paths and `text_kind` the chain stages (send_chain; issues/13). Never
+on the token allowlist nor in MCP tools/list; `toolbox.call` runs one only for a plan step (the
+Ultra executor). A send's `check` failing means "may have gone out" (the executor's uncertain).
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, Field, ValidationError
 
+import toolbox_sends as ts
 import toolbox_writes as tw
 from toolbox_args import CREATOR as _CREATOR, Args
 
@@ -104,6 +106,8 @@ class Tool:
     # before, e.g. an image file → MCP destructiveHint.
     check: Check | None = None
     replaces: bool = False
+    # The Ultra plan card's step heading; None = the name in Title Case (ultra_decide.title).
+    title: str | None = None
 
 
 # ── v1 read tools ───────────────────────────────────────────────────────────
@@ -225,6 +229,16 @@ TOOLS: tuple[Tool, ...] = (
          "vault.",
          "POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault", tw.BioLinkBgArgs, "write", open=_BIO_OPEN,
          shape=Shape(rows="links"), replaces=True),
+    # Sends (step 4): only from an owner-approved plan; their text is chained at propose (send_chain).
+    Tool("mass_send", "Send (or schedule) a mass message from one Creator to lists and/or fans, optionally "
+         "priced with vault media. Only inside propose_plan; the owner approves it in the browser.",
+         "POST", "/api/of/v2/messages/queue", ts.MassSendArgs, "send", open=Open("/growth/smart-messages"),
+         model_text=("text",), text_kind="mass", check=ts.check_mass_send,
+         fixed=(("require_recipients", True),), title="Mass message"),
+    Tool("post_create", "Publish (or schedule) a post on one Creator's OnlyFans feed, optionally priced with "
+         "vault media. Only inside propose_plan; the owner approves it in the browser.",
+         "POST", "/api/of/v2/posts", ts.PostCreateArgs, "send", open=Open("/of-manager/home"),
+         model_text=("text",), text_kind="post", check=ts.check_post_create, title="Post"),
 )
 
 # What an owner access token (MCP) may call: every tool but send-class ones, which run

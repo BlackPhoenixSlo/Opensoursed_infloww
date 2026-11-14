@@ -14,8 +14,9 @@ import userEvent from "@testing-library/user-event";
 
 // Hoisted with the vi.mock factories below — anything they close over has to
 // be, or it is still in its TDZ when the mocked module is first imported.
-const { relayPost, relayGet, relayFile, saveBlob, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
+const { relayPost, relayGet, relayPut, relayFile, saveBlob, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
   relayPost: vi.fn(),
+  relayPut: vi.fn(),
   relayGet: vi.fn(),
   relayFile: vi.fn(),
   saveBlob: vi.fn(),
@@ -44,7 +45,9 @@ vi.mock("@/lib/relay", () => {
   }
   return {
     RelayError,
-    relay: { post: (...a: unknown[]) => relayPost(...a), get: (...a: unknown[]) => relayGet(...a) },
+    relay: {
+      post: (...a: unknown[]) => relayPost(...a), get: (...a: unknown[]) => relayGet(...a), put: (...a: unknown[]) => relayPut(...a),
+    },
     relayFile: (...a: unknown[]) => relayFile(...a),
   };
 });
@@ -108,6 +111,7 @@ async function ask(question: string) {
 beforeEach(() => {
   relayPost.mockReset();
   relayGet.mockReset();
+  relayPut.mockReset();
   relayFile.mockReset();
   saveBlob.mockReset();
   // GET /admin/errors?since_hours=24 — the Status card's source.
@@ -750,6 +754,45 @@ describe("AssistantWidget: Do it for me", () => {
       { account_id: "1001", rules: [{ id: 11, version: "v11" }, { id: 12, version: "v12" }], changes: { unsend_after_hours: 0 } },
       { accountId: "1001", employeeId: 7 },
     ]]);
+  });
+
+  it("a full_ai_config plan: the Creator's changed settings, Apply PUTs the draft once on its rev", async () => {
+    const CONFIG = {
+      rev: 4, before: { reply_speed: "0-2m", gifs: true }, after: { reply_speed: "0-15-60", gifs: true }, account_name: "Ava",
+      diffs: [{ field: "reply_speed", label: "Reply speed", before: "0-2m", after: "0-15-60" }],
+    };
+    relayPost.mockResolvedValue(draft({ flow: "full_ai_config", slots: CONFIG, assumptions: [], unresolved: [] }));
+    relayPut.mockResolvedValue({ rev: 5 });
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "reply slower");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    const plan = await screen.findByTestId("do-config-plan");
+    expect(within(plan).getByText("Change Ava's Full AI draft")).toBeTruthy();
+    expect(within(plan).getByText("Reply speed: 0-2m → 0-15-60")).toBeTruthy();
+    expect(relayPut).not.toHaveBeenCalled();                               // proposing writes nothing
+
+    await userEvent.click(within(plan).getByRole("button", { name: "Apply to draft" }));
+    const res = await screen.findByTestId("do-config-result");
+    expect(within(res).getByText("Draft updated. Save on the page makes it the checkpoint.")).toBeTruthy();
+    expect(relayPut.mock.calls).toEqual([[
+      "/admin/full-ai/config/draft", { account_id: "1001", draft: CONFIG.after, rev: 4 }, { accountId: "1001", employeeId: 7 },
+    ]]);
+  });
+
+  it("a full_ai_config Apply answered 409 ends on the stale line, not a failure", async () => {
+    const { RelayError } = await import("@/lib/relay");
+    const CONFIG = { rev: 4, before: { gifs: true }, after: { gifs: false }, account_name: "Ava",
+      diffs: [{ field: "gifs", label: "GIFs", before: true, after: false }] };
+    relayPost.mockResolvedValue(draft({ flow: "full_ai_config", slots: CONFIG, assumptions: [], unresolved: [] }));
+    relayPut.mockRejectedValue(new RelayError(409, { detail: "stale", rev: 6 }));
+    await openPanel();
+    await userEvent.click(doCard()!);
+    await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "stop GIFs");
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await userEvent.click(within(await screen.findByTestId("do-config-plan")).getByRole("button", { name: "Apply to draft" }));
+    expect(within(await screen.findByTestId("do-config-result")).getByText("The draft changed since you saw it. Ask again.")).toBeTruthy();
+    expect(relayPut).toHaveBeenCalledTimes(1);
   });
 
   it("General focus: an owner's export drafts with no account_id; Download builds the file, Try again re-runs it", async () => {

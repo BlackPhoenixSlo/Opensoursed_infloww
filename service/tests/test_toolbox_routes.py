@@ -8,16 +8,19 @@ Cases:
                              path for a GET, body field for a write); every required route param is a
                              required arg or fixed. An untyped body (dict / Request) is allowed for a
                              write tool only, which then must carry a `check` (its echo test).
+                             `account_id` may be no body field: build_request binds it as X-Account-Id +
+                             `?account_id=`, which the isolation middleware and `_resolve_account_id` read.
   case_paths_full_match    — a sample request to each tool's path is dispatched to exactly that route +
                              method by the token gate's own first-FULL-match walk, and is on the token
                              allowlist.
-  case_checks_on_writes    — only a write tool carries a `check`.
+  case_checks_on_writes    — only a write or send tool carries a `check`; every send tool has one.
   case_schema_rules        — names unique + [a-z0-9_]{1,64}; descriptions set; args forbid unknown keys;
                              each client schema is a closed object with no $ref / $defs and no top-level
                              oneOf / anyOf / allOf; GET implies effect "read".
-  case_send_text_declared  — a send tool with a string arg declares `model_text` (each an arg) and a
-                             `text_kind` (vacuous until step 4 adds send tools).
-  case_open_pages_exist    — each Open path (and per-value path) is an `app/app/**/page.tsx`.
+  case_send_text_declared  — send tools exist (mass_send, post_create); each declares `model_text` (each a
+                             str arg) and a `text_kind`, and its required string args are all model_text.
+  case_open_pages_exist    — each Open path (and per-value path) is an `app/app/**/page.tsx` (a `[x]` segment
+                             takes any one segment, a trailing `[[...x]]` zero or more: /of-manager/home).
 
 Run: ./venv/bin/python service/tests/test_toolbox_routes.py   (exit 0 = green)
 """
@@ -79,7 +82,7 @@ def case_args_match_route() -> None:
     for t in td.TOOLS:
         params = _route_params(t, _route(t))
         args, fixed = _args(t), dict(t.fixed)
-        for name in (*args, *fixed):
+        for name in (*(a for a in args if a != "account_id" or "account_id" in params), *fixed):
             assert name in params, f"{t.name}: arg {name!r} is not a param of {t.method} {t.path} ({sorted(params)})"
         for name, required in params.items():
             if required:
@@ -104,7 +107,8 @@ def case_paths_full_match() -> None:
 
 def case_checks_on_writes() -> None:
     for t in td.TOOLS:
-        assert t.effect == "write" or t.check is None, f"{t.name}: a check is for write tools"
+        assert t.effect in ("write", "send") or t.check is None, f"{t.name}: a check is for write/send tools"
+        assert t.effect != "send" or t.check is not None, f"{t.name}: a send needs its echo check"
 
 
 def case_schema_rules() -> None:
@@ -129,15 +133,19 @@ def case_schema_rules() -> None:
 
 
 def case_send_text_declared() -> None:
+    sends = {t.name for t in td.TOOLS if t.effect == "send"}
+    assert {"mass_send", "post_create"} <= sends, sends
     for t in td.TOOLS:
         if t.effect != "send":
             assert not t.model_text and t.text_kind is None, t.name
             continue
-        strings = [n for n, f in t.args.model_fields.items() if "str" in str(f.annotation)]
-        if strings:
-            assert t.model_text and t.text_kind in ("mass", "post"), f"{t.name}: send text undeclared"
-            for path in t.model_text:
-                assert path.split(".")[0] in t.args.model_fields, (t.name, path)
+        assert t.model_text and t.text_kind in ("mass", "post"), f"{t.name}: send text undeclared"
+        fields = t.args.model_fields
+        for path in t.model_text:
+            assert path in fields and fields[path].annotation is str, (t.name, path, "not a str arg")
+        free = [n for n, f in fields.items() if f.annotation is str and f.is_required()
+                and n not in t.model_text and n != "account_id"]
+        assert not free, f"{t.name}: required string args outside model_text: {free}"
 
 
 def _pages() -> list[tuple[str, ...]]:
@@ -151,9 +159,14 @@ def _pages() -> list[tuple[str, ...]]:
 def _page_for(path: str, pages: list[tuple[str, ...]]) -> bool:
     want = tuple(s for s in path.strip("/").split("/") if s)
     for parts in pages:
-        if len(parts) == len(want) and all(
-                a == b or (re.fullmatch(r"\[[^\]]+\]", a) and re.fullmatch(r"\{[a-z_]+\}", b))
-                for a, b in zip(parts, want)):
+        if parts and re.fullmatch(r"\[\[\.\.\.[^\]]+\]\]", parts[-1]):
+            parts, want_n = parts[:-1], want[:len(parts) - 1]
+        else:
+            want_n = want
+        if len(parts) == len(want_n) and all(
+                a == b or (re.fullmatch(r"\[[^\]]+\]", a) and (re.fullmatch(r"\{[a-z_]+\}", b)
+                                                              or re.fullmatch(r"[a-z0-9-]+", b)))
+                for a, b in zip(parts, want_n)):
             return True
     return False
 

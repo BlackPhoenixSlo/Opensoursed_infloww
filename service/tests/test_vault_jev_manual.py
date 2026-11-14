@@ -31,7 +31,6 @@ import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
-import gzip  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
@@ -51,26 +50,12 @@ import vault_jev_manual as m  # noqa: E402
 import vault_jev_pass  # noqa: E402
 import vault_jev_rules as rules  # noqa: E402
 import vault_pack_picker as pp  # noqa: E402
-from _jev_fixtures import video_jev  # noqa: E402
+from _jev_fixtures import photo_jev, video_jev  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, VaultItem  # noqa: E402
 
 J = rules.JEV_KEY
 TIER = {"free": 0, "$10": 10, "$50": 50, "$100": 100}
-_GOLD = json.load(gzip.open(Path(__file__).parent / "fixtures" / "vault_jev" / "golden.json.gz", "rt"))["images"]
-
-
-def photo_jev(lane5: str) -> dict:
-    """A current photo `_jev` from a golden pass-1-only record of final lane `lane5`."""
-    for g in _GOLD:
-        if g["nn"] is not None and set(g["rec"]) == {"resp"} and g["expect"]["lane5"] == lane5:
-            d = rules.final(g["rec"], g["nn"])
-            if d["lane5"] == lane5:
-                return rules.blob(d, g["nn"], passes=["1"], tok=1, px=[800, 1200], at="2026-11-12T00:00:00",
-                                  answers=g["rec"]["resp"]["answers"])
-    raise LookupError(lane5)
-
-
 def scanned(kind: str, lane5: str) -> dict:
     return video_jev(lane5) if kind == "video" else photo_jev(lane5)
 

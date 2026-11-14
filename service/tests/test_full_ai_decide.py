@@ -29,6 +29,27 @@ Router's constants (`_router_jev`), pure, plain assert.
                               over 10,000 Fans; HOLDOUT_PCT 20, SALT_VER 1
   case_decide_module_is_pure  full_ai_decide imports stdlib and the Router's
                               constants only
+  case_r10_every_flag_combination  R10 over every fired set of the flagged rows,
+                              Pending offer / tease and flag combination: an off
+                              row is dropped, the first remaining row matches
+  case_r10_shadow_equals_the_old_table  flags on: the pre-R10 table, nothing dropped
+  case_r10_dropped_contents   `dropped` names the removed rows in walk order
+  case_test_mode_questions    Shadow asks exactly QUESTIONS + intensity; test Mode
+                              adds asks_subject / asks_format (Choices) and the
+                              DRAFT Nouls counter_offer / offer_moment; DRAFT set
+  case_question_version_by_mode  Shadow's digest is the pre-03b literal; test
+                              Mode's moves with DRAFT, a Choice option, a wording
+  case_choice_of              argmax; a tie or a missing answer → anything / any
+  case_sell_rows_every_combination  (ticket 47) haggle / offer_moment over every
+                              fired set × draft_on × sell_on × open Offer ×
+                              Pending tease (× Pending offer × sext_on): the
+                              frozen pre-47 table plus the spec's two rows
+  case_sell_rows_dropped      `dropped` worked rows: a DRAFT id that fired but
+                              did not count, haggle → sell_off, offer_moment
+                              names nothing
+  case_shadow_equals_the_pre_47_table  draft_on false: a frozen copy of the
+                              pre-ticket-47 `decide_turn` over every fired set
+                              of the 11 Phase 01 ids × every other fact
 
 Run: ./venv/bin/python service/tests/test_full_ai_decide.py  (exit 0 = pass)
 """
@@ -38,9 +59,11 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 import ast  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import get_args  # noqa: E402
 
 from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_decide as fd  # noqa: E402
+from automations import full_ai_sell  # noqa: E402
 
 # OWNER-REVIEW-router.md items 1-10 and 12, in that order (spec › Interfaces).
 IDS = ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
@@ -205,14 +228,15 @@ def case_precedence():
 
 
 def case_route_flags():
-    """Sell off: sell and tease turn chat (rows sell_off, tease_off); sext off:
-    sext turns chat (row sext_off); no flag touches any other row."""
+    """Sell off: sell and tease turn chat (rows sell_off, tease_off) unless a later
+    row matches (R10: wants_content + sexual_now is sext); sext off: sext turns chat
+    (row sext_off); no flag touches any other row."""
     off, nosext = {"sell_on": False}, {"sext_on": False}
     rows = [
         (({"wants_content"}, off), ("chat", "sell_off")),
         (({"says_yes_to_offer"}, {"pending_offer": True, **off}), ("chat", "sell_off")),
         ((set(), {"pending_tease": True, **off}), ("chat", "sell_off")),
-        (({"wants_content", "sexual_now"}, off), ("chat", "sell_off")),
+        (({"wants_content", "sexual_now"}, off), ("sext", "sexual_now")),
         (({"price"}, off), ("chat", "tease_off")),
         (({"declines_buying"}, off), ("chat", "tease_off")),
         (({"sexual_now"}, off), ("sext", "sexual_now")),
@@ -288,6 +312,326 @@ def case_decide_module_is_pure():
         if isinstance(n, ast.ImportFrom) and n.module == "automations._router_jev":
             names = [a.name for a in n.names]
             assert all(x.isupper() for x in names), names
+
+
+# R10 (ticket 34): the flagged rows in walk order. An off flag drops its row and the
+# walk goes on; reaching `otherwise` names the first kind dropped.
+_FLAGGED_Q = ("wants_content", "says_yes_to_offer", "price", "declines_buying", "sexual_now")
+
+
+def _r10_expect(fired, pending_offer, pending_tease, sell_on, sext_on):
+    """The spec's R10 walk written out (Interfaces › full_ai_decide)."""
+    rows = (
+        ("sell", "sell_now", sell_on, "wants_content" in fired
+         or ("says_yes_to_offer" in fired and pending_offer) or pending_tease),
+        ("tease_price", "tease", sell_on, "price" in fired),
+        ("tease_decline", "tease", sell_on, "declines_buying" in fired and "price" not in fired),
+        ("sexual_now", "sext", sext_on, "sexual_now" in fired),
+    )
+    dropped: list[str] = []
+    for row, route, on, match in rows:
+        if match and on:
+            return route, row, tuple(dropped)
+        if match:
+            dropped.append(row)
+    # Named by the first drop, a literal table rather than the code's own walk.
+    end = {"sell": "sell_off", "tease_price": "tease_off", "tease_decline": "tease_off",
+           "sexual_now": "sext_off"}[dropped[0]] if dropped else "otherwise"
+    return "chat", end, tuple(dropped)
+
+
+def _combos():
+    from itertools import product
+    for bits in product((False, True), repeat=len(_FLAGGED_Q) + 4):
+        fired = {q for q, b in zip(_FLAGGED_Q, bits) if b}
+        yield fired, *bits[len(_FLAGGED_Q):]
+
+
+def case_r10_every_flag_combination():
+    n = 0
+    for fired, po, pt, sell_on, sext_on in _combos():
+        d = fd.decide_turn(_facts(fired, 1.4, pending_offer=po, pending_tease=pt,
+                                  sell_on=sell_on, sext_on=sext_on))
+        exp = _r10_expect(fired, po, pt, sell_on, sext_on)
+        assert (d.route, d.row, d.dropped) == exp, (fired, po, pt, sell_on, sext_on, d, exp)
+        assert (d.heat, d.fired) == (2, frozenset(fired)), d
+        n += 1
+    assert n == 2 ** 9, n
+
+
+def _pre_r10(fired, po, pt):
+    """The table before R10 with every flag on (ticket 27's rows, verbatim logic)."""
+    if "wants_content" in fired or ("says_yes_to_offer" in fired and po) or pt:
+        return "sell_now", "sell"
+    if "price" in fired or "declines_buying" in fired:
+        return "tease", "tease_price" if "price" in fired else "tease_decline"
+    if "sexual_now" in fired:
+        return "sext", "sexual_now"
+    return "chat", "otherwise"
+
+
+def case_r10_shadow_equals_the_old_table():
+    """Shadow passes every flag on (the `Facts` defaults): the same Route and row as
+    before R10, nothing dropped, on every combination and every TABLE row."""
+    for fired, po, pt, _s, _x in _combos():
+        d = fd.decide_turn(fd.Facts(frozenset(fired), 1.0, po, pt, True))
+        assert ((d.route, d.row), d.dropped) == (_pre_r10(fired, po, pt), ()), (fired, po, pt, d)
+    for q, extra, route, row in TABLE:
+        d = fd.decide_turn(_facts({q}, **extra))
+        assert (d.route, d.row, d.dropped) == (route, row, ()), (q, d)
+    assert fd.Decision("chat", 1, "otherwise", frozenset()).dropped == ()
+
+
+def case_r10_dropped_contents():
+    off, nosext = {"sell_on": False}, {"sext_on": False}
+    rows = [
+        (({"wants_content"}, off), ("chat", "sell_off", ("sell",))),
+        (({"wants_content", "sexual_now"}, off), ("sext", "sexual_now", ("sell",))),
+        (({"wants_content", "price", "sexual_now"}, off),
+         ("sext", "sexual_now", ("sell", "tease_price"))),
+        (({"price"}, off), ("chat", "tease_off", ("tease_price",))),
+        (({"declines_buying"}, off), ("chat", "tease_off", ("tease_decline",))),
+        (({"price", "sexual_now"}, off), ("sext", "sexual_now", ("tease_price",))),
+        (({"declines_buying", "sexual_now"}, off), ("sext", "sexual_now", ("tease_decline",))),
+        (({"wants_content", "sexual_now"}, {**off, **nosext}),
+         ("chat", "sell_off", ("sell", "sexual_now"))),
+        (({"price", "sexual_now"}, {**off, **nosext}),
+         ("chat", "tease_off", ("tease_price", "sexual_now"))),
+        (({"sexual_now"}, nosext), ("chat", "sext_off", ("sexual_now",))),
+        ((set(), {"pending_tease": True, **off}), ("chat", "sell_off", ("sell",))),
+        # says_yes with no Pending offer is no sell row, so nothing is dropped.
+        (({"says_yes_to_offer"}, off), ("chat", "otherwise", ())),
+        # Rows 1-5 come before every flagged row: nothing is dropped.
+        (({"complains_now", "wants_content"}, off), ("make_right", "complains_now", ())),
+        (({"stop", "sexual_now"}, {**off, **nosext}), ("chat", "stop", ())),
+    ]
+    for (fired, extra), exp in rows:
+        d = fd.decide_turn(_facts(fired, **extra))
+        assert (d.route, d.row, d.dropped) == exp, (fired, extra, d, exp)
+    # A Jev failure walks no row.
+    assert fd.decide_turn(_facts({"wants_content"}, jev_ok=False, **off)).dropped == ()
+
+
+# ── Test-Mode Router questions (03b ticket 43) ──────────────────────────
+
+# Spec › Interfaces `Ask` (ticket 10 r3's subjects, "anything" included) and formats; the
+# Sell executor's own Literals, so a Choice label is always an `Ask` value.
+SUBJECTS = ("feet", "butt", "tits", "pussy", "nude", "lingerie", "bikini", "shower", "toy",
+            "masturbation", "blowjob", "sex", "anything")
+FORMATS = ("photo", "video", "any")
+assert SUBJECTS == get_args(full_ai_sell.Subject) and FORMATS == get_args(full_ai_sell.Format)
+TEST_IDS = {"asks_subject", "asks_format", "counter_offer", "offer_moment"}
+
+
+def case_test_mode_questions():
+    """Shadow asks exactly `QUESTIONS` + `intensity`; test Mode adds the two Choices and the
+    two DRAFT Nouls; the DRAFT set names gif_fits, counter_offer, offer_moment."""
+    for shadow in (rj._questions(), rj._questions("shadow")):
+        assert list(shadow) == [*IDS, "intensity"], list(shadow)
+    test = rj._questions("test")
+    assert set(test) == {*IDS, "intensity"} | TEST_IDS, sorted(test)
+    kinds = {q: type(v).__name__ for q, v in test.items() if q in TEST_IDS}
+    assert kinds == {"asks_subject": "Choice", "asks_format": "Choice",
+                     "counter_offer": "Noul", "offer_moment": "Noul"}, kinds
+    assert tuple(test["asks_subject"].criteria) == SUBJECTS, tuple(test["asks_subject"].criteria)
+    assert tuple(test["asks_format"].criteria) == FORMATS, tuple(test["asks_format"].criteria)
+    assert all(test[q].model_dump() == v.model_dump() for q, v in rj._questions().items())
+    assert rj.DRAFT == frozenset({"gif_fits", "counter_offer", "offer_moment"}), rj.DRAFT
+    assert not TEST_IDS & set(rj.QUESTIONS) and not TEST_IDS & set(rj.THRESHOLDS)
+
+
+def case_question_version_by_mode():
+    """Shadow's digest is the pre-03b literal; test Mode's moves with a DRAFT member, a Choice
+    option or a DRAFT Noul's wording, and Shadow's never does."""
+    assert rj.question_version() == rj.question_version("shadow") == "b3202b420ab0"
+    base = rj.question_version("test")
+    assert base != rj.QUESTION_VERSION, base
+    real_draft, real_choices = rj.DRAFT, rj.TEST_CHOICES
+    real_nouls = rj.TEST_NOULS
+    fmt = real_choices["asks_format"]
+    for label, name, other in (
+            ("drop a DRAFT member", "DRAFT", real_draft - {"offer_moment"}),
+            ("add a DRAFT member", "DRAFT", real_draft | {"price"}),
+            ("drop a Choice option", "TEST_CHOICES",
+             {**real_choices, "asks_format": {**fmt, "criteria": {
+                 k: v for k, v in fmt["criteria"].items() if k != "video"}}}),
+            ("reword a DRAFT Noul", "TEST_NOULS",
+             {**real_nouls, "counter_offer": {**real_nouls["counter_offer"], "instructions": "x"}})):
+        setattr(rj, name, other)
+        try:
+            moved, shadow = rj.question_version("test"), rj.question_version()
+        finally:
+            setattr(rj, name, {"DRAFT": real_draft, "TEST_CHOICES": real_choices,
+                               "TEST_NOULS": real_nouls}[name])
+        assert moved != base, label
+        assert shadow == "b3202b420ab0", label
+    assert rj.question_version("test") == base
+
+
+def case_choice_of():
+    """Argmax over the Choice's probabilities; a tie at the top or a missing answer is
+    anything / any."""
+    rows = [
+        ({"asks_subject": {"feet": .7, "butt": .2, "anything": .1}}, "asks_subject", "feet"),
+        ({"asks_subject": {"feet": .3, "anything": .6, "tits": .1}}, "asks_subject", "anything"),
+        ({"asks_format": {"photo": .1, "video": .8, "any": .1}}, "asks_format", "video"),
+        ({"asks_subject": {"feet": .45, "butt": .45, "anything": .1}}, "asks_subject", "anything"),
+        ({"asks_format": {"photo": .45, "video": .45, "any": .1}}, "asks_format", "any"),
+        ({"asks_format": {"photo": .5, "video": .2}}, "asks_subject", "anything"),   # missing
+        ({}, "asks_format", "any"),
+        ({"asks_subject": {}}, "asks_subject", "anything"),
+        ({"asks_subject": {"face": .9, "feet": .1}}, "asks_subject", "anything"),       # not offered
+    ]
+    for choices, qid, want in rows:
+        got = rj.choice_of(choices, qid)
+        assert got == want, (choices, qid, got, want)
+
+
+
+# ── Sell rows haggle / offer_moment (03b ticket 47) ─────────────────────
+
+_SELL_Q = ("complains_now", "wants_content", "says_yes_to_offer", "price", "declines_buying",
+           "sexual_now", "counter_offer", "offer_moment")
+
+
+def _before_sext(dropped: tuple[str, ...], row: str) -> tuple[str, ...]:
+    """`row` placed after the sell / tease drops and before a dropped sexual_now."""
+    i = dropped.index("sexual_now") if "sexual_now" in dropped else len(dropped)
+    return (*dropped[:i], row, *dropped[i:])
+
+
+def _sell_expect(fired, po, pt, oo, draft_on, sell_on, sext_on):
+    """The expected (route, row, dropped), from the frozen pre-47 table (`_decide_before_47`,
+    below) on the fired set without the DRAFT ids, changed only as the spec says (Interfaces ›
+    full_ai_decide, Contracts › DRAFT gate): haggle right after rows 1-5, offer_moment after the
+    tease rows and before sexual_now; a dropped haggle names sell_off, a dropped offer_moment
+    names nothing; draft_on false = normal routing with each fired DRAFT id in `dropped`."""
+    old = _decide_before_47(fd.Facts(fired - {"counter_offer", "offer_moment"}, 1.4, po, pt, True,
+                                     sell_on=sell_on, sext_on=sext_on))
+    if old.row in ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop"):
+        return old.route, old.row, ()
+    co, om = "counter_offer" in fired, "offer_moment" in fired
+    om_reached = om and old.row not in ("sell", "tease_price", "tease_decline")
+    if not draft_on:
+        dropped = (("counter_offer",) if co else ()) + old.dropped
+        return old.route, old.row, _before_sext(dropped, "offer_moment") if om_reached else dropped
+    haggle = co and (oo or pt)
+    if haggle and sell_on:
+        return "sell_now", "haggle", ()
+    if om_reached and sell_on:
+        return "sell_now", "offer_moment", ()
+    row = "sell_off" if haggle and old.route == "chat" else old.row      # sell off from here on
+    dropped = (("haggle",) if haggle else ()) + old.dropped
+    return old.route, row, _before_sext(dropped, "offer_moment") if om_reached else dropped
+
+
+def case_sell_rows_every_combination():
+    from itertools import product
+    n = 0
+    for bits in product((False, True), repeat=len(_SELL_Q) + 6):
+        fired = frozenset(q for q, b in zip(_SELL_Q, bits) if b)
+        po, pt, oo, draft_on, sell_on, sext_on = bits[len(_SELL_Q):]
+        d = fd.decide_turn(fd.Facts(fired, 1.4, po, pt, True, sell_on=sell_on, sext_on=sext_on,
+                                    open_offer=oo, draft_on=draft_on))
+        exp = _sell_expect(fired, po, pt, oo, draft_on, sell_on, sext_on)
+        assert (d.route, d.row, d.dropped) == exp, (sorted(fired), bits[len(_SELL_Q):], d, exp)
+        assert (d.heat, d.fired) == (2, fired), d
+        n += 1
+    assert n == 2 ** 14, n
+    # Rows 1-5 each beat haggle and offer_moment, every flag and state on.
+    for q in ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop"):
+        d = fd.decide_turn(_facts({q, "counter_offer", "offer_moment"}, pending_tease=True,
+                                  open_offer=True, draft_on=True))
+        assert (d.row, d.dropped) == (q, ()), (q, d)
+
+
+def case_sell_rows_dropped():
+    on, oo, pt = {"draft_on": True}, {"open_offer": True}, {"pending_tease": True}
+    off, nosext = {"sell_on": False}, {"sext_on": False}
+    rows = [
+        # draft_questions off: the DRAFT id is dropped by name, routing as before.
+        (({"counter_offer"}, oo), ("chat", "otherwise", ("counter_offer",))),
+        (({"counter_offer", "wants_content"}, oo), ("sell_now", "sell", ("counter_offer",))),
+        (({"counter_offer"}, pt), ("sell_now", "sell", ("counter_offer",))),
+        (({"offer_moment"}, {}), ("chat", "otherwise", ("offer_moment",))),
+        (({"offer_moment", "sexual_now"}, {}), ("sext", "sexual_now", ("offer_moment",))),
+        (({"counter_offer", "offer_moment"}, oo), ("chat", "otherwise", ("counter_offer", "offer_moment"))),
+        (({"counter_offer", "wants_content"}, {**oo, **off}),
+         ("chat", "sell_off", ("counter_offer", "sell"))),
+        # draft_on: haggle needs an open Offer or a Pending tease, and beats sell.
+        (({"counter_offer"}, {**on, **oo}), ("sell_now", "haggle", ())),
+        (({"counter_offer"}, {**on, **pt}), ("sell_now", "haggle", ())),
+        (({"counter_offer", "wants_content"}, {**on, **oo}), ("sell_now", "haggle", ())),
+        (({"counter_offer"}, on), ("chat", "otherwise", ())),
+        (({"counter_offer", "sexual_now"}, on), ("sext", "sexual_now", ())),
+        # The sell flag drops haggle and names sell_off.
+        (({"counter_offer"}, {**on, **oo, **off}), ("chat", "sell_off", ("haggle",))),
+        (({"counter_offer"}, {**on, **pt, **off}), ("chat", "sell_off", ("haggle", "sell"))),
+        (({"counter_offer", "sexual_now"}, {**on, **oo, **off}), ("sext", "sexual_now", ("haggle",))),
+        # offer_moment: after the tease rows, before sexual_now.
+        (({"offer_moment"}, on), ("sell_now", "offer_moment", ())),
+        (({"offer_moment", "sexual_now"}, on), ("sell_now", "offer_moment", ())),
+        (({"offer_moment", "price"}, on), ("tease", "tease_price", ())),
+        (({"offer_moment", "wants_content"}, on), ("sell_now", "sell", ())),
+        # The sell flag drops offer_moment and names nothing (no sell-off line).
+        (({"offer_moment"}, {**on, **off}), ("chat", "otherwise", ("offer_moment",))),
+        (({"offer_moment", "sexual_now"}, {**on, **off}), ("sext", "sexual_now", ("offer_moment",))),
+        (({"offer_moment", "sexual_now"}, {**on, **off, **nosext}),
+         ("chat", "sext_off", ("offer_moment", "sexual_now"))),
+        (({"offer_moment", "price"}, {**on, **off}), ("chat", "tease_off", ("tease_price", "offer_moment"))),
+        # Rows 1-5 first: nothing dropped.
+        (({"complains_now", "counter_offer"}, {**on, **oo}), ("make_right", "complains_now", ())),
+        (({"stop", "offer_moment"}, {**on, **off}), ("chat", "stop", ())),
+    ]
+    for (fired, extra), exp in rows:
+        d = fd.decide_turn(_facts(fired, **extra))
+        assert (d.route, d.row, d.dropped) == exp, (fired, extra, d, exp)
+    # A Jev failure walks no row, DRAFT ids included.
+    d = fd.decide_turn(_facts({"counter_offer", "offer_moment"}, jev_ok=False, **on, **oo))
+    assert (d.route, d.row, d.dropped) == ("chat", "jev_failed", ()), d
+
+
+def _decide_before_47(facts):
+    """FROZEN: `full_ai_decide.decide_turn` as it was before ticket 47 (main f3ad378e1),
+    copied verbatim so the Shadow proof compares against the real previous table."""
+    f = facts.fired
+    if not facts.jev_ok:
+        return fd.Decision("chat", 1, "jev_failed", f)
+    heat = fd.heat_of(facts.intensity)
+    for q, route in fd._FIRST:
+        if q in f:
+            return fd.Decision(route, heat, q, f)
+    sell = "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease
+    tease = "tease_price" if "price" in f else "tease_decline" if "declines_buying" in f else ""
+    flagged = (("sell", "sell_now", facts.sell_on, bool(sell), "sell_off"),
+               (tease, "tease", facts.sell_on, bool(tease), "tease_off"),
+               ("sexual_now", "sext", facts.sext_on, "sexual_now" in f, "sext_off"))
+    dropped: list[str] = []
+    end = "otherwise"
+    for row, route, on, match, off_row in flagged:
+        if match and on:
+            return fd.Decision(route, heat, row, f, tuple(dropped))
+        if match:
+            end = off_row if not dropped else end
+            dropped.append(row)
+    return fd.Decision("chat", heat, end, f, tuple(dropped))
+
+
+def case_shadow_equals_the_pre_47_table():
+    """Shadow (draft_on false, the default; flags on and off alike): the same Decision as the
+    pre-47 table on every fired set of the 11 Phase 01 ids, whatever open Offer says."""
+    from itertools import product
+    n = 0
+    for bits in product((False, True), repeat=len(IDS) + 6):
+        fired = frozenset(q for q, b in zip(IDS, bits) if b)
+        po, pt, oo, jev_ok, sell_on, sext_on = bits[len(IDS):]
+        facts = fd.Facts(fired, 2.6, po, pt, jev_ok, sell_on=sell_on, sext_on=sext_on, open_offer=oo)
+        assert fd.decide_turn(facts) == _decide_before_47(facts), (sorted(fired), bits[len(IDS):])
+        n += 1
+    assert n == 2 ** 17, n
+    # Today's caller (full_ai_turn._route) passes no new keyword: draft_on and open_offer default off.
+    assert (fd.Facts(frozenset(), 0.0, False, False, True).draft_on,
+            fd.Facts(frozenset(), 0.0, False, False, True).open_offer) == (False, False)
 
 
 _harness.run()

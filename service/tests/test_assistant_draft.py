@@ -29,6 +29,8 @@ from fastapi import HTTPException  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 import assistant_draft  # noqa: E402
+import assistant_full_ai  # noqa: E402
+from automations import full_ai_config  # noqa: E402
 import assistant_report  # noqa: E402
 import auth  # noqa: E402
 import llm_client  # noqa: E402
@@ -36,7 +38,7 @@ import llm_client  # noqa: E402
 REAL_CHAT = llm_client.chat     # cases spy on `chat`; a few need the real one
 from assistant_draft import (  # noqa: E402
     DraftBody, FolderStat, Intent, draft, do_caps, folder_stats, match_named,
-    pick_sfw, rank_sfw, resolve,
+    interpret, pick_sfw, rank_sfw, resolve, vetoed,
 )
 from automations._common import JSON_OBJECT_PURPOSES, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -332,10 +334,10 @@ def case_massdmexclude_is_never_stored_and_always_explained():
 
 def case_the_fewshots_parse_as_the_schema_they_teach():
     shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
-    assert len(shots) == 12, len(shots)
+    assert len(shots) == 15, len(shots)
     every = [Intent.model_validate(json.loads(s)) for s in shots]
-    parsed, exports = every[:9], every[9:]                        # the 3 report_export shots come last
-    requests = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)[9:]
+    parsed, configs, exports = every[:9], every[9:12], every[12:]  # 3 full_ai_config, then 3 report_export
+    requests = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)[12:]
     ctx = assistant_report.ReportCtx((("a1", "Luna"), ("a2", "Mia Rose")), ((1, "Anna"), (2, "Marco")),
                                      "Europe/London", date(2026, 3, 14), "monday", frozenset())
     got = [assistant_report.resolve_export(i.report, ctx, request=r) for i, r in zip(exports, requests)]
@@ -471,7 +473,7 @@ async def case_a_caller_who_cannot_create_the_rule_gets_a_sentence_not_a_403():
     real = assistant_draft.opt_in_refusal
 
     async def refuse(pages, account_id):   # neither do-mode page: refused before any call
-        assert pages in (("/growth/auto-mass",), ("/growth/auto-story",)), pages
+        assert pages in (("/growth/auto-mass",), ("/growth/auto-story",), ("/full-ai-chatter",)), pages
         return "Your role does not allow it"
     assistant_draft.opt_in_refusal = refuse
     try:
@@ -1555,6 +1557,75 @@ async def case_an_owner_keeps_the_account_gate_and_report_names_ride_only_report
     finally:
         assistant_draft.opt_in_refusal = real
         auth._request_user.reset(token)
+
+
+# ── full_ai_config (phase 03c, ticket 55) ──────────────────────────────
+
+def _config_shots() -> list[tuple[str, str]]:
+    reqs = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)
+    shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
+    return [(r, j) for r, j in zip(reqs, shots) if '"full_ai_config"' in j]
+
+
+def case_interpret_parses_the_full_ai_config_fewshots():
+    shots = _config_shots()
+    assert [r for r, _ in shots] == ["reply slower", "stop GIFs", "use Euryale then Hermes"], shots
+    got = [interpret(j, request=r, lists=[], folders=[], existing=[]) for r, j in shots]
+    assert all(o.flow == assistant_draft.CONFIG_FLOW and o.error is None for o in got), got
+    assert [o.draft.slots for o in got] == [
+        {"set": {"reply_speed": "0-15-60"}}, {"set": {"gifs": False}},
+        {"set": {"writers": ["euryale-v2.3", "hermes-4-405b"]}}], [o.draft.slots for o in got]
+    # An empty patch is no config draft.
+    empty = interpret('{"flow": "full_ai_config", "config": {"set": {}}}', request="reply slower",
+                      lists=[], folders=[], existing=[])
+    assert (empty.flow, empty.draft) == (None, None), empty
+
+
+def case_vetoed_keeps_full_ai_config_only_on_a_config_word():
+    f = assistant_draft.CONFIG_FLOW
+    assert vetoed("send a mass at 9pm", refine=False, flow=f)
+    assert not vetoed("reply slower", refine=False, flow=f)
+    assert vetoed("reply slower", refine=True, flow=f), "a config plan is never refined"
+    o = interpret('{"flow": "full_ai_config", "config": {"set": {"reply_speed": "0-15-60"}}}',
+                  request="send a mass at 9pm", lists=[], folders=[], existing=[])
+    assert (o.flow, o.asked) == (None, None), o
+
+
+def case_config_word_matches_every_config_key_and_writer_model():
+    """Built from the schema: a new DEFAULTS key or Writer model with no word fails here."""
+    from automations.full_ai_config import DEFAULTS, WRITER_PROVIDERS
+    from llm_models import MODELS
+    keys = [k for k in DEFAULTS if k != "version"]
+    assert set(keys) == set(assistant_full_ai.CONFIG_KEYS), keys
+    for k in keys:
+        for text in (k, k.replace("_", " "), f"change the {k.replace('_', ' ')} please"):
+            assert assistant_draft.CONFIG_WORD.search(text), text
+    models = [m for m, v in MODELS.items() if v.provider in WRITER_PROVIDERS]
+    assert models, "no Writer model"
+    for m in models:
+        short = re.match(r"[a-z]+", m).group(0)
+        assert assistant_draft.CONFIG_WORD.search(f"use {short.capitalize()} first"), m
+    for text in ("send a mass at 9pm", "make an auto mass every 3 hours", "export last month's sales"):
+        assert not assistant_draft.CONFIG_WORD.search(text), text
+
+
+def case_the_system_prompt_names_the_full_ai_config_flow():
+    sp = assistant_draft.system_prompt()
+    assert '- "full_ai_config":' in sp and '| "full_ai_config" | null' in sp, "flow not named"
+    assert '"config": {"set": {"reply_speed": "0-15-60"}}' in sp
+
+
+def case_user_block_carries_the_full_ai_draft_only_on_a_config_word():
+    stored = full_ai_config.merged({"draft": {"reply_speed": "0-15-60"}, "rev": 3})
+    on = assistant_draft.user_block("reply slower", lists=[], folders=[], existing=[], previous=None,
+                                    full_ai=stored)
+    off = assistant_draft.user_block("send a mass at 9pm", lists=[], folders=[], existing=[], previous=None,
+                                     full_ai=stored)
+    none = assistant_draft.user_block("reply slower", lists=[], folders=[], existing=[], previous=None)
+    line = next(x for x in on.split("\n\n") if x.startswith("Full AI draft: "))
+    assert json.loads(line.removeprefix("Full AI draft: "))["reply_speed"] == "0-15-60", line
+    assert "Full AI draft" not in off and "Full AI draft" not in none, (off, none)
+    assert on.endswith("<request>\nreply slower\n</request>"), on
 
 
 _harness.run()

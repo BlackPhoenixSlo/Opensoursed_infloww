@@ -317,6 +317,12 @@ class _MassScheduleBody(BaseModel):
     min_tipped: float | None = Field(None, gt=0, description="Only fans who tipped at least $N")
     subscribed_over_days: float | None = Field(None, gt=0, description="Only fans subscribed N+ days")
     expired_over_days: float | None = Field(None, gt=0, description="Only fans expired N+ days ago")
+    # Ultra's mass_send (toolbox_decide `fixed`): when the opt-out / dedup guards
+    # leave no list and no fan id, answer 422 and send nothing (no OF call, no
+    # mass_runs row) instead of posting an empty audience.
+    require_recipients: bool = Field(
+        False, description="422 (nothing sent) when no list and no fan id is left after the guards",
+    )
 
     def has_thresholds(self) -> bool:
         return bool(self.min_total_spent or self.min_tipped
@@ -349,6 +355,7 @@ async def of_send_or_schedule_mass(
     # queued-send dedup, so a plain composer blast still skips an excluded /
     # already-queued fan. The client is only needed for the OF "Unread" lookup,
     # so build it only when unread_limit is set.
+    _asked_ids = len(dict.fromkeys(body.user_ids))  # the caller's own fan ids, before any guard drops one
     _thresholds = body.has_thresholds()
     _online_now = bool(body.online_only or (body.filters or {}).get("online"))
     _refusal = mass_queue_decide.threshold_refusal(
@@ -407,6 +414,9 @@ async def of_send_or_schedule_mass(
     # never messaged), and those outbound rows would then poison the contact
     # guard. Mirror the of_client subtraction so our record matches the send.
     body.user_ids = mass_queue_decide.strip_excluded(body.user_ids, body.excluded_users)
+    if body.require_recipients and not body.user_lists and not body.user_ids:
+        raise HTTPException(422, f"nobody left to send to: {_asked_ids} of {_asked_ids} fan(s) skipped "
+                                 "(opted out or already queued); nothing was sent")
     # OF cannot exclude individual ids from a list/online audience — the
     # `excludedUsers` body field doesn't exist (verified live 2026-06-12: it was
     # silently dropped and excluded fans got the blast). Mirror the ids into the
@@ -532,6 +542,10 @@ async def of_send_or_schedule_mass(
         # audience. The UI prints "N already answered — skipped".
         result["_skipped_already_answered"] = _answered_total or len(_skipped_answered)
         result["_skipped_already_answered_ids"] = _skipped_answered
+    if isinstance(result, dict) and _asked_ids:
+        # How many of the caller's fan ids went into this send after the guards
+        # (opt-out list, queued-send dedup, …); Ultra's step note reads it.
+        result["_user_ids_kept"] = {"asked": _asked_ids, "kept": len(set(body.user_ids))}
     return result
 
 class _EditQueuedMessageBody(BaseModel):

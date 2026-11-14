@@ -5,18 +5,32 @@
 match, holding no rule of its own beyond them (ADR-0032): no counter, window,
 cap, stamp, regex or earlier row. Stdlib plus `_router_jev`'s constants only
 (pinned by test_full_ai_decide.py), so shadow, replay, test and live share one
-table. The rows, in order (D42-D44, Opus a-c, R9):
+table. The rows, in order (D42-D44, Opus a-c, R9, 03b ticket 47):
 
   promo -> no_send · says_under_18 -> no_send · complains_now -> make_right ·
   asks_if_ai -> ai_dare · stop -> chat (no sell, no hook) ·
+  haggle: counter_offer (DRAFT) with an open Offer or a Pending tease -> sell_now ·
   sell: wants_content, says_yes_to_offer with a Pending offer or Pending
   tease, or a Pending tease -> sell_now ·
   tease_price (price) / tease_decline (declines_buying, price not) -> tease ·
+  offer_moment (DRAFT) -> sell_now ·
   sexual_now -> sext · otherwise -> chat.
 
-The sell flag turns rows sell and tease_* into chat (rows sell_off,
-tease_off), the sext flag row sexual_now (row sext_off). A Jev failure is
-chat at Heat 1 (row jev_failed), never a no_send. `gif_fits` is never read.
+Route flags (R10): an off flag drops its rows (sell flag: haggle, sell,
+tease_*, offer_moment; sext flag: sexual_now) and the walk goes on, so a later
+row still matches (wants_content + sexual_now with selling off is sext). The
+Decision records the dropped rows in `dropped`. A walk that reaches
+`otherwise` with a row dropped names the first naming drop: sell_off (haggle
+or sell), tease_off (a tease row), sext_off; a dropped offer_moment names none
+(he asked for nothing, so no sell-off line). Shadow passes every flag on, so
+its table is unchanged. A Jev failure is chat at Heat 1 (row jev_failed),
+never a no_send. `gif_fits` is never read.
+
+DRAFT gate (ticket 47): counter_offer and offer_moment count only with
+`draft_on` (test Mode and config `draft_questions`; Shadow and live pass
+false whatever the config says). A DRAFT id that fired and did not count is
+dropped by its id at its row's place, and routing goes on as without it.
+The fired set carries them once the Router gives them a threshold (phase B).
 
 `arm_of(account_id, fan_id)` is the Fan's Arm, a pure salted hash (ADR-0035):
 every Decision row carries it with `SALT_VER`; Shadow writes no Enrolment.
@@ -55,6 +69,8 @@ class Facts:
     jev_ok: bool                # Jev answered
     sell_on: bool = True        # route flags (all on in Shadow)
     sext_on: bool = True
+    open_offer: bool = False    # a priced Offer with no outcome (test fold, 03b)
+    draft_on: bool = False      # DRAFT ids count: test Mode and config draft_questions
 
 
 @dataclass(frozen=True)
@@ -63,6 +79,7 @@ class Decision:
     heat: int                   # 1..4: his level + 1, at most 4
     row: str                    # the table row that matched
     fired: frozenset[str]
+    dropped: tuple[str, ...] = ()   # the rows an off flag removed, in walk order (R10)
 
 
 def heat_of(intensity: float) -> int:
@@ -84,19 +101,32 @@ def decide_turn(facts: Facts) -> Decision:
         if q in f:
             return Decision(route, heat, q, f)
     # The Pending tease is a named D32 exception (R9): state, not a Jev answer.
-    if "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease:
-        return _gated(facts.sell_on, "sell_now", "sell", "sell_off", heat, f)
-    if "price" in f or "declines_buying" in f:
-        row = "tease_price" if "price" in f else "tease_decline"
-        return _gated(facts.sell_on, "tease", row, "tease_off", heat, f)
-    if "sexual_now" in f:
-        return _gated(facts.sext_on, "sext", "sexual_now", "sext_off", heat, f)
-    return Decision("chat", heat, "otherwise", f)
-
-
-def _gated(on: bool, route: Route, row: str, off_row: str, heat: int, f: frozenset[str]) -> Decision:
-    """A flagged row: its Route when the flag is on, else chat under `off_row`."""
-    return Decision(route, heat, row, f) if on else Decision("chat", heat, off_row, f)
+    sell = "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease
+    tease = "tease_price" if "price" in f else "tease_decline" if "declines_buying" in f else ""
+    haggle = "counter_offer" in f and (facts.open_offer or facts.pending_tease)
+    # (row, its DRAFT id, Route, its flag, matched, the chat row this names as the first
+    # naming drop; None names nothing)
+    flagged = (("haggle", "counter_offer", "sell_now", facts.sell_on, haggle, "sell_off"),
+               ("sell", None, "sell_now", facts.sell_on, bool(sell), "sell_off"),
+               (tease, None, "tease", facts.sell_on, bool(tease), "tease_off"),
+               ("offer_moment", "offer_moment", "sell_now", facts.sell_on, "offer_moment" in f, None),
+               ("sexual_now", None, "sext", facts.sext_on, "sexual_now" in f, "sext_off"))
+    dropped: list[str] = []
+    end = "otherwise"
+    for row, draft, route, on, match, off_row in flagged:
+        if draft and draft in f and not facts.draft_on:
+            # ASSUMPTION: a DRAFT id gated off is recorded under its question id
+            # (`counter_offer`, the spec's API case), a row the sell flag drops under
+            # its row name (`haggle`); offer_moment is both names, told apart by
+            # draft_on on the row. Overturned if the owner wants a separate field.
+            dropped.append(draft)       # fired, did not count
+            continue
+        if match and on:
+            return Decision(route, heat, row, f, tuple(dropped))
+        if match:
+            end = off_row if end == "otherwise" and off_row else end
+            dropped.append(row)
+    return Decision("chat", heat, end, f, tuple(dropped))
 
 
 def arm_of(account_id: str, fan_id: int) -> Arm:

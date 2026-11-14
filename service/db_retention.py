@@ -82,18 +82,21 @@ _AUTOMATION_RUNS_RETAIN_S = int(os.environ.get("AUTOMATION_RUNS_RETAIN_S", str(1
 _GROK_CALLS_RETAIN_S = int(os.environ.get("GROK_CALLS_RETAIN_S", str(30 * 24 * 60 * 60)))
 _SCHEDULED_JOBS_RETAIN_S = int(os.environ.get("SCHEDULED_JOBS_RETAIN_S", str(7 * 24 * 60 * 60)))
 _ACTIONS_RETAIN_S = int(os.environ.get("ACTIONS_RETAIN_S", str(90 * 24 * 60 * 60)))
+# Full AI Chat's Test chat rows (`ai_decisions` mode test): the owner's own scratch Turns, 7 days
+# (spec phase-03a › Retention). Shadow and later live rows are never swept here.
+_FULL_AI_TEST_RETAIN_S = int(os.environ.get("FULL_AI_TEST_RETAIN_S", str(7 * 24 * 60 * 60)))
 _AUDIT_EVICT_INTERVAL_S = int(os.environ.get("AUDIT_EVICT_INTERVAL_S", str(24 * 60 * 60)))
 
 
 async def evict_audit_logs_once() -> dict[str, int]:
     """One retention sweep of the append-only audit/log tables that otherwise
     grow unbounded: automation_runs (run audit), grok_calls (LLM-call audit),
-    scheduled_jobs (only the TERMINAL done/error rows), actions (mutation audit).
-    Deletes rows older than each table's own window. grok_daily_cost (the cap
+    scheduled_jobs (only the TERMINAL done/error rows), actions (mutation audit),
+    ai_decisions (only Full AI Chat's Test chat rows, mode test). Deletes rows older than each table's own window. grok_daily_cost (the cap
     rollup) is a SEPARATE, tiny, un-pruned table, so spend/cap history survives
     the grok_calls per-call prune. Returns {tablename: deleted_count}."""
     from db.engine import get_session
-    from db.models import Action, AutomationRun, GrokCall, ScheduledJob
+    from db.models import Action, AiDecision, AutomationRun, GrokCall, ScheduledJob
     from sqlalchemy import delete as sa_delete
 
     now = datetime.utcnow()
@@ -103,6 +106,7 @@ async def evict_audit_logs_once() -> dict[str, int]:
         (ScheduledJob, ScheduledJob.created_at, _SCHEDULED_JOBS_RETAIN_S,
          ScheduledJob.status.in_(("done", "error"))),
         (Action, Action.at, _ACTIONS_RETAIN_S, None),
+        (AiDecision, AiDecision.created_at, _FULL_AI_TEST_RETAIN_S, AiDecision.mode == "test"),
     ]
     out: dict[str, int] = {}
     for model, col, retain_s, extra in plan:
@@ -128,7 +132,7 @@ async def _audit_retention_sweep() -> None:
 async def _audit_retention_evictor_loop() -> None:
     """Daily retention sweep of the unbounded audit/log tables. Tune each window
     via AUTOMATION_RUNS_RETAIN_S / GROK_CALLS_RETAIN_S / SCHEDULED_JOBS_RETAIN_S
-    / ACTIONS_RETAIN_S (0 disables a table). See evict_audit_logs_once.
+    / ACTIONS_RETAIN_S / FULL_AI_TEST_RETAIN_S (0 disables a table). See evict_audit_logs_once.
 
     Sweeps after a boot grace rather than after a full day — this loop's own
     interval used to exceed the process's typical uptime, so it had never run.

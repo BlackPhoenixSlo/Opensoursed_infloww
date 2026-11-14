@@ -19,10 +19,14 @@
  *     /admin/reports/run POST), `downloaded` lands the file on `done`. `attempt` counts starts of one draft: Try again
  *     from `failed` is attempt+1, so the provider's download effect (keyed on the plan's client `id` + attempt — a server
  *     draft id may be null, so two exports would collide) fires again.
+ *   • A `full_ai_config` draft (phase 03c) has no steps either: `start` (Apply) goes straight to `saving` (useDoRunner's
+ *     one draft PUT), `configApplied` lands its result line on `done` — a 409 / 422 too (the line says why), never
+ *     `failed`, so no retry re-PUTs.
  */
 
 import { exportSlotsFrom } from "./doExport";
 import type { AutoStorySlots, DoDraft, MassPremadeSlots } from "./doFlows";
+import { slotsFrom as configSlotsFrom, type ConfigStatus } from "./fullAiConfigEdit";
 import { editSlotsFrom, type EditResult } from "./massEdit";
 
 /** `id`: the drafting request's client id — the plan's own identity (a server draft id may be null). */
@@ -32,10 +36,12 @@ type Planned = { id: string; request: string; draft: DoDraft };
 export type DoOutcome =
   | { kind: "saved" }
   | { kind: "applied"; results: EditResult[] }
-  | { kind: "downloaded"; file: string };
+  | { kind: "downloaded"; file: string }
+  /** A full_ai_config apply's answer: the PUT's status and the card's line. */
+  | { kind: "config"; status: ConfigStatus; line: string };
 
 /** Flows with no steps: `start` goes straight to `saving` (one POST by the provider), and `saved` never ends them. */
-const DIRECT_FLOWS: ReadonlySet<DoDraft["flow"]> = new Set(["mass_edit", "report_export"]);
+const DIRECT_FLOWS: ReadonlySet<DoDraft["flow"]> = new Set(["mass_edit", "report_export", "full_ai_config"]);
 
 export type DoRun =
   | { phase: "off" }
@@ -64,6 +70,8 @@ export type DoAction =
   | { type: "applied"; results: EditResult[] }
   /** A report_export run's file was saved. */
   | { type: "downloaded"; file: string }
+  /** A full_ai_config run's draft PUT answered (200 / 409 / 422): `line` is the card's (fullAiConfigEdit.resultLine). */
+  | { type: "configApplied"; status: ConfigStatus; line: string }
   /** `id`: a drafting request's failure (dropped when stale); none: the running run's. */
   | { type: "fail"; msg: string; id?: string }
   | { type: "reset" };
@@ -118,6 +126,9 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
     case "downloaded":
       return s.phase === "running" && s.draft.flow === "report_export"
         ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "downloaded", file: a.file } } : s;
+    case "configApplied":
+      return s.phase === "running" && s.draft.flow === "full_ai_config"
+        ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "config", status: a.status, line: a.line } } : s;
     case "fail":
       if (a.id !== undefined) {
         return s.phase === "drafting" && s.id === a.id ? { phase: "failed", id: s.id, request: s.request, draft: null, msg: a.msg } : s;
@@ -135,12 +146,13 @@ const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is st
 export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string | null): DoDraft {
   const acct = typeof r?.account_id === "string" && r.account_id ? r.account_id : accountId;
   const named = r?.flow === "mass_premade" || r?.flow === "mass_edit" || r?.flow === "auto_story" || r?.flow === "report_export"
-    ? r.flow : null;
+    || r?.flow === "full_ai_config" ? r.flow : null;
   const flow = named === "report_export" || acct ? named : null;
   const pair = flow === "mass_premade" ? { flow, slots: r?.slots ? r.slots as MassPremadeSlots : null }
     : flow === "auto_story" ? { flow, slots: r?.slots ? r.slots as AutoStorySlots : null }
     : flow === "mass_edit" ? { flow, slots: editSlotsFrom(r?.slots) }
     : flow === "report_export" ? { flow, slots: exportSlotsFrom(r?.slots) }
+    : flow === "full_ai_config" ? { flow, slots: configSlotsFrom(r?.slots) }
     : { flow: null, slots: null };
   return {
     id: String(r?.id ?? ""),

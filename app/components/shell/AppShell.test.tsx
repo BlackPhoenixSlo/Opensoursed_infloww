@@ -311,7 +311,7 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     fireEvent.click(group("My AI Chatter"));
     expect(group("My AI Chatter")).toHaveAttribute("aria-expanded", "true");
     expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("link", { name: "Full AI Chatter" })).toHaveAttribute("href", "/full-ai-chatter");
+    expect(screen.getByRole("link", { name: "Full AI Chat" })).toHaveAttribute("href", "/full-ai-chatter");
 
     fireEvent.click(group("My AI Chatter"));
     expect(screen.getAllByRole("button", { expanded: true }).map((b) => b.textContent)).not.toContain("My AI Chatter");

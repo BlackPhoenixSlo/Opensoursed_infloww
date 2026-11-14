@@ -219,30 +219,43 @@ def _typo_correction_allowed(state: dict, now: datetime) -> bool:
     return (now - last) >= _TYPO_FIX_MIN_INTERVAL or since >= _TYPO_FIX_MIN_EXCHANGES
 
 
+def _throttled(state: dict, parts, rng, now: datetime, *, protect, max_bubbles) -> tuple[list[str], dict]:
+    """One reply through humanize_typos under the '*fix' throttle `state`:
+    (bubbles sliced to max_bubbles, the next state). Pure."""
+    out, emitted = _humanize_typos_impl(
+        parts, rng, protect=protect, max_bubbles=max_bubbles,
+        allow_correction=_typo_correction_allowed(state, now))
+    return out[:max_bubbles], ({"at": now.isoformat(), "since": 0} if emitted else
+                               {"at": state.get("at"),
+                                "since": int(state.get("since", 0) or 0) + 1})
+
+
 async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
-                              max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
+                              max_bubbles: int = STYLE_MAX_BUBBLES,
+                              state: dict | None = None) -> list[str]:
     """humanize_typos + the per-fan, cross-automation '*fix' throttle. The thumb-slip
     always rides; the correction bubble is suppressed unless _typo_correction_allowed.
     Every reply that runs this layer bumps the per-fan 'since' counter (shared across
     all 4 senders); a fired correction resets it and stamps the time. Returns the
     bubble list sliced to max_bubbles. The fan-lease guarantees one sender per fan per
-    tick, so the read-modify-write needs no extra locking."""
+    tick, so the read-modify-write needs no extra locking.
+
+    `state` (Full AI Chat's Test chat, whose synthetic Fan has no `fans` row): the
+    throttle state to decide from instead of `fans.custom_fields._typo_fix`; no Fan
+    is read or written and the dict is updated in place with the next state."""
     now = datetime.utcnow()
+    if state is not None:
+        out, nxt = _throttled(state, parts, rng, now, protect=protect, max_bubbles=max_bubbles)
+        state.clear()
+        state.update(nxt)
+        return out
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
-        state = fan_state(fan, _TYPO_FIX_STATE_KEY)
-
-        out, emitted = _humanize_typos_impl(
-            parts, rng, protect=protect, max_bubbles=max_bubbles,
-            allow_correction=_typo_correction_allowed(state, now))
-        out = out[:max_bubbles]
-
+        cur = fan_state(fan, _TYPO_FIX_STATE_KEY)
+        out, nxt = _throttled(cur, parts, rng, now, protect=protect, max_bubbles=max_bubbles)
         if fan is not None:
             # Atomic with nothing else here, but the blob merge is the shared one —
             # this throttle is cross-sender state and must not clobber a sibling key.
-            put_fan_state(fan, _TYPO_FIX_STATE_KEY,
-                          {"at": now.isoformat(), "since": 0} if emitted else
-                          {"at": state.get("at"),
-                           "since": int(state.get("since", 0) or 0) + 1})
+            put_fan_state(fan, _TYPO_FIX_STATE_KEY, nxt)
             await s.commit()
     return out

@@ -43,6 +43,8 @@ _AUDIT_SKIP_PREFIXES = (
     # The MCP host route (mcp_api): its body may carry tool args with nested secrets, which
     # `_safe_snapshot` does not redact; each tool's own inner request is the audited write.
     "/admin/mcp",
+    # Ultra plans (ultra_api): the OK echoes a hash and the run's own inner step requests are the audit.
+    "/admin/ultra/plans",
     "/push",             # a browser's push subscription sync, on every page load
     "/t/",               # public tracking-link verify: an anonymous fan's click, counted on its own row
 )

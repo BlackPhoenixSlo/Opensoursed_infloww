@@ -104,6 +104,7 @@ def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -
 PURPOSE_DEFAULT_MODELS: dict[str, str] = {
     "help_assistant": "deepseek-v4-flash",
     "help_assistant_do": "deepseek-v4-flash",
+    "full_ai_persona": "deepseek-v4-flash",   # Full AI persona draft (full_ai_api.py), OLD-OTH-30's model
 }
 
 

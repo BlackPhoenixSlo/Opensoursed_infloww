@@ -14,6 +14,7 @@
  * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
  * `auto_story` (D13) fills the Auto Story page's own form (autoStoriesForm.ts): no "open" step — the page IS the form.
  * `report_export` is no recipe either: Download POSTs the report recipe and saves the file (doExport.ts).
+ * `full_ai_config` (phase 03c) is no recipe: Apply is one draft PUT (fullAiConfigEdit.ts, useDoRunner.ts).
  */
 
 import type { RuleEditorAction } from "@/components/automations/ruleEditorForm";
@@ -24,11 +25,12 @@ import { SYSTEM_AUDIENCES } from "@/components/audience/fanLists";
 import { DEFAULT_FORM as STORY_BLANK, type AutoStoriesAction } from "@/components/settings/autoStoriesForm";
 import type { AgentKind } from "./agentBridge";
 import type { ExportSlots } from "./doExport";
+import type { FullAiConfigSlots } from "./fullAiConfigEdit";
 import type { MassEditSlots } from "./massEdit";
 
 /** A flow the runner plays in a form (DO_FLOWS). */
 export type EditorFlowId = "mass_premade" | "auto_story";
-export type DoFlowId = EditorFlowId | "mass_edit" | "report_export";
+export type DoFlowId = EditorFlowId | "mass_edit" | "report_export" | "full_ai_config";
 
 export interface FolderTiers {
   sfw: number;
@@ -94,6 +96,7 @@ export type DoDraft = DraftBase & (
   | { flow: "auto_story"; account_id: string; slots: AutoStorySlots | null }
   | { flow: "mass_edit"; account_id: string; slots: MassEditSlots | null }
   | { flow: "report_export"; account_id: string | null; slots: ExportSlots | null }
+  | { flow: "full_ai_config"; account_id: string; slots: FullAiConfigSlots | null }
   | { flow: null; account_id: string | null; slots: null }
 );
 

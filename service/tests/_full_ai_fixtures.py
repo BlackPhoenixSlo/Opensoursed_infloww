@@ -1,5 +1,6 @@
-"""_full_ai_fixtures — the Jev fake, seeding and one-run helpers that the Full
-AI Chat inbound-path suites share (test_full_ai_shadow.py, test_full_ai_routes.py).
+"""_full_ai_fixtures — the Jev fake, the Writer HTTP fake, seeding and one-run
+helpers that the Full AI Chat suites share (test_full_ai_shadow.py,
+test_full_ai_routes.py, test_full_ai_test_chat.py).
 
 Import it after `_harness` (which binds the temp DB) and `_harness.bootstrap()`.
 """
@@ -16,6 +17,9 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
+import httpx
+
+import llm_client
 import webhook_dispatch as wd
 from automation_executor import run_once
 from automations import _router_jev as rj
@@ -28,12 +32,16 @@ KIND = "full_ai_chat"
 NOULS = {"promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
          "wants_content", "declines_buying", "says_yes_to_offer", "sexual_now", "gif_fits"}
 QUIET = dict.fromkeys(NOULS, 0.05)
+QUIET_TEST = {**QUIET, **dict.fromkeys(rj.TEST_NOULS, 0.05)}   # a quiet test-Mode `answers` (03b)
 T0 = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
 
 
 class FakeJev:
     """The TypeSafe client: each `system_one` pops the next verdict
-    ((answers, intensity) or an exception) and records what it was asked."""
+    ((answers, intensity), (answers, intensity, choices) or an exception) and records what it was
+    asked. A test-Mode request (03b) also gets its `TEST_NOULS` (from `answers`, else 0.05) and its
+    `TEST_CHOICES`: `choices` maps a Choice id to a label (P 0.9) or a label -> P map; an unnamed
+    Choice answers its `CHOICE_DEFAULT` (anything / any). Shadow's request gets neither."""
 
     def __init__(self, *verdicts):
         self.verdicts = list(verdicts)
@@ -47,22 +55,123 @@ class FakeJev:
             raise v
         if isinstance(v, SimpleNamespace):      # a raw response, as Jev sent it
             return v
-        answers, score = v
-        return SimpleNamespace(
+        answers, score, *rest = v
+        answers = {**{q: 0.05 for q in rj.TEST_NOULS if q in questions}, **answers}
+        res = SimpleNamespace(
             model="jev-1.14.0",
             nouls={q: SimpleNamespace(noul=p) for q, p in answers.items()},
             scores={"intensity": SimpleNamespace(
                 score=score, probabilities={0: .05, 1: .1, 2: .2, 3: .6, 4: .05})})
+        asked = [q for q in rj.TEST_CHOICES if q in questions]
+        if asked:
+            given = rest[0] if rest else {}
+            res.choices = {}
+            for q in asked:
+                p = given.get(q, rj.CHOICE_DEFAULT[q])
+                p = {p: 0.9} if isinstance(p, str) else dict(p)
+                res.choices[q] = SimpleNamespace(choice=max(p, key=p.get), probabilities=p)
+        return res
+
+
+class FakeInfoJev:
+    """The info Jev's TypeSafe client (`_info_jev._client`): each `system_one` pops the next
+    verdict ((stated, pick): `stated` field -> P(yes), the rest 0.05; `pick` the Choice's label,
+    "none" for none; or an exception) and records what it was asked. With no verdict left it
+    answers quiet: nothing stated, `none`."""
+
+    def __init__(self, *verdicts):
+        self.verdicts = list(verdicts)
+        self.calls: list[dict] = []
+
+    async def system_one(self, state, questions, model=None):
+        self.calls.append({"state": state, "questions": questions, "model": model})
+        v = self.verdicts.pop(0) if self.verdicts else ({}, "none")
+        if isinstance(v, Exception):
+            raise v
+        stated, pick = v
+        nouls = {q: SimpleNamespace(noul=stated.get(q.removeprefix("stated_"), 0.05))
+                 for q in questions if q.startswith("stated_")}
+        return SimpleNamespace(model="jev-1.14.0", nouls=nouls, choices={
+            "next_question": SimpleNamespace(choice=pick, probabilities={pick: 0.9})})
 
 
 @contextlib.contextmanager
-def _fake_jev(fake: FakeJev):
-    saved = rj._client
+def _fake_jev(fake: FakeJev, info: FakeInfoJev | None = None):
+    """Both Jev seams faked: the Router's (`fake`) and the info Jev's (`info`, quiet by default),
+    so no Turn reaches TypeSafe."""
+    from automations import _info_jev as ij
+    saved = rj._client, ij._client
+    info = info or FakeInfoJev()
     rj._client = lambda key: fake  # type: ignore[assignment]
+    ij._client = lambda key: info  # type: ignore[assignment]
     try:
         yield fake
     finally:
-        rj._client = saved  # type: ignore[assignment]
+        rj._client, ij._client = saved  # type: ignore[assignment]
+
+
+class FakeWriterHTTP:
+    """The Writers' wire (`llm_client.httpx.AsyncClient`): each request answers by its host
+    (`script`: host -> `ok:<text> | <HTTP status> | timeout | empty`, or a list of those taken
+    one per request), recorded as
+    {host, model, body, timeout}. No `llm_client.chat` patch, so its real error mapping runs."""
+
+    def __init__(self, script: dict[str, str | list[str]]):
+        self.script = dict(script)
+        self.requests: list[dict] = []
+
+    def __call__(self, *_a, timeout=None, **_k):
+        return _WriterConn(self, timeout)
+
+    @contextlib.contextmanager
+    def on(self):
+        saved = llm_client.httpx.AsyncClient
+        llm_client.httpx.AsyncClient = self  # type: ignore[assignment]
+        try:
+            yield self
+        finally:
+            llm_client.httpx.AsyncClient = saved  # type: ignore[assignment]
+
+
+class _WriterResp:
+    def __init__(self, url: str, status: int, data: dict):
+        self.status_code, self._data, self._url = status, data, url
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "fake", request=httpx.Request("POST", self._url),
+                response=httpx.Response(self.status_code, text="busy"))
+
+    def json(self):
+        return self._data
+
+
+class _WriterConn:
+    def __init__(self, fake: FakeWriterHTTP, timeout):
+        self.fake, self.timeout = fake, timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        host = httpx.URL(str(url)).host
+        self.fake.requests.append({"host": host, "model": (json or {}).get("model"),
+                                   "body": json, "timeout": self.timeout})
+        how = self.fake.script[host]
+        if isinstance(how, list):
+            how = how.pop(0)
+        if how == "timeout":
+            raise httpx.ReadTimeout("timed out")
+        if how.isdigit():
+            return _WriterResp(str(url), int(how), {})
+        text = "" if how == "empty" else how.removeprefix("ok:")
+        return _WriterResp(str(url), 200, {
+            "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
 
 
 # ── Seeding ───────────────────────────────────────────────────────────

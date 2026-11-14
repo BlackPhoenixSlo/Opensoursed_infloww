@@ -779,6 +779,7 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/system",       # Settings → System: automation status + run log — founder-only
     "/admin/my-llm-keys",  # an agency's own LLM keys — the OWNER's, never a chatter's
     "/admin/owner-tokens",  # Settings → AI keys → Access tokens — the OWNER's, never a chatter's
+    "/admin/ultra",        # Ultra plans: read / OK / cancel — the OWNER's, never a chatter's
     "/admin/employees",    # Manage employees — owner-only, the list too (phase-05 story 13)
     "/admin/employee-groups",  # the Organization Chart's groups — owner-only (phase-05 story 39)
     "/admin/link-shares",  # Growth > Share links: public reports on a Creator's links — owner-only

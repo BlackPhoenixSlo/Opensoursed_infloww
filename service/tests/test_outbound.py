@@ -267,6 +267,7 @@ def case_every_engine_declares_its_guard_set():
         # engine        consistency  strip_emoji
         "welcome_chatter_for_info":  (True,        "flag"),
         "autoreply":   (False,       "flag"),
+        "full_ai_turn":  (False,     "flag"),
     }
     for name, want in expected.items():
         assert _declared_guards(name) == want, (

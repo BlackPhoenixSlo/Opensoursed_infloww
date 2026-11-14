@@ -11,7 +11,8 @@ import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { boundFlow, PLAN_NOTE, type DoDraft } from "./doFlows";
 import { exportPlanText, type ExportSlots } from "./doExport";
-import { canStart, type DoRun } from "./doRunReducer";
+import { diffLine, type FullAiConfigSlots } from "./fullAiConfigEdit";
+import { canStart, type DoOutcome, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
 /** The messenger's card (home screen cards, Do plan/results). */
@@ -27,7 +28,8 @@ export const DO_HINT =
   "Tell me what to set up — e.g. “auto mass to fans every hour, delete after 8h, SFW folder, 10 captions”. "
   + "I can set up a new Auto Mass or Auto Story (saved OFF — you turn it on) or change unsend, schedule, "
   + "online-only, skip-recent-chats or turn off on your existing Auto Masses, here or on every model. "
-  + "Owners can also export a report — e.g. “last month's sales per Creator as Excel”.";
+  + "Owners can also export a report — e.g. “last month's sales per Creator as Excel”, "
+  + "or change a Creator's Full AI Chat draft — e.g. “reply slower”.";
 
 /** The plan card's text, pure (DoMode.test.ts): the flow's plain-words lines, the draft's assumptions and open
  *  questions, and the fixed note. */
@@ -113,36 +115,60 @@ function EditResults({ results, slots }: { results: EditResult[]; slots: MassEdi
   );
 }
 
-/** The do-mode conversation for a mass_edit draft: plan card → applying → results (no cursor, no Stop once out). */
-function EditThread({ run, draft, slots, on, request }: {
-  run: Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>; draft: DoDraft; slots: MassEditSlots; on: DoCallbacks; request: ReactNode;
+type ShownRun = Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>;
+
+/** A message as one sentence ending in a full stop. */
+const sentence = (msg: string) => msg.trim().replace(/[.\s]*$/, ".");
+
+/** The do-mode conversation for a flow with no steps (mass_edit, report_export, full_ai_config): the plan card with
+ *  its start button → the busy line while the one request is out → `done(outcome)`, or the failure / abort line with Start
+ *  over (and Try again, `retry`: a new attempt). `card` renders the flow's card around the planned buttons. */
+function DirectThread({ run, on, request, card, startLabel, canGo = true, busy, done, failed, retry = false,
+  startOverWhenDone = false }: {
+  run: ShownRun; on: DoCallbacks; request: ReactNode; card: (actions?: ReactNode) => ReactNode; startLabel: string;
+  canGo?: boolean; busy: string; done: (outcome: DoOutcome) => ReactNode; failed: (msg: string) => string; retry?: boolean;
+  startOverWhenDone?: boolean;
 }) {
+  const ended = run.phase === "aborted" || run.phase === "failed";
   return (
     <>
       {request}
-      {run.phase === "planned" ? (
-        <EditPlanCard draft={draft} slots={slots}>
-          <button type="button" className={BTN_MAIN} onClick={on.start}>Do it</button>
-          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Cancel</button>
-        </EditPlanCard>
-      ) : <EditPlanCard draft={draft} slots={slots} />}
-      {run.phase === "running" && (
-        <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">Changing the rules…</span></div>
-      )}
-      {run.phase === "done" && <EditResults results={run.outcome.kind === "applied" ? run.outcome.results : []} slots={slots} />}
-      {(run.phase === "aborted" || run.phase === "failed") && (
+      {card(run.phase === "planned" ? (
         <>
-          <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
-            {run.phase === "failed"
-              ? `Couldn't finish: ${run.msg.trim().replace(/[.\s]*$/, ".")} Some rules may have changed — check the Auto mass table.`
-              : `${run.reason}.`}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
-          </div>
+          <button type="button" className={BTN_MAIN} onClick={on.start} disabled={!canGo}>{startLabel}</button>
+          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Cancel</button>
         </>
+      ) : undefined)}
+      {run.phase === "running" && (
+        <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">{busy}</span></div>
+      )}
+      {run.phase === "done" && done(run.outcome)}
+      {ended && (
+        <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
+          {run.phase === "failed" ? failed(run.msg) : `${run.reason}.`}
+        </div>
+      )}
+      {(ended || (startOverWhenDone && run.phase === "done")) && (
+        <div className="flex flex-wrap gap-2">
+          {retry && ended && <button type="button" className={BTN_MAIN} onClick={on.start}>Try again</button>}
+          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
+        </div>
       )}
     </>
+  );
+}
+
+/** mass_edit: plan card → applying → results (no cursor, no Stop once out). */
+function EditThread({ run, draft, slots, on, request }: {
+  run: ShownRun; draft: DoDraft; slots: MassEditSlots; on: DoCallbacks; request: ReactNode;
+}) {
+  return (
+    <DirectThread
+      run={run} on={on} request={request} startLabel="Do it" busy="Changing the rules…"
+      card={(actions) => <EditPlanCard draft={draft} slots={slots}>{actions}</EditPlanCard>}
+      done={(o) => <EditResults results={o.kind === "applied" ? o.results : []} slots={slots} />}
+      failed={(msg) => `Couldn't finish: ${sentence(msg)} Some rules may have changed — check the Auto mass table.`}
+    />
   );
 }
 
@@ -160,41 +186,60 @@ function ExportPlanCard({ draft, slots, children }: { draft: DoDraft; slots: Exp
   );
 }
 
-/** The do-mode conversation for a report_export draft: plan card → Download → building → the saved file, or the
- *  error and Try again (a new attempt). Download stays off while a name is unresolved (canStart). */
+/** report_export: plan card → Download → building → the saved file, or the error and Try again (a new attempt).
+ *  Download stays off while a name is unresolved (canStart). */
 function ExportThread({ run, draft, slots, on, request }: {
-  run: Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>; draft: DoDraft; slots: ExportSlots; on: DoCallbacks; request: ReactNode;
+  run: ShownRun; draft: DoDraft; slots: ExportSlots; on: DoCallbacks; request: ReactNode;
 }) {
   return (
-    <>
-      {request}
-      {run.phase === "planned" ? (
-        <ExportPlanCard draft={draft} slots={slots}>
-          <button type="button" className={BTN_MAIN} onClick={on.start} disabled={!canStart(draft)}>Download</button>
-          <button type="button" className={BTN_SOFT} onClick={on.cancel}>Cancel</button>
-        </ExportPlanCard>
-      ) : <ExportPlanCard draft={draft} slots={slots} />}
-      {run.phase === "running" && (
-        <div className={cn(BUBBLE_BOT, "text-fg")} role="status"><span className="animate-pulse">Building the file…</span></div>
-      )}
-      {run.phase === "done" && (
+    <DirectThread
+      run={run} on={on} request={request} startLabel="Download" canGo={canStart(draft)} busy="Building the file…" retry
+      card={(actions) => <ExportPlanCard draft={draft} slots={slots}>{actions}</ExportPlanCard>}
+      done={(o) => (
         <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-[13px] text-fg")} role="status">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok [html[data-theme=light]_&]:text-[#1a7f37]" aria-hidden />
-          <span className="break-words">Downloaded {run.outcome.kind === "downloaded" ? run.outcome.file : slots.filename}</span>
+          <span className="break-words">Downloaded {o.kind === "downloaded" ? o.file : slots.filename}</span>
         </div>
       )}
-      {(run.phase === "aborted" || run.phase === "failed") && (
-        <>
-          <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
-            {run.phase === "failed" ? `Couldn't build the file: ${run.msg.trim().replace(/[.\s]*$/, ".")}` : `${run.reason}.`}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={BTN_MAIN} onClick={on.start}>Try again</button>
-            <button type="button" className={BTN_SOFT} onClick={on.cancel}>Start over</button>
-          </div>
-        </>
+      failed={(msg) => `Couldn't build the file: ${sentence(msg)}`}
+    />
+  );
+}
+
+/** The fixed note under a full_ai_config card: the assistant only edits the draft. */
+export const CONFIG_NOTE = "Only the draft changes. Save on the Full AI Chat page makes it live.";
+
+/** The full_ai_config card: the Creator, each changed setting before → after. */
+function ConfigCard({ draft, slots, children }: { draft: DoDraft; slots: FullAiConfigSlots; children?: ReactNode }) {
+  return (
+    <div className={cn(CARD, "self-stretch px-5 py-4 text-sm text-fg")} data-testid="do-config-plan">
+      <div className="mb-1 font-semibold">Change {slots.account_name || "this Creator"}&apos;s Full AI draft</div>
+      <ul className="space-y-0.5">{slots.diffs.map((d) => <li key={d.field} className="break-words">{diffLine(d)}</li>)}</ul>
+      <Notes assumptions={draft.assumptions} unresolved={draft.unresolved} />
+      <p className="mt-3 text-xs text-fg-dim">{CONFIG_NOTE}</p>
+      {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/** full_ai_config: card → Apply (one draft PUT) → the PUT's line (a 409 / 422 says why; no retry — ask again). */
+function ConfigThread({ run, draft, slots, on, request }: {
+  run: ShownRun; draft: DoDraft; slots: FullAiConfigSlots; on: DoCallbacks; request: ReactNode;
+}) {
+  return (
+    <DirectThread
+      run={run} on={on} request={request} startLabel="Apply to draft" busy="Updating the draft…" startOverWhenDone
+      card={(actions) => <ConfigCard draft={draft} slots={slots}>{actions}</ConfigCard>}
+      done={(o) => (
+        <div className={cn(CARD, "flex items-start gap-3 px-5 py-4 text-sm text-fg")} role="status" data-testid="do-config-result">
+          {o.kind === "config" && o.status === 200
+            ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden />
+            : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" aria-hidden />}
+          <span className="break-words">{o.kind === "config" ? o.line : ""}</span>
+        </div>
       )}
-    </>
+      failed={(msg) => `Couldn't update the draft: ${sentence(msg)}`}
+    />
   );
 }
 
@@ -258,6 +303,7 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
     );
   }
   if (draft.flow === "mass_edit") return <EditThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
+  if (draft.flow === "full_ai_config") return <ConfigThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
   const flow = boundFlow(draft);
   if (!flow) return null;
   const total = flow.steps.length;
@@ -317,11 +363,13 @@ export function pillFor(run: DoRun, expanded: DoRun | null): boolean {
 export function pillStatus(run: DoRun): string {
   if (run.phase === "done") {
     const o = run.outcome;
+    if (o.kind === "config") return o.status === 200 ? "Draft updated" : "Not applied";
     return o.kind === "applied" ? resultHeadline(o.results) : o.kind === "downloaded" ? "Downloaded" : "Created OFF";
   }
   if (run.phase === "aborted") return "Stopped";
   if (run.phase === "failed") return "Couldn't finish";
   if (run.phase === "running" && run.draft.flow === "report_export") return "Building the file…";
+  if (run.phase === "running" && run.draft.flow === "full_ai_config") return "Updating the draft…";
   return run.phase === "running" && run.saving ? "Saving…" : "Doing it…";
 }
 

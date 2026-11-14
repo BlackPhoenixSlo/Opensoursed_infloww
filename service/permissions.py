@@ -452,7 +452,7 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # Today's Shadow Decision rows (full_ai_api) and the full_ai_chat switch on the shared rule routes.
     # That kind's writes stay owner-only (OPT_IN_KINDS: this page is not in OPT_IN_PAGES), but like
     # Gen-Info's, a role ticking this page opens the rule routes, so other kinds' rule writes too.
-    "/full-ai-chatter": ("Full AI Chatter", ("/admin/full-ai", "/admin/automation-rules")),
+    "/full-ai-chatter": ("Full AI Chat", ("/admin/full-ai", "/admin/automation-rules")),
     "/creators": ("Manage creators", (
         "/admin/accounts/active", "/admin/automation", "/admin/reload-session")),
     # Its proxy routes are owner-only (`_CHATTER_BLOCKED_ADMIN_PREFIXES`).

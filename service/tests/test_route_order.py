@@ -84,6 +84,24 @@ Golden refresh (2026-11-14, Full AI Prepare content): adds POST /admin/full-ai/p
 /admin/full-ai/prepare-content/status (full_ai_api) after the full-ai today row; no existing row moves; inspected,
 intentional. Diff vs main's golden (a340051a9) = those two rows + the sha.
 
+Golden refresh (2026-11-14, full-ai 03a ticket 32): adds POST /admin/full-ai/test/turn and GET
+/admin/full-ai/test/session (full_ai_api, Test chat) after the Full AI rows; diff = those two rows + the sha.
+
+Golden refresh (2026-11-14, full-ai 03a ticket 37 + 03c ticket 52): adds POST /admin/full-ai/persona/draft and
+the four config routes (GET /admin/full-ai/config, PUT …/config/draft, POST …/config/save, POST …/config/rollback)
+at the end of the Full AI rows; diff = those rows + the sha.
+
+Golden refresh (2026-11-14, ultra step 4 plans): adds GET /admin/ultra/plans/{plan_id} and POST .../ok, .../cancel
+(ultra_api) after the /admin/mcp rows; OpenAPI diff = those paths + schema OkBody only (measured: sha1 with them
+removed == the prior golden); no row moves.
+
+Golden refresh (2026-11-14, ultra step 4 R2): _MassScheduleBody gains `require_recipients` (POST
+/api/of/v2/messages/queue[/later]); OpenAPI diff = that one schema field (measured: the sha matches the prior
+golden without it); no row moves.
+
+Golden refresh (2026-11-14, full-ai 03b ticket 44): adds POST /admin/full-ai/test/settle (full_ai_api, fake
+Buy/Decline in the Test chat) after the Test chat rows; diff = that one row + the sha.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

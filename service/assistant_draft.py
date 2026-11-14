@@ -99,12 +99,14 @@ from sqlalchemy import select
 
 import assistant_api
 import assistant_edit
+import assistant_full_ai
 import llm_client
 import report_recipe_decide as rd
 from assistant_report import (EXPORT_NOT_ALLOWED_ANSWER, REPORT_WORD, ReportCtx, export_summary, report_ctx,
                               report_lines, resolve_export)
 from auth import assert_account_owned, get_request_user
 from automations._common import resolve_model_and_fallback
+from automations.full_ai_turn import stored_config
 from chatters import allowed_folder_ids_for_chatter, get_request_chatter
 from db.engine import get_session
 from db.models import Account, AutomationRule, VaultItem
@@ -124,7 +126,10 @@ EDIT_FLOW = assistant_edit.EDIT_FLOW   # bulk edit of existing Auto mass rules (
 STORY_FLOW = "auto_story"             # a new Auto Story rule (spec D13)
 STORY_KIND = "auto_stories"           # its automation_rules kind (one per account)
 REPORT_FLOW = "report_export"         # a report file of the Agency's numbers (ultra-mode ticket 02)
-FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW, REPORT_FLOW)
+CONFIG_FLOW = "full_ai_config"        # a patch of the Creator's Full AI draft (phase 03c, D63)
+CONFIG_KIND = "full_ai_chat"          # its opt-in kind (owner-only, like the config routes)
+CONFIG_WORD = assistant_full_ai.CONFIG_WORD
+FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW, REPORT_FLOW, CONFIG_FLOW)
 MAX_REQUEST_CHARS = assistant_api.MAX_QUESTION_CHARS
 MAX_PREVIOUS_CHARS = 8000            # a prior draft's slots, serialized
 MIN_INTERVAL_MIN, MAX_INTERVAL_MIN = 5, 168 * 60
@@ -177,7 +182,10 @@ def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
     mass word; editing an existing rule is what it is for (spec D11). An
     `auto_story` draft needs a story word and no mass word, is never an edit
     of the existing rule, and never a refine (a refine is of an Auto mass plan).
-    A `report_export` draft needs a report word and is never a refine."""
+    A `report_export` draft needs a report word and is never a refine; a
+    `full_ai_config` draft needs a config word (`CONFIG_WORD`), never a refine."""
+    if flow == CONFIG_FLOW:
+        return refine or not CONFIG_WORD.search(request)
     if flow == STORY_FLOW:
         return (refine or not _STORY_WORD.search(request) or bool(_ANY_MASS.search(request))
                 or (bool(_EDIT_VERB.search(request)) and bool(_STORY_EXISTING.search(request))))
@@ -194,6 +202,9 @@ def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
 NOT_ALLOWED_ANSWER = ("Your role can't create Auto mass rules on this account — ask "
                       "an owner or admin to set it up.")
 BAD_DRAFT_ANSWER = "I couldn't turn that into a form — try saying it another way."
+FULL_AI_NOT_ALLOWED_ANSWER = ("Your role can't change Full AI Chat settings on this account — ask an owner "
+                              "to do it.")
+CONFIG_READ_FAILED_ANSWER = "Couldn't read the Full AI settings — try again."
 STORY_NOT_ALLOWED_ANSWER = ("Your role can't create Auto Story rules on this account — ask "
                             "an owner or admin to set it up.")
 # One Auto Story per account: the agent never makes a second one, nor edits the one there (D13).
@@ -219,6 +230,9 @@ The forms you can fill:
   folder as stories, at set times each day or every few hours.
 - "report_export": a report file (CSV, or Excel) of the Agency's numbers
   from one of the DATASETS below, for the user to download.
+- "full_ai_config": change the Creator's Full AI Chat draft settings — reply
+  speed, casual texting style, GIFs, sexting, Writer models, Writer timeout,
+  reply checks, facts to learn — from the "Full AI draft" line.
 Anything else — another automation, turning a rule on, deleting or running a
 rule, editing an existing rule's captions, folder or audience, a question, a
 one-off message — is {"flow": null, ...} with every other field empty.
@@ -229,7 +243,7 @@ with these rules, and never output anything but the JSON below.
 
 Output schema (for "mass_premade" and null every key always present):
 {
-  "flow": "mass_premade" | "mass_edit" | "auto_story" | "report_export" | null,
+  "flow": "mass_premade" | "mass_edit" | "auto_story" | "report_export" | "full_ai_config" | null,
   "name": string | null,            // short rule name, ≤40 chars, not one of EXISTING AUTO MASS RULES
   "every": {"value": number, "unit": "minutes" | "hours"} | null,   // how often; null if not said
   "delete_after": boolean,          // asked to delete / unsend each mass afterwards
@@ -283,6 +297,11 @@ For "report_export" the keys are "flow", "report", "assumptions", "unresolved":
   worked out from TODAY ("last month" = the whole previous calendar month).
 DATASETS (a report reads only these):
 <<DATASETS>>
+For "full_ai_config" the keys are "flow", "config", "assumptions", "unresolved":
+  "config": {"set": {key: new value}}   // ONLY the keys the request changes,
+  each a key of the "Full AI draft" line with a whole new value of the same
+  type (a list replaced whole, in the order asked). reply_speed "0-2m" = fast,
+  "0-15-60" = slower; text_style "girl" = casual texting, "formal" = formal.
 
 Rules:
 - audience names: "everyone" for everyone / all fans and following; "fans" for
@@ -342,6 +361,9 @@ Rules:
   "mass_premade", start from it, apply only what the request changes, and
   return the whole result. Its captions go in "provided" and count stays their
   number unless the request asks for more or fewer captions.
+- flow "full_ai_config" = a request to change a Full AI Chat setting ("reply
+  slower", "stop GIFs", "use Euryale then Hermes"). Saving, rolling back or
+  switching Full AI Chat on or off = flow null.
 - Never invent a list, a folder or a time the request did not ask for.""".replace(
     "<<DATASETS>>", rd.catalogue_text())     # once, at import: sorted, no account data
 
@@ -375,6 +397,15 @@ JSON: {"flow": "auto_story", "folder": {"want": "sfw", "name": null}, "every": {
 
 REQUEST: turn on auto reply for new fans and delete my old auto mass
 JSON: {"flow": null, "name": null, "every": null, "delete_after": false, "unsend_after_hours": null, "online_only": null, "audience": {"include": [], "exclude": []}, "folder": {"want": "none", "name": null}, "captions": {"count": 0, "provided": [], "generated": []}, "keep_skip_recent": true, "assumptions": [], "unresolved": []}
+
+REQUEST: reply slower
+JSON: {"flow": "full_ai_config", "config": {"set": {"reply_speed": "0-15-60"}}, "assumptions": [], "unresolved": []}
+
+REQUEST: stop GIFs
+JSON: {"flow": "full_ai_config", "config": {"set": {"gifs": false}}, "assumptions": [], "unresolved": []}
+
+REQUEST: use Euryale then Hermes
+JSON: {"flow": "full_ai_config", "config": {"set": {"writers": ["euryale-v2.3", "hermes-4-405b"]}}, "assumptions": [], "unresolved": []}
 
 CREATORS: Luna, Mia Rose
 TODAY: 2026-03-14 (Europe/London)
@@ -443,6 +474,7 @@ class Intent(BaseModel):
     hours_to_live: float | None = Field(None, allow_inf_nan=False)
     max_runs: float | None = Field(None, allow_inf_nan=False)
     report: dict[str, Any] | None = None           # flow "report_export" only; assistant_report.resolve_export
+    config: assistant_full_ai.ConfigPatch | None = None   # flow "full_ai_config" only; propose in `_with_config`
     assumptions: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
 
@@ -1152,6 +1184,12 @@ def _resolved(intent: Intent, *, request: str, lists: list[dict] | None, folders
         if d is not None:
             return Outcome(edit_summary(d.slots), flow=EDIT_FLOW, draft=d)
         intent = intent.model_copy(update={"flow": None})
+    if intent.flow == CONFIG_FLOW:      # the patch only; `_with_config` reads the draft and proposes
+        if intent.config is not None and intent.config.set:
+            return Outcome("", flow=CONFIG_FLOW, draft=Draft({"set": intent.config.set},
+                                                             _clean_notes(intent.assumptions),
+                                                             _clean_notes(intent.unresolved), {}))
+        intent = intent.model_copy(update={"flow": None})
     if intent.flow not in FLOWS:
         return Outcome(ONE_OFF_MASS_ANSWER if _MASS_WORD.search(request) else UNSUPPORTED_ANSWER)
     if intent.flow == STORY_FLOW:
@@ -1333,10 +1371,11 @@ def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
 
 def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderStat],
                existing: list[str], previous: dict | None, report: ReportCtx | None = None,
-               account: bool = True) -> str:
+               account: bool = True, full_ai: dict | None = None) -> str:
     """Everything per-request — the cached system prompt never sees it. No
     Creator in focus (`account` False): no account lines. An owner (`report`):
-    the Agency's Creators, Employees and today, for an export."""
+    the Agency's Creators, Employees and today, for an export. `full_ai`: the
+    stored Full AI config, its draft line only on a `CONFIG_WORD` request."""
     parts = []
     if account:
         custom = sorted({nm for _, nm in _custom_lists(lists or []).values()}, key=str.lower)
@@ -1347,6 +1386,8 @@ def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderSt
         parts.append("EXISTING AUTO MASS RULES: " + (", ".join(sorted(existing)[:100]) or "(none)"))
     if report is not None:
         parts += report_lines(report)
+    if account and full_ai is not None and CONFIG_WORD.search(request):
+        parts.append(assistant_full_ai.draft_line(full_ai))
     if previous:
         parts.append("PREVIOUS DRAFT: " + json.dumps(previous_for_prompt(previous, lists),
                                                      ensure_ascii=False, sort_keys=True))
@@ -1367,11 +1408,12 @@ async def _may_create(kind: str, account_id: str) -> bool:
 
 
 async def can_do(account_id: str) -> bool:
-    """Any account do-mode flow for this session: Auto mass or Auto Story. Each
-    flow is re-checked after the draft (`_gate`). An owner's export is not
-    gated here (`assistant_report.report_ctx`)."""
+    """Any account do-mode flow for this session: Auto mass, Auto Story or a
+    Full AI config change. Each flow is re-checked after the draft (`_gate`).
+    An owner's export is not gated here (`assistant_report.report_ctx`)."""
     return (await _may_create(OPT_IN_KINDS[FLOW], account_id)
-            or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id))
+            or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id)
+            or await _may_create(OPT_IN_KINDS[CONFIG_KIND], account_id))
 
 
 async def has_key(account_id: str) -> bool:
@@ -1431,8 +1473,9 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
         return _out(aid, row_id=None, answer="Tell me what to set up.", error="empty_request")
     role = assistant_api._asker_role()
     thread_id = body.thread_id or assistant_api._new_thread_id()
-    # A mass_edit plan is never refined (the widget sends none); a stray one is ignored.
-    previous = body.previous if body.previous and "changes" not in body.previous else None
+    # A mass_edit or full_ai_config plan is never refined (the widget sends none); a stray one is ignored.
+    previous = (body.previous if body.previous and "changes" not in body.previous
+                and "after" not in body.previous else None)
 
     async def record(reply: assistant_api.Reply) -> int | None:
         return await assistant_api._record_turn(
@@ -1456,8 +1499,19 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
         lists, folders, existing = await asyncio.gather(_read_lists(aid), _read_folders(aid), _existing_names(aid))
         model, fallback = await resolve_model_and_fallback(aid, PURPOSE)
         user_id = None
+    # A config ask (the only one `vetoed` keeps a full_ai_config draft for): the opt-in and the stored
+    # config are read once, here — the draft line and `_gate`'s proposal use the same read (the PUT's
+    # rev check covers the model call's seconds). An unreadable config only drops the draft line.
+    may_config = (allowed and aid is not None and bool(CONFIG_WORD.search(request))
+                  and await _may_create(OPT_IN_KINDS[CONFIG_KIND], aid))
+    full_ai = None
+    if may_config:
+        try:
+            full_ai = await stored_config(aid)
+        except Exception:
+            log.warning("assistant_draft: full ai config read failed account=%s", aid, exc_info=True)
     block = user_block(request, lists=lists, folders=folders, existing=existing, previous=previous,
-                       report=report, account=aid is not None)
+                       report=report, account=aid is not None, full_ai=full_ai)
 
     async def complete() -> assistant_api.Reply:
         return await assistant_api._complete(
@@ -1478,16 +1532,18 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
         if again.error is None:
             reply = again
             o = read(reply)
-    o = await _gate(aid, o, allowed)
+    o = await _gate(aid, o, allowed, may_config, full_ai)
     reply = replace(reply, answer=o.answer, error=o.error)
     return _out_of(aid, await record(reply), o)
 
 
-async def _gate(aid: str | None, o: Outcome, allowed: bool) -> Outcome:
+async def _gate(aid: str | None, o: Outcome, allowed: bool, may_config: bool,
+                full_ai: dict | None) -> Outcome:
     """The checks after the draft (an export's are `report_ctx` and
     `/admin/reports/run`): no Creator in focus = `no_creator`; no do-mode flow
     here (`can_do`) = NOT_ALLOWED whatever came back; then each flow's own
-    opt-in, an edit's rules, a story's one-per-account."""
+    opt-in (`may_config`: the caller's full_ai_chat answer; `full_ai`: the stored config read with
+    it, None when unreadable), an edit's rules, a story's one-per-account."""
     if o.flow == REPORT_FLOW:
         return o
     if aid is None:
@@ -1500,7 +1556,33 @@ async def _gate(aid: str | None, o: Outcome, allowed: bool) -> Outcome:
         return await _with_rules(aid, o)
     if o.flow == STORY_FLOW:
         return await _story_gate(aid, o)
+    if o.flow == CONFIG_FLOW and o.draft is not None:
+        if not may_config:
+            return Outcome(FULL_AI_NOT_ALLOWED_ANSWER, error="not_allowed")
+        if full_ai is None:
+            return Outcome(CONFIG_READ_FAILED_ANSWER, error="read_failed")
+        return await _with_config(aid, o, full_ai)
     return o
+
+
+async def _with_config(account_id: str, o: Outcome, cur: dict) -> Outcome:
+    """A config patch + the stored config (`cur`, merged) → the proposal (`assistant_full_ai.propose`):
+    slots {rev, before, after, diffs, account_name}, or the refusal sentence (no slots)."""
+    patch = assistant_full_ai.ConfigPatch(set=o.draft.slots["set"])
+    try:
+        async with get_session() as s:
+            nick = (await s.execute(select(Account.nickname).where(
+                Account.id == account_id))).scalar_one_or_none()
+    except Exception:
+        log.warning("assistant_draft: creator name read failed account=%s", account_id, exc_info=True)
+        return Outcome(CONFIG_READ_FAILED_ANSWER, error="read_failed")
+    p = assistant_full_ai.propose(cur, patch)
+    if isinstance(p, assistant_full_ai.Refusal):
+        return Outcome(p.text, error=p.error)
+    name = nick or account_id
+    slots = {"rev": p.rev, "before": p.before, "after": p.after, "diffs": p.diffs, "account_name": name}
+    return Outcome(f"Change {name}'s Full AI draft: " + "; ".join(d["label"] for d in p.diffs) + ".",
+                   flow=CONFIG_FLOW, draft=replace(o.draft, slots=slots))
 
 
 async def _story_gate(account_id: str, o: Outcome) -> Outcome:

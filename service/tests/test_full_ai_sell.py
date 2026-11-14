@@ -32,6 +32,20 @@
                                ids), packs, groups
   case_load_rows_fails_closed  dupe lookup / bad refs / rows error ->
                                inventory_unknown
+  case_claim_ok_table          counts, kinds, plurals, subject words vs the
+                               Pick (ticket 45); a price or a time is no count
+  case_price_ok_table          any price named = the PPV price; None / 0 (a
+                               tease, a Free item): no price may be named
+  case_fallback_caption_table  counts + kinds per kind; only offer has the
+                               price; each fallback passes its own audit
+  case_clamp_quote_table       (ticket 47) worked quotes: floor = max($10,
+                               67 % of list up to a dollar), no amount = floor,
+                               above list = list, cents round up to a dollar
+  case_clamp_quote_sweep       every list $10..$200 x asked in {None, 0, 1c,
+                               floor-1c, floor, list, list+1c, 10^6}: >= ceil
+                               (0.67 list), >= $10, <= list, whole dollars
+  case_quoted_cents_table      (ticket 47) each dollar spelling; two amounts,
+                               an amount next to "tip", no amount -> None
 
 Run: ./venv/bin/python service/tests/test_full_ai_sell.py  (exit 0 = pass)
 """
@@ -503,6 +517,157 @@ async def case_load_rows_fails_closed():
         assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "bad of_folder_ids"
     with patch.object(vault_scripts, "_load_rows", _boom):
         assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "rows unreadable"
+
+
+# ── Claim audit + fallback caption (ticket 45) ───────────────────────
+
+CLIP, SET4, MIX = {"video": 1}, {"photo": 4}, {"photo": 2, "video": 1}
+
+
+def _cpick(kinds, price=2500, subject="anything", description=""):
+    n = sum(kinds.values())
+    return fs.Pick(ref=1, media=tuple(range(1, n + 1)), previews=(), price_cents=price,
+                   list_cents=price or 1000, subject=subject, format=next(iter(kinds)), lane="$10",
+                   facts={"kinds": kinds, "items": [], "description": description})
+
+
+def case_claim_ok_table():
+    rows = [
+        # (text, pick, expected, why)
+        ("5 videos just for u", _cpick(CLIP), False, "count and plural over one clip"),
+        ("my new video just for u 😏", _cpick(CLIP), True, "one clip, one video"),
+        ("a hot vid babe", _cpick(CLIP), True, "a = 1"),
+        ("videos of me", _cpick(CLIP), False, "plural on one clip"),
+        ("my pics for u", _cpick(CLIP), False, "a kind the Pick lacks"),
+        ("4 pics from my shoot", _cpick(SET4), True, "the count"),
+        ("four pics", _cpick(SET4), True, "a number word"),
+        ("3 pics", _cpick(SET4), False, "wrong count"),
+        ("a pic just for u", _cpick(SET4), False, "a = 1 over four"),
+        ("a vid", _cpick(SET4), False, "no clip in a photo set"),
+        ("2 pics + 1 vid", _cpick(MIX), True, "each kind its own count"),
+        ("a 5 minute video", _cpick(CLIP), True, "a time is no count"),
+        ("$25 vid just for u", _cpick(CLIP), True, "a price is no count"),
+        ("a few pics", _cpick(SET4), True, "a quantity word is no count"),
+        ("all my content babe", _cpick(SET4), True, "a generic media word claims no kind"),
+        ("hey babe wyd", _cpick(CLIP), True, "no claim"),
+        ("", _cpick(CLIP), True, "empty text claims nothing"),
+        ("my feet in this one", _cpick(CLIP, subject="feet"), True, "the Pick's subject"),
+        ("my toes for u", _cpick(CLIP, subject="feet"), True, "a word of the subject"),
+        ("my ass in this one", _cpick(CLIP, subject="feet"), False, "a subject the Pick lacks"),
+        ("my ass in this one", _cpick(CLIP, description="bent over showing her butt"), True,
+         "a subject its describe text names"),
+        ("my tits babe", _cpick(SET4, subject="anything"), False, "anything names no subject"),
+    ]
+    for text, pick, want, why in rows:
+        assert fs.claim_ok(text, pick) is want, (why, text)
+
+
+def case_price_ok_table():
+    rows = [
+        # (text, price_cents, expected, why)
+        ("its $25 to unlock", 2500, True, "the price"),
+        ("25$ babe", 2500, True, "symbol after"),
+        ("$25.00", 2500, True, "cents spelled"),
+        ("only 25 bucks", 2500, True, "bucks"),
+        ("25 dollars", 2500, True, "dollars"),
+        ("$20 to unlock", 2500, False, "another price"),
+        ("$25 now, was $50", 2500, False, "every price named must be the price"),
+        ("€25", 2500, True, "a euro amount is still a price named"),
+        ("4 pics for u", 2500, True, "a count is no price"),
+        ("unlock it babe", 2500, True, "naming no price is fine on an offer"),
+        ("$10 to unlock", None, False, "no price allowed (tease)"),
+        ("€10", None, False, "no price allowed, any currency"),
+        ("4 pics for u", None, True, "no price named"),
+        ("$0", 0, False, "free: no money talk"),
+        ("just for u", 0, True, "free, nothing named"),
+    ]
+    for text, cents, want, why in rows:
+        assert fs.price_ok(text, cents) is want, (why, text)
+
+
+def case_fallback_caption_table():
+    rows = [
+        # (pick, kind, expected)
+        (_cpick(CLIP, 2500), "offer", "1 vid, $25 to unlock"),
+        (_cpick(SET4, 1050), "offer", "4 pics, $10.50 to unlock"),
+        (_cpick(MIX, 5000), "offer", "2 pics + 1 vid, $50 to unlock"),
+        (_cpick(SET4, 5000), "tease", "4 pics"),
+        (_cpick(CLIP, 2500), "tease", "1 vid"),
+        (_cpick(MIX, 0), "free", "2 pics + 1 vid"),
+    ]
+    for pick, kind, want in rows:
+        got = fs.fallback_caption(pick, kind)
+        assert got == want, (kind, got)
+        assert fs.claim_ok(got, pick), ("the fallback passes the claim audit", got)
+        assert fs.price_ok(got, pick.price_cents if kind == "offer" else None), ("and the price check", got)
+        assert ("$" in got) is (kind == "offer"), ("only an offer names money", got)
+
+
+
+# ── Haggle quote (ticket 47; spec › Interfaces `clamp_quote`, `quoted_cents`) ──
+
+def case_clamp_quote_table():
+    rows = [
+        # (list, asked, expected, why) — worked by hand from the spec's formula
+        (5000, 2000, 3400, "spec example: $50 list, $20 asked -> 67 % = $33.50 -> $34"),
+        (5000, None, 3400, "no amount -> the floor"),
+        (5000, 4000, 4000, "inside the range: his amount"),
+        (5000, 3950, 4000, "cents round up to a whole dollar"),
+        (5000, 6000, 5000, "above list -> list"),
+        (5000, 3401, 3500, "a cent over the floor rounds up to the next dollar"),
+        (10000, 5000, 6700, "67 % of $100 is exactly $67 (no float drift to $68)"),
+        (10000, None, 6700, "floor of $100"),
+        (20000, 1, 13400, "$200 list: floor $134"),
+        (1000, None, 1000, "$10 list: 67 % = $6.70, the $10 minimum wins"),
+        (1000, 500, 1000, "never under $10"),
+        (1500, None, 1100, "$15 list: 67 % = $10.05 -> $11"),
+        (1400, 0, 1000, "$14 list: 67 % = $9.38 -> $10"),
+        (9900, None, 6700, "$99 list: 67 % = $66.33 -> $67"),
+    ]
+    for list_cents, asked, want, why in rows:
+        got = fs.clamp_quote(list_cents, asked)
+        assert got == want, (why, list_cents, asked, got)
+
+
+def case_clamp_quote_sweep():
+    """The property sweep: every list $10..$200 at $1 steps, eight asked amounts each."""
+    n = 0
+    for dollars in range(10, 201):
+        lst = dollars * 100
+        least = -(-67 * lst // 100)          # ceil(0.67 * list) in exact integers
+        floor = max(1000, -(-least // 100) * 100)
+        for asked in (None, 0, 1, floor - 1, floor, lst, lst + 1, 10 ** 6):
+            got = fs.clamp_quote(lst, asked)
+            assert isinstance(got, int), (lst, asked, got)
+            assert got >= least and got >= 1000 and got <= lst and got % 100 == 0, (lst, asked, got)
+            n += 1
+    assert n == 191 * 8, n
+
+
+def case_quoted_cents_table():
+    rows = [
+        # (his text, expected cents, why)
+        ("would you do $20?", 2000, "$ before"),
+        ("would you do 20$", 2000, "$ after"),
+        ("$ 25 ok?", 2500, "$ then a space"),
+        ("I'd pay 30 dollars", 3000, "dollars"),
+        ("31 dollar max", 3100, "dollar"),
+        ("40 bucks and it's mine", 4000, "bucks"),
+        ("45 USD max", 4500, "usd, any case"),
+        ("$19.99?", 1999, "cents kept (clamp_quote rounds)"),
+        ("would you do $20 or $25?", None, "two amounts"),
+        ("$20 now and $30 later", None, "two amounts"),
+        ("I'll tip $20", None, "tip right before"),
+        ("here's a $20 tip", None, "tip right after"),
+        ("I'll tip you 20 bucks", None, "tip two words before"),
+        ("tipping $15 if u send it", None, "tipping"),
+        ("would you do 20?", None, "a bare number names no dollars"),
+        ("can u do it cheaper", None, "no amount"),
+        ("", None, "empty"),
+    ]
+    for text, want, why in rows:
+        got = fs.quoted_cents(text)
+        assert got == want, (why, text, got)
 
 
 _harness.run()

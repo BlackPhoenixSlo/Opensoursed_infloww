@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPayload, dirty, hasPersona, initPersonaDraft, personaDraftReducer, type Action, type PersonaDraft } from "./personaDraft";
+import {
+  BUSY_LINE, busyLine, buildPayload, canDraft, dirty, hasPersona, initPersonaDraft, personaDraftReducer, requestBody, type Action, type PersonaDraft,
+} from "./personaDraft";
 
 // _persona.MODEL_NOTES_TEMPLATE, as GET /admin/account-config serves it.
 const TEMPLATE = "Name: \nAge: \nFrom: \nPersonality: \nLikes: \nWon't do (hard limits): ";
@@ -26,7 +28,84 @@ describe("personaDraftReducer", () => {
   });
 
   it("serverText sets both fields", () => {
-    expect(run([{ type: "serverText", text: "Age: 24" }])).toEqual({ text: "Age: 24", savedText: "Age: 24" });
+    expect(run([{ type: "serverText", text: "Age: 24" }]))
+      .toEqual({ text: "Age: 24", savedText: "Age: 24", phase: "idle", error: null, notes: [] });
+  });
+});
+
+describe("draft from the Creator's images (click / confirm / cancel / draftOk / draftEmpty / draftFail)", () => {
+  const blank = () => initPersonaDraft(TEMPLATE);
+  const DRAFTED = "Name: Kay\nAge: 19\nFrom: Austin, TX\nLooks: blonde, freckles";
+  const NEED = "No described images yet. Run Prepare content or the vault describe first.";
+  const mia = () => initPersonaDraft("Name: Mia");
+  const click: Action = { type: "click", template: TEMPLATE };
+
+  it.each<[string, PersonaDraft, Action[], Partial<PersonaDraft> & { dirty?: boolean }]>([
+    ["blank template → click → drafting", blank(), [{ type: "click", template: TEMPLATE }],
+      { phase: "drafting", text: TEMPLATE, dirty: false }],
+    ["draftOk replaces the text, makes dirty, saves nothing", blank(),
+      [{ type: "click", template: TEMPLATE }, { type: "draftOk", text: DRAFTED, notes: [] }],
+      { phase: "idle", text: DRAFTED, savedText: TEMPLATE, error: null, notes: [], dirty: true }],
+    ["draftOk carries the route's notes", blank(),
+      [click, { type: "draftOk", text: DRAFTED, notes: ["No OF name stored; type her name."] }],
+      { phase: "idle", text: DRAFTED, notes: ["No OF name stored; type her name."] }],
+    ["text present → click → confirm (no request yet)", mia(), [click], { phase: "confirm", text: "Name: Mia", dirty: false }],
+    ["confirm → drafting", mia(), [click, { type: "confirm" }], { phase: "drafting", text: "Name: Mia" }],
+    ["cancel keeps the text and makes no request", mia(), [click, { type: "cancel" }],
+      { phase: "idle", text: "Name: Mia", savedText: "Name: Mia", error: null }],
+    ["click while confirm changes nothing", mia(), [click, click], { phase: "confirm" }],
+    ["confirm or cancel with no question open changes nothing", mia(), [{ type: "confirm" }, { type: "cancel" }],
+      { phase: "idle", text: "Name: Mia" }],
+    ["confirm then draftOk replaces his persona, unsaved", mia(), [click, { type: "confirm" }, { type: "draftOk", text: DRAFTED, notes: [] }],
+      { phase: "idle", text: DRAFTED, savedText: "Name: Mia", dirty: true }],
+    ["draftEmpty shows its note and keeps the text", mia(), [click, { type: "confirm" }, { type: "draftEmpty", note: NEED }],
+      { phase: "idle", text: "Name: Mia", notes: [NEED], error: null, dirty: false }],
+    ["a new click clears the last notes", blank(), [click, { type: "draftEmpty", note: NEED }, click], { phase: "drafting", notes: [] }],
+    ["draftFail keeps the text and shows the error", blank(),
+      [{ type: "click", template: TEMPLATE }, { type: "draftFail", error: "The AI provider failed. Try again." }],
+      { phase: "error", text: TEMPLATE, error: "The AI provider failed. Try again." }],
+    ["draftFail (cap hit) keeps his persona and sets the error", mia(),
+      [click, { type: "confirm" }, { type: "draftFail", error: "Today's AI limit for this creator is reached." }],
+      { phase: "error", text: "Name: Mia", savedText: "Name: Mia", error: "Today's AI limit for this creator is reached." }],
+    ["click after a failure drafts again and clears the error", blank(),
+      [{ type: "click", template: TEMPLATE }, { type: "draftFail", error: "x" }, { type: "click", template: TEMPLATE }],
+      { phase: "drafting", error: null }],
+    ["a draft reply with no request out is ignored", blank(),
+      [{ type: "draftOk", text: DRAFTED, notes: [] }, { type: "draftEmpty", note: NEED }, { type: "draftFail", error: "x" }],
+      { phase: "idle", text: TEMPLATE, error: null, notes: [] }],
+    ["serverText keeps the phase", blank(), [{ type: "click", template: TEMPLATE }, { type: "serverText", text: TEMPLATE }],
+      { phase: "drafting" }],
+  ])("%s", (_name, from, actions, want) => {
+    const s = actions.reduce(personaDraftReducer, from);
+    const { dirty: wantDirty, ...fields } = want;
+    expect(s).toMatchObject(fields);
+    if (wantDirty !== undefined) expect(dirty(s)).toBe(wantDirty);
+  });
+
+  it("canDraft: no request out and no question open (a double tap is one request)", () => {
+    const s = blank();
+    expect(canDraft(s)).toBe(true);
+    const drafting = personaDraftReducer(s, click);
+    expect(canDraft(drafting)).toBe(false);
+    expect(personaDraftReducer(drafting, click)).toBe(drafting);   // click while drafting changes nothing
+    expect(canDraft(mia())).toBe(true);
+    expect(canDraft(personaDraftReducer(mia(), click))).toBe(false);
+  });
+
+  it("busyLine: the gap-describe line only while the request is out (ticket 54)", () => {
+    expect(BUSY_LINE).toBe("Describing up to 6 photos, then drafting…");
+    const drafting = personaDraftReducer(blank(), click);
+    expect.soft(busyLine(blank())).toBeNull();
+    expect.soft(busyLine(personaDraftReducer(mia(), click))).toBeNull();   // confirm: no request yet
+    expect.soft(busyLine(drafting)).toBe(BUSY_LINE);
+    expect.soft(busyLine(personaDraftReducer(drafting, { type: "draftOk", text: "Name: Kay", notes: [] }))).toBeNull();
+    expect.soft(busyLine(personaDraftReducer(drafting, { type: "draftEmpty", note: NEED }))).toBeNull();
+    expect.soft(busyLine(personaDraftReducer(drafting, { type: "draftFail", error: "x" }))).toBeNull();
+  });
+
+  it("requestBody carries the unsaved text as current_text", () => {
+    const s = personaDraftReducer(blank(), { type: "edit", text: "Won't do (hard limits): meetups" });
+    expect(requestBody(s, "8000186")).toEqual({ account_id: "8000186", current_text: "Won't do (hard limits): meetups" });
   });
 });
 

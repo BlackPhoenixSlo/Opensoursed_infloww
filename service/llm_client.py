@@ -228,6 +228,7 @@ _FEATURE_LABELS = {
     # Named as the sidebar names their pages (app/lib/nav.ts).
     "welcome_chatter_for_info": "Get to know fans", "followup": "Follow-ups",
     "gen_info": "Gen-Info",
+    "full_ai_persona": "Full AI persona draft",
 }
 
 
