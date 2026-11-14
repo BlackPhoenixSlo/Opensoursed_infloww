@@ -228,6 +228,19 @@ def save(stored: dict | None, rev: int) -> dict[str, Any]:
             "draft": copy.deepcopy(cur["draft"]), "rev": rev + 1}
 
 
+def put_checkpoint(stored: dict | None, cfg: Any, rev: int) -> dict[str, Any]:
+    """`cfg` (filled from DEFAULTS) as the checkpoint, typed straight in (the page's checkpoint JSON);
+    the old checkpoint is kept as `previous`, so Roll back undoes it. The draft stays."""
+    cur = merged(stored)
+    _check(cur, rev)
+    if errs := validate(cfg):
+        raise Invalid(errs)
+    new = side(cfg)
+    if new == cur["checkpoint"]:
+        raise Invalid(["checkpoint: unchanged, nothing to store"])
+    return {**cur, "checkpoint": new, "previous": cur["checkpoint"], "rev": rev + 1}
+
+
 def rollback(stored: dict | None, rev: int) -> dict[str, Any]:
     """Swap the checkpoint and `previous` (a second roll back undoes it); the draft stays."""
     cur = merged(stored)

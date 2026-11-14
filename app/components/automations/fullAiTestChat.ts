@@ -451,15 +451,17 @@ export function ppvLine(t: Turn): PpvLine | null {
     : { kind: "price", dollars: cents / 100 };
 }
 
-/** The line under a reply: Route, Heat, matched row and, when she answered, the Writer and how many fell before it. */
+/** The line under a reply: Route, Heat, matched row and, when she answered, the Writer and how many fell before it
+ *  with each one's outcome ("1 fell before (euryale-v2.3 no_key)"). */
 export function replyLine(r: TurnResponse): string {
   const head = `Route ${r.route} · Heat ${r.heat} · Row ${r.route_row}`;
   if (r.status !== "sent" || !r.writer) return head;
   // The chain stops at the first Writer that answers, so every failed first-pass attempt fell before it; the Claim
   // audit's rewrite attempts are not Writers falling.
-  const fell = r.attempts.filter((a) => !a.rewrite && a.outcome !== "ok").length;
+  const fell = r.attempts.filter((a) => !a.rewrite && a.outcome !== "ok");
+  const why = fell.length ? ` (${outcomesLine(fell)})` : "";
   const cap = !r.caption ? "" : r.caption.writer === "caption" ? ` · Caption ${r.caption.model}` : ` · Caption chat (${r.caption.outcome})`;
-  return `${head} · Writer ${r.writer} · ${fell} fell before${cap}`;
+  return `${head} · Writer ${r.writer} · ${fell.length} fell before${why}${cap}`;
 }
 
 /** The text in place of her bubbles on a Turn with none; null when she answered. */
@@ -515,6 +517,17 @@ export function writerPatch(cfg: FullAiConfig | null, model: string): Partial<Fu
   const rest = (cfg?.writers ?? []).filter((w) => w !== model);
   return { writers: [model, ...rest].slice(0, MAX_WRITERS) };
 }
+
+/** The Writer checklist's tick: an unticked model joins the chain's end, a ticked one leaves it. Null when refused:
+ *  the last Writer (the server needs 1) or a full chain (`MAX_WRITERS`). */
+export function toggleWriterPatch(cfg: FullAiConfig | null, model: string): Partial<FullAiConfig> | null {
+  const ws = cfg?.writers ?? [];
+  if (ws.includes(model)) return ws.length > 1 ? { writers: ws.filter((w) => w !== model) } : null;
+  return ws.length < MAX_WRITERS ? { writers: [...ws, model] } : null;
+}
+
+/** A side's Writer chain for its window header, in the order tried. */
+export const writersLine = (cfg: FullAiConfig) => `Writers ${(cfg.writers ?? []).join(" → ") || "none"}`;
 
 const onOff = (on: boolean) => (on ? "on" : "off");
 

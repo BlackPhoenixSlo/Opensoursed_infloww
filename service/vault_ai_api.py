@@ -52,6 +52,7 @@ import vault_stills
 import vault_harvest_terms  # which words the OF-search harvest asks
 import vault_tags  # the grid's tag chips: tag_match / facets SQL
 import vault_folder_prices  # the agency's per-folder prices (Full AI sell)
+import vault_internal_folders  # the Inflowwww folders editor (list + edits of our own folders)
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
 # module reaches them through it.
@@ -1020,28 +1021,9 @@ async def list_of_folders_from_mirror(account_id: str = Query(...)) -> dict[str,
 
 
 # ── Internal folders (our own, zero OF writes) ──────────────────────
-
-
-@router.get("/admin/vault-ai/internal-folders")
-async def list_internal_folders(account_id: str = Query(...)) -> dict[str, Any]:
-    """The live internal folders, name-sorted, with counts of their unremoved items (Full AI Chat's Content
-    folders picker, `vf:<id>`). A restricted chatter's allowed list names OF lists, so it
-    sees none."""
-    assert_account_owned(account_id)
-    if await allowed_folder_ids_for_chatter(account_id) is not None:
-        return {"list": []}
-    items = (select(VaultFolderItem.folder_id, func.count().label("n"))
-             .join(VaultItem, (VaultItem.account_id == VaultFolderItem.account_id)
-                   & (VaultItem.media_id == VaultFolderItem.media_id))
-             .where(VaultFolderItem.account_id == account_id, VaultItem.removed_at.is_(None))
-             .group_by(VaultFolderItem.folder_id).subquery())
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(VaultFolder.id, VaultFolder.name, func.coalesce(items.c.n, 0))
-            .outerjoin(items, items.c.folder_id == VaultFolder.id)
-            .where(VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None))
-            .order_by(func.lower(VaultFolder.name), VaultFolder.id))).all()
-    return {"list": [{"id": i, "name": n, "items": int(c)} for i, n, c in rows]}
+# List + the Inflowwww folders editor's writes live in `vault_internal_folders`; included HERE so the
+# list route keeps its place in the registration order.
+router.include_router(vault_internal_folders.router)
 
 
 # ── Folder prices (Full AI sell; our DB only, zero OF writes) ───────

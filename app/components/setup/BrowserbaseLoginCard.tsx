@@ -37,46 +37,17 @@ import { useEffect, useRef, useState } from "react";
 import { relay, RelayError } from "@/lib/relay";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { IfButton, IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
-import type { ProxyChoice } from "@/components/setup/creatorFlow";
+import {
+  jobPath, STATE_TEXT, TERMINAL, type RemoteLoginStatus,
+} from "@/components/setup/remoteLogin";
+import { OtpCodeForm } from "@/components/setup/RemoteLoginOtp";
 import { useReportBusy } from "@/components/setup/useReportBusy";
 import { BRAND_NAME } from "@/lib/brand";
 
-export interface RemoteLoginStatus {
-  id: string;
-  backend: string;
-  state: "starting" | "typing" | "challenge" | "otp" | "capturing" | "done" | "error" | "cancelled";
-  message: string;
-  error: string | null;
-  account_id: string | null;
-  session_file: string | null;
-  /** The Proxy selection bound after the login; `proxy_label` names a custom one ("" otherwise). */
-  proxy: ProxyChoice["type"];
-  proxy_label: string;
-  live_view_url: string | null;
-  expires_at: number;
-}
+export type { RemoteLoginStatus };
 
-const TERMINAL = new Set(["done", "error", "cancelled"]);
-/** What each running state asks of the operator. */
-const STATE_TEXT: Record<string, string> = {
-  starting: "Starting the remote browser (about 10 to 20 seconds)…",
-  typing: "Entering the email and password on OnlyFans…",
-  challenge: "OnlyFans is showing a verification check. Solve it in the live view.",
-  otp: "OnlyFans is asking for the 2FA code. Enter it below (or in the live view).",
-  capturing: "Signed in. Saving the session…",
-};
 /** The email + password form: the footer's start button submits it. */
 const BB_FORM_ID = "browser-login-form";
-const jobPath = (id: string) => `/admin/login/remote/${encodeURIComponent(id)}`;
-/** The relay's messages while the job is on OnlyFans' 2FA prompt (remote_login.OTP_CHECKING / OTP_REJECTED /
- * OTP_NOT_TYPED; the last two matched by prefix). */
-const OTP_CHECKING = "checking the 2FA code";
-const OTP_REJECTED = "OnlyFans didn't accept that code";
-const OTP_NOT_TYPED = "couldn't type the 2FA code";
-const OTP_CODE = /^\d{6,8}$/;
-/** What the code field keeps of what was typed or pasted: spaces and dashes dropped ("123 456", "1234-5678"), nothing
- *  else changed or cut, so a mistyped or overlong code stays visibly wrong (Submit off) instead of becoming another code. */
-const otpInput = (raw: string) => raw.replace(/[\s-]/g, "");
 
 /** The status poll's 404: the relay no longer has the job. */
 const LOST = "the relay lost this login (it restarted, or the login expired). Try again.";
@@ -109,8 +80,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   const [password, setPassword] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [otp, setOtp] = useState("");
-  const [otpErr, setOtpErr] = useState<string | null>(null);
   const linkedRef = useRef<string | null>(null);
   const liveRef = useRef<HTMLDivElement | null>(null);
   const mountedRef = useRef(false);
@@ -135,8 +104,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
     onSuccess: (job) => {
       setErr(null);
       setPassword("");
-      setOtp("");
-      setOtpErr(null);
       failingSinceRef.current = null;
       setJobId(job.id);
     },
@@ -197,31 +164,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   useEffect(() => {
     if (liveUrl) liveRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
   }, [liveUrl]);
-
-  const otpM = useMutation<RemoteLoginStatus, RelayError, string>({
-    mutationFn: (code) => relay.post<RemoteLoginStatus>(`${jobPath(jobId!)}/otp`, { code }),
-    onSuccess: async (job, sent) => {
-      setOtpErr(null);
-      setOtp((cur) => (cur === sent ? "" : cur));
-      // A poll still in flight was read before the code was in: it must not land after this and unlock the field.
-      const key = ["remote-login", job.id];
-      await qc.cancelQueries({ queryKey: key });
-      const cached = qc.getQueryData<RemoteLoginStatus>(key);
-      if (!cached || cached.state === "otp") qc.setQueryData(key, job); // a newer poll already past the prompt wins
-    },
-    onError: (e) => setOtpErr(`Couldn't send the code: ${e.message}`),
-  });
-  const onOtp = status?.state === "otp";
-  const [wasOnOtp, setWasOnOtp] = useState(onOtp);
-  if (wasOnOtp !== onOtp) { // left (or reached) the 2FA prompt: no stale digits or error
-    setWasOnOtp(onOtp);
-    setOtp("");
-    setOtpErr(null);
-  }
-  const otpChecking = onOtp && status.message === OTP_CHECKING;
-  const otpRejected = onOtp && status.message.startsWith(OTP_REJECTED);
-  const otpNotTyped = onOtp && status.message.startsWith(OTP_NOT_TYPED);
-  const otpLocked = otpM.isPending || otpChecking; // in flight, or OnlyFans is checking it
 
   /** Polls again after the poll gave up. */
   const resume = () => { failingSinceRef.current = null; void statusQ.refetch(); };
@@ -297,37 +239,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
               {stalled && <IfButton onClick={resume}>Try again</IfButton>}
             </div>
           )}
-          {status?.state === "otp" && (
-            <form
-              className="space-y-2"
-              onSubmit={(e) => { e.preventDefault(); if (OTP_CODE.test(otp) && !otpLocked) otpM.mutate(otp); }}
-            >
-              <IfLabel htmlFor="bb-otp" className="mb-0">2FA code</IfLabel>
-              <div className="flex gap-2">
-                <IfInput
-                  id="bb-otp" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]*"
-                  minLength={6} autoFocus value={otp} placeholder="123456" className="w-40"
-                  disabled={otpLocked}
-                  onChange={(e) => setOtp(otpInput(e.target.value))}
-                />
-                <IfButton type="submit" variant="primary" disabled={!OTP_CODE.test(otp) || otpLocked}>
-                  {otpM.isPending ? "Sending…" : "Submit code"}
-                </IfButton>
-              </div>
-              {otpChecking && <p className="text-xs text-muted">Checking the code with OnlyFans…</p>}
-              {otpRejected && (
-                <div role="alert" className="text-err text-sm">
-                  OnlyFans didn&apos;t accept that code (or hasn&apos;t answered yet). Check it and try again.
-                </div>
-              )}
-              {otpNotTyped && (
-                <div role="alert" className="text-err text-sm">
-                  The code couldn&apos;t be typed into OnlyFans. Try again, or type it in the live view.
-                </div>
-              )}
-              {otpErr && <div role="alert" className="text-err text-sm whitespace-pre-wrap">{otpErr}</div>}
-            </form>
-          )}
+          {status?.state === "otp" && <OtpCodeForm jobId={status.id} message={status.message} inputId="bb-otp" />}
           {liveUrl ? (
             <div ref={liveRef} className="space-y-2">
               {/* Touch inside an iframe is awkward on a phone: the full-screen page is one tap away. */}

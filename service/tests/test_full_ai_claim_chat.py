@@ -167,6 +167,7 @@ def case_good_caption_no_rewrite():
     assert FALLBACK not in _texts(got["parts"]), got["parts"]
     _ppv_on_last(got["parts"])
     assert _reply(_rows(A, pair)[0])["caption_fallback"] is False
+    assert _reply(_rows(A, pair)[0])["claim_fail"] == [], "a pass records no failure"
 
 
 def case_claim_fail_then_fallback():
@@ -183,6 +184,9 @@ def case_claim_fail_then_fallback():
     (row,) = _rows(A, pair)
     reply = _reply(row)
     assert reply["caption_fallback"] is True and reply["attempts"] == got["attempts"], reply
+    fails = reply["claim_fail"]
+    assert [f["check"] for f in fails] == ["claim", "claim"], ("first write + rewrite recorded", fails)
+    assert "5 videos" in fails[0]["text"] and "videos" in fails[1]["text"], fails
     assert reply["typo_state"] == {}, ("a caption never sent leaves the first Turn's typo state", reply)
     assert row.offer_price_cents == 1000, row.offer_price_cents
 
@@ -209,6 +213,8 @@ def case_wrong_price_then_fallback():
     assert _texts(got["parts"]) == [FALLBACK] and "$40" not in json.dumps(got["parts"]), got["parts"]
     _ppv_on_last(got["parts"])
     assert _reply(_rows(A, pair)[0])["caption_fallback"] is True
+    fails = _reply(_rows(A, pair)[0])["claim_fail"]
+    assert [f["check"] for f in fails] == ["price", "price"] and all("$40" in f["text"] for f in fails), fails
 
 
 class _SlowWriter(FakeWriterHTTP):

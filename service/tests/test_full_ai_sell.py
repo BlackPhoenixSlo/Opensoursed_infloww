@@ -409,6 +409,8 @@ async def case_pick_photo_set_from_one_shoot():
         if got.ref in {2, 4, 6}:
             seen_white = True
             assert len(got.media) == 4 and got.previews == (7,), got
+            assert sum(got.facts["shown_kinds"].values()) == 5 and sum(got.facts["kinds"].values()) == 4, \
+                ("shown = locked + the free preview", got.facts)
             assert {m for m in got.media if m in {1, 3, 5}}, "a $10 photo rides under the $50 price"
     assert seen_white
 
@@ -463,6 +465,7 @@ def case_same_piece_table():
     assert (got.media, got.previews, got.ref) == ((1, 2), (7,), 1), "same set; free_ok previews kept"
     assert got.price_cents == got.list_cents == 5000, "today's list: the highest locked"
     assert got.subject == "tits" and got.format == "photo", got
+    assert len(got.facts["descriptions"]) == 2, ("locked items' describe texts only, no preview", got.facts)
     repriced = fs.pool([_tits(1, "$50", fields=WHITE, minutes=1), _tits(2, "$50", fields=WHITE, minutes=2)],
                        [], set(), ALL, ask)
     assert fs.same_piece(repriced, (1,), (), ask).price_cents == 5000, "a teased $10 sells at today's $50"
@@ -660,11 +663,24 @@ async def case_load_rows_folder_cents():
 CLIP, SET4, MIX = {"video": 1}, {"photo": 4}, {"photo": 2, "video": 1}
 
 
-def _cpick(kinds, price=2500, subject="anything", description=""):
+def _cpick(kinds, price=2500, subject="anything", description="", descriptions=None, previews=None):
     n = sum(kinds.values())
+    shown = dict(kinds)
+    for k, c in (previews or {}).items():
+        shown[k] = shown.get(k, 0) + c
     return fs.Pick(ref=1, media=tuple(range(1, n + 1)), previews=(), price_cents=price,
                    list_cents=price or 1000, subject=subject, format=next(iter(kinds)), lane="$10",
-                   facts={"kinds": kinds, "items": [], "description": description})
+                   facts={"kinds": kinds, "shown_kinds": shown, "items": [], "description": description,
+                          "descriptions": [description] if descriptions is None else descriptions})
+
+
+LEAD = "The woman sits on a bed in lace lingerie, legs apart, toy beside her."
+NUDE = "The woman is nude on the bed, a bodysuit with cutouts exposing her nipples."
+PUSSY2 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE])
+# the owner's 2026-11-14 bubble: 2 locked photos + 1 free preview = 3 thumbnails
+SHOWN3 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE],
+                previews={"photo": 1})
+CLIP_PREVIEW = _cpick(CLIP, previews={"photo": 1})
 
 
 def case_claim_ok_table():
@@ -678,7 +694,8 @@ def case_claim_ok_table():
         ("4 pics from my shoot", _cpick(SET4), True, "the count"),
         ("four pics", _cpick(SET4), True, "a number word"),
         ("3 pics", _cpick(SET4), False, "wrong count"),
-        ("a pic just for u", _cpick(SET4), False, "a = 1 over four"),
+        ("a pic just for u", _cpick(SET4), True, "a is no count: over-delivery, not a false claim"),
+        ("one pic", _cpick(SET4), False, "a real number word keeps the exact count"),
         ("a vid", _cpick(SET4), False, "no clip in a photo set"),
         ("2 pics + 1 vid", _cpick(MIX), True, "each kind its own count"),
         ("a 5 minute video", _cpick(CLIP), True, "a time is no count"),
@@ -693,6 +710,21 @@ def case_claim_ok_table():
         ("my ass in this one", _cpick(CLIP, description="bent over showing her butt"), True,
          "a subject its describe text names"),
         ("my tits babe", _cpick(SET4, subject="anything"), False, "anything names no subject"),
+        # measured 2026-11-14 false-fails: 2-photo $100 pussy Pick, the nude photo not the lead
+        ("mm i got a pic just for u, $100 to unlock", PUSSY2, True, "he asked for a pic; 2 is over-delivery"),
+        ("me naked on my bed with my toy, $100 to unlock", PUSSY2, True, "the second locked item is nude"),
+        ("my pussy and tits out for u, $100", PUSSY2, True, "the second locked item shows nipples"),
+        ("a little vid of me playing", PUSSY2, False, "a vid on a photo-only Pick"),
+        ("3 pics", PUSSY2, False, "3 over 2"),
+        ("3 pics for u, $100", SHOWN3, True, "the bubble shows 3: 2 locked + the free preview"),
+        ("2 pics for u, $100", SHOWN3, True, "the locked count still passes"),
+        ("4 pics for u, $100", SHOWN3, False, "more than the bubble shows"),
+        ("1 pic for u, $100", SHOWN3, False, "neither the locked count nor the shown one"),
+        ("the pic and the vid", CLIP_PREVIEW, True, "a photo preview beside a locked clip is a pic he sees"),
+        ("2 vids", CLIP_PREVIEW, False, "a preview adds no clip"),
+        ("my feet for u", PUSSY2, False, "no describe text names feet"),
+        ("me naked for u", _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD), False,
+         "no locked item is nude"),
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)
@@ -737,6 +769,8 @@ def case_fallback_caption_table():
         (_cpick(SET4, 5000), "tease", "4 pics"),
         (_cpick(CLIP, 2500), "tease", "1 vid"),
         (_cpick(MIX, 0), "free", "2 pics + 1 vid"),
+        (SHOWN3, "offer", "3 pics, $100 to unlock"),
+        (CLIP_PREVIEW, "offer", "1 pic + 1 vid, $25 to unlock"),
     ]
     for pick, kind, want in rows:
         got = fs.fallback_caption(pick, kind)

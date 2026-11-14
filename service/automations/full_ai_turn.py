@@ -358,7 +358,8 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
     one rewrite by the Writer that answered (same messages, `write` with `min(its own, remaining)`)
     through the same chain, its attempts appended with `rewrite: true`; a second failure, or less
     than one `writer_timeout_s` left before the Turn deadline -> `fallback_caption`. Sets
-    `reply["caption_fallback"]`. A caption not sent leaves no trace on the row: `leak` /
+    `reply["caption_fallback"]` and `reply["claim_fail"]` (one `{check: claim|price, text}` per
+    failed check of the first text and the rewrite; [] on a first pass). A caption not sent leaves no trace on the row: `leak` /
     `dropped_reason` stay as the first chain set them, and `typo_state` is the state the shipped
     text's chain left (the Turn's starting state for the fallback caption, which has no typos).
     ASSUMPTION: the rewrite regenerates with the same messages (no correction note): story 32 says
@@ -371,9 +372,12 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
 
     def ok(ps: list[str]) -> bool:
         text = "\n".join(ps)
-        return full_ai_sell.claim_ok(text, pick) and full_ai_sell.price_ok(text, price)
+        fails = [c for c, good in (("claim", full_ai_sell.claim_ok(text, pick)),
+                                   ("price", full_ai_sell.price_ok(text, price))) if not good]
+        reply["claim_fail"] = reply["claim_fail"] + [{"check": c, "text": text} for c in fails]
+        return not fails
 
-    reply["caption_fallback"] = False
+    reply["caption_fallback"], reply["claim_fail"] = False, []
     if ok(parts):
         return parts
     if deadline - time.monotonic() >= float(facts.config["writer_timeout_s"]):

@@ -13,7 +13,8 @@ import { useCallback, useEffect, useReducer, useState } from "react";
 import { ArrowUp, X } from "lucide-react";
 
 import { errText } from "@/lib/errText";
-import { relay } from "@/lib/relay";
+import { LOGINS_PAGE } from "@/lib/loginPaste";
+import { relay, RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { PlanSteps } from "./PlanSteps";
 import { useUltraPlan } from "./useUltraPlan";
@@ -89,12 +90,13 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
 
   async function start() {
     const body = requestBody(s);
+    send({ type: "start" }); // a login in the draft: refused here, never sent
     if (!body) return;
-    send({ type: "start" });
     try {
       send({ type: "started", plan: await relay.post<PlanView>("/admin/ultra/plans", body) });
     } catch (e) {
-      send({ type: "startFailed", message: errText(e) });
+      // The start's one 400 is the relay's login guard.
+      send({ type: "startFailed", message: errText(e), loginRefused: e instanceof RelayError && e.status === 400 });
     }
   }
 
@@ -124,6 +126,11 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
               Say what to get done, in your own words. The AI reads what it needs and shows the exact plan; nothing
               runs until your OK, then the steps run in order. It stops to ask you only where the plan says you pick
               the media.
+            </p>
+          )}
+          {s.loginRefused && (
+            <p role="alert" className="break-words text-[13px] text-err">
+              OnlyFans logins never go to Ultra: <a href={LOGINS_PAGE} className="underline">paste logins in the Connect card</a>.
             </p>
           )}
           {s.startError && <p role="alert" className="break-words text-[13px] text-err">{s.startError}</p>}

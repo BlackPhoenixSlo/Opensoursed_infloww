@@ -65,6 +65,8 @@ turn takes the same owner-only gate (`require_opt_in_kind`).
 
   GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models}
   PUT  /admin/full-ai/config/draft {account_id, draft, rev}
+  PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON typed in; the old
+      checkpoint becomes `previous` (Roll back undoes it), the draft stays
   POST /admin/full-ai/config/save {account_id, rev}
   POST /admin/full-ai/config/rollback {account_id, rev}
       → each the GET shape after the write. 422 {errors: ["<key>: <why>"]} on field errors,
@@ -401,6 +403,12 @@ class ConfigDraftBody(BaseModel):
     rev: int
 
 
+class ConfigCheckpointBody(BaseModel):
+    account_id: str
+    checkpoint: dict[str, Any]
+    rev: int
+
+
 class ConfigRevBody(BaseModel):
     account_id: str
     rev: int
@@ -410,6 +418,12 @@ class ConfigRevBody(BaseModel):
 async def full_ai_config_put_draft(body: ConfigDraftBody):
     return await _config_write(body.account_id,
                                lambda st: full_ai_config.put_draft(st, body.draft, body.rev))
+
+
+@router.put("/admin/full-ai/config/checkpoint")
+async def full_ai_config_put_checkpoint(body: ConfigCheckpointBody):
+    return await _config_write(body.account_id,
+                               lambda st: full_ai_config.put_checkpoint(st, body.checkpoint, body.rev))
 
 
 @router.post("/admin/full-ai/config/save")

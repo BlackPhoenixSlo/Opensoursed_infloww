@@ -8,6 +8,15 @@
                                           answer for an expired job)
   POST /admin/login/remote/{id}/cancel    cancel the job
 
+  POST /admin/login/remote/queue          {"text"}: pasted logins (login_paste: email<sep>password per
+                                          line) → a sequential queue (login_queue) + the bad lines (by
+                                          number, never their text); 409 while the owner's last one runs (a cancelled one is replaced)
+  GET  /admin/login/remote/queue          the owner's last queue, as below (404: none since the relay
+                                          started); the card opens it when it holds no id or meets a 409
+  GET  /admin/login/remote/queue/{qid}    each entry's email, state, job id, message, live view
+                                          (404 unknown / restarted / replaced / another principal's)
+  POST /admin/login/remote/queue/{qid}/cancel   stop it (waiting entries dropped, the running job cancelled)
+
 The human solves any challenge in the Browserbase live view whose URL the
 status carries while the job runs. A 2FA code can be typed there too, or sent
 to /otp: the job's thread types it into OnlyFans; a code OnlyFans does not take
@@ -39,6 +48,8 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 import auth
+import login_paste
+import login_queue
 import proxies as proxy_registry
 import remote_login
 from brand import BRAND_NAME
@@ -99,6 +110,12 @@ def _resolve_proxy(choice: str, label: str) -> tuple[str, str]:
     return choice, ""
 
 
+def _require_playwright() -> None:
+    if importlib.util.find_spec("playwright") is None:
+        raise HTTPException(status_code=501, detail=(
+            "Browserbase login needs the playwright Python package on the relay"))
+
+
 @router.post("/admin/login/remote/start")
 def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
     if not body.email.strip() or not body.password:
@@ -106,9 +123,8 @@ def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
     if body.backend not in remote_login.BACKENDS:
         raise HTTPException(status_code=400, detail=(
             f"unknown backend {body.backend!r} (expected one of {remote_login.BACKENDS})"))
-    if body.backend == remote_login.BACKEND_BROWSERBASE and importlib.util.find_spec("playwright") is None:
-        raise HTTPException(status_code=501, detail=(
-            "Browserbase login needs the playwright Python package on the relay"))
+    if body.backend == remote_login.BACKEND_BROWSERBASE:
+        _require_playwright()
 
     proxy, label = _resolve_proxy(body.proxy, body.proxy_label)
     try:
@@ -129,6 +145,69 @@ def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
     except RuntimeError as e:  # Browserbase env not configured
         raise HTTPException(status_code=503, detail=str(e))
     return job.public()
+
+
+MAX_PASTE = 64 * 1024
+_NO_QUEUE = "this login queue is no longer on the relay (it restarted, or a newer paste replaced it)"
+
+
+def _bad(bad: list[login_paste.BadLine]) -> list[dict[str, Any]]:
+    return [{"line": b.line, "reason": b.reason} for b in bad]
+
+
+def _require_queue(queue_id: str) -> login_queue.Queue:
+    q = login_queue.get(_principal() or "", queue_id)
+    if q is None:  # unknown, gone with a restart, or another principal's: the card shows "interrupted"
+        raise HTTPException(status_code=404, detail=_NO_QUEUE)
+    return q
+
+
+@router.post("/admin/login/remote/queue")
+async def remote_login_queue(body: Any = Body(None)) -> dict[str, Any]:
+    # Any, checked by hand: a pydantic 422 would echo the body (the passwords) back.
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail='the body is {"text": "<email:password per line>"}')
+    if len(text) > MAX_PASTE:
+        raise HTTPException(status_code=413, detail=f"paste over {MAX_PASTE // 1024} KB")
+    logins, bad = login_paste.parse(text)
+    if not logins:
+        raise HTTPException(status_code=400, detail={
+            "message": "no email<separator>password line to log in", "bad_lines": _bad(bad)})
+    _require_playwright()
+    try:
+        remote_login.bb_env()  # fail before a queue exists when the env is not set
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    proxy, _ = _resolve_proxy("", "")  # the Add creator default: the Inflowwww proxy when the relay has one
+    owner = _principal()
+    if owner is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    try:
+        q = login_queue.start(owner, [(x.email, x.password) for x in logins], proxy)
+    except login_queue.QueueBusy as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {**q.public(), "bad_lines": _bad(bad)}
+
+
+@router.get("/admin/login/remote/queue")
+async def remote_login_queue_current() -> dict[str, Any]:
+    q = login_queue.current(_principal() or "")
+    if q is None:
+        raise HTTPException(status_code=404, detail="no login queue on the relay")
+    return q.public()
+
+
+@router.get("/admin/login/remote/queue/{queue_id}")
+async def remote_login_queue_status(queue_id: str) -> dict[str, Any]:
+    return _require_queue(queue_id).public()
+
+
+@router.post("/admin/login/remote/queue/{queue_id}/cancel")
+async def remote_login_queue_cancel(queue_id: str) -> dict[str, Any]:
+    q = _require_queue(queue_id)
+    login_queue.cancel(q)
+    return q.public()
 
 
 @router.get("/admin/login/remote/{job_id}")

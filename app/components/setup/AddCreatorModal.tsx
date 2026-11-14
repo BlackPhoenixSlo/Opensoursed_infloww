@@ -8,6 +8,7 @@
  *   login   the two ways in as two big choices at the top (a radiogroup, "Login method"):
  *             Browser login  (first, Recommended): BrowserbaseLoginCard, a remote browser on Browserbase's network;
  *                            email + password, any check solved in the live view, a 2FA code typed on the card.
+ *                            Under it (not on a recovery) a link to Paste logins (LOGINS_PAGE, LoginQueueCard).
  *             Extension      (the fallback, "if browser login doesn't work"): PasteCurlCard, the Chrome extension's
  *                            Copy cURL pasted here. Desktop only: on a phone the panel says so.
  *           Under them, small, "Link a Fansly account" swaps to the Fansly paste session (the extension's session
@@ -41,6 +42,7 @@
  */
 
 import { Globe, Puzzle, User, UserPlus } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import LinkedCreatorProxy from "./LinkedCreatorProxy";
@@ -60,6 +62,7 @@ import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { HbButton, IfButton, IfModal } from "@/components/ui/infloww";
 import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/lib/creatorProfiles";
+import { LOGINS_PAGE } from "@/lib/loginPaste";
 import { proxyImage } from "@/lib/mediaUrl";
 import { textAvatar } from "@/lib/ofMirrorAvatar";
 import { cn } from "@/lib/utils";
@@ -272,6 +275,11 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
               onBusy={reportBusy.login}
             />
+            {!recovery && (
+              <Link href={LOGINS_PAGE} className="mt-3 inline-block text-sm text-accent hover:text-accent-hover">
+                Several creators? Paste all their logins at once
+              </Link>
+            )}
           </Section>
           <Section k="paste" hidden={!of || method !== "extension"}>
             {/* No extension on a phone. */}

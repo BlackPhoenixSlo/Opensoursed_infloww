@@ -22,6 +22,8 @@ Cases:
   case_recover             — a `planning` row at relay start → interrupted.
   case_post_guards         — POST with a bearer (alone or beside the cookie) → 403; chatter → 403; signed out
                              → 401; empty request → 422. No row.
+  case_login_line_refused  — a request carrying an OnlyFans login (email:password) → 400 "paste logins in the
+                             Connect card", before any model call; no row; the password not in the answer.
   case_pure                — tool list = read tools + submit_plan; prompt carries the data rule and the
                              verbatim caption lines; a big result is cut with a note; progress never free text;
                              llm_client.failure table with FAILURE_TEXT (planner + judge share it); submit_plan
@@ -51,6 +53,7 @@ import mcp_api  # noqa: E402
 import server  # noqa: E402
 import ultra_plan  # noqa: E402
 import ultra_plan_decide as upd  # noqa: E402
+import ultra_api  # noqa: E402
 import ultra_judge_decide as uj  # noqa: E402
 import ultra_run  # noqa: E402
 import ultra_schema as us  # noqa: E402
@@ -320,6 +323,16 @@ def case_post_guards() -> None:
     assert post(ANON).status_code == 401
     assert post(A, request="   ").status_code == 422 and post(A, request="").status_code == 422
     assert asyncio.run(_rows()) == before
+
+
+def case_login_line_refused() -> None:
+    LLM.reset(_res(("creators_list", {})))
+    before = asyncio.run(_rows())
+    for request in ("log in ava@x.com:hunter2-of and mass her fans", "ava@x.com hunter2-of"):
+        r = A.post("/admin/ultra/plans", json={"request": request})
+        assert r.status_code == 400 and r.json()["detail"] == ultra_api.LOGIN_REFUSED, r.text
+        assert "hunter2" not in r.text, r.text
+    assert asyncio.run(_rows()) == before and LLM.calls == []
 
 
 def case_pure() -> None:

@@ -2,7 +2,8 @@
 
 /** The Extras drawer and its tools (moved out of `VaultManagePanel`): our tools, which the bundle does not have
  *  (ADR-0003) — the full download (whole vault / open folder), the mirror collect, the describe sweep and its
- *  prompt, the keyword harvest, the duplicates, pack, AI-folder and disagreement reviews and the flags review. */
+ *  prompt, the keyword harvest, the duplicates, pack, AI-folder and disagreement reviews, the flags review and the
+ *  Inflowwww folders editor. */
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -12,6 +13,7 @@ import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { useExitGhost } from "@/hooks/useExitGhost";
 import { type useDescribePlan } from "@/hooks/useVaultCache";
 import { harvestSweepLabel, type VaultSweep } from "@/hooks/useVaultSweep";
+import { BRAND_NAME } from "@/lib/brand";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
@@ -27,7 +29,7 @@ function readLimitText(): string {
 }
 
 /** The modals the drawer's tools open. */
-export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "flagsReview";
+export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "flagsReview" | "folders";
 
 /** The Extras drawer: the page's own tools, which the bundle does not have, one click from the header (ADR-0003).
  *  A right sheet over the page; Esc or × closes it, unless a modal above it took the Escape first. It slides in
@@ -81,6 +83,7 @@ export default function VaultExtrasTools({
   setNeedsReview,
   flagsReviewOpen,
   onOpen,
+  foldersAllowed = true,
   download,
 }: {
   accountId: string;
@@ -109,6 +112,8 @@ export default function VaultExtrasTools({
   /** The flags review is up (its offer hides meanwhile). */
   flagsReviewOpen: boolean;
   onOpen: (m: ExtrasModal) => void;
+  /** false for a restricted chatter: our own folders are not theirs to see (`allowed_folder_ids_for_chatter`). */
+  foldersAllowed?: boolean;
   /** "Download full vault" (All media) / "Download full folder" (a rail folder open); `reason` non-empty: off, said
    *  as its title (`downloadGate`, the folder still loading). `onStart` starts the page's one download. */
   download: { label: string; reason: string; onStart: () => void };
@@ -256,6 +261,20 @@ export default function VaultExtrasTools({
           >
             Build AI folders
           </button>
+        {/* Our own folders (AI, Feet pack, hand-made), opened and edited like the vault. Needs no cache to open:
+            a new folder can be made first. Off for a restricted chatter, who sees none of them. */}
+        <button
+          type="button"
+          data-testid="vault-extras-folders"
+          onClick={() => onOpen("folders")}
+          disabled={!foldersAllowed}
+          className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
+          title={foldersAllowed
+            ? `Open and edit ${BRAND_NAME}'s own folders (AI, Feet pack, yours), on OnlyFans or not. Edits stay in ${BRAND_NAME}.`
+            : "Your access is limited to assigned OnlyFans folders."}
+        >
+          {BRAND_NAME} folders
+        </button>
       </div>
 
       {/* The Collect asks every 2000 new items; unanswered for 30 min it stops on its own (vault_ai_api). */}

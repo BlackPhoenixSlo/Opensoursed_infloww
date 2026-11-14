@@ -54,7 +54,8 @@ export default function VaultItemModal({
   keysOff: boolean;
   onExpand: () => void;
   onSaved: (updated: Record<string, unknown>) => void;
-  onDeleted: () => void;
+  /** Omitted: no "Remove from vault" (the Inflowwww folders editor, which never writes to OnlyFans). */
+  onDeleted?: () => void;
   describeSlot: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
@@ -131,7 +132,7 @@ export default function VaultItemModal({
               </button>
             </div>
           }
-          deleteSlot={<VaultDeleteButton key={`del-${media.id}`} media={media} accountId={accountId} onDeleted={onDeleted} />}
+          deleteSlot={onDeleted && <VaultDeleteButton key={`del-${media.id}`} media={media} accountId={accountId} onDeleted={onDeleted} />}
         />
       </div>
     </div>

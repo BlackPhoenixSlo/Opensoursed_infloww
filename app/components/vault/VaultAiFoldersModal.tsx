@@ -513,7 +513,6 @@ export default function VaultAiFoldersModal({
               Internal folders only — nothing was written to OnlyFans.
             </span>
           )}
-          <span className="block text-ok/80">Nothing was sent.</span>
         </Notice>
       )}
 

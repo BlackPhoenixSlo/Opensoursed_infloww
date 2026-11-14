@@ -269,7 +269,7 @@ describe("Full AI Chat page › Test chat", () => {
     expect((await win("Checkpoint").findByTestId("reply-line")).textContent)
       .toBe("Route chat · Heat 2 · Row otherwise · Writer euryale-v2.3 · 0 fell before");
     expect((await win("Draft").findByTestId("reply-line")).textContent)
-      .toBe("Route sext · Heat 3 · Row sexual_now · Writer hermes-4-405b · 1 fell before");
+      .toBe("Route sext · Heat 3 · Row sexual_now · Writer hermes-4-405b · 1 fell before (euryale-v2.3 http_503)");
   });
 
   it("an all-failed Turn reads 'no reply: all writers failed' with each outcome; no_send reads promo / under 18", async () => {
@@ -438,7 +438,7 @@ describe("Full AI Chat page › Settings", () => {
       .toEqual([["0-2 min", "true"], ["0-15-60", "false"]]);
     expect(within(items[3]).getByRole("switch", { name: "Human style" }).getAttribute("aria-checked")).toBe("true");
     expect(within(items[4]).getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("true");
-    expect((within(items[5]).getByRole("combobox", { name: "Writer" }) as HTMLSelectElement).value).toBe("euryale-v2.3");
+    expect((within(items[5]).getByRole("checkbox", { name: "euryale-v2.3" }) as HTMLInputElement).checked).toBe(true);
     expect(within(items[6]).getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
     expect(within(items[7]).getByRole("switch", { name: "Sell" }).getAttribute("aria-checked")).toBe("false");
     expect(within(items[8]).getByText("Content folders")).toBeTruthy();
@@ -488,16 +488,33 @@ describe("Full AI Chat page › Settings", () => {
     expect(win("Draft").getByText("Reply 0-2 min · Human style mixed · Typos off · GIFs off · Caption chat")).toBeTruthy();
   });
 
-  it("Writer: picking a model puts it first and keeps the rest in order", async () => {
+  it("Writers: tick adds at the end, untick drops, Make Writer moves first; the last one and a full chain are locked", async () => {
     mountSettings(configBody({ draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b"] },
       writer_models: ["deepseek-v4-flash", "euryale-v2.3", "hermes-4-405b"] }));
     await loadedConfig();
-    const sel = settings().getByRole("combobox", { name: "Writer" }) as HTMLSelectElement;
-    expect([...sel.options].map((o) => o.value)).toEqual(["euryale-v2.3", "deepseek-v4-flash", "hermes-4-405b"]);
-    expect(settings().getByText("Then: hermes-4-405b")).toBeTruthy();
-    await act(async () => { fireEvent.change(sel, { target: { value: "deepseek-v4-flash" } }); });
+    const box = (m: string) => settings().getByRole("checkbox", { name: m }) as HTMLInputElement;
+    expect(["euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"].map((m) => box(m).checked)).toEqual([true, true, false]);
+    expect(settings().getByText("#2")).toBeTruthy();
+    await act(async () => { fireEvent.click(box("deepseek-v4-flash")); });
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a",
-      draft: { ...CONFIG, writers: ["deepseek-v4-flash", "euryale-v2.3", "hermes-4-405b"] }, rev: 3 });
+      draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"] }, rev: 3 });
+    await waitFor(() => expect(box("deepseek-v4-flash").checked).toBe(true));
+    expect(win("Draft").getByText("Writers euryale-v2.3 → hermes-4-405b → deepseek-v4-flash")).toBeTruthy();
+    expect(win("Checkpoint").getByText("Writers euryale-v2.3")).toBeTruthy();
+    await act(async () => { fireEvent.click(box("euryale-v2.3")); });
+    expect(putCalls()[1][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, writers: ["hermes-4-405b", "deepseek-v4-flash"] }, rev: 4 });
+    await waitFor(() => expect(box("euryale-v2.3").checked).toBe(false));
+    await act(async () => { fireEvent.click(settings().getByRole("button", { name: "Make Writer" })); });
+    expect(putCalls()[2][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, writers: ["deepseek-v4-flash", "hermes-4-405b"] }, rev: 5 });
+  });
+
+  it("Writers: the only Writer cannot be unticked", async () => {
+    mountSettings(configBody({ writer_models: ["euryale-v2.3", "hermes-4-405b"] }));
+    await loadedConfig();
+    expect((settings().getByRole("checkbox", { name: "euryale-v2.3" }) as HTMLInputElement).disabled).toBe(true);
+    expect((settings().getByRole("checkbox", { name: "hermes-4-405b" }) as HTMLInputElement).disabled).toBe(false);
   });
 
   it("a refused draft shows its field errors and keeps Send waiting", async () => {
@@ -548,6 +565,24 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(screen.queryByText("Someone saved this config meanwhile. Reload.")).toBeNull());
   });
 
+  it("JSON shows the checkpoint (old) next to the draft (new); storing the checkpoint PUTs it and adopts the answer", async () => {
+    const old = { ...CONFIG, gifs: true };
+    mountSettings(configBody(), { put: (b) => configBody({ checkpoint: b.checkpoint, previous: CONFIG, rev: 4 }) });
+    await loadedConfig();
+    fireEvent.click(btn("JSON (old + new)"));
+    const ck = await screen.findByRole("textbox", { name: "Checkpoint · old (saved) JSON" }) as HTMLTextAreaElement;
+    expect(JSON.parse(ck.value)).toEqual(CONFIG);
+    fireEvent.change(ck, { target: { value: "{bad" } });
+    expect((within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(ck, { target: { value: JSON.stringify(old) } });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" })); });
+    const ckPuts = relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/checkpoint");
+    expect(ckPuts.map((c) => c[1])).toEqual([{ account_id: "acc-a", checkpoint: old, rev: 3 }]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs on · Caption chat")).toBeTruthy();
+    await waitFor(() => expect(btn("Roll back").disabled).toBe(false));
+  });
+
   it("JSON opens the full draft in the raw JSON editor; a field error is shown, a good one stores and closes", async () => {
     let calls = 0;
     mountSettings(configBody(), {
@@ -558,15 +593,15 @@ describe("Full AI Chat page › Settings", () => {
       },
     });
     await loadedConfig();
-    fireEvent.click(btn("JSON"));
-    const box = await screen.findByRole("textbox", { name: "Raw JSON" }) as HTMLTextAreaElement;
+    fireEvent.click(btn("JSON (old + new)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
     expect(JSON.parse(box.value)).toEqual(CONFIG);
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 1 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 1 }, rev: 3 });
     expect(await within(screen.getByRole("dialog")).findByText(/writer_timeout_s: must be a number of seconds from 5 to 60/)).toBeTruthy();
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 30 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 30 }, rev: 3 });
   });
@@ -579,10 +614,10 @@ describe("Full AI Chat page › Settings", () => {
     await act(async () => { fireEvent.click(btn("Reload")); });
     await loadedConfig();
     expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
-    fireEvent.click(btn("JSON"));
-    const box = await screen.findByRole("textbox", { name: "Raw JSON" });
+    fireEvent.click(btn("JSON (old + new)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" });
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 1 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
     await within(screen.getByRole("dialog")).findByText(/writer_timeout_s: must be a number/);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     fireEvent.change(composer(), { target: { value: "hey" } });
@@ -590,8 +625,8 @@ describe("Full AI Chat page › Settings", () => {
     await act(async () => { fireEvent.click(btn("Reload")); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
     expect(screen.queryByText("Draft not stored — fix it or Reload")).toBeNull();
-    fireEvent.click(btn("JSON"));
-    expect(JSON.parse((await screen.findByRole("textbox", { name: "Raw JSON" }) as HTMLTextAreaElement).value)).toEqual(CONFIG);
+    fireEvent.click(btn("JSON (old + new)"));
+    expect(JSON.parse((await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement).value)).toEqual(CONFIG);
   });
 
   it("the persona block (Model info) sits here with 'not part of the checkpoint' next to its Save", async () => {
@@ -736,7 +771,8 @@ describe("Full AI Chat page › Selling settings", () => {
     mountSell({ post: (path) => (path === "/admin/full-ai/prepare-content" ? {
       run_id: "r1", started_at: "2026-11-14T03:00:00Z", finished_at: "2026-11-14T03:00:01Z",
       steps: [skipped("harvest", "already harvested"), skipped("describe", "every item described and flagged"),
-        { name: "folders", state: "done", detail: "", counts: { folders: 3, items: 40 } }],
+        { name: "folders", state: "done", detail: "", counts: { folders: 3, items: 40 } },
+        { name: "feet", state: "done", detail: "", counts: { filed: 2, to_check: 15 } }],
     } : answer()) });
     await loadedConfig();
     await waitFor(() => expect(relayGet.mock.calls.some((c) => String(c[0]).startsWith("/admin/full-ai/prepare-content/status"))).toBe(true));
@@ -746,6 +782,7 @@ describe("Full AI Chat page › Selling settings", () => {
     expect((await screen.findByTestId("prepare-harvest")).textContent).toBe("Harvest skippedalready harvested");
     expect(screen.getByTestId("prepare-describe").textContent).toBe("Describe skippedevery item described and flagged");
     expect(screen.getByTestId("prepare-folders").textContent).toBe("Folders done · folders 3 · items 40");
+    expect(screen.getByTestId("prepare-feet").textContent).toBe("Feet pack done · filed 2 · to_check 15");
   });
 
   it("Prepare content polls the status every 2 s while it runs, then stops", async () => {

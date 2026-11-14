@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """GET /admin/vault-ai/internal-folders (ticket 49): the Creator's live INTERNAL vault folders
 for Full AI Chat's Content folders picker (`vf:<id>` refs), with their item counts. No OF call.
+The editor's own fields and writes: test_vault_internal_folders.py.
 
 Real HTTP with real owner / chatter logins (pattern: test_vault_chatter_folders.py).
 
-  case_owner_lists_live_folders_with_counts   deleted folders and other accounts' folders left out; sorted by name
+  case_owner_lists_live_folders_with_counts   deleted folders and other accounts' folders left out; sorted by name;
+                                              items / photos / videos skip removed media; of_list_id; kind
   case_restricted_chatter_gets_none           a chatter limited to OF folders sees no internal folder
 
 Run: ./venv/bin/python service/tests/test_full_ai_internal_folders.py   (exit 0 = pass)
@@ -38,15 +40,16 @@ async def case_seed():
         s.add(UserAccount(user_id=uid, account_id=AID))
         s.add(Chatter(id=cid, username="cif", password="secretpw", display_name="Cif",
                       created_at=now, last_seen_at=now))
-        beach, ai = VaultFolder(account_id=AID, name="beach"), VaultFolder(account_id=AID, name="AI-lingerie")
+        beach = VaultFolder(account_id=AID, name="beach", of_list_id=777)
+        ai = VaultFolder(account_id=AID, name="AI-lingerie", created_by="vault_ai_script")
         gone = VaultFolder(account_id=AID, name="old", deleted_at=now)
         s.add_all([beach, ai, gone, VaultFolder(account_id="accOther", name="theirs")])
         await s.flush()
-        s.add_all([VaultFolderItem(account_id=AID, folder_id=ai.id, media_id=m) for m in (1, 2, 3)]
+        s.add_all([VaultFolderItem(account_id=AID, folder_id=ai.id, media_id=m) for m in (1, 2, 3, 4)]
                   + [VaultFolderItem(account_id=AID, folder_id=gone.id, media_id=9)])
         # Media 3 was removed from the vault: the sell pool skips it, so the count does too.
-        s.add_all([VaultItem(account_id=AID, media_id=m, kind="photo", created_at=now,
-                             removed_at=now if m == 3 else None) for m in (1, 2, 3, 9)])
+        s.add_all([VaultItem(account_id=AID, media_id=m, kind="video" if m == 4 else "photo", created_at=now,
+                             removed_at=now if m == 3 else None) for m in (1, 2, 3, 4, 9)])
         IDS.update(ai=ai.id, beach=beach.id)
     async with get_session() as s:
         s.add(ChatterUser(chatter_id=cid, user_id=uid, created_at=now))
@@ -64,8 +67,11 @@ def _login(path: str, user: str):
 def case_owner_lists_live_folders_with_counts():
     r = _login("/auth/login", "ownerif").get(Q)
     assert r.status_code == 200, (r.status_code, r.text)
-    assert r.json() == {"list": [{"id": IDS["ai"], "name": "AI-lingerie", "items": 2},
-                                 {"id": IDS["beach"], "name": "beach", "items": 0}]}, r.json()
+    assert r.json() == {"list": [
+        {"id": IDS["ai"], "name": "AI-lingerie", "items": 3, "photos": 2, "videos": 1, "of_list_id": None,
+         "kind": "ai"},
+        {"id": IDS["beach"], "name": "beach", "items": 0, "photos": 0, "videos": 0, "of_list_id": 777,
+         "kind": "own"}]}, r.json()
 
 
 def case_restricted_chatter_gets_none():

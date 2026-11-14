@@ -7,7 +7,8 @@
  * On a phone held upright the windows are Checkpoint / Draft tabs. State: `fullAiTestChat.ts` (pure reducer) through
  * `useFullAiTestChat` (requests, timers), held by the page; this file only renders and dispatches. Send waits with
  * "Storing draft…" or "Draft not stored — fix it or Reload" (`sendBlock`). Each window header names its side's config
- * (`configLine`): the checkpoint's, or the draft as shown, so an applied draft shows there at once (ticket 57).
+ * (`configLine`) and Writer chain (`writersLine`): the checkpoint's, or the draft as shown, so an applied draft shows there
+ * at once (ticket 57).
  * A reply with an Offer (ticket 49) shows its PPV bubble on the text part carrying `ppv`: from the Offer, the Pick's
  * thumbnails from the Creator's local vault mirror (`mirrorThumbSrc`) and `ppvLine` — the price with Buy / Decline under
  * it while `canSettle`, "$N · paid" / "$N · not paid" once settled (`PpvStatusLine`), or "Free".
@@ -23,7 +24,7 @@ import { Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import {
-  canSend, canSettle, configLine, factsLine, photoCaption, sendBlock, noReplyText, outcomesLine, ppvLine, replyLine,
+  canSend, canSettle, configLine, factsLine, writersLine, photoCaption, sendBlock, noReplyText, outcomesLine, ppvLine, replyLine,
   type Describing, type FanPhoto, type FullAiConfig, type Offer, type Outcome, type Part, type SideState, type Turn,
   type UiSide,
 } from "@/components/automations/fullAiTestChat";
@@ -141,6 +142,7 @@ function Window({ ui, side, cfg, accountId, describing, onRetry, onSettle }: {
           {TITLE[ui]} <span className="font-normal text-muted">· {SUB[ui]}</span>
         </div>
         {cfg && <div data-testid="config" className="text-xs text-muted">{configLine(cfg)}</div>}
+        {cfg && <div data-testid="writers" className="text-xs text-fg-dim">{writersLine(cfg)}</div>}
         <div data-testid="facts" className="text-xs text-fg-dim">{factsLine(last?.result.fan_info)}</div>
       </div>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3">

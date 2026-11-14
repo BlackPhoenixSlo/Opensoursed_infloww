@@ -1,7 +1,10 @@
 """service/ultra_api.py — the owner's Ultra plan page (app/app/ultra/plans/[id]): plan, read, OK, cancel.
 
   POST /admin/ultra/plans              {request} → a `planning` plan (ultra_plan: the model reads, then
-                                       submits → `awaiting_ok`); 429 when today's AI budget is spent
+                                       submits → `awaiting_ok`); 429 when today's AI budget is spent; 400
+                                       "paste logins in the Connect card" when it holds an OnlyFans login
+                                       (login_paste.holds_login), before any model call, nothing stored;
+                                       its only 400 (the panel reads a 400 as this refusal)
   GET  /admin/ultra/plans/{id}         → the plan (ultra_run.view): card, step states
   POST /admin/ultra/plans/{id}/ok      {sha256} → starts the run; 409 when the hash is not the stored one,
                                        the plan expired or is no longer awaiting its OK
@@ -24,6 +27,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, StrictInt
 
+import login_paste
 import toolbox
 import ultra_plan
 import ultra_plan_decide as upd
@@ -34,6 +38,7 @@ from auth import require_user
 router = APIRouter(prefix="/admin/ultra/plans", tags=["ultra"])
 
 _SIGN_IN = "sign in as an account owner to see this plan"
+LOGIN_REFUSED = "paste logins in the Connect card"
 
 
 def _browser_creds(request: Request, detail: str) -> toolbox.Creds:
@@ -63,6 +68,8 @@ async def new_plan(body: PlanBody, request: Request) -> dict[str, Any]:
     creds = _browser_creds(request, "start a plan in the browser, signed in as an account owner")
     if not body.request.strip():
         raise HTTPException(422, "say what the plan should do")
+    if login_paste.holds_login(body.request):  # never to a model, never stored (ticket 11 credential guard)
+        raise HTTPException(400, LOGIN_REFUSED)
     try:
         pid = await ultra_plan.start(body.request.strip(), user.id, user.account_ids, creds)
     except ultra_run.Refused as e:

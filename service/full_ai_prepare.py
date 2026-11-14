@@ -2,8 +2,9 @@
 Creator's vault sellable for Full AI (docs/spec/phase-03b-full-ai-selling-test-chat.md).
 
   read_facts(account_id)  what is already done: harvested (`vault_runs._walked`), undescribed
-                          (`describe_selection("undescribed")`), unflagged (`_flags_todo`), ai_folders
-  steps_for(facts)        pure: which of harvest / describe / folders still need running
+                          (`describe_selection("undescribed")`), unflagged (`_flags_todo`), ai_folders,
+                          feet_pack
+  steps_for(facts)        pure: which of harvest / describe / folders / feet still need running
   start(account_id)       claim the chain and run it in the background; a running run is returned as is
   view(account_id)        the run as the status route shows it
 
@@ -12,6 +13,10 @@ The chain, in order, each step only if still missing (facts re-read before each 
   describe  `_claim_describe` + `_run_describe_all("undescribed")`, then the flags sweep on
             items still missing Jev flags (`_flags_todo` / `_run_flags_all`)
   folders   `vault_of_folders.build_ai_folders` with the Folder plan's defaults, never mirrored to OF
+  feet      the Feet pack's one-click "File N preselected" (`vault_pack_picker`): every photo Jev scores
+            feet at the confident gate goes on its preselected rung; the possible ones stay in the picker
+            for the operator. Only while the account has no feet-* folder (owner 2026-11-14: the default
+            ticks were right, so the button files them). Never published to OF.
 Each step reuses its job's own running guard (held → `busy`, the chain stops) and reads its
 state from the job's RECORDED outcome (the run row, the sweeps' progress snapshots), never from
 the coroutine returning: the jobs record failures and return normally.
@@ -40,6 +45,7 @@ import llm_client
 import vault_ai_api
 import vault_ai_vision
 import vault_of_folders
+import vault_pack_picker
 import vault_runs
 import vault_scripts
 from db.engine import get_session
@@ -49,10 +55,13 @@ from vault_ai_vision_decide import describe_selection
 
 log = logging.getLogger(__name__)
 
-STEPS = ("harvest", "describe", "folders")
-# The Folder plan's own defaults (`useVaultCache.ts` useApplyFolderPlan), mirror always off.
-FOLDER_DEFAULTS: dict[str, Any] = {"keep": 2, "solo": False, "topics": [], "split": True}
+STEPS = ("harvest", "describe", "folders", "feet")
+# The Folder plan's own defaults (`vaultAiFoldersForm.ts` INITIAL_FORM), mirror always off. `keep` is the
+# vault's constant, not a copy: a literal 2 here left prepare content with 2 script folders, the modal with 10.
+FOLDER_DEFAULTS: dict[str, Any] = {"keep": vault_scripts.DEFAULT_KEEP_SCRIPTS, "solo": False, "topics": [],
+                                   "split": True}
 STOPPED = "not run: an earlier step stopped the chain"
+FEET = vault_pack_picker.category("feet")
 
 _running: set[str] = set()              # accounts whose chain runs now (process-local)
 _runs: dict[str, dict[str, Any]] = {}   # account → its latest run (in memory; a restart forgets it)
@@ -73,9 +82,12 @@ async def read_facts(account_id: str) -> dict[str, Any]:
         ai_folders = (await s.execute(select(VaultFolder.id).where(
             VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None),
             VaultFolder.name.startswith(vault_scripts.AI_FOLDER_PREFIX)).limit(1))).first() is not None
+        feet_pack = (await s.execute(select(VaultFolder.id).where(
+            VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None),
+            VaultFolder.name.in_(FEET.folder_names)).limit(1))).first() is not None
     unflagged = len(await vault_ai_vision._flags_todo(account_id))
     return {"harvested": harvested, "undescribed": int(undescribed or 0),
-            "unflagged": unflagged, "ai_folders": ai_folders}
+            "unflagged": unflagged, "ai_folders": ai_folders, "feet_pack": feet_pack}
 
 
 def _step(name: str, state: str, detail: str = "", counts: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -83,7 +95,7 @@ def _step(name: str, state: str, detail: str = "", counts: dict[str, Any] | None
 
 
 def steps_for(facts: dict[str, Any]) -> list[dict[str, Any]]:
-    """harvest / describe / folders, each `pending` (to run) or `skipped` (done already).
+    """harvest / describe / folders / feet, each `pending` (to run) or `skipped` (done already).
     Before a harvest the mirror is empty, so describe can't be judged yet: pending."""
     todo = {"undescribed": facts["undescribed"], "unflagged": facts["unflagged"]}
     return [
@@ -91,6 +103,8 @@ def steps_for(facts: dict[str, Any]) -> list[dict[str, Any]]:
         _step("describe", "pending", counts=todo) if not facts["harvested"] or any(todo.values())
         else _step("describe", "skipped", "every item described and flagged"),
         _step("folders", "skipped", "AI folders exist") if facts["ai_folders"] else _step("folders", "pending"),
+        # An existing pack is the operator's: a second filing would put back what they took off a rung.
+        _step("feet", "skipped", "Feet pack exists") if facts["feet_pack"] else _step("feet", "pending"),
     ]
 
 
@@ -184,9 +198,21 @@ async def _folders(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     return _step("folders", "done", "", {"folders": res["folders"], "items": res["items"]})
 
 
+async def _feet(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
+    """File the Feet pack's preselected photos, each on its preselected rung (the picker's "File N
+    preselected"). `to_check` = the possible ones left in the picker. Nothing preselected: no folder
+    is made, so a later press looks again."""
+    queue = [c for c in (await vault_pack_picker.candidates(account_id, FEET, limit=2000))["candidates"]
+             if not c["rung"]]
+    verdicts = {c["media_id"]: c["suggested"] for c in queue if c["preselect"]}
+    if verdicts:
+        await vault_pack_picker.triage(account_id, FEET, verdicts)
+    return _step("feet", "done", "", {"filed": len(verdicts), "to_check": sum(1 for c in queue if c["possible"])})
+
+
 # ── The chain ────────────────────────────────────────────────────────
 
-_RUN = {"harvest": _harvest, "describe": _describe, "folders": _folders}   # keyed by STEPS
+_RUN = {"harvest": _harvest, "describe": _describe, "folders": _folders, "feet": _feet}   # keyed by STEPS
 
 async def _chain(account_id: str, run: dict[str, Any]) -> None:
     steps = run["steps"]

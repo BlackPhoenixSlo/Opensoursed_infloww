@@ -77,6 +77,10 @@ schema FileBody only (measured: sha1 with them removed == the prior golden); no 
 Golden refresh (2026-11-14, ultra MCP server): adds POST /admin/mcp and DELETE,GET /admin/mcp (mcp_api) after
 the owner-tokens rows; include_in_schema=False, so the OpenAPI sha1 is unchanged (measured); no row moves.
 
+Golden refresh (2026-11-14, Full AI checkpoint JSON): adds PUT /admin/full-ai/config/checkpoint
+(full_ai_api.full_ai_config_put_checkpoint) after the draft PUT row; OpenAPI diff = that path + schema
+ConfigCheckpointBody; no existing row moves; inspected, intentional.
+
 Golden refresh (2026-11-14, merge main 713774458 into ultra step 2): main's golden (Full AI routes) plus this
 branch's seven rows above, regenerated; diff vs main's golden = those rows + the sha only.
 
@@ -111,6 +115,13 @@ keep theirs); diff = those three names + the sha; inspected, intentional.
 
 Golden refresh (2026-11-14, full-ai folder prices): adds GET + POST /admin/vault-ai/folder-prices (vault_ai_api,
 an agency's price per vault folder) right after /admin/vault-ai/internal-folders; diff = those two rows + the sha.
+
+Golden refresh (2026-11-14, Inflowwww folders editor): the internal-folders routes move to vault_internal_folders,
+included from vault_ai_api where the GET stood, so GET /admin/vault-ai/internal-folders keeps its row and its name
+list_internal_folders; adds right after it POST /admin/vault-ai/internal-folders (create_internal_folder), POST
+…/{folder_id}/rename, DELETE …/{folder_id}, POST …/{folder_id}/add, …/remove, …/reorder; no existing row moves.
+OpenAPI diff = those six operations + the GET's description (measured: sha1 with them removed and the old GET
+docstring restored == the prior golden).
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

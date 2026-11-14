@@ -601,7 +601,8 @@ ACTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "withdraw": ("Request withdrawals", (
         "POST /api/of/v2/payouts/requests", "PATCH /api/of/v2/payouts/requests")),
     "delete-post": ("Delete posts", ("DELETE /api/of/v2/posts/*",)),
-    "delete-folder": ("Delete vault folders", ("DELETE /admin/vault-ai/of-folders/*",)),
+    "delete-folder": ("Delete vault folders", (
+        "DELETE /admin/vault-ai/of-folders/*", "DELETE /admin/vault-ai/internal-folders/*")),
     "delete-script": ("Delete scripts", ("DELETE /admin/saved-replies/*", "POST /admin/saved-replies/delete")),
     "edit-shifts": ("Create, edit or cancel shifts", (
         "POST /admin/shifts", "PATCH /admin/shifts/*", "POST /admin/shifts/*/cancel")),

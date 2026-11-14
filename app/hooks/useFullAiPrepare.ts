@@ -13,7 +13,7 @@ import { relay } from "@/lib/relay";
 
 export const PREPARE_POLL_MS = 2_000;
 
-export type PrepareStepName = "harvest" | "describe" | "folders";
+export type PrepareStepName = "harvest" | "describe" | "folders" | "feet";
 export type PrepareStepState = "pending" | "running" | "done" | "failed" | "busy" | "skipped";
 export interface PrepareStep {
   name: PrepareStepName;

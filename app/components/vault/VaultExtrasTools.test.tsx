@@ -94,3 +94,21 @@ describe("paused collect", () => {
     expect(screen.getByText(line)).toBeInTheDocument();
   });
 });
+
+describe("Inflowwww folders", () => {
+  it("opens the folders editor; off for a restricted chatter", () => {
+    const onOpen = vi.fn();
+    const props = {
+      accountId: "1000001", onClose: () => {}, isCollecting: false, totalSeen: null, cachedCount: 0, onCollect: () => {},
+      onDescribeAll: () => {}, describeSweep: sweep, describeText: { label: "", title: "" }, describeStopped: null,
+      harvestSweep: sweep, plan: undefined, capped: false, capReason: "", needsReview: 0, setNeedsReview: () => {},
+      flagsReviewOpen: false, onOpen, download: { label: "Download full vault", reason: "", onStart: () => {} },
+    };
+    const { rerender } = renderWithProviders(<VaultExtrasTools {...props} />);
+    // An empty cache does not turn it off: a folder can be made first.
+    fireEvent.click(screen.getByRole("button", { name: "Inflowwww folders" }));
+    expect(onOpen).toHaveBeenCalledWith("folders");
+    rerender(<VaultExtrasTools {...props} foldersAllowed={false} />);
+    expect(screen.getByRole("button", { name: "Inflowwww folders" })).toBeDisabled();
+  });
+});

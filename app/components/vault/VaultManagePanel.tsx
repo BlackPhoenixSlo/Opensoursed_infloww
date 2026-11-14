@@ -25,6 +25,7 @@ import { useVaultDownloadContext } from "@/components/vault/VaultDownloadPanel";
 import { dlAccess, downloadGate, safeName, type DlMode } from "@/components/vault/vaultDownloadReducer";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
+import VaultInternalFoldersModal from "@/components/vault/VaultInternalFoldersModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
 import VaultPackPickerModal from "@/components/vault/VaultPackPickerModal";
 import VaultExtrasTools, { type ExtrasModal } from "@/components/vault/VaultExtrasTools";
@@ -409,6 +410,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           setNeedsReview={setNeedsReview}
           flagsReviewOpen={open === "flagsReview"}
           onOpen={setOpen}
+          foldersAllowed={access === "all"}
           download={{
             // While a run is busy, a folder-sink press queues (`dl.queueing`).
             label: `${dl.queueing ? "Add" : "Download"} full ${fullScope?.mode === "vault" ? "vault" : "folder"}${dl.queueing ? " to queue" : ""}`,
@@ -681,6 +683,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
 
       {open === "aiFolders" && (
         <VaultAiFoldersModal accountId={accountId} onClose={() => setOpen(null)} />
+      )}
+      {open === "folders" && (
+        <VaultInternalFoldersModal accountId={accountId} onClose={() => setOpen(null)} />
       )}
     </div>
   );

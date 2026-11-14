@@ -7,10 +7,11 @@ Cases:
                                  ping → tools/list (the Toolbox + propose_plan / plan_status) → tools/call creators_list (A's own Creator).
   case_origin_refused          — any Origin → 403, even with a good token; no tool runs.
   case_auth_refused            — cookie-only, a bad ifw_ token, a foreign Bearer, Basic → 401.
-  case_anonymous_surface       — no credential: initialize + tools/list = connect_account only; its links
+  case_anonymous_surface       — no credential: initialize + tools/list = connect_account, register_account, login
+                                 (test_mcp_auth.py); its links
                                  (MCP_SIGNUP_URL, else this host); a data tool or propose_plan → isError with the link.
   case_share_token_gate        — SHARE_TOKEN set: anonymous POST /admin/mcp still serves initialize / tools/list
-                                 (connect_account only); a data tool, GET /admin/mcp and /admin/accounts stay refused.
+                                 (the anonymous builtins only); a data tool, GET /admin/mcp and /admin/accounts stay refused.
   case_cross_agency_refused    — B's token never reads Creator A (403) and lists only B.
   case_protocol_errors         — unknown method/tool, bad params/arguments, bad args (isError 422), malformed
                                  JSON, batch, no jsonrpc, bad id, unsupported version header, GET/DELETE 405.
@@ -126,7 +127,7 @@ def case_anonymous_surface() -> None:
     r = _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, {})
     assert r.status_code == 202, r.status_code
     tools = _rpc("tools/list", headers={})["result"]["tools"]
-    assert [t["name"] for t in tools] == ["connect_account"], tools
+    assert [t["name"] for t in tools] == ["connect_account", "register_account", "login"], tools
     fwd = {"X-Forwarded-Host": "app.example.com", "X-Forwarded-Proto": "https"}
     out = _tool("connect_account", headers=fwd)
     s = out["structuredContent"]
@@ -159,7 +160,8 @@ def case_share_token_gate() -> None:
         assert ANON.get("/admin/accounts").status_code == 401  # the gate is on
         init = _rpc("initialize", {"protocolVersion": "2025-06-18"}, {})["result"]
         assert init["protocolVersion"] == "2025-06-18", init
-        assert [t["name"] for t in _rpc("tools/list", headers={})["result"]["tools"]] == ["connect_account"]
+        anon = [t["name"] for t in _rpc("tools/list", headers={})["result"]["tools"]]
+        assert anon == ["connect_account", "register_account", "login"], anon
         out = _tool("creators_list", headers={})
         assert out["isError"] is True and out["structuredContent"]["error"]["status"] == 401, out
         assert "accounts" not in out["structuredContent"], out

@@ -7,7 +7,7 @@
  *      A checklist in a dialog, All by default, include-only: Save sends the whole `folders` object with the stored
  *      `exclude` carried over (the draft PUT replaces it whole) and is refused with nothing ticked and All off.
  *      State: `sellFoldersForm.ts` (pure reducer);
- *   8. Prepare content: harvest → describe + Jev flags → AI folders, each step only if missing; the button is its only
+ *   8. Prepare content: harvest → describe + Jev flags → AI folders → feet pack, each step only if missing; the button is its only
  *      start, the step list polls every 2 s while it runs (`useFullAiPrepare`). It writes no config, so it does not
  *      wait on the draft.
  * Content folders edits the draft (`useFullAiConfig.edit`) and waits like the other controls (`off`).
@@ -96,7 +96,7 @@ function FolderGroup({ title, list, picked, onToggle }: {
   );
 }
 
-const STEP_LABEL: Record<PrepareStep["name"], string> = { harvest: "Harvest", describe: "Describe", folders: "Folders" };
+const STEP_LABEL: Record<PrepareStep["name"], string> = { harvest: "Harvest", describe: "Describe", folders: "Folders", feet: "Feet pack" };
 const countsLine = (c: Record<string, number>) => Object.entries(c).map(([k, v]) => `${k} ${v}`).join(" · ");
 
 export function PrepareRow({ accountId }: { accountId: string }) {
@@ -107,7 +107,7 @@ export function PrepareRow({ accountId }: { accountId: string }) {
       <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
         <div className="min-w-0">
           <div className="text-sm text-fg">Prepare content</div>
-          <div className="mt-0.5 text-xs text-muted">Harvest, describe, AI folders; skips what is done. Nothing goes to OnlyFans.</div>
+          <div className="mt-0.5 text-xs text-muted">Harvest, describe, AI folders, feet pack; skips what is done. Nothing goes to OnlyFans.</div>
         </div>
         <IfButton disabled={busy} onClick={() => start.mutate()}>{busy ? "Preparing…" : "Prepare content"}</IfButton>
       </div>

@@ -318,16 +318,23 @@ def _draw(rows: list[dict[str, Any]], rng: random.Random) -> dict[str, Any]:
     return rng.choice(sorted(rows, key=lambda r: r["media_id"]))
 
 
-def _facts(locked: list[dict[str, Any]]) -> dict[str, Any]:
+def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) -> dict[str, Any]:
     kinds: dict[str, int] = {}
     for r in locked:
         kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    shown = dict(kinds)
+    for r in previews:
+        shown[r["kind"]] = shown.get(r["kind"], 0) + 1
     return {"kinds": kinds,
+            # locked + free previews: what the PPV bubble shows him (`claim_ok` counts, `fallback_caption`)
+            "shown_kinds": shown,
             "items": [vault_ai_brief.sellability(r.get("fields") or {},
                                                  duration_seconds=r.get("duration_seconds"))
                       for r in locked],
             # the anchor's describe text: the Writer's item line (03b, full_ai_writers.item_line)
             "description": str((locked[0].get("fields") or {}).get("description") or ""),
+            # every locked item's describe text: `claim_ok`'s subject words (previews aren't paid for)
+            "descriptions": [str((r.get("fields") or {}).get("description") or "") for r in locked],
             # the separate caption call's one media (`full_ai_caption`): the first described locked
             # item, as old `_ppv_caption._first_described` took a pack's hero; None when none is
             "hero": next(({"media_id": r["media_id"], "kind": r["kind"],
@@ -342,7 +349,7 @@ def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: As
     return Pick(ref=locked[0]["media_id"], media=tuple(r["media_id"] for r in locked),
                 previews=tuple(r["media_id"] for r in previews), price_cents=0 if free else top,
                 list_cents=top, subject=subject or ask.subject, format=locked[0]["kind"], lane=_lane(top),
-                facts=_facts(locked))
+                facts=_facts(locked, previews))
 
 
 def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
@@ -462,21 +469,31 @@ def _words(text: str) -> list[str]:
 
 def claim_ok(text: str, pick: Pick) -> bool:
     """The text claims only what the Pick holds: a video word needs a clip and a photo word a
-    photo; a count before one ("5 videos", "four pics", "a vid") equals that kind's count; a plural
-    needs more than one; a subject word is the Pick's subject's or named by its describe text.
-    A price or a time before a noun is no count. Pure.
+    photo; a count before one ("5 videos", "four pics") equals that kind's count; a plural
+    needs more than one; a subject word is the Pick's subject's or named by the describe text of
+    any of its locked items (`facts["descriptions"]`). A price or a time before a noun is no count,
+    nor is "a"/"an" ("a pic" over 2 photos is over-delivery; "a vid" still needs a clip). Pure.
     ASSUMPTION: the per-subject word lists (`_SUBJECT_WORDS`) and the uncounted words
     (`_NOT_A_COUNT`) are this repo's; old `pack_claim` audited a caption it assembled itself, so it
-    had no such check. Overturned by a measured false-fail on real Writer captions."""
+    had no such check. Overturned by a measured false-fail on real Writer captions.
+    ASSUMPTION: "a"/"an" is no count and every locked item's describe text allows its subject
+    words (measured 2026-11-14: "a pic" and "naked" false-failed a 2-photo Pick whose second photo
+    is the nude one). Overturned if he complains "a pic" got him several.
+    ASSUMPTION (owner 2026-11-14, "there are 3 photos"): a count may be the locked items' or what
+    the bubble shows (locked + free previews: "2 pics" and "3 pics" both pass over 2 locked + 1
+    preview), and a media noun / plural reads against what it shows. Overturned if a fan disputes
+    paying for a count that included the free preview."""
     low = text.lower()
     pics, vids, _auds = _buckets(pick.facts["kinds"])
+    # what the bubble shows: the locked items plus the free previews beside them
+    seen_pics, seen_vids, _ = _buckets(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     for w in _words(low):
-        have = vids if w in _VID_NOUNS else pics if w in _PIC_NOUNS else None
+        have = seen_vids if w in _VID_NOUNS else seen_pics if w in _PIC_NOUNS else None
         if have is not None and (have == 0 or (w.endswith("s") and have == 1)):
             return False
     toks = _TOKEN.findall(low)
     for i, tok in enumerate(toks):
-        n = int(tok) if tok.isdigit() else _NUMBER_WORDS.get(tok)
+        n = int(tok) if tok.isdigit() else None if tok in ("a", "an") else _NUMBER_WORDS.get(tok)
         nxt = toks[i + 1:i + 3]
         if n is None or not nxt:
             continue
@@ -487,9 +504,9 @@ def claim_ok(text: str, pick: Pick) -> bool:
             noun = nxt[1]
         else:
             continue
-        if n != (vids if noun in _VID_NOUNS else pics):
+        if n not in ((vids, seen_vids) if noun in _VID_NOUNS else (pics, seen_pics)):
             return False
-    desc = set(_words(pick.facts["description"]))
+    desc = set(_words(" ".join(pick.facts.get("descriptions", [pick.facts["description"]]))))
     allowed = set(_SUBJECT_WORDS.get(pick.subject, ()))
     for words in _SUBJECT_WORDS.values():
         if desc & words:
@@ -567,12 +584,12 @@ def _money(cents: int) -> str:
 
 
 def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str:
-    """The plain caption a twice-failed (or too late) audit sends instead: the Pick's counts and
-    kinds (`_media_phrase`), plus OLD-AIC-12's terms wording with the price only for an `offer`
+    """The plain caption a twice-failed (or too late) audit sends instead: the counts and kinds the
+    bubble shows, free previews included (`_media_phrase` over `facts["shown_kinds"]`), plus OLD-AIC-12's terms wording with the price only for an `offer`
     ("1 vid, $25 to unlock"); a tease and a Free item name no money ("4 pics"). Pure.
     ASSUMPTION: the bare clause, as old `pack_claim.compose_caption` sent with no voice line.
     Overturned if the owner wants a flirt line beside it (old `ppv_send._FALLBACK_CAPTION`)."""
-    phrase = _media_phrase(pick.facts["kinds"])
+    phrase = _media_phrase(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     return f"{phrase}, {_money(pick.price_cents)} to unlock" if kind == "offer" else phrase
 
 

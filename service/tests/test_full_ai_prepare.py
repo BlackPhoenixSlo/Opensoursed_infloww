@@ -60,7 +60,7 @@ import vault_stills  # noqa: E402
 from _jev_fixtures import video_jev  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (Account, AccountAiConfig, GrokDailyCost, VaultCacheRun,  # noqa: E402
-                       VaultFolder, VaultItem)
+                       VaultFolder, VaultFolderItem, VaultItem)
 
 SERVICE = Path(__file__).resolve().parents[1]
 
@@ -180,6 +180,17 @@ async def _apply_spy(account_id, plan):
 
 vault_scripts.apply_ai_folders = _apply_spy
 
+_planned: list[dict] = []
+_real_plan = vault_scripts.plan_ai_folders
+
+
+async def _plan_spy(account_id, **kw):
+    _planned.append(kw)
+    return await _real_plan(account_id, **kw)
+
+
+vault_scripts.plan_ai_folders = _plan_spy
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -257,7 +268,8 @@ async def case_facts_harvested_table():
         s.add(VaultFolder(account_id=aid, name="AI-gone", deleted_at=datetime.utcnow()))
         await s.commit()
     f = await prep.read_facts(aid)
-    assert f == {"harvested": True, "undescribed": 3, "unflagged": 3, "ai_folders": False}, f
+    assert f == {"harvested": True, "undescribed": 3, "unflagged": 3, "ai_folders": False,
+                 "feet_pack": False}, f
     async with get_session() as s:
         s.add(VaultFolder(account_id=aid, name="AI-free lane"))
         await s.commit()
@@ -265,25 +277,75 @@ async def case_facts_harvested_table():
 
 
 async def case_steps_for_table():
-    def row(harvested, undescribed, unflagged, ai_folders):
+    def row(harvested, undescribed, unflagged, ai_folders, feet_pack=False):
         return [(s["name"], s["state"]) for s in prep.steps_for(
             {"harvested": harvested, "undescribed": undescribed, "unflagged": unflagged,
-             "ai_folders": ai_folders})]
+             "ai_folders": ai_folders, "feet_pack": feet_pack})]
 
     P, S = "pending", "skipped"
     table = [
         # never harvested: describe can't be judged on an empty mirror yet
-        ((False, 0, 0, False), [("harvest", P), ("describe", P), ("folders", P)]),
-        ((True, 0, 0, False), [("harvest", S), ("describe", S), ("folders", P)]),
-        ((True, 5, 0, False), [("harvest", S), ("describe", P), ("folders", P)]),
-        ((True, 0, 2, False), [("harvest", S), ("describe", P), ("folders", P)]),
-        ((True, 0, 0, True), [("harvest", S), ("describe", S), ("folders", S)]),
-        ((False, 0, 0, True), [("harvest", P), ("describe", P), ("folders", S)]),
+        ((False, 0, 0, False), [("harvest", P), ("describe", P), ("folders", P), ("feet", P)]),
+        ((True, 0, 0, False), [("harvest", S), ("describe", S), ("folders", P), ("feet", P)]),
+        ((True, 5, 0, False), [("harvest", S), ("describe", P), ("folders", P), ("feet", P)]),
+        ((True, 0, 2, False), [("harvest", S), ("describe", P), ("folders", P), ("feet", P)]),
+        ((True, 0, 0, True), [("harvest", S), ("describe", S), ("folders", S), ("feet", P)]),
+        ((False, 0, 0, True), [("harvest", P), ("describe", P), ("folders", S), ("feet", P)]),
+        # a Feet pack already there is the operator's: never filed twice
+        ((True, 0, 0, True, True), [("harvest", S), ("describe", S), ("folders", S), ("feet", S)]),
+        ((True, 0, 0, False, True), [("harvest", S), ("describe", S), ("folders", P), ("feet", S)]),
     ]
     for facts, want in table:
         assert row(*facts) == want, (facts, row(*facts))
-    steps = prep.steps_for({"harvested": True, "undescribed": 5, "unflagged": 2, "ai_folders": False})
+    steps = prep.steps_for({"harvested": True, "undescribed": 5, "unflagged": 2, "ai_folders": False,
+                            "feet_pack": False})
     assert steps[1]["counts"] == {"undescribed": 5, "unflagged": 2}, steps[1]
+
+
+def _feet_jev(lane5: str = "free", score: float = 0.9, detail: str = "socks", **body) -> dict:
+    """A photo `_jev` as the Feet pack reads it (test_vault_pack_picker `_jev_blob`)."""
+    return {"v": "v8+nn.10", "status": "ok", "lane5": lane5,
+            **{"breasts_bare": "n", "crotch_bare": "n", "penetration": "n", **body},
+            "feet_subject": score,
+            "P": {"feet_focus": score, "soles_visible": 0.0, "bare_toes_visible": 0.0},
+            "tags": {"feet_detail": detail, "feet_any": "y", "feet_focus": "y" if score >= 0.4 else "n"}}
+
+
+async def case_feet_step_files_preselected_only():
+    """The feet step = the picker's "File N preselected": confident photos on their rung, the possible
+    ones, clips and non-feet left alone; then the pack exists and the step is skipped."""
+    aid = await _account()
+    rows = [
+        (1, "photo", _feet_jev()),                                  # .9, socks, free  -> tease
+        (2, "photo", _feet_jev(detail="bare")),                     # .9, bare, free   -> nude
+        (3, "photo", _feet_jev(lane5="$50", crotch_bare="y")),      # .9, paid body    -> nude-body
+        (4, "photo", _feet_jev(score=0.4)),                         # possible: stays in the picker
+        (5, "photo", _feet_jev(breasts_bare="unsure")),             # confident, no safe rung: not filed
+        (6, "video", _feet_jev()),                                  # a pack is photos only
+        (7, "photo", None),                                         # Jev never saw it
+    ]
+    async with get_session() as s:
+        for mid, kind, jev in rows:
+            s.add(VaultItem(account_id=aid, media_id=mid, kind=kind, tags="[]",
+                            ai_fields_json=json.dumps({"_jev": jev}) if jev else None,
+                            created_at=datetime(2026, 6, 1)))
+        await s.commit()
+    assert (await prep.read_facts(aid))["feet_pack"] is False
+    step = await prep._feet(aid, {})
+    assert (step["name"], step["state"], step["counts"]) == ("feet", "done", {"filed": 3, "to_check": 1}), step
+    async with get_session() as s:
+        got = {(f.name, i.media_id) for f, i in (await s.execute(
+            select(VaultFolder, VaultFolderItem).join(VaultFolderItem, VaultFolderItem.folder_id == VaultFolder.id)
+            .where(VaultFolder.account_id == aid))).all()}
+        made = {f.name: f.created_by for f in (await s.execute(
+            select(VaultFolder).where(VaultFolder.account_id == aid))).scalars()}
+    assert got == {("feet-tease", 1), ("feet-nude", 2), ("feet-nude-body", 3)}, got
+    # the operator's folders (the AI- reaper never touches them), all three rungs
+    assert made == {"feet-tease": "operator", "feet-nude": "operator", "feet-nude-body": "operator"}, made
+    facts = await prep.read_facts(aid)
+    assert facts["feet_pack"] is True
+    assert prep.steps_for(facts)[3] == {"name": "feet", "state": "skipped", "detail": "Feet pack exists",
+                                        "counts": {}}
 
 
 # ── The chain ────────────────────────────────────────────────────────
@@ -293,9 +355,11 @@ async def case_first_click_runs_missing_steps():
     of = _CLIENTS[aid] = FakeOF(aid, 3)
     _reset_spies()
     started = await full_ai_api.prepare_content_start({"account_id": aid})
-    assert started["run_id"] and len(started["steps"]) == 3, started
+    assert started["run_id"] and len(started["steps"]) == 4, started
     run = await _settle(aid)
-    assert _states(run) == [("harvest", "done"), ("describe", "done"), ("folders", "done")], run
+    assert _states(run) == [("harvest", "done"), ("describe", "done"), ("folders", "done"), ("feet", "done")], run
+    # clips only: no feet photo, so nothing filed and no feet-* folder made
+    assert run["steps"][3]["counts"] == {"filed": 0, "to_check": 0}, run["steps"][3]
     assert run["run_id"] == started["run_id"] and run["started_at"], run
     # harvest walked the fake vault: folder list, then the newest page (OF: no more)
     assert of.calls[:2] == [("lists", 0), ("media", 0, "desc")], of.calls
@@ -304,8 +368,12 @@ async def case_first_click_runs_missing_steps():
     assert sorted(_jevved) == [1, 2, 3] and len(_described) == 3, (_jevved, _described)
     assert run["steps"][1]["counts"]["described"] == 3, run["steps"][1]
     assert _applied == [aid], _applied
+    # the folder step asks for the vault's own script count (10), as the Build AI folders modal does; a
+    # literal 2 here once left prepare content with 2 script folders
+    assert _planned[-1] == {"keep": vault_scripts.DEFAULT_KEEP_SCRIPTS, "solo": False, "topics": [],
+                            "split": True} and _planned[-1]["keep"] == 10, _planned
     assert (await prep.read_facts(aid)) == {"harvested": True, "undescribed": 0, "unflagged": 0,
-                                            "ai_folders": True}
+                                            "ai_folders": True, "feet_pack": False}
     # never mirrored: no OF call beyond the walk's reads
     assert {c[0] for c in of.calls} <= {"media", "lists"}, of.calls
 
@@ -315,13 +383,14 @@ async def case_second_click_skips_everything():
     _CLIENTS[aid] = FakeOF(aid, 2)
     await full_ai_api.prepare_content_start({"account_id": aid})
     first = await _settle(aid)
-    assert [s for _, s in _states(first)] == ["done"] * 3, first
+    assert [s for _, s in _states(first)] == ["done"] * 4, first
     of = _CLIENTS[aid] = FakeOF(aid, 2)
     _reset_spies()
     again = await full_ai_api.prepare_content_start({"account_id": aid})
     assert again["run_id"] != first["run_id"], "a finished run is not re-returned"
     run = await _settle(aid)
-    assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped")], run
+    assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped"),
+                            ("feet", "done")], run   # no feet-* folder yet, so it looks again: filed 0
     assert of.calls == [], of.calls
     assert (_jevved, _described, _applied) == ([], [], []), (_jevved, _described, _applied)
 
@@ -345,7 +414,7 @@ async def case_walk_error_fails_harvest():
         cr = (await s.execute(select(VaultCacheRun).where(VaultCacheRun.account_id == aid))).scalar_one()
     assert (cr.status, cr.error) == ("error", "OF 500 mid-walk (fake)"), (cr.status, cr.error)
     assert run["steps"][0]["state"] == "failed" and run["steps"][0]["detail"] == cr.error, run["steps"][0]
-    assert [s["state"] for s in run["steps"][1:]] == ["skipped", "skipped"], run
+    assert [s["state"] for s in run["steps"][1:]] == ["skipped"] * 3, run
     assert (_jevved, _described, _applied) == ([], [], []), "the chain did not stop"
     assert aid not in vault_runs.manual_running
 
@@ -381,7 +450,8 @@ async def case_ai_folder_exists_skips_folders():
     _reset_spies()
     await full_ai_api.prepare_content_start({"account_id": aid})
     run = await _settle(aid)
-    assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped")], run
+    assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped"),
+                            ("feet", "done")], run   # no feet-* folder yet, so it looks again: filed 0
     assert _applied == [] and of.calls == [], (_applied, of.calls)
 
 
@@ -396,7 +466,7 @@ async def case_held_guard_is_busy():
     finally:
         vault_runs.manual_running.discard(aid)
     assert run["steps"][0]["state"] == "busy", run["steps"][0]
-    assert [s["state"] for s in run["steps"][1:]] == ["skipped", "skipped"], run
+    assert [s["state"] for s in run["steps"][1:]] == ["skipped"] * 3, run
     assert _CLIENTS[aid].calls == [] and _applied == [], "the chain did not stop"
 
 
@@ -557,6 +627,7 @@ async def case_turn_path_never_imports_prepare():
 CASES = [
     case_facts_harvested_table,
     case_steps_for_table,
+    case_feet_step_files_preselected_only,
     case_first_click_runs_missing_steps,
     case_second_click_skips_everything,
     case_click_while_running_same_run,

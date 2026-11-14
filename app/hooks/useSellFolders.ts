@@ -8,21 +8,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { internalFoldersQuery } from "@/hooks/useInternalFolders";
 import { useOfFoldersMirror } from "@/hooks/useVaultCache";
-import { relay } from "@/lib/relay";
 
-export interface InternalFolder { id: number; name: string; items: number }
 export interface SellFolder { ref: string; name: string; count: number }
 
-/** The key the vault page's folder writes already invalidate (`VaultAiFoldersModal`, `VaultPackPickerModal`). */
-export const internalFoldersKey = (accountId: string) => ["vault-internal-folders", accountId] as const;
-
 export function useSellFolders(accountId: string) {
-  const internalQ = useQuery<{ list: InternalFolder[] }>({
-    queryKey: internalFoldersKey(accountId),
-    queryFn: () => relay.get(`/admin/vault-ai/internal-folders?account_id=${encodeURIComponent(accountId)}`, { accountId }),
-    staleTime: 60_000,
-  });
+  const internalQ = useQuery(internalFoldersQuery(accountId));
   const ofQ = useOfFoldersMirror(accountId, true);
   const vault: SellFolder[] = (internalQ.data?.list ?? []).map((f) => ({ ref: `vf:${f.id}`, name: f.name, count: f.items }));
   const of: SellFolder[] = (ofQ.data?.list ?? []).map((f) => ({ ref: `of:${f.id}`, name: f.name, count: f.mediaCount ?? 0 }));

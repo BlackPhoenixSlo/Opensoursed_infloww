@@ -2,7 +2,7 @@
 
 The app serves a read-only MCP server at `https://<your app host>/admin/mcp` (`service/mcp_api.py`; design: `docs/plans/ultra-mode/issues/05-mcp-server.md`). Owners only.
 
-1. In the app: **Settings → AI keys → Access tokens** → create a token (shown once, starts `ifw_`). No account yet? Connect without a token and call the `connect_account` tool: it returns the sign-up / log-in link that lands on that card.
+1. In the app: **Settings → AI keys → Access tokens** → create a token (shown once, starts `ifw_`). No token yet? Connect without one: `register_account` (new Agency) or `login` (owner username + password, `code` with 2FA) returns a token straight away; `connect_account` returns the sign-up / log-in link that lands on that card instead. Employee logins get no token. Each `register_account` / `login` call makes a new token (earlier ones keep working); revoke old ones on **Settings → AI keys → Access tokens**. OnlyFans logins are never an MCP tool: `connect_account`'s `logins_url` opens the Connect card where you paste them.
 2. Add the server (token goes in the config, never into the chat):
 
    ```sh

@@ -362,7 +362,7 @@ def start_login(*, email: str, password: str, principal: str | None,
         raise ValueError(f"unknown proxy choice {proxy!r} (expected one of {PROXY_CHOICES})")
     if proxy == PROXY_CUSTOM and not proxy_label:
         raise ValueError("a custom proxy needs its label")
-    _bb_env()  # fail before a job exists when the env is not set
+    bb_env()  # fail before a job exists when the env is not set
     now = time.time()
     job = RemoteLoginJob(
         id=uuid.uuid4().hex, email=email, principal=principal,
@@ -469,7 +469,7 @@ def open_of(page) -> str | None:
 
 # ── Browserbase REST (stdlib; tests fake these symbols) ─────────────────────
 
-def _bb_env() -> tuple[str, str]:
+def bb_env() -> tuple[str, str]:
     api_key = os.environ.get("BROWSERBASE_API_KEY")
     project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
     if not api_key:
@@ -493,7 +493,7 @@ def _bb_session_payload(project_id: str) -> dict[str, Any]:
 
 
 def _bb_request(path: str, method: str = "GET", body: dict | None = None) -> dict[str, Any]:
-    api_key, _ = _bb_env()
+    api_key, _ = bb_env()
     req = urllib.request.Request(
         f"{BROWSERBASE_API}{path}",
         data=json.dumps(body).encode() if body is not None else None,
@@ -513,7 +513,7 @@ def _bb_request(path: str, method: str = "GET", body: dict | None = None) -> dic
 
 def _bb_create_session() -> dict[str, Any]:
     """Create a session on Browserbase's managed proxies. Raises on any refusal."""
-    _, project_id = _bb_env()
+    _, project_id = bb_env()
     try:
         session = _bb_request("/sessions", "POST", _bb_session_payload(project_id))
     except RuntimeError as e:
@@ -540,7 +540,7 @@ def _bb_release(session_id: str | None) -> None:
     if not session_id:
         return
     try:
-        _, project_id = _bb_env()
+        _, project_id = bb_env()
         _bb_request(f"/sessions/{session_id}", "POST",
                     {"projectId": project_id, "status": "REQUEST_RELEASE"})
     except Exception as e:  # noqa: BLE001 — the session times out on its own

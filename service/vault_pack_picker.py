@@ -35,6 +35,10 @@ always come back, whatever they are, so a rung view can still unfile them. The
 pack reads the vault itself, never the AI- folders (it works before they are
 built). Nothing here talks to OnlyFans.
 
+Prepare content (`full_ai_prepare._feet`, owner 2026-11-14: the default ticks were right) presses "File N
+preselected" itself, once, while the account has no feet-* folder: the preselected photos only, each on its
+preselected rung. The possible ones still wait for the operator here.
+
 THE FREE RUNG is guarded hard: `jev_tier` is 0 only for lane5 "free" with
 breasts / crotch / penetration all "n"; `triage` refuses (`NotFreeSafe`) a
 Jev-priced row (`jev_priced`: a video's max frame too) on the free rung

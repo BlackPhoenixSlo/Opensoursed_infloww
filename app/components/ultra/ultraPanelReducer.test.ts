@@ -42,6 +42,40 @@ describe("composer: canSubmit / requestBody", () => {
   });
 });
 
+describe("credential guard (ticket 11)", () => {
+  it.each<[string, string, boolean]>([
+    ["colon login", "log in a@x.com:hunter22", true],
+    ["login on its own line", "add these\nb@y.com hunter22", true],
+    ["plain request", "mass the new set to a@x.com fans", false],
+    ["email only", "who is a@x.com", false],
+  ])("%s", (_name, text, refused) => {
+    const ready = run([hydrated, draft(text)]);
+    const s = ultraPanelReducer(ready, { type: "start" });
+    if (refused) {
+      expect(requestBody(ready)).toBeNull();
+      expect([s.starting, s.draft, s.startError, s.loginRefused]).toEqual([false, "", null, true]);
+    } else {
+      expect(requestBody(ready)).not.toBeNull();
+      expect([s.starting, s.startError, s.loginRefused]).toEqual([true, null, false]);
+    }
+  });
+
+  it("the relay's 400 (its login guard) maps to the same refusal, draft cleared", () => {
+    const s = run([hydrated, draft("log in x"), { type: "start" },
+      { type: "startFailed", message: "paste logins in the Connect card", loginRefused: true }]);
+    expect([s.starting, s.draft, s.startError, s.loginRefused]).toEqual([false, "", null, true]);
+  });
+
+  it.each<[string, PanelAction]>([
+    ["a clean start", { type: "start" }],
+    ["reset", { type: "reset" }],
+  ])("%s clears the refusal", (_name, next) => {
+    const refused = run([hydrated, draft("a@x.com:hunter22"), { type: "start" }, draft("go")]);
+    expect(refused.loginRefused).toBe(true);
+    expect(ultraPanelReducer(refused, next).loginRefused).toBe(false);
+  });
+});
+
 describe("plan lifecycle", () => {
   it("hydrate runs once (a later stored read can't replace the open plan)", () => {
     expect(run([{ type: "hydrate", planId: "p1" }, { type: "hydrate", planId: "p2" }]).planId).toBe("p1");

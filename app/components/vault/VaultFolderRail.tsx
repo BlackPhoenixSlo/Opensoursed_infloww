@@ -165,18 +165,19 @@ function FolderNameModal({ folder, onSave, onCancel }: {
   );
 }
 
-/** Ours: "Set price" (an agency's price on the folder, `of:<id>`). Full AI Chat's sell executor lists the folder's
+/** Ours: "Set price" (an agency's price on the folder, `of:<id>` or `vf:<id>`). Full AI Chat's sell executor lists the folder's
  *  items at it (the highest when an item is in several priced folders). Dollars, $10 to $200; Clear drops it. Our DB
  *  only, never written to OnlyFans. Form logic: `folderPriceForm.ts`. */
-function FolderPriceModal({ folder, current, onSave, onCancel }: {
-  folder: VaultList;
+export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCancel }: {
+  /** The folder's name, and its price ref: `of:<id>` (an OF list) or `vf:<id>` (one of ours). */
+  name: string;
+  priceRef: string;
   current: number | null;
   onSave: (body: ReturnType<typeof buildPayload>) => Promise<void>;
   onCancel: () => void;
 }) {
   const accountId = useVaultAccountId();
   const [form, dispatch] = useReducer(folderPriceReducer, current, initForm);
-  const ref = `of:${folder.id}`;
   async function write(body: ReturnType<typeof buildPayload>) {
     dispatch({ type: "saving" });
     try {
@@ -205,7 +206,7 @@ function FolderPriceModal({ folder, current, onSave, onCancel }: {
       }
     >
       <p className="text-sm text-fg-dim">
-        Full AI Chat sells the items in <span className="font-medium text-fg">{folder.name}</span> at this price.
+        Full AI Chat sells the items in <span className="font-medium text-fg">{name}</span> at this price.
       </p>
       <label className="block space-y-2">
         <span className="block text-sm font-medium">Price (USD, $10 to $200)</span>
@@ -665,7 +666,8 @@ export default function VaultFolderRail({
       {priceModal && (
         <FolderPriceModal
           key={priceModal.id}
-          folder={priceModal}
+          name={priceModal.name}
+          priceRef={`of:${priceModal.id}`}
           current={priceOf(priceModal)}
           onSave={async (body) => {
             await setFolderPrice(qc, body);

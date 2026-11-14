@@ -88,17 +88,32 @@ class Creds:
         return td.public_base(self.forwarded_host, self.forwarded_proto, os.environ.get("APP_PUBLIC_URL"))
 
 
-async def _send(req: td.Request, creds: Creds) -> tuple[int, Any]:
+async def _raw(req: td.Request, creds: Creds) -> httpx.Response:
     import server  # the app this process serves; imported late (server imports the API modules)
     transport = httpx.ASGITransport(app=server.app, raise_app_exceptions=False,
                                     client=(creds.client_host or "127.0.0.1", 0))
     async with httpx.AsyncClient(transport=transport, base_url="http://relay.internal", timeout=None) as c:
-        r = await c.request(req.method, req.path, params=req.query or None, json=req.json,
-                            headers={**creds.headers(), **req.headers})
+        return await c.request(req.method, req.path, params=req.query or None, json=req.json,
+                               headers={**creds.headers(), **req.headers})
+
+
+async def raw(req: td.Request, creds: Creds) -> httpx.Response:
+    """One inner request, the whole response (Set-Cookie included); the one isolation point: an empty
+    Context, so the inner request neither sees nor sets the caller's identity."""
+    return await asyncio.create_task(_raw(req, creds), context=contextvars.Context())
+
+
+def body_of(r: httpx.Response) -> Any:
+    """The response's JSON, else its text."""
     try:
-        return r.status_code, r.json()
+        return r.json()
     except ValueError:
-        return r.status_code, r.text
+        return r.text
+
+
+async def _send(req: td.Request, creds: Creds) -> tuple[int, Any]:
+    r = await raw(req, creds)
+    return r.status_code, body_of(r)
 
 
 async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
@@ -115,7 +130,7 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
     except td.ArgsError as e:
         return {**td.error(422, {"detail": "invalid arguments", "errors": e.errors}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
-    status, body = await _isolated(req, creds)
+    status, body = await _send(req, creds)
     url = td.open_url(base, t.open, parsed, body)
     if t.check is not None and 200 <= status < 300 and (why := t.check(parsed, body)):
         return {**td.error(502, {"detail": why}), "open_url": url}
@@ -133,7 +148,3 @@ async def _plan_send(t: td.Tool, args: dict[str, Any], plan_step: str | None) ->
     return row is not None and ud.may_send(json.loads(row.plan_json), row.status, json.loads(row.step_states),
                                            sid, t.name, args)
 
-
-async def _isolated(req: td.Request, creds: Creds) -> tuple[int, Any]:
-    # An empty Context: the inner request neither sees nor sets the caller's identity.
-    return await asyncio.create_task(_send(req, creds), context=contextvars.Context())

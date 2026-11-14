@@ -9,6 +9,8 @@
  *   PUT  /admin/full-ai/config/draft {account_id, draft, rev}   a control or the JSON editor: `editDraft`, `saveDraft`,
  *                                            then `draftSaved` with the stored draft and rev
  *   POST /admin/full-ai/config/save | rollback {account_id, rev}   `commit`, then `saved` / `rolledBack`
+ *   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON: `commit`, then `loaded`
+ *                                            with the answer (a draft edit unstored is dropped, as on Reload)
  *
  * Every write answers the GET shape. A field error is 422 `{errors: ["<key or page label>: <why>"]}` → `configFailed`; a stale rev is
  * 409 → `stale` (the page asks for a reload instead of overwriting). Both read through `RelayError.body`. Reload (a fresh
@@ -127,11 +129,27 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [accountId, dispatch]);
 
+  /** Store `checkpoint` straight in (the checkpoint JSON); the old one becomes `previous`. True once stored. */
+  const putCheckpoint = useCallback(async (checkpoint: FullAiConfig): Promise<boolean> => {
+    const s = ref.current;
+    if (!canEdit(s)) return false;
+    dispatch({ type: "commit" });
+    try {
+      const body = await relay.put<ConfigBody>("/admin/full-ai/config/checkpoint",
+        { account_id: accountId, checkpoint, rev: s.rev }, { accountId });
+      dispatch({ type: "loaded", body });
+      return true;
+    } catch (e) {
+      dispatch(failed(e));
+      return false;
+    }
+  }, [accountId, dispatch]);
+
   const save = useCallback(() => void commit("save"), [commit]);
   const rollback = useCallback(() => void commit("rollback"), [commit]);
   /** The Writer select's options (the GET's `writer_models`; empty until it answers). */
   const writerModels = data?.writer_models ?? [];
-  return { edit, putDraft, save, rollback, reload, keepMine, takeTheirs, writerModels };
+  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

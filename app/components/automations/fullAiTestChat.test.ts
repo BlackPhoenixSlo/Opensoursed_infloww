@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, configLine, humanStyle,
   humanStylePatch, initTestChat, keepMineSave, layersOff, MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, styleLayers,
-  testChatReducer, typosPatch, writerPatch, type FanPhoto, type HumanStyle, type PpvLine, type StyleLayers,
+  testChatReducer, toggleWriterPatch, typosPatch, writerPatch, writersLine, type FanPhoto, type HumanStyle, type PpvLine, type StyleLayers,
   type ConfigBody, type FullAiConfig, type Offer, type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide,
   sessionTurns,
 } from "./fullAiTestChat";
@@ -415,6 +415,23 @@ describe("humanStylePatch / typosPatch", () => {
   });
 });
 
+describe("toggleWriterPatch (tick adds at the end, untick drops; the last one and a full chain refuse)", () => {
+  it.each<[string, string[], string, string[] | null]>([
+    ["adds at the end", ["a"], "b", ["a", "b"]],
+    ["drops a ticked one", ["a", "b", "c"], "b", ["a", "c"]],
+    ["drops the Writer, the next answers first", ["a", "b"], "a", ["b"]],
+    ["keeps the last one", ["a"], "a", null],
+    ["refuses a fifth", ["a", "b", "c", "d"], "e", null],
+    ["drops from a full chain", ["a", "b", "c", "d"], "d", ["a", "b", "c"]],
+  ])("%s", (_n, writers, model, want) => {
+    expect(toggleWriterPatch({ writers }, model)).toEqual(want === null ? null : { writers: want });
+  });
+  it("writersLine prints the chain in order", () => {
+    expect(writersLine({ writers: ["a", "b"] })).toBe("Writers a → b");
+    expect(writersLine({})).toBe("Writers none");
+  });
+});
+
 describe("writerPatch (picked model first, the rest keep their order)", () => {
   const W = ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash"];
   it.each<[string, string[] | undefined, string, string[]]>([
@@ -532,14 +549,16 @@ describe("ppvLine: how a PPV bubble stands", () => {
 
 describe("replyLine: how many Writers fell before the one that answered", () => {
   const a = (writer: string, outcome: string, rewrite?: boolean) => ({ writer, outcome, ms: 100, ...(rewrite ? { rewrite } : {}) });
-  it.each<[string, TurnResponse["attempts"], number]>([
-    ["first Writer answered", [a("euryale-v2.3", "ok")], 0],
-    ["one fell", [a("euryale-v2.3", "http_503"), a("hermes-4-405b", "ok")], 1],
-    ["Claim audit rewrite by the same Writer: none fell", [a("euryale-v2.3", "ok"), a("euryale-v2.3", "ok", true)], 0],
+  it.each<[string, TurnResponse["attempts"], string]>([
+    ["first Writer answered", [a("euryale-v2.3", "ok")], "0 fell before"],
+    ["one fell, with why", [a("euryale-v2.3", "no_key"), a("hermes-4-405b", "ok")], "1 fell before (euryale-v2.3 no_key)"],
+    ["Claim audit rewrite by the same Writer: none fell", [a("euryale-v2.3", "ok"), a("euryale-v2.3", "ok", true)], "0 fell before"],
     ["one fell, then a rewrite with its own failure", [a("euryale-v2.3", "http_503"), a("hermes-4-405b", "ok"),
-      a("hermes-4-405b", "timeout", true), a("glm-5.3-flash", "ok", true)], 1],
+      a("hermes-4-405b", "timeout", true), a("glm-5.3-flash", "ok", true)], "1 fell before (euryale-v2.3 http_503)"],
+    ["two fell", [a("euryale-v2.3", "no_key"), a("hermes-4-405b", "no_key"), a("deepseek-v4-flash", "ok")],
+      "2 fell before (euryale-v2.3 no_key · hermes-4-405b no_key)"],
   ])("%s → %s", (_n, attempts, fell) => {
-    expect(replyLine(reply({ attempts }))).toBe(`Route chat · Heat 1 · Row otherwise · Writer euryale-v2.3 · ${fell} fell before`);
+    expect(replyLine(reply({ attempts }))).toBe(`Route chat · Heat 1 · Row otherwise · Writer euryale-v2.3 · ${fell}`);
   });
 });
 

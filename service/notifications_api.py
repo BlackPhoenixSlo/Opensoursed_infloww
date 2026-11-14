@@ -29,7 +29,9 @@ Where the rows come from (settings_schema.NOTIFICATION_KINDS):
   session_dead          account_health.mark_session_dead, once per dead episode
   ultra_done            ultra_run, once per finished Ultra plan (links its plan page)
   ultra_needs_you       ultra_run, an Ultra judge step waiting for the owner's pick (links the plan page;
-                        no switch: the run waits on it)
+                        no switch: the run waits on it); login_queue, a pasted login that failed
+                        ("<email> not logged in") or timed out ("… not logged in after 5 min"; links
+                        /creators/logins?queue=<id>)
   consent_required      consent_notices: OnlyFans wants the Creator's signed consent
                         form (NC/AL law); one per Creator while it lasts
 

@@ -1782,6 +1782,7 @@ def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
     aid = IDS["creator_a"]
     get = f"/admin/full-ai/config?account_id={aid}"
     writes = (("put", "/admin/full-ai/config/draft", {"account_id": aid, "draft": {}, "rev": 0}),
+              ("put", "/admin/full-ai/config/checkpoint", {"account_id": aid, "checkpoint": {}, "rev": 0}),
               ("post", "/admin/full-ai/config/save", {"account_id": aid, "rev": 0}),
               ("post", "/admin/full-ai/config/rollback", {"account_id": aid, "rev": 0}))
     denied = {"detail": "Your role does not allow Full AI Chat"}
@@ -1810,9 +1811,10 @@ def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
             assert r.status_code == 403, (w[1], r.status_code, r.text)
         # Nothing above stored a thing; the owner is never checked (stale rev 0 after the PUT: 409).
         assert OWNER_A.get(get).json()["rev"] == 0
-        put, save, rollback = (write(OWNER_A, *w) for w in writes)
+        put, ckpt, save, rollback = (write(OWNER_A, *w) for w in writes)
         assert put.status_code == 200 and put.json()["rev"] == 1, put.text
-        assert save.status_code == 409 and rollback.status_code == 409, (save.text, rollback.text)
+        assert ckpt.status_code == 409 and save.status_code == 409 and rollback.status_code == 409, (
+            ckpt.text, save.text, rollback.text)
     finally:
         _reset()
 

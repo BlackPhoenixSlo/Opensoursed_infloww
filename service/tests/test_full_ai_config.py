@@ -34,7 +34,7 @@ from sqlalchemy import text  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 from automations.full_ai_config import (  # noqa: E402
-    DEFAULTS, STYLE_LAYERS, WRITER_PROVIDERS, Invalid, StaleRev, merged, put_draft, rollback, save,
+    DEFAULTS, STYLE_LAYERS, WRITER_PROVIDERS, Invalid, StaleRev, merged, put_checkpoint, put_draft, rollback, save,
     style_layers, turn_bound_s, validate,
 )
 from db.engine import get_session  # noqa: E402
@@ -247,6 +247,13 @@ def case_transitions_and_stale_rev():
         k: s2[k] for k in ("checkpoint", "previous", "draft")} and s4["rev"] == 4, s4
     assert _raises(StaleRev, rollback, s3, 2).rev == 3
     assert _raises(Invalid, rollback, s1, 1).errors == ["previous: nothing to roll back to"]
+    # The checkpoint JSON typed in: the old one becomes `previous` (Roll back undoes it), the draft stays.
+    c1 = put_checkpoint(s1, {"gifs": True}, 1)
+    assert c1 == {"checkpoint": {**DEFAULTS, "gifs": True}, "previous": DEFAULTS, "draft": formal, "rev": 2}, c1
+    assert rollback(c1, 2)["checkpoint"] == DEFAULTS
+    assert _raises(StaleRev, put_checkpoint, s1, DEFAULTS, 0).rev == 1
+    assert _raises(Invalid, put_checkpoint, s1, {"writers": []}, 1).errors == ["writers: needs 1 to 4 Writers"]
+    assert _raises(Invalid, put_checkpoint, s1, DEFAULTS, 1).errors == ["checkpoint: unchanged, nothing to store"]
     # Pure: the inputs are untouched.
     before = copy.deepcopy(s2)
     save(put_draft(s2, DEFAULTS, 2), 3)
