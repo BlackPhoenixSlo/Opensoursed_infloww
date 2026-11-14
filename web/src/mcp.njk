@@ -11,32 +11,50 @@ description: "Connect Claude Code, or any MCP client, to your Inflowwww agency: 
 
 <h2 id="connect">Connect in three steps</h2>
 <ol>
+  <li>Add the server. No token and no header:</li>
+</ol>
+<pre class="overflow-x-auto whitespace-pre"><code>claude mcp add --transport http inflowwww {{ site.appUrl }}/admin/mcp</code></pre>
+<ol start="2">
+  <li>
+    In Claude Code, run <code>/mcp</code>, pick <code>inflowwww</code> and choose <strong>Authenticate</strong>. Your
+    browser opens. From a terminal, <code>claude mcp login inflowwww</code> does the same.
+  </li>
+  <li>
+    Log in to Inflowwww as the agency owner (with your two-factor code if it is on) and press <strong>Allow</strong>.
+    Claude Code is connected, with its tools.
+  </li>
+</ol>
+<p>
+  Allow makes an access token for the client. It shows on <strong>Settings → AI keys → Access tokens</strong> as
+  <code>MCP Claude Code …</code>, lasts 90 days, and you can revoke it there any time. When it runs out, choose
+  Authenticate again.
+</p>
+<p>A client that only speaks stdio can go through <code>mcp-remote</code>, which opens the same sign-in:</p>
+<pre class="overflow-x-auto whitespace-pre"><code>npx mcp-remote {{ site.appUrl }}/admin/mcp</code></pre>
+
+<h3 id="token">Or with a token</h3>
+<ol>
   <li>
     In the app, open <strong>Settings → AI keys → Access tokens</strong> and create a token. It starts with
     <code>ifw_</code> and is shown once.
   </li>
-  <li>
-    Add the server to your client. The token goes in the client's config, never into the chat. For Claude Code:
-  </li>
+  <li>Add the server with the token in a header. The token goes in the client's config, never into the chat:</li>
 </ol>
 <pre class="overflow-x-auto whitespace-pre"><code>claude mcp add --transport http inflowwww {{ site.appUrl }}/admin/mcp \
   --header "Authorization: Bearer ifw_YOUR_TOKEN"</code></pre>
-<ol start="3">
-  <li>In Claude Code, run <code>/mcp</code>. It lists <code>inflowwww</code> as connected, with its tools.</li>
-</ol>
-<p>A client that only speaks stdio can go through <code>mcp-remote</code>:</p>
+<p>The same with <code>mcp-remote</code>:</p>
 <pre class="overflow-x-auto whitespace-pre"><code>npx mcp-remote {{ site.appUrl }}/admin/mcp --header "Authorization: Bearer ifw_YOUR_TOKEN"</code></pre>
 
 <h2 id="no-token">No token yet</h2>
-<p>Add the server without the header. Three tools work with no token at all:</p>
+<p>Added the server without a header and not signed in yet? Three tools work with no token at all:</p>
 <ul>
   <li><code>register_account</code>: makes a new agency from a username, a password and an agency name, and answers with a token.</li>
   <li><code>login</code>: signs an owner in with username and password (plus <code>code</code> if two-factor is on) and answers with a token.</li>
   <li><code>connect_account</code>: answers with the sign-up and log-in links, if you would rather do it in the browser.</li>
 </ul>
 <p>
-  Then add the server again with the token in the header. Each <code>register_account</code> or <code>login</code> call
-  makes a new token; revoke old ones on the Access tokens card.
+  Then add the server again with the token in the header, or sign in as in step 2 above. Each
+  <code>register_account</code> or <code>login</code> call makes a new token; revoke old ones on the Access tokens card.
 </p>
 
 <h2 id="what-it-can-do">What it can do</h2>
