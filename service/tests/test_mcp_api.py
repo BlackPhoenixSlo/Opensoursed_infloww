@@ -9,12 +9,13 @@ Cases:
   case_auth_refused            — cookie-only, a bad ifw_ token, a foreign Bearer, Basic → 401.
   case_anonymous_surface       — no credential: initialize + tools/list = connect_account, register_account, login
                                  (test_mcp_auth.py); its links
-                                 (MCP_SIGNUP_URL, else this host); a data tool or propose_plan → isError with the link.
+                                 (MCP_SIGNUP_URL, else this host); a data tool or propose_plan → HTTP 401 with
+                                 WWW-Authenticate resource_metadata and the link as the JSON-RPC error's data.
   case_share_token_gate        — SHARE_TOKEN set: anonymous POST /admin/mcp still serves initialize / tools/list
                                  (the anonymous builtins only); GET /admin/mcp is its 405; a data tool,
                                  /admin/mcp-x and /admin/accounts stay refused.
   case_anonymous_predicate     — `anonymous_surface`: exactly PATH, POST + the 405-only methods; audit skips
-                                 exactly PATH.
+                                 exactly PATH and the three MCP sign-in POST paths (mcp_oauth).
   case_cross_agency_refused    — B's token never reads Creator A (403) and lists only B.
   case_protocol_errors         — unknown method/tool, bad params/arguments, bad args (isError 422), malformed
                                  JSON, deep nesting, batch, no jsonrpc, bad id (a readable id echoed), unsupported
@@ -88,6 +89,21 @@ def _tool(name, args=None, headers=HA):
     return res
 
 
+def _anon_refused(name, args=None, headers=None) -> dict:
+    """A token tool called with no credential: HTTP 401 naming the resource metadata (the client's
+    browser sign-in, mcp_oauth), the connect link as the JSON-RPC error's data."""
+    r = _post({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": args or {}}},
+              headers or {})
+    assert r.status_code == 401, (name, r.status_code, r.text)
+    want = 'Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/admin/mcp"'
+    assert r.headers["www-authenticate"] == (want if headers else "Bearer"), r.headers
+    j = r.json()
+    assert j["id"] == 7 and j["error"]["code"] == -32001 and "result" not in j, j
+    data = j["error"]["data"]
+    assert data["error"]["status"] == 401 and data["open_url"] == data["register_url"] and "accounts" not in data, j
+    return data
+
+
 def _err_code(r) -> int:
     return r.json()["error"]["code"]
 
@@ -149,12 +165,9 @@ def case_anonymous_surface() -> None:
     finally:
         os.environ.pop("MCP_SIGNUP_URL")
     for name in ("creators_list", "report_run"):
-        out = _tool(name, {"recipe": {}} if name == "report_run" else {}, headers={})
-        s = out["structuredContent"]
-        assert out["isError"] is True and s["error"]["status"] == 401, out
-        assert s["open_url"] == s["register_url"] and "accounts" not in s, out
-    out = _tool("propose_plan", {"summary": "x", "steps": []}, headers={})  # a token builtin: the link
-    assert out["isError"] is True and out["structuredContent"]["error"]["status"] == 401, out
+        _anon_refused(name, {"recipe": {}} if name == "report_run" else {}, fwd)
+    _anon_refused("creators_list")  # no public address: plain Bearer
+    _anon_refused("propose_plan", {"summary": "x", "steps": []}, fwd)  # a token builtin: the link
     assert _rpc("tools/call", {"name": "mass_send", "arguments": {}}, {})["error"]["code"] == -32602
     assert _rpc("resources/list", headers={})["error"]["code"] == -32601
 
@@ -168,9 +181,7 @@ def case_share_token_gate() -> None:
         assert init["protocolVersion"] == "2025-06-18", init
         anon = [t["name"] for t in _rpc("tools/list", headers={})["result"]["tools"]]
         assert anon == ["connect_account", "register_account", "login"], anon
-        out = _tool("creators_list", headers={})
-        assert out["isError"] is True and out["structuredContent"]["error"]["status"] == 401, out
-        assert "accounts" not in out["structuredContent"], out
+        _anon_refused("creators_list")
         assert ANON.get(mcp_api.PATH).status_code == 405  # anonymous_surface: the 405-only GET too
         assert ANON.post(mcp_api.PATH + "-x", json={}).status_code == 401  # exact path only
         assert _tool("creators_list")["isError"] is False  # a token still works behind the gate
@@ -180,12 +191,14 @@ def case_share_token_gate() -> None:
 
 def case_anonymous_predicate() -> None:
     import audit_log
+    import mcp_oauth
     for method, path, want in (("POST", mcp_api.PATH, True), ("GET", mcp_api.PATH, True),
                                ("DELETE", mcp_api.PATH, True), ("PUT", mcp_api.PATH, False),
                                ("PATCH", mcp_api.PATH, False), ("POST", mcp_api.PATH + "-x", False),
                                ("POST", mcp_api.PATH + "/x", False), ("POST", "/admin/accounts", False)):
         assert mcp_api.anonymous_surface(method, path) is want, (method, path)
-    assert audit_log._AUDIT_SKIP_PATHS == {mcp_api.PATH}
+    oauth = {mcp_oauth.REGISTER_PATH, mcp_oauth.AUTHORIZE_PATH, mcp_oauth.TOKEN_PATH}  # its form bodies
+    assert audit_log._AUDIT_SKIP_PATHS == {mcp_api.PATH} | oauth
     assert ANON.request("PUT", mcp_api.PATH).status_code == 401  # no principal, not the surface
 
 

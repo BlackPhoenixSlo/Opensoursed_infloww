@@ -151,7 +151,7 @@ def case_haggle_reoffers_at_clamped_quote():
 
 def case_haggle_draft_off_drops():
     pair = "h-draft-off"
-    with _draft(sell_on=True), _vault(PRICED):
+    with _draft(sell_on=True, draft_questions=False), _vault(PRICED):
         _offer_50(pair)
         got, fw, picks, _ = _turn(_body(pair, TWENTY, n=2), "ok:hehe its worth it babe",
                                   (_hot(counter_offer=0.9), 2.0))
@@ -328,21 +328,26 @@ def case_haggle_audit_holds_the_quote():
 # ── Unasked offer (offer_moment) ──────────────────────────────────────
 
 def case_offer_moment_sells():
+    """`chat_tease` off: the pitched unasked offer (test Mode: ESCALATION_TEST). The Chat tease (flag
+    on) is test_full_ai_ride.py's."""
     pair = "m-sell"
-    with _haggling(), _vault(PRICED):
+    with _draft(sell_on=True, draft_questions=True, chat_tease=False), _vault(PRICED):
         got, fw, (pick,), _ = _turn(_body(pair, "u look so good today"), "ok:mm wanna see more?",
                                     (_hot(offer_moment=0.9), 2.0))
     assert (got["route"], got["route_row"]) == ("sell_now", "offer_moment"), got
     assert got["offer"]["ref"] == pick.ref == 202 and got["offer"]["price_cents"] == 5000, got["offer"]
     assert _ppvs(got["parts"]) == [len(got["parts"]) - 1], got["parts"]
     system = _system(fw)
-    assert w.ESCALATION.format(close=w.CLOSE_BY_ID) in system, system
-    assert w.CONTENT_ASK.format(close=w.CLOSE_BY_ID) not in system and w.SELL_STEP[:20] not in system
+    assert w.ESCALATION_TEST.format(close=w.CLOSE_BY_ID) in system, system
+    assert w.ESCALATION[:40] not in system, system
+    assert w.CONTENT_ASK.format(close=w.CLOSE_BY_ID) not in system and w.SELL_STEP_TEST[:20] not in system
     assert w.PRICE_BLOCK.format(px="$50") in system and "already saw" not in system
 
 
 def case_hot_sell_gets_step_4():
-    step = w.SEXT_HOT + w.SELL_STEP.format(close=w.CLOSE_BY_ID, example=_voice.HER.sell_caption_example)
+    # test Mode: the _TEST twins; a hot offer_moment is no Chat tease (`tease_turn`), flag on or off.
+    # SELL_STEP_TEST carries no example caption (owner 2026-11-14 "Yes, drop the example line").
+    step = w.SEXT_HOT_TEST + w.SELL_STEP_TEST.format(close=w.CLOSE_BY_ID, example=_voice.HER.sell_caption_example)
     for tag, answers, row in (("moment", _hot(offer_moment=0.9, sexual_now=0.9), "offer_moment"),
                               ("ask", _hot(wants_content=0.9, sexual_now=0.9), "sell")):
         pair = f"m-hot-{tag}"
@@ -350,16 +355,16 @@ def case_hot_sell_gets_step_4():
             got, fw, _, _ = _turn(_body(pair, "fuck im so hard"), "ok:mm watch me babe", (answers, 2.0))
         assert (got["route"], got["route_row"]) == ("sell_now", row), (tag, got)
         system = _system(fw)
-        assert step in system and _voice.HER.sell_caption_example in system, (tag, system)
-        assert w.ESCALATION.format(close=w.CLOSE_BY_ID) not in system, tag
+        assert step in system and _voice.HER.sell_caption_example not in system, (tag, system)
+        assert w.ESCALATION_TEST.format(close=w.CLOSE_BY_ID) not in system, tag
         assert w.SEXT_HEAT.format(heat=got["heat"]) not in system, tag
         assert got["offer"]["ref"] == 202 and _ppvs(got["parts"]), (tag, got)
-    with _draft(sell_on=True, draft_questions=True, sext_on=False), _vault(PRICED):
+    with _draft(sell_on=True, draft_questions=True, sext_on=False, chat_tease=False), _vault(PRICED):
         got, fw, _, _ = _turn(_body("m-hot-sext-off", "fuck im so hard"), "ok:mm wanna see babe",
                               (_hot(offer_moment=0.9, sexual_now=0.9), 2.0))
     assert (got["route"], got["route_row"]) == ("sell_now", "offer_moment"), got
     system = _system(fw)
-    assert w.SELL_STEP[:20] not in system and w.ESCALATION.format(close=w.CLOSE_BY_ID) in system, system
+    assert w.SELL_STEP_TEST[:20] not in system and w.ESCALATION_TEST.format(close=w.CLOSE_BY_ID) in system, system
 
 
 def case_offer_moment_gated():
@@ -367,7 +372,7 @@ def case_offer_moment_gated():
               ("chat", "otherwise", ["offer_moment"])),
              ("sell-off-hot", dict(draft_questions=True), _hot(offer_moment=0.9, sexual_now=0.9),
               ("sext", "sexual_now", ["offer_moment"])),
-             ("draft-off", dict(sell_on=True), _hot(offer_moment=0.9), ("chat", "otherwise", ["offer_moment"])))
+             ("draft-off", dict(sell_on=True, draft_questions=False), _hot(offer_moment=0.9), ("chat", "otherwise", ["offer_moment"])))
     for tag, cfg, answers, want in cases:
         pair = f"m-gate-{tag}"
         with _draft(**cfg), _vault(PRICED):

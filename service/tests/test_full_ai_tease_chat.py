@@ -9,10 +9,12 @@ fakes at the network edges only (Jev at `_router_jev._client` / `_info_jev._clie
 content_offers + `ownership.stamp_media_owned`).
 
 Tease:
-  case_tease_then_sell_same_piece      "how much?" / "I'm not buying" -> tease row (Pick, price NULL,
+  case_tease_then_sell_same_piece      "how much?" -> tease row (Pick, price NULL,
                                        no PPV, no `$`); his next reply -> row `sell`, the same piece
                                        (a fresh pick would differ); the Router saw the tease text
                                        as `pending_offer` (fetch, tease first)
+  case_decline_is_ignored              "I'm not buying" (.97) routes nothing (owner 2026-11-15): a plain
+                                       chat, no Pick or Offer, BROKE_JOKE once in her prompt
   case_tease_gone_after_900s           the tease row 901 s old -> normal routing, `pending_offer` none
   case_complaint_after_tease           complaint inside the window -> make_right (rows 1-5 win)
   case_teased_piece_gone               teased photo removed -> re-pick of the same subject and
@@ -137,25 +139,39 @@ def _tease_row_checks(got: dict, row: AiDecision, ref: int) -> None:
 def case_tease_then_sell_same_piece():
     """Heat 2 teases the $10 photo (101); his next reply comes at Heat 3, where a fresh pick takes
     the $50 one (202): the sell is the teased 101 at its list price."""
-    for pair, line, answers, row_name in (("t-price", HOW_MUCH, _hot(price=0.9), "tease_price"),
-                                          ("t-decline", NOT_BUYING, _hot(declines_buying=0.9), "tease_decline")):
-        with _sell_draft(), _vault(PRICED):
-            tease, fw, (pick,), _ = _turn(_body(pair, line), f"ok:{TEASE_TEXT}", (answers, 1.0))
-            assert isinstance(pick, full_ai_sell.Pick) and pick.ref == 101, pick
-            (row,) = _rows(pair)
-            assert row.route_row == row_name, row.route_row
-            _tease_row_checks(tease, row, 101)
-            system = _system(fw)
-            assert w.GOAL_HEAD + w.TEASE_GOAL + w.item_line(pick, None) in system, system
-            assert "SELLING RULES" not in system and "to unlock" not in system, system
-            assert _reply(row)["caption_fallback"] is False, _reply(row)
-            sell, _, picks, fj = _turn(_body(pair, "ok", n=2), "ok:here u go babe", (QUIET, 2.0))
-        # fetch's one source, tease first: her tease bubbles, space-joined.
-        assert fj.calls[0]["state"]["pending_offer"] == " ".join(_texts(tease["parts"])), fj.calls[0]["state"]
-        assert (sell["route"], _rows(pair)[1].route_row) == ("sell_now", "sell"), sell
-        assert sell["offer"]["kind"] == "offer" and sell["offer"]["ref"] == 101, sell["offer"]
-        assert sell["offer"]["price_cents"] == 1000 and picks == [], (sell["offer"], picks)
-        assert _ppvs(sell["parts"]) == [len(sell["parts"]) - 1], sell["parts"]
+    pair = "t-price"
+    with _sell_draft(), _vault(PRICED):
+        tease, fw, (pick,), _ = _turn(_body(pair, HOW_MUCH), f"ok:{TEASE_TEXT}", (_hot(price=0.9), 1.0))
+        assert isinstance(pick, full_ai_sell.Pick) and pick.ref == 101, pick
+        (row,) = _rows(pair)
+        assert row.route_row == "tease_price", row.route_row
+        _tease_row_checks(tease, row, 101)
+        system = _system(fw)
+        assert w.GOAL_HEAD + w.TEASE_GOAL + w.item_line(pick, None) in system, system
+        assert "SELLING RULES" not in system and "to unlock" not in system, system
+        assert _reply(row)["caption_fallback"] is False, _reply(row)
+        sell, _, picks, fj = _turn(_body(pair, "ok", n=2), "ok:here u go babe", (QUIET, 2.0))
+    # fetch's one source, tease first: her tease bubbles, space-joined.
+    assert fj.calls[0]["state"]["pending_offer"] == " ".join(_texts(tease["parts"])), fj.calls[0]["state"]
+    assert (sell["route"], _rows(pair)[1].route_row) == ("sell_now", "sell"), sell
+    assert sell["offer"]["kind"] == "offer" and sell["offer"]["ref"] == 101, sell["offer"]
+    assert sell["offer"]["price_cents"] == 1000 and picks == [], (sell["offer"], picks)
+    assert _ppvs(sell["parts"]) == [len(sell["parts"]) - 1], sell["parts"]
+
+
+def case_decline_is_ignored():
+    """"I'm not buying" (declines_buying .97, over its .95) routes nothing (owner 2026-11-15 "just be
+    ignorant of this broke stuff"): the chat Route, no Pick, no Offer; BROKE_JOKE once under the goal."""
+    pair = "t-decline"
+    with _sell_draft(), _vault(PRICED):
+        got, fw, picks, _ = _turn(_body(pair, NOT_BUYING), "ok:lol not too broke for me",
+                                  (_hot(declines_buying=0.97), 2.0))
+    (row,) = _rows(pair)
+    assert (got["route"], row.route_row) == ("chat", "otherwise"), (got["route"], row.route_row)
+    assert "declines_buying" in json.loads(row.jev_json)["fired"], row.jev_json
+    assert got["offer"] is None and picks == [] and _ppvs(got["parts"]) == [], got
+    system = _system(fw)
+    assert system.count(w.BROKE_JOKE) == 1 and "SELLING RULES" not in system, system
 
 
 def case_tease_gone_after_900s():

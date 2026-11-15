@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any, Iterable, NamedTuple
 
@@ -45,6 +46,9 @@ REFUSED = "not allowed with an access token: it reaches only the MCP tools and r
 WRITE_REFUSED = "not allowed with an access token: a write must be one its MCP tool could have sent"
 
 MCP_PATH = "/admin/mcp"
+# The MCP endpoint's protected-resource metadata (RFC 9728; mcp_oauth serves it): a 401 names it, so
+# an MCP client finds where to sign in.
+PRM_MCP_PATH = "/.well-known/oauth-protected-resource" + MCP_PATH
 
 # Besides the tools' own routes: the report_file download, and the MCP endpoint itself.
 EXTRA: frozenset[tuple[str, str]] = frozenset({
@@ -72,6 +76,19 @@ def matched(scope: dict[str, Any], routes: Iterable[Any]) -> tuple[str | None, d
         if match is Match.FULL:
             return getattr(route, "path", None), dict(child.get("path_params") or {})
     return None, {}
+
+
+def challenge_for(base: str | None) -> str:
+    """A 401's WWW-Authenticate: Bearer plus resource_metadata on the public address `base`;
+    plain Bearer when there is none."""
+    return f'Bearer resource_metadata="{base}{PRM_MCP_PATH}"' if base else "Bearer"
+
+
+def challenge(headers: Any, scheme: str) -> str:
+    """`challenge_for` this request's public address (APP_PUBLIC_URL, else X-Forwarded-Host/Proto,
+    as toolbox.Creds.public_base)."""
+    return challenge_for(td.public_base(headers.get("x-forwarded-host"), headers.get("x-forwarded-proto") or scheme,
+                                        os.environ.get("APP_PUBLIC_URL")))
 
 
 def allowed(method: str, template: str | None) -> bool:

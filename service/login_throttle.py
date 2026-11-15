@@ -26,6 +26,9 @@ Sign-up (`take_register`, POST /auth/register, also MCP register_account's in-pr
 the caller's address): one bucket per client IP, REGISTER_CAPACITY refilling one per
 REGISTER_REFILL_S, taken once the username and password are valid. It bounds new owner rows and
 "username already taken" probing from one address.
+
+MCP client registration (`take_client_register`, POST /auth/oauth/register): its own bucket per
+client IP with the sign-up limits. It stores nothing, so this only bounds signing work per address.
 """
 
 from __future__ import annotations
@@ -60,7 +63,8 @@ _buckets = Buckets(_MAX_KEYS)
 
 def _limits(key: tuple[str, ...]) -> tuple[int, float]:
     return {"name": (NAME_CAPACITY, NAME_REFILL_S), "user": (USER_CAPACITY, USER_REFILL_S),
-            "register": (REGISTER_CAPACITY, REGISTER_REFILL_S)}.get(key[0], (IP_CAPACITY, IP_REFILL_S))
+            "register": (REGISTER_CAPACITY, REGISTER_REFILL_S),
+            "client_register": (REGISTER_CAPACITY, REGISTER_REFILL_S)}.get(key[0], (IP_CAPACITY, IP_REFILL_S))
 
 
 def _level(key: tuple[str, ...], now: float) -> float:
@@ -120,6 +124,16 @@ def take_register(request: Request) -> None:
     if wait is not None:
         log.warning("sign-up throttled addr=%s key=%s retry_after=%ss", addr, key[1], wait)
         raise _too_many("Too many sign-ups from this address.", wait)
+
+
+def take_client_register(request: Request) -> None:
+    """One MCP client registration token for this client address, or 429."""
+    addr = client_addr.client_address(request)
+    key = ("client_register", bucket_key(addr))
+    wait = _buckets.take(key, *_limits(key), _clock())
+    if wait is not None:
+        log.warning("client registration throttled addr=%s key=%s retry_after=%ss", addr, key[1], wait)
+        raise _too_many("Too many app registrations from this address.", wait)
 
 
 def _too_many(what: str, wait: int) -> HTTPException:

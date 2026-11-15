@@ -453,6 +453,8 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # That kind's writes stay owner-only (OPT_IN_KINDS: this page is not in OPT_IN_PAGES), but like
     # Gen-Info's, a role ticking this page opens the rule routes, so other kinds' rule writes too.
     "/full-ai-chatter": ("Full AI Chat", ("/admin/full-ai", "/admin/automation-rules")),
+    # The Full AI Turn as a read-only diagram (full_ai_api GET /admin/full-ai/rules): no Creator data.
+    "/ai-rules": ("AI rules", ("/admin/full-ai/rules",)),
     "/creators": ("Manage creators", (
         "/admin/accounts/active", "/admin/automation", "/admin/reload-session")),
     # Its proxy routes are owner-only (`_CHATTER_BLOCKED_ADMIN_PREFIXES`).
@@ -470,6 +472,7 @@ UNMAPPED: dict[str, str] = {
     "/chatter": "chatter sign-in, session, its Creators and folder access",
     "/t": "public tracking-link redirect",
     "/share": "a share link's public report, read by its secret",
+    "/.well-known/": "MCP sign-in discovery (public JSON, names no account)",
     "/health": "health check", "/livez": "liveness check",
     "/docs": "API docs", "/openapi.json": "API schema", "/redoc": "API docs",
     "/events": "the shell's live event stream",

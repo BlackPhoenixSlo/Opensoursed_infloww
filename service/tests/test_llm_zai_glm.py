@@ -430,6 +430,7 @@ def case_every_model_carries_its_own_reasoning_body():
         "claude-haiku-5-5": ({"thinking": {"type": "disabled"}}, ()),
         # Full AI Writers (03a): non-reasoning by default (llm_models ASSUMPTION).
         "euryale-v2.3": ({}, ()),
+        "euryale-v2.2": ({}, ()), "euryale-v2.3-deepinfra": ({}, ()),
         "hermes-4-405b": ({}, ()),
     }
     assert set(MODELS) == set(expected), set(MODELS) ^ set(expected)

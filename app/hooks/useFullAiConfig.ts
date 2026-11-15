@@ -22,8 +22,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, type Dispatch } from "react";
 
+import type { ConfigBody, FullAiConfig } from "@/components/automations/fullAiConfig";
 import {
-  canEdit, canRollback, canSave, keepMineSave, type ConfigBody, type FullAiConfig, type TestChatAction, type TestChatState,
+  canEdit, canRollback, canSave, keepMineSave, type TestChatAction, type TestChatState,
 } from "@/components/automations/fullAiTestChat";
 import { errText } from "@/lib/errText";
 import { relay, RelayError } from "@/lib/relay";
@@ -62,6 +63,7 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     if (reloading.current) return;
     dispatch(first ? { type: "loaded", body: data } : { type: "externalDraft", body: data });
   }, [data, dispatch]);
+  // A read that lands while a write of ours is out is held by the reducer and offered again once the write settles.
   useEffect(() => {
     if (error) dispatch({ type: "configFailed", errors: [`Couldn't read the Full AI config: ${errText(error, "Request failed")}`] });
   }, [error, dispatch]);
@@ -91,16 +93,17 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [accountId, dispatch]);
 
-  /** Store `draft` as the draft; true once stored. */
-  const putDraft = useCallback(async (draft: FullAiConfig): Promise<boolean> => {
+  /** Store `draft` as the draft on `rev` (default the page's; the JSON modal passes the rev it opened at, so a draft
+   *  stored meanwhile answers 409); true once stored. */
+  const putDraft = useCallback(async (draft: FullAiConfig, rev?: number): Promise<boolean> => {
     const s = ref.current;
     if (!canEdit(s)) return false;
     dispatch({ type: "editDraft", draft });
     dispatch({ type: "saveDraft" });
-    return store(draft, s.rev);
+    return store(draft, rev ?? s.rev);
   }, [dispatch, store]);
 
-  /** Keep mine: the page's draft stored on the applied draft's rev. */
+  /** Keep mine: the page's draft stored on the applied draft's rev (not while the photo request is out: `keepMineSave`). */
   const keepMine = useCallback(() => {
     const put = keepMineSave(ref.current);
     if (!put) return;
@@ -129,14 +132,15 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [accountId, dispatch]);
 
-  /** Store `checkpoint` straight in (the checkpoint JSON); the old one becomes `previous`. True once stored. */
-  const putCheckpoint = useCallback(async (checkpoint: FullAiConfig): Promise<boolean> => {
+  /** Store `checkpoint` straight in (the checkpoint JSON) on `rev` (as `putDraft`); the old one becomes `previous`.
+   *  True once stored. */
+  const putCheckpoint = useCallback(async (checkpoint: FullAiConfig, rev?: number): Promise<boolean> => {
     const s = ref.current;
     if (!canEdit(s)) return false;
     dispatch({ type: "commit" });
     try {
       const body = await relay.put<ConfigBody>("/admin/full-ai/config/checkpoint",
-        { account_id: accountId, checkpoint, rev: s.rev }, { accountId });
+        { account_id: accountId, checkpoint, rev: rev ?? s.rev }, { accountId });
       dispatch({ type: "loaded", body });
       return true;
     } catch (e) {
@@ -149,7 +153,11 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
   const rollback = useCallback(() => void commit("rollback"), [commit]);
   /** The Writer select's options (the GET's `writer_models`; empty until it answers). */
   const writerModels = data?.writer_models ?? [];
-  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels };
+  /** Every key the JSON takes (the GET's `reference`; empty until it answers). */
+  const reference = data?.reference ?? [];
+  /** The controls' server constants (the GET's `limits`; null until it answers). */
+  const limits = data?.limits ?? null;
+  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, reference, limits };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

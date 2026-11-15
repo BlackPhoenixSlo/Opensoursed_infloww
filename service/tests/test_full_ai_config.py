@@ -1,26 +1,42 @@
 #!/usr/bin/env python3
 """test_full_ai_config — Full AI Chat's config: pure tables and the config API (phase 03a).
 
-  case_turn_bound_s_table   20 + (1 + len(writers)) x writer_timeout_s: defaults -> 145,
+  case_turn_bound_s_table   20 + (1 + len(writers)) x writer_timeout_s: defaults -> 245,
                             one Writer at 5 s -> 30 (spec › Contracts › One Turn bound)
+  case_turn_bound_cap_table (rwl-c F3) validate refuses a side whose turn_bound_s tops TURN_BOUND_MAX_S (900):
+                            DEFAULTS (245) and the default chain at the 120 s max pass; a stored side over it
+                            still loads (merged, turn_bound_s) and only its write is refused
   case_validate_table       (ticket 37) every refusal the spec names, one key changed each row;
                             DEFAULTS passes
   case_merged_fills_a_later_key  a stored side missing a later key takes it from DEFAULTS
+  case_reference_covers_every_key  REFERENCE has exactly DEFAULTS' keys in its order, each with an allowed and
+                            an about line; `reference()` defaults are DEFAULTS; both merged sides hold every key
   case_style_layers_table   `style`: five bools, exactly those keys; the legacy `text_style` on a write
                             sets all five and is never stored; a stored side with only `text_style`
                             reads girl = all on, formal = all off on every side; one layer stored alone
   case_folders_table        (ticket 43) `folders` refs validated by name, default all, a stored
                             v1 without `folders` reads all, unknown key still refused
-  case_draft_questions_table (ticket 47) `draft_questions` a bool, default false; a stored v1
-                            without it reads false on every side
+  case_draft_questions_table (ticket 47) `draft_questions` a bool, default true (owner 2026-11-14);
+                            a stored v1 without it reads true on every side
   case_sell_spacing_table   (03d ticket 59) `sell_spacing` a bool, default true, labelled "Spacing",
                             in CONFIG_KEYS; a stored v1 without it reads true
   case_sell_bundle_table    (03d ticket 61) `sell_bundle` shoot|fill, default fill, a stored v1
-                            without it reads fill, labelled "Photo bundle" on the page
+                            without it reads fill, labelled "Fill the set" on the page
+  case_typo_pct_table       `typo_pct` null (auto) or a whole 0-100, labelled "Typos %"; a stored
+                            v1 without it reads null
+  case_gif_pct_table        `gif_pct` null (auto) or a whole 0-100, labelled "GIFs %"; a stored
+                            v1 without it reads null
+  case_top_spend_cents_table (04b ticket 75) `top_spend_cents` a whole number >= 0, default 100000, labelled
+                            "Top spend limit", in CONFIG_KEYS; a stored v1 without it reads 100000
+  case_fans_table           (04b ticket 76) `fans` {include, exclude} lists of distinct OF list ids, default both
+                            empty, each refusal names the key, labelled "Fans", in CONFIG_KEYS; a stored v1
+                            without it reads the default
   case_transitions_and_stale_rev put_draft / save / rollback, StaleRev on a rev mismatch,
                             Invalid on a bad draft, nothing to save, nothing to roll back to
-  case_config_api_round_trip GET defaults, PUT 422 / 409 / 200, save, roll back twice = identity;
-                            the `full_ai_chat` rule row byte-identical throughout
+  case_ts_constants_match   the page's copies it keeps (fullAiConfig.ts STYLE_LAYERS, the legacy text_style pair,
+                            the Sell switches' sell_nearest / sell_bundle values, the reply speed labels) match these
+  case_config_api_round_trip GET defaults (+ `reference`, `limits`), PUT 422 / 409 / 200, save, roll back twice =
+                            identity; the `full_ai_chat` rule row byte-identical throughout
 
 Run: ./venv/bin/python service/tests/test_full_ai_config.py  (exit 0 = pass)
 """
@@ -33,30 +49,78 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 import copy  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 from sqlalchemy import text  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 from automations.full_ai_config import (  # noqa: E402
-    DEFAULTS, STYLE_LAYERS, WRITER_PROVIDERS, Invalid, StaleRev, merged, put_checkpoint, put_draft, rollback, save,
-    style_layers, turn_bound_s, validate,
+    DEFAULTS, REFERENCE, REPLY_SPEEDS, SELL_BUNDLE, SELL_NEAREST, STYLE_LAYERS, TEXT_STYLES, TURN_BOUND_MAX_S,
+    WRITER_PROVIDERS, Invalid, StaleRev, merged, put_checkpoint, put_draft, reference, rollback, save, style_layers,
+    turn_bound_s, validate,
 )
 from db.engine import get_session  # noqa: E402
 from db.models import AutomationRule  # noqa: E402
 from llm_models import MODELS  # noqa: E402
 
 # Every Writer-provider model (the page's Writer select), sorted.
-WRITER_MODELS = sorted(m for m, v in MODELS.items() if v.provider in WRITER_PROVIDERS)
+WRITER_MODELS = sorted(m for m, v in MODELS.items() if v.provider in WRITER_PROVIDERS
+                       or m == "euryale-v2.3-deepinfra")
 
 
 def case_turn_bound_s_table():
     table = [
-        (DEFAULTS, 145),
+        (DEFAULTS, 245),
         ({**DEFAULTS, "writers": ["deepseek-v4-flash"], "writer_timeout_s": 5}, 30),
         ({**DEFAULTS, "writers": ["euryale-v2.3", "hermes-4-405b"], "writer_timeout_s": 60}, 200),
+        # 20 + extract 30 + v2.3's own 90 + Hermes 30; one retry doubles the Writers' part.
+        ({**DEFAULTS, "writers": ["euryale-v2.3", "hermes-4-405b"], "writer_timeout_s": 30,
+          "writer_timeouts": {"euryale-v2.3": 90}}, 170),
+        ({**DEFAULTS, "writers": ["euryale-v2.3", "hermes-4-405b"], "writer_timeout_s": 30,
+          "writer_timeouts": {"euryale-v2.3": 90}, "writer_retries": 1}, 290),
     ]
     for cfg, want in table:
         assert turn_bound_s(cfg) == want, (cfg["writers"], cfg["writer_timeout_s"], turn_bound_s(cfg))
+
+
+def case_turn_bound_cap_table():
+    """rwl-c F3: 6 Writers x 120 s x (1 + 3 retries) was a 3020 s Turn; validate now caps the bound."""
+    six = ["euryale-v2.3", "euryale-v2.2", "euryale-v2.3-deepinfra", "hermes-4-405b", "glm-5.3-flash",
+           "deepseek-v4-flash"]
+    assert TURN_BOUND_MAX_S == 900
+    assert turn_bound_s(DEFAULTS) * 3 < TURN_BOUND_MAX_S          # clear headroom on the shipped defaults
+    passes = [
+        {},                                                        # DEFAULTS: 245
+        {"writer_timeout_s": 120},                                 # the default chain at the per-try max: 620
+        {"writer_retries": 1},                                     # 425
+        {"writers": six},                                          # 20 + 45 + 6 x 45 = 335
+        {"writers": six, "writer_timeout_s": 120},                 # 860
+    ]
+    for change in passes:
+        cfg = {**DEFAULTS, **change}
+        assert turn_bound_s(cfg) <= TURN_BOUND_MAX_S and validate(cfg) == [], (change, turn_bound_s(cfg), validate(cfg))
+    refused = [
+        ({"writers": six, "writer_timeout_s": 120, "writer_retries": 3}, 3020),
+        ({"writer_timeout_s": 120, "writer_retries": 1}, 1100),
+        ({"writers": six, "writer_timeouts": {"hermes-4-405b": 120, "glm-5.3-flash": 120}, "writer_retries": 1}, 905),
+    ]
+    for change, bound in refused:
+        cfg = {**DEFAULTS, **change}
+        assert turn_bound_s(cfg) == bound, (change, turn_bound_s(cfg))
+        assert validate(cfg) == [f"writers: one Turn could take {bound} s (Jev 20 + extract + every Writer try); "
+                                 f"max {TURN_BOUND_MAX_S} s: fewer Writers or retries, or shorter timeouts"], validate(cfg)
+        assert _raises(Invalid, put_draft, None, cfg, 0).errors == validate(cfg)
+    # A bad writer key answers its own error only (no bound computed off it).
+    assert validate({**DEFAULTS, "writer_retries": "3"}) == ["writer_retries: must be a whole number from 0 to 3"]
+    assert validate({**DEFAULTS, "writers": "x", "writer_retries": 3}) == ["writers: must be a list of model ids"]
+    # A side stored over the cap (before it existed) still loads; the Turn's deadline reads it as before.
+    over = {**DEFAULTS, "writers": six, "writer_timeout_s": 120, "writer_retries": 3}
+    got = merged({"checkpoint": over, "draft": over, "rev": 5})
+    assert got["checkpoint"] == over and turn_bound_s(got["checkpoint"]) == 3020, got
+    assert REFERENCE["writers"]["allowed"].endswith(f"one Turn at most {TURN_BOUND_MAX_S} s"), REFERENCE["writers"]
+    for k in ("writer_timeout_s", "writer_timeouts", "writer_retries"):
+        assert f"{TURN_BOUND_MAX_S} s" in REFERENCE[k]["about"], (k, REFERENCE[k])
 
 
 # ── validate ──────────────────────────────────────────────────────────
@@ -70,12 +134,21 @@ def case_validate_table():
         ({"writers": ["qwen3-vl-30b"]}, "writers"),                           # provider mismatch
         ({"writers": ["euryale-v2.3", "claude-haiku-5-5"]}, "writers"),       # provider mismatch
         ({"writers": []}, "writers"),
-        ({"writers": ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash",
-                      "deepseek-v4-pro"]}, "writers"),                        # five
+        ({"writers": ["euryale-v2.3", "euryale-v2.2", "euryale-v2.3-deepinfra", "hermes-4-405b",
+                      "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro"]}, "writers"),  # seven
         ({"writers": ["euryale-v2.3", "euryale-v2.3"]}, "writers"),           # repeated
         ({"writers": "euryale-v2.3"}, "writers"),
         ({"writer_timeout_s": 4}, "writer_timeout_s"),
-        ({"writer_timeout_s": 61}, "writer_timeout_s"),
+        ({"writer_timeout_s": 121}, "writer_timeout_s"),
+        ({"writer_timeouts": []}, "writer_timeouts"),
+        ({"writer_timeouts": {"gpt-9": 30}}, "writer_timeouts"),                # unknown model
+        ({"writer_timeouts": {"qwen3-vl-30b": 30}}, "writer_timeouts"),         # not a Writer
+        ({"writer_timeouts": {"euryale-v2.3": 121}}, "writer_timeouts"),
+        ({"writer_timeouts": {"euryale-v2.3": "60"}}, "writer_timeouts"),
+        ({"writer_retries": 4}, "writer_retries"),
+        ({"writer_retries": -1}, "writer_retries"),
+        ({"writer_retries": 1.5}, "writer_retries"),
+        ({"writer_retries": True}, "writer_retries"),
         ({"writer_timeout_s": True}, "writer_timeout_s"),
         ({"writer_timeout_s": "25"}, "writer_timeout_s"),
         ({"sell_on": "yes"}, "sell_on"),                                     # 03b: settable, a bool
@@ -121,6 +194,47 @@ def case_merged_fills_a_later_key():
     # A stored v1 config from before 03b (no `sell_on`) reads selling off.
     pre = {k: v for k, v in DEFAULTS.items() if k != "sell_on"}
     assert merged({"checkpoint": pre, "draft": pre, "rev": 1})["draft"]["sell_on"] is False
+
+
+def case_reference_covers_every_key():
+    assert set(REFERENCE) == set(DEFAULTS), set(REFERENCE) ^ set(DEFAULTS)
+    assert list(REFERENCE) == list(DEFAULTS), "REFERENCE out of DEFAULTS order"
+    for k, r in REFERENCE.items():
+        assert set(r) == {"allowed", "about", "page"}, (k, r)
+        assert isinstance(r["allowed"], str) and r["allowed"].strip(), k
+        assert isinstance(r["about"], str) and r["about"].strip(), k
+        assert r["page"] is None or (isinstance(r["page"], str) and r["page"].strip()), k
+    # One feature: Chat tease has the page switch; the old Ride-along photos (`offer_ride`) is retired.
+    assert REFERENCE["chat_tease"]["page"] == "Chat tease" and "offer_ride" not in DEFAULTS
+    assert "Ride-along photos" not in {r["page"] for r in REFERENCE.values()}
+    ref = reference()
+    assert [r["key"] for r in ref] == list(DEFAULTS)
+    assert {r["key"]: r["default"] for r in ref} == DEFAULTS
+    ref[0]["default"], ref[2]["default"]["typos"] = 9, False     # a copy: DEFAULTS untouched
+    assert DEFAULTS["version"] == 1 and DEFAULTS["style"]["typos"] is True
+    m = merged(None)
+    for side in ("checkpoint", "draft"):
+        assert set(m[side]) == set(DEFAULTS), (side, set(m[side]) ^ set(DEFAULTS))
+
+
+APP = Path(__file__).resolve().parents[2] / "app"
+
+
+def case_ts_constants_match():
+    """The constants the page keeps a copy of (a TS type, or a value the controls write) match the server's; the rest
+    it reads off GET config's `limits`."""
+    ts = (APP / "components" / "automations" / "fullAiConfig.ts").read_text()
+    layers = re.search(r"export const STYLE_LAYERS = \[([^\]]*)\] as const;", ts)
+    assert layers and tuple(re.findall(r'"(\w+)"', layers[1])) == STYLE_LAYERS, layers
+    casual = re.search(r'export const CASUAL_STYLE = "(\w+)";', (APP / "lib" / "fullAiStyle.ts").read_text())
+    formal = re.search(r'ts === CASUAL_STYLE \|\| ts === "(\w+)"', ts)
+    assert casual and formal and (casual[1], formal[1]) == TEXT_STYLES, (casual, formal)
+    for key, values in (("sell_nearest", SELL_NEAREST), ("sell_bundle", SELL_BUNDLE)):
+        sw = re.search(rf'key: "{key}", label: "[^"]+", on: "(\w+)", off: "(\w+)"', ts)
+        assert sw and {sw[1], sw[2]} <= set(values) and sw[1] != sw[2], (key, sw)
+        assert DEFAULTS[key] != sw[2], (key, "the default must read on")
+    labels = re.search(r"const SPEED_LABEL: Record<string, string> = \{([^}]*)\}", ts)
+    assert labels and set(re.findall(r'"([^"]+)":', labels[1])) <= set(REPLY_SPEEDS), labels
 
 
 def case_style_layers_table():
@@ -200,20 +314,22 @@ def case_folders_table():
 
 
 def case_draft_questions_table():
-    """(ticket 47) `draft_questions`: the DRAFT gate's config half, a bool, off by default."""
-    assert DEFAULTS["draft_questions"] is False, DEFAULTS
+    """(ticket 47) `draft_questions`: the DRAFT gate's config half, a bool, on by default (owner 2026-11-14;
+    test Mode only, so Shadow / live never read it)."""
+    assert DEFAULTS["draft_questions"] is True, DEFAULTS
+    assert REFERENCE["draft_questions"]["page"] == "Unasked offers", REFERENCE["draft_questions"]
     for ok in (True, False):
         assert validate({**DEFAULTS, "draft_questions": ok}) == [], ok
     for bad in ("yes", 1, 0, None, "true"):
         assert validate({**DEFAULTS, "draft_questions": bad}) == ["draft_questions: must be true or false"], bad
-    # Stored v1 from before ticket 47 (no `draft_questions`): every side reads false.
+    # Stored v1 without `draft_questions`: every side reads the default (on).
     pre = {k: v for k, v in DEFAULTS.items() if k != "draft_questions"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "sell_on": True}, "rev": 2})
-    assert got["checkpoint"]["draft_questions"] is got["previous"]["draft_questions"] is False, got
-    assert got["draft"]["draft_questions"] is False and got["draft"]["sell_on"] is True, got["draft"]
+    assert got["checkpoint"]["draft_questions"] is got["previous"]["draft_questions"] is True, got
+    assert got["draft"]["draft_questions"] is True and got["draft"]["sell_on"] is True, got["draft"]
     # A draft PUT stores it per side.
-    s = put_draft(None, {**DEFAULTS, "draft_questions": True}, 0)
-    assert (s["draft"]["draft_questions"], s["checkpoint"]["draft_questions"]) == (True, False), s
+    s = put_draft(None, {**DEFAULTS, "draft_questions": False}, 0)
+    assert (s["draft"]["draft_questions"], s["checkpoint"]["draft_questions"]) == (False, True), s
 
 
 def case_sell_spacing_table():
@@ -242,10 +358,89 @@ def case_sell_bundle_table():
     for bad in ("always", "", None, True, "Fill"):
         assert validate({**DEFAULTS, "sell_bundle": bad}) == ["sell_bundle: must be one of shoot, fill"], bad
     assert "sell_bundle" in assistant_full_ai.CONFIG_KEYS
-    assert assistant_full_ai.label("sell_bundle") == "Photo bundle"
+    assert assistant_full_ai.label("sell_bundle") == "Fill the set"
     pre = {k: v for k, v in DEFAULTS.items() if k != "sell_bundle"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 2})
     assert got["checkpoint"]["sell_bundle"] == got["previous"]["sell_bundle"] == got["draft"]["sell_bundle"] == "fill", got
+
+
+def case_typo_pct_table():
+    """`typo_pct`: the chance (%) a reply gets one typo; null = the per-sentence rule."""
+    import assistant_full_ai
+    from automations.full_ai_writers import typo_rate
+    assert DEFAULTS["typo_pct"] is None, DEFAULTS
+    for ok in (None, 0, 1, 35, 100):
+        assert validate({**DEFAULTS, "typo_pct": ok}) == [], ok
+    for bad in (-1, 101, 2.5, 50.0, "30", True, False, [30]):
+        assert validate({**DEFAULTS, "typo_pct": bad}) == [
+            "typo_pct: must be a whole percent from 0 to 100, or null"], bad
+    assert [typo_rate({**DEFAULTS, "typo_pct": p}) for p in (None, 0, 35, 100)] == [None, 0.0, 0.35, 1.0]
+    assert typo_rate({}) is None
+    assert "typo_pct" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("typo_pct") == "Typos %"
+    pre = {k: v for k, v in DEFAULTS.items() if k != "typo_pct"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "typo_pct": 40}, "rev": 2})
+    assert got["checkpoint"]["typo_pct"] is got["previous"]["typo_pct"] is None, got
+    assert got["draft"]["typo_pct"] == 40, got["draft"]
+
+
+def case_gif_pct_table():
+    """`gif_pct`: the chance (%) a Turn offers the sticker block while GIFs is on; null = every Turn."""
+    import assistant_full_ai
+    assert DEFAULTS["gif_pct"] is None, DEFAULTS
+    for ok in (None, 0, 1, 50, 100):
+        assert validate({**DEFAULTS, "gif_pct": ok}) == [], ok
+    for bad in (-1, 101, 2.5, 50.0, "30", True, False, [30]):
+        assert validate({**DEFAULTS, "gif_pct": bad}) == [
+            "gif_pct: must be a whole percent from 0 to 100, or null"], bad
+    assert "gif_pct" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("gif_pct") == "GIFs %"
+    pre = {k: v for k, v in DEFAULTS.items() if k != "gif_pct"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "gif_pct": 25}, "rev": 2})
+    assert got["checkpoint"]["gif_pct"] is got["previous"]["gif_pct"] is None, got
+    assert got["draft"]["gif_pct"] == 25, got["draft"]
+
+
+def case_top_spend_cents_table():
+    """`top_spend_cents` (04b ticket 75): a Fan at or over it is left to humans; 0 = off."""
+    import assistant_full_ai
+    assert DEFAULTS["top_spend_cents"] == 100000, DEFAULTS
+    for ok in (0, 1, 100000, 10**9):
+        assert validate({**DEFAULTS, "top_spend_cents": ok}) == [], ok
+    for bad in (-1, 2.5, 100.0, "100", True, False, None, [1]):
+        assert validate({**DEFAULTS, "top_spend_cents": bad}) == [
+            "top_spend_cents: must be a whole number of cents, 0 or more (0 = off)"], bad
+    assert "top_spend_cents" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("top_spend_cents") == "Top spend limit"
+    assert REFERENCE["top_spend_cents"]["page"] is None      # JSON-only
+    pre = {k: v for k, v in DEFAULTS.items() if k != "top_spend_cents"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "top_spend_cents": 0}, "rev": 2})
+    assert got["checkpoint"]["top_spend_cents"] == got["previous"]["top_spend_cents"] == 100000, got
+    assert got["draft"]["top_spend_cents"] == 0, got["draft"]
+    assert merged(None)["checkpoint"]["top_spend_cents"] == 100000
+
+
+def case_fans_table():
+    """`fans` (04b ticket 76): the Fans list, shaped like `folders` but OF list ids."""
+    import assistant_full_ai
+    assert DEFAULTS["fans"] == {"include": [], "exclude": []}, DEFAULTS
+    for ok in ({"include": [], "exclude": []}, {"include": [1, 2], "exclude": []}, {"include": [], "exclude": [9]},
+               {"include": [5], "exclude": [5]}):
+        assert validate({**DEFAULTS, "fans": ok}) == [], ok
+    for bad in ("all", [], None, {"include": []}, {"include": [], "exclude": [], "x": []},
+                {"include": "1", "exclude": []}, {"include": [], "exclude": None},
+                {"include": ["1"], "exclude": []}, {"include": [1.0], "exclude": []}, {"include": [True], "exclude": []},
+                {"include": [0], "exclude": []}, {"include": [], "exclude": [-3]}, {"include": [4, 4], "exclude": []}):
+        errs = validate({**DEFAULTS, "fans": bad})
+        assert len(errs) == 1 and errs[0].startswith("fans: "), (bad, errs)
+    assert "fans" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("fans") == "Fans"
+    assert REFERENCE["fans"]["page"] is None      # JSON-only
+    pre = {k: v for k, v in DEFAULTS.items() if k != "fans"}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "fans": {"include": [3], "exclude": []}},
+                  "rev": 2})
+    assert got["checkpoint"]["fans"] == got["previous"]["fans"] == {"include": [], "exclude": []}, got
+    assert got["draft"]["fans"] == {"include": [3], "exclude": []}, got["draft"]
 
 
 # ── Transitions ───────────────────────────────────────────────────────
@@ -288,7 +483,7 @@ def case_transitions_and_stale_rev():
     assert c1 == {"checkpoint": {**DEFAULTS, "gifs": True}, "previous": DEFAULTS, "draft": formal, "rev": 2}, c1
     assert rollback(c1, 2)["checkpoint"] == DEFAULTS
     assert _raises(StaleRev, put_checkpoint, s1, DEFAULTS, 0).rev == 1
-    assert _raises(Invalid, put_checkpoint, s1, {"writers": []}, 1).errors == ["writers: needs 1 to 4 Writers"]
+    assert _raises(Invalid, put_checkpoint, s1, {"writers": []}, 1).errors == ["writers: needs 1 to 6 Writers"]
     assert _raises(Invalid, put_checkpoint, s1, DEFAULTS, 1).errors == ["checkpoint: unchanged, nothing to store"]
     # Pure: the inputs are untouched.
     before = copy.deepcopy(s2)
@@ -302,6 +497,8 @@ IDS = fx.seed_two_agencies()
 A = IDS["creator_a"]
 OWNER_A = fx.login_owner("agency_a_owner")
 CONFIG = "/admin/full-ai/config"
+REF = json.loads(json.dumps(reference()))     # as the wire carries it
+LIMITS = {"max_writers": 6, "reply_speeds": ["0-2m", "0-15-60"], "default_reply_speed": "0-2m"}
 
 
 def _db(fn):
@@ -333,7 +530,8 @@ def case_config_api_round_trip():
     got = OWNER_A.get(CONFIG, params={"account_id": A})
     assert got.status_code == 200, got.text
     assert got.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0,
-                          "errors": [], "writer_models": WRITER_MODELS}, got.json()
+                          "errors": [], "writer_models": WRITER_MODELS, "reference": REF,
+                          "limits": LIMITS}, got.json()
     formal = FORMAL_IN
     bad = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**formal, "fans_list": []},
                                                "rev": 0})
@@ -344,7 +542,8 @@ def case_config_api_round_trip():
     assert ok.status_code == 200, ok.text
     formal = FORMAL                                 # stored as the layers
     assert ok.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": formal, "rev": 1,
-                         "errors": [], "writer_models": WRITER_MODELS}, ok.json()
+                         "errors": [], "writer_models": WRITER_MODELS, "reference": REF,
+                         "limits": LIMITS}, ok.json()
     # The same request again is stale: someone (this tab) stored meanwhile.
     again = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 0})
     assert again.status_code == 409 and again.json()["rev"] == 1, again.text
@@ -352,7 +551,8 @@ def case_config_api_round_trip():
     assert saved.status_code == 200, saved.text
     after_save = saved.json()
     assert after_save == {"checkpoint": formal, "previous": DEFAULTS, "draft": formal, "rev": 2,
-                          "errors": [], "writer_models": WRITER_MODELS}, after_save
+                          "errors": [], "writer_models": WRITER_MODELS, "reference": REF,
+                          "limits": LIMITS}, after_save
     assert _rule_row() == rule
     assert OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 1}).status_code == 409
     nothing = OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 2})

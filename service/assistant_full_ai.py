@@ -18,17 +18,20 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from automations import full_ai_config
-from llm_models import MODELS
 
-# Plan-card labels; a key with none shows its own name (`label`). style / text_style read like the page's switch.
-# `folders` / `draft_questions` are 03b's keys (spec 03c lists their labels).
+# Plan-card labels: the page control's name (`REFERENCE[k]["page"]`); `_LABEL_OVERRIDES` names the JSON-only keys and
+# the few whose page entry is not one control's name; any other key shows its own name (`label`).
+# `style` reads like the page's switch (its page entry also names Typos); the legacy `text_style` lands on `style`.
+_LABEL_OVERRIDES: dict[str, str] = {
+    "style": "Human style", "text_style": "Human style",
+    "sext_on": "Sexting", "sext_scene": "Sext scene", "lead_in": "Lead-in asks",
+    "writer_timeout_s": "Writer timeout (s)", "writer_timeouts": "Writer timeouts per model (s)",
+    "writer_retries": "Writer retries", "floor_on": "Reply checks", "info_fields": "Facts to learn",
+    "chat_tease_prices": "Chat tease prices", "info_wide": "Wider hobbies",
+    "top_spend_cents": "Top spend limit", "fans": "Fans",
+}
 LABELS: dict[str, str] = {
-    "reply_speed": "Reply speed", "style": "Human style", "text_style": "Human style", "gifs": "GIFs",
-    "sell_on": "Selling", "sext_on": "Sexting", "sext_scene": "Sext scene", "lead_in": "Lead-in asks", "writers": "Writers (in order)",
-    "writer_timeout_s": "Writer timeout (s)", "floor_on": "Reply checks", "info_fields": "Facts to learn",
-    "folders": "Content folders", "draft_questions": "Draft questions", "sell_nearest": "Nearest piece",
-    "sell_spacing": "Spacing",
-    "sell_bundle": "Photo bundle",
+    **{k: ref["page"] for k, ref in full_ai_config.REFERENCE.items() if ref["page"]}, **_LABEL_OVERRIDES,
 }
 
 
@@ -78,6 +81,9 @@ def propose(cur: dict, patch: ConfigPatch) -> Proposal | Refusal:
     # An unknown key never equals `base`, so `validate` below refuses it, as it does the JSON box's.
     if bad := [f"{k}: locked" for k in patch.set if k in LOCKED_KEYS]:
         return Refusal("invalid_patch", refusal_text(bad))
+    # `side` below drops a retired key, so name it here or the answer would be a false "already set".
+    if bad := full_ai_config.retired_errors(patch.set):
+        return Refusal("invalid_patch", refusal_text(bad))
     after = {**base, **patch.set}
     # 03b's `folders`: a value without `exclude` keeps the stored one (spec 03c › propose step 3).
     f = patch.set.get("folders")
@@ -107,8 +113,8 @@ _STOP = frozenset({"his", "the", "and"})      # key words that name nothing (`hi
 
 def writer_short_names() -> list[str]:
     """Each Writer-provider model's leading word: euryale, hermes, glm, deepseek."""
-    return sorted({re.match(r"[a-z]+", m).group(0) for m, v in MODELS.items()
-                   if v.provider in full_ai_config.WRITER_PROVIDERS and re.match(r"[a-z]+", m)})
+    return sorted({re.match(r"[a-z]+", m).group(0) for m in full_ai_config.WRITER_MODELS
+                   if re.match(r"[a-z]+", m)})
 
 
 def _words(s: str) -> list[str]:

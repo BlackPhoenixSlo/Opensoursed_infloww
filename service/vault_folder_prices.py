@@ -2,12 +2,14 @@
 
 One row per (account, folder ref): `vf:<vault_folders.id>` (internal folder) or `of:<OF list id>`
 (the refs `automations/full_ai_sell.load_rows` gives each item). No row = no custom price. Our DB
-only: setting a price never writes to OnlyFans. Read by the sell executor only (`full_ai_sell`).
+only: setting a price never writes to OnlyFans. Read by the sell executor (`full_ai_sell`) and the
+GET route below.
 
 Routes (owner scope, beside the folder routes): `vault_ai_api` GET / POST /admin/vault-ai/folder-prices.
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from typing import Iterable
@@ -18,7 +20,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from db.engine import get_session
 from db.models import VaultFolderPrice
 
-# Same bounds as `full_ai_sell.MIN_CENTS` / `MAX_CENTS` (a sale price inside [$10, $200]).
+# A sale price inside [$10, $200]; `full_ai_sell.MIN_CENTS` / `MAX_CENTS` are these.
 MIN_CENTS = 1000
 MAX_CENTS = 20000
 # `vf:` + an internal folder id; `of:` + an OF list id (stored as OF sent it: digits in practice).
@@ -32,8 +34,10 @@ def parse_ref(raw: object) -> str | None:
 
 
 def parse_cents(raw: object) -> int | None:
-    """`raw` as a price in whole cents inside [MIN_CENTS, MAX_CENTS], else None (bools refused)."""
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw != int(raw):
+    """`raw` as a price in whole cents inside [MIN_CENTS, MAX_CENTS], else None (bools refused, and
+    NaN / ±Infinity, which `json.loads` accepts and `int()` raises on)."""
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or (isinstance(raw, float) and not math.isfinite(raw)) or raw != int(raw)):
         return None
     cents = int(raw)
     return cents if MIN_CENTS <= cents <= MAX_CENTS else None

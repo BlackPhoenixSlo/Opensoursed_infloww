@@ -9,8 +9,8 @@
  *
  * On submit Sign in posts once to /auth/sign-in (lib/twoFactor.ts `signIn`),
  * which checks owners then employees and sets the matching session cookie;
- * Register calls UserContext.register(). Then it goes to `?next=` if present,
- * else the `next` prop (AuthGate's in-place form on an Ultra plan page), else the Dashboard: Messages Pro is a window of its own, opened from the
+ * Register calls UserContext.register(). Then it goes to `?next=` if it is a path on this host
+ * (nextPath.ts), else the `next` prop (AuthGate's in-place form on an Ultra plan page), else the Dashboard: Messages Pro is a window of its own, opened from the
  * sidebar (ADR-0002), never the app's main page.
  *
  * Sign in wears the site's dark Inflowwww sign-in look (web/src/login.njk,
@@ -31,6 +31,7 @@ import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { SITE_URL } from "@/lib/site";
 import { errorCode, signIn, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 import TwoFactorStep from "@/components/auth/TwoFactorStep";
+import { nextHref as pickNext } from "@/components/auth/nextPath";
 import {
   Badges, Bang, EyeIcon, EyeOffIcon, HINT, INPUT, INPUT_LOGIN, Logo, Notice, PINK, PINK_TEXT, UNDERLINE, WRAP,
 } from "@/components/auth/SiteLook";
@@ -44,7 +45,7 @@ export default function Landing({ next }: { next?: string } = {}) {
   const router = useRouter();
   const sp = useSearchParams();
   const inApp = useInDesktopApp();
-  const nextHref = sp.get("next") || next || "/";
+  const nextHref = pickNext(sp.get("next"), next);
 
   const [mode, setMode] = useState<Mode>(sp.get("mode") === "register" ? "register" : "login");
   const prefilled = sp.get("username") ?? "";

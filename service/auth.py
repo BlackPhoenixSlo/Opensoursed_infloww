@@ -762,7 +762,8 @@ async def _token_request(request: Request, call_next, token: str):
     if owner is None:
         return Response(
             "invalid, expired or revoked access token", status_code=401,
-            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
+            headers={"Cache-Control": "no-store",
+                     "WWW-Authenticate": token_auth.challenge(request.headers, request.url.scheme)},
         )
     template, params = token_auth.matched(request.scope, request.app.routes)
     if not token_auth.allowed(request.method, template):

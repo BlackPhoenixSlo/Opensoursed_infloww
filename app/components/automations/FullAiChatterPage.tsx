@@ -112,7 +112,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
               </li>
             </ul>
             {today && (
-              <p className="text-[12px] text-muted">Since {new Date(today.since).toLocaleString()}</p>
+              <p className="text-[12px] text-muted">Since {new Date(today.since).toLocaleString()} (includes Test chat)</p>
             )}
           </FormBlock>
 

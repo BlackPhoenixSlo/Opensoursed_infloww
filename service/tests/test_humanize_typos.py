@@ -157,6 +157,25 @@ def case_deterministic():
         assert a == b, (seed, a, b)
 
 
+def case_reply_rate_overrides_sentence_rule():
+    # Full AI's `typo_pct`: a flat per-reply chance. 1.0 = every reply with an eligible word
+    # slips (one typo), 0.0 = never, None = the per-sentence rule draw-for-draw.
+    one = ["maybe tonight babe"]
+    for seed in range(300):
+        out = humanize_typos(one, random.Random(seed), reply_rate=1.0)
+        assert _typo_count(one, out) == 1, (seed, out)
+        assert humanize_typos(one, random.Random(seed), reply_rate=0.0) == one, seed
+        assert (humanize_typos(one, random.Random(seed), reply_rate=None)
+                == humanize_typos(one, random.Random(seed))), seed
+    # 1.0 with nothing eligible still leaves the reply alone.
+    assert humanize_typos(["u up", "lol ok"], random.Random(0), reply_rate=1.0) == ["u up", "lol ok"]
+    # 0.5 over many seeds lands near half, regardless of sentence count.
+    many = ["maybe tonight babe. honestly cant wait. thinking about you"]
+    hits = sum(1 for s in range(2000)
+               if _typo_count(many, humanize_typos(many, random.Random(s), reply_rate=0.5)))
+    assert 0.44 <= hits / 2000.0 <= 0.56, hits
+
+
 def case_empty_and_blank_safe():
     assert humanize_typos([], random.Random(0)) == []
     assert humanize_typos(["", "   "], random.Random(0)) == []
@@ -174,5 +193,6 @@ if __name__ == "__main__":
         case_self_correct_fires_and_points_at_right_word,
         case_ugly_slips_get_fixed_more_often,
         case_deterministic,
+        case_reply_rate_overrides_sentence_rule,
         case_empty_and_blank_safe,
     )

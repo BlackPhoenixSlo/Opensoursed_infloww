@@ -56,8 +56,17 @@ const TODAY = {
 
 const TEMPLATE = "Name: \nAge: \nFrom: \nPersonality: \nLikes: \nWon't do (hard limits): ";
 const CONFIG = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
+/** The GET's `reference` (`full_ai_config.reference`), a few keys. */
+const REFERENCE = [
+  { key: "version", default: 1, allowed: "1", about: "Config format version.", page: null },
+  { key: "reply_speed", default: "0-2m", allowed: "0-2m | 0-15-60", about: "How long she waits before replying.", page: "Reply speed" },
+  { key: "gifs", default: false, allowed: "true | false", about: "Sticker GIFs in her replies.", page: "GIFs" },
+  { key: "sext_on", default: true, allowed: "true | false", about: "Sexting. Off: she stays in normal chat.", page: null },
+];
+/** The GET's `limits` (`full_ai_config.limits`). */
+const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m" };
 const configBody = (over: Record<string, unknown> = {}) =>
-  ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], ...over });
+  ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS, ...over });
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
 /** The reads every mount answers: the Full AI config, the account config (Model info) and the LLM keys status. */
 const baseGet = (p: string): unknown => {
@@ -127,6 +136,7 @@ describe("Full AI Chat page", () => {
       "Chat7", "Sext6", "Sell now5", "Tease4", "Make right3", "AI dare2", "No send1", "Jev failed8",
     ]);
     expect(relayGet.mock.calls.some((c) => String(c[0]) === "/admin/full-ai/today?account_id=acc-a")).toBe(true);
+    expect(screen.getByText(/^Since .* \(includes Test chat\)$/)).toBeTruthy();
   });
 
   it("shows the newest rows: Fan, Route, Heat, row and Jev latency or Jev failed; a Test chat Turn reads 'Test chat'", async () => {
@@ -488,6 +498,42 @@ describe("Full AI Chat page › Settings", () => {
     expect(win("Draft").getByText("Reply 0-2 min · Human style mixed · Typos off · GIFs off · Caption chat")).toBeTruthy();
   });
 
+  it("Typos %: empty = auto, a percent stores typo_pct on blur, 101 snaps back; hidden while Typos is off", async () => {
+    mountSettings();
+    await loadedConfig();
+    const box = () => settings().getByRole("spinbutton", { name: "Typos %" }) as HTMLInputElement;
+    expect([box().value, box().placeholder]).toEqual(["", "auto"]);
+    await act(async () => { fireEvent.change(box(), { target: { value: "101" } }); fireEvent.blur(box()); });
+    expect(putCalls().length).toBe(0);
+    expect(box().value).toBe("");
+    await act(async () => { fireEvent.change(box(), { target: { value: "30" } }); fireEvent.blur(box()); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, typo_pct: 30 }, rev: 3 });
+    await waitFor(() => expect(box().value).toBe("30"));
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Typos" })); });
+    await waitFor(() => expect(settings().queryByRole("spinbutton", { name: "Typos %" })).toBeNull());
+  });
+
+  it("GIFs %: shown only while GIFs is on, empty = auto, a percent stores gif_pct on blur, 101 snaps back", async () => {
+    mountSettings(configBody({ draft: { ...CONFIG, gifs: true } }));
+    await loadedConfig();
+    const box = () => settings().getByRole("spinbutton", { name: "GIFs %" }) as HTMLInputElement;
+    expect([box().value, box().placeholder]).toEqual(["", "auto"]);
+    await act(async () => { fireEvent.change(box(), { target: { value: "101" } }); fireEvent.blur(box()); });
+    expect(putCalls().length).toBe(0);
+    expect(box().value).toBe("");
+    await act(async () => { fireEvent.change(box(), { target: { value: "25" } }); fireEvent.blur(box()); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true, gif_pct: 25 }, rev: 3 });
+    await waitFor(() => expect(box().value).toBe("25"));
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
+    await waitFor(() => expect(settings().queryByRole("spinbutton", { name: "GIFs %" })).toBeNull());
+  });
+
+  it("GIFs %: no box while GIFs is off", async () => {
+    mountSettings();
+    await loadedConfig();
+    expect(settings().queryByRole("spinbutton", { name: "GIFs %" })).toBeNull();
+  });
+
   it("Writers: tick adds at the end, untick drops, Make Writer moves first; the last one and a full chain are locked", async () => {
     mountSettings(configBody({ draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b"] },
       writer_models: ["deepseek-v4-flash", "euryale-v2.3", "hermes-4-405b"] }));
@@ -581,6 +627,24 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs on · Caption chat")).toBeTruthy();
     await waitFor(() => expect(btn("Roll back").disabled).toBe(false));
+  });
+
+  it("JSON shows the All settings table: one row per reference key, Changed on a draft value off its default", async () => {
+    mountSettings(configBody({ draft: { ...CONFIG, gifs: true } }));
+    await loadedConfig();
+    fireEvent.click(btn("JSON (old + new)"));
+    const table = await within(screen.getByRole("dialog")).findByRole("table", { name: "All settings" });
+    expect(within(screen.getByRole("dialog")).getByText("All settings", { selector: "h3" })).toBeTruthy();
+    expect(within(table).getAllByRole("columnheader").map((c) => c.textContent))
+      .toEqual(["Setting", "Default", "Draft", "Allowed", "What it does", "Where"]);
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows.map((r) => within(r).getAllByRole("cell")[0].textContent)).toEqual(REFERENCE.map((r) => r.key));
+    const row = (key: string) => rows[REFERENCE.findIndex((r) => r.key === key)];
+    expect(within(row("gifs")).getAllByRole("cell").map((c) => c.textContent))
+      .toEqual(["gifs", "false", "trueChanged", "true | false", "Sticker GIFs in her replies.", "GIFs"]);
+    expect(within(row("reply_speed")).queryByText("Changed")).toBeNull();
+    expect(within(row("sext_on")).getAllByRole("cell").map((c) => c.textContent)[5]).toBe("JSON");
+    expect(within(table).getAllByText("Changed").length).toBe(1);
   });
 
   it("JSON opens the full draft in the raw JSON editor; a field error is shown, a good one stores and closes", async () => {
@@ -713,6 +777,79 @@ describe("Full AI Chat page › applied draft", () => {
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
   });
 
+  it("JSON open while an Apply lands: both Store buttons go off and the alert says to copy the text first (rwl-c R2-3)", async () => {
+    // rwl-c F1: the boxes were read at rev 3; storing them would overwrite the Apply's draft (the server 409s on rev 3).
+    const apply = mountApplied();
+    await loadedConfig();
+    fireEvent.click(btn("JSON (old + new)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, gifs: true }) } });
+    await apply();
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("alert").textContent).toMatch(/changed elsewhere since you opened this.*Copy your text before Cancel/);
+    for (const name of ["Store draft", "Store checkpoint"]) {
+      const b = dialog.getByRole("button", { name }) as HTMLButtonElement;
+      expect(b.disabled).toBe(true);
+      await act(async () => { fireEvent.click(b); });
+    }
+    expect(relayPut).not.toHaveBeenCalled();
+    expect(box.value).toBe(JSON.stringify({ ...CONFIG, gifs: true }));
+    expect(screen.queryByText("Someone saved this config meanwhile. Reload.")).toBeNull();
+  });
+
+  it("JSON open while an Apply lands: untouched boxes still close on Escape; reopened they show the newer draft", async () => {
+    const apply = mountApplied();
+    await loadedConfig();
+    fireEvent.click(btn("JSON (old + new)"));
+    await screen.findByRole("textbox", { name: "Draft · new JSON" });
+    await apply();
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(btn("JSON (old + new)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
+    expect(JSON.parse(box.value)).toEqual(slower);
+    expect(within(screen.getByRole("dialog")).queryByText(/changed elsewhere since you opened this/)).toBeNull();
+  });
+
+  it("JSON open: a config stored elsewhere the page has not read yet still answers 409 on the opened rev (rwl-c R2-3)", async () => {
+    mountApplied({
+      put: (b) => {
+        if (b.rev !== 4) throw new RelayError(409, { detail: "Someone saved this config meanwhile. Reload.", rev: 4 });
+        return configBody({ checkpoint: b.checkpoint, previous: CONFIG, draft: slower, rev: 5 });
+      },
+    });
+    await loadedConfig();
+    fireEvent.click(btn("JSON (old + new)"));
+    const ck = await screen.findByRole("textbox", { name: "Checkpoint · old (saved) JSON" });
+    fireEvent.change(ck, { target: { value: JSON.stringify({ ...CONFIG, gifs: true }) } });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" })); });
+    const ckPuts = relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/checkpoint");
+    expect(ckPuts.map((c) => c[1].rev)).toEqual([3]);
+    expect(await within(screen.getByRole("dialog")).findByText("Someone saved this config meanwhile. Reload.")).toBeTruthy();
+  });
+
+  it("an Apply read while the page's own draft PUT is out is adopted once that PUT lands (rwl-c F5)", async () => {
+    let body = configBody();
+    let land: (v: unknown) => void = () => {};
+    mountSettings(() => Promise.resolve(body), { put: () => new Promise((r) => { land = r; }) });
+    await loadedConfig();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
+    body = configBody({ draft: slower, rev: 5 });
+    const reads = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/config")).length;
+    const before = reads();
+    await act(async () => { await client.invalidateQueries({ queryKey: fullAiConfigKey("acc-a") }); });
+    // Let the refetched body reach the page (React Query notifies on a timer) while the PUT is still out.
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect([reads(), speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")]).toEqual([before + 1, "true"]);
+    await act(async () => { land(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    expect(bar()).toBeNull();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
+    expect(putCalls()[1][1]).toMatchObject({ rev: 5 });
+  });
+
   it("an equal rev on refetch changes nothing", async () => {
     mountSettings();
     await loadedConfig();
@@ -743,6 +880,39 @@ describe("Full AI Chat page › Selling settings", () => {
     await loadedConfig();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, folders: FOLDERS, sell_on: true }, rev: 3 });
+  });
+
+  it("the Sell settings group shows only with Sell on: seven switches, all on by default; a click stores its off value", async () => {
+    mountSettings();
+    await loadedConfig();
+    const group = () => screen.queryByRole("list", { name: "Sell settings" });
+    expect(group()).toBeNull();
+    expect(settings().queryByRole("switch", { name: "Unasked offers" })).toBeNull();
+    expect(settings().queryByText("Test chat only.")).toBeNull();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
+    await waitFor(() => expect(group()).not.toBeNull());
+    const sws = within(group()!).getAllByRole("switch") as HTMLButtonElement[];
+    expect(sws.map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked"), s.disabled])).toEqual(
+      ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Spacing", "He likes"]
+        .map((n) => [n, "true", false]));
+    expect(settings().getByText("Test chat only.")).toBeTruthy();
+    // Sell group sits inside Sell's own top-level item.
+    const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
+    expect(items.length).toBe(10);
+    expect(within(items[7]).getByRole("list", { name: "Sell settings" })).toBeTruthy();
+    const sw = (name: string) => within(group()!).getByRole("switch", { name }) as HTMLButtonElement;
+    await act(async () => { fireEvent.click(sw("Unasked offers")); });
+    expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, sell_on: true, draft_questions: false }, rev: 4 });
+    await waitFor(() => expect(sw("Unasked offers").getAttribute("aria-checked")).toBe("false"));
+    await act(async () => { fireEvent.click(sw("Nearest piece")); });
+    expect(putCalls()[2][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, sell_on: true, draft_questions: false, sell_nearest: "off" }, rev: 5 });
+    await waitFor(() => expect(sw("Nearest piece").getAttribute("aria-checked")).toBe("false"));
+    await act(async () => { fireEvent.click(sw("Nearest piece")); });
+    expect(putCalls()[3][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, sell_on: true, draft_questions: false, sell_nearest: "note" }, rev: 6 });
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
+    await waitFor(() => expect(group()).toBeNull());
   });
 
   it("Content folders: All by default; nothing ticked refuses Save; a picked folder stores include with the stored exclude", async () => {

@@ -8,9 +8,13 @@ _harness temp DB.
 
   case_shadow_request_golden   the recorded Jev request (state + questions + model,
                                serialized) equals the golden bytes, and the row's
-                               `question_version` is the pre-03b `QUESTION_VERSION`
+                               `question_version` is Shadow's `QUESTION_VERSION` (pinned)
   case_golden_file_pinned      the golden file's sha256 is the one captured at 10481c760
                                (ticket 47 phase B: nobody regenerated it)
+  case_wall_clock_caps         rwl-a F3: a hanging Router request fails at `timeout_s` (test
+                               Mode's cap), no budget = "deadline" with no request; N6: every
+                               caller, Shadow too, at `WALL_S`; a hanging Writer walk under `_capped` reads
+                               as no Writer answering
 
 The golden (`test_full_ai_router_test_mode.shadow_request.golden.json`) was captured from
 the unchanged Router module at 10481c760, before ticket 43 edited `_router_jev.py`. Never
@@ -36,8 +40,10 @@ from db.engine import get_session  # noqa: E402
 from db.models import Transaction  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_full_ai_router_test_mode.shadow_request.golden.json")
-# `_router_jev.QUESTION_VERSION` at 10481c760 (Phase 01 + `gif_fits`), before ticket 43.
-PRE_03B_QUESTION_VERSION = "b3202b420ab0"
+# `_router_jev.QUESTION_VERSION` at 10481c760 (Phase 01 + `gif_fits`), before ticket 43. Re-pinned
+# 2026-11-15 only for declines_buying's threshold .5 -> .95 in `THRESHOLDS` (owner: ignore "broke");
+# the request bytes (golden) are unchanged.
+SHADOW_QUESTION_VERSION = "14f5d4f6222f"
 GOLDEN_SHA256 = "c83e5dc592bd3d5cb04d5418256f056f354cc5936f1425217833e994aa1dba31"
 
 
@@ -78,11 +84,64 @@ async def case_shadow_request_golden():
     assert got == GOLDEN.read_bytes(), got.decode()
     (r,) = await _rows("fa_golden")
     assert r.mode == "shadow", r.mode
-    assert r.question_version == PRE_03B_QUESTION_VERSION, r.question_version
+    assert r.question_version == SHADOW_QUESTION_VERSION, r.question_version
 
 
 async def case_golden_file_pinned():
     assert hashlib.sha256(GOLDEN.read_bytes()).hexdigest() == GOLDEN_SHA256
+
+
+async def case_wall_clock_caps():
+    import asyncio
+    import time
+
+    import tenant_keys
+    from automations import _router_jev as rj
+    from automations import full_ai_turn
+
+    class Slow(FakeJev):
+        async def system_one(self, state, questions, model=None):
+            await asyncio.sleep(0.3)
+            return await super().system_one(state, questions, model)
+
+    saved = rj._client, tenant_keys.typesafe_key_for, rj.WALL_S
+
+    async def key(_aid):
+        return "k"
+    tenant_keys.typesafe_key_for = key
+    try:
+        fake = Slow((QUIET, 1.0), (QUIET, 1.0))
+        rj._client = lambda k: fake
+        t0 = time.monotonic()
+        try:
+            await rj.ask({}, "a", mode="test", timeout_s=0.05)
+            raise AssertionError("no cap")
+        except rj.GateError as e:
+            assert "TimeoutError" in str(e), e
+        assert time.monotonic() - t0 < 0.25
+        try:
+            await rj.ask({}, "a", mode="test", timeout_s=0)
+            raise AssertionError("no deadline")
+        except rj.GateError as e:
+            assert str(e) == "deadline", e
+        assert fake.calls == [], fake.calls     # the capped one was cancelled; none with no budget
+        assert rj.WALL_S == rj.TIMEOUT_S * (1 + rj.MAX_RETRIES) == 20.0
+        assert (await rj.ask({}, "a")).intensity == 1.0  # Shadow: 0.3 s is inside WALL_S
+        rj.WALL_S = 0.05                                  # N6: every caller is capped, Shadow too
+        for kw in ({}, {"mode": "test", "timeout_s": 60.0}):
+            try:
+                await rj.ask({}, "a", **kw)
+                raise AssertionError(f"no wall cap {kw}")
+            except rj.GateError as e:
+                assert "TimeoutError" in str(e), (kw, e)
+    finally:
+        rj._client, tenant_keys.typesafe_key_for, rj.WALL_S = saved
+
+    async def hang():
+        await asyncio.sleep(5)
+    res = await full_ai_turn._capped(hang(), time.monotonic() + 0.05)
+    assert res.text is None and res.writer is None, res
+    assert [a["outcome"] for a in res.attempts] == ["timeout"], res.attempts
 
 
 _harness.run()

@@ -67,7 +67,7 @@ describe("applyBody / resultLine / diffLine", () => {
   it("diffLine reads the value in plain words", () => {
     expect(diffLine(GOOD.diffs[0])).toBe("Reply speed: 0-2m → 0-15-60");
     expect(diffLine({ field: "gifs", label: "GIFs", before: true, after: false })).toBe("GIFs: on → off");
-    expect(diffLine({ field: "writers", label: "Writers (in order)", before: ["a"], after: ["b", "c"] }))
-      .toBe("Writers (in order): a → b, c");
+    expect(diffLine({ field: "writers", label: "Writers", before: ["a"], after: ["b", "c"] }))
+      .toBe("Writers: a → b, c");
   });
 });

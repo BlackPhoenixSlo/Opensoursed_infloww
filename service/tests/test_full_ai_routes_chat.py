@@ -70,7 +70,7 @@ def case_every_route_via_api():
     try:
         cases = [
             ("chat", _hot(), "chat", "otherwise", w.SELL_OFF_LINE),   # selling off: never a promise
-            ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT),
+            ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT_TEST),   # test Mode's twin
             ("dare", _hot(asks_if_ai=0.9), "ai_dare", "asks_if_ai", w.DARE),
             ("mr", _hot(complains_now=0.9), "make_right", "complains_now", w.MAKE_RIGHT_HEAD),
         ]
@@ -89,7 +89,7 @@ def case_every_route_via_api():
             assert beat in system, tag
             assert notes in system, tag                      # her Model info, every Route
             if route == "chat":
-                assert not any(x in system for x in (w.SEXT_HOT, w.BRUSH_OFF, w.MAKE_RIGHT_HEAD))
+                assert not any(x in system for x in (w.SEXT_HOT, w.SEXT_HOT_TEST, w.BRUSH_OFF, w.MAKE_RIGHT_HEAD))
             if route == "sext":
                 assert got["heat"] == 3 and w.SEXT_HEAT.format(heat=3) in system, got
             if route == "ai_dare":                           # two beats, one reply

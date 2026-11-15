@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { HELP, LABELS, wrongFieldWarning } from "./providerFields";
+import { HELP, KEY_URLS, LABELS, keyUrl, wrongFieldWarning } from "./providerFields";
 
 /**
  * Pins the one paste mistake this card can make silently: a DeepSeek key
@@ -65,5 +65,20 @@ describe("Full AI Chat Writer host copy", () => {
     expect(HELP.openrouter).toMatch(/Full AI Chat/);
     expect(HELP.openrouter).toMatch(/Hermes/);
     expect(HELP.openrouter).toMatch(/openrouter\.ai/);
+  });
+});
+
+describe("keyUrl", () => {
+  it("links every provider with a label to an https key page", () => {
+    for (const id of Object.keys(LABELS)) expect(keyUrl(id)).toMatch(/^https:\/\//);
+  });
+  it("maps server key names to their vendor page", () => {
+    expect(keyUrl("DEEPSEEK_API_KEY")).toBe(KEY_URLS.deepseek);
+    expect(keyUrl("HELP_ASSISTANT_ANTHROPIC_KEY")).toBe(KEY_URLS.anthropic);
+    expect(keyUrl("GOOGLE_DRIVE_API_KEY")).toBe(KEY_URLS.google);
+  });
+  it("has no link for vendorless keys", () => {
+    expect(keyUrl("ADMIN_PASSWORD")).toBeNull();
+    expect(keyUrl("SHARE_TOKEN")).toBeNull();
   });
 });

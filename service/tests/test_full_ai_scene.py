@@ -3,7 +3,11 @@
 
   case_scene_next_table          start, climb, never back, after -> new scene, off -> None, heat floor
   case_scene_words               Jev's `scene` state words
+  case_saved_scene               95: newest row wins whatever its status; None on no rows, a None /
+                                 absent / unreadable newest, or a gap over `gap_s` (119 vs 121 min)
   case_switches                  scene_flag / is_hot / scene_turn / gif_offered over flag × Mode × Route
+  case_gif_pct                   `gif_pct`: 0 never, 100 = null, 50 ≈ half, seeded per Turn; prompt
+                                 block and `_gif_part` follow the same roll
   case_flag_off_prompts_pinned   flag off: 14 Writer prompts byte-identical to origin/main's builder
   case_scene_prompts             scene Turns: SEXT_SCENE + stage (+ SEXT_HEAT on sext / SCENE_SELL on
                                  a hot sell / CAPTION_APART apart / need-line on a Refusal); no
@@ -26,6 +30,7 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 import hashlib  # noqa: E402
 import json  # noqa: E402
 from dataclasses import replace  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
@@ -36,7 +41,7 @@ from automations import full_ai_writers as wr  # noqa: E402
 from automations._prompt_rules import NO_NARRATION_RULE  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 from automations.full_ai_decide import Decision  # noqa: E402
-from automations.full_ai_scene import scene_next, scene_words  # noqa: E402
+from automations.full_ai_scene import saved_scene, scene_next, scene_words  # noqa: E402
 from automations.full_ai_sell import Pick, Refusal, Teased  # noqa: E402
 from automations.full_ai_turn import _haggled  # noqa: E402
 
@@ -65,6 +70,31 @@ def case_scene_next_table():
     for (prev, on, stage, heat), want in rows:
         got = scene_next(prev, on, stage, heat)
         assert got == want, (prev, on, stage, heat, got, want)
+
+
+def case_saved_scene():
+    now, gap = datetime(2026, 11, 15, 12, 0), ft.SITTING_GAP_S
+    a, b = {"n": 2, "stage": "building", "heat": 4}, {"n": 3, "stage": "peak", "heat": 4}
+    row = lambda reply, mins=1, status="sent": SimpleNamespace(   # noqa: E731
+        reply_json=reply if reply is None or isinstance(reply, str) else json.dumps(reply),
+        created_at=now - timedelta(minutes=mins), status=status)
+    table = [   # (rows, want)
+        ([], None),
+        ([row({"scene": a}, 5), row({"scene": b})], b),                    # newest wins
+        ([row({"scene": a}, 5), row({"scene": None})], None),              # None ends it
+        ([row({"scene": a}, 5), row({"parts": []})], None),                # key absent ends it
+        ([row({"scene": a}, 5), row({"scene": b}, status="failed")], b),   # status ignored
+        ([row({"scene": a}, 5), row({"scene": b}, status="no_send")], b),
+        ([row({"scene": b}, 119)], b),                                     # the same Sitting
+        ([row({"scene": b}, 121)], None),                                  # the Sitting ended
+        ([row({"scene": a}, 5), row(None)], None),                         # empty reply_json
+        ([row({"scene": a}, 5), row("")], None),
+        ([row({"scene": a}, 5), row("not json")], None),
+        ([row({"scene": a}, 5), row("[1]")], None),
+    ]
+    for rows, want in table:
+        got = saved_scene(rows, now, gap)
+        assert got == want, ([(r.reply_json, r.created_at, r.status) for r in rows], got, want)
 
 
 def case_scene_words():
@@ -107,6 +137,36 @@ def case_switches():
         assert wr.gif_offered(d, f) is want, (d, f.mode, f.config)
 
 
+def case_gif_pct():
+    """`gif_pct`: null = the gate alone; 0 never; 100 = null; 50 ≈ half the Turns; seeded per Turn;
+    never lifts the scene / gif_fits gate; `messages_for` (gif_ok None) and `_gif_part` agree."""
+    from automations.full_ai_turn import _gif_part
+    D = lambda route, *fired: Decision(route, 3, "x", frozenset(fired))   # noqa: E731
+
+    def f(key, **cfg):
+        return SimpleNamespace(mode="test", account_id="acct_g", fan_id=7, anchor_key=key,
+                               config={**DEFAULTS, "gifs": True, "sext_scene": False, **cfg})
+    keys = [f"t:{i}" for i in range(2000)]
+    for d in (D("chat"), D("sext", "sexual_now")):
+        assert all(wr.gif_offered(d, f(k)) for k in keys[:200])
+        assert not any(wr.gif_offered(d, f(k, gif_pct=0)) for k in keys[:200])
+        assert all(wr.gif_offered(d, f(k, gif_pct=100)) for k in keys[:200])
+    hits = sum(wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys)
+    assert 0.45 <= hits / len(keys) <= 0.55, hits
+    assert [wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys[:50]] == \
+        [wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys[:50]]
+    assert not any(wr.gif_offered(D("chat"), f(k, gifs=False, gif_pct=100)) for k in keys[:50])
+    assert not any(wr.gif_offered(D("chat"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])  # no gif_fits
+    assert all(wr.gif_offered(D("chat", "gif_fits"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])
+    sticker = wr.cat_stickers.prompt_block("allow", wr._voice.VOICE_HER)
+    for k in keys[:40]:
+        t = SimpleNamespace(**{**vars(_turn(gifs=True, sext_scene=False, gif_pct=50)), "fan_id": 7, "anchor_key": k})
+        on = wr.gif_offered(D("chat"), t)
+        assert (sticker in wr.messages_for("chat", "otherwise", 2, t, None)[0]["content"]) is on, k
+        text, gif = _gif_part("hey\nSTICKER: kiss", t, on)
+        assert "STICKER" not in text and (gif is None or on), (k, text, gif)
+
+
 def _row(d, t, mid):
     return SimpleNamespace(direction=d, body=t, created_at=None, message_id=mid, automation_kind=None,
                            media_count=0, raw_json=None, price_cents=None, is_paid=False, purchased_at=None)
@@ -125,6 +185,18 @@ PICK = Pick(ref=11, media=(11, 12), previews=(), price_cents=5000, list_cents=50
 FLAG_OFF_PROMPTS_SHA = "00570ca587295d9a7222dad2e8fe1be44a375476e9317e7e90aea2792f08560f"
 
 
+def _old_twins(prompts):
+    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST where Shadow composes
+    the old three (off-path wording PR); put back, the prompts are the pinned builder's."""
+    s = json.dumps(prompts)
+    fmt = {"close": wr.CLOSE_BY_ID, "example": wr._voice.HER.sell_caption_example}
+    for new, old in ((wr.SEXT_HOT_TEST, wr.SEXT_HOT),
+                     (wr.SELL_STEP_TEST.format(**fmt), wr.SELL_STEP.format(**fmt)),
+                     (wr.ESCALATION_TEST.format(close=wr.CLOSE_BY_ID), wr.ESCALATION.format(close=wr.CLOSE_BY_ID))):
+        s = s.replace(json.dumps(new)[1:-1], json.dumps(old)[1:-1])
+    return json.loads(s)
+
+
 def case_flag_off_prompts_pinned():
     """Flag off: chat, sext, hot / cold / apart sell, a hot Refusal and offer_moment, GIFs off and
     on, byte-identical to the builder before the sext scene (`lead_in` off too)."""
@@ -139,7 +211,7 @@ def case_flag_off_prompts_pinned():
                                          hot=hot, plain=plain))
     # Selling off in test Mode puts SELL_OFF_LINE in NO_SELL_OFFERS' place (sell_nearest PR); put
     # back, every prompt is byte-identical to the pinned builder.
-    cases = json.loads(json.dumps(cases).replace(json.dumps(wr.SELL_OFF_LINE)[1:-1],
+    cases = json.loads(json.dumps(_old_twins(cases)).replace(json.dumps(wr.SELL_OFF_LINE)[1:-1],
                                                  json.dumps(wr.NO_SELL_OFFERS)[1:-1]))
     got = hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest()
     assert got == FLAG_OFF_PROMPTS_SHA, got

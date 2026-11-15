@@ -10,12 +10,15 @@ Router) keeps its own questions, thresholds and model pin, and its own one-line
     it: OF's HTML stripped and unescaped; a media-only message is `MEDIA_ONLY`.
   - `client(key, model, timeout_s, max_retries)`: one cached async client per
     event loop, key and settings (connections are reused).
+  - `ask_one(client_of, account_id, st, questions, model, timeout_s, error)`: one
+    request on the account's key under a wall-clock cap; `(result, ms)` or `error`.
 """
 from __future__ import annotations
 
 import asyncio
 import html
 import re
+import time
 from typing import Any
 
 MEDIA_ONLY = "[sent a photo or video]"
@@ -54,3 +57,24 @@ def client(key: str, model: str, timeout_s: float, max_retries: int) -> Any:
             api_key=key, model=model,
             retry=RetryPolicy(max_retries=max_retries, timeout=timeout_s))
     return c
+
+
+async def ask_one(client_of: Any, account_id: str | None, st: dict[str, Any], questions: dict[str, Any],
+                  model: str, timeout_s: float | None, error: type[Exception]) -> tuple[Any, int]:
+    """One `system_one` request on `account_id`'s TypeSafe key within `timeout_s` wall-clock
+    seconds (None: no cap past the SDK's per-operation timeout). `(result, request ms)`; raises
+    `error` on any failure: no budget left, no key, SDK missing, HTTP, timeout."""
+    from tenant_keys import typesafe_key_for
+    if timeout_s is not None and timeout_s <= 0:
+        raise error("deadline")
+    try:
+        key = await typesafe_key_for(account_id)   # DB reads: may raise
+        if not key:
+            raise error("no TypeSafe key (agency or TYPESAFE_API_KEY)")
+        t0 = time.perf_counter()   # Jev wall time is the request alone, not the key read
+        res = await asyncio.wait_for(client_of(key).system_one(st, questions, model=model), timeout_s)
+        return res, int((time.perf_counter() - t0) * 1000)
+    except error:
+        raise
+    except Exception as e:      # SDK missing, HTTP, timeout
+        raise error(f"{type(e).__name__}: {e}"[:300]) from e

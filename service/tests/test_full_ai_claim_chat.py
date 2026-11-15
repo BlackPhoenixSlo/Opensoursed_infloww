@@ -187,7 +187,7 @@ def case_claim_fail_then_fallback():
     fails = reply["claim_fail"]
     assert [f["check"] for f in fails] == ["claim", "claim"], ("first write + rewrite recorded", fails)
     assert "5 videos" in fails[0]["text"] and "videos" in fails[1]["text"], fails
-    assert reply["typo_state"] == {}, ("a caption never sent leaves the first Turn's typo state", reply)
+    assert reply["typo_state"] == {"at": None, "since": 1}, ("the chained fallback's typo state (rwl-a F2)", reply)
     assert row.offer_price_cents == 1000, row.offer_price_cents
 
 
@@ -230,10 +230,10 @@ class _SlowWriter(FakeWriterHTTP):
 
 
 def case_deadline_no_rewrite():
-    """The Router stalls 100 s of the 145 s Turn and NanoGPT takes its full 25 s: 20 s is left, less
+    """The Router stalls 170 s of the 245 s Turn and NanoGPT takes its full 45 s: 30 s is left, less
     than one writer_timeout_s, so the wrong caption gets no rewrite."""
     bound = turn_bound_s(DEFAULTS)
-    assert bound == 145 and DEFAULTS["writer_timeout_s"] == 25, bound
+    assert bound == 245 and DEFAULTS["writer_timeout_s"] == 45, bound
     clock = _Clock()
     start = clock.t
     saved = (full_ai_turn.time, full_ai_writers.time)
@@ -244,12 +244,12 @@ def case_deadline_no_rewrite():
         t0 = time.perf_counter()
         with _one_clip_sell():
             r, _ = _post(["ok:5 videos just for u babe", "ok:my 1 vid for u"], "p-claim-deadline", fake_w=fw,
-                         fake_j=_SlowJev(clock, 100.0, ({**QUIET, "wants_content": 0.9}, 1.0)))
+                         fake_j=_SlowJev(clock, 170.0, ({**QUIET, "wants_content": 0.9}, 1.0)))
         wall = time.perf_counter() - t0
     finally:
         full_ai_turn.time, full_ai_writers.time = saved
     got = r.json()
-    assert [x["timeout"] for x in fw.requests] == [25.0], fw.requests
+    assert [x["timeout"] for x in fw.requests] == [45.0], fw.requests
     assert _outcomes(got["attempts"]) == [(EURYALE, "ok", False)], got["attempts"]
     assert _texts(got["parts"]) == [FALLBACK], got["parts"]
     _ppv_on_last(got["parts"])

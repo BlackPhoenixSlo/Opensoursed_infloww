@@ -19,7 +19,7 @@ import { ROW } from "@/components/automations/automationPage";
 import {
   buildPayload, canSubmit, initFolders, NO_FOLDER_TEXT, NO_FOLDERS, sellFoldersReducer, type StoredFolders,
 } from "@/components/automations/sellFoldersForm";
-import type { FullAiConfig } from "@/components/automations/fullAiTestChat";
+import type { FullAiConfig } from "@/components/automations/fullAiConfig";
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import type { FullAiConfigApi } from "@/hooks/useFullAiConfig";
 import { useFullAiPrepare, type PrepareStep } from "@/hooks/useFullAiPrepare";

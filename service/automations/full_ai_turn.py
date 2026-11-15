@@ -1,8 +1,8 @@
 """automations/full_ai_turn.py — Full AI Chat's shared Turn pipeline, one for every Mode.
 
   load_turn_facts(account, fan, anchor, mode, *, session=None, side=None, photo=None) -> TurnFacts
-  sender_for(mode)       test: full_ai_test.send | shadow: None (records only) | live: 04a
-  run_turn(facts) -> TurnResult
+  TurnIO                 one Mode's I/O: trigger_kind, hold, send (None = records only), record
+  run_turn(facts, io=None) -> TurnResult   io None = full_ai_test.IO (the Test chat)
 
 `run_turn`, in order: Router Jev (`_router_jev.ask`; a `GateError` is chat at Heat 1, row
 `jev_failed`) and `decide_turn` with the side's route flags; on a speaking Route the info stage
@@ -21,9 +21,14 @@ row (DRAFT `counter_offer`, test Mode with `draft_questions` only) re-offers the
 (`TurnFacts.offer_piece`), else the Pending tease's, at his clamped quote. On
 make_right after a Buy in the session (`TurnFacts.spent`) it picks one unseen Free item (price 0,
 row kind `free`, its PPV on the last bubble); a Refusal there keeps the apology with no item. A leak
-swap or a dropped turn sends no PPV (`reply_json.offer_dropped` `leak` | `shape`). One Pick per Turn at most. A text bubble set riding a Pick then passes the Claim
-audit + price check (`_claim_audit`, ticket 45): one rewrite through the same chain, then
-`full_ai_sell.fallback_caption` (`reply_json.caption_fallback`).
+swap or a dropped turn sends no PPV (`reply_json.offer_dropped` `leak` | `shape`, the fallback caption
+dropped by the chain too; `claim`: a ride whose text failed the Claim audit twice). One Pick per Turn
+at most. A text bubble set riding a Pick then passes the Claim audit + price check (`_claim_audit`,
+ticket 45): one rewrite through the same chain, then `full_ai_sell.fallback_caption` through the
+chain (`reply_json.caption_fallback`).
+On a Route sext Turn with `floor_on` the Heat check (`_heat_check`, spec 06) scores her final text
+(`_heat_jev`, one Score) against the Heat the Writer got and rewrites it once when over
+(`reply_json.heat_check`); no Mode check, never a dropped reply.
 `hold_with_typing` and the DM rate are the Mode's transport's to call, and test calls neither.
 A `STICKER: <tag>` line is always stripped from the Writer's text before the chain
 (`cat_stickers.parse_marker`); with `config.gifs` on, its tag becomes a `{gif, tag}` part after her
@@ -45,13 +50,14 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 import llm_client
-from automations import _info_jev, _price_jev, _reply_shape, _voice, cat_stickers
+from automations import _heat_jev, _info_jev, _price_jev, _reply_shape, _voice, cat_stickers
 from automations import _router_jev as router
 from automations import full_ai_caption, full_ai_sell, full_ai_test
 from automations._nonnative import NONNATIVE_OUTPUTS
+from automations.full_ai_mode import full
 from automations._outbound import finalize_draft
 from automations._prompt_rules import STYLE_MAX_BUBBLES
 from automations._style_flags import load_strip_emojis
@@ -61,9 +67,11 @@ from automations.full_ai_sell import Pick, Refusal, Teased
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
-    PURPOSE, _outcome, bundle_of, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, was_cents_of, write,
+    PURPOSE, WriteResult, _outcome, bundle_of, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, typo_rate, was_cents_of, write,
 )
-from automations.full_ai_writers import spacing_flag
+from automations.full_ai_writers import (
+    implied_flag, is_ride, likes_flag, spacing_flag, tease_flag, tease_turn, wide_flag,
+)
 from automations.full_ai_config import merged, turn_bound_s
 from automations.welcome_chatter_for_info import _HISTORY_TAIL, _REPLY_MAX_CHARS
 from db.engine import get_session
@@ -96,6 +104,7 @@ class TurnFacts:
     pick: Pick | Refusal | None = None  # the sell step's result (03b, `_sell`), set by `run_turn`
     owned: set[int] = field(default_factory=set)    # Owned media, raw ids (test: `full_ai_test.owned_of`)
     spent: list = field(default_factory=list)       # his purchases, oldest first (`bought_of`): the spend line
+    tips: list[int] = field(default_factory=list)   # his tips, cents (live: `transactions` kind tip); spend line only, never pricing
     sent: set[int] = field(default_factory=set)     # media an Offer showed him (test: `sent_media_of`)
     # The Pending tease's piece, else None (test: `full_ai_test.teased_of`). `offer` is the open
     # priced Offer's line; the two are separate.
@@ -109,6 +118,9 @@ class TurnFacts:
     # (`full_ai_test.fetch`), and this Turn's (`full_ai_scene.scene_next`, set by `run_turn`).
     scene: dict | None = None
     scene_now: dict | None = None
+    # Chat tease (config `chat_tease`, test Mode): his settled Offers in words (`full_ai_test.purchases_of`),
+    # read by the tease price Jev; [] without the flag.
+    purchases: list = field(default_factory=list)
 
 
 @dataclass
@@ -124,7 +136,8 @@ class TurnResult:
     caption: dict | None = None     # `reply_json.caption` (`caption_writer` "caption" on a PPV Turn)
     scene: dict | None = None       # `reply_json.scene` (config `sext_scene`): the saved scene
     price: dict | None = None       # `reply_json.price` (config `sext_scene`): the price Jev
-    dropped_reason: str | None = None   # why the reply chain dropped her text: empty | banned
+    dropped_reason: str | None = None   # why no text shipped: empty | echo | banned (chain) | leak | claim (`_claim_audit`)
+    heat_check: dict | None = None  # `reply_json.heat_check` (`_heat_check`): her level vs the Turn's Heat
 
 
 async def stored_config(account_id: str) -> dict:
@@ -139,28 +152,50 @@ async def stored_config(account_id: str) -> dict:
 async def load_turn_facts(account, fan, anchor, mode, *, session=None, side=None, photo=None) -> TurnFacts:
     """The Turn's facts. Test: `fan` is the pair, `anchor` his line, `side` the config side;
     read off the session's own rows (`full_ai_test.fetch`) with that side of the stored config.
-    Shadow and live read the DB (`full_ai_chat._state`) from 04a; `session` is theirs."""
+    The Test chat's loader only (live loads with `full_ai_live.load`)."""
     if mode == "test":
         cfg = await stored_config(account)
         facts = await full_ai_test.fetch(account, fan, side, anchor, cfg[side], photo)
         facts.config_rev = cfg["rev"]
         return facts
-    raise NotImplementedError(f"load_turn_facts: mode {mode!r} lands with 04a")
+    raise NotImplementedError(f"load_turn_facts: Test chat only, not {mode!r}")
 
 
-def sender_for(mode: str) -> Callable | None:
-    if mode == "test":
-        return full_ai_test.send
-    if mode == "shadow":
-        return None
-    raise NotImplementedError(f"sender_for: mode {mode!r} lands with 04a")
+@dataclass(frozen=True)
+class TurnIO:
+    """One Mode's I/O (04a seam): the spine calls it, never imports the Mode's module."""
+    trigger_kind: str                    # test | inbound
+    hold: Callable[[dict, str], float]   # (config, anchor_key) -> reply wait in s; drawn, never slept
+    send: Callable[..., Awaitable[None]] | None   # (row, parts, pick, *, over=None, desc=None, gif=None); None = records only
+    record: Callable[[dict], Awaitable[int]]      # row dict -> ai_decisions.id
 
 
-async def _route(facts: TurnFacts) -> tuple[Decision, dict, str | None, int | None, str | None]:
-    """Router Jev and the Route table: (decision, jev_json, router model, Jev ms, Jev error)."""
+# The price Jevs stop this long before the Turn deadline, so their own timeout (a GateError: the
+# Pick keeps its list price, the row says why) fires before `run_turn`'s sell cap (rwl-a N4).
+_PRICE_MARGIN_S = 0.5
+
+
+async def _capped(call, deadline: float) -> WriteResult:
+    """A Writer walk (`write` / `full_ai_caption.write`) cancelled at `deadline`: then it reads as
+    no Writer answering (one `turn` / `timeout` attempt), never a late text. With no time left the
+    walk itself makes no try (`walk`)."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return await call
+    try:
+        return await asyncio.wait_for(call, left)
+    except asyncio.TimeoutError:
+        return WriteResult(None, None, [{"writer": "turn", "outcome": "timeout", "ms": int(left * 1000)}])
+
+
+async def _route(facts: TurnFacts, deadline: float) -> tuple[Decision, dict, str | None, int | None, str | None]:
+    """Router Jev (wall-clock capped at `router.WALL_S` and `deadline`) and the Route table:
+    (decision, jev_json, router model, Jev ms, Jev error)."""
     try:
         jev = await router.ask(facts.state, facts.account_id, mode=facts.mode, scene=scene_flag(facts),
-                               spacing=spacing_flag(facts))
+                               spacing=spacing_flag(facts), likes=likes_flag(facts),
+                               tease=tease_flag(facts), implied=implied_flag(facts),
+                               timeout_s=deadline - time.monotonic())
         fired, intensity, error = router.fired(jev.answers, facts.mode), jev.intensity, None
         answers, score, model, ms = jev.answers, {"score": jev.intensity, "p": jev.intensity_p}, jev.model, jev.ms
         choices = jev.choices
@@ -169,13 +204,13 @@ async def _route(facts: TurnFacts) -> tuple[Decision, dict, str | None, int | No
         answers, score, model, ms = None, None, None, None
         choices = None
     cfg = facts.config
-    # DRAFT gate (ticket 47): test Mode and the side's `draft_questions`; Shadow / live never.
+    # DRAFT gate (ticket 47): test / live (`full`) and the side's `draft_questions`; Shadow never.
     d = decide_turn(Facts(fired=fired, intensity=intensity, pending_offer=facts.offer is not None,
                           pending_tease=facts.tease is not None, jev_ok=error is None,
                           sell_on=bool(cfg["sell_on"]), sext_on=bool(cfg["sext_on"]),
                           open_offer=facts.offer_piece is not None,
-                          draft_on=facts.mode == "test" and bool(cfg["draft_questions"]),
-                          scene=scene_flag(facts)))
+                          draft_on=full(facts.mode) and bool(cfg["draft_questions"]),
+                          scene=scene_flag(facts), chat_tease=tease_flag(facts)))
     jev_json = {"answers": answers, "intensity": score, "fired": sorted(fired), "state": facts.state,
                 "choices": choices}   # 03b: test Mode's Choices, read by `_sell` only
     return d, jev_json, model, ms, error
@@ -189,11 +224,7 @@ async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -
         history = [(m.direction, router.line_text(m)) for m in facts.cut_rows[-_HISTORY_TAIL:]]
         al = _info_jev.ask_list(facts.config, facts.fan_info, facts.asked, history,
                                 random.Random(f"full_ai:ask:{facts.anchor_key}"))
-        if lead_flag(facts):                    # boobs_ass is never led to: not listed, not marked
-            keep = [i for i, k in enumerate(al.keys) if k != "boobs_ass"]
-            al = _info_jev.AskList([al.keys[i] for i in keep], [al.lines[i] for i in keep],
-                                   al.ask and bool(keep))
-        facts.ask_list = al
+        facts.ask_list = al = _info_jev.unled(al) if lead_flag(facts) else al
         jev_json.setdefault("info", {}).update(info_questions="list", still_needed=al.keys,
                                                presented=al.presented)
     return err
@@ -205,10 +236,13 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     `min(writer_timeout_s, time left)`. Sets `facts.fan_info` (a new dict, newer values win) and
     `facts.next_question`: Jev's pick while it is still missing after the extract (so the pick is
     exactly what the Writer asks, and what `asked` counts). Returns `info_error` (None when all
-    ran). `lead_flag` (`lead_in`, test Mode): the lead wording (`INFO_VERSION_LEAD`) and fetishes
-    is never offered (`_info_jev.askable`): a pick of it fails the Choice (`jev_failed`, no ask)."""
-    lead = lead_flag(facts)
-    jev_json["info_version"] = _info_jev.INFO_VERSION_LEAD if lead else _info_jev.INFO_VERSION
+    ran). `lead_flag` (`lead_in`, test Mode): the lead wording (in `info_version(lead, likes)`) and fetishes
+    is never offered (`_info_jev.askable`): a pick of it fails the Choice (`jev_failed`, no ask).
+    `likes_flag` (`he_likes`, test Mode): the extract carries `LIKES_EXTRACT`, in the digest too.
+    `wide_flag` (`info_wide`, test Mode): `stated_hobbies` takes `STATED_WIDE`'s wording and the
+    extract carries `HOBBIES_EXTRACT`, in the digest too."""
+    lead, likes, wide = lead_flag(facts), likes_flag(facts), wide_flag(facts)
+    jev_json["info_version"] = _info_jev.info_version(lead, likes, wide)
     left = deadline - time.monotonic()
     if left <= 0:
         return "deadline"
@@ -216,7 +250,7 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     offered = _info_jev.askable(facts.config, facts.fan_info, lead) if choice_on else []
     st = _info_jev.state(facts.state, facts.asked, offered)
     try:
-        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left, lead=lead)
+        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left, lead=lead, wide=wide)
     except router.GateError as e:
         return f"jev_failed: {e}"[:300]
     jev_json["info"] = {"stated": info.stated, "pick": info.pick, "fired": info.fired,
@@ -229,7 +263,8 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
         return "deadline"
     try:
         got = await _info_jev.extract(facts, info.fired,
-                                      timeout_s=min(float(facts.config["writer_timeout_s"]), left))
+                                      timeout_s=min(float(facts.config["writer_timeout_s"]), left),
+                                      likes=likes, wide=wide)
     except llm_client.LLMError as e:
         return f"extract:{_outcome(e)}"
     except _info_jev.ExtractError as e:
@@ -278,7 +313,7 @@ async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = Fals
         cap = len(parts) if isinstance(facts.pick, Pick) else max_bubbles
         parts = await apply_typo_throttle(aid, fid, parts, random.Random(f"{fid}:{text}"),
                                           protect=protect, max_bubbles=cap,
-                                          state=reply["typo_state"])
+                                          state=reply["typo_state"], reply_rate=typo_rate(facts.config))
     return parts
 
 
@@ -305,7 +340,7 @@ def _haggled(p: Pick, piece: Teased, same: bool, his: list[str]) -> Pick:
 
 
 async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, float]],
-                reply: dict | None = None) -> None:
+                reply: dict | None = None, deadline: float | None = None) -> None:
     """The Sell executor on a sell_now, tease or Free-item make_right Turn (`_sells`): the vault (`load_rows`), the pool over the
     side's `folders` (config; empty include = all, exclude wins), the shoots and one seeded Pick
     (replayable per Turn). The ask is the Router's `asks_subject` / `asks_format` Choices
@@ -333,14 +368,29 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     broken Turn, as `load_rows` itself fails closed. Overturned if such errors should surface.
     Sext scene (config `sext_scene`): the ask's Heat is the saved scene's (`facts.scene_now`) and a
     fresh Pick (no haggle, tease piece or Free item) aims at Jev's `offer_level` lane
-    (`LEVEL_CENTS`; "any" keeps the heat target), recorded as `reply["level"]`.
+    (`LEVEL_CENTS`; "any" keeps the heat target), recorded as `reply["level"]`; a Chat tease aims at
+    "soft" instead (recorded so).
     Nearest piece (config `sell_nearest` "plain" / "note", `nearest_flag`): a fresh sell_now Pick
     (no haggle, tease piece or Free item) whose ask nothing matches sells the nearest piece
     (`pick(nearest=True)`), recorded as `reply["nearest"]` = {asked_subject, asked_format, step}.
     Bundle (config `sell_bundle`, `bundle_of`, 03d): the same fresh Pick passes `bundle="fill"` (up to
-    5 photos, filled to 3); everything else keeps `"shoot"`, today's Pick."""
+    5 photos, filled to 3); everything else keeps `"shoot"`, today's Pick.
+    Chat tease (config `chat_tease`, `tease_turn`: row chat_tease, or a not-hot offer_moment), on a
+    fresh Pick (no Pending tease; with one the teased piece is re-sold at its price as today): first
+    the tease price Jev (`_tease_price`, before the pick: the photo count depends on the price),
+    then always a ride (`pick(ride=True)`, photos only) drawn only from soft-lane photos (list at
+    most `LEVEL_CENTS["soft"]`; at price 0 only ones passing the free guard `_free_safe`; none:
+    Refusal("no_match")) of up to `full_ai_sell.tease_photos(cents)` photos (one when free) at Jev's
+    price (0 = free, sent unlocked as a Free item; the vault list kept in `facts["vault_list_cents"]`),
+    recorded as `reply["ride"]` = True (kept if the Offer is later dropped, as `reply["nearest"]`
+    is); never the Offer price Jev. Jev failing:
+    Refusal("no_match"), a plain chat reply (`messages_for` adds no need-line on a tease Turn).
+    The Offer price Jev (`_price`) runs here, last, on a fresh priced sell_now Pick only.
+    `deadline`: the Turn's; both price Jevs stop `_PRICE_MARGIN_S` before it. A ride whose text fails the Claim audit twice
+    sends only its bubbles claiming no media and no price, without the photos (`_claim_audit`)."""
     reply = {} if reply is None else reply
     aid = facts.account_id
+    jev_by = (time.monotonic() + _price_jev.TIMEOUT_S if deadline is None else deadline) - _PRICE_MARGIN_S
     heat = max(1, min(4, int(facts.scene_now["heat"] if facts.scene_now else d.heat)))
     haggle = d.row == "haggle"
     if haggle:
@@ -355,12 +405,21 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
         ask = full_ai_sell.Ask(router.choice_of(choices, "asks_subject"),
                                router.choice_of(choices, "asks_format"), heat)
     free = d.route == "make_right"
+    fresh = not (haggle or teased or free)     # a new piece: no haggle, tease piece or Free item
     owned = facts.owned | facts.sent if free else facts.owned
-    level_target = None
-    if scene_flag(facts) and not (haggle or teased or free):
-        level = router.choice_of(choices, "offer_level")
-        reply["level"] = level
-        level_target = full_ai_sell.LEVEL_CENTS.get(level)    # "any" -> the heat target
+    # One lane: a Chat tease takes the soft lane over Jev's `offer_level`.
+    level = router.choice_of(choices, "offer_level") if scene_flag(facts) and fresh else None
+    if fresh and tease_turn(d, facts):
+        level = "soft"
+    if scene_flag(facts) and fresh:
+        reply["level"] = level                                  # the lane used
+    level_target = full_ai_sell.LEVEL_CENTS.get(level) if level else None   # "any" -> the heat target
+    tease_cents = None
+    if tease_turn(d, facts) and fresh:
+        tease_cents = await _tease_price(facts, heat, reply, jev_by)
+        if tease_cents is None:                 # the tease price Jev failed: no tease this Turn
+            facts.pick = Refusal("no_match")
+            return
     loaded = await full_ai_sell.load_rows(aid)
     if isinstance(loaded, Refusal):
         facts.pick = loaded
@@ -377,12 +436,24 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
         else:
             if haggle:
                 pool = [r for r in pool if r["list_cents"] <= teased.list_cents]
+            if tease_cents is not None:     # a Chat tease rides soft photos only; free ones pass the free guard
+                pool = [r for r in pool if r["list_cents"] <= full_ai_sell.LEVEL_CENTS["soft"]
+                        and (tease_cents or full_ai_sell._free_safe(r))]
+                if not pool:
+                    facts.pick = Refusal("no_match")
+                    return
             shoots = await full_ai_sell.shoots_for(aid, pool, prints)
-            fresh = d.route == "sell_now" and not (haggle or teased)
+            sell = fresh and d.route == "sell_now"
             got = full_ai_sell.pick(pool, shoots, ask, free=free, target=level_target,
                                     seed=full_ai_sell.seed_for(aid, str(facts.fan_id), facts.anchor_key),
-                                    nearest=nearest_flag(facts) and fresh,
-                                    bundle=bundle_of(facts) if fresh else "shoot")
+                                    nearest=nearest_flag(facts) and sell,
+                                    bundle=bundle_of(facts) if sell else "shoot", ride=tease_cents is not None,
+                                    ride_max=2 if tease_cents is None else full_ai_sell.tease_photos(tease_cents))
+            if is_ride(got):
+                reply["ride"] = True
+            if tease_cents is not None and isinstance(got, Pick):     # the tease price Jev's price
+                got = replace(got, price_cents=tease_cents, list_cents=tease_cents or got.list_cents,
+                              facts={**got.facts, "vault_list_cents": got.list_cents})
             if isinstance(got, Pick) and "asked" in got.facts:
                 reply["nearest"] = {"asked_subject": ask.subject, "asked_format": ask.format,
                                     "step": got.facts["nearest"]}
@@ -392,20 +463,47 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     except Exception:  # noqa: BLE001 — fail closed: chat, never a half-built offer
         log.exception("full_ai sell step failed account=%s", aid)
         facts.pick = Refusal("inventory_unknown")
+        return
+    if (scene_flag(facts) and fresh and d.route == "sell_now" and tease_cents is None
+            and isinstance(facts.pick, Pick) and facts.pick.price_cents):
+        # Rows here: sell, offer_moment, scene_offer. He asked (wants_content, or yes to a Pending
+        # offer) exactly on row sell: its Pending-tease case is not fresh, later rows mean sell missed.
+        await _price(facts, reply, jev_by, d.heat, d.row == "sell")
 
 
-async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, row: str) -> None:
-    """The price Jev (`_price_jev`, config `sext_scene`) on a fresh priced sell_now Pick: Jev's price
+async def _tease_price(facts: TurnFacts, heat: int, reply: dict, deadline: float) -> int | None:
+    """The tease price Jev (`_price_jev.ask_tease`, config `chat_tease`) over the side's
+    `chat_tease_prices`: the price in cents, or None on any failure (never fails the Turn). Sets
+    `reply["chat_tease"]` = {cents, p (option -> probability), ms, error, version, options (the
+    prices offered, in cents)}."""
+    prices = list(facts.config["chat_tease_prices"])
+    out: dict[str, Any] = {"cents": None, "p": None, "ms": None, "error": None,
+                           "version": _price_jev.TEASE_PRICE_VERSION, "options": prices}
+    reply["chat_tease"] = out
+    st = _price_jev.tease_state(facts.state, heat, facts.purchases, [b.amount_cents for b in facts.spent])
+    try:
+        got = await _price_jev.ask_tease(st, _price_jev.tease_options(prices), facts.account_id,
+                                         timeout_s=deadline - time.monotonic())
+    except router.GateError as e:
+        out["error"] = str(e)[:300] or "GateError"
+        return None
+    out.update(cents=got.cents, p=got.p, ms=got.ms)
+    return got.cents
+
+
+async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, he_asked: bool) -> None:
+    """The price Jev (`_price_jev`, config `sext_scene`) on a fresh priced sell_now Pick (`_sell` calls
+    it: no haggle, Pending tease piece, Free item, Chat tease or ride): Jev's price
     becomes the Pick's price and list (what a later haggle and the WAS price measure against), the
     vault's list kept in `facts["vault_list_cents"]`. Any failure keeps the list price; never fails
     the Turn. Sets `reply["price"]` = {list_cents, jev_cents, score, p, ms, error, version, he_asked,
-    bought_before}. Price signals (03d): the rows reaching here are sell, offer_moment and
-    scene_offer, so `row == "sell"` is he asked; he bought before once any Offer was bought."""
+    bought_before}. Price signals (03d): `he_asked` is the caller's (row sell: wants_content fired,
+    or says_yes_to_offer with a Pending offer); he bought before once any Offer was bought."""
     p = facts.pick
     heat = facts.scene_now["heat"] if facts.scene_now else heat
     st = _price_jev.state(facts.state, heat, scene_words(facts.scene_now),
                           facts.state.get("purchases") or [], p,
-                          he_asked=row == "sell", bought_before=bool(facts.spent))
+                          he_asked=he_asked, bought_before=bool(facts.spent))
     out: dict[str, Any] = {"list_cents": p.list_cents, "jev_cents": None, "score": None, "p": None,
                            "ms": None, "error": None, "version": _price_jev.PRICE_VERSION,
                            "he_asked": st["he_asked"], "bought_before": st["bought_before"]}
@@ -425,11 +523,16 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
     """The Claim audit + price check on the chain's final text (ticket 45): pass -> `parts`; fail ->
     one rewrite by the Writer that answered (same messages, `write` with `min(its own, remaining)`)
     through the same chain, its attempts appended with `rewrite: true`; a second failure, or less
-    than one `writer_timeout_s` left before the Turn deadline -> `fallback_caption`. Sets
+    than one `writer_timeout_s` left before the Turn deadline -> `fallback_caption` through the chain
+    as one bubble (dropped by it -> [] and `reply["offer_dropped"]` "shape" | "leak": no PPV); on a
+    ride Pick (`is_ride`, a Chat tease) instead her first text's bubbles that claim no media and no
+    price, as a plain chat reply with no PPV (`reply["offer_dropped"]` = "claim": the caller sends no
+    Pick; `fallback_caption` would name the photos and the price). Sets
     `reply["caption_fallback"]` and `reply["claim_fail"]` (one `{check: claim|price, text}` per
     failed check of the first text and the rewrite; [] on a first pass). A caption not sent leaves no trace on the row: `leak` /
     `dropped_reason` stay as the first chain set them, and `typo_state` is the state the shipped
-    text's chain left (the Turn's starting state for the fallback caption, which has no typos).
+    text's chain left; but when nothing ships `dropped_reason` says why: the fallback's chain
+    reason (`leak` on a leak), or `claim` on a ride with no bubble left.
     ASSUMPTION: the rewrite regenerates with the same messages (no correction note): story 32 says
     "regenerated once" and no old claim-correction wording exists. Overturned if the owner wants
     the house re-ask shape (old ai_chatter's assistant + user correction turn).
@@ -449,7 +552,7 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
     if ok(parts):
         return parts
     if deadline - time.monotonic() >= float(facts.config["writer_timeout_s"]):
-        again = await write(d, facts, deadline=deadline, writers=[writer])
+        again = await _capped(write(d, facts, deadline=deadline, writers=[writer]), deadline)
         reply["attempts"] = reply["attempts"] + [{**a, "rewrite": True} for a in again.attempts]
         if again.text is not None:
             # A scratch reply: the rewrite's chain marks the row only if its text ships.
@@ -459,16 +562,84 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
             if redo and not scratch["leak"] and ok(redo):
                 reply.update(scratch)
                 return redo
-    reply["typo_state"] = dict(facts.typo_state)
+    if is_ride(pick):       # no photos: only her bubbles claiming no media and no price ship
+        reply["offer_dropped"] = "claim"
+        none = replace(pick, media=(), previews=(), subject="anything",
+                       facts={"kinds": {}, "description": ""})
+        kept = [x for x in parts if full_ai_sell.claim_ok(x, none) and full_ai_sell.price_ok(x, None)]
+        if not kept:
+            reply["dropped_reason"] = "claim"
+        return kept
+    # The fallback caption runs the shared chain too (one bubble); dropped -> no text, no PPV.
+    scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
+    line = await _chain(full_ai_sell.fallback_caption(pick, kind), facts, scratch, single=True)
+    if not line or scratch["leak"]:
+        reply["offer_dropped"] = "leak" if scratch["leak"] else "shape"
+        reply["dropped_reason"] = "leak" if scratch["leak"] else scratch["dropped_reason"]
+        return []
+    reply["typo_state"] = scratch["typo_state"]
     reply["caption_fallback"] = True
-    return [full_ai_sell.fallback_caption(pick, kind)]
+    return line
+
+
+async def _heat_check(d: Decision, facts: TurnFacts, reply: dict, writer: str, parts: list[str],
+                      deadline: float) -> list[str]:
+    """The Heat check (spec 06 › Contracts › Heat check) on a Route sext Turn's final text: Jev's
+    `reply_level` Score (`_heat_jev`) over the parts joined; cap = the Heat the Writer was given
+    (`scene_of`'s heat, else `d.heat`). Not over -> `parts`. Over, and at least one
+    `writer_timeout_s` left -> one rewrite by the Writer that answered (same messages, `write`)
+    through `_chain` on a scratch reply (the Claim audit's shape), its attempts appended with
+    `rewrite: true`, the first reply's gif kept; asked again; it ships only when not over. Anything
+    else (still over, no text, chain drop, leak, second ask failed, no time) ships `parts`; so does
+    a failed first ask. Sets `reply["heat_check"]` = {cap, score, level, outcome (ok | regen_ok |
+    over_sent | error), ms, version} + `redo_score` and `first_level` when a rewrite ran + `error`
+    on error; `score` / `level` are the shipped text's, `ms` both asks'. No Mode check."""
+    scene = scene_of(d, facts)
+    cap = int(scene["heat"] if scene else d.heat)
+    out: dict[str, Any] = {"cap": cap, "score": None, "level": None, "outcome": "error", "ms": None,
+                           "version": _heat_jev.HEAT_VERSION}
+    reply["heat_check"] = out
+    try:
+        got = await _heat_jev.ask("\n".join(parts), facts.account_id, timeout_s=deadline - time.monotonic())
+    except router.GateError as e:
+        out["error"] = str(e)[:300] or "GateError"
+        return parts
+    out.update(score=got.score, level=_heat_jev.level_of(got.score), ms=got.ms, outcome="ok")
+    if not _heat_jev.over(got.score, cap):
+        return parts
+    out["outcome"] = "over_sent"
+    if deadline - time.monotonic() < float(facts.config["writer_timeout_s"]):
+        return parts
+    out["redo_score"], out["first_level"] = None, out["level"]
+    again = await _capped(write(d, facts, deadline=deadline, writers=[writer]), deadline)
+    reply["attempts"] = reply["attempts"] + [{**a, "rewrite": True} for a in again.attempts]
+    if again.text is None:
+        return parts
+    # A scratch reply: the rewrite's chain marks the row only if its text ships.
+    scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
+    text = cat_stickers.parse_marker(again.text)[0]     # the first reply's gif stays
+    redo = await _chain(text, facts, scratch) if text else []
+    if not redo or scratch["leak"]:
+        return parts
+    try:
+        got2 = await _heat_jev.ask("\n".join(redo), facts.account_id, timeout_s=deadline - time.monotonic())
+    except router.GateError:
+        return parts
+    out["redo_score"], out["ms"] = got2.score, got.ms + got2.ms
+    if _heat_jev.over(got2.score, cap):
+        return parts
+    reply.update(scratch)
+    out.update(score=got2.score, level=_heat_jev.level_of(got2.score), outcome="regen_ok")
+    return redo
 
 
 def _ppv_turn(d: Decision, facts: TurnFacts) -> bool:
     """The Turn sends a PPV the separate caption may write: a priced sell_now Pick or make_right's
-    Free item, in a Mode that sends (shadow records only and stays on today's path)."""
+    Free item, in a Mode that sends (shadow records only and stays on today's path). Never on a
+    ride Pick (`is_ride`): its PPV rides her ordinary reply's last bubble."""
     p = facts.pick
-    return (facts.config.get("caption_writer") == "caption" and sender_for(facts.mode) is not None
+    return (facts.config.get("caption_writer") == "caption" and full(facts.mode)
+            and not is_ride(p)
             and isinstance(p, Pick)
             and ((d.route == "sell_now" and p.price_cents > 0) or (d.route == "make_right" and not p.price_cents)))
 
@@ -507,7 +678,7 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
     msgs = full_ai_caption.messages(facts, pick, was)
     if msgs is None:
         return done("no_description")
-    res = await full_ai_caption.write(facts, msgs, deadline=deadline - budget)
+    res = await _capped(full_ai_caption.write(facts, msgs, deadline=deadline - budget), deadline - budget)
     cap["attempts"], cap["model"] = res.attempts, res.writer
     if res.text is None:
         return done("no_writer")
@@ -516,7 +687,8 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
     if line is None:
         if deadline - time.monotonic() < 2 * budget:
             return done("late")
-        again = await full_ai_caption.write(facts, msgs, deadline=deadline - budget, writers=[res.writer])
+        again = await _capped(full_ai_caption.write(facts, msgs, deadline=deadline - budget, writers=[res.writer]),
+                              deadline - budget)
         cap["attempts"] = cap["attempts"] + [{**a, "rewrite": True} for a in again.attempts]
         if again.text is None:
             return done("failed")
@@ -562,14 +734,17 @@ def _gif_part(raw: str, facts: TurnFacts, offered: bool = True) -> tuple[str, di
     return text, ({"gif": gid, "tag": tag} if gid else None)
 
 
-async def run_turn(facts: TurnFacts) -> TurnResult:
-    """Decide, write, shape and record one Turn. Raises `full_ai_test.Conflict` when the Turn
-    is not the session's next one or already has its row."""
+async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
+    """Decide, write, shape and record one Turn through `io` (None: the Test chat's
+    `full_ai_test.IO`, which raises `full_ai_test.Conflict` when the Turn is not the session's
+    next one or already has its row)."""
+    io = io or full_ai_test.IO
     t0 = time.perf_counter()
-    # One Turn deadline every LLM stage shares (spec › Contracts › One Turn bound). The Router
-    # runs first, so its own 10 s always fits the >= 30 s bound; later stages are capped by it.
+    # One Turn deadline every LLM stage shares (spec › Contracts › One Turn bound). The SDK's
+    # timeout is per HTTP operation (retried), so the Router (`router.WALL_S`, 20 s) and every
+    # Writer walk (`_capped`) are also wall-clock capped at the time left.
     deadline = time.monotonic() + turn_bound_s(facts.config)
-    d, jev_json, model, ms, error = await _route(facts)
+    d, jev_json, model, ms, error = await _route(facts, deadline)
     reply: dict[str, Any] = {
         "parts": [], "attempts": [], "floor_reason": None, "dropped_reason": None, "leak": [],
         "side": facts.side, "config_rev": facts.config_rev, "wait_s": None, "turn_ms": None,
@@ -586,7 +761,7 @@ async def run_turn(facts: TurnFacts) -> TurnResult:
         reply["scene"] = facts.scene_now
     row: dict[str, Any] = {
         "account_id": facts.account_id, "fan_id": facts.fan_id, "mode": facts.mode,
-        "trigger_kind": full_ai_test.TRIGGER_KIND, "trigger_key": facts.anchor_key,
+        "trigger_kind": io.trigger_kind, "trigger_key": facts.anchor_key,
         "arm": arm_of(facts.account_id, facts.fan_id), "salt_ver": SALT_VER,
         "route": d.route, "heat": d.heat, "route_row": d.row,
         "question_version": router.question_version(facts.mode), "router_model": model, "writer_model": None,
@@ -603,19 +778,17 @@ async def run_turn(facts: TurnFacts) -> TurnResult:
             # ASSUMPTION: a cut dupe read's `asyncio.to_thread` clustering finishes in the background
             # (read-only, one per cut Turn). Overturned if cut Turns pile up executor threads.
             try:
-                await asyncio.wait_for(_sell(facts, d, jev_json["choices"], reply),
+                await asyncio.wait_for(_sell(facts, d, jev_json["choices"], reply, deadline),
                                        deadline - time.monotonic())
             except asyncio.TimeoutError:
                 log.warning("full_ai sell step past the Turn deadline account=%s", facts.account_id)
                 facts.pick = Refusal("inventory_unknown")
             if isinstance(facts.pick, Refusal):
                 reply["refusal"] = facts.pick.reason
-            elif scene_flag(facts) and d.route == "sell_now" and d.row != "haggle" and facts.pick.price_cents:
-                await _price(facts, reply, deadline, d.heat, d.row)
         pick = facts.pick if isinstance(facts.pick, Pick) else None
         caption = await _caption(d, facts, reply, pick, deadline) if _ppv_turn(d, facts) else None
         caption_typos = dict(reply["typo_state"])
-        res = await write(d, facts, deadline=deadline, plain=caption is not None)
+        res = await _capped(write(d, facts, deadline=deadline, plain=caption is not None), deadline)
         reply["attempts"], reply["floor_reason"] = res.attempts, res.floor_reason
         gif = None
         if res.text is not None:
@@ -628,27 +801,32 @@ async def run_turn(facts: TurnFacts) -> TurnResult:
             reply["offer_dropped"] = "shape"        # the reply chain dropped her text, or a lone gif
         elif pick is not None and parts and caption is not None:
             parts = _with_caption(reply, parts, caption, pick, caption_typos)
+        elif pick is not None and caption is not None and res.text is None:   # no chat Writer: the caption alone
+            reply["caption_fallback"], reply["caption"]["outcome"], reply["typo_state"] = False, "alone", caption_typos
+            parts = [caption]
         elif pick is not None and parts:            # her text must claim only what the PPV holds
             parts = await _claim_audit(d, facts, reply, res.writer, parts, pick, deadline)
+            if reply.get("offer_dropped"):          # a ride failed twice / fallback dropped: no PPV
+                pick = None
+        if parts and d.route == "sext" and facts.config["floor_on"]:   # Heat check (spec 06), no Mode check
+            parts = await _heat_check(d, facts, reply, res.writer, parts, deadline)
         if parts or (gif and not text):            # a dropped draft fails, gif or not
             writer = res.writer
             row["writer_model"] = writer
-            reply["wait_s"] = full_ai_test.hold(facts.config, facts.anchor_key)
-            send = sender_for(facts.mode)
-            if send is not None:                    # shadow records only
+            reply["wait_s"] = io.hold(facts.config, facts.anchor_key)
+            if io.send is not None:                 # None records only
                 over = facts.offer_piece.row_id if d.row == "haggle" and facts.offer_piece else None
                 desc = (str(pick.facts.get("description") or "") or None
                         if pick is not None and scene_flag(facts) else None)
-                send(row, parts, pick, over=over, **({"desc": desc} if desc else {}))
-                if gif:
-                    reply["parts"].append(gif)
+                await io.send(row, parts, pick, over=over, desc=desc, gif=gif)
             if facts.next_question and parts:       # the ask went out in her text (not a lone gif)
                 reply["asked"] = {**facts.asked,
                                   facts.next_question: facts.asked.get(facts.next_question, 0) + 1}
             elif facts.ask_list is not None and parts:
                 reply["asked"] = _info_jev.mark_asked(facts.asked, facts.ask_list)
     reply["turn_ms"] = int((time.perf_counter() - t0) * 1000)
-    row_id = await full_ai_test.record(row)
+    row_id = await io.record(row)
     return TurnResult(row_id, d, reply["parts"], writer, reply["attempts"], reply["wait_s"],
                       row["status"], full_ai_test.offer_of(row), reply.get("caption"),
-                      reply.get("scene"), reply.get("price"), reply.get("dropped_reason"))
+                      reply.get("scene"), reply.get("price"), reply.get("dropped_reason"),
+                      reply.get("heat_check"))

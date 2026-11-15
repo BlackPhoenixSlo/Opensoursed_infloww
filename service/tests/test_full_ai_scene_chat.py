@@ -9,6 +9,10 @@
                            climbs -> scene_offer + offer_level soft -> sell_now on the $10 lane
                            priced by the price Jev ($30) -> Buy -> next scene_offer at "nude" on
                            the $50 lane; the price Jev's error keeps the list price, recorded
+  case_sitting_ends_scene  95: a scene at `building`, then a Turn whose newest row is 121 min old ->
+                           Jev's state `scene` "none", the Writer gets the opening, the row n 1
+  case_under_18_ends_scene 95: mid-scene `says_under_18` -> no_send, no Writer request, scene null;
+                           the next sexual Turn starts at n 1
   case_flag_off_asks_none  the same Turn with `sext_scene` off: no scene question, no price Jev,
                            no scene on the row
   case_price_he_asked      03d: a `sell` row -> `he_asked` "yes" in the price Jev's state and in
@@ -16,6 +20,10 @@
   case_price_bought_before 03d: "no" before any Buy; two Offers ($20 then $50), the $50 bought
                            first and the $20 second -> next Turn "yes", `purchases` ends with $20
   case_haggle_no_price_jev 03d: a haggle row never calls the price Jev
+  case_tease_resell_keeps_price  rwl-a F7: a Pending tease re-sold on his yes keeps the teased
+                           piece's list price (no price Jev); `he_asked` reads what he said
+  case_price_jev_at_deadline  rwl-a N4: a price Jev still running near the Turn deadline times out
+                           itself first: the Pick keeps its list price and `price.error` says why
 
 Run: ./venv/bin/python service/tests/test_full_ai_scene_chat.py  (exit 0 = pass)
 """
@@ -24,16 +32,19 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 from _full_ai_sell_helpers import (  # noqa: E402
-    A, OWNER_A, _body, _guarded, _post, _put_draft, _reply, _rows, _system, _vault,
+    A, OWNER_A, _body, _db, _guarded, _post, _put_draft, _reply, _rows, _system, _vault,
 )
 import contextlib  # noqa: E402
 import json  # noqa: E402
+from datetime import timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 from _full_ai_fixtures import QUIET_SCENE, QUIET_TEST  # noqa: E402
 from automations import _price_jev, full_ai_writers as wr  # noqa: E402
 from automations import _router_jev as rj  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
+from db.engine import get_session  # noqa: E402
+from db.models import AiDecision  # noqa: E402
 
 SETTLE = "/admin/full-ai/test/settle"
 
@@ -142,6 +153,50 @@ def case_scene_walk():
         assert pf4.calls[0]["state"]["purchases"] == st4["purchases"], pf4.calls
 
 
+def _age(row_id: int, minutes: float) -> None:
+    async def q():
+        async with get_session() as s:
+            row = await s.get(AiDecision, row_id)
+            row.created_at = row.created_at - timedelta(minutes=minutes)
+            await s.commit()
+    _db(q)
+
+
+def _building(pair):
+    """Two sext Turns: the scene saved at `building`, n 2."""
+    _turn(pair, 1, "ur making me so hard rn", {"sexual_now": .9}, {"scene_stage": "opening"}, "ok:mm im in bed")
+    _turn(pair, 2, "omg I love it", {"scene_on": .9}, {"scene_stage": "building"}, "ok:sliding my fingers in")
+    assert _reply(_rows(pair)[1])["scene"] == {"n": 2, "stage": "building", "heat": 4}, _reply(_rows(pair)[1])
+
+
+def case_sitting_ends_scene():
+    pair = "sc-sitting"
+    with _draft(True), _vault({101: "$10"}):
+        _building(pair)
+        _age(_rows(pair)[1].id, 121)
+        _, fw, _, _ = _turn(pair, 3, "keep going", {"scene_on": .9}, {"scene_stage": "opening"},
+                            "ok:mm where were we")   # same Sitting: never back -> building, n 3
+    row = _rows(pair)[2]
+    assert json.loads(row.jev_json)["state"]["scene"] == "none", row.jev_json
+    assert _reply(row)["scene"] == {"n": 1, "stage": "opening", "heat": 4}, _reply(row)
+    s = _system(fw)
+    assert wr.SCENE_STAGE["opening"] in s and wr.SCENE_STAGE["building"] not in s, s
+
+
+def case_under_18_ends_scene():
+    pair = "sc-u18"
+    with _draft(True), _vault({101: "$10"}):
+        _building(pair)
+        _, fw, _, _ = _turn(pair, 3, "im 16 btw", {"scene_on": .9, "says_under_18": .9}, {}, "ok:never sent")
+        row = _rows(pair)[2]
+        assert row.status == "no_send" and fw.requests == [], (row.status, fw.requests)
+        assert "scene" in _reply(row) and _reply(row)["scene"] is None, _reply(row)
+        _turn(pair, 4, "ur so hot", {"sexual_now": .9}, {}, "ok:mm")
+    row4 = _rows(pair)[3]
+    assert json.loads(row4.jev_json)["state"]["scene"] == "none", row4.jev_json
+    assert _reply(row4)["scene"]["n"] == 1, _reply(row4)
+
+
 def case_flag_off_asks_none():
     pair = "sc-off"
     with _draft(False), _vault({101: "$10"}):
@@ -165,7 +220,8 @@ def _signals(fake):
 
 
 def case_price_he_asked():
-    with _draft(True, draft_questions=True), _vault({101: "$10", 202: "$50", 303: "$100"}):
+    # chat_tease off: a not-hot offer_moment is the pitched (Jev-priced) sell, not a Chat tease.
+    with _draft(True, draft_questions=True, chat_tease=False), _vault({101: "$10", 202: "$50", 303: "$100"}):
         _, _, _, pf = _turn("pa-sell", 1, "send me pics", {"wants_content": .9}, {},
                                "ok:i have something", FakePriceJev(1.0))
         row = _rows("pa-sell")[0]
@@ -209,6 +265,43 @@ def case_haggle_no_price_jev():
         row = _rows(pair)[1]
     assert row.route_row == "haggle" and row.offer_price_cents, (row.route_row, row.offer_price_cents)
     assert pf.calls == [] and "price" not in _reply(row), (pf.calls, _reply(row).get("price"))
+
+
+def case_tease_resell_keeps_price():
+    pair = "pt-resell"
+    with _draft(True, draft_questions=True, chat_tease=False), _vault({101: "$10", 202: "$50", 303: "$100"}):
+        _, _, _, pf1 = _turn(pair, 1, "how much are ur pics", {"price": .9}, {}, "ok:mm i have a cute set", FakePriceJev())
+        r1 = _rows(pair)[0]
+        assert r1.route == "tease" and pf1.calls == [], (r1.route, pf1.calls)
+        g2, _, picks, pf2 = _turn(pair, 2, "ok send it", {"says_yes_to_offer": .9}, {}, "ok:here u go", FakePriceJev(3.0))
+        r2 = _rows(pair)[1]
+    assert (r2.route, r2.route_row) == ("sell_now", "sell"), (r2.route, r2.route_row)
+    assert pf2.calls == [] and "price" not in _reply(r2), (pf2.calls, _reply(r2).get("price"))
+    assert picks == [] and g2["offer"]["media"] == json.loads(r1.offer_media_json)["locked"], (picks, g2)   # same piece
+    assert r2.offer_price_cents == r1.offer_list_cents == g2["offer"]["price_cents"], (r2.offer_price_cents, g2)
+
+
+def case_price_jev_at_deadline():
+    import asyncio
+
+    from automations import full_ai_turn
+
+    class Hang(FakePriceJev):
+        async def system_one(self, state, questions, model=None):
+            await asyncio.sleep(5)
+
+    pair, real = "pd-deadline", full_ai_turn.turn_bound_s
+    full_ai_turn.turn_bound_s = lambda cfg: 1.5
+    try:
+        with _draft(True, chat_tease=False), _vault({101: "$10", 202: "$50"}):
+            g, _, _, _ = _turn(pair, 1, "send me pics", {"wants_content": .9}, {"offer_level": "soft"},
+                               "ok:here", Hang())
+            row = _rows(pair)[0]
+    finally:
+        full_ai_turn.turn_bound_s = real
+    rp = _reply(row)
+    assert "refusal" not in rp and rp["price"]["error"].startswith("TimeoutError"), rp
+    assert g["status"] == "sent" and g["offer"]["price_cents"] == 1000 == row.offer_price_cents, g
 
 
 _harness.run()

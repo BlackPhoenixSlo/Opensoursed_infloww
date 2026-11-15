@@ -23,9 +23,10 @@
 import { Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
+import { configLine, writersLine, type ConfigLimits, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import {
-  canSend, canSettle, configLine, factsLine, writersLine, photoCaption, sendBlock, noReplyText, outcomesLine, writersFailed, ppvLine, replyLine,
-  type Describing, type FanPhoto, type FullAiConfig, type Offer, type Outcome, type Part, type SideState, type Turn,
+  canSend, canSettle, factsLine, photoCaption, sendBlock, noReplyText, outcomesLine, writersFailed, ppvLine,
+  replyLine, type Describing, type FanPhoto, type Offer, type Outcome, type Part, type SideState, type Turn,
   type UiSide,
 } from "@/components/automations/fullAiTestChat";
 import { PPV_BORDER, PPV_FILL, PpvStatusLine, ppvPriceLabel } from "@/components/chat/PpvStatus";
@@ -100,7 +101,8 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
       )}
       <div className={cn("grid gap-3", !phone && "grid-cols-2")}>
         {shown.map((ui) => (
-          <Window key={ui} ui={ui} side={state.sides[ui]} cfg={ui === "L" ? state.checkpoint : state.draft} accountId={accountId}
+          <Window key={ui} ui={ui} side={state.sides[ui]} cfg={ui === "L" ? state.checkpoint : state.draft}
+            limits={chat.config.limits} accountId={accountId}
             describing={state.describing} onRetry={() => retry(ui)} onSettle={(rowId, outcome) => settle(ui, rowId, outcome)} />
         ))}
       </div>
@@ -125,8 +127,8 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
   );
 }
 
-function Window({ ui, side, cfg, accountId, describing, onRetry, onSettle }: {
-  ui: UiSide; side: SideState; cfg: FullAiConfig | null; accountId: string; describing: Describing | null;
+function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettle }: {
+  ui: UiSide; side: SideState; cfg: FullAiConfig | null; limits: ConfigLimits | null; accountId: string; describing: Describing | null;
   onRetry: () => void; onSettle: OnSettle;
 }) {
   // The newest reply stays hidden until its wait is over.
@@ -141,7 +143,7 @@ function Window({ ui, side, cfg, accountId, describing, onRetry, onSettle }: {
         <div className="text-sm font-semibold text-fg">
           {TITLE[ui]} <span className="font-normal text-muted">· {SUB[ui]}</span>
         </div>
-        {cfg && <div data-testid="config" className="text-xs text-muted">{configLine(cfg)}</div>}
+        {cfg && limits && <div data-testid="config" className="text-xs text-muted">{configLine(cfg, limits.default_reply_speed)}</div>}
         {cfg && <div data-testid="writers" className="text-xs text-fg-dim">{writersLine(cfg)}</div>}
         <div data-testid="facts" className="text-xs text-fg-dim">{factsLine(last?.result.fan_info)}</div>
       </div>

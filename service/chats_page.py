@@ -23,6 +23,38 @@ log = logging.getLogger(__name__)
 IN_PAGE_RETRY_MAX_S = 2.0
 _sleep = time.sleep  # tests swap it
 
+# A page that still ended in OF's 429 is not cached (a short page would hide the rest), so
+# every re-ask (UI retry, 90s poll, a second tab) went straight back to OF and 429'd again
+# (AE 2026-11-14: one Creator's chats route 99.87 429s/h). Hold that 429 per page key for
+# OF's asked wait, clamped: long enough to absorb the re-asks, short enough to never matter.
+HOLD_MIN_S = 1.0
+HOLD_MAX_S = 5.0
+
+
+class ThrottleHold:
+    """Per-key memo of OF's last 429: `check` returns it while its hold runs, else None."""
+
+    def __init__(self, clock: Any = time.monotonic):
+        self._clock = clock
+        self._held: dict[Any, tuple[float, BaseException]] = {}
+
+    def hold(self, key: Any, exc: BaseException, wait: float) -> float:
+        now = self._clock()
+        for k in [k for k, (until, _) in self._held.items() if until <= now]:
+            del self._held[k]  # prune on write: the map only ever holds live keys
+        secs = min(max(wait, HOLD_MIN_S), HOLD_MAX_S)
+        self._held[key] = (now + secs, exc)
+        return secs
+
+    def check(self, key: Any) -> BaseException | None:
+        got = self._held.get(key)
+        if got is None:
+            return None
+        if got[0] <= self._clock():
+            del self._held[key]
+            return None
+        return got[1]
+
 
 class ChatsPage(NamedTuple):
     rows: list[dict[str, Any]]

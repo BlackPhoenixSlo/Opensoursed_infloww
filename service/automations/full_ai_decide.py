@@ -12,20 +12,22 @@ table. The rows, in order (D42-D44, Opus a-c, R9, 03b ticket 47):
   haggle: counter_offer (DRAFT) with an open Offer or a Pending tease -> sell_now ·
   sell: wants_content, says_yes_to_offer with a Pending offer or Pending
   tease, or a Pending tease -> sell_now ·
-  tease_price (price) / tease_decline (declines_buying, price not) -> tease ·
+  tease_price (price) -> tease ·
   offer_moment (DRAFT) -> sell_now ·
   scene_offer (sext scene) -> sell_now ·
-  sexual_now, or scene_on (sext scene) -> sext · otherwise -> chat.
+  sexual_now, or scene_on (sext scene) -> sext ·
+  chat_tease (Chat tease) -> sell_now · otherwise -> chat.
 
 Route flags (R10): an off flag drops its rows (sell flag: haggle, sell,
-tease_*, offer_moment; sext flag: sexual_now) and the walk goes on, so a later
+tease_price, offer_moment; sext flag: sexual_now) and the walk goes on, so a later
 row still matches (wants_content + sexual_now with selling off is sext). The
 Decision records the dropped rows in `dropped`. A walk that reaches
 `otherwise` with a row dropped names the first naming drop: sell_off (haggle
-or sell), tease_off (a tease row), sext_off; a dropped offer_moment names none
+or sell), tease_off (tease_price), sext_off; a dropped offer_moment names none
 (he asked for nothing, so no sell-off line). Shadow passes every flag on, so
 its table is unchanged. A Jev failure is chat at Heat 1 (row jev_failed),
-never a no_send. `gif_fits` is never read.
+never a no_send. `gif_fits` and `declines_buying` are never read (owner 2026-11-15: "broke"
+routes nothing in any Mode; the Writer may joke about it).
 
 DRAFT gate (ticket 47): counter_offer and offer_moment count only with
 `draft_on` (test Mode and config `draft_questions`; Shadow and live pass
@@ -41,6 +43,12 @@ asked then (`_router_jev._questions(mode, scene)`), so the table is the old one.
 ADR-0032 named exception (owner-ordered "some save states for few messages"): the saved
 scene state (`full_ai_scene`) feeds Jev's state (`scene`, `purchases`) and the Writer's
 stage/heat floor only; it never enters this table, which stays pure over Jev's answers.
+
+Chat tease (`chat_tease`: test Mode and config `chat_tease`, owner 2026-11-14): row `chat_tease`
+-> sell_now on Jev's `chat_tease`, the last flagged row (after sext), so an ask, haggle, tease,
+offer_moment, scene_offer and any sext Turn win and it only ever replaces a chat row; the sell
+flag drops it and the drop names nothing (as offer_moment). Without the flag the id is ignored,
+not recorded: it is never asked then (`_router_jev._questions(..., tease)`).
 
 `arm_of(account_id, fan_id)` is the Fan's Arm, a pure salted hash (ADR-0035):
 every Decision row carries it with `SALT_VER`; Shadow writes no Enrolment.
@@ -82,6 +90,7 @@ class Facts:
     open_offer: bool = False    # a priced Offer with no outcome (test fold, 03b)
     draft_on: bool = False      # DRAFT ids count: test Mode and config draft_questions
     scene: bool = False         # sext scene ids count: test Mode and config sext_scene
+    chat_tease: bool = False    # `chat_tease` counts: test Mode and config chat_tease
 
 
 @dataclass(frozen=True)
@@ -113,7 +122,6 @@ def decide_turn(facts: Facts) -> Decision:
             return Decision(route, heat, q, f)
     # The Pending tease is a named D32 exception (R9): state, not a Jev answer.
     sell = "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease
-    tease = "tease_price" if "price" in f else "tease_decline" if "declines_buying" in f else ""
     haggle = "counter_offer" in f and (facts.open_offer or facts.pending_tease)
     scene_on = facts.scene and "scene_on" in f
     scene_offer = facts.scene and "scene_offer" in f and ("sexual_now" in f or scene_on)
@@ -122,10 +130,12 @@ def decide_turn(facts: Facts) -> Decision:
     # naming drop; None names nothing)
     flagged = (("haggle", "counter_offer", "sell_now", facts.sell_on, haggle, "sell_off"),
                ("sell", None, "sell_now", facts.sell_on, bool(sell), "sell_off"),
-               (tease, None, "tease", facts.sell_on, bool(tease), "tease_off"),
+               ("tease_price", None, "tease", facts.sell_on, "price" in f, "tease_off"),
+               # No decline row: `declines_buying` routes nothing (owner 2026-11-15, "be ignorant").
                ("offer_moment", "offer_moment", "sell_now", facts.sell_on, "offer_moment" in f, None),
                ("scene_offer", None, "sell_now", facts.sell_on, scene_offer, None),
-               (sext_row, None, "sext", facts.sext_on, "sexual_now" in f or scene_on, "sext_off"))
+               (sext_row, None, "sext", facts.sext_on, "sexual_now" in f or scene_on, "sext_off"),
+               ("chat_tease", None, "sell_now", facts.sell_on, facts.chat_tease and "chat_tease" in f, None))
     dropped: list[str] = []
     end = "otherwise"
     for row, draft, route, on, match, off_row in flagged:

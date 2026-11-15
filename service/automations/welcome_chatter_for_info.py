@@ -2051,6 +2051,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         account_id, list(by_fan), kind="welcome_chatter_for_info",
         stats=audience_stats, extra_allowed_ids=cfg.force_ids))
     by_fan = {fid: c for fid, c in by_fan.items() if fid in _kept}
+    # Full AI Chat's Stand-down (spec 04b): a Fan it claims is its alone, force_ids and turn_handoff_ids
+    # included (this one seam covers the sweep, the W7 wake and the handoff job).
+    from automations import full_ai_owner_io
+    _claimed, claimed_stats = await full_ai_owner_io.stand_down(
+        account_id, list(by_fan), lane="welcome_chatter_for_info")
+    by_fan = {fid: c for fid, c in by_fan.items() if fid not in _claimed}
 
     # Who has bought CONTENT — a tip or a PPV unlock. THE line where the gather
     # stops: above it a man is a customer (the team and Auto-reply cover him),
@@ -2146,6 +2152,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "candidates": len(candidates),
         **audience_stats,
+        **claimed_stats,
         "replies_sent": tally["replies_sent"],
         "stickers_sent": tally["stickers_sent"],
         "closing_ppvs_sent": tally["closing_ppvs_sent"],

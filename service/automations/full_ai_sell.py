@@ -20,10 +20,14 @@ moves the lane up the owner's ladder ($50 / $100 / $150). Clamped to $10-$200.
 Folder prices (`vault_folder_prices`): an agency's price on a folder (`vf:` or `of:` ref).
 `load_rows` gives each row `folder_cents`, the highest price among its folders' (None: no priced
 folder), and `list_price_cents` lists the item at it instead of its lane price, with no explicit
-bump (the agency's number is the number). Unpriced items are unchanged; `pick`'s heat targeting,
-the haggle clamp, `price_ok` and the owned / dupe rules read `list_cents` as before.
-ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices (never sold
-under any price an agency set on it). Overturned if the owner wants the lowest or a folder order.
+bump: the folder price is the LIST price. Unpriced items are unchanged; `pick`'s heat targeting,
+the haggle clamp, `price_ok` and the owned / dupe rules read `list_cents` as before. What holds
+after the list: a haggle may go down to 67 % of it (`clamp_quote`); the price Jev (sext_scene,
+which gets it as `list_price`) and a chat-tease ride's price Jev replace it, under or over: Jev
+decides the price (owner 11-15), the folder price is its input, not a floor. The Pick carries
+the folder price as `facts["folder_cents"]` (absent when no locked item is priced).
+ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices. Overturned if
+the owner wants the lowest or a folder order.
 ASSUMPTION: a Jev "review" item (and a disputed free-tier one, `_unpriced_dispute`) stays not for
 sale in a priced folder; any other item there sells at the folder price, a free-lane or unpriced
 one (no Jev blob, shelf 0) too. Overturned if a folder price may lift a review, or free items
@@ -65,8 +69,8 @@ Subject = Literal["feet", "butt", "tits", "pussy", "nude", "lingerie", "bikini",
 Format = Literal["photo", "video", "any"]
 Reason = Literal["sell_off", "inventory_unknown", "no_priced_items", "no_match", "all_owned"]
 
-MIN_CENTS = 1000
-MAX_CENTS = 20000
+MIN_CENTS = vault_folder_prices.MIN_CENTS     # $10
+MAX_CENTS = vault_folder_prices.MAX_CENTS     # $200
 _LANE_CENTS = {"free": 0, "$10": 1000, "$50": 5000, "$100": 10000, "$150": 15000}
 
 
@@ -330,6 +334,7 @@ def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) ->
     shown = dict(kinds)
     for r in previews:
         shown[r["kind"]] = shown.get(r["kind"], 0) + 1
+    folder = [r["folder_cents"] for r in locked if r.get("folder_cents") is not None]
     return {"kinds": kinds,
             # locked + free previews: what the PPV bubble shows him (`claim_ok` counts, `fallback_caption`)
             "shown_kinds": shown,
@@ -345,7 +350,10 @@ def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) ->
             "hero": next(({"media_id": r["media_id"], "kind": r["kind"],
                            "seconds": r.get("duration_seconds"), "fields": r.get("fields") or {}}
                           for r in locked
-                          if str((r.get("fields") or {}).get("description") or "").strip()), None)}
+                          if str((r.get("fields") or {}).get("description") or "").strip()), None),
+            # the agency's folder price (highest over the locked items), only when one is priced:
+            # steps that reprice the Pick later can read it; an unpriced Pick's facts are unchanged
+            **({"folder_cents": max(folder)} if folder else {})}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
@@ -374,9 +382,19 @@ def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]]
     return None
 
 
+TEASE_PHOTO_CENTS = 500     # Chat tease: one photo per $5 of its price (the old teaser ladder)
+
+
+def tease_photos(cents: int) -> int:
+    """The most photos a Chat tease at `cents` holds: price / $5, at least 1 (so the free photo and
+    a price under $10 are one photo, $10 two, $200 forty); the vault may hold fewer. Pure."""
+    return max(1, cents // TEASE_PHOTO_CENTS)
+
+
 def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
          seed: str, free: bool = False, target: int | None = None,
-         nearest: bool = False, bundle: str = "shoot") -> Pick | Refusal:
+         nearest: bool = False, bundle: str = "shoot", ride: bool = False,
+         ride_max: int = 2) -> Pick | Refusal:
     """One Pick from `pool` (`pool()`'s rows, the sell step having handled its Refusal) for `ask`,
     by a seeded draw (`seed_for`). Pure.
 
@@ -415,6 +433,17 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     lane, so the set stays one level (owner proof 2026-11-14: both generic Offers held 1 photo).
     "shoot" (the default) is the path above, rng sequence unchanged.
     ASSUMPTION (spec 03d): near-dupe `prints` are not checked.
+    Ignored with `free`.
+
+    `ride=True` (config `chat_tease`, a fresh test-Mode Chat tease Turn): photos only
+    (the ask's format is photo, so a video `asks_format` never refuses or relaxes a ride; the
+    pool's videos are dropped too, so `nearest` cannot relax into one), at most 2: the anchor and one shoot mate ("shoot"), or under
+    2 filled to 2 ("fill", the fill rules above); never a free preview. The Pick's
+    `facts["ride"]` = True marks it (`full_ai_writers.is_ride`).
+    ASSUMPTION: a ride carries no free preview, so the bubble shows at most 2 photos. Overturned if
+    the owner wants the old ladder's free first rung back.
+    `ride_max` (ride only, default 2): the most photos a ride holds; Chat tease passes
+    `tease_photos` of Jev's price.
     Ignored with `free`."""
     rng = random.Random(seed)
     if free:
@@ -428,6 +457,9 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
         return _offer([_draw([r for r in cands if r["list_cents"] == low], rng)], [], ask, free=True,
                       subject=subject)
 
+    if ride:
+        ask = replace(ask, format="photo")
+        pool = [r for r in pool if r["kind"] == "photo"]
     matching = [r for r in pool if _matches(r, ask)]
     subject, miss = None, None
     if not matching and nearest and (got := _nearest(pool, ask)) is not None:
@@ -452,15 +484,19 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
              and r["kind"] == "photo" and r["list_cents"] <= anchor["list_cents"]]
     mates.sort(key=lambda r: r["media_id"])
     rng.shuffle(mates)
-    locked = [anchor, *mates[:4 if bundle == "fill" else 3]]
-    if bundle == "fill" and len(locked) < 3:
+    size = ride_max if ride else 3                          # the fill target
+    locked = [anchor, *mates[:ride_max - 1 if ride else 4 if bundle == "fill" else 3]]
+    if bundle == "fill" and len(locked) < size:
         have = {r["media_id"] for r in locked}
         same_lane = (subject or ask.subject) == "anything"      # no subject to hold a mix together
         fill = sorted((r for r in cands if r["kind"] == "photo" and r["media_id"] not in have
                        and (r["list_cents"] == anchor["list_cents"] if same_lane
                             else r["list_cents"] <= anchor["list_cents"])), key=lambda r: r["media_id"])
         rng.shuffle(fill)
-        locked += fill[:3 - len(locked)]
+        locked += fill[:size - len(locked)]
+    if ride:
+        p = _offer(locked, [], ask, free=False, subject=subject)
+        return _missed(replace(p, facts={**p.facts, "ride": True}), miss)
     preview = next((by_id[m] for m in in_shoot if m in by_id and by_id[m]["kind"] == "photo"
                     and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])), None)
     return _missed(_offer(locked, [preview] if preview else [], ask, free=False, subject=subject), miss)

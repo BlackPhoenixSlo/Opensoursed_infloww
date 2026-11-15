@@ -601,6 +601,15 @@ def case_folder_price_pool():
     assert _ids(only) == {3, 4}, "folder filter unchanged"
 
 
+def case_folder_price_parse_cents_refuses_non_finite():
+    """`parse_cents` (POST /admin/vault-ai/folder-prices): NaN / ±Infinity (`json.loads` accepts
+    them) are refused (a 400 bad_price), never an exception (a 500)."""
+    for raw, want in ((json.loads("NaN"), None), (float("inf"), None), (float("-inf"), None),
+                      (True, None), ("12", None), (1000.0, 1000), (999, None), (20001, None),
+                      (2499, 2499)):
+        assert vault_folder_prices.parse_cents(raw) == want, (raw, vault_folder_prices.parse_cents(raw))
+
+
 def case_folder_price_highest_of_several():
     prices = {"vf:1": 2500, "of:7": 7000, "vf:9": 1500}
     for refs, want in (({"vf:1", "of:7"}, 7000), ({"vf:1", "vf:9"}, 2500), ({"vf:2"}, None), (set(), None)):
@@ -626,6 +635,18 @@ def case_folder_price_pick_heat_targets():
     odd = _pick([_priced(_tits(1, "$10"), 2499)], fs.Ask("tits", "photo", 1))
     assert odd.lane == "$24.99" and odd.price_cents == 2499, odd
     assert _pick(low, fs.Ask("tits", "photo", 1)).lane == "$25"
+
+
+def case_folder_price_rides_on_the_pick():
+    """A Pick from a priced folder carries the folder price (`facts["folder_cents"]`) for the
+    steps that reprice it later; an unpriced Pick's facts have no such key."""
+    got = _pick([_priced(_tits(1, "$10"), 2499)], fs.Ask("tits", "photo", 1))
+    assert got.facts["folder_cents"] == 2499, got.facts
+    plain = _pick([_tits(1, "$10"), _priced(_tits(2, "$50"), None)], fs.Ask("tits", "photo", 1))
+    assert isinstance(plain, fs.Pick) and "folder_cents" not in plain.facts, plain.facts
+    rows = fs.pool([_priced(_tits(1, "$10"), 7000)], [], set(), ALL, TITS)
+    again = fs.same_piece(rows, [1], [], fs.Ask("tits", "photo", 1))
+    assert again.facts["folder_cents"] == 7000 and again.list_cents == 7000, again
 
 
 def case_folder_price_haggle_floor():

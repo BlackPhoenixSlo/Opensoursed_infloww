@@ -22,6 +22,10 @@ NEW-115; not probed yet.
     `question_key` its wcfi key (the Writer's `LEAD_LINES` key with `lead_in`).
   - `lead_in` (test Mode): `NEXT_QUESTION_LEAD` / `INFO_VERSION_LEAD`, and `askable` drops
     `NEVER_LED` (fetishes) from what she goes for.
+  - `he_likes` (test Mode): `LIKES_EXTRACT` widens the extract's fetishes (`extract(likes=)`);
+    `info_version(lead, likes)` records it.
+  - `info_wide` (test Mode): `STATED_WIDE` / `HOBBIES_EXTRACT` count what he is watching or playing
+    now as hobbies (`ask(wide=)`, `extract(wide=)`); `info_version(lead, likes, wide)` records it.
   - `info_questions: "list"` (DRAFT; default "pick" is the Choice above): no Choice; the Writer
     gets wcfi's whole still-need list. `still_needed(config, fan_info, asked)`,
     `ask_list(config, fan_info, asked, history, rng)` -> `AskList` (wcfi's ask/breather call) and
@@ -32,7 +36,6 @@ The key is `_router_jev`'s (`tenant_keys.typesafe_key_for`). `_client` is the te
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -122,12 +125,49 @@ NEXT_QUESTION_LEAD: dict[str, Any] = {
 # With `lead_in` never asked (he still states it: `stated_fetishes`), so never waited for.
 NEVER_LED = ("fetishes",)
 
+# Config `he_likes` (test Mode, `full_ai_writers.likes_flag`; owner 2026-11-14): one more system
+# message right after wcfi's `_EXTRACT_SYSTEM` (never edited: that lane is live), so sexting lines
+# store what he likes as `fetishes`. DRAFT docs/prompts NEW-144. Off (and Shadow): wcfi's messages.
+LIKES_EXTRACT = (
+    "For \"fetishes\" in this chat, the rule above is wider: write what turns him on as a short comma "
+    "list (body parts, acts, outfits, places or scenarios), taken from what he praises, asks to see "
+    "or describes doing in his own FAN: lines. Keep every item CURRENT already lists and add the new "
+    "ones, newest first, at most 8 items, in his words where you can. Use \"\" only when his lines "
+    "show nothing he is into. Never take an item from the YOU: lines.")
 
-def info_version(lead: bool = False) -> str:
-    """A short digest of what changes what Jev answers: model, wording, threshold, state keys."""
+# Config `info_wide` (test Mode, `full_ai_writers.wide_flag`; owner 2026-11-14: one Test chat window
+# stored "watching Netflix, watching anime drama", the other nothing, for the same lines): what he
+# is watching, playing, reading or listening to right now counts as what he does for fun.
+# `STATED_WIDE` replaces `stated_hobbies`' wording in the info Jev's request; `HOBBIES_EXTRACT` is one
+# more system message right after wcfi's `_EXTRACT_SYSTEM` (never edited: that lane is live) when
+# hobbies fired. DRAFT docs/prompts NEW-151 / NEW-152. Off (and Shadow): STATED and wcfi's messages.
+STATED_WIDE: dict[str, dict[str, Any]] = {
+    "stated_hobbies": _q(
+        "Does `fan_new_messages` tell her what he likes to do in his free time, or what he is doing "
+        "for fun right now?",
+        "He names a hobby, sport, game or something he does for fun, or says what he is watching, "
+        "playing, reading or listening to right now (a show, Netflix, anime, a game, music), even "
+        "in a few words",
+        "He says nothing about what he does for fun or what he is watching, playing, reading or "
+        "listening to"),
+}
+HOBBIES_EXTRACT = (
+    "For \"hobbies\" in this chat, the rule above is wider: what he says he is watching, playing, "
+    "reading or listening to right now counts as what he does for fun (\"im watching netflix\" -> "
+    "\"watching Netflix\"). Write it as a short comma list, keep every item CURRENT already lists "
+    "and add the new ones, at most 6 items, in his words where you can. Never take an item from the "
+    "YOU: lines.")
+
+
+def info_version(lead: bool = False, likes: bool = False, wide: bool = False) -> str:
+    """A short digest of what changes what Jev answers: model, wording, threshold, state keys;
+    with `likes` (`he_likes`) also `LIKES_EXTRACT` (what the stored values come from); with `wide`
+    (`info_wide`) `STATED_WIDE` and `HOBBIES_EXTRACT`."""
     return hashlib.sha256(json.dumps(
         {"model": MODEL, "stated": STATED, "next_question": NEXT_QUESTION_LEAD if lead else NEXT_QUESTION,
-         "threshold": THRESHOLD, "state_keys": STATE_KEYS},
+         "threshold": THRESHOLD, "state_keys": STATE_KEYS,
+         **({"likes_extract": LIKES_EXTRACT} if likes else {}),
+         **({"stated_wide": STATED_WIDE, "hobbies_extract": HOBBIES_EXTRACT} if wide else {})},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
@@ -167,10 +207,11 @@ def _client(key: str) -> Any:
     return _jev.client(key, MODEL, TIMEOUT_S, MAX_RETRIES)
 
 
-def _questions(offered: list[str], lead: bool = False) -> dict[str, Any]:
+def _questions(offered: list[str], lead: bool = False, wide: bool = False) -> dict[str, Any]:
     from typesafe_sdk import Choice, Noul
+    stated = {**STATED, **STATED_WIDE} if wide else STATED
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
-                         for qid, v in STATED.items()}
+                         for qid, v in stated.items()}
     if offered:                                 # nothing to offer: nothing to pick
         nq = NEXT_QUESTION_LEAD if lead else NEXT_QUESTION
         crit = nq["criteria"]
@@ -180,17 +221,14 @@ def _questions(offered: list[str], lead: bool = False) -> dict[str, Any]:
 
 
 async def ask(st: dict[str, Any], account_id: str, offered: list[str], *, timeout_s: float,
-              lead: bool = False) -> Info:
+              lead: bool = False, wide: bool = False) -> Info:
     """Every `stated_*` Noul and the `next_question` Choice over `offered` + none (no Choice when
-    nothing is offered; `lead`: NEXT_QUESTION_LEAD's wording), in one request within
-    `min(TIMEOUT_S, timeout_s)`. Raises `GateError` on any failure."""
-    from tenant_keys import typesafe_key_for
+    nothing is offered; `lead`: NEXT_QUESTION_LEAD's wording; `wide`: `STATED_WIDE`'s
+    `stated_hobbies`, same place), in one request within `min(TIMEOUT_S, timeout_s)`. Raises
+    `GateError` on any failure."""
     try:
-        key = await typesafe_key_for(account_id)
-        if not key:
-            raise GateError("no TypeSafe key (agency or TYPESAFE_API_KEY)")
-        res = await asyncio.wait_for(_client(key).system_one(st, _questions(offered, lead), model=MODEL),
-                                     min(TIMEOUT_S, timeout_s))
+        res, _ = await _jev.ask_one(_client, account_id, st, _questions(offered, lead, wide), MODEL,
+                                    min(TIMEOUT_S, timeout_s), GateError)
         stated = {qid.removeprefix("stated_"): float(res.nouls[qid].noul) for qid in STATED}
         bad = [f for f, p in stated.items() if not 0.0 <= p <= 1.0]
         if bad:
@@ -206,14 +244,22 @@ async def ask(st: dict[str, Any], account_id: str, offered: list[str], *, timeou
                 [f for f in _EXTRACT_FIELDS if stated[f] >= THRESHOLD])
 
 
-async def extract(facts, fields: list[str], *, timeout_s: float) -> dict[str, str]:
+async def extract(facts, fields: list[str], *, timeout_s: float, likes: bool = False,
+                  wide: bool = False) -> dict[str, str]:
     """wcfi's extract over the Turn's rows and the fold, on DeepSeek, one attempt: the new value of
-    each field in `fields` he stated (a newer value replaces the fold's)."""
+    each field in `fields` he stated (a newer value replaces the fold's). `likes` (`he_likes`) with
+    fetishes fired: `LIKES_EXTRACT` as a second system message right after wcfi's; `wide`
+    (`info_wide`) with hobbies fired: `HOBBIES_EXTRACT` right after wcfi's (before `LIKES_EXTRACT`)."""
     f = SimpleNamespace(**{k: facts.fan_info.get(k) for k in _EXTRACT_FIELDS},
                         likes_boobs=False, likes_ass=False)
     c = SimpleNamespace(messages=[(m.direction, line_text(m)) for m in facts.cut_rows])
+    messages = _extract_messages(f, c, persona=await _load_persona(facts.account_id))
+    if likes and "fetishes" in fields:          # only the fired fields are kept: no fetishes, no line
+        messages = [messages[0], {"role": "system", "content": LIKES_EXTRACT}, *messages[1:]]
+    if wide and "hobbies" in fields:
+        messages = [messages[0], {"role": "system", "content": HOBBIES_EXTRACT}, *messages[1:]]
     res = await llm_client.chat(
-        model=EXTRACT_MODEL, messages=_extract_messages(f, c, persona=await _load_persona(facts.account_id)),
+        model=EXTRACT_MODEL, messages=messages,
         purpose=PURPOSE, account_id=facts.account_id, temperature=0.2,
         response_format={"type": "json_object"}, timeout_s=timeout_s, max_attempts=1)
     data = res.parsed
@@ -230,10 +276,15 @@ _LINE_KEYS = {"real_name": ("name",), "his_age": ("age",),
               "occupation": ("job",), "hobbies": ("hobbies",), "fetishes": ("boobs_ass",)}
 
 
-def _wcfi_lines(fan_info: dict) -> dict[str, str]:
+def _wcfi_needed(fan_info: dict, marks: set[str]) -> list[tuple[str, str]]:
+    """wcfi's `_questions_still_needed` over the fold (its other fan fields empty) and `marks`."""
     f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
                         **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
-    return dict(_questions_still_needed(f, set()))
+    return _questions_still_needed(f, marks)
+
+
+def _wcfi_lines(fan_info: dict) -> dict[str, str]:
+    return dict(_wcfi_needed(fan_info, set()))
 
 
 def question_key(field: str, fan_info: dict) -> str:
@@ -249,12 +300,14 @@ def question_line(field: str, fan_info: dict) -> str:
 
 
 # ── `info_questions: "list"` (DRAFT): wcfi's whole still-need list, no Choice ─────────────────
-# wcfi's question keys -> the info fields that gate them (any one in `info_fields` lists the key).
-# `recent_events` is no info field: never listed.
-_KEY_FIELDS = {"name": ("real_name",), "age": ("his_age",),
-               "location": ("home_country", "home_city"), "country_from_city": ("home_country",),
-               "city": ("home_city",), "job": ("occupation",), "hobbies": ("hobbies",),
-               "recent_events": (), "boobs_ass": ("fetishes",)}
+# wcfi's question keys -> the info fields that gate them (any one in `info_fields` lists the key):
+# `_LINE_KEYS` inverted. A key no field gates (`recent_events`) is never listed.
+_KEY_FIELDS: dict[str, tuple[str, ...]] = {}
+for _f, _ks in _LINE_KEYS.items():
+    for _k in _ks:
+        _KEY_FIELDS[_k] = _KEY_FIELDS.get(_k, ()) + (_f,)
+# With `lead_in`: the keys of `NEVER_LED` fields (boobs_ass): never listed, never marked.
+NEVER_LED_KEYS = frozenset(k for f in NEVER_LED for k in _LINE_KEYS[f])
 
 
 class AskList(NamedTuple):
@@ -277,11 +330,15 @@ def asked_marks(asked: dict) -> set[str]:
 def still_needed(config: dict, fan_info: dict, asked: dict) -> list[tuple[str, str]]:
     """wcfi's `_questions_still_needed` over the fold and the list-mode marks, keeping only keys an
     `info_fields` field gates (its order, poke-later reorder included). Pure."""
-    f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
-                        **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
     on = set(config["info_fields"])
-    return [(k, line) for k, line in _questions_still_needed(f, asked_marks(asked))
-            if on.intersection(_KEY_FIELDS[k])]
+    return [(k, line) for k, line in _wcfi_needed(fan_info, asked_marks(asked))
+            if on.intersection(_KEY_FIELDS.get(k, ()))]
+
+
+def unled(al: AskList) -> AskList:
+    """`al` less `NEVER_LED_KEYS` (`lead_in`): not listed, not marked; no ask when none is left."""
+    keep = [i for i, k in enumerate(al.keys) if k not in NEVER_LED_KEYS]
+    return AskList([al.keys[i] for i in keep], [al.lines[i] for i in keep], al.ask and bool(keep))
 
 
 def ask_list(config: dict, fan_info: dict, asked: dict, history: list[tuple[str, str]],

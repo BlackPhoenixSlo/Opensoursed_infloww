@@ -47,8 +47,10 @@ _AUDIT_SKIP_PREFIXES = (
 )
 # Exact paths skipped (not prefixes: a new route under one stays audited). The MCP host route
 # (mcp_api.PATH): its body may carry tool args with nested secrets, which `_safe_snapshot` does
-# not redact; each tool's own inner request is the audited write.
-_AUDIT_SKIP_PATHS = frozenset({"/admin/mcp"})
+# not redact; each tool's own inner request is the audited write. The MCP sign-in (mcp_oauth): its
+# form bodies (code, code_verifier, CSRF value) are not JSON, so `_safe_snapshot` would store them
+# as plain text; the token's mint is its own audited inner request.
+_AUDIT_SKIP_PATHS = frozenset({"/admin/mcp", "/auth/oauth/register", "/auth/oauth/authorize", "/auth/oauth/token"})
 # Note: do NOT include "/" here — every absolute path starts with "/", so
 # `startswith("/")` would silently skip every endpoint. The root path is
 # handled by the static-UI mount which only serves GET anyway.

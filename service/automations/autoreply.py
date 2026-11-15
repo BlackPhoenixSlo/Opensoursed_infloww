@@ -635,14 +635,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     _kept = set(await _audiences.filter_candidates(
         account_id, [int(f.fan_id) for (f, _) in cands], kind="autoreply",
         stats=audience_stats))
-    cands = [(f, t) for (f, t) in cands if int(f.fan_id) in _kept][:limit]
+    # Full AI Chat's Stand-down (spec 04b): a Fan it claims is its alone; before the [:limit] cut.
+    from automations import full_ai_owner_io
+    _claimed, claimed_stats = await full_ai_owner_io.stand_down(
+        account_id, [int(f.fan_id) for (f, _) in cands if int(f.fan_id) in _kept], lane="autoreply",
+        client=client)
+    cands = [(f, t) for (f, t) in cands if int(f.fan_id) in _kept and int(f.fan_id) not in _claimed][:limit]
     # Nobody waiting → done. Same shape as the disabled / quiet-hours returns,
     # and what makes the 30 s cadence cheap: an empty tick is the config, model
     # and key reads, one messages query and the audience step — the ~20
     # per-account loads below run only for a real fan.
     if not cands:
         return {"enabled": True, "candidates": 0, "sent": 0, **folder_stats,
-                **audience_stats}
+                **audience_stats, **claimed_stats}
 
     typing_wpm = await load_typing_wpm(account_id)
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
@@ -914,7 +919,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await ax.release_fan_lease(account_id, fid)
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
-            **folder_stats, **audience_stats,
+            **folder_stats, **audience_stats, **claimed_stats,
             "skipped_cap": skipped_cap,
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,

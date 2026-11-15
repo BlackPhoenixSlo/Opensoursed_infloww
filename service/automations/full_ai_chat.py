@@ -24,6 +24,8 @@ row records `photo`.
 It has no send path by construction: it imports no OF client, no outbound
 helper, no executor and no lease module, and names no client factory, send,
 lease or cooldown function (test_full_ai_shadow.py, no-send (a) to (c)).
+A Creator whose rule is in Mode live (`trigger_json.mode`): `run` hands the job to
+`full_ai_live.run` (lazy import), the only Full AI send path (04a).
 """
 from __future__ import annotations
 
@@ -117,10 +119,11 @@ def build_state(turn: list, thread_rows: list, bought, offer, *,
     first), his last purchase `bought` (a `PURCHASE_KINDS` row or None) and the
     Pending offer `offer` (or None). `pending`, when given, is the state's
     `pending_offer` as already stated (test: `full_ai_test.pending_offer_text`,
-    a Pending tease first); else it is `offer`'s line. Pure: attribute reads
-    only, so rows from any source with `Message`/`Transaction`'s fields work.
-    `photos` (the side's `describe_fan_photos`) switches the `[he sent: …]` tag
-    on these rows (`router.read_photos`); the Writer reads the same rows."""
+    a Pending tease first); else it is `offer`'s line. No I/O: attribute reads,
+    so rows from any source with `Message`/`Transaction`'s fields work, plus one
+    write: `photos` (the side's `describe_fan_photos`) sets each row's
+    `photo_read`, the `[he sent: …]` tag (`router.read_photos`); the Writer reads
+    the same rows."""
     # ASSUMPTION: paid flags are read as of decide time, as the probe's sampler
     # did (sampler.py:68); overturned if catch-up rows show it.
     # ASSUMPTION: the probe's clock: every age (each line's `when`, his last
@@ -138,7 +141,13 @@ def build_state(turn: list, thread_rows: list, bought, offer, *,
 async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message],
                  photos: bool = False) -> tuple[dict, bool]:
     """The Jev state of one Turn and whether it has a Pending offer
-    (`build_state`), read in session `s`: the `THREAD_LINES` lines at or before
+    (`build_state` over `_reads`)."""
+    thread_rows, offer, bought = await _reads(s, account_id, fan_id, cut, turn)
+    return build_state(turn, thread_rows, bought, offer, photos=photos)
+
+
+async def _reads(s, account_id: str, fan_id: int, cut, turn: list[Message]) -> tuple[list, Message | None, Transaction | None]:
+    """(thread rows, Pending offer, his last purchase) of one Turn, read in session `s`: the `THREAD_LINES` lines at or before
     `cut` (her outbound that opened the run, None for none), the Pending offer
     among them, and his last purchase at or before its Anchor (`turn[-1]`):
     only rows created at or before that Anchor, their paid flags (`is_paid`,
@@ -166,15 +175,20 @@ async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message],
                Transaction.kind.in_(router.PURCHASE_KINDS),
                Transaction.occurred_at <= turn[-1].created_at)
         .order_by(Transaction.occurred_at.desc(), Transaction.id.desc()).limit(1))).scalar_one_or_none()
-    return build_state(turn, thread_rows, bought, offer, photos=photos)
+    return thread_rows, offer, bought
 
 
 async def _photos_on(account_id: str) -> bool:
-    """The checkpoint's `describe_fan_photos` (Shadow reads no other config: route flags all on)."""
+    """The checkpoint's `describe_fan_photos` (Shadow reads no other config: route flags all on). A
+    stored blob that will not parse reads off (fail closed: the catch-up still runs)."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, str(account_id))
     raw = row.full_ai_config_json if row is not None else None
-    return bool(merged(json.loads(raw) if raw else {})["checkpoint"][full_ai_photo.KEY])
+    try:
+        return bool(merged(json.loads(raw) if raw else {})["checkpoint"][full_ai_photo.KEY])
+    except (ValueError, TypeError, AttributeError, KeyError):
+        log.warning("full_ai bad stored config account=%s: describe_fan_photos off", account_id)
+        return False
 
 
 async def _read(account_id: str, fan_id: int, anchor_id: int, photos: bool = False
@@ -245,6 +259,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     whose Anchor has no row yet, one Jev call each. Stats: recorded, duplicate
     (an insert that lost the Turn key to a racing job) and one entry per row
     written; or `skipped` with why nothing was decided."""
+    from automations import full_ai_live    # lazy: the live twin, the only Full AI send path
+    if await full_ai_live.live_rule(account_id) is not None:
+        return await full_ai_live.run(account_id, payload, run_id=run_id)
     if payload.get("anchor") is None:       # the rule's interval tick, a Run-now
         return {"skipped": "unanchored"}
     fan_id = int(payload["only_fan_ids"][0])

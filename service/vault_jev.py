@@ -426,8 +426,12 @@ KEY_ERROR_KIND = {"no_key": "missing", "key_invalid": "invalid", "key_no_credit"
 
 
 def _failed(e: BaseException) -> str:
-    """The status of a failed TypeSafe/NudeNet call: a key status when TypeSafe refused the key, else `error`."""
-    from typesafe_sdk import TypeSafeAPIError
+    """The status of a failed TypeSafe/NudeNet call: a key status when TypeSafe refused the key, else `error`
+    (SDK missing included: the row is still stamped)."""
+    try:
+        from typesafe_sdk import TypeSafeAPIError
+    except ImportError:
+        return "error"
     return _KEY_HTTP.get(e.status, "error") if isinstance(e, TypeSafeAPIError) else "error"
 
 

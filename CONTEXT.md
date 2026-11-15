@@ -531,13 +531,21 @@ Two to five photos sold together as one Offer at one price: photos of one shoot,
 _Avoid_: pack, set, album, shoot (the vault's grouping a Bundle starts from)
 ASSUMPTION: the owner's line means photos per Offer, said right after a one-photo $45 Offer; overturned if he meant Pieces per Sitting.
 
+**Chat tease**:
+In test Mode (config `chat_tease`, Page switch "Chat tease", needs Sell), a teasing photo that rides her ordinary reply in a normal chat, the text never mentioning it (owner 2026-11-14, after the old teaser ladder). It fires when Jev's `chat_tease` says the moment fits (from about his 5th line, 3+ lines since her last piece), and an Unasked piece on row `offer_moment` outside a hot scene goes out this way too (owner 2026-11-14 "just one feature": the former Ride-along offer folded in). No ladder in code: a second Jev picks its price from the config list `chat_tease_prices` (free or $3-$200; default free, $3, $10, $40, $80, $120, $160, $200), reading what he bought and spent and `teases_sent` (each tease she sent this session and how he took it); free is one unlocked photo, a price up to price ÷ $5 photos. That Jev failing sends no tease that Turn; her text failing the Claim audit twice sends the text without the photos. Her free Chat tease photo ends Spacing's line count but is not a Piece.
+_Avoid_: tip ladder, teaser ladder (the old repo's, which had fixed prices), Ride-along offer (retired name), silent PPV, Free item (make_right's), teaser
+
 **Piece**:
 An Offer as Spacing counts it: a Decision row of the Sitting that carried an Offer, whatever its Offer outcome. A Free item or a free preview is not a Piece.
 _Avoid_: PPV on its own (the message kind), item, media, sale (the purchase)
 
 **Unasked piece**:
-A Piece he did not ask for: the Route table sold it because the moment fit (`offer_moment` or `scene_offer`), not because of an ask (`wants_content`, a yes to an offer, a Pending tease or a haggle).
+A Piece he did not ask for: the Route table sold it because the moment fit (`offer_moment`, `scene_offer` or `chat_tease`), not because of an ask (`wants_content`, a yes to an offer, a Pending tease or a haggle).
 _Avoid_: upsell, push, cold offer
+
+**He likes**:
+In test Mode, what turns him on, kept as a short comma list in the session fold's `fetishes` from his own lines (a wider extract than wcfi's) and given to the Router's `asks_subject` on every Turn, so a generic ask ("send me pics") is filled by what he is into; Jev's Choice decides, no code maps likes to media (ADR-0032).
+_Avoid_: kinks, preferences, interests (his hobbies), fetish profile
 
 **Nearest piece**:
 In test Mode, the Offer she sells when nothing in the vault matches his ask: the closest Pick (same subject, then same format, then anything), whose caption never passes it off as what he asked for.
@@ -558,6 +566,10 @@ _Avoid_: seen media (also counts sent but unbought; the Free item's pool exclude
 **Free item**:
 The one unseen vault item, price 0 and matched to what he wants, that a Make-it-right Turn sends. It is uncapped (ADR-0032) and becomes Owned media.
 _Avoid_: gift, freebie, preview (the free photo beside an Offer), Free previews (the PPV row's)
+
+**Heat check**:
+On a sext reply, one Jev Score of how sexual her final text is (0-4, the `intensity` scale turned on her) against the Heat the Writer was given; over it, the same Writer rewrites once and the rewrite ships only if it is not over. A failed check or a second over-Heat text still sends. Runs under `floor_on` in every Mode that writes; recorded on `reply_json.heat_check`.
+_Avoid_: intensity post-check, intensity cap
 
 **Claim audit**:
 The check that a sell or Free item bubble's exact final text claims only what its Pick holds (count, kind, and subject words by a strict lexicon). A failure regenerates once, then sends a fallback caption built only from the Pick's counts and kinds.
@@ -587,7 +599,7 @@ The owner chatting as a Fan with Full AI Chat on the Full AI Chat page (Mode tes
 _Avoid_: sandbox, playground, helper chat (the assistant's config tool), left/right or L/R (the sides are checkpoint and draft; L/R only in the page's code, never in requests or UI text)
 
 **Enrolment**:
-A Fan's one `ai_enrolments` row, written at his first eligible inbound in live mode with selling on, on a Full AI Chat Creator (Shadow and the selling-off stage enrol no one, R8), and fixing his Arm for good (ADR-0035).
+A Fan of a Full AI Chat Creator counted for Revenue per enrolled fan, derived: his first inbound message after the Creator's first live Turn; no row. His Arm is the Fan hash's (`arm_of`), never stored for it (ADR-0035).
 _Avoid_: enrollment (OF list enrollment, a **Functional demand**), assignment
 
 **Arm**:

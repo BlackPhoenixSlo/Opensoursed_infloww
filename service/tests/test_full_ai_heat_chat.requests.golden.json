@@ -1,0 +1,969 @@
+{
+ "chat": [
+  {
+   "jev": {
+    "model": "jev-1.14.0",
+    "questions": {
+     "asks_format": {
+      "criteria": {
+       "any": "He does not say, or either is fine",
+       "photo": "A photo, pic or picture",
+       "video": "A video, clip or vid"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+      "type": "choice"
+     },
+     "asks_if_ai": {
+      "criteria": {
+       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
+      },
+      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_subject": {
+      "criteria": {
+       "anything": "Nothing specific, or something not listed here",
+       "bikini": "Her in a bikini or swimwear",
+       "blowjob": "Her giving a blowjob",
+       "butt": "Her butt or ass",
+       "feet": "Her feet, toes or soles",
+       "lingerie": "Her in lingerie or underwear",
+       "masturbation": "Her touching herself or masturbating",
+       "nude": "Her fully naked",
+       "pussy": "Her pussy",
+       "sex": "Her having sex with someone",
+       "shower": "Her in the shower or bath",
+       "tits": "Her tits, boobs or nipples",
+       "toy": "Her with a sex toy or dildo"
+      },
+      "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described in his own lines in `thread`. Pick anything only when none of these names one of the choices.",
+      "type": "choice"
+     },
+     "complains_now": {
+      "criteria": {
+       "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for",
+       "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was"
+      },
+      "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+      "type": "noul"
+     },
+     "counter_offer": {
+      "criteria": {
+       "false": "He accepts the price, says no without bargaining, only asks what it costs, or does not mention the price",
+       "true": "He names a lower amount, asks for a discount or a deal, or says he would buy it for less"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+      "type": "noul"
+     },
+     "declines_buying": {
+      "criteria": {
+       "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money",
+       "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+      "type": "noul"
+     },
+     "gif_fits": {
+      "criteria": {
+       "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs",
+       "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs"
+      },
+      "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+      "type": "noul"
+     },
+     "intensity": {
+      "criteria": [
+       "He writes about everyday things, with no flirting",
+       "He flirts or compliments her looks, with nothing sexual",
+       "He is suggestive: he hints at sex or teases without saying it outright",
+       "He talks explicitly about sex: what he wants to do with her or to see",
+       "He describes graphic sex acts in detail"
+      ],
+      "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+      "type": "score"
+     },
+     "offer_moment": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, the chat is only small talk so far, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, nothing shows he is upset or cannot pay, and she has room to offer: `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "Would this be a good moment for her to offer him some of her content to buy, even though he did not ask for it?",
+      "type": "noul"
+     },
+     "price": {
+      "criteria": {
+       "false": "He says nothing about prices or paying",
+       "true": "He asks how much, what it costs, the price, or what he would pay for something"
+      },
+      "instructions": "Does the fan ask about a price, or what something costs?",
+      "type": "noul"
+     },
+     "promo": {
+      "criteria": {
+       "false": "He is talking to her about himself, about her, or about their chat",
+       "true": "It promotes another creator, page, link or service, like a promo or spam bot"
+      },
+      "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+      "type": "noul"
+     },
+     "says_under_18": {
+      "criteria": {
+       "false": "He says he is 18 or older, gives no age, or mentions the age of someone else",
+       "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet"
+      },
+      "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+      "type": "noul"
+     },
+     "says_yes_to_offer": {
+      "criteria": {
+       "false": "He turns it down, ignores it and talks about something else, or only asks what it is",
+       "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it"
+      },
+      "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+      "type": "noul"
+     },
+     "sexual_now": {
+      "criteria": {
+       "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question",
+       "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way"
+      },
+      "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+      "type": "noul"
+     },
+     "stop": {
+      "criteria": {
+       "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later",
+       "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while"
+      },
+      "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+      "type": "noul"
+     },
+     "wants_content": {
+      "criteria": {
+       "false": "He only compliments her, says what he would do to her, says he is looking at or likes her posts, feed or body, asks what kind of content she makes, offers to send her his own pics, or says please about something other than seeing her",
+       "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it; he asks her to send him something even if vague (send me something, something fun, a surprise); he complains he cannot see her naked or that her feed or page shows nothing nude; or he begs or says please right after `her_last_line` or `thread` shows she held back or teased showing him something"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now? Read his lines with `her_last_line` and `thread`.",
+      "type": "noul"
+     }
+    },
+    "state": {
+     "fan_new_messages": [
+      "how was ur day"
+     ],
+     "he_likes": "nothing stored yet",
+     "her_last_line": "none",
+     "his_lines_since_last_piece": "no piece yet",
+     "last_purchase": "none in the last 7 days",
+     "pending_offer": "none",
+     "pieces_this_sitting": 0,
+     "thread": [],
+     "unasked_pieces_this_sitting": 0
+    }
+   }
+  },
+  {
+   "writer": {
+    "body": {
+     "messages": [
+      {
+       "content": "You are a warm, flirty OnlyFans creator chatting with one of your fans.\n\nYou're texting a fan — flirting, getting to know him, quietly making him feel like the only one. 100% human, never a bot or an assistant. Use what you've learned about him, and give a little back: a small beat about your own moment (what you're doing, how you feel), half a sentence, never a paragraph, never a fact that clashes with your profile; never name a price or pitch a piece yourself — if he asks to see something, say yes warmly and let it arrive. He may send several texts — read all, reply to the latest.\n\nTHE FEEL OF TEXTING (governs everything below):\ntexting is a chore, like a girl half-glued to her phone — you write the LEAST you can. dont agonize over the perfect tiny line — longer is fine if it comes easier, but usually short just works. spend extra words only when it amuses YOU, lands the emotion harder, or makes HIM feel something; a line that PUNCHES beats one that explains.\nbut short NEVER means dead — even a tiny reply carries heat, a tease, or warmth — never a flat 'ok'/'lol' anyone could've sent, never parroting him, never dodging his point. the FEWEST words that land AND address him: one line, occasionally two, no padding.\nif he ASKED something, answer it in as few words as it takes, then STOP.\nthe get-to-know-you question is a judgement call, not a habit — read the moment, dont ask or drop it on autopilot.\n\nTHIS MESSAGE: don't ask anything — react + a small thought of your own.\n\nSTYLE FOR THIS MESSAGE — ONE quick line, even 2-5 words — react to one thing, leave the rest hanging.\n\nHOW YOU TEXT (a real 22yo girl, not an assistant):\n- Short and casual — lowercase, u/ur. React to what he said first.\n- VARY it — never reuse an opener, phrase, or emoji from this chat.\n- At most ONE question, never one he already answered. No paragraphs.\n- NEVER narrate (no *actions*, no self-description) — sooner send nothing.\n- If he gets explicit early: playfully tease and slow it down — warm, never preachy.\n- GOOD: \"haha thanks what should i call u?\" / \"u sound like trouble.. let me guess, 25?\"\n\nSTAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/socials, never plan to meet irl — flirty fantasy fine, actual invites never. brush it off warmly and keep chatting here.\n\nWHO YOU ARE (hard rule): every personal fact must match your profile + what you already told him. off-profile? improvise small and stick to it. unsure? warm and vague, no new specifics. NEVER plead memory loss or explain yourself as a bot/assistant/agency.\n\nTEXT LIKE A REAL PERSON, NOT AN AI:\n- lowercase always, even 'i'. no em-dash or semicolon, ever.\n- NEVER echo his words or restate them with an adjective ('sounds gorgeous') — biggest bot tell. react in your OWN words.\n- vary length wildly. dont open every text on a reaction sound, and never the same opener twice in a row — sounds (lol, omg, ugh, oof) in moderation, rotated.\n- a tiny typo is fine (dont, im, ur, gonna).\n- not always sweet — tease, be a lil bratty, push back sometimes.\n- AT MOST ONE question, never two.\n- never explain yourself. 0-1 emoji, never the same emoji twice.\n\nnon-native english — sometimes drop a tiny word (a, the, is), never cartoonish.\n\nYour reply is ONLY the message text — no JSON, quotes, or metadata.",
+       "role": "system"
+      },
+      {
+       "content": "What you know about him:\n- (nothing on file yet)\n\nRecent conversation (oldest→newest):\nFAN: how was ur day\n\nReply to his last message now, in the STYLE FOR THIS MESSAGE above.",
+       "role": "user"
+      }
+     ],
+     "model": "Sao10K/L3.3-70B-Euryale-v2.3",
+     "stream": false,
+     "temperature": 0.85
+    },
+    "host": "nano-gpt.com",
+    "model": "Sao10K/L3.3-70B-Euryale-v2.3"
+   }
+  }
+ ],
+ "no_send": [
+  {
+   "jev": {
+    "model": "jev-1.14.0",
+    "questions": {
+     "asks_format": {
+      "criteria": {
+       "any": "He does not say, or either is fine",
+       "photo": "A photo, pic or picture",
+       "video": "A video, clip or vid"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+      "type": "choice"
+     },
+     "asks_if_ai": {
+      "criteria": {
+       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
+      },
+      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_subject": {
+      "criteria": {
+       "anything": "Nothing specific, or something not listed here",
+       "bikini": "Her in a bikini or swimwear",
+       "blowjob": "Her giving a blowjob",
+       "butt": "Her butt or ass",
+       "feet": "Her feet, toes or soles",
+       "lingerie": "Her in lingerie or underwear",
+       "masturbation": "Her touching herself or masturbating",
+       "nude": "Her fully naked",
+       "pussy": "Her pussy",
+       "sex": "Her having sex with someone",
+       "shower": "Her in the shower or bath",
+       "tits": "Her tits, boobs or nipples",
+       "toy": "Her with a sex toy or dildo"
+      },
+      "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described in his own lines in `thread`. Pick anything only when none of these names one of the choices.",
+      "type": "choice"
+     },
+     "complains_now": {
+      "criteria": {
+       "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for",
+       "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was"
+      },
+      "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+      "type": "noul"
+     },
+     "counter_offer": {
+      "criteria": {
+       "false": "He accepts the price, says no without bargaining, only asks what it costs, or does not mention the price",
+       "true": "He names a lower amount, asks for a discount or a deal, or says he would buy it for less"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+      "type": "noul"
+     },
+     "declines_buying": {
+      "criteria": {
+       "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money",
+       "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+      "type": "noul"
+     },
+     "gif_fits": {
+      "criteria": {
+       "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs",
+       "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs"
+      },
+      "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+      "type": "noul"
+     },
+     "intensity": {
+      "criteria": [
+       "He writes about everyday things, with no flirting",
+       "He flirts or compliments her looks, with nothing sexual",
+       "He is suggestive: he hints at sex or teases without saying it outright",
+       "He talks explicitly about sex: what he wants to do with her or to see",
+       "He describes graphic sex acts in detail"
+      ],
+      "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+      "type": "score"
+     },
+     "offer_moment": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, the chat is only small talk so far, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, nothing shows he is upset or cannot pay, and she has room to offer: `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "Would this be a good moment for her to offer him some of her content to buy, even though he did not ask for it?",
+      "type": "noul"
+     },
+     "price": {
+      "criteria": {
+       "false": "He says nothing about prices or paying",
+       "true": "He asks how much, what it costs, the price, or what he would pay for something"
+      },
+      "instructions": "Does the fan ask about a price, or what something costs?",
+      "type": "noul"
+     },
+     "promo": {
+      "criteria": {
+       "false": "He is talking to her about himself, about her, or about their chat",
+       "true": "It promotes another creator, page, link or service, like a promo or spam bot"
+      },
+      "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+      "type": "noul"
+     },
+     "says_under_18": {
+      "criteria": {
+       "false": "He says he is 18 or older, gives no age, or mentions the age of someone else",
+       "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet"
+      },
+      "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+      "type": "noul"
+     },
+     "says_yes_to_offer": {
+      "criteria": {
+       "false": "He turns it down, ignores it and talks about something else, or only asks what it is",
+       "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it"
+      },
+      "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+      "type": "noul"
+     },
+     "sexual_now": {
+      "criteria": {
+       "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question",
+       "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way"
+      },
+      "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+      "type": "noul"
+     },
+     "stop": {
+      "criteria": {
+       "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later",
+       "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while"
+      },
+      "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+      "type": "noul"
+     },
+     "wants_content": {
+      "criteria": {
+       "false": "He only compliments her, says what he would do to her, says he is looking at or likes her posts, feed or body, asks what kind of content she makes, offers to send her his own pics, or says please about something other than seeing her",
+       "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it; he asks her to send him something even if vague (send me something, something fun, a surprise); he complains he cannot see her naked or that her feed or page shows nothing nude; or he begs or says please right after `her_last_line` or `thread` shows she held back or teased showing him something"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now? Read his lines with `her_last_line` and `thread`.",
+      "type": "noul"
+     }
+    },
+    "state": {
+     "fan_new_messages": [
+      "im 16"
+     ],
+     "he_likes": "nothing stored yet",
+     "her_last_line": "none",
+     "his_lines_since_last_piece": "no piece yet",
+     "last_purchase": "none in the last 7 days",
+     "pending_offer": "none",
+     "pieces_this_sitting": 0,
+     "thread": [],
+     "unasked_pieces_this_sitting": 0
+    }
+   }
+  }
+ ],
+ "scene_floor_off": [
+  {
+   "jev": {
+    "model": "jev-1.14.0",
+    "questions": {
+     "asks_format": {
+      "criteria": {
+       "any": "He does not say, or either is fine",
+       "photo": "A photo, pic or picture",
+       "video": "A video, clip or vid"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+      "type": "choice"
+     },
+     "asks_if_ai": {
+      "criteria": {
+       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
+      },
+      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_subject": {
+      "criteria": {
+       "anything": "Nothing specific, or something not listed here",
+       "bikini": "Her in a bikini or swimwear",
+       "blowjob": "Her giving a blowjob",
+       "butt": "Her butt or ass",
+       "feet": "Her feet, toes or soles",
+       "lingerie": "Her in lingerie or underwear",
+       "masturbation": "Her touching herself or masturbating",
+       "nude": "Her fully naked",
+       "pussy": "Her pussy",
+       "sex": "Her having sex with someone",
+       "shower": "Her in the shower or bath",
+       "tits": "Her tits, boobs or nipples",
+       "toy": "Her with a sex toy or dildo"
+      },
+      "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described in his own lines in `thread`. Pick anything only when none of these names one of the choices.",
+      "type": "choice"
+     },
+     "chat_tease": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, `his_lines_this_sitting` is under 5, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), the last tease in `teases_sent` is one he did not buy or said no to and the chat has not warmed up since, or she already sent 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "They are chatting back and forth and he is friendly or flirty, `his_lines_this_sitting` is 5 or more, `his_lines_since_last_piece` is 3 or more or says no piece yet, and nothing shows he is upset or cannot pay"
+      },
+      "instructions": "They are chatting, not sexting, and he did not ask to see anything. Is this a good moment for her to slip a teasing photo of herself in with her normal reply?",
+      "type": "noul"
+     },
+     "complains_now": {
+      "criteria": {
+       "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for",
+       "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was"
+      },
+      "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+      "type": "noul"
+     },
+     "counter_offer": {
+      "criteria": {
+       "false": "He accepts the price, says no without bargaining, only asks what it costs, or does not mention the price",
+       "true": "He names a lower amount, asks for a discount or a deal, or says he would buy it for less"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+      "type": "noul"
+     },
+     "declines_buying": {
+      "criteria": {
+       "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money",
+       "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+      "type": "noul"
+     },
+     "gif_fits": {
+      "criteria": {
+       "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs",
+       "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs"
+      },
+      "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+      "type": "noul"
+     },
+     "intensity": {
+      "criteria": [
+       "He writes about everyday things, with no flirting",
+       "He flirts or compliments her looks, with nothing sexual",
+       "He is suggestive: he hints at sex or teases without saying it outright",
+       "He talks explicitly about sex: what he wants to do with her or to see",
+       "He describes graphic sex acts in detail"
+      ],
+      "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+      "type": "score"
+     },
+     "offer_level": {
+      "criteria": {
+       "explicit": "Touching herself inside, using a toy, or sex",
+       "nude": "Fully naked with her pussy showing",
+       "soft": "Teasing: lingerie, topless, or naked with her pussy hidden"
+      },
+      "instructions": "If she sends him a piece of her content to buy now, how explicit should it be? Go by how turned on he is in `fan_new_messages`, what he asks for, and what he already bought in `purchases`: one step further than the last thing he bought, never the same level again.",
+      "type": "choice"
+     },
+     "offer_moment": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, the chat is only small talk so far, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, nothing shows he is upset or cannot pay, and she has room to offer: `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "Would this be a good moment for her to offer him some of her content to buy, even though he did not ask for it?",
+      "type": "noul"
+     },
+     "price": {
+      "criteria": {
+       "false": "He says nothing about prices or paying",
+       "true": "He asks how much, what it costs, the price, or what he would pay for something"
+      },
+      "instructions": "Does the fan ask about a price, or what something costs?",
+      "type": "noul"
+     },
+     "promo": {
+      "criteria": {
+       "false": "He is talking to her about himself, about her, or about their chat",
+       "true": "It promotes another creator, page, link or service, like a promo or spam bot"
+      },
+      "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+      "type": "noul"
+     },
+     "says_under_18": {
+      "criteria": {
+       "false": "He says he is 18 or older, gives no age, or mentions the age of someone else",
+       "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet"
+      },
+      "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+      "type": "noul"
+     },
+     "says_yes_to_offer": {
+      "criteria": {
+       "false": "He turns it down, ignores it and talks about something else, or only asks what it is",
+       "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it"
+      },
+      "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+      "type": "noul"
+     },
+     "scene_offer": {
+      "criteria": {
+       "false": "The sexting only just started, a locked message of hers in `thread` is still not bought, she offered him something in her last message, he just came, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is turned on and into it, they have been sexting for a few messages or he bought and still wants more, no locked message of hers is waiting unbought in `thread`, `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "They are sexting. Is this a good moment for her to send him a locked photo or video as the next step of it?",
+      "type": "noul"
+     },
+     "scene_on": {
+      "criteria": {
+       "false": "The last lines of `thread` are not sexual, or in `fan_new_messages` he changes the subject, says he has to go, is upset, or asks something serious",
+       "true": "The last lines of `thread` are sexting between them and in `fan_new_messages` he stays in it: he reacts to it, enjoys it, answers her, asks for more, or says he just came, even when his own words are short or not sexual by themselves"
+      },
+      "instructions": "Is a sexual chat between her and the fan going on right now, counting `thread` and `fan_new_messages` together?",
+      "type": "noul"
+     },
+     "scene_stage": {
+      "criteria": {
+       "after": "He says he came or finished, or thanks her for it",
+       "building": "They describe what they do to each other or to themselves, and it is getting more explicit",
+       "none": "They are not sexting",
+       "opening": "It only just turned sexual: first dirty lines, nothing described yet",
+       "peak": "He is close to finishing: he says he is stroking, about to cum, cannot hold it, or begs her"
+      },
+      "instructions": "They are sexting. How far along is it, counting `thread` and `fan_new_messages` together? `scene` says how far it had got before his new messages; it does not go backwards unless he clearly starts over.",
+      "type": "choice"
+     },
+     "sexual_now": {
+      "criteria": {
+       "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question",
+       "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way"
+      },
+      "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+      "type": "noul"
+     },
+     "stop": {
+      "criteria": {
+       "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later",
+       "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while"
+      },
+      "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+      "type": "noul"
+     },
+     "wants_content": {
+      "criteria": {
+       "false": "He only compliments her, says what he would do to her, says he is looking at or likes her posts, feed or body, asks what kind of content she makes, offers to send her his own pics, or says please about something other than seeing her",
+       "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it; he asks her to send him something even if vague (send me something, something fun, a surprise); he complains he cannot see her naked or that her feed or page shows nothing nude; or he begs or says please right after `her_last_line` or `thread` shows she held back or teased showing him something"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now? Read his lines with `her_last_line` and `thread`.",
+      "type": "noul"
+     }
+    },
+    "state": {
+     "fan_new_messages": [
+      "ur making me hard"
+     ],
+     "he_likes": "nothing stored yet",
+     "her_last_line": "none",
+     "his_lines_since_last_piece": "no piece yet",
+     "his_lines_this_sitting": 1,
+     "last_purchase": "none in the last 7 days",
+     "pending_offer": "none",
+     "pieces_this_sitting": 0,
+     "purchases": [],
+     "scene": "none",
+     "teases_sent": "none yet",
+     "thread": [],
+     "unasked_pieces_this_sitting": 0
+    }
+   }
+  },
+  {
+   "writer": {
+    "body": {
+     "messages": [
+      {
+       "content": "You are a warm, flirty OnlyFans creator chatting with one of your fans.\n\nYou're texting a fan — flirting, getting to know him, quietly making him feel like the only one. 100% human, never a bot or an assistant. Use what you've learned about him; you can't send pictures or videos in this chat right now — never say you're sending one, that you took one, or that he'll see one. If he asks to see you, tell him in one hot line that the real thing is on your page, then stay in the scene with words. He may send several texts — read all, reply to the latest.\n\nTHE FEEL OF TEXTING (governs everything below):\ntexting is a chore, like a girl half-glued to her phone — you write the LEAST you can. dont agonize over the perfect tiny line — longer is fine if it comes easier, but usually short just works. spend extra words only when it amuses YOU, lands the emotion harder, or makes HIM feel something; a line that PUNCHES beats one that explains.\nbut short NEVER means dead — even a tiny reply carries heat, a tease, or warmth — never a flat 'ok'/'lol' anyone could've sent, never parroting him, never dodging his point. the FEWEST words that land AND address him: one line, occasionally two, no padding.\nif he ASKED something, answer it in as few words as it takes, then STOP.\nthe get-to-know-you question is a judgement call, not a habit — read the moment, dont ask or drop it on autopilot.\n\nYOU ARE SEXTING HIM RIGHT NOW — a live scene, already going. The one way to throw it away is a get-to-know question (job, day, city, age) or a change of subject — never. Run the scene:\n1. STAY IN IT — present tense, first person, dirty, SHORT.\n2. GIVE BEFORE YOU ASK — every message tells him one thing YOU are doing right now (to yourself, for him) or one thing you want to do to him, in plain dirty words: where your hand is, what you just took off, how wet he makes you, what your mouth would do to him.\n3. MIRROR IT BACK, HOTTER — his words escalated, as if it's already happening.\n4. NEVER GO BACKWARDS — each message goes one step further than your last one. No cooling it down, no 'slow down', no going sweet or small-talk until he has finished.\n5. At most one question, and only after you gave him something. Never two messages in a row ending on a question, never the same question twice.\nWHERE THE SCENE IS: just starting. Pull him in: say what you have on (or don't) and the first thing you'd do to him if he were here.\nHEAT 3 of 4 — run it one step hotter than he is right now, never colder.\n\nSTYLE FOR THIS MESSAGE — one short line, emoji NOT 😏 (😈 🙈 😅 🥵) or none.\n\nHOW YOU TEXT (a real 22yo girl, not an assistant):\n- Short and casual — lowercase, u/ur. React to what he said first.\n- VARY it — never reuse an opener, phrase, or emoji from this chat.\n- At most ONE question, never one he already answered. No paragraphs.\n- No *asterisk actions* and no story about yourself in third person — say what you're doing as a text to him, in your own words, sooner send nothing.\n- GOOD: \"haha thanks what should i call u?\" / \"aww how old are ya\"\n\nSTAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/socials, never plan to meet irl — flirty fantasy fine, actual invites never. brush it off warmly and keep chatting here.\n\nWHO YOU ARE (hard rule): every personal fact must match your profile + what you already told him. off-profile? improvise small and stick to it. unsure? warm and vague, no new specifics. NEVER plead memory loss or explain yourself as a bot/assistant/agency.\n\nTEXT LIKE A REAL PERSON, NOT AN AI:\n- lowercase always, even 'i'. no em-dash or semicolon, ever.\n- NEVER echo his words or restate them with an adjective ('sounds gorgeous') — biggest bot tell. react in your OWN words.\n- vary length wildly. dont open every text on a reaction sound, and never the same opener twice in a row — sounds (lol, omg, ugh, oof) in moderation, rotated.\n- a tiny typo is fine (dont, im, ur, gonna).\n- not always sweet — tease, be a lil bratty, push back sometimes.\n- AT MOST ONE question, never two.\n- never explain yourself. 0-1 emoji, never the same emoji twice.\n\nnon-native english — sometimes drop a tiny word (a, the, is), never cartoonish.\n\nYour reply is ONLY the message text — no JSON, quotes, or metadata.",
+       "role": "system"
+      },
+      {
+       "content": "What you know about him:\n- (nothing on file yet)\n\nRecent conversation (oldest→newest):\nFAN: ur making me hard\n\nReply to his last message now, in the STYLE FOR THIS MESSAGE above.",
+       "role": "user"
+      }
+     ],
+     "model": "Sao10K/L3.3-70B-Euryale-v2.3",
+     "stream": false,
+     "temperature": 0.85
+    },
+    "host": "nano-gpt.com",
+    "model": "Sao10K/L3.3-70B-Euryale-v2.3"
+   }
+  }
+ ],
+ "sell": [
+  {
+   "jev": {
+    "model": "jev-1.14.0",
+    "questions": {
+     "asks_format": {
+      "criteria": {
+       "any": "He does not say, or either is fine",
+       "photo": "A photo, pic or picture",
+       "video": "A video, clip or vid"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+      "type": "choice"
+     },
+     "asks_if_ai": {
+      "criteria": {
+       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
+      },
+      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_subject": {
+      "criteria": {
+       "anything": "Nothing specific, or something not listed here",
+       "bikini": "Her in a bikini or swimwear",
+       "blowjob": "Her giving a blowjob",
+       "butt": "Her butt or ass",
+       "feet": "Her feet, toes or soles",
+       "lingerie": "Her in lingerie or underwear",
+       "masturbation": "Her touching herself or masturbating",
+       "nude": "Her fully naked",
+       "pussy": "Her pussy",
+       "sex": "Her having sex with someone",
+       "shower": "Her in the shower or bath",
+       "tits": "Her tits, boobs or nipples",
+       "toy": "Her with a sex toy or dildo"
+      },
+      "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described in his own lines in `thread`. Pick anything only when none of these names one of the choices.",
+      "type": "choice"
+     },
+     "complains_now": {
+      "criteria": {
+       "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for",
+       "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was"
+      },
+      "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+      "type": "noul"
+     },
+     "counter_offer": {
+      "criteria": {
+       "false": "He accepts the price, says no without bargaining, only asks what it costs, or does not mention the price",
+       "true": "He names a lower amount, asks for a discount or a deal, or says he would buy it for less"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+      "type": "noul"
+     },
+     "declines_buying": {
+      "criteria": {
+       "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money",
+       "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+      "type": "noul"
+     },
+     "gif_fits": {
+      "criteria": {
+       "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs",
+       "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs"
+      },
+      "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+      "type": "noul"
+     },
+     "intensity": {
+      "criteria": [
+       "He writes about everyday things, with no flirting",
+       "He flirts or compliments her looks, with nothing sexual",
+       "He is suggestive: he hints at sex or teases without saying it outright",
+       "He talks explicitly about sex: what he wants to do with her or to see",
+       "He describes graphic sex acts in detail"
+      ],
+      "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+      "type": "score"
+     },
+     "offer_moment": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, the chat is only small talk so far, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, nothing shows he is upset or cannot pay, and she has room to offer: `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "Would this be a good moment for her to offer him some of her content to buy, even though he did not ask for it?",
+      "type": "noul"
+     },
+     "price": {
+      "criteria": {
+       "false": "He says nothing about prices or paying",
+       "true": "He asks how much, what it costs, the price, or what he would pay for something"
+      },
+      "instructions": "Does the fan ask about a price, or what something costs?",
+      "type": "noul"
+     },
+     "promo": {
+      "criteria": {
+       "false": "He is talking to her about himself, about her, or about their chat",
+       "true": "It promotes another creator, page, link or service, like a promo or spam bot"
+      },
+      "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+      "type": "noul"
+     },
+     "says_under_18": {
+      "criteria": {
+       "false": "He says he is 18 or older, gives no age, or mentions the age of someone else",
+       "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet"
+      },
+      "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+      "type": "noul"
+     },
+     "says_yes_to_offer": {
+      "criteria": {
+       "false": "He turns it down, ignores it and talks about something else, or only asks what it is",
+       "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it"
+      },
+      "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+      "type": "noul"
+     },
+     "sexual_now": {
+      "criteria": {
+       "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question",
+       "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way"
+      },
+      "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+      "type": "noul"
+     },
+     "stop": {
+      "criteria": {
+       "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later",
+       "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while"
+      },
+      "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+      "type": "noul"
+     },
+     "wants_content": {
+      "criteria": {
+       "false": "He only compliments her, says what he would do to her, says he is looking at or likes her posts, feed or body, asks what kind of content she makes, offers to send her his own pics, or says please about something other than seeing her",
+       "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it; he asks her to send him something even if vague (send me something, something fun, a surprise); he complains he cannot see her naked or that her feed or page shows nothing nude; or he begs or says please right after `her_last_line` or `thread` shows she held back or teased showing him something"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now? Read his lines with `her_last_line` and `thread`.",
+      "type": "noul"
+     }
+    },
+    "state": {
+     "fan_new_messages": [
+      "send me pics"
+     ],
+     "he_likes": "nothing stored yet",
+     "her_last_line": "none",
+     "his_lines_since_last_piece": "no piece yet",
+     "last_purchase": "none in the last 7 days",
+     "pending_offer": "none",
+     "pieces_this_sitting": 0,
+     "thread": [],
+     "unasked_pieces_this_sitting": 0
+    }
+   }
+  },
+  {
+   "writer": {
+    "body": {
+     "messages": [
+      {
+       "content": "You are a warm, flirty OnlyFans creator chatting with one of your fans.\n\nYou're texting a fan — flirting, getting to know him, quietly making him feel like the only one. 100% human, never a bot or an assistant. Use what you've learned about him, and give a little back: a small beat about your own moment (what you're doing, how you feel), half a sentence, never a paragraph, never a fact that clashes with your profile; you DO have real content you can send or sell when the moment is right — see CONTENT YOU CAN ACTUALLY SEND HIM below. He may send several texts — read all, reply to the latest.\n\nTHE FEEL OF TEXTING (governs everything below):\ntexting is a chore, like a girl half-glued to her phone — you write the LEAST you can. dont agonize over the perfect tiny line — longer is fine if it comes easier, but usually short just works. spend extra words only when it amuses YOU, lands the emotion harder, or makes HIM feel something; a line that PUNCHES beats one that explains.\nbut short NEVER means dead — even a tiny reply carries heat, a tease, or warmth — never a flat 'ok'/'lol' anyone could've sent, never parroting him, never dodging his point. the FEWEST words that land AND address him: one line, occasionally two, no padding.\nif he ASKED something, answer it in as few words as it takes, then STOP.\nthe get-to-know-you question is a judgement call, not a habit — read the moment, dont ask or drop it on autopilot.\n\nHE IS ASKING FOR CONTENT RIGHT NOW — stay on it, answer the ask: Pick the piece from CONTENT YOU CAN ACTUALLY SEND HIM that best fits, tease it from its description, give the terms, and end with the >>OFFER line.\n\nSTYLE FOR THIS MESSAGE — ONE quick line, even 2-5 words — react to one thing, leave the rest hanging.\n\nHOW YOU TEXT (a real 22yo girl, not an assistant):\n- Short and casual — lowercase, u/ur. React to what he said first.\n- VARY it — never reuse an opener, phrase, or emoji from this chat.\n- At most ONE question, never one he already answered. No paragraphs.\n- NEVER narrate (no *actions*, no self-description) — sooner send nothing.\n- If he gets explicit early: playfully tease and slow it down — warm, never preachy.\n- GOOD: \"haha thanks what should i call u?\" / \"u sound like trouble.. let me guess, 25?\"\n\nSTAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/socials, never plan to meet irl — flirty fantasy fine, actual invites never. brush it off warmly and keep chatting here.\n\nWHO YOU ARE (hard rule): every personal fact must match your profile + what you already told him. off-profile? improvise small and stick to it. unsure? warm and vague, no new specifics. NEVER plead memory loss or explain yourself as a bot/assistant/agency.\n\nTEXT LIKE A REAL PERSON, NOT AN AI:\n- lowercase always, even 'i'. no em-dash or semicolon, ever.\n- NEVER echo his words or restate them with an adjective ('sounds gorgeous') — biggest bot tell. react in your OWN words.\n- vary length wildly. dont open every text on a reaction sound, and never the same opener twice in a row — sounds (lol, omg, ugh, oof) in moderation, rotated.\n- a tiny typo is fine (dont, im, ur, gonna).\n- not always sweet — tease, be a lil bratty, push back sometimes.\n- AT MOST ONE question, never two.\n- never explain yourself. 0-1 emoji, never the same emoji twice.\n\nnon-native english — sometimes drop a tiny word (a, the, is), never cartoonish.\n\nCONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed — NEVER invent or promise anything not on this list, never customs, and describe a piece using ONLY its description):\n- [id 101] photo — untitled: a mirror selfie in jeans — $10 to unlock\n\nSELLING RULES:\n- Pitch ONLY when the vibe is warm or he's asking for content — at most ONE piece, woven in naturally (\"its $10 to unlock babe 😏\"), never pushy. When he asks or is turned on, dont stall or be coy: tease the best fit from its description and name the price NOW. A FREE piece is a spontaneous treat when he's sweet.\n- When (and ONLY when) you pitch/send a piece this message, end your reply with a final line that is exactly:\n>>OFFER <id>\n- No pitch → do NOT write >>OFFER, and never tease that you \"have something\" without actually pitching it.\n- The list above is COMPLETE and CURRENT: anything not on it is gone — never re-offer, re-price, or invent sets, lengths, counts, or prices. If he wants more, you're filming more soon — never promise specifics.\n\nTHE PRICE\nIt unlocks at $10. You may name it or not, but if you name a price it must be exactly $10.\n\nYour reply is ONLY the message text — no JSON, quotes, or metadata. ONE exception: the final >>OFFER line when you pitch a piece (stripped — he never sees it).",
+       "role": "system"
+      },
+      {
+       "content": "What you know about him:\n- (nothing on file yet)\n\nRecent conversation (oldest→newest):\nFAN: send me pics\n\nReply to his last message now, in the STYLE FOR THIS MESSAGE above.",
+       "role": "user"
+      }
+     ],
+     "model": "Sao10K/L3.3-70B-Euryale-v2.3",
+     "stream": false,
+     "temperature": 0.85
+    },
+    "host": "nano-gpt.com",
+    "model": "Sao10K/L3.3-70B-Euryale-v2.3"
+   }
+  }
+ ],
+ "sext_floor_off": [
+  {
+   "jev": {
+    "model": "jev-1.14.0",
+    "questions": {
+     "asks_format": {
+      "criteria": {
+       "any": "He does not say, or either is fine",
+       "photo": "A photo, pic or picture",
+       "video": "A video, clip or vid"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask for a photo or a video?",
+      "type": "choice"
+     },
+     "asks_if_ai": {
+      "criteria": {
+       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
+      },
+      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_subject": {
+      "criteria": {
+       "anything": "Nothing specific, or something not listed here",
+       "bikini": "Her in a bikini or swimwear",
+       "blowjob": "Her giving a blowjob",
+       "butt": "Her butt or ass",
+       "feet": "Her feet, toes or soles",
+       "lingerie": "Her in lingerie or underwear",
+       "masturbation": "Her touching herself or masturbating",
+       "nude": "Her fully naked",
+       "pussy": "Her pussy",
+       "sex": "Her having sex with someone",
+       "shower": "Her in the shower or bath",
+       "tits": "Her tits, boobs or nipples",
+       "toy": "Her with a sex toy or dildo"
+      },
+      "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described in his own lines in `thread`. Pick anything only when none of these names one of the choices.",
+      "type": "choice"
+     },
+     "chat_tease": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, `his_lines_this_sitting` is under 5, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), the last tease in `teases_sent` is one he did not buy or said no to and the chat has not warmed up since, or she already sent 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "They are chatting back and forth and he is friendly or flirty, `his_lines_this_sitting` is 5 or more, `his_lines_since_last_piece` is 3 or more or says no piece yet, and nothing shows he is upset or cannot pay"
+      },
+      "instructions": "They are chatting, not sexting, and he did not ask to see anything. Is this a good moment for her to slip a teasing photo of herself in with her normal reply?",
+      "type": "noul"
+     },
+     "complains_now": {
+      "criteria": {
+       "false": "He praises what he got, wants more or different content, haggles, says he is broke, flirts, or is unhappy about something he never paid for",
+       "true": "He says he paid and got nothing, that what he paid for was already his or is free on her page, that he was charged twice, or that what he bought was disappointing: too tame, too short, too few, or not what she said it was"
+      },
+      "instructions": "In `fan_new_messages`, is the fan unhappy about something he paid her for?",
+      "type": "noul"
+     },
+     "counter_offer": {
+      "criteria": {
+       "false": "He accepts the price, says no without bargaining, only asks what it costs, or does not mention the price",
+       "true": "He names a lower amount, asks for a discount or a deal, or says he would buy it for less"
+      },
+      "instructions": "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
+      "type": "noul"
+     },
+     "declines_buying": {
+      "criteria": {
+       "false": "He asks for her content or a price, agrees to buy, says goodbye or is sad without mentioning paying, or does not mention buying or money",
+       "true": "He says no to buying, that he has no money or cannot afford it, that it costs too much or is not worth the money, or that he only wants to chat and not pay"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
+      "type": "noul"
+     },
+     "gif_fits": {
+      "criteria": {
+       "false": "He is upset or complaining, asks something serious, is mid explicit sext, or earlier reacted badly to her GIFs",
+       "true": "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and nothing shows he dislikes her GIFs"
+      },
+      "instructions": "Would a cute reaction GIF from her fit as part of this reply?",
+      "type": "noul"
+     },
+     "intensity": {
+      "criteria": [
+       "He writes about everyday things, with no flirting",
+       "He flirts or compliments her looks, with nothing sexual",
+       "He is suggestive: he hints at sex or teases without saying it outright",
+       "He talks explicitly about sex: what he wants to do with her or to see",
+       "He describes graphic sex acts in detail"
+      ],
+      "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
+      "type": "score"
+     },
+     "offer_moment": {
+      "criteria": {
+       "false": "He is upset or complaining, says he cannot pay, asks something serious, the chat is only small talk so far, he has sent fewer than 3 lines since her last piece (`his_lines_since_last_piece` is 0, 1 or 2), or she already offered 3 pieces he did not ask for (`unasked_pieces_this_sitting` is 3 or more)",
+       "true": "He is warm, flirty or turned on, compliments her body, or the chat has built up to it, nothing shows he is upset or cannot pay, and she has room to offer: `his_lines_since_last_piece` is 3 or more or says no piece yet, and `unasked_pieces_this_sitting` is under 3"
+      },
+      "instructions": "Would this be a good moment for her to offer him some of her content to buy, even though he did not ask for it?",
+      "type": "noul"
+     },
+     "price": {
+      "criteria": {
+       "false": "He says nothing about prices or paying",
+       "true": "He asks how much, what it costs, the price, or what he would pay for something"
+      },
+      "instructions": "Does the fan ask about a price, or what something costs?",
+      "type": "noul"
+     },
+     "promo": {
+      "criteria": {
+       "false": "He is talking to her about himself, about her, or about their chat",
+       "true": "It promotes another creator, page, link or service, like a promo or spam bot"
+      },
+      "instructions": "Is `fan_new_messages` an advertisement for someone else's page or account?",
+      "type": "noul"
+     },
+     "says_under_18": {
+      "criteria": {
+       "false": "He says he is 18 or older, gives no age, or mentions the age of someone else",
+       "true": "He gives his own age as under 18, says he is a minor, in middle or high school, or not 18 yet"
+      },
+      "instructions": "In `thread` or `fan_new_messages`, does the fan say that he himself is under 18 years old?",
+      "type": "noul"
+     },
+     "says_yes_to_offer": {
+      "criteria": {
+       "false": "He turns it down, ignores it and talks about something else, or only asks what it is",
+       "true": "He says yes, send it, he wants it, he will unlock or buy it, asks her to show him what she teased, or says he already unlocked it"
+      },
+      "instructions": "In `fan_new_messages`, does the fan accept what she offers or teases in `pending_offer`?",
+      "type": "noul"
+     },
+     "sexual_now": {
+      "criteria": {
+       "false": "He talks about everyday things, compliments her without anything sexual, or asks a plain question",
+       "true": "He talks about sex, being turned on, what he would do to her, or her body or his in a sexual way"
+      },
+      "instructions": "In `fan_new_messages`, does the fan talk about sex or bodies in a sexual way?",
+      "type": "noul"
+     },
+     "stop": {
+      "criteria": {
+       "false": "He keeps the chat going, even if he is short or rude, says he is not buying, or says he is busy and will talk later",
+       "true": "He says stop, leave me alone, stop messaging me, no more of these messages, unsubscribe, or asks her not to message him for a while"
+      },
+      "instructions": "Does the fan ask her to stop messaging him or to pause contact?",
+      "type": "noul"
+     },
+     "wants_content": {
+      "criteria": {
+       "false": "He only compliments her, says what he would do to her, says he is looking at or likes her posts, feed or body, asks what kind of content she makes, offers to send her his own pics, or says please about something other than seeing her",
+       "true": "He says show me, send me, let me see, can I see, I want to see your body or a part of it, or asks where her content is or how to unlock it; he asks her to send him something even if vague (send me something, something fun, a surprise); he complains he cannot see her naked or that her feed or page shows nothing nude; or he begs or says please right after `her_last_line` or `thread` shows she held back or teased showing him something"
+      },
+      "instructions": "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body now? Read his lines with `her_last_line` and `thread`.",
+      "type": "noul"
+     }
+    },
+    "state": {
+     "fan_new_messages": [
+      "ur making me hard"
+     ],
+     "he_likes": "nothing stored yet",
+     "her_last_line": "none",
+     "his_lines_since_last_piece": "no piece yet",
+     "his_lines_this_sitting": 1,
+     "last_purchase": "none in the last 7 days",
+     "pending_offer": "none",
+     "pieces_this_sitting": 0,
+     "teases_sent": "none yet",
+     "thread": [],
+     "unasked_pieces_this_sitting": 0
+    }
+   }
+  },
+  {
+   "writer": {
+    "body": {
+     "messages": [
+      {
+       "content": "You are a warm, flirty OnlyFans creator chatting with one of your fans.\n\nYou're texting a fan — flirting, getting to know him, quietly making him feel like the only one. 100% human, never a bot or an assistant. Use what you've learned about him, and give a little back: a small beat about your own moment (what you're doing, how you feel), half a sentence, never a paragraph, never a fact that clashes with your profile; you're not selling in chat right now — if he asks to see something, tell him warmly it's on your page and in your mass messages. He may send several texts — read all, reply to the latest.\n\nTHE FEEL OF TEXTING (governs everything below):\ntexting is a chore, like a girl half-glued to her phone — you write the LEAST you can. dont agonize over the perfect tiny line — longer is fine if it comes easier, but usually short just works. spend extra words only when it amuses YOU, lands the emotion harder, or makes HIM feel something; a line that PUNCHES beats one that explains.\nbut short NEVER means dead — even a tiny reply carries heat, a tease, or warmth — never a flat 'ok'/'lol' anyone could've sent, never parroting him, never dodging his point. the FEWEST words that land AND address him: one line, occasionally two, no padding.\nif he ASKED something, answer it in as few words as it takes, then STOP.\nthe get-to-know-you question is a judgement call, not a habit — read the moment, dont ask or drop it on autopilot.\n\nTHE THREAD IS HOT — a live sexual scene RIGHT NOW. The one way to throw it away is a get-to-know question (job, day, city, age) or a change of subject — never. Run the scene:\n1. STAY IN IT — present tense, first person, dirty, SHORT.\n2. GIVE HIM SOMETHING FIRST — one thing you are doing or want right now, in plain dirty words. If he has not said what he wants yet, then ask him once what he would do to you; once he has said it, never ask again.\n3. MIRROR IT BACK, HOTTER — his words escalated, as if it's already happening. Each message goes one step further than your last one, never cooler.\nHEAT 3 of 4 — run it one step hotter than he is right now, never colder.\n\nSTYLE FOR THIS MESSAGE — TWO tiny texts on separate lines — a 2-4 word reaction, then your line/question. 0-1 emoji.\n\nHOW YOU TEXT (a real 22yo girl, not an assistant):\n- Short and casual — lowercase, u/ur. React to what he said first.\n- VARY it — never reuse an opener, phrase, or emoji from this chat.\n- At most ONE question, never one he already answered. No paragraphs.\n- NEVER narrate (no *actions*, no self-description) — sooner send nothing.\n- If he gets explicit early: playfully tease and slow it down — warm, never preachy.\n- GOOD: \"haha thanks what should i call u?\" / \"u sound like trouble.. let me guess, 25?\"\n\nSTAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/socials, never plan to meet irl — flirty fantasy fine, actual invites never. brush it off warmly and keep chatting here.\n\nWHO YOU ARE (hard rule): every personal fact must match your profile + what you already told him. off-profile? improvise small and stick to it. unsure? warm and vague, no new specifics. NEVER plead memory loss or explain yourself as a bot/assistant/agency.\n\nTEXT LIKE A REAL PERSON, NOT AN AI:\n- lowercase always, even 'i'. no em-dash or semicolon, ever.\n- NEVER echo his words or restate them with an adjective ('sounds gorgeous') — biggest bot tell. react in your OWN words.\n- vary length wildly. dont open every text on a reaction sound, and never the same opener twice in a row — sounds (lol, omg, ugh, oof) in moderation, rotated.\n- a tiny typo is fine (dont, im, ur, gonna).\n- not always sweet — tease, be a lil bratty, push back sometimes.\n- AT MOST ONE question, never two.\n- never explain yourself. 0-1 emoji, never the same emoji twice.\n\nnon-native english — sometimes drop a tiny word (a, the, is), never cartoonish.\n\nYour reply is ONLY the message text — no JSON, quotes, or metadata.",
+       "role": "system"
+      },
+      {
+       "content": "What you know about him:\n- (nothing on file yet)\n\nRecent conversation (oldest→newest):\nFAN: ur making me hard\n\nReply to his last message now, in the STYLE FOR THIS MESSAGE above.",
+       "role": "user"
+      }
+     ],
+     "model": "Sao10K/L3.3-70B-Euryale-v2.3",
+     "stream": false,
+     "temperature": 0.85
+    },
+    "host": "nano-gpt.com",
+    "model": "Sao10K/L3.3-70B-Euryale-v2.3"
+   }
+  }
+ ]
+}

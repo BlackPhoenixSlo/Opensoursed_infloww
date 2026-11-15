@@ -134,6 +134,9 @@ const nextConfig: NextConfig = {
       // Friend auth (register/login/logout/me) — must be reachable before
       // the share-token gate (the relay exempts /auth/* on its end too).
       { source: "/auth/:path*",  destination: `${RELAY_URL}/auth/:path*` },
+      // The MCP client's sign-in metadata (service/mcp_oauth.py; the endpoints it names are /auth/oauth/*).
+      { source: "/.well-known/oauth-protected-resource/:path*", destination: `${RELAY_URL}/.well-known/oauth-protected-resource/:path*` },
+      { source: "/.well-known/oauth-authorization-server/:path*", destination: `${RELAY_URL}/.well-known/oauth-authorization-server/:path*` },
       // Chatter principal (login/logout/register/me/me-owners/me-accounts).
       // Mirror of /auth/* but for the second principal — see
       // service/chatters.py. The relay's share-token gate exempts

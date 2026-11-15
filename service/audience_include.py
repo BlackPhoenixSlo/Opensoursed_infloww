@@ -526,6 +526,8 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     "resubscribe_message": "gated",
     "birthday_message": "gated",
     "priority_mass": "gated",       # Smart Messages' Priority mass message: per-fan DMs, filter_candidates per leg
+    "full_ai_ppv": "gated",         # Full AI live priced bubble; the live sender's last-look gates it
+    "full_ai_live": "gated",        # Full AI Chat Mode live (04a): the Turn's bubbles to one Fan
     # mass senders — original audience kept, AUTOFENCE subtracted
     "send_mass_message": "fenced",
     "mass_premade": "fenced",       # pure delegation (test asserts no bypass)

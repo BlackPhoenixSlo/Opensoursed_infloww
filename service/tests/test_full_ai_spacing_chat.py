@@ -52,7 +52,10 @@ GOLDEN = Path(__file__).with_name("test_full_ai_router_test_mode.shadow_request.
 # test_full_ai_spacing.py's pin (9718d06e3), questions + state key list, by `sext_scene`.
 FLAG_OFF_TEST_REQUEST_SHA = {
     False: "06b04a892422a5bffe10ed28274d9c90471c73f3f31e29f321dd8899303a0f71",
-    True: "30a0de07d24d5090c981c579f9f5475c69a8bd5f5e7b54d58fdf2ed7047d7abc",
+    # 9718d06e3's pin was 30a0de07…; the no-Spacing `scene_offer` wording (NEW-133 update, off-path
+    # wording PR) re-pinned it, then again 2026-11-14 (its false side lost "he just said no to buying
+    # or cannot pay": a decline sells now). Shadow's request is not in it (QUESTION_VERSION, golden).
+    True: "13d5925b3c881135bcc3f88bd973ac7e7c141271eea2d412d5e99773fc26e71a",
 }
 
 
@@ -107,7 +110,9 @@ def _wording(q) -> dict:
 
 def case_spacing_on_state_and_wording():
     pair = "sp-on"
-    with _draft(draft_questions=True, sext_scene=True), _vault(VAULT):
+    # `he_likes` / `chat_tease` off: their keys would follow the Spacing keys (test_full_ai_he_likes.py,
+    # test_full_ai_chat_tease.py cover them).
+    with _draft(draft_questions=True, sext_scene=True, he_likes=False, chat_tease=False), _vault(VAULT):
         g, call, row = _turn(pair, 1, "hey u", {})
     assert DEFAULTS["sell_spacing"] is True
     assert _counts(call["state"]) == (NO, 0, 0), call["state"]
@@ -120,7 +125,8 @@ def case_spacing_on_state_and_wording():
 
 def case_exact_counts():
     pair = "sp-count"
-    with _draft(draft_questions=True, sext_scene=False), _vault(VAULT):
+    # chat_tease off: each offer_moment is a pitched Piece (a Chat tease is test_full_ai_ride's).
+    with _draft(draft_questions=True, sext_scene=False, chat_tease=False), _vault(VAULT):
         n = 0
 
         def step(text, answers, want, row_want=None):
@@ -171,7 +177,10 @@ def _request_sha(call: dict, scene: bool) -> str:
 def case_switch_off():
     for scene in (False, True):
         pair = f"sp-off-{scene}"
-        with _draft(draft_questions=True, sext_scene=scene, sell_spacing=False), _vault(VAULT):
+        # `he_likes`, `chat_tease`, `ask_implied` off too: the pin is the pre-03d request (their
+        # wording and keys are not in it).
+        with _draft(draft_questions=True, sext_scene=scene, sell_spacing=False, he_likes=False,
+                    chat_tease=False, ask_implied=False), _vault(VAULT):
             _, call, row = _turn(pair, 1, "hey u", {})
         assert not set(KEYS) & set(call["state"]), call["state"]
         assert not set(KEYS) & set(_saved(row)), row.jev_json

@@ -8,7 +8,8 @@ test_autoreply.py fakes it), the CDN download and key check are faked, Writers a
 Full AI fakes. Covers: key off reads every line as before; key on puts Auto-reply's
 `[he sent: <desc>]` in the Router state and the Writer history; one describe per photo (the
 second Turn is a cache hit); a video still is labelled; no key / cap / model failure answer with
-`MEDIA_ONLY`; Shadow reads cached descriptions only; the Test chat's photo route describes once
+`MEDIA_ONLY`; Shadow reads cached descriptions only (a stored config that will not parse reads
+the key off); the Test chat's photo route describes once
 for both sides, a side with the key off reads `MEDIA_ONLY`, a reload shows it; upload limits.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ from automations import full_ai_chat as runner  # noqa: E402
 from automations import full_ai_photo  # noqa: E402
 from automations._jev import MEDIA_ONLY  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import AiDecision, Message  # noqa: E402
+from db.models import AccountAiConfig, AiDecision, Message  # noqa: E402
 
 PHOTO = "/admin/full-ai/test/photo"
 DESC = "a selfie of a guy in a grey hoodie, thumbs up, kitchen behind him"
@@ -226,6 +227,13 @@ def case_shadow_reads_cached_only():
     assert f"[he sent: {DESC}]" in json.dumps(st2["thread"]), st2["thread"]
     _config(False, False)
     assert _db(lambda: runner._photos_on(A)) is False
+    for bad in ("{not json", '{"checkpoint": 3}'):        # rwl-a F10: a bad stored blob reads off
+        async def put(bad=bad):
+            async with get_session() as s:
+                (await s.get(AccountAiConfig, A)).full_ai_config_json = bad
+        _db(put)
+        assert _db(lambda: runner._photos_on(A)) is False, bad
+    _config(False, False)
     off = _db(lambda: runner._read(A, fan, 71201, False))
     assert [o[3] for o in off] == [None, None] and off[0][1]["fan_new_messages"] == ["me"], off
     row_id, *_ = _db(lambda: runner._record(A, fan, a1, st1, False, "jev down", p1))

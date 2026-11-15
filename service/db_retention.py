@@ -85,6 +85,19 @@ _ACTIONS_RETAIN_S = int(os.environ.get("ACTIONS_RETAIN_S", str(90 * 24 * 60 * 60
 # Full AI Chat's Test chat rows (`ai_decisions` mode test): the owner's own scratch Turns, 7 days
 # (spec phase-03a › Retention). Shadow and later live rows are never swept here.
 _FULL_AI_TEST_RETAIN_S = int(os.environ.get("FULL_AI_TEST_RETAIN_S", str(7 * 24 * 60 * 60)))
+# Non-test ledger rows (shadow / live) are never deleted (ADR-0034); past this window their bulky JSON
+# (`jev_json`, `reply_json`) is NULLed, every other column kept (spec phase-04a › Retention). Never a
+# `sending` row (in flight) nor the newest row of its (account, fan, mode): the live loader folds it
+# (`asked`, `typo_state`, the saved scene). Batched by FULL_AI_JSON_BATCH rows a statement.
+_FULL_AI_JSON_RETAIN_S = int(os.environ.get("FULL_AI_JSON_RETAIN_S", str(90 * 24 * 60 * 60)))
+_FULL_AI_JSON_BATCH = int(os.environ.get("FULL_AI_JSON_BATCH", "2000"))
+_FULL_AI_JSON_NULL = (
+    "UPDATE ai_decisions SET jev_json = NULL, reply_json = NULL WHERE id IN ("
+    " SELECT d.id FROM ai_decisions d WHERE d.mode != 'test' AND d.created_at < :cutoff"
+    " AND d.status != 'sending' AND (d.jev_json IS NOT NULL OR d.reply_json IS NOT NULL)"
+    " AND EXISTS (SELECT 1 FROM ai_decisions n WHERE n.account_id = d.account_id AND n.fan_id = d.fan_id"
+    " AND n.mode = d.mode AND (n.created_at, n.id) > (d.created_at, d.id))"
+    " LIMIT :batch)")
 _AUDIT_EVICT_INTERVAL_S = int(os.environ.get("AUDIT_EVICT_INTERVAL_S", str(24 * 60 * 60)))
 
 
@@ -92,7 +105,8 @@ async def evict_audit_logs_once() -> dict[str, int]:
     """One retention sweep of the append-only audit/log tables that otherwise
     grow unbounded: automation_runs (run audit), grok_calls (LLM-call audit),
     scheduled_jobs (only the TERMINAL done/error rows), actions (mutation audit),
-    ai_decisions (only Full AI Chat's Test chat rows, mode test). Deletes rows older than each table's own window. grok_daily_cost (the cap
+    ai_decisions (only Full AI Chat's Test chat rows, mode test). Deletes rows older than each table's own window;
+    then NULLs old non-test ai_decisions JSON (ai_decisions_json: rows NULLed, none deleted). grok_daily_cost (the cap
     rollup) is a SEPARATE, tiny, un-pruned table, so spend/cap history survives
     the grok_calls per-call prune. Returns {tablename: deleted_count}."""
     from db.engine import get_session
@@ -120,7 +134,25 @@ async def evict_audit_logs_once() -> dict[str, int]:
             res = await s.execute(stmt)
             await s.commit()
             out[model.__tablename__] = int(res.rowcount or 0)
+    if _FULL_AI_JSON_RETAIN_S > 0:
+        out["ai_decisions_json"] = await _null_full_ai_json(now - timedelta(seconds=_FULL_AI_JSON_RETAIN_S))
     return out
+
+
+async def _null_full_ai_json(cutoff: datetime) -> int:
+    """_FULL_AI_JSON_NULL in batches until one touches fewer than a batch; rows NULLed."""
+    from db.engine import get_session
+    from sqlalchemy import text
+    total, batch = 0, max(1, _FULL_AI_JSON_BATCH)
+    # SQLAlchemy's SQLite DateTime text, so the bound cutoff compares as the stored column does
+    params = {"cutoff": cutoff.strftime("%Y-%m-%d %H:%M:%S.%f"), "batch": batch}
+    while True:
+        async with get_session() as s:
+            n = int((await s.execute(text(_FULL_AI_JSON_NULL), params)).rowcount or 0)
+            await s.commit()
+        total += n
+        if n < batch:
+            return total
 
 
 async def _audit_retention_sweep() -> None:
@@ -132,7 +164,7 @@ async def _audit_retention_sweep() -> None:
 async def _audit_retention_evictor_loop() -> None:
     """Daily retention sweep of the unbounded audit/log tables. Tune each window
     via AUTOMATION_RUNS_RETAIN_S / GROK_CALLS_RETAIN_S / SCHEDULED_JOBS_RETAIN_S
-    / ACTIONS_RETAIN_S / FULL_AI_TEST_RETAIN_S (0 disables a table). See evict_audit_logs_once.
+    / ACTIONS_RETAIN_S / FULL_AI_TEST_RETAIN_S / FULL_AI_JSON_RETAIN_S (0 disables a table). See evict_audit_logs_once.
 
     Sweeps after a boot grace rather than after a full day — this loop's own
     interval used to exceed the process's typical uptime, so it had never run.

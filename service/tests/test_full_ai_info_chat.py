@@ -87,14 +87,15 @@ def case_info_stated_age_folds():
     # The extract runs before the Writer, once, on DeepSeek with wcfi's verbatim prompt.
     assert [x["host"] for x in fw.requests] == [DEEPSEEK, NANO], fw.requests
     ex = fw.requests[0]
-    assert ex["model"] == "deepseek-v4-flash" and ex["timeout"] == 25.0, ex
+    assert ex["model"] == "deepseek-v4-flash" and ex["timeout"] == 45.0, ex
     assert ex["body"]["messages"][0] == {"role": "system", "content": _EXTRACT_SYSTEM}, ex["body"]
     assert "FAN: im 31 btw, u?" in ex["body"]["messages"][1]["content"], ex["body"]
     assert ex["body"]["response_format"] == {"type": "json_object"}, ex["body"]
     (row,) = _rows(A, pair)
     assert _reply(row)["fan_info"] == {"his_age": "31"} and _reply(row)["info_error"] is None, _reply(row)
-    # `lead_in` on by default in test Mode: the lead wording's digest.
-    assert json.loads(row.jev_json)["info_version"] == _info_jev.INFO_VERSION_LEAD, row.jev_json
+    # `lead_in` and `he_likes` on by default in test Mode: their digest (no fetishes fired: wcfi's
+    # two messages above).
+    assert json.loads(row.jev_json)["info_version"] == _info_jev.info_version(lead=True, likes=True, wide=True), row.jev_json
     # Turn 2 states nothing: no extract, the fold carries the age.
     got, fw, _ = _info_post(_body(pair, 2, "what are u up to"), FakeInfoJev())
     assert got["fan_info"] == {"his_age": "31"} and DEEPSEEK not in [x["host"] for x in fw.requests], got
@@ -208,7 +209,7 @@ def case_info_lead_in():
     assert full_ai_writers.SELF_GIVE in sys_ and full_ai_writers.SELF_BAN not in sys_, sys_
     (row,) = _rows(A, "p-lead-pick")
     assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)
-    assert json.loads(row.jev_json)["info_version"] == _info_jev.INFO_VERSION_LEAD != _info_jev.INFO_VERSION
+    assert json.loads(row.jev_json)["info_version"] == _info_jev.info_version(lead=True, likes=True, wide=True) != _info_jev.INFO_VERSION
     info = FakeInfoJev()
     _info_post(_body("p-lead-offer"), info)
     (call,) = info.calls
@@ -267,12 +268,12 @@ def case_info_stalled_extract():
     assert got["status"] == "sent" and [x["host"] for x in fw.requests] == [NANO], (got, fw.requests)
     err = _reply(_rows(A, "p-info-jevfail")[0])["info_error"]
     assert err.startswith("jev_failed") and "jev down" in err, err
-    # On the Turn clock: Router 100 s of 145 -> the extract gets its 25 s, stalls, NanoGPT the
-    # 20 s left and sends; Router 130 s -> the extract is capped at the 15 s left, no Writer
-    # time remains; Router 145 s -> the info stage is skipped (`deadline`).
+    # On the Turn clock: Router 180 s of 245 -> the extract gets its 45 s, stalls, NanoGPT the
+    # 20 s left and sends; Router 230 s -> the extract is capped at the 15 s left, no Writer
+    # time remains; Router 245 s -> the info stage is skipped (`deadline`).
     bound = turn_bound_s(DEFAULTS)
-    for jev_s, extract_t, writer_t, status in ((100.0, [25.0], [20.0], "sent"),
-                                               (130.0, [15.0], [], "failed"), (145.0, [], [], "failed")):
+    for jev_s, extract_t, writer_t, status in ((180.0, [45.0], [20.0], "sent"),
+                                               (230.0, [15.0], [], "failed"), (245.0, [], [], "failed")):
         clock = _Clock()
         start = clock.t
         fake_clock = types.SimpleNamespace(monotonic=clock.now, perf_counter=time.perf_counter)

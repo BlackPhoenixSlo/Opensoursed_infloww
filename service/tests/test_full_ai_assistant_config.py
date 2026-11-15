@@ -64,6 +64,14 @@ def case_propose_table():
         assert p.after == {**p.before, **patch}, p.after
         assert full_ai_config.validate(p.after) == [], p.after
     assert af.label("not_a_key") == "not_a_key" and af.label("text_style") == "Human style"
+    # Labels come from the page's names (REFERENCE "page"); overrides only for JSON-only keys and `style` (rwl-c F7).
+    assert [af.label(k) for k in ("sell_on", "writers", "style", "sell_bundle", "floor_on")] == [
+        "Sell", "Writers", "Human style", "Fill the set", "Reply checks"]
+    for k, ref in full_ai_config.REFERENCE.items():
+        assert k in af._LABEL_OVERRIDES or af.label(k) == (ref["page"] or k), (k, af.label(k), ref["page"])
+    # Every override is a JSON-only key (no page name) or `style`; `text_style` is legacy (not in REFERENCE) (rwl-c R2-6).
+    assert all(k == "text_style" or k == "style" or full_ai_config.REFERENCE[k]["page"] is None
+               for k in af._LABEL_OVERRIDES), af._LABEL_OVERRIDES
     # The prompt's legacy `text_style` lands as the stored `style` layers (one "Human style" row).
     on, off = DEFAULTS["style"], dict.fromkeys(DEFAULTS["style"], False)
     p = af.propose(full_ai_config.merged(copy.deepcopy(SEED)), af.ConfigPatch(set={"text_style": "formal"}))
@@ -222,9 +230,13 @@ def case_propose_refuses_by_name_and_follows_validate():
     for key, value in (("checkpoint", {}), ("previous", None), ("rev", 9), ("version", 2)):
         t = _refused({key: value}).text
         assert t.startswith("I can't make that change: ") and f"{key}: locked" in t, (key, t)
+    # Retired keys: named with where they went, never a false "already set" (`side` drops them).
+    for patch, why in (({"offer_ride": True}, "offer_ride: retired, folded into chat_tease"),
+                       ({"chat_tease_rungs": [0, 1000], "gifs": False}, "chat_tease_rungs: retired, renamed to chat_tease_prices")):
+        assert why in _refused(patch).text, patch
     # Out of range, wrong type, null (never a reset): validate's own error, nothing clamped.
-    for patch, key, why in (({"writer_timeout_s": 90}, "writer_timeout_s", "from 5 to 60"),
-                            ({"writer_timeout_s": 61}, "writer_timeout_s", "from 5 to 60"),
+    for patch, key, why in (({"writer_timeout_s": 150}, "writer_timeout_s", "from 5 to 120"),
+                            ({"writer_timeout_s": 121}, "writer_timeout_s", "from 5 to 120"),
                             ({"gifs": "no"}, "gifs", "true or false"),
                             ({"gifs": None}, "gifs", "true or false"),
                             ({"writers": None}, "writers", "list of model ids"),

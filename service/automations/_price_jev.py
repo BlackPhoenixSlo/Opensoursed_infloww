@@ -14,19 +14,30 @@ not probed yet. `PRICE_VERSION` (`price_version()`) goes on the row.
   - `offer_state(pick)`: the Offer as Jev reads it. `state(...)`: the whole request state.
   - `ask(state, account_id, *, timeout_s)`: one request; `Price`, or `GateError` on any failure.
 
+Chat tease price (config `chat_tease`, test Mode, owner 2026-11-14 "jev puts the price no leader just
+pass info to jev"): on a Chat tease Turn, before the pick, `full_ai_turn._tease_price` asks ONE Choice
+`chat_tease_price` in its own request: which of config `chat_tease_prices` (`tease_options`: "free",
+"$3", "$10", ...) the tease costs him, over his Turn, the thread, heat, what he bought and spent, and
+the teases he already got (`tease_state`). The answer is the most probable option; code attaches no
+order or climb to the list. Any failure (`GateError`) means no tease this Turn. Wording: new, DRAFT
+docs/prompts NEW-153. `TEASE_PRICE_VERSION` (wording, model, state keys; the options come from config
+and go on the row) goes on the row.
+
+  - `TEASE_PRICE`, `TEASE_PRICE_STATE_KEYS`, `TEASE_PRICE_VERSION`.
+  - `tease_options(prices)`, `tease_state(...)`: pure. `ask_tease(state, options, account_id, *,
+    timeout_s)`: one request; `TeasePrice`, or `GateError`.
+
 The key is `_router_jev`'s (`tenant_keys.typesafe_key_for`). `_client` is the tests' fake seam.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
-import time
 from typing import Any, NamedTuple
 
 from automations import _jev
 from automations._router_jev import GateError
-from automations.full_ai_sell import MAX_CENTS, MIN_CENTS, Pick
+from automations.full_ai_sell import MAX_CENTS, MIN_CENTS, Pick, tease_photos
 
 MODEL = "jev-1.14.0"
 TIMEOUT_S = 10.0
@@ -129,17 +140,9 @@ def _questions() -> dict[str, Any]:
 async def ask(st: dict[str, Any], account_id: str, *, timeout_s: float) -> Price:
     """The `price` Score in one request within `min(TIMEOUT_S, timeout_s)`. Raises `GateError` on
     any failure (no key, no SDK, timeout, HTTP, a missing or out-of-range answer)."""
-    from tenant_keys import typesafe_key_for
-    if timeout_s <= 0:
-        raise GateError("deadline")
     try:
-        key = await typesafe_key_for(account_id)
-        if not key:
-            raise GateError("no TypeSafe key (agency or TYPESAFE_API_KEY)")
-        t0 = time.perf_counter()
-        res = await asyncio.wait_for(_client(key).system_one(st, _questions(), model=MODEL),
-                                     min(TIMEOUT_S, timeout_s))
-        ms = int((time.perf_counter() - t0) * 1000)
+        res, ms = await _jev.ask_one(_client, account_id, st, _questions(), MODEL,
+                                     min(TIMEOUT_S, timeout_s), GateError)
         sc = res.scores["price"]
         score = float(sc.score)
         if not 0.0 <= score <= len(PRICE_LADDER_CENTS) - 1:
@@ -150,3 +153,93 @@ async def ask(st: dict[str, Any], account_id: str, *, timeout_s: float) -> Price
     except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
         raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
     return Price(cents_of(score), score, p, ms)
+
+
+# ── Chat tease price (config `chat_tease`, test Mode) ──────────────────────
+# DRAFT wording (owner edits it; docs/prompts NEW-153). An option's description is built from its
+# price (`free` / `paid`, `{n}` = `tease_photos`, `{price}` its label), so Jev sees what each holds.
+TEASE_PRICE = {
+    "instructions": (
+        "She is about to slip a teasing photo of herself in with her normal chat reply; he did not "
+        "ask for it. What should it cost him? Go by who he is. A first tease (`teases_sent` says none "
+        "yet) to a fan who never paid her (`bought_before` no) is free or the lowest price. Free is "
+        "only for that first one: once `teases_sent` holds a free photo, the next costs something, "
+        "starting low. After he "
+        "bought a tease or anything else (`teases_sent`, `purchases`, `spent_so_far`), go higher, but "
+        "not far above what he has already shown he pays. After a tease he did not buy or said no to, "
+        "stay at that price or go lower. A fan who is cold or short with her gets the cheap "
+        "end; a warm or turned on fan (`heat`) who keeps spending gets the "
+        "high end."),
+    "free": "One photo of her, free for him to see",
+    "paid": "Up to {n} teasing photos of her, locked: he pays {price} to see them",
+}
+TEASE_PRICE_STATE_KEYS = ("fan_new_messages", "thread", "heat", "bought_before", "purchases", "spent_so_far",
+                          "teases_sent", "his_lines_this_sitting")
+TEASE_QID = "chat_tease_price"
+
+
+def tease_price_version() -> str:
+    """A short digest of what changes what Jev answers on the tease price: model, wording, state
+    keys (the options come from config and are recorded on the row)."""
+    return hashlib.sha256(json.dumps(
+        {"model": MODEL, "tease_price": TEASE_PRICE, "state_keys": TEASE_PRICE_STATE_KEYS},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+
+TEASE_PRICE_VERSION = tease_price_version()
+
+
+class TeasePrice(NamedTuple):
+    cents: int                      # the most probable option's price
+    option: str                     # its label ("free", "$10")
+    p: dict[str, float]             # option -> probability
+    ms: int
+
+
+def tease_options(prices: list[int]) -> dict[str, int]:
+    """Config `chat_tease_prices` as the Choice's options, in config order: label -> cents ("free"
+    for 0, else "$10" / "$12.50"). Pure."""
+    return {("free" if c == 0 else _dollars(c)): int(c) for c in prices}
+
+
+def _tease_criteria(options: dict[str, int]) -> dict[str, str]:
+    return {k: TEASE_PRICE["free"] if c == 0 else TEASE_PRICE["paid"].format(n=tease_photos(c), price=k)
+            for k, c in options.items()}
+
+
+def tease_state(router_state: dict, heat: int, purchases: list[str], spent_cents: list[int]) -> dict[str, Any]:
+    """His Turn and the thread as the Router reads them, the heat, whether and what he bought
+    (`purchases` in words, `spent_so_far` the session's total), and the Router's Chat tease keys
+    (`teases_sent`, `his_lines_this_sitting`). Pure."""
+    total = sum(spent_cents)
+    return {"fan_new_messages": router_state.get("fan_new_messages"),
+            "thread": router_state.get("thread"), "heat": f"{int(heat)} of 4",
+            "bought_before": "yes" if spent_cents else "no", "purchases": list(purchases),
+            "spent_so_far": _dollars(total) if total else "nothing yet",
+            "teases_sent": router_state.get("teases_sent"),
+            "his_lines_this_sitting": router_state.get("his_lines_this_sitting")}
+
+
+async def ask_tease(st: dict[str, Any], options: dict[str, int], account_id: str, *,
+                    timeout_s: float) -> TeasePrice:
+    """The `chat_tease_price` Choice over `options` (`tease_options`) in one request within
+    `min(TIMEOUT_S, timeout_s)`; the answer is the most probable option. Raises `GateError` on any
+    failure (no key, no SDK, timeout, HTTP, no answer, a tie at the top or an unoffered label)."""
+    if timeout_s <= 0:
+        raise GateError("deadline")
+    if not options:
+        raise GateError("no chat_tease_prices")
+    try:
+        from typesafe_sdk import Choice
+        q = {TEASE_QID: Choice(instructions=TEASE_PRICE["instructions"], criteria=_tease_criteria(options))}
+        res, ms = await _jev.ask_one(_client, account_id, st, q, MODEL, min(TIMEOUT_S, timeout_s), GateError)
+        p = {str(k): float(v) for k, v in (res.choices[TEASE_QID].probabilities or {}).items()}
+    except GateError:
+        raise
+    except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
+        raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
+    top = max(p.values(), default=None)
+    best = [k for k, v in p.items() if v == top]
+    if len(best) != 1 or best[0] not in options:
+        raise GateError(f"no clear option: {p}"[:300])
+    return TeasePrice(options[best[0]], best[0], p, ms)

@@ -10,6 +10,13 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
       of today in the Agency's report zone (`stats._report_zone`; UTC without
       one). A row is Jev-failed when its `jev_error` is set.
 
+  GET /admin/full-ai/revenue?account_id=
+      → {live_since, note, arms: {arm: {fans, in_window, complete, cents, cents_per_fan}},
+         routes: [{route, offers, bought, cents}]}   full_ai_revenue.revenue: Enrolment derived (his
+      first inbound at / after the Creator's first live row), 14-day cleared money per enrolled
+      Fan, live priced Offers per Route. No holdout gate yet: one group `all`, `note` "no holdout:
+      not a comparison". Reads only, settles nothing; live rows only.
+
   POST /admin/full-ai/test/photo {account_id, image (data URL), text?}
       → {desc, thumb, outcome, model, ms}   his one attached image, described ONCE for both
       sides (`inbound_describe.describe_upload`, purpose `full_ai_test_photo`, the account's own
@@ -17,7 +24,8 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
       null); `thumb` a small JPEG. 415 / 413 not a JPG / PNG / GIF / WebP image or over 20 MB
       (bio pages' limits), 424 no DeepInfra key (server.py's key notice), 429 on the cost cap;
       a failed or refused description is outcome "none" / "failed" and desc null. Stores
-      nothing: the client sends it back as each side's turn `photo`. Same gates as the turn.
+      nothing: the client sends it back as each side's turn `photo`. A duplicate POST (same image
+      and text) while one runs shares its call and answer. Same gates as the turn.
   POST /admin/full-ai/test/turn {account_id, pair, side: "checkpoint"|"draft", n, text, photo?}
       → {row_id, route, heat, route_row, dropped, parts, writer, attempts, wait_s, status, fan_info,
          offer}
@@ -29,7 +37,9 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
       One Test chat Turn (automations/full_ai_turn.py, Mode test): `n` is the client's Turn
       number for the side's session; any `n` but 1 + the session's row count, a replay of a
       recorded Turn, or the same Turn while it still runs (no paid call) is 409 {row_id | null}.
-      Owner-only (the `full_ai_chat` opt-in gate).
+      The owner, or a member whose role grants the page (the `full_ai_chat` opt-in gate); a
+      folder-limited chatter with the grant sees every folder's picks here (owner 11-15: access
+      is taken away with the page permission, not per folder).
       `photo` (the photo route's reply) makes `text` optional; it lands on the row as
       `reply_json.fan_photo`, and as `photo` (+ `read`: this side read the description) on the
       answer and the session read's row.
@@ -48,10 +58,16 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
       the owner's press only; a running run is returned as is. Chatters are refused
       before the handler (`chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`).
 
+  GET /admin/full-ai/rules?mode=test|shadow   (default test)
+      → full_ai_rules.rules(mode): the AI rules page's (/ai-rules) read-only diagram of the Turn
+      (steps, every prompt and Jev question off the live constants, routes, stored keys). No
+      Creator data: signed in only (401 without), the page's role grant is the middleware's
+      (permissions.PAGE_MAP["/ai-rules"]).
+
 Guards: the account's owner (`assert_account_owned`); the page's role grant
 is the middleware's (permissions.PAGE_MAP["/full-ai-chatter"]). The page's
 switch rides the shared rule routes (`full_ai_chat` in OPT_IN_KINDS); the test
-turn takes the same owner-only gate (`require_opt_in_kind`).
+turn takes the same gate (`require_opt_in_kind`: the owner or a granted member).
 
   POST /admin/full-ai/persona/draft {account_id, current_text}
       → {text, age, city, name, images_used, images_described, need_describe,
@@ -63,7 +79,7 @@ turn takes the same owner-only gate (`require_opt_in_kind`).
       writes, the persona is never saved. No line after that → need_describe and
       no text call. 429 on the cost cap, 502 on a bad reply.
 
-  GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models}
+  GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models, reference, limits}
   PUT  /admin/full-ai/config/draft {account_id, draft, rev}
   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON typed in; the old
       checkpoint becomes `previous` (Roll back undoes it), the draft stays
@@ -75,12 +91,14 @@ turn takes the same owner-only gate (`require_opt_in_kind`).
       (`account_ai_config.full_ai_config_json`, automations/full_ai_config.py): the checkpoint
       drives Shadow and the Test chat's checkpoint side, the stored draft only its draft side.
       `errors` is the stored draft's; `writer_models` the models a `writers` entry may name (the page's
-      Writer select). Writes are owner-only (the `full_ai_chat` opt-in gate, as
-      the test turn) and touch nothing but that column; the GET follows the page grant.
+      Writer select); `reference` every key's {key, default, allowed, about, page} (`full_ai_config.reference`, the
+      JSON modal's "All settings" table); `limits` the controls' constants (`full_ai_config.limits`). Writes take
+      the `full_ai_chat` opt-in gate (as the test turn) and touch nothing but that column; the GET follows the page grant.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -95,9 +113,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import full_ai_persona
 import full_ai_prepare
+import full_ai_revenue
 import inbound_describe
-from auth import assert_account_owned
-from automations import full_ai_config, full_ai_photo, full_ai_test, full_ai_turn
+from auth import assert_account_owned, require_actor_account_ids
+from automations import full_ai_config, full_ai_photo, full_ai_rules, full_ai_test, full_ai_turn
 from automations._model_pick import resolve_model_and_fallback
 from automations._persona import MODEL_NOTES_MAX
 from automations.full_ai_chat import MODE as SHADOW
@@ -106,7 +125,6 @@ from db.engine import get_session
 from db.models import AccountAiConfig, AiDecision, Fan
 from isotime import iso_z
 from llm_client import LLMCapExceeded, LLMConfigError, LLMError, LLMKeyError, chat
-from llm_models import MODELS
 from permissions import require_opt_in_kind, require_opt_in_page
 from vault_ai_api import assert_owner_scope
 
@@ -123,6 +141,12 @@ async def _since(account_id: str) -> datetime:
     zone = await stats._report_zone(account_id) or timezone.utc
     midnight = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     return midnight.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+@router.get("/admin/full-ai/rules")
+async def full_ai_rules_read(mode: Literal["test", "shadow", "live"] = Query("test")) -> dict[str, Any]:
+    require_actor_account_ids()
+    return full_ai_rules.rules(mode)
 
 
 @router.get("/admin/full-ai/today")
@@ -155,6 +179,12 @@ async def full_ai_today(account_id: str = Query(...)) -> dict[str, Any]:
             "test": d.mode == full_ai_test.MODE,
         } for d, display, username in rows],
     }
+
+
+@router.get("/admin/full-ai/revenue")
+async def full_ai_revenue_read(account_id: str = Query(...)) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    return await full_ai_revenue.revenue(account_id)
 
 
 class _TestSide(BaseModel):
@@ -232,11 +262,41 @@ async def full_ai_test_turn(body: TestTurn):
     if res.caption is not None:     # `caption_writer` "caption" on a PPV Turn: who wrote the caption
         out["caption"] = res.caption
     out.update({k: v for k, v in (("scene", res.scene), ("price", res.price)) if v})   # sext scene
+    if res.heat_check:              # the Heat check on a sext reply (spec 06)
+        out["heat_check"] = res.heat_check
     if res.dropped_reason:          # the reply chain dropped her text (empty | banned)
         out["dropped_reason"] = res.dropped_reason
     if facts.photo is not None:
         out["photo"] = facts.photo     # his photo as this side read it
     return out
+
+
+# Photo descriptions running now (process-local), by (account, sha256 of the image, text): a
+# duplicate POST (double click, client retry) while the first runs makes no paid call; it awaits
+# the same description (or its error). Dropped when it ends: no cache after.
+_photos_running: dict[tuple[str, str, str], asyncio.Task] = {}
+
+
+async def _describe_photo(account_id: str, still, text: str) -> dict[str, Any]:
+    """The photo route's description fields (`desc`, `outcome`, `model`, `ms`)."""
+    t0 = time.perf_counter()
+    try:
+        desc, model = await inbound_describe.describe_upload(account_id, still, his_words=text)
+        outcome = "described" if desc else "none"
+    except LLMKeyError:
+        raise  # server.py's 424 key notice; before LLMConfigError, which it subclasses
+    except LLMCapExceeded as e:
+        raise HTTPException(status_code=429, detail="Today's AI limit for this creator is reached.") from e
+    except LLMConfigError:
+        log.warning("full_ai_test_photo config account=%s", account_id, exc_info=True)
+        desc, model, outcome = None, None, "failed"
+    return {"desc": desc, "outcome": outcome, "model": model, "ms": int((time.perf_counter() - t0) * 1000)}
+
+
+def _photo_done(key: tuple[str, str, str], task: asyncio.Task) -> None:
+    _photos_running.pop(key, None)
+    if not task.cancelled():
+        task.exception()    # retrieved: no "never retrieved" warning when every caller has gone
 
 
 @router.post("/admin/full-ai/test/photo")
@@ -251,19 +311,13 @@ async def full_ai_test_photo(body: TestPhoto):
     out: dict[str, Any] = {"desc": None, "thumb": thumb, "outcome": "off", "model": None, "ms": None}
     if not any(cfg[side][full_ai_photo.KEY] for side in full_ai_test.SIDES):
         return out
-    t0 = time.perf_counter()
-    try:
-        desc, model = await inbound_describe.describe_upload(body.account_id, still, his_words=body.text)
-        outcome = "described" if desc else "none"
-    except LLMKeyError:
-        raise  # server.py's 424 key notice; before LLMConfigError, which it subclasses
-    except LLMCapExceeded as e:
-        raise HTTPException(status_code=429, detail="Today's AI limit for this creator is reached.") from e
-    except LLMConfigError:
-        log.warning("full_ai_test_photo config account=%s", body.account_id, exc_info=True)
-        desc, model, outcome = None, None, "failed"
-    return {**out, "desc": desc, "outcome": outcome, "model": model,
-            "ms": int((time.perf_counter() - t0) * 1000)}
+    key = (body.account_id, hashlib.sha256(body.image.encode()).hexdigest(), body.text)
+    task = _photos_running.get(key)
+    if task is None:                    # get → add with no await between: atomic on the loop
+        task = asyncio.ensure_future(_describe_photo(body.account_id, still, body.text))
+        _photos_running[key] = task
+        task.add_done_callback(lambda t: _photo_done(key, t))
+    return {**out, **await asyncio.shield(task)}   # a dropped caller leaves it running for the rest
 
 
 class TestSettle(_TestSide):
@@ -352,11 +406,12 @@ async def full_ai_persona_draft(body: PersonaDraftBody) -> dict[str, Any]:
 # ── Config: checkpoint, previous, draft, rev ──────────────────────────
 
 # The models a Writer may be (`full_ai_config._writers_error`'s rule), for the page's Writer select.
-WRITER_MODELS: list[str] = sorted(m for m, v in MODELS.items() if v.provider in full_ai_config.WRITER_PROVIDERS)
+WRITER_MODELS: list[str] = full_ai_config.WRITER_MODELS
 
 
 def _config_view(cfg: dict) -> dict[str, Any]:
-    return {**cfg, "errors": full_ai_config.validate(cfg["draft"]), "writer_models": WRITER_MODELS}
+    return {**cfg, "errors": full_ai_config.validate(cfg["draft"]), "writer_models": WRITER_MODELS,
+            "reference": full_ai_config.reference(), "limits": full_ai_config.limits()}
 
 
 @router.get("/admin/full-ai/config")

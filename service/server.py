@@ -152,6 +152,7 @@ from link_share_api import router as _link_share_router  # noqa: E402
 from bio_pages.admin import router as _bio_admin_router  # noqa: E402
 from owner_tokens_api import router as _owner_tokens_router  # noqa: E402
 import mcp_api  # noqa: E402  # hosted MCP server, POST /admin/mcp (bearer or no-credential surface)
+import mcp_oauth  # noqa: E402  # the MCP client's browser sign-in: /.well-known/oauth-*, /auth/oauth/*
 import ultra_api  # noqa: E402  # Ultra plans: POST /admin/ultra/plans, GET …/{id}, POST …/ok, …/cancel
 from full_ai_api import router as _full_ai_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
@@ -420,6 +421,7 @@ app.include_router(_tenant_keys_router)
 app.include_router(_tenant_keys_admin_router)
 app.include_router(_owner_tokens_router)
 app.include_router(mcp_api.router)
+app.include_router(mcp_oauth.router)
 # Ultra plan page (/admin/ultra/plans/*): owner cookie only, chatter-blocked by prefix, audit-ineligible.
 app.include_router(ultra_api.router)
 app.include_router(_ai_key_status_router)
@@ -768,6 +770,9 @@ async def _share_token_gate(request: Request, call_next):
     # The MCP endpoint (mcp_api.anonymous_surface): an MCP client holds no share token. mcp_api
     # still refuses an Origin or a cookie, and a token still meets the session middleware.
     if mcp_api.anonymous_surface(request.method, request.url.path):
+        return await call_next(request)
+    # The MCP sign-in's metadata (mcp_oauth): public JSON naming this host's /auth/oauth/* endpoints.
+    if request.url.path in mcp_oauth.PUBLIC_PATHS:
         return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
@@ -3253,6 +3258,9 @@ def _assemble_chats_page(
     return {"list": page.rows, "hasMore": page.has_more}
 
 
+_CHATS_429_HOLD = chats_page.ThrottleHold()
+
+
 def _is_plain_view(filter: str | None, list_id: str | None, q: str | None) -> bool:
     """The chat list with no filter, folder or search: an unbiased window of the roster."""
     return not filter and list_id is None and not q
@@ -3315,12 +3323,23 @@ async def list_chats(
                     name=f"reconcile-chats-{aid}",
                 )
         return value
+    held = _CHATS_429_HOLD.check(coalesce_key)
+    if held is not None:
+        # OF 429'd this exact page moments ago: answer that, don't ask OF again (chats_page.HOLD_*).
+        raise HTTPException(status_code=held.status_code, detail=held.detail, headers=held.headers)
     with _of_read_timing("chats", aid):
-        resp = await relay_cache.get_or_fetch(
-            "list_chats", aid, (limit, offset, order, filter, list_id, q),
-            ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
-            stale_while_revalidate=_LIST_CHATS_SWR,
-        )
+        try:
+            resp = await relay_cache.get_or_fetch(
+                "list_chats", aid, (limit, offset, order, filter, list_id, q),
+                ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
+                stale_while_revalidate=_LIST_CHATS_SWR,
+            )
+        except HTTPException as e:
+            wait = of_pacing.retry_after(e)
+            if wait is not None:
+                secs = _CHATS_429_HOLD.hold(coalesce_key, e, wait)
+                log.info("list_chats 429 hold account=%s offset=%s for %.1fs", aid, offset, secs)
+            raise
         _timing_post_start()
         # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
         # window the roster badge folds its counts from — drop the cached fold so

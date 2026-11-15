@@ -47,7 +47,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Redirect links / Bio pages / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
-      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat",
+      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat / AI rules",
       "—",
       "Creators: Manage creators / Custom proxy",
       "Employees: Manage employees / Shift schedule",
@@ -71,6 +71,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       ["Auto-reply", "/growth/auto-reply"],
       ["Get to know fans", "/growth/get-to-know-fans"],
       ["Full AI Chat", "/full-ai-chatter"],
+      ["AI rules", "/ai-rules"],
     ] });
   });
 
@@ -79,6 +80,12 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(PERMISSION_PAGES.has("/full-ai-chatter")).toBe(true);
     expect(CHATTER_OPT_IN_PAGES.has("/full-ai-chatter")).toBe(false);
     expect(outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }))).not.toContain("Full AI Chat");
+  });
+
+  it("AI rules is an owner-only Permission page beside Full AI Chat, not opt-in", () => {
+    expect(findNavLink("/ai-rules")).toMatchObject({ label: "AI rules", chatterHidden: true });
+    expect(PERMISSION_PAGES.has("/ai-rules")).toBe(true);
+    expect(CHATTER_OPT_IN_PAGES.has("/ai-rules")).toBe(false);
   });
 
   it("shows an owner every Settings tab but the master's System tab", () => {
@@ -124,7 +131,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     // An owner always sees them all.
     expect(automations(false, { pages: null })).toEqual([
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
-      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat",
+      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat / AI rules",
     ]);
     // Opened by URL: denied to the chatter without the grant, every other page open.
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });

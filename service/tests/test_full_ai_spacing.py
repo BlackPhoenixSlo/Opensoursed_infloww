@@ -31,7 +31,10 @@ KEYS = ("his_lines_since_last_piece", "pieces_this_sitting", "unasked_pieces_thi
 # Captured on 9718d06e3 (its `_router_jev.py`, before any 03d edit) with `_flag_off_request`.
 FLAG_OFF_TEST_REQUEST_SHA = {
     False: "06b04a892422a5bffe10ed28274d9c90471c73f3f31e29f321dd8899303a0f71",
-    True: "30a0de07d24d5090c981c579f9f5475c69a8bd5f5e7b54d58fdf2ed7047d7abc",
+    # 9718d06e3's pin was 30a0de07…; the no-Spacing `scene_offer` wording (NEW-133 update, off-path
+    # wording PR) re-pinned it, then again 2026-11-14 (its false side lost "he just said no to buying
+    # or cannot pay": a decline sells now). Shadow's request is not in it (QUESTION_VERSION, golden).
+    True: "13d5925b3c881135bcc3f88bd973ac7e7c141271eea2d412d5e99773fc26e71a",
 }
 PRE_03D_TEST_VERSION = "d6d23cee85f2"     # `question_version("test")` on 9718d06e3
 
@@ -146,21 +149,21 @@ def case_flag_off_request_sha():
 
 
 def case_question_versions():
-    assert rj.question_version() == rj.question_version("shadow") == rj.QUESTION_VERSION == "b3202b420ab0"
+    assert rj.question_version() == rj.question_version("shadow") == rj.QUESTION_VERSION == "14f5d4f6222f"
     base = rj.question_version("test")
     assert base != PRE_03D_TEST_VERSION, base
     real = rj.TEST_SPACING
     rj.TEST_SPACING = {**real, "offer_moment": {**real["offer_moment"], "instructions": "x"}}
     try:
         assert rj.question_version("test") != base
-        assert rj.question_version() == "b3202b420ab0"
+        assert rj.question_version() == "14f5d4f6222f"
     finally:
         rj.TEST_SPACING = real
     real_keys = rj.SPACING_STATE_KEYS
     rj.SPACING_STATE_KEYS = KEYS[:2]
     try:
         assert rj.question_version("test") != base
-        assert rj.question_version() == "b3202b420ab0"
+        assert rj.question_version() == "14f5d4f6222f"
     finally:
         rj.SPACING_STATE_KEYS = real_keys
 

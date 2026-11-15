@@ -61,6 +61,7 @@ describe("DriveKeyCard", () => {
     expect(screen.queryByText("Other")).toBeNull();
     expect(screen.getByText("not set")).toBeInTheDocument();
     expect(screen.getByText(/Anyone with the link can view/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Get your key/ })).toHaveAttribute("href", "https://console.cloud.google.com/apis/credentials");
 
     await user.type(field, "AIza-placeholder");
     await user.click(screen.getByRole("button", { name: "Save" }));

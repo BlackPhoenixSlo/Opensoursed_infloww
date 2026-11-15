@@ -5,11 +5,15 @@
  *   1. on/off, the Off / Shadow switch over the `full_ai_chat` rule (the page wires its one write);
  *   2. LLM keys: whether NanoGPT and OpenRouter are set (never a value or hint), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
- *   (the typos layer alone), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs;
- *   8. Sell, 9. Content folders, 10. Prepare content (`FullAiSellSettings.tsx`, ticket 49).
+ *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
+ *   (on, a "%" box sets `gif_pct`, empty = auto);
+ *   8. Sell (on, the "Sell settings" group under it: seven switches, all on by default, owner 2026-11-14: Unasked
+ *   offers, Chat tease, Implied asks, Nearest piece, Fill the set, Spacing, He likes; `sellSwitches`), 9. Content
+ *   folders, 10. Prepare content (`FullAiSellSettings.tsx`, ticket 49).
  * Controls 3-9 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
  * Under them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
- * side, each editable and stored on its own, validated by the server), the field errors, and on a stale rev a reload message. Reload
+ * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
+ * GET's `reference`: every key's default, the draft's value, what it accepts and does), the field errors, and on a stale rev a reload message. Reload
  * shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
  * A draft stored elsewhere (the assistant's Apply) while an edit is unsaved raises the Keep mine / Take theirs bar on
  * top (ticket 57); controls, Save and Send wait until one is picked.
@@ -17,19 +21,26 @@
  */
 
 import Link from "next/link";
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
 import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import {
-  canEdit, canRollback, canSave, DEFAULT_SPEED, humanStyle, humanStylePatch, layersOff, MAX_WRITERS, REPLY_SPEEDS, styleLayers,
-  toggleWriterPatch, typosPatch, writerPatch, type FullAiConfig, type TestChatState,
-} from "@/components/automations/fullAiTestChat";
-import { IfButton, IfHelp, IfModal, IfSegmented, IfTextArea } from "@/components/ui/infloww";
+  humanStyle, humanStylePatch, layersOff, sellSwitches, speedLabel, styleLayers, gifPct, gifPctPatch, sellSwitchPatch,
+  settingRows, toggleWriterPatch, typoPct, typoPctPatch, typosPatch, writerPatch, type FullAiConfig, type SettingRow,
+} from "@/components/automations/fullAiConfig";
+import {
+  jsonEditInit, jsonEditReducer, jsonMoved, jsonTyped, prettyJson, type JsonSide,
+} from "@/components/automations/fullAiConfigJson";
+import { canEdit, canRollback, canSave, keepMineSave, type TestChatState } from "@/components/automations/fullAiTestChat";
+import { RawJsonActions, RawJsonEditor } from "@/components/automations/RawJsonModal";
+import { IF_TABLE, IfButton, IfHelp, IfInput, IfModal, IfSegmented, IfSwitch } from "@/components/ui/infloww";
+import { Badge } from "@/components/ui/primitives";
 import { type FullAiConfigApi } from "@/hooks/useFullAiConfig";
 import { useTenantKeys } from "@/hooks/useTenantKeys";
 import { errText } from "@/lib/errText";
 import { parseJsonObject } from "@/lib/rawJsonReducer";
+import { cn } from "@/lib/utils";
 
 const STALE = "Someone saved this config meanwhile. Reload.";
 const KEY_ROWS = [{ id: "nanogpt", label: "NanoGPT" }, { id: "openrouter", label: "OpenRouter" }] as const;
@@ -51,21 +62,24 @@ export function FullAiSettings({ state, cfg, power, accountId }: {
 
   return (
     <div className="space-y-3">
-      {state.conflict && <ConflictBar cfg={cfg} />}
+      {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
       <ul aria-label="Settings" className="space-y-2">
         <li>
           <SwitchRow label="Full AI Chat" hint={power.on ? "Shadow" : "Off"} checked={power.on} onChange={power.onChange}
             disabled={power.disabled} loading={power.loading} />
         </li>
         <li><KeysRow /></li>
-        <li className={ROW}>
-          <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
-            <span className="text-[14px] text-fg">Reply speed</span>
-            <IfSegmented aria-label="Reply speed" value={draft?.reply_speed ?? DEFAULT_SPEED}
-              options={REPLY_SPEEDS.map((o) => ({ ...o, disabled: off }))}
-              onChange={(reply_speed) => cfg.edit({ reply_speed })} />
-          </div>
-        </li>
+        {/* The speeds are the server's (`limits`): the row waits for the config read. */}
+        {cfg.limits && (
+          <li className={ROW}>
+            <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
+              <span className="text-[14px] text-fg">Reply speed</span>
+              <IfSegmented aria-label="Reply speed" value={draft?.reply_speed ?? cfg.limits.default_reply_speed}
+                options={cfg.limits.reply_speeds.map((value) => ({ value, label: speedLabel(value), disabled: off }))}
+                onChange={(reply_speed) => cfg.edit({ reply_speed })} />
+            </div>
+          </li>
+        )}
         <li>
           <SwitchRow label="Human style" disabled={off} checked={humanStyle(draft) !== "off"}
             hint={humanStyle(draft) === "mixed" ? `Mixed: ${layersOff(draft)} off. Tap for all off.`
@@ -74,15 +88,21 @@ export function FullAiSettings({ state, cfg, power, accountId }: {
         </li>
         <li>
           <SwitchRow label="Typos" hint="Thumb slips and a *fix bubble." checked={styleLayers(draft).typos} disabled={off}
-            onChange={(on) => cfg.edit(typosPatch(draft, on))} />
+            onChange={(on) => cfg.edit(typosPatch(draft, on))}>
+            {styleLayers(draft).typos && <TypoPctBox draft={draft} off={off} cfg={cfg} />}
+          </SwitchRow>
         </li>
-        <li><WriterRow draft={draft} off={off} cfg={cfg} /></li>
+        {cfg.limits && <li><WriterRow draft={draft} off={off} cfg={cfg} max={cfg.limits.max_writers} /></li>}
         <li>
-          <SwitchRow label="GIFs" checked={draft?.gifs === true} disabled={off} onChange={(gifs) => cfg.edit({ gifs })} />
+          <SwitchRow label="GIFs" checked={draft?.gifs === true} disabled={off} onChange={(gifs) => cfg.edit({ gifs })}>
+            {draft?.gifs === true && <GifPctBox draft={draft} off={off} cfg={cfg} />}
+          </SwitchRow>
         </li>
         <li>
           <SwitchRow label="Sell" hint="Offer PPVs from the content folders. Off: the AI never sells." checked={draft?.sell_on === true}
-            disabled={off} onChange={(sell_on) => cfg.edit({ sell_on })} />
+            disabled={off} onChange={(sell_on) => cfg.edit({ sell_on })}>
+            {draft?.sell_on === true && <SellGroup draft={draft} off={off} cfg={cfg} />}
+          </SwitchRow>
         </li>
         <li><ContentFoldersRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
         <li><PrepareRow accountId={accountId} /></li>
@@ -116,19 +136,74 @@ export function FullAiSettings({ state, cfg, power, accountId }: {
   );
 }
 
-/** The Writer chain as a checklist: tick to add a model at the end, untick to drop it (1 to `MAX_WRITERS`); the first
- *  ticked is the Writer, the rest its fallbacks in order. "Make Writer" moves one to the front. */
-function WriterRow({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+/** The Sell settings: compact switches nested under Sell (only while it is on), each storing its on / off value. */
+function SellGroup({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+  return (
+    <div className="space-y-1.5">
+      <ul aria-label="Sell settings" className="divide-y divide-border border-l-2 border-border pl-3">
+        {sellSwitches(draft).map((s) => (
+          <li key={s.key} className="flex min-h-12 items-center justify-between gap-4 py-2">
+            <div className="min-w-0">
+              <div className="text-[14px] text-fg">{s.label}</div>
+              <div className="mt-0.5 text-[12px] text-muted">{s.hint}</div>
+            </div>
+            <IfSwitch aria-label={s.label} checked={s.checked} disabled={off}
+              onChange={(on) => cfg.edit(sellSwitchPatch(s.key, on))} />
+          </li>
+        ))}
+      </ul>
+      <p className="text-[12px] text-muted">Test chat only.</p>
+    </div>
+  );
+}
+
+/** Typos %: the chance a reply gets one slip. */
+function TypoPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+  return <PctBox pct={typoPct(draft)} toPatch={typoPctPatch} off={off} cfg={cfg} label="Typos %"
+    text="Replies with a typo" note="~1 per 5 sentences" />;
+}
+
+/** GIFs %: the chance a Turn may send a GIF (`gif_pct`). */
+function GifPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+  return <PctBox pct={gifPct(draft)} toPatch={gifPctPatch} off={off} cfg={cfg} label="GIFs %"
+    text="Chance of a GIF" note="whenever one fits" />;
+}
+
+/** A % box under a switch, stored on blur / Enter; empty = auto. A refused entry snaps back. */
+function PctBox({ pct, toPatch, off, cfg, label, text, note }: {
+  pct: number | null; toPatch: (text: string) => Partial<FullAiConfig> | null; off: boolean; cfg: FullAiConfigApi;
+  label: string; text: string; note: string;
+}) {
+  const commit = (el: HTMLInputElement) => {
+    const patch = toPatch(el.value);
+    if (patch === null) el.value = pct === null ? "" : String(pct);
+    else if (Object.values(patch)[0] !== pct) cfg.edit(patch);
+  };
+  return (
+    <label className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
+      <span>{text}</span>
+      <IfInput key={pct ?? "auto"} type="number" inputMode="numeric" min={0} max={100} step={1} aria-label={label}
+        className="w-20" placeholder="auto" disabled={off} defaultValue={pct ?? ""}
+        onBlur={(e) => commit(e.currentTarget)}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+      <span className="text-[12px] text-muted">% · empty = auto ({note})</span>
+    </label>
+  );
+}
+
+/** The Writer chain as a checklist: tick to add a model at the end, untick to drop it (1 to `limits.max_writers`); the
+ *  first ticked is the Writer, the rest its fallbacks in order. "Make Writer" moves one to the front. */
+function WriterRow({ draft, off, cfg, max }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi; max: number }) {
   const writers = draft?.writers ?? [];
   const options = [...new Set([...writers, ...cfg.writerModels])];
   return (
     <div className={ROW}>
       <fieldset className="space-y-1.5 py-3">
         <legend className="text-[14px] text-fg">Writers</legend>
-        <p className="text-[12px] text-muted">Tick to add, untick to drop (1 to {MAX_WRITERS}). Tried in order: the first answers, the rest are fallbacks.</p>
+        <p className="text-[12px] text-muted">Tick to add, untick to drop (1 to {max}). Tried in order: the first answers, the rest are fallbacks.</p>
         {options.map((m) => {
           const at = writers.indexOf(m);
-          const patch = toggleWriterPatch(draft, m);
+          const patch = toggleWriterPatch(draft, m, max);
           return (
             <div key={m} className="flex min-h-9 items-center gap-2">
               <label className="flex min-w-0 flex-1 items-center gap-2 text-[14px]">
@@ -138,7 +213,7 @@ function WriterRow({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
                 {at >= 0 && <span className="text-[12px] tabular-nums text-muted">{at === 0 ? "Writer" : `#${at + 1}`}</span>}
               </label>
               {at > 0 && (
-                <IfButton variant="link" disabled={off} onClick={() => cfg.edit(writerPatch(draft, m))}>Make Writer</IfButton>
+                <IfButton variant="link" disabled={off} onClick={() => cfg.edit(writerPatch(draft, m, max))}>Make Writer</IfButton>
               )}
             </div>
           );
@@ -149,12 +224,12 @@ function WriterRow({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
 }
 
 /** Keep mine (store the page's edit over the applied draft) or Take theirs (drop the edit, adopt it). */
-function ConflictBar({ cfg }: { cfg: FullAiConfigApi }) {
+function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean }) {
   return (
     <div role="group" aria-label="Draft changed elsewhere" className="space-y-2 rounded-lg border border-warn/40 px-4 py-3">
       <p className="text-sm text-fg">The draft changed elsewhere (an assistant Apply) while you had an unsaved edit.</p>
       <div className="flex flex-wrap items-center gap-2">
-        <IfButton variant="primary" onClick={cfg.keepMine}>Keep mine</IfButton>
+        <IfButton variant="primary" disabled={!canKeep} onClick={cfg.keepMine}>Keep mine</IfButton>
         <IfButton onClick={cfg.takeTheirs}>Take theirs</IfButton>
       </div>
       <p className="text-xs text-muted">Keep mine stores your edit over it; Take theirs drops your edit. Send and Save wait until you pick.</p>
@@ -183,21 +258,24 @@ function KeysRow() {
   );
 }
 
-const pretty = (v: unknown) => JSON.stringify(v, null, 2);
-
-type JsonSide = "checkpoint" | "draft";
 const JSON_TITLE: Record<JsonSide, string> = { checkpoint: "Checkpoint · old (saved)", draft: "Draft · new" };
 const JSON_SAVE: Record<JsonSide, string> = { checkpoint: "Store checkpoint", draft: "Store draft" };
 
-/** Both sides as raw JSON next to each other: Checkpoint (old) and Draft (new), each editable and stored on its own.
+/** Both sides as raw JSON next to each other (a `RawJsonEditor` + `RawJsonActions` each): Checkpoint (old) and Draft
+ *  (new), each editable and stored on its own.
  *  Bad JSON never leaves its box; the server checks the keys and answers field errors. Storing the checkpoint keeps
- *  the old one as `previous` (Roll back undoes it). */
+ *  the old one as `previous` (Roll back undoes it). Both store on the rev the boxes were read at (`jsonEditInit`):
+ *  one the page adopts meanwhile turns both Store buttons off (`jsonMoved`), one it has not read yet answers 409 and
+ *  the reload message, never a silent overwrite. */
 function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAiConfigApi; onClose: () => void }) {
-  const [text, setText] = useState<Record<JsonSide, string>>(
-    () => ({ checkpoint: pretty(state.checkpoint ?? {}), draft: pretty(state.draft ?? {}) }));
+  const [ed, dispatch] = useReducer(jsonEditReducer, state, jsonEditInit);
+  const text = ed.text;
+  const setText = (side: JsonSide, t: string) => dispatch({ type: "type", side, text: t });
   const busy = state.savingDraft || state.committing;
+  // Moved underneath: storing these boxes would 409 (`baseRev` stays the guard for a store already out), so Store is off.
+  const moved = jsonMoved(ed, state);
   // Escape closes only untouched boxes, and never mid-store.
-  const typed = text.checkpoint !== pretty(state.checkpoint ?? {}) || text.draft !== pretty(state.draft ?? {});
+  const typed = jsonTyped(ed);
   const serverError = state.stale ? STALE : state.errors.length > 0 ? state.errors.join("\n") : null;
   const parse = (side: JsonSide): { v: Record<string, unknown> | null; err: string | null } => {
     try { return { v: parseJsonObject(text[side], "The config", '{"gifs": true}'), err: null }; }
@@ -205,36 +283,83 @@ function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAi
   };
   const store = async (side: JsonSide) => {
     const { v } = parse(side);
-    if (v && await (side === "draft" ? cfg.putDraft(v) : cfg.putCheckpoint(v))) onClose();
+    if (v && await (side === "draft" ? cfg.putDraft(v, ed.baseRev) : cfg.putCheckpoint(v, ed.baseRev))) onClose();
   };
 
   return (
     <IfModal width={1200} size="editor" title="Full AI config JSON" onClose={onClose} keyboard={!busy && !typed}
       footer={<IfButton onClick={onClose}>Cancel</IfButton>}>
       <IfHelp className="-mt-3 mb-3">Old (checkpoint) left, new (draft) right: what the Test chat split-tests. Unknown keys are refused.</IfHelp>
+      {moved && !state.stale && (
+        <p role="alert" className="-mt-1 mb-3 text-[12px] text-warn">
+          The config changed elsewhere since you opened this (an assistant Apply), so these boxes can&apos;t be stored. Copy
+          your text before Cancel (Cancel drops it), then open JSON again to edit the newer one.
+        </p>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
         {(["checkpoint", "draft"] as const).map((side) => {
           const { v, err } = parse(side);
           return (
             <section key={side} aria-label={JSON_TITLE[side]} className="flex min-w-0 flex-col gap-2">
               <h3 className="text-[14px] font-semibold text-fg">{JSON_TITLE[side]}</h3>
-              <IfTextArea aria-label={`${JSON_TITLE[side]} JSON`} value={text[side]} spellCheck={false}
-                onChange={(e) => setText((t) => ({ ...t, [side]: e.target.value }))}
-                className="h-[48vh] resize-none font-mono text-[12px]" />
-              {err && <div className="whitespace-pre-wrap text-[12px] text-err">{err}</div>}
+              <RawJsonEditor label={`${JSON_TITLE[side]} JSON`} text={text[side]} onText={(t) => setText(side, t)}
+                error={err} className="h-[48vh] text-[12px]" />
               <div className="flex flex-wrap items-center gap-2">
-                <IfButton variant="link" disabled={!v} onClick={() => { if (v) setText((t) => ({ ...t, [side]: pretty(v) })); }}>
-                  Reformat
-                </IfButton>
-                <IfButton variant="primary" disabled={!v || busy} onClick={() => void store(side)}>
-                  {busy ? "Storing…" : JSON_SAVE[side]}
-                </IfButton>
+                <RawJsonActions onReformat={() => { if (v) setText(side, prettyJson(v)); }} reformatDisabled={!v}
+                  onSave={() => void store(side)} saveDisabled={!v || busy || moved || !canEdit(state)} busy={busy}
+                  saveLabel={JSON_SAVE[side]} busyLabel="Storing…" />
               </div>
             </section>
           );
         })}
       </div>
       {serverError && <div className="mt-3 whitespace-pre-wrap text-[12px] text-err">{serverError}</div>}
+      <AllSettings rows={settingRows(cfg.reference, state.draft)} />
     </IfModal>
+  );
+}
+
+const SETTING_COLS = ["Setting", "Default", "Draft", "Allowed", "What it does", "Where"] as const;
+const CELL = cn(IF_TABLE.td, "px-3 py-2 align-top text-[12px]");
+const CODE = cn(CELL, "break-all font-mono");
+
+/** Read-only: every key the JSON takes (the GET's `reference`), its default, the draft's value ("Changed" when it
+ *  differs), what it accepts and does, and the page control that edits it. Scrolls sideways in its own box. */
+function AllSettings({ rows }: { rows: SettingRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <section className="mt-6 flex min-w-0 flex-col gap-2">
+      <h3 className="text-[14px] font-semibold text-fg">All settings</h3>
+      <IfHelp>
+        Every key the JSON takes: its default, the values it accepts and what it does. &quot;Changed&quot; marks a draft value
+        that differs from the default.
+      </IfHelp>
+      <div className="max-w-full overflow-x-auto rounded-lg border border-border">
+        <table aria-label="All settings" className={cn(IF_TABLE.table, "min-w-[960px]")}>
+          <thead>
+            <tr>
+              {SETTING_COLS.map((c) => (
+                <th key={c} scope="col" className={cn(IF_TABLE.th, IF_TABLE.thDivider, "h-10 px-3 text-[12px]")}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key} className={IF_TABLE.row}>
+                <td className={cn(CELL, "whitespace-nowrap font-mono")}>{r.key}</td>
+                <td className={cn(CODE, "w-[160px] text-muted")}>{r.def}</td>
+                <td className={cn(CODE, "w-[180px]")}>
+                  {r.value}
+                  {r.changed && <Badge color="warn" className="ml-1.5 font-sans">Changed</Badge>}
+                </td>
+                <td className={cn(CELL, "w-[160px] text-muted")}>{r.allowed}</td>
+                <td className={CELL}>{r.about}</td>
+                <td className={cn(CELL, "whitespace-nowrap", r.where === "JSON" && "text-muted")}>{r.where}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

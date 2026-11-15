@@ -16,6 +16,7 @@
 
 import { useTenantKeys } from "@/hooks/useTenantKeys";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
+import KeyLink from "@/components/setup/KeyLink";
 import type { KeyDraft } from "@/hooks/useKeyDraft";
 import { Badge } from "@/components/ui/primitives";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -145,6 +146,7 @@ export default function AgencyKeysCard({ keys, pending }: {
           ) : (
             HELP[name] && <p className="text-[11px] text-fg-dim">{HELP[name]}</p>
           )}
+          <KeyLink name={name} />
         </div>
       ))}
     </div>

@@ -6,7 +6,7 @@
  * (fullAiConfigEdit.test.ts).
  */
 
-import { humanStyle, layersOff, type FullAiConfig } from "@/components/automations/fullAiTestChat";
+import { humanStyle, layersOff, type FullAiConfig } from "@/components/automations/fullAiConfig";
 
 /** One changed key (assistant_full_ai.diffs); `label` falls back to the key on the server. */
 export interface ConfigDiff { field: string; label: string; before: unknown; after: unknown }

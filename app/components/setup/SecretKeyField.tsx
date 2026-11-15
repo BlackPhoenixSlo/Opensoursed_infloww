@@ -11,6 +11,7 @@ import { useId } from "react";
 
 import type { SecretKeyStatus } from "@/hooks/useSecrets";
 import { Badge, Input, Textarea } from "@/components/ui/primitives";
+import KeyLink from "@/components/setup/KeyLink";
 
 export default function SecretKeyField({
   name,
@@ -75,6 +76,7 @@ export default function SecretKeyField({
         />
       )}
       {k.help && <p className="text-[11px] text-fg-dim">{k.help}</p>}
+      <KeyLink name={name} />
     </div>
   );
 }

@@ -216,6 +216,8 @@ export const ONLYFANS_NAV: NavNode[] = [
       { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true },
       // Full AI Chat: Shadow switch + the owner's Test chat. Owner-only: nothing a chatter operates.
       { label: "Full AI Chat", href: "/full-ai-chatter", chatterHidden: true, notOptIn: true },
+      // AI rules: the Full AI Turn as a read-only zoomable diagram (every prompt, route, stored key).
+      { label: "AI rules", href: "/ai-rules", chatterHidden: true, notOptIn: true },
     ],
   },
 ];

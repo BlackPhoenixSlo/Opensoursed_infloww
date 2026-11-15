@@ -163,8 +163,8 @@ def case_sell_step_gates():
     table = [
         # (decision, facts, nearest passed, a Pick, why)
         (Decision("sell_now", 2, "sell", frozenset()), _facts(), True, True, "fresh sell, note"),
-        (Decision("sell_now", 2, "offer_moment", frozenset()), _facts(sell_nearest="plain"), True, True,
-         "offer_moment, plain"),
+        (Decision("sell_now", 2, "offer_moment", frozenset()), _facts(sell_nearest="plain", chat_tease=False),
+         True, True, "offer_moment, plain (chat_tease off: a pitched sell, not a Chat tease)"),
         (Decision("sell_now", 2, "sell", frozenset()), _facts(sell_nearest="off"), False, False, "off"),
         (Decision("sell_now", 2, "sell", frozenset()), _facts("shadow"), False, False, "Shadow never"),
         (Decision("sell_now", 2, "sell", frozenset()), _facts(tease=piece), False, False,

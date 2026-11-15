@@ -137,7 +137,7 @@ async def case_replay_reproduces_route_row_heat():
         (({**QUIET, "complains_now": .6, "stop": .9}, 1.0), False, ("make_right", "complains_now")),
         (({**QUIET, "says_yes_to_offer": .8}, 1.5), True, ("sell_now", "sell")),
         (({**QUIET, "says_yes_to_offer": .8}, 1.5), False, ("chat", "otherwise")),
-        (({**QUIET, "declines_buying": .6, "sexual_now": .9}, 3.6), False, ("tease", "tease_decline")),
+        (({**QUIET, "declines_buying": .97, "sexual_now": .9}, 3.6), False, ("sext", "sexual_now")),  # broke: ignored
         (({**QUIET, "sexual_now": .9}, 2.5), False, ("sext", "sexual_now")),
         (RuntimeError("jev down"), False, ("chat", "jev_failed")),
     )
@@ -284,6 +284,53 @@ async def case_today_read_counts_test_rows():
     assert [x["route"] for x in test] == list(reversed(full_ai_api.ROUTES)), test
     assert {x["fan_name"] for x in test} == {None} and [x["jev_failed"] for x in test][-1] is True, test
     assert [x for x in after["rows"] if not x["test"]] == before["rows"], (before, after)
+
+
+async def case_test_photo_duplicate_post_shares_one_describe():
+    """Two concurrent POSTs of the same image + text: one paid describe call, both get the same
+    body; an error in it reaches both and leaves no entry behind; no cache once it has ended."""
+    import asyncio
+    from automations import full_ai_photo, full_ai_turn
+    import inbound_describe
+    calls, fail = [], []
+
+    async def _describe(account_id, still, his_words=""):
+        calls.append((account_id, still, his_words))
+        await asyncio.sleep(0.05)
+        if fail:
+            raise RuntimeError("vision down")
+        return "a red bikini", "vision-model"
+
+    async def _cfg(account_id):
+        return {side: {full_ai_photo.KEY: True} for side in ("checkpoint", "draft")}
+
+    async def _opt_in(kind, account_id):
+        return None
+    saved = (full_ai_api.assert_account_owned, full_ai_api.require_opt_in_kind, full_ai_photo.upload_still,
+             full_ai_turn.stored_config, inbound_describe.describe_upload)
+    full_ai_api.assert_account_owned = lambda aid: None
+    full_ai_api.require_opt_in_kind = _opt_in
+    full_ai_photo.upload_still = lambda img: ("still", "data:image/jpeg;base64,AA")
+    full_ai_turn.stored_config = _cfg
+    inbound_describe.describe_upload = _describe
+    try:
+        body = full_ai_api.TestPhoto(account_id="fa_photo_dup", image="data:image/png;base64,AA", text="hi")
+        a, b = await asyncio.gather(full_ai_api.full_ai_test_photo(body), full_ai_api.full_ai_test_photo(body))
+        assert len(calls) == 1 and a == b and a["desc"] == "a red bikini", (calls, a, b)
+        assert full_ai_api._photos_running == {}, full_ai_api._photos_running
+        await full_ai_api.full_ai_test_photo(body)
+        assert len(calls) == 2, "no cache after the first ended"
+        other = full_ai_api.TestPhoto(account_id="fa_photo_dup", image="data:image/png;base64,AA", text="yo")
+        await asyncio.gather(full_ai_api.full_ai_test_photo(body), full_ai_api.full_ai_test_photo(other))
+        assert len(calls) == 4, "other text: its own call"
+        fail.append(1)
+        got = await asyncio.gather(full_ai_api.full_ai_test_photo(body), full_ai_api.full_ai_test_photo(body),
+                                   return_exceptions=True)
+        assert len(calls) == 5 and all(isinstance(e, RuntimeError) for e in got), got
+        assert full_ai_api._photos_running == {}, full_ai_api._photos_running
+    finally:
+        (full_ai_api.assert_account_owned, full_ai_api.require_opt_in_kind, full_ai_photo.upload_still,
+         full_ai_turn.stored_config, inbound_describe.describe_upload) = saved
 
 
 _harness.run()

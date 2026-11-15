@@ -16,14 +16,13 @@ from __future__ import annotations
 import json
 import random
 import re
-import time
 
 import llm_client
 import vault_ai_brief
 from automations import _language
-from automations.full_ai_sell import Pick, _money
+from automations.full_ai_sell import Pick
 from automations.full_ai_writers import (
-    FREE_TERMS, PRICE_BLOCK, WAS_PRICE_BLOCK, WriteResult, _fan, _outcome, floor, nearest_line,
+    FREE_TERMS, WriteResult, _fan, floor, nearest_line, priced_block, walk,
 )
 from automations.names import resolve_fan_name
 
@@ -110,12 +109,7 @@ def him_lines(fan_info: dict) -> list[str]:
 def price_block(pick: Pick, was_cents: int | None) -> str:
     """OLD-CORE-33 as `full_ai_writers.sell_section` picks it (was-price form only when `was_cents`
     is over the price), or the DRAFT free block for a Free item (price 0)."""
-    if not pick.price_cents:
-        return FREE_PRICE_BLOCK
-    px = _money(pick.price_cents)
-    if was_cents and was_cents > pick.price_cents:
-        return WAS_PRICE_BLOCK.format(was=_money(was_cents), px=px)
-    return PRICE_BLOCK.format(px=px)
+    return priced_block(pick.price_cents, was_cents) if pick.price_cents else FREE_PRICE_BLOCK
 
 
 def body_suffix(lines: list[str], price: str) -> str:
@@ -158,35 +152,20 @@ def parse(text: str) -> str:
 
 async def write(facts, msgs: list[dict], *, deadline: float,
                 writers: list[str] | None = None) -> WriteResult:
-    """`full_ai_writers.write`'s walk for the caption: the side's `writers` in order, each within
-    `writer_timeout_s` capped at the time left before `deadline`, the next only after a failure, a
+    """`full_ai_writers.walk` for the caption: the side's `writers` in order (tries, per-Writer
+    timeouts and the deadline as there), the next only after a failure, a
     reply with no caption (`empty`) or a code-floor reject (`floor_on`, no marker allowed).
     ASSUMPTION: no `response_format` (not every Writer provider takes it); a reply without the JSON
     caption is `empty`, as the old lane kept its canned line. Overturned if the chain's providers
     all accept json_object."""
     cfg = facts.config
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
-    res = WriteResult(None, None)
-    for writer in writers or cfg["writers"]:
-        timeout = min(float(cfg["writer_timeout_s"]), deadline - time.monotonic())
-        if timeout <= 0:
-            res.attempts.append({"writer": writer, "outcome": "timeout", "ms": 0})
-            continue
-        t0, text, reason = time.perf_counter(), "", None
-        try:
-            r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
-                                      account_id=facts.account_id, temperature=TEMPERATURE,
-                                      timeout_s=timeout, max_attempts=1)
-            text = parse(r.content or "")
-            reason = floor(text, lang) if text and cfg["floor_on"] else None
-            outcome = "empty" if not text else f"floor:{reason}" if reason else "ok"
-        except llm_client.LLMError as e:
-            outcome = _outcome(e)
-        res.attempts.append({"writer": writer, "outcome": outcome,
-                             "ms": int((time.perf_counter() - t0) * 1000)})
-        if outcome == "ok":
-            res.text, res.writer = text, writer
-            return res
-        if reason and res.floor_reason is None:
-            res.floor_reason = reason
-    return res
+
+    async def try_once(writer: str, timeout: float) -> tuple[str, str | None]:
+        r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
+                                  account_id=facts.account_id, temperature=TEMPERATURE,
+                                  timeout_s=timeout, max_attempts=1)
+        text = parse(r.content or "")
+        return text, floor(text, lang) if text and cfg["floor_on"] else None
+
+    return await walk(cfg, writers or cfg["writers"], deadline, try_once)

@@ -10,6 +10,7 @@ Cases:
                      `vault_jev_rules.final` == the bench's own score8 + settle nn.10
                      (fixture made by .scratch/jev-vault-bench/p8-golden-gen.py)
   question spec      `vault_jev.spec()` == the spec generated from jev_flags8/jev_crop8
+  failed, no SDK     `_failed` with typesafe_sdk unimportable → "error", never ImportError (rwl-a F16)
   geometry           shrink / crops / enc output sizes == the bench functions'
   pipeline           pass 1 → 2 → L over the fake client: model pin + header, the
                      blob, spend on the `typesafe` cap row + audit row
@@ -113,6 +114,19 @@ def case_question_spec():
     assert set(got) == set(want), set(got) ^ set(want)
     assert vault_jev.MODEL == "jev-1.14.0"
     assert vault_jev.HEADERS == {"TypeSafe-Danger-Zone-Images": "true"}
+
+
+def case_failed_without_sdk():
+    import sys
+    saved = sys.modules.get("typesafe_sdk")
+    sys.modules["typesafe_sdk"] = None          # import raises ImportError
+    try:
+        assert vault_jev._failed(RuntimeError("boom")) == "error"
+    finally:
+        if saved is None:
+            sys.modules.pop("typesafe_sdk", None)
+        else:
+            sys.modules["typesafe_sdk"] = saved
 
 
 def case_geometry():

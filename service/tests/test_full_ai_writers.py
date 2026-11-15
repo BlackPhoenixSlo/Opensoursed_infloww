@@ -15,7 +15,8 @@ one-shot Writer call.
      `docs/prompts/old` text, each new one its catalog entry; the sell-off
      line only on rows `sell_off` / `tease_off`; sext at Heat with her Model
      info; ai_dare two beats in order; make_right the apology frames, no free
-     item; the cat-sticker block only with `gifs` on; no_send builds nothing.
+     item; the cat-sticker block only with `gifs` on; no_send builds nothing;
+     BROKE_JOKE once under any Route's goal when `declines_buying` fired (NEW-154).
   5. `style_flags` per `style` layer: one layer off turns its switch off alone; an old
      `text_style` side reads girl = all on, formal = all off; typos never reach the prompt.
 
@@ -222,6 +223,31 @@ async def case_zero_attempts_is_refused_before_anything_fires():
     except LLMConfigError:
         pass
     assert _OkClient.calls == 0, _OkClient.calls
+
+
+async def case_walk_cuts_a_slow_drip_try_at_its_timeout():
+    """A try that runs past its timeout (a slow-drip reply httpx's per-read timeout never trips)
+    is cut there and recorded `timeout`; the walk moves on to the next Writer. With the deadline
+    already passed no try is made."""
+    import asyncio
+    import time
+    calls = []
+
+    async def try_once(writer, timeout):
+        calls.append(writer)
+        if writer == "slow":
+            await asyncio.sleep(5)
+        return "hey you", None
+
+    cfg = {"writer_timeout_s": 0.2, "writer_retries": 0}
+    t0 = time.monotonic()
+    res = await wr.walk(cfg, ["slow", "fast"], time.monotonic() + 10, try_once)
+    assert time.monotonic() - t0 < 2, time.monotonic() - t0
+    assert [a["outcome"] for a in res.attempts] == ["timeout", "ok"], res.attempts
+    assert res.writer == "fast" and calls == ["slow", "fast"], (res, calls)
+    calls.clear()
+    res = await wr.walk(cfg, ["fast"], time.monotonic() - 1, try_once)
+    assert calls == [] and res.attempts == [{"writer": "fast", "outcome": "timeout", "ms": 0}], res.attempts
 
 
 # ── 4. The code floor (ticket 33): a reply the next Writer must replace ──
@@ -450,6 +476,15 @@ def case_sell_now_with_a_pick_is_the_content_ask_sell_prompt():
     assert wr.PRICE_BLOCK.format(px="$10") in s3
 
 
+def case_sell_section_terms_keep_a_folder_price_cents():
+    """A folder price with cents: the item line's terms name the price the price block demands
+    ($24.99, not $24); whole dollars stay `$24` (Shadow bytes unchanged)."""
+    for cents, px in ((2499, "$24.99"), (2400, "$24"), (1050, "$10.50"), (20000, "$200")):
+        p = Pick(**{**_PICK.__dict__, "price_cents": cents, "list_cents": cents})
+        sec = wr.sell_section(p, None)
+        assert f"— {px} to unlock" in sec and wr.PRICE_BLOCK.format(px=px) in sec, (cents, sec)
+
+
 def case_haggle_offer_moment_and_hot_sell_prompts():
     """Ticket 47: the haggle row's price block is OLD-CORE-33's `was_cents` form when it re-offers
     the open Offer's own piece under that Offer's list (`was_cents_of`; plain at list, on a re-pick,
@@ -475,6 +510,28 @@ def case_haggle_offer_moment_and_hot_sell_prompts():
         assert step in hot and wr.SEXT_HEAT.format(heat=3) not in hot, row
         assert wr.ESCALATION[:20] not in hot and wr.CONTENT_ASK[:20] not in hot, row
     assert wr.sell_beat("sell", False) == wr.CONTENT_ASK.format(close=wr.CLOSE_BY_ID)
+
+
+def case_broke_joke_rides_any_goal():
+    """Owner 2026-11-15 ("just be ignorant of this broke stuff"): `broke=True` adds BROKE_JOKE once, after
+    the Route's own goal, on chat and sell_now alike; the rest of the prompt is unchanged. NEW-154."""
+    assert "{" not in wr.BROKE_JOKE and not hasattr(wr, "BROKE_SELL")
+    for route, row, pick in (("chat", "otherwise", None), ("sell_now", "sell", _PICK)):
+        t = _turn("no im broke")
+        off = wr.messages_for(route, row, 2, t, pick)[0]["content"]
+        on = wr.messages_for(route, row, 2, t, pick, broke=True)[0]["content"]
+        assert wr.BROKE_JOKE not in off and on.count(wr.BROKE_JOKE) == 1, route
+        assert on.replace("\n" + wr.BROKE_JOKE, "", 1) == off, route
+    for route, row in (("sext", "sexual_now"), ("tease", "tease_price")):
+        t = _turn("no im broke")
+        assert wr.messages_for(route, row, 2, t, None, broke=True)[0]["content"].count(wr.BROKE_JOKE) == 1, route
+    for route, row in (("make_right", "complains_now"), ("ai_dare", "asks_if_ai")):   # apology / dare untouched
+        t = _turn("no im broke")
+        assert wr.messages_for(route, row, 2, t, None, broke=True) == wr.messages_for(route, row, 2, t, None), route
+    new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
+    entry = new[new.index("### NEW-154"):]
+    entry = entry[:entry.index("\n#", 1)]                    # up to the next heading
+    assert wr.BROKE_JOKE in entry and "2026-11-15" in entry
 
 
 def case_sell_now_refusal_is_chat_with_its_need_line():
@@ -546,7 +603,7 @@ def case_tease_and_free_constants_are_their_catalog_text():
 
 
 def case_tease_with_a_pick_describes_it_without_a_price():
-    for row in ("tease_price", "tease_decline"):
+    for row in ("tease_price",):            # the only tease row since 2026-11-14
         sys_ = wr.messages_for("tease", row, 2, _turn("how much?"), _PICK)[0]["content"]
         goal = (wr.GOAL_HEAD + wr.TEASE_GOAL
                 + "- [id 4242] video 1:35 — untitled: her in a red bikini by the pool")
@@ -609,6 +666,89 @@ def case_spend_line_only_without_a_pick():
         row = {"sell_now": "sell", "tease": "tease_price", "make_right": "complains_now"}.get(route, "otherwise")
         user = wr.messages_for(route, row, 3, t, pick)[1]["content"]
         assert (f"- {line}" in user) is want, (route, pick, bool(sp), user)
+
+
+
+def _ppv(*cents):
+    return [SimpleNamespace(kind="ppv_message", amount_cents=c, occurred_at=None) for c in cents]
+
+
+TAIL = " — talk like you remember it, never like he's never paid."
+
+
+def _old_buyer_facts(ppv_n, ppv_total, ppv_max, tip_rows):
+    """The old bot's `_buyer_facts` text block, pasted verbatim (ai_chatter.py:5470-5487)."""
+    tip_total = sum(int(x or 0) for x in tip_rows)
+    tip_n = sum(1 for x in tip_rows if int(x or 0) > 0)
+    if tip_total <= 0 and ppv_n <= 0:
+        return []
+    parts: list[str] = []
+    if ppv_n > 0:
+        parts.append(f"unlocked {ppv_n} PPV{'s' if ppv_n != 1 else ''} "
+                     f"(${ppv_total // 100} total, biggest ${ppv_max // 100})")
+    if tip_total > 0:
+        parts.append(f"tipped ${tip_total // 100} across "
+                     f"{tip_n} tip{'s' if tip_n != 1 else ''}")
+    return [
+        "he's spent: " + " and ".join(parts)
+        + " — talk like you remember it, never like he's never paid."
+    ]
+
+
+def case_spend_line_tips_table():
+    """OLD-AIC-22's tip part (ticket 88): verbatim, joined by " and "; tips alone give the line."""
+    for spent, tips, want in [
+        ([], (), None),
+        ([], [0], None),
+        (_ppv(1000), (), "he's spent: unlocked 1 PPV ($10 total, biggest $10)" + TAIL),
+        (_ppv(1000, 2500), (), "he's spent: unlocked 2 PPVs ($35 total, biggest $25)" + TAIL),
+        ([], [500], "he's spent: tipped $5 across 1 tip" + TAIL),
+        ([], [500, 500, 1000], "he's spent: tipped $20 across 3 tips" + TAIL),
+        (_ppv(1000), [500, 700], "he's spent: unlocked 1 PPV ($10 total, biggest $10) and tipped $12 across 2 tips" + TAIL),
+        ([], [50], "he's spent: tipped $0 across 1 tip" + TAIL),          # a 50-cent tip counts in tip_n
+        ([], [50, 300], "he's spent: tipped $3 across 2 tips" + TAIL),
+    ]:
+        assert wr.spend_line(spent, tips) == want, (spent, tips, wr.spend_line(spent, tips))
+    # Equals the old bot for the same numbers.
+    for cents, tips in [((1000, 2500), [500, 50]), ((), [700]), ((4000,), []), ((999, 1), [1, 1, 1])]:
+        old = _old_buyer_facts(len(cents), sum(cents), max(cents, default=0), tips)
+        assert [x for x in [wr.spend_line(_ppv(*cents), tips)] if x] == old, (cents, tips, old)
+
+
+def case_tips_reach_the_prompt_not_the_selling():
+    """A TurnFacts with tips and no PPV buys: the chat Writer carries the tip line; make_right does
+    not sell and the price Jev's `bought_before` stays false (tippers out of PPV pricing)."""
+    import asyncio
+    from automations import full_ai_turn as ft
+    facts = ft.TurnFacts(account_id="acct_msgs", fan_id=1, mode="live", anchor_key="42", state={},
+                         cut_rows=[_msg_row("out", "hii", 1), _msg_row("in", "hey you", 2)], bought=None,
+                         offer=None, fan_info={}, asked={}, config={**DEFAULTS, "sell_on": True},
+                         side=None, tips=[500, 500])
+    assert facts.spent == [] and facts.tips == [500, 500]
+    user = wr.messages_for("chat", "otherwise", 2, facts, None)[1]["content"]
+    assert "- he's spent: tipped $10 across 2 tips" + TAIL in user, user
+    assert ft._sells("make_right", facts) is False
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _state(*a, **k):
+        seen.update(k)
+        raise _Stop
+    saved, ft._price_jev.state = ft._price_jev.state, _state
+    try:
+        facts.pick = _PICK
+        try:
+            asyncio.run(ft._price(facts, {}, 0.0, 2, False))
+        except _Stop:
+            pass
+    finally:
+        ft._price_jev.state = saved
+    assert seen.get("bought_before") is False, seen
+    # Beside a Pick no spend line, tips included (the price check allows no other amount).
+    user = wr.messages_for("sell_now", "sell", 3, facts, _PICK)[1]["content"]
+    assert "he's spent" not in user, user
 
 
 _FLAG_OF = {"texting": "style_on", "nonnative": "nonnative_on", "spacing": "spacing_on", "typos": "typo_on",

@@ -234,6 +234,12 @@ def case_list_lead_in():
         assert _reply(row)["asked"] == {"name": 1}, _reply(row)
     finally:
         _store_config(A, {})
+    # rwl-a F13/F14: the never-led keys and the key->field map come from `_LINE_KEYS`
+    assert ij.NEVER_LED_KEYS == {"boobs_ass"}, ij.NEVER_LED_KEYS
+    assert ij._KEY_FIELDS["location"] == ("home_country", "home_city"), ij._KEY_FIELDS
+    assert "recent_events" not in ij._KEY_FIELDS
+    al = ij.unled(ij.AskList(["boobs_ass"], ["x"], True))
+    assert al == ij.AskList([], [], False), al
 
 
 if __name__ == "__main__":

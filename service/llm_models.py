@@ -314,6 +314,20 @@ MODELS: dict[str, LLMModel] = {
         input_per_1k_cents=0.0493, input_cache_hit_per_1k_cents=0.0493,
         output_per_1k_cents=0.0493, json_object_ok=False,  # D54: $0.493/M in and out
     ),
+    # Euryale on OpenRouter beside NanoGPT's v2.3 (owner 2026-11-14): v2.3 on NanoGPT 429'd or
+    # timed out on 109/241 test Turns (measured). v2.2 (Llama 3.1 70B): $0.85/M in and out.
+    "euryale-v2.2": LLMModel(
+        "euryale-v2.2", "openrouter", api_model="sao10k/l3.1-euryale-70b",
+        input_per_1k_cents=0.085, input_cache_hit_per_1k_cents=0.085,
+        output_per_1k_cents=0.085, json_object_ok=False,
+    ),
+    # v2.3 on DeepInfra (owner 2026-11-14; OpenRouter lists it with no endpoint). Price read from
+    # api.deepinfra.com/models/list 2026-11-14: $0.85/M in and out. Selectable, not default.
+    "euryale-v2.3-deepinfra": LLMModel(
+        "euryale-v2.3-deepinfra", "deepinfra", api_model="Sao10K/L3.3-70B-Euryale-v2.3",
+        input_per_1k_cents=0.085, input_cache_hit_per_1k_cents=0.085,
+        output_per_1k_cents=0.085, json_object_ok=False,
+    ),
     "hermes-4-405b": LLMModel(
         "hermes-4-405b", "openrouter", api_model="nousresearch/hermes-4-405b",
         input_per_1k_cents=0.1, input_cache_hit_per_1k_cents=0.1,

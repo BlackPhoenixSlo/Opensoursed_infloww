@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from curl_cffi import requests as _cc  # connection / timeout errors of_client raises
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (tests patch ax._make_client)
@@ -148,6 +148,11 @@ async def _upsert_message(
                 "is_tip": bool(m.get("isTip")),
                 "is_unsent": bool(m.get("isUnsent")),
                 "media_count": int(m.get("mediaCount") or 0),
+                # Fill only an empty record: an attribution-written row ('[]') of
+                # any lane then carries its media, so ownership's paid-message leg
+                # sees it; stored ids are never overwritten.
+                "media_ids": case((Message.media_ids == "[]", json.dumps(media_ids)),
+                                  else_=Message.media_ids),
                 "raw_json": raw,
             },
         )

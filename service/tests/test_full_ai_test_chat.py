@@ -473,19 +473,21 @@ def case_typo_fix_throttled_per_session():
 
 
 # ── Writer chain (ticket 33) ──────────────────────────────────────────
-# case_chain_falls_on_each_failure   503 / 429 / timeout / empty on NanoGPT: Hermes answers, one
+# case_chain_falls_on_each_failure   503 / 429 / timeout / empty on NanoGPT: OpenRouter Euryale v2.2 answers, one
 #                                    request per Writer
-# case_chain_floor_reject_falls      `framework:` -> floor:framework, then Hermes; floor_on off -> sent
+# case_chain_floor_reject_falls      `framework:` -> floor:framework, then Euryale v2.2; floor_on off -> sent
 # case_chain_all_fail                four failures: failed, no parts, writer_model NULL, each outcome
 # case_chain_key_missing_or_refused  no NanoGPT key -> no_key (no request); 401 / 402 -> http_<status>
-# case_chain_provider_cap            NanoGPT capped -> cap, Hermes answers; all capped -> failed
+# case_chain_provider_cap            NanoGPT capped -> cap, OpenRouter Euryale v2.2 answers; all capped -> failed
+# case_chain_retries_and_timeouts    writer_retries: 429 / timeout tried again, 401 not; writer_timeouts
+#                                    overrides one Writer's timeout
 # case_chain_turn_deadline           stages faked slow on a fake clock: Writer timeouts never exceed
 #                                    the time left, the Turn ends within turn_bound_s
 # The deadline case alone also fakes the Turn's clock (`full_ai_turn.time` / `full_ai_writers.time`,
 # a module swap; asyncio's loop clock stays real): the bound is >= 30 s of wall time, which a test
 # cannot spend, so the slow fakes advance that clock instead of sleeping.
 
-CHAIN = ("euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash")
+CHAIN = ("euryale-v2.3", "euryale-v2.2", "hermes-4-405b", "deepseek-v4-flash")
 
 
 
@@ -499,15 +501,15 @@ def case_chain_falls_on_each_failure():
         pair = f"p-fall-{how}"
         r, fw = _chain_post(_body(pair), {NANO: how})
         got = r.json()
-        assert (got["status"], got["writer"]) == ("sent", "hermes-4-405b"), (how, got)
-        assert _outcomes(got["attempts"]) == [("euryale-v2.3", outcome), ("hermes-4-405b", "ok")], got
+        assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), (how, got)
+        assert _outcomes(got["attempts"]) == [("euryale-v2.3", outcome), ("euryale-v2.2", "ok")], got
         assert all(a["ms"] >= 0 for a in got["attempts"]), got["attempts"]
         assert got["parts"], got
         # Each Writer saw exactly one request (no internal retry), at the side's bound.
         assert [x["host"] for x in fw.requests] == [NANO, OPENROUTER], (how, fw.requests)
-        assert [x["timeout"] for x in fw.requests] == [25.0, 25.0], fw.requests
+        assert [x["timeout"] for x in fw.requests] == [45.0, 45.0], fw.requests
         (row,) = _rows(A, pair)
-        assert (row.status, row.writer_model) == ("sent", "hermes-4-405b"), (row.status, row.writer_model)
+        assert (row.status, row.writer_model) == ("sent", "euryale-v2.2"), (row.status, row.writer_model)
         assert _reply(row)["attempts"] == got["attempts"], _reply(row)
 
 
@@ -515,8 +517,8 @@ def case_chain_floor_reject_falls():
     pair = "p-floor"
     r, fw = _chain_post(_body(pair), {NANO: "ok:framework: 1) tease him 2) ask his name"})
     got = r.json()
-    assert (got["status"], got["writer"]) == ("sent", "hermes-4-405b"), got
-    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "floor:framework"), ("hermes-4-405b", "ok")]
+    assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), got
+    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "floor:framework"), ("euryale-v2.2", "ok")]
     (row,) = _rows(A, pair)
     assert _reply(row)["floor_reason"] == "framework", _reply(row)
     # The switch: floor_on off sends the first Writer's reply through the shared chain.
@@ -535,8 +537,8 @@ def case_chain_all_fail():
     r, fw = _chain_post(_body(pair), {NANO: "503", OPENROUTER: "timeout", ZAI: "429", DEEPSEEK: "empty"})
     got = r.json()
     assert (got["status"], got["parts"], got["writer"], got["wait_s"]) == ("failed", [], None, None), got
-    assert _outcomes(got["attempts"]) == list(zip(CHAIN, ("http_503", "timeout", "http_429", "empty")))
-    assert [x["host"] for x in fw.requests] == [NANO, OPENROUTER, ZAI, DEEPSEEK], fw.requests
+    assert _outcomes(got["attempts"]) == list(zip(CHAIN, ("http_503", "timeout", "timeout", "empty")))
+    assert [x["host"] for x in fw.requests] == [NANO, OPENROUTER, OPENROUTER, DEEPSEEK], fw.requests
     (row,) = _rows(A, pair)
     assert (row.status, row.writer_model) == ("failed", None), (row.status, row.writer_model)
     assert _reply(row)["parts"] == [] and _reply(row)["attempts"] == got["attempts"], _reply(row)
@@ -546,14 +548,14 @@ def case_chain_key_missing_or_refused():
     with _agency_keys({"nanogpt": ""}):
         r, fw = _chain_post(_body("p-nokey"), {})
     got = r.json()
-    assert (got["status"], got["writer"]) == ("sent", "hermes-4-405b"), got
-    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "no_key"), ("hermes-4-405b", "ok")], got
+    assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), got
+    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "no_key"), ("euryale-v2.2", "ok")], got
     assert [x["host"] for x in fw.requests] == [OPENROUTER], fw.requests
     for status in ("401", "402"):                       # an invalid key, a key with no credit
         r, fw = _chain_post(_body(f"p-badkey-{status}"), {NANO: status})
         got = r.json()
-        assert got["writer"] == "hermes-4-405b", (status, got)
-        assert _outcomes(got["attempts"]) == [("euryale-v2.3", f"http_{status}"), ("hermes-4-405b", "ok")]
+        assert got["writer"] == "euryale-v2.2", (status, got)
+        assert _outcomes(got["attempts"]) == [("euryale-v2.3", f"http_{status}"), ("euryale-v2.2", "ok")]
         assert [x["host"] for x in fw.requests] == [NANO, OPENROUTER], fw.requests
 
 
@@ -585,8 +587,8 @@ def case_chain_provider_cap():
     with _capped(("nanogpt",)):
         r, fw = _chain_post(_body("p-cap"), {})
     got = r.json()
-    assert (got["status"], got["writer"]) == ("sent", "hermes-4-405b"), got
-    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "cap"), ("hermes-4-405b", "ok")], got
+    assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), got
+    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "cap"), ("euryale-v2.2", "ok")], got
     assert [x["host"] for x in fw.requests] == [OPENROUTER], fw.requests
     with _capped(("nanogpt", "openrouter", "zai", "deepseek")):
         r, fw = _chain_post(_body("p-cap-all"), {})
@@ -611,14 +613,31 @@ class _SlowWriters(FakeWriterHTTP):
         return super().__call__(*a, timeout=timeout, **k)
 
 
+def case_chain_retries_and_timeouts():
+    _store_config(A, {"checkpoint": {**DEFAULTS, "writer_retries": 1, "writer_timeouts": {"euryale-v2.3": 60}}})
+    try:
+        for how, outcome in (("429", "http_429"), ("timeout", "timeout"), ("503", "http_503")):
+            r, fw = _chain_post(_body(f"p-retry-{how}"), {NANO: how})
+            got = r.json()
+            assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), (how, got)
+            assert _outcomes(got["attempts"]) == [("euryale-v2.3", outcome)] * 2 + [("euryale-v2.2", "ok")], got
+            assert [(x["host"], x["timeout"]) for x in fw.requests] == [
+                (NANO, 60.0), (NANO, 60.0), (OPENROUTER, 45.0)], fw.requests
+        r, fw = _chain_post(_body("p-retry-401"), {NANO: "401"})      # a key refusal: no second try
+        got = r.json()
+        assert _outcomes(got["attempts"]) == [("euryale-v2.3", "http_401"), ("euryale-v2.2", "ok")], got
+    finally:
+        _store_config(A, {})
+
+
 def case_chain_turn_deadline():
-    """Router Jev stalls 100 s of a 145 s Turn: NanoGPT gets its full 25 s, Hermes the 20 s
-    left, GLM and DeepSeek are not called (`timeout`). A Router stall to the bound leaves no
-    Writer called."""
+    """Router Jev stalls 180 s of a 245 s Turn: NanoGPT gets its full 45 s, OpenRouter's Euryale
+    the 20 s left, Hermes and DeepSeek are not called (`timeout`). A Router stall to the bound
+    leaves no Writer called."""
     import types
     bound = turn_bound_s(DEFAULTS)
-    assert bound == 145, bound
-    for jev_s, want_timeouts in ((100.0, [25.0, 20.0]), (145.0, [])):
+    assert bound == 245, bound
+    for jev_s, want_timeouts in ((180.0, [45.0, 20.0]), (245.0, [])):
         clock = _Clock()
         fake_clock = types.SimpleNamespace(monotonic=clock.now, perf_counter=time.perf_counter)
         saved = (full_ai_turn.time, full_ai_writers.time)

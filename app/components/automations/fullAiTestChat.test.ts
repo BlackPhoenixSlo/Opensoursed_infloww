@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import type { ConfigBody, FullAiConfig } from "./fullAiConfig";
 import {
-  buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, configLine, humanStyle,
-  humanStylePatch, initTestChat, keepMineSave, layersOff, MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, styleLayers,
-  testChatReducer, toggleWriterPatch, typosPatch, writerPatch, writersLine, type FanPhoto, type HumanStyle, type PpvLine, type StyleLayers,
-  type ConfigBody, type FullAiConfig, type Offer, type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide,
-  sessionTurns, noReplyText, writersFailed,
+  buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, initTestChat, keepMineSave,
+  MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, testChatReducer, type FanPhoto, type PpvLine, type Offer,
+  type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide, sessionTurns, noReplyText,
+  writersFailed, heatTail, type HeatCheck,
 } from "./fullAiTestChat";
 
 const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
@@ -168,7 +168,8 @@ describe("sessionTurns (the session read's rows, one side)", () => {
 // ── Config: checkpoint / previous / draft, rev (ticket 39) ──────────────────────────────────────────────────────────
 const CP = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
 const body = (over: Partial<ConfigBody> = {}): ConfigBody =>
-  ({ checkpoint: CP, previous: null, draft: CP, rev: 3, errors: [], ...over });
+  ({ checkpoint: CP, previous: null, draft: CP, rev: 3, errors: [],
+    limits: { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m" }, ...over });
 const loaded = (over: Partial<ConfigBody> = {}): TestChatAction => ({ type: "loaded", body: body(over) });
 const gifsOn = { ...CP, gifs: true };
 const edit = (draft = gifsOn): TestChatAction => ({ type: "editDraft", draft });
@@ -328,13 +329,45 @@ describe("externalDraft: a refetched config with a newer rev", () => {
     ["the page's draft PUT is out", [edit(), { type: "saveDraft" }]],
     ["a Save is out", [{ type: "commit" }]],
     ["stale (Reload owed)", [{ type: "stale" }]],
-  ])("ignored while %s (its own answer or the Reload carries the newest)", (_n, actions) => {
+  ])("held, not shown, while %s", (_n, actions) => {
     const s0 = run(ready(), ...actions);
-    expect(testChatReducer(s0, external())).toBe(s0);
+    const s = testChatReducer(s0, external());
+    expect(s).toEqual({ ...s0, held: body({ draft: slower, rev: 4 }) });
   });
   it("loaded clears a conflict", () => {
     const s = run(unsaved(), external(), loaded({ draft: slower, rev: 4 }));
     expect([s.conflict, s.draft, s.dirty]).toEqual([null, slower, false]);
+  });
+});
+
+describe("held: a read that lands while a write is out is offered again once it settles (rwl-c R2-2)", () => {
+  const putOut = [edit(), { type: "saveDraft" }] as TestChatAction[];
+  const commitOut = [{ type: "commit" }] as TestChatAction[];
+  const failed: TestChatAction = { type: "configFailed", errors: ["gifs: bad"] };
+  const reloaded = (rev: number): TestChatAction => loaded({ draft: CP, rev });
+  // [case, actions after ready(), want [rev, draft, dirty, conflict rev, held]]
+  it.each<[string, TestChatAction[], [number, FullAiConfig, boolean, number | null, null]]>([
+    ["draft PUT lands older → the read is adopted", [...putOut, external(slower, 5), stored(gifsOn, 4)], [5, slower, false, null, null]],
+    ["draft PUT lands newer → the read is dropped", [...putOut, external(slower, 4), stored(gifsOn, 5)], [5, gifsOn, false, null, null]],
+    ["draft PUT refused (edit still dirty) → Keep mine / Take theirs", [...putOut, external(slower, 5), failed], [3, gifsOn, true, 5, null]],
+    ["Save lands → adopted", [...commitOut, external(slower, 5), { type: "saved", rev: 4 }], [5, slower, false, null, null]],
+    ["Roll back lands → adopted", [...commitOut, external(slower, 5), { type: "rolledBack", rev: 4 }], [5, slower, false, null, null]],
+    ["Save fails → adopted", [...commitOut, external(slower, 5), failed], [5, slower, false, null, null]],
+    ["checkpoint PUT lands (loaded) → adopted", [...commitOut, external(slower, 5), reloaded(4)], [5, slower, false, null, null]],
+    ["two reads held → the newest wins", [...putOut, external(gifsOn, 6), external(slower, 5), stored(gifsOn, 4)], [6, gifsOn, false, null, null]],
+    ["stale keeps it; Reload at a newer rev drops it", [...putOut, external(slower, 5), { type: "stale" }, reloaded(6)], [6, CP, false, null, null]],
+    ["stale keeps it; Reload at an older rev adopts it", [...putOut, external(slower, 5), { type: "stale" }, reloaded(4)], [5, slower, false, null, null]],
+  ])("%s", (_n, actions, want) => {
+    const s = run(ready(), ...actions);
+    expect([s.rev, s.draft, s.dirty, s.conflict?.rev ?? null, s.held]).toEqual(want);
+  });
+  it("stale keeps the read held until the Reload", () => {
+    expect(run(ready(), ...putOut, external(slower, 5), { type: "stale" }).held).toEqual(body({ draft: slower, rev: 5 }));
+  });
+  it("offered once: a settled state holds nothing, so nothing is offered again", () => {
+    const s = run(ready(), ...putOut, external(slower, 5), stored(gifsOn, 4));
+    expect(testChatReducer(s, { type: "configFailed", errors: [] }).draft).toEqual(slower);
+    expect(run(s, edit(), { type: "saveDraft" }, stored(gifsOn, 6))).toMatchObject({ rev: 6, draft: gifsOn, held: null });
   });
 });
 
@@ -361,87 +394,6 @@ describe("keepMine / takeTheirs", () => {
   it.each<TestChatAction["type"]>(["keepMine", "takeTheirs"])("%s without a conflict is a no-op", (type) => {
     const s0 = unsaved();
     expect(testChatReducer(s0, { type } as TestChatAction)).toBe(s0);
-  });
-});
-
-describe("configLine (a window header's config)", () => {
-  it.each<[string, FullAiConfig, string]>([
-    ["checkpoint", CP, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
-    ["slower, formal, GIFs on", { ...CP, reply_speed: "0-15-60", text_style: "formal", gifs: true }, "Reply 0-15-60 · Human style off · GIFs on · Caption chat"],
-    ["layers all on", { reply_speed: "0-2m", style: ON }, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
-    ["typos off", { reply_speed: "0-2m", style: { ...ON, typos: false }, gifs: true }, "Reply 0-2 min · Human style mixed · Typos off · GIFs on · Caption chat"],
-    ["spacing off, typos on", { style: { ...ON, spacing: false } }, "Reply 0-2 min · Human style mixed · GIFs off · Caption chat"],
-    ["all off: no Typos chip", { style: OFF }, "Reply 0-2 min · Human style off · GIFs off · Caption chat"],
-    ["separate caption", { ...CP, caption_writer: "caption" }, "Reply 0-2 min · Human style on · GIFs off · Caption caption"],
-  ])("%s", (_n, cfg, want) => {
-    expect(configLine(cfg)).toBe(want);
-  });
-});
-
-// ── Style layers, Typos, Writer (the settings column's pure edits) ─────────────────────────────────────────────────
-const ON: StyleLayers = { texting: true, nonnative: true, spacing: true, typos: true, painful: true };
-const OFF: StyleLayers = { texting: false, nonnative: false, spacing: false, typos: false, painful: false };
-
-describe("styleLayers / humanStyle (the server's read: text_style wins, then style; neither = all on)", () => {
-  it.each<[string, FullAiConfig | null, StyleLayers, HumanStyle, string]>([
-    ["no config", null, ON, "on", ""],
-    ["no style key", { gifs: true }, ON, "on", ""],
-    ["all on", { style: ON }, ON, "on", ""],
-    ["all off", { style: OFF }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
-    ["typos off", { style: { ...ON, typos: false } }, { ...ON, typos: false }, "mixed", "typos"],
-    ["two off", { style: { ...ON, spacing: false, typos: false } }, { ...ON, spacing: false, typos: false }, "mixed", "spacing, typos"],
-    ["legacy formal", { text_style: "formal" }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
-    ["legacy formal wins over style", { text_style: "formal", style: ON }, OFF, "off", "texting style, non-native, spacing, typos, painful texting"],
-    ["legacy casual", { ...CP }, ON, "on", ""],
-    ["an unknown text_style falls to style", { text_style: "boy", style: { ...ON, typos: false } }, { ...ON, typos: false }, "mixed", "typos"],
-    ["a missing layer reads off", { style: { texting: true } }, { ...OFF, texting: true }, "mixed", "non-native, spacing, typos, painful texting"],
-  ])("%s", (_n, cfg, layers, hs, off) => {
-    expect([styleLayers(cfg), humanStyle(cfg), layersOff(cfg)]).toEqual([layers, hs, off]);
-  });
-});
-
-describe("humanStylePatch / typosPatch", () => {
-  it.each<[string, FullAiConfig | null, Partial<FullAiConfig>, StyleLayers]>([
-    ["master on from mixed", { style: { ...ON, typos: false } }, humanStylePatch(true), ON],
-    ["master off from on", { style: ON }, humanStylePatch(false), OFF],
-    ["typos off keeps the other layers", { style: { ...ON, spacing: false } }, typosPatch({ style: { ...ON, spacing: false } }, false), { ...ON, spacing: false, typos: false }],
-    ["typos on from all off", { style: OFF }, typosPatch({ style: OFF }, true), { ...OFF, typos: true }],
-    ["typos off on a legacy draft", { ...CP }, typosPatch({ ...CP }, false), { ...ON, typos: false }],
-    ["master off on a legacy draft", { ...CP }, humanStylePatch(false), OFF],
-  ])("%s", (_n, cfg, patch, want) => {
-    const next = { ...cfg, ...patch };
-    expect([next.style, styleLayers(next)]).toEqual([want, want]);
-    expect(JSON.parse(JSON.stringify(patch))).toEqual({ style: want });
-  });
-});
-
-describe("toggleWriterPatch (tick adds at the end, untick drops; the last one and a full chain refuse)", () => {
-  it.each<[string, string[], string, string[] | null]>([
-    ["adds at the end", ["a"], "b", ["a", "b"]],
-    ["drops a ticked one", ["a", "b", "c"], "b", ["a", "c"]],
-    ["drops the Writer, the next answers first", ["a", "b"], "a", ["b"]],
-    ["keeps the last one", ["a"], "a", null],
-    ["refuses a fifth", ["a", "b", "c", "d"], "e", null],
-    ["drops from a full chain", ["a", "b", "c", "d"], "d", ["a", "b", "c"]],
-  ])("%s", (_n, writers, model, want) => {
-    expect(toggleWriterPatch({ writers }, model)).toEqual(want === null ? null : { writers: want });
-  });
-  it("writersLine prints the chain in order", () => {
-    expect(writersLine({ writers: ["a", "b"] })).toBe("Writers a → b");
-    expect(writersLine({})).toBe("Writers none");
-  });
-});
-
-describe("writerPatch (picked model first, the rest keep their order)", () => {
-  const W = ["euryale-v2.3", "hermes-4-405b", "glm-5.3-flash", "deepseek-v4-flash"];
-  it.each<[string, string[] | undefined, string, string[]]>([
-    ["a fallback moves to the front", W, "glm-5.3-flash", ["glm-5.3-flash", "euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"]],
-    ["the current Writer: unchanged", W, "euryale-v2.3", W],
-    ["a new model on a full list drops the last", W, "deepseek-v4-pro", ["deepseek-v4-pro", "euryale-v2.3", "hermes-4-405b", "glm-5.3-flash"]],
-    ["a new model on a short list joins it", ["hermes-4-405b"], "euryale-v2.3", ["euryale-v2.3", "hermes-4-405b"]],
-    ["no writers yet", undefined, "euryale-v2.3", ["euryale-v2.3"]],
-  ])("%s", (_n, writers, model, want) => {
-    expect(writerPatch(writers ? { writers } : {}, model)).toEqual({ writers: want });
   });
 });
 
@@ -595,6 +547,25 @@ describe("replyLine: the sext scene tail", () => {
   });
 });
 
+describe("heatTail: the Heat check under a sext reply", () => {
+  const h = (o: Partial<HeatCheck>): HeatCheck => ({ cap: 3, score: 3, level: 3, outcome: "ok", ms: 120, version: "v", ...o });
+  it.each<[string, HeatCheck | null | undefined, string]>([
+    ["absent", undefined, ""],
+    ["null", null, ""],
+    ["ok", h({}), " · her level 3 of Heat 3"],
+    ["rewritten", h({ outcome: "regen_ok", redo_score: 3, first_level: 4 }), " · her level 3 of Heat 3 · rewritten (was 4)"],
+    ["over twice", h({ outcome: "over_sent", score: 4, level: 4, redo_score: 4, first_level: 4 }), " · her level 4 of Heat 3 · over Heat, sent"],
+    ["failed", h({ outcome: "error", score: null, level: null, error: "GateError: deadline" }), " · Heat check failed"],
+  ])("%s", (_n, hc, tail) => {
+    expect(heatTail(hc)).toBe(tail);
+  });
+  it("rides the reply line after the scene tail", () => {
+    const r = reply({ attempts: [{ writer: "euryale-v2.3", outcome: "ok", ms: 100 }], route: "sext", heat: 3,
+      scene: { n: 2, stage: "building", heat: 3 }, heat_check: h({ outcome: "regen_ok", first_level: 4 }) });
+    expect(replyLine(r).endsWith(" · scene building · 2 · her level 3 of Heat 3 · rewritten (was 4)")).toBe(true);
+  });
+});
+
 describe("buildSettlePayload", () => {
   it.each<[UiSide, number, "bought" | "declined", string]>([
     ["L", 7, "bought", "checkpoint"],
@@ -628,6 +599,31 @@ describe("his photo (attach → described once → both sides' Turns)", () => {
     ["photo failed: back in the composer", [attach, { type: "send" }, { type: "photoFailed", pair: "p1", error: "x" }], true],
   ])("canSend: %s → %s", (_n, actions, want) => {
     expect(canSend(run(initTestChat("p1"), ...actions))).toBe(want);
+  });
+
+  it("controls, Save, Roll back and JSON wait while the photo request is out (rwl-c F2)", () => {
+    const s = run(initTestChat("p1"), loaded({ draft: gifsOn, previous: CP }), attach, { type: "send" });
+    expect([canEdit(s), canSave(s), canRollback(s)]).toEqual([false, false, false]);
+    const done = run(s, described);
+    expect([canEdit(done), sendBlock(done)]).toEqual([true, null]);
+  });
+
+  it.each<[string, TestChatAction[], string]>([
+    ["an edit unstored", [edit()], "Draft not stored — fix it or Reload"],
+    ["a draft PUT out", [edit(), { type: "saveDraft" }], "Storing draft…"],
+    ["a refused edit", [edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: bad"] }], "Draft not stored — fix it or Reload"],
+    ["a Keep mine / Take theirs pending", [edit(), external()], "Keep mine or Take theirs first"],
+  ])("photoDescribed while Send is blocked (%s) starts no Turn: his line and image go back with why (rwl-c R2-1)",
+    (_n, mid, why) => {
+      const s = run(initTestChat("p1"), loaded(), attach, ...say("rate me"), ...mid, typed("pls"), described);
+      expect([s.describing, s.sides.L.pending, s.sides.R.pending, s.text, s.photo, s.photoError])
+        .toEqual([null, null, null, "rate me pls", IMG, `Not sent: ${why}`]);
+    });
+
+  it("Keep mine waits while the photo request is out (rwl-c R2-1)", () => {
+    const s = run(initTestChat("p1"), loaded(), attach, { type: "send" }, edit(), external());
+    expect([s.conflict?.rev, keepMineSave(s)]).toEqual([4, null]);
+    expect(keepMineSave(run(s, described))).toEqual({ draft: gifsOn, rev: 4 });
   });
 
   it("Send owes the photo request first (his line and image), not the Turns; the composer clears", () => {

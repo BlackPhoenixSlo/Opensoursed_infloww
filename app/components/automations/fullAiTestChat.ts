@@ -16,22 +16,34 @@
  * refetch) is `externalDraft` with the whole body (rev is one counter for the whole config): a newer `rev` is adopted, or
  * with an unsaved edit raises `conflict` until `keepMine` (take its checkpoint and rev; the hook then re-stores the page's
  * draft on it through `saveDraft`, `keepMineSave`) or `takeTheirs` (adopt it whole). Never overwritten silently.
+ * One landing while a write of ours is out (or a Reload is owed) is `held` and offered the same way when it settles.
  * Selling (ticket 49): a reply may carry an `offer`; Buy / Decline on a priced one dispatches `settle` (that Turn's
  * `settle` pending), the hook POSTs `buildSettlePayload` and lands `settled` (done, the outcome) or `settleFailed`
  * (failed: buttons back with the message).
  * A settle lives on its Turn, not in `pending`, so it never blocks Send.
  * His photo: `attach` puts one (already shrunk) image on the composer, `detach` drops it; Send with one first owes the
  * photo request (`describing`: described ONCE for both sides), then `photoDescribed` owes both sides' Turns carrying it
- * (`photo` in `buildTurnPayload`), or `photoFailed` puts his line and image back in the composer with the message.
+ * (`photo` in `buildTurnPayload`), or `photoFailed` puts his line and image back in the composer with the message
+ * (as `photoDescribed` does while `sendBlock` holds: the draft side would not read the stored draft).
  */
 
+import { sameConfig, type ConfigBody, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import type { Route } from "@/hooks/useFullAiToday";
-import { CASUAL_STYLE } from "@/lib/fullAiStyle";
+
+// `sellFoldersForm.ts` still imports the config type from here (outside this split's files); drop once it imports
+// `fullAiConfig`.
+export type { FullAiConfig };
 
 export type UiSide = "L" | "R";
 export type TestSide = "checkpoint" | "draft";
 export const UI_SIDES: readonly UiSide[] = ["L", "R"];
 export const SIDE_OF: Record<UiSide, TestSide> = { L: "checkpoint", R: "draft" };
+
+/** `reply_json.heat_check`: `score` / `level` are the shipped text's; `first_level` / `redo_score` when a rewrite ran. */
+export interface HeatCheck {
+  cap: number; score: number | null; level: number | null; outcome: "ok" | "regen_ok" | "over_sent" | "error";
+  ms: number | null; version: string; redo_score?: number | null; first_level?: number; error?: string;
+}
 
 /** The PPV the last text bubble carries (`full_ai_test.send`): the Offer's ref, price and media ids. */
 export interface Ppv { ref: number; price_cents: number; media: number[]; previews: number[] }
@@ -81,6 +93,8 @@ export interface TurnResponse {
   price?: { list_cents: number; jev_cents: number | null; error: string | null } | null;
   /** Why the reply chain dropped her text on a `failed` Turn a Writer answered ("empty" | "banned"); absent otherwise. */
   dropped_reason?: string | null;
+  /** The Heat check on a sext reply (`floor_on`, spec 06): her level vs the Heat the Writer got; absent when it did not run. */
+  heat_check?: HeatCheck | null;
 }
 
 /** POST /admin/full-ai/test/photo's answer, sent back with each side's Turn; `read` (on a recorded Turn only): that
@@ -117,40 +131,6 @@ export interface SideState {
   revealAt: number | null;
 }
 
-/** The five human-texting layers (`full_ai_config.STYLE_LAYERS`), in the server's order. */
-export const STYLE_LAYERS = ["texting", "nonnative", "spacing", "typos", "painful"] as const;
-export type StyleLayer = (typeof STYLE_LAYERS)[number];
-export type StyleLayers = Record<StyleLayer, boolean>;
-
-/** One side of Full AI Chat's config (`full_ai_config.DEFAULTS` keys): draft, checkpoint or previous. The page edits the
- *  named keys, the JSON the rest; they are optional, as a hand-typed JSON draft may lack them until the server
- *  refuses it. */
-export interface FullAiConfig {
-  reply_speed?: string;
-  /** The stored human-texting layers; `text_style` is only the legacy write alias (never stored). */
-  style?: Partial<StyleLayers>;
-  text_style?: string;
-  /** Ordered: the first is the Writer, the rest its fallbacks. */
-  writers?: string[];
-  gifs?: boolean;
-  sell_on?: boolean;
-  /** PPV caption: "chat" (default) = the chat Writer's last bubble, "caption" = its own call. */
-  caption_writer?: string;
-  /** Content folders: `include: []` = all (ticket 49, `sellFoldersForm.ts`). */
-  folders?: { include: string[]; exclude: string[] };
-  [key: string]: unknown;
-}
-/** GET /admin/full-ai/config's body; every config write answers the same shape. */
-export interface ConfigBody {
-  checkpoint: FullAiConfig;
-  previous: FullAiConfig | null;
-  draft: FullAiConfig;
-  rev: number;
-  errors: string[];
-  /** The models a `writers` entry may name (the Writer select's options). */
-  writer_models?: string[];
-}
-
 export interface TestChatState {
   pair: string;
   skipWait: boolean;
@@ -179,6 +159,9 @@ export interface TestChatState {
   errors: string[];
   /** A newer draft stored elsewhere while the page had an unsaved edit: Keep mine / Take theirs pending. */
   conflict: ConfigBody | null;
+  /** The newest read that landed while a write of ours was out or a Reload was owed: offered again (`offer`) once
+   *  the write settles. */
+  held: ConfigBody | null;
 }
 
 export type TestChatAction =
@@ -217,7 +200,7 @@ export function initTestChat(pair: string, skipWait = false): TestChatState {
   return {
     pair, skipWait, text: "", photo: null, describing: null, photoError: null, sides: { L: EMPTY_SIDE, R: EMPTY_SIDE },
     checkpoint: null, previous: null, draft: null, rev: 0,
-    dirty: false, savingDraft: false, committing: false, stale: false, errors: [], conflict: null,
+    dirty: false, savingDraft: false, committing: false, stale: false, errors: [], conflict: null, held: null,
   };
 }
 
@@ -237,24 +220,18 @@ export function canSend(state: TestChatState): boolean {
     && UI_SIDES.every((s) => state.sides[s].pending === null && state.sides[s].revealAt === null);
 }
 
-/** Same config whatever the key order (the server's JSON may order a side's keys differently). */
-function stable(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(stable);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable((v as Record<string, unknown>)[k])]));
-  }
-  return v;
-}
-export const sameConfig = (a: unknown, b: unknown) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
-
-/** A control (or the JSON editor) may edit the draft: loaded, nothing out, not stale, no Keep mine / Take theirs pending. */
+/** A control (or the JSON editor) may edit the draft: loaded, nothing out (no photo request either: `photoDescribed`
+ *  then owes the draft side's Turn on the stored draft), not stale, no Keep mine / Take theirs pending. */
 export function canEdit(state: TestChatState): boolean {
-  return state.draft !== null && !state.savingDraft && !state.committing && !state.stale && state.conflict === null;
+  return state.draft !== null && !state.savingDraft && !state.committing && !state.stale && state.conflict === null
+    && state.describing === null;
 }
 
-/** Keep mine's draft PUT: the page's draft on the conflict's rev; null without a conflict. */
+/** Keep mine's draft PUT: the page's draft on the conflict's rev; null without a conflict, or while the photo request
+ *  is out (as `canEdit`). */
 export function keepMineSave(state: TestChatState): { draft: FullAiConfig; rev: number } | null {
-  return state.conflict && state.draft ? { draft: state.draft, rev: state.conflict.rev } : null;
+  return state.conflict && state.draft && state.describing === null
+    ? { draft: state.draft, rev: state.conflict.rev } : null;
 }
 
 /** Save (the stored draft becomes the checkpoint): something to save, nothing unstored, out, stale or refused. */
@@ -280,6 +257,13 @@ export function buildTurnPayload(state: TestChatState, ui: UiSide): TurnPayload 
 
 const owe = (s: SideState, text: string, photo?: FanPhoto): SideState =>
   ({ ...s, pending: { n: s.turns.length + 1, text, ...(photo ? { photo } : {}), inFlight: true, error: null } });
+
+/** A photo request that sends nothing: his line and image back in the composer (a line typed meanwhile is kept after
+ *  it), with why. */
+function unsent(state: TestChatState, d: Describing, why: string): TestChatState {
+  const text = [d.text, state.text].filter((t) => t.trim() !== "").join(" ");
+  return { ...state, describing: null, text, photo: d.image, photoError: why };
+}
 
 const withSide = (state: TestChatState, ui: UiSide, side: SideState): TestChatState =>
   ({ ...state, sides: { ...state.sides, [ui]: side } });
@@ -327,15 +311,16 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
     case "photoDescribed": {
       const d = state.describing;
       if (action.pair !== state.pair || !d) return state;
+      // The draft side's Turn reads the stored draft only: with Send blocked meanwhile, nothing is sent.
+      const block = sendBlock(state);
+      if (block) return unsent(state, d, `Not sent: ${block}`);
       return { ...state, describing: null,
         sides: { L: owe(state.sides.L, d.text, action.photo), R: owe(state.sides.R, d.text, action.photo) } };
     }
     case "photoFailed": {
       const d = state.describing;
       if (action.pair !== state.pair || !d) return state;
-      // His line and image back in the composer (a line typed meanwhile is kept after it).
-      const text = [d.text, state.text].filter((t) => t.trim() !== "").join(" ");
-      return { ...state, describing: null, text, photo: d.image, photoError: action.error };
+      return unsent(state, d, action.error);
     }
     case "turnResult": {
       const s = state.sides[action.side];
@@ -379,29 +364,25 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return { ...state, pair: action.pair, text: "", photo: null, describing: null, photoError: null,
         sides: { L: EMPTY_SIDE, R: EMPTY_SIDE } };
     case "loaded":
-      return adopt(state, action.body);
+      return offerHeld(adopt(state, action.body));
     case "editDraft":
       return { ...state, draft: action.draft, dirty: true, errors: [] };
     case "saveDraft":
       return { ...state, savingDraft: true };
     case "draftSaved":
-      return { ...state, draft: action.draft, rev: action.rev, dirty: false, savingDraft: false, errors: [] };
+      return offerHeld({ ...state, draft: action.draft, rev: action.rev, dirty: false, savingDraft: false, errors: [] });
     case "configFailed":
-      return { ...state, errors: action.errors, savingDraft: false, committing: false };
+      return offerHeld({ ...state, errors: action.errors, savingDraft: false, committing: false });
     case "commit":
       return { ...state, committing: true };
     case "saved":
-      return { ...state, previous: state.checkpoint, checkpoint: state.draft, rev: action.rev, committing: false, errors: [] };
+      return offerHeld({ ...state, previous: state.checkpoint, checkpoint: state.draft, rev: action.rev, committing: false, errors: [] });
     case "rolledBack":
-      return { ...state, checkpoint: state.previous, previous: state.checkpoint, rev: action.rev, committing: false, errors: [] };
+      return offerHeld({ ...state, checkpoint: state.previous, previous: state.checkpoint, rev: action.rev, committing: false, errors: [] });
     case "stale":
       return { ...state, stale: true, savingDraft: false, committing: false };
-    case "externalDraft": {
-      // A write of ours out (its answer carries the newest rev) or a Reload owed: that path settles it.
-      if (state.savingDraft || state.committing || state.stale) return state;
-      if (action.body.rev <= Math.max(state.rev, state.conflict?.rev ?? 0)) return state;
-      return state.dirty ? { ...state, conflict: action.body } : adopt(state, action.body);
-    }
+    case "externalDraft":
+      return offer(state, action.body);
     case "keepMine": {
       if (!state.conflict) return state;
       const { checkpoint, previous, rev } = state.conflict;
@@ -422,6 +403,20 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
         (t) => (t.settle?.kind === "pending" ? { ...t, settle: { kind: "failed", error: action.error } } : t));
   }
 }
+
+/** A read config body: held while a write of ours is out or a Reload is owed (the newest rev kept); else dropped
+ *  unless newer than the page's rev and any conflict's, adopted, or with an unsaved edit raised as the conflict. */
+function offer(state: TestChatState, body: ConfigBody): TestChatState {
+  if (state.savingDraft || state.committing || state.stale) {
+    return { ...state, held: state.held && state.held.rev > body.rev ? state.held : body };
+  }
+  if (body.rev <= Math.max(state.rev, state.conflict?.rev ?? 0)) return state;
+  return state.dirty ? { ...state, conflict: body } : adopt(state, body);
+}
+
+/** A write settled (`draftSaved`, `saved`, `rolledBack`, `loaded`, `configFailed`): the held read, if any, is offered
+ *  once and cleared (still stale, `offer` holds it again until the Reload's `loaded`). */
+const offerHeld = (state: TestChatState): TestChatState => (state.held ? offer({ ...state, held: null }, state.held) : state);
 
 /** A stored config body taken whole (`loaded`, an adopted `externalDraft`, Take theirs): nothing unstored is left. */
 function adopt(state: TestChatState, { checkpoint, previous, draft, rev, errors }: ConfigBody): TestChatState {
@@ -467,7 +462,7 @@ export function replyLine(r: TurnResponse): string {
   const fell = r.attempts.filter((a) => !a.rewrite && a.outcome !== "ok");
   const why = fell.length ? ` (${outcomesLine(fell)})` : "";
   const cap = !r.caption ? "" : r.caption.writer === "caption" ? ` · Caption ${r.caption.model}` : ` · Caption chat (${r.caption.outcome})`;
-  return `${head} · Writer ${r.writer} · ${fell.length} fell before${why}${cap}${sceneTail(r)}`;
+  return `${head} · Writer ${r.writer} · ${fell.length} fell before${why}${cap}${sceneTail(r)}${heatTail(r.heat_check)}`;
 }
 
 const usd = (c: number) => `$${c % 100 ? (c / 100).toFixed(2) : c / 100}`;
@@ -479,6 +474,16 @@ function sceneTail(r: TurnResponse): string {
   const px = p && p.jev_cents != null && p.jev_cents !== p.list_cents ? ` · price Jev ${usd(p.jev_cents)} (list ${usd(p.list_cents)})`
     : p?.error ? ` · price Jev failed (list ${usd(p.list_cents)})` : "";
   return s + px;
+}
+
+/** The Heat check's tail: ` · her level 3 of Heat 3`, then ` · rewritten (was 4)` or ` · over Heat, sent`; a failed
+ *  check ` · Heat check failed`; nothing when it did not run. */
+export function heatTail(h: HeatCheck | null | undefined): string {
+  if (!h) return "";
+  if (h.outcome === "error" || h.level == null) return " · Heat check failed";
+  const lvl = ` · her level ${h.level} of Heat ${h.cap}`;
+  if (h.outcome === "regen_ok") return `${lvl} · rewritten${h.first_level != null ? ` (was ${h.first_level})` : ""}`;
+  return h.outcome === "over_sent" ? `${lvl} · over Heat, sent` : lvl;
 }
 
 /** The text in place of her bubbles on a Turn with none; null when she answered. */
@@ -500,70 +505,6 @@ const DROP_WORDS: Record<string, string> = { empty: "nothing left to send", bann
 /** A failed Turn no Writer answered: the Writers' outcomes are the reason. When one answered and the reply chain
  *  dropped its text, an earlier Writer's "no_key" is not why, so the outcomes line stays out. */
 export const writersFailed = (r: TurnResponse) => r.status === "failed" && r.attempts.every((a) => a.outcome !== "ok");
-
-/** The reply speeds (`full_ai_config.REPLY_SPEEDS`) with their labels, and the one a config without the key runs on. */
-export const REPLY_SPEEDS = [{ value: "0-2m", label: "0-2 min" }, { value: "0-15-60", label: "0-15-60" }];
-export const DEFAULT_SPEED = "0-2m";
-const allLayers = (on: boolean) => Object.fromEntries(STYLE_LAYERS.map((k) => [k, on])) as StyleLayers;
-
-/** The side's layers as the server reads them (`full_ai_config.style_layers`): a valid legacy `text_style` wins
- *  (formal = all off, girl = all on), then `style`; a config with neither is the server default, all on. */
-export function styleLayers(cfg: FullAiConfig | null): StyleLayers {
-  const ts = cfg?.text_style;
-  if (ts === CASUAL_STYLE || ts === "formal") return allLayers(ts === CASUAL_STYLE);
-  if (!cfg?.style) return allLayers(true);
-  const s = cfg.style;
-  return Object.fromEntries(STYLE_LAYERS.map((k) => [k, s[k] === true])) as StyleLayers;
-}
-
-/** The Human style master switch: on / off when every layer agrees, mixed otherwise. */
-export type HumanStyle = "on" | "off" | "mixed";
-export function humanStyle(cfg: FullAiConfig | null): HumanStyle {
-  const v = Object.values(styleLayers(cfg));
-  return v.every(Boolean) ? "on" : v.some(Boolean) ? "mixed" : "off";
-}
-/** The layers that are off, in plain words ("typos, spacing"), for the mixed state's hint. */
-const LAYER_WORD: Record<StyleLayer, string> = {
-  texting: "texting style", nonnative: "non-native", spacing: "spacing", typos: "typos", painful: "painful texting",
-};
-export const layersOff = (cfg: FullAiConfig | null) =>
-  STYLE_LAYERS.filter((k) => !styleLayers(cfg)[k]).map((k) => LAYER_WORD[k]).join(", ");
-
-/** The master switch's edit: every layer on or off. */
-export const humanStylePatch = (on: boolean): Partial<FullAiConfig> => ({ style: allLayers(on), text_style: undefined });
-/** The Typos switch's edit: the typos layer alone. Both drop a legacy `text_style` (it would win over `style`). */
-export const typosPatch = (cfg: FullAiConfig | null, on: boolean): Partial<FullAiConfig> =>
-  ({ style: { ...styleLayers(cfg), typos: on }, text_style: undefined });
-
-/** `full_ai_config.MAX_WRITERS`. */
-export const MAX_WRITERS = 4;
-/** The Writer select's edit: `model` first, the others keep their order as fallbacks (a full list drops its last). */
-export function writerPatch(cfg: FullAiConfig | null, model: string): Partial<FullAiConfig> {
-  const rest = (cfg?.writers ?? []).filter((w) => w !== model);
-  return { writers: [model, ...rest].slice(0, MAX_WRITERS) };
-}
-
-/** The Writer checklist's tick: an unticked model joins the chain's end, a ticked one leaves it. Null when refused:
- *  the last Writer (the server needs 1) or a full chain (`MAX_WRITERS`). */
-export function toggleWriterPatch(cfg: FullAiConfig | null, model: string): Partial<FullAiConfig> | null {
-  const ws = cfg?.writers ?? [];
-  if (ws.includes(model)) return ws.length > 1 ? { writers: ws.filter((w) => w !== model) } : null;
-  return ws.length < MAX_WRITERS ? { writers: [...ws, model] } : null;
-}
-
-/** A side's Writer chain for its window header, in the order tried. */
-export const writersLine = (cfg: FullAiConfig) => `Writers ${(cfg.writers ?? []).join(" → ") || "none"}`;
-
-const onOff = (on: boolean) => (on ? "on" : "off");
-
-/** A side's config for its window header: reply speed, Human style (+ "Typos off" unless all off), GIFs. */
-export function configLine(cfg: FullAiConfig): string {
-  const speed = cfg.reply_speed ?? DEFAULT_SPEED;
-  const label = REPLY_SPEEDS.find((o) => o.value === speed)?.label ?? speed;
-  const hs = humanStyle(cfg);
-  const typos = hs !== "off" && !styleLayers(cfg).typos ? " · Typos off" : "";
-  return `Reply ${label} · Human style ${hs}${typos} · GIFs ${onOff(cfg.gifs === true)} · Caption ${cfg.caption_writer ?? "chat"}`;
-}
 
 /** Each Writer's outcome, in chain order. */
 export const outcomesLine = (attempts: Attempt[]) => attempts.map((a) => `${a.writer} ${a.outcome}`).join(" · ");

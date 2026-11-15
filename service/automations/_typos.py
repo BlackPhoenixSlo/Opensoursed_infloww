@@ -123,21 +123,28 @@ def _correction_bubble(word: str, rng) -> str:
 
 def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
                          max_bubbles: int = STYLE_MAX_BUBBLES,
-                         allow_correction: bool = True) -> tuple[list[str], bool]:
+                         allow_correction: bool = True,
+                         reply_rate: float | None = None) -> tuple[list[str], bool]:
     """Core injector → (new_parts, correction_emitted). At most one thumb-typo across
     `parts`, rate ~1 per 5 sentences, and SOMETIMES a '*fix' correction bubble. Pure:
     takes an explicit `rng` (random.Random) — caller seeds it off (fan_id, text) for
     reproducibility. When `allow_correction` is False the thumb-slip still rides but
     the '*fix' bubble is suppressed (the per-fan throttle path); the True branch keeps
-    the original RNG draw order so seeded callers stay byte-identical."""
+    the original RNG draw order so seeded callers stay byte-identical. `reply_rate`
+    (Full AI's `typo_pct` / 100) replaces the per-sentence chance with a flat
+    per-reply one; None keeps the per-sentence rule (same single draw)."""
     parts = [p for p in parts if p and p.strip()]
     if not parts:
         return parts, False
     protect_set = {w.lower() for name in protect for w in _WORD_RE.findall(str(name))}
 
     # sentences across the whole reply → P(one typo) = min(1, n * rate)
-    n_sent = sum(max(1, len(_SENT_RE.findall(p))) for p in parts)
-    if rng.random() >= min(1.0, n_sent * _TYPO_SENTENCE_RATE):
+    if reply_rate is None:
+        n_sent = sum(max(1, len(_SENT_RE.findall(p))) for p in parts)
+        p_typo = min(1.0, n_sent * _TYPO_SENTENCE_RATE)
+    else:
+        p_typo = reply_rate
+    if rng.random() >= p_typo:
         return list(parts), False
 
     # collect eligible words across all bubbles, pick one. Scan WHOLE
@@ -184,10 +191,11 @@ def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
 
 
 def humanize_typos(parts: list[str], rng, *, protect=(),
-                   max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
+                   max_bubbles: int = STYLE_MAX_BUBBLES, reply_rate: float | None = None) -> list[str]:
     """Back-compat wrapper returning just the bubble list (drops the emitted flag).
     Callers that need the per-fan '*fix' throttle use apply_typo_throttle instead."""
-    return _humanize_typos_impl(parts, rng, protect=protect, max_bubbles=max_bubbles)[0]
+    return _humanize_typos_impl(parts, rng, protect=protect, max_bubbles=max_bubbles,
+                                reply_rate=reply_rate)[0]
 
 
 # ── Per-fan '*fix' correction throttle ───────────────────────────────
@@ -219,12 +227,13 @@ def _typo_correction_allowed(state: dict, now: datetime) -> bool:
     return (now - last) >= _TYPO_FIX_MIN_INTERVAL or since >= _TYPO_FIX_MIN_EXCHANGES
 
 
-def _throttled(state: dict, parts, rng, now: datetime, *, protect, max_bubbles) -> tuple[list[str], dict]:
+def _throttled(state: dict, parts, rng, now: datetime, *, protect, max_bubbles,
+               reply_rate: float | None = None) -> tuple[list[str], dict]:
     """One reply through humanize_typos under the '*fix' throttle `state`:
     (bubbles sliced to max_bubbles, the next state). Pure."""
     out, emitted = _humanize_typos_impl(
         parts, rng, protect=protect, max_bubbles=max_bubbles,
-        allow_correction=_typo_correction_allowed(state, now))
+        allow_correction=_typo_correction_allowed(state, now), reply_rate=reply_rate)
     return out[:max_bubbles], ({"at": now.isoformat(), "since": 0} if emitted else
                                {"at": state.get("at"),
                                 "since": int(state.get("since", 0) or 0) + 1})
@@ -232,7 +241,8 @@ def _throttled(state: dict, parts, rng, now: datetime, *, protect, max_bubbles) 
 
 async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
                               max_bubbles: int = STYLE_MAX_BUBBLES,
-                              state: dict | None = None) -> list[str]:
+                              state: dict | None = None,
+                              reply_rate: float | None = None) -> list[str]:
     """humanize_typos + the per-fan, cross-automation '*fix' throttle. The thumb-slip
     always rides; the correction bubble is suppressed unless _typo_correction_allowed.
     Every reply that runs this layer bumps the per-fan 'since' counter (shared across
@@ -245,14 +255,16 @@ async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
     is read or written and the dict is updated in place with the next state."""
     now = datetime.utcnow()
     if state is not None:
-        out, nxt = _throttled(state, parts, rng, now, protect=protect, max_bubbles=max_bubbles)
+        out, nxt = _throttled(state, parts, rng, now, protect=protect, max_bubbles=max_bubbles,
+                              reply_rate=reply_rate)
         state.clear()
         state.update(nxt)
         return out
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
         cur = fan_state(fan, _TYPO_FIX_STATE_KEY)
-        out, nxt = _throttled(cur, parts, rng, now, protect=protect, max_bubbles=max_bubbles)
+        out, nxt = _throttled(cur, parts, rng, now, protect=protect, max_bubbles=max_bubbles,
+                              reply_rate=reply_rate)
         if fan is not None:
             # Atomic with nothing else here, but the blob merge is the shared one —
             # this throttle is cross-sender state and must not clobber a sibling key.

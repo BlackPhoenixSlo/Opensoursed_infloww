@@ -105,17 +105,26 @@ class FakeInfoJev:
 
 @contextlib.contextmanager
 def _fake_jev(fake: FakeJev, info: FakeInfoJev | None = None):
-    """Both Jev seams faked: the Router's (`fake`) and the info Jev's (`info`, quiet by default),
-    so no Turn reaches TypeSafe."""
+    """The Jev seams faked: the Router's (`fake`), the info Jev's (`info`, quiet by default) and
+    the Heat check's (`QuietHeatJev`: level 0, never over), so no Turn reaches TypeSafe."""
+    from automations import _heat_jev as hj
     from automations import _info_jev as ij
-    saved = rj._client, ij._client
+    saved = rj._client, ij._client, hj._client
     info = info or FakeInfoJev()
     rj._client = lambda key: fake  # type: ignore[assignment]
     ij._client = lambda key: info  # type: ignore[assignment]
+    hj._client = lambda key: QuietHeatJev()  # type: ignore[assignment]
     try:
         yield fake
     finally:
-        rj._client, ij._client = saved  # type: ignore[assignment]
+        rj._client, ij._client, hj._client = saved  # type: ignore[assignment]
+
+
+class QuietHeatJev:
+    """`_heat_jev._client` for suites that do not test the Heat check: her level 0, never over."""
+
+    async def system_one(self, state, questions, model=None):
+        return SimpleNamespace(scores={"reply_level": SimpleNamespace(score=0.0, probabilities={0: 1.0})})
 
 
 class FakeWriterHTTP:

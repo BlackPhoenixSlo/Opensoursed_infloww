@@ -141,10 +141,10 @@ class _SlowJev(FakeJev):
 
 
 def case_sell_step_inside_the_deadline():
-    """The Router takes all but 0.3 s of the 145 s bound; the dupe read takes 3 s of real time: the
+    """The Router takes all but 0.3 s of the 245 s bound; the dupe read takes 3 s of real time: the
     sell step is cut at the time left, the Turn is chat with inventory_unknown, no PPV."""
     bound = turn_bound_s(DEFAULTS)
-    assert bound == 145, bound
+    assert bound == 245, bound
     clock, real = _Clock(), vault_dupes.find_duplicates
 
     async def slow(*a, **k):

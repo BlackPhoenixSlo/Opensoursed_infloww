@@ -14,6 +14,8 @@ Covered:
                               suppressed, the slip still rides, 'since' increments.
   case_reenables_by_count     state at 50 exchanges → correction allowed again.
   case_reenables_by_time      state >1h old → correction allowed again.
+  case_state_path_reply_rate  Full AI's `state=` path passes `reply_rate`: 1.0 always
+                              slips, 0.0 never; 'since' still counts each reply.
 
 Run: ./venv/bin/python service/tests/test_typo_throttle.py   (exit 0 = pass)
 """
@@ -158,6 +160,19 @@ def case_blocked_within_window():
     asyncio.run(go())
 
 
+def case_state_path_reply_rate():
+    async def go():
+        one = ["maybe tonight babe"]
+        for seed in range(50):
+            st: dict = {}
+            out = await apply_typo_throttle("x", 1, list(one), random.Random(seed), state=st, reply_rate=1.0)
+            assert out[0] != one[0], (seed, out)
+            st2: dict = {}
+            out = await apply_typo_throttle("x", 1, list(one), random.Random(seed), state=st2, reply_rate=0.0)
+            assert out == one and st2 == {"at": None, "since": 1}, (seed, out, st2)
+    asyncio.run(go())
+
+
 if __name__ == "__main__":
     _harness.run(
         case_impl_allow_flag,
@@ -166,4 +181,5 @@ if __name__ == "__main__":
         case_reenables_by_count,
         case_reenables_by_time,
         case_blocked_within_window,
+        case_state_path_reply_rate,
     )

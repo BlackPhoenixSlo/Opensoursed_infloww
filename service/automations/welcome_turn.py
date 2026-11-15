@@ -177,7 +177,22 @@ async def enqueue_turn_handoff(account_id: str, fan_id: int) -> str | None:
 
     `run_at` clears our own 150s rest (the engine checks `fan_on_cooldown` in
     its send loop); the executor's 30s tick then picks it up within half a
-    minute, so he is answered about three minutes after he wrote."""
+    minute, so he is answered about three minutes after he wrote.
+
+    A Fan Full AI Chat claims (spec 04b, Welcome handoff) gets one `full_ai_chat`
+    job instead, the shape `webhook_dispatch._full_ai_hook` enqueues, anchored on
+    his newest inbound row; also when Get to know fans is off."""
+    run_at = datetime.utcnow() + timedelta(
+        seconds=WELCOME_REST_S + HANDOFF_DELAY_PAD_S)
+    full_ai = await _full_ai_handoff(account_id, fan_id)
+    if full_ai is not None:
+        rule_id, anchor = full_ai
+        await ax.enqueue_job(
+            account_id, "full_ai_chat",
+            payload={"only_fan_ids": [int(fan_id)], "anchor": anchor,
+                     "_rule_id": rule_id},
+            run_at=run_at)
+        return "full_ai_chat"
     kind = await handoff_engine(account_id)
     if kind is None:
         return None
@@ -185,9 +200,37 @@ async def enqueue_turn_handoff(account_id: str, fan_id: int) -> str | None:
         account_id, kind,
         payload={"only_fan_ids": [int(fan_id)], "force_ids": [int(fan_id)],
                  "turn_handoff_ids": [int(fan_id)]},
-        run_at=datetime.utcnow() + timedelta(
-            seconds=WELCOME_REST_S + HANDOFF_DELAY_PAD_S))
+        run_at=run_at)
     return kind
+
+
+async def _full_ai_handoff(account_id: str, fan_id: int) -> tuple[int, int] | None:
+    """`(full_ai_chat rule id, anchor message id)` when Full AI Chat claims this
+    Fan and he has an inbound row (media-only counts); else None. Any failure
+    reads as None, logged: a Full AI fault never loses the handoff."""
+    try:
+        from automations import full_ai_owner_io   # lazy: import cycle safety
+        if int(fan_id) not in await full_ai_owner_io.claimed_ids(account_id, [int(fan_id)]):
+            return None
+        async with get_session() as s:
+            anchor = (await s.execute(
+                select(Message.message_id).where(
+                    Message.account_id == str(account_id),
+                    Message.fan_id == int(fan_id),
+                    Message.direction == "in",
+                    Message.is_unsent.is_(False),
+                )
+                .order_by(Message.created_at.desc(), Message.message_id.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+        if anchor is None:
+            return None
+        rule_id = await ax.enabled_rule_id(account_id, "full_ai_chat")
+        return None if rule_id is None else (int(rule_id), int(anchor))
+    except Exception:
+        log.warning("welcome handoff full_ai check failed account=%s fan=%s — "
+                    "today's handoff", account_id, fan_id, exc_info=True)
+        return None
 
 
 class Landed(NamedTuple):

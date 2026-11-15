@@ -73,10 +73,22 @@ def _sha(prompts) -> str:
     return hashlib.sha256(json.dumps(prompts, sort_keys=True).encode()).hexdigest()
 
 
+def _old_twins(prompts):
+    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST where Shadow composes
+    the old three (off-path wording PR); put back, the prompts are the pinned builder's."""
+    s = json.dumps(prompts)
+    fmt = {"close": wr.CLOSE_BY_ID, "example": wr._voice.HER.sell_caption_example}
+    for new, old in ((wr.SEXT_HOT_TEST, wr.SEXT_HOT),
+                     (wr.SELL_STEP_TEST.format(**fmt), wr.SELL_STEP.format(**fmt)),
+                     (wr.ESCALATION_TEST.format(close=wr.CLOSE_BY_ID), wr.ESCALATION.format(close=wr.CLOSE_BY_ID))):
+        s = s.replace(json.dumps(new)[1:-1], json.dumps(old)[1:-1])
+    return json.loads(s)
+
+
 def case_flag_off_snapshot():
     # Selling off in test Mode puts SELL_OFF_LINE in NO_SELL_OFFERS' place (sell_nearest PR); put
     # back, the snapshot is byte-identical to the pinned one.
-    snap = json.loads(json.dumps(_snapshot(lead_in=False)).replace(
+    snap = json.loads(json.dumps(_old_twins(_snapshot(lead_in=False))).replace(
         json.dumps(wr.SELL_OFF_LINE)[1:-1], json.dumps(wr.NO_SELL_OFFERS)[1:-1]))
     assert _sha(snap) == FLAG_OFF_SHA
     # Shadow never leads, flag on or off.

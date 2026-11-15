@@ -55,3 +55,34 @@ export const HELP: Record<string, string> = {
   nanogpt: "Full AI Chat's first Writer (Euryale v2.3). nano-gpt.com.",
   openrouter: "Full AI Chat's second Writer (Hermes 4 405B). openrouter.ai.",
 };
+
+/** Provider id → the vendor page where you create / copy an API key (not the
+ *  sign-up page), linked under every key field so nobody has to search for it.
+ *  Logged-out visitors land on the vendor's login, which bounces back here. */
+export const KEY_URLS: Record<string, string> = {
+  deepseek: "https://platform.deepseek.com/api_keys",
+  deepinfra: "https://deepinfra.com/dash/api_keys",
+  zai: "https://z.ai/manage-apikey/apikey-list",
+  anthropic: "https://console.anthropic.com/settings/keys",
+  typesafe: "https://console.typesafe.ai/home",
+  nanogpt: "https://nano-gpt.com/api",
+  openrouter: "https://openrouter.ai/settings/keys",
+  google: "https://console.cloud.google.com/apis/credentials",
+};
+
+/** Server secrets-store key (service/secrets_store.py KNOWN) → provider id in
+ *  KEY_URLS. Keys with no vendor (passwords, share token) have no entry. */
+const SERVER_KEY_PROVIDER: Record<string, string> = {
+  DEEPSEEK_API_KEY: "deepseek",
+  ZAI_API_KEY: "zai",
+  ANTHROPIC_API_KEY: "anthropic",
+  TYPESAFE_API_KEY: "typesafe",
+  HELP_ASSISTANT_DEEPSEEK_KEY: "deepseek",
+  HELP_ASSISTANT_ANTHROPIC_KEY: "anthropic",
+  GOOGLE_DRIVE_API_KEY: "google",
+};
+
+/** The key page for a provider id or a server key name, or null. */
+export function keyUrl(name: string): string | null {
+  return KEY_URLS[SERVER_KEY_PROVIDER[name] ?? name] ?? null;
+}

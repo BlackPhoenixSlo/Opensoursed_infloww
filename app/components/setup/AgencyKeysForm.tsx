@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { relay } from "@/lib/relay";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
+import KeyLink from "@/components/setup/KeyLink";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { errText } from "@/lib/errText";
 import { ifConfirm } from "@/components/ui/ifConfirm";
@@ -117,6 +118,7 @@ export function AgencyKeysForm(
           ) : (
             HELP[name] && <p className="text-[11px] text-fg-dim">{HELP[name]}</p>
           )}
+          <KeyLink name={name} />
           </div>
         ))
       )}

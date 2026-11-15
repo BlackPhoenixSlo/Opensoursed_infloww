@@ -100,6 +100,9 @@ SWITCHES: tuple[Switch, ...] = (
            "Most smart lists one Creator may have active (each costs OF writes). Applies to new "
            "activations; lists already active stay.",
            "number", 10, lambda raw: int(raw), "smart_lists_api", minimum=1, maximum=50),
+    Switch("FULL_AI_CHAT_OFF", "Full AI Chat off",
+           "On: Full AI Chat sends nothing on any Creator; its Fans go back to the other automations.",
+           "bool", False, _truthy, "automations/full_ai_owner_io._off"),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
 
