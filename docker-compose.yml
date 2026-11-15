@@ -142,6 +142,9 @@ services:
       # TypeSafe (Jev): the FM auto-reply's off-script check only. Blank = the
       # check is skipped and the script is sent as before.
       TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
+      # Seconds after a Full AI DM before the account's next write (default 2;
+      # 11 = the old spacing, the fallback if OF refuses writes as too fast).
+      FULL_AI_WRITE_GAP_S: "${FULL_AI_WRITE_GAP_S:-}"
       # Founder second factor (auth._read_admin_password), and the ONE key where
       # the environment outranks the Setup → Keys store — which is what makes
       # rotating it possible at all. It only works if it is NAMED here: the relay

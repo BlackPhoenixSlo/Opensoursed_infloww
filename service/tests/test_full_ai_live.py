@@ -71,6 +71,7 @@ def _world(jev=(QUIET, 1.0)):
 
     async def unpaced(account_id, fn, **kw):
         purposes.append(kw.get("send_purpose"))
+        assert kw.get("min_gap_s") == full_ai_live.WRITE_GAP_S == 2.0, kw   # the Full AI gap, not 11 s
         return await real_paced(account_id, fn, **{**kw, "min_gap_s": 0.0, "pause_s": 0.0})
 
     def make(account_id):

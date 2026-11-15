@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
@@ -72,6 +73,11 @@ WELCOME = "welcome"                    # send_welcome's automation_kind: never a
 _TURN_KEY = ["account_id", "fan_id", "mode", "trigger_key"]
 BUSY_RETRY_S, BUSY_RUNS = 20, 3        # a busy Fan: same payload at +20 s; after 3 runs the sweep (68)
 SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h, 20 Turns per pass
+# A Full AI DM lets the account's next write start this soon after it (the write gate's gap; every
+# other sender keeps of_write's 11 s). Measured 2026-11-15 on OF: 10 DMs each way (fan -> Creator,
+# Creator -> fan) 1.0-2.8 s apart, none refused. The DM window (dm_rate, OF_DM_PER_MIN) still caps
+# the minute. FULL_AI_WRITE_GAP_S=11 is the old spacing.
+WRITE_GAP_S = max(0.0, float(os.environ.get("FULL_AI_WRITE_GAP_S") or 2.0))
 # (account, Fan) whose live job runs in this process now: jobs for different Fans of one Creator
 # overlap (automation_executor `_PER_FAN_KINDS`), so `reap` leaves these and the sweep skips them.
 _running: set[tuple[str, int]] = set()
@@ -429,7 +435,8 @@ async def _look(look: Look) -> tuple[str, str] | None:
 async def _dm(client, look: Look, text: str, **kw) -> dict:
     """One DM on OF; writes its own `messages` row with OF's text and time (attributed)."""
     res = await ax.of_write_paced(look.account_id, lambda: client.send_message(look.fan_id, text, **kw),
-                                  send_purpose=SEND_PURPOSE, tries=1, dm=True)
+                                  send_purpose=SEND_PURPOSE, tries=1, dm=True,
+                                  min_gap_s=WRITE_GAP_S)
     mid = res.get("id") if isinstance(res, dict) else None
     if mid:
         await write_outbound_attribution(
