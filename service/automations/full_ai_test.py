@@ -133,6 +133,13 @@ def _his_line(r) -> str | None:
     return his[-1] if his else None
 
 
+def _test_photo(reply: dict) -> dict | None:
+    """`reply_json.fan_photo` when it is his Test chat photo (`text`, `desc`). A live row keeps
+    `full_ai_photo.describe_turn`'s outcome there (`outcome`, `model`, `ms`): not a photo line."""
+    photo = reply.get("fan_photo")
+    return photo if photo and "text" in photo else None
+
+
 def _n(trigger_key: str) -> int:
     return int(trigger_key.rsplit(":", 1)[1])
 
@@ -145,7 +152,7 @@ def test_thread(rows) -> list[SimpleNamespace]:
     Pure."""
     out: list[SimpleNamespace] = []
     for r in rows:
-        photo = _loads(r.reply_json).get("fan_photo")
+        photo = _test_photo(_loads(r.reply_json))
         his = photo["text"] if photo else _his_line(r)
         if his or photo:
             out.append(_line("in", his, r.created_at, len(out) + 1, photo))
@@ -391,7 +398,7 @@ def session_row(r: AiDecision) -> dict:
     """One row as the session read returns it."""
     reply = _loads(r.reply_json)
     caption = {"caption": reply["caption"]} if reply.get("caption") else {}   # caption_writer "caption"
-    photo = reply.get("fan_photo")
+    photo = _test_photo(reply)
     return {"row_id": r.id, "side": reply.get("side"), "n": _n(r.trigger_key),
             "text": photo["text"] if photo else _his_line(r), "photo": photo,
             "parts": reply.get("parts") or [], "route": r.route, "heat": r.heat,

@@ -192,6 +192,17 @@ def _r(i, text, *, row="otherwise", price=None, outcome=None, minutes=None, part
                                **({"chat_tease": {"cents": price}} if tease else {})}))
 
 
+def case_live_photo_outcome_is_not_a_photo_line():
+    """A live row keeps the photo read's outcome in `reply_json.fan_photo` (no `text`): the folds
+    read his line from `jev_json`, never `photo["text"]` (public 2026-11-15: every live Turn after
+    the first raised KeyError)."""
+    r = _r(1, "hey")
+    r.reply_json = json.dumps({**json.loads(r.reply_json), "fan_photo": {"outcome": "none", "model": None, "ms": 3}})
+    lines = ft.test_thread([r])
+    assert [(m.direction, m.body, m.media_count) for m in lines] == [("in", "hey", 0), ("out", "ok", 0)], lines
+    assert ft.chat_tease_of([r], T + timedelta(minutes=2))
+
+
 def case_folds():
     now = T + timedelta(minutes=30)
     chat = [_r(i, f"line {i}") for i in range(1, 5)]
