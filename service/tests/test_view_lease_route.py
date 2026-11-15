@@ -19,6 +19,10 @@
   • case_opened_starts_warm: `opened` starts the App-open warm (app_open_warm.start, faked) with the
     principal's own Creators, the live leases first and the renewal's Select-refreshed ids;
     `warm` answers its summary; without `opened` no warm and "none".
+  • case_legacy_stream_leases: GET /events from a browser page (Referer) without `lease` (a tab loaded
+    before 1a) leases the session's own Creators while the stream runs (owner: its Agency's only;
+    chatter_ab both; a watcher never) and nothing after it ends; `lease=1`, no Referer, or signed out
+    lease nothing.
 
 Run: ./venv/bin/python service/tests/test_view_lease_route.py   (exit 0 = green)
 """
@@ -75,6 +79,7 @@ accounts_admin_api._spawn_bg = _spawn_inline
 
 def _reset():
     view_lease._holders.clear()
+    view_lease._streams.clear()
     POLLS.clear()
 
 
@@ -246,6 +251,45 @@ def case_opened_gains_go_to_warm():
     finally:
         app_open_warm.start = saved
         app_open_warm._warmed_at.update(saved_at)
+
+
+
+
+def _stream_leased(client, qs="", referer="https://app.example/messages-pro"):
+    """GET /events{qs} with the stream stubbed to two frames: the Creators leased between them,
+    and the status. None when the stream never ran."""
+    seen: list[set] = []
+    original = server.sse_stream
+
+    async def _two(_request, _scope, **_kw):
+        yield b": a\n\n"
+        seen.append(view_lease.leased_ids())
+        yield b": b\n\n"
+    server.sse_stream = _two
+    try:
+        r = client.get(f"/events{qs}", headers={"Referer": referer} if referer else {})
+    finally:
+        server.sse_stream = original
+    return (seen[0] if seen else None), r.status_code
+
+
+def case_legacy_stream_leases():
+    _reset()
+    owner = fx.login_owner("agency_a_owner")
+    assert _stream_leased(owner) == ({A}, 200), "a pre-1a tab: its own Creators, not Agency B's"
+    assert view_lease.leased_ids() == set() and view_lease._streams == {}, "ended: dropped"
+    assert _stream_leased(owner, "?scope=all&lease=1") == (set(), 200), "the app since 1a"
+    assert _stream_leased(owner, referer=None) == (set(), 200), "no Referer: not a browser page"
+    assert _stream_leased(fx.login_chatter("chatter_a"), f"?scope=model:{A}") == ({A}, 200)
+    assert _stream_leased(fx.login_chatter("chatter_ab")) == ({A, B}, 200)
+    saved = accounts.is_watcher
+    accounts.is_watcher = lambda a: a == B
+    try:
+        assert _stream_leased(fx.login_chatter("chatter_ab")) == ({A}, 200), "a watcher is never leased"
+    finally:
+        accounts.is_watcher = saved
+    assert _stream_leased(_harness.make_client()) == (None, 401)
+    assert view_lease.leased_ids() == set()
 
 
 _harness.run()

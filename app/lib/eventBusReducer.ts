@@ -160,9 +160,11 @@ export function isConnected(s: BusState, ready: number | null, now: number): boo
   return ready === OPEN && now - s.lastEventAt < STALE_MS;
 }
 
-/** The stream's URL. `token` is the share token, `lastEventId` the resume point ("" = none). */
+/** The stream's URL. `token` is the share token, `lastEventId` the resume point ("" = none). `lease=1`: this app
+ *  renews its own View lease (lib/viewLease); the Relay reads an unmarked browser stream as a tab loaded before that
+ *  and leases all its Creators while it is open (service/view_lease.py "Legacy tabs"). */
 export function eventsUrl(scope: Scope, token: string | null, lastEventId: string): string {
-  const qs = new URLSearchParams({ scope });
+  const qs = new URLSearchParams({ scope, lease: "1" });
   if (token) qs.set("t", token);
   if (lastEventId) qs.set("last_event_id", lastEventId);
   return `/events?${qs.toString()}`;

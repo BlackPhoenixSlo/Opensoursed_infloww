@@ -9,14 +9,23 @@ the next renewals (one TTL at most). Expired holders are pruned on every call.
 
 Knob `VIEW_LEASE_TTL_S` (default 60 s), read here only. `now` is monotonic seconds (default
 `time.monotonic()`), passed by tests.
+
+Legacy tabs (fetch-diet P1a fix): a tab loaded before 1a shipped runs JS that never renews a
+lease. The app's `/events` stream says `lease=1` since then; an unmarked one from a browser page
+(it has a Referer; the desktop app's main-process notifier and scripts send none) is such a tab,
+and while it is open every Creator its session can access (the route's clamp, watchers dropped)
+counts as leased, the pre-1a cadence for that operator. `legacy_stream_ids` decides,
+`legacy_held` holds it: re-held on every frame (heartbeat 20 s), dropped when the stream ends,
+lapsing TTL_S after its last frame if an end is never seen.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
 import time
-from typing import Iterable, NamedTuple
+from typing import AsyncIterator, Callable, Iterable, NamedTuple
 
 log = logging.getLogger("of-relay.view_lease")
 
@@ -58,6 +67,8 @@ def _now(now: float | None) -> float:
 def _prune(now: float) -> None:
     for h in [h for h, v in _holders.items() if now - v.at >= TTL_S]:
         del _holders[h]
+    for k in [k for k, (_, at) in _streams.items() if now - at >= TTL_S]:
+        del _streams[k]
 
 
 def renew(holder: Holder, account_ids: Iterable[str], selected: str | None,
@@ -82,11 +93,50 @@ def renew(holder: Holder, account_ids: Iterable[str], selected: str | None,
 
 
 def _union() -> set[str]:
-    return {a for v in _holders.values() for a in v.ids}
+    return {a for v in _holders.values() for a in v.ids} | {a for ids, _ in _streams.values() for a in ids}
+
+
+# ── Legacy tabs (module docstring) ──
+
+_streams: dict[object, tuple[frozenset[str], float]] = {}
+
+
+def legacy_stream_ids(lease: str | None, referer: str | None, accounts: frozenset[str] | None,
+                      is_watcher: Callable[[str], bool]) -> frozenset[str]:
+    """The Creators an `/events` stream leases while open: none when it is marked (`lease` given:
+    the app since 1a renews its own), has no Referer (not a browser page) or is unclamped
+    (`accounts` None: the anonymous escape hatch, no wildcard); else `accounts` minus watchers."""
+    if lease is not None or not referer or accounts is None:
+        return frozenset()
+    return frozenset(a for a in accounts if not is_watcher(a))
+
+
+def hold_stream(key: object, ids: frozenset[str], now: float | None = None) -> None:
+    """(Re)hold an open legacy stream's `ids` from `now`."""
+    now = _now(now)
+    _prune(now)
+    _streams[key] = (ids, now)
+
+
+def drop_stream(key: object) -> None:
+    _streams.pop(key, None)
+
+
+async def legacy_held(stream: AsyncIterator[bytes], ids: frozenset[str]) -> AsyncIterator[bytes]:
+    """`stream` passed through, holding `ids` while it runs (re-held per frame); closes `stream`
+    when this ends, as the response would."""
+    key = object()
+    try:
+        async with contextlib.aclosing(stream):
+            async for chunk in stream:
+                hold_stream(key, ids)
+                yield chunk
+    finally:
+        drop_stream(key)
 
 
 def leased_ids(now: float | None = None) -> set[str]:
-    """The union of every live holder's Creators."""
+    """The union of every live holder's Creators and every open legacy stream's."""
     _prune(_now(now))
     return _union()
 

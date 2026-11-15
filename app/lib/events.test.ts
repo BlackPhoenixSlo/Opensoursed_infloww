@@ -55,7 +55,7 @@ describe("eventBus pause / resume", () => {
 
     bus.resume();
     expect(live()).toHaveLength(1);
-    expect(live()[0].url).toBe("/events?scope=all&last_event_id=e1.41");
+    expect(live()[0].url).toBe("/events?scope=all&lease=1&last_event_id=e1.41");
   });
 
   it("a scope change while paused waits for resume", async () => {
@@ -66,7 +66,7 @@ describe("eventBus pause / resume", () => {
     expect(live()).toHaveLength(0);
 
     bus.resume();
-    expect(live().map((e) => e.url)).toEqual(["/events?scope=model%3A7"]);
+    expect(live().map((e) => e.url)).toEqual(["/events?scope=model%3A7&lease=1"]);
   });
 });
 
@@ -83,7 +83,7 @@ describe("eventBus give-up (the shell hands `follow` the socket's readyState as 
     vi.advanceTimersByTime(RETRY_MIN_MS - 1);
     expect(FakeEventSource.all).toHaveLength(1);
     vi.advanceTimersByTime(1);   // RETRY_MIN_MS
-    expect(FakeEventSource.all.map((e) => e.url)).toEqual(["/events?scope=all", "/events?scope=all&last_event_id=e1.41"]);
+    expect(FakeEventSource.all.map((e) => e.url)).toEqual(["/events?scope=all&lease=1", "/events?scope=all&lease=1&last_event_id=e1.41"]);
   });
 
   it("a state listener that pauses on the error: `__error` is {} (no socket), no retry", async () => {
@@ -130,7 +130,7 @@ describe("eventBus re-entrancy", () => {
     expect(live()).toHaveLength(0);
     expect(FakeEventSource.all).toHaveLength(1); // the restart's reopen never ran
     eventBus.resume();
-    expect(live().map((e) => e.url)).toEqual(["/events?scope=model%3A7&last_event_id=e1.5"]);
+    expect(live().map((e) => e.url)).toEqual(["/events?scope=model%3A7&lease=1&last_event_id=e1.5"]);
   });
 });
 
@@ -178,7 +178,7 @@ describe("eventBus batch frames", () => {
     expect(bus.isConnected()).toBe(true);
     bus.pause();
     bus.resume();
-    expect(live()[0].url).toBe("/events?scope=all&last_event_id=e1.9");
+    expect(live()[0].url).toBe("/events?scope=all&lease=1&last_event_id=e1.9");
   });
 
   it("a 50-event batch is one notify flush; 50 back-to-back single frames coalesce into one window", async () => {

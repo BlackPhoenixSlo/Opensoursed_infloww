@@ -337,9 +337,9 @@ describe("scope", () => {
 
 describe("eventsUrl", () => {
   it.each<[Scope, string | null, string, string]>([
-    ["all", null, "", "/events?scope=all"],
-    ["model:7", null, "", "/events?scope=model%3A7"],
-    ["all", "tok", "e1.41", "/events?scope=all&t=tok&last_event_id=e1.41"],
+    ["all", null, "", "/events?scope=all&lease=1"],
+    ["model:7", null, "", "/events?scope=model%3A7&lease=1"],
+    ["all", "tok", "e1.41", "/events?scope=all&lease=1&t=tok&last_event_id=e1.41"],
   ])("%s token=%s id=%s", (scope, tok, id, want) => {
     expect(eventsUrl(scope, tok, id)).toBe(want);
   });

@@ -6224,7 +6224,7 @@ app.include_router(chat_screen_api.router)
 @app.get("/events", include_in_schema=False)
 async def sse_events(
     request: Request, scope: str = Query("all"),
-    last_event_id: str | None = Query(None),
+    last_event_id: str | None = Query(None), lease: str | None = Query(None),
 ):
     """Server-Sent Events stream for the new browser app.
 
@@ -6240,6 +6240,9 @@ async def sse_events(
 
     Replay: the browser's `Last-Event-ID` header on its own reconnect, or
     `?last_event_id=` when it reopens the stream itself; see events.sse_stream.
+
+    `?lease=1`: the app renews its own View lease; an unmarked browser stream is a tab loaded
+    before that and leases the session's Creators while open (view_lease "Legacy tabs").
     """
     accounts = _require_actor_account_ids()
     if scope.startswith("model:") and accounts is not None and scope[len("model:"):] not in accounts:
@@ -6250,9 +6253,15 @@ async def sse_events(
                 if user is not None
                 else chatter.owner_user_ids | {sessions_audience("chatter", chatter.id)}
                 if chatter is not None else frozenset())
+    body = sse_stream(request, scope, accounts=accounts, agencies=agencies,
+                      last_event_id=request.headers.get("last-event-id") or last_event_id)
+    import view_lease
+    legacy = view_lease.legacy_stream_ids(lease, request.headers.get("referer"), accounts,
+                                          account_registry.is_watcher)
+    if legacy:
+        log.info("view_lease_legacy_stream creators=%d", len(legacy))
     return StreamingResponse(
-        sse_stream(request, scope, accounts=accounts, agencies=agencies,
-                   last_event_id=request.headers.get("last-event-id") or last_event_id),
+        view_lease.legacy_held(body, legacy) if legacy else body,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
