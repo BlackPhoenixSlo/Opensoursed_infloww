@@ -15,6 +15,8 @@ view_lease — the View lease registry's public functions (ADR-0031, phase-01 1a
   case_selected_change:         a changed `selected` is returned even when already leased; the
                                 same `selected` again is not; `selected` with no ids still leases it.
   case_selected_is_leased:      `selected` is leased with the ids (it is on screen).
+  case_refresh_plan:            renew's answer split into (read now, paced): the selection now unless just
+                                polled; other gains paced unless current or the post is `opened`; a table.
   case_legacy_stream_ids:       a stream leases its clamp minus watchers only when unmarked, from a
                                 browser page (Referer) and clamped; a table.
   case_legacy_stream_hold:      an open legacy stream's ids are in leased_ids and count as leased
@@ -100,6 +102,23 @@ def case_selected_is_leased():
     _reset()
     assert vl.renew(O1, ["a"], "b", now=0) == ["a", "b"], "b newly leased (once, not twice)"
     assert vl.leased_ids(1) == {"a", "b"} and vl.is_leased("b", 1)
+
+
+def case_refresh_plan():
+    cur = {"c"}                        # current: polled ok within FAST_S, or warmed
+    fresh = {"f"}                      # polled ok within SELECT_MIN_AGE_S
+    for gains, selected, opened, want in [
+        (["a", "b"], None, False, ([], ["a", "b"])),          # gains are paced, never one read each at once
+        (["a", "b"], "a", False, (["a"], ["b"])),             # the selection at once, the rest paced
+        (["a", "c"], None, False, ([], ["a"])),               # a current gain reads nothing
+        (["c"], "c", False, (["c"], [])),                     # a current selection still reads ...
+        (["f"], "f", False, ([], [])),                        # ... unless it was just polled
+        (["a", "b"], "a", True, (["a"], [])),                 # an opening post: the warm reads the rest
+        (["f", "b"], "f", True, ([], [])),
+        ([], None, False, ([], [])),
+    ]:
+        got = vl.refresh_plan(gains, selected, opened=opened, current=cur.__contains__, fresh=fresh.__contains__)
+        assert got == want, (gains, selected, opened, got)
 
 
 def case_legacy_stream_ids():

@@ -155,11 +155,13 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
   const writerModels = data?.writer_models ?? [];
   /** Writer model → provider (the GET's `writer_providers`; undefined until it answers). */
   const writerProviders = data?.writer_providers;
+  /** Provider → name (the GET's `provider_labels`). */
+  const providerLabels = data?.provider_labels;
   /** Every key the JSON takes (the GET's `reference`; empty until it answers). */
   const reference = data?.reference ?? [];
   /** The controls' server constants (the GET's `limits`; null until it answers). */
   const limits = data?.limits ?? null;
-  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, reference, limits };
+  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, reference, limits };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

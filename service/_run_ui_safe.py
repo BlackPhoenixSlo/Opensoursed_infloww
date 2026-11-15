@@ -38,6 +38,7 @@ if str(_S) not in sys.path:
 os.environ["CHATTERLY_TEST_MODE"] = "1"
 
 import automation_executor          # noqa: E402
+import purchase_poll                # noqa: E402
 import transaction_ingest           # noqa: E402
 import server                       # noqa: E402
 
@@ -50,7 +51,7 @@ async def _noop_forever() -> None:
 # Disable every outbound/background loop BEFORE the startup hook reads them.
 automation_executor.automation_supervisor = _noop_forever   # no rule firing / sends
 transaction_ingest.start_supervisor = _noop_forever         # no payouts ingest
-transaction_ingest.start_fast_poll = _noop_forever          # ← the one that got out
+purchase_poll.start_fast_poll = _noop_forever               # ← the one that got out
 server._start_account_pump = lambda *a, **k: None           # no OF WS connect
 server._pump_supervisor = _noop_forever                     # no pump management
 

@@ -50,12 +50,13 @@ NO = "no piece yet"
 VAULT = {101: "$10", 202: "$50", 303: "$100", 404: "$25", 505: "$50", 606: "$10"}
 GOLDEN = Path(__file__).with_name("test_full_ai_router_test_mode.shadow_request.golden.json")
 # test_full_ai_spacing.py's pin (9718d06e3), questions + state key list, by `sext_scene`.
+# Re-pinned 2026-11-15: `asks_if_ai` reads `fan_new_messages` only in test + live (NEW-158).
 FLAG_OFF_TEST_REQUEST_SHA = {
-    False: "06b04a892422a5bffe10ed28274d9c90471c73f3f31e29f321dd8899303a0f71",
+    False: "83307ec2488f2da9c6bfb0087e7f27737cc992109bdfd9695b180ea1ced4e533",
     # 9718d06e3's pin was 30a0de07…; the no-Spacing `scene_offer` wording (NEW-133 update, off-path
     # wording PR) re-pinned it, then again 2026-11-14 (its false side lost "he just said no to buying
     # or cannot pay": a decline sells now). Shadow's request is not in it (QUESTION_VERSION, golden).
-    True: "13d5925b3c881135bcc3f88bd973ac7e7c141271eea2d412d5e99773fc26e71a",
+    True: "4671bb5bc20c408af3cc9201b3a311e252b232e32ba7134632b6754de75ce4bb",
 }
 
 

@@ -278,6 +278,10 @@ _ANNOUNCED_NOTIFS: dict[_NotifKey, None] = {}
 # Shared bound for both memos above.
 _NOTIF_MEMO_MAX = 4096
 
+# Accounts whose last catch-up (poll_purchases, pages > 1) failed part-way: its
+# handled pages are in _DONE_NOTIFS now, so the retry must not stop at them.
+_CATCHUP_UNFINISHED: set[str] = set()
+
 # Only announce purchases this fresh. Bounds the noise when the relay restarts
 # and re-walks a feed page it already announced (same rationale as the ledger's
 # 48h insert cap), without needing durable state. Generous next to the 30s
@@ -559,7 +563,9 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
     `pages` > 1 is the catch-up after a gap (purchase_poll_decide.catch_up): it
     reads further pages of `limit` until a page holds a notification already
     handled (`_handle_items`' `known`: in the done memo when sighted), a short page
-    (the feed's end), or `pages` pages.
+    (the feed's end), or `pages` pages. A catch-up that failed part-way is
+    retried without the `known` stop (its own pages are in the memo) until one
+    finishes ok (`_CATCHUP_UNFINISHED`).
 
     Never raises: this rides on the freshness tick, and a notifications hiccup
     must not take down transaction ingest. Returns counts for the caller's log
@@ -567,6 +573,8 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
     answered, `feed_outcome`); pages read before a failure keep their counts.
     """
     totals = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
+    catch_up = int(pages) > 1
+    resume = catch_up and str(account_id) in _CATCHUP_UNFINISHED
     try:
         for page in range(max(1, int(pages))):
             items = await asyncio.to_thread(_fetch_feed_in_lane, account_id, client, limit, page * int(limit))
@@ -577,10 +585,14 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
             known = got.pop("known")
             for k, v in got.items():
                 totals[k] += v
-            if known or len(items) < int(limit):
+            if (known and not resume) or len(items) < int(limit):
                 break
         outcome = Outcome("ok")
+        if catch_up:
+            _CATCHUP_UNFINISHED.discard(str(account_id))
     except Exception as e:  # noqa: BLE001
+        if catch_up:
+            _CATCHUP_UNFINISHED.add(str(account_id))
         outcome = feed_outcome(e)
         log.debug("purchase_notif_poll_failed account=%s outcome=%s", account_id, outcome.kind, exc_info=True)
     return {**totals, "outcome": outcome}

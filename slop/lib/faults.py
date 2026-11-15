@@ -876,8 +876,8 @@ FAULTS: dict[str, Fault] = {
     # slop/run 2026-11-07-ai-chatter-nav --break (the scenario's FAULT, client side): app/lib/nav.ts's
     # Full AI Chat link without `chatterHidden`, so a chatter's sidebar draws the owner-only page.
     "full-ai-chatter-shown-to-chatter": Fault(None, (
-        "chatter (role ticks Auto-reply only): the sidebar shows My AI Chatter with Auto-reply and "
-        "Get to know fans, no My Automations, no Full AI Chat, no AI rules",
+        "chatter (role ticks Auto-reply only): Auto-reply opens by URL; the sidebar shows no My AI Chatter, "
+        "Auto-reply, Get to know fans, My Automations, Full AI Chat or AI rules",
     ), browser=((r'(href:\s*\\?"/full-ai-chatter\\?",[^}]*?chatterHidden:\s*)(?:true|!0)', r"\g<1>false"),),
         # next dev's eval strings escape the quotes; nav.ts sits in each chunk the run loads.
         browser_files=4),
@@ -886,8 +886,8 @@ FAULTS: dict[str, Fault] = {
     # map, the page's group open until toggled), so every toggled group stays open. The click still
     # sets a fresh choice so the sidebar re-renders.
     "sidebar-groups-not-accordion": Fault(None, (
-        "phone: opening My Automations (6 pages), then My AI Chatter (Auto-reply, "
-        "Get to know fans, Full AI Chat, AI rules) leaves only My AI Chatter open",
+        "phone: opening Growth, then My Automations (6 pages) leaves only My Automations "
+        "open, Full AI Chat the link after it",
     ), browser=(
         (r"openGroup\s*===\s*(?:undefined|void 0)\s*\?\s*holdsActive\s*:\s*openGroup\s*===\s*n\.label",
          "(globalThis.__slopToggled ??= {})[n.label] ?? holdsActive"),

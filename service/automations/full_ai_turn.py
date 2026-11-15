@@ -199,6 +199,8 @@ async def _capped(call, deadline: float) -> WriteResult:
         return await _freed(asyncio.wait_for(call, left))
     except asyncio.TimeoutError:
         return WriteResult(None, None, [{"writer": "turn", "outcome": "timeout", "ms": int(left * 1000)}])
+    finally:
+        call.close()    # a lost slot never started the walk: no "never awaited" warning (done: a no-op)
 
 
 async def _route(facts: TurnFacts, deadline: float) -> tuple[Decision, dict, str | None, int | None, str | None]:

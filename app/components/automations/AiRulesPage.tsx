@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * AI rules (/ai-rules): the Full AI Turn as a zoomable diagram, read from GET /admin/full-ai/rules?mode=test|shadow.
+ * AI rules (/ai-rules, and Full AI Chat's "AI rules" popup: `AiRulesDiagram fill`): the Full AI Turn as a zoomable diagram, read from GET /admin/full-ai/rules?mode=test (Live runs the same Turn; no Shadow view, owner 11-15).
  * Every prompt, question, table and switch on a card comes from the live code objects (service/automations/
  * full_ai_rules.py). Wheel zooms at the pointer, drag pans, two fingers pinch, keys + / - / 0; a click opens the card
  * in a drawer (bottom sheet on phone) with the full text. View state: aiRulesView.ts; positions: aiRulesLayout.ts.
@@ -13,13 +13,18 @@ import { cn } from "@/lib/utils";
 import { layout } from "./aiRulesLayout";
 import {
   aiRulesReducer, DETAIL_K, INITIAL, orientationFor,
-  type Action, type Mode, type RuleBlock, type RuleNode, type Rules,
+  type Action, type RuleBlock, type RuleNode, type Rules,
 } from "./aiRulesView";
 
 const BTN = "h-8 min-w-8 rounded-md border border-border bg-bg-elev-1 px-2 text-[13px] text-fg hover:bg-bg-elev-2";
 const DRAG_PX = 4;
 
 export default function AiRulesPage() {
+  return <PageFrame title="AI rules"><AiRulesDiagram /></PageFrame>;
+}
+
+/** The toolbar and the diagram; `fill`: as tall as its parent (Full AI Chat's popup), else the window less the header. */
+export function AiRulesDiagram({ fill = false }: { fill?: boolean }) {
   const [s, dispatch] = useReducer(aiRulesReducer, INITIAL);
   const box = useRef<HTMLDivElement>(null);
   const orientation = orientationFor(s.viewport.w);
@@ -58,26 +63,18 @@ export default function AiRulesPage() {
     if (e.key === "+" || e.key === "=") dispatch({ type: "zoomStep", dir: 1 });
     else if (e.key === "-" || e.key === "_") dispatch({ type: "zoomStep", dir: -1 });
     else if (e.key === "0") fit();
-    else if (e.key === "Escape") dispatch({ type: "close" });
+    // Escape closes an open card only; else it is left to a popup around the diagram.
+    else if (e.key === "Escape" && s.selected) dispatch({ type: "close" });
     else return;
     e.preventDefault();
   };
 
   return (
-    <PageFrame title="AI rules">
+    <div className={cn(fill && "flex h-full min-h-0 flex-col")}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <button type="button" className={BTN} aria-label="Zoom out" onClick={() => dispatch({ type: "zoomStep", dir: -1 })}>−</button>
         <button type="button" className={BTN} aria-label="Zoom in" onClick={() => dispatch({ type: "zoomStep", dir: 1 })}>+</button>
         <button type="button" className={BTN} onClick={fit}>Fit</button>
-        <div role="group" aria-label="Mode" className="flex overflow-hidden rounded-md border border-border">
-          {(["test", "shadow"] as Mode[]).map((m) => (
-            <button key={m} type="button" aria-pressed={s.mode === m}
-              onClick={() => dispatch({ type: "setMode", mode: m })}
-              className={cn("h-8 px-3 text-[13px]", s.mode === m ? "bg-accent text-white" : "bg-bg-elev-1 text-fg-dim hover:bg-bg-elev-2")}>
-              {m === "test" ? "Test" : "Shadow"}
-            </button>
-          ))}
-        </div>
         <span className="text-[12px] text-muted">
           {s.status === "loading" ? "Loading…" : s.status === "error" ? <span className="text-err">{s.error}</span>
             : `${Math.round(s.view.k * 100)}% · drag to pan, wheel or pinch to zoom, click a card`}
@@ -86,7 +83,8 @@ export default function AiRulesPage() {
 
       <div ref={box} tabIndex={0} onKeyDown={onKey} {...handlers}
         aria-label="AI rules diagram"
-        className="relative h-[calc(100dvh-150px)] min-h-[420px] touch-none select-none overflow-hidden rounded-lg border border-border bg-hb-bg outline-none focus-visible:border-accent">
+        className={cn("relative touch-none select-none overflow-hidden rounded-lg border border-border bg-hb-bg outline-none focus-visible:border-accent",
+          fill ? "min-h-[300px] flex-1" : "h-[calc(100dvh-150px)] min-h-[420px]")}>
         {lay && s.data && (
           <div className="absolute left-0 top-0 origin-top-left"
             style={{ width: lay.width, height: lay.height, transform: `translate(${s.view.x}px, ${s.view.y}px) scale(${s.view.k})` }}>
@@ -119,7 +117,7 @@ export default function AiRulesPage() {
       )}
 
       {selected && <Drawer node={selected} onClose={() => dispatch({ type: "close" })} />}
-    </PageFrame>
+    </div>
   );
 }
 
@@ -239,7 +237,7 @@ function Drawer({ node, onClose }: { node: RuleNode; onClose: () => void }) {
   useEffect(() => { ref.current?.focus(); }, [node.id]);
   return (
     <div ref={ref} role="dialog" aria-label={node.title} tabIndex={-1}
-      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
       className="fixed inset-x-0 bottom-0 z-50 flex max-h-[75dvh] select-text flex-col rounded-t-xl border border-border bg-panel shadow-2xl outline-none md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:w-[600px] md:rounded-none md:rounded-l-xl">
       <div className="flex items-start gap-2 border-b border-border p-4">
         <div className="min-w-0 flex-1">

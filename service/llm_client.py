@@ -216,7 +216,7 @@ def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
 # money-counting, but it is ONE map beside the error it describes rather than a
 # copy per caller (and never re-composed in the browser).
 KEY_FIX_URL = "/settings/ai-keys"
-_PROVIDER_LABELS = {"deepseek": "DeepSeek", "deepinfra": "DeepInfra",
+PROVIDER_LABELS = {"deepseek": "DeepSeek", "deepinfra": "DeepInfra",
                     "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)",
                     "typesafe": "TypeSafe (Jev)"}
 _FEATURE_LABELS = {
@@ -249,7 +249,7 @@ def key_error_payload(exc: "LLMKeyError", *, feature: str = "") -> dict[str, Any
     automations); the sentences are worded to read for one feature or a list.
     """
     feature = feature or feature_label(exc.purpose)
-    prov = _PROVIDER_LABELS.get(exc.provider, exc.provider)
+    prov = PROVIDER_LABELS.get(exc.provider, exc.provider)
     if exc.kind == "invalid":
         message = f"{feature} stopped: {prov} rejected the API key (wrong or revoked)."
         fix = "Paste the right key in Settings › AI keys."

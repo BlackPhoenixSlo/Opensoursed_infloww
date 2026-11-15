@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * My AI Chatter > Get to know fans (ours). The AI info-gather automation
+ * My AI Chatter > Get to know fans (ours; by URL, out of the sidebar since 11-15). The AI info-gather automation
  * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the header
  * switch (with its On / Off pill) turns the kind on or off for the creator the moment it flips
  * (`/admin/automation-rules/switch`, which creates its rule from the catalog defaults the first time, else wakes the

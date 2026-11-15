@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
     "sell_on": False,           # settable since 03b; off by default
     "sext_on": True,            # page switch "Sexting"; off = normal chat only
     # Test + live (`full_ai_mode.full`), Shadow ignores: the Jev-run sext scene (scene questions, saved scene state, scene Writer
-    # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (12-control limit).
+    # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (no page control).
     "sext_scene": True,
     # Test + live (`full_ai_mode.full`), Shadow ignores: get-to-know asks led into, not asked straight (lead-in lines, few-shots, a
     # beat of her own, the info Jev's lead wording; owner 2026-11-14). Page switch "Lead-in questions".

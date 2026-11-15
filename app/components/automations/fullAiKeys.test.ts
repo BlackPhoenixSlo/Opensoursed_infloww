@@ -16,12 +16,12 @@ describe("keyRows (LLM keys row)", () => {
     ["a DeepInfra Writer: once", [W(["euryale-v2.3-deepinfra", "euryale-v2.3"]), null], ["deepinfra", "nanogpt"]],
     ["unloaded sides: nothing", [null, null], []],
   ])("%s", (_, sides, ids) => {
-    expect(keyRows(sides, PROV)?.map((r) => r.id)).toEqual(ids);
+    expect(keyRows(sides, PROV, undefined)?.map((r) => r.id)).toEqual(ids);
   });
 
   it("null until writer_providers answers; labels", () => {
-    expect(keyRows([W(["euryale-v2.3"])], undefined)).toBeNull();
-    expect(keyRows([W([])], PROV)).toEqual([{ id: "deepinfra", label: "DeepInfra" }]);
+    expect(keyRows([W(["euryale-v2.3"])], undefined, undefined)).toBeNull();
+    expect(keyRows([W([])], PROV, { deepinfra: "DeepInfra" })).toEqual([{ id: "deepinfra", label: "DeepInfra" }]);
   });
 });
 

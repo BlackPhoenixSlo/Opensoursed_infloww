@@ -6,9 +6,10 @@
  * Labels are VERBATIM from docs/infloww-screens.md §1.1 (sidebar) and §3.10
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
  * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
- * Auto Story, Auto Funnel, Gen-Info), the "My AI Chatter" group
- * (Auto-reply, Get to know fans, the "Full AI Chat" page). A plugin may add
- * links to a group (lib/chatSlots.ts `navLinks`).
+ * Auto Story, Auto Funnel, Gen-Info), the "Full AI Chat" page, the "My AI
+ * Chatter" group (Auto-reply, Get to know fans: `hidden`, so a Permission group
+ * the sidebar never draws). A plugin may add links to a group (lib/chatSlots.ts
+ * `navLinks`).
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).
@@ -41,7 +42,12 @@
  *                   that grants the tab but not its page gets it as an entry
  *                   of its own. It stays a `PERMISSION_PAGES` page with its
  *                   own route (Sales records, Employee reports' second tab as
- *                   in Infloww; page-parity ticket 27).
+ *                   in Infloww; page-parity ticket 27; AI rules, Full AI Chat's
+ *                   popup).
+ *   hidden        — never drawn in the sidebar (`drawnSidebar`), but every
+ *                   derived list still counts it: a Permission page with its
+ *                   route, gate, denied panel and opt-in as before (owner 11-15:
+ *                   Auto-reply, Get to know fans; their pages open by URL).
  */
 
 import type { MouseEvent } from "react";
@@ -97,6 +103,8 @@ export interface NavLink {
   flag?: FeatureFlag;
   permission?: string;
   tabOf?: string;
+  /** Not drawn in the sidebar; still a Permission page like any other (`drawnSidebar`). */
+  hidden?: boolean;
   /** In a `chatterOptIn` group, a page a role grants like any other (not opt-in). */
   notOptIn?: boolean;
 }
@@ -208,19 +216,20 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
       { label: "Gen-Info", href: "/growth/gen-info" },
     ],
   },
-  // Ours: the AI chat lanes, opt-in for a chatter like My Automations.
+  // Full AI Chat: Shadow switch + the owner's Test chat. Owner-only: nothing a chatter operates.
+  { label: "Full AI Chat", href: "/full-ai-chatter", icon: Bot, chatterHidden: true },
+  // AI rules: the Full AI Turn as a read-only zoomable diagram, a popup on Full AI Chat (owner 11-15).
+  { label: "AI rules", href: "/ai-rules", icon: Bot, chatterHidden: true, tabOf: "/full-ai-chatter" },
+  // Ours: the AI chat lanes, opt-in for a chatter like My Automations. Out of the sidebar (owner 11-15),
+  // still Permission pages with their routes and gates.
   {
     label: "My AI Chatter",
     icon: Bot,
     chatterOptIn: true,
     children: [
-      { label: "Auto-reply", href: "/growth/auto-reply" },
+      { label: "Auto-reply", href: "/growth/auto-reply", hidden: true },
       // Its Model info is the account's, so a role grants it like any page (service/permissions.py PAGE_MAP).
-      { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true },
-      // Full AI Chat: Shadow switch + the owner's Test chat. Owner-only: nothing a chatter operates.
-      { label: "Full AI Chat", href: "/full-ai-chatter", chatterHidden: true, notOptIn: true },
-      // AI rules: the Full AI Turn as a read-only zoomable diagram (every prompt, route, stored key).
-      { label: "AI rules", href: "/ai-rules", chatterHidden: true, notOptIn: true },
+      { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true, hidden: true },
     ],
   },
 ]);
@@ -512,6 +521,13 @@ export function visibleSidebar(nodes: NavNode[], f: NavFilter): NavNode[] {
     }
   }
   return out;
+}
+
+/** The rows the sidebar draws: `visibleSidebar` without the `hidden` links, and the groups they empty. */
+export function drawnSidebar(nodes: NavNode[], f: NavFilter): NavNode[] {
+  const shown = nodes.flatMap((n): NavNode[] =>
+    isDivider(n) ? [n] : isGroup(n) ? [{ ...n, children: n.children.filter((c) => !c.hidden) }] : n.hidden ? [] : [n]);
+  return visibleSidebar(shown, f);
 }
 
 /** Every link in the tree, flattened (both platforms' sidebars, footer, settings tabs). */

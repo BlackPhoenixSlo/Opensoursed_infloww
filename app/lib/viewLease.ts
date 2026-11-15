@@ -17,7 +17,6 @@ export const OPENED_WAIT_MS = 5_000;
  *  came reads its money lists and count itself (lib/ofReadGate.ts). */
 export const APP_OPEN_WARM_FALLBACK_MS = 90_000;
 
-const TAB_KEY = "chatterly:view-lease-tab";
 let memoTab: string | null = null;
 
 function randomId(): string {
@@ -28,16 +27,11 @@ function randomId(): string {
   }
 }
 
-/** This tab's id: random, kept in sessionStorage (one per tab; a reload keeps it). */
+/** This document's lease-holder id: random, one per page load, in memory only. Not sessionStorage: a popout
+ *  (`window.open` without noopener) and "Duplicate tab" copy it, and two windows on one id would replace each other's
+ *  set every renewal. A reload gets a new id; the old holder lapses after the Relay's VIEW_LEASE_TTL_S. */
 export function tabId(): string {
-  if (memoTab) return memoTab;
-  try {
-    const saved = window.sessionStorage.getItem(TAB_KEY);
-    memoTab = saved || randomId();
-    if (!saved) window.sessionStorage.setItem(TAB_KEY, memoTab);
-  } catch {
-    memoTab = randomId();
-  }
+  memoTab ??= randomId();
   return memoTab;
 }
 

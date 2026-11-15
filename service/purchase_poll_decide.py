@@ -2,7 +2,7 @@
 The purchases poll's decisions, pure: no DB, no OF, no clock of its own (the
 caller passes `now`, monotonic seconds).
 
-`transaction_ingest.start_fast_poll` ticks every `FAST_S` and, per Creator, asks
+`purchase_poll.start_fast_poll` ticks every `FAST_S` and, per Creator, asks
 `tier` (Demand: a View lease or an enabled Seller -> "fast", else "slow") and
 `due` (is the tier's interval up since its last poll). ADR-0031, phase-01 1a.
 
@@ -26,14 +26,11 @@ flag resumes polling on the next cycle. `error` neither climbs nor holds.
 """
 from __future__ import annotations
 
-import logging
-import math
-import os
 import zlib
 from dataclasses import dataclass, replace
 from typing import Literal
 
-log = logging.getLogger("of-relay.ingest_tx")
+from env_knob import env_float
 
 Tier = Literal["fast", "slow"]
 
@@ -43,27 +40,16 @@ _DEFAULT_SLOW_S = 300.0
 _MIN_FAST_S = 5.0
 
 
-def _knob(name: str, default: float, lo: float) -> float:
-    """A positive float from the environment; malformed, non-finite or below `lo` -> `default`, loudly."""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        v = float(raw)
-    except ValueError:
-        v = math.nan
-    if not math.isfinite(v) or v < lo:
-        log.warning("purchases_poll_bad_env name=%s value=%r — using default %.0f", name, raw, default)
-        return default
-    return v
-
-
-FAST_S = _knob("PURCHASES_POLL_FAST_S", _DEFAULT_FAST_S, _MIN_FAST_S)
-SLOW_S = max(FAST_S, _knob("PURCHASES_POLL_SLOW_S", _DEFAULT_SLOW_S, _MIN_FAST_S))
-BACKOFF_BASE_S = _knob("PURCHASES_BACKOFF_BASE_S", 30.0, 1.0)
-BACKOFF_MAX_S = max(BACKOFF_BASE_S, _knob("PURCHASES_BACKOFF_MAX_S", 900.0, 1.0))
-BACKOFF_DEMAND_MAX_S = _knob("PURCHASES_BACKOFF_DEMAND_MAX_S", 120.0, 1.0)
-CATCHUP_MAX_PAGES = int(_knob("PURCHASES_CATCHUP_MAX_PAGES", 3.0, 1.0))
+FAST_S = env_float("PURCHASES_POLL_FAST_S", _DEFAULT_FAST_S, _MIN_FAST_S)
+SLOW_S = max(FAST_S, env_float("PURCHASES_POLL_SLOW_S", _DEFAULT_SLOW_S, _MIN_FAST_S))
+BACKOFF_BASE_S = env_float("PURCHASES_BACKOFF_BASE_S", 30.0, 1.0)
+BACKOFF_MAX_S = max(BACKOFF_BASE_S, env_float("PURCHASES_BACKOFF_MAX_S", 900.0, 1.0))
+BACKOFF_DEMAND_MAX_S = env_float("PURCHASES_BACKOFF_DEMAND_MAX_S", 120.0, 1.0)
+CATCHUP_MAX_PAGES = int(env_float("PURCHASES_CATCHUP_MAX_PAGES", 3.0, 1.0))
+# A Select refresh reads no feed whose last ok poll started under this long ago (5 s at the 30 s tick, the loop's
+# own floor between cycles): the data it would fetch is that fresh already, and alternating selections or new tab
+# ids read a Creator at most once per this. Scales with FAST_S (slop runs FAST_S 5 s).
+SELECT_MIN_AGE_S = FAST_S / 6
 
 OutcomeKind = Literal["ok", "rate_limited", "unauthorized", "dead", "error"]
 
@@ -112,7 +98,7 @@ def hold_s(state: PollState, t: Tier) -> float:
 def held(state: PollState | None, t: Tier, now: float, ahead: float) -> bool:
     """True while a 429 / unauthorized hold is on at `now`: now < held_at + hold_s. `ahead` looks one
     poll ahead for a Demand ("fast") Creator: held only while now + ahead is still inside the cap.
-    `due` passes FAST_S (the loop's next tick); the one gate, transaction_ingest._single_flight,
+    `due` passes FAST_S (the loop's next tick); the one gate, purchase_poll._single_flight,
     passes 0 at each poll's real start (the loop's and a Select refresh's): no poll before OF's
     wait, nor before the cap when the cap wins."""
     if state is None or state.held_at is None:

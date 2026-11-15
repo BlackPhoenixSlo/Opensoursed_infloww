@@ -55,7 +55,6 @@ export type Action =
   | { type: "resize"; w: number; h: number }
   | { type: "select"; id: string }
   | { type: "close" }
-  | { type: "setMode"; mode: Mode }
   | { type: "loaded"; mode: Mode; data: Rules }
   | { type: "failed"; mode: Mode; error: string };
 
@@ -124,10 +123,6 @@ export function aiRulesReducer(s: AiRulesState, a: Action): AiRulesState {
       return { ...s, selected: a.id };
     case "close":
       return s.selected === null ? s : { ...s, selected: null };
-    case "setMode":
-      // The old Mode's diagram goes: never shown (or fitted) under the new Mode's button.
-      return a.mode === s.mode ? s
-        : { ...s, mode: a.mode, status: "loading", data: null, error: null, selected: null };
     case "loaded":
       // A late answer for the other Mode is dropped.
       return a.mode !== s.mode ? s : { ...s, status: "ready", data: a.data, error: null, pendingFit: true };

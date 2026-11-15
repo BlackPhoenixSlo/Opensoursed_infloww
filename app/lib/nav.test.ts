@@ -12,6 +12,7 @@ import {
   SIDEBAR_FOOTER,
   allNavLinks,
   deniedPage,
+  drawnSidebar,
   findNavLink,
   firstPage,
   hasCreatorColumn,
@@ -39,8 +40,8 @@ function outline(nodes: NavNode[]): string[] {
 }
 
 describe("sidebar (docs/infloww-screens.md §1.1)", () => {
-  it("has Infloww's items and sub-items verbatim, plus Vault Pro, My Automations and My AI Chatter", () => {
-    expect(outline(visibleSidebar(SIDEBAR, OWNER))).toEqual([
+  it("has Infloww's items and sub-items verbatim, plus Vault Pro, My Automations and Full AI Chat", () => {
+    expect(outline(drawnSidebar(SIDEBAR, OWNER))).toEqual([
       "Dashboard",
       "OF Manager: Home / Go live / New post / Notifications / Messages Basic / Vault / Queue / Collections / Bookmarks / Statements / Statistics / Bank / My profile / Release forms / OF settings",
       // Four entries, as live 07-analytics-menu.png: Sales records is Employee reports' tab (page-parity ticket 27).
@@ -50,7 +51,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Redirect links / Bio pages / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
-      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat / AI rules",
+      "Full AI Chat",
       "—",
       "Creators: Manage creators / Custom proxy",
       "Employees: Manage employees / Shift schedule",
@@ -58,7 +59,28 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(visibleLinks(SIDEBAR_FOOTER, OWNER).map((l) => l.label)).toEqual(["Settings", "Help center"]);
   });
 
-  it("My Automations has the automation pages in the requested order; My AI Chatter has the AI chat lanes", () => {
+  it("draws neither the My AI Chatter group nor Auto-reply, Get to know fans or AI rules, yet keeps their gates (owner 11-15)", () => {
+    const labels = (f: Parameters<typeof drawnSidebar>[1]) =>
+      drawnSidebar(SIDEBAR, f).flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? [n.label, ...n.children.map((c) => c.label)] : [n.label]));
+    const everything = { chatterOnly: true, grantedPages: new Set(PERMISSION_PAGES) };
+    for (const f of [OWNER, everything]) {
+      for (const gone of ["My AI Chatter", "Auto-reply", "Get to know fans", "AI rules"]) expect(labels(f)).not.toContain(gone);
+    }
+    // Still Permission pages with their opt-in standing, routes and denied panels, as before.
+    for (const href of ["/growth/auto-reply", "/growth/get-to-know-fans", "/full-ai-chatter", "/ai-rules"]) {
+      expect(PERMISSION_PAGES.has(href)).toBe(true);
+      expect(findNavLink(href)).toBeDefined();
+      expect(deniedPage(href, new Set(["/"]))).toBe(href);
+      expect(deniedPage(href, new Set([href]))).toBeNull();
+    }
+    expect(CHATTER_OPT_IN_PAGES.has("/growth/auto-reply")).toBe(true);
+    for (const href of ["/growth/get-to-know-fans", "/full-ai-chatter", "/ai-rules"]) expect(CHATTER_OPT_IN_PAGES.has(href)).toBe(false);
+    // /ai-rules by URL lights Full AI Chat; a role granting AI rules without Full AI Chat gets it as an entry.
+    expect(sidebarHref("/ai-rules")).toBe("/full-ai-chatter");
+    expect(outline(drawnSidebar(SIDEBAR, { chatterOnly: false, grantedPages: new Set(["/ai-rules"]) }))).toEqual(["AI rules", "—"]);
+  });
+
+  it("My Automations has the automation pages in the requested order; the hidden My AI Chatter group the AI chat lanes", () => {
     const group = (label: string) => {
       const g = visibleSidebar(SIDEBAR, OWNER).find((n) => isGroup(n) && n.label === label);
       return g && isGroup(g) && { optIn: g.chatterOptIn, children: g.children.map((c) => [c.label, c.href]) };
@@ -73,20 +95,18 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(group("My AI Chatter")).toEqual({ optIn: true, children: [
       ["Auto-reply", "/growth/auto-reply"],
       ["Get to know fans", "/growth/get-to-know-fans"],
-      ["Full AI Chat", "/full-ai-chatter"],
-      ["AI rules", "/ai-rules"],
     ] });
   });
 
-  it("Full AI Chat is an owner-only Permission page of its own, in My AI Chatter but not opt-in", () => {
+  it("Full AI Chat is an owner-only top-level Permission page of its own, not opt-in", () => {
     expect(findNavLink("/full-ai-chatter")).toMatchObject({ label: "Full AI Chat", chatterHidden: true });
     expect(PERMISSION_PAGES.has("/full-ai-chatter")).toBe(true);
     expect(CHATTER_OPT_IN_PAGES.has("/full-ai-chatter")).toBe(false);
     expect(outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }))).not.toContain("Full AI Chat");
   });
 
-  it("AI rules is an owner-only Permission page beside Full AI Chat, not opt-in", () => {
-    expect(findNavLink("/ai-rules")).toMatchObject({ label: "AI rules", chatterHidden: true });
+  it("AI rules is an owner-only Permission page, Full AI Chat's tab, not opt-in", () => {
+    expect(findNavLink("/ai-rules")).toMatchObject({ label: "AI rules", chatterHidden: true, tabOf: "/full-ai-chatter" });
     expect(PERMISSION_PAGES.has("/ai-rules")).toBe(true);
     expect(CHATTER_OPT_IN_PAGES.has("/ai-rules")).toBe(false);
   });
@@ -134,7 +154,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     // An owner always sees them all.
     expect(automations(false, { pages: null })).toEqual([
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
-      "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat / AI rules",
+      "My AI Chatter: Auto-reply / Get to know fans",
     ]);
     // Opened by URL: denied to the chatter without the grant, every other page open.
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });

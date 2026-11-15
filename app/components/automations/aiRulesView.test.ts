@@ -56,8 +56,6 @@ describe("aiRulesReducer", () => {
     ["panBy moves", sized, { type: "panBy", dx: 5, dy: -3 }, { view: { x: 5, y: -3, k: 1 } }],
     ["select opens", sized, { type: "select", id: "sell" }, { selected: "sell" }],
     ["close closes", { ...sized, selected: "sell" }, { type: "close" }, { selected: null }],
-    ["setMode reloads, closes and drops the old diagram", { ...sized, status: "ready", data: RULES, selected: "sell" },
-      { type: "setMode", mode: "shadow" }, { mode: "shadow", status: "loading", data: null, selected: null }],
     ["loaded for this Mode lands and asks for a fit", sized, { type: "loaded", mode: "test", data: RULES },
       { status: "ready", data: RULES, pendingFit: true }],
     ["late load for the other Mode is dropped", sized, { type: "loaded", mode: "shadow", data: RULES }, { status: "loading", data: null }],

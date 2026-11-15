@@ -45,6 +45,7 @@ import types  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 import purchase_poll_decide as decide  # noqa: E402
+import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 import view_lease  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -58,7 +59,7 @@ RULES = [(AUTO, "purchase_followup", True), (FUNNEL, "reply_mass_funnel", True),
          (OLD, "welcome_chatter_for_info", True), (OFF, "purchase_followup", False),
          (F_SELL, "purchase_followup", True)]
 FANSLY_TICKS: list[str] = []
-REAL_FAST_TICK = ti.run_fast_tick
+REAL_FAST_TICK = pp.run_fast_tick
 ORDER: list[str] = []          # every poll's start, both lanes, in order
 
 
@@ -96,7 +97,7 @@ async def _patched(fake_tick, live=ACCOUNTS, stagger=0.0, concurrency=5):
     async def _false(_aid):
         return False
 
-    real_tick = ti.run_fast_tick
+    real_tick = pp.run_fast_tick
 
     async def _tick(aid):
         # A Fansly Creator takes the product's own platform seam (run_fast_tick -> fansly_revenue).
@@ -107,23 +108,23 @@ async def _patched(fake_tick, live=ACCOUNTS, stagger=0.0, concurrency=5):
         ORDER.append(aid)
         return types.SimpleNamespace(rows_inserted=0, error=None)
 
-    saved = {k: getattr(ti, k) for k in ("run_fast_tick", "boot_grace", "_is_paused", "_FAST_POLL_STAGGER_S",
-                                         "_FAST_POLL_CONCURRENCY")}
+    saved = {(m, k): getattr(m, k) for m, k in ((pp, "run_fast_tick"), (pp, "boot_grace"), (ti, "_is_paused"),
+                                                (pp, "_FAST_POLL_STAGGER_S"), (pp, "_FAST_POLL_CONCURRENCY"))}
     saved_list, saved_off = ti.account_registry.list_accounts, ti.account_health.deactivated_ids
     saved_dead = ti.account_health.dead_session_map
     ti.account_health.dead_session_map = _dead
     saved_fansly = ti.fansly_backend.is_fansly, ti.fansly_revenue.run_one_tick
-    ti.run_fast_tick, ti.boot_grace, ti._is_paused = _tick, _none, _false
+    pp.run_fast_tick, pp.boot_grace, ti._is_paused = _tick, _none, _false
     ti.fansly_backend.is_fansly = lambda a: a in FANSLY
     ti.fansly_revenue.run_one_tick = _fansly_tick
-    ti._FAST_POLL_STAGGER_S, ti._FAST_POLL_CONCURRENCY = stagger, concurrency
+    pp._FAST_POLL_STAGGER_S, pp._FAST_POLL_CONCURRENCY = stagger, concurrency
     ti.account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in live]
     ti.account_health.deactivated_ids = _off
     try:
         yield
     finally:
-        for k, v in saved.items():
-            setattr(ti, k, v)
+        for (m, k), v in saved.items():
+            setattr(m, k, v)
         ti.account_registry.list_accounts, ti.account_health.deactivated_ids = saved_list, saved_off
         ti.account_health.dead_session_map = saved_dead
         ti.fansly_backend.is_fansly, ti.fansly_revenue.run_one_tick = saved_fansly
@@ -146,7 +147,7 @@ async def _one_cycle(outcomes=None, poll=None, **kw) -> list[str]:
         ti._client_for, ti.purchase_notifications.poll_purchases = (lambda _aid: object()), poll
     try:
         async with _patched(_tick, **kw):
-            task = asyncio.create_task(ti.start_fast_poll())
+            task = asyncio.create_task(pp.start_fast_poll())
             await asyncio.sleep(0.5)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -162,9 +163,9 @@ async def case_tiers_ignore_presence():
     view_lease.renew(("user", "tier-owner", "t1"), [LEASED], LEASED)
     sellers = await ti._seller_account_ids()
     assert sellers == {AUTO, FUNNEL, FU, F_SELL}, sorted(sellers)
-    ti._poll_state.clear()
+    pp._poll_state.clear()
     ago = time.monotonic() - 20
-    ti._poll_state.update({a: decide.PollState(ago) for a in ACCOUNTS})
+    pp._poll_state.update({a: decide.PollState(ago) for a in ACCOUNTS})
     polled = await _one_cycle()
     assert sorted(polled) == sorted([AUTO, FUNNEL, FU, LEASED, F_SELL]), sorted(polled)
     assert FANSLY_TICKS == [F_SELL], f"through the Fansly lane: {FANSLY_TICKS}"
@@ -173,14 +174,14 @@ async def case_tiers_ignore_presence():
 
 async def case_idle_still_polled():
     view_lease._holders.clear()
-    ti._poll_state.clear()
-    ti._poll_state[QUIET] = decide.PollState(time.monotonic() - decide.SLOW_S)
-    ti._poll_state[OLD] = decide.PollState(time.monotonic() - 20)
+    pp._poll_state.clear()
+    pp._poll_state[QUIET] = decide.PollState(time.monotonic() - decide.SLOW_S)
+    pp._poll_state[OLD] = decide.PollState(time.monotonic() - 20)
     polled = await _one_cycle()
     assert QUIET in polled, sorted(polled)
     assert OLD not in polled, "Idle polled 20 s ago: not due"
     for aid in (IDLE, OFF, F_IDLE):            # never polled: its phase decides
-        assert aid in ti._poll_state, aid
+        assert aid in pp._poll_state, aid
         phase_now = decide.due(decide.first_idle_state(aid, 0.0, None), "slow", 0.0)
         assert (aid in polled) is phase_now, (aid, phase_now, sorted(polled))
 
@@ -188,8 +189,8 @@ async def case_idle_still_polled():
 async def case_demand_first():
     view_lease._holders.clear()
     long_ago = time.monotonic() - 2 * decide.SLOW_S
-    ti._poll_state.clear()
-    ti._poll_state.update({a: decide.PollState(long_ago) for a in ACCOUNTS})   # every Creator due
+    pp._poll_state.clear()
+    pp._poll_state.update({a: decide.PollState(long_ago) for a in ACCOUNTS})   # every Creator due
     polled = await _one_cycle(stagger=0.01, concurrency=1)
     fast = {AUTO, FUNNEL, FU, F_SELL}
     assert sorted(polled) == sorted(ACCOUNTS), sorted(polled)
@@ -207,27 +208,27 @@ async def case_poll_now_single_flight():
         return {"aid": aid}
 
     async with _patched(_tick, live=[AUTO, IDLE]):
-        ti._poll_inflight.clear()
-        loop_poll = ti._single_flight(AUTO, "fast")          # the loop's tick, in flight
+        pp._poll_inflight.clear()
+        loop_poll = pp._single_flight(AUTO, "fast")          # the loop's tick, in flight
         await asyncio.sleep(0)
-        a = asyncio.create_task(ti.poll_now(AUTO))
-        b = asyncio.create_task(ti.poll_now(AUTO))
+        a = asyncio.create_task(pp.poll_now(AUTO))
+        b = asyncio.create_task(pp.poll_now(AUTO))
         await asyncio.sleep(0.05)
         assert reads == [AUTO], reads
         gate.set()
         assert await a == {"aid": AUTO} and await b == {"aid": AUTO}
         assert await loop_poll == {"aid": AUTO}
         assert reads == [AUTO], f"one feed read, got {reads}"
-        assert AUTO not in ti._poll_inflight
-        assert await ti.poll_now(LEASED) is None, "no live session: skipped"
-        assert await ti.poll_now(IDLE) == {"aid": IDLE} and reads == [AUTO, IDLE]
+        assert AUTO not in pp._poll_inflight
+        assert await pp.poll_now(LEASED) is None, "no live session: skipped"
+        assert await pp.poll_now(IDLE) == {"aid": IDLE} and reads == [AUTO, IDLE]
 
 
 def _all_polled_long_ago() -> None:
     view_lease._holders.clear()
-    ti._poll_state.clear()
+    pp._poll_state.clear()
     ago = time.monotonic() - 2 * decide.SLOW_S
-    ti._poll_state.update({a: decide.PollState(ago) for a in ACCOUNTS})
+    pp._poll_state.update({a: decide.PollState(ago) for a in ACCOUNTS})
 
 
 async def case_dead_session_skipped():
@@ -244,7 +245,7 @@ async def case_dead_session_skipped():
             reads.append(aid)
             return {}
         async with _patched(_tick):
-            assert await ti.poll_now(AUTO) is None and reads == [], "a Select refresh honours the dead set"
+            assert await pp.poll_now(AUTO) is None and reads == [], "a Select refresh honours the dead set"
     finally:
         DEAD.clear()
     polled = await _one_cycle()
@@ -255,10 +256,10 @@ async def case_429_holds_the_creator():
     _all_polled_long_ago()
     polled = await _one_cycle({AUTO: decide.Outcome("rate_limited", retry_after_s=90.0)})
     assert AUTO in polled
-    st = ti._poll_state[AUTO]
+    st = pp._poll_state[AUTO]
     assert st.step == 1 and st.hold_s == 90.0, st
     _all_polled_long_ago()                                  # every interval up: only the hold decides
-    ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], step=st.step, held_at=st.held_at,
+    pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], step=st.step, held_at=st.held_at,
                                                hold_s=st.hold_s)
     polled = await _one_cycle()
     assert AUTO not in polled and FUNNEL in polled, sorted(polled)
@@ -268,11 +269,11 @@ async def case_429_holds_the_creator():
         reads.append(aid)
         return {}
     async with _patched(_tick):
-        assert await ti.poll_now(AUTO) is None and reads == [], "poll_now inside a backoff: no call"
+        assert await pp.poll_now(AUTO) is None and reads == [], "poll_now inside a backoff: no call"
     # the hold over (90 s ago), the next cycle polls it, and an ok resets the ladder
-    ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], held_at=st.held_at - 90)
+    pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], held_at=st.held_at - 90)
     polled = await _one_cycle()
-    assert AUTO in polled and ti._poll_state[AUTO].step == 0 and ti._poll_state[AUTO].held_at is None
+    assert AUTO in polled and pp._poll_state[AUTO].step == 0 and pp._poll_state[AUTO].held_at is None
 
 
 async def case_dead_outcome_flags_unauthorized_does_not():
@@ -295,13 +296,13 @@ async def case_dead_outcome_flags_unauthorized_does_not():
         ti.account_health.mark_session_dead, ti._record_failure = saved
     assert marked == [(AUTO, "wrong_user")], marked
     assert failures == [], f"feed outcomes never count toward the supervisor's pause: {failures}"
-    assert ti._poll_state[AUTO].held_at is None, "dead holds no poll state"
-    assert ti._poll_state[FUNNEL].step == 1 and ti._poll_state[FUNNEL].hold_s == decide.BACKOFF_BASE_S
+    assert pp._poll_state[AUTO].held_at is None, "dead holds no poll state"
+    assert pp._poll_state[FUNNEL].step == 1 and pp._poll_state[FUNNEL].hold_s == decide.BACKOFF_BASE_S
 
 
 async def case_poll_now_stamps_last_ok_not_the_schedule():
     _all_polled_long_ago()
-    before = ti._poll_state[AUTO]
+    before = pp._poll_state[AUTO]
     answer = [decide.Outcome("ok")]
     reads: list[str] = []
 
@@ -310,24 +311,24 @@ async def case_poll_now_stamps_last_ok_not_the_schedule():
         return {"outcome": answer[0]}
     async with _patched(_tick):
         t0 = time.monotonic()
-        await ti.poll_now(AUTO)
-        st = ti._poll_state[AUTO]
+        await pp.poll_now(AUTO)
+        st = pp._poll_state[AUTO]
         assert st.last_s == before.last_s, "the loop's schedule is not moved"
         assert st.last_ok_s is not None and st.last_ok_s >= t0, st
         # A Demand Creator's 429 on a Select refresh: the hold runs from OF's answer, last-ok stays the ok
         # poll's, and a Select refresh makes no call before the cap (OF asked longer).
         answer[0] = decide.Outcome("rate_limited", retry_after_s=600.0)
-        await ti.poll_now(AUTO)
+        await pp.poll_now(AUTO)
         t1 = time.monotonic()
-        st2 = ti._poll_state[AUTO]
+        st2 = pp._poll_state[AUTO]
         assert st2.held_at <= t1 and st2.held_at >= st.last_ok_s and st2.last_ok_s == st.last_ok_s, st2
         answer[0] = decide.Outcome("ok")
         cap = decide.BACKOFF_DEMAND_MAX_S
-        ti._poll_state[AUTO] = dataclasses.replace(st2, held_at=time.monotonic() - cap + decide.FAST_S / 2)
+        pp._poll_state[AUTO] = dataclasses.replace(st2, held_at=time.monotonic() - cap + decide.FAST_S / 2)
         n = len(reads)
-        assert await ti.poll_now(AUTO) is None and len(reads) == n, "inside the cap, the next tick past it: no call"
-        ti._poll_state[AUTO] = dataclasses.replace(st2, held_at=time.monotonic() - cap)
-        assert await ti.poll_now(AUTO) is not None and len(reads) == n + 1, "the cap reached: polled"
+        assert await pp.poll_now(AUTO) is None and len(reads) == n, "inside the cap, the next tick past it: no call"
+        pp._poll_state[AUTO] = dataclasses.replace(st2, held_at=time.monotonic() - cap)
+        assert await pp.poll_now(AUTO) is not None and len(reads) == n + 1, "the cap reached: polled"
 
 
 async def case_cap_poll_starts_at_the_hold_end():
@@ -339,28 +340,28 @@ async def case_cap_poll_starts_at_the_hold_end():
         starts.append((aid, time.monotonic()))
         return {"outcome": decide.Outcome("ok")}
     end = time.monotonic() + 0.2                           # the capped hold ends 0.2 s into the cycle
-    ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], step=6, held_at=end - cap, hold_s=600.0)
+    pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], step=6, held_at=end - cap, hold_s=600.0)
     async with _patched(_tick):
-        task = asyncio.create_task(ti.start_fast_poll())
+        task = asyncio.create_task(pp.start_fast_poll())
         await asyncio.sleep(0.6)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
     at = [t for a, t in starts if a == AUTO]
     assert len(at) == 1 and end <= at[0] < end + 0.2, (at, end)
-    assert FUNNEL in [a for a, _ in starts] and AUTO not in ti._poll_timers
-    assert ti._poll_state[AUTO].step == 0, "the ok at the hold's end resets the ladder"
+    assert FUNNEL in [a for a, _ in starts] and AUTO not in pp._poll_timers
+    assert pp._poll_state[AUTO].step == 0, "the ok at the hold's end resets the ladder"
     # One pending timer per Creator; a poll starting first cancels it.
-    ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], step=1, held_at=time.monotonic() - cap + 5.0,
+    pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], step=1, held_at=time.monotonic() - cap + 5.0,
                                                hold_s=600.0)
     async with _patched(_tick):
-        ti._poll_at_hold_end(AUTO, "fast")
-        first = ti._poll_timers[AUTO]
-        ti._poll_at_hold_end(AUTO, "fast")
-        assert ti._poll_timers[AUTO] is first and len(ti._poll_timers) == 1
-        ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], held_at=time.monotonic() - cap)
-        await ti._single_flight(AUTO, "fast")
-        assert first.cancelled() and AUTO not in ti._poll_timers
+        pp._poll_at_hold_end(AUTO, "fast")
+        first = pp._poll_timers[AUTO]
+        pp._poll_at_hold_end(AUTO, "fast")
+        assert pp._poll_timers[AUTO] is first and len(pp._poll_timers) == 1
+        pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], held_at=time.monotonic() - cap)
+        await pp._single_flight(AUTO, "fast")
+        assert first.cancelled() and AUTO not in pp._poll_timers
 
 
 async def case_held_past_next_tick_starts_at_the_hold_end():
@@ -377,9 +378,9 @@ async def case_held_past_next_tick_starts_at_the_hold_end():
     fast, decide.FAST_S = decide.FAST_S, 0.2
     try:
         end = time.monotonic() + 0.3                        # past now + FAST_S, before 2 * FAST_S
-        ti._poll_state[AUTO] = dataclasses.replace(ti._poll_state[AUTO], step=6, held_at=end - cap, hold_s=600.0)
+        pp._poll_state[AUTO] = dataclasses.replace(pp._poll_state[AUTO], step=6, held_at=end - cap, hold_s=600.0)
         async with _patched(_tick):
-            task = asyncio.create_task(ti.start_fast_poll())
+            task = asyncio.create_task(pp.start_fast_poll())
             await asyncio.sleep(0.6)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -396,12 +397,12 @@ async def case_catch_up_after_a_gap():
         read.append(pages)
         return {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0, "outcome": decide.Outcome("ok")}
     view_lease._holders.clear()
-    ti._poll_state.clear()
+    pp._poll_state.clear()
     await _one_cycle(poll=_poll, live=[AUTO])                            # no state: a restart
     now = time.monotonic()
-    ti._poll_state[AUTO] = decide.PollState(now - decide.SLOW_S, now - 1)             # ok a second ago
+    pp._poll_state[AUTO] = decide.PollState(now - decide.SLOW_S, now - 1)             # ok a second ago
     await _one_cycle(poll=_poll, live=[AUTO])
-    ti._poll_state[AUTO] = decide.PollState(now - decide.SLOW_S, now - decide.SLOW_S)  # an Idle gap
+    pp._poll_state[AUTO] = decide.PollState(now - decide.SLOW_S, now - decide.SLOW_S)  # an Idle gap
     await _one_cycle(poll=_poll, live=[AUTO])
     assert read == [decide.CATCHUP_MAX_PAGES, 1, decide.CATCHUP_MAX_PAGES], read
 

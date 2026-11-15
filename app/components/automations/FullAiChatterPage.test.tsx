@@ -69,9 +69,11 @@ const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_repl
   info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] };
 /** The GET's `writer_providers` (model → provider). */
 const WRITER_PROVIDERS = { "euryale-v2.3": "nanogpt", "hermes-4-405b": "openrouter", "glm-5.3-flash": "zai" };
+/** The GET's `provider_labels` (provider → name). */
+const PROVIDER_LABELS = { nanogpt: "NanoGPT", openrouter: "OpenRouter", zai: "Z.ai (GLM)", deepinfra: "DeepInfra" };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS,
-    writer_providers: WRITER_PROVIDERS, ...over });
+    writer_providers: WRITER_PROVIDERS, provider_labels: PROVIDER_LABELS, ...over });
 const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
 let modeRead: Record<string, unknown> = MODE_OFF;
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
@@ -230,6 +232,36 @@ describe("Full AI Chat page", () => {
     expect(await screen.findByText("No creator with a live session")).toBeTruthy();
     expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
     expect(relayGet).not.toHaveBeenCalled();
+  });
+
+  it("the header's AI rules opens the diagram in a popup over the page; Escape closes an open card first, then the popup; X closes it", async () => {
+    mount([]);
+    const base = relayGet.getMockImplementation()!;
+    const RULES = { mode: "test", versions: {}, edges: [], nodes: [
+      { id: "router_jev", title: "Router Jev", group: "jev", summary: "One Jev call.", flags: [], blocks: [] },
+    ] };
+    relayGet.mockImplementation((path: string) =>
+      String(path).startsWith("/admin/full-ai/rules") ? Promise.resolve(RULES) : base(path));
+    const popup = () => screen.queryByRole("dialog", { name: "AI rules" });
+    expect(popup()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "AI rules" }));
+    const dialog = await screen.findByRole("dialog", { name: "AI rules" });
+    expect(within(dialog).getByLabelText("AI rules diagram")).toBeTruthy();
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Router Jev" }));
+    expect(relayGet).toHaveBeenCalledWith("/admin/full-ai/rules?mode=test", expect.anything());
+    const card = await screen.findByRole("dialog", { name: "Router Jev" });
+    fireEvent.keyDown(card, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Router Jev" })).toBeNull();
+    expect(popup()).not.toBeNull();
+    fireEvent.keyDown(within(dialog).getByLabelText("AI rules diagram"), { key: "Escape" });
+    await waitFor(() => expect(popup()).toBeNull());
+    // The page stays where it was.
+    expect(screen.getByRole("group", { name: "Mode" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "AI rules" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "AI rules" })).getByRole("button", { name: "Close" }));
+    expect(popup()).toBeNull();
   });
 });
 
@@ -548,7 +580,7 @@ describe("Full AI Chat page › Settings", () => {
     const keys = within(settings().getAllByRole("listitem")[1]);
     expect(await keys.findByText("NanoGPT set")).toBeTruthy();
     expect(keys.getByText("OpenRouter not set").className).toContain("text-err");
-    expect(keys.getByText("Z.ai not set").className).toContain("text-err");
+    expect(keys.getByText("Z.ai (GLM) not set").className).toContain("text-err");
     expect(keys.getByText("NanoGPT set").className).not.toContain("text-err");
     expect(keys.queryByText(/DeepSeek/)).toBeNull();
     expect(screen.queryByText(/n4n0/)).toBeNull();
@@ -1070,14 +1102,14 @@ describe("Full AI Chat page › Selling settings", () => {
     const group = () => screen.queryByRole("list", { name: "Sell settings" });
     expect(group()).toBeNull();
     expect(settings().queryByRole("switch", { name: "Unasked offers" })).toBeNull();
-    expect(settings().queryByText("Test chat + live. Shadow ignores these.")).toBeNull();
+    expect(settings().queryByText("Test chat + live.")).toBeNull();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
     await waitFor(() => expect(group()).not.toBeNull());
     const sws = within(group()!).getAllByRole("switch") as HTMLButtonElement[];
     expect(sws.map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked"), s.disabled])).toEqual(
       ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Match his count", "Spacing", "He likes"]
         .map((n) => [n, "true", false]));
-    expect(settings().getByText("Test chat + live. Shadow ignores these.")).toBeTruthy();
+    expect(settings().getByText("Test chat + live.")).toBeTruthy();
     // Sell group sits inside Sell's own top-level item.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
     expect(items.length).toBe(18);

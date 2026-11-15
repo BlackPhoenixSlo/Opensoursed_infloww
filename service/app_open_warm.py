@@ -7,6 +7,9 @@ As each Creator's reads land it publishes `creator_warmed`; every tab that can a
 
   current(account_id) -> bool: no read needed now (polled ok within PURCHASES_POLL_FAST_S, or warmed within
       REUSE_S, or queued in a warm): the view-lease route's lease-gain Select refresh skips it.
+  just_polled(account_id) -> bool: polled ok within purchase_poll_decide.SELECT_MIN_AGE_S: a selection reads no feed.
+  pace(account_ids, poll, busy=()): the view-lease route's other lease gains, `poll`ed per proxy like the warm's
+      groups (below), feed only: never one read each at once (a restart or a tab back from hidden re-leases many).
   start(principal, account_ids, leased_first, *, refreshed=()) -> {Creator: "started" | "reused"}
       Schedules the warm and returns at once. `account_ids` are the principal's (the route drops
       watchers); dead-session, deactivated and no-session Creators are skipped (absent from the
@@ -21,7 +24,7 @@ As each Creator's reads land it publishes `creator_warmed`; every tab that can a
       first, then in `account_ids` order.
       Per Creator, one background walk (`of_pacing.walk`, Caller kind `walk:app_open_warm`, its pages
       paced per Creator), in order:
-        1. one purchases poll (`transaction_ingest.poll_now`, single-flight with the loop's tick),
+        1. one purchases poll (`purchase_poll.poll_now`, single-flight with the loop's tick),
            skipped when its last ok poll is younger than PURCHASES_POLL_FAST_S (a Demand Creator is
            current); a Creator it flags a Dead session reads nothing more;
         2-4. the server's `app_open_warm_reads` (looked up at call time): the chats window (roster-counts'
@@ -42,21 +45,23 @@ import hashlib
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 
 import client_pool
 import events
 import of_pacing
 import proxies
+import purchase_poll
 import purchase_poll_decide as poll_decide
 import relay_host
 import transaction_ingest
+from env_knob import env_float
 from fastapi import HTTPException
 
 log = logging.getLogger("of-relay.app_open_warm")
 
-GAP_S = poll_decide._knob("APP_OPEN_WARM_GAP_S", 1.0, 0.0)
-REUSE_S = poll_decide._knob("APP_OPEN_WARM_REUSE_S", 30.0, 0.0)
+GAP_S = env_float("APP_OPEN_WARM_GAP_S", 1.0, 0.0)
+REUSE_S = env_float("APP_OPEN_WARM_REUSE_S", 30.0, 0.0)
 
 DIRECT = "direct"                       # proxies.egress_identity's key (and the label) without a proxy
 _clock = time.monotonic                 # the reuse memo's clock (tests inject one)
@@ -90,8 +95,14 @@ def _egress(account_id: str) -> tuple[str, str]:
 
 def _current(account_id: str) -> bool:
     """Its last ok purchases poll is younger than PURCHASES_POLL_FAST_S: no feed read."""
-    age = transaction_ingest.last_ok_poll_age_s(account_id)
+    age = purchase_poll.last_ok_poll_age_s(account_id)
     return age is not None and age < poll_decide.FAST_S
+
+
+def just_polled(account_id: str) -> bool:
+    """Its last ok purchases poll is younger than purchase_poll_decide.SELECT_MIN_AGE_S: a selection reads no feed."""
+    age = purchase_poll.last_ok_poll_age_s(account_id)
+    return age is not None and age < poll_decide.SELECT_MIN_AGE_S
 
 
 def current(account_id: str) -> bool:
@@ -112,7 +123,7 @@ async def _warm_one(account_id: str, feed: bool) -> bool:
     reads its feed."""
     async def run() -> bool:
         if feed and not _current(account_id):
-            await transaction_ingest.poll_now(account_id)
+            await purchase_poll.poll_now(account_id)
             if account_id not in set(await transaction_ingest.live_account_ids()):
                 return False        # its feed read flagged it a Dead session: nothing else can succeed
         await _server().app_open_warm_reads(account_id)
@@ -181,6 +192,32 @@ async def start(principal: tuple[str, str], account_ids: Iterable[str], leased_f
     log.info("app_open_warm principal=%s:%s started=%d refreshed=%d reused=%d proxies=%d", principal[0],
              principal[1], len(fresh) - n_done, n_done, len(out) - len(fresh), len(groups))
     return out
+
+
+async def _pace_group(account_ids: list[str], poll: Callable[[str], Awaitable[Any]], read_before: bool) -> None:
+    for aid in account_ids:
+        if _current(aid):
+            continue
+        if read_before:
+            await asyncio.sleep(GAP_S)
+        read_before = True
+        await poll(aid)
+
+
+def pace(account_ids: Iterable[str], poll: Callable[[str], Awaitable[Any]], busy: Iterable[str] = ()) -> None:
+    """A lease renewal's gains (the view-lease route's, not `opened`): `poll` (its Select refresh, feed only) per
+    Creator, grouped by proxy exit as `start`'s groups, one Creator at a time GAP_S apart, groups in parallel; a group
+    on the exit of a `busy` Creator (the selection, reading now) waits GAP_S first. A Creator polled ok within
+    PURCHASES_POLL_FAST_S by its turn is skipped. Returns at once; no event, no reuse memo. `poll` never raises."""
+    hot = {_egress(a)[0] for a in busy}
+    groups: dict[str, tuple[str, list[str]]] = {}
+    for aid in dict.fromkeys(account_ids):
+        key, label = _egress(aid)
+        groups.setdefault(key, (label, []))[1].append(aid)
+    for key, (label, aids) in groups.items():
+        t = asyncio.create_task(_pace_group(aids, poll, key in hot), name=f"lease-gain:{label}")
+        _tasks.add(t)
+        t.add_done_callback(_tasks.discard)
 
 
 def summary(result: dict[str, Any]) -> str:

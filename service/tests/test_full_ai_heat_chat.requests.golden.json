@@ -15,10 +15,10 @@
      },
      "asks_if_ai": {
       "criteria": {
-       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "false": "He talks to her as the real person she is, even if he asks personal questions or asked whether she is real earlier in `thread`",
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
-      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
      "asks_subject": {
@@ -201,10 +201,10 @@
      },
      "asks_if_ai": {
       "criteria": {
-       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "false": "He talks to her as the real person she is, even if he asks personal questions or asked whether she is real earlier in `thread`",
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
-      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
      "asks_subject": {
@@ -366,10 +366,10 @@
      },
      "asks_if_ai": {
       "criteria": {
-       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "false": "He talks to her as the real person she is, even if he asks personal questions or asked whether she is real earlier in `thread`",
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
-      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
      "asks_subject": {
@@ -600,10 +600,10 @@
      },
      "asks_if_ai": {
       "criteria": {
-       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "false": "He talks to her as the real person she is, even if he asks personal questions or asked whether she is real earlier in `thread`",
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
-      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
      "asks_subject": {
@@ -786,10 +786,10 @@
      },
      "asks_if_ai": {
       "criteria": {
-       "false": "He talks to her as the real person she is, even if he asks personal questions",
+       "false": "He talks to her as the real person she is, even if he asks personal questions or asked whether she is real earlier in `thread`",
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
-      "instructions": "Does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
      "asks_subject": {

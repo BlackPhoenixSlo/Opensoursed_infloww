@@ -172,7 +172,7 @@ function SellGroup({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
           </li>
         ))}
       </ul>
-      <p className="text-[12px] text-muted">Test chat + live. Shadow ignores these.</p>
+      <p className="text-[12px] text-muted">Test chat + live.</p>
     </div>
   );
 }
@@ -316,7 +316,7 @@ function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi })
   const keysQ = useTenantKeys();
   const providers = keysQ.data?.providers;
   const sides = [state.draft, state.checkpoint];
-  const rows = keyRows(sides, cfg.writerProviders);
+  const rows = keyRows(sides, cfg.writerProviders, cfg.providerLabels);
   return (
     <div className={ROW}>
       <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">

@@ -498,7 +498,13 @@ def case_test_mode_questions():
                      "counter_offer": "Noul", "offer_moment": "Noul"}, kinds
     assert tuple(test["asks_subject"].criteria) == SUBJECTS, tuple(test["asks_subject"].criteria)
     assert tuple(test["asks_format"].criteria) == FORMATS, tuple(test["asks_format"].criteria)
-    assert all(test[q].model_dump() == v.model_dump() for q, v in rj._questions().items())
+    assert all(test[q].model_dump() == v.model_dump() for q, v in rj._questions().items()
+               if q not in rj.TEST_NEW_ONLY)
+    # `asks_if_ai` reads his new messages only in test + live (NEW-158); Shadow keeps Phase 01's.
+    assert set(rj.TEST_NEW_ONLY) == {"asks_if_ai"}
+    assert test["asks_if_ai"].instructions == rj.TEST_NEW_ONLY["asks_if_ai"]["instructions"]
+    assert test["asks_if_ai"].instructions.startswith("In `fan_new_messages`, ")
+    assert rj._questions()["asks_if_ai"].instructions == rj.QUESTIONS["asks_if_ai"]["instructions"]
     assert rj.DRAFT == frozenset({"gif_fits", "counter_offer", "offer_moment"}), rj.DRAFT
     assert not TEST_IDS & set(rj.QUESTIONS) and not TEST_IDS & set(rj.THRESHOLDS)
 

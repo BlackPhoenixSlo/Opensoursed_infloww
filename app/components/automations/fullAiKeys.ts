@@ -1,10 +1,8 @@
 import { chatSwitch, type FullAiConfig } from "@/components/automations/fullAiConfig";
 
 /** Full AI Chat's LLM keys row: the providers the Writers run on (draft and saved checkpoint), plus the vision provider
- *  while "Read his photos" is on, short names as the keys form reads them. An unknown provider id renders as itself. */
-export const KEY_LABELS: Record<string, string> = {
-  nanogpt: "NanoGPT", openrouter: "OpenRouter", zai: "Z.ai", deepseek: "DeepSeek", deepinfra: "DeepInfra",
-};
+ *  while "Read his photos" is on, named by the config GET's `provider_labels` (as the keys form names them; an unknown provider id
+ *  renders as itself). */
 
 /** The provider "Read his photos" bills (`inbound_describe.PROVIDER`). */
 export const PHOTO_PROVIDER = "deepinfra";
@@ -18,11 +16,12 @@ export function readsPhotos(sides: (FullAiConfig | null)[]): boolean {
  *  `readsPhotos`; a model with no provider is skipped. null while the config GET's `writer_providers` has not answered. */
 export function keyRows(
   sides: (FullAiConfig | null)[], providerOf: Record<string, string> | undefined,
+  labels: Record<string, string> | undefined,
 ): { id: string; label: string }[] | null {
   if (!providerOf) return null;
   const writers = sides.flatMap((s) => s?.writers ?? []).map((w) => providerOf[w]).filter(Boolean);
   const ids = [...new Set([...writers, ...(readsPhotos(sides) ? [PHOTO_PROVIDER] : [])])];
-  return ids.map((id) => ({ id, label: KEY_LABELS[id] ?? id }));
+  return ids.map((id) => ({ id, label: labels?.[id] ?? id }));
 }
 
 /** Photos are read but the keys read says no DeepInfra key: the page warns (not a Live blocker, the Turn answers

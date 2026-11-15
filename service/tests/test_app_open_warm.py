@@ -5,10 +5,10 @@ two money lists and the notifications count) as one background walk, per proxy o
 APP_OPEN_WARM_GAP_S apart, proxies in parallel, leased Creators first; `creator_warmed` per Creator as its reads land.
 
 Fakes: the OF client (client_pool.get: only its bound endpoint, `proxy_url`, is read), the feed read
-(transaction_ingest.run_fast_tick, behind the real poll_now and its single-flight), the server's read helper for
+(purchase_poll.run_fast_tick, behind the real poll_now and its single-flight), the server's read helper for
 steps 2-4 (`app_open_warm._server`, except in case_read_set_on_the_real_routes), the registries (read through the real
 transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), a last ok poll (a seeded
-`transaction_ingest._poll_state`), events.publish (recorded).
+`purchase_poll._poll_state`), events.publish (recorded).
 
   • case_every_creator_once: each live Creator read exactly once (feed, then steps 2-4), Caller kind
     walk:app_open_warm; dead, deactivated, watcher and no-session Creators skipped (not in the answer, no read); per
@@ -21,6 +21,8 @@ transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), 
     gets no feed read, still steps 2-4 and its event.
   • case_refreshed_first: a Creator the route Select-refreshes is `started`, gets no feed read here, its steps 2-4
     first on its proxy one GAP_S late (the Select refresh reads there now); the others' groups at once.
+  • case_pace_lease_gains: a lease renewal's gains (`pace`): feed reads only, grouped per proxy GAP_S apart, a
+    proxy the selection reads on waits one GAP_S, a current Creator skipped; no steps 2-4, event or memo.
   • case_dead_after_feed_read: a Creator its feed read flags a Dead session reads nothing more and publishes nothing.
   • case_read_set_on_the_real_routes: the real server helper and roster-counts recompute over a fake OF client:
     the four steps in order, at most 5 reads, the money lists at the rail's page size, `creator_warmed` in the house
@@ -46,6 +48,7 @@ import client_pool  # noqa: E402
 import events  # noqa: E402
 import of_call_counter  # noqa: E402
 import purchase_poll_decide as decide  # noqa: E402
+import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
@@ -107,7 +110,7 @@ def _patched():
     async def _false(_aid):
         return False
 
-    saved = [(ti, "run_fast_tick", _tick), (ti, "_is_paused", _false),
+    saved = [(pp, "run_fast_tick", _tick), (ti, "_is_paused", _false),
              (accounts, "list_accounts",
               lambda include_watchers=False: [{"id": a, "has_session": a != NOSESS} for a in ALL
                                               if include_watchers or a != WATCH]),
@@ -125,8 +128,8 @@ def _patched():
     DEAD_NOW.clear()
     aow._warmed_at.clear()
     aow._pending.clear()
-    ti._poll_state.clear()
-    ti._poll_inflight.clear()
+    pp._poll_state.clear()
+    pp._poll_inflight.clear()
     try:
         yield
     finally:
@@ -204,7 +207,7 @@ async def case_reuse():
         assert len(READS) == n and len(STEPS) == n, "inside the reuse window: no read"
         assert sorted(_warmed_ids()) == sorted(LIVE), f"a reuse publishes at once: {PUBLISHED}"
         CLOCK[0] = 2000.0 + aow.REUSE_S + 1
-        ti._poll_state.clear()   # forget any last ok poll, so the window alone decides
+        pp._poll_state.clear()   # forget any last ok poll, so the window alone decides
         assert await aow.start(("user", "u2"), LIVE, leased_first=()) == {a: "started" for a in LIVE}
         await _drain()
         assert len(READS) == 2 * n, READS
@@ -213,8 +216,8 @@ async def case_reuse():
 async def case_recently_polled_no_read():
     with _patched():
         now = time.monotonic()
-        ti._poll_state[P1A] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5))   # inside the fast interval
-        ti._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S + 5))   # older: read
+        pp._poll_state[P1A] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5))   # inside the fast interval
+        pp._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S + 5))   # older: read
         t0 = time.monotonic()
         got = await aow.start(("user", "u1"), [P1A, P1B, P1C], leased_first=())
         assert got == {P1A: "started", P1B: "started", P1C: "started"}, got
@@ -242,6 +245,29 @@ async def case_refreshed_first():
     assert GAP <= steps[P1A] < at[P1B], f"its steps 2-4 first on its proxy, one GAP after the Select refresh: {steps}"
     assert at[P1B] >= steps[P1A] + STEP_S + GAP, f"then one GAP to the next Creator: {at} {steps}"
     assert at[P2A] < GAP / 2, f"another proxy's group starts at once: {at}"
+
+
+async def case_pace_lease_gains():
+    """A lease renewal's gains (app_open_warm.pace): feed reads only, per proxy one Creator at a time GAP_S apart,
+    proxies in parallel, a proxy the selection reads on now waits one GAP_S first; a Creator polled ok inside
+    PURCHASES_POLL_FAST_S by its turn is skipped; no steps 2-4, no event, no warm memo."""
+    polled: list[tuple[str, float]] = []
+
+    async def poll(aid):
+        polled.append((aid, time.monotonic()))
+        await asyncio.sleep(READ_S)
+
+    with _patched():
+        pp._poll_state[P1C] = decide.PollState(last_ok_s=time.monotonic())    # current: skipped
+        t0 = time.monotonic()
+        aow.pace([P1A, P1B, P1C, P2A, D1], poll, busy=[P2B])
+        await _drain()
+    at = {a: t - t0 for a, t in polled}
+    assert set(at) == {P1A, P1B, D1, P2A} and len(polled) == 4, f"each once, the current one skipped: {polled}"
+    assert at[P1A] < GAP / 2 and at[D1] < GAP / 2, f"groups in parallel, at once: {at}"
+    assert at[P1B] - at[P1A] >= GAP, f"same proxy: GAP_S apart: {at}"
+    assert at[P2A] >= GAP, f"the selection reads on P2's proxy now: one GAP_S first: {at}"
+    assert STEPS == [] and PUBLISHED == [] and aow._warmed_at == {} and aow._pending == set(), (STEPS, PUBLISHED)
 
 
 async def case_dead_after_feed_read():

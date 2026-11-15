@@ -99,6 +99,7 @@ def waiting(rows: list[dict], account_id: str, now: datetime) -> list[dict]:
 async def run_pass(account_id: str) -> dict | None:
     """One catch-up pass; None when the Creator is not Live (the loop ends). Stats: `chats` read,
     `waiting`, `claimed`, `saved` (DMs not in `messages` before), the sweep's `swept` / `queued`."""
+    import account_health
     import chats_page
     import messages
     import of_pacing
@@ -114,6 +115,12 @@ async def run_pass(account_id: str) -> dict | None:
         return None
     if runtime_switches.on(full_ai_owner_io.OFF_SWITCH):
         return {"skipped": "off_switch"}
+    # The dispatcher's gate (automation_executor.run_once): its jobs would never run, so no OF read.
+    # A skip, not None: the loop keeps its schedule and resumes once the Creator is healthy.
+    if await account_health.is_deactivated(aid):
+        return {"skipped": "account_deactivated"}
+    if await account_health.is_session_dead(aid):
+        return {"skipped": "session_dead"}
     client = await full_ai_live.catchup_client(aid)
     page = await of_pacing.walk(aid, SOURCE, lambda: asyncio.to_thread(
         chats_page.assemble_chats_page, client, limit=CHATS, offset=0, order="recent"))
@@ -157,7 +164,7 @@ async def _loop(account_id: str, delay_s: float = 0) -> None:
 
 
 def start(account_id: str, delay_s: float = 0) -> asyncio.Task:
-    """(Re)start the Creator's schedule: a pass after `delay_s` (0: at once), then +5, +15, every 25 min (`schedule`)."""
+    """(Re)start the Creator's schedule: after `delay_s` (0: at once), passes on `catchup_minutes` (`schedule`; default 0/5/15, then 25)."""
     aid = str(account_id)
     stop(aid)
     task = asyncio.get_running_loop().create_task(_loop(aid, delay_s), name=f"full-ai-catchup:{aid}")

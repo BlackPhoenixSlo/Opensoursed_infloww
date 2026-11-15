@@ -21,6 +21,7 @@ import time  # noqa: E402
 import types  # noqa: E402
 
 import purchase_notifications as pn  # noqa: E402
+import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 
 ACCOUNTS = [f"77{i:02d}" for i in range(20)]
@@ -44,18 +45,18 @@ async def _one_cycle(fake_tick, failures):
     async def _fail(aid, e):
         failures.append((aid, str(e)))
 
-    saved = {k: getattr(ti, k) for k in (
-        "run_fast_tick", "boot_grace", "_is_paused", "_seller_account_ids",
-        "_record_failure", "_FAST_POLL_STAGGER_S")}
+    saved = {(m, k): getattr(m, k) for m, k in (
+        (pp, "run_fast_tick"), (pp, "boot_grace"), (ti, "_is_paused"), (ti, "_seller_account_ids"),
+        (ti, "_record_failure"), (pp, "_FAST_POLL_STAGGER_S"))}
     saved_list, saved_off = ti.account_registry.list_accounts, ti.account_health.deactivated_ids
-    ti.run_fast_tick, ti.boot_grace, ti._is_paused = fake_tick, _none, _false
+    pp.run_fast_tick, pp.boot_grace, ti._is_paused = fake_tick, _none, _false
     ti._seller_account_ids, ti._record_failure = _wanted, _fail
-    ti._FAST_POLL_STAGGER_S = 0.01
+    pp._FAST_POLL_STAGGER_S = 0.01
     ti.account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in ACCOUNTS]
     ti.account_health.deactivated_ids = _off
-    ti._poll_state.clear()  # in-memory poll state: every account due on this cycle
+    pp._poll_state.clear()  # in-memory poll state: every account due on this cycle
     try:
-        task = asyncio.create_task(ti.start_fast_poll())
+        task = asyncio.create_task(pp.start_fast_poll())
         await asyncio.sleep(2.0)
         task.cancel()
         try:
@@ -63,8 +64,8 @@ async def _one_cycle(fake_tick, failures):
         except asyncio.CancelledError:
             pass
     finally:
-        for k, v in saved.items():
-            setattr(ti, k, v)
+        for (m, k), v in saved.items():
+            setattr(m, k, v)
         ti.account_registry.list_accounts, ti.account_health.deactivated_ids = saved_list, saved_off
 
 
@@ -84,14 +85,14 @@ async def case_bounded_concurrent_and_staggered():
     failures: list = []
     await _one_cycle(_tick, failures)
     assert sorted(a for a, _ in started) == sorted(ACCOUNTS), "every account once per cycle"
-    assert peak == ti._FAST_POLL_CONCURRENCY, f"peak in flight {peak}"
-    first_wave = sorted(t for _, t in started)[:ti._FAST_POLL_CONCURRENCY]
+    assert peak == pp._FAST_POLL_CONCURRENCY, f"peak in flight {peak}"
+    first_wave = sorted(t for _, t in started)[:pp._FAST_POLL_CONCURRENCY]
     # Span, not pairwise gaps: start i sleeps i*stagger from one base, and a
     # loaded loop only ever wakes LATE, so one late start next to an on-time
     # one shrinks a single gap (6 ms seen at load ~40) while the wave's span
     # cannot fall below (n-1)*stagger. All-at-once would read ~0 here.
     spread = first_wave[-1] - first_wave[0]
-    want = 0.8 * (ti._FAST_POLL_CONCURRENCY - 1) * 0.01
+    want = 0.8 * (pp._FAST_POLL_CONCURRENCY - 1) * 0.01
     assert spread >= want, f"starts not staggered: first wave spans {spread:.4f}s < {want}s"
     span = max(t for _, t in started) - min(t for _, t in started)
     assert span < len(ACCOUNTS) * TICK_S / 2, f"walk still ~sequential: {span:.2f}s"

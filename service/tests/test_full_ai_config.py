@@ -76,6 +76,9 @@ from llm_models import MODELS  # noqa: E402
 WRITER_MODELS = sorted(m for m, v in MODELS.items() if v.provider in WRITER_PROVIDERS
                        or m == "euryale-v2.3-deepinfra")
 WRITER_PROVIDERS_OF = {m: MODELS[m].provider for m in WRITER_MODELS}
+# The LLM keys row's names, as Settings → AI keys names each provider.
+PROVIDER_LABELS = {"nanogpt": "NanoGPT", "openrouter": "OpenRouter", "deepseek": "DeepSeek", "deepinfra": "DeepInfra",
+                   "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)", "typesafe": "TypeSafe (Jev)"}
 
 
 def case_turn_bound_s_table():
@@ -604,7 +607,7 @@ def case_config_api_round_trip():
     got = OWNER_A.get(CONFIG, params={"account_id": A})
     assert got.status_code == 200, got.text
     assert got.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0,
-                          "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "reference": REF,
+                          "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "provider_labels": PROVIDER_LABELS, "reference": REF,
                           "limits": LIMITS}, got.json()
     formal = FORMAL_IN
     bad = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**formal, "fans_list": []},
@@ -620,7 +623,7 @@ def case_config_api_round_trip():
     assert ok.status_code == 200, ok.text
     formal = FORMAL                                 # stored as the layers
     assert ok.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": formal, "rev": 1,
-                         "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "reference": REF,
+                         "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "provider_labels": PROVIDER_LABELS, "reference": REF,
                          "limits": LIMITS}, ok.json()
     # The same request again is stale: someone (this tab) stored meanwhile.
     again = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 0})
@@ -629,7 +632,7 @@ def case_config_api_round_trip():
     assert saved.status_code == 200, saved.text
     after_save = saved.json()
     assert after_save == {"checkpoint": formal, "previous": DEFAULTS, "draft": formal, "rev": 2,
-                          "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "reference": REF,
+                          "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "provider_labels": PROVIDER_LABELS, "reference": REF,
                           "limits": LIMITS}, after_save
     assert _rule_row() == rule
     assert OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 1}).status_code == 409

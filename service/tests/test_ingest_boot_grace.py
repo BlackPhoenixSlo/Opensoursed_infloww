@@ -47,19 +47,21 @@ from cadence import boot_grace  # noqa: E402
 
 _SERVICE = Path(__file__).resolve().parents[1]
 _INGEST_SRC = _SERVICE / "transaction_ingest.py"
+_POLL_SRC = _SERVICE / "purchase_poll.py"
 _COMPOSE = _SERVICE.parent / "docker-compose.yml"
 
-# The two loops that must hold, and the knob each is expected to hold on.
-_GUARDED_LOOPS = ("start_fast_poll", "start_supervisor")
+# The two loops that must hold, and the file each lives in.
+_GUARDED_LOOPS = {"start_fast_poll": _POLL_SRC, "start_supervisor": _INGEST_SRC}
 
 
 def _fn(name: str) -> ast.AsyncFunctionDef:
-    tree = ast.parse(_INGEST_SRC.read_text(encoding="utf-8"))
+    src = _GUARDED_LOOPS[name]
+    tree = ast.parse(src.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
             return node
     raise AssertionError(f"{name} is no longer a module-level async def in "
-                         f"{_INGEST_SRC.name} — this guard needs updating")
+                         f"{src.name} — this guard needs updating")
 
 
 def _index_of_await_boot_grace(fn: ast.AsyncFunctionDef) -> int:
@@ -179,6 +181,8 @@ def case_env_float_degrades_on_garbage():
         ("", 90.0, "empty falls back (an operator blanking the value in .env)"),
         ("   ", 90.0, "whitespace falls back"),
         ("not-a-number", 90.0, "garbage falls back instead of raising at import"),
+        ("inf", 90.0, "non-finite falls back (an infinite grace never starts the loop)"),
+        ("nan", 90.0, "nan falls back"),
         ("0", 0.0, "an explicit zero is honoured — that is the disable switch"),
         ("45.5", 45.5, "a real value is read"),
     ]

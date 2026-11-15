@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * My AI Chatter > Full AI Chat (ours; owner only in the sidebar, same /full-ai-chatter address). A settings column
+ * Full AI Chat (ours; owner only, a top-level sidebar link, same /full-ai-chatter address). The header's "AI rules"
+ * opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
  * (`FullAiSettings`: Mode, LLM keys, reply speed, Human style, GIFs, Sell, Content folders, Prepare content; Save /
  * Roll back / JSON over the draft
  * config) with the persona editor (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) under it;
@@ -19,6 +20,9 @@
  * with the honesty line, never a comparison it cannot make.
  */
 
+import { useState } from "react";
+
+import { AiRulesDiagram } from "@/components/automations/AiRulesPage";
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
 import { FullAiRevenue } from "@/components/automations/FullAiRevenue";
 import { FullAiSettings } from "@/components/automations/FullAiSettings";
@@ -26,7 +30,8 @@ import { FullAiTestChat } from "@/components/automations/FullAiTestChatWindows";
 import { ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { IF_TABLE } from "@/components/ui/infloww";
+import { IF_BTN } from "@/components/settings/ifButton";
+import { IF_TABLE, IfModal } from "@/components/ui/infloww";
 import { useFullAiTestChat } from "@/hooks/useFullAiTestChat";
 import { ROUTE_LABEL, ROUTES, useFullAiToday } from "@/hooks/useFullAiToday";
 import { cn } from "@/lib/utils";
@@ -40,10 +45,25 @@ const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
 export default function FullAiChatterPage() {
   const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators}><NoCreator loading={loading} /></PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={<AiRulesButton />}><NoCreator loading={loading} /></PageFrame>;
   }
   // Keyed, so a switch in flight can never land on the next creator, and a new Creator starts a new Test chat.
   return <FullAiChatter key={accountId} accountId={accountId} creators={creators} />;
+}
+
+/** The header's "AI rules": the diagram in a popup over this page (X, Escape), near full-screen on a phone too. */
+function AiRulesButton() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className={IF_BTN} onClick={() => setOpen(true)}>AI rules</button>
+      {open && (
+        <IfModal title="AI rules" width={1600} className="h-[calc(var(--vvh,100dvh)-32px)]" onClose={() => setOpen(false)}>
+          <AiRulesDiagram fill />
+        </IfModal>
+      )}
+    </>
+  );
 }
 
 function FullAiChatter({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
@@ -52,7 +72,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
   const today = todayQ.data;
 
   return (
-    <PageFrame title={TITLE} creators={creators}>
+    <PageFrame title={TITLE} creators={creators} actions={<AiRulesButton />}>
       <div className="grid max-w-[1320px] gap-8 lg:grid-cols-[340px_minmax(0,1fr)]">
         <aside className="min-w-0 space-y-8">
           <FormBlock title="Settings">

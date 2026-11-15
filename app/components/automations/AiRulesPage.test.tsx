@@ -1,7 +1,7 @@
 /** AI rules page: cards render from GET /admin/full-ai/rules, a click opens the drawer with the full prompt, the
- *  Test|Shadow toggle refetches with the new Mode. */
+ *  no Test|Shadow toggle. */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -51,10 +51,7 @@ describe("AiRulesPage", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Shadow" }));
-    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/full-ai/rules?mode=shadow", expect.anything()));
-    expect(await screen.findByRole("button", { name: "Router Jev (shadow)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Shadow" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Shadow" })).toBeNull();
   });
 
   it("shows the read's error", async () => {

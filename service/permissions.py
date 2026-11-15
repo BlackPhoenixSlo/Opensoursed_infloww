@@ -483,6 +483,8 @@ UNMAPPED: dict[str, str] = {
                        " a chatter may make here (chatters.py); the rest is owner-only",
     "/admin/view-lease": "every open tab's View lease renewal (accounts_admin_api): ids outside the"
                          " session's Creators are dropped; answers only the kept ids",
+    "/admin/of-consent": "a Creator's Auto-accept OnlyFans consent switch (of_consent_api): the route checks"
+                         " the Creator is the session's; its PUT is owner-only there",
     "/admin/screens": "a screen's reads in one call (screens_api): each inner read is checked as its own route",
     "/admin/settings": "Settings blobs (owner-only) and the Applied settings read every session needs",
     "/admin/shifts/me": "the top bar's clock", "/admin/shifts/clock-in": "the top bar's clock",

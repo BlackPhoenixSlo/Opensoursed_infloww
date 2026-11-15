@@ -14,6 +14,7 @@ swapped for a recorder. Temp DB only; no OF, no paid call.
                                    (no sooner than the scrape grace); the job replies once, row `sent`
   case_skips                       answered (row on the key) / she wrote last / a funnel walk owns him /
                                    8 days old: nothing queued, nothing saved for her chat
+  case_unhealthy_creator_skipped   deactivated / Dead session: a skip, no OF read, no job; the loop goes on
   case_more_than_twenty_cap_200    205 waiting chats: 200 read, 200 queued in one pass (the sweep's 20 cap
                                    not applied)
   case_second_pass_no_double       two passes: one job; after his reply, a third pass queues none
@@ -243,6 +244,20 @@ async def case_skips():
     async with get_session() as s:
         saved = {m for (m,) in (await s.execute(select(Message.message_id).where(Message.account_id == aid))).all()}
     assert 71302 not in saved and 71304 not in saved, saved
+
+
+async def case_unhealthy_creator_skipped():
+    """A deactivated or Dead-session Creator left on Live: the pass skips before any OF read (the
+    dispatcher would never run its jobs), and returns a skip, not None, so the loop keeps its schedule."""
+    import account_health
+    for aid, sick, want in (("fa_cu_deact", account_health.deactivate, "account_deactivated"),
+                            ("fa_cu_dead", lambda a: account_health.mark_session_dead(a, "wrong_user"),
+                             "session_dead")):
+        await seed_live(aid)
+        await sick(aid)
+        res, fake = await _pass(aid, [_chat(1501, 71501, _ago(20))])
+        assert res == {"skipped": want}, res
+        assert fake.pages == [] and await _jobs(aid) == [], (fake.pages, await _jobs(aid))
 
 
 async def case_more_than_twenty_cap_200():

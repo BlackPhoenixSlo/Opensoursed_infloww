@@ -11,11 +11,15 @@ Through the executor (`_drain_due_jobs_once` -> plan_dispatch -> run_once -> the
                                    of a Fan whose Turn runs here is busy (+20 s), never a 2nd Turn
   case_model_wait_frees_the_slot   ONE run slot, two Fans: both Turns are waiting on their Writer at
                                    the same time (the slot goes back while a model answers), both reply
+  case_lost_slot_closes_the_walk   a Writer walk on a lost slot: SlotLost, the walk never starts and
+                                   is closed (no "never awaited" warning)
   case_cap_respected               6 Fans, AUTOMATION_FULL_AI_PER_CREATOR=3: at most 3 at once,
                                    all 6 run; =1: one at a time (the old behaviour)
   case_other_kinds_exclusive       another kind with jobs for 2 Fans: one run per account at once
   case_reap_spares_running_fans    a run's reap: a dead Fan's `sending` row + lease reaped, a Fan
                                    running in this process spared; its own Fan reaped
+  case_reap_spares_a_turn_started_during_its_await  a Turn that starts while another reap waits
+                                   on the DB keeps its `sending` row and lease
   case_crash_requeue_no_double_send  a `running` job left by a dead process: requeued, the rerun
                                    reaps the `sending` row and sends nothing
 
@@ -287,6 +291,29 @@ async def case_model_wait_frees_the_slot():
         assert any(s["fan_id"] == fan for s in fake.sent), (fan, fake.sent)
 
 
+async def case_lost_slot_closes_the_walk():
+    import gc
+    import warnings
+    ran: list[int] = []
+
+    async def walk():
+        ran.append(1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        async with run_slot.hold(run_slot.SlotPool(1)) as slot:
+            slot.lost = True
+            call = walk()
+            try:
+                await full_ai_turn._capped(call, time.monotonic() + 30)
+                raise AssertionError("no SlotLost")
+            except run_slot.SlotLost:
+                pass
+        assert call.cr_frame is None, "the walk is left open"
+        del call
+        gc.collect()
+    assert ran == []
+
+
 async def case_cap_respected():
     for cap, aid in ((3, "fa_par_cap3"), (1, "fa_par_cap1")):
         await _account(aid)
@@ -347,6 +374,42 @@ async def case_reap_spares_running_fans():
         full_ai_live._running.difference_update({(aid, me), (aid, other)})
     assert await full_ai_live.reap(aid) == 1            # nothing running: all of them, as before
     assert await _state(aid) == ({dead: "unconfirmed", me: "unconfirmed", other: "unconfirmed"}, set())
+
+
+async def case_reap_spares_a_turn_started_during_its_await():
+    """Fan A's reap waits on the DB after reading `_running`; Fan B's Turn starts in that gap (in
+    `_running`, its own reap, its lease, its `sending` row). A's reap must not reap B."""
+    aid, a_fan, b_fan = "fa_par_reap_gap", 8341, 8342
+    await seed_live(aid)
+    real, gate, parked = full_ai_live.get_session, asyncio.Event(), asyncio.Event()
+
+    @contextlib.asynccontextmanager
+    async def gated():
+        if not parked.is_set():            # A's reap only: park inside its session open
+            parked.set()
+            await gate.wait()
+        async with real() as s:
+            yield s
+
+    async def turn_b():                    # run(): into `_running`, then _run's reap, lease, row
+        full_ai_live._running.add((aid, b_fan))
+        await full_ai_live.reap(aid, b_fan)
+        await _sending(aid, b_fan)
+
+    full_ai_live.get_session = gated
+    try:
+        full_ai_live._running.add((aid, a_fan))
+        a = asyncio.create_task(full_ai_live.reap(aid, a_fan))
+        await asyncio.wait_for(parked.wait(), 5)
+        b = asyncio.create_task(turn_b())
+        await asyncio.sleep(0.5)           # B gets as far as it can while A is parked
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(a, b), 10)
+        rows, leases = await _state(aid)
+        assert rows == {b_fan: "sending"} and leases == {b_fan}, (rows, leases)
+    finally:
+        full_ai_live.get_session = real
+        full_ai_live._running.difference_update({(aid, a_fan), (aid, b_fan)})
 
 
 async def case_crash_requeue_no_double_send():

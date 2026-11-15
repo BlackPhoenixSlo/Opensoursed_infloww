@@ -515,15 +515,15 @@ def case_the_fast_poll_seam_banks_too():
     open offer in seconds did nothing."""
     async def go():
         await _seed_account()
-        import transaction_ingest as ti
-        ti.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
+        import purchase_poll as pp
+        pp.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
         _install([dict(LIVE_ROW, id="900642430324909111", price_usd=2.0)])
-        res = await ti.run_fast_tick(ACCT)
+        res = await pp.run_fast_tick(ACCT)
         assert res["rows_inserted"] == 1, res
         rows = await _rows_for("900642430324909111")
         assert len(rows) == 1 and rows[0].amount_cents == 200, rows
         # ...and it dedups against the supervisor lane, sharing one ledger.
-        again = await ti.run_fast_tick(ACCT)
+        again = await pp.run_fast_tick(ACCT)
         assert again["rows_inserted"] == 0, again
         assert len(await _rows_for("900642430324909111")) == 1
     asyncio.run(go())
@@ -574,8 +574,9 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
 
     async def go():
         await _seed_account()
+        import purchase_poll as pp
         import transaction_ingest as ti
-        ti.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
+        ti.fansly_backend = pp.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
         fansly_revenue.fansly_backend = type(
             "_B", (), {"get_client": staticmethod(lambda _a: _Boom()),
                        "is_fansly": staticmethod(lambda _a: True)})
@@ -594,7 +595,7 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
             row.paused_until = None
         # Both entry points must RAISE so their caller can record.
         for run in (lambda: ti.run_one_tick(ACCT, mode="refresh"),
-                    lambda: ti.run_fast_tick(ACCT)):
+                    lambda: pp.run_fast_tick(ACCT)):
             before = await failures()
             with _quiet_lane_errors():
                 try:

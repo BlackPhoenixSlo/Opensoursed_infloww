@@ -21,32 +21,16 @@ lapsing TTL_S after its last frame if an end is never seen.
 from __future__ import annotations
 
 import contextlib
-import logging
 import math
-import os
 import time
 from typing import AsyncIterator, Callable, Iterable, NamedTuple
 
-log = logging.getLogger("of-relay.view_lease")
+from env_knob import env_float
 
 _DEFAULT_TTL_S = 60.0
 
-
-def _ttl_s() -> float:
-    raw = os.environ.get("VIEW_LEASE_TTL_S")
-    if raw is None or raw.strip() == "":
-        return _DEFAULT_TTL_S
-    try:
-        v = float(raw)
-    except ValueError:
-        v = math.nan
-    if not math.isfinite(v) or v <= 0:
-        log.warning("view_lease_bad_env value=%r — using default %.0f", raw, _DEFAULT_TTL_S)
-        return _DEFAULT_TTL_S
-    return v
-
-
-TTL_S = _ttl_s()
+# Above zero (a zero TTL would lease nothing).
+TTL_S = env_float("VIEW_LEASE_TTL_S", _DEFAULT_TTL_S, lo=math.nextafter(0.0, 1.0))
 
 Holder = tuple[str, str, str]   # (principal kind, principal id, tab id)
 
@@ -90,6 +74,17 @@ def renew(holder: Holder, account_ids: Iterable[str], selected: str | None,
     if selected is not None and selected != (prev.selected if prev else None) and selected not in out:
         out.append(selected)
     return out
+
+
+def refresh_plan(gains: Iterable[str], selected: str | None, *, opened: bool, current: Callable[[str], bool],
+                 fresh: Callable[[str], bool]) -> tuple[list[str], list[str]]:
+    """`renew`'s answer split into (read now, paced). `selected` reads now unless `fresh` (polled ok within
+    purchase_poll_decide.SELECT_MIN_AGE_S). The other gains are paced per proxy (app_open_warm.pace), except a
+    `current` one and all of them on an `opened` post (the App-open warm reads them)."""
+    gains = list(gains)
+    now = [a for a in gains if a == selected and not fresh(a)]
+    paced = [] if opened else [a for a in gains if a != selected and not current(a)]
+    return now, paced
 
 
 def _union() -> set[str]:

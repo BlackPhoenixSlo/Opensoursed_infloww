@@ -1720,10 +1720,8 @@ async def _start_event_pumps() -> None:
     # stats include subs / tips / PPV unlocks / paid posts. 15-min ticks
     # (INGEST_TICK_INTERVAL_S), refresh + backfill 4 Creators at a time. See
     # service/transaction_ingest.py docstring.
-    from transaction_ingest import (
-        start_supervisor as _start_tx_ingest,
-        start_fast_poll as _start_tx_fast,
-    )
+    from transaction_ingest import start_supervisor as _start_tx_ingest
+    from purchase_poll import start_fast_poll as _start_tx_fast
     _tx_ingest_task = asyncio.create_task(_start_tx_ingest(), name="tx-ingest-supervisor")
     # 30s freshness poll layered on the 15-min supervisor: reads OF's purchases
     # notification feed (no ledger read) per due account (leased/Seller 30s, Idle 5min) so a PPV

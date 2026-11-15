@@ -71,8 +71,9 @@ MAIN_INFO_VERSION = "66b043f3a87e"
 # `sext_scene`: `_questions("test", scene, spacing=True, likes=True)` + router state, scene,
 # Spacing and He likes keys. True re-pinned 2026-11-14: `scene_offer` false-side lost "he just
 # said no to buying or cannot pay" (a decline sells now, owner "we never stop selling").
-PRE_REQUEST_SHA = {False: "d368b2e696a332edf08cd4066c127f19f16d20193e2c3a8e02a7f0b19d54e0d5",
-                   True: "9499fde509d10d1a51ac206bdffce7994774a87748ab04177e6c343ccbabc6ab"}
+# Re-pinned 2026-11-15: `asks_if_ai` reads `fan_new_messages` only in test + live (NEW-158).
+PRE_REQUEST_SHA = {False: "60dc28c9ce4f9c0177bb47ebd98eefb418121d3d4f47b7f86ec1743399284890",
+                   True: "a72e58d985022c50e490d46f535ebbdc6dc9f9da034eb747e61d4f72a66a9947"}
 SETTLE = "/admin/full-ai/test/settle"
 CHATTY = "ok:haha stop it, what are u watching tonight"
 VAULT = {101: "$10", 102: "$10", 103: "$10", 104: "$10", 202: "$50"}

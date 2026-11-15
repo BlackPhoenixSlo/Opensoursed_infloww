@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * My AI Chatter > Auto-reply (ours; Infloww has no counterpart). The owner's
+ * My AI Chatter > Auto-reply (ours; Infloww has no counterpart; by URL, out of the sidebar since 11-15). The owner's
  * ask: "just autoreply, with options to pick folder who to reply".
  *
  * One switch, the timing (a delay, optionally randomised up to 2x) and WHO to

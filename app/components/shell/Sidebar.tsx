@@ -40,6 +40,7 @@ import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import {
   POPOUT_FEATURES,
   SIDEBAR_FOOTER,
+  drawnSidebar,
   isDivider,
   isGroup,
   isPopoutRoute,
@@ -47,7 +48,6 @@ import {
   sidebarFor,
   sidebarHref,
   visibleLinks,
-  visibleSidebar,
   type NavGroup,
   type NavLink,
   type NavNode,
@@ -93,7 +93,8 @@ export default function Sidebar({
   // The platform selector swaps the page set: its own pages, a divider, the common ones (lib/nav `sidebarFor`).
   const platform = usePlatform();
   const unread = usePlatformUnread()[platform];
-  const nodes = visibleSidebar(sidebarFor(platform), filter);
+  // `hidden` links (Auto-reply, Get to know fans) are Permission pages the sidebar never draws.
+  const nodes = drawnSidebar(sidebarFor(platform), filter);
   const footer = visibleLinks(SIDEBAR_FOOTER, filter);
   // A page shown as another's tab (Sales records) lights that page's entry.
   const active = activeHref(sidebarHref(pathname, filter.grantedPages), [...flatten(nodes), ...footer]);

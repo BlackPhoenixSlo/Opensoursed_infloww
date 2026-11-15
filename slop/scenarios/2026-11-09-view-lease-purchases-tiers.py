@@ -559,6 +559,7 @@ async def _tiers(ctx, creators: list[str], warm: dict | None = None) -> None:
         # (b) SELECT: the owner's tab 0 selects a Creator the chatter's tabs already lease.
         sel = roles["chatter"][0]
         await after_a_cycle(sel)
+        await asyncio.sleep(FAST_S / 6)   # past purchase_poll_decide.SELECT_MIN_AGE_S: a selection reads again
         owner_tab0["ids"] = roles["owner"] + [gain, sel]
         owner_tab0["selected"] = sel
         r = await renew(ctx.owner, "owner", "o-0", list(owner_tab0["ids"]), sel)
@@ -747,7 +748,7 @@ async def _tiers(ctx, creators: list[str], warm: dict | None = None) -> None:
 def _read_at(fake, aid: str, t: float) -> tuple[float, float] | None:
     """`aid`'s first purchases read (t0, answer t) still on the wire at `t` or started after it: a selection post
     that lands while the tab's own lease-gain read is in flight (the click's scroll into view) joins it
-    (`transaction_ingest.poll_now`, single-flight per Creator)."""
+    (`purchase_poll.poll_now`, single-flight per Creator)."""
     with fake.lock:
         xs = sorted((c["t0"], c["t"]) for c in fake.calls
                     if c["account"] == aid and c["t0"] is not None and is_feed(c)
@@ -765,7 +766,7 @@ def _bounds(hold: float, cycle_s: float) -> tuple[float, float]:
     """A Demand Creator's gap, OF's answer to its next call, after a failing poll asking `hold`
     (purchase_poll_decide.held: the _single_flight gate starts no poll before the hold, capped at the Demand cap,
     from the answer): polled on the first cycle at or after it, or at the hold's end when that falls before the next
-    tick (transaction_ingest._poll_at_hold_end). So at least the capped hold, at most a cycle more (`cycle_s`,
+    tick (purchase_poll._poll_at_hold_end). So at least the capped hold, at most a cycle more (`cycle_s`,
     measured) plus the stagger, and never past the cap plus CAP_SLACK_S."""
     e = min(hold, BACKOFF_DEMAND_MAX_S)
     return e - LO_SLACK_S, min(e + cycle_s + GAP_SLACK_S, BACKOFF_DEMAND_MAX_S + CAP_SLACK_S)

@@ -92,6 +92,7 @@ import automation_executor as ax  # noqa: E402
 import link_prewarm  # noqa: E402
 import of_client  # noqa: E402
 import of_stats_daily  # noqa: E402
+import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 import vault_upload  # noqa: E402
 from of_client import OFClient, OFDeactivatedError  # noqa: E402
@@ -534,18 +535,18 @@ async def case_ledger_polls_skip() -> None:
     async def _wanted():
         return set(_ACCOUNTS)
 
-    saved = {k: getattr(ti, k) for k in (
-        "run_one_tick", "run_fast_tick", "boot_grace", "_is_paused", "_decide_mode",
-        "_clear_stale_inflight", "_seller_account_ids")}
-    ti.run_one_tick, ti.run_fast_tick, ti.boot_grace = _tick, _fast, _none
+    saved = {(m, k): getattr(m, k) for m, k in (
+        (ti, "run_one_tick"), (pp, "run_fast_tick"), (ti, "boot_grace"), (pp, "boot_grace"), (ti, "_is_paused"),
+        (ti, "_decide_mode"), (ti, "_clear_stale_inflight"), (ti, "_seller_account_ids"))}
+    ti.run_one_tick, pp.run_fast_tick, ti.boot_grace, pp.boot_grace = _tick, _fast, _none, _none
     ti._is_paused, ti._decide_mode, ti._clear_stale_inflight = _false, _refresh, _zero
     ti._seller_account_ids = _wanted
     try:
         await _run_briefly(ti.start_supervisor())
-        await _run_briefly(ti.start_fast_poll())
+        await _run_briefly(pp.start_fast_poll())
     finally:
-        for k, v in saved.items():
-            setattr(ti, k, v)
+        for (m, k), v in saved.items():
+            setattr(m, k, v)
     assert sorted(ticked) == sorted([(FOREIGN, "refresh"), (ON, "refresh"), (FOREIGN, "fast"), (ON, "fast")]), \
         f"ticked: {ticked}"
 

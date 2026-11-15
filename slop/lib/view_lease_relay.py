@@ -1,7 +1,7 @@
 """The View lease / purchases poll tiers' part of the slop relay (lib/relay.py loads it: `wire` runs at the
 end of its `_wire`), for scenarios/2026-11-09-view-lease-purchases-tiers.py.
 
-  POST /__slop/fast-poll   starts the product's 30 s purchases loop (`transaction_ingest.start_fast_poll`,
+  POST /__slop/fast-poll   starts the product's 30 s purchases loop (`purchase_poll.start_fast_poll`,
        compiled again from its own source: `_run_ui_safe` no-ops the module attribute) once, as server.py's
        `_spawn_bg(..., "tx-ingest-fast-poll")` does (Caller kind `loop:tx-ingest-fast-poll`); a second call
        is a no-op. Answers {started}. Bypass, declared: CHATTERLY_TEST_MODE never runs the startup spawn
@@ -16,12 +16,12 @@ _TASK: dict = {}
 
 
 def _real_fast_poll():
-    """`transaction_ingest.start_fast_poll` as written, in the module's namespace (faults patch its globals)."""
-    import transaction_ingest as ti
-    tree = ast.parse(Path(ti.__file__).read_text())
+    """`purchase_poll.start_fast_poll` as written, in the module's namespace (faults patch its globals)."""
+    import purchase_poll as pp
+    tree = ast.parse(Path(pp.__file__).read_text())
     fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "start_fast_poll")
     ns: dict = {}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), ti.__file__, "exec"), ti.__dict__, ns)
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), pp.__file__, "exec"), pp.__dict__, ns)
     return ns["start_fast_poll"]
 
 

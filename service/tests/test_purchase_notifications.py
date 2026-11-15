@@ -320,6 +320,37 @@ async def case_catch_up_pages_back_to_a_seen_notification() -> None:
     assert got["seen"] == 10 and got["outcome"] == Outcome("rate_limited"), got
 
 
+async def case_failed_catch_up_resumes_past_its_own_pages() -> None:
+    """A catch-up whose page 1 failed is retried: page 0 is all in the done memo now, yet
+    the retry still reads page 1 and flips its buy; the next ok catch-up stops at the memo again."""
+    base_msg, base_id = 994_000, 117_700_000
+    items = []
+    for i in range(15):
+        await _seed(msg_id=base_msg + i)
+        items.append(_fresh_notif(base_id - i, fan_id=_FAN, msg_id=base_msg + i, age_s=60 + i))
+
+    class _FailOnce(_Paged):
+        failed = False
+        def get_json(self, path):
+            if self.offsets and not _FailOnce.failed:
+                _FailOnce.failed = True
+                self.offsets.append(-1)
+                raise OFAPIError("500 for x\n{}", response=_Resp(500, {"error": {"message": "x"}}))
+            return super().get_json(path)
+
+    got = await pn.poll_purchases(_ACC, _FailOnce(items), limit=10, pages=3)
+    assert got["flipped"] == 10 and got["outcome"] == Outcome("error"), got
+    feed = _FailOnce(items)
+    got = await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert feed.offsets == [0, 10], f"the retry must read page 1, read {feed.offsets}"
+    assert got["flipped"] == 5 and got["outcome"] == _OK, got
+    for i in range(15):
+        assert await _is_paid(base_msg + i), i
+    feed = _Paged(items)
+    await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert feed.offsets == [0], f"a finished catch-up stops at the memo again, read {feed.offsets}"
+
+
 def _fresh_notif(notif_id: int, *, fan_id: int, msg_id: int, age_s: int = 5) -> dict:
     """The captured payload, re-stamped relative to now. `_REAL` is frozen at
     its capture date, so it reads as ancient to the announce freshness gate."""
@@ -515,6 +546,7 @@ _harness.run(
     case_poll_survives_a_broken_feed,
     case_poll_outcome_per_answer,
     case_catch_up_pages_back_to_a_seen_notification,
+    case_failed_catch_up_resumes_past_its_own_pages,
     case_live_poll_announces_the_buy_once,
     case_backfill_never_announces,
     case_stale_purchase_is_not_announced,

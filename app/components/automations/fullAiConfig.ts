@@ -78,6 +78,8 @@ export interface ConfigBody {
   writer_models?: string[];
   /** Writer model → its provider (selectable Writers plus any stored one): the LLM keys row. */
   writer_providers?: Record<string, string>;
+  /** Provider → its name as Settings → AI keys shows it (the server's one map): the LLM keys row. */
+  provider_labels?: Record<string, string>;
   /** Every key the JSON takes, in `full_ai_config.DEFAULTS` order (the JSON modal's "All settings" table). */
   reference?: SettingRef[];
   /** The controls' server constants (`full_ai_config.limits`). */

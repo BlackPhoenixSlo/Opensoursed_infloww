@@ -25,7 +25,7 @@ the fingerprint/promote writer — a Fansly `if` in each. That is the spaghetti
 this module exists to avoid: the platforms share the DESTINATION (`transactions`)
 and nothing about the SOURCE, so they share the table and the model, not the
 walk. Both of `transaction_ingest`'s entry points (`run_one_tick`, the 5-min
-supervisor; `run_fast_tick`, the 30s freshness poll) dispatch here at their
+supervisor; `purchase_poll.run_fast_tick`, the 30s freshness poll) dispatch here at their
 first line on `fansly_backend.is_fansly`, and the OF path below is untouched.
 
 WHERE THE PLATFORM KNOWLEDGE LIVES

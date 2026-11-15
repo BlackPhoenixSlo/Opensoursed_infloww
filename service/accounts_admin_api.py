@@ -590,9 +590,9 @@ async def _select_refresh(account_id: str) -> None:
     """One Select refresh. The Caller kind is set inside the task: spawn_bg labels its task
     `loop:<name>`, and the innermost label wins."""
     import of_call_counter
-    import transaction_ingest
+    import purchase_poll
     with of_call_counter.caller("select_refresh"):
-        await transaction_ingest.poll_now(account_id)
+        await purchase_poll.poll_now(account_id)
 
 
 class _ViewLeaseBody(BaseModel):
@@ -607,10 +607,11 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
     """Renew this tab's View lease: the Creators it shows now (`view_lease`). Owner or chatter
     session, no X-Account-Id. Ids outside the principal's Creators, and watchers, are dropped
     silently (as roster-counts), re-filtered on every renewal; `selected` is leased too; no ids and
-    no `selected` releases the tab; no wildcard. A Creator nobody leased before (unless `app_open_warm.current`: polled
-    ok within PURCHASES_POLL_FAST_S or warmed within APP_OPEN_WARM_REUSE_S; or the post is `opened`: the warm reads
-    it, leased first, paced per proxy), and a changed `selected` (always), get one purchases poll now
-    (`transaction_ingest.poll_now`, Caller kind `select_refresh`), in the background.
+    no `selected` releases the tab; no wildcard. A changed `selected`, or one nobody leased before, gets one purchases
+    poll now (`purchase_poll.poll_now`, Caller kind `select_refresh`), in the background, unless polled ok within
+    SELECT_MIN_AGE_S. Any other Creator nobody leased before gets the same poll paced per proxy (`app_open_warm.pace`),
+    unless `app_open_warm.current` (polled ok within PURCHASES_POLL_FAST_S or warmed within APP_OPEN_WARM_REUSE_S) or
+    the post is `opened` (the warm reads it, leased first, paced per proxy) (`view_lease.refresh_plan`).
     `opened` (a document load's first renewal) also starts the App-open warm of every Creator the
     principal can access (`app_open_warm.start`; the Select-refreshed ones count as warmed); `warm` answers
     started | reused | none, "none" unless `opened`. Not audited (audit_log skip list)."""
@@ -632,10 +633,13 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
 
     selected = body.selected if ok(body.selected) else None
     ids = [a for a in dict.fromkeys([*body.account_ids, *([selected] if selected else [])]) if ok(a)]
-    refreshed = [a for a in view_lease.renew((kind, pid, body.tab), ids, selected)
-                 if a == selected or not (body.opened or app_open_warm.current(a))]
+    refreshed, paced = view_lease.refresh_plan(view_lease.renew((kind, pid, body.tab), ids, selected), selected,
+                                               opened=body.opened, current=app_open_warm.current,
+                                               fresh=app_open_warm.just_polled)
     for aid in refreshed:
         _spawn_bg(_select_refresh(aid), f"select-refresh:{aid}")
+    if paced:
+        app_open_warm.pace(paced, _select_refresh, busy=refreshed)
     warm = "none"
     if body.opened:
         got = await app_open_warm.start((kind, pid), [a for a in order if ok(a)], view_lease.leased_ids(),

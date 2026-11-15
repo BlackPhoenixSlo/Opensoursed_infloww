@@ -151,6 +151,11 @@ module's router to of_consent_api as /admin/of-consent/{account_id} (get_of_cons
 right after /admin/account-config; no existing row moves; diff = those two rows + the sha (the wiring golden
 loses its two consent rows).
 
+Golden refresh (2026-11-15, fetch-diet review H1): POST /admin/view-lease description only (lease gains paced,
+selection min age); no route row changes; diff = the sha.
+Golden refresh (2026-11-15, fetch-diet review H3): the same description names `purchase_poll.poll_now` (the poll
+scheduler moved out of transaction_ingest); no route row changes; diff = the sha.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations

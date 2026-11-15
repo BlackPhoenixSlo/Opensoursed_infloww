@@ -308,13 +308,16 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     expect(group("Growth")).toHaveAttribute("aria-expanded", "true");
     expect(group("Analytics")).toHaveAttribute("aria-expanded", "false");
 
-    fireEvent.click(group("My AI Chatter"));
-    expect(group("My AI Chatter")).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(group("My Automations"));
+    expect(group("My Automations")).toHaveAttribute("aria-expanded", "true");
     expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
+    // Full AI Chat is a top-level link; the My AI Chatter group and AI rules are not drawn (owner 11-15).
     expect(screen.getByRole("link", { name: "Full AI Chat" })).toHaveAttribute("href", "/full-ai-chatter");
+    expect(screen.queryByRole("button", { name: "My AI Chatter" })).toBeNull();
+    for (const name of ["Auto-reply", "Get to know fans", "AI rules"]) expect(screen.queryByRole("link", { name })).toBeNull();
 
-    fireEvent.click(group("My AI Chatter"));
-    expect(screen.getAllByRole("button", { expanded: true }).map((b) => b.textContent)).not.toContain("My AI Chatter");
+    fireEvent.click(group("My Automations"));
+    expect(screen.getAllByRole("button", { expanded: true }).map((b) => b.textContent)).not.toContain("My Automations");
   });
 
   it("a toggled group does not hide the new page's group after navigation", () => {
@@ -330,9 +333,9 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     expect(group("Analytics")).toHaveAttribute("aria-expanded", "true");
 
     fireEvent.click(group("Growth"));
-    pathname = "/full-ai-chatter";
+    pathname = "/growth/auto-mass";
     act(() => rerender(<AppShell>page</AppShell>));
-    expect(group("My AI Chatter")).toHaveAttribute("aria-expanded", "true");
+    expect(group("My Automations")).toHaveAttribute("aria-expanded", "true");
     expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
   });
 });

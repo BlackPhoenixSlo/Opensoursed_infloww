@@ -28,7 +28,7 @@ shape: the probe's.
     `question_version("test")`, `_questions("test", scene, spacing)` (03d `TEST_SPACING`,
     `SPACING_STATE_KEYS`, config `sell_spacing`; `TEST_LIKES`, `LIKES_STATE_KEYS`, config
     `he_likes`; `chat_tease` in `TEASE`, `TEASE_STATE_KEYS`, config `chat_tease`; `TEST_IMPLIED`,
-    config `ask_implied`); Shadow's request and
+    config `ask_implied`; `TEST_NEW_ONLY`, no config key); Shadow's request and
     digest are unchanged (spec 03b story 66).
   - `fired(answers, mode="shadow")`: the ids at or above their threshold.
   - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
@@ -177,10 +177,9 @@ INTENSITY: dict[str, Any] = {
 }
 
 # ── Test + live only (03b) ────────────────────────────────────────────────
-# Asked only in test Mode, in its one request: Shadow's request, `QUESTIONS`,
-# `THRESHOLDS` and `QUESTION_VERSION` stay Phase 01's until the owner OKs this
-# wording (adding it to Shadow / live is a 04a / 05 step). Wording is new (no old
-# question existed), docs/prompts NEW-118..121; not probed yet.
+# Asked in test and live Mode (`full_ai_mode.full`), in its one request; Shadow never: its
+# request, `QUESTIONS`, `THRESHOLDS` and `QUESTION_VERSION` stay Phase 01's. Wording is new
+# (no old question existed), docs/prompts NEW-118..121; not probed yet.
 
 # What he asks to see and in which format; the Sell executor's `Ask` options
 # (ticket 10 r3), in its order. ASSUMPTION: wording new (rung 5), overturned by
@@ -312,12 +311,12 @@ DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
 TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7,
                                      "scene_on": 0.7, "scene_offer": 0.7, "wants_content": 0.65,
                                      "chat_tease": 0.7}
-# The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked only in test Mode with
+# The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked in test and live Mode (`full`) with
 # config `sext_scene` (`_questions(mode, scene)`); off, the request is the pre-scene one. They
 # read two state keys only `full_ai_test.fetch` adds with the flag (`SCENE_STATE_KEYS`).
 SCENE = frozenset({"scene_on", "scene_offer", "scene_stage", "offer_level"})
 SCENE_STATE_KEYS = ("purchases", "scene")
-# Chat tease (config `chat_tease`): asked only in test Mode with the flag (`_questions(..., tease)`);
+# Chat tease (config `chat_tease`): asked in test and live Mode (`full`) with the flag (`_questions(..., tease)`);
 # off, the request is the one before it. `full_ai_test.fetch` adds these keys (`chat_tease_of`)
 # and the Spacing keys with the flag. The tease's price is a second Jev (`_price_jev.ask_tease`).
 TEASE = frozenset({"chat_tease"})
@@ -385,14 +384,29 @@ TEST_IMPLIED: dict[str, dict[str, Any]] = {
         "or says please about something other than seeing her"),
 }
 
+# New messages only (owner 2026-11-15, first live chat: one "are you a real person or a bot?" kept
+# `asks_if_ai` at .96-.98 on his next four Turns, "can you send me some pics?" and a sext line among
+# them, so every one routed ai_dare and she repeated the brush-off): Shadow's `asks_if_ai`
+# (`QUESTIONS`) names no state key, so Jev reads the question back out of `thread`. Test + live take
+# this wording, always (no config key); Shadow's is untouched. docs/prompts NEW-158; not probed.
+TEST_NEW_ONLY: dict[str, dict[str, Any]] = {
+    "asks_if_ai": _q(
+        "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a "
+        "real person?",
+        "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or "
+        "copy-pasted",
+        "He talks to her as the real person she is, even if he asks personal questions or asked "
+        "whether she is real earlier in `thread`"),
+}
+
 
 def question_version(mode: str = "shadow") -> str:
     """A short digest of what changes what Jev answers: the model, the wording,
     thresholds and levels, and the state's shape (`STATE_VERSION`, the
     `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads). For any
     Mode but `test` exactly Phase 01's digest; `test` adds `TEST_CHOICES`,
-    `TEST_NOULS`, `TEST_THRESHOLDS`, `DRAFT`, the scene, Spacing, He likes, Chat tease and Implied
-    asks sets (what test rows record)."""
+    `TEST_NOULS`, `TEST_THRESHOLDS`, `DRAFT`, the scene, Spacing, He likes, Chat tease, Implied
+    asks and New only sets (what test rows record)."""
     d: dict[str, Any] = {
         "model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
         "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
@@ -404,7 +418,7 @@ def question_version(mode: str = "shadow") -> str:
               "test_spacing": TEST_SPACING, "spacing_state_keys": list(SPACING_STATE_KEYS),
               "test_likes": TEST_LIKES, "likes_state_keys": list(LIKES_STATE_KEYS),
               "tease": sorted(TEASE), "tease_state_keys": list(TEASE_STATE_KEYS),
-              "test_implied": TEST_IMPLIED}
+              "test_implied": TEST_IMPLIED, "test_new_only": TEST_NEW_ONLY}
     return hashlib.sha256(json.dumps(
         d, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
@@ -614,9 +628,10 @@ def _questions(mode: str = "shadow", scene: bool = False, spacing: bool = False,
     only with `tease` (config `chat_tease`); with
     `spacing` (config `sell_spacing`) a `TEST_SPACING` id takes that wording, same place; with
     `likes` (config `he_likes`) `asks_subject` takes `TEST_LIKES`' wording; with `implied` (config
-    `ask_implied`) `wants_content` takes `TEST_IMPLIED`'s wording, same place. Pure."""
+    `ask_implied`) `wants_content` takes `TEST_IMPLIED`'s wording, same place; `asks_if_ai` always
+    takes `TEST_NEW_ONLY`'s, same place. Pure."""
     from typesafe_sdk import Choice, Noul, Score
-    shadow = {**QUESTIONS, **TEST_IMPLIED} if full(mode) and implied else QUESTIONS
+    shadow = {**QUESTIONS, **TEST_NEW_ONLY, **(TEST_IMPLIED if implied else {})} if full(mode) else QUESTIONS
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
                          for qid, v in shadow.items()}
     q["intensity"] = Score(instructions=INTENSITY["instructions"], criteria=INTENSITY["criteria"])

@@ -183,7 +183,9 @@ _OPERATOR_KINDS: frozenset[str] = frozenset({
 # Fan never has two (dispatch_plan.run_key). Their OF sends still queue at the
 # account's write gate (of_write_paced) and DM rate (dm_rate): overlap is for
 # the thinking and typing, never a burst of sends. Each run takes a run slot
-# (_run_sem: the fleet bound). Read every pass (panel save applies at once);
+# (_run_sem) for its reads, shaping and sends, and gives it back while it waits
+# on a model (run_slot.freed), so model waits are bounded by this cap x the
+# Creators, not by the slots. Read every pass (panel save applies at once);
 # 1 = one at a time per Creator, as before.
 _FULL_AI_PER_CREATOR = 4
 _PER_FAN_KINDS: frozenset[str] = frozenset({"full_ai_chat"})

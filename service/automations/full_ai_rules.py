@@ -49,16 +49,17 @@ GATES = {"sext_scene": writers.scene_flag, "lead_in": writers.lead_flag, "sell_n
          "sell_spacing": writers.spacing_flag, "he_likes": writers.likes_flag, "sell_bundle": writers.bundle_of,
          "chat_tease": writers.tease_flag, "ask_implied": writers.implied_flag,
          "info_wide": writers.wide_flag, "sell_count": writers.count_flag}
-# `chat_tease_prices` is read only on a Chat tease Turn (`tease_flag`).
+# `chat_tease_prices` is read only on a Chat tease Turn (`tease_flag`). "Test only" is 03b's name:
+# these count in test + live (`full(mode)`); Shadow ignores them.
 TEST_ONLY_KEYS = (*GATES, "draft_questions", "chat_tease_prices")
 # Config keys only live reads: the live sender's owner check (spec 04b, `full_ai_owner_io`) and the catch-up's
 # schedule (`full_ai_catchup`). Test and Shadow ignore them.
 LIVE_ONLY_KEYS = ("top_spend_cents", "fans", "catchup_minutes")
 # The only config key Shadow reads (full_ai_chat._photos_on; its Facts keep every route flag on).
 SHADOW_READS = (photo.KEY,)
-# Router wording variants a test-only key swaps in: (router dict, flag, label).
+# Router wording variants a test-only key swaps in: (router dict, flag, label); flag None = always.
 _VARIANTS = (("TEST_SPACING", "sell_spacing", "Spacing"), ("TEST_LIKES", "he_likes", "He likes"),
-             ("TEST_IMPLIED", "ask_implied", "Implied"))
+             ("TEST_IMPLIED", "ask_implied", "Implied"), ("TEST_NEW_ONLY", None, "New only"))
 # Router state key sets test Mode adds (`full_ai_test.fetch`): router `<NAME>_STATE_KEYS` -> flag.
 _KEYSET_FLAG = {"SCENE": "sext_scene", "SPACING": "sell_spacing", "LIKES": "he_likes", "TEASE": "chat_tease"}
 
@@ -76,7 +77,8 @@ _DOC = {
     "LEAD_LINES": "NEW-136", "LEAD_EXAMPLES": "NEW-137", "SELF_GIVE": "NEW-138", "NEAREST_NOTE": "NEW-140",
     "SELL_OFF_SCENE": "NEW-141", "fallback_caption": "NEW-122", "LIKES_EXTRACT": "NEW-144",
     "SEXT_HOT_TEST": "NEW-145", "SELL_STEP_TEST": "NEW-146", "ESCALATION_TEST": "NEW-147", "RIDE_NOTE": "NEW-148",
-    "chat_tease": "NEW-149", "implied:wants_content": "NEW-150", "STATED_WIDE": "NEW-151",
+    "chat_tease": "NEW-149", "implied:wants_content": "NEW-150",
+    "new only:asks_if_ai": "NEW-158", "STATED_WIDE": "NEW-151",
     "HOBBIES_EXTRACT": "NEW-152", "TEASE_PRICE": "NEW-153", "BROKE_JOKE": "NEW-154", "describe": "NEW-73",
     "REPLY_LEVEL": "NEW-155",
 }
@@ -255,7 +257,7 @@ def _variants(qid: str, mode: str, kind: str) -> list[dict]:
 
 def _probes(mode: str) -> list[tuple[str, dict]]:
     """(when, Facts kwargs): one probe per table row, in walk order; `decide_turn` names the row and
-    Route. Test-only rows (haggle, offer_moment, scene) only in test Mode."""
+    Route. Test-only rows (haggle, offer_moment, scene) only in test and live Mode (`full`)."""
     test = full(mode)
     on = {"draft_on": True, "scene": True, "chat_tease": True} if test else {}
     p: list[tuple[str, dict]] = [("Jev failed (any error)", {"jev_ok": False})]

@@ -75,6 +75,9 @@ SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h,
 # (account, Fan) whose live job runs in this process now: jobs for different Fans of one Creator
 # overlap (automation_executor `_PER_FAN_KINDS`), so `reap` leaves these and the sweep skips them.
 _running: set[tuple[str, int]] = set()
+# One `reap` per Creator at a time: a Turn joins `_running` before its own reap and writes its lease /
+# row only after it, so it waits out a reap whose `_running` read missed it.
+_reap_locks: dict[str, asyncio.Lock] = {}
 
 
 def _is_live(raw: str | None) -> bool:
@@ -594,16 +597,18 @@ async def reap(account_id: str, mine: int | None = None) -> int:
     `unconfirmed` (a bubble may be on OF: never re-sent) and their full_ai_chat leases go, except
     for a Fan whose job is running in this process (`_running`; `mine`, the caller's own Fan, is
     reaped). Valid because one relay process runs a Creator's jobs, one job per Fan at a time
-    (the executor's (account, kind, fan) run lock). Returns the rows reaped."""
+    (the executor's (account, kind, fan) run lock), and one reap per Creator at a time
+    (`_reap_locks`). Returns the rows reaped."""
     aid = str(account_id)
-    live = [f for a, f in _running if a == aid and f != mine]
-    async with get_session() as s:
-        n = (await s.execute(update(AiDecision).where(
-            AiDecision.account_id == aid, AiDecision.mode == MODE, AiDecision.status == "sending",
-            AiDecision.fan_id.not_in(live))
-            .values(status="unconfirmed", updated_at=datetime.utcnow()))).rowcount or 0
-        await s.execute(delete(FanLease).where(FanLease.account_id == aid, FanLease.automation_kind == KIND,
-                                               FanLease.fan_id.not_in(live)))
+    async with _reap_locks.setdefault(aid, asyncio.Lock()):
+        live = [f for a, f in _running if a == aid and f != mine]
+        async with get_session() as s:
+            n = (await s.execute(update(AiDecision).where(
+                AiDecision.account_id == aid, AiDecision.mode == MODE, AiDecision.status == "sending",
+                AiDecision.fan_id.not_in(live))
+                .values(status="unconfirmed", updated_at=datetime.utcnow()))).rowcount or 0
+            await s.execute(delete(FanLease).where(FanLease.account_id == aid, FanLease.automation_kind == KIND,
+                                                   FanLease.fan_id.not_in(live)))
     if n:
         log.warning("full_ai_live_reaped account=%s rows=%d", aid, n)
     return n

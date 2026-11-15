@@ -14,16 +14,13 @@ No DB, no loop; `now` is passed.
   case_demand_cap:   a Demand Creator's hold never passes 120 s, a longer ask included; no poll before it.
   case_reset_on_ok_and_outcomes / case_due_respects_the_hold_and_the_interval /
   case_polled_and_first_idle_state_keep_the_rest / case_catch_up_after_a_gap.
-  case_knob_defaults_and_bad_env: 30 / 300 by default; garbage, non-finite or under the 5 s
-                     cycle floor -> the default.
+  (The knobs' parse: test_env_knob.py.)
 
 Run: ./venv/bin/python service/tests/test_purchase_poll_decide.py   (exit 0 = pass)
 """
 from __future__ import annotations
 
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
-
-import os  # noqa: E402
 
 import purchase_poll_decide as d  # noqa: E402
 from purchase_poll_decide import PollState  # noqa: E402
@@ -198,17 +195,6 @@ def case_catch_up_after_a_gap():
     assert not d.catch_up(ok, 160.0), "fast + one tick: no"
     assert d.catch_up(ok, 160.1), "longer: page back"
     assert d.catch_up(ok, 100.0 + d.SLOW_S), "an Idle Creator's slow gap: page back"
-
-
-def case_knob_defaults_and_bad_env():
-    for raw, want in ((None, 30.0), ("", 30.0), ("abc", 30.0), ("nan", 30.0), ("inf", 30.0), ("2", 30.0),
-                      ("5", 5.0), ("45", 45.0)):
-        if raw is None:
-            os.environ.pop("X_POLL_KNOB", None)
-        else:
-            os.environ["X_POLL_KNOB"] = raw
-        assert d._knob("X_POLL_KNOB", 30.0, 5.0) == want, (raw, want)
-    os.environ.pop("X_POLL_KNOB", None)
 
 
 _harness.run()
