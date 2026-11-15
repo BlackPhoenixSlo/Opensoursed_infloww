@@ -95,9 +95,30 @@ describe("mergeRosterCounts (60s-poll vs optimistic-patch race — codex FM2)", 
     const prev = resp({ a: { unread: 1, owe_reply: 0 } });
     expect(mergeRosterCounts(server, prev, 100, () => 50)).toEqual({ counts: { a: { unread: 5, owe_reply: 0 } } });
   });
-  it("a locally-patched account missing from the server response survives", () => {
-    const server = resp({}); // server dropped it (5-min cache lag)
+  it.each([
+    ["patched", 150],
+    ["never patched", 0],
+  ])("an account missing from the server response keeps its cached value (%s)", (_n, at) => {
+    const server = resp({}); // an Idle Creator the server holds nothing for (e.g. after a Relay restart)
     const prev = resp({ a: { unread: 1, owe_reply: 0 } });
-    expect(mergeRosterCounts(server, prev, 100, () => 150)).toEqual({ counts: { a: { unread: 1, owe_reply: 0 } } });
+    expect(mergeRosterCounts(server, prev, 100, () => at)).toEqual({ counts: { a: { unread: 1, owe_reply: 0 } } });
+  });
+});
+
+describe("mergeRosterCounts as_of (an Idle Creator's held count never jumps back, ADR-0031)", () => {
+  const resp = (c: RosterCountsResp["counts"]): RosterCountsResp => ({ counts: c });
+  const local = { unread: 2, owe_reply: 1 };
+  const held = (as_of?: number) => ({ unread: 0, owe_reply: 0, ...(as_of === undefined ? {} : { as_of }) });
+  it.each([
+    // [case, server as_of, patchedAt, fetchStartedAt, want]
+    ["a patch newer than as_of wins, though the poll started after it", 50, 60, 100, "local"],
+    ["a patch older than as_of loses", 50, 40, 100, "server"],
+    ["a patch at as_of loses", 50, 50, 100, "server"],
+    ["as_of 0 (unknown): the poll start decides, newer patch wins", 0, 150, 100, "local"],
+    ["as_of 0 (unknown): the poll start decides, older patch loses", 0, 60, 100, "server"],
+    ["no as_of: the poll start decides", undefined, 60, 100, "server"],
+  ] as const)("%s", (_n, asOf, patched, started, want) => {
+    const out = mergeRosterCounts(resp({ a: held(asOf) }), resp({ a: local }), started, () => patched);
+    expect(out.counts.a).toEqual(want === "local" ? local : held(asOf));
   });
 });

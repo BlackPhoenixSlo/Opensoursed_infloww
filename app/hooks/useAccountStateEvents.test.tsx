@@ -24,6 +24,7 @@ vi.mock("@/lib/events", () => ({
 }));
 
 import { makeTestQueryClient } from "@/test-utils";
+import { isArmed, resetReadGate } from "@/lib/ofReadGate";
 import { COALESCE_MS, RESYNC_MIN_MS, SALES_MIN_MS, useAccountStateEvents } from "./useAccountStateEvents";
 
 function emit(type: string, e: Record<string, unknown> = {}) {
@@ -103,6 +104,29 @@ describe("useAccountStateEvents", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     act(() => { vi.advanceTimersByTime(1); });
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads a warmed Creator's rail, bell and strip entries, gathered per window; arms its reads at once", () => {
+    resetReadGate();
+    const { keys } = mount();
+    const warmed = (aid: string) => ({ __account_id: aid, creator_warmed: { account_id: aid, at: "2026-11-09T10:00:00Z" } });
+    emit("creator_warmed", warmed("7"));
+    emit("creator_warmed", warmed("8"));
+    emit("creator_warmed", warmed("7"));
+    expect(keys()).toEqual([]);
+    expect([isArmed("7"), isArmed("8"), isArmed("9")]).toEqual([true, true, false]);
+    act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+    expect(keys()).toEqual([
+      ["notif-list", "7"], ["of-notif-count", "7"], ["roster-counts"],
+      ["notif-list", "8"], ["of-notif-count", "8"],
+    ]);
+  });
+
+  it("ignores a warm with no Creator", () => {
+    const { keys } = mount();
+    emit("creator_warmed", { creator_warmed: {} });
+    act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+    expect(keys()).toEqual([]);
   });
 
   it("invalidates account-state queries at once", () => {

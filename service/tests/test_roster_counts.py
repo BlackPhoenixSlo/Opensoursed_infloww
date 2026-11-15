@@ -29,6 +29,20 @@ import server  # noqa: E402
 import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Chat, Message  # noqa: E402
+import view_lease  # noqa: E402
+
+
+def _bare(out: dict) -> dict:
+    """A count without its `as_of` (the cases below that pin the fold)."""
+    return {k: v for k, v in out.items() if k != "as_of"}
+
+
+_HOLDER = ("user", "test", "tab")
+
+
+def _lease(*ids: str) -> None:
+    """This test's tab leases `ids` (none: releases)."""
+    view_lease.renew(_HOLDER, list(ids), None)
 
 
 _TS = datetime(2026, 6, 21, 12, 0, 0)
@@ -77,7 +91,7 @@ async def case_compute_roster_count_from_of():
         server._load_client = orig
         server.relay_cache.invalidate("list_chats", "acct-of")
 
-    assert out == {"unread": 1, "owe_reply": 2}, out
+    assert _bare(out) == {"unread": 1, "owe_reply": 2}, out
 
 
 async def case_roster_count_caps_at_window():
@@ -99,7 +113,7 @@ async def case_roster_count_caps_at_window():
         server._load_client = orig
         server.relay_cache.invalidate("list_chats", "acct-cap")
 
-    assert out == {"unread": 0, "owe_reply": cap}, out
+    assert _bare(out) == {"unread": 0, "owe_reply": cap}, out
 
 
 async def case_reconcile_pulls_of_read_state_into_local():
@@ -227,6 +241,7 @@ async def case_roster_bust_recomputes_only_target():
     orig_compute = accounts_admin_api._compute_roster_count_of
     server._get_request_user = lambda: _User()
     accounts_admin_api._compute_roster_count_of = _fake_compute
+    _lease("acct-x", "acct-y")
     # Start from a clean cache so the first read is a guaranteed cold miss.
     server.relay_cache.invalidate("roster_count", "acct-x")
     server.relay_cache.invalidate("roster_count", "acct-y")
@@ -253,6 +268,7 @@ async def case_roster_bust_recomputes_only_target():
         assert calls[3:] == [], f"foreign bust evicted/recomputed: {calls[3:]}"
         assert set(r_foreign["counts"]) == {"acct-x", "acct-y"}, r_foreign
     finally:
+        _lease()
         server._get_request_user = orig_user
         accounts_admin_api._compute_roster_count_of = orig_compute
         server.relay_cache.invalidate("roster_count", "acct-x")
@@ -282,6 +298,7 @@ async def case_roster_counts_skip_a_watcher():
     server._get_request_user = lambda: _User()
     accounts_admin_api._compute_roster_count_of = _fake_compute
     accounts_admin_api.account_registry.is_watcher = lambda aid: aid == "acct-w"
+    _lease("acct-x", "acct-w")
     for aid in ("acct-x", "acct-w"):
         server.relay_cache.invalidate("roster_count", aid)
     try:
@@ -294,6 +311,7 @@ async def case_roster_counts_skip_a_watcher():
         server._get_request_user = orig_user
         accounts_admin_api._compute_roster_count_of = orig_compute
         accounts_admin_api.account_registry.is_watcher = orig_is_watcher
+        _lease()
         for aid in ("acct-x", "acct-w"):
             server.relay_cache.invalidate("roster_count", aid)
 
@@ -387,12 +405,12 @@ async def case_bust_rewarms_shared_list_window():
     try:
         # Bust path: live read + counts from the same rows.
         out = await accounts_admin_api._compute_roster_count_of(AID, bypass=True)
-        assert out == {"unread": 3, "owe_reply": 5}, out
+        assert _bare(out) == {"unread": 3, "owe_reply": 5}, out
         assert fake.calls == 1, f"bypass read OF {fake.calls}x, wanted 1"
 
         # Badge recompute off the warm window: zero further OF calls.
         out2 = await accounts_admin_api._compute_roster_count_of(AID)
-        assert out2 == out, out2
+        assert _bare(out2) == _bare(out), out2
         assert fake.calls == 1, f"warm-window recompute hit OF: {fake.calls}"
 
         # The inbox list endpoint's exact cache key is warm: a read through it
@@ -415,7 +433,7 @@ async def case_bust_rewarms_shared_list_window():
             server._time_mod.monotonic() - server._ROSTER_WINDOW_MAX_AGE_S - 1
         )
         out3 = await accounts_admin_api._compute_roster_count_of(AID)
-        assert out3 == out, out3
+        assert _bare(out3) == _bare(out), out3
         assert fake.calls == 2, f"aged window must force a live re-read: {fake.calls}"
     finally:
         server._load_client = orig
@@ -464,7 +482,7 @@ async def case_ws_kept_window_is_folded_past_300s_within_its_list_ttl():
         pump.connected_at = aged - 1
         server._chats_window_fetched_at[AID] = aged
         out = await accounts_admin_api._compute_roster_count_of(AID)
-        assert out == {"unread": 2, "owe_reply": 4}, out
+        assert _bare(out) == {"unread": 2, "owe_reply": 4}, out
         assert fake.calls == 1, f"a WS-kept window re-read OF: {fake.calls}"
 
         # Reconnected after the read: the gap may have missed frames.
@@ -485,6 +503,110 @@ async def case_ws_kept_window_is_folded_past_300s_within_its_list_ttl():
         server._chats_window_fetched_at.pop(AID, None)
 
 
+class _Resp:
+    def __init__(self):
+        self.headers: dict[str, str] = {}
+
+
+class _CountingClient(_FakeClient):
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.calls = 0
+
+    def list_chats(self, **kw):
+        self.calls += 1
+        return super().list_chats(**kw)
+
+
+async def case_roster_counts_read_of_only_for_leased_creators():
+    """ADR-0031 1b: OF is read for a leased Creator only (today's path). An unleased one folds its held window at
+    any age, else serves its last-known count, else is left out; no OF read either way. Every count has `as_of`."""
+    import time
+
+    me = 9
+    L, U, N = "acct-leased", "acct-idle", "acct-never"
+
+    class _User:
+        account_ids = [L, U, N]
+
+    clients = {a: _CountingClient(me, [_chat(6000 + i, unread=(1 if i < 2 else 0)) for i in range(5)])
+               for a in (L, U, N)}
+    orig_user, orig_load = server._get_request_user, server._load_client
+    server._get_request_user = lambda: _User()
+    server._load_client = lambda aid: clients[aid]
+
+    def clean():
+        for a in (L, U, N):
+            server.relay_cache.invalidate("list_chats", a)
+            server.relay_cache.invalidate("roster_count", a)
+            server._chats_window_fetched_at.pop(a, None)
+            accounts_admin_api._roster_last.pop(a, None)
+    clean()
+    try:
+        # U's window was read once (the warm), long ago: past the badge's age and the list TTL alike.
+        t0 = time.time() * 1000
+        await accounts_admin_api._compute_roster_count_of(U, bypass=True)
+        assert clients[U].calls == 1
+        aged = server._time_mod.monotonic() - 3600
+        server._chats_window_fetched_at[U] = aged
+        _lease(L)
+
+        r = (await accounts_admin_api.admin_accounts_roster_counts(_Resp()))["counts"]
+        assert set(r) == {L, U}, r                       # N: no window, no last-known -> left out
+        assert clients[L].calls == 1, clients[L].calls   # leased: today's path, one live read
+        assert clients[U].calls == 1 and clients[N].calls == 0, (clients[U].calls, clients[N].calls)
+        assert _bare(r[U]) == {"unread": 2, "owe_reply": 3}, r[U]
+        assert abs(r[U]["as_of"] - (t0 - 3600_000)) < 5_000, (r[U]["as_of"], t0)   # the window's read time
+        assert r[L]["as_of"] >= t0, r[L]
+
+        # The window gone (an outbound echo busted it): the last-known count, still no read.
+        server.relay_cache.invalidate("list_chats", U)
+        r2 = (await accounts_admin_api.admin_accounts_roster_counts(_Resp()))["counts"]
+        assert r2[U] == r[U] and clients[U].calls == 1, (r2[U], clients[U].calls)
+
+        # A bust still reads OF for an unleased Creator.
+        r3 = (await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=N))["counts"]
+        assert clients[N].calls == 1 and set(r3) == {N} and r3[N]["as_of"] >= t0, (clients[N].calls, r3)
+    finally:
+        _lease()
+        server._get_request_user, server._load_client = orig_user, orig_load
+        clean()
+
+
+async def case_roster_counts_never_read_a_dead_creator():
+    """A Dead-session Creator is never read, leased or busted: its held window or last-known count only."""
+    D = "acct-dead"
+
+    class _User:
+        account_ids = [D]
+
+    fake = _CountingClient(9, [_chat(7000, unread=1)])
+    orig_user, orig_load = server._get_request_user, server._load_client
+    orig_dead = accounts_admin_api.account_health.dead_session_map
+    server._get_request_user = lambda: _User()
+    server._load_client = lambda _aid: fake
+
+    async def _dead():
+        return {D: object()}
+    accounts_admin_api.account_health.dead_session_map = _dead
+    for ns in ("list_chats", "roster_count"):
+        server.relay_cache.invalidate(ns, D)
+    accounts_admin_api._roster_last.pop(D, None)
+    _lease(D)
+    try:
+        assert (await accounts_admin_api.admin_accounts_roster_counts(_Resp()))["counts"] == {}
+        assert (await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=D))["counts"] == {}
+        assert fake.calls == 0, fake.calls
+        accounts_admin_api._roster_last[D] = {"unread": 4, "owe_reply": 0, "as_of": 1}
+        r = (await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=D))["counts"]
+        assert r == {D: {"unread": 4, "owe_reply": 0, "as_of": 1}} and fake.calls == 0, (r, fake.calls)
+    finally:
+        _lease()
+        server._get_request_user, server._load_client = orig_user, orig_load
+        accounts_admin_api.account_health.dead_session_map = orig_dead
+        accounts_admin_api._roster_last.pop(D, None)
+
+
 _harness.run(
     case_ws_kept_window_is_folded_past_300s_within_its_list_ttl,
     case_compute_roster_count_from_of,
@@ -497,4 +619,6 @@ _harness.run(
     case_assemble_empty_page_ends_pagination,
     case_assemble_dup_only_page_breaks,
     case_bust_rewarms_shared_list_window,
+    case_roster_counts_read_of_only_for_leased_creators,
+    case_roster_counts_never_read_a_dead_creator,
 )

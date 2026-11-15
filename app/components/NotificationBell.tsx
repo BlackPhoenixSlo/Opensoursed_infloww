@@ -63,6 +63,8 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
+import { useOfReadGate } from "@/hooks/useOfReadGate";
+import { gateOptions } from "@/lib/ofReadGate";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
 import { relay } from "@/lib/relay";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
@@ -138,6 +140,10 @@ export const NOTIF_ALL_CAP = 50;
 
 export { NOTIF_PAGE_SIZE, notifPath, parseList } from "@/lib/notifText";
 
+const NO_IDS: readonly string[] = [];
+/** The bell's list keys, for the lease-gain refetch (lib/ofReadGate.ts). */
+const LIST_ROOTS = ["notif-list"] as const;
+
 /** One feed read: its Creator, its offset and how many rows it returned
  *  (undefined until it has data). */
 export interface NotificationFeedRead {
@@ -154,18 +160,26 @@ export interface NotificationFeedRead {
  * A row a Creator's earlier page already returned is dropped. Offset 0 keeps
  * the key `["notif-list", accountId, type]` that the Money rail and the
  * toaster's invalidation share; a later page appends its offset.
+ *
+ * `gated` (the bell): no Dead-session Creator, and an unleased Creator's reads
+ * follow the rail's gate (lib/ofReadGate.ts): off until armed, then served
+ * until its next `creator_warmed`.
  */
 export function useNotificationFeed(
   type: string | null,
   enabled: boolean,
   pages?: Readonly<Record<string, number>>,
+  gated = false,
 ) {
   const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
-  const accountIds = useMemo<string[]>(
-    () => (accountId ? [accountId] : activeAccounts.map((a) => a.id)),
-    [accountId, activeAccounts],
-  );
+  const accountIds = useMemo<string[]>(() => {
+    const ids = accountId ? [accountId] : activeAccounts.map((a) => a.id);
+    if (!gated) return ids;
+    const dead = new Set(activeAccounts.filter((a) => a.session_dead_at).map((a) => a.id));
+    return ids.filter((id) => !dead.has(id));
+  }, [accountId, activeAccounts, gated]);
+  const gateOf = useOfReadGate(gated ? accountIds : NO_IDS, LIST_ROOTS);
   const targets = accountIds.flatMap((aid) =>
     Array.from({ length: Math.max(1, pages?.[aid] ?? 1) }, (_, i) => ({ aid, offset: i * NOTIF_PAGE_SIZE })));
 
@@ -176,6 +190,7 @@ export function useNotificationFeed(
       enabled,
       staleTime: 30_000,
       refetchOnWindowFocus: false,
+      ...(gated ? gateOptions(gateOf(aid)) : {}),
     })),
   });
 
@@ -360,7 +375,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
 
   // List — fan-out, merged client-side. Enabled only when the panel is
   // open so we don't spam OF on idle pages.
-  const feed = useNotificationFeed(filter.type, ofListOnScreen(bell));
+  const feed = useNotificationFeed(filter.type, ofListOnScreen(bell), undefined, true);
   const targetAccountIds = feed.accountIds;
 
   // The consent banner's "View": open on the Agency tab (only where there is one).
@@ -387,7 +402,8 @@ export function NotificationBell(props: NotificationBellProps = {}) {
 
   // Messages Pro: the scoped Creator's OnlyFans count. Not read by the top
   // bar, nor under All Models (the count is per Creator).
-  const countAccountId = pro ? accountId : null;
+  // A Dead-session Creator's count is not read.
+  const countAccountId = pro && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at) ? accountId : null;
   const { count: proCount, refetch: refetchCount } = useOfNotifCount(countAccountId);
 
   // Opening the bell counts as "seen everything" (the reducer zeroes this

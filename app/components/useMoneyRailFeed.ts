@@ -9,12 +9,17 @@
  *
  * OF CALL BUDGET (20 Creators = 40 lists): SSE keeps the lists live — the
  * toaster seeds each tip/sale straight into them (`seedMoneyList`) — so OF's
- * feed is only re-read to reconcile: on mount or tab return once a list is
- * LIST_STALE_MS old, every LIST_SAFETY_POLL_MS while the tab is visible, and
- * on `resync` (useAccountStateEvents). No SSE arrival (DM, like, tip) refetches
- * a list. A hidden tab (or an idle one, useIdleMode) pays nothing: it skips
- * the safety poll and defers its SSE-driven re-renders and chat-detail
- * refreshes to one catch-up on return.
+ * feed is only re-read to reconcile, and only for a Creator this tab leases
+ * (lib/ofReadGate.ts, ADR-0031): on mount or tab return once a list is
+ * LIST_STALE_MS old, every LIST_SAFETY_POLL_MS while the tab is visible, on a
+ * lease gain or selection once it is 30 s old, and on `resync`
+ * (useAccountStateEvents). An unleased Creator's lists read once its
+ * `creator_warmed` comes (the warm's cached copy), on a lease gain, or at the
+ * APP_OPEN_WARM_FALLBACK_MS deadline, then only on its next `creator_warmed`.
+ * A Dead-session Creator is no target. No SSE arrival (DM, like, tip)
+ * refetches a list. A hidden tab (or an idle one, useIdleMode) pays nothing:
+ * it skips the safety poll and defers its SSE-driven re-renders and
+ * chat-detail refreshes to one catch-up on return.
  *
  * COLD START: a page refresh wipes the react-query cache, and each model's
  * OF fan-out lands at its own pace — so every successful fetch is mirrored
@@ -30,6 +35,8 @@ import { relay, type OFChatItem } from "@/lib/relay";
 import { compareFanIds, type FanId, sameUserId } from "@/lib/fanId";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 import type { AttributionEntry, AttributionResponse } from "@/hooks/useChatAttribution";
+import { useOfReadGate } from "@/hooks/useOfReadGate";
+import { gateOptions } from "@/lib/ofReadGate";
 import {
   mapOfTypeToKey,
   readNotifHistory,
@@ -66,6 +73,8 @@ const LIST_STALE_MS = 5 * 60_000;
 /** Safety re-read of every list while the tab is visible — catches a row the
  *  SSE path missed. react-query skips the tick in a hidden or idle tab. */
 const LIST_SAFETY_POLL_MS = 10 * 60_000;
+/** The rail's list keys (`["notif-list", aid, type]`), for the lease-gain refetch. */
+const LIST_ROOTS = ["notif-list"] as const;
 
 export interface MergedItem {
   n: NotificationItem;
@@ -294,7 +303,7 @@ export function useMoneyRailFeed({
   open,
 }: {
   settings: RailSettings;
-  activeAccounts: readonly { id: string }[];
+  activeAccounts: readonly { id: string; session_dead_at?: string | null }[];
   open: boolean;
 }) {
   // The snapshot and the watermark are global (not per surface), so they are
@@ -316,10 +325,12 @@ export function useMoneyRailFeed({
   // by default even when the rest of the UI is scoped to one — money landing
   // on another model is exactly what you don't want to miss. Narrow it in the
   // rail's own settings if you really only care about a subset.
+  // A Dead-session Creator is no target: its reads would only fail.
   const targetAccountIds = useMemo<string[]>(
-    () => resolveRailAccounts(settings, activeAccounts),
+    () => resolveRailAccounts(settings, activeAccounts.filter((a) => !a.session_dead_at)),
     [settings, activeAccounts],
   );
+  const gateOf = useOfReadGate(targetAccountIds, LIST_ROOTS);
 
   // Re-render whenever the SSE toaster mirrors a new arrival into the
   // localStorage history (same-tab custom event + cross-tab storage event).
@@ -372,6 +383,8 @@ export function useMoneyRailFeed({
       refetchOnWindowFocus: true,
       // eslint-disable-next-line local/no-fixed-polling -- safety re-read of OF's feed for rows SSE missed (TODO verify: could be ssePoll)
       refetchInterval: LIST_SAFETY_POLL_MS,
+      // An unleased Creator: off until armed, then no interval and no focus refetch (lib/ofReadGate.ts).
+      ...gateOptions(gateOf(aid)),
       // Cold start: show this account's rows from the last session at once
       // (dimmed) while the real fetch runs, instead of blanking the rail.
       placeholderData: () => snapshot[snapshotKeyOf(aid, type)]?.items,

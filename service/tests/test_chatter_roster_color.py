@@ -194,8 +194,15 @@ async def _setup() -> None:
 # ── 5. Cases ─────────────────────────────────────────────────────────
 
 def case_chatter_sees_badges() -> None:
+    # Leased (ADR-0031: an unleased Creator with no held window is left out), the foreign one too: scope still holds.
+    import view_lease
+    holder = ("user", "lease-test", "tab")
+    view_lease.renew(holder, ["accAva", "accCelest", "accForeign"], None)
     chatter = _login_chatter("sensui")
-    r = chatter.get("/admin/accounts/roster-counts")
+    try:
+        r = chatter.get("/admin/accounts/roster-counts")
+    finally:
+        view_lease.renew(holder, [], None)
     _expect("chatter GET roster-counts → 200", r.status_code == 200,
             detail=f"got {r.status_code} {r.text[:120]}")
     counts = (r.json() or {}).get("counts", {}) if r.status_code == 200 else {}

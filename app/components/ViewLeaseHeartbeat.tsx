@@ -20,7 +20,7 @@ import { focusManager } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
-import { onLeaseHolds, OPENED_WAIT_MS, postLease, tabId, VIEW_LEASE_RENEW_MS } from "@/lib/viewLease";
+import { holdLease, onLeaseHolds, OPENED_WAIT_MS, postLease, tabId, VIEW_LEASE_RENEW_MS } from "@/lib/viewLease";
 import {
   canPost, INITIAL_LEASE, leaseBody, SELECTED_SOURCE, shouldPostNow, viewLeaseReducer,
 } from "@/lib/viewLeaseState";
@@ -31,11 +31,10 @@ export function ViewLeaseHeartbeat() {
   const stateRef = useRef(state);
   const prevRef = useRef(INITIAL_LEASE);
 
+  // Held in the registry (not dispatched directly), so the count and money-list readers see it (lib/viewLease
+  // `tabLease`); it comes back below as a Hold / Release.
   const selected = scope.kind === "model" ? scope.accountId : null;
-  useEffect(() => {
-    dispatch(selected ? { type: "Hold", source: SELECTED_SOURCE, accountIds: [selected] }
-      : { type: "Release", source: SELECTED_SOURCE });
-  }, [selected]);
+  useEffect(() => (selected ? holdLease(SELECTED_SOURCE, [selected]) : undefined), [selected]);
 
   useEffect(() => onLeaseHolds((source, accountIds) => dispatch(accountIds.length
     ? { type: "Hold", source, accountIds } : { type: "Release", source })), []);

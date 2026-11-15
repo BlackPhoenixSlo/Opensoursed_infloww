@@ -335,6 +335,13 @@ async def _fetch_locked(
         return value
 
 
+def peek(namespace: str, account_id: str, key_extras: tuple) -> Any | None:
+    """The value held for this key at any age (an expired entry not yet swept included), or None.
+    No fetch, no hit or miss counted."""
+    entry = _cache.get((namespace, account_id, tuple(key_extras)))
+    return entry[0] if entry is not None else None
+
+
 def invalidate(
     namespace: str,
     account_id: str,

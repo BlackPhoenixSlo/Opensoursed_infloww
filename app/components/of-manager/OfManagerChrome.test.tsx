@@ -46,13 +46,17 @@ vi.mock("@/hooks/useAccounts", () => ({
 import { renderWithProviders } from "@/test-utils";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { chatDraftKey } from "@/lib/ofMirrorChat";
+import { resetReadGate } from "@/lib/ofReadGate";
+import { holdLease } from "@/lib/viewLease";
 import { CreatorColumn } from "./CreatorColumn";
 import { OfManagerChrome } from "./OfManagerChrome";
 
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
 
-beforeEach(() => { localStorage.clear(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; });
-afterEach(() => { cleanup(); get.mockClear(); });
+// The test Creators leased by this tab: counts read as they always have (the unleased gate: lib/ofReadGate.test.ts).
+let release: () => void = () => {};
+beforeEach(() => { localStorage.clear(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; resetReadGate(); release = holdLease("test", ["1", "2", "3"]); });
+afterEach(() => { cleanup(); get.mockClear(); release(); });
 
 describe("OfManagerChrome", () => {
   it("heads the page with the section and lists the creators with their OF notification count", async () => {

@@ -1,15 +1,34 @@
-/** Full AI Chat's LLM keys row: the providers the Writers run on (draft and saved checkpoint), short names as the
- *  keys form reads them. An unknown provider id renders as itself. */
+import { chatSwitch, type FullAiConfig } from "@/components/automations/fullAiConfig";
+
+/** Full AI Chat's LLM keys row: the providers the Writers run on (draft and saved checkpoint), plus the vision provider
+ *  while "Read his photos" is on, short names as the keys form reads them. An unknown provider id renders as itself. */
 export const KEY_LABELS: Record<string, string> = {
   nanogpt: "NanoGPT", openrouter: "OpenRouter", zai: "Z.ai", deepseek: "DeepSeek", deepinfra: "DeepInfra",
 };
 
-/** Each provider once, in Writer order (draft first, then the checkpoint's); a model with no provider is skipped.
- *  null while the config GET's `writer_providers` has not answered. */
-export function writerKeyRows(
-  writerLists: (string[] | undefined)[], providerOf: Record<string, string> | undefined,
+/** The provider "Read his photos" bills (`inbound_describe.PROVIDER`). */
+export const PHOTO_PROVIDER = "deepinfra";
+
+/** "Read his photos" on in a loaded side (draft or checkpoint); a side without the key reads the default, on. */
+export function readsPhotos(sides: (FullAiConfig | null)[]): boolean {
+  return sides.some((s) => s !== null && chatSwitch(s, "describe_fan_photos").checked);
+}
+
+/** Each provider once, in Writer order (draft first, then the checkpoint's), then the photo provider while
+ *  `readsPhotos`; a model with no provider is skipped. null while the config GET's `writer_providers` has not answered. */
+export function keyRows(
+  sides: (FullAiConfig | null)[], providerOf: Record<string, string> | undefined,
 ): { id: string; label: string }[] | null {
   if (!providerOf) return null;
-  const ids = [...new Set(writerLists.flatMap((ws) => ws ?? []).map((w) => providerOf[w]).filter(Boolean))];
+  const writers = sides.flatMap((s) => s?.writers ?? []).map((w) => providerOf[w]).filter(Boolean);
+  const ids = [...new Set([...writers, ...(readsPhotos(sides) ? [PHOTO_PROVIDER] : [])])];
   return ids.map((id) => ({ id, label: KEY_LABELS[id] ?? id }));
+}
+
+/** Photos are read but the keys read says no DeepInfra key: the page warns (not a Live blocker, the Turn answers
+ *  without the photo). false while the keys read has not answered. */
+export function photoKeyMissing(
+  sides: (FullAiConfig | null)[], providers: Record<string, { set: boolean }> | undefined,
+): boolean {
+  return !!providers && readsPhotos(sides) && !providers[PHOTO_PROVIDER]?.set;
 }

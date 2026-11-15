@@ -31,6 +31,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { renderWithProviders } from "@/test-utils";
+import { holdLease } from "@/lib/viewLease";
 import { NotificationBell } from "./NotificationBell";
 import NotificationsPage from "./NotificationsPage";
 
@@ -61,14 +62,17 @@ const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({
 
 const WIRED = ["All", "Subscriptions", "Purchases", "Comments", "Mentions", "Likes", "Messages"];
 
-/** Clicks each wired tab of the bell's open panel and returns its feed reads. */
+/** Clicks each wired tab of the bell's open panel and returns its feed reads. The Creators leased by this tab, so
+ *  the bell reads them as the page does (an unleased one waits for its warm: lib/ofReadGate.ts). */
 async function bellReads(): Promise<string[][]> {
+  const release = holdLease("test", accounts.map((a) => a.id));
   renderWithProviders(<NotificationBell />);
   await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
   for (const label of WIRED) await userEvent.click(screen.getByRole("button", { name: label }));
   await screen.findByText("No notifications.");
   const reads = feedReads();
   cleanup();
+  release();
   relayGet.mockClear();
   return reads as string[][];
 }

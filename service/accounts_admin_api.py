@@ -319,6 +319,18 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
 # keyed (25, 0, "recent", None, None, None), which is what guarantees the
 # badge and the visible list can never disagree.
 _ROSTER_SCAN_MAX = 25
+_ROSTER_WINDOW_KEY = (_ROSTER_SCAN_MAX, 0, "recent", None, None, None)
+# Per Creator, its last computed count (with `as_of`): what roster-counts serves an unleased Creator
+# whose chats window is no longer held. Bounded by Creator count; a restart forgets it.
+_roster_last: dict[str, dict[str, int]] = {}
+
+
+def _window_as_of(account_id: str) -> int | None:
+    """Epoch ms of the Creator's page-0 chats window's last live read (its monotonic stamp), or None."""
+    fetched_at = _chats_window_fetched_at().get(account_id)
+    if fetched_at is None:
+        return None
+    return int((_time_mod.time() - (_time_mod.monotonic() - fetched_at)) * 1000)
 
 
 def _roster_counts_from_rows(
@@ -416,16 +428,35 @@ async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> 
         return value
 
     resp = await relay_cache.get_or_fetch(
-        "list_chats", account_id,
-        (_ROSTER_SCAN_MAX, 0, "recent", None, None, None),
+        "list_chats", account_id, _ROSTER_WINDOW_KEY,
         ttl_seconds=list_chats_ttl(),
         fetcher=_fetch_window,
         bypass=bypass,
     )
+    return await _fold_window(account_id, client, resp)
+
+
+async def _fold_window(account_id: str, client, resp: dict[str, Any]) -> dict[str, int]:
+    """The window's counts with `as_of` (the window's last live read; 0 if unknown), kept as the last-known."""
     rows = resp.get("list") or resp.get("chats") or []
     from automations._common import load_of_restricted_ids
     exclude = await load_of_restricted_ids(account_id)
-    return _roster_counts_from_rows(rows, str(client.user_id), exclude)
+    out = {**_roster_counts_from_rows(rows, str(client.user_id), exclude), "as_of": _window_as_of(account_id) or 0}
+    _roster_last[account_id] = out
+    return out
+
+
+async def _held_roster_count(account_id: str) -> dict[str, int] | None:
+    """No OF read (an unleased or Dead-session Creator): its held page-0 chats window folded at any age, else its
+    last-known count, else None (left out of the answer)."""
+    resp = relay_cache.peek("list_chats", account_id, _ROSTER_WINDOW_KEY)
+    if resp is not None and _window_as_of(account_id) is not None:
+        try:
+            client = await asyncio.to_thread(_load_client, account_id)
+            return await _fold_window(account_id, client, resp)
+        except Exception:  # noqa: BLE001 — no client to fold with: the last-known count
+            log.debug("roster-counts: held window not folded for %s", account_id, exc_info=True)
+    return _roster_last.get(account_id)
 
 
 @router.get("/admin/accounts/roster-counts")
@@ -499,7 +530,22 @@ async def admin_accounts_roster_counts(
                                     "automations paused until the session recovers", aid, dead_reason)
                 except Exception:  # noqa: BLE001 — the strip still answers
                     log.exception("failed to mark session-dead account")
-            return aid, {"unread": 0, "owe_reply": 0}
+            return aid, {"unread": 0, "owe_reply": 0, "as_of": 0}
+
+    # OF is read only for a Creator this Relay's View lease holds (`view_lease`, ADR-0031), a `bust`, or the
+    # App-open warm (`rewarm_roster_count`). Any other Creator, and a Dead-session one always, is served with no
+    # OF read (`_held_roster_count`): its held chats window folded at any age, else its last-known count, else it
+    # is left out of `counts`. Every count carries `as_of`, epoch ms of the window it was folded from (0: a
+    # failed read's zeros), so the tab keeps its own newer SSE patch (app hooks/useRosterCounts.ts).
+    # (A comment, not the docstring: the docstring is the OpenAPI description, pinned by test_route_order.)
+    import view_lease
+    leased = view_lease.leased_ids()
+    dead = set(await account_health.dead_session_map())
+
+    async def _served(aid: str) -> tuple[str, dict[str, int] | None]:
+        if aid in leased and aid not in dead:
+            return await _one(aid)
+        return aid, await _held_roster_count(aid)
 
     # Targeted force-refresh: drop + recompute JUST this model and return only it.
     # The frontend merges the single entry into its cached map, so a swap / hover /
@@ -513,12 +559,27 @@ async def admin_accounts_roster_counts(
     # the list refetch the frontend chains after this call is a warm hit of the
     # same rows these counts were folded from.
     if bust and bust in ids:
+        if bust in dead:
+            held = await _held_roster_count(bust)
+            return {"counts": {bust: held} if held is not None else {}}
         relay_cache.invalidate("roster_count", bust)
         _, value = await _one(bust, bypass=True)
         return {"counts": {bust: value}}
 
-    pairs = await asyncio.gather(*[_one(a) for a in ids])
-    return {"counts": {aid: c for aid, c in pairs}}
+    pairs = await asyncio.gather(*[_served(a) for a in ids])
+    return {"counts": {aid: c for aid, c in pairs if c is not None}}
+
+
+async def rewarm_roster_count(account_id: str) -> dict[str, int]:
+    """The `?bust=` recompute for one Creator outside a request (the App-open warm's step 2,
+    server.app_open_warm_reads): one live read of the chats window, rewarming the Fan List's page-0
+    `list_chats` entry, folded into a fresh `roster_count` entry (the route's TTL). Raises what the
+    read raised."""
+    relay_cache.invalidate("roster_count", account_id)
+
+    async def _fetch() -> dict[str, int]:
+        return await _compute_roster_count_of(account_id, bypass=True)
+    return await relay_cache.get_or_fetch("roster_count", account_id, (), ttl_seconds=300.0, fetcher=_fetch)
 
 
 # View lease (ADR-0031, phase-01 1a): the Creators a tab has on screen.

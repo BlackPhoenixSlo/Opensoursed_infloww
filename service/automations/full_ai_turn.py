@@ -54,6 +54,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 import llm_client
+import run_slot
 from automations import _heat_jev, _info_jev, _price_jev, _reply_shape, _voice, cat_stickers
 from automations import _router_jev as router
 from automations import full_ai_caption, full_ai_sell, full_ai_test
@@ -74,6 +75,7 @@ from automations.full_ai_writers import (
     implied_flag, is_ride, likes_flag, spacing_flag, tease_flag, tease_turn, wide_flag,
 )
 from automations.full_ai_config import merged, turn_bound_s
+from automations.rhythm import INLINE_MAX_S
 from automations.welcome_chatter_for_info import _HISTORY_TAIL, _REPLY_MAX_CHARS
 from db.engine import get_session
 from db.models import AccountAiConfig
@@ -179,6 +181,13 @@ class TurnIO:
 _PRICE_MARGIN_S = 0.5
 
 
+def _freed(aw):
+    """A provider wait (Router / Jev ask, Writer walk, extract) off the Run slot (`run_slot.freed`):
+    a live Turn holds a slot for its reads, shaping and sends only, so Fans waiting on a model do
+    not pin the fleet's slots. A plain await in the Test chat (no slot)."""
+    return run_slot.freed(aw, budget_s=INLINE_MAX_S)
+
+
 async def _capped(call, deadline: float) -> WriteResult:
     """A Writer walk (`write` / `full_ai_caption.write`) cancelled at `deadline`: then it reads as
     no Writer answering (one `turn` / `timeout` attempt), never a late text. With no time left the
@@ -187,7 +196,7 @@ async def _capped(call, deadline: float) -> WriteResult:
     if left <= 0:
         return await call
     try:
-        return await asyncio.wait_for(call, left)
+        return await _freed(asyncio.wait_for(call, left))
     except asyncio.TimeoutError:
         return WriteResult(None, None, [{"writer": "turn", "outcome": "timeout", "ms": int(left * 1000)}])
 
@@ -196,10 +205,10 @@ async def _route(facts: TurnFacts, deadline: float) -> tuple[Decision, dict, str
     """Router Jev (wall-clock capped at `router.WALL_S` and `deadline`) and the Route table:
     (decision, jev_json, router model, Jev ms, Jev error)."""
     try:
-        jev = await router.ask(facts.state, facts.account_id, mode=facts.mode, scene=scene_flag(facts),
-                               spacing=spacing_flag(facts), likes=likes_flag(facts),
-                               tease=tease_flag(facts), implied=implied_flag(facts),
-                               timeout_s=deadline - time.monotonic())
+        jev = await _freed(router.ask(facts.state, facts.account_id, mode=facts.mode, scene=scene_flag(facts),
+                                      spacing=spacing_flag(facts), likes=likes_flag(facts),
+                                      tease=tease_flag(facts), implied=implied_flag(facts),
+                                      timeout_s=deadline - time.monotonic()))
         fired, intensity, error = router.fired(jev.answers, facts.mode), jev.intensity, None
         answers, score, model, ms = jev.answers, {"score": jev.intensity, "p": jev.intensity_p}, jev.model, jev.ms
         choices = jev.choices
@@ -254,7 +263,7 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     offered = _info_jev.askable(facts.config, facts.fan_info, lead) if choice_on else []
     st = _info_jev.state(facts.state, facts.asked, offered)
     try:
-        info = await _info_jev.ask(st, facts.account_id, offered, timeout_s=left, lead=lead, wide=wide)
+        info = await _freed(_info_jev.ask(st, facts.account_id, offered, timeout_s=left, lead=lead, wide=wide))
     except router.GateError as e:
         return f"jev_failed: {e}"[:300]
     jev_json["info"] = {"stated": info.stated, "pick": info.pick, "fired": info.fired,
@@ -266,9 +275,9 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     if left <= 0:
         return "deadline"
     try:
-        got = await _info_jev.extract(facts, info.fired,
-                                      timeout_s=min(float(facts.config["writer_timeout_s"]), left),
-                                      likes=likes, wide=wide)
+        got = await _freed(_info_jev.extract(facts, info.fired,
+                                             timeout_s=min(float(facts.config["writer_timeout_s"]), left),
+                                             likes=likes, wide=wide))
     except llm_client.LLMError as e:
         return f"extract:{_outcome(e)}"
     except _info_jev.ExtractError as e:
@@ -500,8 +509,8 @@ async def _tease_price(facts: TurnFacts, heat: int, reply: dict, deadline: float
     reply["chat_tease"] = out
     st = _price_jev.tease_state(facts.state, heat, facts.purchases, [b.amount_cents for b in facts.spent])
     try:
-        got = await _price_jev.ask_tease(st, _price_jev.tease_options(prices), facts.account_id,
-                                         timeout_s=deadline - time.monotonic())
+        got = await _freed(_price_jev.ask_tease(st, _price_jev.tease_options(prices), facts.account_id,
+                                                timeout_s=deadline - time.monotonic()))
     except router.GateError as e:
         out["error"] = str(e)[:300] or "GateError"
         return None
@@ -527,7 +536,7 @@ async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, he_a
                            "he_asked": st["he_asked"], "bought_before": st["bought_before"]}
     reply["price"] = out
     try:
-        got = await _price_jev.ask(st, facts.account_id, timeout_s=deadline - time.monotonic())
+        got = await _freed(_price_jev.ask(st, facts.account_id, timeout_s=deadline - time.monotonic()))
     except router.GateError as e:
         out["error"] = str(e)[:300] or "GateError"
         return
@@ -618,7 +627,8 @@ async def _heat_check(d: Decision, facts: TurnFacts, reply: dict, writer: str, p
                            "version": _heat_jev.HEAT_VERSION}
     reply["heat_check"] = out
     try:
-        got = await _heat_jev.ask("\n".join(parts), facts.account_id, timeout_s=deadline - time.monotonic())
+        got = await _freed(_heat_jev.ask("\n".join(parts), facts.account_id,
+                                         timeout_s=deadline - time.monotonic()))
     except router.GateError as e:
         out["error"] = str(e)[:300] or "GateError"
         return parts
@@ -640,7 +650,8 @@ async def _heat_check(d: Decision, facts: TurnFacts, reply: dict, writer: str, p
     if not redo or scratch["leak"]:
         return parts
     try:
-        got2 = await _heat_jev.ask("\n".join(redo), facts.account_id, timeout_s=deadline - time.monotonic())
+        got2 = await _freed(_heat_jev.ask("\n".join(redo), facts.account_id,
+                                          timeout_s=deadline - time.monotonic()))
     except router.GateError:
         return parts
     out["redo_score"], out["ms"] = got2.score, got.ms + got2.ms

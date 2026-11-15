@@ -6,7 +6,10 @@
  * polls to a slow safety poll (see `ssePoll`). Mounted once, in ScopeProvider.
  *
  * The relay already scopes these to the signed-in principal's Creators and
- * Agency; nothing here filters.
+ * Agency; nothing here filters. `creator_warmed` (the App-open warm read a
+ * Creator) reaches every tab that can access the Creator, whatever its scope;
+ * it also arms that Creator's money-list and count reads at once
+ * (lib/ofReadGate.ts: an unleased Creator reads nothing until then).
  *
  * `transaction_recorded` (a sale landed in the ledger, sent after its commit by
  * the OF ingest, the WS pump and the Fansly lane) refetches the open reports
@@ -20,6 +23,7 @@ import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
+import { armRead } from "@/lib/ofReadGate";
 
 type Body = Record<string, unknown>;
 
@@ -40,12 +44,14 @@ const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> 
     ...(b.kind === "full_ai_chat" ? [byAccount("full-ai-today", aid)] : []),
     ...(b.status === "error" ? [["app-errors", "recent"]] : []),
   ],
+  // The App-open warm refreshed this Creator's entries: the rail and bell lists, the OF counts, the roster counts.
+  creator_warmed: (aid) => (aid ? [["notif-list", aid], ["of-notif-count", aid], ["roster-counts"]] : []),
 };
 
 /** A busy Agency finishes runs back to back: their invalidations are
  *  gathered and sent at most once per this window. */
 export const COALESCE_MS = 2_000;
-const COALESCED = new Set(["rule_run_finished", "scheduled_send_changed"]);
+const COALESCED = new Set(["rule_run_finished", "scheduled_send_changed", "creator_warmed"]);
 /** `resync` refetches every query; a flapping link must not repeat that. */
 export const RESYNC_MIN_MS = 30_000;
 /** A sale refetches the heavy reports; a busy Agency sells back to back. */
@@ -102,6 +108,8 @@ export function useAccountStateEvents(): void {
         else invalidate(keys);
       }),
     );
+
+    offs.push(eventBus.on("creator_warmed", (e: EventEnvelope) => armRead(e.__account_id)));
 
     // The relay could not replay what this tab missed: refetch everything.
     // Leading refetch, then at most one trailing one per window, so a resync

@@ -199,9 +199,10 @@ function CreatorTab({
   onHoverEnd: () => void;
 }) {
   const name = account.nickname || account.id;
-  // Infloww's second badge: the Creator's OnlyFans notification count, the
-  // same read (and cache entry) as the Notifications button.
-  const { count: notifs } = useOfNotifCount(account.id);
+  // Infloww's second badge: the Creator's OnlyFans notification count,
+  // the same read (and cache entry) as the Notifications button; none for a
+  // Dead-session Creator.
+  const { count: notifs } = useOfNotifCount(account.session_dead_at ? null : account.id);
   return (
     <OpenInNewWindowMenu href={creatorWindowHref(account.id)}>
       <div

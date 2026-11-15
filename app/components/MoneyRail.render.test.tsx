@@ -53,6 +53,10 @@ import {
   type NotificationItem,
   type RailSettings,
 } from "@/lib/moneyRailStorage";
+import { holdLease } from "@/lib/viewLease";
+import { armRead, resetReadGate } from "@/lib/ofReadGate";
+import { APP_OPEN_WARM_FALLBACK_MS } from "@/lib/viewLease";
+import { SELECTED_SOURCE } from "@/lib/viewLeaseState";
 import { MoneyRail, MoneyRailRestoreButton } from "./MoneyRail";
 
 /** The two OF round-trips the rail can make. The attribution query goes to
@@ -123,15 +127,23 @@ beforeAll(async () => {
   cleanup();
 });
 
+// Both Creators leased by this tab: the rail reads as it always has (an unleased Creator's gate: "MoneyRail lease
+// gate" below).
+let release: () => void = () => {};
 beforeEach(() => {
   window.localStorage.clear();
   relayGet.mockReset();
   seedRelay();
   route.pathname = "/messages-pro";
   writeSettings(DEFAULT_SETTINGS);
+  resetReadGate();
+  release = holdLease("test", accounts.map((a) => a.id));
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  release();
+});
 
 describe("MoneyRail surface gate", () => {
   it("issues no requests at all on a surface it is not shown on", async () => {
@@ -285,5 +297,92 @@ describe("MoneyRail OF call budget", () => {
     vi.spyOn(Date, "now").mockReturnValue(later);
     await hideAndReturn();
     await waitFor(() => expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(2 * FANOUT));
+  });
+});
+
+describe("MoneyRail lease gate", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    focusManager.setFocused(undefined);
+  });
+
+  const listsOf = (aid: string) =>
+    relayGet.mock.calls.filter((c) => String(c[0]).startsWith(OF_NOTIFICATIONS) && (c[1] as { accountId?: string })?.accountId === aid);
+
+  it("an unleased Creator reads nothing until its creator_warmed, then once, with no focus re-read", async () => {
+    release();
+    renderWithProviders(<MoneyRail />);
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(0);
+
+    await act(async () => { armRead("1001"); });
+    await flush();
+    expect(listsOf("1001")).toHaveLength(2);
+    expect(listsOf("1002")).toHaveLength(0);
+
+    // Long stale: a leased Creator would re-read on the tab return; an unleased one does not.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
+    await act(async () => { focusManager.setFocused(false); });
+    await act(async () => { focusManager.setFocused(true); });
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(2);
+  });
+
+  it("an unleased Creator whose warm never came reads at the fallback deadline after the load", async () => {
+    release();
+    resetReadGate(Date.now() - APP_OPEN_WARM_FALLBACK_MS);
+    renderWithProviders(<MoneyRail />);
+    await flush();
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+  });
+
+  it("a lease gain refetches a list older than 30 s, not a fresher one", async () => {
+    release();
+    armRead("1001");
+    armRead("1002");
+    renderWithProviders(<MoneyRail />);
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+
+    const t0 = Date.now();
+    const off1 = holdLease("chat", ["1001"]);
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+
+    vi.spyOn(Date, "now").mockReturnValue(t0 + 31_000);
+    const off2 = holdLease("strip", ["1002"]);
+    await flush();
+    expect(listsOf("1002")).toHaveLength(4);
+    expect(listsOf("1001")).toHaveLength(2);
+    off1();
+    off2();
+  });
+
+  it("a selection refetches its stale lists even if already leased", async () => {
+    renderWithProviders(<MoneyRail />);
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+    const off = holdLease(SELECTED_SOURCE, ["1002"]);
+    await flush();
+    expect(listsOf("1002")).toHaveLength(4);
+    expect(listsOf("1001")).toHaveLength(2);
+    off();
+  });
+
+  it("a Dead-session Creator issues no query, leased or not", async () => {
+    const dead = { id: "1003", nickname: "gone", session_dead_at: "2026-11-01T00:00:00Z" };
+    (accounts as { id: string; nickname: string }[]).push(dead);
+    const off = holdLease("strip", ["1003"]);
+    try {
+      renderWithProviders(<MoneyRail />);
+      await flush();
+      expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+      expect(listsOf("1003")).toHaveLength(0);
+    } finally {
+      off();
+      accounts.pop();
+    }
   });
 });

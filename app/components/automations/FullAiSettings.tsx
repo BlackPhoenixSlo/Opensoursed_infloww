@@ -4,7 +4,8 @@
  * Full AI Chat's settings column (spec phase-03a, 03b): eighteen controls in a list named "Settings":
  *   1. the Mode control (Off / Live, `FullAiModeControl`);
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
- *   is set (never a value or hint; "not set" in red), linking to the agency keys form;
+ *   and, while Read his photos is on, DeepInfra is set (never a value or hint; "not set" in red, no DeepInfra key a
+ *   warning, not a Live blocker), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
  *   (on, a "%" box sets `gif_pct`, empty = auto);
@@ -38,7 +39,7 @@ import {
   styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch, topSpendDollars, topSpendPatch,
   typoPct, typoPctPatch, typosPatch, writerPatch, type ChatSwitchKey, type FullAiConfig, type SettingRow,
 } from "@/components/automations/fullAiConfig";
-import { writerKeyRows } from "@/components/automations/fullAiKeys";
+import { keyRows, photoKeyMissing } from "@/components/automations/fullAiKeys";
 import {
   jsonEditInit, jsonEditReducer, jsonMoved, jsonTyped, prettyJson, type JsonSide,
 } from "@/components/automations/fullAiConfigJson";
@@ -309,12 +310,13 @@ function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean 
   );
 }
 
-/** Set / not set per Writer provider, from GET /admin/my-llm-keys; the hint (last characters) is never shown. The
- *  model → provider map is the config read's `writer_providers`. */
+/** Set / not set per Writer provider and the photo provider (`keyRows`), from GET /admin/my-llm-keys; the hint (last
+ *  characters) is never shown. The model → provider map is the config read's `writer_providers`. */
 function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi }) {
   const keysQ = useTenantKeys();
   const providers = keysQ.data?.providers;
-  const rows = writerKeyRows([state.draft?.writers, state.checkpoint?.writers], cfg.writerProviders);
+  const sides = [state.draft, state.checkpoint];
+  const rows = keyRows(sides, cfg.writerProviders);
   return (
     <div className={ROW}>
       <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
@@ -327,6 +329,12 @@ function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi })
                 {providers ? `${k.label} ${set ? "set" : "not set"}` : `${k.label} …`}</span>;
             })}
           </div>
+          {photoKeyMissing(sides, providers) && (
+            <p role="status" className="mt-1 text-[12px] text-warn">
+              Read his photos is on but there is no DeepInfra key: photos he sends won&apos;t be read. Add one in Settings → AI
+              keys, or switch it off.
+            </p>
+          )}
         </div>
         <Link href="/settings/ai-keys" className="text-[14px] text-accent hover:text-accent-hover">Open keys form</Link>
       </div>

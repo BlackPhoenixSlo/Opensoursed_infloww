@@ -4058,6 +4058,43 @@ async def of_notifications_count(
     )
 
 
+# The Money Rail's and the bell's money-list read (app/lib/notifText.ts notifPath: NOTIF_PAGE_SIZE, offset 0, MONEY_TYPES).
+_RAIL_PAGE_SIZE = 20
+_RAIL_MONEY_TYPES = ("tip", "purchases")
+
+
+def _warm_fetch(coalesce_key: tuple, aid: str, read: Callable[[OFClient], Any]):
+    """A pass-through route's fetcher for `aid` outside a request: same coalesce key, `_proxy`'s error shapes,
+    the Creator's background lane."""
+    def run():
+        with _priority_lane_background(aid):
+            return _proxy(lambda: read(_load_client(aid)))
+
+    async def _fetch():
+        return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(run))
+    return _fetch
+
+
+async def app_open_warm_reads(account_id: str) -> None:
+    """The App-open warm's steps 2-4 for one Creator (app_open_warm, inside its walk; looked up at call time):
+    2. the chats window, through roster-counts' recompute with bypass (it rewarms the Fan List's page-0
+       `list_chats` entry and the `roster_count` one); 3. the rail's two money lists (`_RAIL_MONEY_TYPES`, page 0
+    at `_RAIL_PAGE_SIZE`) and 4. the notifications count, into the relay_cache entries (through the coalesce keys)
+    `of_notifications` / `of_notifications_count` serve; one still fresh is served, not read again. Raises what a
+    read raised: the warm stops that Creator there."""
+    aid = str(account_id)
+    await accounts_admin_api.rewarm_roster_count(aid)
+    for typ in _RAIL_MONEY_TYPES:
+        extras = (_RAIL_PAGE_SIZE, 0, typ)
+        await relay_cache.get_or_fetch(
+            "notifications", aid, extras, ttl_seconds=30.0,
+            fetcher=_warm_fetch(("notifications", aid) + extras, aid,
+                                lambda c, t=typ: c.notifications(limit=_RAIL_PAGE_SIZE, offset=0, type=t)))
+    await relay_cache.get_or_fetch(
+        "notifications_count", aid, (), ttl_seconds=30.0,
+        fetcher=_warm_fetch(("notifications_count", aid), aid, lambda c: c.notifications_count()))
+
+
 @app.get("/api/of/v2/release-forms/mentions")
 def of_release_form_mentions(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
     """Notifications' Tags tab: posts the creator is tagged in, notification-shaped."""

@@ -10,6 +10,7 @@ import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_deci
   queue_fold / blasted      the "did this account just blast?" ring
   user_blob(payload)        the Fan touch a non-message frame carries
   dm_plan(aid, m, now)      Skip | Outbound | Inbound for a chat_message
+  money_bust(m)             does an inbound chat_message clear the money feeds' cache
   fan_upsert(plans)         the `fans` upsert of one chat's DM batch
   ppv_fields(payload, now)  the ledger row of a PPV-unlock frame
 """
@@ -246,6 +247,19 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     )
     return Inbound(msg, from_user, max(tip_cents, 0),
                    image=bool(mids or giphy_dm_id(m)) and not is_tip, has_media=bool(mids))
+
+
+def money_bust(m: dict) -> bool:
+    """Does an inbound `api2_chat_message` clear the money feeds' cache
+    (`relay_cache.invalidate_money_feeds`)? Only a plain DM keeps it: `isTip`
+    false and `price` a number equal to 0. A tip (any amount), a price above 0,
+    or a frame lacking the fields to tell (`isTip` not a bool, `price` missing,
+    null or not a number) clears it: a misread money frame would cost a sale
+    its bust, a misread plain DM only one re-read."""
+    price = m.get("price")
+    if m.get("isTip") is not False or isinstance(price, bool) or not isinstance(price, (int, float)):
+        return True
+    return price != 0
 
 
 def fan_upsert(plans: list[Inbound]) -> tuple[dict, dict, tuple[Any, Any]]:

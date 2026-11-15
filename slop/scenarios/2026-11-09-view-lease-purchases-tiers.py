@@ -13,20 +13,25 @@ the rest IDLE. Each Idle Creator (IDLE_RULES' too) has one seeded PPV purchase: 
 message (SQL) and its notification in OF's `type=purchases` feed (`FakeOF.purchases`).
 
 Legs (`--set leg=latency` runs only the UI one, with the no-5xx check; `--set leg=warm` the App-open warm alone;
-`--set leg=visible` the on-screen lease alone):
+`--set leg=visible` the on-screen lease alone, `--set leg=dm` the plain-DM leg alone; `--set leg=rail` the out-of-scope
+rail alone):
   warm     (first: the loop is not running yet, so every feed read is the warm's or a Select refresh's) WARM_PX fake
            proxies of WARM_PER_PX Creators each (lib/sweep_pacing_proxy.bind, the product's own routes), the rest
            direct; an httpx owner tab leases the last Creator of each group and waits FAST_S + 1 s (their Select
            refresh ages out). The owner's Chromium (no /api/of/ read let through) opens WARM_PAGE (Settings) first,
            its saved scope (localStorage `chatterly:scope`) one unleased Creator of the first proxy: its heartbeat's
-           `opened: true` post carries it `selected` (its Select refresh; the warm skips it and starts that proxy
-           one GAP late) and warms every other Creator, WARM_SENDS sends go out meanwhile; then, the scope back to
+           `opened: true` post carries it `selected` (its Select refresh; the warm skips its feed and starts that proxy
+           one GAP late) and warms every Creator's read set (lib/view_lease_rail_scope.py), WARM_SENDS sends go out
+           meanwhile; settled, the pass-through routes read it all back (httpx, as a tab); then, the scope back to
            All, Messages Pro (a second document load inside APP_OPEN_WARM_REUSE_S: `reused`, no read); then two
            Creator-tab clicks (an OWNER and a CHATTER Creator, both leased in tiers anyway), each a selection post.
            Its strip's tabs, warmed within REUSE_S, get no lease-gain read (ticket 20); a selection post on a tab
            leased at the click joins no read in flight (`read_joined` false), one its scroll brought on screen may.
            Screenshots `warm-trigger-settings` (just opened), `warm-settled-settings`, `warm-mp-selected`; the
            page's own view-lease posts and answers and the per-Creator feed reads in `app-open-warm.json`.
+  rail     (ticket 23, lib/view_lease_rail_scope.py) the warm aged out, the owner's Messages Pro scoped to one Creator
+           opens (a fresh warm); an Idle Creator's tip shows in its rail from SSE; the tab's money-list and count
+           reads hit OF only for the Creators it leases.
   tiers    the loop starts (`POST /__slop/fast-poll`); P1_S with no client (Sellers alone); then P2_S with
            max(1, users // 3) tabs per lease role renewing every RENEW_S, the owner and the chatters signed in;
            inside P2 (each right after a loop cycle, so a read within 2 s is not the loop's): the owner's tab 0
@@ -40,6 +45,9 @@ Legs (`--set leg=latency` runs only the UI one, with the no-5xx check; `--set le
            its feed inside one slow gap (SQL + `FakeOF.purchases`, CATCHUP_BATCHES batches CATCHUP_EVERY_S apart);
            one `/__slop/automation-tick` (the recovery probe), then the CHATTER Creator is re-captured
            (`POST /admin/session/bootstrap`, paste-curl). Then each leg's `run` (LEGS; its module docstring).
+  dm       (1b story 52, lib/view_lease_dm_bust.py) an ALL_OFF Creator's money reads through the relay (the rail's
+           purchases and tip lists, the bell's count), PLAIN_N plain DMs at the pump boundary, each followed by the same
+           reads, then a tip DM and the reads: OF calls per stage. Evidence `dm-no-bust.json`.
   visible  (ticket 20, lib/view_lease_visible.py) the owner's pages in Chromium in the All view post exactly the
            on-screen Creators (strip + rail + open chat + OF Manager's column).
   latency  the owner's Messages Pro in Chromium (`/messages-pro`, the rail's and the strip's reads let through to
@@ -47,7 +55,8 @@ Legs (`--set leg=latency` runs only the UI one, with the no-5xx check; `--set le
            /admin/ or let-through /api/of/ read in flight for IDLE_MS); p95 `click_settled_ms`. Screenshots
            `trigger-strip` (before the first click) and `settled-strip` (after the last).
 
-Checks (names in lib/view_lease_faults.py): WARM_ONCE, WARM_STAGGER (the warm leg; same-proxy read starts >= GAP -
+Checks (names in lib/view_lease_faults.py): WARM_ONCE (each read-set read once, the pass-through reads no OF
+call), RAIL_OUT_OF_SCOPE_LIVE and RAIL_LEASED_ONLY (the rail leg), WARM_STAGGER (the warm leg; same-proxy read starts >= GAP -
 WARM_GAP_SLACK_S apart, the selected Creator's Select refresh first on its proxy, then the leased one, the groups'
 first reads within GAP of each other), LEASED_FAST,
 SELLER_FAST, IDLE_SLOW, ALL_VIEW_NO_LEASE, SELECT_REFRESH (with the warm leg: also the browser's two selection
@@ -58,10 +67,11 @@ LO_SLACK_S), at most a cycle more, the loop's period measured on a third leased 
 past the Demand cap plus CAP_SLACK_S),
 DEAD_SILENT, DEAD_RESUME (a feed read within 1.5 x FAST_S + 1 s of the re-capture), UI_LEASE_VISIBLE (the visible
 leg), FEED_CATCHUP (all CATCHUP_N flipped, inside one slow gap while the Creator is slow; evidence `feed-health.json`),
-each leg's own, CLICK_SETTLED; p95 vs the last green
+DM_NO_BUST (the dm leg: no OF read after a plain DM, one per read after the tip, all inside the pass-through's
+TTL), each leg's own, CLICK_SETTLED; p95 vs the last green
 run (P95_VS_LAST) of
-`POST /admin/view-lease` and `click_settled_ms`. A purchases poll is a fake-OF call on `GET
-/api2/v2/users/notifications` with `type=purchases`; gaps are between consecutive calls per Creator.
+`POST /admin/view-lease`, `GET /admin/accounts/roster-counts` (the rail leg's owner polls) and `click_settled_ms`. A purchases poll is a fake-OF call on `GET
+/api2/v2/users/notifications` with `type=purchases` (not at the rail's page size: lib/view_lease_feed.is_feed); gaps are between consecutive calls per Creator.
 Evidence `view-lease.json`.
 
 Bypasses (declared): OF at its wire (lib/of_wire.py, 50 ms a call, a guess); time: the Knobs scaled at stack
@@ -72,7 +82,7 @@ Seller rules by SQL; the registry
 read through `GET /__slop/view-lease` (read-only); the supervisor's cadence (`/__slop/automation-tick`). The tiers'
 lease tabs are httpx clients naming their subsets (the browser's own lease sources are the warm, visible and latency
 legs'). The warm leg's Next routes are compiled by one plain GET each first (dev server), so the reuse window measures
-the relay, not a compile. The visible leg's: its module's.
+the relay, not a compile. The visible and dm legs': their modules'.
 Break-it-once: `admin-online-all-fast` (the FAULT: the old admin branch): only IDLE_SLOW. `seller-kinds-old`:
 only SELLER_FAST. `all-view-leases-every-creator`: only ALL_VIEW_NO_LEASE. `select-refresh-on-gain-only`: only
 SELECT_REFRESH. `warm-messages-pro-only` (browser: `opened` only on /messages-pro): only WARM_ONCE.
@@ -80,7 +90,9 @@ SELECT_REFRESH. `warm-messages-pro-only` (browser: `opened` only on /messages-pr
 nothing): only BACKOFF_429. `dead-still-polled` (the live set without the dead filter): only DEAD_SILENT.
 `dead-held-in-poll-state` (`dead` a hold nothing clears): only DEAD_RESUME. `feed-no-catchup` (newest page only):
 only FEED_CATCHUP.
-`strip-leases-all-tabs` (browser: the strip leases every open tab): only UI_LEASE_VISIBLE.
+`strip-leases-all-tabs` (browser: the strip leases every open tab): only UI_LEASE_VISIBLE. `dm-busts-money-feeds`
+(every inbound DM clears the money feeds): only DM_NO_BUST. `money-events-scope-only` (the pre-1b routing: scope
+only): only RAIL_OUT_OF_SCOPE_LIVE.
 """
 from __future__ import annotations
 
@@ -93,17 +105,18 @@ import time
 from contextlib import ExitStack
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
-from slop.lib import of_call_stats, of_wire, sweep_pacing_proxy, view_lease_visible
+from slop.lib import of_call_stats, of_wire, sweep_pacing_proxy, view_lease_dm_bust, view_lease_visible
+from slop.lib import view_lease_rail_scope as rail_scope
 from slop.lib.client import Http
 from slop.lib.browserbase import paste_curl
 from slop.lib.view_lease_faults import (ALL_VIEW_NO_LEASE, BACKOFF_429, CLICK_SETTLED, DEAD_RESUME, DEAD_SILENT,
                                         FAN_WRITES_KEPT, FEED_CATCHUP, IDLE_SLOW, LEASED_FAST, SELECT_REFRESH,
                                         SELLER_FAST, UNAUTH_NOT_DEAD, WARM_ONCE, WARM_STAGGER)
-from slop.lib.view_lease_feed import POLL_ROUTE, next_poll
+from slop.lib.view_lease_feed import POLL_ROUTE, is_feed, next_poll
 from slop.lib.view_lease_feed import feed as _feed
 from slop.lib.view_lease_feed import until as _until
 from slop.seed import chatters as chatter_seed
@@ -174,8 +187,7 @@ def _polls(fake, since: float) -> dict[str, list[float]]:
     out: dict[str, list[float]] = {}
     with fake.lock:
         for c in fake.calls:
-            if c["route"] == POLL_ROUTE and c["t0"] >= since and (parse_qs(c.get("query") or "").get("type")
-                                                                   or [""])[0] == "purchases":
+            if c["t0"] is not None and c["t0"] >= since and is_feed(c):
                 out.setdefault(c["account"], []).append(c["t0"])
     return out
 
@@ -195,8 +207,14 @@ async def run(ctx) -> None:
         warm = None
         if leg in ("all", "warm"):
             warm = await _warm(ctx, creators, wires)
+        if leg in ("all", "rail"):
+            roster = await rail_scope.run(ctx, creators, _roles(creators), THROUGH, ttl_s=TTL_S, reuse_s=WARM_REUSE_S)
+            if roster:
+                _p95(ctx, "GET /admin/accounts/roster-counts", roster["p95_ms"], roster["n"])
         if leg in ("all", "tiers"):
             await _tiers(ctx, creators, warm)
+        if leg in ("all", "dm"):
+            await view_lease_dm_bust.run(ctx, _roles(creators)["all_off"][0])
         if leg in ("all", "visible"):
             await view_lease_visible.run(ctx, creators, TTL_S, THROUGH)
         if leg in ("all", "latency"):
@@ -311,10 +329,11 @@ async def _warm(ctx, creators: list[str], wires: ExitStack) -> dict:
         await _until(lambda: any(p["body"].get("opened") for p in posts), 30)
         shots.append(await ui.shot(ctx, page, "warm-trigger-settings"))
         st = asyncio.create_task(send_during())
-        await _until(lambda: set(_polls(fake, t["open1"])) >= set(creators), WARM_SETTLE_S)
+        await _until(lambda: rail_scope.warmed_on_wire(fake, creators, t["open1"]), WARM_SETTLE_S, 0.25)
         await of_call_stats.quiet(fake, 1.5, 20)
         await st
         shots.append(await ui.shot(ctx, page, "warm-settled-settings"))
+        passed = await rail_scope.pass_through(ctx, creators)   # a tab's reads of the warmed entries
         counts1 = _warm_counts(ctx)
         await page.evaluate("localStorage.setItem('chatterly:scope', 'all')")   # the second open: no selection
         t["open2"] = time.time()
@@ -355,12 +374,21 @@ async def _warm(ctx, creators: list[str], wires: ExitStack) -> dict:
     open1 = next((p for p in opened if p["t"] < t["open2"]), None)
     open2 = next((p for p in opened if p["t"] >= t["open2"]), None)
     per1 = {a: len(reads1.get(a, [])) for a in creators}
+    set1 = rail_scope.read_set(fake, t["open1"], t["open2"])
+    # The scaled TTL (6 s) lapses the Settings tab's lease between its 20 s heartbeats: each re-leases `sel` as its
+    # `selected` (a Select refresh, always). The tab's own roster-counts read (an /admin/ read) adds chats reads.
+    regain = sum(1 for p in posts if t["open1"] < p["t"] < t["open2"] and not p["body"].get("opened")
+                 and p["body"].get("selected") == sel)
+    want1 = {a: {"feed": 1 + regain * (a == sel), "list:tip": 1, "list:purchases": 1, "count": 1} for a in creators}
+    set2 = rail_scope.read_set(fake, t["open2"], t["click"])
     last_read = max((x for v in reads1.values() for x in v), default=None)
     once = {
         "page": WARM_PAGE, "open1": open1 and {k: open1[k] for k in ("page", "body", "status", "answer")},
         "open2": open2 and {k: open2[k] for k in ("page", "body", "status", "answer")},
-        "reads_per_creator": per1, "warm_calls_open1": _delta(counts0, counts1),
-        "warm_calls_open2": _delta(counts1, counts2), "reads_open2": {a: len(v) for a, v in reads2.items() if v},
+        "reads_per_creator": per1, "sel_regained": regain, "read_set_open1": set1,
+        "read_calls_open1": rail_scope.read_calls(fake, t["open1"], t["open2"]), "read_set_open2": set2,
+        "pass_through": passed,
+        "warm_calls_open1": _delta(counts0, counts1), "warm_calls_open2": _delta(counts1, counts2),
         "open2_after_warm_s": round(open2["t"] - last_read, 2) if open2 and last_read else None,
     }
     once["selected"] = sel
@@ -368,10 +396,12 @@ async def _warm(ctx, creators: list[str], wires: ExitStack) -> dict:
     ok_once = (open1 is not None and open1["page"].startswith(WARM_PAGE)   # Settings redirects to /settings/account
                and open1["body"].get("selected") == sel
                and (open1["answer"] or {}).get("warm") == "started"
-               and all(n == 1 for n in per1.values())
-               and (wc1 is None or wc1 == {a: 1 for a in creators if a != sel})
+               and all({k: n for k, n in set1.get(a, {}).items() if k != "chats"} == want1[a]
+                       and set1[a].get("chats", 0) >= 1 for a in creators)
+               and (wc1 is None or wc1 == {a: len(rail_scope.READ_SET) - (a == sel) for a in creators})
+               and not passed["of_calls"] and set(passed["statuses"]) == {"200"}
                and open2 is not None and (open2["answer"] or {}).get("warm") == "reused"
-               and not once["reads_open2"] and not once["warm_calls_open2"])
+               and not set2 and not once["warm_calls_open2"])
     ctx.check(WARM_ONCE, ok_once, **once)
 
     # ── WARM_STAGGER: the first warm's reads (the open that warmed: the Settings page's, else Messages Pro's) ──
@@ -720,9 +750,8 @@ def _read_at(fake, aid: str, t: float) -> tuple[float, float] | None:
     (`transaction_ingest.poll_now`, single-flight per Creator)."""
     with fake.lock:
         xs = sorted((c["t0"], c["t"]) for c in fake.calls
-                    if c["route"] == POLL_ROUTE and c["account"] == aid and c["t0"] is not None
-                    and (c["t"] or float("inf")) >= t and c["t0"] >= t - REFRESH_WITHIN_S
-                    and (parse_qs(c.get("query") or "").get("type") or [""])[0] == "purchases")
+                    if c["account"] == aid and c["t0"] is not None and is_feed(c)
+                    and (c["t"] or float("inf")) >= t and c["t0"] >= t - REFRESH_WITHIN_S)
     return xs[0] if xs else None
 
 
@@ -850,9 +879,8 @@ async def _health(ctx, roles: dict[str, list[str]], hook) -> None:
         # answered by the mode.
         with fake.lock:
             return [(c["t0"], c["t"]) for c in fake.calls
-                    if c["route"] == POLL_ROUTE and c["account"] == aid and c["t0"] is not None
-                    and t_arm - FAST_S <= c["t0"] <= t_clear and c["status"] == modes[aid][0]
-                    and (parse_qs(c.get("query") or "").get("type") or [""])[0] == "purchases"]
+                    if c["account"] == aid and c["t0"] is not None and is_feed(c)
+                    and t_arm - FAST_S <= c["t0"] <= t_clear and c["status"] == modes[aid][0]]
 
     bx = [t for t, _ in _feed(fake, beat, t_arm, t_clear)]
     beat_gaps = [round(b - a, 2) for a, b in zip(bx, bx[1:])]

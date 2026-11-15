@@ -7,9 +7,9 @@ pure transitions and a pure read of the rings (docs/reducer-scan.md "Non-React" 
     replay(rings, last_id, sees, wants, knobs) -> effects    what a (re)connect is sent first
     persist_plan(batch)                        -> rows               what the persist worker writes
 
-plus the pure reads the shell routes and filters with: `sees` / `wants` (which subscriber an
-event may reach), `is_feed_noise`, `typing_fan_id` / `typing_due`, and the type sets
-(SSE_TYPES, STATE_TYPES, ENDS_STREAM, FEED_POST_TYPES).
+plus the pure reads the shell routes and filters with: `sees` / `wants` / `any_scope` (which
+subscriber an event may reach), `is_feed_noise`, `typing_fan_id` / `typing_due`, and the type sets
+(SSE_TYPES, STATE_TYPES, ENDS_STREAM, FEED_POST_TYPES, ANY_SCOPE_TYPES).
 
 No clock, no queue, no I/O here: events.py is the shell. It reads the time,
 builds the event, calls decide, keeps the new state, and performs the effect
@@ -53,6 +53,11 @@ tests); `agencies` the audiences (owner user ids, `owner:` / `sessions:` keys) w
 events it gets. `wants`: an Agency-wide event (`__agency`) reaches its audience whatever the
 scope; an account event (`__account_id`) the subscribers that `sees` that account (scope match,
 then the clamp); an event with neither only an unclamped "all" subscriber. Ids compare as str.
+Any-scope (`ANY_SCOPE_TYPES`, phase-01 1b): the warm event and the rail's money events also reach
+a model-scoped subscriber for any Creator in its clamp (its accessible set, resolved at
+subscribe for owners and chatters), so a tab scoped to one Creator still fills its rail with
+another's sale; never past the clamp (another Agency), never for an unclamped subscriber.
+Replay (a reconnect) still reads only the rings its scope sees.
 
 Persist. events_persist.py's worker drains its queue of PersistItems in batches and
 transcodes every item's `event`; `persist_plan` is the event_inbox rows one batch
@@ -270,7 +275,18 @@ SSE_TYPES = frozenset({
     "chat_queue_update",
     "chat_queue_finish",
     "chat_responded",
+    # The App-open warm read a Creator (app_open_warm; any-scope): the tab re-reads its
+    # notif lists, notif count and roster counts from the warmed cache.
+    "creator_warmed",
 }) | STATE_TYPES
+
+# Account events that reach a model-scoped subscriber for every Creator in its clamp, not only
+# the one its scope names (`wants`): `creator_warmed` and what the Money Rail and the bell seed
+# from: `transaction_recorded`, `purchase_notified`, and a `toasts` frame holding a tip or
+# purchase toast (`is_money_toast`; any other toast routes by scope).
+ANY_SCOPE_TYPES = frozenset({"creator_warmed", "transaction_recorded", "purchase_notified", "toasts"})
+# OF's toast types the app reads as money (app/lib/notifSettings.ts mapOfTypeToKey: tip, purchases).
+MONEY_TOAST_TYPES = frozenset({"tip", "tips", "purchase", "purchases", "paided_message"})
 
 # OF's home-feed frames. On a creator account that follows other creators
 # they are ~82% of all WS traffic (2 days, one account: 8,451 of 10,308
@@ -317,12 +333,27 @@ def typing_due(last_at: Optional[float], now: float, throttle: float) -> bool:
 
 
 # ── routing ──
-def sees(scope: str, accounts: Optional[frozenset], account_id: Any) -> bool:
-    """A subscriber of `scope` clamped to `accounts` (None: unclamped) sees `account_id`'s events."""
+def sees(scope: str, accounts: Optional[frozenset], account_id: Any, any_scope: bool = False) -> bool:
+    """A subscriber of `scope` clamped to `accounts` (None: unclamped) sees `account_id`'s events;
+    `any_scope` (an ANY_SCOPE event): a model-scoped one sees every Creator in its clamp."""
     aid = str(account_id)
     if scope != "all" and scope != f"model:{aid}":
-        return False
+        if not (any_scope and scope.startswith("model:") and accounts is not None):
+            return False
     return accounts is None or aid in accounts
+
+
+def is_money_toast(event: Mapping) -> bool:
+    """A `toasts` frame (OF's list of toasts) holding a tip or purchase toast."""
+    items = event.get("toasts")
+    return isinstance(items, list) and any(
+        isinstance(t, dict) and str(t.get("type") or "").lower() in MONEY_TOAST_TYPES for t in items)
+
+
+def any_scope(event: Mapping) -> bool:
+    """`event` routes any-scope (ANY_SCOPE_TYPES; a `toasts` frame only when it holds money)."""
+    kind = first_key(event)
+    return kind in ANY_SCOPE_TYPES and (kind != "toasts" or is_money_toast(event))
 
 
 def wants(scope: str, accounts: Optional[frozenset], agencies: frozenset, event: Mapping) -> bool:
@@ -333,7 +364,7 @@ def wants(scope: str, accounts: Optional[frozenset], agencies: frozenset, event:
     account_id = event.get("__account_id")
     if account_id is None:
         return scope == "all" and accounts is None
-    return sees(scope, accounts, account_id)
+    return sees(scope, accounts, account_id, any_scope(event))
 
 
 # ── the rings ──

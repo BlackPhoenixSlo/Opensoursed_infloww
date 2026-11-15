@@ -1,6 +1,7 @@
 """The View lease / purchases poll tiers' break-it-once faults (phase-01 1a; service/view_lease.py,
 service/transaction_ingest.py `_seller_account_ids` / `_SELLING_KINDS` / `live_account_ids`,
-service/purchase_poll_decide.py `after` / `held` / `catch_up`, service/app_open_warm.py, all looked
+service/purchase_poll_decide.py `after` / `held` / `catch_up`, service/app_open_warm.py,
+service/event_transcode_decide.py `money_bust`, service/events_decide.py `ANY_SCOPE_TYPES`, all looked
 up in their modules at call time; the warm's page fault and the strip's lease fault in the browser): lib/faults.py
 merges `register(Fault)`
 into FAULTS. The check names live here and
@@ -21,8 +22,10 @@ FAN_WRITES_KEPT = ("FAN_WRITES_KEPT: sends and automation runs during the tiers 
                    "seeded job ran once, counts match")
 CLICK_SETTLED = "UI: every Creator-tab click settles (tab selected, rail and badge reads done) within CLICK_TIMEOUT_S"
 WARM_ONCE = ("WARM_ONCE: opening a non-Messages-Pro page (Settings) with a Creator selected warms every accessible "
-             "Creator once (one feed read each: the selected one its Select refresh, the rest Caller kind "
-             "walk:app_open_warm); a second open inside the reuse window (Messages Pro) is `reused` and adds no OF read")
+             "Creator once: one read each of the read set (feed, chats window, the rail's tip and purchases lists, the "
+             "bell's count; the selected one's feed its Select refresh, the rest Caller kind walk:app_open_warm); the "
+             "pass-through routes then answer from the warm (no OF call); a second open inside the reuse window "
+             "(Messages Pro) is `reused` and adds no OF read")
 WARM_STAGGER = ("WARM_STAGGER: the warm's reads on one proxy start at least APP_OPEN_WARM_GAP_S apart (after the "
                 "selected Creator's Select refresh on its proxy too), leased Creators first, proxies in parallel")
 
@@ -40,6 +43,15 @@ UI_LEASE_VISIBLE = ("UI_LEASE_VISIBLE: in the browser, the All view's posted lea
                     "hidden tab posts nothing (its lease lapses within the TTL) until shown again, when it posts at once")
 FEED_CATCHUP = ("FEED_CATCHUP: an Idle Creator with 25 purchases inside one slow gap gets all 25 flipped (its poll "
                 "pages back after a gap)")
+RAIL_OUT_OF_SCOPE_LIVE = ("RAIL_OUT_OF_SCOPE_LIVE: a tab scoped to Creator A gets `creator_warmed` for every Creator "
+                          "its open warmed, and shows an Idle Creator B's tip in its rail from SSE, with no OF call "
+                          "for B")
+RAIL_LEASED_ONLY = ("RAIL_LEASED_ONLY: from a tab's open through its warm and after, the pass-through routes read OF's "
+                    "money lists and notifications count, and roster-counts its chats window, only for Creators "
+                    "that tab leases (an unleased one's reads answer from the warm)")
+
+DM_NO_BUST = ("DM_NO_BUST: a plain inbound DM (isTip false, price 0) causes no money-feed re-read (the rail's purchases "
+              "and tip lists and the bell's count stay in the relay cache), while a tip DM does (one OF read each)")
 
 _OLD_SELLING_KINDS = ("welcome_chatter_for_info", "ppv_send", "reengage_buyers")
 
@@ -199,6 +211,21 @@ _STRIP_LEASES_ALL_TABS = ((r'\(0,\s*([\w$]+)\.useOnScreenLease\)\((\\?)"strip\2"
                            r'((0, \1.useViewLease)(open.map((a) => a.id)), (0, \1.useOnScreenLease)(\2"strip\2"))'),)
 
 
+def _dm_busts_money_feeds() -> None:
+    """The pre-1b transcoder: every inbound DM clears the money feeds' cache (event_transcoder looks
+    `event_transcode_decide.money_bust` up at call time)."""
+    import event_transcode_decide as td
+
+    td.money_bust = lambda m: True
+
+
+def _money_events_scope_only() -> None:
+    """The pre-1b routing: `creator_warmed` and the money events reach a tab only for the Creator its scope names."""
+    import events_decide
+
+    events_decide.ANY_SCOPE_TYPES = frozenset()
+
+
 def register(Fault) -> dict:
     return {
         # slop/run 2026-11-09-view-lease-purchases-tiers --break (the scenario's FAULT)
@@ -214,4 +241,6 @@ def register(Fault) -> dict:
         "dead-held-in-poll-state": Fault(_dead_held_in_poll_state, (DEAD_RESUME,)),
         "feed-no-catchup": Fault(_feed_no_catchup, (FEED_CATCHUP,)),
         "strip-leases-all-tabs": Fault(None, (UI_LEASE_VISIBLE,), browser=_STRIP_LEASES_ALL_TABS),
+        "dm-busts-money-feeds": Fault(_dm_busts_money_feeds, (DM_NO_BUST,)),
+        "money-events-scope-only": Fault(_money_events_scope_only, (RAIL_OUT_OF_SCOPE_LIVE,)),
     }

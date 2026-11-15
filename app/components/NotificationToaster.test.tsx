@@ -543,6 +543,66 @@ describe("NotificationToaster — arrivals seed the money lists, never refetch t
   });
 });
 
+describe("NotificationToaster — another accessible Creator's money, in a tab scoped to one", () => {
+  // The relay routes a money event for any Creator the principal can access to every tab (events_decide
+  // ANY_SCOPE_TYPES): a tab scoped to one Creator records and seeds it for the rail, and pings nothing.
+  const OLD_ROW = { id: 1, type: "tip", text: "older", createdAt: "2026-01-01T00:00:00.000Z" };
+  const active = (...ids: string[]) => ids.map((id) => ({ id, platform: "onlyfans" as const, has_session: true }));
+
+  it("toasts lane: a tip → no toast, recorded, seeded into the cached tip list", async () => {
+    mockAccountId = "710";
+    mockActive = active("710", "711");
+    mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: true, osPing: false };
+    const Comp = await loadComponent();
+    const { container, qc } = renderToaster(Comp);
+    qc.setQueryData(["notif-list", "711", "tip"], [OLD_ROW]);
+
+    fire("toasts", {
+      __account_id: "711",
+      toasts: [{ id: 7101, type: "tip", text: "tipped you $10", data: { relatedUser: { id: 781, name: "Away" } } }],
+    });
+
+    expect(container.querySelector("div.bg-panel")).toBeNull();
+    expect(readNotifHistory()["711"]?.map((e) => e.id)).toEqual(["7101"]);
+    const list = qc.getQueryData<{ id: unknown }[]>(["notif-list", "711", "tip"]);
+    expect(list?.map((r) => String(r.id))).toEqual(["7101", "1"]);
+    expect(mockPlayAlertOnce).not.toHaveBeenCalled();
+  });
+
+  it("toasts lane: not money, or named by @username only → nothing recorded, nothing read", async () => {
+    mockAccountId = "712";
+    mockActive = active("712", "713");
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fire("toasts", { __account_id: "713", toasts: [{ id: 7131, type: "favorited", text: "liked", data: { relatedUser: { id: 782 } } }] });
+    fire("toasts", { __account_id: "713", toasts: [{ id: 7132, type: "tip", text: "tipped you $3", data: { relatedUser: { username: "u7132" } } }] });
+
+    expect(container.querySelector("div.bg-panel")).toBeNull();
+    expect(readNotifHistory()["713"]?.map((e) => e.id)).toEqual(["7132"]);
+    expect(mockRelayGet).not.toHaveBeenCalled();  // no username lookup: an OF read for a Creator not on screen
+  });
+
+  it("purchase lane: a PPV unlock → no toast, recorded, seeded into the cached purchases list", async () => {
+    mockAccountId = "714";
+    mockActive = active("714", "715");
+    mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: true, osPing: false };
+    const Comp = await loadComponent();
+    const { container, qc } = renderToaster(Comp);
+    qc.setQueryData(["notif-list", "715", "purchases"], [OLD_ROW]);
+
+    fire("purchase_notified", {
+      __account_id: "715",
+      purchase_notified: { notif_id: "7151", fan_id: 783, message_id: 9, amount_cents: 500, created_at: RECENT_OF_TS, name: "Away" },
+    });
+
+    expect(container.querySelector("div.bg-panel")).toBeNull();
+    expect(readNotifHistory()["715"]?.map((e) => e.id)).toEqual(["7151"]);
+    expect(qc.getQueryData<{ id: unknown }[]>(["notif-list", "715", "purchases"])?.map((r) => String(r.id)))
+      .toEqual(["7151", "1"]);
+  });
+});
+
 describe("NotificationToaster — per-platform switches", () => {
   const tip = (aid: string, id: number) => fire("toasts", {
     __account_id: aid,

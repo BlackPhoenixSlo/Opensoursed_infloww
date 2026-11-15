@@ -14,6 +14,12 @@
  * the rail and play the sound; those dedupe themselves (by id, by the sound's
  * own claim). Also the lazy Web Push sync (lib/webPush). The OS permission
  * is asked only from a tap (NotificationBell): iOS ignores an ask without one.
+ *
+ * A tab scoped to one Creator also gets every other accessible Creator's money
+ * events (the relay's any-scope routing, events_decide.ANY_SCOPE_TYPES): a tip
+ * or purchase for an active Creator outside the scope is recorded and seeded
+ * (the Money rail lists every active Creator), never pinged, and gets no
+ * username lookup (an OF read for a Creator nobody is looking at).
  */
 
 import { useEffect, useMemo } from "react";
@@ -107,6 +113,8 @@ export function useNotificationDelta(): void {
     () => (accountId ? [accountId] : active.map((a) => a.id)),
     [accountId, active],
   );
+  // Out of scope but active: its money arrivals are recorded and seeded, not pinged.
+  const activeIds = useMemo(() => new Set(active.map((a) => a.id)), [active]);
   // An account on a platform switched off pings nothing (as the master
   // switch off), its history still mirrored. One not in `active` has no
   // platform known: OnlyFans, as accountPlatform reads a missing one.
@@ -128,7 +136,8 @@ export function useNotificationDelta(): void {
     if (!ready) return;
     const off = eventBus.on("toasts", (env: EventEnvelope) => {
       const aid = env.__account_id;
-      if (!aid || !targetIds.includes(aid)) return;
+      const inScope = !!aid && targetIds.includes(aid);
+      if (!aid || (!inScope && !activeIds.has(aid))) return;
       const arr = (env as { toasts?: unknown }).toasts;
       if (!Array.isArray(arr)) return;
 
@@ -138,12 +147,13 @@ export function useNotificationDelta(): void {
         const arrival = toastArrival(aid, raw);
         if (!arrival) continue;
         const { id, typeKey, user } = arrival;
+        if (!inScope && !isMoney(typeKey)) continue;
         if (user.id != null) seedName(qc, aid, user.id, user);
 
         // History always, pings gated — the money rail and the feed dropdown
         // must still list a muted arrival (incl. likes).
         mirrorNotification(arrival);
-        if (claimUnseen(aid, id)) pingNotification(settingsFor(aid), arrival);
+        if (inScope && claimUnseen(aid, id)) pingNotification(settingsFor(aid), arrival);
         // No notif-list refetch, muted or not: a tip/purchase is seeded into
         // the rail's list from this payload; anything else reaches the bell
         // through the history mirror it already merges.
@@ -152,7 +162,7 @@ export function useNotificationDelta(): void {
         // Resolve username → id in the background whether or not it pinged;
         // the history entry gets patched either way. Only OF's own toasts
         // arrive without a user id, which is why this lane alone needs it.
-        if (!user.id && user.username) {
+        if (inScope && !user.id && user.username) {
           const uname = user.username;
           resolveUsernameId(aid, uname, qc).then((resolvedId) => {
             if (resolvedId == null) return;
@@ -164,7 +174,7 @@ export function useNotificationDelta(): void {
       }
     });
     return off;
-  }, [qc, settingsFor, ready, targetIds]);
+  }, [qc, settingsFor, ready, targetIds, activeIds]);
 
   // SSE: inbound chat messages — OF's native `toasts` feed does NOT carry
   // DMs (those arrive on `api2_chat_message`, consumed by useInboxRealtime
@@ -239,7 +249,8 @@ export function useNotificationDelta(): void {
     if (!ready) return;
     const off = eventBus.on("purchase_notified", (env: EventEnvelope) => {
       const aid = env.__account_id;
-      if (!aid || !targetIds.includes(aid)) return;
+      const inScope = !!aid && targetIds.includes(aid);
+      if (!aid || (!inScope && !activeIds.has(aid))) return;
       const p = env.purchase_notified as Partial<PurchaseNotified> | undefined;
       const fanId = p?.fan_id;
       if (!p?.notif_id || !isValidFanId(fanId)) return;
@@ -250,13 +261,13 @@ export function useNotificationDelta(): void {
       const arrival = purchaseArrival(aid, { ...p, notif_id: p.notif_id, fan_id: fanId }, cached);
       // OF's own id, unprefixed — the dedupe this whole design rests on.
       mirrorNotification(arrival);
-      if (claimUnseen(aid, arrival.id)) pingNotification(settingsFor(aid), arrival);
+      if (inScope && claimUnseen(aid, arrival.id)) pingNotification(settingsFor(aid), arrival);
       // The relay read this off OF's purchases feed — the list already has it,
       // so seed the row instead of re-reading it.
       seedMoneyList(qc, arrival);
     });
     return off;
-  }, [qc, settingsFor, ready, targetIds]);
+  }, [qc, settingsFor, ready, targetIds, activeIds]);
 
   // Web Push the service worker offers this focused page (instead of an OS
   // notification): toasted here for an in-scope Creator, through the lanes'

@@ -231,7 +231,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         m = {
             'id': 9684362558908,           # OF message_id (BIGINT)
             'text': '<p>...</p>',
-            'price': 9.99,                  # may be 0/null for free
+            'price': 9.99,                  # may be 0/null for free (null/missing still busts the money feeds)
             'isFree': bool,
             'isOpened': bool,               # PPV unlocked or not
             'isTip': bool,
@@ -247,7 +247,9 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         }
 
     OF sometimes omits fields; everything below copes with None. The row, the
-    direction and the hook lanes: `td.dm_plan`.
+    direction and the hook lanes: `td.dm_plan`. Only a plain DM (`isTip` false,
+    `price` a number equal to 0) keeps the money feeds' cache; a null or missing
+    `price` or `isTip` cannot tell and still busts it (fail-safe, `td.money_bust`).
     """
     plan = td.dm_plan(account_id, m, datetime.utcnow())
     if isinstance(plan, td.Skip):
@@ -316,12 +318,12 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     except (TypeError, ValueError):
         pass
     # A tip rides on an inbound chat_message (isTip, $ in tipAmount), so this
-    # is the tip lane as well as the DM lane. Deliberately NOT gated on
-    # `is_tip`: a plain DM is not a notifications-feed row, but the browser
-    # refetches its notif-list on every inbound message anyway, and a gate
-    # here that mis-reads one degenerate tip frame silently costs a sale its
-    # bust. Unconditional is the cheap side of that trade.
-    relay_cache.invalidate_money_feeds(aid_s)
+    # is the tip lane as well as the DM lane. A plain DM (isTip false, price 0)
+    # is no money row and keeps the money feeds' cache; a tip, a priced DM or a
+    # frame lacking the fields to tell still clears it (`td.money_bust`, phase-01
+    # story 52).
+    if td.money_bust(m):
+        relay_cache.invalidate_money_feeds(aid_s)
     # Roster strip badge: an inbound DM bumps this model's unread, our reply
     # clears its owe-reply — bust the cached count so the next 60s poll recomputes
     # from OF. This is what keeps the unread badge live off the WS pump.

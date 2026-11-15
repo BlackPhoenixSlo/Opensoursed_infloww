@@ -9,6 +9,8 @@ Through the executor (`_drain_due_jobs_once` -> plan_dispatch -> run_once -> the
                                    gate: starts >= the gap apart, never two at once
   case_same_fan_never_overlaps     two jobs of one Fan: one run at a time, both run; a second job
                                    of a Fan whose Turn runs here is busy (+20 s), never a 2nd Turn
+  case_model_wait_frees_the_slot   ONE run slot, two Fans: both Turns are waiting on their Writer at
+                                   the same time (the slot goes back while a model answers), both reply
   case_cap_respected               6 Fans, AUTOMATION_FULL_AI_PER_CREATOR=3: at most 3 at once,
                                    all 6 run; =1: one at a time (the old behaviour)
   case_other_kinds_exclusive       another kind with jobs for 2 Fans: one run per account at once
@@ -38,6 +40,7 @@ from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
 import of_write  # noqa: E402
+import run_slot  # noqa: E402
 import webhook_dispatch as wd  # noqa: E402
 from _full_ai_fixtures import _msg  # noqa: E402
 from _full_ai_live_helpers import KIND, clear_pause, live_rows, seed_live, world  # noqa: E402
@@ -245,6 +248,43 @@ async def case_same_fan_never_overlaps():
             ScheduledJob.account_id == aid2, ScheduledJob.status == "pending"))).scalars()
     assert job.run_at > datetime.utcnow() + timedelta(seconds=15), job.run_at
     assert await live_rows(aid2) == []
+
+
+async def case_model_wait_frees_the_slot():
+    aid, fans = "fa_par_freed", [8351, 8352]
+    rid = await seed_live(aid)
+    await _no_sweep(aid, rid)
+    await _dms(aid, fans, 93510)
+    real_write, real_size, real_sem = full_ai_turn.write, ax._size_run_slots, ax._run_sem
+    inside, peak, both = 0, 0, asyncio.Event()
+
+    async def write(*a, **kw):                  # the Writer walk: each waits (<= 15 s) for the other
+        nonlocal inside, peak
+        inside += 1
+        peak = max(peak, inside)
+        if inside >= 2:
+            both.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(both.wait(), 15)
+        try:
+            return await real_write(*a, **kw)
+        finally:
+            inside -= 1
+
+    async def keep(pool):                       # the pool stays at the one slot set here
+        return None
+    full_ai_turn.write, ax._size_run_slots, ax._run_sem = write, keep, run_slot.SlotPool(1)
+    try:
+        with world() as (fake, *_):
+            await _drain_all(aid)
+        assert ax._run_sem.free == 1, ax._run_sem.free
+    finally:
+        full_ai_turn.write, ax._size_run_slots, ax._run_sem = real_write, real_size, real_sem
+    assert peak == 2, f"one slot pinned by a model wait: Writers at once = {peak}"
+    for fan in fans:
+        (row,) = await live_rows(aid, fan)
+        assert row.status == "sent", (fan, row.status)
+        assert any(s["fan_id"] == fan for s in fake.sent), (fan, fake.sent)
 
 
 async def case_cap_respected():

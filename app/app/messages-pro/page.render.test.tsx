@@ -86,6 +86,8 @@ import {
   expectDomOrder, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf,
 } from "@/components/chat/composerTestHarness";
 import { SETTINGS_KEY as RAIL_SETTINGS_KEY } from "@/lib/moneyRailStorage";
+import { resetReadGate } from "@/lib/ofReadGate";
+import { holdLease } from "@/lib/viewLease";
 import { openNotification } from "@/lib/notificationLink";
 import type { OFMessage } from "@/lib/relay";
 import MessagesProPage from "./page";
@@ -188,7 +190,12 @@ class FakeEventSource {
 // case's teardown and read `EventSource.OPEN`.
 Object.defineProperty(globalThis, "EventSource", { value: FakeEventSource, configurable: true, writable: true });
 
+// Both Creators leased by this tab (the root layout's heartbeat, not mounted here, would hold the selected one), so
+// the counts and money lists read as they always have (an unleased Creator's gate: lib/ofReadGate.ts).
+let releaseLease: () => void = () => {};
 beforeEach(() => {
+  resetReadGate();
+  releaseLease = holdLease("test", [ACCOUNT_ID, OTHER_ACCOUNT_ID]);
   resetComposerHarness();
   // The roster counts' 8s refresh cooldown is module state: no case inherits
   // another's.
@@ -207,6 +214,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  releaseLease();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });

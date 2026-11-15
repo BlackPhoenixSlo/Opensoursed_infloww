@@ -1,25 +1,34 @@
 """
-The App-open warm (ADR-0031, phase-01 1a): when an Employee opens Inflowwww on any page (the first
+The App-open warm (ADR-0031, phase-01 1b): when an Employee opens Inflowwww on any page (the first
 `POST /admin/view-lease` of a document load carries `opened: true`), every Creator they can access
 gets ONE refresh, so the first screen anyone sees is current, even for Creators they never open.
-1a reads the purchases feed only and publishes nothing (`creator_warmed` and the other reads are 1b).
+As each Creator's reads land it publishes `creator_warmed`; every tab that can access the Creator
+(events_decide.ANY_SCOPE_TYPES) re-reads its rail, bell and strip entries from the warmed cache.
 
   current(account_id) -> bool: no read needed now (polled ok within PURCHASES_POLL_FAST_S, or warmed within
-      REUSE_S): the view-lease route's lease-gain Select refresh skips it.
+      REUSE_S, or queued in a warm): the view-lease route's lease-gain Select refresh skips it.
   start(principal, account_ids, leased_first, *, refreshed=()) -> {Creator: "started" | "reused"}
       Schedules the warm and returns at once. `account_ids` are the principal's (the route drops
       watchers); dead-session, deactivated and no-session Creators are skipped (absent from the
       answer; `transaction_ingest.live_account_ids`). `refreshed` (the route's Select refreshes,
-      already running) are `started` and warmed now, never read again here: what the user is
-      looking at goes first, and the group on their proxy waits one GAP_S before its first read.
-      Any other Creator warmed, or still queued, within REUSE_S is `reused`: many Employees
-      opening at once cost one warm per Creator. The rest are grouped by their client's proxy
-      exit (`proxies.egress_identity`, the ledger pacer's exit key; "direct" without one): each group reads one Creator at a
-      time, GAP_S between reads, groups in parallel, Creators in `leased_first` first, then in
-      `account_ids` order.
-      Per Creator: one purchases poll (`transaction_ingest.poll_now`, single-flight with the loop's
-      tick) as a background walk (`of_pacing.walk`, Caller kind `walk:app_open_warm`), skipped
-      when its last ok poll is younger than PURCHASES_POLL_FAST_S (a Demand Creator is current).
+      already running) are `started`, their feed never read again here, their other reads first on
+      their proxy: what the user is looking at goes first, and the group on their proxy waits one
+      GAP_S before its first read. Any other Creator warmed, or still queued, within REUSE_S is
+      `reused` (one whose warm ended publishes `creator_warmed` at once: its entries are still
+      served): many Employees opening at once cost one warm per Creator. The rest are grouped by their
+      client's proxy exit (`proxies.egress_identity`, the ledger pacer's exit key; "direct" without one):
+      each group reads one Creator at a time, GAP_S between Creators, groups in parallel, Creators in `leased_first`
+      first, then in `account_ids` order.
+      Per Creator, one background walk (`of_pacing.walk`, Caller kind `walk:app_open_warm`, its pages
+      paced per Creator), in order:
+        1. one purchases poll (`transaction_ingest.poll_now`, single-flight with the loop's tick),
+           skipped when its last ok poll is younger than PURCHASES_POLL_FAST_S (a Demand Creator is
+           current); a Creator it flags a Dead session reads nothing more;
+        2-4. the server's `app_open_warm_reads` (looked up at call time): the chats window (roster-counts'
+           recompute with bypass, rewarming the Fan List's page 0), the rail's tip and purchases lists
+           and the notifications count, into the entries the pass-through routes serve.
+      At most 5 reads per Creator per REUSE_S. Then `creator_warmed` (house envelope); a Creator whose
+      reads failed publishes nothing (the tab's own read covers it).
       The warm only reads: no send, fan write or automation run waits on it.
 
 Knobs, read here only: APP_OPEN_WARM_GAP_S (default 1.0, of_pacing.PAGE_GAP_S: OF's "Please allow
@@ -32,13 +41,17 @@ import asyncio
 import hashlib
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import client_pool
+import events
 import of_pacing
 import proxies
 import purchase_poll_decide as poll_decide
+import relay_host
 import transaction_ingest
+from fastapi import HTTPException
 
 log = logging.getLogger("of-relay.app_open_warm")
 
@@ -50,6 +63,11 @@ _clock = time.monotonic                 # the reuse memo's clock (tests inject o
 _warmed_at: dict[str, float] = {}       # Creator -> when its warm ended (read, or found current)
 _pending: set[str] = set()              # Creators queued or reading in a warm now
 _tasks: set[asyncio.Task] = set()       # the running groups (held: a bare task may be collected)
+
+
+def _server():
+    """The serving relay: steps 2-4's read helper lives there (relay_host.live_server)."""
+    return relay_host.live_server()
 
 
 async def _eligible(account_ids: Iterable[str]) -> list[str]:
@@ -71,7 +89,7 @@ def _egress(account_id: str) -> tuple[str, str]:
 
 
 def _current(account_id: str) -> bool:
-    """Its last ok purchases poll is younger than PURCHASES_POLL_FAST_S: no read."""
+    """Its last ok purchases poll is younger than PURCHASES_POLL_FAST_S: no feed read."""
     age = transaction_ingest.last_ok_poll_age_s(account_id)
     return age is not None and age < poll_decide.FAST_S
 
@@ -83,31 +101,47 @@ def current(account_id: str) -> bool:
     return _current(account_id) or account_id in _pending or (at is not None and _clock() - at < REUSE_S)
 
 
-async def _warm_one(account_id: str) -> None:
-    """One Creator's 1a read set: the purchases poll, as a background walk."""
-    await of_pacing.walk(account_id, "app_open_warm", lambda: transaction_ingest.poll_now(account_id))
+def _publish(account_id: str) -> None:
+    events.publish({"creator_warmed": {"account_id": account_id,
+                                       "at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+                    "__account_id": account_id})
 
 
-async def _run_group(label: str, account_ids: list[str], read_before: bool) -> None:
-    """`read_before`: a Select refresh is reading on this proxy now, so the first read waits GAP_S too."""
+async def _warm_one(account_id: str, feed: bool) -> bool:
+    """One Creator's read set as one background walk; True when its reads landed. `feed` False: a Select refresh
+    reads its feed."""
+    async def run() -> bool:
+        if feed and not _current(account_id):
+            await transaction_ingest.poll_now(account_id)
+            if account_id not in set(await transaction_ingest.live_account_ids()):
+                return False        # its feed read flagged it a Dead session: nothing else can succeed
+        await _server().app_open_warm_reads(account_id)
+        return True
+    return await of_pacing.walk(account_id, "app_open_warm", run)
+
+
+async def _run_group(label: str, jobs: list[tuple[str, bool]], read_before: bool) -> None:
+    """`jobs`: (Creator, read its feed). `read_before`: a Select refresh is reading on this proxy now, so the first
+    read waits GAP_S too."""
     try:
-        for aid in account_ids:
+        for aid, feed in jobs:
             try:
-                if _current(aid):
-                    continue
                 if read_before:
                     await asyncio.sleep(GAP_S)
                 read_before = True
-                await _warm_one(aid)
+                if await _warm_one(aid, feed):
+                    _publish(aid)
             except asyncio.CancelledError:
                 raise
+            except HTTPException as exc:     # a refused read (bad session, no client): expected, one line
+                log.info("app_open_warm_skipped account=%s proxy=%s status=%s", aid, label, exc.status_code)
             except Exception:
                 log.warning("app_open_warm_failed account=%s proxy=%s", aid, label, exc_info=True)
             finally:
                 _pending.discard(aid)
                 _warmed_at[aid] = _clock()
     finally:
-        for aid in account_ids:
+        for aid, _ in jobs:
             _pending.discard(aid)
 
 
@@ -122,26 +156,30 @@ async def start(principal: tuple[str, str], account_ids: Iterable[str], leased_f
         at = _warmed_at.get(aid)
         if aid in done:
             out[aid] = "started"
-            _warmed_at[aid] = now
+            fresh.append(aid)
+            _pending.add(aid)
             busy.add(_egress(aid)[0])
         elif aid in _pending or (at is not None and now - at < REUSE_S):
             out[aid] = "reused"
+            if aid not in _pending:
+                _publish(aid)                 # its entries are still served: this open's tabs read them now
         else:
             out[aid] = "started"
             fresh.append(aid)
             _pending.add(aid)
     first = set(leased_first)
-    groups: dict[str, tuple[str, list[str]]] = {}
-    for aid in sorted(fresh, key=lambda a: a not in first):   # stable: leased first, then the caller's order
+    groups: dict[str, tuple[str, list[tuple[str, bool]]]] = {}
+    # Stable: the Select-refreshed first, then leased, then the caller's order.
+    for aid in sorted(fresh, key=lambda a: (a not in done, a not in first)):
         key, label = _egress(aid)
-        groups.setdefault(key, (label, []))[1].append(aid)
-    for key, (label, aids) in groups.items():
-        t = asyncio.create_task(_run_group(label, aids, key in busy), name=f"app-open-warm:{label}")
+        groups.setdefault(key, (label, []))[1].append((aid, aid not in done))
+    for key, (label, jobs) in groups.items():
+        t = asyncio.create_task(_run_group(label, jobs, key in busy), name=f"app-open-warm:{label}")
         _tasks.add(t)
         t.add_done_callback(_tasks.discard)
+    n_done = len(done & out.keys())
     log.info("app_open_warm principal=%s:%s started=%d refreshed=%d reused=%d proxies=%d", principal[0],
-             principal[1], len(fresh), len(done & out.keys()), len(out) - len(fresh) - len(done & out.keys()),
-             len(groups))
+             principal[1], len(fresh) - n_done, n_done, len(out) - len(fresh), len(groups))
     return out
 
 

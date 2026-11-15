@@ -13,6 +13,13 @@ the `(account, kind)` in-flight guard and run lock, the claimed job row, the
 fan lease. So the freed permit can only go to a DIFFERENT (account, kind)
 pair; per-fan ordering, cooldown and dedupe are untouched.
 
+`freed(aw, budget_s=...)` is `released()` around an awaitable: a wait on a
+provider (a model answering). Full AI Chat's Turn wraps its Router / Jev asks
+and Writer walks in it (full_ai_turn `_freed`), so a Fan waiting on a model
+holds no slot; the per-Creator cap (AUTOMATION_FULL_AI_PER_CREATOR) still
+bounds the Turns in flight. Its photo describe keeps the slot: it downloads
+from OF, and of_pacing sizes OF calls by the slots.
+
 THE RULES the pool and `released()` keep:
 
 - An operator's run (a job started from the app: `hold(pool, operator=True)`)
@@ -80,6 +87,7 @@ import contextlib
 import contextvars
 import itertools
 import logging
+import math
 from typing import AsyncIterator
 
 import lane_config
@@ -445,6 +453,32 @@ async def released(seconds: float, *, budget_s: float) -> AsyncIterator[None]:
     except BaseException:
         slot.lost = True        # cancelled while queued: the run is ending
         raise
+
+
+async def freed(aw, *, budget_s: float):
+    """Await `aw` with the run's slot given back, as `released()`: for a wait on
+    a provider (an LLM / Jev answer), which is no slot work. `aw` must not
+    call OF (of_pacing sizes its calls by the slots) nor hold a lock another
+    run waits for. What `aw` raises is re-raised AFTER the take-back, so a
+    failure the caller handles (a timeout, a provider error) does not end the
+    run's slot; a cancel still does. A lost slot raises `SlotLost` here, after
+    `aw` finished (its own accounting is done). No slot (the Test chat, an
+    app request): a plain await. The release floor does not apply (the wait's
+    length is unknown: `math.inf`); the kill switch does."""
+    err: Exception | None = None
+    res = None
+    try:
+        async with released(math.inf, budget_s=budget_s):
+            try:
+                res, aw = await aw, None
+            except Exception as e:  # noqa: BLE001 — re-raised below, slot back first
+                err, aw = e, None
+    finally:
+        if aw is not None and hasattr(aw, "close"):
+            aw.close()          # never started (the slot was already lost) or cancelled
+    if err is not None:
+        raise err
+    return res
 
 
 @contextlib.asynccontextmanager

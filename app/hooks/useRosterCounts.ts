@@ -27,6 +27,9 @@ import { usePrincipalId } from "@/hooks/useEmployeeKey";
 export interface RosterCount {
   unread: number;
   owe_reply: number;
+  /** Epoch ms of the chats window the server folded this from (0: unknown). An Idle Creator's count can be old
+   *  (ADR-0031: no OF read unless leased), so a local patch newer than it wins. */
+  as_of?: number;
 }
 
 export interface RosterCountsResp {
@@ -171,11 +174,14 @@ export function rosterPriorFromRow(row: OFChatItem | null | undefined): RosterPr
 }
 
 /** Pure: fold a fresh server roster response over the currently-cached one,
- *  PRESERVING any per-account value that an optimistic local patch rewrote WHILE
- *  this poll was in flight. `patchedAt(aid)` returns an account's last local-patch
- *  timestamp; `fetchStartedAt` is when this poll began its network read. Any
- *  account patched AFTER that keeps its local value (the server snapshot predates
- *  the patch); the next poll — started after the patch — reconciles to truth. */
+ *  PRESERVING any per-account value that a local patch (optimistic or SSE) rewrote
+ *  after the server's snapshot. `patchedAt(aid)` returns an account's last local-patch
+ *  timestamp. A server count's `as_of` (when its chats window was read) is that
+ *  snapshot's time; without one, `fetchStartedAt` (when this poll began its network
+ *  read). An account patched AFTER it keeps its local value, so an Idle Creator's
+ *  held, older count never jumps a live badge back. An account the server left out
+ *  (an Idle Creator it holds nothing for, e.g. after a Relay restart) keeps its
+ *  cached value. */
 export function mergeRosterCounts(
   server: RosterCountsResp | undefined,
   prev: RosterCountsResp | undefined,
@@ -186,7 +192,8 @@ export function mergeRosterCounts(
   const prevCounts = prev?.counts ?? {};
   const out: Record<string, RosterCount> = { ...serverCounts };
   for (const aid of Object.keys(prevCounts)) {
-    if (patchedAt(aid) > fetchStartedAt) out[aid] = prevCounts[aid];
+    const fresh = serverCounts[aid];
+    if (!fresh || patchedAt(aid) > (fresh.as_of || fetchStartedAt)) out[aid] = prevCounts[aid];
   }
   return { counts: out };
 }

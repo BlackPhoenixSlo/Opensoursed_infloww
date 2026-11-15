@@ -555,6 +555,22 @@ describe("Full AI Chat page › Settings", () => {
     expect(keys.getByRole("link", { name: "Open keys form" }).getAttribute("href")).toBe("/settings/ai-keys");
   });
 
+  it("Read his photos on (default) adds DeepInfra to LLM keys; no DeepInfra key warns", async () => {
+    mountSettings();
+    const keys = within(settings().getAllByRole("listitem")[1]);
+    expect((await keys.findByText("DeepInfra not set")).className).toContain("text-err");
+    expect(keys.getByText(/Read his photos is on but there is no DeepInfra key/)).toBeTruthy();
+  });
+
+  it("Read his photos off on both sides: no DeepInfra in LLM keys, no warning", async () => {
+    const off = { ...CONFIG, describe_fan_photos: false };
+    mountSettings(configBody({ checkpoint: off, draft: off }));
+    const keysOff = within(settings().getAllByRole("listitem")[1]);
+    expect(await keysOff.findByText("NanoGPT set")).toBeTruthy();
+    expect(keysOff.queryByText(/DeepInfra/)).toBeNull();
+    expect(keysOff.queryByText(/Read his photos is on/)).toBeNull();
+  });
+
   it("a control stores the draft at once; Send waits ('Storing draft…') until it is stored", async () => {
     let store: (v: unknown) => void = () => {};
     mountSettings(configBody(), { put: () => new Promise((r) => { store = r; }) });

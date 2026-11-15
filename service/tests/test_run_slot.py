@@ -791,5 +791,94 @@ async def case_an_alias_run_does_not_queue_on_the_run_lock():
         ax.get_automation, ax.account_health.is_session_dead, ax.account_health.is_deactivated = saved
 
 
+# ── freed(): a provider wait (an LLM / Jev answer) off the slot ──────
+
+async def case_freed_frees_the_slot_for_the_await_and_returns_its_value():
+    pool = run_slot.SlotPool(1)
+    seen: list[bool] = []
+
+    async def provider():
+        seen.append(await _free(pool))          # the model is answering: the slot is free
+        return "reply"
+    async with run_slot.hold(pool):
+        assert await run_slot.freed(provider(), budget_s=B) == "reply"
+        seen.append(await _free(pool))          # back to work: held again
+    assert seen == [True, False], seen
+    assert pool.free == 1
+
+
+async def case_freed_reraises_after_the_take_back_and_keeps_the_slot():
+    """A provider error / timeout the caller handles does not end the run's slot."""
+    pool = run_slot.SlotPool(1)
+
+    async def provider():
+        raise TimeoutError("slow model")
+    async with run_slot.hold(pool) as slot:
+        try:
+            await run_slot.freed(provider(), budget_s=B)
+            raise AssertionError("the provider error was swallowed")
+        except TimeoutError:
+            pass
+        assert slot.held and not slot.lost
+        assert not await _free(pool)            # held again for the handler's work
+        assert await run_slot.freed(asyncio.sleep(0, "next"), budget_s=B) == "next"
+    assert pool.free == 1
+
+
+async def case_freed_with_a_lost_slot_raises_and_never_starts_the_await():
+    pool = run_slot.SlotPool(1)
+    ran: list[str] = []
+
+    async def provider():
+        ran.append("paid call")
+    async with run_slot.hold(pool) as slot:
+        slot.lost = True
+        try:
+            await run_slot.freed(provider(), budget_s=B)
+            raise AssertionError("no SlotLost")
+        except run_slot.SlotLost:
+            pass
+    assert ran == []
+
+
+async def case_freed_take_back_past_the_budget_is_slot_lost_after_the_await():
+    pool = run_slot.SlotPool(1)
+    done: list[str] = []
+
+    async def provider():
+        await pool.acquire()                    # another run takes the freed slot and keeps it
+        done.append("answered")
+    async with run_slot.hold(pool):
+        try:
+            await run_slot.freed(provider(), budget_s=0.05)
+            raise AssertionError("no SlotLost")
+        except run_slot.SlotLost:
+            pass
+    assert done == ["answered"]
+    pool.release()
+    assert pool.free == 1
+
+
+async def case_freed_ignores_the_floor_but_obeys_the_kill_switch():
+    pool = run_slot.SlotPool(1)
+    seen: list[bool] = []
+
+    async def provider():
+        seen.append(await _free(pool))
+    for env, val in (("AUTOMATION_RELEASE_SLOT_MIN_HOLD_S", "60"), ("AUTOMATION_RELEASE_SLOT_ON_HOLD", "0")):
+        old = os.environ.get(env)
+        os.environ[env] = val
+        try:
+            async with run_slot.hold(pool):
+                await run_slot.freed(provider(), budget_s=B)
+        finally:
+            os.environ.pop(env, None) if old is None else os.environ.__setitem__(env, old)
+    assert seen == [True, False], seen          # a 60 s floor: still freed; switch off: kept
+
+
+async def case_freed_outside_a_run_is_a_plain_await():
+    assert await run_slot.freed(asyncio.sleep(0, "x"), budget_s=B) == "x"
+
+
 if __name__ == "__main__":
     _harness.run()
