@@ -20,9 +20,19 @@ class FakeOF:
         self.user_id = "999"
         self.sent: list[dict] = []
         self.fail = dict(fail or {})
+        self.read: list[int] = []              # mark_chat_read calls
+        self.chat: list[dict] = []             # what `get_messages` lists (04b's OF-app read)
+        self.reads = 0                          # get_messages calls
 
     def me(self) -> dict:
         return {"id": int(self.user_id)}
+
+    def mark_chat_read(self, chat_id) -> None:
+        self.read.append(int(chat_id))
+
+    def get_messages(self, chat_id, **kw) -> dict:
+        self.reads += 1
+        return {"list": list(self.chat), "hasMore": False}
 
     def send_message(self, chat_id, text, **kw) -> dict:
         if text in self.fail:

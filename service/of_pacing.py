@@ -59,16 +59,18 @@ Limits, as built (kept on purpose):
   * Not fair between jobs: every waiter wakes and asks again, the first to ask gets the slot;
     a long walk can delay another job's pages on the same Creator, never break them.
   * Walks take no relay lane: they call the OF client directly in a worker thread
-    (link_metrics' asyncio.to_thread(walk, client, ...), promo_reactivate, the
-    roster / ledger / auto-exclude crawls), so server.py's "<= 2 background per Creator" lane
+    (link_metrics' asyncio.to_thread(walk, client, ...), promo_reactivate, the roster /
+    ledger / auto-exclude crawls, a plugin's background loop), so server.py's "<= 2 background per Creator" lane
     cap does not bound them, and a paced page sleeps IN that thread (time.sleep in `paced`).
     Threads asleep at once on a 50-Creator box, counted from the code (inferred): link prewarm 1
     (serial pass); Growth refresh / Details re-walk / list adds <= 1 per Creator (walk lock),
     only Creators whose Growth page was opened; ledger supervisor 4 (refresh 4, then backfill 2);
     roster crawl <= 8 (inside automation runs: run_slot.auto_runs(50) = 6 + 2 operator);
     promo_reactivate shares those 8 slots; auto-exclude <= 1 per Creator with a big list due
-    (single-flight per Creator, no global cap). Worst case
-    ~1 + 50 + 4 + 8 + 50 = 113 of the 378-thread default executor (server._EXECUTOR_THREADS).
+    (single-flight per Creator, no global cap); each walking plugin loop
+    (relay_hooks.background_loops) 1 (one sequential pass). Worst case
+    ~1 + 50 + 4 + 8 + 50 = 113, plus 1 per such loop, of the 378-thread default executor
+    (server._EXECUTOR_THREADS).
   * Only reads are paced: OFClient.get_json is the one seam wrapped. Writes inside a walk
     (link_metrics.sync_lists' add-to-list, audiences' batch list adds) are not, by the owner's
     rule that writes are never throttled; sync_lists keeps its own 0.4 s gap between adds.

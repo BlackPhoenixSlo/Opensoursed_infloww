@@ -40,6 +40,20 @@ IDS = fx.seed_two_agencies()
 NAV = Path(__file__).resolve().parents[2] / "app" / "lib" / "nav.ts"
 
 
+_PLUGIN_LINK = re.compile(r'\{\s*group:\s*"([^"]+)",(?:\s*first:\s*true,)?\s*link:\s*(\{[^}]*\})\s*\}')
+
+
+def _nav_text() -> str:
+    """nav.ts with each app plugin's `navLinks` (app/plugins/*/register.ts) written into its group,
+    as nav.ts `withSlotLinks` adds them at runtime (no plugins: nav.ts as is)."""
+    nav_ts = NAV.read_text()
+    for reg in sorted(NAV.parents[1].glob("plugins/*/register.ts")):
+        for group, link in _PLUGIN_LINK.findall(reg.read_text()):
+            head, tail = nav_ts.split(f'label: "{group}"', 1)
+            nav_ts = head + f'label: "{group}"' + tail.replace("children: [", f"children: [\n      {link},", 1)
+    return nav_ts
+
+
 def _mirror(chatter: str, owner: str) -> int:
     emp = asyncio.run(employees.get_or_create_mirror_employee(
         IDS[chatter], IDS[owner], display_name=chatter, color="#bbbbbb"))
@@ -507,7 +521,7 @@ def case_a_two_agency_chatter_is_granted_an_opt_in_page_by_the_enforcing_agency_
 
 
 def case_the_opt_in_pages_are_the_navs_opt_in_groups():
-    nav_ts = NAV.read_text()
+    nav_ts = _nav_text()
     groups = [nav_ts.split(f'label: "{g}"', 1)[1].split("],", 1)[0] for g in ("My Automations", "My AI Chatter")]
     assert all("chatterOptIn: true" in g for g in groups)
     assert nav_ts.count("chatterOptIn: true") == 2
@@ -1264,13 +1278,13 @@ def _drift(nav_ts: str) -> list[str]:
 
 
 def case_the_page_map_follows_the_nav():
-    nav_ts = NAV.read_text()
+    nav_ts = _nav_text()
     assert len(_nav_pages(nav_ts)) == 48
     assert _drift(nav_ts) == []
 
 
 def case_the_drift_check_fails_on_a_nav_page_with_no_map_entry():
-    nav_ts = NAV.read_text().replace(
+    nav_ts = _nav_text().replace(
         '{ label: "Dashboard", href: "/", icon: Grid01Line },',
         '{ label: "Dashboard", href: "/", icon: Grid01Line },\n'
         '  { label: "Fixture page", href: "/fixture-page" },', 1)
@@ -1282,7 +1296,7 @@ def case_the_drift_check_fails_on_a_nav_page_with_no_map_entry():
 def case_the_drift_check_skips_a_link_that_answers_to_another_page():
     """As nav.ts `isPermissionPage`: a `permission:` link is no page of its own, top-level or a
     group's child alike."""
-    nav_ts = NAV.read_text()
+    nav_ts = _nav_text()
     nav_ts = nav_ts.replace(
         '{ label: "Dashboard", href: "/", icon: Grid01Line },',
         '{ label: "Dashboard", href: "/", icon: Grid01Line },\n'

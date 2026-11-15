@@ -4594,17 +4594,24 @@ async def _redescribe(ctx, page, chk) -> None:
         tile = page.get_by_title(f"#{mid} · photo", exact=True)
         save = page.get_by_role("button", name="Save & lock", exact=True)
         desc = page.get_by_placeholder("Full description…")
-        tags = page.get_by_placeholder("comma, separated, tags")
+        # The Hashtags box is chips since #542 (VaultItemEditor HashtagInput): the editor's tags string is its
+        # chips joined ", " (each chip's "Remove hashtag <t>" button), as the old text box showed it.
+        chips = page.get_by_role("button", name=re.compile(r"^Remove hashtag "))
+
+        async def tags() -> str:
+            return await chips.evaluate_all(
+                "bs => bs.map(b => b.getAttribute('aria-label').slice('Remove hashtag '.length)).join(', ')")
+
         redo = page.get_by_role("button", name=re.compile(r"^(Re-describe|Describe)$"))
         # 1. Untouched editor, Re-describe.
         await tile.click(timeout=10_000)
         await save.wait_for(timeout=30_000)
-        before = {"desc": await desc.input_value(), "tags": await tags.input_value()}
+        before = {"desc": await desc.input_value(), "tags": await tags()}
         await ui.shot(ctx, page, "redescribe-untouched-trigger")
         await redo.click(timeout=10_000)
         await page.get_by_role("button", name="Re-describe", exact=True).wait_for(timeout=10_000)
         await page.wait_for_timeout(500)
-        shown = {"desc": await desc.input_value(), "tags": await tags.input_value()}
+        shown = {"desc": await desc.input_value(), "tags": await tags()}
         first = await _button_state(save)
         await ui.shot(ctx, page, "redescribe-untouched-settled")
         chk(REDESCRIBE_SHOWS, len(asked) == 1 and shown == {"desc": "slop redescribed", "tags": "slop, redescribed"}
@@ -4614,14 +4621,14 @@ async def _redescribe(ctx, page, chk) -> None:
         await tile.click(timeout=10_000)
         await save.wait_for(timeout=30_000)
         await desc.fill(REDESCRIBE_EDIT, timeout=10_000)
-        tags_typed = await tags.input_value()
+        tags_typed = await tags()
         await ui.shot(ctx, page, "redescribe-edited-trigger")
         await redo.click(timeout=10_000)
         t_end = asyncio.get_event_loop().time() + 10
         while len(asked) < 2 and asyncio.get_event_loop().time() < t_end:
             await asyncio.sleep(0.1)
         await page.wait_for_timeout(800)
-        kept = {"desc": await desc.input_value(), "tags": await tags.input_value()}
+        kept = {"desc": await desc.input_value(), "tags": await tags()}
         second = await _button_state(save)
         status = None
         if not second["disabled"]:
@@ -5119,7 +5126,7 @@ def _rt_fit_ok(fit: dict | None) -> bool:
 async def _rt_phone(ctx, browser, through=THROUGH, init=()):
     phone = await ui._owner_page(browser, ctx, PHONE, [], [], (TOURS_SEEN, *init), through=through, touch=True)
     phone.context.set_default_navigation_timeout(WAIT_MS)
-    phone.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    await ui.accept_confirms(phone)
     return phone
 
 
@@ -5662,7 +5669,7 @@ async def _ofm_rich_text(ctx, page, chk) -> None:
             try:
                 await tab.context.add_init_script(TOURS_SEEN)
                 tab.context.set_default_navigation_timeout(WAIT_MS)
-                tab.on("dialog", lambda dl: asyncio.ensure_future(dl.accept()))
+                await ui.accept_confirms(tab)
                 await _ofm_routes(ctx, tab, aid, view, fan_d)
                 try:
                     await _ofm_surfaces(ctx, tab, aid, [fan], tap=touch, tag=tag, out=out)
@@ -5797,6 +5804,10 @@ async def run(ctx) -> None:
             r.raise_for_status()
         r = await ctx.owner.post("/admin/smart-lists", json={"account_id": c["id"], "name": SMART_LIST})
         r.raise_for_status()
+    # The Agency's DeepSeek key (a dummy, through the real PUT /admin/my-llm-keys): since #589 an AI automation's
+    # off->on (Auto-reply's header switch, Get to know fans' rule) is refused 424 without one. Never called: the
+    # stack's egress guard and CHATTERLY_TEST_MODE keep the relay off DeepSeek.
+    (await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})).raise_for_status()
     of_sessions.seed(w, w.data["creators"])  # a real OFClient per Creator, talking to lib/of_wire.py
     aid0 = w.data["creators"][0]["id"]
     # OF still has these media: its by-id read (the stills path's re-sign) answers them, with no
@@ -5847,7 +5858,7 @@ async def run(ctx) -> None:
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=THROUGH) as page:
         await page.context.add_init_script(TOURS_SEEN)
         page.context.set_default_navigation_timeout(WAIT_MS)  # a goto's first visit compiles the page too
-        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+        await ui.accept_confirms(page)
         for name, fn in (("mass", _mass), ("mass-retry", _mass_retry), ("mass-unsend", _mass_unsend),
                          ("auto-unsend", _auto_unsend),
                          ("post", _post), ("dupes", _dupes),

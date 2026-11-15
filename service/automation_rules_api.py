@@ -583,13 +583,17 @@ def _refuse_config_route_kind(kind: str, *, turning_off: bool = False) -> None:
     """purchase_followup is owner-only to switch on and restamps `enabled_at` on
     every off→on; only its own config route does both, so these writes refuse it.
     Switching it OFF (and nothing else) stays open here, so the Automations
-    panel's toggle still stops it."""
+    panel's toggle still stops it. Same for the lifecycle Triggers and full_ai_chat."""
     if canonical_kind(kind) == "purchase_followup" and not turning_off:
         raise HTTPException(409, "purchase_followup is set at /admin/purchase-followup-config")
     # The Smart Messages lifecycle Triggers: the same rule, at their own route.
     from automations.lifecycle_messages import KINDS as _LIFECYCLE
     if canonical_kind(kind) in _LIFECYCLE and not turning_off:
         raise HTTPException(409, f"{kind} is set at /admin/lifecycle-message-config")
+    # Full AI Chat: its page's Mode control (PUT /admin/full-ai/mode, confirm + Live checks) is the
+    # only way on; a re-enable here could wake a parked rule still marked Live (ticket 74).
+    if canonical_kind(kind) == "full_ai_chat" and not turning_off:
+        raise HTTPException(409, "full_ai_chat is set at /admin/full-ai/mode")
 
 
 @router.post("/admin/automation-rules/switch")

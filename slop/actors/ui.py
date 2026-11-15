@@ -281,6 +281,32 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
     return page
 
 
+# The app's confirm()/alert() is an in-page dialog since #545 (app/components/ui/ifConfirm.tsx: IfConfirmHost, its
+# body text's id `if-confirm-<n>`), not a native one `page.on("dialog")` sees. Accepted as the native one was: its
+# last footer button (OK / its confirmLabel; an alert's only one) clicked as it mounts. Other dialogs are untouched.
+ACCEPT_CONFIRMS_JS = """(() => {
+  if (window.__slopAcceptConfirms) return;
+  window.__slopAcceptConfirms = true;
+  const accept = () => {
+    for (const d of document.querySelectorAll('[role="dialog"][aria-describedby^="if-confirm-"]')) {
+      if (d.dataset.slopAccepted) continue;
+      const ok = [...d.querySelectorAll('button')].pop();
+      if (ok) { d.dataset.slopAccepted = '1'; ok.click(); }
+    }
+  };
+  const start = () => { new MutationObserver(accept).observe(document.documentElement, { childList: true, subtree: true }); accept(); };
+  if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start);
+})();"""
+
+
+async def accept_confirms(page) -> None:
+    """Accept every confirm()/alert() `page` shows, native (`page.on("dialog")`) and the app's in-page one
+    (ACCEPT_CONFIRMS_JS), on this document and every later one."""
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    await page.add_init_script(ACCEPT_CONFIRMS_JS)
+    await page.evaluate(ACCEPT_CONFIRMS_JS)
+
+
 @asynccontextmanager
 async def owner_browser(ctx, viewport=(1600, 1000), through=(), send=False, scale=1, touch=False):
     async with async_playwright() as pw:

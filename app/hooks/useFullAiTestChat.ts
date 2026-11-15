@@ -64,7 +64,7 @@ async function postTurn(
 async function postPhoto(accountId: string, pair: string, d: Describing, dispatch: Dispatch<TestChatAction>) {
   try {
     const photo = await relay.post<FanPhoto>("/admin/full-ai/test/photo",
-      { account_id: accountId, image: d.image, text: d.text }, { accountId });
+      { account_id: accountId, image: d.image, text: d.text, pair }, { accountId });
     dispatch({ type: "photoDescribed", pair, photo });
   } catch (e) {
     dispatch({ type: "photoFailed", pair, error: message(e) });

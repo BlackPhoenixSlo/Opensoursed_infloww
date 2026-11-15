@@ -35,7 +35,7 @@ import contextlib  # noqa: E402
 import time  # noqa: E402
 import types  # noqa: E402
 
-from _full_ai_fixtures import QUIET, FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
+from _full_ai_fixtures import GIF_FITS, QUIET, FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
 import vault_dupes  # noqa: E402
 from automations import _router_jev as router  # noqa: E402
 from automations import cat_stickers, full_ai_sell, full_ai_turn, full_ai_writers  # noqa: E402
@@ -103,7 +103,7 @@ def case_sticker_only_sell_tries_next():
 def case_gif_only_reply_seen_next_turn():
     pair = "p-gif-only"
     with _draft(gifs=True):
-        r1, _, _ = _post(_body(pair, "hi cutie"), f"ok:STICKER: {_GIF_TAG}", jev=(QUIET, 1.0))
+        r1, _, _ = _post(_body(pair, "hi cutie"), f"ok:STICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
         g1 = r1.json()
         assert g1["status"] == "sent" and [set(p) for p in g1["parts"]] == [{"gif", "tag"}], g1
         fj = FakeJev((QUIET, 1.0))

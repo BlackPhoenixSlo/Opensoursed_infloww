@@ -116,6 +116,7 @@ def seed(w: World, creators: list[dict], *, profiles: int, links: int, files_dir
                 pub_links.append(pl)
             body = {"profile": {"id": pid, "username": username, "displayName": display, "bio": bio,
                                 "avatarUrl": f"/api/files/profiles/{pid}/{avatar}" if avatar else "",
+                                "backgroundUrl": "",   # PR #605's page background; the seed sets none
                                 "verified": verified, "mode": mode if mode in MODES else "escape_ig"},
                     "links": pub_links}
             live = f"c{ci}.bio.slop.test" if p == 0 else None

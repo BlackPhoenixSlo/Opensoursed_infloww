@@ -1,13 +1,27 @@
-"""Fans: one `fans` row per Creator x Fan (column list as scripts/demo-shots/seed.py)."""
+"""Fans: one `fans` row per Creator x Fan (column list as scripts/demo-shots/seed.py).
+
+A flow's own `fans` columns are set by its `seed/<flow>_fan_columns.py` (`fill(con, account_ids)`: the rows this call
+inserted, in its transaction), when present.
+"""
 from __future__ import annotations
 
+import importlib
 from datetime import timedelta
+from pathlib import Path
 
 from . import World, ts
 
 FIRST = ["Carlos", "Mike", "Dan", "Tom", "Leo", "Sam", "Max", "Ben", "Joe", "Raj", "Ken", "Ali", "Tim", "Ian"]
 LAST = "ABCDEFGHJKLMNPRSTVW"
 FAN_ID_BASE = 600_000_000
+_COLUMNS = [importlib.import_module(f"{__package__}.{p.stem}")
+            for p in sorted(Path(__file__).parent.glob("*_fan_columns.py"))]
+
+
+def fill_fan_columns(con, account_ids: list[str]) -> None:
+    """Run every `*_fan_columns.py` hook on the given Creators' fresh rows (also used by scripts/demo-shots/seed.py)."""
+    for mod in _COLUMNS:
+        mod.fill(con, account_ids)
 
 
 def seed(w: World, creators: list[dict], per_creator: int | dict[str, int] | None = None) -> dict[str, list[dict]]:
@@ -40,6 +54,7 @@ def seed(w: World, creators: list[dict], per_creator: int | dict[str, int] | Non
             "subscription_expires_at, subscription_status, is_followed, "
             "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+        fill_fan_columns(con, [c["id"] for c in creators])
     con.close()
     w.data["fans"] = by_creator
     return by_creator

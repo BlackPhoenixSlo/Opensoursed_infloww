@@ -60,8 +60,8 @@ zero-subscriber and created links). Budgets: p95 `/t/` <= 150 ms, earnings (the 
 reads (`/summary`, `/:id/analytics`) <= 300 ms in 20 timed reads each after the storm and <= 1200 / 700 ms under
 it (a single-relay saturation guard), plus a separate 90-day hot-link probe <= 600 ms p95;
 p95 vs the last green run (routes with >= 20 calls in both).
-UI (`UI = True`; UI == API only, the oracle is the API checks' job): /growth/tracking-links for the Creator
-the page picks, its Redirect links tab: the summary cards == `/summary` (UI_SUMMARY, screenshots
+UI (`UI = True`; UI == API only, the oracle is the API checks' job): /growth/redirect-links (its own Growth
+entry since 11-12, was a Tracking links tab) for the Creator the page picks: the summary cards == `/summary` (UI_SUMMARY, screenshots
 `tracking-links-summary`, `tracking-links-trigger`); its hot link's Analytics opened: "{n} clicks · last 30
 days" == the API's total == the DB's rows in that window, 30 bars and the top Opened in row == the API
 (UI_STATS; `tracking-links-stats-30d`, `tracking-links-settled`); the same on a 390 x 844 phone with no
@@ -904,13 +904,13 @@ async def _ui_viewed(ctx, tc) -> None:
 
 
 async def _open(ctx, page, tc) -> str | None:
-    """/growth/tracking-links, its Redirect links tab with the summary cards loaded; the Creator the page picked
-    (by its first OF link's name)."""
-    creator_of = {r["campaignName"]: aid for aid, rows in tc["campaigns"].items() for r in rows}
-    await page.goto(f"{ctx.app}/growth/tracking-links", wait_until="domcontentloaded")
-    await page.get_by_text(re.compile(r"OF link 0$")).first.wait_for(timeout=90_000)
-    shown = (await page.get_by_text(re.compile(r"OF link 0$")).first.inner_text()).strip()
-    await page.get_by_role("tab", name=re.compile("^Redirect links")).click()
+    """/growth/redirect-links with the summary cards loaded; the Creator the page picked (by its seeded
+    "<creator> link 0" redirect link's name in the list)."""
+    creator_of = {l["name"]: l["account_id"] for l in tc["links"]}
+    await page.goto(f"{ctx.app}/growth/redirect-links", wait_until="domcontentloaded")
+    first = page.get_by_role("region", name="Custom redirect links").get_by_text(re.compile(r" link 0$")).first
+    await first.wait_for(timeout=90_000)
+    shown = (await first.inner_text()).strip()
     await page.locator('[data-stat="today"] [data-value]').filter(has_not_text="—").wait_for(timeout=30_000)
     return creator_of.get(shown)
 
@@ -944,7 +944,7 @@ async def _ui(ctx, tc, gated, w) -> None:
         aid = await _open(ctx, page, tc)
         if aid is None:
             for name in (UI_SUMMARY, UI_STATS_TOTAL, UI_STATS):
-                ctx.check(name, False, reason="the page's first OF link is none of the seeded ones")
+                ctx.check(name, False, reason="the page's first redirect link is none of the seeded ones")
             return
         await ui.shot(ctx, page, "tracking-links-summary")
         summary = (await ctx.owner.get(f"/admin/tracking-links/summary?account_id={aid}")).json()

@@ -1,7 +1,7 @@
 """automations/_jev.py — what the Jev gates share: the TypeSafe transport and how a stored message reads.
 
 Not a stream: it registers no kind and holds no outbound primitive. Each gate
-(`_fm_relevance`, the FM off-script gate; `_router_jev`, Full AI Chat's
+(the FM off-script gate; `_router_jev`, Full AI Chat's
 Router) keeps its own questions, thresholds and model pin, and its own one-line
 `_client` (the tests' fake seam) over `client` here.
 

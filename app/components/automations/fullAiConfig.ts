@@ -31,7 +31,7 @@ export interface FullAiConfig {
   folders?: { include: string[]; exclude: string[] };
   /** Chance (%, 0-100) a reply gets one thumb-typo while Typos is on; null / absent = auto (~1 per 5 sentences). */
   typo_pct?: number | null;
-  /** The Sell group's switches (`sellSwitches`), test Mode only; absent = on (server defaults).
+  /** The Sell group's switches (`sellSwitches`), test + live (Shadow ignores); absent = on (server defaults).
    *  Unasked offers: the DRAFT Router questions count. */
   draft_questions?: boolean;
   /** Chat tease: in normal chat photos may ride her reply, free or Jev-priced. */
@@ -46,6 +46,10 @@ export interface FullAiConfig {
   sell_spacing?: boolean;
   /** He likes: what he likes steers what the AI sends. */
   he_likes?: boolean;
+  /** JSON-only, test Mode: a fresh offer aims at the number of pieces he names (at most 5); absent = on. */
+  sell_count?: boolean;
+  /** JSON-only, every Mode: emojis stripped from her replies; off / absent = the account's strip-emojis setting. */
+  strip_emojis?: boolean;
   /** Chance (%, 0-100) a Turn offers the GIF (sticker) block while GIFs is on; null / absent = auto (every eligible Turn). */
   gif_pct?: number | null;
   /** Live only, JSON-only: lifetime spend (cents) at which a Fan is left to humans; 0 = off ("Top spend limit"). */

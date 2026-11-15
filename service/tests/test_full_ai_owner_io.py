@@ -7,8 +7,8 @@
   case_hard_skip             blacklist, each HARD_SKIP_REASONS member, unreachable, a muted creator -> hard;
                              a graduation skip_list reason, a muted non-creator -> not
   case_audience              audience_allows_fan(kind="full_ai_live") refusing -> audience_ok false
-  case_walk_advancing        pending + walker rule on -> true; not pending, another account's run,
-                             walker rule off -> false
+  case_walk_advancing        pending + walker rule on -> true (reply_mass_funnel and a registered walker's runs);
+                             held, not pending, another account's run, walker rule off -> false
   case_spend                 spend = fans.lifetime_spend_cents (no row = 0); top_spend_cents off the checkpoint;
                              0 never stops, equal stops; a bad stored value reads the default
   case_claimed_ids           empty for every input while `_live` is false; live + rule on -> the Fans given;
@@ -30,6 +30,7 @@ import subprocess  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 import runtime_switches  # noqa: E402
+from automations import _funnel_walkers  # noqa: E402
 from automations import full_ai_owner_io as io  # noqa: E402
 from automations._skiplist import HARD_SKIP_REASONS  # noqa: E402
 from automations.full_ai_owner import Stop, who_owns  # noqa: E402
@@ -181,23 +182,36 @@ async def _walk(aid: str, fan: int, *, run_kind: str | None = None, status: str 
         s.add(FunnelState(mass_run_id=run.id, fan_id=fan, status=status, last_error=last_error))
 
 
+# A walker of its own, registered the way a walker module does at import.
+SIDE_RUN, SIDE_WALKER, SIDE_HOLD = "side_stream_run", "side_walker", "side_hold"
+_funnel_walkers.register_walker({SIDE_RUN}, SIDE_WALKER, hold_mark=SIDE_HOLD)
+
+
 async def case_walk_advancing():
-    aid = await _account(kinds=("reply_mass_funnel",))
+    aid = await _account(kinds=("reply_mass_funnel", SIDE_WALKER))
     await _walk(aid, 1)                                              # reply_mass_funnel walk
+    await _walk(aid, 2, last_error=SIDE_HOLD)                        # held
+    await _walk(aid, 3, last_error=SIDE_HOLD + ":4th")               # held with a reason
     await _walk(aid, 4, status="done")                               # not pending
-    await _walk(aid, 6, last_error="send failed")                    # an error
+    await _walk(aid, 5, run_kind=SIDE_RUN)                           # the side walk, its walker on
+    await _walk(aid, 6, last_error="send failed")                    # an error that is not a hold
     other = await _account(kinds=("reply_mass_funnel",))
     await _walk(other, 7)                                            # another account's run
-    want = {1: True, 4: False, 6: True, 7: False, 8: False}
+    want = {1: True, 2: False, 3: False, 4: False, 5: True, 6: True, 7: False, 8: False}
     for f, w in want.items():
         assert (await io.load(aid, f, ANCHOR)).walk_advancing is w, (f, w)
-    # walker rule off
-    no_rule = await _account()
-    await _walk(no_rule, 1)
-    assert (await io.load(no_rule, 1, ANCHOR)).walk_advancing is False
+    # walker rule off: a reply_mass_funnel walk on an account with only the side walker, and the reverse
+    only_side = await _account(kinds=(SIDE_WALKER,))
+    await _walk(only_side, 1)
+    await _walk(only_side, 2, run_kind=SIDE_RUN)
+    assert (await io.load(only_side, 1, ANCHOR)).walk_advancing is False
+    assert (await io.load(only_side, 2, ANCHOR)).walk_advancing is True
+    only_rmf = await _account(kinds=("reply_mass_funnel",))
+    await _walk(only_rmf, 1, run_kind=SIDE_RUN)
+    assert (await io.load(only_rmf, 1, ANCHOR)).walk_advancing is False
     with _live():
         assert who_owns(await io.load(aid, 1, ANCHOR)) == Stop("funnel_walk")
-        assert who_owns(await io.load(aid, 4, ANCHOR)) is None
+        assert who_owns(await io.load(aid, 2, ANCHOR)) is None
 
 
 async def _config(aid: str, checkpoint: dict) -> None:

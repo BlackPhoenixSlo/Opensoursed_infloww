@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// A made-up plugin with one Messages Pro mode route (lib/chatSlots.ts).
+vi.mock("@/lib/plugins.generated.register", () => ({ PLUGINS: [{ popoutModeRoutes: ["/messages-pro/mode"] }] }));
+
 import {
   SETTINGS_KEY,
   parseSurfaces,
@@ -27,6 +30,11 @@ describe("surfaceOf", () => {
     expect(surfaceOf("/group")).toBe("group");
     expect(surfaceOf("/messages-pro/5551/999")).toBe("popup");
     expect(surfaceOf("/messages-pro/5551/u/someone")).toBe("popup");
+  });
+
+  it("puts a Messages Pro mode route (a plugin's popoutModeRoutes) on Messages Pro's surface, not the pop-out's", () => {
+    expect(surfaceOf("/messages-pro/mode")).toBe(surfaceOf("/messages-pro"));
+    expect(surfaceOf("/messages-pro/mode")).not.toBe(surfaceOf("/messages-pro/5551/999"));
   });
 
   it("buckets every non-chat page (and no path) as 'other'", () => {

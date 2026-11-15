@@ -57,6 +57,7 @@ from sqlalchemy.exc import IntegrityError
 
 from automations import _router_jev as router
 from automations.full_ai_chat import build_state, cut_runs
+from automations.full_ai_mode import full
 from automations.full_ai_photo import KEY as PHOTOS_KEY
 from automations.full_ai_scene import saved_scene, scene_words
 from automations.full_ai_sell import Pick, Teased, _money
@@ -247,6 +248,15 @@ def _sitting(rows, now: datetime) -> list:
     return rows[start:]
 
 
+DARED_ROWS = 3
+
+
+def dared_of(rows) -> bool:
+    """Her dare stands: one of the Fan's newest `DARED_ROWS` rows (oldest first) is Route ai_dare.
+    Read off the rows, so no pending-dare state (D32)."""
+    return any(r.route == "ai_dare" for r in rows[-DARED_ROWS:])
+
+
 def _his_lines(rows) -> int:
     """His "in" lines of `test_thread(rows)` (one per row: a carried line once, a photo one line)."""
     return sum(m.direction == "in" for m in test_thread(rows))
@@ -323,15 +333,15 @@ def offer_line(r) -> SimpleNamespace | None:
 
 
 def pending_tease_of(rows, now: datetime, ttl_s: float = TEASE_TTL_S):
-    """The Pending tease (CONTEXT; ticket 07 r3 shape), else None: the newest `sent` row is a test
-    tease carrying its Pick (`offer_item_ref` kind `tease`, price NULL), created at most `ttl_s`
+    """The Pending tease (CONTEXT; ticket 07 r3 shape), else None: the newest `sent` row is a Full
+    AI (test or live, `full`) tease carrying its Pick (`offer_item_ref` kind `tease`, price NULL), created at most `ttl_s`
     before `now` (his reply), with no Offer outcome (a purchase or a decline) set since. "No other
     outbound since" is the newest-sent-row rule: a test session's sent rows are its only outbound;
     a failed / no_send row sent nothing, so it never ends the tease (story 38)."""
     r = next((x for x in reversed(rows) if x.status == "sent"), None)
     if r is None:
         return None
-    if not (r.mode == MODE and r.offer_price_cents is None
+    if not (full(r.mode) and r.offer_price_cents is None
             and _loads(r.offer_item_ref).get("kind") == "tease"):
         return None
     if (now - r.created_at).total_seconds() > ttl_s:
@@ -410,18 +420,19 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
     spent, offer = bought_of(rows), offer_line(open_offer)
     bought = spent[-1] if spent else None
     # The one `pending_offer` source: a Pending tease first.
-    on = bool(config[PHOTOS_KEY])
+    dared = dared_of(rows)
+    on = bool(config[PHOTOS_KEY]) or dared      # her dare promised to look
     st, _ = build_state(turn, thread_rows, bought, offer, pending=pending_offer_text(rows, now), photos=on)
     fold = _loads(rows[-1].reply_json) if rows else {}
     scene = saved_scene(rows, now, SITTING_GAP_S)
-    if config.get("sext_scene"):        # test Mode only (this module); never in build_state / Shadow
+    if config.get("sext_scene"):        # test + live (this module); never in build_state / Shadow
         st = {**st, "purchases": purchases_of(rows), "scene": scene_words(scene)}
     tease = bool(config.get("chat_tease"))
-    if config.get("sell_spacing") or tease:   # 03d Spacing: test Mode only, never in build_state / Shadow
+    if config.get("sell_spacing") or tease:   # 03d Spacing: test + live, never in build_state / Shadow
         st = {**st, **spacing_of(rows, now, free=tease)}
-    if tease:                           # Chat tease: test Mode only, never in build_state / Shadow
+    if tease:                           # Chat tease: test + live, never in build_state / Shadow
         st = {**st, **chat_tease_of(rows, now)}
-    if config.get("he_likes"):          # He likes: test Mode only, every Turn, never in build_state / Shadow
+    if config.get("he_likes"):          # He likes: test + live, every Turn, never in build_state / Shadow
         st = {**st, "he_likes": likes_of(fold.get("fan_info") or {})}
     session = session_key(pair, side)
     return TurnFacts(
@@ -433,6 +444,7 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
         sent=sent_media_of(rows), tease=teased_of(pending_tease_of(rows, now)),
         offer_piece=teased_of(open_offer), scene=scene,
         photo={**photo, "text": text, "read": bool(on and photo.get("desc"))} if photo else None,
+        dared=dared,
         purchases=purchases_of(rows) if tease else [])
 
 
@@ -458,6 +470,8 @@ def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | N
     joins the item ref, so `open_offer_of` never opens that Offer again; `desc` (the sext scene:
     the anchor's description, <= 120 chars) joins it for `purchases_of`;
     `offer_message_id`, `outcome`, `outcome_at`, `join_src` stay NULL (no send, no settle yet).
+    `offer_media_json` = {locked, previews, items}: `items` is the Pick's `facts["media"]` (each locked
+    then preview item's {id, kind, seconds}), the PPV bubble's kind and length line (`[]` when absent).
     Unless a tease, it rides the last bubble as `ppv: {ref, price_cents, media, previews}`.
     One call, one Pick: at most one Offer per row. A make_right row never carries a priced Offer
     (raises).
@@ -477,7 +491,8 @@ def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | N
                                          "media": list(pick.media), "previews": list(pick.previews)}
         row.update(
             offer_price_cents=None if tease else pick.price_cents, offer_list_cents=pick.list_cents,
-            offer_media_json=json.dumps({"locked": list(pick.media), "previews": list(pick.previews)}),
+            offer_media_json=json.dumps({"locked": list(pick.media), "previews": list(pick.previews),
+                                         "items": list((pick.facts or {}).get("media") or [])}),
             offer_item_ref=json.dumps({"ref": pick.ref, "subject": pick.subject, "format": pick.format,
                                        "lane": pick.lane, "kind": kind,
                                        **({"over": over} if over is not None else {}),
@@ -488,14 +503,15 @@ def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | N
 def offer_of(r) -> dict | None:
     """The Offer a row carries (the row dict before or the AiDecision after its INSERT), as the
     turn response and the session read return it; None on a row with none.
-    `refusal` is None on an Offer (a Refusal row has no Offer; its reason is `reply_json.refusal`)."""
+    `refusal` is None on an Offer (a Refusal row has no Offer; its reason is `reply_json.refusal`).
+    `items`: each media's {id, kind, seconds} (`send`), `[]` on a row stored before it."""
     get = r.get if isinstance(r, dict) else (lambda k: getattr(r, k))
     if not get("offer_item_ref"):
         return None
     item, media = json.loads(get("offer_item_ref")), json.loads(get("offer_media_json") or "{}")
     return {"kind": item["kind"], "ref": item["ref"], "price_cents": get("offer_price_cents"),
             "list_cents": get("offer_list_cents"), "media": media.get("locked") or [],
-            "previews": media.get("previews") or [], "refusal": None}
+            "previews": media.get("previews") or [], "items": media.get("items") or [], "refusal": None}
 
 
 class Unsettled(Exception):

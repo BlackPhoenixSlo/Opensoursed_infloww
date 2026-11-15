@@ -20,6 +20,18 @@ Bundle of 3 to 5 photos, filled from photos matching his ask when its shoot is s
   case_api_haggle_repick_keeps_shoot  a haggle's re-pick sells one photo, never a Bundle
   case_api_price_jev_reads_count  P×B, `sext_scene` on: a shoot of 1 fills to 3 and the price Jev's
                               recorded state has `offer.photos` 3
+  case_asked_count_table      `asked_count`: "bundle of 5 videos" 5, "three pics" 3, clamped to 5; never a
+                              price, a length, an age, "a" or one
+  case_pick_count_table       pure `pick` with `Ask.count`: a clip sells with more clips at or under it,
+                              listed at their sum (capped at $200), fewer when fewer; a filled photo set fills
+                              to the count ("shoot" ignores it); free and ride ignore it; seeded; `same_piece`
+                              re-lists a clip bundle at its sum; `facts["media"]` kinds and lengths
+  case_video_bundle_counts    item line "3 videos" with the total length; claim audit, fallback caption and
+                              the price Jev's offer state count the clips
+  case_count_flag_table       `count_flag`: test / live read `sell_count` (default on), Shadow never
+  case_api_bundle_of_videos   Test chat: "i want a bundle of 5 videos" sells 5 clips at their summed list,
+                              `reply.asked_count` 5, the Offer's `items` kinds and lengths; `sell_count` off
+                              sells one clip
 
 Run: ./venv/bin/python service/tests/test_full_ai_bundle.py  (exit 0 = pass)
 """
@@ -31,6 +43,7 @@ from _full_ai_sell_helpers import (  # noqa: E402
     A, OWNER_A, FakePriceJev, _body, _db, _guarded, _post, _price, _put_draft, _reply, _rows, _vault,
 )
 import contextlib  # noqa: E402
+from dataclasses import replace  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
@@ -40,7 +53,7 @@ from sqlalchemy import update  # noqa: E402
 from _full_ai_fixtures import QUIET_SCENE, QUIET_TEST  # noqa: E402
 import vault_ai_brief  # noqa: E402
 import vault_jev_rules  # noqa: E402
-from automations import full_ai_sell as fs, full_ai_writers as wr  # noqa: E402
+from automations import _price_jev, full_ai_sell as fs, full_ai_writers as wr  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import VaultItem  # noqa: E402
@@ -75,6 +88,10 @@ def _row(mid, lane="$50", kind="photo"):
 
 def _shoot(*ids):
     return {"items": [{"media_id": i} for i in ids]}
+
+
+def _clip(mid, lane="$10"):
+    return _row(mid, lane, kind="video")
 
 
 def _pick(rows, shoots=(), ask=TOY, *, groups=(), owned=(), seed=SEED, **kw):
@@ -270,6 +287,150 @@ def case_api_price_jev_reads_count():
     (st,) = pf.calls
     assert st["offer"]["photos"] == 3 and st["he_asked"] == "yes", st["offer"]
     assert row.offer_price_cents == 3500, row.offer_price_cents
+
+
+# ── His asked count (`sell_count`) ────────────────────────────────────
+
+def case_asked_count_table():
+    for text, want in (("I want bundle of 5 videos", 5), ("i want a bundle of 5 videos", 5), ("three pics", 3),
+                       ("bundle of 5", 5), ("5 vids for me", 5), ("5 hot videos", 5), ("two pics pls", 2),
+                       ("send me 5 sexy feet pics", 5), ("pack of five", 5), ("set of 3", 3),
+                       ("10 videos", 5), ("twelve pics", 5), ("3 pics and 2 videos", 3), ("FOUR CLIPS", 4),
+                       ("5 videos for $50", 5), ("can i get 2 more vids", 2),
+                       # no count: a price, a length, an age, one, "a", vague words, no media noun
+                       ("$5 video", None), ("5$ video", None), ("5 dollars", None), ("5 dollar videos", None),
+                       ("bundle of 5 dollars", None), ("5 min video", None), ("a 5 minute video", None),
+                       ("bundle of 2 min clips", None), ("im 25 and want videos", None),
+                       ("I am 25 years old, send videos", None), ("1 video", None), ("one pic", None),
+                       ("a video", None), ("an hour long video", None), ("a few pics", None),
+                       ("a couple of videos", None), ("give me 4", None), ("2.5 videos", None),
+                       ("send me videos", None), ("", None)):
+        assert fs.asked_count(text) == want, (text, fs.asked_count(text), want)
+    assert fs.COUNT_MAX == 5
+
+
+def case_pick_count_table():
+    vid = fs.Ask("toy", "video", 3)                          # heat 3 -> the $50 lane
+    clips = [_clip(50, "$50"), _clip(51, "$50"), _clip(52, "$10"), _clip(53, "$100"), _row(54)]
+    # count 3: the $50 anchor plus 2 clips at or under it, never the $100 one nor the photo; summed.
+    for seed in ("s1", "s2", "s3", "s4"):
+        got = _pick(clips, [], replace(vid, count=3), seed=seed)
+        assert set(got.media) == {50, 51, 52} and got.media[0] in (50, 51), (seed, got.media)
+        assert got.list_cents == got.price_cents == 11000 and got.format == "video", (seed, got)
+        assert got.lane == "$50" and got.facts["asked_count"] == 3 and got.facts["kinds"] == {"video": 3}, got
+    # Fewer available: count 5 still 3 clips (a suggestion).
+    got = _pick(clips, [], replace(vid, count=5))
+    assert len(got.media) == 3 and got.facts["asked_count"] == 5, got
+    # count 2: one more clip, the anchor's price plus it.
+    got = _pick(clips, [], replace(vid, count=2))
+    assert len(got.media) == 2 and got.list_cents == sum(_cents(clips)[m] for m in got.media), got
+    # The sum caps at $200: five $100 clips (heat 4).
+    big = [_clip(i, "$100") for i in range(60, 66)]
+    got = _pick(big, [], fs.Ask("toy", "video", 4, 5))
+    assert len(got.media) == 5 and got.list_cents == got.price_cents == fs.MAX_CENTS == 20000, got
+    # No count: a clip sells alone, rng unchanged; seeded and deterministic with one.
+    assert _pick(clips, [], vid).media in ((50,), (51,)), _pick(clips, [], vid)
+    assert _pick(clips, [], replace(vid, count=None)) == _pick(clips, [], vid)
+    assert _pick(clips, [], replace(vid, count=3), seed="x") == _pick(clips, [], replace(vid, count=3), seed="x")
+    assert _pick(clips, [], vid).ref == _pick(clips, [], replace(vid, count=3)).ref     # same anchor draw
+    # A filled photo set fills to his count (at most 5, at least 3); "shoot" ignores it.
+    loose = [_row(i) for i in range(30, 37)]
+    for count, want in ((2, 3), (3, 3), (4, 4), (5, 5)):
+        got = _pick(loose, [], replace(TOY, count=count), bundle="fill")
+        assert len(got.media) == want and got.facts["asked_count"] == count, (count, got.media)
+        assert got.list_cents == 5000 == got.price_cents, got                 # photos keep the highest
+    for seed in ("a", "b"):
+        assert _pick(loose, [], replace(TOY, count=5), seed=seed, bundle="shoot") == _pick(loose, [], TOY, seed=seed)
+    # Free and ride ignore the count.
+    for kw in ({"free": True}, {"ride": True}):
+        assert _pick(loose + clips, [], replace(TOY, count=5), **kw) == _pick(loose + clips, [], TOY, **kw), kw
+    assert len(_pick(clips, [], replace(vid, count=5), free=True).media) == 1
+    # `same_piece` re-lists a clip bundle at its sum, a photo set at its highest.
+    pool = fs.pool(clips, [], set(), ALL, vid)
+    again = fs.same_piece(pool, (50, 51, 52), (), vid)
+    assert again.list_cents == again.price_cents == 11000, again
+    pool = fs.pool(loose[:3] + [_row(40, "$10")], [], set(), ALL, TOY)
+    assert fs.same_piece(pool, (30, 40), (), TOY).list_cents == 5000
+    # `facts["media"]`: every locked then preview item's kind and length.
+    got = _pick(clips, [], replace(vid, count=3))
+    assert got.facts["media"] == [{"id": m, "kind": "video", "seconds": 12} for m in got.media], got.facts["media"]
+    rows = [_row(i) for i in range(1, 4)] + [_row(7, "free")]
+    p = _pick(rows, [_shoot(1, 2, 3, 7)])
+    assert p.previews == (7,) and p.facts["media"] == [{"id": m, "kind": "photo", "seconds": None}
+                                                      for m in (*p.media, 7)], p.facts["media"]
+
+
+def case_video_bundle_counts():
+    got = _pick([_clip(50), _clip(51), _clip(52)], [], fs.Ask("toy", "video", 1, 3))
+    assert wr.got_words(got) == "3 videos", wr.got_words(got)
+    line = wr.item_line(got, "x")
+    assert " 0:36 " in line and "3 videos" in line, line                  # 3 x 12 s
+    one = _pick([_clip(50)], [], fs.Ask("toy", "video", 1))
+    assert " 0:12 " in wr.item_line(one, "x") and "untitled" in wr.item_line(one, "x"), wr.item_line(one, "x")
+    assert fs.claim_ok("3 vids just for u", got) and fs.claim_ok("these videos", got) and fs.claim_ok("a vid", got)
+    assert not fs.claim_ok("2 videos", got) and not fs.claim_ok("3 pics", got) and not fs.claim_ok("5 vids", got)
+    assert fs.fallback_caption(got, "offer") == "3 vids, $30 to unlock", fs.fallback_caption(got, "offer")
+    st = _price_jev.offer_state(got)                       # the price Jev reads the clips, as a Bundle's photos
+    assert (st["videos"], st["photos"], st["video_seconds"], st["list_price"]) == (3, 0, [12, 12, 12], "$30"), st
+
+
+def case_count_flag_table():
+    for mode, cfg, want in (("test", {}, True), ("test", {"sell_count": False}, False), ("live", {}, True),
+                            ("shadow", {"sell_count": True}, False), ("shadow", {}, False)):
+        f = SimpleNamespace(mode=mode, config={**DEFAULTS, **cfg})
+        assert wr.count_flag(f) is want, (mode, cfg)
+
+
+CLIP_JEV = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": "$10", "state": {}, "kind": "video",
+            "vv": vault_jev_rules.VIDEO_VERSION, "frames": [], "breasts_bare": "n", "crotch_bare": "n",
+            "penetration": "n", "tags": TOY_J}
+
+
+@contextlib.contextmanager
+def _clips(mids):
+    """A's vault for the block: one $10 toy clip of 30 s per media id, then removed."""
+    from sqlalchemy import delete
+    from _full_ai_sell_helpers import DRESSED as DESCRIBED
+
+    async def add():
+        async with get_session() as s:
+            for mid in mids:
+                s.add(VaultItem(account_id=A, media_id=mid, kind="video", duration_seconds=30,
+                                created_at=T0 + timedelta(days=mid), tags="[]", describe_status="described",
+                                of_folder_ids="[]",
+                                ai_fields_json=json.dumps({**DESCRIBED, vault_jev_rules.JEV_KEY: CLIP_JEV})))
+
+    async def drop():
+        async with get_session() as s:
+            await s.execute(delete(VaultItem).where(VaultItem.account_id == A))
+    _db(add)
+    try:
+        yield
+    finally:
+        _db(drop)
+
+
+ASK_VIDS = {"asks_subject": "toy", "asks_format": "video"}
+
+
+def case_api_bundle_of_videos():
+    """The owner's test-chat find: "i want a bundle of 5 videos" got one $75 clip. Now 5 clips at
+    their summed list ($10 each -> $50), the count on the row, each item's kind and length."""
+    jev = ({**QUIET_TEST, "wants_content": .9}, 3.0, ASK_VIDS)
+    with _draft(sext_scene=False), _clips(range(401, 408)):
+        r, _, (pick,) = _post(_body("b-vids", "i want a bundle of 5 videos"), "ok:5 vids just for u", jev=jev)
+        row = _rows("b-vids")[0]
+    got = r.json()
+    assert row.route_row == "sell" and len(pick.media) == 5 and pick.format == "video", pick
+    assert row.offer_list_cents == row.offer_price_cents == 5000 == got["offer"]["price_cents"], got["offer"]
+    assert _reply(row)["asked_count"] == 5 and _reply(row)["caption_fallback"] is False, _reply(row)
+    assert got["offer"]["media"] == list(pick.media), got["offer"]
+    assert got["offer"]["items"] == [{"id": m, "kind": "video", "seconds": 30} for m in pick.media], got["offer"]
+    assert json.loads(row.offer_media_json)["items"] == got["offer"]["items"], row.offer_media_json
+    with _draft(sext_scene=False, sell_count=False), _clips(range(401, 408)):
+        r, _, (lone,) = _post(_body("b-vids-off", "i want a bundle of 5 videos"), "ok:here", jev=jev)
+        row = _rows("b-vids-off")[0]
+    assert len(lone.media) == 1 and "asked_count" not in _reply(row), (lone, _reply(row))
 
 
 _harness.run()

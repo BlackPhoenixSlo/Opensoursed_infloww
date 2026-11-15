@@ -1,5 +1,6 @@
-"""Vault Pro's manual Collect (POST /admin/vault-ai/collect, `vault_ai_api._run_collect`): the useful media first,
-each page's stills downloaded before the next OF call, every media counted and downloaded once.
+"""Vault Pro's manual Collect (POST /admin/vault-ai/collect, `vault_ai_api._run_collect`): OF walked in the describe
+sweep's priority order (`vault_collect_plan`, PR #615), each page's stills downloaded before the next OF call, every
+media counted and downloaded once.
 
 World: `flat_agency`, vault_manual_creators Creators (3 / 6 / 10), each with a captured OF session (the relay's
 REAL OFClient against lib/of_wire.py, `OF_WIRE`) and a vault of vault_manual_items media (450 / 1,500 / 5,000) in
@@ -17,12 +18,18 @@ calls are told apart by the query), Vault Pro's grid `GET /admin/vault-ai/items`
 Creator's status every 0.5 s until no run is running.
 
 Checks (lib/vault_manual_collect_faults.py names), per Creator, on its untyped OF vault calls after the press:
-  collect_newest_first      the first is media sort=desc offset 0 limit 100; then the folder list (lists); then
-                            page 0 (limit 24, desc) of every folder, each once; then media sort=asc limit 100 at
-                            offsets 0, 100, 200, ... to the end, nothing else. The warm phase's 240p clip fetches
-                            all after the last walk call, newest first.
-  collect_first_batch_early every newest-100 media's thumb AND full were fetched from the CDN (200) before the asc
-                            walk's 2nd page (offset 100) reached OF.
+  collect_newest_first      (name kept; the order is vault_collect_plan's since #615) exactly: the folder list
+                            (lists offset 0, LISTS_PAGE, ... while hasMore); then rounds of {the next FOLD folders
+                            in rail order, each paged whole (list=<id>, desc, limit 100, offsets 0, 100, ... until
+                            hasMore false) -> the next TOP_PAGES All pages desc -> the next BOTTOM_PAGES All pages
+                            asc} until the desc and asc cursors meet or one hits the end and every folder is paged,
+                            nothing else. The warm phase's 240p clip fetches all after the last walk call, newest
+                            first.
+  collect_first_batch_early (a) the first page the walk gets (rail folder 1, page 0): every media's thumb AND full
+                            fetched from the CDN (200) before the walk's next media call reached OF; (b) every
+                            newest-100 media's thumb AND full fetched (200) before the desc walk's 2nd page (offset
+                            100) reached OF (was: the asc walk's 2nd page; the newest page is now the desc walk's
+                            1st, so the budget is the same page count or tighter).
   collect_complete          the run is done (status done, not running, no error: uncapped), total_seen == upserted
                             == the fake's media count, vault_items == that count, /cache/summary complete + count,
                             every media's thumb and full still on disk.
@@ -37,8 +44,8 @@ storyboard dirs re-pointed by env (lib/vault_collect_relay.py, which also would 
 storyboards of older videos pre-written by the harness into the run's temp store (12 tiny files each, keyed as
 storyboard._video_path_hash), picker users are httpx clients (no browser).
 Break-it-once: manual-collect-asc-first (default; the pre-change asc-first sweep: collect_newest_first +
-collect_first_batch_early), --fault=manual-collect-warm-at-end (new OF order, downloads after the walk:
-collect_first_batch_early).
+collect_first_batch_early), --fault=manual-collect-warm-at-end (the pre-#615 newest/folders/asc order, downloads
+after the walk: collect_first_batch_early; collect_newest_first also fails, as noise).
 """
 from __future__ import annotations
 
@@ -72,7 +79,9 @@ STATUS = "GET /admin/vault-ai/collect/status"
 # (20261111T063254Z-...-142c) vs old download-at-end 1382/1688/1845 ms (20261111T075952Z-...-break-6f8e),
 # p50 equal (~280/350/490): the ceiling is the 200-user load on SQLite, not the order. ~1.3x headroom.
 BUDGET_MS = {STATUS: 2300, "GET /admin/vault-ai/items": 2400, "GET /api/of/v2/vault/media": 2600}
-PAGE, PICKER_PAGE, NEWEST = 100, 24, 100   # vault_ai_api._PAGE, vault_collect.PICKER_PAGE, the first batch
+PAGE, PICKER_PAGE, NEWEST = 100, 24, 100   # vault_ai_api._PAGE, vault_collect.PICKER_PAGE, the newest batch
+LISTS_PAGE = 50                            # vault_collect.LISTS_PAGE
+FOLD, TOP_PAGES, BOTTOM_PAGES = 10, 5, 1   # vault_collect_plan.FOLD / TOP_PAGES / BOTTOM_PAGES
 COLD_VIDEOS = 4
 STORYBOARD_FRAMES = 12                     # storyboard._STORYBOARD_FRAMES
 CDN_LATENCY_S = 0.01
@@ -89,8 +98,30 @@ def _is_collect(c: dict) -> bool:
     return c["route"] == "lists" or (c["route"] == "media" and "type" not in c["query"])
 
 
-def _order(calls: list[dict], folders: set[int], n_items: int) -> dict:
-    """The Collect's OF calls against the newest-first order. Returns {ok, why, seq}."""
+def _want(folders: list[int], sizes: dict[int, int], n_items: int) -> list[tuple]:
+    """The walk vault_collect_plan designs over the fake (lib/vault_wire: hasMore false on the last page, full or not;
+    desc and asc meet once their position ranges overlap), modelled here, not imported."""
+    seq: list[tuple] = [("lists", o) for o in range(0, max(len(folders), 1), LISTS_PAGE)]
+    fi = desc = asc = 0
+    walked = False
+    while True:
+        for f in folders[fi:fi + FOLD]:
+            for o in range(0, sizes[f], PAGE):
+                seq.append(("folder", f, o, PAGE, "desc"))
+        fi += FOLD
+        for sort, k in (("desc", TOP_PAGES), ("asc", BOTTOM_PAGES)):
+            for _ in range(k):
+                if walked:
+                    break
+                seq.append((sort, desc if sort == "desc" else asc, PAGE))
+                desc, asc = (desc + PAGE, asc) if sort == "desc" else (desc, asc + PAGE)
+                walked = max(desc, asc) >= n_items or desc > n_items - asc
+        if walked and fi >= len(folders):
+            return seq
+
+
+def _order(calls: list[dict], folders: list[int], sizes: dict[int, int], n_items: int) -> dict:
+    """The Collect's OF calls against the designed priority order. Returns {ok, why, seq}."""
     seq = []
     for c in calls:
         q = c["query"]
@@ -101,26 +132,11 @@ def _order(calls: list[dict], folders: set[int], n_items: int) -> dict:
                         q.get("sort")))
         else:
             seq.append((q.get("sort"), int(q.get("offset") or 0), int(q.get("limit") or 0)))
+    want = _want(folders, sizes, n_items)
     why = []
-    if not seq or seq[0] != ("desc", 0, PAGE):
-        why.append(f"first call {seq[:1]} != newest page")
-    i = 1
-    lists = 0
-    while i < len(seq) and seq[i][0] == "lists":
-        lists, i = lists + 1, i + 1
-    if not lists:
-        why.append("no folder list right after the newest page")
-    got_f = []
-    while i < len(seq) and seq[i][0] == "folder":
-        got_f.append(seq[i])
-        i += 1
-    if sorted(f[1] for f in got_f) != sorted(folders) or any(f[2:] != (0, PICKER_PAGE, "desc") for f in got_f):
-        why.append(f"folder pages {got_f} != page 0 of {sorted(folders)}")
-    walk = seq[i:]
-    # The walk ends on the page whose hasMore is false (lib/vault_wire: on the last full page too).
-    want = [("asc", o, PAGE) for o in range(0, n_items, PAGE)]
-    if walk != want:
-        why.append(f"asc walk {walk[:4]}..{walk[-2:]} ({len(walk)}) != offsets 0..{n_items - 1} step {PAGE}")
+    if seq != want:
+        i = next((i for i, (g, w) in enumerate(zip(seq, want)) if g != w), min(len(seq), len(want)))
+        why.append(f"call {i}: got {seq[i:i + 3]} want {want[i:i + 3]} ({len(seq)} calls, want {len(want)})")
     return {"ok": not why, "why": why, "seq": seq}
 
 
@@ -225,8 +241,10 @@ async def run(ctx):
         media = v["media"]
         created = {m["id"]: m["created"] for m in media}
         calls = sorted(wire[a], key=lambda c: c["t"])
-        o = _order(calls, {f["id"] for f in v["folders"]}, n_items)
-        walk_t = [c["t"] for c in calls if c["route"] == "media" and c["query"].get("sort") == "asc"]
+        rail = [f["id"] for f in v["folders"] if f.get("type") == "custom" and f.get("hasMedia")]
+        sizes = {f: sum(f in m["folders"] for m in media) for f in rail}
+        o = _order(calls, rail, sizes, n_items)
+        walk_t = [c["t"] for c in calls]
         clips = sorted((c for c in fetch[a] if c["variant"] == "240p"), key=lambda c: c["t"])
         clip_ids = [c["mid"] for c in clips]
         if walk_t and clips and clips[0]["t"] < walk_t[-1]:
@@ -237,16 +255,29 @@ async def run(ctx):
             order_bad[a] = {"why": o["why"], "seq_head": o["seq"][:10], "calls": len(o["seq"])}
 
         # first batch early
-        second = next((c["t"] for c in calls if c["route"] == "media" and c["query"].get("sort") == "asc"
-                       and int(c["query"].get("offset") or 0) == PAGE), None)
         first_ok: dict[tuple[int, str], float] = {}
         for c in fetch[a]:
             if c["status"] == 200 and c["variant"] in ("thumb", "full"):
                 first_ok.setdefault((c["mid"], c["variant"]), c["t"])
-        late = [(m, var) for m in (x["id"] for x in media[:NEWEST]) for var in ("thumb", "full")
-                if second is None or first_ok.get((m, var), float("inf")) >= second]
-        if second is None or late:
-            early_bad[a] = {"second_page_t": second, "late": len(late), "late_head": late[:4]}
+
+        def late(ids: list[int], by: float | None) -> list[tuple[int, str]]:
+            return [(m, var) for m in ids for var in ("thumb", "full")
+                    if by is None or first_ok.get((m, var), float("inf")) >= by]
+        mcalls = [c for c in calls if c["route"] == "media"]
+        # (a) the walk's first page: rail folder 1's page 0, its stills in before the next media call
+        f1 = rail[0] if rail else None
+        i1 = next((i for i, c in enumerate(mcalls) if f1 is not None and str(c["query"].get("list")) == str(f1)
+                   and int(c["query"].get("offset") or 0) == 0), None)
+        first_by = mcalls[i1 + 1]["t"] if i1 is not None and i1 + 1 < len(mcalls) else None
+        first_late = late([m["id"] for m in media if f1 in m["folders"]][:PAGE], first_by) if f1 else [None]
+        # (b) the newest 100 in before the desc walk's 2nd page
+        second = next((c["t"] for c in mcalls if c["query"].get("list", "all") == "all"
+                       and c["query"].get("sort") == "desc" and int(c["query"].get("offset") or 0) == PAGE), None)
+        new_late = late([x["id"] for x in media[:NEWEST]], second)
+        if first_by is None or first_late or second is None or new_late:
+            early_bad[a] = {"first_folder": f1, "first_next_call_t": first_by, "first_late": len(first_late),
+                            "first_late_head": first_late[:4], "second_page_t": second, "late": len(new_late),
+                            "late_head": new_late[:4]}
 
         # complete
         s = status.get(a, {})

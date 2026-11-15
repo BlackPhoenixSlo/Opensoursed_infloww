@@ -28,7 +28,8 @@ Checks:
                               bio page on B's Creator but B's own
   send_tools_never_listed     tools/list for tokens A and B (cases + mix) names no send tool, lists both builtins
   anonymous_only_three_tools  anon (and token-in-query) tools/list == connect_account/register_account/login, and
-                              an anon data tool / propose_plan / plan_status call is isError 401 with open_url
+                              an anon data tool / propose_plan / plan_status call is HTTP 401 -32001 (the MCP
+                              sign-in challenge) with open_url in error.data
   revoked_token_dead          the revoked token: 401 on MCP (cases + mix) and on its report file
   origin_refused              any Origin header (anon or token): 403 -32600
   cookie_refused              owner cookie / Basic / employee cookie without a token: 401 -32001 (employee: 401/403)
@@ -149,7 +150,8 @@ class Wild:
                "text": None if parsed is not None else mc.redact(text[:300], self.secrets), "bug": case.bug or None}
         res = parsed.get("result") if isinstance(parsed, dict) else None
         sc = res.get("structuredContent") if isinstance(res, dict) else None
-        row["open_url"] = isinstance(sc, dict) and "open_url" in sc
+        data = err.get("data")   # an anonymous data-tool call: HTTP 401 -32001, the connect link in error.data
+        row["open_url"] = any(isinstance(d, dict) and "open_url" in d for d in (sc, data))
         row["checks"] = list(case.checks)
         problems = mc.expect_problems(case, status, parsed)
         row["problems"] = problems
@@ -334,7 +336,7 @@ _MIX_STATUS = {
     "v_status_other": ((200,), None, 404, (C_CROSS,)), "v_send_tool": ((200,), -32602, None, (C_NO_SEND,)),
     "v_garbage": ((400,), -32700, None, ()), "v_batch": ((400,), -32600, None, ()),
     "v_unknown_method": ((200,), -32601, None, ()), "v_revoked": ((401,), None, None, (C_REVOKED,)),
-    "v_cookie": ((401,), -32001, None, (C_COOKIE,)), "v_anon_data": ((200,), None, 401, (C_ANON3,)),
+    "v_cookie": ((401,), -32001, None, (C_COOKIE,)), "v_anon_data": ((401,), -32001, None, (C_ANON3,)),
     "v_bad_args": ((200,), None, 422, ()), "v_notification": ((202,), None, None, ()),
 }
 _MIX_UNREAD = frozenset({"v_cookie"})   # refused on its Cookie before the body is read: id null
@@ -465,7 +467,8 @@ async def run(ctx):
         if not wild.lists.get(who):
             wild.fail(c, f"no tools/list answer for {who}")
     for row in wild.rows:   # anon data-tool refusals carry the connect link
-        if row["who"] in ("anon", "a_query") and row["tool_status"] == 401 and not row["open_url"]:
+        refused = row["tool_status"] == 401 or (row["status"] == 401 and C_ANON3 in row["checks"])
+        if row["who"] in ("anon", "a_query") and refused and not row["open_url"]:
             wild.fail(C_ANON3, f"{row['name']}: 401 without open_url")
 
     by_check = {c: [r["name"] for r in wild.rows if c in r["checks"]] for c in

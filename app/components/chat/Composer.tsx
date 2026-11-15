@@ -47,6 +47,7 @@ import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { scriptPickWarning } from "@/lib/messageScripts";
 import { isUploadable, useComposerUploads } from "@/hooks/useComposerUploads";
 import { useReorder } from "@/hooks/useReorder";
+import { SCRIPT_SOURCE } from "@/lib/chatSlots";
 import { EXECUTOR_MAX_MINUTES, type SendOutcome } from "@/hooks/useSendMessage";
 import { useQueueKeys } from "@/hooks/useQueueKeys";
 import { markScriptSent } from "@/hooks/useSavedReplies";
@@ -97,6 +98,9 @@ const VaultPicker = dynamic(
   { ssr: false },
 );
 
+/** The script source's action beside its next-step bubble (lib/chatSlots.ts), if any. */
+const StepAction = SCRIPT_SOURCE?.StepAction ?? null;
+
 /** Imperative API exposed via `composerApiRef`. The parent can call
  *  these to drive the composer from outside (e.g. FanDrawer's
  *  "Send to chat" buttons on unsold PPVs). */
@@ -113,6 +117,9 @@ export interface ComposerProps {
    *  Composer by Creator and Fan), and it drives the vault picker's per-fan
    *  badges + filter. */
   fanId: FanId;
+  /** When the fan spoke last, that message's time (ISO), else null: the
+   *  script source (lib/chatSlots.ts) reads its next step for it. */
+  fanSpokeLastAt?: string | null;
   /** The Fan's name, for a refused schedule's notice in the other chats. */
   fanName?: string | null;
   /** May resolve to the send's outcome: a send waiting on its uploads
@@ -141,13 +148,16 @@ export interface ComposerProps {
   /** Queue keys for a caller that steps through chats, and whether the draft holds more than its text (useQueueKeys). */
   onAdvance?: (dir: 1 | -1) => void;
   onHoldChange?: (held: boolean) => void;
+  /** Plain Enter sends and moves on too (useQueueKeys). With
+   *  `onAdvance`, a Send & next button beside Send does what ⌘/Ctrl+Enter does. */
+  enterAdvances?: boolean;
 }
 
 export function Composer({
-  accountId, fanId, fanName = null, onSend, disabled, inflight = 0, placeholder,
+  accountId, fanId, fanSpokeLastAt = null, fanName = null, onSend, disabled, inflight = 0, placeholder,
   canSend: chatCanSend = true, cannotSendReason,
   quoted, onClearQuoted,
-  composerApiRef, onAdvance, onHoldChange,
+  composerApiRef, onAdvance, onHoldChange, enterAdvances,
 }: ComposerProps) {
   // The text is the chat's draft (sessionStorage), so it survives a Fan
   // switch and the Fan List marks the row "[Draft]"; a send empties it.
@@ -213,8 +223,8 @@ export function Composer({
   // can avoid charging again).
   const fanVaultQ = useFanVaultHistory(accountId, fanId);
 
-  // The "Next in" bubbles: the next step of the chat's user Script.
-  const scripts = useScriptSuggestions(accountId, fanId);
+  // The "Next in" bubbles: the chat's user Script, else the script source's.
+  const scripts = useScriptSuggestions(accountId, fanId, fanSpokeLastAt);
 
   // Uploads from the computer. The Composer remounts per Fan chat, so they
   // are per Fan as the rest of the draft is.
@@ -238,7 +248,7 @@ export function Composer({
   // Surface OF's block reason at the top of the composer when sending is
   // disallowed. Saves the user from typing a message that will 400.
   const blocked = !chatCanSend;
-  const queue = useQueueKeys({ accountId, fanId, held: view.held, onAdvance, onHoldChange });
+  const queue = useQueueKeys({ accountId, fanId, held: view.held, onAdvance, onHoldChange, enterAdvances });
 
   /** A notice that goes after `ms`; the next one replaces it. */
   function showToast(msg: string, opts: { ms?: number } = {}) {
@@ -339,7 +349,7 @@ export function Composer({
     if (args.scheduledAt) showToast(scheduledToast(args.scheduledAt, Date.now(), EXECUTOR_MAX_MINUTES));
     // Advance the Script if the just-sent message rode a step of one (the
     // draft's `script`, set by its template pick).
-    scripts.advance(picked);
+    scripts.advance(picked, !!sent?.failure);
     // A send at once that rode a saved reply counts toward its send count
     // once OF took it (a schedule is not counted: it has not gone out).
     const replyId = sentReplyId(refused.draft);
@@ -480,6 +490,13 @@ export function Composer({
     else setText((t) => (t ? `${t} ${suggestion}` : suggestion));
   }
 
+  /** A source step's action's draft: like a Copilot suggestion, never a
+   *  script pick, so a template picked earlier no longer advances a script on Send. */
+  function onStepDraft(draft: string) {
+    act({ type: "dropScript" });
+    onPickSuggestion(draft);
+  }
+
   /** A script picked in the Scripts list or the next-step suggestion: the
    *  "Use script?" guard (roadmap W4 4.2) asks first when this Fan already
    *  bought some of its media (the BOUGHT badge's history) or some was
@@ -592,13 +609,17 @@ export function Composer({
                 {nextStep.title ? <strong className="text-fg mr-1">{nextStep.title}:</strong> : null}
                 {isOfHtml(nextStep.text) ? ofPreviewText(nextStep.text) : nextStep.text}
               </span>
+              {StepAction && SCRIPT_SOURCE?.owns(nextStep.scriptId) && accountId && (
+                <StepAction key={`${accountId}:${fanId}`} accountId={accountId} fanId={fanId}
+                  replyAt={fanSpokeLastAt} onDraft={onStepDraft} />
+              )}
               <button
                 type="button"
                 onClick={(e) => {
                   // Stop the row's click handler from also firing the pick —
                   // ✕ is an "end script" action, not a "pick + dismiss" combo.
                   e.stopPropagation();
-                  scripts.dismiss();
+                  scripts.dismiss(nextStep.scriptId);
                 }}
                 className="text-fg-dim hover:text-fg shrink-0"
                 title="End script — stop suggesting next steps"
@@ -665,6 +686,8 @@ export function Composer({
             <TemplatePicker
               accountId={accountId}
               onPick={onPickScript}
+              activeScriptId={scripts.activeScriptId}
+              pinnedScriptId={scripts.pinnedScriptId}
               messagesPro
               slashQuery={slashQuery}
               onSlashClose={() => setSlashClosedFor(text)}
@@ -715,6 +738,7 @@ export function Composer({
           onVault={openVault}
           onCalendar={() => act({ type: "schedule", open: !scheduleOpen })}
           onSend={() => submit()}
+          onSendNext={onAdvance ? () => submit({ advance: true }) : undefined}
           accountId={accountId}
           onToggleOutbound={outbound.toggle}
           aa={allowRich ? { on: draft.mode.toolbar, onToggle: onAa } : null}

@@ -57,8 +57,12 @@ export interface Offer {
   list_cents: number | null;
   media: number[];
   previews: number[];
+  /** Each locked then preview media's kind and length in seconds (`offer_media_json.items`); absent on older rows. */
+  items?: OfferItem[];
   refusal: string | null;
 }
+/** One Offer media (`full_ai_sell._facts` "media"): its id, kind ("photo" | "video" | ...) and length (null: none known). */
+export interface OfferItem { id: number; kind: string; seconds: number | null }
 export type Outcome = "bought" | "declined";
 /** One Writer call; `rewrite` marks the Claim audit's rewrite pass (`full_ai_turn._claim_audit`), appended after the
  *  first pass. */
@@ -450,6 +454,27 @@ export function ppvLine(t: Turn): PpvLine | null {
   if (cents === 0) return { kind: "free" };
   return t.settle?.kind === "done" ? { kind: "settled", dollars: cents / 100, paid: t.settle.outcome === "bought" }
     : { kind: "price", dollars: cents / 100 };
+}
+
+const clock = (secs: number) => {
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), ss = String(secs % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+};
+
+/** The PPV bubble's kind and length line over the Offer's LOCKED items (those whose id is in `media`; a free preview is
+ *  not what he pays for): "1 video · 0:42", "5 videos · 12:30", "3 photos", "2 photos + 1 video · 0:42". Photos first,
+ *  then videos, then any other kind; the length is the videos' total (m:ss, h:mm:ss from an hour), printed only when
+ *  every video has one. null when `items` is absent or holds no locked item. */
+export function mediaLine(offer: Offer): string | null {
+  const locked = new Set(offer.media);
+  const items = (offer.items ?? []).filter((i) => locked.has(i.id));
+  if (!items.length) return null;
+  const kinds = [...new Set(["photo", "video", ...items.map((i) => i.kind)])];
+  const counts = kinds.map((k) => [k, items.filter((i) => i.kind === k).length] as const).filter(([, n]) => n > 0);
+  const head = counts.map(([k, n]) => `${n} ${k}${n > 1 ? "s" : ""}`).join(" + ");
+  const videos = items.filter((i) => i.kind === "video");
+  const timed = videos.length > 0 && videos.every((i) => i.seconds);
+  return timed ? `${head} · ${clock(videos.reduce((t, i) => t + (i.seconds ?? 0), 0))}` : head;
 }
 
 /** The line under a reply: Route, Heat, matched row and, when she answered, the Writer and how many fell before it

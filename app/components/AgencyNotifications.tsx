@@ -34,6 +34,7 @@ import { TriangleAlert, X } from "lucide-react";
 
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
+import { CONSENT_FIX_HREF } from "@/lib/chatSlots";
 import { relay } from "@/lib/relay";
 import { ssePoll } from "@/lib/events";
 import { useSettingsBlob } from "@/lib/settingsBlob";
@@ -95,11 +96,11 @@ export function useAgencyPinned(): AgencyNotification[] {
 }
 const NO_ROWS: AgencyNotification[] = [];
 
-/** The page where a pinned row's Creator gets fixed (that Creator's consent switch), else null:
- *  the pinned row links there, and so does the banner's View while only one Creator is flagged. */
+/** The page where a pinned row's Creator gets fixed (that Creator's consent switch, a plugin's:
+ *  lib/chatSlots.ts `consentFixHref`), else null: the pinned row links there, and so does the
+ *  banner's View while only one Creator is flagged. None: the rows stay plain and View opens the bell. */
 export function consentFixHref(accountId: string | null): string | null {
-  void accountId;   // no such page here: the rows stay plain and View opens the bell
-  return null;
+  return accountId && CONSENT_FIX_HREF ? CONSENT_FIX_HREF(accountId) : null;
 }
 
 /** A pinned row's Creator name (`data.name`), else its account id. */

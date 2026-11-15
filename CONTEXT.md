@@ -407,7 +407,7 @@ Which one Lane, or none, may reply to a Fan at an Evaluation point, decided by t
 _Avoid_: owner on its own (the Agency's, as in **Owner session**), ownership on its own (`ownership.py`'s bought media), engine_active
 
 **Human yield**:
-The Lane ownership rule that no Lane replies to a Fan for a while (default 1 h) after a human's 1:1 outbound; an outbound of unknown sender counts as human. OF-app yield feeds it from a live one-Fan read just before a send.
+The Lane ownership rule that no Lane replies to a Fan for a while after a human's 1:1 outbound (`manual_yield_minutes`, code default 60 s; D49's 1 h is set per Creator at the flip); an outbound of unknown sender counts as human. OF-app yield feeds it from one live one-Fan read per Turn, at Full AI Chat's pre-look.
 _Avoid_: takeover, human window, pause
 
 **Top spend limit**:
@@ -415,7 +415,7 @@ The lifetime spend at or above which Full AI Chat stops replying to a Fan and le
 _Avoid_: whale gate, whale cap
 
 **Stand-down**:
-The other Lanes skipping a Treatment fan whom Full AI Chat owns in live Mode: W7's `_classify`, Get to know fans (at decide and before each bubble) and Auto-reply. Holdout fans and Shadow mode stand nothing down, and funnel code never changes (ADR-0036).
+The other Lanes skipping a Fan whom Full AI Chat claims (`claims`: Full AI on for the Creator, i.e. global switch not set, rule enabled, Mode live, and the Fan on its Fans list), whatever Full AI then does (reply, `no_send`, Stop): Get to know fans (every trigger, at its candidate seam), Auto-reply, and the Welcome handoff (a claimed Fan's handoff job is `full_ai_chat`). Shadow mode stands nothing down, and funnel code never changes (ADR-0036).
 _Avoid_: yield (that is **Human yield**), disable, mute
 
 - **Welcome handoff** (the welcome engine passing a Fan to the Lane that owns him; per Creator today, per Fan once Full AI Chat goes live): `service/automations/welcome_turn.py`
@@ -603,7 +603,7 @@ A Fan of a Full AI Chat Creator counted for Revenue per enrolled fan, derived: h
 _Avoid_: enrollment (OF list enrollment, a **Functional demand**), assignment
 
 **Arm**:
-A Fan's side of the fixed Fan-hash split, on every Decision row and fixed for good by his Enrolment: treatment (about 80 %; Full AI Chat owns him) or holdout (about 20 %; today's Lanes, unchanged). A Treatment fan or Holdout fan is a Fan in that Arm.
+A Fan's side of the fixed Fan-hash split, on every Decision row (`arm`, `salt_ver`): treatment (about 80 %) or holdout (about 20 %). A label only: no holdout gate is built (Owner answers 14), so who Full AI Chat answers is its claim (*Stand-down*), never the Arm. A gate later is one fact in `claims`, landed before a Creator's first flip.
 _Avoid_: control group, slice (the **Shadow slice** is a systemd slice), bucket, cohort
 
 **Revenue per enrolled fan**:

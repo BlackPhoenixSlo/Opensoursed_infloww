@@ -384,6 +384,46 @@ def case_ai_dare_is_one_reply_brush_off_then_dare():
     assert sys_.count(wr.DARE) == 1 and sys_.count(wr.BRUSH_OFF) == 1
 
 
+def _photo_system(route, row, *, read, dared, photo=True):
+    f = _turn("i dont believe rate my face")
+    f.dared = dared
+    if photo:
+        f.cut_rows[-1].media_count = 1
+        f.cut_rows[-1].photo_read = "a man in a black parka with a grey fur hood" if read else None
+    return wr.messages_for(route, row, 2, f, None)[0]["content"]
+
+
+def case_bot_check_photo_is_rated_and_never_dared_twice():
+    """NEW-156: his read picture on a bot check gets DARE_RATE in the dare's place; after her dare
+    she does not dare again (brush-off alone, DARE_BLIND with an unread picture); chat / sext
+    right after her dare rate the read picture under the goal; no dare, no picture: as before."""
+    for dared in (False, True):
+        sys_ = _photo_system("ai_dare", "asks_if_ai", read=True, dared=dared)
+        assert wr.DARE_RATE in sys_ and wr.DARE not in sys_ and wr.BRUSH_OFF not in sys_, dared
+    sys_ = _photo_system("ai_dare", "asks_if_ai", read=False, dared=True)
+    assert wr.BRUSH_OFF in sys_ and wr.DARE_BLIND in sys_ and wr.DARE not in sys_
+    sys_ = _photo_system("ai_dare", "asks_if_ai", read=False, dared=True, photo=False)
+    assert wr.BRUSH_OFF in sys_ and wr.DARE not in sys_ and wr.DARE_BLIND not in sys_
+    for kw in ({"read": False, "dared": False}, {"read": False, "dared": False, "photo": False}):
+        assert wr.DARE in _photo_system("ai_dare", "asks_if_ai", **kw), kw      # the first dare
+    for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
+        assert wr.DARE_RATE in _photo_system(route, row, read=True, dared=True), route
+        assert wr.DARE_RATE not in _photo_system(route, row, read=True, dared=False), route
+        assert wr.DARE_RATE not in _photo_system(route, row, read=False, dared=True), route
+    new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
+    for c in (wr.DARE_RATE, wr.DARE_BLIND, wr.GIF_NOW.strip()):
+        assert c in new, c
+
+
+def case_gif_now_only_with_gif_pct():
+    """NEW-157: the sticker block ends with GIF_NOW only when `gif_pct` is set."""
+    f = _turn(gifs=True, gif_pct=100)
+    assert wr.GIF_NOW in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=True)[0]["content"]
+    assert wr.GIF_NOW not in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=False)[0]["content"]
+    f = _turn(gifs=True)
+    assert wr.GIF_NOW not in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=True)[0]["content"]
+
+
 def case_make_right_is_the_apology_with_no_free_item():
     sys_ = _system("make_right", "complains_now", fan_info={"real_name": "Tom"})
     assert wr.MAKE_RIGHT_HEAD in sys_ and wr.MAKE_RIGHT_TAIL in sys_

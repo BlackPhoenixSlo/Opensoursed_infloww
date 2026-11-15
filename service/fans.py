@@ -35,6 +35,7 @@ from db.models import (
 )
 from auth import assert_account_owned
 from geo_timezones import resolve_timezone_for_place
+import relay_hooks
 from of_coerce import json_list
 
 # Statuses that mean "this money is gone / never landed" — chargebacks,
@@ -73,7 +74,7 @@ _zone_for_place = functools.lru_cache(maxsize=2048)(resolve_timezone_for_place)
 
 
 def _row_to_dict(f: Fan) -> dict[str, Any]:
-    return {
+    d = {
         "account_id": f.account_id,
         "fan_id": f.fan_id,
         "of_username": f.of_username,
@@ -145,6 +146,9 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "created_at": f.created_at.isoformat() if f.created_at else None,
         "updated_at": f.updated_at.isoformat() if f.updated_at else None,
     }
+    for extra in relay_hooks.fan_row_fields:
+        d.update(extra(f))
+    return d
 
 
 def _safe_load_obj(raw: str | None) -> dict[str, Any]:

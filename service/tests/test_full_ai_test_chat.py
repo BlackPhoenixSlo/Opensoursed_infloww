@@ -14,6 +14,8 @@ equal before and after, no `automation_runs` row, every send path patched to rai
   case_parts_equal_the_shared_chain      girl / formal parts = a direct finalize_draft + shape_parts
                                          (+ typo throttle) with the matching context, and differ;
                                          the account-wide style switches (set against each side) unread
+  case_strip_emojis_config               config `strip_emojis` on the draft: her emoji is gone from the parts and
+                                         the row; the checkpoint (off, account flag off) keeps it
   case_typos_off_skips_only_the_typo_pass  `style.typos` off on the draft: its parts = the girl chain
                                          without the typo throttle, the checkpoint's keep it, no typo state
   case_echo_is_sent                    her line repeating his is sent; a chain drop: failed + dropped_reason
@@ -148,6 +150,21 @@ def case_parts_equal_the_shared_chain():
     assert g["parts"] != f["parts"], (g["parts"], f["parts"])
     rows = _rows(A, pair)
     assert [(_reply(x)["side"], _reply(x)["config_rev"]) for x in rows] == [("checkpoint", 3), ("draft", 3)]
+
+
+def case_strip_emojis_config():
+    pair, raw = "p-emoji", "omg hii 😏 what are u up to tonight"
+    _store_config(A, {"draft": {**DEFAULTS, "strip_emojis": True}, "rev": 4})
+    try:
+        ck, *_ = _post(OWNER_A, _body(pair), f"ok:{raw}")
+        dr, *_ = _post(OWNER_A, _body(pair, side="draft"), f"ok:{raw}")
+    finally:
+        _store_config(A, {})
+    kept, gone = (" ".join(p["text"] for p in x.json()["parts"]) for x in (ck, dr))
+    assert "😏" in kept and "hii" in kept, kept
+    assert "😏" not in gone and "hii" in gone and "tonight" in gone, gone
+    ck_row, dr_row = _rows(A, pair)
+    assert "😏" not in json.dumps(_reply(dr_row)["parts"], ensure_ascii=False), _reply(dr_row)["parts"]
 
 
 def case_typos_off_skips_only_the_typo_pass():

@@ -49,7 +49,8 @@ chats), capped at the 200 rows drawn); the thread's bubbles == OF's thread (seed
 oldest first; the picker's tiles, scrolled to the end, == the seeded vault; every /img 200; the send side effect (OF
 got exactly one POST with that text); receive: every DM in the DB (`/admin/messages`), each thread's DMs in send
 order, the opened Fan's DM visible, and frame -> SSE p95 (the manager's /events listener, harness side) <= SSE_P95_MS
-(budget); the thread's reads: no route GET twice (`THREAD_ONCE`: attribution, fan-history were 3x / 2x) and its
+(budget); the thread's reads: no route GET twice (`THREAD_ONCE`: attribution, fan-history were 3x / 2x; an older
+page a short thread fills, #563, is one read per `before_id`, at most MAX_FILL_PAGES) and its
 local reads (seed, Fan, attribution, fan-history, scheduled sends, saved replies, sensitive words) in one
 /admin/screens/chat, none per route (`THREAD_BUNDLE`); its waves (request start clusters > WAVE_GAP_MS apart) and
 duplicates in the table and metrics. After receive the open thread is left alone `idle_s` (`--set idle_s=0`: none;
@@ -97,7 +98,8 @@ profile: `slop/run slow-conn --net=jp-lossy --break --fault=net-lossy-si-budget-
 targets its flows measured >= 2x si's). Serve-stale: `--net=jp --break --fault=screen-bundle-stale-unmarked`
 (lib/screens_faults.py: a last value served without `refreshing`, so no follow-up; targets C_AGAIN only). Inline
 boot (C_INLINE: a document load of the Dashboard or Messages Pro fetches none of the reads its HTML carries,
-app/lib/inlineBoot.server.ts; the Dashboard reads no screen bundle at all): `--net=jp --break --fault=inline-boot-relay-refuses-server` (the Next server's reads
+app/lib/inlineBoot.server.ts; the Dashboard's card bundle, from its Per-model cards (#586), is the page's own, once: the
+Dashboard boots none, lib/screenEntry.ts): `--net=jp --break --fault=inline-boot-relay-refuses-server` (the Next server's reads
 answered 503: the page falls back to its own fetches; targets C_INLINE only).
 
 Wire profiles (`--net=jp-lossy` / `--net=jp-lossy-bad`, never in the default set; the run stops at once, naming
@@ -281,6 +283,9 @@ WAVE_GAP_MS = 100  # a thread request starting this long after the previous star
 THREAD_LOCAL = tuple(re.compile(x) for x in (
     r"^/admin/messages/\d+/\d+(\?|/attribution|$)", r"^/admin/fans/\d+/\d+(\?|$)", r"^/admin/vault/fan-history",
     r"^/api/of/v2/scheduled-sends\?", r"^/admin/saved-replies\?", r"^/admin/sensitive-words"))
+# A short thread, still pinned, loads older pages at once once OF's head settled, at most this many
+# (app/components/chat/threadPin.ts MAX_FILL_PAGES, #563): each its own read (THREAD_ONCE), not the open's local reads.
+MAX_FILL_PAGES = 4
 PACED_GAP_MS = 2_000  # judged time this far past the key: the table note names the flow (key = the paint)
 # Where each flow should land after the fixes (recorded; checked only where met, RECEIVE_LIMIT_MS below): si as
 # measured (the owner's "instant"); a far profile = si + 2 RTT (one for the request, one for its data, nothing serial
@@ -319,15 +324,15 @@ C_HTML_PRIVATE = ("a signed-in document load's HTML (it carries that user's inli
 UI_CHECKS = (WARM_REUSED, WARM_FRESH, C_HTML_PRIVATE, C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE, C_AGAIN,
              C_INLINE, THREAD_ONCE, THREAD_BUNDLE)
 # C_INLINE: per document-load flow, the reads its HTML carries (app/lib/inlineBoot.server.ts inlinePaths; a bundle's
-# follow-up, `accounts=`, is the browser's own). The Dashboard's HTML carries no bundle: none of its cards reads one,
-# so its document loads read none at all (DASH_BUNDLE).
+# follow-up, `accounts=`, is the browser's own). The Dashboard's HTML carries no bundle (lib/screenEntry.ts): its
+# Per-model cards (#586) read it once the Applied settings answer, one first-page GET per document load (DASH_BUNDLE).
 _ME = (r"^/auth/me$", r"^/chatter/me$")
 INLINE_READS: dict[str, tuple[re.Pattern, ...]] = {
     "dashboard": tuple(re.compile(x) for x in (*_ME, r"^/admin/settings/applied$")),
     "fan-list": tuple(re.compile(x) for x in (*_ME, r"^/admin/screens/inbox\?cursor=0$")),
 }
 INLINE_READS["dashboard-again"] = INLINE_READS["dashboard"]
-DASH_BUNDLE = re.compile(r"^/admin/screens/dashboard")
+DASH_BUNDLE = re.compile(r"^/admin/screens/dashboard(?!.*accounts=)")
 
 ROWS_JS = "() => [...document.querySelectorAll('table tbody tr')].filter(r => r.cells.length > 1).length"
 FANS_JS = ("() => [...document.querySelectorAll('dt')].filter(d => d.textContent.trim() === 'Fans')"
@@ -1118,8 +1123,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     bad_order = {p: {"want": res[p]["found"]["thread_want"], "got": res[p]["found"].get("thread_ids")}
                  for p in profiles if res[p]["found"].get("thread_ids") != res[p]["found"]["thread_want"]}
     ctx.check(C_ORDER, not bad_order, wrong=bad_order, urls={p: res[p]["found"].get("thread_url") for p in profiles})
-    ctx.check(THREAD_ONCE, not any(d["dupes"] for d in reads.values()),
-              dupes={p: d["dupes"] for p, d in reads.items() if d["dupes"]})
+    ctx.check(THREAD_ONCE, not any(d["dupes"] or d["older"] > MAX_FILL_PAGES for d in reads.values()),
+              dupes={p: d["dupes"] for p, d in reads.items() if d["dupes"]},
+              older={p: d["older"] for p, d in reads.items()}, max_fill_pages=MAX_FILL_PAGES)
     ctx.check(THREAD_BUNDLE, all(d["bundle"] == 1 and not d["local"] for d in reads.values()),
               bundle={p: d["bundle"] for p, d in reads.items()}, local={p: d["local"] for p, d in reads.items()})
     bad_v = {p: res[p]["found"].get("vault_tiles") for p in profiles if res[p]["found"].get("vault_tiles") != n_vault}
@@ -1146,11 +1152,12 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     fetched = {f"{p} {f}": paths for p in profiles for f, rxs in INLINE_READS.items()
                if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
                              if q["method"] == "GET" and any(rx.match(q["path"]) for rx in rxs)])}
-    # The Dashboard's document loads: no screen bundle at all (0 GETs of it by the page).
-    dash_bundle = {f"{p} {f}": paths for p in profiles for f in ("dashboard", "dashboard-again")
-                   if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
-                                 if q["method"] == "GET" and DASH_BUNDLE.match(q["path"])])}
-    ctx.check(C_INLINE, not fetched and not dash_bundle, fetched=fetched, dash_bundle=dash_bundle,
+    # The Dashboard's document loads: its card bundle (first page, no `accounts=`) the page's own GET, exactly once.
+    dash_bundle = {f"{p} {f}": [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
+                                if q["method"] == "GET" and DASH_BUNDLE.match(q["path"])]
+                   for p in profiles for f in ("dashboard", "dashboard-again")}
+    ctx.check(C_INLINE, not fetched and all(len(x) == 1 for x in dash_bundle.values()), fetched=fetched,
+              dash_bundle=dash_bundle,
               html={p: {f: [res[p]["flows"].get(f, {}).get(k) for k in ("html_ttfb_ms", "html_end_ms")]
                         for f in INLINE_READS} for p in profiles})
 

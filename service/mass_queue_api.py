@@ -137,7 +137,8 @@ async def _close_mass_run(
 
     List-based audiences (`userLists`) aren't expanded here, so their members
     aren't in `recipient_ids` and NO per-fan row is written for them. What they
-    get instead: the run itself records the body and OF's send stamp. Who received it is never read off OF's rosters
+    get instead: the run itself records the body and OF's send stamp (read by the
+    blast-copy matcher and other readers). Who received it is never read off OF's rosters
     (the Audience crawl is gone, docs/spec/phase-02-audience-crawl.md): readers
     assume it from the run's `audience_filter`.
 

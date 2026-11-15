@@ -94,7 +94,7 @@ export function readCachedOwnerId(accountId: string): number | null {
 
 export function ChatSurface({
   accountId, fanId, chat, insightsOpenAtStart, onBack,
-  markRead = "onOpen", prefetchWindowMs, onSendStart, onSendSettled, onAdvance, onHoldChange,
+  markRead = "onOpen", prefetchWindowMs, onSendStart, onSendSettled, onAdvance, onHoldChange, enterAdvances,
 }: {
   accountId: string;
   /** Number on OnlyFans, a string snowflake on Fansly — the id is passed
@@ -126,6 +126,8 @@ export function ChatSurface({
   onAdvance?: (dir: 1 | -1) => void;
   /** The draft holds media, GIFs or a price (see Composer). */
   onHoldChange?: (held: boolean) => void;
+  /** Enter sends and moves on, as ⌘/Ctrl+Enter (see Composer). */
+  enterAdvances?: boolean;
 }) {
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
@@ -588,6 +590,13 @@ export function ChatSurface({
     return [...real, ...scheduled.map((s) => scheduledToPseudoMessage(s, ownerUserId))];
   }, [handle.data, scheduledQ.data, ownerUserId]);
 
+  // When the fan spoke last, the time of that message (Composer's script-step
+  // offer waits for it). Null while we spoke last.
+  const lastReal = handle.data?.[handle.data.length - 1];
+  const fanSpokeLastAt = lastReal && ownerUserId != null && !sameUserId(lastReal.fromUser?.id, ownerUserId)
+    ? lastReal.createdAt ?? null
+    : null;
+
   // Pinned slice asked of OF directly (one call, cached a minute), because
   // filtering the loaded backlog UNDERCOUNTS: a pin older than the first page
   // is invisible, so a thread holding two rendered "Pinned · 1" — verified live
@@ -748,12 +757,14 @@ export function ChatSurface({
       <Composer
         accountId={accountId}
         fanId={fanId}
+        fanSpokeLastAt={fanSpokeLastAt}
         fanName={headerName}
         composerApiRef={composerApiRef}
         quoted={quoted}
         onClearQuoted={() => setQuoted(null)}
         onAdvance={onAdvance}
         onHoldChange={onHoldChange}
+        enterAdvances={enterAdvances}
         onSend={async (args) => {
           // Closing the pinned popover on send is the second half of the
           // hide rule (the first half is click-out, owned by the popover

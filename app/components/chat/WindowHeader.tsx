@@ -13,12 +13,14 @@
  * as the way back to the Dashboard (`goToDashboard`): this window has no
  * sidebar, and in the desktop app no address bar.
  * The right-hand group ends with SFW, the far right; before it the "Notif"
- * switch (`RailSwitch`).
+ * switch (`RailSwitch`), and before that the page's own `actions`. A page
+ * that picks the Creator itself can leave All Models and the Creator tabs
+ * out (`tabs={false}`).
  */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 import { SwitchTrack } from "@/components/ui/SwitchTrack";
@@ -80,16 +82,23 @@ export function RailSwitch() {
   );
 }
 
-export function WindowHeader() {
+export function WindowHeader({ actions, tabs = true }: {
+  /** The page's own buttons, before Notif and SFW. */
+  actions?: ReactNode;
+  /** All Models and the Creator tabs (with "+ Add a Creator"); off, the row
+   *  keeps Home and its right end. */
+  tabs?: boolean;
+} = {}) {
   const [sfw, toggleSfw] = useSfw();
   return (
     <div role="region" aria-label="Window header" className={cn(G.bar, "flex items-end bg-[var(--inf-window,var(--color-bg))] border-[var(--inf-rule,var(--color-border))]")}>
       <Link href="/" onClick={goToDashboard} aria-label="Dashboard" title="Dashboard" className="self-center mr-3 rounded-md focus-visible:outline-2 focus-visible:outline-accent">
         <IfMark className="size-6" />
       </Link>
-      <AllModelsTab />
-      <CreatorTabs />
+      {tabs && <AllModelsTab />}
+      {tabs && <CreatorTabs />}
       <div className={cn(G.right, "ml-auto self-center flex items-center")}>
+        {actions}
         <RailSwitch />
         {/* SFW = blur media everywhere; the same store as the app top bar's. */}
         <button

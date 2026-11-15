@@ -21,7 +21,7 @@ shape: the probe's.
 
   - `QUESTIONS`, `THRESHOLDS`, `INTENSITY`, `STATE_VERSION`,
     `QUESTION_VERSION` (`question_version()`).
-  - Test Mode only (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`; with config
+  - Test + live only, never Shadow (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`; with config
     `sext_scene` also `scene_stage`, `offer_level`), `TEST_NOULS` (DRAFT `counter_offer`,
     `offer_moment`; with `sext_scene` also `scene_on`, `scene_offer`: the `SCENE` set, which
     reads the `SCENE_STATE_KEYS` `full_ai_test.fetch` adds), `DRAFT`, `TEST_THRESHOLDS`,
@@ -176,7 +176,7 @@ INTENSITY: dict[str, Any] = {
     ],
 }
 
-# ── Test Mode only (03b) ────────────────────────────────────────────────
+# ── Test + live only (03b) ────────────────────────────────────────────────
 # Asked only in test Mode, in its one request: Shadow's request, `QUESTIONS`,
 # `THRESHOLDS` and `QUESTION_VERSION` stay Phase 01's until the owner OKs this
 # wording (adding it to Shadow / live is a 04a / 05 step). Wording is new (no old

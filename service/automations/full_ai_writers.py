@@ -7,6 +7,7 @@
   likes_flag                                                pure: He likes' switch (`he_likes`, test Mode)
   tease_flag / tease_turn / is_ride                         pure: Chat tease's switch (`chat_tease`, test Mode)
   implied_flag / wide_flag                                  pure: `ask_implied` / `info_wide` (test Mode)
+  bundle_of / count_flag                                    pure: `sell_bundle` / `sell_count` (test Mode)
   lead_flag / lead_line / lead_examples                     pure: lead-in asks (`lead_in`, test Mode)
   write(decision, facts, *, deadline) -> WriteResult       the Writer chain through llm_client.chat
   floor(text, lang, offer_ref=None) -> str | None          pure: the code floor's reject reason
@@ -208,6 +209,21 @@ DARE = ("He questioned whether you're real last message and you laughed it off. 
         "picture right now and you'll tell him exactly what you see — a bot couldn't. Promise a "
         "rating out of ten; filthy about what you want a picture OF if the thread's explicit, cheeky "
         "if tame. ONE short message. A dare, not a sale: no price, no offer, no questions.")
+# NEW-156 (owner 2026-11-15, Test chat: she dared, he sent his face, she dared again): his picture
+# on a bot check is read and rated; `_dare_beat`.
+DARE_RATE = ("He doubts you're real and sent a picture to test you — the [he sent: …] note in the chat is "
+             "what's in it. Prove you're looking at it: name one or two things you actually see in it, in "
+             "your own voice, then give him his rating out of ten. Playful, never mean about his looks. "
+             "ONE or two short messages. No price, no offer, no questions, and don't ask for another "
+             "picture.")
+# autoreply's `_PHOTO_UNSEEN`, verbatim: his picture on a bot check that nobody could describe.
+DARE_BLIND = ("HE SENT A PHOTO you can't make out — [he sent a photo] in the chat. Never say "
+              "or imply what's in it. If he wrote something, answer that. If it's just the "
+              "photo, react warmly and naturally anyway: a playful guess said AS a guess, or a "
+              "flirty question about it, is fine.")
+# NEW-157 (owner 2026-11-15 "how many percentages does it send it", of the fitting Turns): under
+# the sticker block when `gif_pct` is set, so the % is GIFs sent and not GIFs allowed.
+GIF_NOW = "\n- THIS message: a sticker fits the moment. Attach one, after your text."
 # NEW-113 (ticket 34): the dare joining, one reply holding both beats (no pending-dare state, D32).
 DARE_JOIN = ("\n\nBOTH BEATS GO IN THIS ONE REPLY: the brush-off above first, then right after it "
              "the dare below (the \"last message\" it means is the brush-off you just wrote):\n")
@@ -571,6 +587,34 @@ def _beat(route: str, heat: int, f: SimpleNamespace, item: Pick | None, test: bo
     return None
 
 
+def his_photo(rows) -> str | None:
+    """His Turn's picture (the trailing inbound rows of `rows`): "seen" when one is read
+    (`photo_read`, `_router_jev.read_photos`), "unseen" when he sent media nobody described, else None."""
+    turn = []
+    for m in reversed(rows):
+        if m.direction != "in":
+            break
+        turn.append(m)
+    if any(getattr(m, "photo_read", None) for m in turn):
+        return "seen"
+    return "unseen" if any(getattr(m, "media_count", 0) for m in turn) else None
+
+
+def _dare_beat(route: str, need: str, photo: str | None, dared: bool) -> str:
+    """The bot check with his picture (NEW-156). ai_dare: a read picture gets DARE_RATE in the
+    dare's place; after her dare (`dared`, `TurnFacts.dared`) she never dares twice: the brush-off
+    alone, with DARE_BLIND when his picture could not be read. chat / sext right after her dare
+    with a read picture: DARE_RATE under the goal. Anything else: `need` as it was."""
+    if route == "ai_dare":
+        if photo == "seen":
+            return DARE_RATE
+        if dared:
+            return BRUSH_OFF + (f"\n{DARE_BLIND}" if photo else "")
+    elif dared and photo == "seen" and route in ("chat", "sext"):
+        return need.rstrip("\n") + "\n" + DARE_RATE
+    return need
+
+
 def _carries_item(route: str, pick: Pick | Refusal | None) -> bool:
     """A tease with a Pick, or make_right with a Free item (a Pick at price 0; a priced Pick there
     is ignored, as on every non-selling Route)."""
@@ -579,17 +623,18 @@ def _carries_item(route: str, pick: Pick | Refusal | None) -> bool:
 
 def item_line(pick: Pick, terms: str | None) -> str:
     """OLD-AIC-12's item line for the Pick: its `ref` as the id, the anchor's kind and length
-    (` m:ss` on a clip), the label and the anchor's describe text (`pick.facts["description"]`);
-    `terms` None drops the ` — {terms}` tail (a tease names no price).
+    (` m:ss` on a clip; a video bundle's total over its locked clips), the label and the anchor's
+    describe text (`pick.facts["description"]`); `terms` None drops the ` — {terms}` tail (a tease
+    names no price).
 
     ASSUMPTION: the vault has no item label, so the label is OLD-AIC-12's own fallback
-    'untitled', or "<n> photos" for a photo set (the count is true; the Writer must not invent
-    one). Overturned by an owner-set label field."""
+    'untitled', or "<n> photos" / "<n> videos" for a set (the count is true; the Writer must not
+    invent one). Overturned by an owner-set label field."""
     facts = pick.facts or {}
     items = facts.get("items") or []
-    secs = items[0].get("seconds") if items else None
-    dur = f" {secs // 60}:{secs % 60:02d}" if pick.format == "video" and secs else ""
-    label = f"{len(pick.media)} photos" if len(pick.media) > 1 else "untitled"
+    secs = sum(int(i.get("seconds") or 0) for i in items) if pick.format == "video" else 0
+    dur = f" {secs // 60}:{secs % 60:02d}" if secs else ""
+    label = f"{len(pick.media)} {pick.format}s" if len(pick.media) > 1 else "untitled"
     line = ITEM_HEAD if terms is None else ITEM_LINE
     return line.format(iid=pick.ref, kind=pick.format, dur=dur, label=label,
                        description=str(facts.get("description") or "").strip(), terms=terms)
@@ -652,12 +697,12 @@ def tease_flag(facts) -> bool:
 
 
 def implied_flag(facts) -> bool:
-    """Config `ask_implied` counts (`wants_content`'s wider wording): test Mode only."""
+    """Config `ask_implied` counts (`wants_content`'s wider wording): test + live (`full`), Shadow never."""
     return full(getattr(facts, "mode", None)) and bool(facts.config.get("ask_implied"))
 
 
 def wide_flag(facts) -> bool:
-    """Config `info_wide` counts (what he is watching / playing now is a hobby): test Mode only."""
+    """Config `info_wide` counts (what he is watching / playing now is a hobby): test + live (`full`), Shadow never."""
     return full(getattr(facts, "mode", None)) and bool(facts.config.get("info_wide"))
 
 
@@ -689,6 +734,12 @@ def bundle_of(facts) -> str:
     return facts.config.get("sell_bundle", "shoot") if full(getattr(facts, "mode", None)) else "shoot"
 
 
+def count_flag(facts) -> bool:
+    """Config `sell_count` counts (a fresh sell_now Pick aims at the count he names,
+    `full_ai_sell.asked_count`): test + live (`full`), Shadow never."""
+    return full(getattr(facts, "mode", None)) and bool(facts.config.get("sell_count"))
+
+
 def is_hot(fired, facts) -> bool:
     """The side's `sext_on` and `sexual_now` fired, or with `scene_flag` `scene_on`."""
     return bool(facts.config["sext_on"]) and (
@@ -712,12 +763,12 @@ def gif_rolled(facts) -> bool:
 
 
 def gif_offered(decision, facts) -> bool:
-    """The sticker block goes in the prompt: `config.gifs`; with `scene_flag` never on a scene Turn,
-    else only when Jev's `gif_fits` fired. Flag off: every Turn, as before. Then `gif_rolled`
-    (`gif_pct`)."""
+    """The sticker block goes in the prompt: `config.gifs`, only when Jev's `gif_fits` fired (a GIF
+    suits this reply; owner 2026-11-15) and never on a scene Turn. Then `gif_rolled`: `gif_pct` is
+    the share of those fitting Turns, not of all Turns."""
     if not facts.config.get("gifs"):
         return False
-    if scene_flag(facts) and (scene_turn(decision, facts) or "gif_fits" not in decision.fired):
+    if "gif_fits" not in decision.fired or scene_turn(decision, facts):
         return False
     return gif_rolled(facts)
 
@@ -827,6 +878,8 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
             need = _scene_head(scene) + (f"\n{SEXT_HEAT.format(heat=heat)}" if route == "sext" else "")
         else:
             need = _beat(route, heat, f, item, test) or _need_block(facts, "?" in " ".join(fan_run), rng, lead)
+            if not item:
+                need = _dare_beat(route, need, his_photo(rows), bool(getattr(facts, "dared", False)))
         if ride:
             need = f"{need}\n{RIDE_NOTE}"
         # A Chat tease Refusal is a plain chat reply: he asked for nothing, so no need-line.
@@ -852,6 +905,7 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
                           sell_block=sell_block, marker=selling, scene=scene is not None,
                           # GIFs on: the pack offered when `gif_rolled` (`gif_pct`), her lane (`gif_ok`).
                           sticker_block=cat_stickers.prompt_block("allow", _voice.VOICE_HER)
+                          + (GIF_NOW if facts.config.get("gif_pct") is not None else "")
                           if ((facts.config.get("gifs") and not scene and gif_rolled(facts))
                               if gif_ok is None else gif_ok)
                           else "")

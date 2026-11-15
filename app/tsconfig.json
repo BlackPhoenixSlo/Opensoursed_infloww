@@ -24,6 +24,10 @@
     ],
     "baseUrl": ".",
     "paths": {
+      "@/lib/plugins.generated*": [
+        "./lib/plugins.generated*",
+        "./lib/noPlugins"
+      ],
       "@/*": [
         "./*"
       ]

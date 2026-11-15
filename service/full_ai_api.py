@@ -1,11 +1,11 @@
 """service/full_ai_api.py — the Full AI Chatter page's read: one Creator's
-Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai_chat.py).
+live, Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai_chat.py).
 
   GET /admin/full-ai/today?account_id=
       → {since, counts: {route: n for every Route, zeros included},
          jev_failed, rows: [{id, created_at, fan_id, fan_name, route, heat,
                              row, jev_ms, jev_failed, test}]}
-      newest first, at most `ROWS` rows: Shadow rows and the Test chat's Turns (mode test, both
+      newest first, at most `ROWS` rows: live and Shadow rows and the Test chat's Turns (mode test, both
       sides; `test: true`, no fan name: the page shows "Test chat"), counted alike. `since` is midnight
       of today in the Agency's report zone (`stats._report_zone`; UTC without
       one). A row is Jev-failed when its `jev_error` is set.
@@ -16,6 +16,21 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
       first inbound at / after the Creator's first live row), 14-day cleared money per enrolled
       Fan, live priced Offers per Route. No holdout gate yet: one group `all`, `note` "no holdout:
       not a comparison". Reads only, settles nothing; live rows only.
+
+  GET /admin/full-ai/mode?account_id=
+      → {mode: "off" | "shadow" | "live", off_switch, blockers}   the Mode control (ticket 74, spec
+      04a). `live` = an enabled `full_ai_chat` rule with `trigger_json.mode` "live"
+      (`full_ai_live.live_rule`); `shadow` = enabled without it (a legacy rule: "records only"); else
+      `off`. `off_switch` = FULL_AI_CHAT_OFF is set (it wins over Mode: nothing sends). `blockers` =
+      why Live would be refused now (`live_blockers`), empty when it may go Live.
+  PUT /admin/full-ai/mode {account_id, mode: "off" | "live"}   → the GET shape after the write.
+      `live`: 409 naming the blockers, else the Creator's one `full_ai_chat` rule (created or the
+      legacy one updated in place) enabled with `trigger_json` {"every_seconds": 300, "mode": "live"}.
+      `off`: every rule of the kind disabled, trigger {"every_seconds": 300}, every pending job of the
+      kind cancelled ("rule switched off"). `shadow` or anything else: 422. A failed blocker read
+      answers one blocker (Live refused), never an error. The shared rule routes never
+      turn this kind on (`automation_rules_api._refuse_config_route_kind`): this route is the only way
+      Live is set.
 
   POST /admin/full-ai/test/photo {account_id, image (data URL), text?}
       → {desc, thumb, outcome, model, ms}   his one attached image, described ONCE for both
@@ -66,8 +81,8 @@ Shadow and Test chat Decision rows of today (`ai_decisions`, automations/full_ai
 
 Guards: the account's owner (`assert_account_owned`); the page's role grant
 is the middleware's (permissions.PAGE_MAP["/full-ai-chatter"]). The page's
-switch rides the shared rule routes (`full_ai_chat` in OPT_IN_KINDS); the test
-turn takes the same gate (`require_opt_in_kind`: the owner or a granted member).
+Mode control is PUT /admin/full-ai/mode (`full_ai_chat` in OPT_IN_KINDS); it and the test
+turn take the same gate (`require_opt_in_kind`: the owner or a granted member).
 
   POST /admin/full-ai/persona/draft {account_id, current_text}
       → {text, age, city, name, images_used, images_described, need_describe,
@@ -87,7 +102,8 @@ turn takes the same gate (`require_opt_in_kind`: the owner or a granted member).
   POST /admin/full-ai/config/rollback {account_id, rev}
       → each the GET shape after the write. 422 {errors: ["<key>: <why>"]} on field errors,
       nothing to save or nothing to roll back to; 409 {detail, rev} when `rev` is not the
-      stored one (someone stored meanwhile: reload). Full AI Chat's config
+      stored one (someone stored meanwhile: reload); 409 {detail} when the Creator is Live and the
+      new checkpoint has no Fans list (D61 holds while Live). Full AI Chat's config
       (`account_ai_config.full_ai_config_json`, automations/full_ai_config.py): the checkpoint
       drives Shadow and the Test chat's checkpoint side, the stored draft only its draft side.
       `errors` is the stored draft's; `writer_models` the models a `writers` entry may name (the page's
@@ -115,14 +131,20 @@ import full_ai_persona
 import full_ai_prepare
 import full_ai_revenue
 import inbound_describe
+import llm_client
+import runtime_switches
+import tenant_keys
 from auth import assert_account_owned, require_actor_account_ids
-from automations import full_ai_config, full_ai_photo, full_ai_rules, full_ai_test, full_ai_turn
+from automation_registry import kind_family
+from automations import full_ai_config, full_ai_live, full_ai_photo, full_ai_rules, full_ai_test, full_ai_turn
+from automations.full_ai_owner_io import OFF_SWITCH
+from automations.full_ai_writers import PURPOSE as WRITER_PURPOSE
 from automations._model_pick import resolve_model_and_fallback
 from automations._persona import MODEL_NOTES_MAX
 from automations.full_ai_chat import MODE as SHADOW
 from automations.full_ai_decide import Route
 from db.engine import get_session
-from db.models import AccountAiConfig, AiDecision, Fan
+from db.models import AccountAiConfig, AiDecision, AutomationRule, Fan, ScheduledJob
 from isotime import iso_z
 from llm_client import LLMCapExceeded, LLMConfigError, LLMError, LLMKeyError, chat
 from permissions import require_opt_in_kind, require_opt_in_page
@@ -130,6 +152,10 @@ from vault_ai_api import assert_owner_scope
 
 ROUTES: tuple[str, ...] = get_args(Route)
 ROWS = 50
+KIND = full_ai_live.KIND
+OFF_TRIGGER = {"every_seconds": 300}
+LIVE_TRIGGER = {**OFF_TRIGGER, "mode": full_ai_live.MODE}
+NO_FANS_LIST = "No Fans list: set an include or exclude list in the saved config"
 
 router = APIRouter()
 log = logging.getLogger("of-relay.full_ai_api")
@@ -153,7 +179,7 @@ async def full_ai_rules_read(mode: Literal["test", "shadow", "live"] = Query("te
 async def full_ai_today(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     since = await _since(account_id)
-    today = (AiDecision.account_id == account_id, AiDecision.mode.in_((SHADOW, full_ai_test.MODE)),
+    today = (AiDecision.account_id == account_id, AiDecision.mode.in_((SHADOW, full_ai_test.MODE, full_ai_live.MODE)),
              AiDecision.created_at >= since)
     async with get_session() as s:
         counts, jev_failed = dict.fromkeys(ROUTES, 0), 0
@@ -176,7 +202,7 @@ async def full_ai_today(account_id: str = Query(...)) -> dict[str, Any]:
             "id": d.id, "created_at": iso_z(d.created_at), "fan_id": str(d.fan_id),
             "fan_name": None if d.mode == full_ai_test.MODE else display or username or None, "route": d.route, "heat": d.heat,
             "row": d.route_row, "jev_ms": d.jev_ms, "jev_failed": d.jev_error is not None,
-            "test": d.mode == full_ai_test.MODE,
+            "test": d.mode == full_ai_test.MODE, "live": d.mode == full_ai_live.MODE,
         } for d, display, username in rows],
     }
 
@@ -185,6 +211,80 @@ async def full_ai_today(account_id: str = Query(...)) -> dict[str, Any]:
 async def full_ai_revenue_read(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     return await full_ai_revenue.revenue(account_id)
+
+
+async def live_blockers(account_id: str) -> list[str]:
+    """Why this Creator may not go Live now (empty = it may), read off the saved checkpoint (what a
+    live Turn runs): a Fans list (D61: an include or an exclude list), a usable key for every Writer
+    in the chain (the same policy as the call, `llm_client.llm_key_available`) and Jev's TypeSafe
+    key (`tenant_keys.typesafe_key_for`). Reads only."""
+    cfg = (await full_ai_turn.stored_config(account_id))["checkpoint"]
+    out: list[str] = []
+    if not full_ai_config.has_fans_list(cfg):
+        out.append(NO_FANS_LIST)
+    missing = sorted({m.provider for w in cfg["writers"] if (m := full_ai_config.MODELS.get(w)) is not None
+                      and not await llm_client.llm_key_available(account_id, m.provider, WRITER_PURPOSE)})
+    if missing:
+        out.append(f"No key for {', '.join(missing)}: add it or untick its Writers in the saved config")
+    if not await tenant_keys.typesafe_key_for(account_id):
+        out.append("No TypeSafe key (the Router)")
+    return out
+
+
+async def _blockers(account_id: str) -> list[str]:
+    """`live_blockers`, never raising: a failed read is one blocker (Live refused, Off unaffected)."""
+    try:
+        return await live_blockers(account_id)
+    except Exception:
+        log.exception("full_ai_mode_blockers_failed account=%s", account_id)
+        return ["Couldn't check the keys and the Fans list. Reload to try again"]
+
+
+async def _mode(account_id: str) -> dict[str, Any]:
+    async with get_session() as s:
+        enabled = (await s.execute(select(func.count()).where(
+            AutomationRule.account_id == str(account_id), AutomationRule.kind.in_(kind_family(KIND)),
+            AutomationRule.is_enabled.is_(True)))).scalar_one()
+    mode = "live" if await full_ai_live.live_rule(account_id) is not None else "shadow" if enabled else "off"
+    return {"mode": mode, "off_switch": runtime_switches.on(OFF_SWITCH), "blockers": await _blockers(account_id)}
+
+
+class ModeWrite(BaseModel):
+    account_id: str
+    mode: Literal["off", "live"]   # Shadow is not settable (owner 2026-11-15: no Shadow stage)
+
+
+@router.get("/admin/full-ai/mode")
+async def full_ai_mode_read(account_id: str = Query(...)) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    return await _mode(account_id)
+
+
+@router.put("/admin/full-ai/mode")
+async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
+    from automation_rules_api import ensure_kind_rule   # it imports the catalog and half the routes
+    aid = body.account_id
+    assert_account_owned(aid)
+    await require_opt_in_kind(KIND, aid)
+    if body.mode == "live":
+        if blockers := await _blockers(aid):
+            raise HTTPException(409, "Can't go Live: " + "; ".join(blockers))
+        async with get_session() as s:
+            action = await ensure_kind_rule(s, aid, KIND, enable=True, trigger=LIVE_TRIGGER)
+    else:
+        async with get_session() as s:
+            action = await ensure_kind_rule(s, aid, KIND, enable=False)
+            family = kind_family(KIND)
+            await s.execute(update(AutomationRule).where(
+                AutomationRule.account_id == aid, AutomationRule.kind.in_(family))
+                .values(trigger_json=json.dumps(OFF_TRIGGER)))
+            # Hook jobs carry their rule in the payload only: cancel every pending job of the kind, so
+            # Off then Live inside the reply wait never runs a reply queued before Off.
+            await s.execute(update(ScheduledJob).where(
+                ScheduledJob.account_id == aid, ScheduledJob.kind.in_(family), ScheduledJob.status == "pending")
+                .values(status="cancelled", last_error="rule switched off"))
+    log.info("full_ai_mode_set account=%s mode=%s action=%s", aid, body.mode, action)
+    return await _mode(aid)
 
 
 class _TestSide(BaseModel):
@@ -219,6 +319,8 @@ class TestPhoto(BaseModel):
     account_id: str
     image: str = Field(max_length=full_ai_photo.MAX_UPLOAD * 4 // 3 + 64)
     text: str = Field("", max_length=2000)
+    # The session: a side whose dare stands (`full_ai_test.dared_of`) reads the photo with the key off.
+    pair: str | None = Field(None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 def _conflict(row_id: int | None) -> JSONResponse:
@@ -309,7 +411,13 @@ async def full_ai_test_photo(body: TestPhoto):
         raise HTTPException(status_code=e.status, detail=e.msg) from e
     cfg = await full_ai_turn.stored_config(body.account_id)
     out: dict[str, Any] = {"desc": None, "thumb": thumb, "outcome": "off", "model": None, "ms": None}
-    if not any(cfg[side][full_ai_photo.KEY] for side in full_ai_test.SIDES):
+    on = any(cfg[side][full_ai_photo.KEY] for side in full_ai_test.SIDES)
+    if not on and body.pair:
+        for side in full_ai_test.SIDES:
+            if full_ai_test.dared_of(await full_ai_test.session_rows(body.account_id, body.pair, side)):
+                on = True
+                break
+    if not on:
         return out
     key = (body.account_id, hashlib.sha256(body.image.encode()).hexdigest(), body.text)
     task = _photos_running.get(key)
@@ -426,6 +534,7 @@ async def _config_write(account_id: str, step: Callable[[dict | None], dict[str,
     what was read (compare-and-swap, so two tabs never both win)."""
     assert_account_owned(account_id)
     await require_opt_in_kind("full_ai_chat", account_id)
+    live = await full_ai_live.live_rule(account_id) is not None
     col = AccountAiConfig.full_ai_config_json
     async with get_session() as s:
         found = (await s.execute(select(col).where(AccountAiConfig.account_id == account_id))).first()
@@ -436,6 +545,9 @@ async def _config_write(account_id: str, step: Callable[[dict | None], dict[str,
             return JSONResponse(status_code=422, content={"errors": e.errors})
         except full_ai_config.StaleRev as e:
             return _stale(e.rev)
+        if live and not full_ai_config.has_fans_list(new["checkpoint"]):   # D61 holds while Live, not only at the flip
+            return JSONResponse(status_code=409, content={
+                "detail": "Live needs a Fans list: keep an include or exclude list, or set Off first."})
         blob = json.dumps(new)
         if found is None:       # no row yet: a racing insert makes this one stale
             done = await s.execute(sqlite_insert(AccountAiConfig).values(

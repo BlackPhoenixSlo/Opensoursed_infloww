@@ -2,42 +2,37 @@
 
 /**
  * My AI Chatter > Full AI Chat (ours; owner only in the sidebar, same /full-ai-chatter address). A settings column
- * (`FullAiSettings`: on/off, LLM keys, reply speed, Human style, GIFs, Sell, Content folders, Prepare content; Save /
+ * (`FullAiSettings`: Mode, LLM keys, reply speed, Human style, GIFs, Sell, Content folders, Prepare content; Save /
  * Roll back / JSON over the draft
  * config) with the persona editor (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) under it;
  * beside it (above it on a phone: the column comes first) the owner's Test chat (`FullAiTestChat`: two windows,
- * checkpoint and draft, one composer; nothing reaches a Fan). Below, Full AI Chat in Shadow
- * (service/automations/full_ai_chat.py): each inbound DM on a Creator with the switch on gets one Decision row, what
- * the AI would do (its Route, Heat and the Route table row), and nothing is sent.
+ * checkpoint and draft, one composer; nothing reaches a Fan). Below, today's Decision rows (live, a legacy Shadow
+ * rule's, and the Test chat's): each Turn's Route, Heat and the Route table row.
  *
- * The on/off switch (Shadow / Off) is `useSwitchKind` over kind `full_ai_chat`, saving the moment it flips (the
- * server creates the rule from its catalog the first time). Only the owner may write it (permissions.OPT_IN_KINDS).
+ * The Mode control (Off / Live, `FullAiModeControl` over GET / PUT /admin/full-ai/mode, ticket 74): Live asks to
+ * confirm, then replies go to the Fans on its Fans list on OnlyFans; Off drops the queued replies. A legacy rule with
+ * no Mode reads "Shadow (records only)". Only the owner may write it (permissions.OPT_IN_KINDS).
  * The Test chat and the config share one reducer (`fullAiTestChat.ts`), held here through `useFullAiTestChat` (the
  * turns; its `config` = `useFullAiConfig`, the config reads and writes). Below, today's rows (`useFullAiToday`): counts
  * per Route in the Route table's order plus Jev failures, then the newest rows; Test chat Turns count too and list as
- * "Test chat".
+ * "Test chat". Under it the Revenue block (`FullAiRevenue`, live rows only): $ per enrolled Fan and offers per Route,
+ * with the honesty line, never a comparison it cannot make.
  */
 
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
+import { FullAiRevenue } from "@/components/automations/FullAiRevenue";
 import { FullAiSettings } from "@/components/automations/FullAiSettings";
 import { FullAiTestChat } from "@/components/automations/FullAiTestChatWindows";
 import { ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { IF_TABLE } from "@/components/ui/infloww";
-import { useAutomationRules, useSwitchKind } from "@/hooks/useAutomations";
 import { useFullAiTestChat } from "@/hooks/useFullAiTestChat";
-import { ROUTES, useFullAiToday, type Route } from "@/hooks/useFullAiToday";
+import { ROUTE_LABEL, ROUTES, useFullAiToday } from "@/hooks/useFullAiToday";
 import { cn } from "@/lib/utils";
 
 const TITLE = "Full AI Chat";
 const PERSONA_NOTE = "Saves for every live chat on this Creator now (not part of the checkpoint)";
-const KIND = "full_ai_chat";
-
-const ROUTE_LABEL: Record<Route, string> = {
-  chat: "Chat", sext: "Sext", sell_now: "Sell now", tease: "Tease",
-  make_right: "Make right", ai_dare: "AI dare", no_send: "No send",
-};
 
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
@@ -52,40 +47,20 @@ export default function FullAiChatterPage() {
 }
 
 function FullAiChatter({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
-  const rulesQ = useAutomationRules(accountId);
-  const switchKind = useSwitchKind(accountId);
   const todayQ = useFullAiToday(accountId);
   const chat = useFullAiTestChat(accountId);
-  // Shadow = a running full_ai_chat row. No rows read yet → the switch is disabled rather than claiming "Off".
-  const on = (rulesQ.data ?? []).some((r) => r.kind === KIND && r.is_enabled);
   const today = todayQ.data;
-
-  const power = {
-    on, disabled: !rulesQ.isSuccess, loading: switchKind.isPending,
-    onChange: (enable: boolean) => switchKind.mutate({ kind: KIND, enable }),
-  };
 
   return (
     <PageFrame title={TITLE} creators={creators}>
       <div className="grid max-w-[1320px] gap-8 lg:grid-cols-[340px_minmax(0,1fr)]">
         <aside className="min-w-0 space-y-8">
           <FormBlock title="Settings">
-            <div className="space-y-2">
-              <p className="text-[14px] text-fg">
-                Shadow: for every DM a fan sends, records what the AI would do. Nothing is sent.
-              </p>
-              {rulesQ.isLoadingError && (
-                <p className="text-[12px] text-err">
-                  Couldn&apos;t read this Creator&apos;s automations, so this can&apos;t say whether Full AI Chat is on.
-                </p>
-              )}
-              {switchKind.isError && (
-                <p className="text-[12px] text-err">
-                  {switchKind.error?.message || "Couldn't switch Full AI Chat."} Try again.
-                </p>
-              )}
-            </div>
-            <FullAiSettings state={chat.state} cfg={chat.config} power={power} accountId={accountId} />
+            <p className="text-[14px] text-fg">
+              Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing.
+            </p>
+            <FullAiSettings state={chat.state} cfg={chat.config}
+              accountId={accountId} />
           </FormBlock>
           <ModelInfoBlock accountId={accountId} draftFromImages saveNote={PERSONA_NOTE} />
         </aside>
@@ -116,6 +91,10 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
             )}
           </FormBlock>
 
+          <FormBlock title="Revenue">
+            <FullAiRevenue accountId={accountId} />
+          </FormBlock>
+
           <FormBlock title="Newest">
             {today && today.rows.length === 0 && (
               <p className="text-[14px] text-fg-dim">No decisions yet today.</p>
@@ -132,7 +111,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
                     {today.rows.map((r) => (
                       <tr key={r.id} className={IF_TABLE.row} data-testid="full-ai-row">
                         <td className={CELL}>{new Date(r.created_at).toLocaleTimeString()}</td>
-                        <td className={CELL}>{r.test ? "Test chat" : r.fan_name ?? `Fan ${r.fan_id}`}</td>
+                        <td className={CELL}>{r.test ? "Test chat" : r.fan_name ?? `Fan ${r.fan_id}`}{r.live && " · Live"}</td>
                         <td className={CELL}>{ROUTE_LABEL[r.route]}</td>
                         <td className={cn(CELL, "tabular-nums")}>{r.heat}</td>
                         <td className={cn(CELL, "text-fg-dim")}>{r.row}</td>

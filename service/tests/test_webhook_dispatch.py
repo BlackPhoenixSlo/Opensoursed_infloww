@@ -522,6 +522,53 @@ def _clear_claims() -> None:
     wd._fan_scrape_claims.clear()
 
 
+# The scrape's gate (`wd._scrape_allowed`, the account's auto-reply section) is
+# stubbed per account: these cases are about the scrape, not the gate's reading.
+_SCRAPE_ALLOWED: set[str] = set()
+
+
+async def _scrape_allowed_stub(account_id: str, *, s=None) -> bool:
+    return str(account_id) in _SCRAPE_ALLOWED
+
+
+_real_scrape_allowed = wd._scrape_allowed
+wd._scrape_allowed = _scrape_allowed_stub
+
+
+async def case_scrape_gate_asks_the_registered_hooks():
+    """`_scrape_allowed` is the OR of `relay_hooks.blast_scrape_gates`, each handed
+    the session and the account; none registered (a checkout with no plugin
+    gate) → no scrape."""
+    import relay_hooks
+    saved = list(relay_hooks.blast_scrape_gates)
+    seen: list[tuple[bool, str]] = []
+
+    async def no(s, aid):
+        seen.append((s is not None, aid))
+        return False
+
+    async def yes(s, aid):
+        seen.append((s is not None, aid))
+        return aid == "w7_gate_yes"
+
+    try:
+        relay_hooks.blast_scrape_gates[:] = []
+        assert await _real_scrape_allowed("w7_gate_yes") is False
+        relay_hooks.blast_scrape_gates[:] = [no]
+        assert await _real_scrape_allowed("w7_gate_yes") is False
+        relay_hooks.blast_scrape_gates[:] = [no, yes]
+        assert await _real_scrape_allowed("w7_gate_yes") is True
+        assert await _real_scrape_allowed("w7_gate_no") is False
+        assert seen[:3] == [(True, "w7_gate_yes")] * 3, seen
+    finally:
+        relay_hooks.blast_scrape_gates[:] = saved
+
+
+def _seed_scrape_allowed(aid: str) -> None:
+    """The account's reply section switched on (the stub answers yes)."""
+    _SCRAPE_ALLOWED.add(aid)
+
+
 async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     """One job for the fan, now — and exactly one however many times he writes.
 
@@ -531,6 +578,7 @@ async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     plus two handlers racing on the same loop."""
     aid, fan = "w7_blast", 6301
     await _seed_account(aid, webhook_enabled=True)
+    _seed_scrape_allowed(aid)
     _clear_claims()
     await _seed_blast_run(aid, minutes_ago=5)
 
@@ -564,6 +612,7 @@ async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     # between the check and the set, so they serialise on it.
     aid2, fan2 = "w7_blast_race", 6302
     await _seed_account(aid2, webhook_enabled=True)
+    _seed_scrape_allowed(aid2)
     _clear_claims()
     await _seed_blast_run(aid2, minutes_ago=5)
     await asyncio.gather(wd.on_inbound_message(aid2, fan2, 1),
@@ -587,6 +636,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
     import event_transcoder as et  # noqa: E402
     aid, fan = "w7_blast_frame", 6303
     await _seed_account(aid, webhook_enabled=True)
+    _seed_scrape_allowed(aid)
     _clear_claims()
     et._queue_finishes.clear()
 
@@ -602,6 +652,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
     # A canceled frame is not a blast anyone is answering.
     aid2, fan2 = "w7_blast_cancel", 6304
     await _seed_account(aid2, webhook_enabled=True)
+    _seed_scrape_allowed(aid2)
     _clear_claims()
     et._queue_finishes.clear()
     canceled = {"chat_queue_finish": {**frame["chat_queue_finish"],
@@ -614,6 +665,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
     # …and a cancel that arrives AFTER the finish frame removes it.
     aid3, fan3 = "w7_blast_late_cancel", 6305
     await _seed_account(aid3, webhook_enabled=True)
+    _seed_scrape_allowed(aid3)
     _clear_claims()
     et._queue_finishes.clear()
     await et.transcode({**frame, "__account_id": aid3})
@@ -626,6 +678,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
     # Control: no blast in the window at all → no scrape, on either source.
     aid4, fan4 = "w7_no_blast", 6306
     await _seed_account(aid4, webhook_enabled=True)
+    _seed_scrape_allowed(aid4)
     _clear_claims()
     et._queue_finishes.clear()
     await _seed_blast_run(aid4, minutes_ago=90)      # older than the 60-min window
@@ -634,11 +687,12 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
 
 
 async def case_the_scrape_runs_even_for_a_fan_nobody_will_answer():
-    """ABOVE `_classify_kind`, deliberately. A terminal-stage fan — skip-listed, or
-    a whale a human owns — gets NO chat job, and his inbox needs the copy MORE than
-    anyone's, not less. Same reasoning as the customs mark in `on_inbound_tip`."""
+    """ABOVE `_classify_kind`: its gate is the reply section, not W7's stage
+    classification. A skip-listed fan gets NO W7 chat job, yet on an account
+    whose reply section is on the scrape still runs."""
     aid, fan = "w7_blast_terminal", 6307
     await _seed_account(aid, webhook_enabled=True)
+    _seed_scrape_allowed(aid)
     _clear_claims()
     await _seed_blast_run(aid, minutes_ago=5)
     await _seed_skip(aid, fan, "unreachable")
@@ -708,6 +762,7 @@ async def case_deferred_backfill_shares_the_blast_claim():
     """A blast reply on a deferred chat: one job (the blast's), not two."""
     aid, fan = "w7_deferred_blast", 6402
     await _seed_account(aid, webhook_enabled=True)
+    _seed_scrape_allowed(aid)
     _clear_claims()
     await _seed_blast_run(aid, minutes_ago=5)
     await _seed_deferred(aid, fan)
@@ -765,6 +820,7 @@ _harness.run(
     case_inbound_image_hands_off_one_words_job,
     case_inbound_image_gif_is_not_stranded,
     case_inbound_image_gate_off_account_enqueues_nothing,
+    case_scrape_gate_asks_the_registered_hooks,
     case_inbound_after_a_blast_enqueues_a_one_fan_scrape,
     case_a_human_of_app_blast_triggers_the_scrape_too,
     case_the_scrape_runs_even_for_a_fan_nobody_will_answer,

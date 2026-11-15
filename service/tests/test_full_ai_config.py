@@ -22,6 +22,9 @@
                             in CONFIG_KEYS; a stored v1 without it reads true
   case_sell_bundle_table    (03d ticket 61) `sell_bundle` shoot|fill, default fill, a stored v1
                             without it reads fill, labelled "Fill the set" on the page
+  case_sell_count_strip_emojis_table  `sell_count` (default true) and `strip_emojis` (default false) bools,
+                            JSON-only, labelled "Asked count" / "Strip emojis", in CONFIG_KEYS; a stored v1
+                            without them reads the defaults
   case_typo_pct_table       `typo_pct` null (auto) or a whole 0-100, labelled "Typos %"; a stored
                             v1 without it reads null
   case_gif_pct_table        `gif_pct` null (auto) or a whole 0-100, labelled "GIFs %"; a stored
@@ -362,6 +365,23 @@ def case_sell_bundle_table():
     pre = {k: v for k, v in DEFAULTS.items() if k != "sell_bundle"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 2})
     assert got["checkpoint"]["sell_bundle"] == got["previous"]["sell_bundle"] == got["draft"]["sell_bundle"] == "fill", got
+
+
+def case_sell_count_strip_emojis_table():
+    """`sell_count` (a fresh offer aims at the count he names) and `strip_emojis` (every Mode): JSON-only bools."""
+    import assistant_full_ai
+    assert DEFAULTS["sell_count"] is True and DEFAULTS["strip_emojis"] is False, DEFAULTS
+    for k, lab in (("sell_count", "Asked count"), ("strip_emojis", "Strip emojis")):
+        for ok in (True, False):
+            assert validate({**DEFAULTS, k: ok}) == [], (k, ok)
+        for bad in ("yes", 1, 0, None, "true"):
+            assert validate({**DEFAULTS, k: bad}) == [f"{k}: must be true or false"], (k, bad)
+        assert assistant_full_ai.label(k) == lab and k in assistant_full_ai.CONFIG_KEYS, k
+        assert REFERENCE[k]["page"] is None, k
+    pre = {k: v for k, v in DEFAULTS.items() if k not in ("sell_count", "strip_emojis")}
+    got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 2})
+    for side in ("checkpoint", "previous", "draft"):
+        assert got[side]["sell_count"] is True and got[side]["strip_emojis"] is False, got[side]
 
 
 def case_typo_pct_table():

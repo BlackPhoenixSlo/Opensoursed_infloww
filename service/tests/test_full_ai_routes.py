@@ -231,7 +231,7 @@ async def case_today_read_counts_by_route_in_the_report_zone():
     r = next(r for r in rows if r["id"] == live.id)
     assert r == {"id": live.id, "created_at": r["created_at"], "fan_id": str(fan), "fan_name": "Garrett",
                  "route": "sext", "heat": live.heat, "row": "sexual_now", "jev_ms": live.jev_ms,
-                 "jev_failed": False, "test": False}, r
+                 "jev_failed": False, "test": False, "live": False}, r
     assert [x["jev_failed"] for x in rows if x["jev_ms"] is None] == [True], rows
     # No report zone: UTC midnight. At most 50 rows, newest first.
     for i in range(55):

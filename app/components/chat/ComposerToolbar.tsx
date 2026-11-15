@@ -29,7 +29,7 @@
  */
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Briefcase, CalendarDays, CircleDollarSign, Image as ImageIcon, Languages } from "lucide-react";
+import { Briefcase, CalendarDays, CircleDollarSign, Image as ImageIcon, Languages, SkipForward } from "lucide-react";
 
 import { MP } from "@/lib/messagesPro";
 import { UPLOAD_ACCEPT } from "@/hooks/useComposerUploads";
@@ -108,6 +108,9 @@ export interface ComposerToolbarProps {
   onVault: () => void;
   onCalendar: () => void;
   onSend: () => void;
+  /** A queue's Send & next, beside Send (⌘/Ctrl+Enter's send, then the next
+   *  Fan); absent, no button. Below lg its ⏭ icon alone, named "Send & next". */
+  onSendNext?: () => void;
   /** The chat's Creator, whose Agency's AI translation switch gates the
    *  Translator (spec phase-04, story 56). */
   accountId: string | null;
@@ -121,7 +124,7 @@ export interface ComposerToolbarProps {
 export function ComposerToolbar({
   emoji, favourites, quick, input, ai, scripts, timed, gif, tag, children,
   vaultOn, ppvOpen, ppvHeld, vaultDisabled, scheduleOn, canSend, sendBlockedReason, sendLabel, inflight, disabled,
-  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, accountId, onToggleOutbound, aa,
+  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, onSendNext, accountId, onToggleOutbound, aa,
 }: ComposerToolbarProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   return (
@@ -232,6 +235,29 @@ export function ComposerToolbar({
         <div className="ml-auto self-end flex items-center gap-2">
           {inflight > 0 && (
             <span className={cn(MP.ours.ComposerToolbar.inflight, "text-fg-dim")}>{inflight} sending…</span>
+          )}
+          {onSendNext && (
+            <button
+              type="button"
+              onClick={onSendNext}
+              disabled={!canSend}
+              data-testid="send-next"
+              aria-label={`${sendLabel} & next`}
+              title={sendBlockedReason || `${sendLabel}, then the next fan (⌘/Ctrl+Enter)`}
+              className={cn(
+                MP.composer.send,
+                MP.ours.ComposerToolbar.send,
+                MP.ours.ComposerToolbar.sendNext,
+                "inline-flex items-center justify-center",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+                canSend
+                  ? "bg-accent/15 text-[var(--inf-accent-text,var(--color-accent))] hover:bg-accent/25"
+                  : "bg-[var(--inf-send-idle,var(--color-bg-elev-2))] text-[var(--inf-send-idle-text,var(--color-fg-dim))] cursor-not-allowed",
+              )}
+            >
+              <SkipForward aria-hidden data-testid="send-next-icon" className="size-4 lg:hidden" />
+              <span aria-hidden className="hidden lg:inline">{sendLabel} &amp; next</span>
+            </button>
           )}
           <button
             type="button"

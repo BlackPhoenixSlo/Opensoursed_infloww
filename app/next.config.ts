@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "next/constants";
 
 /**
  * Dev rewrites: the browser only ever talks to localhost:3001 (the
@@ -196,4 +197,13 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
 };
 
-export default nextConfig;
+// The plugins present (lib/chatSlots.ts), written for next dev and next build
+// only: `next start` (the Docker runner holds no lib/) loads this file too.
+export default function config(phase: string): NextConfig {
+  if (phase === PHASE_DEVELOPMENT_SERVER || phase === PHASE_PRODUCTION_BUILD) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { writePluginBarrel } = require("./lib/pluginBarrel.js") as { writePluginBarrel: (appRoot: string) => string[] };
+    writePluginBarrel(__dirname);
+  }
+  return nextConfig;
+}

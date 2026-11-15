@@ -7,9 +7,10 @@ temp DB and a faked OF client, and `start_human_yield`'s cooldown.
   case_queue_id_matches       the pure queue-id read agrees with messages._queue_id_of on the same frames
   case_yield_left_table       fresh = full; half elapsed; elapsed = 0; disabled (0) = 0
   case_loader_rows            employee-stamped outbound after the anchor -> "human"; before -> None; tagged
-                              full_ai_chat / welcome_chatter_for_info -> None; an untagged mass copy -> None
+                              full_ai_chat / welcome_chatter_for_info / reply_mass_funnel -> None; an untagged mass
+                              copy -> None; an untagged one-off -> "human"
   case_loader_no_live_read    live_read False: 0 OF calls
-  case_loader_live_read       live_read True: exactly 1 OF call; an unknown creator item -> "human_of_app" + its
+  case_loader_live_read       live_read True, Full AI on: exactly 1 OF call (off: none); an unknown creator item -> "human_of_app" + its
                               time; rows win over the OF app; the client raising -> None
   case_who_owns_order         human / human_of_app below off, list, hard skip, audience; above funnel_walk
   case_start_human_yield      default -> paused ~60 s after sent_at; manual_yield_minutes 60 -> ~1 h; a send older
@@ -112,11 +113,6 @@ async def _out(aid: str, at: datetime, body: str = "typed for u", fan: int = FAN
 
 
 async def _employee() -> int:
-    """A chatter; the Automation sentinel is seeded once beside it (the human predicate reads it)."""
-    from sqlalchemy import select
-    async with get_session() as s:
-        if (await s.execute(select(Employee.id).where(Employee.display_name == "Automation"))).first() is None:
-            s.add(Employee(display_name="Automation", is_active=False))
     async with get_session() as s:
         e = Employee(display_name=f"chatter{next(_ids)}")
         s.add(e)
@@ -144,7 +140,7 @@ async def case_loader_rows():
     before = await _account()
     await _out(before, anchor - timedelta(minutes=1), sent_by_employee_id=emp)
     assert (await io.load(before, FAN, anchor)).human is None
-    for kind in ("full_ai_chat", "welcome_chatter_for_info"):
+    for kind in ("full_ai_chat", "welcome_chatter_for_info", "reply_mass_funnel"):
         tagged = await _account()
         await _out(tagged, anchor + timedelta(minutes=1), automation_kind=kind)
         assert (await io.load(tagged, FAN, anchor)).human is None, kind
@@ -152,6 +148,9 @@ async def case_loader_rows():
     for fan in range(FAN, FAN + 5):
         await _out(mass, anchor + timedelta(minutes=1), body="new set out now 🔥", fan=fan)
     assert (await io.load(mass, FAN, anchor)).human is None
+    untagged = await _account()                                       # a one-off from the OF app, synced
+    await _out(untagged, anchor + timedelta(minutes=1), body="just for u")
+    assert (await io.load(untagged, FAN, anchor)).human == "human"
 
 
 async def case_loader_no_live_read():
@@ -161,7 +160,30 @@ async def case_loader_no_live_read():
     assert f.human is None and fake.calls == [], (f, fake.calls)
 
 
+@contextlib.contextmanager
+def _live():
+    """Full AI on for every Creator (`_live` true): the OF-app read runs only then (ticket 81)."""
+    real = io._live
+
+    async def on(_account_id):
+        return True
+    io._live = on
+    try:
+        yield
+    finally:
+        io._live = real
+
+
 async def case_loader_live_read():
+    with _live():
+        await _loader_live_read()
+    off = await _account()                     # Full AI off (`_live` false = off_mode): no OF read
+    fake = ChatOF([_item(datetime.utcnow())])
+    f = await io.load(off, FAN, datetime.utcnow() - timedelta(minutes=5), client=fake, live_read=True)
+    assert (f.off, f.human, fake.calls) == ("off_mode", None, []), (f, fake.calls)
+
+
+async def _loader_live_read():
     anchor = datetime.utcnow().replace(microsecond=0) - timedelta(minutes=10)
     aid = await _account()
     ours = await _out(aid, anchor + timedelta(minutes=1), automation_kind="full_ai_chat")

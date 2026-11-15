@@ -29,7 +29,7 @@ BIO_PUBLIC_URL/<username>, never a pending domain; it and `<public_url>/<code>` 
 Host answer the page's bootstrap), BIO_PAGE / BIO_REVEAL (the visitors' page and Reveal oracle), BIO_NO_LEAK,
 BIO_NO_5XX; plus the stock checks.
 
-UI (stage `ui`, after the load; PR2b, skipped under --no-ui): Growth > Tracking links?tab=bio lists every page with
+UI (stage `ui`, after the load; PR2b, skipped under --no-ui): Growth > Bio pages lists every page with
 the API's 30-day counts (UI_LIST, shot bio-list); "New bio page" makes one (bio-create-dialog; UI_CREATE: API +
 bio_profiles) and opens its editor; a Display name edit + Save (UI_PROFILE: API, SQL, bio port); two links through the
 link dialog, the second moved up (UI_LINKS: the PUT's ids, cards == preview == API == bio_links == bio port order;
@@ -113,8 +113,10 @@ def public_of(P: dict) -> dict:
         item["backgroundImage"] = (f"/api/files/links/{lk['id']}/{lk['background_image']}"
                                    if lk["background_image"] else "")
         links.append(item)
+    bg = p["background_url"].rsplit("/", 1)[1] if p["background_url"] else ""   # P names the file only in its URL
     return {"profile": {"id": p["id"], "username": p["username"], "displayName": p["display_name"], "bio": p["bio"],
                         "avatarUrl": f"/api/files/profiles/{p['id']}/{p['avatar']}" if p["avatar"] else "",
+                        "backgroundUrl": f"/api/files/profiles/{p['id']}/{bg}" if bg else "",
                         "verified": p["verified"], "mode": pmode},
             "links": links}
 
@@ -356,7 +358,7 @@ async def _ui(ctx, w, owner: Http, user: str, *, bio, shows, order_note, counts,
 
     name0, name1 = "Slop UI page", "Slop UI page edited"
     async with ui.owner_browser(ctx) as page:
-        await page.goto(f"{ctx.app}/growth/tracking-links?tab=bio", wait_until="domcontentloaded", timeout=90_000)
+        await page.goto(f"{ctx.app}/growth/bio-pages", wait_until="domcontentloaded", timeout=90_000)
         await page.locator("[data-bio-page]").first.wait_for(timeout=90_000)
         rows = await page.evaluate(ROWS_JS)
         await _shot(ctx, page, "bio-list")
@@ -373,7 +375,7 @@ async def _ui(ctx, w, owner: Http, user: str, *, bio, shows, order_note, counts,
         await dlg.get_by_label("Display name").fill(name0)
         await _shot(ctx, page, "bio-create-dialog")
         await dlg.get_by_role("button", name="Create").click()
-        await page.wait_for_url(re.compile(r".*/growth/tracking-links/bio/[a-z0-9]+$"), timeout=90_000)
+        await page.wait_for_url(re.compile(r".*/growth/bio-pages/[a-z0-9]+$"), timeout=90_000)
         pid = page.url.rstrip("/").rsplit("/", 1)[1]
         P = await api_page(pid)
         db = sql("SELECT owner_user_id, username, display_name FROM bio_profiles WHERE id = ?", pid)
@@ -435,7 +437,7 @@ async def _ui(ctx, w, owner: Http, user: str, *, bio, shows, order_note, counts,
               api_ids=api_ids, db_ids=db_ids, bio_json_ids=json_ids, destinations=dests)
 
     async with ui.owner_browser(ctx, viewport=(390, 844), touch=True) as page:
-        await page.goto(f"{ctx.app}/growth/tracking-links/bio/{pid}", wait_until="domcontentloaded", timeout=90_000)
+        await page.goto(f"{ctx.app}/growth/bio-pages/{pid}", wait_until="domcontentloaded", timeout=90_000)
         await page.locator("[data-bio-link]").first.wait_for(timeout=90_000)
         await page.wait_for_function(SETTLED_JS, timeout=15_000)
         wide_editor = await page.evaluate(FITS_JS)

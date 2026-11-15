@@ -55,7 +55,7 @@ from toolbox_args import Args
 router = APIRouter()
 
 PATH = token_auth.MCP_PATH
-OTHER_METHODS = ("GET", "DELETE")  # answered 405 (mcp_other)
+OTHER_METHODS = ("GET", "DELETE", "PUT")  # answered 405 (mcp_other)
 # Who serves a request with no principal (server.py: the isolation middleware and the share gate
 # both ask `anonymous_surface`): this exact path, POST plus the 405-only methods (an MCP client
 # probes GET for an SSE stream; a 401 there would send it into an OAuth flow). A new handler on

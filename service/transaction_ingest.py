@@ -1737,7 +1737,8 @@ async def _fast_poll_account_ids() -> set[str]:
             .where(AutomationRule.kind.in_(_SELLING_KINDS),
                    AutomationRule.is_enabled.is_(True))
         )).all()}
-    return selling | await _online_account_ids()
+    from automations import full_ai_live      # lazy: the automation stack imports this module
+    return selling | await full_ai_live.live_accounts() | await _online_account_ids()
 
 
 async def _online_account_ids() -> set[str]:

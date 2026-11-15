@@ -78,6 +78,7 @@ vi.mock("@/contexts/UserContext", () => ({ useOptionalUser: () => (signedIn.user
 import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget, LAUNCHER_KEY } from "./AssistantWidget";
 import { PageCreatorProvider, usePageCreator } from "@/contexts/PageCreatorContext";
+import { POPOUT_MODE_ROUTES } from "@/lib/chatSlots";
 
 /** A scope-driven page on screen (Messages Pro, OF Manager) reports the scope as its pick. */
 function ScopedPage() {
@@ -131,7 +132,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AssistantWidget", () => {
-  it.each(["/messages-pro", "/messages-pro/1001/9001"])(
+  it.each(["/messages-pro", "/messages-pro/1001/9001", ...POPOUT_MODE_ROUTES])(
     "hides the launcher and an already-open panel on %s", async (path) => {
       const view = renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
       await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));

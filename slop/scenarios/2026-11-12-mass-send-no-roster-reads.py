@@ -10,7 +10,8 @@ send's Auto_Exclude sync puts on OF's list), round-robin over the Creators, ever
 (past of_write's 11 s per-Creator gap) from a seeded offset, kinds alternating: the real automation enqueue
 (`POST /admin/automation/enqueue` send_mass_message, then `/__slop/run-automation {claim: true}`: the product's claim,
 run slot and run_once) and the composer's real `POST /api/of/v2/messages/queue`. Then QUIET_S with no driven call (a
-background read a send spawned would land here).
+background read a send spawned would land here). Then each leg (lib/mass_send_no_roster_reads_<leg>_leg.py, any
+number; module docstrings) checks the recorded runs further.
 
 Checks:
   NO_ROSTER_READS  zero `GET /api2/v2/subscriptions/subscribers|subscribes` calls on the wire from the first send to
@@ -30,9 +31,11 @@ bug class): NO_ROSTER_READS only.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import time
 from collections import Counter
+from pathlib import Path
 
 import httpx
 
@@ -57,6 +60,11 @@ WIRE_QUEUE = "POST /api2/v2/messages/queue"
 NO_ROSTER_READS = "no_roster_reads"
 SENDS_RECORDED = "sends_recorded"
 NO_5XX = "no_5xx_sends"
+# Legs, each in a file of its own (lib/mass_send_no_roster_reads_<leg>_leg.py): `async check(ctx, hook, w, creators,
+# plan, fans, guard, excluded)` after the shared checks (creators {id: row}, fans and guard {id: [fan ids]}, excluded
+# {mass run id: excluded_users}, the runs SENDS_RECORDED passed).
+LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
+        for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("mass_send_no_roster_reads_*_leg.py"))]
 
 
 def _q(w, sql: str, args=()) -> list[tuple]:
@@ -187,5 +195,7 @@ async def run(ctx) -> None:
     ctx.metric("p95_vs_last_green", {k: v["p95_ms"] for k, v in sends.items()})
     ctx.metric("p95_vs_last_green_n", {k: v["n"] for k, v in sends.items()})
 
+    for leg in LEGS:
+        await leg.check(ctx, hook, w, creators=creators, plan=plan, fans=fans, guard=guard, excluded=excluded)
     await hook.aclose()
     ctx.metric("roster_calls_per_send", round(len(rosters) / max(1, len(plan)), 3))

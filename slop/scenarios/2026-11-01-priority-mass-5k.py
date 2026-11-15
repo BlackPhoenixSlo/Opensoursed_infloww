@@ -687,7 +687,7 @@ async def _ui_creator(ctx, C: str, creators: list[dict]) -> None:
 
     async with ui.owner_browser(ctx) as page:
         await page.route(lambda u: urlsplit(u).path == "/api/of/v2/messages/queue", queue_route)
-        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+        await ui.accept_confirms(page)
         await page.goto(f"{ctx.app}/growth/smart-messages", wait_until="domcontentloaded", timeout=180_000)
         col = page.get_by_test_id("of-creator-column")
         await col.get_by_role("button", name=re.compile(re.escape(nick))).first.click(timeout=120_000)

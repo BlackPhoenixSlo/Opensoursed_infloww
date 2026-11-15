@@ -125,13 +125,15 @@ def case_switches():
     for (d, f), want in rows:
         assert (wr.is_hot(d.fired, f), wr.scene_turn(d, f)) == want, (d, f.mode, f.config["sext_scene"])
     gifs = [   # gif_offered: (decision, facts) -> bool
-        ((D("chat"), _facts(gifs=True, sext_scene=False)), True),     # flag off: every Turn
-        ((D("sext", "sexual_now"), _facts(gifs=True, sext_scene=False)), True),
+        ((D("chat"), _facts(gifs=True, sext_scene=False)), False),    # needs gif_fits, flag or not
+        ((D("chat", "gif_fits"), _facts(gifs=True, sext_scene=False)), True),
+        ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=False)), True),   # no scene
         ((D("chat"), _facts(gifs=True, sext_scene=True)), False),     # needs gif_fits
         ((D("chat", "gif_fits"), _facts(gifs=True, sext_scene=True)), True),
         ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=True)), False),  # scene
         ((D("chat", "gif_fits"), _facts(gifs=False, sext_scene=True)), False),
-        ((D("chat"), _facts("shadow", gifs=True, sext_scene=True)), True),
+        ((D("chat"), _facts("shadow", gifs=True, sext_scene=True)), False),
+        ((D("chat", "gif_fits"), _facts("shadow", gifs=True, sext_scene=True)), True),
     ]
     for (d, f), want in gifs:
         assert wr.gif_offered(d, f) is want, (d, f.mode, f.config)
@@ -147,22 +149,24 @@ def case_gif_pct():
         return SimpleNamespace(mode="test", account_id="acct_g", fan_id=7, anchor_key=key,
                                config={**DEFAULTS, "gifs": True, "sext_scene": False, **cfg})
     keys = [f"t:{i}" for i in range(2000)]
-    for d in (D("chat"), D("sext", "sexual_now")):
+    for d in (D("chat", "gif_fits"), D("sext", "sexual_now", "gif_fits")):
         assert all(wr.gif_offered(d, f(k)) for k in keys[:200])
         assert not any(wr.gif_offered(d, f(k, gif_pct=0)) for k in keys[:200])
         assert all(wr.gif_offered(d, f(k, gif_pct=100)) for k in keys[:200])
-    hits = sum(wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys)
+    fits = D("chat", "gif_fits")        # the % is of the fitting Turns
+    hits = sum(wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys)
     assert 0.45 <= hits / len(keys) <= 0.55, hits
-    assert [wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys[:50]] == \
-        [wr.gif_offered(D("chat"), f(k, gif_pct=50)) for k in keys[:50]]
-    assert not any(wr.gif_offered(D("chat"), f(k, gifs=False, gif_pct=100)) for k in keys[:50])
+    assert [wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys[:50]] == \
+        [wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys[:50]]
+    assert not any(wr.gif_offered(D("chat"), f(k, gif_pct=100)) for k in keys[:50])    # no gif_fits
+    assert not any(wr.gif_offered(fits, f(k, gifs=False, gif_pct=100)) for k in keys[:50])
     assert not any(wr.gif_offered(D("chat"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])  # no gif_fits
     assert all(wr.gif_offered(D("chat", "gif_fits"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])
     sticker = wr.cat_stickers.prompt_block("allow", wr._voice.VOICE_HER)
     for k in keys[:40]:
         t = SimpleNamespace(**{**vars(_turn(gifs=True, sext_scene=False, gif_pct=50)), "fan_id": 7, "anchor_key": k})
-        on = wr.gif_offered(D("chat"), t)
-        assert (sticker in wr.messages_for("chat", "otherwise", 2, t, None)[0]["content"]) is on, k
+        on = wr.gif_offered(D("chat", "gif_fits"), t)
+        assert (sticker in wr.messages_for("chat", "otherwise", 2, t, None, gif_ok=on)[0]["content"]) is on, k
         text, gif = _gif_part("hey\nSTICKER: kiss", t, on)
         assert "STICKER" not in text and (gif is None or on), (k, text, gif)
 

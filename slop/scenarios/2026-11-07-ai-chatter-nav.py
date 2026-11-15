@@ -3,23 +3,24 @@ open at a time (2026-11-07, 11-08). The owner on a phone opens the nav drawer: M
 Growth, Share for Share, My Automations, My AI Chatter as entries (no Focus row: #379, Focus opens from
 Messages Pro). Opening My Automations (the pages a flow in files of its own adds: lib/<flow>_nav.py
 `MY_AUTOMATIONS`, then Auto Mass, Auto Post, Auto Story, Auto Funnel, Gen-Info), then My AI Chatter
-(Auto-reply, Get to know fans, Full AI Chatter) leaves
-only My AI Chatter open; tapping Full AI Chatter closes the drawer on the coming-soon page. At desktop
+(Auto-reply, Get to know fans, Full AI Chat, AI rules) leaves
+only My AI Chatter open; tapping Full AI Chat closes the drawer on its Off / Live settings (Shadow until a9eecca02) (was a coming-soon
+page until e4aa1c5f3, renamed from Full AI Chatter in 7abc422b1; AI rules added by 35467ffc9). At desktop
 width the sidebar on Auto-reply holds My AI Chatter open with Auto-reply current. A chatter whose enforced
 role ticks Auto-reply only sees My AI Chatter (Auto-reply and Get to know fans, the not-opt-in page), no
-My Automations, no Full AI Chatter (owner-only). A nav flow, not a volume one: one owner, one chatter,
-real routes on the slop temp DB.
+My Automations, no Full AI Chat, no AI rules (owner-only). A nav flow, not a volume one: one owner, one
+chatter, real routes on the slop temp DB.
 
 World: `agency_inbox`; the chatter through the real invite + register (`seed/chatters`), the role
 through `PUT /admin/settings/roles`.
 
 Invariants: the stored role and the chatter's Applied read (`opt_in` exactly Auto-reply), the three
-sidebars' outlines, the coming-soon page after the tap, no 5xx from the relay in any browser.
+sidebars' outlines, the Off / Live settings after the tap, no 5xx from the relay in any browser.
 Screenshots: phone-drawer, phone-accordion-trigger (My Automations open), phone-accordion (settled: only
 My AI Chatter open), phone-full-ai-chatter (settled; -dark too), desktop-sidebar, chatter-sidebar. --no-ui:
 the route checks only.
 
-Fault `full-ai-chatter-shown-to-chatter` (nav.ts's Full AI Chatter without `chatterHidden`) must turn
+Fault `full-ai-chatter-shown-to-chatter` (nav.ts's Full AI Chat without `chatterHidden`) must turn
 only the chatter-sidebar check red; `sidebar-groups-not-accordion` (Sidebar.tsx keeping every toggled group
 open) only the accordion check.
 """
@@ -44,7 +45,9 @@ FULL = "/full-ai-chatter"
 
 _AUTOMATIONS = (*navs.extras("MY_AUTOMATIONS"), "Auto Mass", "Auto Post", "Auto Story", "Auto Funnel", "Gen-Info")
 MY_AUTOMATIONS = "My Automations: " + " / ".join(_AUTOMATIONS)
-MY_AI_CHATTER = "My AI Chatter: Auto-reply / Get to know fans / Full AI Chatter"
+MY_AI_CHATTER = "My AI Chatter: Auto-reply / Get to know fans / Full AI Chat / AI rules"
+# Full AI Chat's Settings line (FullAiChatterPage.tsx): the page that replaced "Coming soon".
+SHADOW = "Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing."
 # The drawer's entries from Messages Pro to the divider, groups by label.
 ENTRIES = ["Messages Pro", "Vault Pro", "Growth", "Share for Share", "My Automations", "My AI Chatter"]
 
@@ -52,14 +55,14 @@ C_ROLE = "PUT /admin/settings/roles (enforced, a role ticking Auto-reply of the 
 C_APPLIED = ("chatter's GET /admin/settings/applied: opt_in is exactly Auto-reply; pages hold Auto-reply, "
              "Get to know fans and Full AI Chatter")
 C_PHONE_DRAWER = ("phone (390x844): the nav drawer's entries run Messages Pro, Vault Pro, Growth, Share for "
-                  "Share, My Automations, My AI Chatter (no Focus); Vault Pro is not in Growth, Full AI Chatter not an entry")
+                  "Share, My Automations, My AI Chatter (no Focus); Vault Pro is not in Growth, Full AI Chat not an entry")
 C_ACCORDION = (f"phone: opening My Automations ({len(_AUTOMATIONS)} pages), then My AI Chatter (Auto-reply, "
-               "Get to know fans, Full AI Chatter) leaves only My AI Chatter open")
-C_PHONE_PAGE = "phone: tapping Full AI Chatter in the drawer closes it on /full-ai-chatter showing Coming soon"
+               "Get to know fans, Full AI Chat, AI rules) leaves only My AI Chatter open")
+C_PHONE_PAGE = "phone: tapping Full AI Chat in the drawer closes it on /full-ai-chatter showing its Off / Live settings"
 C_DESKTOP = ("desktop (1440px): on Auto-reply the sidebar holds My Automations closed, then My AI Chatter open "
-             "with Auto-reply current and Full AI Chatter its last page")
+             "with Auto-reply current, then Full AI Chat and AI rules its last pages")
 C_CHATTER = ("chatter (role ticks Auto-reply only): the sidebar shows My AI Chatter with Auto-reply and "
-             "Get to know fans, no My Automations, no Full AI Chatter")
+             "Get to know fans, no My Automations, no Full AI Chat, no AI rules")
 C_5XX = "no 5xx from the relay in any browser session"
 CHECKS = (C_ROLE, C_APPLIED, C_PHONE_DRAWER, C_ACCORDION, C_PHONE_PAGE, C_DESKTOP, C_CHATTER, C_5XX)
 
@@ -172,7 +175,7 @@ async def run(ctx) -> None:
             ok = True
             try:
                 await page.wait_for_url(f"**{FULL}", timeout=60_000)
-                await page.get_by_text("Coming soon", exact=True).wait_for(timeout=60_000)
+                await page.get_by_text(SHADOW, exact=True).wait_for(timeout=60_000)
                 await page.locator(drawer).wait_for(state="detached", timeout=10_000)
             except Exception as e:  # noqa: BLE001
                 ok = False
@@ -206,7 +209,8 @@ async def run(ctx) -> None:
             lines = await page.evaluate(_OUTLINE, "#app-sidebar") or []
             await ui.shot(ctx, page, "chatter-sidebar")
             ctx.check(C_CHATTER, "My AI Chatter: Auto-reply / Get to know fans" in lines
-                      and not any(l.startswith("My Automations") or "Full AI Chatter" in l for l in lines),
+                      and not any(l.startswith("My Automations") or "Full AI Chat" in l or "AI rules" in l
+                                     for l in lines),
                       lines=lines)
             statuses += page.slop["statuses"]
         bad = [u for s, u in statuses if s >= 500 and "/api/of/" not in u]

@@ -33,7 +33,7 @@ from _full_ai_chat_helpers import (
 import json
 import time
 
-from _full_ai_fixtures import QUIET, FakeJev, FakeWriterHTTP, _fake_jev
+from _full_ai_fixtures import GIF_FITS, QUIET, FakeJev, FakeWriterHTTP, _fake_jev
 from automations import _info_jev, full_ai_turn, full_ai_writers
 from automations.full_ai_config import DEFAULTS, turn_bound_s
 
@@ -160,7 +160,8 @@ def _pick_in_writer_system():
     try:
         lone = f"ok:STICKER: {_GIF_TAG}"
         got, _, _ = _info_post(_body("p-info-gif"), FakeInfoJev(({}, "occupation")),
-                               {NANO: lone, OPENROUTER: lone, ZAI: lone, DEEPSEEK: lone})
+                               {NANO: lone, OPENROUTER: lone, ZAI: lone, DEEPSEEK: lone},
+                               fake_j=FakeJev((GIF_FITS, 1.0)))
     finally:
         _store_config(A, {"checkpoint": _LEAD_OFF})
     assert got["status"] == "sent" and [set(p) for p in got["parts"]] == [{"gif", "tag"}], got

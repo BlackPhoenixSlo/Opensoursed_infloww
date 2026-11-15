@@ -16,6 +16,11 @@ import { relay } from "@/lib/relay";
 export const ROUTES = ["chat", "sext", "sell_now", "tease", "make_right", "ai_dare", "no_send"] as const;
 export type Route = (typeof ROUTES)[number];
 
+export const ROUTE_LABEL: Record<Route, string> = {
+  chat: "Chat", sext: "Sext", sell_now: "Sell now", tease: "Tease",
+  make_right: "Make right", ai_dare: "AI dare", no_send: "No send",
+};
+
 export interface FullAiRow {
   id: number;
   created_at: string;
@@ -29,6 +34,8 @@ export interface FullAiRow {
   jev_failed: boolean;
   /** A Test chat Turn (no Fan: the page shows "Test chat"). */
   test?: boolean;
+  /** A live Turn (sent on OnlyFans): the page tags it "Live". */
+  live?: boolean;
 }
 
 export interface FullAiToday {

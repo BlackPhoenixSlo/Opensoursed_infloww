@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
+from _full_ai_fixtures import GIF_FITS
 from _full_ai_chat_helpers import (
     A, NANO, OPENROUTER, OWNER_A, _GIF_TAG, _body, _chain_post, _direct, _post, _reply, _rows,
     _store_config,
@@ -69,8 +70,8 @@ def case_draft_follows_its_side_only():
         pair = "p-cfg-gif"
         _put_draft({**DEFAULTS, "gifs": True})
         line = f"ok:omg ur funny\nSTICKER: {_GIF_TAG}"
-        ck, *_ = _post(OWNER_A, _body(pair), line)
-        dr, *_ = _post(OWNER_A, _body(pair, side="draft"), line)
+        ck, *_ = _post(OWNER_A, _body(pair), line, jev=(GIF_FITS, 1.0))
+        dr, *_ = _post(OWNER_A, _body(pair, side="draft"), line, jev=(GIF_FITS, 1.0))
         assert ck.json()["parts"] and all(set(p) == {"text"} for p in ck.json()["parts"]), ck.json()
         assert set(dr.json()["parts"][-1]) == {"gif", "tag"}, dr.json()["parts"]
         assert dr.json()["parts"][-1]["tag"] == _GIF_TAG, dr.json()["parts"]

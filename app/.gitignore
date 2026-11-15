@@ -4,6 +4,8 @@ out/
 dist/
 *.tsbuildinfo
 next-env.d.ts
+# lib/pluginBarrel.js writes them from plugins/*/register.ts and plugins/*/ui.ts
+lib/plugins.generated*.ts
 
 # Dependencies
 node_modules/

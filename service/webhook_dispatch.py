@@ -47,6 +47,7 @@ from db.models import (
     ScrapeHistory, SkipList,
 )
 import automation_executor as ax
+import relay_hooks
 import webhook_dispatch_decide as decide
 from automation_registry import kind_family
 
@@ -74,6 +75,8 @@ def _fan_serial(account_id: str, fan_id: int) -> asyncio.Lock:
 # inbound after a blast lands the real copy (with its media and OF's `queueId`)
 # inside the 4h window we ourselves leave open before the mass unsend erases it.
 # ~34 calls/day fleet-wide, measured against 238 blind inbounds a week.
+# Only on accounts a registered scrape gate allows (`_scrape_after_blast`). The GET
+# does NOT mark the chat read on OF (owner confirmed 2026-11-07).
 _BLAST_SCRAPE_WINDOW = timedelta(minutes=60)
 # One claim per fan for every one-fan scrape trigger (`enqueue_fan_scrape`): the
 # after-blast scrape and a deferred chat's reply, open and gen_info pick.
@@ -333,15 +336,31 @@ async def _blasted_recently(account_id: str, *, s=None) -> bool:
     return hit is not None
 
 
-async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | None = None) -> None:
-    """First inbound from a fan after a blast → one bounded `scrape_chats` job for
-    HIM, now. Never raises: this is an inbox repair, and the chat dispatch it sits
-    in front of must not care whether it worked.
+async def _scrape_allowed(account_id: str, *, s=None) -> bool:
+    """Does a registered gate (`relay_hooks.blast_scrape_gates`) allow the
+    after-blast scrape on this account? Any yes → yes; none registered → no.
+    Each gate owns its own reading (and its reasons), over the one session
+    passed in."""
+    if not relay_hooks.blast_scrape_gates:
+        return False
+    async with _reader(s) as s:
+        for gate in relay_hooks.blast_scrape_gates:
+            if await gate(s, account_id):
+                return True
+    return False
 
-    Deliberately ABOVE `_load_config` / `_classify_kind` in the caller: the inbox
-    benefits whether or not any automation would reply to this man — a terminal
-    -stage fan a human owns needs his history MORE, not less. Same reasoning as the
-    customs mark in `on_inbound_tip`.
+
+async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | None = None,
+                              scrape_allowed: bool | None = None) -> None:
+    """First inbound from a fan after a blast → one bounded `scrape_chats` job for
+    HIM, now, but ONLY when a registered scrape gate allows it. Never raises:
+    this is an inbox repair, and the chat dispatch it sits in front of must not
+    care whether it worked.
+
+    Gated per Creator by `_scrape_allowed` (the plugin gates), and NOT on
+    `_load_config` (W7's own switch). The scrape's `GET /chats/{fan}/messages`
+    does NOT mark the chat read on OF (owner confirmed 2026-11-07). A gate
+    answers per account, not per blast or fan.
 
     What the scrape brings back is the newest rows since his last scrape — his
     inbound, our replies, and the blast copy with its real id, media and
@@ -351,6 +370,8 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
     The blast, sent under an hour ago, is always inside that newest 100."""
     try:
         if not (blasted if blasted is not None else await _blasted_recently(account_id)):
+            return
+        if not (scrape_allowed if scrape_allowed is not None else await _scrape_allowed(account_id)):
             return
         await enqueue_fan_scrape(account_id, fan_id, "blast_reply")
     except Exception:
@@ -430,6 +451,15 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
             log.warning("blast_reply_scrape_failed account=%s fan=%s",
                         account_id, fan_id, exc_info=True)
             blasted = False
+        # Read only after a blast (most DMs skip it); fail closed: a gate
+        # that raises is a no.
+        scrape_allowed = False
+        if blasted:
+            try:
+                scrape_allowed = await _scrape_allowed(account_id, s=s)
+            except Exception:
+                log.warning("blast_reply_scrape_failed account=%s fan=%s",
+                            account_id, fan_id, exc_info=True)
         try:   # an inbox repair too: must not cost the dispatch
             deferred = await history_deferred(account_id, fan_id, s=s)
         except Exception:
@@ -450,9 +480,9 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
                 account_id, kind, fan_id, decide.dedup_within_s(paused_until, delay, now), s=s)
 
     # ── The blast this man may be answering (plans/blast-splice C.1) ──
-    # FIRST, and above every return below: the copy belongs in the inbox
-    # whether or not an automation would reply to him. Own try/except inside.
-    await _scrape_after_blast(account_id, fan_id, blasted=blasted)
+    # Above every return below: its gate is the plugin scrape gate, not W7's
+    # switch or his stage (see `_scrape_after_blast`). Own try/except inside.
+    await _scrape_after_blast(account_id, fan_id, blasted=blasted, scrape_allowed=scrape_allowed)
     if cfg is None:
         return deferred
 
@@ -491,8 +521,9 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
     return deferred
 
 
-# The window for a pending full_ai_chat job, whenever it is due: ours are due
-# now, or JOB_RETRY_BACKOFF_S out after a failed attempt.
+# The window for a pending full_ai_chat job, whenever it is due: Shadow's are due
+# now, or JOB_RETRY_BACKOFF_S out after a failed attempt; a live job waits its
+# reply speed (≤ 3600 s, full_ai_live.due) or a busy retry's 20 s.
 # ASSUMPTION: a day's window covers every pending job (rung 5); overturned if a
 # producer ever queues one further out.
 _FULL_AI_PENDING_S = 86400.0
@@ -503,13 +534,21 @@ async def _full_ai_hook(account_id: str, fan_id: int, message_id: int) -> None:
     `full_ai_chat` rule is on: one one-Fan job anchored on this DM, beside (not
     instead of) W7's dispatch, whatever its gate or `_classify` say. The job only
     decides and records (ADR-0033). A pending job whose catch-up decides this
-    DM's Turn too (`full_ai_chat.decides`) makes it only wake. Own try: a
-    failure here never costs W7's reply. Never raises."""
+    DM's Turn too (`full_ai_chat.decides`) makes it only wake. A rule in Mode
+    live instead queues the Fan's reply at its reply speed (`full_ai_live.enqueue`)
+    unless the checkpoint's `reply_by_webhook` is off (then the sweep answers).
+    Own try: a failure here never costs W7's reply. Never raises."""
     try:
         rule_id = await ax.enabled_rule_id(account_id, "full_ai_chat")
         if rule_id is None:
             return
-        from automations import full_ai_chat   # lazy: the automations package imports widely
+        from automations import full_ai_chat, full_ai_live, full_ai_turn   # lazy: imports widely
+        live = await full_ai_live.live_rule(account_id)
+        if live is not None:
+            cfg = (await full_ai_turn.stored_config(account_id))["checkpoint"]
+            if cfg["reply_by_webhook"]:
+                await full_ai_live.enqueue(account_id, fan_id, message_id, live)   # wakes at run_at
+            return
         hit = await _imminent_pending_job(account_id, "full_ai_chat", fan_id, _FULL_AI_PENDING_S)
         if hit is not None and await full_ai_chat.decides(account_id, fan_id, hit[1], message_id):
             ax.wake_supervisor()

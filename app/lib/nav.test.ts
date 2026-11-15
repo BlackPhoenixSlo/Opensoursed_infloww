@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+// The nav without plugins (lib/chatSlots.ts): their links are their own tests', in plugins/<name>/.
+vi.mock("@/lib/plugins.generated.register", () => ({ PLUGINS: [] }));
+
 import {
   CHATTER_OPT_IN_PAGES,
   FANSLY_NAV,

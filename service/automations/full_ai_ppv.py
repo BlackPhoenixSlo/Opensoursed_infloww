@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import select, update
 
 import audience_include
+import dm_rate
 import automation_executor as ax
 from attribution import write_outbound_attribution
 from automations._send_failure import (
@@ -78,6 +79,7 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
     media = list(dict.fromkeys(locked + previews))      # OF frees `previews` from among `mediaFiles`
     audience_include.audit_send_purpose(send_purpose, where="full_ai_ppv")
     result, exc, landed = None, None, True
+    await dm_rate.turn(str(account_id))     # under full_ai_live's loop: its turn, passes at once
     since = datetime.utcnow()
     try:
         if cents > 0:

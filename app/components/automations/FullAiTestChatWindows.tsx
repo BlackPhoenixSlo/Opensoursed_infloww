@@ -25,7 +25,7 @@ import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { configLine, writersLine, type ConfigLimits, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import {
-  canSend, canSettle, factsLine, photoCaption, sendBlock, noReplyText, outcomesLine, writersFailed, ppvLine,
+  canSend, canSettle, factsLine, photoCaption, sendBlock, noReplyText, outcomesLine, writersFailed, ppvLine, mediaLine,
   replyLine, type Describing, type FanPhoto, type Offer, type Outcome, type Part, type SideState, type Turn,
   type UiSide,
 } from "@/components/automations/fullAiTestChat";
@@ -232,12 +232,14 @@ function HerPart({ part }: { part: Part }) {
   );
 }
 
-/** Her PPV message: caption, the Pick's thumbnails (locked media, then previews) and `ppvLine` — the price with Buy /
- *  Decline under it while `canSettle`, a settled outcome, or "Free". Everything comes from the row's Offer. */
+/** Her PPV message: caption, the Pick's thumbnails (locked media, then previews), their kinds and length (`mediaLine`)
+ *  and `ppvLine` — the price with Buy / Decline under it while `canSettle`, a settled outcome, or "Free". Everything
+ *  comes from the row's Offer. */
 function PpvBubble({ text, offer, turn, rowId, accountId, onSettle }: {
   text: string; offer: Offer; turn: Turn; rowId: number; accountId: string; onSettle: OnSettle;
 }) {
   const media = [...offer.media, ...offer.previews].map((id) => ({ id }));
+  const kinds = mediaLine(offer);
   const line = ppvLine(turn);
   const open = canSettle(turn);
   const pending = turn.settle?.kind === "pending" ? turn.settle.outcome : null;
@@ -247,6 +249,7 @@ function PpvBubble({ text, offer, turn, rowId, accountId, onSettle }: {
         PPV_BORDER, PPV_FILL)}>
         <span className={MP.messageList.ppvTitle}>{text}</span>
         <MediaStrip media={media} accountId={accountId} thumbSrc={(m) => mirrorThumbSrc(accountId, m.id)} />
+        {kinds && <span data-testid="ppv-media" className="text-[12px] text-white/80">{kinds}</span>}
         {line?.kind === "settled" && <PpvStatusLine price={line.dollars} paid={line.paid} />}
         {line?.kind === "price" && <div className={MP.messageList.paidTag}>{ppvPriceLabel(line.dollars)}</div>}
         {line?.kind === "free" && <div className={MP.messageList.paidTag}>Free</div>}

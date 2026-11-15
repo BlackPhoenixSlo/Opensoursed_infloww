@@ -79,7 +79,8 @@ OF_REFRESH = "/admin/mass-messages/refresh"
 CHECKS = (C_HISTORY, C_LINKS, C_CLICK, C_DEEP, C_5XX)
 
 # The answer bubble's links (AssistantWidget renderTurn), not the composer's focus line.
-ANSWER_SEL = '[data-look="messenger"] .rounded-bl-md'
+# data-assistant-ui, not data-look: the /help-center page variant drops data-look (it wears the app theme).
+ANSWER_SEL = '[data-assistant-ui] .rounded-bl-md'
 ANSWER_LINKS = f"{ANSWER_SEL} a"
 THREAD = "slop-help-links"
 _LINKS = """() => {

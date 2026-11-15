@@ -1,6 +1,6 @@
 /**
- * Full AI Chat: the settings column (ten controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the on/off switch over kind `full_ai_chat` (Shadow / Off) through the server's kind switch,
- * and today's Shadow Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
+ * Full AI Chat: the settings column (ten controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
+ * and today's Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -32,6 +32,7 @@ import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
+const relayPut = relay.put as unknown as Mock;
 
 const rule = (is_enabled: boolean) => ({
   id: 9, account_id: "acc-a", name: "Full AI Chat", kind: "full_ai_chat", is_enabled,
@@ -67,6 +68,8 @@ const REFERENCE = [
 const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m" };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS, ...over });
+const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
+let modeRead: Record<string, unknown> = MODE_OFF;
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
 /** The reads every mount answers: the Full AI config, the account config (Model info) and the LLM keys status. */
 const baseGet = (p: string): unknown => {
@@ -75,6 +78,7 @@ const baseGet = (p: string): unknown => {
     return { account_id: "acc-a", config: { persona: "", model_notes: null }, model_notes_template: TEMPLATE };
   }
   if (p.startsWith("/admin/full-ai/prepare-content/status")) return PREPARE_IDLE;
+  if (p.startsWith("/admin/full-ai/mode")) return modeRead;
   if (p.startsWith("/admin/my-llm-keys")) {
     return { providers: { nanogpt: { set: true, hint: "••••n4n0" }, openrouter: { set: false, hint: "" } } };
   }
@@ -88,6 +92,8 @@ beforeEach(() => {
   relayGet.mockReset();
   relayPost.mockReset();
   relayPost.mockResolvedValue({ action: "created" });
+  relayPut.mockReset();
+  modeRead = MODE_OFF;
 });
 afterEach(() => {
   cleanup();
@@ -104,28 +110,91 @@ const mount = (rules: unknown[], today: unknown = TODAY) => {
   renderWithProviders(<FullAiChatterPage />, client);
 };
 const settings = () => within(screen.getByRole("list", { name: "Settings" }));
-const theSwitch = () => settings().getByRole("switch", { name: "Full AI Chat" }) as HTMLButtonElement;
-const switchCalls = () => relayPost.mock.calls.filter((c) => String(c[0]) === "/admin/automation-rules/switch");
+const modeGroup = () => settings().getByRole("group", { name: "Mode" });
+const modeButton = (name: "Off" | "Live") => within(modeGroup()).getByRole("button", { name }) as HTMLButtonElement;
+const modeNow = () => screen.getByTestId("full-ai-mode-now").textContent;
+const modePuts = () => relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/mode");
 
 describe("Full AI Chat page", () => {
-  it("reads Off with no rule and flips it to Shadow through the server switch", async () => {
+  it("reads Off and goes Live only after the confirm (Cancel writes nothing)", async () => {
     mount([]);
-    await waitFor(() => expect(theSwitch().disabled).toBe(false));
-    expect(theSwitch().getAttribute("aria-checked")).toBe("false");
-    expect(settings().getByText("Off")).toBeTruthy();
-    await act(async () => { fireEvent.click(theSwitch()); });
-    await waitFor(() => expect(switchCalls().length).toBe(1));
-    expect(switchCalls()[0][1]).toEqual({ account_id: "acc-a", kind: "full_ai_chat", enable: true });
-    expect(relayPost).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(modeButton("Live").disabled).toBe(false));
+    expect(modeNow()).toBe("Off");
+    expect(modeButton("Off").disabled).toBe(true);
+    await act(async () => { fireEvent.click(modeButton("Live")); });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Replies will be sent to fans on OnlyFans.")).toBeTruthy();
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" })); });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(modePuts()).toEqual([]);
+    relayPut.mockResolvedValue({ mode: "live", off_switch: false, blockers: [] });
+    await act(async () => { fireEvent.click(modeButton("Live")); });
+    await act(async () => { fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Go Live" })); });
+    await waitFor(() => expect(modePuts().length).toBe(1));
+    expect(modePuts()[0][1]).toEqual({ account_id: "acc-a", mode: "live" });
+    await waitFor(() => expect(modeNow()).toBe("Live"));
+    expect(modeButton("Live").getAttribute("aria-pressed")).toBe("true");
+    expect(relayPost).not.toHaveBeenCalled();   // never the shared rule switch
   });
 
-  it("reads Shadow from an enabled rule and switches it off", async () => {
+  it("reads a legacy rule as Shadow (records only); Off writes off with no confirm", async () => {
+    modeRead = { ...MODE_OFF, mode: "shadow" };
+    relayPut.mockResolvedValue(MODE_OFF);
     mount([rule(true)]);
-    await waitFor(() => expect(theSwitch().getAttribute("aria-checked")).toBe("true"));
-    expect(settings().getByText("Shadow")).toBeTruthy();
-    await act(async () => { fireEvent.click(theSwitch()); });
-    await waitFor(() => expect(switchCalls().length).toBe(1));
-    expect(switchCalls()[0][1]).toEqual({ account_id: "acc-a", kind: "full_ai_chat", enable: false });
+    await waitFor(() => expect(modeNow()).toBe("Shadow (records only)"));
+    expect(within(modeGroup()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Off", "Live"]);
+    await act(async () => { fireEvent.click(modeButton("Off")); });
+    await waitFor(() => expect(modePuts().length).toBe(1));
+    expect(modePuts()[0][1]).toEqual({ account_id: "acc-a", mode: "off" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(modeNow()).toBe("Off"));
+  });
+
+  it("keeps Live disabled while the server names a blocker, and shows the global off switch", async () => {
+    modeRead = { mode: "off", off_switch: true, blockers: ["No Fans list: set an include or exclude list in the saved config"] };
+    mount([]);
+    await waitFor(() => expect(modeNow()).toBe("Off"));
+    expect(modeButton("Live").disabled).toBe(true);
+    expect(within(screen.getByRole("list", { name: "Live blockers" })).getByText(/^No Fans list/)).toBeTruthy();
+    expect(screen.getByText(/FULL_AI_CHAT_OFF is on: nothing is sent on any Creator/)).toBeTruthy();
+  });
+
+  it("shows the server's refusal when Live is refused", async () => {
+    relayPut.mockRejectedValue(new Error("Can't go Live: No TypeSafe key (the Router)"));
+    mount([]);
+    await waitFor(() => expect(modeButton("Live").disabled).toBe(false));
+    await act(async () => { fireEvent.click(modeButton("Live")); });
+    await act(async () => { fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Go Live" })); });
+    expect(await screen.findByText(/Can't go Live: No TypeSafe key \(the Router\)/)).toBeTruthy();
+    expect(modeNow()).toBe("Off");
+  });
+
+  it("re-reads the Mode after a refusal, and keeps Off pressable when the Mode read fails", async () => {
+    const modeGets = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/mode")).length;
+    relayPut.mockRejectedValue(new Error("Can't go Live: No Fans list"));
+    mount([]);
+    await waitFor(() => expect(modeButton("Live").disabled).toBe(false));
+    const before = modeGets();
+    await act(async () => { fireEvent.click(modeButton("Live")); });
+    await act(async () => { fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Go Live" })); });
+    await waitFor(() => expect(modeGets()).toBeGreaterThan(before));
+    cleanup();
+    client = makeTestQueryClient();
+    relayGet.mockImplementation((path: string) => {
+      const p = String(path);
+      if (p.startsWith("/admin/full-ai/mode")) return Promise.reject(new Error("boom"));
+      if (p.startsWith("/admin/automation-rules")) return Promise.resolve({ rules: [] });
+      if (p.startsWith("/admin/full-ai/today")) return Promise.resolve(TODAY);
+      return Promise.resolve(baseGet(p));
+    });
+    relayPut.mockReset();
+    relayPut.mockResolvedValue(MODE_OFF);
+    renderWithProviders(<FullAiChatterPage />, client);
+    expect(await screen.findByText(/Couldn't read the Mode/)).toBeTruthy();
+    expect(modeButton("Live").disabled).toBe(true);
+    expect(modeButton("Off").disabled).toBe(false);
+    await act(async () => { fireEvent.click(modeButton("Off")); });
+    await waitFor(() => expect(modePuts()).toEqual([["/admin/full-ai/mode", { account_id: "acc-a", mode: "off" }, { accountId: "acc-a" }]]));
   });
 
   it("counts today's rows in Route order, Jev failures last, and reads the Creator's today", async () => {
@@ -155,7 +224,7 @@ describe("Full AI Chat page", () => {
     accounts.list = [];
     mount([]);
     expect(await screen.findByText("No creator with a live session")).toBeTruthy();
-    expect(screen.queryByRole("switch", { name: "Full AI Chat" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
     expect(relayGet).not.toHaveBeenCalled();
   });
 });
@@ -399,7 +468,6 @@ describe("Full AI Chat page › Test chat", () => {
 });
 
 // ── Settings column (ticket 39) ──────────────────────────────────────────────────────────────────────────────────
-const relayPut = relay.put as unknown as Mock;
 const putCalls = () => relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/draft");
 const postsTo = (path: string) => relayPost.mock.calls.filter((c) => String(c[0]) === path);
 const btn = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
@@ -441,7 +509,7 @@ describe("Full AI Chat page › Settings", () => {
     // Top-level items only: Prepare content's step list nests its own.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
     expect(items.length).toBe(10);
-    expect(within(items[0]).getByRole("switch", { name: "Full AI Chat" })).toBeTruthy();
+    expect(within(items[0]).getByRole("group", { name: "Mode" })).toBeTruthy();
     expect(within(items[1]).getByText("LLM keys")).toBeTruthy();
     const speed = within(items[2]).getByRole("radiogroup", { name: "Reply speed" });
     expect(within(speed).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
@@ -888,14 +956,14 @@ describe("Full AI Chat page › Selling settings", () => {
     const group = () => screen.queryByRole("list", { name: "Sell settings" });
     expect(group()).toBeNull();
     expect(settings().queryByRole("switch", { name: "Unasked offers" })).toBeNull();
-    expect(settings().queryByText("Test chat only.")).toBeNull();
+    expect(settings().queryByText("Test chat + live. Shadow ignores these.")).toBeNull();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
     await waitFor(() => expect(group()).not.toBeNull());
     const sws = within(group()!).getAllByRole("switch") as HTMLButtonElement[];
     expect(sws.map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked"), s.disabled])).toEqual(
       ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Spacing", "He likes"]
         .map((n) => [n, "true", false]));
-    expect(settings().getByText("Test chat only.")).toBeTruthy();
+    expect(settings().getByText("Test chat + live. Shadow ignores these.")).toBeTruthy();
     // Sell group sits inside Sell's own top-level item.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
     expect(items.length).toBe(10);
@@ -970,7 +1038,10 @@ describe("Full AI Chat page › Selling settings", () => {
 });
 
 describe("Full AI Chat page › PPV bubble", () => {
-  const offer = (price_cents: number) => ({ kind: "offer", ref: 21, price_cents, list_cents: price_cents, media: [21, 22], previews: [23], refusal: null });
+  // Checkpoint's Offer carries `items` (2 clips + the free preview photo); Draft's is an older row without them.
+  const ITEMS = [{ id: 21, kind: "video", seconds: 42 }, { id: 22, kind: "video", seconds: 30 }, { id: 23, kind: "photo", seconds: null }];
+  const offer = (price_cents: number) => ({ kind: "offer", ref: 21, price_cents, list_cents: price_cents, media: [21, 22], previews: [23],
+    ...(price_cents ? { items: ITEMS } : {}), refusal: null });
   const ppvAnswer = (row_id: number, price_cents: number) => answer({
     row_id, route: "sell_now", offer: offer(price_cents),
     parts: [{ text: "u want this?", ppv: { ref: 21, price_cents, media: [21, 22], previews: [23] } }],
@@ -996,10 +1067,12 @@ describe("Full AI Chat page › PPV bubble", () => {
     expect([...win("Checkpoint").getByTestId("ppv").querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual([21, 22, 23].map(
       (id) => `/admin/vault-ai/thumb?account_id=acc-a&media_id=${id}`));
     expect(cp.getByText("$15")).toBeTruthy();
+    expect(cp.getByTestId("ppv-media").textContent).toBe("2 videos · 1:12");     // the locked clips, not the preview
     expect(win("Checkpoint").getByRole("button", { name: "Buy" })).toBeTruthy();
     expect(win("Checkpoint").getByRole("button", { name: "Decline" })).toBeTruthy();
     const draft = await win("Draft").findByTestId("ppv");
     expect(within(draft).getByText("Free")).toBeTruthy();
+    expect(within(draft).queryByTestId("ppv-media")).toBeNull();                // no `items`: no line
     expect(win("Draft").queryByRole("button", { name: "Buy" })).toBeNull();
     expect(win("Draft").queryByRole("button", { name: "Decline" })).toBeNull();
   });

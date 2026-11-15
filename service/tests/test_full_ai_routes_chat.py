@@ -27,7 +27,7 @@ from _full_ai_fixtures import _shape_drop  # noqa: E402
 from _full_ai_chat_helpers import A, OWNER_A, _GIF_TAG, _body, _db, _post, _reply, _rows, _store_config
 from sqlalchemy import func, select
 
-from _full_ai_fixtures import QUIET
+from _full_ai_fixtures import GIF_FITS, QUIET
 from automations import full_ai_writers
 from automations.full_ai_config import DEFAULTS
 from db.engine import get_session
@@ -160,7 +160,7 @@ def case_gifs_on_carry_a_gif_part():
     _store_config(A, {"checkpoint": {**DEFAULTS, "gifs": True}})
     try:
         pair = "p-gif-on"
-        r, fw, _, _ = _post(OWNER_A, _body(pair), f"ok:omg ur funny\nSTICKER: {_GIF_TAG}")
+        r, fw, _, _ = _post(OWNER_A, _body(pair), f"ok:omg ur funny\nSTICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
         got = r.json()
         assert r.status_code == 200 and got["status"] == "sent", r.text
         assert cat_stickers.prompt_block("allow") in _system_of(fw)
@@ -174,14 +174,14 @@ def case_gifs_on_carry_a_gif_part():
         assert s["rows"][0]["parts"] == got["parts"], s
         # A sticker-only reply is the gif alone.
         pair = "p-gif-solo"
-        r, *_ = _post(OWNER_A, _body(pair), f"ok:STICKER: {_GIF_TAG}")
+        r, *_ = _post(OWNER_A, _body(pair), f"ok:STICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
         got = r.json()
         assert got["status"] == "sent" and got["writer"] == "euryale-v2.3", got
         assert [set(p) for p in got["parts"]] == [{"gif", "tag"}], got["parts"]
         # A draft the chain drops stays failed: its sticker does not carry the Turn.
         pair = "p-gif-drop"
         with _shape_drop("banned"):
-            r, *_ = _post(OWNER_A, _body(pair), f"ok:hii\nSTICKER: {_GIF_TAG}")
+            r, *_ = _post(OWNER_A, _body(pair), f"ok:hii\nSTICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
         got = r.json()
         assert (got["status"], got["parts"], got["writer"]) == ("failed", [], None), got
         (row,) = _rows(A, pair)

@@ -38,6 +38,10 @@ The Claim audit (ticket 45), pure, on a sell Turn's final text after the shared 
 lexicon), `price_ok(text, price_cents)` (every price named is the PPV price; None or 0 = none may
 be named) and `fallback_caption(pick, kind)` (counts + kinds, the price only for an `offer`).
 
+His asked count, pure: `asked_count(text)` (the number of pieces he names, "bundle of 5 videos",
+"three pics"; None for none or one, at most `COUNT_MAX`), carried on `Ask.count` to `pick` as a
+suggestion (config `sell_count`).
+
 The haggle quote (ticket 47), pure: `quoted_cents(text)` (his one named dollar amount, not a tip)
 and `clamp_quote(list_cents, asked_cents)` (at least max($10, 67 % of list up to a dollar), at most
 list; no amount = that floor).
@@ -76,10 +80,12 @@ _LANE_CENTS = {"free": 0, "$10": 1000, "$50": 5000, "$100": 10000, "$150": 15000
 
 @dataclass(frozen=True)
 class Ask:
-    """What he asks for: the Router's `asks_subject` / `asks_format` and his `intensity` (1-4)."""
+    """What he asks for: the Router's `asks_subject` / `asks_format`, his `intensity` (1-4) and the
+    count he names (`asked_count`, None: none read; a suggestion, `pick`)."""
     subject: Subject
     format: Format
     intensity: int
+    count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -351,17 +357,26 @@ def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) ->
                            "seconds": r.get("duration_seconds"), "fields": r.get("fields") or {}}
                           for r in locked
                           if str((r.get("fields") or {}).get("description") or "").strip()), None),
+            # every locked then preview item's kind and length: the Test chat's PPV bubble line
+            # (`full_ai_test.send` stores it as `offer_media_json.items`)
+            "media": [{"id": r["media_id"], "kind": r["kind"], "seconds": r.get("duration_seconds") or None}
+                      for r in [*locked, *previews]],
             # the agency's folder price (highest over the locked items), only when one is priced:
             # steps that reprice the Pick later can read it; an unpriced Pick's facts are unchanged
             **({"folder_cents": max(folder)} if folder else {})}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
-           free: bool, subject: str | None = None) -> Pick:
+           free: bool, subject: str | None = None, price: Literal["highest", "sum"] = "highest") -> Pick:
+    """The Pick over `locked`: listed at the highest of their list prices, or with `price="sum"`
+    (a video bundle) at their sum capped at `MAX_CENTS`; the lane is the top item's either way.
+    ASSUMPTION: a video bundle lists at the sum of its clips, capped at $200; the price Jev may still
+    move it. Overturned if the owner wants a bundle discount or the top clip's price."""
     top = max(r["list_cents"] for r in locked)
+    cents = min(MAX_CENTS, sum(r["list_cents"] for r in locked)) if price == "sum" else top
     return Pick(ref=locked[0]["media_id"], media=tuple(r["media_id"] for r in locked),
-                previews=tuple(r["media_id"] for r in previews), price_cents=0 if free else top,
-                list_cents=top, subject=subject or ask.subject, format=locked[0]["kind"], lane=_lane(top),
+                previews=tuple(r["media_id"] for r in previews), price_cents=0 if free else cents,
+                list_cents=cents, subject=subject or ask.subject, format=locked[0]["kind"], lane=_lane(top),
                 facts=_facts(locked, previews))
 
 
@@ -370,9 +385,9 @@ def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]]
     `pool` matches, in order (a) same subject, any format (step "format"); (b) any subject, same
     format ("subject"); (c) anything ("any"). Returns (rows, the Pick's subject, step); the subject
     is kept only in (a), else "anything" (the Pick never names what its media lacks). Pure."""
-    steps = (("format", Ask(ask.subject, "any", ask.intensity), ask.subject),
-             ("subject", Ask("anything", ask.format, ask.intensity), "anything"),
-             ("any", Ask("anything", "any", ask.intensity), "anything"))
+    steps = (("format", replace(ask, format="any"), ask.subject),
+             ("subject", replace(ask, subject="anything"), "anything"),
+             ("any", replace(ask, subject="anything", format="any"), "anything"))
     for step, relaxed, subject in steps:
         if relaxed == ask:
             continue
@@ -444,7 +459,15 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     the owner wants the old ladder's free first rung back.
     `ride_max` (ride only, default 2): the most photos a ride holds; Chat tease passes
     `tease_photos` of Jev's price.
-    Ignored with `free`."""
+    Ignored with `free`.
+
+    `ask.count` (config `sell_count`, his `asked_count`, a fresh sell_now Pick only; a suggestion):
+    a clip anchor sells with up to `count - 1` more matching priced clips listed at or under it
+    (sorted by media id, then shuffled; fewer when fewer exist), the Pick listed at their sum
+    (`_offer(price="sum")`, capped at $200); a photo anchor with `bundle="fill"` fills to
+    `min(COUNT_MAX, max(3, count))` instead of 3 ("shoot" unchanged). An applied count lands on
+    `facts["asked_count"]`. None (the default) is the path above, rng sequence unchanged.
+    Ignored with `free` and `ride`."""
     rng = random.Random(seed)
     if free:
         unseen = [r for r in pool if r["list_cents"] > 0 or _free_safe(r)]
@@ -474,8 +497,15 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     goal = target_cents(ask.intensity) if target is None else target
     lane = next((c for c in lanes if c >= goal), lanes[0])
     anchor = _draw([r for r in cands if r["list_cents"] == lane], rng)
+    count = None if ride or not ask.count else min(COUNT_MAX, ask.count)
     if anchor["kind"] == "video":
-        return _missed(_offer([anchor], [], ask, free=False, subject=subject), miss)
+        if not count:
+            return _missed(_offer([anchor], [], ask, free=False, subject=subject), miss)
+        more = sorted((r for r in cands if r["kind"] == "video" and r["media_id"] != anchor["media_id"]
+                       and r["list_cents"] <= anchor["list_cents"]), key=lambda r: r["media_id"])
+        rng.shuffle(more)
+        p = _offer([anchor, *more[:count - 1]], [], ask, free=False, subject=subject, price="sum")
+        return _missed(replace(p, facts={**p.facts, "asked_count": count}), miss)
 
     shoot = next((s for s in shoots if anchor["media_id"] in {i["media_id"] for i in s["items"]}), None)
     in_shoot = [i["media_id"] for i in shoot["items"]] if shoot else []
@@ -484,7 +514,8 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
              and r["kind"] == "photo" and r["list_cents"] <= anchor["list_cents"]]
     mates.sort(key=lambda r: r["media_id"])
     rng.shuffle(mates)
-    size = ride_max if ride else 3                          # the fill target
+    counted = bool(count) and bundle == "fill"              # his count sets the fill target
+    size = ride_max if ride else min(COUNT_MAX, max(3, count)) if counted else 3   # the fill target
     locked = [anchor, *mates[:ride_max - 1 if ride else 4 if bundle == "fill" else 3]]
     if bundle == "fill" and len(locked) < size:
         have = {r["media_id"] for r in locked}
@@ -499,7 +530,10 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
         return _missed(replace(p, facts={**p.facts, "ride": True}), miss)
     preview = next((by_id[m] for m in in_shoot if m in by_id and by_id[m]["kind"] == "photo"
                     and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])), None)
-    return _missed(_offer(locked, [preview] if preview else [], ask, free=False, subject=subject), miss)
+    p = _offer(locked, [preview] if preview else [], ask, free=False, subject=subject)
+    if counted:
+        p = replace(p, facts={**p.facts, "asked_count": count})
+    return _missed(p, miss)
 
 
 def _missed(p: Pick, miss: dict[str, Any] | None) -> Pick:
@@ -555,6 +589,58 @@ _SUBJECT_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
     "masturbation": ("masturbating", "masturbation"), "blowjob": ("blowjob", "bj"),
     "sex": ("sex", "sextape"),
 }.items()}
+
+
+COUNT_MAX = 5       # the most pieces his asked count asks for (`asked_count`)
+# A word after a number that makes it a price or an age, never a count of pieces.
+_PRICE_AGE = frozenset({"dollar", "dollars", "buck", "bucks", "usd", "euro", "euros", "cent", "cents",
+                        "year", "years", "yr", "yrs", "yo", "old"})
+# A word between a number and its media noun that makes the number no count of pieces: a price, an
+# age, or a word that joins two clauses ("im 25 and want videos"); `_NOT_A_COUNT` too.
+_GAP_STOP = _PRICE_AGE | frozenset({"and", "or", "but", "so", "then", "i", "im", "me", "my", "you", "u",
+                                    "ur", "your", "is", "am", "are", "was", "want", "wanna", "need",
+                                    "send", "get", "buy", "have", "got", "give", "for", "to", "of",
+                                    "the", "with", "in", "on", "at", "from", "if"})
+_BUNDLE_WORDS = frozenset({"bundle", "pack", "set"})
+
+
+def _count_word(tok: str) -> int | None:
+    """A token as a count: digits or a number word, never "a" / "an" (one) or a price ("$5")."""
+    return int(tok) if tok.isdigit() else None if tok in ("a", "an") else _NUMBER_WORDS.get(tok)
+
+
+def asked_count(text: str) -> int | None:
+    """The number of pieces he names, clamped to `COUNT_MAX`; None for no count or one. Read: a
+    number right before a media noun ("5 videos", "three pics", "5 vids for me") or with up to two
+    words between ("5 hot videos"), none of them a number, `_NOT_A_COUNT` or `_GAP_STOP`; or right
+    after "bundle of" / "pack of" / "set of" ("bundle of 5") not followed by a `_NOT_A_COUNT` or
+    `_PRICE_AGE` word. A price ("$5", "5 dollars"), a length ("5 min video" is one video) or an age is no
+    count. Pure.
+    ASSUMPTION: several counts in one message ("3 pics and 2 videos") -> the largest. Overturned if
+    the owner wants the count of the asked format only."""
+    toks = _TOKEN.findall(text.lower())
+    found = []
+    for i, tok in enumerate(toks):
+        n = _count_word(tok)
+        if n is None:
+            continue
+        if i >= 2 and toks[i - 1] == "of" and toks[i - 2] in _BUNDLE_WORDS:
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if nxt not in _NOT_A_COUNT and nxt not in _PRICE_AGE:
+                found.append(n)
+                continue
+        for gap in range(3):
+            j = i + 1 + gap
+            if j >= len(toks):
+                break
+            if toks[j] in _KIND_NOUNS:
+                found.append(n)
+                break
+            w = toks[j]
+            if not w.isalpha() or w in _NOT_A_COUNT or w in _GAP_STOP or w in _NUMBER_WORDS:
+                break
+    top = max(found, default=0)
+    return min(COUNT_MAX, top) if top > 1 else None
 
 
 # The describe text's own words for a subject (it writes "vulva", never "pussy"): a locked item
@@ -717,11 +803,14 @@ def same_piece(pool: list[dict[str, Any]], locked: Iterable[int], previews: Iter
     """A Pending tease's piece re-validated against the current `pool` (`pool()`'s rows): every
     locked id still sellable and priced -> the same piece as a priced Pick at today's list prices,
     with those of its previews still free-safe in the pool; else None (the caller re-picks the
-    same subject and format, ticket 07 r3). `ask` carries the teased subject. Pure."""
+    same subject and format, ticket 07 r3). `ask` carries the teased subject. A piece of several
+    clips (a video bundle, `ask.count`) lists at their sum again, as `pick` listed it. Pure."""
     by_id = {r["media_id"]: r for r in pool}
     locked = list(locked)
     if not locked or any(m not in by_id or by_id[m]["list_cents"] <= 0 for m in locked):
         return None
     keep = [by_id[m] for m in previews
             if m in by_id and by_id[m]["list_cents"] == 0 and _free_safe(by_id[m])]
-    return _offer([by_id[m] for m in locked], keep, ask, free=False)
+    rows = [by_id[m] for m in locked]
+    bundle = len(rows) > 1 and all(r["kind"] == "video" for r in rows)
+    return _offer(rows, keep, ask, free=False, price="sum" if bundle else "highest")

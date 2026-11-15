@@ -139,7 +139,7 @@ def case_every_default_key_is_a_switch():
         assert [f["key"] for f in n["flags"]] == want, mode
         rows = n["blocks"][0]["rows"]
         assert [r[0] for r in rows[1:]] == list(full_ai_config.DEFAULTS), mode
-        scoped = {r[0] for r in rows[1:] if r[3].startswith("test Mode only")}
+        scoped = {r[0] for r in rows[1:] if r[3].startswith("test + live (off")}
         assert scoped == set(fr.TEST_ONLY_KEYS), scoped
         live = {r[0] for r in rows[1:] if r[3].startswith("live only")}
         assert live == set(fr.LIVE_ONLY_KEYS), live
@@ -156,7 +156,7 @@ def case_test_only_keys_are_the_gates():
     assert gates <= {g.__name__ for g in fr.GATES.values()}, gates
     on = {**full_ai_config.DEFAULTS, "sext_scene": True, "lead_in": True, "sell_nearest": "plain",
           "sell_spacing": True, "he_likes": True, "sell_bundle": "fill",
-          "chat_tease": True, "ask_implied": True, "info_wide": True}
+          "chat_tease": True, "ask_implied": True, "info_wide": True, "sell_count": True}
     for key, gate in fr.GATES.items():
         test = gate(SimpleNamespace(mode="test", config=on))
         shadow = gate(SimpleNamespace(mode="shadow", config=on))

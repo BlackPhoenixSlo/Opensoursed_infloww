@@ -19,7 +19,7 @@ Cases:
   case_cross_agency_refused    — B's token never reads Creator A (403) and lists only B.
   case_protocol_errors         — unknown method/tool, bad params/arguments, bad args (isError 422), malformed
                                  JSON, deep nesting, batch, no jsonrpc, bad id (a readable id echoed), unsupported
-                                 version header, GET/DELETE 405.
+                                 version header, GET/DELETE/PUT 405.
   case_hostile_values          — a lone surrogate in id / method / tool name answers (\\u-escaped), never 500;
                                  NaN, a lone surrogate or a 100k query in tool args → isError 422, never 500.
   case_send_tools_absent       — an effect="send" tool is not listed and not callable.
@@ -193,13 +193,13 @@ def case_anonymous_predicate() -> None:
     import audit_log
     import mcp_oauth
     for method, path, want in (("POST", mcp_api.PATH, True), ("GET", mcp_api.PATH, True),
-                               ("DELETE", mcp_api.PATH, True), ("PUT", mcp_api.PATH, False),
+                               ("DELETE", mcp_api.PATH, True), ("PUT", mcp_api.PATH, True),
                                ("PATCH", mcp_api.PATH, False), ("POST", mcp_api.PATH + "-x", False),
                                ("POST", mcp_api.PATH + "/x", False), ("POST", "/admin/accounts", False)):
         assert mcp_api.anonymous_surface(method, path) is want, (method, path)
     oauth = {mcp_oauth.REGISTER_PATH, mcp_oauth.AUTHORIZE_PATH, mcp_oauth.TOKEN_PATH}  # its form bodies
     assert audit_log._AUDIT_SKIP_PATHS == {mcp_api.PATH} | oauth
-    assert ANON.request("PUT", mcp_api.PATH).status_code == 401  # no principal, not the surface
+    assert ANON.request("PATCH", mcp_api.PATH).status_code == 401  # no principal, not the surface
 
 
 def case_cross_agency_refused() -> None:
@@ -244,7 +244,7 @@ def case_protocol_errors() -> None:
     assert r.status_code == 202, r.status_code
     r = _post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, {**HA, "MCP-Protocol-Version": "2024-11-05"})
     assert r.status_code == 400, r.status_code
-    for method in ("GET", "DELETE"):
+    for method in ("GET", "DELETE", "PUT"):
         r = ANON.request(method, mcp_api.PATH)
         assert r.status_code == 405 and r.headers["allow"] == "POST", (method, r.status_code)
         assert ANON.request(method, mcp_api.PATH, headers=HA).status_code == 403  # off the token allowlist

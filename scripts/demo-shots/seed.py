@@ -11,6 +11,7 @@ the run's temp dir is written.
 from __future__ import annotations
 
 import hashlib
+import sys
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -137,6 +138,10 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         "subscription_expires_at, subscription_status, is_followed, "
         "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+    # A flow's own fans columns: the slop seeders' `*_fan_columns.py` hooks (slop/seed/fans.py), when present.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from slop.seed.fans import fill_fan_columns
+    fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
     # NOT NULL text columns the insert above leaves to their defaults are filled here if the schema has no default.
 
     # Messages first: a sale's credit trigger reads the message that earned it.

@@ -853,8 +853,8 @@ async def case_the_composer_reports_kept_ids_and_refuses_nobody_on_request():
 async def case_close_mass_run_skips_a_scheduled_send():
     """`mass_queue_api._close_mass_run` is the composer's + the legacy route's close step.
     An IMMEDIATE send records the body and the stamp; a SCHEDULED one records
-    neither, because OF has not sent it — a `sent_at` would make readers treat an
-    unsent mass as sent. The legacy route closes a scheduled send
+    neither, because OF has not sent it — a `sent_at` would make readers and the
+    blast-copy matcher treat an unsent mass as sent. The legacy route closes a scheduled send
     immediately, which is exactly why the flag exists."""
     import mass_queue_api  # noqa: E402
     aid = "acc_mass_close"

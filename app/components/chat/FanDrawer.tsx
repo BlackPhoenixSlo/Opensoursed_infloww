@@ -49,6 +49,7 @@ import { useReorder } from "@/hooks/useReorder";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { PersonaClaims } from "./PersonaClaims";
+import { storedSpendCents } from "./totalSpend";
 import { useInsightsBlocks, type InsightsBlockId } from "./useInsightsBlocks";
 import { type PickedTemplate } from "./TemplatePicker";
 import { effectiveFields, fanDrawerFormReducer, INITIAL_FORM, nickPatch, notesPatch, tagsPatch } from "./fanDrawerForm";
@@ -287,13 +288,13 @@ export function FanDrawer({
   );
   // The OF lists the Fan is on. `listsStates` carries OF's system lists only.
   const fanLists = (ofUserQ.data?.listsStates ?? []).filter((l) => l.hasUser && l.name);
-  // Prefer OF's authoritative totalSumm, fall back to the
-  // transactions-derived windowed sum if it briefly reports 0
-  // while our DB copy is also empty.
+  // The largest of OF's live totalSumm, the transactions-derived windowed
+  // sum (if OF briefly reports 0) and the stored total (`storedSpendCents`),
+  // so a fan whose live read is out still shows what we last knew.
   const spendCents = Math.max(
     typeof sub?.totalSumm === "number" ? Math.round(sub.totalSumm * 100) : 0,
     recentSpend,
-    fan?.lifetime_spend_cents || 0,
+    storedSpendCents(fan),
   );
 
   // One shown block's place in the drag, its × and its keyboard move.

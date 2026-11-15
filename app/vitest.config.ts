@@ -12,6 +12,11 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 
+// The plugins present (lib/chatSlots.ts).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { writePluginBarrel } = require("./lib/pluginBarrel.js") as { writePluginBarrel: (appRoot: string) => string[] };
+writePluginBarrel(__dirname);
+
 // CPU-bound jsdom renders: 0.6-2.3 s alone, 5-9.3 s at host load ~90 (measured), past the 5 s default.
 // No timer wait to fake, so these files get 15 s (~1.6x the slowest); everything else keeps 5 s.
 const SLOW_JSDOM = [

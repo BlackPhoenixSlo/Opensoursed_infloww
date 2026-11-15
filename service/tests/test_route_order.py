@@ -8,12 +8,19 @@ Starlette matches the first route in `server.app.routes` order, so e.g.
 
 Pins: the ordered (methods, path, endpoint __name__) list over
 `server.app.routes`, plus sha1 of `app.openapi()`, equal the committed
-test_route_order.golden.json. Regenerate ONLY for a deliberate route change
-and say so in the PR:  ./venv/bin/python service/tests/test_route_order.py --write-golden
+test_route_order.golden.json. Both leave out the routes the optional
+`*_wiring.py` modules add, so the golden does not depend on which of them a
+checkout has; each such module's routes (and their OpenAPI sha1) are pinned in
+their own test_route_order.<module>.golden.json, checked only when the module is
+present. A wired route is one whose endpoint the module's `wire` binds on a
+probe app. Regenerate ONLY for a deliberate route change and say so in the PR:
+  ./venv/bin/python service/tests/test_route_order.py --write-golden
 
 Golden refresh (2026-11-09): inspected ce072f9ce -> 40cd38d1e OpenAPI diff:
 - GET /admin/stats/per-employee adds optional include_series: bool = false
   (9d5c8d811, dashboard daily employee sales).
+- one GET list-detail route describes repeated pages as incomplete
+  (f09a18467); description only, no contract change.
 Routes/order and all other schema fields are unchanged; Phase 2's schema is
 identical to 40cd38d1e. Keep these intentional base changes in the golden.
 Phase 3 integration also retains its vault lists/media revalidate query params
@@ -123,6 +130,19 @@ list_internal_folders; adds right after it POST /admin/vault-ai/internal-folders
 OpenAPI diff = those six operations + the GET's description (measured: sha1 with them removed and the old GET
 docstring restored == the prior golden).
 
+Golden refresh (2026-11-15, wiring routes left out): routes added by `*_wiring.py`
+leave the route list and the OpenAPI sha1; one module's router moved from server.py to its wiring module.
+Measured: the full route set is unchanged (670) and every route's first match is the same as before; the
+golden diff = the left-out rows + the sha.
+
+Golden refresh (2026-11-15, main 72e46c075): sha only, no route row changes. Measured OpenAPI diff
+698ac80d7 -> 72e46c075: #733 adds optional `pair` to schema TestPhoto (full_ai_api test photo
+body); #731 rewords GET /admin/saved-replies/overview's description. Nothing else; inspected,
+intentional.
+
+Golden refresh (2026-11-15, Full AI ticket 74): adds GET + PUT /admin/full-ai/mode (full_ai_api, the Mode
+control); full_ai_api's module docstring changed too; no existing row moves; diff = those two rows + the sha.
+
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """
 from __future__ import annotations
@@ -143,44 +163,101 @@ from pathlib import Path  # noqa: E402
 os.environ["FLEET_SECRET"] = ""
 
 import server  # noqa: E402 — registers routers + middleware
+from fastapi import FastAPI  # noqa: E402
+
+import relay_hooks  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_route_order.golden.json")
-WANT = None if "--write-golden" in sys.argv else json.loads(GOLDEN.read_text())
+WRITE = "--write-golden" in sys.argv
+WANT = None if WRITE else json.loads(GOLDEN.read_text())
 
 
-def _routes() -> list:
-    routes = []
-    for r in server.app.routes:
+def _wired() -> dict[str, list]:
+    """{wiring module: the server.app routes it added}, by endpoint: what its
+    `wire` binds on a probe app."""
+    out = {}
+    for mod in relay_hooks.import_wirings():
+        probe = FastAPI()
+        mod.wire(probe)
+        ends = {getattr(r, "endpoint", None) for r in probe.router.routes} - {None}
+        added = [r for r in server.app.routes if getattr(r, "endpoint", None) in ends]
+        if added:
+            out[mod.__name__] = added
+    return out
+
+
+WIRED = _wired()
+_WIRED_IDS = {id(r) for added in WIRED.values() for r in added}
+
+
+def _shared_routes() -> list:
+    return [r for r in server.app.routes if id(r) not in _WIRED_IDS]
+
+
+def _routes(routes: list) -> list:
+    out = []
+    for r in routes:
         methods = sorted(getattr(r, "methods", None) or [])
         endpoint = getattr(r, "endpoint", None)
         name = getattr(endpoint, "__name__", None) or type(r).__name__
-        routes.append([",".join(methods), r.path, name])
-    return routes
+        out.append([",".join(methods), r.path, name])
+    return out
 
 
-def _openapi_sha1() -> str:
-    spec = json.dumps(server.app.openapi(), sort_keys=True).encode()
+def _openapi_sha1(routes: list) -> str:
+    app = server.app
+    saved = app.router.routes
+    app.router.routes, app.openapi_schema = routes, None
+    try:
+        spec = json.dumps(app.openapi(), sort_keys=True).encode()
+    finally:
+        app.router.routes, app.openapi_schema = saved, None
     return hashlib.sha1(spec).hexdigest()
 
 
-def case_route_order_matches_golden():
-    got = [json.dumps(r) for r in _routes()]
-    want = [json.dumps(r) for r in WANT["routes"]]
-    if got != want:
-        diff = "\n".join(difflib.unified_diff(
-            want, got, "golden", "server.app.routes", lineterm=""))
+def _golden(routes: list) -> str:
+    rows = ",\n  ".join(json.dumps(r) for r in _routes(routes))
+    return f'{{"openapi_sha1": "{_openapi_sha1(routes)}",\n "routes": [\n  {rows}\n]}}\n'
+
+
+def _wired_golden(name: str) -> Path:
+    return GOLDEN.with_name(f"test_route_order.{name}.golden.json")
+
+
+def _check_rows(want: dict, routes: list, label: str) -> None:
+    got_rows = [json.dumps(r) for r in _routes(routes)]
+    want_rows = [json.dumps(r) for r in want["routes"]]
+    if got_rows != want_rows:
+        diff = "\n".join(difflib.unified_diff(want_rows, got_rows, "golden", label, lineterm=""))
         raise AssertionError(f"route order changed:\n{diff}")
 
 
+def case_route_order_matches_golden():
+    _check_rows(WANT, _shared_routes(), "server.app.routes")
+
+
 def case_openapi_sha1_matches_golden():
-    got, want = _openapi_sha1(), WANT["openapi_sha1"]
+    got, want = _openapi_sha1(_shared_routes()), WANT["openapi_sha1"]
     assert got == want, f"app.openapi() changed: sha1 {got} != golden {want}"
 
 
-if __name__ == "__main__" and "--write-golden" in sys.argv:
-    rows = ",\n  ".join(json.dumps(r) for r in _routes())
-    GOLDEN.write_text(f'{{"openapi_sha1": "{_openapi_sha1()}",\n "routes": [\n  {rows}\n]}}\n')
+def case_wired_routes_match_their_goldens():
+    """Each present wiring module that adds routes has its own golden."""
+    for name, routes in WIRED.items():
+        path = _wired_golden(name)
+        assert path.exists(), f"{name} adds routes but {path.name} is missing (--write-golden)"
+        want = json.loads(path.read_text())
+        _check_rows(want, routes, name)
+        got = _openapi_sha1(routes)
+        assert got == want["openapi_sha1"], f"{name} openapi changed: sha1 {got} != golden {want['openapi_sha1']}"
+
+
+if __name__ == "__main__" and WRITE:
+    GOLDEN.write_text(_golden(_shared_routes()))
     print(f"wrote {GOLDEN}")
+    for name, routes in WIRED.items():
+        _wired_golden(name).write_text(_golden(routes))
+        print(f"wrote {_wired_golden(name)}")
     sys.exit(0)
 
 _harness.run()

@@ -232,9 +232,8 @@ built: no list to curate. `all` stays for deploys and harness-wide changes.
 
 **Nightly.** `slop/run nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach]`
 (`lib/nightly.py`, tables in `lib/test_nightly.py`) is the daily full sweep, notifications
-and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (every scenario, small, UI on), `map` (`--map` for each unmapped scenario; every
-scenario when the oldest map sha is > 200 commits behind HEAD, any map sha is not an ancestor of HEAD, or
-it is Sunday). Each scenario is its own
+and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (every scenario, small, UI on), `map` (`--map` for each unmapped scenario and each
+entry whose sha is > 200 commits behind HEAD or not an ancestor of HEAD (fresh entries are not re-mapped: same bound, ~2.5 h less a night when a few entries never re-map); every scenario on Sunday). Each scenario is its own
 `slop/run <name> <knobs>`, its verdict that run's exit code (0 OK, 1 FAIL, 3 INFRA, 2 refused = INFRA
 with its printed reason, 1 without invariants.json = INFRA; invariants.json only names the failed checks); a FAIL in `all` or `volume`
 re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on budgets is `RED (coverage)` (counted as ok).
@@ -1220,8 +1219,8 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   ages Date +31 min and holds fan-count replies on the bundle fallback path; reports-slow (+62 min, Creator 0's OF +3 s > the 2 s deadline)
   keeps every card's saved count, 1 bundle + 1 follow-up, the late read in the relay's cache; reports-snapshot / reports-leave / mp-click-N
   take the per-Creator path on purpose (bundles 404 by page route). Document entry keeps Messages Pro
-  bundle ordering and Dashboard Applied settings timing; Dashboard reload sends no card bundle
-  (`useRememberEntry(false)`, #374). The first-visit Dashboard guess still leaves with auth.
+  bundle ordering and Dashboard Applied settings timing; each Dashboard visit's card bundle (its
+  Per-model cards, back since #586) is the page's own, one, after the Applied settings answer (no boot guess).
   Faults (`lib/clicks_first_faults.py`: `relay-scheduler-bypassed`, `badge-keys-unpersisted`, `screen-bundle-unused`:
   its dash-first / mp-first are the per-Creator "before"; `screen-bundle-after-probe`: both held behind /auth/me at the
   page's fetch), budget, bypasses: the scenario's docstring. Legs kept in files of their own
@@ -1325,12 +1324,14 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   `route:`, `walk:`, `auto:`, the WS pumps' `loop:ws-pump`, two composer list mass sends `route:POST /api/of/v2/messages/queue` and no roster page after them; zero `unlabelled`), `survives_restart`, `no_5xx`, p95 vs last green. Fault
   `of-counter-drops-errors` (`lib/faults.py`). Details: the scenario's docstring.
 - `2026-11-12-mass-send-no-roster-reads` (`OF_WIRE`, volume): a list-audience mass send reads no OF roster (the
-  Audience crawl is deleted; who received a send is assumed from its `audience_filter`): `--users` sends (`fans` + `following`, guard ids excluded) through
-  the real automation enqueue (+ the product's claim) and the composer's queue route, SPACING_S apart per Creator.
+  Audience crawl is deleted; who received a send is assumed from its `audience_filter`): `--users` sends (`fans` +
+  `following`, guard ids excluded) through the real automation enqueue (+ the product's claim) and the composer's
+  queue route, SPACING_S apart per Creator.
   Checks: `no_roster_reads` (zero subscribers / subscribes calls on the wire from the first send to the end of the
   quiet window), `sends_recorded` (every send a run `ok` with a queue id OF accepted with its text, the guard kept in
-  `excluded_users`, one accept per send), `no_5xx_sends`, p95 vs last green. Fault `mass-send-reads-roster`
-  (`no_roster_reads`, `lib/faults.py`). Details: the scenario's docstring.
+  `excluded_users`, one accept per send), `no_5xx_sends`, p95 vs last green, then each leg's
+  (`lib/mass_send_no_roster_reads_<leg>_leg.py`). Fault `mass-send-reads-roster` (`no_roster_reads`,
+  `lib/faults.py`). Details: the scenario's docstring.
 - `2026-11-08-auto-mass-one-message` (UI, 390x844 phone): Auto Mass = one message per rule, one popup. New auto mass:
   the message's fields inline (no Compose / Use in rule / second dialog; no list / resend / delay; skip-chatted-with
   chips 1h on; More settings closed) → audience chips + lists → Create: POST body, GET route and row hold the one
@@ -1369,7 +1370,7 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   alpha PNG)/deletes; `--users` visitors (`actors/bio_visitor.py`, shared with bio-pages-public); halfway the bio
   process is SIGTERMed (`Stack.stop_sidecar`) and started again. Checks: edits show on the bio port, order == last
   PUT and no visitor JSON drops a link, tenancy 404/403, 30-day stats == SQL, uploads bounded WebP and stale files gone,
-  the drain loses no count. UI leg after the load (Growth > Tracking links?tab=bio, the editor): list counts == API,
+  the drain loses no count. UI leg after the load (Growth > Bio pages, the editor): list counts == API,
   create via the dialog, Display name save, two links via the link dialog + move up (cards == preview == API ==
   bio_links == bio port), 390 x 844 phone editor / full-height link dialog / Preview after animations settle, checking
   element right edges and the dialog's scrollable body's scrollWidth against clientWidth, then Open on the bio port with saved name/links (`bio-editor-public.png`); its

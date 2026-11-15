@@ -48,7 +48,7 @@ SHADOW_QV_9E9014C36 = "14f5d4f6222f"   # question_version("shadow") on origin/ma
 KEYS = {"sext_scene": (True, False), "lead_in": (True, False), "sell_nearest": ("plain", "note", "off"),
         "sell_spacing": (True, False), "he_likes": (True, False), "sell_bundle": ("fill", "shoot"),
         "chat_tease": (True, False), "ask_implied": (True, False), "info_wide": (True, False),
-        "sell_on": (True, False)}
+        "sell_count": (True, False), "sell_on": (True, False)}
 
 
 def _f(mode, **cfg):
@@ -88,7 +88,7 @@ def case_flags_live_equals_test():
         assert (got["live"] is not None) is (v == "note"), (v, got)
     # Each named gate really is on for both full Modes with its key on.
     on = {**DEFAULTS, "sext_scene": True, "lead_in": True, "sell_nearest": "plain", "sell_spacing": True,
-          "he_likes": True, "chat_tease": True, "ask_implied": True, "info_wide": True}
+          "he_likes": True, "chat_tease": True, "ask_implied": True, "info_wide": True, "sell_count": True}
     for g in gates:
         f = getattr(fw, g)
         assert f(SimpleNamespace(mode="live", config=on)) is True, g

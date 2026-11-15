@@ -7,7 +7,8 @@
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
  * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
  * Auto Story, Auto Funnel, Gen-Info), the "My AI Chatter" group
- * (Auto-reply, Get to know fans, the "Full AI Chat" page).
+ * (Auto-reply, Get to know fans, the "Full AI Chat" page). A plugin may add
+ * links to a group (lib/chatSlots.ts `navLinks`).
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).
@@ -82,6 +83,7 @@ import type { FeatureFlag, FeatureFlags } from "@/lib/appliedSettings";
 import type { FanId } from "@/lib/fanId";
 import type { Platform } from "@/lib/platform";
 import { BRAND_NAME } from "@/lib/brand";
+import { NAV_LINK_SLOTS, POPOUT_MODE_ROUTES } from "@/lib/chatSlots";
 
 export interface NavLink {
   label: string;
@@ -123,7 +125,7 @@ export const isDivider = (n: NavNode): n is NavDivider => "divider" in n;
  * @10731434); its Fansly rail shows only Creators and Employees below the
  * divider, so everything above it here is OnlyFans'.
  */
-export const ONLYFANS_NAV: NavNode[] = [
+export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
   { label: "Dashboard", href: "/", icon: Grid01Line },
   {
     label: "OF Manager",
@@ -220,7 +222,17 @@ export const ONLYFANS_NAV: NavNode[] = [
       { label: "AI rules", href: "/ai-rules", chatterHidden: true, notOptIn: true },
     ],
   },
-];
+]);
+
+/** `nodes` with the plugins' links (lib/chatSlots.ts `navLinks`) in their groups. */
+function withSlotLinks(nodes: NavNode[]): NavNode[] {
+  return nodes.map((n) => {
+    const adds = isGroup(n) ? NAV_LINK_SLOTS.filter((s) => s.group === n.label) : [];
+    if (!isGroup(n) || !adds.length) return n;
+    const links = (first: boolean) => adds.filter((s) => !!s.first === first).map((s) => s.link);
+    return { ...n, children: [...links(true), ...n.children, ...links(false)] };
+  });
+}
 
 /** The menus every platform shows, below the divider. */
 const COMMON_NAV: NavNode[] = [
@@ -547,10 +559,12 @@ export const POPOUT_FEATURES = "popup,width=1470,height=915";
  * Open `href` (Messages Pro or a Deep link into it) in the Messages Pro
  * window, as Infloww does, leaving this page where it is. A second open finds
  * the window by name and focuses it, moving it only when `href` names another
- * place than the Messages Pro it already shows (a Deep link). Same-origin, so
- * the opener keeps the handle (no `noopener`). The desktop app refuses a new
- * blank window (its open handler allows only the app's own origin), so with
- * none open yet the window opens on `href` itself.
+ * place than the Messages Pro it already shows (a Deep link), or when it is
+ * Messages Pro itself and the window shows a mode route (lib/chatSlots.ts
+ * `popoutModeRoutes`: that link names the inbox; a Deep link's fan stays put).
+ * Same-origin, so the opener keeps the handle (no `noopener`). The desktop app
+ * refuses a new blank window (its open handler allows only the app's own
+ * origin), so with none open yet the window opens on `href` itself.
  */
 export function openPopout(href: string): void {
   const w = window.open("", POPOUT_WINDOW, POPOUT_FEATURES);
@@ -559,7 +573,8 @@ export function openPopout(href: string): void {
     return;
   }
   const showing = w.location.pathname;
-  if (!isPopoutRoute(showing) || (href !== "/messages-pro" && `${showing}${w.location.search}` !== href)) w.location.href = href;
+  const elsewhere = href === "/messages-pro" ? POPOUT_MODE_ROUTES.has(showing) : `${showing}${w.location.search}` !== href;
+  if (!isPopoutRoute(showing) || elsewhere) w.location.href = href;
   w.focus();
 }
 

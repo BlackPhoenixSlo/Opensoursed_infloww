@@ -35,9 +35,10 @@ A `STICKER: <tag>` line is always stripped from the Writer's text before the cha
 text bubbles (or the whole reply), the giphy id from `cat_stickers.pick_gif`.
 
 Guard set, declared at the one `finalize_draft` call: no consistency check and
-`strip_emoji=strip_emoji_on`, the account-wide flag (autoreply's `(False, "flag")`, pinned in
-test_outbound.py). Every other style switch comes from the side's config (`style`), never
-from `_style_flags`, so a draft-only style change reaches only the draft window.
+`strip_emoji=strip_emoji_on`: the side's `strip_emojis` (every Mode) or else the account-wide flag
+(autoreply's `(False, "flag")`, pinned in test_outbound.py). Every other style switch comes from the
+side's config (`style`), never from `_style_flags`, so a draft-only style change reaches only the
+draft window.
 
 Sends nothing itself: no direct import of an OF client, executor, lease, DM rate or OF write module
 (AST scan + runtime send traps in test_full_ai_test_chat.py; shared helpers load them transitively).
@@ -67,7 +68,7 @@ from automations.full_ai_sell import Pick, Refusal, Teased
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
-    PURPOSE, WriteResult, _outcome, bundle_of, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, typo_rate, was_cents_of, write,
+    PURPOSE, WriteResult, _outcome, bundle_of, count_flag, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, typo_rate, was_cents_of, write,
 )
 from automations.full_ai_writers import (
     implied_flag, is_ride, likes_flag, spacing_flag, tease_flag, tease_turn, wide_flag,
@@ -114,6 +115,9 @@ class TurnFacts:
     offer_piece: Teased | None = None
     # His attached image in test (`full_ai_test.fetch`), landing on the row as `reply_json.fan_photo`.
     photo: dict | None = None
+    # One of her last `DARED_ROWS` replies was the ai_dare Route (`full_ai_test.dared_of`): his
+    # picture is read whatever `describe_fan_photos` says, and she does not dare twice (NEW-156).
+    dared: bool = False
     # Sext scene (config `sext_scene`, test Mode): the saved scene the newest row left
     # (`full_ai_test.fetch`), and this Turn's (`full_ai_scene.scene_next`, set by `run_turn`).
     scene: dict | None = None
@@ -280,7 +284,8 @@ async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = Fals
     (`reply["dropped_reason"]` says why). `single`: the separate caption, one bubble, never split
     (`force_single`)."""
     aid, fid = facts.account_id, facts.fan_id
-    strip_emoji_on = await load_strip_emojis(aid)   # the one account-wide style read
+    # The side's `strip_emojis` (every Mode), else the one account-wide style read.
+    strip_emoji_on = bool(facts.config.get("strip_emojis")) or await load_strip_emojis(aid)
     text, leak = await finalize_draft(raw, account_id=aid, fan_id=fid, purpose=PURPOSE,
                                       strip_emoji=strip_emoji_on, v=_voice.HER)
     reply["leak"] = leak
@@ -360,6 +365,8 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     if it should reuse the haggled Offer's Heat.
     make_right draws the Free item (`pick(..., free=True)`): one item at price 0 from the pool minus
     Owned media and every media an Offer already showed him (`facts.sent`).
+    A fresh sell_now Pick (no Chat tease) also skips the open Offer's media (`facts.offer_piece`): a yes
+    to it never re-sends the same piece (ticket 90); a tease may still re-tease it.
 
     Owned media is `facts.owned` (the pool expands it through the dupe groups).
     ASSUMPTION: the Free item's "unseen" drops dupe copies of seen media too (`facts.sent` goes
@@ -375,6 +382,10 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     (`pick(nearest=True)`), recorded as `reply["nearest"]` = {asked_subject, asked_format, step}.
     Bundle (config `sell_bundle`, `bundle_of`, 03d): the same fresh Pick passes `bundle="fill"` (up to
     5 photos, filled to 3); everything else keeps `"shoot"`, today's Pick.
+    Asked count (config `sell_count`, `count_flag`): the same fresh sell_now Pick asks with
+    `count=full_ai_sell.asked_count` over his new messages (the Turn's `fan_new_messages`, as
+    `_haggled` reads them): a clip sells with more clips at their summed list, a filled photo set fills
+    to it (`pick`); recorded as `reply["asked_count"]` when one was read. Everything else asks with none.
     Chat tease (config `chat_tease`, `tease_turn`: row chat_tease, or a not-hot offer_moment), on a
     fresh Pick (no Pending tease; with one the teased piece is re-sold at its price as today): first
     the tease price Jev (`_tease_price`, before the pick: the photo count depends on the price),
@@ -407,6 +418,8 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     free = d.route == "make_right"
     fresh = not (haggle or teased or free)     # a new piece: no haggle, tease piece or Free item
     owned = facts.owned | facts.sent if free else facts.owned
+    if fresh and facts.offer_piece and d.route == "sell_now" and not tease_turn(d, facts):   # a yes never re-sends it
+        owned = owned | set(facts.offer_piece.locked) | set(facts.offer_piece.previews)
     # One lane: a Chat tease takes the soft lane over Jev's `offer_level`.
     level = router.choice_of(choices, "offer_level") if scene_flag(facts) and fresh else None
     if fresh and tease_turn(d, facts):
@@ -420,6 +433,11 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
         if tease_cents is None:                 # the tease price Jev failed: no tease this Turn
             facts.pick = Refusal("no_match")
             return
+    if fresh and d.route == "sell_now" and tease_cents is None and count_flag(facts):   # never on a ride
+        count = full_ai_sell.asked_count("\n".join(facts.state.get("fan_new_messages") or []))
+        if count:
+            ask = replace(ask, count=count)
+            reply["asked_count"] = count
     loaded = await full_ai_sell.load_rows(aid)
     if isinstance(loaded, Refusal):
         facts.pick = loaded

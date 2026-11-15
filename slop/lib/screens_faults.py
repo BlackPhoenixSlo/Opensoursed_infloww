@@ -15,7 +15,8 @@ C_PRIORITY = ("priority: a user bundle with focus=Creator 1 leaves every other C
               "Creator 1 user-active in lane stats); a tap on Creator 2 meanwhile never waited for a lane")
 C_AGAIN = "reports-again extras: the Per-model cards' fan counts converge to OF's (one Creator's changed since the first visit)"
 C_INLINE = ("inline boot: each document load of the Dashboard / Messages Pro fetched none of /auth/me, /chatter/me, "
-            "the Dashboard's Applied settings and its screen bundle itself (they came with its HTML)")
+            "the Dashboard's Applied settings and Messages Pro's screen bundle (they came with its HTML); the "
+            "Dashboard's card bundle is the page's own, once")
 C_NO_SKIP = ("no skip: a cold inbox bundle answered at 300 ms; every (Creator, read) still reached OF "
              "and the next bundle is complete with no OF call")
 

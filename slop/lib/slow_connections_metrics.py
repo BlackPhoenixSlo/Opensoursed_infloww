@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import parse_qs
 
 from slop.lib.net import Meter
 from slop.lib.procmon import pct as _p
@@ -24,18 +25,30 @@ def idle(win: list[dict], seconds: float) -> dict:
             "by_route": dict(sorted(by.items(), key=lambda kv: -kv[1])[:30])}
 
 
+def _before_id(path: str) -> str | None:
+    """An older page's cursor (`before_id`), None for any other read."""
+    return (parse_qs(path.split("?", 1)[1]).get("before_id") or [None])[0] if "?" in path else None
+
+
 def thread_reads(reqs: list[dict], wave_gap_ms: float, thread_local) -> dict:
-    """The thread open's reads: routes GET more than once (/img aside), the bundle calls, local reads per route, and
-    waves (start clusters)."""
+    """The thread open's reads: routes GET more than once (/img aside; an older page, `before_id`, is its own read per
+    cursor: a short thread fills older pages at once, app/components/chat/threadPin.ts MAX_FILL_PAGES), the bundle
+    calls, the open's local reads per route (older pages aside: the bundle carries the head), the older pages OF
+    was asked for (distinct cursors), and waves (start clusters)."""
     gets = [q for q in reqs if q.get("method", "GET") == "GET" and not q["path"].startswith("/img")]
     by: dict[str, int] = {}
     for q in gets:
-        by[q["path"].split("?", 1)[0]] = by.get(q["path"].split("?", 1)[0], 0) + 1
+        base, cur = q["path"].split("?", 1)[0], _before_id(q["path"])
+        key = base if cur is None else f"{base}?before_id={cur}"
+        by[key] = by.get(key, 0) + 1
     starts = sorted(q["start"] for q in reqs if q.get("start") is not None)
     waves = sum(1 for i, t in enumerate(starts) if i == 0 or t - starts[i - 1] > wave_gap_ms)
     return {"dupes": {k: v for k, v in by.items() if v > 1},
             "bundle": sum(1 for q in gets if q["path"].startswith("/admin/screens/chat")),
-            "local": [q["path"][:160] for q in gets if any(rx.match(q["path"]) for rx in thread_local)],
+            "local": [q["path"][:160] for q in gets if _before_id(q["path"]) is None
+                      and any(rx.match(q["path"]) for rx in thread_local)],
+            "older": len({_before_id(q["path"]) for q in gets if q["path"].startswith("/api/of/")
+                          and _before_id(q["path"]) is not None}),
             "waves": waves}
 
 

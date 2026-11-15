@@ -328,8 +328,9 @@ _CATALOG: dict[str, dict[str, Any]] = {
         # the longest cadence writes the fewest no-op runs (spec, rung 4).
         "label": "Full AI Chat", "recurring": False, "surface": "internal",
         "cadence_default_s": 86400,
-        "summary": "Shadow mode: on every inbound DM, ask Jev the Router questions and record "
-                   "one Decision row (ai_decisions). Sends nothing.",
+        "summary": "Set Off or Live on the Full AI Chat page. Live: replies to the Fans on its Fans "
+                   "list on OnlyFans, one Decision row (ai_decisions) per Turn. A legacy rule with "
+                   "no Mode records rows only.",
         "example": "internal · one job per inbound DM, anchored on it",
         "knobs": [],
     },

@@ -33,7 +33,9 @@ share's included) brings every step and "N.M" option; one whose name the target
 already uses is skipped whole (the target's own stays as it is), and of two
 sources sharing a name the first picked brings it, so no copy mixes two sources'
 steps and a re-share adds nothing. A script outside a sequence whose name the
-target already has (an untitled one: the same text) is skipped.
+target already has (an untitled one: the same text) is skipped. A generated
+script (a reserved id, `_reserved_scripts.is_reserved`) is never copied: it
+belongs to that account.
 
 Every route sits under /admin/saved-replies/, so Role enforcement maps it to the
 Scripts page (`permissions.PAGE_MAP`), and each account named goes through
@@ -52,6 +54,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete as sa_delete, func, select
 
 from auth import assert_account_owned
+from automations import _reserved_scripts as reserved
 from db.engine import get_session
 from db.models import SavedReply, SavedReplySequence
 from of_rich_text import of_text, plain_length
@@ -144,8 +147,10 @@ async def import_scripts(account_id: str = Query(...), file: UploadFile = File(.
     failed: list[dict[str, Any]] = []
     added = 0
     async with get_session() as s:
+        # A hidden generated script's titles ("1", "1.5", ...) never take a name.
         have = {_key(t) for t in (await s.execute(
-            select(SavedReply.title).where(SavedReply.account_id == account_id))).scalars() if t}
+            select(SavedReply.title).where(SavedReply.account_id == account_id,
+                                           ~reserved.is_reserved(SavedReply.script_id)))).scalars() if t}
         for r in rows:
             tag = r["sheet"].strip()
             text = of_text(r["text"])  # a cell may hold markup: only OF's allow-list is stored
@@ -210,7 +215,7 @@ async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
         assert_account_owned(acc)
     copied = skipped = media_dropped = 0
     async with get_session() as s:
-        q = select(SavedReply).where(SavedReply.account_id.in_(from_ids))
+        q = select(SavedReply).where(SavedReply.account_id.in_(from_ids), ~reserved.is_reserved(SavedReply.script_id))
         rows: dict[int, SavedReply] = {}
         if body.ids is None:
             rows = {r.id: r for r in (await s.execute(q)).scalars()}
@@ -246,7 +251,7 @@ async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
         for target in targets:
             async with _BULK_LOCKS.setdefault(target, asyncio.Lock()):
                 held = (await s.execute(select(SavedReply).where(
-                    SavedReply.account_id == target))).scalars().all()
+                    SavedReply.account_id == target, ~reserved.is_reserved(SavedReply.script_id)))).scalars().all()
                 have = {_key(r.title) if r.title else "\0" + r.text for r in held}
                 held_seqs = {r.script_id for r in held if r.script_id}
                 # Sequence names the target already keeps a header for: the header insert's idempotency.
@@ -292,7 +297,8 @@ async def saved_replies_overview() -> dict[str, Any]:
 
     Shape: {accounts:[{id, nickname}], sequences:[{name, per_account:{id:count}}],
     tags:[{name, per_account:{id:count}}]}. A tag is counted once per script that carries it
-    (a script in two tags counts in both). Same /admin/saved-replies prefix, so the Scripts Role gate applies; every
+    (a script in two tags counts in both); generated scripts are excluded, as everywhere
+    on this page. Same /admin/saved-replies prefix, so the Scripts Role gate applies; every
     account is resolved through `owned_account_ids`, each owned."""
     from accounts_admin_api import owned_account_ids
     import accounts as account_registry
@@ -309,11 +315,12 @@ async def saved_replies_overview() -> dict[str, Any]:
         async with get_session() as s:
             seq_rows = (await s.execute(
                 select(SavedReply.account_id, SavedReply.script_id, func.count())
-                .where(SavedReply.account_id.in_(ids), SavedReply.script_id.is_not(None))
+                .where(SavedReply.account_id.in_(ids), SavedReply.script_id.is_not(None),
+                       ~reserved.is_reserved(SavedReply.script_id))
                 .group_by(SavedReply.account_id, SavedReply.script_id))).all()
             tag_rows = (await s.execute(
                 select(SavedReply.account_id, SavedReply.tags_json, func.count())
-                .where(SavedReply.account_id.in_(ids))
+                .where(SavedReply.account_id.in_(ids), ~reserved.is_reserved(SavedReply.script_id))
                 .group_by(SavedReply.account_id, SavedReply.tags_json))).all()
         sequences: dict[str, dict[str, int]] = {}
         for aid, name, n in seq_rows:
@@ -402,7 +409,7 @@ def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _Bulk
         why = "name is required"
     elif len(name) > SEQ_NAME_MAX:
         why = f"name longer than {SEQ_NAME_MAX} characters"
-    elif name.startswith("FM") and name[2:].isascii() and name[2:].isdigit():
+    elif reserved.is_reserved_name(name):
         why = "name is reserved (FM follow-up scripts)"
     elif len(q.created_by or "") > BULK_BY_MAX or len(q.description or "") > BULK_DESC_MAX:
         why = "created_by or description too long"
@@ -519,11 +526,11 @@ async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
                 steps["created"] += 1
             have.add(name)
         await s.flush()
-        # Tags: (name, text) -> the script that holds it.
+        # Tags: (name, text) -> the script that holds it, generated scripts aside.
         index: dict[tuple[str, str], SavedReply] = {}
         for row in (await s.execute(
                 select(SavedReply)
-                .where(SavedReply.account_id == account_id)
+                .where(SavedReply.account_id == account_id, ~reserved.is_reserved(SavedReply.script_id))
                 .order_by(SavedReply.id))).scalars():
             index.setdefault((_key(row.title), row.text), row)
         for t in body.tags:

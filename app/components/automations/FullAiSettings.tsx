@@ -2,7 +2,7 @@
 
 /**
  * Full AI Chat's settings column (spec phase-03a, 03b): ten controls in a list named "Settings":
- *   1. on/off, the Off / Shadow switch over the `full_ai_chat` rule (the page wires its one write);
+ *   1. the Mode control (Off / Live, `FullAiModeControl`);
  *   2. LLM keys: whether NanoGPT and OpenRouter are set (never a value or hint), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
@@ -24,6 +24,7 @@ import Link from "next/link";
 import { useReducer, useState } from "react";
 
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
+import { FullAiModeControl } from "@/components/automations/FullAiModeControl";
 import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import {
   humanStyle, humanStylePatch, layersOff, sellSwitches, speedLabel, styleLayers, gifPct, gifPctPatch, sellSwitchPatch,
@@ -45,15 +46,8 @@ import { cn } from "@/lib/utils";
 const STALE = "Someone saved this config meanwhile. Reload.";
 const KEY_ROWS = [{ id: "nanogpt", label: "NanoGPT" }, { id: "openrouter", label: "OpenRouter" }] as const;
 
-export interface PowerSwitch {
-  on: boolean;
-  disabled: boolean;
-  loading: boolean;
-  onChange: (on: boolean) => void;
-}
-
-export function FullAiSettings({ state, cfg, power, accountId }: {
-  state: TestChatState; cfg: FullAiConfigApi; power: PowerSwitch; accountId: string;
+export function FullAiSettings({ state, cfg, accountId }: {
+  state: TestChatState; cfg: FullAiConfigApi; accountId: string;
 }) {
   const [jsonOpen, setJsonOpen] = useState(false);
   const draft = state.draft;
@@ -64,10 +58,7 @@ export function FullAiSettings({ state, cfg, power, accountId }: {
     <div className="space-y-3">
       {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
       <ul aria-label="Settings" className="space-y-2">
-        <li>
-          <SwitchRow label="Full AI Chat" hint={power.on ? "Shadow" : "Off"} checked={power.on} onChange={power.onChange}
-            disabled={power.disabled} loading={power.loading} />
-        </li>
+        <li><FullAiModeControl accountId={accountId} /></li>
         <li><KeysRow /></li>
         {/* The speeds are the server's (`limits`): the row waits for the config read. */}
         {cfg.limits && (
@@ -152,7 +143,7 @@ function SellGroup({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
           </li>
         ))}
       </ul>
-      <p className="text-[12px] text-muted">Test chat only.</p>
+      <p className="text-[12px] text-muted">Test chat + live. Shadow ignores these.</p>
     </div>
   );
 }
@@ -163,10 +154,10 @@ function TypoPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: bool
     text="Replies with a typo" note="~1 per 5 sentences" />;
 }
 
-/** GIFs %: the chance a Turn may send a GIF (`gif_pct`). */
+/** GIFs %: of the Turns a GIF fits (Jev's `gif_fits`), the share that send one (`gif_pct`). */
 function GifPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
   return <PctBox pct={gifPct(draft)} toPatch={gifPctPatch} off={off} cfg={cfg} label="GIFs %"
-    text="Chance of a GIF" note="whenever one fits" />;
+    text="GIF when one fits" note="share of the replies a GIF suits, not of all replies" />;
 }
 
 /** A % box under a switch, stored on blur / Enter; empty = auto. A refused entry snaps back. */

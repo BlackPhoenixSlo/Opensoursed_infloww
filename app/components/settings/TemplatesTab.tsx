@@ -24,6 +24,7 @@ import {
   useDeleteSavedReply,
   useUpdateSavedReply,
 } from "@/hooks/useSavedReplies";
+import { isSourceScript } from "@/lib/chatSlots";
 import type { SavedReply, VaultMedia } from "@/lib/relay";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
@@ -49,7 +50,9 @@ export function useSavedReplyEditor(accountId: string | null) {
   const createReplyM = useCreateSavedReply(accountId);
   const updateReplyM = useUpdateSavedReply(accountId);
   const deleteReplyM = useDeleteSavedReply(accountId);
-  const replies = replyQ.data ?? [];
+  // A script source's scripts (lib/chatSlots.ts) are not hand-made: they
+  // live in the chat's Scripts picker only.
+  const replies = (replyQ.data ?? []).filter((r) => !isSourceScript(r.script_id));
 
   function startNewReply(seed?: Partial<TemplateDraft>) {
     setDraft({ ...EMPTY_REPLY, ...seed });

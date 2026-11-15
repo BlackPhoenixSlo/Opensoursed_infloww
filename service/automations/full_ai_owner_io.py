@@ -10,10 +10,11 @@
   start_human_yield(account_id, fan_id, sent_at)
         the OF-app Human yield's quiet time: the shared per-fan cooldown, never shortened
   _live(account_id) -> bool
-        the Mode gate. False on main: no Creator is live, so `off` is always `off_mode` and
-        `claimed_ids` is empty. Ticket 81 points it at `full_ai_live.live_rule` (never a `mode ==` check).
+        the Mode gate: the Creator's enabled rule is in Mode live (`full_ai_live.live_rule`, never a
+        `mode ==` check). False for every Creator until ticket 74's flip.
 
-Reads only (DB rows, the global switch). No funnel code is edited.
+Reads only (DB rows, the global switch). No funnel code is edited: a run's walker and its hold mark
+are `_funnel_walkers`'; the human-send rule is `_human_outbound`'s.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from sqlalchemy import select
 import job_queue
 import runtime_switches
 from audience_include import audience_allows_fan
+from automations import _funnel_walkers
 from automations import _human_outbound
 from automations import full_ai_config
 from automations._skiplist import HARD_SKIP_REASONS, should_skip_muted_creator
@@ -41,12 +43,12 @@ OFF_SWITCH = "FULL_AI_CHAT_OFF"
 AUDIENCE_KIND = "full_ai_live"
 # The hard skip_list reasons plus `unreachable` (a dead chat): a graduation reason is not one.
 HARD_REASONS: frozenset[str] = frozenset(HARD_SKIP_REASONS | {"unreachable"})
-REPLY_FUNNEL_KIND = "reply_mass_funnel"
 
 
 async def _live(account_id: str) -> bool:
-    """The Mode gate. False on main (no Creator is live); ticket 81 wires it."""
-    return False
+    """The Mode gate: the Creator's enabled full_ai_chat rule is in Mode live."""
+    from automations import full_ai_live   # lazy: full_ai_live's last look imports this module
+    return await full_ai_live.live_rule(account_id) is not None
 
 
 async def _off(account_id: str, s) -> str | None:
@@ -122,15 +124,20 @@ async def _hard_skip(account_id: str, fan_id: int, fan, s) -> bool:
 
 
 async def _walk_advancing(account_id: str, fan_id: int, s) -> bool:
-    """A pending funnel_state under this account's mass run, its walker's rule on
-    (`reply_mass_funnel`)."""
+    """A pending funnel_state under this account's mass run, not held, its walker's rule on
+    (`_funnel_walkers.walker_for` the run's kind; `reply_mass_funnel` by default)."""
     rows = (await s.execute(
         select(FunnelState.last_error, MassRun.automation_kind)
         .join(MassRun, MassRun.id == FunnelState.mass_run_id)
         .where(MassRun.account_id == str(account_id), FunnelState.fan_id == int(fan_id),
                FunnelState.status == "pending"))).all()
-    return bool(rows) and await job_queue.enabled_rule_id(
-        account_id, REPLY_FUNNEL_KIND, session=s) is not None
+    for last_error, run_kind in rows:
+        if _funnel_walkers.is_hold(last_error):
+            continue
+        walker = _funnel_walkers.walker_for(run_kind)
+        if await job_queue.enabled_rule_id(account_id, walker, session=s) is not None:
+            return True
+    return False
 
 
 async def _human(account_id: str, fan_id: int, anchor_at: datetime, client,
@@ -189,7 +196,9 @@ async def load(account_id: str, fan_id: int, anchor_at: datetime, *, client=None
         walk = await _walk_advancing(account_id, fan_id, s)
         cfg = await _checkpoint(account_id, s)
     listed = int(fan_id) in await _listed(account_id, {int(fan_id)}, cfg, client)
-    human, human_at = await _human(account_id, int(fan_id), anchor_at, client, live_read)
+    # The OF-app read only when nothing above it already stops the Turn (an off switch = 0 OF reads).
+    human, human_at = await _human(account_id, int(fan_id), anchor_at, client,
+                                   live_read and off is None and listed)
     audience_ok, _why = await audience_allows_fan(account_id, fan_id, kind=AUDIENCE_KIND)
     return OwnerFacts(
         off=off, listed=listed, hard_skip=hard, audience_ok=bool(audience_ok), human=human, human_at=human_at,

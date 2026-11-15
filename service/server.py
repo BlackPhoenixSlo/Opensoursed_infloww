@@ -23,7 +23,6 @@ Env knobs (read at call time):
 from __future__ import annotations
 
 import hashlib
-import importlib
 import logging
 import os
 import re
@@ -1469,7 +1468,7 @@ def _spawn_bg(coro, name: str) -> asyncio.Task:
 @app.on_event("startup")
 async def _close_streams_on_term() -> None:
     """SIGTERM ends every open SSE stream before uvicorn's graceful wait, and
-    no automation run or send starts after it.
+    no automation run or mass send starts after it.
 
     uvicorn installs its exit handler before startup hooks run, so this wraps
     it: streams close first (events.close_streams) and the automation lane
@@ -1711,6 +1710,9 @@ async def _start_event_pumps() -> None:
         _spawn_bg(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
                             first_after_s=vault_collect.FIRST_AFTER_S), "vault-collect")
 
+    # Loops the *_wiring.py modules registered (relay_hooks.background_loops).
+    relay_hooks.start_background_loops()
+
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 15-min ticks
     # (INGEST_TICK_INTERVAL_S), refresh + backfill 4 Creators at a time. See
@@ -1774,8 +1776,8 @@ async def _stop_event_pumps() -> None:
     # the one restart where we can avoid losing the last flush interval.
     _lane_stats_flush(force=True)
     of_call_counter.flush()
-    # Finish every automation run that has claimed a send (a mass message on
-    # its way to OF) before anything below stops, and start no new one: a restart
+    # Finish every automation run that has claimed a send (a mass on its
+    # way to OF) before anything below stops, and start no new one: a restart
     # never leaves a send half done (automation_executor.drain, bounded).
     from automation_executor import drain as _drain_automations
     with contextlib.suppress(Exception):
@@ -3411,11 +3413,11 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
     return {**resp, rows_key: out_rows}
 
 
-# Each optional *_wiring.py gets wire(app) mid-import here, after the helpers
-# above exist. Binding routes here retains their precedence; extensions
-# may be absent from a deployment.
-for _wiring_path in sorted(HERE.glob("*_wiring.py")):
-    importlib.import_module(_wiring_path.stem).wire(app)
+# Each optional *_wiring.py is imported and gets wire(app) mid-import here,
+# after the helpers above exist. Binding routes here retains their precedence;
+# private modules may be absent from a public checkout (relay_hooks' doc).
+for _wiring in relay_hooks.import_wirings():
+    _wiring.wire(app)
 
 
 # Short on purpose. Folder edits are rare but they are OPERATOR edits — a

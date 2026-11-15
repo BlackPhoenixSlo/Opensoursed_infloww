@@ -404,6 +404,9 @@ export const OURS = {
     pill: "leading-tight",
     /** Send's line height (CP11 sets none). */
     send: "leading-tight",
+    /** A queue's Send & next below lg: its icon alone, on 12px sides, so it
+     *  fits beside Send at 390px. */
+    sendNext: "max-lg:px-3",
     /** "N sending…" before Send: 10px. */
     inflight: "text-[10px]",
     /** A button-row popover (the ⏱ Timed message, the Translator): from its

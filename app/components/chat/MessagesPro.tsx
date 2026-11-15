@@ -43,6 +43,7 @@ import { keepChatEntry, useChatBackEntry } from "@/hooks/useChatBackEntry";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope } from "@/contexts/ScopeContext";
+import { WINDOW_HEADER_ACTIONS } from "@/lib/chatUiSlots";
 import { MP } from "@/lib/messagesPro";
 import { FAN_TAB_PARAM, setFanTabOpener } from "@/lib/notificationLink";
 import { cn } from "@/lib/utils";
@@ -51,6 +52,11 @@ import { sameUserId, type FanId } from "@/lib/fanId";
 
 /** How long "Fan tab limit reached (100)" shows after a notification outside the panel. */
 const TABS_FULL_NOTICE_MS = 8_000;
+
+/** The plugins' Window header buttons (lib/chatUiSlots.ts), in plugin order. */
+const headerActions = WINDOW_HEADER_ACTIONS.length
+  ? <>{WINDOW_HEADER_ACTIONS.map((Action, i) => <Action key={i} />)}</>
+  : undefined;
 
 /** The Creator and Fan a Deep link (`/messages-pro/<accountId>/<fanId>`) names. */
 export interface MessagesProDeepLink {
@@ -450,7 +456,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   // Messages Pro (index, Deep link, Pop-out window) draws in Infloww's colours.
   return (
     <InflowwPalette className={cn(MP.panes.root, "h-chat flex flex-col overflow-hidden")}>
-      {desktop && <WindowHeader />}
+      {desktop && <WindowHeader actions={headerActions} />}
       {desktop && <FanTabsRow openFan={selected} onActivate={handleActivateTab} onClosed={handleClosedTab} onHome={clearSelection} />}
       {tabsFull && (
         <div role="status" className="shrink-0 px-3 py-1 border-b border-border text-xs text-warn">{FAN_TABS_FULL_LABEL}</div>

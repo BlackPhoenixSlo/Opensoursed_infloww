@@ -6,19 +6,21 @@
  * composer is empty, ⌘/Ctrl+→ / ← over a text draft (it is kept per Fan),
  * never away from what the per-Fan draft can't keep (`held`: media, GIFs,
  * uploads or a price), which is reported through `onHoldChange` (false on
- * unmount). Without `onAdvance` no key moves.
+ * unmount). Without `onAdvance` no key moves. `enterAdvances`: plain Enter
+ * sends and moves on too.
  */
 
 import { useEffect, useRef } from "react";
 
 import { type FanId } from "@/lib/fanId";
 
-export function useQueueKeys({ accountId, fanId, held, onAdvance, onHoldChange }: {
+export function useQueueKeys({ accountId, fanId, held, onAdvance, onHoldChange, enterAdvances = false }: {
   accountId: string | null;
   fanId: FanId | null;
   held: boolean;
   onAdvance?: (dir: 1 | -1) => void;
   onHoldChange?: (held: boolean) => void;
+  enterAdvances?: boolean;
 }) {
   const holdRef = useRef(onHoldChange);
   useEffect(() => { holdRef.current = onHoldChange; });
@@ -32,10 +34,10 @@ export function useQueueKeys({ accountId, fanId, held, onAdvance, onHoldChange }
   useEffect(() => { onFanRef.current = fanKey; }, [fanKey]);
   useEffect(() => () => { onFanRef.current = null; }, []);
 
-  /** Whether this Enter sends and moves on: ⌘/Ctrl, never with Alt (AltGr)
-   *  or Shift. */
+  /** Whether this Enter sends and moves on: ⌘/Ctrl (or plain Enter with
+   *  `enterAdvances`), never with Alt (AltGr) or Shift. */
   const isAdvanceKey = (e: React.KeyboardEvent) =>
-    !!onAdvance && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
+    !!onAdvance && (e.metaKey || e.ctrlKey || (enterAdvances && e.key === "Enter")) && !e.altKey && !e.shiftKey;
 
   /** → / ←: moves and takes the key when allowed (`empty`: no text, no
    *  quote). */

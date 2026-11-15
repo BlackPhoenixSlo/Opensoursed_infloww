@@ -66,7 +66,9 @@ def case_sell_turn_via_api():
     assert (row.offer_price_cents, row.offer_list_cents) == (want_list, want_list), (
         row.offer_price_cents, row.offer_list_cents)
     assert (row.offer_message_id, row.outcome, row.outcome_at, row.join_src) == (None, None, None, None)
-    assert json.loads(row.offer_media_json) == {"locked": list(pick.media), "previews": list(pick.previews)}
+    assert json.loads(row.offer_media_json) == {"locked": list(pick.media), "previews": list(pick.previews),
+                                                "items": [{"id": m, "kind": "photo", "seconds": None}
+                                                          for m in (*pick.media, *pick.previews)]}
     assert json.loads(row.offer_item_ref) == {"ref": pick.ref, "subject": pick.subject, "format": pick.format,
                                               "lane": pick.lane, "kind": "offer"}, row.offer_item_ref
     # The response's `offer` is the row's; the session read carries the same.

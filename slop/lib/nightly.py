@@ -2,7 +2,7 @@
 
 Phases, each scenario a plain `slop/run <name> <knobs>` subprocess (its own stack and evidence folder,
 as `slop/run all` would run it): `all` (small, UI on), `volume` (a dated rotation of VOLUME_PER_NIGHT
-map entries tagged volume, medium/120, no UI; runs first), `map` (`--map` for the unmapped; every scenario when map_rule fires). A FAIL in
+map entries tagged volume, medium/120, no UI; runs first), `map` (`--map` for the unmapped + entries past the stale bound; every scenario on Sunday). A FAIL in
 `all`/`volume` is re-run once: green = FLAKY. The map phase hands its entries over in <folder>/map.json
 and restores slop/map.json (`--apply-map=<folder>` merges them elsewhere). Evidence:
 evidence/<stamp>-nightly-<hex>/ with plan.txt, run.log, status.json, summary.{json,md}, map.json, done
@@ -58,13 +58,22 @@ INSTALL_DEADLINE_S = int(CHILD_LOCK_WAIT_S) + INSTALL_TIMEOUT_S  # the gated ins
 
 def map_rule(ages: dict[str, int | None], weekday: int) -> tuple[bool, str]:
     """(full refresh?, why). `ages`: per map sha, commits it is behind HEAD, None when it is not an
-    ancestor of HEAD (divergent or newer: its count says nothing, so it is stale); `weekday` 0 = Monday."""
+    ancestor of HEAD (divergent or newer: its count says nothing, so it is stale); `weekday` 0 = Monday.
+    A stale map is no full refresh: build_plan re-maps its stale entries (stale_entry) + the unmapped, which
+    leaves the same bound (no entry > MAP_STALE behind or divergent) without re-mapping fresh entries; a few
+    entries that never re-map (INFRA in --map) had made every night a full ~2.5 h refresh."""
     stale, reason = covmap.map_stale(ages)
-    if stale:
-        return True, reason + ": full refresh"
     if weekday == 6:
-        return True, "Sunday: weekly full refresh"
+        return True, "Sunday: weekly full refresh" + (f" ({reason})" if stale else "")
+    if stale:
+        return False, reason + ", not Sunday: stale entries + unmapped"
     return False, reason + ", not Sunday: unmapped only"
+
+
+def stale_entry(entry: dict, ages: dict[str, int | None]) -> bool:
+    """A map entry past the map_stale bound: no sha, a sha not in `ages`, divergent (None), > MAP_STALE behind."""
+    n = ages.get(entry.get("sha") or "")
+    return n is None or n > covmap.MAP_STALE
 
 
 def volume_slice(names: list[str], day: int, k: int = VOLUME_PER_NIGHT) -> list[str]:
@@ -91,7 +100,7 @@ def build_plan(paths: dict[str, Path], doc: dict, phases: list[str], smoke: bool
         why = f"smoke: unmapped only (full rule: {why})"
     else:
         plan = {"all": list(names), "volume": volume_slice([n for n in names if covmap.is_volume(paths[n])], day),
-                "map": list(names) if full else unmapped}
+                "map": list(names) if full else [n for n in names if n not in mapped or stale_entry(mapped[n], ages)]}
     return {p: plan[p] for p in PHASES if p in phases}, why
 
 

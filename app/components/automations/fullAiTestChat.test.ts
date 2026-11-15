@@ -5,7 +5,7 @@ import {
   buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, initTestChat, keepMineSave,
   MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, testChatReducer, type FanPhoto, type PpvLine, type Offer,
   type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide, sessionTurns, noReplyText,
-  writersFailed, heatTail, type HeatCheck,
+  writersFailed, heatTail, type HeatCheck, mediaLine, type OfferItem,
 } from "./fullAiTestChat";
 
 const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
@@ -426,6 +426,27 @@ const settled = (side: UiSide, rowId: number, outcome: "bought" | "declined" = "
 const failed = (side: UiSide, rowId: number, pair = "p1"): TestChatAction =>
   ({ type: "settleFailed", pair, side, rowId, error: "relay 503" });
 const turnOf = (s: TestChatState, side: UiSide) => s.sides[side].turns[0];
+
+describe("mediaLine: the PPV bubble's kinds and length over the locked items", () => {
+  const vid = (id: number, seconds: number | null = null): OfferItem => ({ id, kind: "video", seconds });
+  const pic = (id: number): OfferItem => ({ id, kind: "photo", seconds: null });
+  it.each<[string, Partial<Offer>, string | null]>([
+    ["one clip", { media: [1], items: [vid(1, 42)] }, "1 video · 0:42"],
+    ["five clips, total length", { media: [1, 2, 3, 4, 5], items: [1, 2, 3, 4, 5].map((i) => vid(i, 150)) }, "5 videos · 12:30"],
+    ["past an hour", { media: [1, 2], items: [vid(1, 3000), vid(2, 725)] }, "2 videos · 1:02:05"],
+    ["three photos", { media: [1, 2, 3], items: [pic(1), pic(2), pic(3)] }, "3 photos"],
+    ["mixed, photos first", { media: [1, 2, 3], items: [vid(3, 42), pic(1), pic(2)] }, "2 photos + 1 video · 0:42"],
+    ["a clip with no length", { media: [1], items: [vid(1)] }, "1 video"],
+    ["one clip of two with no length", { media: [1, 2], items: [vid(1, 30), vid(2)] }, "2 videos"],
+    ["the free preview is not counted", { media: [1, 2], previews: [3], items: [pic(1), pic(2), pic(3)] }, "2 photos"],
+    ["items absent (an older row)", { media: [1] }, null],
+    ["items empty", { media: [1], items: [] }, null],
+    ["no locked item among them", { media: [1], previews: [2], items: [pic(2)] }, null],
+  ])("%s", (_n, over, want) => {
+    expect(mediaLine({ kind: "offer", ref: 1, price_cents: 1000, list_cents: 1000, media: [], previews: [], refusal: null, ...over }))
+      .toBe(want);
+  });
+});
 
 describe("settle → settled / settleFailed", () => {
   it("settle marks only that turn in flight; settled shows the outcome and clears it", () => {

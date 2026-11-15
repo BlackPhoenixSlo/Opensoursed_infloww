@@ -28,6 +28,7 @@ _LABEL_OVERRIDES: dict[str, str] = {
     "writer_timeout_s": "Writer timeout (s)", "writer_timeouts": "Writer timeouts per model (s)",
     "writer_retries": "Writer retries", "floor_on": "Reply checks", "info_fields": "Facts to learn",
     "chat_tease_prices": "Chat tease prices", "info_wide": "Wider hobbies",
+    "sell_count": "Asked count", "strip_emojis": "Strip emojis",
     "top_spend_cents": "Top spend limit", "fans": "Fans",
 }
 LABELS: dict[str, str] = {

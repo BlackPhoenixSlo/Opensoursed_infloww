@@ -45,14 +45,14 @@ DEFAULTS: dict[str, Any] = {
     "gifs": False,
     "sell_on": False,           # settable since 03b; off by default
     "sext_on": True,
-    # Test Mode only: the Jev-run sext scene (scene questions, saved scene state, scene Writer
+    # Test + live (`full_ai_mode.full`), Shadow ignores: the Jev-run sext scene (scene questions, saved scene state, scene Writer
     # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (12-control limit).
     "sext_scene": True,
-    # Test Mode only: get-to-know asks led into, not asked straight (lead-in lines, few-shots, a
+    # Test + live (`full_ai_mode.full`), Shadow ignores: get-to-know asks led into, not asked straight (lead-in lines, few-shots, a
     # beat of her own, the info Jev's lead wording; owner 2026-11-14). JSON-only switch.
     "lead_in": True,
     "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
-    "draft_questions": True,    # 03b: DRAFT Router questions count (test Mode only, ticket 47); Sell group switch "Unasked offers" (on, owner 2026-11-14)
+    "draft_questions": True,    # 03b: DRAFT Router questions count (test + live, ticket 47); Sell group switch "Unasked offers" (on, owner 2026-11-14)
     "writers": ["euryale-v2.3", "euryale-v2.2", "hermes-4-405b", "deepseek-v4-flash"],
     "writer_timeout_s": 45,     # owner 2026-11-14: let Euryale cook (25 s cut 15/241 test Turns)
     # Per-Writer override of `writer_timeout_s`, {model id: seconds}; a Writer not named uses the
@@ -68,30 +68,34 @@ DEFAULTS: dict[str, Any] = {
     "typing_sign": True,
     "typing_notification": True,
     "caption_writer": "chat",   # PPV caption: "chat" = the chat Writer's last bubble; "caption" = its own call
-    # Test Mode only: a sell ask nothing in the vault matches sells the nearest piece (same subject,
+    # Test + live (`full_ai_mode.full`), Shadow ignores: a sell ask nothing in the vault matches sells the nearest piece (same subject,
     # then same format, then anything) instead of no PPV. "off" = no_match as before; "plain" = the
     # caption as today; "note" = the Writer also plays his ask out as a story from what the piece shows (NEW-140).
     # Sell group switch "Nearest piece" (on = "note", off = "off").
     "sell_nearest": "note",
-    # Test Mode only (phase 03d Bundle): a fresh photo Offer holds up to 5 photos of its shoot and,
+    # Test + live (`full_ai_mode.full`), Shadow ignores (phase 03d Bundle): a fresh photo Offer holds up to 5 photos of its shoot and,
     # under 3, fills to 3 with other photos matching his ask ("fill"); "shoot" = shoot mates only,
     # up to 4 photos (today's Pick). Sell group switch "Fill the set".
     "sell_bundle": "fill",
-    "describe_fan_photos": False,   # read his photo (inbound_describe, DeepInfra); JSON-only switch
-    # Test Mode only (03d): Spacing, the unasked-offer questions read the Sitting's counts
+    # Test + live (`full_ai_mode.full`), Shadow ignores: a fresh sell Offer aims at the number of pieces he names ("bundle of 5 videos",
+    # "three pics"; `full_ai_sell.asked_count`, at most 5): a clip sells with more clips, a photo set
+    # fills to it. A suggestion: fewer when the vault holds fewer. JSON-only switch.
+    "sell_count": True,
+    "describe_fan_photos": True,    # read his photo (inbound_describe, DeepInfra); on by default (owner 2026-11-15); JSON-only switch
+    # Test + live (`full_ai_mode.full`), Shadow ignores (03d): Spacing, the unasked-offer questions read the Sitting's counts
     # (`full_ai_test.spacing_of`). Sell group switch "Spacing".
     "sell_spacing": True,
-    # Test Mode only: what he likes is extracted wider (`_info_jev.LIKES_EXTRACT`), stored as the
+    # Test + live (`full_ai_mode.full`), Shadow ignores: what he likes is extracted wider (`_info_jev.LIKES_EXTRACT`), stored as the
     # fold's `fetishes`, and read by `asks_subject` as state `he_likes` on every Turn (owner
     # 2026-11-14). Sell group switch "He likes".
     "he_likes": True,
     # Chance (%, 0-100) a reply gets one thumb-typo while `style.typos` is on; None = the per-sentence
     # rule (~1 per 5 sentences, `_typos._TYPO_SENTENCE_RATE`).
     "typo_pct": None,
-    # Chance (%, 0-100) a Turn offers the sticker block while `gifs` is on (after the scene / gif_fits
-    # gate); None = every eligible Turn (`full_ai_writers.gif_rolled`).
+    # Of the Turns a GIF fits (Jev's `gif_fits`, never a scene Turn) while `gifs` is on: the share
+    # (%, 0-100) that send one (`full_ai_writers.gif_rolled`, GIF_NOW); None = the Writer decides on each.
     "gif_pct": None,
-    # Test Mode only: Chat tease, in a normal chat Jev's `chat_tease` (or an unasked offer, row
+    # Test + live (`full_ai_mode.full`), Shadow ignores: Chat tease, in a normal chat Jev's `chat_tease` (or an unasked offer, row
     # offer_moment, not hot) sends photos riding her ordinary reply, unasked; the text never
     # mentions them (owner 2026-11-14). Needs `sell_on`. Sell group switch "Chat tease".
     # `chat_tease_prices`: the prices in cents Jev may pick the tease's from (0 = a free photo; owner
@@ -99,12 +103,15 @@ DEFAULTS: dict[str, Any] = {
     # (`_price_jev.ask_tease`). A price holds up to price / $5 photos (`full_ai_sell.tease_photos`).
     "chat_tease": True,
     "chat_tease_prices": [0, 300, 1000, 4000, 8000, 12000, 16000, 20000],
-    # Test Mode only: `wants_content` reads implied asks too (a vague "send me something", "nothing
+    # Test + live (`full_ai_mode.full`), Shadow ignores: `wants_content` reads implied asks too (a vague "send me something", "nothing
     # nude on your feed", "pleaseee" after she held back; owner 2026-11-14). Sell group switch "Implied asks".
     "ask_implied": True,
-    # Test Mode only: the info Jev and the extract count what he is watching, playing, reading or
+    # Test + live (`full_ai_mode.full`), Shadow ignores: the info Jev and the extract count what he is watching, playing, reading or
     # listening to right now as his hobbies (owner 2026-11-14). JSON-only switch.
     "info_wide": True,
+    # Emojis are stripped from her replies in every Mode (the shared chain's `strip_emoji`); off = the
+    # account's own strip-emojis style setting decides, as before. JSON-only switch.
+    "strip_emojis": False,
     # Live only (04b): a Fan whose lifetime spend reaches this many cents is left to humans; 0 = no
     # limit. JSON-only, label "Top spend limit".
     "top_spend_cents": 100000,
@@ -161,7 +168,7 @@ FOLDER_REF = re.compile(r"(vf|of):[0-9]+")
 _FOLDER_KEYS = ("include", "exclude")
 _BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
           "describe_fan_photos", "sell_spacing", "he_likes", "chat_tease", "ask_implied",
-          "info_wide")
+          "info_wide", "sell_count", "strip_emojis")
 # Chat tease prices: 1-12 distinct prices in cents, each 0 (a free photo) or $3-$200.
 TEASE_PRICES = (1, 12)
 TEASE_CENTS = (300, 20000)
@@ -169,7 +176,7 @@ TEASE_CENTS = (300, 20000)
 # The JSON's reading aid (the page's "All settings" table, GET config's `reference`): per DEFAULTS key, in its
 # order, the values it accepts (off the constants above where there is one), what it does, and the Settings page
 # control that edits it (None = JSON only). test_full_ai_config pins the keys and order to DEFAULTS.
-_TEST = "Test chat only. "
+_TEST = "Test chat + live (Shadow ignores). "
 _BOOL = "true | false"
 _PCT = "whole 0-100, or null"
 
@@ -214,22 +221,25 @@ REFERENCE: dict[str, dict[str, str | None]] = {
     "info_fields": _ref("distinct, any of " + ", ".join(INFO_FIELDS), "The facts she tries to learn about him."),
     "info_questions": _ref(_one_of(INFO_QUESTIONS),
                            "pick = Jev picks one thing to ask; list = the old whole still-needed list."),
-    "reply_by_webhook": _ref(_BOOL, "Reserved for the live sender. Read by nothing yet."),
-    "typing_sign": _ref(_BOOL, "Reserved for the live sender. Read by nothing yet."),
-    "typing_notification": _ref(_BOOL, "Reserved for the live sender. Read by nothing yet."),
+    "reply_by_webhook": _ref(_BOOL, "Live: on = his DM queues her reply at the reply speed; off = only the missed-message sweep answers."),
+    "typing_sign": _ref(_BOOL, "Live: she waits her typing time before each text bubble. Off: no typing wait."),
+    "typing_notification": _ref(_BOOL, "Live: OF shows her typing during that wait (the account's typing indicator must be on too). Off: never."),
     "caption_writer": _ref(_one_of(CAPTION_WRITERS),
                            "PPV caption: chat = the last bubble of her reply; caption = its own call."),
     "sell_nearest": _ref(_one_of(SELL_NEAREST), _TEST + "Nothing matches his ask: off = no PPV, plain = sell the "
                          "nearest piece, note = sell it and play his ask out as a story.", "Nearest piece"),
     "sell_bundle": _ref(_one_of(SELL_BUNDLE), _TEST + "fill = a photo offer holds up to 5 of its shoot, filled to 3 "
                         "with other photos matching his ask; shoot = shoot mates only, up to 4.", "Fill the set"),
+    "sell_count": _ref(_BOOL, _TEST + "A fresh offer aims at the number he names (\"bundle of 5 videos\", at most 5): "
+                       "a video goes with more of his asked videos priced at their sum (up to $200), a photo set "
+                       "fills to it. Fewer when there are fewer."),
     "describe_fan_photos": _ref(_BOOL, "She reads a photo he sends (one paid vision call per photo)."),
     "sell_spacing": _ref(_BOOL, _TEST + "Unasked offers respect spacing: his lines since the last piece and pieces "
                          "this sitting.", "Spacing"),
     "he_likes": _ref(_BOOL, _TEST + "What he likes is stored and steers what she sends.", "He likes"),
     "typo_pct": _ref(_PCT, "Chance (%) a reply gets a typo while Typos is on. null = auto (about 1 per 5 "
                      "sentences).", "Typos %"),
-    "gif_pct": _ref(_PCT, "Chance (%) a Turn may carry a GIF while GIFs is on. null = every eligible Turn.",
+    "gif_pct": _ref(_PCT, "Of the replies a GIF fits, the share (%) that send one. null = the Writer decides on each.",
                     "GIFs %"),
     "chat_tease": _ref(_BOOL, _TEST + "Chat tease: in normal chat photos ride her normal reply with no word about "
                        "them, free or at a price Jev picks from chat_tease_prices. An unasked offer in normal chat "
@@ -240,6 +250,8 @@ REFERENCE: dict[str, dict[str, str | None]] = {
     "ask_implied": _ref(_BOOL, _TEST + 'Implied asks ("send me something fun") count as asking for content.', "Implied asks"),
     "info_wide": _ref(_BOOL, _TEST + "What he is watching, playing, reading or listening to right now counts as a "
                       "hobby and is stored."),
+    "strip_emojis": _ref(_BOOL, "Emojis are removed from her replies. The account's own strip-emojis setting "
+                         "still applies when this is off."),
     "top_spend_cents": _ref("whole cents >= 0, 0 = off",
                             "Live only. A Fan whose lifetime spend reaches this is left to humans: Full AI stops and "
                             "the other reply automations stay off him."),
@@ -347,6 +359,12 @@ def _fans_error(fs: Any) -> str | None:
         if len(set(ids)) != len(ids):
             return f"an id is listed twice in {k}"
     return None
+
+
+def has_fans_list(cfg: dict) -> bool:
+    """D61: Live needs an include or an exclude list (both empty = every Fan, so no list)."""
+    fs = cfg.get("fans")
+    return _fans_error(fs) is None and bool(fs["include"] or fs["exclude"])
 
 
 def style_layers(cfg: dict) -> dict[str, bool]:

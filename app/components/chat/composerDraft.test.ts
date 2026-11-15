@@ -206,6 +206,7 @@ describe("sentReplyId: the saved reply a send counts for", () => {
     ["a sequence step", picked({ replyId: 8, scriptId: "Welcome", scriptStep: 2 }), 8],
     ["the OF welcome (no id)", picked({ source: "of" }), null],
     ["a typed message", EMPTY_DRAFT, null],
+    ["a step action's draft over a pick", run(picked({ replyId: 7 }), { type: "dropScript" }), null],
     ["after the send", run(picked({ replyId: 7 }), { type: "sent" }), null],
   ])("%s", (_n, d, want) => expect(sentReplyId(d)).toBe(want));
 });

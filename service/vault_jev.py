@@ -363,7 +363,7 @@ _clients: dict[tuple[int, str], Any] = {}
 
 
 def _client(key: str) -> Any:
-    """One async client per event loop and key (as `_fm_relevance._client`)."""
+    """One async client per event loop and key (as the FM off-script gate's `_client`)."""
     from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
     loop = asyncio.get_running_loop()
     k = (id(loop), key)

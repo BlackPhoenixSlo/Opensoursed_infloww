@@ -101,6 +101,7 @@ import assistant_api
 import assistant_edit
 import assistant_full_ai
 import llm_client
+import relay_hooks
 import report_recipe_decide as rd
 from assistant_report import (EXPORT_NOT_ALLOWED_ANSWER, REPORT_WORD, ReportCtx, export_summary, report_ctx,
                               report_lines, resolve_export)
@@ -168,6 +169,11 @@ _MASS_WORD = re.compile(r"\b(mass|masses|broadcast|blast)\b", re.I)
 _ANY_MASS = re.compile(r"\b(auto[ -]?)?(mass(es|en|e|a)?|mass[ -]?\w*messag\w*|masa|masiv\w*|masov\w*|broadcast\w*|blast\w*)\b", re.I)
 _OTHER_FEATURE = re.compile(r"\b(auto ?post\w*|posts?|posting|stor(y|ies)|welcome|hello message|thank you|"
                             r"repl(y|ies))\b", re.I)
+
+
+def _names_other_feature(request: str) -> bool:
+    return bool(_OTHER_FEATURE.search(request)) or any(
+        re.search(rf"\b{re.escape(w)}\b", request, re.I) for w in relay_hooks.other_feature_words)
 _EDIT_VERB = re.compile(r"^\s*(update|change|edit|delete|remove|rename|pause|stop|disable|enable|"
                         r"turn (on|off)|switch (on|off))\b", re.I)
 _EXISTING = re.compile(r"\b(my|existing|made|the [\w ]{0,20}mass)\b", re.I)
@@ -193,7 +199,7 @@ def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
         return refine or not REPORT_WORD.search(request)
     if refine:
         return False
-    other = bool(_OTHER_FEATURE.search(request)) and not _ANY_MASS.search(request)
+    other = _names_other_feature(request) and not _ANY_MASS.search(request)
     if flow == EDIT_FLOW:
         return other
     edit = (bool(_EDIT_VERB.search(request)) and bool(_EXISTING.search(request))

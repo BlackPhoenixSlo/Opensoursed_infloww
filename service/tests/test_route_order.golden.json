@@ -1,4 +1,4 @@
-{"openapi_sha1": "91991db28417eac2dc049b9b797a96deb1072b5c",
+{"openapi_sha1": "7543de0cb8514fed000fbffbeb03dc4ab59a45fd",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -172,7 +172,7 @@
   ["POST", "/admin/owner-tokens", "create_token"],
   ["DELETE", "/admin/owner-tokens/{token_id}", "revoke_token"],
   ["POST", "/admin/mcp", "mcp_post"],
-  ["DELETE,GET", "/admin/mcp", "mcp_other"],
+  ["DELETE,GET,PUT", "/admin/mcp", "mcp_other"],
   ["GET", "/.well-known/oauth-protected-resource/admin/mcp", "protected_resource"],
   ["GET", "/.well-known/oauth-protected-resource", "protected_resource"],
   ["GET", "/.well-known/oauth-authorization-server", "authorization_server"],
@@ -362,6 +362,8 @@
   ["GET", "/admin/full-ai/rules", "full_ai_rules_read"],
   ["GET", "/admin/full-ai/today", "full_ai_today"],
   ["GET", "/admin/full-ai/revenue", "full_ai_revenue_read"],
+  ["GET", "/admin/full-ai/mode", "full_ai_mode_read"],
+  ["PUT", "/admin/full-ai/mode", "full_ai_mode_write"],
   ["POST", "/admin/full-ai/test/turn", "full_ai_test_turn"],
   ["POST", "/admin/full-ai/test/photo", "full_ai_test_photo"],
   ["POST", "/admin/full-ai/test/settle", "full_ai_test_settle"],

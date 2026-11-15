@@ -3984,7 +3984,9 @@ class AiDecision(Base):
     jev_json: Mapped[str | None] = mapped_column(Text)                   # {answers, intensity, fired, state}
     jev_ms: Mapped[int | None] = mapped_column(Integer)
     jev_error: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String, nullable=False)          # Shadow: planned; test: sent | failed | no_send
+    # Shadow: planned; test: sent | failed | no_send; live: sending (reserved, first OF call imminent)
+    # -> sent | unconfirmed (a dead run's `sending`; never re-sent) | no_send | failed
+    status: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
     # Test (and later live) rows: {parts, attempts, floor_reason, dropped_reason, leak, side,
@@ -3995,7 +3997,7 @@ class AiDecision(Base):
     # The Offer on its row (0120, ADR-0034; NULL on Shadow and no-offer rows), last in 0120's order.
     offer_price_cents: Mapped[int | None] = mapped_column(Integer)      # quoted; 0 = Free item; NULL on a tease
     offer_list_cents: Mapped[int | None] = mapped_column(Integer)
-    offer_media_json: Mapped[str | None] = mapped_column(Text)          # {locked: [...], previews: [...]}
+    offer_media_json: Mapped[str | None] = mapped_column(Text)          # {locked: [...], previews: [...], items: [{id, kind, seconds}]}
     offer_item_ref: Mapped[str | None] = mapped_column(Text)            # {ref, subject, format, lane, kind}
     offer_message_id: Mapped[int | None] = mapped_column(BigInteger)    # NULL in test; Phase 05 join key
     outcome: Mapped[str | None] = mapped_column(String)                 # bought | declined
@@ -4018,3 +4020,19 @@ class AiDecision(Base):
               sqlite_where=text("offer_message_id IS NOT NULL"),
               postgresql_where=text("offer_message_id IS NOT NULL")),
     )
+
+
+# Every `*_models.py` beside this file declares more tables on `Base`; import
+# them here so `Base.metadata` holds the whole schema wherever the models are
+# imported (create_all, init_db's catch-ups, Alembic). At the end: they import
+# `Base` from this module.
+def _load_sibling_models() -> None:
+    import importlib
+    from pathlib import Path
+
+    pkg = __name__.rpartition(".")[0]
+    for path in sorted(Path(__file__).parent.glob("*_models.py")):
+        importlib.import_module(f"{pkg}.{path.stem}" if pkg else path.stem)
+
+
+_load_sibling_models()

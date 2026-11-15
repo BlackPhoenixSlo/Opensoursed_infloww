@@ -121,7 +121,7 @@ async def _clear_pause(aid: str, fan: int) -> None:
 async def _dm_run(aid: str, fan: int, mid: int, body: str = "hey you, how was your day", *,
                   at: datetime | None = None, jev=(QUIET, 1.0)):
     """His DM lands (the hook queues the job), then one run_once: (result, FakeOF, made, purposes)."""
-    await _msg(aid, fan, mid, "in", body, at or datetime.utcnow() - timedelta(seconds=30))
+    await _msg(aid, fan, mid, "in", body, at or datetime.utcnow() - timedelta(minutes=3))   # past "0-2m"
     with _world(jev) as (fake, made, purposes):
         await wd.on_inbound_message(aid, fan, mid)
         res = await run_once(aid, KIND)
@@ -174,7 +174,7 @@ async def case_same_job_twice():
         busy = await full_ai_live.run(aid, payload, run_id=0)       # still on its 10 s cooldown
         await _clear_pause(aid, fan)
         again = await full_ai_live.run(aid, payload, run_id=0)
-    assert busy == {"skipped": "busy"} and again == {"skipped": "no_turn"}, (busy, again)
+    assert busy == {"skipped": "busy", "tries": 1} and again == {"skipped": "no_turn"}, (busy, again)
     assert fake.sent == [] and [r.id for r in await _rows(aid)] == [row.id]
     assert len(await _out_rows(aid, fan)) == n_out and await _leases(aid) == []
 

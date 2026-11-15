@@ -35,6 +35,7 @@
  */
 
 import { applyTemplate, canBeFreePreview } from "@/lib/composeDraft";
+import { isSourceScript } from "@/lib/chatSlots";
 import { hasOfFormatting, isOfHtml } from "@/lib/ofRichText";
 import { PLAIN_MODE, richMode, type RichMode } from "@/lib/ofRichMode";
 import type { VaultMedia } from "@/lib/relay";
@@ -114,9 +115,10 @@ const PPV_EMPTY: Pick<
   pickedGifs: [],
 };
 
-/** The saved reply whose send count a send of `d` bumps: the picked one. */
+/** The saved reply whose send count a send of `d` bumps: the picked one, never a script source's
+ *  (lib/chatSlots.ts; its automation's own rows stay untouched). */
 export function sentReplyId(d: ComposerDraft): number | null {
-  return d.replyId ?? null;
+  return d.replyId != null && !isSourceScript(d.script?.scriptId) ? d.replyId : null;
 }
 
 export type DraftAction =

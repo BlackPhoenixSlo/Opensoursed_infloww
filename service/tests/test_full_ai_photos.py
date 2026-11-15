@@ -245,8 +245,8 @@ def case_shadow_reads_cached_only():
 
 # ── Test chat: the photo route and both sides ─────────────────────────
 
-def _turn(body: dict, *, writer: str = OK_LINE):
-    fake_w, fake_j = FakeWriterHTTP({NANO: writer}), FakeJev((QUIET, 1.0))
+def _turn(body: dict, *, writer: str = OK_LINE, jev=None):
+    fake_w, fake_j = FakeWriterHTTP({NANO: writer}), FakeJev((jev or QUIET, 1.0))
     with _guarded(), fake_w.on(), _fake_jev(fake_j):
         r = OWNER_A.post(TURN, json=body)
     assert r.status_code == 200, r.text
@@ -296,6 +296,37 @@ def case_test_chat_keys_off_no_call():
         _, j = _turn({**_body("photo2", text="hi"), "photo": photo})
     assert _describes(calls) == []
     assert j.calls[0]["state"]["fan_new_messages"] == ["hi"]
+
+
+def case_test_chat_dare_reads_and_rates_his_photo():
+    """Keys off (the owner's 2026-11-15 Test chat): "are u a bot" gets the dare; the photo he then
+    sends is described anyway (her dare stands on that side) and its Writer gets DARE_RATE with
+    the tag, never the dare again, even though `asks_if_ai` fires again; the side that never dared
+    reads MEDIA_ONLY; without `pair` the route stays off."""
+    from automations import full_ai_writers as wr
+    _config(False, False)
+    pair, bot = "photo-dare", {**QUIET, "asks_if_ai": 0.95}
+    with _vision() as calls:
+        w1, _ = _turn(_body(pair, text="Are u a bot"), jev=bot)
+        assert wr.DARE in _writer_text_raw(w1) and _rows(A, pair)[0].route == "ai_dare"
+        off = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "text": "rate my face"}).json()
+        assert off["outcome"] == "off" and _describes(calls) == [], off
+        photo = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "pair": pair,
+                                          "text": "I don't believe rate my face"}).json()
+        assert photo["desc"] == DESC and len(_describes(calls)) == 1, photo
+        body = {**_body(pair, n=2, text="I don't believe rate my face"), "photo": photo}
+        w2, j2 = _turn(body, jev=bot)
+        w_r, j_r = _turn({**body, "n": 1, "side": "draft"}, jev=bot)
+    assert f"[he sent: {DESC}]" in j2.calls[0]["state"]["fan_new_messages"][0], j2.calls[0]["state"]
+    sys2 = _writer_text_raw(w2)
+    assert wr.DARE_RATE in sys2 and wr.DARE not in sys2 and f"[he sent: {DESC}]" in sys2
+    assert _reply(_rows(A, pair)[1])["fan_photo"]["read"] is True
+    # The draft side never dared: key off reads as before, and it dares (its first bot check).
+    assert DESC not in json.dumps(j_r.calls[0]["state"]) and wr.DARE in _writer_text_raw(w_r)
+
+
+def _writer_text_raw(fake_w: FakeWriterHTTP) -> str:
+    return "\n".join(m["content"] for m in fake_w.requests[0]["body"]["messages"])
 
 
 def case_test_chat_no_key_424_and_cap_429():

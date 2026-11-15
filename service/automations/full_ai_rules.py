@@ -11,7 +11,7 @@ the floor reasons and the jev_json / reply_json key lists (dict literals inside 
 
 A block: {label, kind: prompt|table|list|note, text | rows | items, source, doc?, flag?, qid?}.
 A prompt block may also carry `items` (a question's criteria and cut-off); a table's first row
-is its header. `flag` names the config key the wording rides on (test Mode only).
+is its header. `flag` names the config key the wording rides on (test + live, never Shadow).
 
 Mode "test" (and "live", the same page) is the full Turn (full_ai_turn.run_turn). "shadow" asks the Router and
 writes the Decision row (status planned) and stops (automations/full_ai_chat.py), so its later
@@ -42,13 +42,13 @@ from automations import welcome_chatter_for_info as wcfi
 from automations.full_ai_mode import MODES, full   # MODES: the rules route's modes
 from db.models import AiDecision
 
-# Config keys that count in test Mode only: each one's gate checks `mode == "test"`. The
+# Config keys that count in test + live only: each one's gate checks `full(mode)`. The
 # full_ai_writers gates by key; test_full_ai_rules.py probes every `*_flag` there against this map.
 # `draft_questions`' gate is inline in full_ai_turn._route.
 GATES = {"sext_scene": writers.scene_flag, "lead_in": writers.lead_flag, "sell_nearest": writers.nearest_flag,
          "sell_spacing": writers.spacing_flag, "he_likes": writers.likes_flag, "sell_bundle": writers.bundle_of,
          "chat_tease": writers.tease_flag, "ask_implied": writers.implied_flag,
-         "info_wide": writers.wide_flag}
+         "info_wide": writers.wide_flag, "sell_count": writers.count_flag}
 # `chat_tease_prices` is read only on a Chat tease Turn (`tease_flag`).
 TEST_ONLY_KEYS = (*GATES, "draft_questions", "chat_tease_prices")
 # Config keys only the live sender's owner check reads (spec 04b, `full_ai_owner_io`): Test and Shadow ignore them.
@@ -440,8 +440,8 @@ def _sell_node(mode: str) -> dict:
         f"Price lanes: {lanes}. Priced quotes stay within {_money(sell.MIN_CENTS)}–{_money(sell.MAX_CENTS)}; "
         "a Chat tease goes at its chat_tease_prices option (free allowed).",
         "Target by heat: " + ", ".join(f"intensity {i} → {_money(sell.target_cents(i))}" for i in range(5)) + ".",
-        "A clip goes alone; a photo goes with its shoot mates; one free preview at most; a free item is "
-        "his lowest unseen lane.",
+        "A clip goes alone (unless he names a count, sell_count); a photo goes with its shoot mates; one free "
+        "preview at most; a free item is his lowest unseen lane.",
         "Haggle: re-offers the open Offer's piece at his amount, clamped: e.g. list "
         + ", ".join(f"{_money(c)} → floor {_money(sell.clamp_quote(c, None))}" for c in (2000, 5000, 10000))
         + "; never above list.",
@@ -455,6 +455,10 @@ def _sell_node(mode: str) -> dict:
                          "anything; recorded as reply.nearest.", f"{_FS}:pick", flag="sell_nearest"),
                    _note("Fill the set (sell_bundle)", "fill: a fresh photo Offer holds up to 5 of its shoot "
                          "and fills to 3 from his ask; shoot: shoot mates only.", f"{_FS}:pick", flag="sell_bundle"),
+                   _note("Asked count (sell_count)", f"He names a number (\"bundle of 5 videos\", at most "
+                         f"{sell.COUNT_MAX}): a clip goes with up to that many matching clips at or under its price, "
+                         f"listed at their sum (up to {_money(sell.MAX_CENTS)}); a filled photo set fills to it. "
+                         "Fewer when there are fewer; recorded as reply.asked_count.", f"{_FS}:pick", flag="sell_count"),
                    _note("Chat tease (chat_tease)", "Row chat_tease, and an unasked offer in a normal chat "
                          "(row offer_moment, not hot): first the tease price Jev picks its price "
                          "from chat_tease_prices (see Price Jev); free is one unlocked photo, a price up to "
@@ -468,7 +472,7 @@ def _sell_node(mode: str) -> dict:
     return _node("sell", "Sell executor", "sell",
                  "Picks the one piece he gets (or a Refusal) from the vault, priced by his heat; the "
                  "Writer then sells or teases exactly that.",
-                 blocks, ("sell_on", "folders", "sell_nearest", "sell_bundle", "sext_scene",
+                 blocks, ("sell_on", "folders", "sell_nearest", "sell_bundle", "sell_count", "sext_scene",
                           "chat_tease", "chat_tease_prices"), mode)
 
 
@@ -609,7 +613,8 @@ def _writers_node(mode: str) -> dict:
 # ── 9. Reply chain ─────────────────────────────────────────────────────────
 
 def _chain(mode: str) -> dict:
-    steps = ["finalize_draft — leak guard, emoji strip (service/automations/_finalize.py)",
+    steps = ["finalize_draft — leak guard, emoji strip (strip_emojis, else the account's setting; "
+             "service/automations/_finalize.py)",
              "_reply_shape.shape_parts — bubbles, banned words, u/ur, spacing, name protect",
              "apply_typo_throttle — thumb typos + *fix (style typos; typo_pct = % of replies, unset = ~1 per 5 sentences)",
              "hold_with_typing — the live transport's typing hold (test: full_ai_test.hold only)"]
@@ -632,7 +637,8 @@ def _chain(mode: str) -> dict:
             doc=_DOC["REPLY_LEVEL"], flag="floor_on"))
     return _node("reply_chain", "Reply chain", "write",
                  "Every model reply goes through the one shared chain before it reaches him; a reply "
-                 "with a PPV is then audited against the piece.", blocks, ("style", "typo_pct", "floor_on"), mode)
+                 "with a PPV is then audited against the piece.", blocks, ("style", "typo_pct", "floor_on", "strip_emojis"),
+                 mode)
 
 
 # ── 10. Send + record ──────────────────────────────────────────────────────
@@ -642,7 +648,7 @@ _SHADOW_JEV_KEYS = ("answers", "intensity", "fired", "state", f"photo (with {pho
 _REPLY_KEYS = ("parts", "attempts", "floor_reason", "dropped_reason", "leak", "side", "config_rev", "wait_s",
                "turn_ms", "fan_info", "asked", "typo_state", "info_error", "fan_photo", "scene", "refusal",
                "level", "nearest", "price", "caption", "caption_fallback", "claim_fail", "offer_dropped",
-               "chat_tease", "ride", "heat_check")
+               "chat_tease", "ride", "heat_check", "asked_count")
 
 
 def _send(mode: str) -> dict:
@@ -665,8 +671,8 @@ def _send(mode: str) -> dict:
 # ── 11. Config switches ────────────────────────────────────────────────────
 
 def _scope(k: str) -> str:
-    return ("test Mode only (gated; live = test, off in Shadow)" if k in TEST_ONLY_KEYS else "test + Shadow" if k in SHADOW_READS
-            else "live only (who owns a Fan)" if k in LIVE_ONLY_KEYS else "Test chat today; Shadow ignores (live later)")
+    return ("test + live (off in Shadow)" if k in TEST_ONLY_KEYS else "test + live + Shadow" if k in SHADOW_READS
+            else "live only (who owns a Fan)" if k in LIVE_ONLY_KEYS else "test + live; Shadow ignores")
 
 
 def _switches(mode: str) -> dict:

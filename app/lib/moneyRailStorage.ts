@@ -9,6 +9,7 @@
  */
 
 import { persistJSON, readJSON } from "./persist";
+import { POPOUT_MODE_ROUTES } from "@/lib/chatSlots";
 import type { FanId } from "@/lib/fanId";
 
 // ── Settings (rows + which models) ───────────────────────────────────────
@@ -36,8 +37,11 @@ export type Surface = (typeof SURFACE_VALUES)[number];
 
 export function surfaceOf(pathname: string | null): Surface {
   if (pathname?.startsWith("/group")) return "group";
+  // A mode route (lib/chatSlots.ts `popoutModeRoutes`) is Messages Pro in
+  // another mode, not a pop-out: same surface, so its Notif switch and
+  // Messages Pro's are one setting.
+  if (pathname === "/messages-pro" || (pathname !== null && POPOUT_MODE_ROUTES.has(pathname))) return "inbox";
   if (pathname?.startsWith("/messages-pro/")) return "popup";
-  if (pathname === "/messages-pro") return "inbox";
   return "other";
 }
 

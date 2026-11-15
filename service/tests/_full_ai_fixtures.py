@@ -38,6 +38,7 @@ KIND = "full_ai_chat"
 NOULS = {"promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
          "wants_content", "declines_buying", "says_yes_to_offer", "sexual_now", "gif_fits"}
 QUIET = dict.fromkeys(NOULS, 0.05)
+GIF_FITS = {**QUIET, "gif_fits": 0.9}      # a GIF suits the reply: the sticker block's gate
 # A quiet test-Mode `answers` (03b), sext scene off; `QUIET_SCENE` with config `sext_scene` on.
 QUIET_TEST = {**QUIET, **dict.fromkeys((q for q in rj.TEST_NOULS if q not in rj.SCENE), 0.05)}
 QUIET_SCENE = {**QUIET, **dict.fromkeys(rj.TEST_NOULS, 0.05)}
@@ -271,3 +272,54 @@ def _shape_drop(reason: str = "banned"):
         yield
     finally:
         _reply_shape.shape_parts = real
+
+
+# ── Mode live (04a): the shared world of the live_* suites ─────────────────────────────────────
+LIVE_LINE = "ok:haha stop it. what are u doing later tonight"
+LIVE_HOSTS = ("nano-gpt.com", "openrouter.ai", "api.z.ai", "api.deepseek.com")
+
+
+@contextlib.contextmanager
+def live_world(jev=None, n: int = 4):
+    """`_of_fixtures.FakeOF` behind `ax._make_client`, unspaced OF writes, Jev (`jev`, default QUIET
+    intensity 1, `n` answers) and the Writers' wire faked. Yields `w`: `w.of` (`.sent` dicts),
+    `w.made` (clients built), `w.purposes` (send purposes), `w.jev` (FakeJev)."""
+    import automation_executor as ax
+    from _of_fixtures import FakeOF
+    w = SimpleNamespace(of=FakeOF(), made=[], purposes=[], jev=FakeJev(*([jev or (QUIET, 1.0)] * n)))
+    real_make, real_paced = ax._make_client, ax.of_write_paced
+
+    async def unpaced(account_id, fn, **kw):
+        w.purposes.append(kw.get("send_purpose"))
+        return await real_paced(account_id, fn, **{**kw, "min_gap_s": 0.0, "pause_s": 0.0})
+
+    def make(account_id):
+        w.made.append(account_id)
+        return w.of
+    ax._make_client, ax.of_write_paced = make, unpaced
+    os.environ.setdefault("NANOGPT_API_KEY", "test-nanogpt-house-key")
+    os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-house-key")
+    try:
+        with FakeWriterHTTP(dict.fromkeys(LIVE_HOSTS, LIVE_LINE)).on(), _fake_jev(w.jev):
+            yield w
+    finally:
+        ax._make_client, ax.of_write_paced = real_make, real_paced
+
+
+async def seed_live(aid: str, *, gate: bool = False, every_s: int = 300) -> int:
+    """`_seed` with the rule in Mode live (`trigger_json.mode`); the rule id."""
+    from sqlalchemy import update
+    rid = await _seed(aid, rule=True, gate=gate)
+    async with get_session() as s:
+        await s.execute(update(AutomationRule).where(AutomationRule.id == rid).values(
+            trigger_json=json.dumps({"every_seconds": every_s, "mode": "live"})))
+    return rid
+
+
+async def clear_pause(aid: str, fan: int) -> None:
+    """The Fan's `automation_paused_until` gone (his cooldown ends)."""
+    from sqlalchemy import update
+    from db.models import Fan
+    async with get_session() as s:
+        await s.execute(update(Fan).where(Fan.account_id == aid, Fan.fan_id == fan)
+                        .values(automation_paused_until=None))

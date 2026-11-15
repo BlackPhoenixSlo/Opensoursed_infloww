@@ -13,6 +13,7 @@ NAMES = ["a-ui", "b-vol", "c-vol", "d-new", "2026-11-03-os-ping-push", "2026-11-
 DOC = {"scenarios": {"a-ui": {"sha": "x"}, "b-vol": {"sha": "x"}, "c-vol": {"sha": "x"},
                      "2026-11-03-os-ping-push": {"sha": "x"},
                      "2026-11-01-notifications-feed-volume": {"sha": "x"}}}
+MIXED = {"scenarios": {**DOC["scenarios"], "b-vol": {"sha": "y"}, "2026-11-03-os-ping-push": {"sha": "y"}}}
 
 
 def test_volume_runs_medium_120_without_ui(tmp_path):
@@ -30,11 +31,12 @@ def test_volume_runs_medium_120_without_ui(tmp_path):
 
 
 @pytest.mark.parametrize("ages,weekday,full,word", [
-    ({}, 0, True, "no map entry"),
-    ({"a" * 40: 201}, 0, True, "201 commits behind HEAD (> 200)"),
-    ({"a" * 40: 500, "b" * 40: 1}, 0, True, "500 commits"),  # the oldest sha counts
-    ({"a" * 40: 3, "b" * 40: None}, 0, True, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
+    ({}, 0, False, "no map entry, not Sunday: stale entries"),  # stale: build_plan re-maps stale entries only
+    ({"a" * 40: 201}, 0, False, "201 commits behind HEAD (> 200), not Sunday: stale entries"),
+    ({"a" * 40: 500, "b" * 40: 1}, 0, False, "500 commits"),  # the oldest sha counts
+    ({"a" * 40: 3, "b" * 40: None}, 0, False, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
     ({"a" * 40: 0}, 6, True, "Sunday"),
+    ({"a" * 40: 500}, 6, True, "Sunday: weekly full refresh (oldest map sha 500"),
     ({"a" * 40: 5}, 5, False, "not Sunday"),
 ])
 def test_map_rule(ages, weekday, full, word):
@@ -46,14 +48,19 @@ def test_map_rule(ages, weekday, full, word):
     (False, ["all", "volume", "map"], {"x": 3}, 1,  # volume first; day 0: the first 3 sorted volume names
      {"volume": ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol"], "all": NAMES,
       "map": ["d-new"]}),
-    (False, ["map", "all"], {"x": 300}, 1, {"all": NAMES, "map": NAMES}),  # PHASES order, full refresh
+    (False, ["map", "all"], {"x": 300}, 1, {"all": NAMES, "map": NAMES}),  # PHASES order; all stale = every name
+    (False, ["map", "all"], {"x": 3}, 6, {"all": NAMES, "map": NAMES}),  # Sunday: full refresh
+    (False, ["map"], {"x": 3, "y": 201}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # stale entries
+    (False, ["map"], {"x": 3, "y": None}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # divergent
+    (False, ["map"], {"x": 3}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # sha y unknown: stale
     (True, ["all", "volume", "map"], {"x": 300}, 6,  # smoke: never the full map; a missing smoke name dropped
      {"volume": ["2026-11-01-notifications-feed-volume"], "all": ["2026-11-03-os-ping-push"], "map": ["d-new"]}),
 ])
 def test_build_plan(smoke, phases, ages, weekday, want, monkeypatch):
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in
                         {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"})
-    plan, why = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, DOC, phases, smoke, ages, weekday)
+    doc = MIXED if phases == ["map"] else DOC  # the map-only rows: two entries on sha y
+    plan, why = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, doc, phases, smoke, ages, weekday)
     assert plan == want and list(plan) == list(want)
     assert why.startswith("smoke") == smoke
 

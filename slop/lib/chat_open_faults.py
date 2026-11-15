@@ -4,7 +4,8 @@ check names live here and the scenario imports them, so a target can never name 
 """
 from __future__ import annotations
 
-THREAD_ONCE = "thread: each read once per open (no route GET twice: attribution, fan-history)"
+THREAD_ONCE = ("thread: each read once per open (no route GET twice: attribution, fan-history; a short thread's fill: "
+               "each older page once, at most 4)")
 THREAD_BUNDLE = "thread: the open's local reads in one /admin/screens/chat, none per route"
 
 

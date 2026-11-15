@@ -26,6 +26,7 @@ import { MessageCircle } from "lucide-react";
 import { useRenderCap } from "@/hooks/useRenderCap";
 import { useSavedReplies } from "@/hooks/useSavedReplies";
 import { useTemplates } from "@/hooks/useTemplates";
+import { SCRIPT_SOURCE } from "@/lib/chatSlots";
 import { isImeComposing } from "@/lib/ime";
 import { anchorPanel, type PopoverCoords } from "@/lib/anchorPanel";
 import { cn } from "@/lib/utils";
@@ -138,6 +139,14 @@ export interface TemplatePickerProps {
   slashQuery?: string | null;
   /** Called when the "/" search list closes (Escape, a pick, a press outside). */
   onSlashClose?: () => void;
+  /** The chat's script cursor (Composer, a user script). Its rows are listed
+   *  first, by step, after the pinned script's. */
+  activeScriptId?: string | null;
+  /** A fan chat: the script source's current script (lib/chatSlots.ts),
+   *  whose rows are always listed first, by step, under a header. The
+   *  source's other rows stay hidden unless searched for (its
+   *  `searchPrefix`, "/" search included). */
+  pinnedScriptId?: string | null;
 }
 
 /** A row's search text (title, body, script id), lower-cased once per row. */
@@ -166,6 +175,7 @@ function templateHasNoImageMedia(t: PickedTemplate): boolean {
 
 export function TemplatePicker({
   accountId, onPick, hideImageTemplates, messagesPro, slashQuery = null, onSlashClose,
+  activeScriptId = null, pinnedScriptId = null,
 }: TemplatePickerProps) {
   // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
@@ -256,14 +266,29 @@ export function TemplatePicker({
     return { allItems: all, visibleByImageFilter: hideImageTemplates ? all.filter(templateHasNoImageMedia) : all };
   }, [tplQ.data, replyQ.data, hideImageTemplates]);
   const hiddenCount = hideImageTemplates ? allItems.length - visibleByImageFilter.length : 0;
+  // The script source's rows only when searched for or current; the pinned
+  // script first, then the active script, each by step; the rest keep their order.
+  const q = search.trim().toLowerCase();
+  const pool = useMemo(() => {
+    const lead = [...new Set([pinnedScriptId, activeScriptId])].filter((id): id is string => !!id);
+    const source = SCRIPT_SOURCE;
+    const shown = !source || q.startsWith(source.searchPrefix) ? visibleByImageFilter
+      : visibleByImageFilter.filter((t) => !source.owns(t.scriptId) || t.scriptId === pinnedScriptId);
+    if (lead.length === 0) return shown;
+    const rank = (t: PickedTemplate) => {
+      const i = lead.indexOf(t.scriptId ?? "");
+      return i < 0 ? lead.length : i;
+    };
+    return [...shown].sort((a, b) => rank(a) - rank(b)
+      || (rank(a) < lead.length ? (a.scriptStep ?? 0) - (b.scriptStep ?? 0) : 0));
+  }, [visibleByImageFilter, q, pinnedScriptId, activeScriptId]);
 
   // Search across title, body text, and script id — case-insensitive, over
-  // the whole list (only the rendering is capped, below).
-  const q = search.trim().toLowerCase();
+  // the whole pool (only the rendering is capped, below).
   const items = useMemo(() => {
-    if (!q) return visibleByImageFilter;
-    return visibleByImageFilter.filter((t) => haystackOf(t).includes(q));
-  }, [q, visibleByImageFilter]);
+    if (!q) return pool;
+    return pool.filter((t) => haystackOf(t).includes(q));
+  }, [q, pool]);
   // 200 rows at a time, more as the list's foot scrolls in.
   const { cap, hasMore, more, sentinel } = useRenderCap(items.length, `${open}|${q}`);
 
@@ -348,7 +373,7 @@ export function TemplatePicker({
             <div className="text-[10px] text-fg-dim">
               {loading
                 ? "Loading…"
-                : `${items.length} of ${visibleByImageFilter.length}`}
+                : `${items.length} of ${pool.length}`}
               {search && items.length > 0 && " · Enter to pick first"}
             </div>
           </div>
@@ -370,6 +395,11 @@ export function TemplatePicker({
             {hiddenCount > 0 && items.length > 0 && !search && (
               <div className="px-3 py-1.5 text-[10px] text-fg-dim border-b border-border/40 bg-bg/40">
                 {hiddenCount} template{hiddenCount === 1 ? "" : "s"} hidden — contain images, not supported here.
+              </div>
+            )}
+            {SCRIPT_SOURCE && pinnedScriptId && items[0]?.scriptId === pinnedScriptId && (
+              <div className="px-3 py-1 text-[10px] text-[var(--inf-accent-text,var(--color-accent))] border-b border-border/40 bg-accent/5">
+                {pinnedScriptId} · {SCRIPT_SOURCE.label}
               </div>
             )}
             {items.slice(0, cap).map((t, i) => (

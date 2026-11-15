@@ -30,11 +30,11 @@ profile (a genuinely cold first card visit); Dashboard / Messages Pro share the 
                 as the saved rows show, the owner taps the Nth row: tap -> OnlyFans' message of that Fan painted
                 (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
 dash-first, reports-first extras and mp-first send 0 per-Creator OnlyFans reads of what the screen bundles carry
-(BUNDLE_OF; the money rail's feeds keep their own routes; app/lib/screenBundle.ts, service/screens_api.py): reports-first
-extras and mp-first one bundle each, dash-first none (the Dashboard draws no card that reads one) (C_BUNDLE). The card
-bundle starts at extras activation; Messages Pro's entry bundle leaves with the auth probe on a document load, the
-Dashboard's Applied settings read with the HTML; no Dashboard visit reads a card bundle, inline or its own
-(C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). reports-snapshot, reports-leave and mp-click-N run the per-Creator path on purpose
+(BUNDLE_OF; the money rail's feeds keep their own routes; app/lib/screenBundle.ts, service/screens_api.py): one bundle
+each (C_BUNDLE; the Dashboard's from its Per-model cards, back at its bottom since #586). The card bundle starts at
+extras activation; Messages Pro's entry bundle leaves with the auth probe on a document load, the Dashboard's Applied
+settings read with the HTML; the Dashboard's card bundle is the page's own, once, after its Applied settings answer
+(it boots no bundle: lib/screenEntry.ts) (C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). reports-snapshot, reports-leave and mp-click-N run the per-Creator path on purpose
 (the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
 Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
 (but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
@@ -562,16 +562,15 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     per["reports-first"]["bundle_from_extras_ms"] = summ["reports-first"]["bundle_from_extras_ms"]
     per["reports-first"]["bundle_after_activation"] = (activation is not None and bool(card_bundles)
         and all(r["t0"] >= cards["origin"] + activation for r in card_bundles))
-    # The Dashboard reads no bundle (none of its cards reads one); the extras cards and Messages Pro one each.
-    want_bundles = {"dash-first": 0, "reports-first": 1, "mp-first": 1}
+    # One bundle each: the Dashboard's Per-model cards (#586), the extras cards, Messages Pro.
     ctx.check(C_BUNDLE, per["reports-first"]["bundle_after_activation"] and all(
-                  not x["of_paths"] and x["bundles"] == want_bundles[k] and x["follow_ups"] <= want_bundles[k]
-                  for k, x in per.items()),
+                  not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
     # A document load: the bundle leaves with the auth probe, or comes with the HTML (inline boot: the server sent it
     # at once); the Dashboard's Applied settings read comes with the HTML (no client read of it leaves before /auth/me).
-    # A Dashboard visit reads no card bundle at all, inline or its own.
+    # A Dashboard visit's card bundle is the page's own, one, after its Applied settings answer: the Dashboard boots no
+    # bundle (lib/screenEntry.ts; its Per-model cards mount once the settings fixed the period, #586).
     def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
         me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
@@ -582,11 +581,14 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              "bundle_t0": min((r["t0"] for r in page_bundles), default=None),
              "bundle_inline": bool(plain) and not page_bundles,
              "settings_t0": first(settings), "settings_inline": _took_inline(d, settings)}
-        # The Dashboard: its Applied settings timing, no card bundle. Messages Pro: its bundle's timing.
+        # The Dashboard: its Applied settings timing, its card bundle after them. Messages Pro: its bundle's timing.
         want = ("settings",) if dash else ("bundle",)
-        o["no_card_bundle"] = not plain and not any(
-            r["path"].startswith(DASH_SCREEN_PATH) for r in [*d["net"], *d.get("inline", [])])
-        o["ok"] = (not dash or o["no_card_bundle"]) and (bool(me) or o["auth_me_inline"]) and all(
+        cards = [r for r in d["net"] if r["path"] in plain and r["path"].startswith(DASH_SCREEN_PATH)]
+        set_end = [r["end"] for r in d["net"] if r["path"].split("?")[0] == settings and r["end"] is not None]
+        o["card_bundle_own"] = (len(plain) == 1 and len(cards) == 1
+                                and not any(x["path"].startswith(DASH_SCREEN_PATH) for x in d.get("inline", []))
+                                and (o["settings_inline"] or (bool(set_end) and cards[0]["t0"] >= min(set_end))))
+        o["ok"] = (not dash or o["card_bundle_own"]) and (bool(me) or o["auth_me_inline"]) and all(
             o[f"{k}_inline"] or (bool(me) and o[f"{k}_t0"] is not None and o[f"{k}_t0"] < min(me)) for k in want)
         for k in ("bundle", "settings"):
             o[f"{k}_t0"] = None if o[f"{k}_t0"] is None else round(o[f"{k}_t0"] - d["origin"])
