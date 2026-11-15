@@ -607,6 +607,48 @@ async def case_roster_counts_never_read_a_dead_creator():
         accounts_admin_api._roster_last.pop(D, None)
 
 
+async def case_every_answer_carries_server_now():
+    """Every roster-counts answer carries `now` (server epoch ms): the tab measures its clock skew off it, so a
+    count's `as_of` and its own patch stamps compare in one clock (app hooks/useRosterCounts.ts)."""
+    import time
+    D, X = "acct-now-dead", "acct-now-x"
+    owned: list[str] = []
+
+    class _User:
+        account_ids = owned
+
+    class _Resp:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+    async def _fake_compute(aid: str, *, bypass: bool = False) -> dict[str, int]:
+        return {"unread": 1, "owe_reply": 0, "as_of": 0}
+
+    async def _dead():
+        return {D: object()}
+    orig_user, orig_compute = server._get_request_user, accounts_admin_api._compute_roster_count_of
+    orig_dead = accounts_admin_api.account_health.dead_session_map
+    server._get_request_user = lambda: _User()
+    accounts_admin_api._compute_roster_count_of = _fake_compute
+    accounts_admin_api.account_health.dead_session_map = _dead
+    _lease(X, D)
+    try:
+        answers = {"no Creators": await accounts_admin_api.admin_accounts_roster_counts(_Resp())}
+        owned[:] = [X, D]
+        answers["full map"] = await accounts_admin_api.admin_accounts_roster_counts(_Resp())
+        answers["bust"] = await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=X)
+        answers["dead bust"] = await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=D)
+        t = time.time() * 1000
+        for why, a in answers.items():
+            assert isinstance(a.get("now"), int) and abs(a["now"] - t) < 5_000, (why, a)
+    finally:
+        _lease()
+        server._get_request_user = orig_user
+        accounts_admin_api._compute_roster_count_of = orig_compute
+        accounts_admin_api.account_health.dead_session_map = orig_dead
+        server.relay_cache.invalidate("roster_count", X)
+
+
 _harness.run(
     case_ws_kept_window_is_folded_past_300s_within_its_list_ttl,
     case_compute_roster_count_from_of,
@@ -621,4 +663,5 @@ _harness.run(
     case_bust_rewarms_shared_list_window,
     case_roster_counts_read_of_only_for_leased_creators,
     case_roster_counts_never_read_a_dead_creator,
+    case_every_answer_carries_server_now,
 )

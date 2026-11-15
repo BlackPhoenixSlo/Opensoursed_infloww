@@ -11,7 +11,12 @@ swapped for a recorder. Temp DB only; no OF, no paid call.
   case_config_change_next_wait     a checkpoint saved while the loop waits sets the next wait (no restart); an
                                    after_live not starting at 0 delays the first pass
   case_unsaved_dm_saved_one_turn   his DM not in `messages`: saved, one-Fan scrape queued, one Turn job
-                                   (no sooner than the scrape grace); the job replies once, row `sent`
+                                   (no sooner than the scrape grace); the scrape done, the job replies once, row `sent`
+  case_turn_waits_for_queued_scrape   the grace over, his scrape still queued / running: the Turn waits (no
+                                   send, requeued); the scrape done, it replies once
+  case_stuck_scrape_turn_not_lost  his scrape queued past the 3 busy runs: each Turn (also a 2-day-old DM) still
+                                   queued, one job each, no try spent; a scrape row older than SCRAPE_WAIT_S no
+                                   longer holds him: both reply once
   case_skips                       answered (row on the key) / she wrote last / a funnel walk owns him /
                                    8 days old: nothing queued, nothing saved for her chat
   case_unhealthy_creator_skipped   deactivated / Dead session: a skip, no OF read, no job; the loop goes on
@@ -212,6 +217,7 @@ async def case_unsaved_dm_saved_one_turn():
     assert job.run_at >= t0 + timedelta(seconds=cu.SCRAPE_GRACE_S), job.run_at   # the scrape first
     assert await _payloads(aid, "scrape_fan") == [{"fan_ids": [fan], "source": cu.SOURCE}]
     assert fake.sent == [] and fake.read == []        # sends nothing, marks nothing read
+    await _scrape_status(aid, "done")
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.id == job.id)
                         .values(run_at=datetime.utcnow() - timedelta(seconds=1)))
@@ -220,6 +226,71 @@ async def case_unsaved_dm_saved_one_turn():
     (row,) = await _rows(aid)
     assert (row.status, row.trigger_key) == ("sent", str(mid)), row
     assert of.sent
+
+
+async def _scrape_status(aid: str, status: str, **values) -> None:
+    async with get_session() as s:
+        await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_fan")
+                        .values(status=status, **values))
+
+
+async def _turn_due(aid: str) -> None:
+    async with get_session() as s:
+        await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == KIND,
+                                                   ScheduledJob.status == "pending")
+                        .values(run_at=datetime.utcnow() - timedelta(seconds=1)))
+
+
+async def case_turn_waits_for_queued_scrape():
+    """One-Fan scrapes of one Creator run one at a time: after a pass, a later Fan's Turn can come due
+    (+SCRAPE_GRACE_S) with his scrape still queued. It must not load the chat before the scrape lands."""
+    aid, fan, mid = "fa_cu_wait", 1211, 71211
+    await seed_live(aid)
+    assert (await _pass(aid, [_chat(fan, mid, _ago(45))]))[0]["queued"] == 1
+    for status in ("pending", "running"):
+        await _scrape_status(aid, status)
+        await _turn_due(aid)
+        with world() as (of, *_):
+            assert (await run_once(aid, KIND))["status"] == "ok"
+        assert of.sent == [] and await _rows(aid) == [], (status, of.sent)
+        (p,) = await _payloads(aid)
+        assert p["anchor"] == mid, p                                           # requeued, not lost
+    await _scrape_status(aid, "done")
+    await _turn_due(aid)
+    with world() as (of, *_):
+        assert (await run_once(aid, KIND))["status"] == "ok"
+    (row,) = await _rows(aid)
+    assert (row.status, row.trigger_key) == ("sent", str(mid)) and of.sent, row
+    assert await _jobs(aid) == []
+
+
+async def case_stuck_scrape_turn_not_lost():
+    """The scrape wait spends no busy try: past BUSY_RUNS runs each Turn is still queued (a 2-day-old DM is
+    outside the sweep's 24 h and may drop out of catch-up's newest 40: nothing else would queue it again)."""
+    from automations import full_ai_live
+    aid, new, old = "fa_cu_stuck", 1221, 1222
+    await seed_live(aid)
+    chats = [_chat(new, 71221, _ago(45)), _chat(old, 71222, _ago(2 * 24 * 60))]
+    assert (await _pass(aid, chats))[0]["queued"] == 2
+    for _ in range(full_ai_live.BUSY_RUNS + 2):                                # the scrapes never run
+        await _turn_due(aid)
+        with world() as (of, *_):
+            for _ in range(len(await _jobs(aid))):
+                await run_once(aid, KIND)
+        assert of.sent == [] and await _rows(aid) == [], of.sent
+        ps = await _payloads(aid)
+        assert sorted(p["only_fan_ids"][0] for p in ps) == [new, old], ps        # one job each, still queued
+        assert all(p["tries"] == 0 for p in ps), ps                            # no busy try spent
+    # A scrape row stuck past SCRAPE_WAIT_S no longer holds either Turn.
+    await _scrape_status(aid, "pending", created_at=datetime.utcnow() - timedelta(seconds=full_ai_live.SCRAPE_WAIT_S + 5))
+    await _turn_due(aid)
+    with world() as (of, *_):
+        for _ in range(4):
+            if not await _jobs(aid):
+                break
+            await run_once(aid, KIND)
+    assert sorted(r.fan_id for r in await _rows(aid) if r.status == "sent") == [new, old], await _rows(aid)
+    assert await _jobs(aid) == []
 
 
 async def case_skips():

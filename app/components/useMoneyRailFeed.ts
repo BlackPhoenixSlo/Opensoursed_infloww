@@ -16,7 +16,7 @@
  * gain: useOfReadGate starts from no lease), and on `resync`
  * (useAccountStateEvents). An unleased Creator's lists read once its
  * `creator_warmed` comes (the warm's cached copy), on a lease gain, or at the
- * APP_OPEN_WARM_FALLBACK_MS deadline, then only on its next `creator_warmed`.
+ * fallback deadline (lib/ofReadGate `fallbackDeadline`), then only on its next `creator_warmed`.
  * A Dead-session Creator is no target. No SSE arrival (DM, like, tip)
  * refetches a list. A hidden tab (or an idle one, useIdleMode) pays nothing:
  * it skips the safety poll and defers its SSE-driven re-renders and

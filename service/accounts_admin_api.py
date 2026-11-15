@@ -459,6 +459,24 @@ async def _held_roster_count(account_id: str) -> dict[str, int] | None:
     return _roster_last.get(account_id)
 
 
+def _principal() -> tuple[str, Any, list[str]] | None:
+    """The signed-in principal as (kind, the User/Chatter, its Creator ids in their stored order): the owner User,
+    else the Chatter (its linked owners' union), else None (signed out)."""
+    user = _get_request_user()
+    if user is not None:
+        return "user", user, list(user.account_ids or ())
+    chatter = _get_request_chatter()
+    if chatter is not None:
+        return "chatter", chatter, list(chatter.account_ids or ())
+    return None
+
+
+def _roster_answer(counts: dict[str, Any]) -> dict[str, Any]:
+    """A roster-counts answer: the counts and `now`, this Relay's epoch ms, so the tab compares each count's `as_of`
+    with its own patch stamps in one clock (app hooks/useRosterCounts.ts measures the skew off it)."""
+    return {"counts": counts, "now": int(_time_mod.time() * 1000)}
+
+
 @router.get("/admin/accounts/roster-counts")
 async def admin_accounts_roster_counts(
     response: Response, bust: str | None = None
@@ -491,17 +509,13 @@ async def admin_accounts_roster_counts(
     poisoning), and the path is unchanged so the chatter admin allow-list still
     matches (chatters.py permits GET /admin/accounts/roster-counts)."""
     response.headers["Cache-Control"] = "no-store"
-    user = _get_request_user()
-    if user is not None:
-        ids = list(user.account_ids or [])
-    else:
-        chatter = _get_request_chatter()
-        ids = list(chatter.account_ids or []) if chatter is not None else []
+    principal = _principal()
+    ids = principal[2] if principal is not None else []
     # A watcher (a fan account, no Creator) is never in the strip: no OF read on it here,
     # so this poll can never mark its session dead and pause it.
     ids = [a for a in ids if not account_registry.is_watcher(a)]
     if not ids:
-        return {"counts": {}}
+        return _roster_answer({})
 
     async def _one(aid: str, *, bypass: bool = False) -> tuple[str, dict[str, int]]:
         try:
@@ -561,13 +575,13 @@ async def admin_accounts_roster_counts(
     if bust and bust in ids:
         if bust in dead:
             held = await _held_roster_count(bust)
-            return {"counts": {bust: held} if held is not None else {}}
+            return _roster_answer({bust: held} if held is not None else {})
         relay_cache.invalidate("roster_count", bust)
         _, value = await _one(bust, bypass=True)
-        return {"counts": {bust: value}}
+        return _roster_answer({bust: value})
 
     pairs = await asyncio.gather(*[_served(a) for a in ids])
-    return {"counts": {aid: c for aid, c in pairs if c is not None}}
+    return _roster_answer({aid: c for aid, c in pairs if c is not None})
 
 
 async def rewarm_roster_count(account_id: str) -> dict[str, int]:
@@ -620,14 +634,11 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
     import app_open_warm
     import view_lease
 
-    user = _get_request_user()
-    if user is not None:
-        kind, pid, order = "user", str(user.id), list(user.account_ids or ())
-    else:
-        chatter = _get_request_chatter()
-        if chatter is None:
-            raise HTTPException(status_code=401, detail="sign in required")
-        kind, pid, order = "chatter", str(chatter.id), list(chatter.account_ids or ())
+    principal = _principal()
+    if principal is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    kind, who, order = principal
+    pid = str(who.id)
     allowed = set(order)
 
     def ok(a: str | None) -> bool:

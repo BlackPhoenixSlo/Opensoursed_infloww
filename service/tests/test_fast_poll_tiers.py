@@ -207,17 +207,33 @@ async def case_poll_now_single_flight():
         await gate.wait()
         return {"aid": aid}
 
+    real_single_flight = pp._single_flight
+    joins: list[asyncio.Task | None] = []
+    joined = asyncio.Event()
+
+    def _counting_single_flight(account_id, tier):
+        t = real_single_flight(account_id, tier)
+        joins.append(t)
+        if len(joins) == 2:
+            joined.set()
+        return t
+
     async with _patched(_tick, live=[AUTO, IDLE]):
         pp._poll_inflight.clear()
         loop_poll = pp._single_flight(AUTO, "fast")          # the loop's tick, in flight
-        await asyncio.sleep(0)
-        a = asyncio.create_task(pp.poll_now(AUTO))
-        b = asyncio.create_task(pp.poll_now(AUTO))
-        await asyncio.sleep(0.05)
-        assert reads == [AUTO], reads
-        gate.set()
-        assert await a == {"aid": AUTO} and await b == {"aid": AUTO}
-        assert await loop_poll == {"aid": AUTO}
+        pp._single_flight = _counting_single_flight
+        try:
+            a = asyncio.create_task(pp.poll_now(AUTO))
+            b = asyncio.create_task(pp.poll_now(AUTO))
+            # Both callers reached the gate (poll_now awaits DB reads first, so no fixed sleep is enough).
+            await asyncio.wait_for(joined.wait(), 10)
+            assert joins == [loop_poll, loop_poll], "both joined the loop's poll"
+            assert reads == [AUTO], reads
+            gate.set()
+            assert await a == {"aid": AUTO} and await b == {"aid": AUTO}
+            assert await loop_poll == {"aid": AUTO}
+        finally:
+            pp._single_flight = real_single_flight
         assert reads == [AUTO], f"one feed read, got {reads}"
         assert AUTO not in pp._poll_inflight
         assert await pp.poll_now(LEASED) is None, "no live session: skipped"

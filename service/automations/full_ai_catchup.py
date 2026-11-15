@@ -31,7 +31,8 @@ log = logging.getLogger("of-relay.automation.full_ai_catchup")
 
 CHATS = 40                      # OF's most recent chats a pass reads (and the most Turns it queues; owner 2026-11-15: 200 was too many)
 MAX_AGE_S = 7 * 86400           # an older waiting DM is left to humans (owner to confirm)
-SCRAPE_GRACE_S = 60             # a DM only just saved: its Turn waits this long for the chat's scrape
+SCRAPE_GRACE_S = 60             # a DM only just saved: its Turn waits this long for the chat's scrape (then waits while
+                                # the scrape is still queued: full_ai_live._scrape_pending)
 SOURCE = "full_ai_catchup"      # the one-Fan scrape's source and the walk's kind
 BOOT_DELAY_S = 60               # relay start: the first pass waits this long (Mode -> Live: at once)
 RECONNECT_DELAY_S = 10          # socket back after a drop: the first pass waits this long (a flapping socket: one pass)

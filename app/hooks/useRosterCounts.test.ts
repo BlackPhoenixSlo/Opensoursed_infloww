@@ -122,3 +122,28 @@ describe("mergeRosterCounts as_of (an Idle Creator's held count never jumps back
     expect(out.counts.a).toEqual(want === "local" ? local : held(asOf));
   });
 });
+
+describe("mergeRosterCounts clock skew (as_of is server clock, patches are this tab's clock)", () => {
+  const local = { unread: 2, owe_reply: 1 };
+  const held = { unread: 0, owe_reply: 0, as_of: 1_000_000 };
+  const resp = (now?: number): RosterCountsResp => ({ counts: { a: held }, ...(now === undefined ? {} : { now }) });
+  const prev: RosterCountsResp = { counts: { a: local } };
+  // The server read the window at server 1_000_000 and answered at server `now`; the tab began the read at
+  // fetchStartedAt (tab clock). Skew is measured against fetchStartedAt (`now` is stamped at or after it),
+  // so response transit can only keep a patch, never drop it.
+  it.each([
+    // [case, server now, fetchStartedAt, patchedAt (tab clock), want]
+    ["tab 60 s behind: a patch 5 s after the read wins", 1_010_000, 950_000, 945_000, "local"],
+    ["tab 60 s behind: a patch 5 s before the read loses", 1_010_000, 950_000, 935_000, "server"],
+    ["tab 60 s ahead: a patch 5 s before the read loses", 1_010_000, 1_070_000, 1_055_000, "server"],
+    ["tab 60 s ahead: a patch 5 s after the read wins", 1_010_000, 1_070_000, 1_065_000, "local"],
+    ["no skew: plain compare", 1_010_000, 1_010_000, 1_005_000, "local"],
+    ["no `now` (old server): no skew assumed", undefined, 1_070_000, 1_005_000, "local"],
+    // Answer received at 1_000_600: the patch at 1_000_300 landed while the response was in transit.
+    ["equal clocks, slow response: a patch after the snapshot, before the answer lands, wins",
+      1_000_100, 1_000_050, 1_000_300, "local"],
+  ] as const)("%s", (_n, now, started, patched, want) => {
+    const out = mergeRosterCounts(resp(now), prev, started, () => patched);
+    expect(out.counts.a).toEqual(want === "local" ? local : held);
+  });
+});

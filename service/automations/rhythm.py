@@ -18,9 +18,8 @@ log = logging.getLogger("of-relay.automation.rhythm")
 # fan lease (a hold no longer pins a run slot — service/run_slot.py).
 INLINE_MAX_S = 120
 
-# One try's timeout for a sender's model call made off the run slot (`run_slot.freed`:
-# autoreply, welcome_chatter_for_info, send_followup, reply_mass_funnel, the free stream's
-# FU script), passed as Full AI's Writers pass theirs (`timeout_s`, `max_attempts`). Measured p95 of these
+# One try's timeout for a sender's model call made off the run slot (`_model_wait.freed_chat`:
+# autoreply, welcome_chatter_for_info, send_followup, reply_mass_funnel, the consistency check), passed as Full AI's Writers pass theirs (`timeout_s`, `max_attempts`). Measured p95 of these
 # calls in prod 2026-11: 1.5-2.8 s (max 10.6 s).
 # A miss is that fan's provider error: skipped this run, retried on the next.
 MODEL_WAIT_S = 30

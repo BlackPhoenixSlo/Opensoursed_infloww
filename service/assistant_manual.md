@@ -35,13 +35,17 @@ The sidebar, top to bottom:
   settings.
 - **My Automations** — Auto Mass, Auto Post, Auto Story, Auto Funnel and
   Gen-Info.
-- **My AI Chatter** — Auto-reply, Get to know fans and Full AI
-  Chatter (owner only: a "Full AI Chat" switch per creator, Off or Shadow; in
-  Shadow it records what the AI would do with each fan DM and sends nothing).
+- **Full AI Chat** — owner only: a switch per creator, Off or Shadow; in
+  Shadow it records what the AI would do with each fan DM and sends nothing.
+  Its **AI rules** button (shown with the AI rules page granted) opens the AI's
+  rules as a diagram.
 - **Creators** — Manage creators (connecting and watching OnlyFans accounts)
   and Custom proxy.
 - **Employees** — Manage employees (logins, roles, access) and Shift schedule.
 - Pinned at the bottom: **Settings** and **Help center**.
+
+**Auto-reply** (`/growth/auto-reply`) and **Get to know fans**
+(`/growth/get-to-know-fans`) are not in the sidebar: open them by address.
 
 The top bar holds the sidebar toggle, the Inflowwww wordmark, the status pill,
 the error badge, your time zone, the SFW switch, the notification bell, the
@@ -49,7 +53,7 @@ Clock button and the avatar menu (theme, Log out). There is no creator picker in
 the top bar: a page that shows one creator has its own creator select.
 
 **Old names people still use.** "Stuff" is now Analytics → Message dashboard,
-"Auto Convo" is My AI Chatter → Auto-reply, "Inbox" is Messages Pro, "Stats"
+"Auto Convo" is Auto-reply (`/growth/auto-reply`), "Inbox" is Messages Pro, "Stats"
 is Analytics, "Setup" is Creators → Manage creators (accounts) plus Creators →
 Custom proxy and Settings → AI keys. The old `/messages`, `/inbox`, `/stats`,
 `/customs` and `/setup` addresses redirect to the new pages. The old **+ New ▾**
@@ -65,9 +69,10 @@ An employee sees what their role grants. Out of the box an employee does
 **not** see Growth's owner pages (Smart lists, Auto-follow, Vault Pro, Profile
 promotion, Free trial links, Tracking links, Sensitive words), Share for Share,
 Creators or Employees. On Growth they keep **Smart Messages** and **Scripts**.
-In My AI Chatter they see **Get to know fans**; every other My Automations and
-My AI Chatter page is off for an employee until the owner turns it on for their role in **Settings
-→ Role Settings**. In Settings an employee sees only **Security (personal)**,
+They see **Get to know fans**; every My Automations page and **Auto-reply**
+are off for an employee until the owner turns them on for their role in **Settings
+→ Role Settings** (Auto-reply sits under its My AI Chatter heading).
+In Settings an employee sees only **Security (personal)**,
 **Billing** and **About Inflowwww**; Your Account, Your
 Preferences, Security (organization), Role Settings, Sales Settings, Time
 tracking, Messaging settings, AI keys and Audit log are the owner's.
@@ -82,8 +87,8 @@ Automations are set up in these places:
 - **My Automations** — one page per automation: **Auto Post**, **Auto Story**,
   **Auto Mass** (ready-made broadcasts on timers), **Auto Funnel** and
   **Gen-Info**. Each page has its own creator select and its own switch.
-- **My AI Chatter** — the AI chat lanes, laid out the same way: **Auto-reply**
-  and **Get to know fans**.
+- **Auto-reply** and **Get to know fans** — the AI chat lanes, laid out the
+  same way, opened by address (see the sidebar above).
 - **Growth → Smart Messages → Automated Messages** — the per-fan triggers:
   **Nudge**, **Delayed welcome**, **Purchased**, **Nearing expiry**,
   **Expired**, **Resubscribe** and **Birthday**. A trigger that is not set up
@@ -98,8 +103,7 @@ Automations are set up in these places:
   running).
 - **Share for Share** — the S4S posts a creator swaps with a partner.
 
-The AI that writes to fans is **Auto-reply** (My AI Chatter → **Auto-reply**,
-`/growth/auto-reply`, the `autoreply` engine) plus the warm-up **Get to know
+The AI that writes to fans is **Auto-reply** (`/growth/auto-reply`, the `autoreply` engine) plus the warm-up **Get to know
 fans** rule, and every AI call runs on the keys in **Settings → AI keys**.
 (**Growth → Scripts** is the saved script library chatters paste from, not an
 automation.)
@@ -121,7 +125,7 @@ one.
 | Asked about | What to say | Nearest live thing |
 |---|---|---|
 | The Automations page: the Brain card, the rules list with **+ New rule**, the 12 "Ready-made posts & broadcasts" tabs, the Automation runs log | Removed. An old `/automations` link lands on My Automations → Auto Post. | The pages listed above |
-| The Brain: persona, location, clock, daily AI cap, creator facts, per-purpose models | Operator-only, raising the daily cap included (see "The Brain"). The account's AI model is not: it is the **Model** block on My AI Chatter → Auto-reply. | **Model info** on My AI Chatter → Get to know fans; the **Model** block on My AI Chatter → Auto-reply |
+| The Brain: persona, location, clock, daily AI cap, creator facts, per-purpose models | Operator-only, raising the daily cap included (see "The Brain"). The account's AI model is not: it is the **Model** block on Auto-reply. | **Model info** on Get to know fans; the **Model** block on Auto-reply |
 | Follow-ups (`send_followup`) | Operator-only. | Writing to him from the chat; the Nudge trigger for fans who come online |
 | The Audience fence | Operator-only, and its folder sync is removed. | — |
 | ⚡ Reply Instant, real-time dispatch for an inbound message | Operator-only. | Auto-reply |
@@ -141,8 +145,8 @@ This is the single most common cause of "I turned it on and nothing happened."
 An automation only runs when there is an **enabled rule** for it.
 
 **1. Rule-backed — the switch IS the automation.** Switching on creates or
-wakes the rule: every My Automations and My AI Chatter page (Auto Post, Auto
-Story, Auto Mass, Auto-reply, Get to know fans, Gen-Info), the Auto Funnel **Reply walking**
+wakes the rule: every My Automations page (Auto Post, Auto Story, Auto Mass,
+Gen-Info), Auto-reply, Get to know fans, the Auto Funnel **Reply walking**
 switch, the Smart Messages triggers (Nudge, Delayed welcome, Purchased and the
 lifecycle ones), Growth → Auto-follow, the **Auto-activate campaign** switch on
 Growth → Profile promotion and the **Auto-unsend (automation)** card on Smart
@@ -162,13 +166,13 @@ to keep the stored key.
 
 - DeepSeek powers chat replies and most automations — this is the one that
   matters. The system default model is `deepseek-v4-flash`; pick another one
-  for the account in the **Model** block on My AI Chatter → Auto-reply, and
+  for the account in the **Model** block on Auto-reply, and
   hold a key for that model's provider.
 - DeepInfra powers vision: vault image descriptions, and Auto-reply's opt-in
   "describe photos fans send".
 - Z.ai is an optional second provider.
 - Anthropic is optional. It powers a Claude model picked in the **Model** block
-  (My AI Chatter → Auto-reply), and this help assistant: with an Anthropic key
+  (on Auto-reply), and this help assistant: with an Anthropic key
   set (it starts `sk-ant-`, from console.anthropic.com) the help assistant
   answers on Claude Opus (`claude-opus-5-5`), otherwise on `deepseek-v4-flash`.
   Before any account is connected, only the deployment's own help-assistant
@@ -347,13 +351,13 @@ welcome uses. Every AI lane reads it, and it has no page of its own. Two parts
 are editable in the app:
 
 - **The account's AI model** (and its reasoning effort): the **Model** block at
-  the top of **My AI Chatter → Auto-reply** (see "kind: autoreply"). It is
+  the top of **Auto-reply** (see "kind: autoreply"). It is
   account-wide: every AI automation without a model of its own uses it too —
   with exceptions: Get to know fans, Generate fan profiles and the chat's AI
   Copilot need a model that returns JSON, so under a Claude pick they run
   `deepseek-v4-flash`; this help assistant never follows the account model.
-- **Model info**, the short note every chat prompt pins: it is on **My AI
-  Chatter → Get to know fans**.
+- **Model info**, the short note every chat prompt pins: it is on **Get to
+  know fans**.
 
 For anything else in the brain (the per-purpose model choices and raising the
 daily cap included), say the deployment operator has to change it.
@@ -602,9 +606,9 @@ smart list**.
 1. Growth → Smart Messages → **New Message** → **Subscriber welcome** (the
    **Delayed welcome** row once it exists): switch it on, write the message,
    Save.
-2. My AI Chatter → **Get to know fans** → switch it on, Save. This is the lane
+2. **Get to know fans** — switch it on, Save. This is the lane
    for fans who have not bought.
-3. My AI Chatter → **Auto-reply** → switch on, pick who it answers (folders
+3. **Auto-reply** — switch on, pick who it answers (folders
    and/or new fans), Save. That one switch also creates its rule.
 
 **The spend line, surface by surface — they do not behave the same.**
@@ -636,12 +640,12 @@ And Nudge Online's box flips: it cuts **strictly above**, so "under $400" is
 - Anything a **human chatter** sends is never gated by any of this.
 
 **Then stop the non-spenders being chatted.**
-- **Auto-reply** — switch it off (My AI Chatter → Auto-reply), or narrow WHO
+- **Auto-reply** — switch it off (on Auto-reply), or narrow WHO
   to a folder of buyers. Its spend controls are ceilings, it has no minimum, and
   a fan who never paid passes it. Leaving it on is the most common reason
   "spenders only" does not hold.
 - Decide about the warm-up lane. If "spenders only" means *the AI should only
-  ever reply to people who bought*, switch My AI Chatter → Get to know fans off
+  ever reply to people who bought*, switch Get to know fans off
   too.
 
 **Three things to remember**
@@ -660,12 +664,12 @@ And Nudge Online's box flips: it cuts **strictly above**, so "under $400" is
    works without it, and there is no fallback.
 2. **Creators → Manage creators → Add creator** — connect the account (see
    Setting up).
-3. **My AI Chatter → Get to know fans** — fill **Model info** (the short note
+3. **Get to know fans** — fill **Model info** (the short note
    every chat prompt pins), switch it on, Save. The rest of the brain has no
    page (see "The Brain").
 4. **Growth → Smart Messages → New Message → Subscriber welcome** — switch it
    on, Save.
-5. **My AI Chatter → Auto-reply** — switch on, pick who it answers, Save.
+5. **Auto-reply** — switch on, pick who it answers, Save.
 6. Only then add selling: the mass sends, **My Automations → Auto Mass** and
    **My Automations → Auto Funnel**.
 
@@ -676,8 +680,7 @@ There is no one-click onboarding wizard — every step is its own Save button.
 There is no vault rotator (see "Removed or operator-only"). Nearest real
 things: **My Automations → Auto Post** (paid feed posts on a timer) and
 **My Automations → Auto Mass** (ready-made broadcasts on timers). To silence
-the chat lanes as well, switch off My AI Chatter → Auto-reply and
-My AI Chatter → Get to know fans.
+the chat lanes as well, switch off Auto-reply and Get to know fans.
 
 OnlyFans rejects any priced message under $3.00.
 
@@ -789,7 +792,7 @@ feeds Generate fan profiles. It never pitches. Optionally, when the chat ends,
 it sends **one closing PPV** set on the rule — then your team takes over. Leave
 its media empty and it just stops when the chat ends.
 
-**Where:** My AI Chatter → **Get to know fans** (`/growth/get-to-know-fans`):
+**Where:** **Get to know fans** (`/growth/get-to-know-fans`):
 the switch, the message cutoff, the closing PPV, the Human style boxes and the
 account's **Model info**, saved together by one **Save**.
 
@@ -833,7 +836,7 @@ enabled rule of this kind.
 casual line matched to the tone of the recent messages, to keep the conversation
 alive. It never pitches: no PPV, no tip ask, no content offer.
 
-**Where:** My AI Chatter → **Auto-reply** (`/growth/auto-reply`) — the
+**Where:** **Auto-reply** (`/growth/auto-reply`) — the
 **Model** block, the switch, the delay, WHO it answers and the reply-style
 boxes, all saved by the page's one **Save**.
 
@@ -1685,7 +1688,7 @@ Work down this list:
    it the first time the session works — every 10 min for the first hour, every
    30 min for the first day, hourly for the first week, then every 6 hours.
 2. **Is there an enabled rule?** Check that the automation's own page shows it
-   switched on (My Automations, My AI Chatter, or the trigger's row on Growth → Smart
+   switched on (My Automations, Auto-reply, Get to know fans, or the trigger's row on Growth → Smart
    Messages). An operator-only automation (see "Removed or operator-only")
    cannot be checked from the app.
 3. **Is dry run still on?** The **Keep promos running** card on Growth →

@@ -13,8 +13,9 @@ import { SELECTED_SOURCE, sortedIds, type LeaseBody } from "@/lib/viewLeaseState
 export const VIEW_LEASE_RENEW_MS = 20_000;
 /** The opening post waits for the event stream at most this long. */
 export const OPENED_WAIT_MS = 5_000;
-/** The rail's self-read deadline: this long after the document load, an unleased Creator whose `creator_warmed` never
- *  came reads its money lists and count itself (lib/ofReadGate.ts). */
+/** The rail's self-read deadline: this long after the document load (later while the warm is still landing,
+ *  lib/ofReadGate `fallbackDeadline`), an unleased Creator whose `creator_warmed` never came reads its money lists and
+ *  count itself. */
 export const APP_OPEN_WARM_FALLBACK_MS = 90_000;
 
 let memoTab: string | null = null;

@@ -36,7 +36,6 @@ from __future__ import annotations
 import logging
 import re
 
-import llm_client                   # call .chat at runtime so tests can patch it
 import run_slot
 from db.models import Fan
 from jsonsafe import load_dict, load_json
@@ -44,7 +43,8 @@ from llm_client import LLMCapExceeded
 
 from . import _voice
 from ._common import nonempty
-from .rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
+from ._model_wait import freed_chat
+from .rhythm import INLINE_MAX_S
 
 log = logging.getLogger("of-relay.persona")
 
@@ -615,7 +615,8 @@ async def verify_self_consistency(account_id: str, fan_id: int, f: Fan,
         return draft            # nothing to be inconsistent WITH
     try:
         # Off the run slot while the model answers (no OF call, no lock held).
-        res = await run_slot.freed(llm_client.chat(
+        res = await freed_chat(
+            budget_s=INLINE_MAX_S,
             model=model,
             messages=consistency_messages(draft, persona, claims_block),
             # Deliberately the CALLING ENGINE's purpose, not a distinct
@@ -627,8 +628,7 @@ async def verify_self_consistency(account_id: str, fan_id: int, f: Fan,
             # rather than queryable in prod.
             purpose=purpose, account_id=account_id, fan_id=fan_id,
             temperature=0.0, response_format={"type": "json_object"},
-            timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
-        ), budget_s=INLINE_MAX_S)
+        )
         verdict = getattr(res, "parsed", None)
         contradicts, which, fix = parse_consistency_verdict(
             verdict if verdict is not None else res.content)

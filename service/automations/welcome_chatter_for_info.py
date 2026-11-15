@@ -145,7 +145,8 @@ from ._persona import (
     merge_persona_claims, parse_persona_claims, persona_register_age,
 )
 from ._outbound import ConsistencyCtx, finalize_draft
-from .rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
+from ._model_wait import freed_chat
+from .rhythm import INLINE_MAX_S
 from . import cat_stickers  # reaction-gif pack
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 import smart_message_extras as extras  # media + price readers (the closing PPV)
@@ -997,13 +998,13 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     if not _extract_worthwhile(f, c):
         return f
     # Off the run slot while the model answers (no OF call, no lock held).
-    res = await run_slot.freed(llm_client.chat(
+    res = await freed_chat(
+        budget_s=INLINE_MAX_S,
         model=model, messages=_extract_messages(f, c, history_tail, persona),
         purpose=purpose,
         account_id=account_id, fan_id=fan_id, temperature=0.2,
         response_format={"type": "json_object"},
-        timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
-    ), budget_s=INLINE_MAX_S)
+    )
     data = getattr(res, "parsed", None)
     if data is None:
         try:
@@ -1685,15 +1686,15 @@ async def _turn_generate(t: _Turn, asked: set, opener, fan_lang: str,
         opener=opener, v=cfg.voice_blocks)
     try:
         # Off the run slot while the model answers (no OF call, no lock held).
-        res = await run_slot.freed(llm_client.chat(
+        res = await freed_chat(
+            budget_s=INLINE_MAX_S,
             model=cfg.model,
             messages=msgs,
             purpose=_PURPOSE,
             account_id=cfg.account_id,
             fan_id=c.fan_id,
             temperature=_REPLY_TEMPERATURE,
-            timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
-        ), budget_s=INLINE_MAX_S)
+        )
     except run_slot.SlotLost:
         raise                     # send no more: _turn's finally gives the lease back
     except LLMCapExceeded:

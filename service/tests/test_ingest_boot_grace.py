@@ -21,7 +21,7 @@ Four halves, in descending order of how much they'd hurt to lose:
      immediately (so the grace is disable-able by config without branching),
      and cancellation during the grace is NOT delayed by it (a container stop
      must not wait out the full hold and hit the SIGKILL grace).
-  3. `_env_float` degrades to its default on garbage — an operator typo in
+  3. the grace knob (`env_knob.env_float`) degrades to its default on garbage — an operator typo in
      INGEST_BOOT_GRACE_S must not take the relay down at import time.
   4. The cross-file invariant that ties this to the healthcheck change: the
      supervisor's grace has to fit inside the relay's `start_period`, or the
@@ -190,8 +190,8 @@ def case_env_float_degrades_on_garbage():
         os.environ.pop(key, None)
         if raw is not None:
             os.environ[key] = raw
-        got = tx._env_float(key, 90.0)
-        assert got == want, f"{why}: _env_float({raw!r}) -> {got}, want {want}"
+        got = tx.env_knob.env_float(key, 90.0)
+        assert got == want, f"{why}: env_float({raw!r}) -> {got}, want {want}"
     os.environ.pop(key, None)
 
 

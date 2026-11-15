@@ -86,11 +86,6 @@ from tip_ledger import TIP_LEDGER_PREFIX
 log = logging.getLogger("of-relay.ingest_tx")
 
 
-def _env_float(name: str, default: float) -> float:
-    """A float knob (env_knob: malformed or non-finite -> the default, loudly; never a raise at import)."""
-    return env_knob.env_float(name, default)
-
-
 def _clamped_env(name: str, default: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, env_knob.env_float(name, default)))
 
@@ -150,8 +145,8 @@ _MIN_CYCLE_GAP_S = 5.0
 # ~64 min). Costs at most one cycle of ledger freshness on a boot and nothing
 # at all in steady state. Zero disables, for a recovery boot where freshness
 # beats politeness. See cadence.boot_grace.
-_BOOT_GRACE_S = _env_float("INGEST_BOOT_GRACE_S", 90.0)
-_FAST_BOOT_GRACE_S = _env_float("INGEST_FAST_BOOT_GRACE_S", 30.0)
+_BOOT_GRACE_S = env_knob.env_float("INGEST_BOOT_GRACE_S", 90.0)
+_FAST_BOOT_GRACE_S = env_knob.env_float("INGEST_FAST_BOOT_GRACE_S", 30.0)
 _PPV_LINK_LOOKBACK_DAYS = 30
 # Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
 # a refresh scan's 7-day window plus slack for late-clearing pending rows.

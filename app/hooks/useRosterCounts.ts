@@ -34,6 +34,9 @@ export interface RosterCount {
 
 export interface RosterCountsResp {
   counts: Record<string, RosterCount>;
+  /** The server's epoch ms when it answered: the tab's clock skew is measured off it, so `as_of` (server clock)
+   *  and local patch stamps (this tab's clock) compare in one clock. */
+  now?: number;
 }
 
 const EMPTY: Record<string, RosterCount> = {};
@@ -176,12 +179,14 @@ export function rosterPriorFromRow(row: OFChatItem | null | undefined): RosterPr
 /** Pure: fold a fresh server roster response over the currently-cached one,
  *  PRESERVING any per-account value that a local patch (optimistic or SSE) rewrote
  *  after the server's snapshot. `patchedAt(aid)` returns an account's last local-patch
- *  timestamp. A server count's `as_of` (when its chats window was read) is that
- *  snapshot's time; without one, `fetchStartedAt` (when this poll began its network
- *  read). An account patched AFTER it keeps its local value, so an Idle Creator's
- *  held, older count never jumps a live badge back. An account the server left out
- *  (an Idle Creator it holds nothing for, e.g. after a Relay restart) keeps its
- *  cached value. */
+ *  timestamp (this tab's clock). A server count's `as_of` (when its chats window was
+ *  read, server clock) is that snapshot's time, moved into this tab's clock by the
+ *  skew `server.now - fetchStartedAt` (no `now`: no skew; `now` is stamped at or after the
+ *  read began, so transit only ever moves the snapshot earlier: a patch is kept, never
+ *  dropped); without an `as_of`, `fetchStartedAt` (when this poll began its network read). An account patched AFTER
+ *  it keeps its local value, so an Idle Creator's held, older count never jumps a live
+ *  badge back. An account the server left out (an Idle Creator it holds nothing for,
+ *  e.g. after a Relay restart) keeps its cached value. */
 export function mergeRosterCounts(
   server: RosterCountsResp | undefined,
   prev: RosterCountsResp | undefined,
@@ -190,10 +195,11 @@ export function mergeRosterCounts(
 ): RosterCountsResp {
   const serverCounts = server?.counts ?? {};
   const prevCounts = prev?.counts ?? {};
+  const skew = server?.now ? server.now - fetchStartedAt : 0;
   const out: Record<string, RosterCount> = { ...serverCounts };
   for (const aid of Object.keys(prevCounts)) {
     const fresh = serverCounts[aid];
-    if (!fresh || patchedAt(aid) > (fresh.as_of || fetchStartedAt)) out[aid] = prevCounts[aid];
+    if (!fresh || patchedAt(aid) > (fresh.as_of ? fresh.as_of - skew : fetchStartedAt)) out[aid] = prevCounts[aid];
   }
   return { counts: out };
 }

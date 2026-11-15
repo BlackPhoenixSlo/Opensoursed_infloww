@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  armedVersion, armRead, gainedOf, gateOptions, isArmed, onArmed, readGate, REFRESH_OLDER_MS, resetReadGate, wantsRefresh,
+  armedVersion, armRead, FALLBACK_MAX_MS, FALLBACK_QUIET_MS, fallbackDeadline, gainedOf, gateOptions, isArmed, onArmed,
+  readGate, REFRESH_OLDER_MS, resetReadGate, wantsRefresh,
 } from "./ofReadGate";
 import { APP_OPEN_WARM_FALLBACK_MS, type TabLease } from "./viewLease";
 
@@ -77,5 +78,36 @@ describe("armed store", () => {
     expect(isArmed("8")).toBe(true);
     expect(fn).toHaveBeenCalledTimes(1);
     off();
+  });
+
+  it.each([
+    // [case, arm times (s after the load), when every Creator arms (s)]
+    ["no arm: the 90 s deadline", [], 90],
+    ["an arm at 85 s (the warm still landing): 20 s after it", [85], 105],
+    ["an arm early on: the 90 s deadline", [30], 90],
+    ["arms every 10 s: capped at 300 s", Array.from({ length: 40 }, (_, i) => 10 * (i + 1)), 300],
+  ] as const)("fallback while the warm makes progress: %s", (_n, arms, dueS) => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    resetReadGate(t0);
+    const off = onArmed(() => {});
+    const at = (s: number) => vi.advanceTimersByTime(t0 + s * 1000 - Date.now());
+    arms.forEach((s, i) => { if (s < dueS) { at(s); armRead(`warmed-${i}`); } });
+    at(dueS - 0.001);
+    expect(isArmed("8")).toBe(false);
+    at(dueS);
+    expect(isArmed("8")).toBe(true);
+    off();
+  });
+});
+
+describe("fallbackDeadline", () => {
+  it.each([
+    ["an arm at the load", 0, APP_OPEN_WARM_FALLBACK_MS],
+    ["an early arm", 10_000, APP_OPEN_WARM_FALLBACK_MS],
+    ["a late arm pushes it", 85_000, 85_000 + FALLBACK_QUIET_MS],
+    ["never past the cap", 299_000, FALLBACK_MAX_MS],
+  ])("%s", (_n, lastArm, want) => {
+    expect(fallbackDeadline(1_000_000, 1_000_000 + lastArm) - 1_000_000).toBe(want);
   });
 });

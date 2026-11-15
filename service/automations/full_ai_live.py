@@ -18,9 +18,11 @@ the Turn down. Each bubble goes out through its kind's `BUBBLE_SENDERS` entry.
   load(account_id, fan_id, client)   TurnFacts | None (no unanswered Turn, or its row exists)
   reap(account_id, mine)             `sending` rows -> `unconfirmed`, the Creator's full_ai_chat leases dropped,
                                      but a Fan whose job runs in this process (`_running`, not `mine`)
-  run(account_id, payload, *, run_id)   reap -> cooldown -> lease -> load -> pre-look -> run_turn
+  run(account_id, payload, *, run_id)   reap -> cooldown -> scrape wait -> lease -> load -> pre-look -> run_turn
                                      -> cooldown 10 s + release; busy -> the same payload at +20 s,
-                                     3 runs at most (ticket 67); no anchor (the interval job) -> sweep
+                                     3 runs at most (ticket 67); his one-Fan scrape still queued
+                                     (`_scrape_pending`) -> the same payload at +20 s, no try spent
+                                     (bounded by SCRAPE_WAIT_S); no anchor (the interval job) -> sweep
   sweep(account_id)                  missed DMs: due Turn ends with no row / job / cooldown and a clear
                                      pre-look (no OF read) -> enqueue, 20 per pass
   catchup_queue(account, fans, ...)  full_ai_catchup's waiting Fans: the sweep's checks over just them
@@ -58,7 +60,7 @@ from automations._typing_hold import (
 )
 from automations.rhythm import INLINE_MAX_S
 from db.engine import get_session
-from db.models import AiDecision, AutomationRule, Fan, FanLease, Message
+from db.models import AiDecision, AutomationRule, Fan, FanLease, Message, ScheduledJob
 
 log = logging.getLogger("of-relay.automation.full_ai_live")
 
@@ -72,6 +74,7 @@ FAN_INFO_FIELDS = (*FACT_FIELDS, "generated_nickname", "of_display_name")
 WELCOME = "welcome"                    # send_welcome's automation_kind: never answers his DM
 _TURN_KEY = ["account_id", "fan_id", "mode", "trigger_key"]
 BUSY_RETRY_S, BUSY_RUNS = 20, 3        # a busy Fan: same payload at +20 s; after 3 runs the sweep (68)
+SCRAPE_WAIT_S = 900                    # a one-Fan scrape queued longer ago than this no longer holds his Turn (stuck row)
 SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h, 20 Turns per pass
 # A Full AI DM lets the account's next write start this soon after it (the write gate's gap; every
 # other sender keeps of_write's 11 s). Measured 2026-11-15 on OF: 10 DMs each way (fan -> Creator,
@@ -150,6 +153,23 @@ async def _queue(account_id: str, payload: dict, run_at: datetime) -> None:
     from webhook_dispatch import _schedule_wake   # lazy: imports widely
     await ax.enqueue_job(account_id, KIND, payload=payload, run_at=run_at)
     _schedule_wake(max(0.0, (run_at - datetime.utcnow()).total_seconds()))
+
+
+async def _scrape_pending(account_id: str, fan_id: int) -> bool:
+    """A one-Fan `scrape_fan` job of the Fan (e.g. full_ai_catchup's), pending or running, created within
+    `SCRAPE_WAIT_S`: his chat is still being read, and a Turn loaded now could answer what she already answered."""
+    since = datetime.utcnow() - timedelta(seconds=SCRAPE_WAIT_S)
+    async with get_session() as s:
+        payloads = (await s.execute(select(ScheduledJob.payload_json).where(
+            ScheduledJob.account_id == str(account_id), ScheduledJob.kind == "scrape_fan",
+            ScheduledJob.status.in_(("pending", "running")), ScheduledJob.created_at >= since))).scalars().all()
+    for pj in payloads:
+        try:
+            if int(fan_id) in {int(f) for f in json.loads(pj or "{}").get("fan_ids") or ()}:
+                return True
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return False
 
 
 async def _busy(account_id: str, payload: dict) -> dict:
@@ -787,7 +807,14 @@ async def _run(account_id: str, payload: dict) -> dict:
     await reap(aid, fan)
     cfg = (await full_ai_turn.stored_config(aid))["checkpoint"]
     ttl = int(max(900, full_ai_turn.turn_bound_s(cfg) + 600))
-    if await ax.fan_on_cooldown(aid, fan) or not await ax.acquire_fan_lease(aid, fan, KIND, ttl_s=ttl):
+    if await ax.fan_on_cooldown(aid, fan):
+        return await _busy(aid, payload)
+    # His one-Fan scrape still queued: the same payload at +BUSY_RETRY_S, `tries` untouched (the Turn stays
+    # queued until the scrape lands; `_scrape_pending`'s SCRAPE_WAIT_S job-age cap bounds the wait).
+    if await _scrape_pending(aid, fan):
+        await _queue(aid, payload, datetime.utcnow() + timedelta(seconds=BUSY_RETRY_S))
+        return {"skipped": "scrape_pending"}
+    if not await ax.acquire_fan_lease(aid, fan, KIND, ttl_s=ttl):
         return await _busy(aid, payload)
     state = _Run()
     try:
