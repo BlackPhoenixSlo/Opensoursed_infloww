@@ -26,11 +26,19 @@ description: "Connect Claude Code, or any MCP client, to your Inflowwww agency: 
 </ol>
 <p>
   Allow makes an access token for the client. It shows on <strong>Settings → AI keys → Access tokens</strong> as
-  <code>MCP Claude Code …</code>, lasts 90 days, and you can revoke it there any time. When it runs out, choose
-  Authenticate again.
+  <code>MCP Claude Code …</code>, lasts 90 days, and you can revoke it there any time.
 </p>
-<p>A client that only speaks stdio can go through <code>mcp-remote</code>, which opens the same sign-in:</p>
+<p>A client that only speaks stdio can go through <code>mcp-remote</code>:</p>
 <pre class="overflow-x-auto whitespace-pre"><code>npx mcp-remote {{ site.appUrl }}/admin/mcp</code></pre>
+<p>
+  It opens the same sign-in the first time <code>sign_in</code> (or any agency tool) is called. If your app still
+  shows only the sign-in tools after you press Allow, restart it.
+</p>
+<p>
+  When the token runs out or is revoked, Claude Code shows only the sign-in tools again, with no error. Choose
+  Authenticate again, or ask it to call <code>sign_in</code>. <code>mcp-remote</code> opens the browser sign-in
+  again by itself.
+</p>
 
 <h3 id="token">Or with a token</h3>
 <ol>
@@ -46,8 +54,9 @@ description: "Connect Claude Code, or any MCP client, to your Inflowwww agency: 
 <pre class="overflow-x-auto whitespace-pre"><code>npx mcp-remote {{ site.appUrl }}/admin/mcp --header "Authorization: Bearer ifw_YOUR_TOKEN"</code></pre>
 
 <h2 id="no-token">No token yet</h2>
-<p>Added the server without a header and not signed in yet? Three tools work with no token at all:</p>
+<p>Added the server without a header and not signed in yet? Four tools work with no token at all:</p>
 <ul>
+  <li><code>sign_in</code>: opens the browser sign-in, as in step 2 above, in clients that support it. Once you press Allow, the client gets all the agency's tools.</li>
   <li><code>register_account</code>: makes a new agency from a username, a password and an agency name, and answers with a token.</li>
   <li><code>login</code>: signs an owner in with username and password (plus <code>code</code> if two-factor is on) and answers with a token.</li>
   <li><code>connect_account</code>: answers with the sign-up and log-in links, if you would rather do it in the browser.</li>
