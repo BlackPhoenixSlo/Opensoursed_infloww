@@ -43,6 +43,7 @@
                             the Sell switches' sell_nearest / sell_bundle values, the reply speed / Questions / PPV
                             caption labels, the plain switches' defaults) match these; `limits` lists the default first
   case_page_labels          the keys the page now edits (2026-11-15) carry their control label in REFERENCE
+  case_manual_names_every_key  the help bot's manual names every DEFAULTS key but `version` as `key`
   case_audience_keys_carried_table  (owner 2026-11-15) `fans` / `top_spend_cents` one value on every side: the config
                             writes (JSON boxes too) keep them, `put_audience` sets them on all three sides
   case_config_api_audience  PUT config/audience: no rev, all sides, rev bumped (next draft PUT not stale), 422s
@@ -233,6 +234,14 @@ def case_reference_covers_every_key():
 
 
 APP = Path(__file__).resolve().parents[2] / "app"
+
+
+def case_manual_names_every_key():
+    """The help bot's manual (assistant_manual.md, its Full AI Chat section) names every config key as `key`, so a new
+    key without a manual line fails here."""
+    manual = (Path(__file__).resolve().parents[1] / "assistant_manual.md").read_text(encoding="utf-8")
+    missing = [k for k in DEFAULTS if k != "version" and f"`{k}`" not in manual]
+    assert not missing, f"assistant_manual.md does not name: {missing}"
 
 
 def case_ts_constants_match():

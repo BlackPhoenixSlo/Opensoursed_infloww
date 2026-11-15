@@ -35,9 +35,9 @@ The sidebar, top to bottom:
   settings.
 - **My Automations** — Auto Mass, Auto Post, Auto Story, Auto Funnel and
   Gen-Info.
-- **Full AI Chat** — owner only: a switch per creator, Off or Shadow; in
-  Shadow it records what the AI would do with each fan DM and sends nothing.
-  Its **AI rules** button (shown with the AI rules page granted) opens the AI's
+- **Full AI Chat** — owner only: per creator, a Mode (Off or Live; Live means the
+  AI chats, sexts and sells to fans on OnlyFans by itself), its settings, a Test
+  chat and today's decisions (see "kind: full_ai_chat"). Its **AI rules** button (shown with the AI rules page granted) opens the AI's
   rules as a diagram.
 - **Creators** — Manage creators (connecting and watching OnlyFans accounts)
   and Custom proxy.
@@ -104,7 +104,7 @@ Automations are set up in these places:
 - **Share for Share** — the S4S posts a creator swaps with a partner.
 
 The AI that writes to fans is **Auto-reply** (`/growth/auto-reply`, the `autoreply` engine) plus the warm-up **Get to know
-fans** rule, and every AI call runs on the keys in **Settings → AI keys**.
+fans** rule and, where the owner switched it Live, **Full AI Chat**, and every AI call runs on the keys in **Settings → AI keys**.
 (**Growth → Scripts** is the saved script library chatters paste from, not an
 automation.)
 
@@ -195,8 +195,9 @@ panel naming the model and the provider.
 
 ## Which autochat is which
 
-There are two, and **neither one pitches**. No AI sells — selling is done by
-people and the mass sends.
+There are two, and **neither one pitches**. Neither sells — selling is done by
+people and the mass sends. (**Full AI Chat**, owner only, is separate and does
+sell: see "kind: full_ai_chat".)
 
 **Get to know fans (`welcome_chatter_for_info`)** is the warm-up (info-gather).
 It talks to fans who have not bought anything, asking one gentle question at a
@@ -211,7 +212,8 @@ every topic filled or asked to its cap, and the follow-up questions it mined all
 used up. The message cutoff (10 by default) only bites while he is still being interviewed; a
 fan who has finished answering keeps getting replies past it. A complete profile
 on its own is not a hand-off. **Nothing AI picks him up after that** except
-Auto-reply, if it is on and he is in its audience.
+Auto-reply, if it is on and he is in its audience — or Full AI Chat, if it is
+Live for the creator and he is on its Fans list (then Auto-reply skips him).
 
 **Auto-reply (`autoreply`)** is a keep-warm safety net: when nobody answered a
 fan in time it sends one casual line matched to the tone of the chat. Never a
@@ -885,6 +887,200 @@ the account cannot pay for its model).
 
 **Caveats:**
 - Enable it only on accounts with real fans, never on promo-spam accounts.
+
+## kind: full_ai_chat — Full AI Chat (the AI chats and sells on its own)
+
+**What it does:** while Live, answers a creator's fans in their OnlyFans DMs by
+itself: chat, sexting and selling PPVs from the vault. Jev (the TypeSafe router)
+decides what each reply does; a Writer model writes it.
+
+**Where:** **Full AI Chat** (`/full-ai-chatter`), owner only: every change (a
+setting, Save, the Mode, Fans, Model info here, even a Test chat line) is
+refused to an employee. Pick the creator at the top. Top to bottom: the settings
+column, Model info, Who Full AI answers when Live, Content, Test chat, Today,
+Revenue, Newest.
+
+**Mode — Off / Live** (settings column; Save and Roll back never move it):
+- **Live** asks "Go Live?" → **Go Live**. It then replies, on the checkpoint, to
+  the fans the Fans list allows, and catches up chats already waiting
+  (`catchup_minutes`). Greyed out, the reason in red, while a checkpoint Writer
+  has no key for its provider (add it in Settings → AI keys, or untick it under
+  Writers and Save), there is no TypeSafe key, or the key check failed (Reload).
+  An empty Fans list does not block it.
+- **Off** sends nothing and drops replies already queued.
+- **Shadow (records only)** shows only on an old rule: records what the AI would
+  do, sends nothing. It can't be picked; press Off or Live.
+- "FULL_AI_CHAT_OFF is on": the deployment operator stopped Full AI on every
+  creator, whatever the Mode.
+
+**Who Live never answers:** a blacklisted, skip-listed or unreachable fan, a
+muted creator, a fan outside the account's audience limits, a fan in a running
+Auto Funnel walk, and a chat a human answered since his message.
+
+**Draft and checkpoint:** Live runs the **checkpoint**. Every control stores at
+once into the **draft**, which changes nothing live until **Save** (draft →
+checkpoint, old one kept). **Roll back** swaps the checkpoint with the previous
+one; press again to undo. The draft stays either way. **JSON (old + new)** shows
+both as raw JSON side by side, each with its own **Store checkpoint** / **Store
+draft** (Roll back undoes a stored checkpoint too). Below them, **All settings**
+lists every key: default, draft value ("Changed" if not the default), allowed
+values, what it does, where it is set. A draft changed elsewhere (a help
+assistant apply) during your edit raises **Keep mine** / **Take theirs**.
+**Reload** re-reads the stored config after an error.
+
+**LLM keys** row: set / not set for each provider the Writers run on (the
+defaults need NanoGPT, OpenRouter and DeepSeek), plus DeepInfra while Read his
+photos is on. **Open keys form** opens Settings → AI keys.
+
+**Marks below:** † = an old Shadow rule ignores it. "Live only" = does nothing
+in the Test chat; everything else runs there too.
+
+**The settings column** — control (`key`, default): what it does.
+- **Reply speed** (`reply_speed`, `0-2m`): `0-2m` = 0-2 min; `0-15-60` = most
+  near 15 min, none past an hour.
+- **Human style** (`style`, all on): five true/false layers: `texting`
+  lowercase short bubbles, `nonnative` u/ur, `spacing` space before ?/!,
+  `typos`, `painful` painful texting. The switch sets all five ("Mixed" when
+  they differ); off = formal.
+- **Typos** (`style.typos`, on), **Typos %** (`typo_pct`, `null`): thumb slips
+  and a *fix bubble; % 0-100 = chance a reply gets one, empty/`null` = auto (~1
+  per 5 sentences). The % box shows while Typos is on.
+- **Writers** (`writers`: `euryale-v2.3`, `euryale-v2.2`, `hermes-4-405b`,
+  `deepseek-v4-flash`): 1-6 models tried in order: the first writes, the rest
+  are fallbacks. Tick / untick; **Make Writer** moves one first.
+- **GIFs** (`gifs`, off), **GIFs %** (`gif_pct`, `null`): sticker GIFs; % 0-100
+  = share of the replies a GIF suits that send one, `null` = the Writer decides.
+- **Sexting** (`sext_on`, on): off = normal chat only.
+- **Lead-in questions** (`lead_in`, on) †: get-to-know questions led into, not
+  asked straight.
+- **Questions** (`info_questions`, `pick`): Pick one (`pick`, Jev picks one
+  thing to ask) or Whole list (`list`).
+- **Read his photos** (`describe_fan_photos`, on): reads a photo he sends, one
+  paid DeepInfra call each; no DeepInfra key = a warning, photos unread.
+- **Strip emojis** (`strip_emojis`, off): no emojis in her replies; off = the
+  account's own strip-emojis setting decides.
+- **Sell** (`sell_on`, off): offers PPVs from the Content folders; off = never
+  sells.
+- **PPV caption** (`caption_writer`, `chat`): Last bubble (`chat`) or Own call
+  (`caption`, a separate call).
+
+**Sell settings** — shown under Sell while it is on; all on by default, all †.
+Chat tease and Unasked offers need Sell on.
+- **Unasked offers** (`draft_questions`): may send a PPV he didn't ask for, and
+  answer haggling with a new offer; in normal chat, with Chat tease on, it goes
+  out as a chat tease.
+- **Chat tease** (`chat_tease`): in normal chat, photos ride her normal reply
+  with no word about them, free or at a price Jev picks from
+  `chat_tease_prices`.
+- **Implied asks** (`ask_implied`): "send me something fun" counts as asking
+  for content.
+- **Nearest piece** (`sell_nearest`, on `note` / off `off`): nothing matches his
+  ask: sells the nearest piece and plays his ask out as a story; `plain` (JSON
+  only) = no story; `off` = no PPV.
+- **Fill the set** (`sell_bundle`, on `fill` / off `shoot`): a photo offer holds
+  up to 5 of its shoot, filled to 3 with other matching photos; `shoot` = same
+  shoot only, up to 4.
+- **Match his count** (`sell_count`): aims at the number he names ("bundle of 5
+  videos"), at most 5, fewer if the vault has fewer; videos are priced at their
+  sum, up to $200.
+- **Spacing** (`sell_spacing`): unasked pieces wait for his lines since the last
+  one and count pieces this sitting; an ask always goes through.
+- **He likes** (`he_likes`): what he says he likes is stored and steers what she
+  sends.
+
+**JSON-only settings** (no control: the JSON boxes or the help assistant) —
+`key` (default; allowed, true/false where none is given): what it does.
+- `sext_scene` (`true`) †: the guided sext scene (stages, content level, its own
+  pricing).
+- `writer_timeout_s` (`45`; 5-120 s): how long one Writer try may take; the fact
+  extract gets the same limit.
+- `writer_timeouts` (`{}`; {Writer: 5-120 s}): per-Writer override of that.
+- `writer_retries` (`0`; 0-3): retries of the same Writer on a 429, a 5xx or a
+  timeout; any other failure goes straight to the next Writer.
+- `floor_on` (`true`): reply checks: a failing reply is rejected and the next
+  Writer tries; plus the heat check on sext replies.
+- `info_fields` (all seven; any of `real_name`, `his_age`, `home_country`,
+  `home_city`, `hobbies`, `occupation`, `fetishes`): the facts she tries to
+  learn.
+- `info_wide` (`true`) †: what he's watching, playing, reading or listening to
+  now counts as a hobby.
+- `chat_tease_prices` (`[0, 300, 1000, 4000, 8000, 12000, 16000, 20000]`; 1-12
+  distinct cents, each 0 (free) or 300-20000) †: prices Jev may pick for a chat
+  tease; a price holds at most price ÷ $5 photos (at least 1).
+- `reply_by_webhook` (`true`), Live only: on = his DM queues her reply at the
+  reply speed; off = only the missed-message sweep answers.
+- `typing_sign` (`true`), Live only: she waits her typing time before each text
+  bubble.
+- `typing_notification` (`true`), Live only: OnlyFans shows her typing during
+  that wait (the account's typing indicator must be on too).
+- `catchup_minutes` (`{"after_live": [0, 5, 15], "then_every": 15}`; 1-6
+  ascending minutes 0-1440, `then_every` 5-1440), Live only: passes over waiting
+  chats at those minutes after Live (after a relay restart: from 1 min after
+  it), then every N minutes; a Saved change applies from the next wait.
+
+A write is refused when one reply's worst case (20 s for Jev + one
+`writer_timeout_s` for the fact extract + every Writer try at its timeout,
+retries included) exceeds 900 s (the defaults add up to 245 s), or it holds an
+unknown key or a retired one (`chat_tease_rungs`, `offer_ride`). `version` is
+the format (1). `text_style` (`girl` = every style layer on, `formal` = all off)
+is an old alias still accepted; it wins over `style`.
+
+**Model info:** the account's persona note, the same one as on Get to know fans
+(Auto-reply reads it too), up to 1000 characters. **Make persona from the
+Creator's images** fills the box from her described photos (a paid call).
+**Save model info** saves straight to the account, live in every chat at once;
+it is not in the draft or checkpoint, so Save and Roll back don't touch it.
+
+**Who Full AI answers when Live** — Live only; its own write, applied at once
+to draft and checkpoint alike; Save, Roll back and the JSON boxes never change
+it:
+- **Fans** (`fans`) → **Choose**: each OnlyFans fan list Include / Exclude /
+  Neither, then the dialog's Save. Nothing included (the default, **Fans &
+  Following**) = every fan; an excluded list wins over an include. While Live,
+  Get to know fans and Auto-reply skip every fan on the Fans list, also when
+  Full AI itself doesn't reply to him. A fan off the list, or on a list
+  OnlyFans won't read, stays with those automations.
+- **Top spend limit** (`top_spend_cents`; typed in dollars, default $1,000 =
+  `100000`, 0 = no limit; stored on Enter or leaving the box, shows "Saved"): a
+  fan whose lifetime spend reaches it is left to humans — Full AI and the other
+  reply automations stay off him.
+
+**Content:**
+- **Content folders** (`folders`) → **Choose**: tick the vault folders and OF
+  lists she may sell from; **All** (empty include, the default) = the whole
+  vault. JSON also takes `exclude` (no control; exclude wins). Refs: `vf:<id>`
+  vault folder, `of:<id>` OF list.
+- **Prepare content**: harvest, describe, AI folders, feet pack, skipping what is
+  done, with each step's progress. Sends nothing to OnlyFans.
+
+**Test chat:** type as a fan; each line goes to two windows, **Checkpoint** and
+**Draft**, to compare before Save. Nothing is sent on OnlyFans, but the AI calls
+are paid. The paperclip attaches a photo (JPG, PNG, GIF or WebP, up to 20 MB); a
+PPV shows **Buy** / **Decline** to fake his answer; **Skip wait** skips her
+reply delay; **Retry** re-runs a failed turn; **New chat** starts over. Under
+each reply: the route, heat, rule row and Writer. On a phone the windows are
+tabs.
+
+**Today:** today's decisions per route (Chat, Sext, Sell now, Tease, Make right,
+AI dare, No send) and Jev failed, Test chat included. **Newest:** today's
+decisions, newest first (Time, Fan, Route, Heat, Row, Jev).
+
+**Revenue** shows "Not live yet." until this creator's first Live reply, then
+stays (also with Mode Off) with its **Live since** date; the Test chat never
+counts. **Enrolled** = every fan who wrote since that date, answered or not;
+**Complete 14 d** = those whose first 14 days are over; **$ per Fan** = cleared
+money of every kind in those 14 days, averaged over the Complete fans only ("—"
+until one is); **In window** = fans still inside their 14 days. Per route:
+Offers, Bought, Buy rate and $ (prices of the bought offers). There is no
+comparison group: buy rates, not proof of extra revenue.
+
+**Help assistant:** with the Creator picked, ask it ("reply slower", "turn GIFs
+off", "use Euryale then Hermes"): it shows a card with each change, before and
+after; **Apply to draft** stores it in the draft only, and Save on Full AI Chat
+makes it live. If the draft changed since the card, Apply answers "The draft
+changed since you saw it. Ask again." It can change every setting above except
+Fans and Top spend limit. It cannot Save, Roll back, store the checkpoint,
+switch Off / Live or edit Model info. Owner only.
 
 ## kind: send_welcome — Welcome new subscribers
 
