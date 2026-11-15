@@ -3,11 +3,12 @@
 /**
  * Full AI Chat (ours; owner only, a top-level sidebar link, same /full-ai-chatter address). The header's "AI rules"
  * opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
- * (`FullAiSettings`: Mode, LLM keys, reply speed, Human style, GIFs, Sell, Content folders, Prepare content; Save /
- * Roll back / JSON over the draft
- * config) with the persona editor (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) under it;
- * beside it (above it on a phone: the column comes first) the owner's Test chat (`FullAiTestChat`: two windows,
- * checkpoint and draft, one composer; nothing reaches a Fan). Below, today's Decision rows (live, a legacy Shadow
+ * (`FullAiSettings`: Save / Roll back / JSON over the draft config on top, then Mode, LLM keys, reply speed, Human
+ * style, GIFs, Sell); beside it (under it on a phone: the column comes first) one row with the persona editor
+ * (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) and, beside that, "Who Full AI answers
+ * when Live" (`FullAiAudience`: Fans, Top spend limit; its own write) over "Content" (Content folders, which
+ * edits the draft, and Prepare content; `FullAiSellSettings.tsx`), then the owner's Test chat (`FullAiTestChat`: two
+ * windows, checkpoint and draft, one composer; nothing reaches a Fan). Below, today's Decision rows (live, a legacy Shadow
  * rule's, and the Test chat's): each Turn's Route, Heat and the Route table row.
  *
  * The Mode control (Off / Live, `FullAiModeControl` over GET / PUT /admin/full-ai/mode, ticket 74): Live asks to
@@ -24,8 +25,11 @@ import { useState } from "react";
 
 import { AiRulesDiagram } from "@/components/automations/AiRulesPage";
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
+import { AUDIENCE_TITLE, FullAiAudience } from "@/components/automations/FullAiFans";
 import { FullAiRevenue } from "@/components/automations/FullAiRevenue";
+import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import { FullAiSettings } from "@/components/automations/FullAiSettings";
+import { canEdit } from "@/components/automations/fullAiTestChat";
 import { FullAiTestChat } from "@/components/automations/FullAiTestChatWindows";
 import { ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
@@ -84,15 +88,25 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
       <div className="grid max-w-[1320px] gap-8 lg:grid-cols-[340px_minmax(0,1fr)]">
         <aside className="min-w-0 space-y-8">
           <FormBlock title="Settings">
-            <p className="text-[14px] text-fg">
-              Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing.
-            </p>
             <FullAiSettings state={chat.state} cfg={chat.config}
               accountId={accountId} />
           </FormBlock>
-          <ModelInfoBlock accountId={accountId} draftFromImages saveNote={PERSONA_NOTE} />
         </aside>
         <div className="min-w-0 space-y-8">
+          {/* Who the Creator is, who Live answers and what she may sell, above the Test chat. Side by side only when
+              each gets 340px (the settings column's width); stacked on a narrower column and on a phone. */}
+          <div className="grid gap-8 grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))]">
+            <ModelInfoBlock accountId={accountId} draftFromImages saveNote={PERSONA_NOTE} />
+            <div className="min-w-0 space-y-8">
+              <FormBlock title={AUDIENCE_TITLE}>
+                <FullAiAudience accountId={accountId} state={chat.state} cfg={chat.config} />
+              </FormBlock>
+              <FormBlock title="Content">
+                <ContentFoldersRow accountId={accountId} draft={chat.state.draft} off={!canEdit(chat.state)} cfg={chat.config} />
+                <PrepareRow accountId={accountId} />
+              </FormBlock>
+            </div>
+          </div>
           <FormBlock title="Test chat">
             <p className="text-[12px] text-muted">
               Type as a fan. Checkpoint answers with the saved config, Draft with your draft. Nothing is sent on OnlyFans.

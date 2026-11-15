@@ -1,5 +1,5 @@
 /**
- * Full AI Chat: the settings column (fifteen controls, Save / Roll back / JSON over the draft config, the persona block), "Who Full AI answers when Live" (Fans + Top spend limit over PUT /admin/full-ai/config/audience), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
+ * Full AI Chat: the settings column (Save / Roll back / JSON on top, thirteen controls), the row above the Test chat (the persona block, Content), "Who Full AI answers when Live" (Fans + Top spend limit over PUT /admin/full-ai/config/audience), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
  * and today's Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -579,12 +579,11 @@ const loadedConfig = async () => waitFor(() => expect(settings().getByRole("swit
 describe("Full AI Chat page › Settings", () => {
   beforeEach(() => { relayPut.mockReset(); });
 
-  it("holds fifteen controls: LLM keys, reply speed, Human style, Typos, Writer, GIFs, Sexting, Lead-in questions, Questions, Read his photos, Strip emojis, Sell, PPV caption, Content folders, Prepare content; Mode, Fans and Top spend limit sit above the list; the config is read for this Creator", async () => {
+  it("holds thirteen controls: LLM keys, reply speed, Human style, Typos, Writer, GIFs, Sexting, Lead-in questions, Questions, Read his photos, Strip emojis, Sell, PPV caption; Save sits on top, above Mode; Model info, Fans with Top spend limit, and Content (Content folders, Prepare content) sit above the Test chat; the config is read for this Creator", async () => {
     mountSettings();
     await loadedConfig();
-    // Top-level items only: Prepare content's step list nests its own.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
-    expect(items.length).toBe(15);
+    expect(items.length).toBe(13);
     expect(settings().queryByRole("group", { name: "Mode" })).toBeNull();
     expect(modeGroup()).toBeTruthy();
     expect(within(items[0]).getByText("LLM keys")).toBeTruthy();
@@ -607,9 +606,20 @@ describe("Full AI Chat page › Settings", () => {
     const caption = within(items[12]).getByRole("radiogroup", { name: "PPV caption" });
     expect(within(caption).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
       .toEqual([["Last bubble", "true"], ["Own call", "false"]]);
-    expect(within(items[13]).getByText("Content folders")).toBeTruthy();
-    expect(within(items[13]).getByText("All")).toBeTruthy();
-    expect(within(items[14]).getByRole("button", { name: "Prepare content" })).toBeTruthy();
+    // Owner 2026-11-15: Model info and the Content block sit above the Test chat, Save on top of Settings.
+    const h2 = (name: string) => screen.getByRole("heading", { level: 2, name });
+    const before = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const content = within(h2("Content").closest("section") as HTMLElement);
+    expect(content.getByText("Content folders")).toBeTruthy();
+    expect(content.getByText("All")).toBeTruthy();
+    expect(content.getByRole("button", { name: "Prepare content" })).toBeTruthy();
+    expect(before(h2("Model info"), h2("Content"))).toBe(true);
+    expect(before(h2("Model info"), h2("Who Full AI answers when Live"))).toBe(true);
+    expect(before(h2("Who Full AI answers when Live"), h2("Content"))).toBe(true);
+    expect(h2("Who Full AI answers when Live").closest("section")!.contains(screen.getByRole("region", { name: "Who Full AI answers when Live" }))).toBe(true);
+    expect(before(h2("Content"), h2("Test chat"))).toBe(true);
+    expect(before(btn("Save"), modeGroup())).toBe(true);
+    expect(before(btn("Save"), screen.getByRole("list", { name: "Settings" }))).toBe(true);
     expect((audience().getByRole("spinbutton", { name: "Top spend limit" }) as HTMLInputElement).value).toBe("");
     expect(audience().getByText("Every Fan")).toBeTruthy();
     expect(settings().queryByText("Fans")).toBeNull();
@@ -1210,7 +1220,7 @@ describe("Full AI Chat page › Selling settings", () => {
     expect(settings().getByText("Test chat + live.")).toBeTruthy();
     // Sell group sits inside Sell's own top-level item.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
-    expect(items.length).toBe(15);
+    expect(items.length).toBe(13);
     expect(within(items[11]).getByRole("list", { name: "Sell settings" })).toBeTruthy();
     const sw = (name: string) => within(group()!).getByRole("switch", { name }) as HTMLButtonElement;
     await act(async () => { fireEvent.click(sw("Unasked offers")); });
@@ -1249,7 +1259,7 @@ describe("Full AI Chat page › Selling settings", () => {
       account_id: "acc-a", draft: { ...CONFIG, folders: { include: ["vf:4"], exclude: ["of:9"] } }, rev: 3,
     });
     expect(screen.queryByRole("dialog")).toBeNull();
-    await waitFor(() => expect(settings().getByText("1 picked")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("1 picked")).toBeTruthy());
   });
 
   it("Prepare content starts only on the click and lists each step with its state and counts", async () => {

@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * Full AI Chat's settings column (spec phase-03a, 03b). On top, apart from the bot config: the Mode control (Off / Live,
- * `FullAiModeControl`) and "Who Full AI answers when Live" (`FullAiAudience` in `FullAiFans.tsx`: Fans and Top spend limit,
- * their own write, applied at once on every side; Save / Roll back / JSON never move them, owner 2026-11-15).
+ * Full AI Chat's settings column (spec phase-03a, 03b). On top Save / Roll back / JSON with their errors (owner
+ * 2026-11-15: seen without scrolling). Then, apart from the bot config: the Mode control (Off / Live,
+ * `FullAiModeControl`; Save / Roll back / JSON never move it). "Who Full AI answers when Live" (`FullAiAudience` in
+ * `FullAiFans.tsx`: Fans and Top spend limit, their own write) sits on the page, above the Test chat.
  * Then the bot config, controls in a list named "Settings" (numbered as before; 1, 17 and 18 moved up):
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
  *   and, while Read his photos is on, DeepInfra is set on the Creator's owner's keys (the GET's `owner_keys`, what Live checks) (never a value or hint; "not set" in red, no DeepInfra key a
@@ -15,10 +16,10 @@
  *   11. Read his photos (`describe_fan_photos`), 12. Strip emojis (`strip_emojis`): plain switches (`chatSwitch`), owner 2026-11-15;
  *   13. Sell (on, the "Sell settings" group under it: eight switches, all on by default, owner 2026-11-14/15: Unasked
  *   offers, Chat tease, Implied asks, Nearest piece, Fill the set, Match his count, Spacing, He likes; `sellSwitches`),
- *   14. PPV caption (`caption_writer`: Last bubble / Own call), 15. Content folders, 16. Prepare content
- *   (`FullAiSellSettings.tsx`, ticket 49). The Questions / PPV caption options are the server's (`limits`).
+ *   14. PPV caption (`caption_writer`: Last bubble / Own call). 15. Content folders and 16. Prepare content
+ *   (`FullAiSellSettings.tsx`, ticket 49) sit on the page, above the Test chat. The Questions / PPV caption options are the server's (`limits`).
  * Controls 3-15 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
- * Under them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
+ * Above them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
  * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
  * GET's `reference`: every key's default, the draft's value, what it accepts and does), then right under them the field
  * errors (a 409 without `rev` shows its words), and on a stale rev a reload message. Reload shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
@@ -32,8 +33,6 @@ import { useReducer, useState } from "react";
 
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
 import { FullAiModeControl } from "@/components/automations/FullAiModeControl";
-import { FullAiAudience } from "@/components/automations/FullAiFans";
-import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import {
   captionLabel, chatSwitch, humanStyle, humanStylePatch, infoQuestionsLabel, layersOff, sellSwitches, speedLabel,
   styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch,
@@ -64,9 +63,35 @@ export function FullAiSettings({ state, cfg, accountId }: {
   return (
     <div className="space-y-3">
       {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
-      {/* Live or not and who it answers: apart from the bot config below (its Save / Roll back never move these). */}
+      {/* On top, so it is seen without scrolling the list (owner 2026-11-15). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <IfButton variant="primary" disabled={!canSave(state)} onClick={cfg.save}>Save</IfButton>
+        <IfButton disabled={!canRollback(state)} onClick={cfg.rollback}>Roll back</IfButton>
+        <IfButton disabled={off} onClick={() => setJsonOpen(true)}>JSON (old + new)</IfButton>
+        {state.savingDraft && <span role="status" className="text-[12px] text-muted">Storing draft…</span>}
+      </div>
+      {/* Right under Save: a refused Save / Roll back / edit shows where it was tapped. */}
+      {state.stale && <p role="alert" className="text-[12px] text-warn">{STALE_TEXT}</p>}
+      {state.errors.length > 0 && !jsonOpen && (
+        <ul aria-label="Config errors" className="space-y-1 text-[12px] text-err">
+          {state.errors.map((e) => <li key={e}>{e}</li>)}
+        </ul>
+      )}
+      {(state.stale || state.errors.length > 0) && (
+        <div className="flex flex-wrap items-center gap-2">
+          <IfButton onClick={() => void cfg.reload()}>Reload</IfButton>
+          <span className="text-[12px] text-muted">Reads the stored config again; an edit not stored is dropped.</span>
+        </div>
+      )}
+      <p className="text-[12px] text-muted">
+        Save makes the draft the checkpoint. Roll back swaps back; tap it again to undo.
+      </p>
+
+      {/* Live or not: apart from the bot config below (its Save / Roll back never move it). */}
+      <p className="text-[14px] text-fg">
+        Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing.
+      </p>
       <FullAiModeControl accountId={accountId} />
-      <FullAiAudience accountId={accountId} state={state} cfg={cfg} />
       <ul aria-label="Settings" className="space-y-2">
         <li><KeysRow state={state} cfg={cfg} /></li>
         {/* The speeds are the server's (`limits`): the row waits for the config read. */}
@@ -122,32 +147,7 @@ export function FullAiSettings({ state, cfg, accountId }: {
               toLabel={captionLabel} off={off} onChange={(caption_writer) => cfg.edit({ caption_writer })} />
           </li>
         )}
-        <li><ContentFoldersRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
-        <li><PrepareRow accountId={accountId} /></li>
       </ul>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <IfButton variant="primary" disabled={!canSave(state)} onClick={cfg.save}>Save</IfButton>
-        <IfButton disabled={!canRollback(state)} onClick={cfg.rollback}>Roll back</IfButton>
-        <IfButton disabled={off} onClick={() => setJsonOpen(true)}>JSON (old + new)</IfButton>
-        {state.savingDraft && <span role="status" className="text-[12px] text-muted">Storing draft…</span>}
-      </div>
-      {/* Right under Save: a refused Save / Roll back / edit shows where it was tapped. */}
-      {state.stale && <p role="alert" className="text-[12px] text-warn">{STALE_TEXT}</p>}
-      {state.errors.length > 0 && !jsonOpen && (
-        <ul aria-label="Config errors" className="space-y-1 text-[12px] text-err">
-          {state.errors.map((e) => <li key={e}>{e}</li>)}
-        </ul>
-      )}
-      {(state.stale || state.errors.length > 0) && (
-        <div className="flex flex-wrap items-center gap-2">
-          <IfButton onClick={() => void cfg.reload()}>Reload</IfButton>
-          <span className="text-[12px] text-muted">Reads the stored config again; an edit not stored is dropped.</span>
-        </div>
-      )}
-      <p className="text-[12px] text-muted">
-        Save makes the draft the checkpoint. Roll back swaps back; tap it again to undo.
-      </p>
 
       {jsonOpen && draft && <ConfigJson state={state} cfg={cfg} onClose={() => setJsonOpen(false)} />}
     </div>

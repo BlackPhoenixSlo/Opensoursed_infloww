@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Full AI Chat's "Who Full AI answers when Live" (owner 2026-11-15), beside the Mode control and apart from the bot
+ * Full AI Chat's "Who Full AI answers when Live" (owner 2026-11-15), its own block above the Test chat, apart from the bot
  * config's Settings / Save / Roll back: who live answers has nothing to do with how the AI behaves, so the Test chat's
  * draft vs checkpoint never splits it, and Save / Roll back never move it. Both controls write `PUT config/audience`
  * (`useFullAiConfig.putAudience`): applied at once on every side, Live or not, not held by the settings' draft wait.
@@ -39,12 +39,12 @@ type EveryoneSide = "include" | "none";
 
 export const AUDIENCE_TITLE = "Who Full AI answers when Live";
 
-/** The section: Fans and Top spend limit, off the stored config (every side holds the same values). */
+/** The section: Fans and Top spend limit, off the stored config (every side holds the same values). The page titles
+ *  it (`AUDIENCE_TITLE` on its block, above the Test chat). */
 export function FullAiAudience({ accountId, state, cfg }: { accountId: string; state: TestChatState; cfg: FullAiConfigApi }) {
   const stored = state.checkpoint ?? state.draft;
   return (
     <section aria-label={AUDIENCE_TITLE} className="space-y-2">
-      <h3 className="text-[12px] font-medium uppercase tracking-wide text-muted">{AUDIENCE_TITLE}</h3>
       <FansRow accountId={accountId} stored={stored} cfg={cfg} />
       <TopSpendRow stored={stored} cfg={cfg} />
     </section>
