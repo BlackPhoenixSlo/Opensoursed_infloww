@@ -203,8 +203,12 @@ SEXT_HOT = ("THE THREAD IS HOT — a live sexual scene RIGHT NOW. The one way to
 # NEW-114 (ticket 34): the Heat line under OLD-AIC-08 (Heat = his level + 1, D44).
 SEXT_HEAT = "HEAT {heat} of 4 — run it one step hotter than he is right now, never colder."
 # OLD-AIC-01 and OLD-AIC-07, verbatim (ai_chatter.py:6244-6254, :6393-6401).
-BRUSH_OFF = ("He thinks you might be a bot — defending is what a bot does. ONE breezy brush-off, then "
-             "something HE told you. No sell, no ask.")
+# NEW-159 (owner 2026-11-15, first live chat: OLD-AIC-01's "ONE breezy brush-off" came out as
+# "nah im rel", "haha real as can be" and "ugh who cares"): ours, the joke spelled out.
+BRUSH_OFF = ("He thinks you might be a bot. Never defend yourself and never say you're real — that's "
+             "what a bot does. Laugh it off with ONE playful joke instead: play along ('yep total "
+             "robot, beep boop') or tease him for asking. Warm, never annoyed or hurt. Then pick up "
+             "something HE told you. No sell, no ask, and don't ask him for a picture.")
 DARE = ("He questioned whether you're real last message and you laughed it off. Now DARE him: send a "
         "picture right now and you'll tell him exactly what you see — a bot couldn't. Promise a "
         "rating out of ten; filthy about what you want a picture OF if the thread's explicit, cheeky "
@@ -224,7 +228,15 @@ DARE_BLIND = ("HE SENT A PHOTO you can't make out — [he sent a photo] in the c
 # NEW-157 (owner 2026-11-15 "how many percentages does it send it", of the fitting Turns): under
 # the sticker block when `gif_pct` is set, so the % is GIFs sent and not GIFs allowed.
 GIF_NOW = "\n- THIS message: a sticker fits the moment. Attach one, after your text."
-# NEW-113 (ticket 34): the dare joining, one reply holding both beats (no pending-dare state, D32).
+# NEW-160 (owner 2026-11-15 "2 step is good"): the dare on his next Turn, under that Turn's own
+# goal (chat / sext), when he did not ask again; OLD-AIC-07 with "answer him first".
+DARE_NEXT = ("He questioned whether you're real a moment ago and you joked it off. First answer what "
+             "he just said, as above. Then, as your LAST message, DARE him: send a picture right now "
+             "and you'll tell him exactly what you see — a bot couldn't. Promise a rating out of ten; "
+             "filthy about what you want a picture OF if the thread's explicit, cheeky if tame. ONE "
+             "short message for the dare. A dare, not a sale: no price, no offer.")
+# NEW-113 (ticket 34): the dare joining, one reply holding both beats, when he asks again on the
+# Turn her dare is due (no pending-dare state, D32).
 DARE_JOIN = ("\n\nBOTH BEATS GO IN THIS ONE REPLY: the brush-off above first, then right after it "
              "the dare below (the \"last message\" it means is the brush-off you just wrote):\n")
 # The old make_right `_APOLOGY_FRAMES`, her lane, the four purchase kinds `complains_now` covers
@@ -579,7 +591,7 @@ def _beat(route: str, heat: int, f: SimpleNamespace, item: Pick | None, test: bo
     if route == "sext":
         return f"{SEXT_HOT_TEST if test else SEXT_HOT}\n{SEXT_HEAT.format(heat=heat)}"
     if route == "ai_dare":
-        return BRUSH_OFF + DARE_JOIN + DARE
+        return BRUSH_OFF            # step 1; the dare comes on his next Turn (`_dare_beat`)
     if route == "make_right":
         name = _his_first_name(f, _voice.HER)
         return (MAKE_RIGHT_HEAD + "".join(f"  - {x.replace('{name}', name)}\n" for x in APOLOGY_FRAMES)
@@ -600,18 +612,26 @@ def his_photo(rows) -> str | None:
     return "unseen" if any(getattr(m, "media_count", 0) for m in turn) else None
 
 
-def _dare_beat(route: str, need: str, photo: str | None, dared: bool) -> str:
-    """The bot check with his picture (NEW-156). ai_dare: a read picture gets DARE_RATE in the
-    dare's place; after her dare (`dared`, `TurnFacts.dared`) she never dares twice: the brush-off
-    alone, with DARE_BLIND when his picture could not be read. chat / sext right after her dare
-    with a read picture: DARE_RATE under the goal. Anything else: `need` as it was."""
+def _dare_beat(route: str, need: str, photo: str | None, dared: bool, due: bool = False) -> str:
+    """The bot check in two steps (NEW-159, NEW-160) and his picture on it (NEW-156). ai_dare: the
+    joke alone (`need`, step 1); a read picture gets DARE_RATE in its place; while her dare stands
+    (`dared`, `TurnFacts.dared`) she never dares twice: the joke alone, with DARE_BLIND when his
+    picture could not be read; asked again on the Turn her dare is `due` (`TurnFacts.dare_due`):
+    the joke, DARE_JOIN and the dare in one reply. chat / sext: a read picture while her dare
+    stands or is due gets DARE_RATE under the goal; else, `due`, DARE_NEXT under the goal (step 2).
+    Anything else: `need` as it was."""
     if route == "ai_dare":
         if photo == "seen":
             return DARE_RATE
         if dared:
             return BRUSH_OFF + (f"\n{DARE_BLIND}" if photo else "")
-    elif dared and photo == "seen" and route in ("chat", "sext"):
-        return need.rstrip("\n") + "\n" + DARE_RATE
+        if due:
+            return BRUSH_OFF + DARE_JOIN + DARE
+    elif route in ("chat", "sext"):
+        if (dared or due) and photo == "seen":
+            return need.rstrip("\n") + "\n" + DARE_RATE
+        if due and not photo:
+            return need.rstrip("\n") + "\n" + DARE_NEXT
     return need
 
 
@@ -879,7 +899,8 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
         else:
             need = _beat(route, heat, f, item, test) or _need_block(facts, "?" in " ".join(fan_run), rng, lead)
             if not item:
-                need = _dare_beat(route, need, his_photo(rows), bool(getattr(facts, "dared", False)))
+                need = _dare_beat(route, need, his_photo(rows), bool(getattr(facts, "dared", False)),
+                                  bool(getattr(facts, "dare_due", False)))
         if ride:
             need = f"{need}\n{RIDE_NOTE}"
         # A Chat tease Refusal is a plain chat reply: he asked for nothing, so no need-line.

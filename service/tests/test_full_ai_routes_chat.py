@@ -71,7 +71,7 @@ def case_every_route_via_api():
         cases = [
             ("chat", _hot(), "chat", "otherwise", w.SELL_OFF_LINE),   # selling off: never a promise
             ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT_TEST),   # test Mode's twin
-            ("dare", _hot(asks_if_ai=0.9), "ai_dare", "asks_if_ai", w.DARE),
+            ("dare", _hot(asks_if_ai=0.9), "ai_dare", "asks_if_ai", w.BRUSH_OFF),
             ("mr", _hot(complains_now=0.9), "make_right", "complains_now", w.MAKE_RIGHT_HEAD),
         ]
         for tag, answers, route, row, beat in cases:
@@ -92,8 +92,8 @@ def case_every_route_via_api():
                 assert not any(x in system for x in (w.SEXT_HOT, w.SEXT_HOT_TEST, w.BRUSH_OFF, w.MAKE_RIGHT_HEAD))
             if route == "sext":
                 assert got["heat"] == 3 and w.SEXT_HEAT.format(heat=3) in system, got
-            if route == "ai_dare":                           # two beats, one reply
-                assert system.index(w.BRUSH_OFF) < system.index(w.DARE), system
+            if route == "ai_dare":                           # step 1: the joke, no dare yet
+                assert w.DARE not in system and w.DARE_NEXT not in system, system
             if route == "make_right":                        # the apology, no item
                 assert w.MAKE_RIGHT_TAIL in system and w.APOLOGY_FRAMES[0].replace("{name}", "babe") in system
                 assert all(set(p) == {"text"} for p in got["parts"]), got["parts"]

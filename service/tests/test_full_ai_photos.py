@@ -299,16 +299,17 @@ def case_test_chat_keys_off_no_call():
 
 
 def case_test_chat_dare_reads_and_rates_his_photo():
-    """Keys off (the owner's 2026-11-15 Test chat): "are u a bot" gets the dare; the photo he then
-    sends is described anyway (her dare stands on that side) and its Writer gets DARE_RATE with
-    the tag, never the dare again, even though `asks_if_ai` fires again; the side that never dared
-    reads MEDIA_ONLY; without `pair` the route stays off."""
+    """Keys off (the owner's 2026-11-15 Test chat): "are u a bot" gets the joke (step 1); the
+    photo he then sends is described anyway (her dare is due on that side) and its Writer gets
+    DARE_RATE with the tag, never the dare, even though `asks_if_ai` fires again; the side with
+    no bot check behind reads MEDIA_ONLY; without `pair` the route stays off."""
     from automations import full_ai_writers as wr
     _config(False, False)
     pair, bot = "photo-dare", {**QUIET, "asks_if_ai": 0.95}
     with _vision() as calls:
         w1, _ = _turn(_body(pair, text="Are u a bot"), jev=bot)
-        assert wr.DARE in _writer_text_raw(w1) and _rows(A, pair)[0].route == "ai_dare"
+        assert wr.BRUSH_OFF in _writer_text_raw(w1) and wr.DARE not in _writer_text_raw(w1)
+        assert _rows(A, pair)[0].route == "ai_dare"
         off = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "text": "rate my face"}).json()
         assert off["outcome"] == "off" and _describes(calls) == [], off
         photo = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "pair": pair,
@@ -321,8 +322,8 @@ def case_test_chat_dare_reads_and_rates_his_photo():
     sys2 = _writer_text_raw(w2)
     assert wr.DARE_RATE in sys2 and wr.DARE not in sys2 and f"[he sent: {DESC}]" in sys2
     assert _reply(_rows(A, pair)[1])["fan_photo"]["read"] is True
-    # The draft side never dared: key off reads as before, and it dares (its first bot check).
-    assert DESC not in json.dumps(j_r.calls[0]["state"]) and wr.DARE in _writer_text_raw(w_r)
+    # The draft side has no bot check behind it: key off reads as before, and it jokes (step 1).
+    assert DESC not in json.dumps(j_r.calls[0]["state"]) and wr.BRUSH_OFF in _writer_text_raw(w_r)
 
 
 def _writer_text_raw(fake_w: FakeWriterHTTP) -> str:

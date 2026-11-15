@@ -342,10 +342,10 @@ def case_route_constants_are_their_catalog_text():
     `docs/prompts/new/current-repo.md` (the apology frames ride in their NEW entry: the old
     catalog leaves `make_right._APOLOGY_FRAMES` out of scope)."""
     old = (_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
-    for c in (wr.BRUSH_OFF, wr.DARE, wr.SEXT_HOT, wr.NO_SELL_OFFERS, wr.STICKER_EXCEPTION.strip()):
+    for c in (wr.DARE, wr.SEXT_HOT, wr.NO_SELL_OFFERS, wr.STICKER_EXCEPTION.strip()):
         assert c in old, c
     new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
-    for c in (wr.SELL_OFF_LINE, wr.DARE_JOIN.strip(), wr.SEXT_HEAT, wr.MAKE_RIGHT_HEAD,
+    for c in (wr.BRUSH_OFF, wr.DARE_NEXT, wr.SELL_OFF_LINE, wr.DARE_JOIN.strip(), wr.SEXT_HEAT, wr.MAKE_RIGHT_HEAD,
               wr.MAKE_RIGHT_TAIL, *wr.APOLOGY_FRAMES):
         assert c in new, c
 
@@ -377,16 +377,28 @@ def case_sext_is_old_aic_08_at_heat_with_her_model_info():
         assert wr.KNOW_ENOUGH not in sys_ and wr.FAN_ASKED not in sys_
 
 
-def case_ai_dare_is_one_reply_brush_off_then_dare():
+def case_bot_check_is_two_steps():
+    """Step 1 (he asks): the joke alone. Step 2 (his next Turn, `dare_due`): chat / sext keep
+    their goal and add DARE_NEXT; asked again, the joke then the dare in one reply. While her dare
+    stands, or with no bot check behind, no dare."""
     sys_ = _system("ai_dare", "asks_if_ai")
-    i, j, k = sys_.index(wr.BRUSH_OFF), sys_.index(wr.DARE_JOIN), sys_.index(wr.DARE)
-    assert i < j < k, (i, j, k)
-    assert sys_.count(wr.DARE) == 1 and sys_.count(wr.BRUSH_OFF) == 1
+    assert sys_.count(wr.BRUSH_OFF) == 1 and wr.DARE not in sys_ and wr.DARE_NEXT not in sys_
+    for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
+        due = _photo_system(route, row, read=False, dared=False, photo=False, due=True)
+        assert wr.DARE_NEXT in due and wr.BRUSH_OFF not in due and wr.DARE not in due, route
+        assert (wr.SEXT_HOT in due) is (route == "sext"), route          # the Turn's own goal stays
+        for kw in ({"dared": False}, {"dared": True}):
+            assert wr.DARE_NEXT not in _photo_system(route, row, read=False, photo=False, **kw), (route, kw)
+    again = _photo_system("ai_dare", "asks_if_ai", read=False, dared=False, photo=False, due=True)
+    i, j, k = again.index(wr.BRUSH_OFF), again.index(wr.DARE_JOIN), again.index(wr.DARE)
+    assert i < j < k and again.count(wr.DARE) == 1, (i, j, k)
+    for route, row in (("sell_now", "wants_content"), ("make_right", "complains_now")):
+        assert wr.DARE_NEXT not in _photo_system(route, row, read=False, dared=False, photo=False, due=True), route
 
 
-def _photo_system(route, row, *, read, dared, photo=True):
+def _photo_system(route, row, *, read, dared, photo=True, due=False):
     f = _turn("i dont believe rate my face")
-    f.dared = dared
+    f.dared, f.dare_due = dared, due
     if photo:
         f.cut_rows[-1].media_count = 1
         f.cut_rows[-1].photo_read = "a man in a black parka with a grey fur hood" if read else None
@@ -405,9 +417,12 @@ def case_bot_check_photo_is_rated_and_never_dared_twice():
     sys_ = _photo_system("ai_dare", "asks_if_ai", read=False, dared=True, photo=False)
     assert wr.BRUSH_OFF in sys_ and wr.DARE not in sys_ and wr.DARE_BLIND not in sys_
     for kw in ({"read": False, "dared": False}, {"read": False, "dared": False, "photo": False}):
-        assert wr.DARE in _photo_system("ai_dare", "asks_if_ai", **kw), kw      # the first dare
+        sys_ = _photo_system("ai_dare", "asks_if_ai", **kw)                     # step 1: the joke
+        assert wr.BRUSH_OFF in sys_ and wr.DARE not in sys_, kw
     for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
         assert wr.DARE_RATE in _photo_system(route, row, read=True, dared=True), route
+        due = _photo_system(route, row, read=True, dared=False, due=True)       # his picture on step 2
+        assert wr.DARE_RATE in due and wr.DARE_NEXT not in due, route
         assert wr.DARE_RATE not in _photo_system(route, row, read=True, dared=False), route
         assert wr.DARE_RATE not in _photo_system(route, row, read=False, dared=True), route
     new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")

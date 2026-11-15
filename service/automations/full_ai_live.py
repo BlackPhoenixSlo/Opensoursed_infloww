@@ -164,7 +164,7 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
     values left out), `asked` / `typo_state` from the Fan's newest live row whatever its status,
     and the sell / scene folds over his live rows (`_folds`), the checkpoint config. None when
     there is no such run or its live row exists.
-    `client` is the job's OF client: with `describe_fan_photos` on or her dare standing (`dared_of`), `full_ai_photo.describe_turn`
+    `client` is the job's OF client: with `describe_fan_photos` on or her dare standing or due (`looks_of`), `full_ai_photo.describe_turn`
     reads his newest undescribed photo through it (no DB session open: a vision call)."""
     aid, fan = str(account_id), int(fan_id)
     cfg = await full_ai_turn.stored_config(aid)
@@ -190,8 +190,8 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
             AiDecision.account_id == aid, AiDecision.fan_id == fan, AiDecision.mode == MODE)
             .order_by(AiDecision.id))).scalars())
     # Her standing dare promised to look (NEW-156): his photo is read with the key off too.
-    dared = full_ai_test.dared_of(rows)
-    photos = bool(side[full_ai_photo.KEY]) or dared
+    dared, due = full_ai_test.dared_of(rows), full_ai_test.dare_due_of(rows)
+    photos = bool(side[full_ai_photo.KEY]) or full_ai_test.looks_of(rows)
     photo = await full_ai_photo.describe_turn(aid, turn, client) if photos else None
     async with get_session() as s:
         thread_rows, _other_lane, _tx = await full_ai_chat._reads(s, aid, fan, run_cut, turn)
@@ -211,7 +211,7 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
         config=side, side="checkpoint", config_rev=cfg["rev"], owned=k["owned"], spent=k["spent"],
         tips=k["tips"], sent=k["sent"], tease=k["tease"], offer_piece=k["offer_piece"], scene=k["scene"],
         purchases=full_ai_test.purchases_of(rows) if side.get("chat_tease") else [], photo=photo,
-        dared=dared)
+        dared=dared, dare_due=due)
 
 
 def _folds(rows, sold: full_ai_owned.Sold, now: datetime, newest_out: tuple | None) -> dict:

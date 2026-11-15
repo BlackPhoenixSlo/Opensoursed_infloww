@@ -333,7 +333,7 @@ class TestPhoto(BaseModel):
     account_id: str
     image: str = Field(max_length=full_ai_photo.MAX_UPLOAD * 4 // 3 + 64)
     text: str = Field("", max_length=2000)
-    # The session: a side whose dare stands (`full_ai_test.dared_of`) reads the photo with the key off.
+    # The session: a side whose dare stands or is due (`full_ai_test.looks_of`) reads the photo with the key off.
     pair: str | None = Field(None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
@@ -428,7 +428,7 @@ async def full_ai_test_photo(body: TestPhoto):
     on = any(cfg[side][full_ai_photo.KEY] for side in full_ai_test.SIDES)
     if not on and body.pair:
         for side in full_ai_test.SIDES:
-            if full_ai_test.dared_of(await full_ai_test.session_rows(body.account_id, body.pair, side)):
+            if full_ai_test.looks_of(await full_ai_test.session_rows(body.account_id, body.pair, side)):
                 on = True
                 break
     if not on:

@@ -71,7 +71,7 @@ _DOC = {
     "spacing:scene_offer": "NEW-143", "info": "NEW-115", "NEXT_QUESTION_LEAD": "NEW-139",
     "_EXTRACT_SYSTEM": "NEW-45", "_extract_messages": "NEW-46", "PRICE": "NEW-134",
     "chat": "NEW-109", "sell_now": "NEW-116", "SELL_OFF_LINE": "NEW-111", "MAKE_RIGHT_HEAD": "NEW-112",
-    "DARE_JOIN": "NEW-113", "SEXT_HEAT": "NEW-114", "TEASE_GOAL": "NEW-123", "CAPTION_APART": "NEW-126",
+    "DARE_JOIN": "NEW-113", "BRUSH_OFF": "NEW-159", "DARE_NEXT": "NEW-160", "SEXT_HEAT": "NEW-114", "TEASE_GOAL": "NEW-123", "CAPTION_APART": "NEW-126",
     "FREE_PRICE_BLOCK": "NEW-127", "caption": "NEW-128", "SEXT_SCENE": "NEW-129", "SCENE_STAGE": "NEW-130",
     "SCENE_SELL": "NEW-131", "SCENE_NARRATION": "NEW-132", "SCENE_SELF": "NEW-132", "LEAD_HEAD": "NEW-135",
     "LEAD_LINES": "NEW-136", "LEAD_EXAMPLES": "NEW-137", "SELF_GIVE": "NEW-138", "NEAREST_NOTE": "NEW-140",
@@ -538,7 +538,7 @@ def rendered(mode: str) -> list[tuple[str, str, list[dict]]]:
 _SHARED = ("ROLE", "SELF_BAN", "READ_ALL", "HOW_YOU_TEXT", "EXPLICIT_EARLY", "CONTRACT", "CONTRACT_OFFER",
            "STICKER_EXCEPTION", "CALL_HIM", "REPLY_NOW", "KNOW_ENOUGH", "FAN_ASKED", "NO_SELL_OFFERS",
            "HIS_KINK", "NOTHING_ON_FILE", "BROKE_JOKE")
-_BY_ROUTE = (("sext", ("SEXT_HOT", "SEXT_HEAT")), ("ai_dare", ("BRUSH_OFF", "DARE_JOIN", "DARE")),
+_BY_ROUTE = (("sext", ("SEXT_HOT", "SEXT_HEAT")), ("ai_dare", ("BRUSH_OFF", "DARE_NEXT", "DARE_JOIN", "DARE")),
              ("make_right", ("MAKE_RIGHT_HEAD", "MAKE_RIGHT_TAIL", "FREE_TERMS")),
              ("sell_now", ("CONTENT_ASK", "ESCALATION", "SELL_STEP", "CLOSE_BY_ID", "INTRO_BY_ID", "MANIFEST",
                            "ITEM_LINE", "TERMS", "PRICE_BLOCK", "WAS_PRICE_BLOCK", "FILMING_MORE")),

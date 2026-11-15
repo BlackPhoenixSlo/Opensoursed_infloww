@@ -117,9 +117,12 @@ class TurnFacts:
     offer_piece: Teased | None = None
     # His attached image in test (`full_ai_test.fetch`), landing on the row as `reply_json.fan_photo`.
     photo: dict | None = None
-    # One of her last `DARED_ROWS` replies was the ai_dare Route (`full_ai_test.dared_of`): his
+    # One of her last `DARED_ROWS` replies carried her dare (`full_ai_test.dared_of`): his
     # picture is read whatever `describe_fan_photos` says, and she does not dare twice (NEW-156).
     dared: bool = False
+    # Her newest reply was the bot-check joke and no dare stands (`full_ai_test.dare_due_of`): this
+    # Turn dares (NEW-160), and his picture is read as under `dared`.
+    dare_due: bool = False
     # Sext scene (config `sext_scene`, test Mode): the saved scene the newest row left
     # (`full_ai_test.fetch`), and this Turn's (`full_ai_scene.scene_next`, set by `run_turn`).
     scene: dict | None = None
